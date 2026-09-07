@@ -665,7 +665,6 @@ a:hover { text-shadow: var(--glow-green); }
   .hud { padding: 9px var(--space-md) 8px; }
   .counters { margin-left: 0; width: 100%; }
   .counter { flex: 1 1 4.4rem; min-width: 0; }
-  .counter.sep { margin-left: 0; }
   main { padding: var(--space-sm) var(--space-sm) 3rem; }
   .panes, .blocker { padding-left: 0; }
   .topic > summary, .task-head {

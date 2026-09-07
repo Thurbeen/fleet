@@ -58,9 +58,14 @@ fail() {
 	failed=1
 }
 
+# A herestring, not `printf ... | grep`. This file runs under `set -o pipefail`,
+# where a pipeline reports the whole pipeline's status rather than the reader's,
+# so a helper built on one can report FAIL for input that plainly matched — seen
+# once here against the served page, and a false negative in the helper fails
+# the gate for the wrong reason. One command has one status; nothing to misread.
 expect() {
 	local label="$1" want="$2" out="$3"
-	if printf '%s' "$out" | grep -qF -- "$want"; then
+	if grep -qF -- "$want" <<<"$out"; then
 		pass "$label"
 	else
 		fail "$label" "expected to find: $want${nl}--- got ---${nl}$out"
@@ -144,9 +149,9 @@ for asset in assets/press-start-2p.woff2 assets/fleet-banner.jpg; do
 	fi
 done
 
-if printf '%s' "$body" | grep -qE 'https?://'; then
+if grep -qE 'https?://' <<<"$body"; then
 	fail "the page names no off-machine origin" \
-		"$(printf '%s' "$body" | grep -nE 'https?://' | head -3)"
+		"$(grep -nE 'https?://' <<<"$body" | head -3)"
 else
 	pass "the page names no off-machine origin"
 fi
@@ -236,7 +241,7 @@ bad_status="$(FLEET_WEBUI_DIR="$badrt" FLEET_WEBUI_PORT="not-a-port" "$WEBUI" st
 expect "status reports it down, not adopted" "not running" "$bad_status"
 
 bad_ensure2="$(FLEET_WEBUI_DIR="$badrt" FLEET_WEBUI_PORT="not-a-port" "$WEBUI" ensure 2>&1)"
-if printf '%s' "$bad_ensure2" | grep -qF -- "adopted"; then
+if grep -qF -- "adopted" <<<"$bad_ensure2"; then
 	fail "a second ensure still refuses to adopt the phantom" "$bad_ensure2"
 else
 	pass "a second ensure still refuses to adopt the phantom"
