@@ -1,5 +1,7 @@
-# Markdown lint config. `scripts/check.sh markdown` runs `rumdl check .`; CI
-# runs the same script.
+# Markdown lint config. `scripts/check.sh markdown` runs rumdl against an
+# explicit `git ls-files` list, not `rumdl check .` (see that script for why);
+# CI runs the same script. These excludes still apply to files named on the
+# command line.
 
 [global]
 # The agent-tooling trees. A SKILL.md opens with YAML frontmatter rather than

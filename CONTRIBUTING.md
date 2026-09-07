@@ -118,9 +118,12 @@ only correct alongside the reason.
 
 ## Dependencies
 
-The only dependency surface is the GitHub Actions used by CI, pinned by commit
-SHA with the version in a trailing comment. [Renovate](https://renovatebot.com)
-keeps them current (`renovate.json`); a tag reference in a workflow is a bug.
+Two dependency surfaces, both pinned and both kept current by
+[Renovate](https://renovatebot.com) (`renovate.json`): the GitHub Actions used
+by CI, pinned by commit SHA with the version in a trailing comment — a tag
+reference in a workflow is a bug — and `rumdl`, pinned by version in
+`RUMDL_VERSION` in `ci.yml`, tracked by a custom regex manager since Renovate
+has no built-in manager for a version in an `env:` block.
 
 ## Prose
 
