@@ -197,16 +197,31 @@ expect "and the trust step comes before the prompt" \
 
 # --- 4. a turn ending is not a task finishing --------------------------------
 
+# The stream is already at seq 100 before either task attaches, so attach can
+# prove it seeds the cursor from the high-water mark rather than from 0 or
+# from "now".
+events="$tmp/events.jsonl"
+cat >"$events" <<'EOF'
+{"seq":100,"at":1788792150000,"session":"11111111-1111-1111-1111-111111111111","event":"present","from_state":null,"to_state":"working","state":"working","reason":null}
+{"seq":100,"at":1788792150000,"session":"22222222-2222-2222-2222-222222222222","event":"present","from_state":null,"to_state":"working","state":"working","reason":null}
+EOF
+export FLEET_QUEUE_WATCH_CMD="cat $events"
+
 $QUEUE attach "$topic/01-drop-idle-default" 11111111-1111-1111-1111-111111111111 >/dev/null
 $QUEUE attach "$topic/02-document-the-states" 22222222-2222-2222-2222-222222222222 >/dev/null
 
-events="$tmp/events.jsonl"
-cat >"$events" <<'EOF'
+cursor="$(cat "$FLEET_QUEUE_DIR/.cursor" 2>/dev/null || echo '<missing>')"
+if [ "$cursor" = 100 ]; then
+	pass "attach seeds the cursor from the stream's high-water mark"
+else
+	fail "attach seeds the cursor from the stream's high-water mark" "cursor: $cursor"
+fi
+
+cat >>"$events" <<'EOF'
 {"seq":101,"at":1788792159766,"session":"11111111-1111-1111-1111-111111111111","event":"state","from_state":null,"to_state":"working","state":"working","reason":"hook"}
 {"seq":102,"at":1788792160000,"session":"22222222-2222-2222-2222-222222222222","event":"state","from_state":null,"to_state":"working","state":"working","reason":"hook"}
 {"seq":103,"at":1788792199000,"session":"11111111-1111-1111-1111-111111111111","event":"state","from_state":"working","to_state":"done","state":"done","reason":"hook"}
 EOF
-export FLEET_QUEUE_WATCH_CMD="cat $events"
 
 out="$($QUEUE watch --for-secs 1 2>&1)"
 expect "watch folds transitions into the record" "01-drop-idle-default" "$out"

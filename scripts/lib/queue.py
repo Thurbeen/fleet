@@ -582,15 +582,23 @@ def cmd_dispatch(args) -> int:
         f"dispatch: {len(ready)} task(s), launched together — no concurrency cap,\n"
         "          because every one of them has no recorded blocker left."
     )
-    unprompted: list = []
-    for t in ready:
-        create, send = spawn_commands(t)
-        if args.dry_run:
+
+    if args.dry_run:
+        for t in ready:
+            create, send = spawn_commands(t)
             print(f"    {t.ref}")
             print(f"      {shell_quote(create)}")
             print("      ./scripts/session-trust.sh <uuid>   # answer the trust dialog first")
             print(f"      thurbox-cli session send <uuid> {shell_quote([send])}")
-            continue
+        return 0
+
+    # Phase 1: create every session back to back, before any of them is kept
+    # waiting on a trust dialog. That is what makes "launched together" true —
+    # a whole wave against one repo draws its dialogs simultaneously only if
+    # session creation for task 2 does not wait on task 1's trust confirmation.
+    attached: list[Task] = []
+    for t in ready:
+        create, _send = spawn_commands(t)
         try:
             out = subprocess.run(create, capture_output=True, check=True).stdout
             session = json.loads(out)["id"]
@@ -598,14 +606,18 @@ def cmd_dispatch(args) -> int:
             detail = getattr(exc, "stderr", b"") or b""
             print(f"    {t.ref}: spawn failed: {detail.decode().strip() or exc}", file=sys.stderr)
             continue
-        # The session exists, but the agent may be sitting on a trust dialog:
-        # thurbox mints a fresh worktree path per session and most agents ask
-        # about a directory they have not seen. Sending the brief now would
-        # type it INTO that dialog, which is how every fleet-spawned worker
-        # used to break.
         attach(t, session)
+        attached.append(t)
+
+    # Phase 2: the session exists, but the agent may be sitting on a trust
+    # dialog: thurbox mints a fresh worktree path per session and most agents
+    # ask about a directory they have not seen. Sending the brief now would
+    # type it INTO that dialog, which is how every fleet-spawned worker used
+    # to break.
+    unprompted: list = []
+    for t in attached:
         ok, report = prompt_session(t)
-        print(f"    {t.ref}  -> {session}{'' if ok else '  NOT PROMPTED'}")
+        print(f"    {t.ref}  -> {t.doc['session']}{'' if ok else '  NOT PROMPTED'}")
         if report:
             print(f"        {report}", file=None if ok else sys.stderr)
         if not ok:
@@ -626,6 +638,7 @@ def attach(task: Task, session: str) -> None:
     task.doc["dispatched_at"] = now()
     task.doc["prompted"] = False
     task.save()
+    seed_cursor(queue_root())
 
 
 def prompt_session(task: Task, timeout: int = 20) -> tuple[bool, str]:
@@ -705,6 +718,46 @@ def write_cursor(root: str, seq: int) -> None:
         fh.write(f"{seq}\n")
 
 
+def watch_command(extra: list) -> list:
+    """The stream command, real or the selftest's recorded-stream override."""
+    override = os.environ.get("FLEET_QUEUE_WATCH_CMD")
+    if override:
+        return ["sh", "-c", override]
+    return ["thurbox-cli", "watch", "--json"] + extra
+
+
+def seed_cursor(root: str) -> None:
+    """Seed the cursor at the moment a task attaches, from the stream's
+    current high-water mark, so the first `watch` after a dispatch resumes
+    from the dispatch instant rather than from 0 (replays the whole backlog)
+    or from "now" (drops everything in between). Never touches a cursor that
+    already exists — a running watch owns it from here on.
+    """
+    if os.path.exists(os.path.join(root, ".cursor")):
+        return
+    try:
+        proc = subprocess.run(
+            watch_command(["--initial", "--for-secs", "0"]),
+            capture_output=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return
+    if proc.returncode != 0:
+        return
+    high = 0
+    for line in proc.stdout.decode(errors="replace").splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        high = max(high, int(ev.get("seq") or 0))
+    write_cursor(root, high)
+
+
 def cmd_watch(args) -> int:
     """Fold thurbox's event stream into the records. Close nothing.
 
@@ -721,13 +774,10 @@ def cmd_watch(args) -> int:
         return 0
 
     since = read_cursor(root)
-    override = os.environ.get("FLEET_QUEUE_WATCH_CMD")
-    if override:
-        cmd = ["sh", "-c", override]
-    else:
-        cmd = ["thurbox-cli", "watch", "--json", "--for-secs", str(args.for_secs)]
-        if since:
-            cmd += ["--since", str(since)]
+    extra = ["--for-secs", str(args.for_secs)]
+    if since:
+        extra += ["--since", str(since)]
+    cmd = watch_command(extra)
 
     try:
         proc = subprocess.run(cmd, capture_output=True, timeout=args.for_secs + 30)
