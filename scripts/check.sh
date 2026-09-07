@@ -81,8 +81,18 @@ check_markdown() {
 
 check_yaml() {
 	need python3 yaml || return
-	if python3 scripts/lib/check_yaml.py; then
-		ok "yaml: every file parses, registry shape holds"
+	need git yaml || return
+
+	local files=()
+	while IFS= read -r -d '' f; do files+=("$f"); done < <(git ls-files -z -- '*.yml' '*.yaml')
+
+	if [ ${#files[@]} -eq 0 ]; then
+		fail "yaml: no tracked *.yml/*.yaml files found"
+		return
+	fi
+
+	if python3 scripts/lib/check_yaml.py "${files[@]}"; then
+		ok "yaml: ${#files[@]} tracked files parse, registry shape holds"
 	else
 		fail "yaml"
 	fi

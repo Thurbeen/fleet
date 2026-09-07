@@ -1,31 +1,31 @@
 #!/usr/bin/env python3
-"""Every YAML file in the tree parses, and the registry has the shape the
-control plane reads.
+"""Every tracked YAML file parses, and the registry has the shape the control
+plane reads.
 
 Called by scripts/check.sh (and through it by CI, prek and the no-mistakes
-lint step), never on its own. It lives in a file rather than a CI heredoc so
-the local gate and the pull-request gate run the same assertions — CI here
-only fires on pull requests, while routine control-plane changes go straight
-to `main`, so the local run is the one that has to be trustworthy.
+lint step) with the list of tracked *.yml/*.yaml files as argv, never on its
+own. It lives in a file rather than a CI heredoc so the local gate and the
+pull-request gate run the same assertions — CI here only fires on pull
+requests, while routine control-plane changes go straight to `main`, so the
+local run is the one that has to be trustworthy.
 
-`glob` does not descend into symlinked directories, so `.claude/skills` is
-walked once, through `.agents/skills`.
+Takes the file list from argv (check.sh builds it with `git ls-files`) rather
+than walking the filesystem itself: a glob silently skips dot-prefixed paths
+like `.github/` and `.no-mistakes.yaml` unless every segment is spelled out,
+which previously let this check report a clean tree while parsing almost none
+of it.
 """
 
-import glob
 import sys
 
 import yaml
 
-SKIP_PREFIXES = (".git/",)
-
 
 def main() -> int:
+    paths = sys.argv[1:]
     bad = False
 
-    for path in sorted(glob.glob("**/*.y*ml", recursive=True)):
-        if path.startswith(SKIP_PREFIXES):
-            continue
+    for path in paths:
         try:
             with open(path) as fh:
                 list(yaml.safe_load_all(fh))
