@@ -21,6 +21,11 @@
 #   5. A PHANTOM IS NEVER "UP". A supervisor stuck retrying a bind that never
 #      succeeds is a live process, not a running monitor — it must never be
 #      adopted, and never reported healthy with a blank URL.
+#   6. IT RENDERS OFFLINE. The page names no origin it does not serve itself,
+#      and the two files the theme needs come out of media/ in this repo. A
+#      CDN font is the kind of thing that works on the machine it was written
+#      on and fails on a laptop in a train, which is where a monitor is least
+#      able to tell you what went wrong.
 #
 # Test 2 is the one to read first. It is the captain's third sentence — always
 # up unless the user asks it down — and the half that is not free.
@@ -122,6 +127,39 @@ done
 
 expect "it binds loopback and nothing wider by default" "127.0.0.1" \
 	"$(cat "$FLEET_WEBUI_DIR/host")"
+
+# The HUD's counters are folded server-side out of the same by-state tally the
+# pills use, so the bar and the list cannot disagree about what a state means.
+expect "the API carries the HUD's counters" '"key": "ready"' "$api"
+expect "a HUD counter names the states it buckets" '"dispatched"' "$api"
+
+# --- 6. the theme renders with the network unplugged -------------------------
+
+for asset in assets/press-start-2p.woff2 assets/fleet-banner.jpg; do
+	code="$(curl -sS -o /dev/null -w '%{http_code}' "${url}${asset}" 2>&1)"
+	if [ "$code" = "200" ]; then
+		pass "$asset is served from this repo, not fetched"
+	else
+		fail "$asset is served from this repo" "got HTTP $code, wanted 200"
+	fi
+done
+
+if printf '%s' "$body" | grep -qE 'https?://'; then
+	fail "the page names no off-machine origin" \
+		"$(printf '%s' "$body" | grep -nE 'https?://' | head -3)"
+else
+	pass "the page names no off-machine origin"
+fi
+
+# The asset table is a whitelist of names, not a document root, so a path that
+# is not in it is a 404 whether or not it exists on disk.
+code="$(curl -sS --path-as-is -o /dev/null -w '%{http_code}' \
+	"${url}assets/../../../etc/passwd" 2>&1)"
+if [ "$code" = "404" ]; then
+	pass "an asset outside the whitelist is a 404, not a file"
+else
+	fail "an asset outside the whitelist is a 404" "got HTTP $code, wanted 404"
+fi
 
 # --- 2. down is durable across the call the skill makes ----------------------
 
