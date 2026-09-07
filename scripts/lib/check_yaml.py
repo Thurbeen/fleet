@@ -1,0 +1,57 @@
+#!/usr/bin/env python3
+"""Every YAML file in the tree parses, and the registry has the shape the
+control plane reads.
+
+Called by scripts/check.sh (and through it by CI, prek and the no-mistakes
+lint step), never on its own. It lives in a file rather than a CI heredoc so
+the local gate and the pull-request gate run the same assertions — CI here
+only fires on pull requests, while routine control-plane changes go straight
+to `main`, so the local run is the one that has to be trustworthy.
+
+`glob` does not descend into symlinked directories, so `.claude/skills` is
+walked once, through `.agents/skills`.
+"""
+
+import glob
+import sys
+
+import yaml
+
+SKIP_PREFIXES = (".git/",)
+
+
+def main() -> int:
+    bad = False
+
+    for path in sorted(glob.glob("**/*.y*ml", recursive=True)):
+        if path.startswith(SKIP_PREFIXES):
+            continue
+        try:
+            with open(path) as fh:
+                list(yaml.safe_load_all(fh))
+        except Exception as exc:  # noqa: BLE001 — report every parse failure
+            print(f"::error file={path}::{exc}")
+            bad = True
+
+    if bad:
+        return 1
+
+    registry = "registry/repos.generated.yaml"
+    doc = yaml.safe_load(open(registry))
+    owners = doc.get("owners")
+    # A fresh clone ships an empty registry — valid, just not yet synced.
+    assert isinstance(owners, list), f"{registry}: owners missing or not a list"
+    assert isinstance(
+        doc.get("totals", {}).get("repos"), int
+    ), f"{registry}: totals.repos missing"
+    for owner in owners:
+        assert owner.get("name") and isinstance(
+            owner.get("repos"), list
+        ), f"{registry}: bad owner: {owner}"
+
+    print(f"registry ok: {doc['totals']['repos']} repos across {len(owners)} owners")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

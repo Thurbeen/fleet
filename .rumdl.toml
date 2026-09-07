@@ -1,0 +1,16 @@
+# Markdown lint config. `scripts/check.sh markdown` runs `rumdl check .`; CI
+# runs the same script.
+
+[global]
+# The agent-tooling trees. A SKILL.md opens with YAML frontmatter rather than
+# an h1, which MD041 rejects without anything being wrong with it — the file
+# follows the skill convention, not the document convention.
+# CLAUDE.md is the two-line `@AGENTS.md` pointer, not prose — it has no h1
+# and is not meant to grow one.
+exclude = [".git", ".agents", ".claude", "CLAUDE.md"]
+
+[MD013]
+# This repo's prose is hand-wrapped at 80.
+line_length = 80
+tables = false
+code_blocks = false

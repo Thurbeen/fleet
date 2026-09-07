@@ -1,4 +1,11 @@
-# fleet-template
+<!-- rumdl-disable MD041 -->
+<!-- The banner is the first line by design; MD041 wants a level-1 heading. -->
+
+![Fleet: fighter craft over a volcanic canyon, powered by thurbox][banner]
+
+[banner]: media/fleet-banner.jpg
+
+# fleet
 
 A **control plane** for your work across GitHub: one repo that holds the *map* of
 your projects and the *orchestration* of AI agent sessions run against them,
@@ -25,7 +32,11 @@ From a fresh clone:
    thurbox extension.
 5. Open the `fleet` session in thurbox and give it a goal.
 
-Requires `gh` (authenticated), `jq`, and `thurbox-cli`.
+Requires `gh` (authenticated), `jq`, and `thurbox-cli` **2.19.0 or newer** —
+`extension.toml.in` records why the floor sits there.
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the gate (`./scripts/check.sh`),
+the squash-only merge policy, and the layout conventions.
 
 ## Customizing
 
@@ -71,7 +82,7 @@ optional, not a setup step you have overlooked.
 If you do rename it, the name is not in one place. It is in six, and they move
 together:
 
-```
+```text
 extension.toml.in
   name = "fleet"                (1) the extension id — the argument to every
                                     `thurbox-cli extension ...` command, so it
@@ -126,7 +137,7 @@ follows a rename rather than driving one.
 
 ## Layout
 
-```
+```text
 registry/
   owners.txt               The GitHub owners the map covers, one per line.
   repos.generated.yaml     Auto-synced index of every repo (owners → repos).
@@ -144,14 +155,37 @@ orchestration/
     <date>-<slug>.md       Log of one run: goal, sessions, outcomes.
 
 scripts/
+  check.sh                 The whole gate: shell, markdown, YAML, skills.
   install-extension.sh     Renders extension.toml, then installs it.
   sync-registry.sh         Regenerates repos.generated.yaml from the GitHub API.
   sync-checkout.sh         Fast-forwards main when that is unambiguously safe.
   trust-thurbox-dir.sh     Seeds Claude Code workspace trust for a worktree.
+  lib/check_yaml.py        The YAML + registry-shape assertions check.sh runs.
+
+.agents/skills/
+  <name>/SKILL.md          Agent skills. ONE tree, agent-agnostic.
+.claude/skills             A committed SYMLINK to .agents/skills.
+
+media/
+  fleet-banner.jpg         The banner at the top of this README.
 
 .github/workflows/
   ci.yml                   PR checks feeding a single "All Checks" gate.
+                           Every job runs scripts/check.sh.
+
+AGENTS.md                  How an agent should operate inside this repo.
+CLAUDE.md                  A two-line pointer that imports AGENTS.md.
+FLEET.md                   Standing context for the `fleet` SESSION — what it
+                           is for, as opposed to how to work in the checkout.
+CONTRIBUTING.md            The gate, the squash-only policy, the conventions.
 ```
+
+Skills live in `.agents/skills/` and `.claude/skills` is a symlink to it, so one
+copy serves every CLI: Claude Code reads `.claude/skills`, and opencode
+auto-discovers the same path. Mirroring the tree into `.opencode/skills` would
+register the same skill twice — don't. `./scripts/check.sh skills` fails if the
+link is not a symlink, which is what a clone with `core.symlinks=false` leaves
+behind.
 
 ## The map
 
@@ -221,9 +255,9 @@ durable database rather than a tmux pane, it also survives scrollback, TUI
 chrome, and line-wrapping — all of which make pane-scraping fragile.
 
 See [`orchestration/playbooks/_TEMPLATE.md`](orchestration/playbooks/_TEMPLATE.md)
-for the anatomy of a playbook, [`CLAUDE.md`](CLAUDE.md) for how an agent should
+for the anatomy of a playbook, [`AGENTS.md`](AGENTS.md) for how an agent should
 operate inside this repo, and
-[`.claude/skills/thurbox-session/SKILL.md`](.claude/skills/thurbox-session/SKILL.md)
+[`.agents/skills/thurbox-session/SKILL.md`](.agents/skills/thurbox-session/SKILL.md)
 for the detailed driving surface: spawning, prompting, completion detection,
 cleanup.
 
@@ -251,18 +285,18 @@ playbooks, and run logs stay in your checkout, where they are versioned.
 
 ### Why the manifest is a `.in` file
 
-`[[sessions]] repo_path` must be an **absolute path** to your clone, for two
-reasons — one historical, one permanent.
+`[[sessions]] repo_path` must be an **absolute path** to your clone.
 
-Older thurbox did not expand `~` there: `ExtensionDef::resolved_for_home()`
-substituted the `{home}` token but never called `expand_tilde`, so a leading
-tilde was taken literally and the session landed in a directory named `~`.
-[thurbox#782](https://github.com/Thurbeen/thurbox/pull/782) fixed that, first
-shipping in 0.174.2. But `min_thurbox_version` here is `0.113.0`, so anyone on a
-thurbox between that and the fix still hits the bug, and the manifest has to
-work across the whole range it claims to support.
+That used to be true for two reasons. The historical one is gone: older thurbox
+did not expand `~` there — `ExtensionDef::resolved_for_home()` substituted the
+`{home}` token but never called `expand_tilde`, so a leading tilde was taken
+literally and the session landed in a directory named `~`.
+[thurbox#782](https://github.com/Thurbeen/thurbox/pull/782) fixed that in
+0.174.2, and `min_thurbox_version` is now 2.19.0, so no supported thurbox still
+has the bug.
 
-Independently of that bug, no token spells "my clone". `{home}` is substituted,
+The permanent reason stands on its own: no token spells "my clone". `{home}` is
+substituted,
 but it resolves to the *extension home*, not your checkout — while the session
 must open the checkout, because it needs `registry/` and `orchestration/` in
 hand.

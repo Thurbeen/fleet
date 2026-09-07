@@ -1,0 +1,44 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended"
+  ],
+  "labels": [
+    "dependencies"
+  ],
+  "minimumReleaseAge": "7 days",
+  "internalChecksFilter": "strict",
+  "osvVulnerabilityAlerts": true,
+  "packageRules": [
+    {
+      "description": "The only dependency surface here is CI's actions, pinned by SHA with the version in a trailing comment. Keep them pinned to a digest rather than letting an update reintroduce a tag reference.",
+      "matchManagers": [
+        "github-actions"
+      ],
+      "pinDigests": true
+    },
+    {
+      "description": "The pull request title becomes the squash commit on main, and this repo's history is conventional and scopeless. Pinned rather than left to the 'auto' default, which infers the convention from history and would produce a title nobody chose.",
+      "matchPackageNames": [
+        "*"
+      ],
+      "semanticCommitType": "chore"
+    }
+  ],
+  "semanticCommits": "enabled",
+  "semanticCommitScope": null,
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "The rumdl pin in CI's markdown job. Renovate has no manager for a version in an env: block, so match it by name.",
+      "managerFilePatterns": [
+        "**/.github/workflows/ci.yml"
+      ],
+      "matchStrings": [
+        "RUMDL_VERSION:\\s*[\"']?(?<currentValue>[0-9][0-9.]*)"
+      ],
+      "datasourceTemplate": "pypi",
+      "depNameTemplate": "rumdl"
+    }
+  ]
+}

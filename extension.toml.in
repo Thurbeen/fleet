@@ -15,10 +15,10 @@
 # `ExtensionDef::resolved_for_home()` substituted the `{home}` token but never
 # called `expand_tilde`, so `~/code/control-plane` was taken literally and the
 # session opened a directory whose name is the single character `~`. That bug is
-# fixed — Thurbeen/thurbox#782, first shipped in 0.174.2. But
-# `min_thurbox_version` below is 0.113.0, which predates the fix: on any thurbox
-# from 0.113.0 through 0.174.1 a tilde still lands the session in a directory
-# named `~`. This manifest has to work across the whole range it supports.
+# fixed — Thurbeen/thurbox#782, first shipped in 0.174.2 — and since
+# `min_thurbox_version` below is now 2.19.0, no supported thurbox still has it.
+# The history is kept because it is why the placeholder was introduced, not
+# because it still bites.
 #
 # Permanently, and independently of that bug: no token spells "my clone".
 # `{home}` is substituted — but it resolves to the extension home
@@ -41,7 +41,36 @@ name = "fleet"
 description = "Control-plane session: the repo map and thurbox orchestration"
 config_version = 1
 version = "1.0.0"                # this extension's own version; bump on changes
-min_thurbox_version = "0.113.0"  # needs the `extension install`/self-heal machinery
+
+# WHY THE FLOOR IS 2.19.0 — it is a claim about what this control plane's own
+# prose relies on, not a note about the version somebody happens to run.
+#
+# 0.113.0 bought the `extension install` / self-heal machinery this manifest
+# needs, and for a long time that was the whole requirement. What raised it is
+# the session-state vocabulary the repo now documents and reads:
+#
+#   2.13.4  `session get`/`list --json` publish a single `state` word, and the
+#           words are honest: `running`, `uncovered` and `unreported` are
+#           spelled apart from `idle`, so `idle` means the agent SAID it is at
+#           rest rather than "nothing here reports anything" (thurbox#1064).
+#           `.agents/skills/thurbox-session/SKILL.md` documents that table and
+#           tells an agent to read the word rather than the absence of one; on
+#           an older thurbox it would be reading a field that is not there.
+#   2.18.3  `detected_agent`, and `session get` stops answering `idle` for a
+#           session an outside harness launched an agent into (thurbox#1081).
+#           This control plane's own `fleet` session is exactly that shape, so
+#           the fix is not academic here.
+#   2.19.0  hook coverage for `grok` and `kimi` alongside the agents already
+#           covered (thurbox#1082). This matters because the [[agents]] block
+#           below is documented as swappable — a control plane that invites you
+#           to change `command` should be honest about which agents can report
+#           a state at all.
+#
+# Deliberately NOT required: the printing-vs-holding-a-pane distinction
+# (`thurbox.printing`, 2.19.2). It is what lets the TUI animate a `running`
+# spinner only on evidence, and it reaches Lua rather than the CLI — nothing
+# this repo reads is behind it, so it would be a floor bought for nothing.
+min_thurbox_version = "2.19.0"
 # No `home`: defaults to `<config>/extensions/fleet` (override with --home).
 
 # --- agents registered in agents.toml (override the model by editing it) ------

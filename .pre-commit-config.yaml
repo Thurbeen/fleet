@@ -1,0 +1,44 @@
+# Pre-commit hooks. Run with `prek` (https://github.com/j178/prek), not the
+# Python `pre-commit`:
+#
+#     prek install
+#
+# Every hook shells out to scripts/check.sh, which is also what CI and
+# .no-mistakes.yaml's `lint` command run — so a hook cannot drift from the gate
+# it is standing in for. One hook per check rather than a single whole-gate
+# hook, so a commit touching only prose does not wait on shellcheck.
+default_stages: [pre-commit]
+
+repos:
+  - repo: local
+    hooks:
+      - id: shell
+        name: shellcheck
+        entry: ./scripts/check.sh shell
+        language: system
+        files: '\.sh$'
+        pass_filenames: false
+
+      - id: markdown
+        name: markdown (rumdl)
+        entry: ./scripts/check.sh markdown
+        language: system
+        files: '\.md$'
+        pass_filenames: false
+
+      - id: yaml
+        name: YAML parses, registry shape holds
+        entry: ./scripts/check.sh yaml
+        language: system
+        files: '\.ya?ml$'
+        pass_filenames: false
+
+      # Unfiltered: the failure this catches is a checkout that materialised
+      # .claude/skills as a regular file instead of a symlink, which shows up
+      # in a commit that touches no skill at all.
+      - id: skills
+        name: agent skills layout
+        entry: ./scripts/check.sh skills
+        language: system
+        always_run: true
+        pass_filenames: false

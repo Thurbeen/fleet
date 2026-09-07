@@ -14,8 +14,13 @@ permissions:
   # dorny/paths-filter reads the PR's changed files via the API.
   pull-requests: read
 
+env:
+  # Pinned so a rumdl release cannot turn a green pull request red on its own.
+  # Renovate bumps it — see renovate.json's customManagers.
+  RUMDL_VERSION: "0.2.67"
+
 jobs:
-  # Classify the PR diff so a docs-only change skips shell/yaml jobs. Job-level
+  # Classify the PR diff so a docs-only change skips the shell job. Job-level
   # `if:` (not workflow-level `paths-ignore:`) keeps the always-run `all-checks`
   # gate reporting a status — a skipped job counts as success.
   changes:
@@ -23,76 +28,89 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       shell: ${{ steps.filter.outputs.shell }}
+      markdown: ${{ steps.filter.outputs.markdown }}
       yaml: ${{ steps.filter.outputs.yaml }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
         id: filter
         with:
-          # Every filter includes this workflow so editing it re-runs all jobs.
+          # Every filter includes this workflow and the gate script, so editing
+          # either re-runs all jobs.
           filters: |
             shell:
               - '**/*.sh'
+              - 'scripts/check.sh'
+              - '.github/workflows/ci.yml'
+            markdown:
+              - '**/*.md'
+              - '.rumdl.toml'
+              - 'scripts/check.sh'
               - '.github/workflows/ci.yml'
             yaml:
               - '**/*.yaml'
               - '**/*.yml'
+              - 'scripts/lib/check_yaml.py'
+              - 'scripts/check.sh'
               - '.github/workflows/ci.yml'
 
-  shellcheck:
-    name: Shellcheck
+  # Every job below runs scripts/check.sh rather than inlining its checks, so
+  # the local gate and this one cannot drift apart. That matters here because
+  # CI fires only on pull requests while routine control-plane changes go
+  # straight to `main`.
+  shell:
+    name: Shell
     needs: changes
     if: needs.changes.outputs.shell == 'true'
     runs-on: ubuntu-latest # shellcheck is preinstalled on the runner
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
-      - run: shellcheck scripts/*.sh
+      - run: ./scripts/check.sh shell
+
+  markdown:
+    name: Markdown
+    needs: changes
+    if: needs.changes.outputs.markdown == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - name: Install rumdl
+        run: pipx install "rumdl==${RUMDL_VERSION}"
+      - run: ./scripts/check.sh markdown
 
   yaml:
     name: YAML
     needs: changes
     if: needs.changes.outputs.yaml == 'true'
+    runs-on: ubuntu-latest # PyYAML is preinstalled on the runner
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - run: ./scripts/check.sh yaml
+
+  # Unfiltered on purpose. `.claude/skills` is a committed symlink to
+  # `.agents/skills`, and the way that breaks is a CHECKOUT that materialises it
+  # as a regular file rather than a link — which no diff mentions. Running this
+  # on every pull request is what proves the layout survives a fresh clone.
+  skills:
+    name: Skills layout
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
-      - name: Every YAML file parses
-        run: |
-          python3 - <<'PY'
-          import glob, sys, yaml
-          bad = False
-          for f in glob.glob('**/*.y*ml', recursive=True):
-              try:
-                  with open(f) as fh:
-                      list(yaml.safe_load_all(fh))
-              except Exception as e:
-                  print(f"::error file={f}::{e}")
-                  bad = True
-          sys.exit(1 if bad else 0)
-          PY
-      - name: Registry has the expected shape
-        run: |
-          python3 - <<'PY'
-          import yaml
-          d = yaml.safe_load(open('registry/repos.generated.yaml'))
-          owners = d.get('owners')
-          # A fresh clone ships an empty registry — valid, just not yet synced.
-          assert isinstance(owners, list), "owners missing or not a list"
-          assert isinstance(d.get('totals', {}).get('repos'), int), "totals.repos missing"
-          for o in owners:
-              assert o.get('name') and isinstance(o.get('repos'), list), f"bad owner: {o}"
-          print(f"registry ok: {d['totals']['repos']} repos across {len(owners)} owners")
-          PY
+      - run: ./scripts/check.sh skills
 
   # Single required status check. Every job feeds this gate; a branch ruleset
   # requires only "All Checks", so adding or removing jobs never needs a
-  # ruleset change.
+  # ruleset change — but a new job MUST be added to `needs:` below, or it can
+  # fail while this gate reports green.
   all-checks:
     name: All Checks
     if: always()
     needs:
       - changes
-      - shellcheck
+      - shell
+      - markdown
       - yaml
+      - skills
     runs-on: ubuntu-latest
     steps:
       - name: Verify all checks passed

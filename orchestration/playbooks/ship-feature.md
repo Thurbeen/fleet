@@ -22,7 +22,8 @@ One worker session.
 - **repo / worktree** — `repo`, fresh worktree off `base`.
 - **prompt** — self-contained: the goal, acceptance criteria, "open a PR when
   done, then mail the PR URL back". Point the worker at the repo's own
-  conventions (its `CLAUDE.md`, tests, lint) rather than restating them here.
+  conventions (its `AGENTS.md` / `CLAUDE.md`, tests, lint) rather than
+  restating them here.
 - **done when** — a result message carrying the PR URL, CI green.
 
 ## Run
