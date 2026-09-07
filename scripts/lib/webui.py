@@ -709,19 +709,13 @@ def announce(srv: ThreadingHTTPServer, host: str) -> str:
     return url
 
 
-def main(argv: list) -> int:
+def main() -> int:
     host = os.environ.get("FLEET_WEBUI_HOST") or "127.0.0.1"
     try:
         first = int(os.environ.get("FLEET_WEBUI_PORT") or DEFAULT_PORT)
     except ValueError:
         print("fleet monitor: FLEET_WEBUI_PORT is not a number", file=sys.stderr)
         return 2
-
-    if "--once" in argv:
-        # Render the snapshot and exit: what the selftest and a scripted check
-        # use, so neither has to bind a socket to know the reader works.
-        print(json.dumps(snapshot(), indent=2))
-        return 0
 
     srv = bind(host, first, PORT_SPAN)
     url = announce(srv, host)
@@ -743,4 +737,4 @@ def main(argv: list) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    sys.exit(main())

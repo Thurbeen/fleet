@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Prove the monitor's lifecycle claims, rather than assert them.
 #
-# `scripts/webui.sh` makes four promises that are easy to write down and easy
-# to get backwards, and three of them are invisible until the day they matter.
+# `scripts/webui.sh` makes five promises that are easy to write down and easy
+# to get backwards, and four of them are invisible until the day they matter.
 # Each gets a test here, against a throwaway queue and a throwaway runtime
 # directory, so a change that quietly inverts one fails the gate:
 #
@@ -18,6 +18,9 @@
 #   4. IT IS A READER. Every write verb is a 405 and the page binds loopback.
 #      A monitor that could dispatch would be a second writer over records
 #      `queue.sh` owns.
+#   5. A PHANTOM IS NEVER "UP". A supervisor stuck retrying a bind that never
+#      succeeds is a live process, not a running monitor — it must never be
+#      adopted, and never reported healthy with a blank URL.
 #
 # Test 2 is the one to read first. It is the captain's third sentence — always
 # up unless the user asks it down — and the half that is not free.
@@ -168,6 +171,41 @@ expect "the monitor answers again" "fleet monitor" "$(curl -sS "$url" 2>&1)"
 
 "$WEBUI" stop >/dev/null 2>&1
 rm -f "$FLEET_WEBUI_DIR/down"
+
+# --- 5. a supervisor that never binds is never mistaken for "up" ------------
+#
+# A busy port range or a missing dependency makes the python server exit
+# immediately, every time; the bash supervisor keeps retrying with backoff
+# forever, since nothing sets the down flag. That supervisor is a live
+# process, but it has never served anything, and must not be adopted or
+# reported healthy. FLEET_WEBUI_PORT set to something non-numeric reproduces
+# exactly that: an immediate, permanent exit on every attempt, via the real
+# script rather than a stand-in for it.
+
+badrt="$tmp/rt-bad"
+mkdir -p "$badrt"
+
+bad_ensure="$(FLEET_WEBUI_DIR="$badrt" FLEET_WEBUI_PORT="not-a-port" "$WEBUI" ensure 2>&1)"
+expect "ensure gives up rather than adopting a phantom" "did not come up" "$bad_ensure"
+
+if [ -f "$badrt/pid" ]; then
+	fail "a failed launch leaves nothing behind" "$badrt/pid still exists"
+else
+	pass "a failed launch leaves nothing behind"
+fi
+
+bad_status="$(FLEET_WEBUI_DIR="$badrt" FLEET_WEBUI_PORT="not-a-port" "$WEBUI" status 2>&1)"
+expect "status reports it down, not adopted" "not running" "$bad_status"
+
+bad_ensure2="$(FLEET_WEBUI_DIR="$badrt" FLEET_WEBUI_PORT="not-a-port" "$WEBUI" ensure 2>&1)"
+if printf '%s' "$bad_ensure2" | grep -qF -- "adopted"; then
+	fail "a second ensure still refuses to adopt the phantom" "$bad_ensure2"
+else
+	pass "a second ensure still refuses to adopt the phantom"
+fi
+
+FLEET_WEBUI_DIR="$badrt" "$WEBUI" stop >/dev/null 2>&1
+rm -rf "$badrt"
 
 if [ "$failed" -eq 0 ]; then
 	echo "webui selftest: every claim holds"

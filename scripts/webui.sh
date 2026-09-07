@@ -86,13 +86,27 @@ err() { printf '%s\n' "$*" >&2; }
 # --- is it up? ---------------------------------------------------------------
 
 # Echo the live supervisor pid, or nothing. A pidfile alone proves nothing: it
-# outlives a reboot, and pids are reused.
-running_pid() {
+# outlives a reboot, and pids are reused. Says nothing about whether the
+# server it supervises ever bound a port — use this only to signal it, never
+# to decide if the monitor is "up".
+supervisor_pid() {
 	local pid
 	pid="$(cat "$PIDFILE" 2>/dev/null)" || return 1
 	[ -n "$pid" ] || return 1
 	kill -0 "$pid" 2>/dev/null || return 1
 	ps -o args= -p "$pid" 2>/dev/null | grep -qF -- "$SUPERVISE" || return 1
+	printf '%s\n' "$pid"
+}
+
+# Echo the live supervisor pid, or nothing — but only once it has actually
+# bound and announced a URL. A supervisor stuck in a crash-restart loop that
+# never binds (a busy port range, a missing dependency) is a live process,
+# but it is not "up": it must never be adopted, and it must never be reported
+# healthy with a blank URL.
+running_pid() {
+	local pid
+	pid="$(supervisor_pid)" || return 1
+	[ -s "$URLFILE" ] || return 1
 	printf '%s\n' "$pid"
 }
 
@@ -158,6 +172,10 @@ launch() {
 	if [ ! -s "$URLFILE" ]; then
 		err "fleet monitor: did not come up within 15s. Last log lines:"
 		tail -n 15 "$LOG" >&2
+		# A supervisor that never bound is still out there retrying — kill it
+		# rather than leave it running forever behind a stale pid file.
+		terminate
+		rm -f "$PIDFILE"
 		return 1
 	fi
 	return 0
@@ -165,19 +183,19 @@ launch() {
 
 terminate() {
 	local pid
-	pid="$(running_pid)" || return 0
+	pid="$(supervisor_pid)" || return 0
 	# Signal the whole process group: the supervisor and the python server it
 	# is currently running, in one shot, so neither outlives the other.
 	kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null
 	local waited=0
 	while [ "$waited" -lt 40 ]; do
-		running_pid >/dev/null || return 0
+		supervisor_pid >/dev/null || return 0
 		sleep 0.25
 		waited=$((waited + 1))
 	done
 	kill -KILL -- "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null
 	sleep 0.5
-	running_pid >/dev/null && return 1
+	supervisor_pid >/dev/null && return 1
 	return 0
 }
 
