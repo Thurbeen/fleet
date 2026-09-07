@@ -16,6 +16,7 @@ which previously let this check report a clean tree while parsing almost none
 of it.
 """
 
+import os
 import sys
 
 import yaml
@@ -37,9 +38,15 @@ def main() -> int:
         return 1
 
     registry = "registry/repos.generated.yaml"
+    # The map is generated from the operator's own `gh` session and gitignored,
+    # so it is absent in the template and in any clone that has not synced yet.
+    # That is a normal state, not a failure — there is simply nothing to assert.
+    if not os.path.exists(registry):
+        print(f"registry: {registry} not present (not synced yet) — nothing to check")
+        return 0
+
     doc = yaml.safe_load(open(registry))
     owners = doc.get("owners")
-    # A fresh clone ships an empty registry — valid, just not yet synced.
     assert isinstance(owners, list), f"{registry}: owners missing or not a list"
     assert isinstance(
         doc.get("totals", {}).get("repos"), int

@@ -9,16 +9,41 @@ argument handling and the usage message. Two modes:
     session_profiles.py <path> <profile>     validate every profile, then
                                              write that one's flags to stdout
 
+TWO LAYERS, not one. `<path>` holds the defaults the TEMPLATE ships and is
+tracked; `<path>` with a `.local.yaml` suffix holds this instance's overrides
+and is gitignored. A profile named in the local file REPLACES the shipped one
+of that name wholesale — not key by key, because a half-overridden profile is
+the kind of thing nobody can predict from reading either file. A name only the
+local file has is simply added.
+
+A replacement is ANNOUNCED on stderr, in both modes. Silent precedence is how
+someone loses an hour to an override that did nothing, or to a template change
+that did nothing; naming the shadowed profiles costs one line and answers both.
+
+The `.local.example.yaml` sibling, if present, is validated and then discarded:
+it is the tracked copy that documents the schema, so it has to stay correct
+without ever contributing a profile.
+
+That split exists so tuning a profile does not put a commit on `main`. The
+tracked tree of an instance stays identical to the template's, which is what
+keeps scripts/update-from-template.sh a fast-forward rather than a merge that
+can conflict on settings someone tuned deliberately. .gitignore's header owns
+the full reasoning.
+
+Each layer is validated on its own, before the merge, so an error names the
+file it is actually in.
+
 Flags are written NUL-separated so a value may contain anything execve
 accepts — a `--arg` is frequently a whole command line, and a line-based
 protocol would corrupt one that spans lines. The caller reads them with
 `mapfile -d '' -t`.
 
-Both modes validate the whole file. A profile that breaks a rule means the
-file is broken, and finding that out while rendering a different profile is
+Both modes validate BOTH layers in full. A profile that breaks a rule means
+the file is broken, and finding that out while rendering a different profile is
 better than finding it out when a worker starts wrong.
 """
 
+import os
 import re
 import sys
 
@@ -113,41 +138,103 @@ def render(profile):
     return flags
 
 
+def local_path(path, suffix=".local.yaml"):
+    """A sibling of the tracked defaults: the override file, or its example."""
+    base = path[: -len(".yaml")] if path.endswith(".yaml") else path
+    return f"{base}{suffix}"
+
+
+def load_layer(path, errors, required):
+    """Parse and validate one layer. Returns its `profiles` mapping, or None.
+
+    A missing REQUIRED layer is an error; a missing optional one is the normal
+    state of an instance that has not overridden anything.
+    """
+    try:
+        with open(path) as fh:
+            doc = yaml.safe_load(fh)
+    except FileNotFoundError:
+        if required:
+            print(f"{path}: no such file", file=sys.stderr)
+            return None
+        return {}
+    except OSError as exc:
+        print(f"{path}: {exc}", file=sys.stderr)
+        return None
+    except yaml.YAMLError as exc:
+        print(f"{path}: {exc}", file=sys.stderr)
+        return None
+
+    # An override file that exists but is empty is a no-op, not a broken file.
+    if doc is None and not required:
+        return {}
+    if not isinstance(doc, dict) or not isinstance(doc.get("profiles"), dict):
+        print(f"{path}: expected a top-level `profiles:` mapping", file=sys.stderr)
+        return None
+
+    unknown = sorted(set(doc) - {"profiles"})
+    if unknown:
+        errors.append(f"{path}: unknown top-level key(s) {', '.join(unknown)}")
+
+    layer_errors: list[str] = []
+    for name, profile in doc["profiles"].items():
+        check_profile(name, profile, layer_errors)
+    errors.extend(f"{path}: {error}" for error in layer_errors)
+    return doc["profiles"]
+
+
 def main() -> int:
     if len(sys.argv) != 3:
         print("usage: session_profiles.py <path> --check|<profile>", file=sys.stderr)
         return 2
     path, wanted = sys.argv[1], sys.argv[2]
 
-    try:
-        with open(path) as fh:
-            doc = yaml.safe_load(fh)
-    except OSError as exc:
-        print(f"{path}: {exc}", file=sys.stderr)
-        return 1
-    except yaml.YAMLError as exc:
-        print(f"{path}: {exc}", file=sys.stderr)
-        return 1
-
     errors: list[str] = []
-    if not isinstance(doc, dict) or not isinstance(doc.get("profiles"), dict):
-        print(f"{path}: expected a top-level `profiles:` mapping", file=sys.stderr)
+    profiles = load_layer(path, errors, required=True)
+    if profiles is None:
         return 1
-    unknown = sorted(set(doc) - {"profiles"})
-    if unknown:
-        errors.append(f"unknown top-level key(s) {', '.join(unknown)}")
 
-    profiles = doc["profiles"]
-    for name, profile in profiles.items():
-        check_profile(name, profile, errors)
+    overrides_file = local_path(path)
+    overrides = load_layer(overrides_file, errors, required=False)
+    if overrides is None:
+        return 1
+
+    # The tracked example ships the schema and must not rot: hold it to the same
+    # rules, then throw it away. It never contributes a profile.
+    example_file = local_path(path, ".local.example.yaml")
+    if os.path.exists(example_file) and load_layer(example_file, errors, False) is None:
+        return 1
 
     if errors:
         for error in errors:
-            print(f"::error file={path}::{error}", file=sys.stderr)
+            print(f"::error::{error}", file=sys.stderr)
         return 1
 
+    # Wholesale per name: your `sweep` is your `sweep`, not a blend of two.
+    shadowed = sorted(set(profiles) & set(overrides))
+    profiles = {**profiles, **overrides}
+
+    # Precedence is never silent. Someone debugging "why did my override do
+    # nothing" — or "why did the template's change do nothing" — is answered
+    # here rather than by reading two files and guessing which won.
+    if shadowed:
+        print(
+            f"note: {overrides_file} replaces shipped profile(s): "
+            f"{', '.join(shadowed)}",
+            file=sys.stderr,
+        )
+
     if wanted == "--check":
-        print(f"profiles ok: {len(profiles)} in {path}")
+        summary = f"profiles ok: {len(profiles)} in {path}"
+        if overrides:
+            added = sorted(set(overrides) - set(shadowed))
+            detail = []
+            if shadowed:
+                detail.append(f"{len(shadowed)} replaced")
+            if added:
+                detail.append(f"{len(added)} added")
+            summary += f" (+{overrides_file}: {', '.join(detail)})"
+        print(summary)
         return 0
 
     if wanted not in profiles:

@@ -1,4 +1,56 @@
-# Rendered from extension.toml.in by scripts/install-extension.sh. It carries
-# this clone's absolute path, which is true only on one machine — see the header
-# of extension.toml.in for why the path cannot be a `~`.
+# THE INVARIANT: this instance's TRACKED tree stays identical to the template's.
+#
+# That is what makes `git pull template main` a clean fast-forward every time
+# and never a merge. Nothing a running fleet writes is tracked, so there is no
+# divergence, so there is nothing to conflict. The gitignore split and
+# scripts/update-from-template.sh are one design, not two.
+#
+# Every entry below says WHY it is here, because the updater depends on this
+# split and an entry nobody understands is one somebody eventually removes.
+# Three reasons, and no others:
+#
+#   GENERATED   written by a script from a live source; reproducible
+#   LOG         the record of something that happened in THIS instance
+#   PER-INSTANCE  true on one machine, or authored by one operator
+#
+# WHAT THIS COSTS, stated plainly because the README says it too: this repo no
+# longer backs up your control plane's content. It distributes the template's
+# SHAPE. Your run logs, your project context and your map live in one working
+# copy and die with it unless you back that copy up yourself.
+#
+# Files already tracked in an older instance are unaffected — git applies these
+# rules to untracked paths only. update-from-template.sh reports any it finds.
+
+# PER-INSTANCE. Rendered from extension.toml.in by scripts/install-extension.sh
+# and carrying this clone's absolute path, which is true only on one machine —
+# extension.toml.in's header says why the path cannot be a `~`.
 /extension.toml
+
+# PER-INSTANCE. Your GitHub owners. registry/owners.example.txt is the tracked
+# copy that documents the format.
+/registry/owners.txt
+
+# GENERATED. Rebuilt wholesale from your `gh` session by scripts/sync-registry.sh.
+/registry/repos.generated.yaml
+
+# PER-INSTANCE. The judgement about one of your projects, written from
+# _TEMPLATE.md. The template ships the form; what you write into it is yours.
+/registry/context/*.md
+!/registry/context/_TEMPLATE.md
+
+# LOG. One file per orchestration run — the record of what this instance did.
+# _TEMPLATE.md is the shipped form and stays.
+/orchestration/runs/*.md
+!/orchestration/runs/_TEMPLATE.md
+
+# PER-INSTANCE. Playbooks you write. They live in their own directory rather
+# than beside the template's so this stays ONE rule that never needs a line
+# adding when the template ships a fourth playbook — a forgotten negation would
+# land that playbook ignored in every instance, silently.
+/orchestration/playbooks/local/*
+!/orchestration/playbooks/local/README.md
+
+# PER-INSTANCE. Your session-profile overrides, layered over the tracked
+# defaults in orchestration/session-profiles.yaml. scripts/session-flags.sh
+# reads both; a profile defined here replaces the shipped one of that name.
+/orchestration/session-profiles.local.yaml

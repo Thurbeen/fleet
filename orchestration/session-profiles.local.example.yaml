@@ -1,0 +1,50 @@
+# The tracked EXAMPLE for your own session profiles. Copy it once:
+#
+#     cp orchestration/session-profiles.local.example.yaml \
+#        orchestration/session-profiles.local.yaml
+#
+# `/fleet-onboarding` does that for you. The copy is gitignored — it is YOURS,
+# and it is the file to edit. Editing `session-profiles.yaml` instead puts a
+# commit on `main` and costs you the clean fast-forward that
+# `./scripts/update-from-template.sh` depends on; .gitignore's header says why.
+#
+# LAYERING, and it is deliberately boring: a profile named here REPLACES the
+# shipped profile of that name, wholesale — not key by key. A name that only
+# appears here is simply added. `./scripts/session-flags.sh` says on stderr
+# which profiles this file is shadowing, so an override can never silently
+# do nothing (or silently swallow a template change).
+#
+# THE SAME TWO ENFORCED RULES APPLY HERE. A worker started from an override is
+# exactly as capable of being silently broken, so the gate holds both layers to
+# them:
+#
+#   - no `THURBOX_*` keys — thurbox's identity variables always win over
+#     `--env`, so one set here would look applied and do nothing.
+#   - `command` requires `reports_as` — without it thurbox reads hook coverage
+#     against the command instead of the agent in the pane, and a working
+#     session renders as `uncovered`.
+#
+# THE NO-SECRETS CONVENTION POINTS HERE, and that is the point of the file.
+# `session-profiles.yaml` holds template defaults because it is committed and
+# world-readable in a public template. THIS file is gitignored, so a value you
+# would not commit has somewhere to go — put it here rather than in the tracked
+# file. Nothing enforces that, in either file: no gate reads YAML for secrets.
+# It is still a value sitting in plaintext on your disk, so a real credential is
+# better off reaching the worker by inheritance (your shell profile, your
+# keyring, `claude /login`, `gh auth login`) than by living in any file at all.
+# This is the right answer for the awkward middle: a per-machine endpoint, a
+# token for a scratch service, anything you want applied but not published.
+#
+# The schema is `session-profiles.yaml`'s — read it there.
+
+profiles: {}
+# profiles:
+#   # Replaces the shipped `sweep` entirely: what you write is what a worker gets.
+#   sweep:
+#     env:
+#       MAX_THINKING_TOKENS: "16000"
+#
+#   # A name of your own is simply added to the set.
+#   deep:
+#     env:
+#       MAX_THINKING_TOKENS: "31999"
