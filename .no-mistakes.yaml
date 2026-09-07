@@ -16,7 +16,8 @@
 commands:
   # scripts/check.sh IS the repo's gate — shellcheck, rumdl over every tracked
   # markdown file, a YAML parse of the whole tree plus the registry's shape,
-  # the session profiles, and the skills-symlink check. Named explicitly rather than left to agent
+  # the session profiles, the task queue, and the skills-symlink check. Named
+  # explicitly rather than left to agent
   # detection so the step is deterministic, and pointed at the same script CI
   # and the prek hooks run, so a green local run and a green pull request mean
   # the same thing. That parity matters more here than in most repos: CI only
@@ -32,15 +33,20 @@ commands:
 
   # The same script again, deliberately.
   #
-  # This repo has no test suite and is unlikely to grow one: its artifacts are
-  # prose an agent reads and scripts a human runs. The tempting answer is to
-  # leave this key empty — but an empty key does not mean "a small test run",
-  # it means the agent decides what running the tests here looks like, and on a
-  # repo with nothing to run that invites it to invent something (spawning a
-  # real thurbox session, or running sync-registry.sh against the live GitHub
-  # API, both of which reach outside the worktree). Naming the known-good
-  # baseline makes the step's agent turn evidence gathering on top of it rather
-  # than a choice about what to execute. It costs about a second.
+  # `./scripts/check.sh queue` runs scripts/queue-selftest.sh, which is the
+  # repo's one real test: it re-proves the queue's ordering and wake claims —
+  # that independent work goes out all at once, that file overlap does NOT
+  # serialize, that a turn ending is not a task finishing — against a
+  # throwaway queue in a temp directory. Everything else here is prose an agent
+  # reads and scripts a human runs, so the gate is still the whole suite.
+  #
+  # Naming it explicitly rather than leaving this key empty is the point: an
+  # empty key does not mean "a small test run", it means the agent decides what
+  # running the tests here looks like, which invites it to invent something
+  # that reaches outside the worktree (spawning a real thurbox session, or
+  # running sync-registry.sh against the live GitHub API). Naming the
+  # known-good baseline makes the step's agent turn evidence gathering on top
+  # of it rather than a choice about what to execute. It costs about a second.
   test: "./scripts/check.sh"
 
 # Excluded from review and documentation checks: files carrying no reviewable
@@ -105,6 +111,16 @@ document:
     lives in the documents above. `.claude/skills` is a symlink to
     `.agents/skills`, so the skill has exactly one copy; never write a second
     one under `.claude/`.
+
+    scripts/queue.sh's header owns the task queue: the layout, the ordering
+    rule, and why completion is a stream plus a file rather than a message.
+    orchestration/queue/README.md owns the on-disk record shape, and
+    .agents/skills/fleet-queue/SKILL.md is the working reference for driving
+    it — a reference, not an owner. scripts/session-trust.sh's header owns the
+    trust-dialog mechanics and the per-agent table, and
+    scripts/trust-thurbox-dir.sh's owns the config-seeding fallback. README.md
+    owns the human-facing version of all of it. Point at one of those rather
+    than restating the doctrine in a fifth place.
 
     orchestration/playbooks/<name>.md owns a repeatable recipe for a class of
     work; orchestration/runs/<date>-<slug>.md owns what happened in one run and

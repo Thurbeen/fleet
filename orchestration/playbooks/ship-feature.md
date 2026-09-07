@@ -24,10 +24,10 @@ One worker session.
   carries the repo, and so does the run log.
 - **repo / worktree** — `repo`, fresh worktree off `base`.
 - **prompt** — self-contained: the goal, acceptance criteria, "open a PR when
-  done, then mail the PR URL back". Point the worker at the repo's own
-  conventions (its `AGENTS.md` / `CLAUDE.md`, tests, lint) rather than
-  restating them here.
-- **done when** — a result message carrying the PR URL, CI green.
+  done, then write the result file carrying the PR URL". Point the worker at
+  the repo's own conventions (its `AGENTS.md` / `CLAUDE.md`, tests, lint)
+  rather than restating them here.
+- **done when** — a result file carrying the PR URL, CI green.
 
 ## Run
 
@@ -43,7 +43,9 @@ One worker session.
    not two sharing a name. It returns `created: false` when the session was
    already there — **skip the send in that case**, or the brief interrupts a
    worker mid-turn. The skill's §1c and §1d have the mechanics.
-4. Wait for the worker's result message; the send wakes you, so don't poll.
+4. Read the result file the worker wrote, when you choose. Do not ask it to
+   mail you: `message send` wakes the lead and interrupts whoever is talking to
+   it. `./scripts/queue.sh watch` gives the timing without interrupting anyone.
 5. Review the PR; record it in the run log; merge or hand back.
 6. `session delete <uuid> --force` once merged or abandoned.
 

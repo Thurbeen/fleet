@@ -36,11 +36,15 @@ How to decompose the goal into thurbox sessions. For each session, define:
 2. Fast-forward each target repo's base branch, then `thurbox-cli session create`
    with `--parent "$THURBOX_SESSION"`, the chosen `--on-existing` mode, and the
    profile's flags from `./scripts/session-flags.sh`.
-3. `thurbox-cli session send <uuid>` the prompt, ending with the result-mail
-   line so the worker reports back instead of you polling — but only when the
-   spawn returned `created: true`; an adopted session is already working.
-4. Drain `thurbox-cli message inbox --for "$THURBOX_SESSION" --claim --json`;
-   record each outcome in the run log as it lands.
+3. Get each new session past its trust dialog (`./scripts/session-trust.sh
+   <uuid>`), then `thurbox-cli session send <uuid>` the prompt, ending with the
+   result-FILE contract so the worker reports back instead of you polling — but
+   only when the spawn returned `created: true`; an adopted session is already
+   working. `./scripts/queue.sh dispatch` does both steps for you.
+4. Read the results the workers wrote (`./scripts/queue.sh watch` for the
+   timing, `collect` for the conclusions); record each outcome in the run log
+   as it lands. Do not have workers mail you — `message send` wakes the lead
+   and interrupts whoever is talking to it.
 5. Review artifacts (PRs). `session delete <uuid> --force` per session as it
    closes out.
 

@@ -9,13 +9,23 @@
 #
 #     .projects["<absolute path>"].hasTrustDialogAccepted = true
 #
-# keyed by *exact absolute path*. There is no glob, no prefix rule, and no
-# inheritance from a parent directory: a thurbox worktree under
-# ~/.local/share/thurbox is untrusted even when the repo it belongs to, and the
-# directory that repo lives in, are both trusted.
+# keyed by *exact absolute path*. There is no glob and no prefix rule.
 #
-# thurbox mints a fresh worktree path per session, so every new worker would
-# otherwise meet the dialog. Seed the path instead.
+# WHICH PATH, THOUGH — observed live on 2026-09-07, and it is not what this
+# header used to claim. Answering the dialog inside a thurbox worktree records
+# the trust against the REPOSITORY's main worktree path, not the worktree's
+# own. So the FIRST worker in a repo meets the dialog and later ones do not.
+# That is milder than "every worker", and worse in one specific way that
+# matters here: fleet dispatches a whole ready set at once, so every worker in
+# the first wave against a repo draws the dialog simultaneously, and a dialog
+# already on screen stays on screen after another session records the trust.
+#
+# THIS IS NO LONGER THE PRIMARY PATH. `scripts/session-trust.sh` answers the
+# dialog with a keystroke instead, which touches nothing that outlives the
+# session — see its header. Seeding is the FALLBACK, for when a dialog cannot
+# be confirmed or answered, and for pre-seeding a batch of worktrees ahead of
+# an unattended run. It writes to a file the operator owns, so reach for it
+# deliberately rather than by default.
 #
 # TRUST IS A REAL GUARD. Accepting it in advance says "I vouch for the code in
 # this directory". Only ever point this at worktrees of repos you already trust

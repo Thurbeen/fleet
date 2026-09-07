@@ -54,3 +54,12 @@
 # defaults in orchestration/session-profiles.yaml. scripts/session-flags.sh
 # reads both; a profile defined here replaces the shipped one of that name.
 /orchestration/session-profiles.local.yaml
+
+# LOG + PER-INSTANCE. The task queue: topics, per-task briefs, the transitions
+# a run produced, and what each worker concluded. This is the control plane's
+# working state — one operator's prompts and one operator's work — and it is
+# exactly what must not be tracked, or every instance's queue would collide on
+# the next pull. README.md is the shipped explanation of the layout and stays,
+# the same shape /orchestration/playbooks/local/ uses.
+/orchestration/queue/*
+!/orchestration/queue/README.md

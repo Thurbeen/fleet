@@ -12,7 +12,7 @@
 #   scripts/check.sh shell yaml          # only the named ones
 #   scripts/check.sh --fix markdown      # apply the fixes a check can apply
 #
-# Checks: shell, markdown, yaml, profiles, skills. Only `markdown` has a
+# Checks: shell, markdown, yaml, profiles, queue, skills. Only `markdown` has a
 # fixer; `--fix` is a no-op for the rest, so `scripts/check.sh --fix` is
 # always safe to run.
 #
@@ -120,6 +120,33 @@ check_profiles() {
 	fi
 }
 
+# The task queue, in two halves. `queue.sh check` validates THIS instance's
+# records — a blocker naming a task that no longer exists, a state word nobody
+# defined — and says so and passes when the queue has never been used, the way
+# check_yaml.py treats an unsynced registry.
+#
+# `queue-selftest.sh` is the other half and the more important one. The queue
+# makes claims that are easy to invert by accident: that independent work goes
+# out all at once, that file overlap does NOT serialize, that a turn ending is
+# not a task finishing. Each is a test against a throwaway queue, so a change
+# that quietly reverses one fails here rather than in a run six weeks later.
+check_queue() {
+	need python3 queue || return
+
+	local out
+	if ! out="$(./scripts/queue.sh check)"; then
+		fail "queue: ./scripts/queue.sh check"
+		return
+	fi
+	if ./scripts/queue-selftest.sh >/dev/null; then
+		ok "queue: ${out#queue check: }, ordering and wake claims hold"
+	else
+		# Re-run visibly: a failing claim is the whole message.
+		./scripts/queue-selftest.sh
+		fail "queue: scripts/queue-selftest.sh"
+	fi
+}
+
 # The agent-agnostic skills layout: `.agents/skills/` holds the real files and
 # `.claude/skills` is a symlink to it, so one copy serves every CLI. Two ways
 # that breaks silently and this catches both — a clone with `core.symlinks`
@@ -165,7 +192,7 @@ for arg in "$@"; do
 done
 
 if [ ${#checks[@]} -eq 0 ]; then
-	checks=(shell markdown yaml profiles skills)
+	checks=(shell markdown yaml profiles queue skills)
 fi
 
 for c in "${checks[@]}"; do
@@ -174,9 +201,10 @@ for c in "${checks[@]}"; do
 	markdown) check_markdown ;;
 	yaml) check_yaml ;;
 	profiles) check_profiles ;;
+	queue) check_queue ;;
 	skills) check_skills ;;
 	*)
-		printf 'error: unknown check %q (want: shell markdown yaml profiles skills)\n' "$c" >&2
+		printf 'error: unknown check %q (want: shell markdown yaml profiles queue skills)\n' "$c" >&2
 		exit 2
 		;;
 	esac
