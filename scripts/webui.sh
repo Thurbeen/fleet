@@ -55,7 +55,8 @@
 #   FLEET_WEBUI_PORT  first port to try (default 7413), then the next 20 —
 #                     so a second fleet on one machine gets its own
 #   FLEET_WEBUI_DIR   runtime state (default orchestration/webui)
-#   FLEET_QUEUE_DIR   the queue to read (default orchestration/queue)
+#   FLEET_QUEUE_DIR   the queue to read (default: THIS CHECKOUT's
+#                     orchestration/queue — see scripts/queue.sh root)
 #
 # Requires: python3 (with PyYAML) — the same dependency the rest of the gate
 # has. No other dependency, no build step, no node_modules: this repo is
@@ -256,11 +257,15 @@ cmd_restart() {
 }
 
 cmd_status() {
-	local pid
+	local pid queue
+	# Asked of the queue itself rather than re-derived here, so "why is the
+	# dashboard not updated?" is answerable by putting this line next to
+	# `queue.sh list`'s: two prints of one resolution cannot disagree.
+	queue="$(./scripts/queue.sh root)" || queue="${FLEET_QUEUE_DIR:-orchestration/queue}"
 	if pid="$(running_pid)"; then
 		say "up        $(url_of)"
 		say "pid       $pid"
-		say "queue     ${FLEET_QUEUE_DIR:-orchestration/queue}"
+		say "queue     $queue"
 		say "log       $LOG"
 		asked_down && say "NOTE      a down flag is present but something is still running"
 		return 0
@@ -269,9 +274,11 @@ cmd_status() {
 		say "down      asked down, and it will stay down:"
 		sed 's/^/          /' "$DOWNFILE"
 		say "          ./scripts/webui.sh start brings it back"
+		say "queue     $queue"
 		return 0
 	fi
 	say "down      not running, and no down flag — ./scripts/webui.sh ensure starts it"
+	say "queue     $queue"
 	return 0
 }
 

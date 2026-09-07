@@ -35,7 +35,15 @@ recipient: an arriving worker message injects into the lead's terminal and
 interrupts whoever is talking to it. A stream that is read and a file that is
 read interrupt nobody.
 
-Layout under $FLEET_QUEUE_DIR (default orchestration/queue, gitignored):
+WHICH CHECKOUT. The queue belongs to the CONTROL PLANE's clone — the one the
+`fleet` session opens — and never to the process cwd. A second clone of this
+repo is supported and common (a control plane with no `origin` needs one that
+workers push from), and resolving the queue against the cwd meant working in
+that clone silently forked it. `queue_root()` and `guard_creating()` below own
+that; the refuse-vs-warn split is argued at `guard_creating`.
+
+Layout under $FLEET_QUEUE_DIR (default: this checkout's orchestration/queue,
+gitignored):
 
     <topic>/topic.yaml            the topic record
     <topic>/PROMPT.md             the prompt, verbatim
@@ -94,8 +102,183 @@ class QueueError(Exception):
 # --- paths -------------------------------------------------------------------
 
 
+def checkout_root() -> str:
+    """The checkout this script belongs to — never the caller's cwd.
+
+    Anchoring on `__file__` rather than on `git rev-parse --show-toplevel` is
+    deliberate: rev-parse answers "which checkout is the SHELL in", which is
+    the question that produced two queues in the first place. The script's own
+    path answers "which checkout is this queue.sh", which is the one that has a
+    single right answer no matter where it is invoked from. A git worktree of
+    this repo is a different checkout by this rule, and that is correct — it
+    has its own orchestration/queue/.
+    """
+    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
 def queue_root() -> str:
-    return os.environ.get("FLEET_QUEUE_DIR") or os.path.join("orchestration", "queue")
+    """Where the queue lives, as an absolute path.
+
+    FLEET_QUEUE_DIR is honoured verbatim and never second-guessed — webui.sh,
+    the selftests and anyone pointing a harness at a temp directory rely on
+    that. Otherwise the queue belongs to this CHECKOUT, not to the process cwd.
+    """
+    return os.environ.get("FLEET_QUEUE_DIR") or os.path.join(
+        checkout_root(), "orchestration", "queue"
+    )
+
+
+# --- which checkout owns the queue -------------------------------------------
+#
+# The control plane is one checkout. A second clone of this repo is the
+# SUPPORTED shape — the control plane may have no `origin` of its own, so
+# workers branch and push from a clone that does — and that is exactly how the
+# queue silently forked: a `topic add` run with the shell in the second clone
+# wrote records the monitor was right to not show, and nothing said a word.
+#
+# Two ways to recognise the control plane, cheapest first, and both are things
+# the install already produced rather than new state this file invents:
+#
+#   extension.toml   rendered into the control-plane clone by
+#                    scripts/install-extension.sh, with `repo_path` naming it.
+#                    Gitignored, so its presence IS the claim. No thurbox needed.
+#   the live session thurbox-cli reports the fleet session's real `cwd`, which
+#                    is the only authority when the clone has moved.
+#
+# When neither answers — no rendered manifest, no thurbox-cli, no such session —
+# the answer is "unknown", and unknown must stay SILENT. A fleet used without
+# the extension installed is a legitimate setup and may not be made unusable by
+# a guard that cannot tell whether it is even warranted.
+
+SESSION_REPO_PATH_RE = re.compile(r'^\s*repo_path\s*=\s*"([^"]*)"', re.M)
+SESSION_NAME_RE = re.compile(r'^\s*name\s*=\s*"([^"]*)"', re.M)
+
+
+def manifest_session(path: str) -> tuple[str | None, str | None]:
+    """(session name, repo_path) from the first [[sessions]] block of a manifest."""
+    try:
+        with open(path) as fh:
+            text = fh.read()
+    except OSError:
+        return None, None
+    _, sep, sessions = text.partition("[[sessions]]")
+    if not sep:
+        return None, None
+    name = SESSION_NAME_RE.search(sessions)
+    repo = SESSION_REPO_PATH_RE.search(sessions)
+    return (name.group(1) if name else None, repo.group(1) if repo else None)
+
+
+def live_session_cwd(name: str) -> str | None:
+    """The directory the named thurbox session actually opens, if it is running."""
+    try:
+        out = subprocess.run(
+            ["thurbox-cli", "session", "list", "--json"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0:
+        return None
+    try:
+        sessions = json.loads(out.stdout)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(sessions, list):
+        return None
+    for s in sessions:
+        if isinstance(s, dict) and s.get("name") == name and s.get("cwd"):
+            return str(s["cwd"])
+    return None
+
+
+def control_plane() -> str | None:
+    """The checkout that owns the queue, or None when it cannot be told."""
+    here = checkout_root()
+    # The tracked template is the fallback source for the session's NAME, so a
+    # rename (README's "Renaming" section) reaches this without a second edit.
+    name, repo_path = manifest_session(os.path.join(here, "extension.toml"))
+    if repo_path:
+        return repo_path.rstrip("/")
+    if not name:
+        name, _ = manifest_session(os.path.join(here, "extension.toml.in"))
+    if not name or "__" in name:
+        return None
+    cwd = live_session_cwd(name)
+    return cwd.rstrip("/") if cwd else None
+
+
+def foreign_checkout() -> str | None:
+    """The control plane's path when THIS checkout is provably not it.
+
+    None means either "this is the control plane" or "nothing here can tell",
+    and the two are deliberately indistinguishable to callers: both must be
+    silent. Only a positive identification of a different checkout is loud.
+    """
+    if os.environ.get("FLEET_QUEUE_DIR"):
+        return None  # someone named the directory they meant. Honour it, verbatim.
+    owner = control_plane()
+    if owner and owner != checkout_root().rstrip("/"):
+        return owner
+    return None
+
+
+def guard_creating() -> None:
+    """Refuse to open a topic or a task in a checkout that is not the control plane.
+
+    REFUSE here, WARN elsewhere, and the split is the whole policy. Creating a
+    record is the only act that can bring a second queue into existence; every
+    other command reads or edits records that already exist, and a foreign
+    checkout is still a legitimate place to run those from. So the loudest
+    response goes exactly where the damage is, and nothing else is taken away.
+    """
+    owner = foreign_checkout()
+    if not owner:
+        return
+    here = checkout_root()
+    raise QueueError(
+        "refusing to create queue records outside the control plane.\n"
+        f"    this checkout: {here}\n"
+        f"    control plane: {owner}\n"
+        "  Records written here are invisible to the monitor and to the lead.\n"
+        "  Open the topic where the queue lives:\n"
+        f"      {os.path.join(owner, 'scripts', 'queue.sh')} ...\n"
+        "  or, if you really mean this checkout's queue, name it:\n"
+        f"      FLEET_QUEUE_DIR={os.path.join(here, 'orchestration', 'queue')}"
+    )
+
+
+def has_records(root: str) -> bool:
+    """Does this directory hold a queue, as opposed to just existing?
+
+    `orchestration/queue/` is present in every checkout — its README is the one
+    tracked file in it — so the directory existing proves nothing.
+    """
+    try:
+        names = os.listdir(root)
+    except OSError:
+        return False
+    return any(is_record_dir(n) and os.path.isdir(os.path.join(root, n)) for n in names)
+
+
+def warn_foreign(root: str) -> None:
+    """Say, on stderr, that the queue being read is not the control plane's.
+
+    Only when this checkout already HOLDS records: with none here there is no
+    second queue for anything to be confused by, and a warning on every
+    `check.sh` run in every worktree is how a warning stops being read.
+    """
+    owner = foreign_checkout()
+    if not owner or not has_records(root):
+        return
+    print(
+        f"queue: warning — {root}\n"
+        f"       is not the control plane's queue. The control plane is {owner};\n"
+        "       records here are invisible to its monitor and to its lead.",
+        file=sys.stderr,
+    )
 
 
 def is_record_dir(name: str) -> bool:
@@ -899,7 +1082,12 @@ def cmd_collect(args) -> int:
 
 
 def cmd_list(args) -> int:
-    q = Queue(queue_root())
+    root = queue_root()
+    # The first line answers "which queue am I looking at?" without being asked.
+    # webui.sh status prints the same path, so the two can never disagree
+    # silently about what they are showing.
+    print(f"queue: {os.path.abspath(root)}")
+    q = Queue(root)
     grouped = q.by_topic()
     if args.topic:
         grouped = {k: v for k, v in grouped.items() if k == args.topic}
@@ -941,7 +1129,7 @@ def cmd_show(args) -> int:
 
 
 def cmd_check(args) -> int:
-    root = queue_root()
+    root = os.path.abspath(queue_root())
     if not os.path.isdir(root):
         print(f"queue check: ok — {root} not created yet, nothing to validate")
         return 0
@@ -976,7 +1164,13 @@ def cmd_check(args) -> int:
     if problems:
         print(f"queue check: {len(problems)} problem(s)", file=sys.stderr)
         return 1
-    print(f"queue check: ok — {len(q.topics)} topic(s), {len(q.tasks)} task(s)")
+    print(f"queue check: ok — {len(q.topics)} topic(s), {len(q.tasks)} task(s) in {root}")
+    return 0
+
+
+def cmd_root(args) -> int:
+    """The resolved queue root, absolute, and nothing else — for scripts."""
+    print(os.path.abspath(queue_root()))
     return 0
 
 
@@ -994,7 +1188,7 @@ def build_parser() -> argparse.ArgumentParser:
     ta.add_argument("--title")
     ta.add_argument("--prompt")
     ta.add_argument("--prompt-file")
-    ta.set_defaults(func=cmd_topic_add)
+    ta.set_defaults(func=cmd_topic_add, creates=True)
 
     a = sub.add_parser("add", help="add a task to a topic")
     a.add_argument("topic")
@@ -1008,7 +1202,7 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--touches", help="comma-separated paths this task expects to change")
     a.add_argument("--brief-file")
     a.add_argument("--number", help="two-digit ordinal; the next free one by default")
-    a.set_defaults(func=cmd_add)
+    a.set_defaults(func=cmd_add, creates=True)
 
     b = sub.add_parser("block", help="record why one task must wait for another")
     b.add_argument("ref")
@@ -1055,12 +1249,24 @@ def build_parser() -> argparse.ArgumentParser:
 
     ch = sub.add_parser("check", help="validate every record")
     ch.set_defaults(func=cmd_check)
+
+    rt = sub.add_parser("root", help="the resolved queue directory, absolute")
+    rt.set_defaults(func=cmd_root)
+
+    # `creates` splits the guard: the two commands that can bring a SECOND
+    # queue into existence refuse outside the control plane; everything else
+    # warns and carries on. See guard_creating().
+    p.set_defaults(creates=False)
     return p
 
 
 def main(argv: list) -> int:
     args = build_parser().parse_args(argv)
     try:
+        if getattr(args, "creates", False):
+            guard_creating()
+        else:
+            warn_foreign(queue_root())
         return args.func(args)
     except QueueError as exc:
         print(f"queue: {exc}", file=sys.stderr)

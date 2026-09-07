@@ -55,8 +55,32 @@
 #   scripts/queue.sh list [--topic T]     # the lead's view: a line per task
 #   scripts/queue.sh show <ref>           # one task's whole record
 #   scripts/queue.sh check                # validate every record (./scripts/check.sh queue)
+#   scripts/queue.sh root                 # the resolved queue directory, absolute
 #
 # A ref is `<topic>/<task>`, or a bare task id when only one topic has it.
+#
+# THE QUEUE BELONGS TO ONE CHECKOUT — the CONTROL PLANE's, the clone the
+# `fleet` session opens. It is never resolved against the shell's cwd, so this
+# script does the same thing from any directory. That matters because a second
+# clone of this repo is the SUPPORTED shape here: a control plane with no
+# `origin` of its own needs one that workers can branch and push from. Running
+# `topic add` in that clone used to write a whole second queue in silence,
+# with the monitor correctly showing nothing. Now:
+#
+#   `topic add` and `add` REFUSE outside the control plane. Creating a record
+#       is the only act that can fork the queue, so that is where the hard stop
+#       goes, and the refusal names both paths and the override.
+#   Everything else WARNS — once this checkout actually holds records — and
+#       carries on, because a second clone is a fine place to read a queue from
+#       and taking that away helps nobody.
+#   Neither fires when the control plane cannot be identified — no rendered
+#       extension.toml and no live `fleet` session. A fleet used without the
+#       thurbox extension is legitimate and must not be made unusable by a
+#       guard that cannot tell whether it is warranted.
+#
+# `queue.sh root`, `list` and `check` all print the resolved directory, and
+# `webui.sh status` prints the same one, so "why is the dashboard empty?" is a
+# question the tooling answers about itself.
 #
 # Everything under orchestration/queue/ is INSTANCE DATA and gitignored — your
 # queue, not the template's. `_TEMPLATE/` beside it is the shipped form and
@@ -64,7 +88,9 @@
 # .gitignore's header owns the reason.
 #
 # Environment:
-#   FLEET_QUEUE_DIR        where the queue lives (default orchestration/queue)
+#   FLEET_QUEUE_DIR        where the queue lives (default: this checkout's
+#                          orchestration/queue). Honoured VERBATIM and never
+#                          guarded — someone who set it meant it.
 #   FLEET_QUEUE_WATCH_CMD  the event source, for a replay or another transport
 #                          (default: thurbox-cli watch --json)
 #   THURBOX_SESSION        set inside a thurbox session; dispatch passes it as

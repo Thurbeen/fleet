@@ -18,6 +18,8 @@
 #   5. A blocker with no category and no reason is refused, so "these touch the
 #      same file" cannot be spelled as a dependency.
 #   6. A task whose BRIEF.md was never written does not go out.
+#   7. The queue belongs to a CHECKOUT, not to the shell's cwd — and a checkout
+#      that is not the control plane cannot silently open a second one.
 #
 # Test 4 is also the wake proof. The event source is `thurbox-cli watch`, which
 # this script replaces with a recorded stream through `FLEET_QUEUE_WATCH_CMD` —
@@ -25,6 +27,10 @@
 # the lead READS a stream when it chooses and READS a file the worker wrote.
 # Nothing is delivered into its terminal, which is what `message send` does and
 # why the queue does not use it.
+#
+# Test 7 is the silent-fork proof, and it runs against a THROWAWAY CLONE built
+# in a temp directory rather than against this one, so it answers the same on a
+# machine with thurbox installed and on CI without it.
 #
 # Usage: scripts/queue-selftest.sh        (also: ./scripts/check.sh queue)
 #
@@ -321,6 +327,104 @@ expect "list is one line per task, not a brief" "04-log-state-changes" "$out"
 
 out="$($QUEUE check 2>&1)"
 expect "check validates every record" "ok" "$out"
+
+# --- 7. the queue belongs to a CHECKOUT, not to a cwd ------------------------
+#
+# The bug this proves gone: `queue_root()` was relative, so it resolved against
+# whatever directory the shell happened to be in. A lead whose shell sat in a
+# second clone of this repo opened a topic there, dispatched from it, and the
+# monitor — reading the control plane's queue — correctly showed nothing. No
+# warning at any point. Two queues, silently.
+#
+# The whole thing is exercised against a THROWAWAY CLONE rather than this one,
+# so the test says the same thing on a machine with thurbox and on CI without
+# it: a directory holding `scripts/queue.sh`, a symlink to the real
+# `scripts/lib/queue.py` (the anchor is the script's own path, so a symlink is
+# a whole clone for this purpose) and a rendered `extension.toml` that decides
+# whether that clone IS the control plane.
+
+clonetmp="$(mktemp -d)"
+fake="$clonetmp/second-clone"
+mkdir -p "$fake/scripts/lib" "$fake/deep/sub/dir"
+cp scripts/queue.sh "$fake/scripts/queue.sh"
+ln -s "$PWD/scripts/lib/queue.py" "$fake/scripts/lib/queue.py"
+FAKEQ="$fake/scripts/queue.sh"
+
+# Render the manifest install-extension.sh would have written, naming whichever
+# checkout is the control plane for the case under test.
+declare_control_plane() {
+	printf '[[sessions]]\nname = "fleet"\nrepo_path = "%s"\n' "$1" >"$fake/extension.toml"
+}
+
+# --- it is the control plane: anchored to the checkout, from anywhere in it ---
+
+declare_control_plane "$fake"
+
+from_root="$(cd "$fake" && env -u FLEET_QUEUE_DIR ./scripts/queue.sh root 2>&1)"
+expect "root is the checkout's own queue, absolute" "$fake/orchestration/queue" "$from_root"
+
+from_sub="$(cd "$fake/deep/sub/dir" && env -u FLEET_QUEUE_DIR "$FAKEQ" root 2>&1)"
+if [ "$from_sub" = "$from_root" ]; then
+	pass "a subdirectory resolves to the same queue as the root does"
+else
+	fail "a subdirectory resolves to the same queue as the root does" \
+		"root: $from_root${nl}sub:  $from_sub"
+fi
+
+out="$(cd "$fake/deep/sub/dir" && env -u FLEET_QUEUE_DIR "$FAKEQ" topic add \
+	from-a-subdir --prompt 'opened from deep inside the checkout' 2>&1)"
+if [ -d "$fake/orchestration/queue/from-a-subdir" ]; then
+	pass "the control plane's own queue takes a topic from a subdirectory"
+else
+	fail "the control plane's own queue takes a topic from a subdirectory" "$out"
+fi
+refute "and says nothing about the control plane, because it is it" \
+	"control plane" "$out"
+
+# --- it is NOT the control plane: creating a second queue is refused ----------
+
+declare_control_plane "$clonetmp/the-real-control-plane"
+
+out="$(cd "$fake" && env -u FLEET_QUEUE_DIR ./scripts/queue.sh topic add forked \
+	--prompt 'this would have silently forked the queue' 2>&1)"
+rc=$?
+if [ "$rc" -ne 0 ]; then
+	pass "a topic opened outside the control plane is refused, not created"
+else
+	fail "a topic opened outside the control plane is refused, not created" "$out"
+fi
+expect "the refusal names this checkout" "$fake" "$out"
+expect "the refusal names the control plane" "$clonetmp/the-real-control-plane" "$out"
+expect "the refusal names the override that means it" "FLEET_QUEUE_DIR" "$out"
+refute "and nothing was written" "forked" \
+	"$(ls "$fake/orchestration/queue" 2>&1)"
+
+# --- a second queue that already exists is loud on every read ----------------
+
+out="$(cd "$fake" && env -u FLEET_QUEUE_DIR ./scripts/queue.sh list 2>&1)"
+expect "list still works outside the control plane" "from-a-subdir" "$out"
+expect "but it says which checkout it is reading" "$fake/orchestration/queue" "$out"
+expect "and warns that this is not the control plane's queue" \
+	"$clonetmp/the-real-control-plane" "$out"
+
+out="$(cd "$fake" && env -u FLEET_QUEUE_DIR ./scripts/queue.sh check 2>&1)"
+expect "check prints the resolved queue root too" "$fake/orchestration/queue" "$out"
+
+# --- FLEET_QUEUE_DIR is honoured verbatim, with no guard --------------------
+#
+# webui-selftest and this file both point the queue at a temp directory. Someone
+# who set it meant it, so nothing here may warn about it or refuse it.
+
+out="$(cd "$fake" && FLEET_QUEUE_DIR="$clonetmp/explicit" ./scripts/queue.sh \
+	topic add explicit --prompt 'I named the directory I meant' 2>&1)"
+if [ -d "$clonetmp/explicit/explicit" ]; then
+	pass "FLEET_QUEUE_DIR creates a topic outside the control plane unguarded"
+else
+	fail "FLEET_QUEUE_DIR creates a topic outside the control plane unguarded" "$out"
+fi
+refute "and the guard says nothing about it" "control plane" "$out"
+
+rm -rf "$clonetmp"
 
 echo
 if [ "$failed" -eq 0 ]; then
