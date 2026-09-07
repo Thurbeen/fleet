@@ -232,21 +232,26 @@ thurbox-cli session create --name "$name" --repo-path "$repo" \
 
 `mapfile -d ''` because the flags come out NUL-separated: a `--arg` value is
 often a whole command line. `./scripts/session-flags.sh sweep | tr '\0' '\n'`
-is how you read them yourself, and `--check` validates every profile (the gate
-runs that, so a profile breaking a rule below never reaches `main`).
+is how you read them yourself, and `--check` validates every profile in **both**
+layers — the tracked `session-profiles.yaml` and the instance's gitignored
+`session-profiles.local.yaml`, where a profile of the same name replaces the
+shipped one and the renderer says on stderr that it did.
 
-Three rules, and the reason each one is a rule:
+Two rules the gate enforces, so a profile breaking either never reaches `main`:
 
-- **No secrets in the file.** It is committed. A worker inherits the
-  environment of the thurbox server that spawns it, so a credential belongs
-  where that process gets its own — your shell profile, your keyring, the
-  agent's own login. It reaches the worker by inheritance and never passes
-  through a profile.
 - **`THURBOX_*` is not yours to set.** thurbox's identity variables always win
   over `--env`. Passing `THURBOX_SESSION=x` does not fail; the session simply
   still sees its real id, which makes it the worst kind of setting — one that
   looks applied and is not. The renderer refuses the key.
 - **`--command` never ships without `--reports-as`.** This is the trap.
+
+And one **convention**, which the gate does not check and does not pretend to:
+the tracked file holds template defaults, so anything environment-specific — and
+anything you would not commit — goes in the gitignored
+`session-profiles.local.yaml` instead. Better still, a worker inherits the
+environment of the thurbox server that spawns it, so a real credential belongs
+where that process gets its own (your shell profile, your keyring, the agent's
+own login) and never lands in a file at all.
 
 ### The `--command` trap
 

@@ -1,9 +1,0 @@
-# One GitHub owner per line — your username and/or orgs you belong to.
-# Blank lines and everything after a `#` are ignored.
-#
-# scripts/sync-registry.sh reads this file, enumerates every repository your
-# `gh` session can reach, and keeps the ones under these owners, in this order.
-# With no active entries the sync refuses to run rather than emit an empty map.
-
-# your-github-username
-# your-org

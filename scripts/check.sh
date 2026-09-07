@@ -100,11 +100,15 @@ check_yaml() {
 }
 
 # The session profiles render into `thurbox-cli session create` flags, so the
-# rules that make a profile safe — no secrets, no `THURBOX_*` key thurbox
-# would discard, no `command` without the `reports_as` that keeps the session
+# two rules that make a profile safe — no `THURBOX_*` key thurbox would
+# discard, no `command` without the `reports_as` that keeps the session
 # reporting — are only worth anything if a profile that breaks one cannot be
 # committed. scripts/session-flags.sh owns those assertions; this runs them
-# over every profile so there is one implementation rather than two.
+# over both profile layers so there is one implementation rather than two.
+#
+# It does NOT check for secrets, and the profiles file says so rather than
+# claiming a guarantee this cannot give. That rule is a convention with a home
+# — the gitignored `session-profiles.local.yaml` — not a gate.
 check_profiles() {
 	need python3 profiles || return
 

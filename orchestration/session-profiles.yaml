@@ -10,23 +10,35 @@
 # `--env` / `--command` / `--arg` / `--reports-as` flags `session create`
 # takes. `.agents/skills/thurbox-session/SKILL.md` shows the call.
 #
-# THREE RULES, all enforced by ./scripts/check.sh — a file that breaks one
-# does not reach `main`:
+# THIS FILE IS THE TEMPLATE'S. Tune a profile in
+# `orchestration/session-profiles.local.yaml` instead — same schema, gitignored,
+# and a profile it names replaces the one of that name here, wholesale. Editing
+# THIS file puts a commit on `main` and costs you the clean fast-forward that
+# `./scripts/update-from-template.sh` depends on; .gitignore's header says why.
+# Both files are held to the three rules below.
 #
-# 1. NO SECRETS. This file is committed and world-readable in a public
-#    template. A worker inherits the environment of the thurbox server that
-#    spawns it, so a credential belongs where that process gets its own —
-#    your shell profile, your keyring, or the agent's own login (`claude
-#    /login`, `gh auth login`). It reaches the worker by inheritance and
-#    never passes through here. Put in this file only what you would be
-#    happy to read in a code review.
+# ONE CONVENTION, then TWO RULES THE GATE ENFORCES. The distinction is real:
+# ./scripts/check.sh cannot detect a secret and does not try, so only the two
+# numbered rules below stop a file reaching `main`.
 #
-# 2. NO `THURBOX_*` KEYS. thurbox's own identity variables always win over
+# THE CONVENTION: this file holds template DEFAULTS, nothing
+# environment-specific. It is committed and world-readable in a public
+# template, so put in it only what you would be happy to read in a code review.
+# It is a convention rather than a gate, and it has an obvious home rather than
+# just a prohibition: `session-profiles.local.yaml` is gitignored, so a value
+# you would not commit goes THERE. Nothing forces the point either, because
+# nothing a running fleet writes is tracked at all — an instance has no
+# changes of its own to push. A real credential is better still reaching the
+# worker by inheritance: it inherits the environment of the thurbox server that
+# spawns it, so your shell profile, your keyring or the agent's own login
+# (`claude /login`, `gh auth login`) never puts it in a file at all.
+#
+# 1. NO `THURBOX_*` KEYS. thurbox's own identity variables always win over
 #    `--env`, so a `THURBOX_SESSION` here would be silently ignored — the
 #    worst kind of setting, one that looks applied and is not. The renderer
 #    refuses the key rather than emitting a flag that does nothing.
 #
-# 3. `command` REQUIRES `reports_as`. thurbox reads hook coverage against a
+# 2. `command` REQUIRES `reports_as`. thurbox reads hook coverage against a
 #    `--command` session's file stem, so a session launched as
 #    `/bin/sh -c 'exec claude'` reports coverage `none` and renders as
 #    `uncovered` while the agent inside it is working. `--reports-as` is the

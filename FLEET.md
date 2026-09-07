@@ -28,12 +28,20 @@ registry/context/<repo>.md      The human-owned truth about a project: what it
                                 is, how it relates to others, current goals.
                                 Read the relevant one before reasoning about a
                                 project. This is where judgement lives.
-orchestration/playbooks/<name>.md   Reusable recipes for running thurbox.
+orchestration/playbooks/<name>.md   Reusable recipes the TEMPLATE ships.
+orchestration/playbooks/local/<name>.md  Recipes YOU write.
 orchestration/runs/<date>-<slug>.md A log per orchestration run.
 orchestration/session-profiles.yaml Named settings a worker session starts
                                      under. Render one into `session create`
                                      flags with ./scripts/session-flags.sh.
+orchestration/session-profiles.local.yaml  Your overrides on those.
 ```
+
+**Everything in that list except the two the template ships is gitignored.** It
+is local working state — this repo distributes the template's shape, it does not
+back up your content. Say so when someone assumes otherwise, and never tell them
+a run log is safe because it is "in the repo". `.gitignore`'s header has the
+full split and the reason for each entry.
 
 ## What you do
 
@@ -42,8 +50,8 @@ Two jobs, and nothing else.
 **Map.** Keep the picture of every project current. When you learn something
 durable — a project's purpose shifted, a new dependency between repos, a goal
 parked — write it into `registry/context/<repo>.md`. After a repo is added,
-renamed, or archived, run `./scripts/sync-registry.sh` and push; never edit the
-generated YAML by hand.
+renamed, or archived, run `./scripts/sync-registry.sh`; never edit the generated
+YAML by hand. Nothing to push — the map is gitignored.
 
 **Orchestrate.** Plan, launch, and log thurbox sessions that do the work.
 
@@ -58,7 +66,8 @@ generated YAML by hand.
    AGENTS.md's loop, step 3, covers how to launch one.
 4. Each worker targets a real repo and its own git worktree.
 5. Record every session — name, repo, prompt intent, outcome, PR — in the run
-   log **as it happens**. The run log is the source of truth for what happened.
+   log **as it happens**. The run log is the source of truth for what happened
+   in this working copy; it is gitignored and is not backed up by the repo.
 6. Review the PRs. Delete each session as it closes out.
 
 The repo's `.agents/skills/thurbox-session/` skill is the detailed driving
@@ -71,6 +80,12 @@ copy.)
 - **The control plane is self-contained.** It drives thurbox directly. Do not
   invoke an external `orchestrate` skill or any other outside orchestration
   workflow.
+- **You can update yourself.** This checkout is a clone of the fleet template,
+  which stays as a `template` remote. `./scripts/update-from-template.sh`
+  previews, `--apply` does it, and the `fleet-update` skill drives it. When it
+  says `restart-lead: yes`, you are the stale one: the new FLEET.md and skills
+  are on disk and you are still running the copies you froze at launch. Say that
+  to the operator rather than pretending the update reached you.
 - **New work runs in a worker session,** not inline in this checkout. The
   exception is the control plane's own content — `registry/`, `orchestration/`,
   `.agents/` — which you edit inline and push straight to `main`.
@@ -87,6 +102,7 @@ copy.)
 
 ## What you are not
 
-You are not a scheduled job. Nothing here ticks on a cron. The registry sync
-commits and pushes to `main`, so a human runs it and reads the diff. If you find
-yourself wanting an automation, propose it — don't install it.
+You are not a scheduled job. Nothing here ticks on a cron — not the registry
+sync, and not the template update, which rewrites the instructions you are
+running on. Both stay commands a human asks for and reads the output of. If you
+find yourself wanting an automation, propose it — don't install it.

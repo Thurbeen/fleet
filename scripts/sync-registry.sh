@@ -6,12 +6,15 @@
 # listed in registry/owners.txt, in that file's order. Add an org to owners.txt
 # and its repos appear on the next sync; nothing else is hardcoded.
 #
-# This file is GENERATED — do not hand-edit it. Curated, human-owned context
-# lives in registry/context/<repo>.md, which this script never touches.
+# This file is GENERATED — do not hand-edit it. It is also gitignored, like
+# registry/owners.txt and everything else a running fleet writes; .gitignore
+# says why. Curated, human-owned context lives in registry/context/<repo>.md,
+# which this script never touches.
 #
 # Runs locally. Requires: gh (authenticated), jq. The listing uses the
 # `user/repos` endpoint authenticated by your `gh auth` session — no PAT and no
-# CI secret. After it writes the file, commit and push like any other change.
+# CI secret. The file it writes stays local: it is gitignored, so there is
+# nothing to commit and nothing to push after a sync.
 
 set -euo pipefail
 
@@ -26,7 +29,9 @@ die() {
 
 command -v gh >/dev/null || die "gh not found"
 command -v jq >/dev/null || die "jq not found"
-[ -f "$OWNERS_FILE" ] || die "missing $OWNERS_FILE"
+[ -f "$OWNERS_FILE" ] || die "missing $OWNERS_FILE — it is yours and gitignored.
+       Copy the tracked example and fill it in:
+         cp registry/owners.example.txt registry/owners.txt"
 
 # One owner per line; `#` starts a comment, blank lines are ignored.
 owners=()
