@@ -37,7 +37,8 @@ Four files per task, because four different things want four different answers:
 
 A topic view — every task under one heading, plan beside progress beside
 outcome — is therefore the directory listing. It needs no field that is not
-already here.
+already here. `../../scripts/webui.sh` serves exactly that view in a browser,
+as a reader: it opens these four files and adds nothing to them.
 
 ## Two rules worth knowing before you edit anything
 

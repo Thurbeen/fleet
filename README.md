@@ -40,8 +40,9 @@ The [onboarding skill](.agents/skills/fleet-onboarding/SKILL.md) does the setup
 rather than instructing you through it. It checks the prerequisites up front,
 discovers your GitHub username and orgs from your `gh` session and confirms
 them in one question, writes `registry/owners.txt`, syncs the registry,
-installs the thurbox extension, and verifies each step actually landed. Run it
-twice and it converges instead of duplicating.
+installs the thurbox extension, brings [the monitor](#the-monitor) up, and
+verifies each step actually landed. Run it twice and it converges instead of
+duplicating.
 
 Then open the `fleet` session in thurbox and give it a goal. That part is
 yours.
@@ -337,14 +338,26 @@ orchestration/
   runs/
     _TEMPLATE.md           Copy this per orchestration run.
     <date>-<slug>.md       [yours] Log of one run: goal, sessions, outcomes.
+  webui/                   [yours] The monitor's runtime state, created on its
+                           first start. Nothing here is edited by hand.
+    port  host  url        Where it actually bound. The port is chosen at bind
+                           time, so these files are the answer, not a guess.
+    pid                    Its supervisor. server.log sits beside it.
+    down                   Written by `webui.sh stop`. While it exists, the
+                           monitor stays down — across a reboot, and across
+                           the next onboarding run.
 
 scripts/
   check.sh                 The whole gate: shell, markdown, YAML, profiles,
-                           queue, skills.
+                           queue, monitor, skills.
   queue.sh                 The task queue: intake, ordering, dispatch, and both
                            halves of completion. Its header is the full usage.
   queue-selftest.sh        Proves the queue's ordering and wake claims against
                            a throwaway queue. Part of the gate.
+  webui.sh                 The monitor's lifecycle: ensure, start, stop,
+                           restart, status. Its header is the full usage.
+  webui-selftest.sh        Proves the monitor adopts rather than duplicates and
+                           that a stop stays stopped. Part of the gate.
   install-extension.sh     Renders extension.toml, installs it, and verifies
                            the live session really opens this clone.
   sync-registry.sh         Regenerates repos.generated.yaml from the GitHub API.
@@ -357,6 +370,8 @@ scripts/
                            trust dialog. Run by queue.sh dispatch.
   lib/check_yaml.py        The YAML + registry-shape assertions check.sh runs.
   lib/queue.py             The queue model queue.sh drives.
+  lib/webui.py             The read-only web view over that model. Standard
+                           library only — no build step, no node_modules.
   lib/session_profiles.py  The profile validation and rendering session-flags.sh
                            runs.
 
@@ -557,6 +572,109 @@ for the anatomy of a playbook, [`AGENTS.md`](AGENTS.md) for how an agent should
 operate inside this repo, and
 [`.agents/skills/thurbox-session/SKILL.md`](.agents/skills/thurbox-session/SKILL.md)
 for one session's mechanics: spawning, prompting, state, cleanup.
+
+## The monitor
+
+```bash
+./scripts/webui.sh ensure     # onboarding runs this for you
+```
+
+A local web page over `orchestration/queue`, so you can see what the fleet is
+doing without asking the lead and interrupting it. It is a **reader**: it opens
+the same files `queue.sh` writes and adds no field of its own.
+
+That is possible because the queue already stores four different things in four
+different files, which happen to be exactly the four questions a monitor asks:
+
+| The page shows | It reads | Written by |
+|---|---|---|
+| the ask | `PROMPT.md` | you, verbatim, at intake |
+| the plan | `BRIEF.md` + `task.yaml` | the lead |
+| the progress | `progress.jsonl` | `queue.sh watch` |
+| the implementation | `result.md` | the worker, in its words |
+
+Topics are **classified** from their tasks' states each time the page is
+built — nothing stores a classification, so it cannot go stale:
+
+| Class | Means |
+|---|---|
+| `attention` | a worker concluded `stuck` or `failed` |
+| `running` | at least one task is dispatched |
+| `ready` | nothing running, but work has no blocker left |
+| `blocked` | every remaining task waits on a recorded blocker |
+| `done` | every task concluded |
+
+The ready set's file overlaps appear at the top as the same risk note
+`queue.sh plan` prints — a signal, not a hold.
+
+### It displays; it does not control
+
+There is no button that dispatches, cancels or reorders anything. Every route
+is a `GET` and every write verb answers `405`. `scripts/queue.sh` stays the one
+writer, which keeps the records a single tool's contract, and it is also what
+makes a bound socket a modest risk rather than a serious one. Control can be
+added later, once the read path has proven itself.
+
+### Always up, unless you ask it down
+
+Two commands that look alike and differ in one way that matters:
+
+| | On a running monitor | After you asked it down |
+|---|---|---|
+| `ensure` | adopts it, prints the URL | leaves it down |
+| `start` | adopts it, prints the URL | **brings it back** |
+
+`stop` writes `orchestration/webui/down` **before** it kills anything. A flag on
+disk is what makes "down" mean something: an in-memory stop would be undone by
+the next `/fleet-onboarding`, which is a stop that does not stop. So onboarding
+calls `ensure`, and only you type `start`.
+
+Across the three ways a server goes away:
+
+```text
+a crash        a supervisor loop restarts it — unless the down flag is set,
+               in which case that exit was intentional and it stays down.
+a reboot       nothing survives one. The next `ensure` brings it back; the
+               flag survives, so a monitor you stopped stays stopped.
+a second       both `ensure` and `start` ADOPT a live monitor and print its
+invocation     URL. Two servers over one queue is what this prevents.
+```
+
+If you want it back after a reboot without waiting for a skill run, that is a
+login hook of your own calling `ensure` — the command is idempotent and honours
+the flag, so it is safe to run on every login.
+
+### Where it binds, and on what port
+
+**`127.0.0.1`, and nothing wider.** This page serves your prompts, your plans
+and your workers' output. Anything broader is an explicit `FLEET_WEBUI_HOST`
+you set, never a default you discover — and the server says so on stderr when
+you do. On a loopback bind it also rejects a request whose `Host` header names
+somewhere else, which is what stops a page on another origin pointing your
+browser at it.
+
+The port is **chosen at bind time**: `7413` by default, then the next free one
+up to `7433`. Two fleets on one machine is ordinary, not exotic, and the second
+must not fail to start because the first got there. So nothing hard-codes the
+port — read it back:
+
+```bash
+./scripts/webui.sh status     # up? on what URL? asked down?
+./scripts/webui.sh url        # just the URL, for scripting
+cat orchestration/webui/url   # the same answer, from the file it wrote
+```
+
+### What it costs to clone
+
+Nothing beyond what the gate already needs: Python's standard library and the
+PyYAML that `queue.sh` requires. No build step, no `node_modules`, no CDN — the
+page is one file of HTML, CSS and JavaScript the server hands over as it is.
+This repo is cloned by people who should not pay a toolchain to look at their
+own queue.
+
+`./scripts/check.sh webui` proves the two claims that break silently: that a
+second `ensure` adopts rather than starting a twin, and that a stop survives
+the next `ensure`.
 
 ## Thurbox extension
 

@@ -38,6 +38,9 @@ orchestration/session-profiles.yaml Named settings a worker session starts
                                      under. Render one into `session create`
                                      flags with ./scripts/session-flags.sh.
 orchestration/session-profiles.local.yaml  Your overrides on those.
+orchestration/webui/            The monitor's runtime state: the port it chose,
+                                its pid, its log, and the `down` flag. Written
+                                by ./scripts/webui.sh; read nothing else here.
 ```
 
 **Everything in that list except the two the template ships is gitignored.** It
@@ -76,6 +79,13 @@ YAML by hand. Nothing to push — the map is gitignored.
    happened as it happens. It is gitignored and not backed up by the repo.
 6. Review the PRs. Delete each session as it closes out.
 
+The operator watches all of that in a browser rather than by asking you:
+`./scripts/webui.sh ensure` serves a read-only view of the queue on localhost —
+topics classified by what their tasks are doing, each with its plan, progress
+and outcome. It is a READER over the same files, so it never disagrees with
+`list` and never writes anything. `ensure` adopts a running one; only `stop`
+takes it down and only `start` brings it back.
+
 `.agents/skills/fleet-queue/` is the driving surface for 1–4 and
 `.agents/skills/thurbox-session/` for the mechanics of one session — spawning,
 naming, trust, the state vocabulary, cleanup. Use both. (`.claude/skills` is a
@@ -100,6 +110,14 @@ symlink to `.agents/skills`, so every CLI loads the one copy.)
   gate, and CI runs the same script.
 - **Anything that opens a pull request lands by squash merge**, so the pull
   request title is the commit that reaches `main`. See `CONTRIBUTING.md`.
+- **The monitor displays; it does not control.** It has no route that
+  dispatches, cancels or reorders anything, and `./scripts/queue.sh` stays the
+  only thing that writes to the queue. If the operator asks for a button, that
+  is a change to make deliberately, not one to add because the page is there.
+- **A stop stays stopped.** `./scripts/webui.sh stop` writes
+  `orchestration/webui/down`, and `ensure` — which onboarding runs — honours it
+  across a reboot and every later run. Do not clear that flag on the operator's
+  behalf; `start` is theirs to type.
 - **Workers write files; they do not mail you.** `thurbox-cli message send`
   WAKES its recipient — it injects into your terminal and interrupts whoever is
   talking to you. So a worker writes `result.md` into its task directory and you
