@@ -87,7 +87,7 @@ if [ -n "$session_name" ]; then
 	live_cwd="$(thurbox-cli session list --json 2>/dev/null |
 		jq -r --arg n "$session_name" \
 			'.[] | select(.name == $n) | .cwd' 2>/dev/null | head -1)" || live_cwd=""
-	if [ -n "$live_cwd" ] && [ "$live_cwd" != "$REPO_ROOT" ]; then
+	if [ -n "$live_cwd" ] && [ "${live_cwd%/}" != "$REPO_ROOT" ]; then
 		cat >&2 <<-EOF
 
 			error: the '$session_name' session still opens a different directory.
