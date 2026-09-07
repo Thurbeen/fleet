@@ -20,20 +20,38 @@ code.
 
 ## Quickstart
 
-From a fresh clone:
+**Use this template**, clone your new repo, open it in your agent CLI and run:
 
-1. **Use this template**, then clone your new repo.
-2. Edit `registry/owners.txt` — your GitHub username, plus any orgs you belong
-   to, one per line. The sync refuses to run while the file has no active
-   entries, rather than emit an empty map.
-3. `./scripts/sync-registry.sh` — writes `registry/repos.generated.yaml` from
-   your live `gh` session. Commit the result.
-4. `./scripts/install-extension.sh` — renders `extension.toml` and installs the
-   thurbox extension.
-5. Open the `fleet` session in thurbox and give it a goal.
+```text
+/fleet-onboarding
+```
+
+The [onboarding skill](.agents/skills/fleet-onboarding/SKILL.md) does the setup
+rather than instructing you through it. It checks the prerequisites up front,
+discovers your GitHub username and orgs from your `gh` session and confirms
+them in one question, writes `registry/owners.txt`, syncs the registry,
+installs the thurbox extension, and verifies each step actually landed. Run it
+twice and it converges instead of duplicating.
+
+Then open the `fleet` session in thurbox and give it a goal. That part is
+yours.
 
 Requires `gh` (authenticated), `jq`, and `thurbox-cli` **2.19.0 or newer** —
-`extension.toml.in` records why the floor sits there.
+`extension.toml.in` records why the floor sits there. The skill names anything
+missing, with its remedy, before it writes a thing.
+
+### By hand
+
+The skill is the easy path, not the only one. It calls two scripts you can run
+yourself — to automate the setup, or to debug it when the skill fails:
+
+1. Edit `registry/owners.txt` — your GitHub username, plus any orgs you belong
+   to, one per line. The sync refuses to run while the file has no active
+   entries, rather than emit an empty map.
+2. `./scripts/sync-registry.sh` — writes `registry/repos.generated.yaml` from
+   your live `gh` session. Commit the result.
+3. `./scripts/install-extension.sh` — renders `extension.toml` and installs the
+   thurbox extension.
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the gate (`./scripts/check.sh`),
 the squash-only merge policy, and the layout conventions.
@@ -43,8 +61,8 @@ the squash-only merge policy, and the layout conventions.
 Three things are yours to change, in descending order of how likely you are to
 want to:
 
-1. **`registry/owners.txt`** — required, and covered in the Quickstart above. It
-   is the only edit a fresh clone actually needs.
+1. **`registry/owners.txt`** — required, and `/fleet-onboarding` writes it for
+   you. It is the only edit a fresh clone actually needs.
 2. **The agent and model** — optional.
 3. **The name `fleet`** — optional, and leaving it alone is a fine answer.
 
@@ -164,6 +182,8 @@ scripts/
 
 .agents/skills/
   <name>/SKILL.md          Agent skills. ONE tree, agent-agnostic.
+    fleet-onboarding/      Fresh clone -> working control plane.
+    thurbox-session/       Spawning and driving worker sessions.
 .claude/skills             A committed SYMLINK to .agents/skills.
 
 media/
