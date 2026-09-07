@@ -28,6 +28,9 @@ registry/context/<repo>.md      The human-owned truth about a project: what it
                                 is, how it relates to others, current goals.
                                 Read the relevant one before reasoning about a
                                 project. This is where judgement lives.
+orchestration/queue/<topic>/    The task queue: one directory per topic, one
+                                per task inside it, each holding that task's
+                                own BRIEF.md. Driven by ./scripts/queue.sh.
 orchestration/playbooks/<name>.md   Reusable recipes the TEMPLATE ships.
 orchestration/playbooks/local/<name>.md  Recipes YOU write.
 orchestration/runs/<date>-<slug>.md A log per orchestration run.
@@ -57,23 +60,26 @@ YAML by hand. Nothing to push — the map is gitignored.
 
 ## The loop
 
-1. Clarify the goal. Pick a playbook in `orchestration/playbooks/`, or write one
-   from `_TEMPLATE.md`.
-2. Open a run log from `orchestration/runs/_TEMPLATE.md`, named
-   `<YYYY-MM-DD>-<slug>.md`.
-3. For each unit of work, launch a thurbox worker session with one
-   self-contained prompt — workers share no context with you or each other.
-   AGENTS.md's loop, step 3, covers how to launch one.
-4. Each worker targets a real repo and its own git worktree.
-5. Record every session — name, repo, prompt intent, outcome, PR — in the run
-   log **as it happens**. The run log is the source of truth for what happened
-   in this working copy; it is gitignored and is not backed up by the repo.
+1. **A prompt becomes a topic**, not a turn in this conversation.
+   `./scripts/queue.sh topic add` keeps it verbatim; `add` decomposes it into
+   tasks, one per unit of work.
+2. **Write each task's BRIEF.md.** Workers share no context with you or each
+   other, so each brief states the goal, the constraints and what "done" looks
+   like, from scratch.
+3. **`plan`, then `dispatch`.** Everything with no recorded blocker goes out at
+   once — there is no concurrency cap, and file overlap between two tasks is a
+   reported risk, not a reason to hold one back.
+4. **`watch` on your own cadence, then `collect`.** The event stream says WHEN
+   a turn ended; the worker's own result file says WHAT it concluded. A turn
+   ending is not a task finishing, and only `collect` closes anything.
+5. Open a run log from `orchestration/runs/_TEMPLATE.md` and record what
+   happened as it happens. It is gitignored and not backed up by the repo.
 6. Review the PRs. Delete each session as it closes out.
 
-The repo's `.agents/skills/thurbox-session/` skill is the detailed driving
-surface for step 3: spawning, prompting, completion detection, cleanup. Use it.
-(`.claude/skills` is a symlink to `.agents/skills`, so every CLI loads the one
-copy.)
+`.agents/skills/fleet-queue/` is the driving surface for 1–4 and
+`.agents/skills/thurbox-session/` for the mechanics of one session — spawning,
+naming, trust, the state vocabulary, cleanup. Use both. (`.claude/skills` is a
+symlink to `.agents/skills`, so every CLI loads the one copy.)
 
 ## Rules that bite
 
@@ -94,10 +100,13 @@ copy.)
   gate, and CI runs the same script.
 - **Anything that opens a pull request lands by squash merge**, so the pull
   request title is the commit that reaches `main`. See `CONTRIBUTING.md`.
-- **You are a session,** which means workers can mail you results directly
-  (`thurbox-cli message send --to fleet --kind result --body '<PR url>'`). Drain
-  the inbox with `thurbox-cli message inbox --for fleet --claim --json`. Prefer
-  this over scraping panes: it is durable and it is timely. Pass
+- **Workers write files; they do not mail you.** `thurbox-cli message send`
+  WAKES its recipient — it injects into your terminal and interrupts whoever is
+  talking to you. So a worker writes `result.md` into its task directory and you
+  read it when you choose, alongside `thurbox-cli watch`'s event stream for the
+  timing. `./scripts/queue.sh watch` and `collect` are the two halves. The
+  mailbox still exists and is still right for something genuinely urgent; it is
+  wrong for routine completion, which is nearly all of it. Pass
   `--parent <your-uuid>` when you create workers so you can enumerate them.
 
 ## What you are not

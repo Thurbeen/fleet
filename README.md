@@ -260,18 +260,17 @@ derived, not edited
 prose that has to agree
   FLEET.md                      (5) the [[files]] payload, whose text opens
                                     "You are the **fleet** session"
-  --to fleet / --for fleet      (6) the mailbox address workers send to and the
-                                    lead drains. In FLEET.md, in this README,
-                                    and in extension.toml.in's header comment
+  --to fleet / --for fleet      (6) the mailbox address, used for anything
+                                    urgent enough to interrupt the lead. In
+                                    FLEET.md, in this README, and in
+                                    extension.toml.in's header comment
 ```
 
 Only (4) is not a line you edit; it follows from (1). The rest are.
 
 The failure mode is a **partial rename**. Change (1) and the extension installs
-as `mission-control`; leave (6) and every worker brief still mails its result
-`--to fleet`. Whether that send bounces or lands in an inbox nobody drains, the
-lead never sees it — the worker did the work, the PR exists, and nothing
-surfaces it. So:
+as `mission-control`; leave (6) and anything still addressed `--to fleet` either
+bounces or lands in an inbox nobody drains, and the lead never sees it. So:
 
 1. Change all six.
 2. If the extension is already installed under the old name, uninstall it first:
@@ -312,6 +311,16 @@ registry/
     <repo>.md              [yours] Curated notes: purpose, relations, goals.
 
 orchestration/
+  queue/
+    README.md              The queue's layout, and why it is yours.
+    <topic>/               [yours] One unit of intent, from one prompt.
+      topic.yaml           Its record.
+      PROMPT.md            The prompt that opened it, VERBATIM.
+      <NN>-<slug>/         [yours] One unit of work.
+        task.yaml          Intent + state. ./scripts/queue.sh owns it.
+        BRIEF.md           The instructions ONE worker reads.
+        progress.jsonl     One line per observed transition.
+        result.md          What that worker concluded, in its words.
   session-profiles.yaml    Named settings a worker session STARTS under —
                            the template's defaults.
   session-profiles.local.example.yaml
@@ -331,7 +340,11 @@ orchestration/
 
 scripts/
   check.sh                 The whole gate: shell, markdown, YAML, profiles,
-                           skills.
+                           queue, skills.
+  queue.sh                 The task queue: intake, ordering, dispatch, and both
+                           halves of completion. Its header is the full usage.
+  queue-selftest.sh        Proves the queue's ordering and wake claims against
+                           a throwaway queue. Part of the gate.
   install-extension.sh     Renders extension.toml, installs it, and verifies
                            the live session really opens this clone.
   sync-registry.sh         Regenerates repos.generated.yaml from the GitHub API.
@@ -340,7 +353,10 @@ scripts/
                            A different remote and a different job — see its header.
   trust-thurbox-dir.sh     Seeds Claude Code workspace trust for a worktree.
   session-flags.sh         Renders one session profile into session-create flags.
+  session-trust.sh         Confirms, answers and re-confirms a new session's
+                           trust dialog. Run by queue.sh dispatch.
   lib/check_yaml.py        The YAML + registry-shape assertions check.sh runs.
+  lib/queue.py             The queue model queue.sh drives.
   lib/session_profiles.py  The profile validation and rendering session-flags.sh
                            runs.
 
@@ -402,55 +418,145 @@ The control plane drives [thurbox](https://github.com/Thurbeen/thurbox)
 
 ### The run loop
 
-1. **Clarify the goal.** Vague goals produce vague workers.
-2. **Pick or write a playbook** in `orchestration/playbooks/`.
-3. **Open a run log** from `orchestration/runs/_TEMPLATE.md`, named
-   `<YYYY-MM-DD>-<slug>.md`.
-4. **One worker session per unit of work.** Each targets a real repo and its own
-   git worktree. Workers share no context with the lead and none with each
-   other, so every prompt states the goal, the constraints, and what "done"
-   looks like, from scratch.
-5. **Record outcomes as they happen** — session name, repo, intent, PR. The run
-   log is the source of truth for what happened, not your memory of it. It is
-   local working state, not something this repo keeps for you.
+A prompt is not a turn in a conversation. It is a **topic** on disk, which
+becomes **tasks** on disk, each carrying its own instructions in its own file —
+so nothing is lost to a context reset, and no agent holds every task's detail at
+once. `./scripts/queue.sh` owns all six steps.
+
+```bash
+./scripts/queue.sh topic add report-status-honestly \
+  --title 'Make thurbox report agent status honestly' --prompt-file -
+./scripts/queue.sh add report-status-honestly drop-idle-default \
+  --title 'Stop defaulting an unreported session to idle' \
+  --repo ~/code/thurbox --branch fix/drop-idle-default --touches src/state.rs
+# write orchestration/queue/report-status-honestly/01-drop-idle-default/BRIEF.md
+./scripts/queue.sh plan          # what goes out now, what waits, and why
+./scripts/queue.sh dispatch      # all of the ready set, in one go
+./scripts/queue.sh watch         # fold the event stream in; close nothing
+./scripts/queue.sh collect       # read the results; close what is done
+```
+
+1. **Intake.** The prompt is kept verbatim and decomposed into tasks — one repo,
+   one branch, one thing a single worker can finish and validate on its own.
+2. **Write each `BRIEF.md`.** Workers share no context with the lead and none
+   with each other, so each brief states the goal, the constraints, and what
+   "done" looks like, from scratch. `dispatch` refuses an unwritten one.
+3. **Order — and mostly, do not.** See below.
+4. **Dispatch the whole ready set at once.** One invocation, one session per
+   task, each pointed at its own brief and nothing else.
+5. **Read the stream, then read the results.** Record outcomes in a run log from
+   `orchestration/runs/_TEMPLATE.md` as they happen. That log is local working
+   state, not something this repo keeps for you.
 6. **Review the PRs**, then delete each session as it closes out.
 
 Fast-forward a target repo's base branch *before* spawning a worker against it.
 A stale local `main` is inherited by the new worktree: the worker does correct
 work and its PR arrives conflicting.
 
-### The mailbox convention
+### The trust dialog
 
-A worker finishes by mailing its result to the lead:
+An agent started in a directory it has not seen asks whether it may work there,
+and thurbox mints a fresh worktree per session. A worker therefore sat on that
+dialog and `session send` typed the brief straight into it. `dispatch` now runs
+`./scripts/session-trust.sh` between creating a session and prompting it: it
+**confirms the dialog is on the pane**, answers with the keys that agent needs,
+and **confirms it is gone**. If either confirmation fails it sends nothing and
+says which sessions were left unprompted, because a session waiting on a dialog
+is visible and fixable and one that has been typed into randomly is neither.
 
-```bash
-thurbox-cli message send --to '<lead>' --kind result --body '<PR url or NOT_APPLICABLE>'
+Claude Code's dialog defaults to `No, exit`, so a bare Enter dismisses it — the
+key sequence is Down then Enter. `codex`, `pi` and `pi-signed` take Enter;
+`grok` and `kimi` show nothing inside a git repo; `cursor` and `muse` are not
+keystrokes at all but launch flags, which is what the `cursor-trusted` and
+`muse-trusted` profiles are for. `scripts/trust-thurbox-dir.sh` still seeds
+Claude's trust into `~/.claude.json` and is the right fallback when a dialog
+cannot be answered — it is no longer the default, because it writes to a file
+the operator owns.
+
+### Ordering: the counterintuitive part
+
+Most work needs no ordering at all. The job is finding the small set that does
+and letting everything else go at once — a queue that runs one task at a time is
+slower than no queue, because it adds bookkeeping and removes nothing.
+
+So **file or subsystem overlap does not serialize anything.** Two tasks that
+both expect to change `src/state.rs` are recorded with `--touches`, reported
+side by side in the plan as a risk you are accepting, and dispatched together;
+two agents editing one file in two worktrees is an ordinary rebase.
+
+```text
+ready: 3 task(s) — every one of them goes out now, there is no concurrency cap
+    …/01-drop-idle-default     ~/code/thurbox  fix/drop-idle-default
+    …/02-document-the-states   ~/code/thurbox  fix/document-the-states
+    …/04-log-state-changes     ~/code/thurbox  fix/log-state-changes
+    risk: …/01-drop-idle-default, …/04-log-state-changes all touch src/state.rs
+          Overlap is a risk signal, not a reason to wait — dispatch
+          them together and let the delivery path reconcile a rebase.
+
+waiting: 1 task(s) — each held by a durable, recorded blocker
+    …/03-render-detected-agent
+        semantic-dependency on …/01-drop-idle-default: reads the
+        detected_agent field 01 introduces
 ```
 
-and the lead drains the inbox exactly-once:
+What *does* serialize is a recorded blocker, and `queue.sh block` refuses one
+that names no kind and no reason:
 
 ```bash
-thurbox-cli message inbox --for '<lead>' --claim --json
+./scripts/queue.sh block <ref> --on <ref> \
+  --kind semantic-dependency --why 'reads the field the other one introduces'
 ```
 
-Quote the address. A session name is an imperative sentence, spaces and all, so
-an unquoted one is split by the shell and mails somewhere else.
+`--kind` is a closed set — `semantic-dependency`, `shared-external-state`,
+`incompatible-migration`, `other` — and "they edit the same file" is not on it
+and cannot be spelled as one. A blocker clears only when the task it names is
+genuinely done; a session that merely stopped does not clear it.
 
-This beats polling `gh pr list` on three counts. It is **exact** — the worker
-names its own artifact instead of you inferring it from a PR list that may
-contain someone else's. It is **immediate** — `message send` wakes the
-recipient, so the lead never polls at all. And it can report **"not
-applicable"**, which a PR poll can never distinguish from "still working": the
-absence of a PR is not a signal. Because the payload travels through thurbox's
-durable database rather than a tmux pane, it also survives scrollback, TUI
-chrome, and line-wrapping — all of which make pane-scraping fragile.
+### How completion arrives
 
-See [`orchestration/playbooks/_TEMPLATE.md`](orchestration/playbooks/_TEMPLATE.md)
+A worker does **not** mail its result. `thurbox-cli message send` wakes its
+recipient — it injects into the lead's terminal, so a worker reporting in
+interrupts whoever is talking to the lead at that moment. The property the CLI
+calls "immediate" is immediate in exactly the way that hurts.
+
+So completion is split into two things the lead **reads**, on its own cadence:
+
+```text
+the WHEN   thurbox-cli watch --json --since <seq>
+           One line per transition, resumable by sequence number, so a lead
+           that looks away misses nothing and is interrupted by nothing.
+
+the WHAT   the task's result.md, written by the worker when it knew what it
+           had concluded:
+
+               ---
+               outcome: shipped | stuck | failed | not-applicable
+               artifact: <PR url, or omit>
+               ---
+               What it actually did.
+```
+
+**Both halves are needed.** A transition says a turn ended, which is not the
+claim that the task finished — an agent reports `done` at the end of every turn
+it takes, including the one where it gave up. A lead that reads the stream alone
+closes tasks that failed.
+
+`./scripts/queue.sh watch` folds the stream into each task's record and closes
+nothing; `./scripts/queue.sh collect` reads the result files and only that
+closes a task. `not-applicable` is why a file beats polling `gh pr list`: the
+absence of a PR cannot be distinguished from "still working", but a worker
+saying so can.
+
+The mailbox still exists and is still the right tool for something genuinely
+urgent a human should see now. It is the wrong tool for routine completion.
+
+See [`.agents/skills/fleet-queue/SKILL.md`](.agents/skills/fleet-queue/SKILL.md)
+for the queue's driving surface,
+[`orchestration/playbooks/_TEMPLATE.md`](orchestration/playbooks/_TEMPLATE.md)
 for the anatomy of a playbook, [`AGENTS.md`](AGENTS.md) for how an agent should
 operate inside this repo, and
 [`.agents/skills/thurbox-session/SKILL.md`](.agents/skills/thurbox-session/SKILL.md)
-for the detailed driving surface: spawning, prompting, completion detection,
-cleanup.
+for one session's mechanics: spawning, prompting, state, cleanup.
 
 ## Thurbox extension
 
@@ -468,8 +574,9 @@ That registers exactly two things:
 - **A long-lived `fleet` session**, whose standing context is
   [`FLEET.md`](FLEET.md) (symlinked to `CLAUDE.md` / `AGENTS.md` / `GEMINI.md`
   in the extension home). thurbox **self-heals** it: delete the session and it
-  comes back. Because it is a real session, workers can mail their results to it
-  with `thurbox-cli message send --to fleet`.
+  comes back. Because it is a real session it can also be addressed by name —
+  though routine worker results arrive as files the lead reads, not as mail
+  that interrupts it.
 
 Payload files land in `~/.config/thurbox/extensions/fleet/`; the registry,
 playbooks, and run logs stay in your checkout, where they are versioned.

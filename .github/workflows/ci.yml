@@ -31,6 +31,7 @@ jobs:
       markdown: ${{ steps.filter.outputs.markdown }}
       yaml: ${{ steps.filter.outputs.yaml }}
       profiles: ${{ steps.filter.outputs.profiles }}
+      queue: ${{ steps.filter.outputs.queue }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
@@ -58,6 +59,12 @@ jobs:
               - 'orchestration/session-profiles.yaml'
               - 'scripts/session-flags.sh'
               - 'scripts/lib/session_profiles.py'
+              - 'scripts/check.sh'
+              - '.github/workflows/ci.yml'
+            queue:
+              - 'scripts/queue.sh'
+              - 'scripts/queue-selftest.sh'
+              - 'scripts/lib/queue.py'
               - 'scripts/check.sh'
               - '.github/workflows/ci.yml'
 
@@ -103,6 +110,20 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - run: ./scripts/check.sh profiles
 
+  # The queue's records, and — the part worth a job of its own — the selftest
+  # that re-proves its ordering and wake claims: that independent work goes out
+  # all at once, that file overlap does NOT serialize, that a turn ending is not
+  # a task finishing. Those are easy to invert by accident and expensive to
+  # notice in a real run.
+  queue:
+    name: Task queue
+    needs: changes
+    if: needs.changes.outputs.queue == 'true'
+    runs-on: ubuntu-latest # PyYAML is preinstalled on the runner
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - run: ./scripts/check.sh queue
+
   # Unfiltered on purpose. `.claude/skills` is a committed symlink to
   # `.agents/skills`, and the way that breaks is a CHECKOUT that materialises it
   # as a regular file rather than a link — which no diff mentions. Running this
@@ -127,6 +148,7 @@ jobs:
       - markdown
       - yaml
       - profiles
+      - queue
       - skills
     runs-on: ubuntu-latest
     steps:

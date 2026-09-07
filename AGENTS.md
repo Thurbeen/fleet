@@ -25,6 +25,11 @@ place to edit it, whichever CLI is reading.** Edit this file, not the pointer.
   go in `orchestration/session-profiles.local.yaml`, gitignored, and replace a
   shipped profile of the same name wholesale. The file's own header owns the
   rules that keep a profile safe.
+- `orchestration/queue/<topic>/` — the task queue. A prompt becomes a TOPIC
+  holding its verbatim `PROMPT.md`; the topic decomposes into task directories,
+  each with its own `task.yaml`, `BRIEF.md`, `progress.jsonl` and `result.md`.
+  `./scripts/queue.sh` owns it end to end and its header is the full usage.
+  Gitignored except the `README.md` that documents the layout.
 - `orchestration/playbooks/<name>.md` — reusable recipes for running thurbox.
   The template's are tracked; **yours go in `orchestration/playbooks/local/`**,
   which is gitignored.
@@ -34,11 +39,12 @@ place to edit it, whichever CLI is reading.** Edit this file, not the pointer.
   `.claude/skills` is a **symlink** to it, so Claude Code and opencode (which
   auto-discovers `.claude/skills`) both load the same copy. Never add a second
   copy under `.claude/`, and do not mirror into `.opencode/skills` — that
-  registers the same skill twice. Three skills live there: `thurbox-session`
-  (driving workers), `fleet-onboarding` (taking a fresh clone of this template
-  to a working control plane — it owns the setup story the README's Quickstart
-  used to spell out), and `fleet-update` (bringing this control plane current
-  with the template it was cloned from).
+  registers the same skill twice. Four skills live there: `fleet-queue` (the
+  queue: intake, ordering, dispatch, and the two halves of completion),
+  `thurbox-session` (driving one worker session), `fleet-onboarding` (taking a
+  fresh clone of this template to a working control plane — it owns the setup
+  story the README's Quickstart used to spell out), and `fleet-update`
+  (bringing this control plane current with the template it was cloned from).
 
 ## Orchestration model
 
@@ -46,32 +52,42 @@ This repo drives [thurbox](https://github.com/Thurbeen/thurbox) **directly**. Do
 not invoke an external `orchestrate` skill or any other outside orchestration
 workflow — the control plane is deliberately self-contained.
 
-The loop:
+The loop, driven by `./scripts/queue.sh`:
 
-1. Clarify the goal. Pick a playbook in `orchestration/playbooks/`, or write one.
-2. Open a run log from `orchestration/runs/_TEMPLATE.md`, named
-   `<YYYY-MM-DD>-<slug>.md`.
-3. For each unit of work, launch a thurbox worker session with one
-   self-contained prompt. Workers share no context with you and none with each
-   other, so each prompt states the goal, the constraints, and what "done" looks
-   like, from scratch. Always pass an `--on-existing` mode: the default makes a
-   twin under the same name, and a name matching two sessions is refused rather
-   than guessed, which breaks the worker's mailbox for good.
+1. **Intake.** A prompt becomes a topic, kept verbatim, decomposed into tasks —
+   one repo, one branch, one thing a single worker can finish and validate.
+2. **Write each `BRIEF.md`.** Workers share no context with you and none with
+   each other, so each brief states the goal, the constraints, and what "done"
+   looks like, from scratch. `dispatch` refuses a brief that is still the
+   scaffold's placeholder.
+3. **Order, then dispatch the whole ready set at once.** File or subsystem
+   overlap is a RISK SIGNAL that gets reported, not a reason to wait. Serialize
+   only for a true semantic dependency, shared mutable external state, an
+   incompatible concurrent migration, or another concrete condition that makes
+   independent progress unsafe — and record it with `queue.sh block`, which
+   refuses one that names no kind and no reason. A queue that runs one task at
+   a time is slower than no queue at all.
 4. Each worker targets a real repo and its own git worktree — the control plane
-   holds the plan and the log, never the workers' branches.
-5. Record every session (name, repo, prompt intent, outcome, PR/artifact) in the
-   run log as it happens. The run log is the source of truth for what happened —
-   within this working copy. It is gitignored, so it is not backed up by the
-   repo and dies with the checkout.
+   holds the plan and the log, never the workers' branches. `dispatch` gets each
+   new session past its agent's trust dialog before it sends the brief
+   (`./scripts/session-trust.sh`), because sending one into that dialog is how
+   every fleet-spawned worker used to break.
+5. **Completion is two things you read, never something that interrupts you.**
+   `queue.sh watch` folds `thurbox-cli watch`'s event stream into each task's
+   record and closes nothing; `queue.sh collect` reads the `result.md` the
+   worker wrote and only that closes a task. A turn ending is not a task
+   finishing. Record the run in `orchestration/runs/` as it happens; it is
+   gitignored, so it is not backed up and dies with the checkout.
 6. Review the PRs. Delete each session as it closes out.
 
-`.agents/skills/thurbox-session/` is the detailed driving surface for step 3:
-spawning, prompting, completion detection, cleanup. Use it. In particular, read
-its **session state** section before you judge whether a worker is still
-working: `idle` means the agent said it is at rest, and `running`, `uncovered`
-and `unreported` each mean something else. Its §1c and §1d cover the two
-choices every spawn makes — what a name collision means, and what settings the
-agent starts with.
+`.agents/skills/fleet-queue/` is the driving surface for 1–3 and 5.
+`.agents/skills/thurbox-session/` is the driving surface for one session:
+spawning, prompting, cleanup. Use both. In particular, read the latter's
+**session state** section before you judge whether a worker is still working:
+`idle` means the agent said it is at rest, and `running`, `uncovered` and
+`unreported` each mean something else. Its §1c and §1d cover the two choices
+every spawn makes — what a name collision means, and what settings the agent
+starts with.
 
 ## Keeping the map honest
 
@@ -89,7 +105,7 @@ CI only runs on pull requests, and routine control-plane changes go straight to
 `main`. So gate locally before you push:
 
 ```bash
-./scripts/check.sh          # shellcheck, markdown, YAML, session profiles, skills
+./scripts/check.sh          # shellcheck, markdown, YAML, profiles, queue, skills
 ./scripts/check.sh --fix    # same, applying the fixes a check can apply
 ```
 

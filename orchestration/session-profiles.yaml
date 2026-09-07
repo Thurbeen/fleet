@@ -68,3 +68,23 @@ profiles:
     env:
       MAX_THINKING_TOKENS: "8000"
       BASH_DEFAULT_TIMEOUT_MS: "120000"
+
+  # THE FLAG HALF OF TRUST. Most agents ask about a directory they have not
+  # seen with a DIALOG, which `scripts/session-trust.sh` answers with a
+  # keystroke as part of every dispatch. Two do not: they take a launch flag,
+  # and a launch flag is exactly what a profile is for.
+  #
+  # NOT EXERCISED HERE — neither binary is installed on the machine this was
+  # written on, so these are wired from the flag names and thurbox's own
+  # `cursor-agent` command, not from a session anyone watched start. Check the
+  # flag against your installed version before trusting a wave to it.
+  # `reports_as` is mandatory beside `command` and the gate enforces it.
+  cursor-trusted:
+    command: cursor-agent
+    args: ["--trust"]
+    reports_as: cursor
+
+  muse-trusted:
+    command: muse
+    args: ["--yolo"]
+    reports_as: muse

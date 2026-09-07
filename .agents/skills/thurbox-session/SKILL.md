@@ -133,39 +133,63 @@ fail at its first `git` call, which looks like an agent bug and is not one.
 A Windows/PowerShell host is not a POSIX shell: probes like `command -v` and
 `2>/dev/null` misfire there; use `Get-Command`.
 
-## 1b. Trust the worktree before the agent starts
+## 1b. Get past the trust dialog — as part of the spawn, not after it
 
-A Claude Code session started in an untrusted directory stops on the
-workspace-trust dialog. thurbox mints a **fresh worktree path per session**, so
-each new worker meets it.
+An agent started in a directory it has not seen asks whether it may work
+there, and thurbox mints a **fresh worktree path per session**. So a worker
+sits on that dialog: the session exists, the pane is live, the agent has not
+started — and `session send` then types the brief INTO the dialog. This broke
+every worker fleet spawned.
 
-**Trust is not a `settings.json` key** — the settings schema has no such field.
-It lives in `~/.claude.json`:
+**`scripts/session-trust.sh <uuid>` is the answer, and `./scripts/queue.sh
+dispatch` runs it for you** between `session create` and the first `session
+send`. Run it yourself only for a session you spawned by hand, and only in that
+same window — before anything has been typed into the pane.
 
+```bash
+scripts/session-trust.sh <uuid>          # confirm → answer → confirm
+scripts/session-trust.sh <uuid> --json   # for a driver
 ```
-.projects["<absolute path>"].hasTrustDialogAccepted = true
-```
 
-keyed by *exact absolute path*. No globs, no prefix rules, and **no inheritance
-from a parent directory**: a worktree under `~/.local/share/thurbox/worktrees/`
-is untrusted even though the repo it belongs to is trusted.
+It **confirms the dialog is on the pane before sending anything**, answers with
+the keys that agent needs, then confirms the dialog is gone. If it cannot
+confirm either, it sends nothing and exits 3 — a session waiting on a dialog is
+visible and fixable; a session that has been typed into randomly is neither.
 
-`scripts/trust-thurbox-dir.sh` seeds a path safely — it backs `~/.claude.json`
-up, validates that the result is still an object with `.projects`, and refuses
-to write an empty file:
+The per-agent differences are real, and one is a trap:
+
+| agent | gate |
+|---|---|
+| `claude` | a dialog whose default selection is **`No, exit`**. A bare Enter DISMISSES it and the agent exits. Down, then Enter. |
+| `codex` | a dialog; Enter accepts. Persists per repo root. |
+| `pi`, `pi-signed` | a dialog; Enter accepts. Persists per path. |
+| `grok`, `kimi` | no dialog inside a git repo, which a worktree always is. |
+| `cursor`, `muse` | **not a keystroke** — a launch flag (`--trust`, `--yolo`). Use the `cursor-trusted` / `muse-trusted` profiles in `orchestration/session-profiles.yaml` (§1d). |
+
+**Which path the trust is recorded against** (observed 2026-09-07, Claude Code):
+answering inside a worktree records it against the **repository's main worktree
+path**, not the worktree's own. So the first worker in a repo meets the dialog
+and later ones do not — but a whole ready set dispatched at once against one
+repo draws the dialog on every one of them simultaneously, because none has
+been answered yet when they start.
+
+**The config-seeding fallback.** `scripts/trust-thurbox-dir.sh` writes Claude
+Code's trust into `~/.claude.json` directly:
 
 ```bash
 scripts/trust-thurbox-dir.sh /abs/path/to/worktree   # one path
-scripts/trust-thurbox-dir.sh --all-worktrees         # every existing thurbox worktree
+scripts/trust-thurbox-dir.sh --all-worktrees         # every existing one
 ```
 
-Trust is a real guard, not a nuisance: accepting it in advance vouches for the
-code in that directory. Seed only worktrees of repos you already trust. Two
-further caveats. `~/.claude.json` is rewritten by every live Claude Code
-process, so a concurrent write can clobber the edit — seed before the session
-starts, when few sessions are running. And `-p` / non-TTY invocations skip the
-trust dialog entirely, so a headless probe proves nothing about the interactive
-path.
+It still works and it is the right tool when a dialog cannot be answered, or to
+pre-seed before an unattended run. It is **not** the default: it writes to a
+file the operator owns, for a tool fleet did not install, and it needs a
+different format per agent. Prefer answering.
+
+Trust is a real guard either way: accepting it vouches for the code in that
+directory. Only ever point either tool at worktrees of repos you already trust.
+And `~/.claude.json` is rewritten by every live Claude Code process, so a
+concurrent write can clobber a seed — one more reason the keystroke is better.
 
 ## 1c. Re-running a spawn (`--on-existing`)
 
@@ -357,59 +381,62 @@ was adopted, not created, and is already working on this (§1c).
 
 ## 4. Detect completion
 
-**Prefer push over pane-scraping.** Agent CLIs are TUIs — box chrome, prefixes,
-and line-wrapping make grepping a captured pane fragile, and it is only as
-timely as your next poll.
+**A worker writes a FILE. It does not send mail.** That is a deliberate
+reversal of what this skill used to say, and the reason is concrete:
+`thurbox-cli message send` **wakes** its recipient — it injects into the lead's
+terminal, so a worker reporting in interrupts whoever is talking to the lead at
+that moment. The property the CLI calls "immediate" is immediate in exactly the
+way that hurts.
 
-thurbox injects `THURBOX_SESSION` (and `THURBOX_TASK`) into each session's
-environment, so a worker sends its own mail with no ids:
+So completion arrives as two things the lead READS, on its own cadence:
 
-```bash
-# instruct the worker to finish with:
-thurbox-cli message send --to '<lead-name-or-uuid>' --kind result --body '<PR url or NOT_APPLICABLE>'
+```text
+the WHEN   thurbox-cli watch --json [--since <seq>]
+           One line per transition, resumable by sequence number. The lead
+           reads it when it chooses and is never interrupted. It carries the
+           honest state vocabulary of §4a.
+
+the WHAT   a result file the worker wrote when it knew what it had concluded.
 ```
 
-Quote the address: a name is a sentence with spaces in it. The payload travels
-through the durable DB, never the pane. Drain it exactly-once from the lead:
+**Both halves are needed, and the stream alone is not enough.** A transition
+says a turn ended. That is not the claim that the task finished — an agent
+reports `done` at the end of every turn, including the one where it gave up.
+A lead that treats "turn ended" as "task done" closes tasks that failed.
 
-```bash
-thurbox-cli message inbox --for '<lead>' --claim --json
+`./scripts/queue.sh` implements exactly this pair and is how the control plane
+should run any real work: `watch` folds transitions into each task's record and
+closes nothing; `collect` reads the worker's own result file and only then does
+a task close. See `.agents/skills/fleet-queue/SKILL.md`. Put the result
+contract at the end of every brief:
+
+```markdown
+Write <absolute path>/result.md when you finish or conclude you cannot:
+
+---
+outcome: shipped | stuck | failed | not-applicable
+artifact: <PR url, or omit>
+---
+What you actually did, and anything the lead must know.
 ```
 
-**The control plane's own Claude IS a thurbox session** — it runs inside one, so
-`$THURBOX_SESSION` holds its UUID. It can therefore be the lead directly; no
-separate lead session is needed:
+`not-applicable` is why a file beats polling `gh pr list`: the absence of a PR
+cannot be distinguished from "still working", but a worker saying so can.
 
-```bash
-thurbox-cli message send  --to "$THURBOX_SESSION" --kind result --body 'probe'
-thurbox-cli message inbox --for "$THURBOX_SESSION" --json          # peek, non-destructive
-thurbox-cli message inbox --for "$THURBOX_SESSION" --claim --json  # drain exactly-once
-```
+**The mailbox still exists**, and `thurbox-cli message send --to <lead>` is
+still the right tool for something genuinely urgent that a human should see
+now. It is the wrong tool for routine completion, which is most of it.
 
-`send` returns `{"enqueued":true,"woke":true,...}` and **wakes** the recipient,
-so the lead does not poll. `inbox` without `--claim` peeks; `--claim` drains.
-
-So the real loop is: spawn workers with `--parent "$THURBOX_SESSION"`, put this
-line at the end of every worker brief —
-
-```bash
-thurbox-cli message send --to '<lead-uuid>' --kind result --body '<PR url or NOT_APPLICABLE>'
-```
-
-— then enumerate with `session list --parent "$THURBOX_SESSION" --json` and
-drain the inbox. Prefer this over polling `gh pr list`: it is exact, immediate,
-and reports `NOT_APPLICABLE` too, which a PR poll can never distinguish from
-"still working".
-
-**Fallback — sentinel + capture.** For a one-off worker where a lead session
-isn't worth it, have the worker print a `===RESULT===` JSON sentinel and poll:
+**Fallback — sentinel + capture.** For a one-off worker with no queue record
+behind it, have the worker print a `===RESULT===` JSON sentinel and poll:
 
 ```bash
 thurbox-cli session capture <uuid> --lines 400 --json   # default 200, max 10000
 ```
 
 Back off between polls. Treat a missing sentinel as "still working", not as
-failure.
+failure. Pane-scraping is the last resort in any case: agent CLIs are TUIs, and
+box chrome, prefixes and line-wrapping make grepping a captured pane fragile.
 
 `worktrees[]` is how you enumerate a multi-repo session's members: one entry per
 repo, each with `repo_path`, `worktree_path`, and `branch`.
@@ -512,5 +539,9 @@ undoes a soft delete.
    `<YYYY-MM-DD>-<slug>.md`.
 3. Per unit of work: `session create` — with an `--on-existing` mode (§1c) and
    the run's profile flags (§1d) — → `session send`, unless `created` came back
-   `false` → await the result mail → record.
+   `false` → read the result file it writes → record.
 4. Review PRs. `session delete --force` as each closes out.
+
+For more than one unit of work, drive it through `./scripts/queue.sh` and the
+`fleet-queue` skill instead of by hand: it owns the records, the ordering, and
+both halves of step 3's completion.
