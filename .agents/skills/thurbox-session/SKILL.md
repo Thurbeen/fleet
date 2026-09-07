@@ -12,7 +12,7 @@ session**, not inline in this checkout. The control plane holds the plan and the
 run log; workers hold the branches.
 
 Exception: the control plane's own content — `registry/`, `orchestration/`,
-`.claude/` — is edited inline and pushed straight to main.
+`.agents/` — is edited inline and pushed straight to main.
 
 ## Interface: use the CLI
 
@@ -279,16 +279,83 @@ thurbox-cli session capture <uuid> --lines 400 --json   # default 200, max 10000
 Back off between polls. Treat a missing sentinel as "still working", not as
 failure.
 
-**There is no status field to poll.** `session get <uuid> --json` returns only
-`id`, `name`, `agent`, `backend_type`, `agent_session_id`, `cwd`,
-`parent_session_id`, `display_order`, and `worktrees[]`. The lifecycle state
-(`working` / `blocked` / `done` / `idle`) that agent hooks report via
-`session signal` is persisted for the **TUI** to render and is *not* exposed by
-the CLI. Headless completion detection is therefore the mailbox or the sentinel —
-nothing else.
-
 `worktrees[]` is how you enumerate a multi-repo session's members: one entry per
 repo, each with `repo_path`, `worktree_path`, and `branch`.
+
+## 4a. Session state: supervision, not completion
+
+`session get`/`list --json` **do** carry the session's state. That is a
+correction: this skill used to say the lifecycle state was persisted for the TUI
+alone and not exposed by the CLI, and an agent that believed it never looked.
+
+Read `state` — one word, always present:
+
+| `state` | What it means |
+|---|---|
+| `working` | the agent's own hook says it is running a turn |
+| `blocked` | the agent's own hook says it needs input or approval |
+| `done` | the agent's own hook says a turn just finished |
+| `idle` | **the agent said it is at rest** |
+| `running` | an agent holds the pane and nothing has signalled — an observation, not a claim about what it is doing |
+| `uncovered` | this agent is wired to report nothing, so its silence means nothing |
+| `unreported` | the agent *can* report and has not yet |
+| `unreachable` | a remote session whose host cannot be reached |
+| `stopped` | parked by `session stop`; also `stopped: true` |
+
+**The trap this table exists to prevent:** `idle` is not "no news". The last
+five words above are *not* the agent saying it is at rest, and treating any of
+them as `idle` — as anything that reads state here once did — reports a worker
+mid-turn as finished. Read the word, never the absence of one.
+
+`get` and `list` deliberately answer differently:
+
+- **`session get <uuid> --json` probes the pane** (pass `--no-verify` to skip).
+  Only the probe can see an agent thurbox did not launch, which is why `get`
+  answers `running` where `list` answers `uncovered`.
+- **`session list --json` does not probe**, because that costs a multiplexer
+  query and a `ps` *per session*. `hook_corroboration`, `detected_agent`,
+  `hook_state_contradicted` and `foreground_process` / `foreground_command`
+  are therefore `null` — **`null` means "not checked", not "nothing found"**.
+  `session list --verify` buys `get`'s answer at `get`'s cost, per session.
+
+Judge a state with the fields shipped beside it: `hook_state_age_secs` (a
+`working` from twenty minutes ago is a different fact from one from two
+seconds ago), `hook_reported` (silence is not `idle`), and `hook_coverage` /
+`hook_states_reportable` (which words this agent can produce at all — as of
+thurbox 2.19.0 that includes `grok` and `kimi` alongside the agents covered
+before). `state_source` says whether the answer came from a hook or the
+process.
+
+`detected_agent` names the registered agent observed holding the pane when it
+is not the one the row was created as. Three names, three fields: `agent` is
+what the row was created as, `reports_as` what a driver declared, and
+`detected_agent` what is observably running. It is a live reading, never
+written back. It is `null` when the observation cannot pick one profile —
+several registered agents can share an executable — and that case answers
+`hook_corroboration: "foreign-agent"` with `state: "running"`: an agent is
+there, and which one is not knowable from a process listing. A remote session
+has no pane to look at from here and answers `hook_corroboration:
+"unavailable"`.
+
+A worked reading of a control-plane session created as a bare shell, which a
+harness then launched Claude into:
+
+```bash
+thurbox-cli session get <uuid> --json | jq '{agent,detected_agent,state,state_source,hook_coverage,hook_corroboration}'
+# {"agent":"zsh","detected_agent":"claude","state":"running",
+#  "state_source":"process","hook_coverage":"none",
+#  "hook_corroboration":"foreign-agent"}
+```
+
+`uncovered` from `list` and `running` from `get`, for the same session at the
+same moment, and both are true.
+
+**None of this is a completion signal.** `done` means *a turn* finished, not
+that the work is finished — an agent reports `done` at the end of every turn it
+takes. Use state to supervise: to spot a `blocked` worker waiting on an approval
+nobody is going to give, or a `working` one whose report has aged past anything
+plausible. Completion still arrives by mail (or the sentinel below), because
+only the worker knows whether it is done.
 
 ## 5. Collect and clean up
 

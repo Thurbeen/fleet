@@ -1,0 +1,197 @@
+# no-mistakes gate configuration for the control plane.
+#
+# Reference: https://kunchenguid.github.io/no-mistakes/reference/repo-config/
+#
+# Gate-control fields (commands.*, agent, document.instructions,
+# review.path_instructions, ci.rerun_transient, no_ci, disable_project_settings)
+# are read only from the trusted default branch, never from a pushed branch, so
+# a contributor cannot weaken the gate that reviews their own change. Editing
+# any of them takes effect once the change is merged to main.
+#
+# This repo is a control plane, not a code base: markdown playbooks, a handful
+# of shell scripts, a generated registry and one agent skill. The gate is
+# shaped for that — there is nothing to compile and nothing to unit-test, so
+# every deterministic check it has is the one script below.
+
+commands:
+  # scripts/check.sh IS the repo's gate — shellcheck, rumdl over every tracked
+  # markdown file, a YAML parse of the whole tree plus the registry's shape,
+  # and the skills-symlink check. Named explicitly rather than left to agent
+  # detection so the step is deterministic, and pointed at the same script CI
+  # and the prek hooks run, so a green local run and a green pull request mean
+  # the same thing. That parity matters more here than in most repos: CI only
+  # fires on pull requests while routine control-plane changes go straight to
+  # `main`, which makes the local run the one doing the work.
+  lint: "./scripts/check.sh"
+
+  # Run before the push step commits agent fixes. Markdown is the only surface
+  # here with a formatter, and `lint` above enforces exactly what this fixes,
+  # so a prose fix an agent writes would otherwise reach lint unformatted and
+  # cost an extra auto-fix round. `--fix` is a no-op for the other checks.
+  format: "./scripts/check.sh --fix markdown"
+
+  # The same script again, deliberately.
+  #
+  # This repo has no test suite and is unlikely to grow one: its artifacts are
+  # prose an agent reads and scripts a human runs. The tempting answer is to
+  # leave this key empty — but an empty key does not mean "a small test run",
+  # it means the agent decides what running the tests here looks like, and on a
+  # repo with nothing to run that invites it to invent something (spawning a
+  # real thurbox session, or running sync-registry.sh against the live GitHub
+  # API, both of which reach outside the worktree). Naming the known-good
+  # baseline makes the step's agent turn evidence gathering on top of it rather
+  # than a choice about what to execute. It costs about a second.
+  test: "./scripts/check.sh"
+
+# Excluded from review and documentation checks: files carrying no reviewable
+# intent. `*` never crosses a `/`, and a pattern with no slash matches by
+# basename at any depth.
+ignore_patterns:
+  # Regenerated wholesale by scripts/sync-registry.sh from the GitHub API; the
+  # script is the reviewable artifact, its output is not.
+  - "registry/repos.generated.yaml"
+  # The banner artwork: a raster with no reviewable diff.
+  - "media/**"
+
+# Pin review auto-fix to the product default so this repo does not inherit an
+# operator's global override: review findings park for a human decision.
+auto_fix:
+  review: 0
+
+# .github/workflows/ci.yml sets `cancel-in-progress: true`, so a cancelled
+# check here almost always means a newer push superseded it, not provider-side
+# flakiness. Rerunning would restart work that was stopped on purpose.
+ci:
+  rerun_transient: 0
+
+# The default subject (`no-mistakes({{.Step}}): ...`) is not a conventional
+# commit, and this repo's history is conventional and scopeless (`feat:`,
+# `docs:`, `chore:`). `chore` is omitted from any changelog and drives no
+# release; the real commit on the branch, and the pull request title that
+# becomes the squash commit, are what describe the change.
+commit:
+  fix_message: "chore: no-mistakes {{.Step}} - {{.Summary}}"
+
+# Documentation ownership. This repo carries four overlapping prose files by
+# design, and the failure mode is one fact restated in all four and updated in
+# one. Every fact has exactly one owner; reduce a duplicate to a pointer rather
+# than synchronizing it.
+document:
+  instructions: |
+    README.md is the human-facing guide: what the control plane is, the
+    quickstart, the customization surface, and the layout. It owns the
+    template's setup story.
+
+    AGENTS.md is the agent-facing operating guide for working INSIDE this
+    repo — what the trees are, the run loop, and the local gates. It is an
+    index into the other owners, not a second copy of them. CLAUDE.md is a
+    two-line pointer that imports it and owns nothing; never write content
+    there.
+
+    FLEET.md is the standing context of the long-lived `fleet` session, laid
+    down at the extension home by extension.toml.in. It owns what that session
+    is FOR. It deliberately defers to AGENTS.md for how to work in the repo.
+
+    CONTRIBUTING.md owns the contribution process — the branch-and-pull-request
+    flow, the squash-only merge policy, the local gate, and the configuration
+    of external tooling such as .no-mistakes.yaml, .pre-commit-config.yaml,
+    .rumdl.toml and renovate.json. A root-level config file's rationale belongs
+    here, not in README.md.
+
+    .agents/skills/thurbox-session/SKILL.md is the working reference for
+    driving thurbox-cli: spawning, prompting, completion detection, cleanup.
+    Detail an agent needs only while launching a worker belongs there rather
+    than in AGENTS.md. It is a reference, not an owner — the rationale still
+    lives in the documents above. `.claude/skills` is a symlink to
+    `.agents/skills`, so the skill has exactly one copy; never write a second
+    one under `.claude/`.
+
+    orchestration/playbooks/<name>.md owns a repeatable recipe for a class of
+    work; orchestration/runs/<date>-<slug>.md owns what happened in one run and
+    is append-only history, never edited to match a later decision.
+    registry/context/<repo>.md owns the human truth about one project.
+
+    This repository has no CHANGELOG.md and does not need one. Do not add a new
+    documentation file to close a perceived gap when an owner above already
+    covers the subject.
+
+# House rules a reviewer reading only the diff would not know, scoped to the
+# paths a change actually touches.
+review:
+  path_instructions:
+    - path: "scripts/**"
+      instructions: |
+        Shell run by humans and by CI, linted by shellcheck under
+        `scripts/check.sh`. Two constraints this repo has already paid for:
+
+        A script here must work inside a LINKED GIT WORKTREE, where `.git` is a
+        file rather than a directory. Every thurbox worker runs in one, and a
+        tool that walks a directory tree looking for a git repo can silently
+        find nothing there — which reads as a pass. Prefer `git ls-files` and
+        explicit paths over letting a linter discover its own inputs.
+
+        scripts/sync-checkout.sh runs from a SessionStart hook and must always
+        exit 0: a sync problem must never block a session from starting. It
+        only ever fast-forwards, and never rebases or resets.
+
+        Comments explain why, never what. A stale comment is worse than none.
+
+    - path: ".agents/skills/**"
+      instructions: |
+        An agent skill: the working reference a coding agent loads when it is
+        about to drive thurbox. Judge it as instructions rather than as prose —
+        every command must be one that the installed thurbox-cli actually
+        accepts, with the flags spelled as that binary spells them, because an
+        agent will run what this file says without checking.
+
+        A claim about what a CLI does not expose is the expensive kind of
+        mistake here: it sends an agent down a fallback path forever. Check it
+        against `thurbox-cli <cmd> --help`, which is version-matched to the
+        installed binary, before asserting an absence.
+
+        `.claude/skills` is a symlink to this tree. Do not add a parallel copy
+        under `.claude/`, and do not mirror into `.opencode/skills` — opencode
+        auto-discovers `.claude/skills`, so the symlink already serves it and a
+        mirror would register the same skill twice.
+
+    - path: "orchestration/**"
+      instructions: |
+        Playbooks are recipes an operator follows; run logs are history. A
+        playbook states its inputs, how the goal decomposes into sessions, and
+        the acceptance signal for each. It does not restate a target repo's own
+        conventions — it points at them.
+
+        Do not request test coverage for either.
+
+    - path: "registry/**"
+      instructions: |
+        registry/repos.generated.yaml is generated by scripts/sync-registry.sh
+        and must never be hand-edited; a diff that edits it directly is a
+        finding regardless of whether the content is correct.
+        registry/context/<repo>.md is the opposite: human-owned judgement the
+        sync never touches.
+
+    - path: "extension.toml.in"
+      instructions: |
+        The thurbox extension manifest, rendered to a gitignored
+        `extension.toml` by scripts/install-extension.sh. `__REPO_PATH__` is
+        load-bearing — no thurbox token spells "my clone" (`{home}` is the
+        extension home), so it cannot be simplified back to a `~` path.
+
+        `min_thurbox_version` is a claim about the whole range this manifest
+        supports, not a note about the version someone happens to run. Raising
+        it is only correct alongside the reason, and lowering it means every
+        behavior the repo's prose relies on must hold at the new floor too.
+
+    - path: ".github/workflows/**"
+      instructions: |
+        CI fires only on pull requests. Every job feeds the single required
+        "All Checks" gate, so adding or removing a job never needs a branch
+        ruleset change — but a new job must be listed in that gate's `needs:`,
+        or it can fail while the gate reports green.
+
+        Actions are pinned by commit SHA with the version in a trailing
+        comment, and Renovate keeps them current. A tag reference is a finding.
+
+        The jobs run scripts/check.sh rather than inlining their checks, so
+        that the local gate and the pull-request gate cannot drift apart.

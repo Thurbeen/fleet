@@ -1,4 +1,4 @@
-# Run: <YYYY-MM-DD> — <slug>
+# Run: `<YYYY-MM-DD>` — `<slug>`
 
 > Copy to `orchestration/runs/<YYYY-MM-DD>-<slug>.md`. This log is the source of
 > truth for what happened.
@@ -18,8 +18,8 @@ case — no repo prefix, the repo has its own column.
 
 ## Timeline
 
-- <time> — launched `Document the customization surface` against `owner/repo`.
-- <time> — drained the inbox; that session reported …
+- `<time>` — launched `Document the customization surface` against `owner/repo`.
+- `<time>` — drained the inbox; that session reported …
 
 ## Outcome
 

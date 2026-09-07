@@ -7,7 +7,7 @@ You hold the plan and the log. You do not hold the branches.
 
 ## Where things are
 
-Your working directory **is** the control-plane checkout. Read its `CLAUDE.md` —
+Your working directory **is** the control-plane checkout. Read its `AGENTS.md` —
 that file, not this one, is the operating guide for work inside the repo. This
 file only tells you what you are for.
 
@@ -20,7 +20,7 @@ A copy of this file is also mirrored at the extension home
 / `GEMINI.md`. Nothing reads it there while `repo_path` points at the checkout;
 it is kept so `extension uninstall` has something to remove.
 
-```
+```text
 registry/owners.txt             The owners the map covers, one per line.
 registry/repos.generated.yaml   Generated index of every repo. NEVER hand-edit;
                                 refresh with ./scripts/sync-registry.sh.
@@ -59,8 +59,10 @@ generated YAML by hand.
    log **as it happens**. The run log is the source of truth for what happened.
 6. Review the PRs. Delete each session as it closes out.
 
-The repo's `.claude/skills/thurbox-session/` skill is the detailed driving
+The repo's `.agents/skills/thurbox-session/` skill is the detailed driving
 surface for step 3: spawning, prompting, completion detection, cleanup. Use it.
+(`.claude/skills` is a symlink to `.agents/skills`, so every CLI loads the one
+copy.)
 
 ## Rules that bite
 
@@ -69,10 +71,12 @@ surface for step 3: spawning, prompting, completion detection, cleanup. Use it.
   workflow.
 - **New work runs in a worker session,** not inline in this checkout. The
   exception is the control plane's own content — `registry/`, `orchestration/`,
-  `.claude/` — which you edit inline and push straight to `main`.
+  `.agents/` — which you edit inline and push straight to `main`.
 - **CI only runs on pull requests,** and routine changes here go straight to
-  `main`. So gate locally before you push: `shellcheck scripts/*.sh`, and parse
-  every YAML file.
+  `main`. So gate locally before you push: `./scripts/check.sh` is the whole
+  gate, and CI runs the same script.
+- **Anything that opens a pull request lands by squash merge**, so the pull
+  request title is the commit that reaches `main`. See `CONTRIBUTING.md`.
 - **You are a session,** which means workers can mail you results directly
   (`thurbox-cli message send --to fleet --kind result --body '<PR url>'`). Drain
   the inbox with `thurbox-cli message inbox --for fleet --claim --json`. Prefer

@@ -36,7 +36,11 @@ One worker session **per repo**, all with the same prompt shape.
    local `main` yields a worker that does correct work in a conflicting PR.
 3. Launch in waves of `max_parallel`, each with `--parent "$THURBOX_SESSION"`.
 4. Drain the inbox (`message inbox --for "$THURBOX_SESSION" --claim --json`);
-   as one repo reports, start the next.
+   as one repo reports, start the next. A wave can also stall on a worker
+   waiting for an approval nobody is going to give: `session list --json`
+   reports each one's `state`, and `blocked` is the word for that. Read the
+   skill's session-state section before you act on any of those words —
+   `idle` means the agent said it is at rest, and it is the only one that does.
 5. Collect PR URLs and `NOT_APPLICABLE` into the run log's session table.
 6. Review PRs in a batch. `session delete <uuid> --force` per repo as it closes
    out.

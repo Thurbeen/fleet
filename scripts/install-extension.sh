@@ -2,11 +2,12 @@
 # Render extension.toml from extension.toml.in, then install it into thurbox.
 #
 # `[[sessions]] repo_path` must be an absolute path to *this clone*. thurbox has
-# no token for "my clone" (`{home}` is the extension home), and on any thurbox
-# older than 0.174.2 a leading tilde is taken literally, opening a directory
-# named `~`. A template cannot ship one machine's path, so the manifest carries
-# the `__REPO_PATH__` placeholder and this script substitutes the real path at
-# install time. The rendered `extension.toml` is gitignored. See its header.
+# no token for "my clone" — `{home}` is the extension home, not your checkout —
+# and a template cannot ship one machine's path. So the manifest carries the
+# `__REPO_PATH__` placeholder and this script substitutes the real path at
+# install time. The rendered `extension.toml` is gitignored. See its header,
+# which also records the tilde bug that used to be a second reason and no
+# longer applies at the manifest's current version floor.
 #
 # Re-run this after moving the clone: the rendered path is baked in.
 #

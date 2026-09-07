@@ -4,7 +4,8 @@
 
 **What it is.** One or two sentences. What problem it solves and for whom.
 
-**Status.** active | maintenance | parked | archived. Where the work sits right now.
+**Status.** active | maintenance | parked | archived. Where the work sits
+right now.
 
 ## Relations
 
