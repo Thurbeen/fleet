@@ -242,6 +242,52 @@ fi
 out="$($QUEUE watch --for-secs 1 2>&1)"
 refute "the cursor resumes, so a second watch replays nothing" "seq 101" "$out"
 
+# --- 7. a genuinely zero cursor is not treated as "no cursor" ----------------
+#
+# seed_cursor legitimately writes 0 when the stream's high-water mark really
+# is 0 (a brand-new thurbox instance). read_cursor must tell that apart from
+# "no cursor file at all": cmd_watch used to test the cursor for truthiness,
+# so a real 0 was silently treated the same as "no cursor" and the --since
+# flag was dropped from the real `thurbox-cli watch` call, starting the first
+# watch after a dispatch from "now" instead of replaying from seq 0 — quietly
+# losing any transition in between. This needs the real command path (not
+# FLEET_QUEUE_WATCH_CMD, which replaces the whole command and never sees the
+# flags), so it stubs `thurbox-cli` on PATH and reads what it was called with.
+zerotmp="$(mktemp -d)"
+fakebin="$zerotmp/bin"
+mkdir -p "$fakebin"
+cliargs="$zerotmp/cli-args.log"
+cat >"$fakebin/thurbox-cli" <<SH
+#!/bin/sh
+echo "\$@" >>"$cliargs"
+exit 0
+SH
+chmod +x "$fakebin/thurbox-cli"
+
+(
+	export PATH="$fakebin:$PATH"
+	unset FLEET_QUEUE_WATCH_CMD
+	zt="$(FLEET_QUEUE_DIR="$zerotmp/queue" $QUEUE topic add zero-cursor \
+		--prompt 'prove a real zero cursor is not dropped')" || exit 1
+	FLEET_QUEUE_DIR="$zerotmp/queue" $QUEUE add "$zt" only-task --title 'only task' \
+		--repo /tmp/repo-z --branch fix/only-task --number 01 >/dev/null
+	FLEET_QUEUE_DIR="$zerotmp/queue" $QUEUE attach "$zt/01-only-task" \
+		33333333-3333-3333-3333-333333333333 >/dev/null
+	FLEET_QUEUE_DIR="$zerotmp/queue" $QUEUE watch --for-secs 0 >/dev/null 2>&1
+)
+
+cursor="$(cat "$zerotmp/queue/.cursor" 2>/dev/null || echo '<missing>')"
+if [ "$cursor" = 0 ]; then
+	pass "seed_cursor writes a genuine zero when the stream's high-water mark is 0"
+else
+	fail "seed_cursor writes a genuine zero when the stream's high-water mark is 0" "cursor: $cursor"
+fi
+
+expect "watch passes --since 0 to the real stream rather than dropping it" \
+	"--since 0" "$(cat "$cliargs" 2>/dev/null)"
+
+rm -rf "$zerotmp"
+
 # --- 3. the blocker clears only when the task it names is really done --------
 
 out="$($QUEUE collect 2>&1)"
