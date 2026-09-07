@@ -1,0 +1,58 @@
+# How a worker session STARTS — as opposed to where its work goes.
+#
+# The rest of the control plane decides PLACEMENT: which repo, which branch,
+# which host, which repos a session spans. That is spelled on the
+# `thurbox-cli session create` command line and it varies per run. This file
+# holds the other half — the settings that shape the agent itself, which do
+# not vary per run and are worth reviewing in a diff.
+#
+# `./scripts/session-flags.sh <profile>` renders one profile into the
+# `--env` / `--command` / `--arg` / `--reports-as` flags `session create`
+# takes. `.agents/skills/thurbox-session/SKILL.md` shows the call.
+#
+# THREE RULES, all enforced by ./scripts/check.sh — a file that breaks one
+# does not reach `main`:
+#
+# 1. NO SECRETS. This file is committed and world-readable in a public
+#    template. A worker inherits the environment of the thurbox server that
+#    spawns it, so a credential belongs where that process gets its own —
+#    your shell profile, your keyring, or the agent's own login (`claude
+#    /login`, `gh auth login`). It reaches the worker by inheritance and
+#    never passes through here. Put in this file only what you would be
+#    happy to read in a code review.
+#
+# 2. NO `THURBOX_*` KEYS. thurbox's own identity variables always win over
+#    `--env`, so a `THURBOX_SESSION` here would be silently ignored — the
+#    worst kind of setting, one that looks applied and is not. The renderer
+#    refuses the key rather than emitting a flag that does nothing.
+#
+# 3. `command` REQUIRES `reports_as`. thurbox reads hook coverage against a
+#    `--command` session's file stem, so a session launched as
+#    `/bin/sh -c 'exec claude'` reports coverage `none` and renders as
+#    `uncovered` while the agent inside it is working. `--reports-as` is the
+#    declaration that fixes it. The renderer refuses one without the other.
+#
+# Schema, per profile — every key optional:
+#
+#   env:         KEY: VALUE map          -> --env KEY=VALUE (repeated)
+#   command:     an executable           -> --command
+#   args:        list, in order          -> --arg (repeated); needs command
+#   reports_as:  the agent in the pane   -> --reports-as; required by command
+#
+# A profile carrying `command` replaces `--agent`; thurbox refuses both.
+
+profiles:
+  # The profile a run uses when it has no reason to pick another. Empty on
+  # purpose: a fresh clone inherits whatever environment the thurbox server
+  # has, which is what it did before this file existed.
+  default:
+    env: {}
+
+  # Worked example — a sweep of small, repetitive edits across many repos,
+  # where thinking budget is the thing worth turning down. Both variables are
+  # Claude Code's own. Delete it, rename it, or replace its contents; nothing
+  # in the repo requires a profile of this name.
+  sweep:
+    env:
+      MAX_THINKING_TOKENS: "8000"
+      BASH_DEFAULT_TIMEOUT_MS: "120000"

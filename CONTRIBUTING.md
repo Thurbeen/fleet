@@ -9,7 +9,7 @@ follows from that.
 One script is the whole gate:
 
 ```bash
-./scripts/check.sh          # shellcheck, markdown, YAML + registry shape, skills
+./scripts/check.sh          # shellcheck, markdown, YAML, session profiles, skills
 ./scripts/check.sh --fix    # the same, applying the fixes a check can apply
 ./scripts/check.sh shell    # just one check
 ```
@@ -105,6 +105,24 @@ and that every skill directory has a `SKILL.md`.
 `registry/repos.generated.yaml` is written by `./scripts/sync-registry.sh` from
 your live `gh` session. Never hand-edit it. Human judgement about a project goes
 in `registry/context/<repo>.md`, which the sync never touches.
+
+### The session profiles
+
+`orchestration/session-profiles.yaml` holds the settings a worker session
+starts under, and `./scripts/session-flags.sh` renders one profile into
+`thurbox-cli session create` flags. It is committed, so it is reviewed — which
+is the point, and also the constraint: **no secrets go in it**. A worker
+inherits the environment of the thurbox server that spawns it, so a credential
+belongs wherever that process gets its own, and reaches the worker without
+passing through this repo.
+
+`scripts/check.sh profiles` enforces the two rules a reviewer should not have
+to catch by eye: a `THURBOX_*` key is refused, because thurbox's own identity
+variables always win over `--env` and such a setting would look applied while
+doing nothing; and `command` without `reports_as` is refused, because thurbox
+reads hook coverage against the command rather than the agent in the pane, and
+an undeclared session reports nothing and renders as `uncovered` while it
+works.
 
 ### The extension manifest
 

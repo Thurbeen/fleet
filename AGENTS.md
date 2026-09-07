@@ -16,6 +16,11 @@ place to edit it, whichever CLI is reading.** Edit this file, not the pointer.
 - `registry/context/<repo>.md` — the human-owned truth about a project: what it
   is, how it relates to others, current goals. Read the relevant one before
   reasoning about a project. Keep them short and current.
+- `orchestration/session-profiles.yaml` — named sets of settings a worker
+  session STARTS under (`--env`, and `--command` for a setting that is a flag),
+  as opposed to where its work goes. `./scripts/session-flags.sh <profile>`
+  renders one into `session create` flags. Never a place for a secret; the
+  file's own header says why, and `./scripts/check.sh` enforces it.
 - `orchestration/playbooks/<name>.md` — reusable recipes for running thurbox.
 - `orchestration/runs/<date>-<slug>.md` — a log per orchestration run.
 - `.agents/skills/<name>/SKILL.md` — agent skills, in one agent-agnostic tree.
@@ -41,7 +46,9 @@ The loop:
 3. For each unit of work, launch a thurbox worker session with one
    self-contained prompt. Workers share no context with you and none with each
    other, so each prompt states the goal, the constraints, and what "done" looks
-   like, from scratch.
+   like, from scratch. Always pass an `--on-existing` mode: the default makes a
+   twin under the same name, and a name matching two sessions is refused rather
+   than guessed, which breaks the worker's mailbox for good.
 4. Each worker targets a real repo and its own git worktree — the control plane
    holds the plan and the log, never the workers' branches.
 5. Record every session (name, repo, prompt intent, outcome, PR/artifact) in the
@@ -52,7 +59,9 @@ The loop:
 spawning, prompting, completion detection, cleanup. Use it. In particular, read
 its **session state** section before you judge whether a worker is still
 working: `idle` means the agent said it is at rest, and `running`, `uncovered`
-and `unreported` each mean something else.
+and `unreported` each mean something else. Its §1c and §1d cover the two
+choices every spawn makes — what a name collision means, and what settings the
+agent starts with.
 
 ## Keeping the map honest
 
@@ -69,7 +78,7 @@ CI only runs on pull requests, and routine control-plane changes go straight to
 `main`. So gate locally before you push:
 
 ```bash
-./scripts/check.sh          # shellcheck, markdown, YAML + registry shape, skills
+./scripts/check.sh          # shellcheck, markdown, YAML, session profiles, skills
 ./scripts/check.sh --fix    # same, applying the fixes a check can apply
 ```
 

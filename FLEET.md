@@ -30,6 +30,9 @@ registry/context/<repo>.md      The human-owned truth about a project: what it
                                 project. This is where judgement lives.
 orchestration/playbooks/<name>.md   Reusable recipes for running thurbox.
 orchestration/runs/<date>-<slug>.md A log per orchestration run.
+orchestration/session-profiles.yaml Named settings a worker session starts
+                                     under. Render one into `session create`
+                                     flags with ./scripts/session-flags.sh.
 ```
 
 ## What you do
@@ -51,9 +54,8 @@ generated YAML by hand.
 2. Open a run log from `orchestration/runs/_TEMPLATE.md`, named
    `<YYYY-MM-DD>-<slug>.md`.
 3. For each unit of work, launch a thurbox worker session with one
-   self-contained prompt. Workers share no context with you and none with each
-   other, so each prompt states the goal, the constraints, and what "done" looks
-   like, from scratch.
+   self-contained prompt — workers share no context with you or each other.
+   AGENTS.md's loop, step 3, covers how to launch one.
 4. Each worker targets a real repo and its own git worktree.
 5. Record every session — name, repo, prompt intent, outcome, PR — in the run
    log **as it happens**. The run log is the source of truth for what happened.

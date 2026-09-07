@@ -1,6 +1,6 @@
 ---
 name: thurbox-session
-description: Spawn and drive a thurbox worker session with thurbox-cli. Use whenever the control plane is asked to do new work in a real repo. Covers single-repo and multi-repo (--add-repo / --add-dir) sessions, prompting, completion detection, and cleanup.
+description: Spawn and drive a thurbox worker session with thurbox-cli. Use whenever the control plane is asked to do new work in a real repo. Covers single-repo and multi-repo (--add-repo / --add-dir) sessions, idempotent re-spawns (--on-existing), agent settings (--env / --command via session profiles), prompting, completion detection, and cleanup.
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Glob, Grep
 ---
@@ -44,6 +44,7 @@ origin/main` before `session create`, or check that
 thurbox-cli session create --name 'Run exec automations off the TUI thread' \
   --repo-path /abs/path/to/repo \
   --worktree-branch fix/automation-exec-nonblocking --base-branch main \
+  --on-existing fail \
   --json
 ```
 
@@ -56,8 +57,19 @@ thurbox-cli session create --name 'Run exec automations off the TUI thread' \
 | `--agent` | `claude`, `codex`, … (default from `agents.toml`) |
 | `--parent` | lead session UUID, for lead/worker trees |
 | `--host` | remote host from `hosts.toml`; worktree + tmux live there |
+| `--on-existing` | what a name collision means — never leave it defaulted, see §1c |
+| `--env` / `--command` / `--arg` / `--reports-as` | how the agent starts; render them from a profile, see §1d |
 
-Capture the returned UUID — every later command keys off it.
+The first seven rows place the work. The eighth says what a name already in
+use means, and the ninth shapes the agent that does the work. This skill used
+to cover only the first group, and the two gaps that left are worth naming: a
+re-run silently made a second session under the same name, and every session
+it spawned inherited whatever ambient environment the thurbox server happened
+to have.
+
+Capture the returned UUID — every later command keys off it. `create --json`
+also returns **`created`**, which is `false` when `--on-existing adopt`
+handed back a session that was already there; §1c is what to do with that.
 
 ### Naming a session
 
@@ -155,6 +167,118 @@ starts, when few sessions are running. And `-p` / non-TTY invocations skip the
 trust dialog entirely, so a headless probe proves nothing about the interactive
 path.
 
+## 1c. Re-running a spawn (`--on-existing`)
+
+`session create` defaults to `--on-existing allow`, which is what thurbox has
+always done: a second create under a name already in use makes a **second
+session** carrying that name. In this control plane that is a one-way door.
+
+A worker's name is an imperative sentence describing the work, and it is also
+its **mailbox address**. Once two sessions share one, every by-name command
+refuses rather than guesses — `session get`, `message send --to`, and
+`--on-existing adopt` and `replace` too, because there is no single session
+for them to act on:
+
+```text
+'Ship the registry cache' matches 2 active sessions on local-tmux, so there is
+no single one to adopt. Address them by id, or pick another name
+```
+
+Nothing recovers from that except deleting one by id. So decide what a
+collision means, every time:
+
+| Mode | Choose it when | What you get |
+|---|---|---|
+| `adopt` | re-running a playbook — reconciling desired state | the session that is already there, `created: false`. Creation becomes idempotent |
+| `fail` | a one-off spawn, where a collision is news | exit 1, nothing created, the session in the way named |
+| `replace` | you have decided to start this work over | the old session **and its worktree** torn down, then a fresh one |
+| `allow` | never, here | a twin, and by-name addressing broken for both |
+
+`replace` deletes uncommitted work in the old worktree. It is the honest
+answer for a worker that is wedged and whose branch you do not want, and the
+wrong answer for anything else — reach for `session restart` first.
+
+**The rule that goes with `adopt`: read `created` before you send.**
+
+```bash
+out=$(thurbox-cli session create --name "$name" ... --on-existing adopt --json)
+id=$(jq -r .id <<<"$out")
+if [ "$(jq -r .created <<<"$out")" = true ]; then
+	# brand new — write the brief and send it (§3)
+fi
+```
+
+`session send` types its text into the pane and presses Enter. Sending a brief
+to a session that was adopted mid-turn does not restart it: it interrupts a
+worker that is already doing the job and prepends a stale instruction to
+whatever it was in the middle of. `created: false` means *the work is already
+running* — go and read its state (§4a) instead.
+
+## 1d. How the agent starts (`--env`, `--command`)
+
+Everything so far is about the session. These are about the **agent** inside
+it: model, effort, feature flags, and the command line itself.
+
+They are not written on the spawn command line. They live in
+`orchestration/session-profiles.yaml` — one named profile per set of settings,
+committed and reviewed like everything else here — and
+`./scripts/session-flags.sh` renders one into flags:
+
+```bash
+mapfile -d '' -t flags < <(./scripts/session-flags.sh sweep)
+thurbox-cli session create --name "$name" --repo-path "$repo" \
+  --worktree-branch "$branch" --on-existing adopt "${flags[@]}" --json
+```
+
+`mapfile -d ''` because the flags come out NUL-separated: a `--arg` value is
+often a whole command line. `./scripts/session-flags.sh sweep | tr '\0' '\n'`
+is how you read them yourself, and `--check` validates every profile (the gate
+runs that, so a profile breaking a rule below never reaches `main`).
+
+Three rules, and the reason each one is a rule:
+
+- **No secrets in the file.** It is committed. A worker inherits the
+  environment of the thurbox server that spawns it, so a credential belongs
+  where that process gets its own — your shell profile, your keyring, the
+  agent's own login. It reaches the worker by inheritance and never passes
+  through a profile.
+- **`THURBOX_*` is not yours to set.** thurbox's identity variables always win
+  over `--env`. Passing `THURBOX_SESSION=x` does not fail; the session simply
+  still sees its real id, which makes it the worst kind of setting — one that
+  looks applied and is not. The renderer refuses the key.
+- **`--command` never ships without `--reports-as`.** This is the trap.
+
+### The `--command` trap
+
+`--command` launches any executable — a shell, a REPL, an agent with flags
+thurbox has never heard of. It is how a profile expresses a setting that is a
+*flag* rather than an environment variable. It is mutually exclusive with
+`--agent` (thurbox refuses both), and `--resume` is refused for it too: a raw
+command has no conversation to attach to.
+
+The trap is that thurbox reads hook coverage against the **command's file
+stem**, not against whatever is really in the pane:
+
+```text
+--command /bin/sh --arg -c --arg 'exec claude'
+  agent: "sh"  reports_as: null      hook_coverage: "none"  state: "uncovered"
+  hook_states_reportable: []
+
+… --reports-as claude
+  agent: "sh"  reports_as: "claude"  hook_coverage: "full"  state: "unreported"
+  hook_states_reportable: ["working","blocked","done","idle"]
+```
+
+The first row is a session that reports nothing, forever, and therefore reads
+as idle while it works — see §4a for why `uncovered` is not `idle`. The second
+is the same launch, declared. `--reports-as` changes nothing about what runs;
+it tells thurbox which agent's hooks the pane speaks.
+
+So the two ship together or not at all, and `session-flags.sh` refuses a
+profile with `command` and no `reports_as` rather than trusting anyone to
+remember. `thurbox-cli session reports-as <session> <agent>` makes the same
+declaration after the fact, with `--clear` to undo it.
+
 ## 2. Multi-repo mode
 
 One session can span several repos. Two repeatable flags:
@@ -222,6 +346,9 @@ Tell the worker to delete `BRIEF.md` before committing, or it lands in the PR.
 Workers share no context with the control plane and none with each other, so
 each prompt states the goal, the constraints, and what "done" looks like, from
 scratch.
+
+**Do not send at all** when the spawn returned `created: false` — that session
+was adopted, not created, and is already working on this (§1c).
 
 ## 4. Detect completion
 
@@ -378,6 +505,7 @@ undoes a soft delete.
 1. Clarify the goal. Pick or write a playbook in `orchestration/playbooks/`.
 2. Open a run log from `orchestration/runs/_TEMPLATE.md`, named
    `<YYYY-MM-DD>-<slug>.md`.
-3. Per unit of work: `session create` → `session send` → await the result mail →
-   record.
+3. Per unit of work: `session create` — with an `--on-existing` mode (§1c) and
+   the run's profile flags (§1d) — → `session send`, unless `created` came back
+   `false` → await the result mail → record.
 4. Review PRs. `session delete --force` as each closes out.

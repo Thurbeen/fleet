@@ -11,6 +11,9 @@
 - `goal` — the change to make, stated as an outcome.
 - `repo` — `owner/name`.
 - `base` — base branch (default the repo's default branch).
+- `profile` — the session profile the worker starts under, from
+  `../session-profiles.yaml` (default `default`). Record which one in the run
+  log: it is part of what produced the result.
 
 ## Sessions
 
@@ -32,7 +35,14 @@ One worker session.
    bits into the prompt.
 2. Open a run log.
 3. Fast-forward `base` in the target repo, then `session create --parent
-   "$THURBOX_SESSION"` → `session send`.
+   "$THURBOX_SESSION" --on-existing adopt` with the profile's flags →
+   `session send`.
+
+   `adopt` because this step is a reconciliation: the run may be resumed after
+   an interruption, and re-running it should end with one worker on this goal,
+   not two sharing a name. It returns `created: false` when the session was
+   already there — **skip the send in that case**, or the brief interrupts a
+   worker mid-turn. The skill's §1c and §1d have the mechanics.
 4. Wait for the worker's result message; the send wakes you, so don't poll.
 5. Review the PR; record it in the run log; merge or hand back.
 6. `session delete <uuid> --force` once merged or abandoned.
@@ -40,6 +50,11 @@ One worker session.
 ## Notes
 
 Keep it to one repo. If the change spans repos, use `cross-repo-sweep` instead.
+
+Settings that shape the agent — model, effort, feature flags, a command line
+thurbox has never heard of — do not belong in the prompt or on the spawn
+command line. They belong in a profile in `../session-profiles.yaml`, so the
+run log can name it and a reviewer can read it.
 
 A prompt longer than a sentence does not survive `session send`, which types the
 text and presses Enter. Write it to `BRIEF.md` in the worker's worktree and send

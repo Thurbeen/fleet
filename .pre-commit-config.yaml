@@ -33,6 +33,13 @@ repos:
         files: '\.ya?ml$'
         pass_filenames: false
 
+      - id: profiles
+        name: session profiles render
+        entry: ./scripts/check.sh profiles
+        language: system
+        files: '^(orchestration/session-profiles\.yaml|scripts/session-flags\.sh|scripts/lib/session_profiles\.py)$'
+        pass_filenames: false
+
       # Unfiltered: the failure this catches is a checkout that materialised
       # .claude/skills as a regular file instead of a symlink, which shows up
       # in a commit that touches no skill at all.
