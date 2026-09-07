@@ -140,7 +140,15 @@ Two tracked files changed: `registry/owners.txt` and
 `registry/repos.generated.yaml`. `extension.toml` is gitignored and stays
 local.
 
-Offer the commit; do not push on the user's behalf without asking.
+Gate before committing — this repo's whole convention is that a green local run
+is the real gate, and the `yaml` check is the one that asserts the generated
+map's shape:
+
+```bash
+./scripts/check.sh
+```
+
+Then offer the commit; do not push on the user's behalf without asking.
 
 ```bash
 git add registry/owners.txt registry/repos.generated.yaml
