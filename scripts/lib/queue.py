@@ -705,12 +705,13 @@ def cmd_attach(args) -> int:
 # --- watch: the WHEN ---------------------------------------------------------
 
 
-def read_cursor(root: str) -> int:
+def read_cursor(root: str) -> int | None:
+    """None means no cursor was ever written, distinct from a written 0."""
     path = os.path.join(root, ".cursor")
     try:
         return int(open(path).read().strip())
     except (OSError, ValueError):
-        return 0
+        return None
 
 
 def write_cursor(root: str, seq: int) -> None:
@@ -775,7 +776,7 @@ def cmd_watch(args) -> int:
 
     since = read_cursor(root)
     extra = ["--for-secs", str(args.for_secs)]
-    if since:
+    if since is not None:
         extra += ["--since", str(since)]
     cmd = watch_command(extra)
 
@@ -784,7 +785,8 @@ def cmd_watch(args) -> int:
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise QueueError(f"could not read the event stream: {exc}") from exc
 
-    high = since
+    floor = since if since is not None else 0
+    high = floor
     touched: dict[str, dict] = {}
     for line in proc.stdout.decode(errors="replace").splitlines():
         line = line.strip()
@@ -796,7 +798,7 @@ def cmd_watch(args) -> int:
             continue
         seq = int(ev.get("seq") or 0)
         high = max(high, seq)
-        if seq <= since:
+        if seq <= floor:
             continue
         task = by_session.get(ev.get("session"))
         if task is None:
@@ -808,7 +810,7 @@ def cmd_watch(args) -> int:
             f"{ev.get('from_state') or '-'} -> {ev.get('to_state') or ev.get('state') or '-'}"
         )
 
-    if high > since:
+    if high > floor:
         write_cursor(root, high)
 
     print(f"watch: {len(touched)} task(s) moved, stream at seq {high}")
