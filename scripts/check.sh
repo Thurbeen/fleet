@@ -12,11 +12,11 @@
 #   scripts/check.sh shell yaml          # only the named ones
 #   scripts/check.sh --fix markdown      # apply the fixes a check can apply
 #
-# Checks: shell, markdown, yaml, profiles, queue, skills. Only `markdown` has a
+# Checks: shell, markdown, yaml, profiles, queue, webui, skills. Only `markdown` has a
 # fixer; `--fix` is a no-op for the rest, so `scripts/check.sh --fix` is
 # always safe to run.
 #
-# Requires: shellcheck, rumdl, python3 (with PyYAML). A missing tool fails the
+# Requires: shellcheck, rumdl, python3 (with PyYAML), curl. A missing tool fails the
 # check rather than skipping it — a gate that silently passes when its linter
 # is absent is worse than no gate.
 
@@ -147,6 +147,26 @@ check_queue() {
 	fi
 }
 
+# The monitor's lifecycle, which is the part of it that can break silently. It
+# claims to adopt a running server rather than start a second one, and it
+# claims that an explicit `stop` survives the next `ensure` — the call the
+# onboarding skill makes. A regression in either is invisible until the day it
+# costs something: a duplicate server over one queue, or a monitor the operator
+# asked down that comes back up on its own. webui-selftest.sh binds a real
+# socket on a port well away from the default and proves both.
+check_webui() {
+	need python3 webui || return
+	need curl webui || return
+
+	if ./scripts/webui-selftest.sh >/dev/null; then
+		ok "webui: adopts rather than duplicates, and a stop stays stopped"
+	else
+		# Re-run visibly: a failing claim is the whole message.
+		./scripts/webui-selftest.sh
+		fail "webui: scripts/webui-selftest.sh"
+	fi
+}
+
 # The agent-agnostic skills layout: `.agents/skills/` holds the real files and
 # `.claude/skills` is a symlink to it, so one copy serves every CLI. Two ways
 # that breaks silently and this catches both — a clone with `core.symlinks`
@@ -192,7 +212,7 @@ for arg in "$@"; do
 done
 
 if [ ${#checks[@]} -eq 0 ]; then
-	checks=(shell markdown yaml profiles queue skills)
+	checks=(shell markdown yaml profiles queue webui skills)
 fi
 
 for c in "${checks[@]}"; do
@@ -202,9 +222,10 @@ for c in "${checks[@]}"; do
 	yaml) check_yaml ;;
 	profiles) check_profiles ;;
 	queue) check_queue ;;
+	webui) check_webui ;;
 	skills) check_skills ;;
 	*)
-		printf 'error: unknown check %q (want: shell markdown yaml profiles queue skills)\n' "$c" >&2
+		printf 'error: unknown check %q (want: shell markdown yaml profiles queue webui skills)\n' "$c" >&2
 		exit 2
 		;;
 	esac

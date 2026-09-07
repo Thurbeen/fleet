@@ -30,6 +30,11 @@ place to edit it, whichever CLI is reading.** Edit this file, not the pointer.
   each with its own `task.yaml`, `BRIEF.md`, `progress.jsonl` and `result.md`.
   `./scripts/queue.sh` owns it end to end and its header is the full usage.
   Gitignored except the `README.md` that documents the layout.
+- `orchestration/webui/` — the monitor's runtime state: the port it chose at
+  bind time, its supervisor's pid, its log, and the `down` flag. Written by
+  `./scripts/webui.sh`, gitignored, and created on first start. The server's
+  code (`scripts/webui.sh`, `scripts/lib/webui.py`) is tracked; nothing it
+  writes is.
 - `orchestration/playbooks/<name>.md` — reusable recipes for running thurbox.
   The template's are tracked; **yours go in `orchestration/playbooks/local/`**,
   which is gitignored.
@@ -45,6 +50,7 @@ place to edit it, whichever CLI is reading.** Edit this file, not the pointer.
   fresh clone of this template to a working control plane — it owns the setup
   story the README's Quickstart used to spell out), and `fleet-update`
   (bringing this control plane current with the template it was cloned from).
+  `fleet-onboarding` also owns bringing the queue monitor up.
 
 ## Orchestration model
 
@@ -80,6 +86,14 @@ The loop, driven by `./scripts/queue.sh`:
    gitignored, so it is not backed up and dies with the checkout.
 6. Review the PRs. Delete each session as it closes out.
 
+`./scripts/webui.sh` serves a read-only web view of that same queue on
+localhost — topics classified by what their tasks are doing, each with its
+plan, progress and outcome. It READS the records and never writes them, so it
+cannot disagree with `queue.sh list`. Its header owns the lifecycle; the one
+thing to know before touching it is that `ensure` and `start` differ only in
+whether they honour the `down` flag `stop` wrote, and the onboarding skill must
+call `ensure`.
+
 `.agents/skills/fleet-queue/` is the driving surface for 1–3 and 5.
 `.agents/skills/thurbox-session/` is the driving surface for one session:
 spawning, prompting, cleanup. Use both. In particular, read the latter's
@@ -105,7 +119,7 @@ CI only runs on pull requests, and routine control-plane changes go straight to
 `main`. So gate locally before you push:
 
 ```bash
-./scripts/check.sh          # shellcheck, markdown, YAML, profiles, queue, skills
+./scripts/check.sh          # shellcheck, markdown, YAML, profiles, queue, monitor, skills
 ./scripts/check.sh --fix    # same, applying the fixes a check can apply
 ```
 

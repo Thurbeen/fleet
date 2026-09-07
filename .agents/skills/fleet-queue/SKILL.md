@@ -219,6 +219,19 @@ exactly the mixing-up the queue exists to prevent. `show` when you need one.
 
 A ref is `<topic>/<task>`, or a bare task id when only one topic has it.
 
+**The operator has a third view you should point them at rather than narrate
+into.** `./scripts/webui.sh ensure` serves the same records on localhost as a
+page: topics classified by what their tasks are doing, each with its plan,
+progress and outcome. It is a reader over these files, so it never disagrees
+with `list`, and it lets someone watch a run without asking you and
+interrupting whatever you are doing. When they ask "what is in flight" for the
+third time, give them the URL.
+
+It **displays and does not control** — there is no route that dispatches,
+cancels or reorders. You remain the only thing that writes here. And a stop is
+durable: `webui.sh stop` writes a flag that `ensure` honours forever after, so
+do not clear it on their behalf.
+
 ## 7. Where this lives, and what that costs
 
 Everything under `orchestration/queue/` is gitignored instance data — your
@@ -226,6 +239,9 @@ prompts, your briefs, your results. The machinery is tracked; the queue is not.
 That split is what keeps `./scripts/update-from-template.sh` a fast-forward, and
 it means **the repo does not back your queue up**. Say that plainly when someone
 assumes otherwise. `.gitignore`'s header owns the full reasoning.
+
+`orchestration/webui/` is the same kind of thing for the monitor: the port it
+chose, its pid, its log and its down flag, all gitignored, all this instance's.
 
 `./scripts/check.sh queue` validates your records and re-proves the ordering and
 wake claims against a throwaway queue. It runs in the gate, so a change that

@@ -32,6 +32,7 @@ jobs:
       yaml: ${{ steps.filter.outputs.yaml }}
       profiles: ${{ steps.filter.outputs.profiles }}
       queue: ${{ steps.filter.outputs.queue }}
+      webui: ${{ steps.filter.outputs.webui }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
@@ -64,6 +65,15 @@ jobs:
             queue:
               - 'scripts/queue.sh'
               - 'scripts/queue-selftest.sh'
+              - 'scripts/lib/queue.py'
+              - 'scripts/check.sh'
+              - '.github/workflows/ci.yml'
+            webui:
+              - 'scripts/webui.sh'
+              - 'scripts/webui-selftest.sh'
+              - 'scripts/lib/webui.py'
+              # The monitor reads the queue's model through queue.py, so a
+              # change there can break the view without touching a webui file.
               - 'scripts/lib/queue.py'
               - 'scripts/check.sh'
               - '.github/workflows/ci.yml'
@@ -124,6 +134,19 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - run: ./scripts/check.sh queue
 
+  # The monitor's lifecycle. The selftest binds a real socket, so this is a job
+  # and not an assertion: it proves a second `ensure` adopts the running server
+  # instead of starting a twin, and that an explicit `stop` survives the next
+  # `ensure` — which is the call the onboarding skill makes.
+  webui:
+    name: Monitor
+    needs: changes
+    if: needs.changes.outputs.webui == 'true'
+    runs-on: ubuntu-latest # PyYAML and curl are preinstalled on the runner
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - run: ./scripts/check.sh webui
+
   # Unfiltered on purpose. `.claude/skills` is a committed symlink to
   # `.agents/skills`, and the way that breaks is a CHECKOUT that materialises it
   # as a regular file rather than a link — which no diff mentions. Running this
@@ -149,6 +172,7 @@ jobs:
       - yaml
       - profiles
       - queue
+      - webui
       - skills
     runs-on: ubuntu-latest
     steps:
