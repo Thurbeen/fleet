@@ -15,7 +15,7 @@
 # and a profile it names replaces the one of that name here, wholesale. Editing
 # THIS file puts a commit on `main` and costs you the clean fast-forward that
 # `./scripts/update-from-template.sh` depends on; .gitignore's header says why.
-# Both files are held to the three rules below.
+# Both files are held to the convention and the two rules below.
 #
 # ONE CONVENTION, then TWO RULES THE GATE ENFORCES. The distinction is real:
 # ./scripts/check.sh cannot detect a secret and does not try, so only the two

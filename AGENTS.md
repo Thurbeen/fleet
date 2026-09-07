@@ -18,11 +18,13 @@ place to edit it, whichever CLI is reading.** Edit this file, not the pointer.
 - `registry/context/<repo>.md` — the human-owned truth about a project: what it
   is, how it relates to others, current goals. Read the relevant one before
   reasoning about a project. Keep them short and current. Gitignored.
-- `orchestration/session-profiles.yaml` — named sets of settings a worker
+- `orchestration/session-profiles.yaml` — named default settings a worker
   session STARTS under (`--env`, and `--command` for a setting that is a flag),
   as opposed to where its work goes. `./scripts/session-flags.sh <profile>`
-  renders one into `session create` flags. Never a place for a secret; the
-  file's own header says why, and `./scripts/check.sh` enforces it.
+  renders one into `session create` flags. The template's are tracked; yours
+  go in `orchestration/session-profiles.local.yaml`, gitignored, and replace a
+  shipped profile of the same name wholesale. The file's own header owns the
+  rules that keep a profile safe.
 - `orchestration/playbooks/<name>.md` — reusable recipes for running thurbox.
   The template's are tracked; **yours go in `orchestration/playbooks/local/`**,
   which is gitignored.
