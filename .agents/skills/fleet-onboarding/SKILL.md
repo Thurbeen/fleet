@@ -152,7 +152,7 @@ Then offer the commit; do not push on the user's behalf without asking.
 
 ```bash
 git add registry/owners.txt registry/repos.generated.yaml
-git commit -m "chore(registry): onboard this control plane"
+git commit -m "chore: onboard this control plane"
 ```
 
 Then tell them the one thing that is genuinely theirs to do next: open the
