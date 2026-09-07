@@ -54,7 +54,8 @@ have=$(thurbox-cli --version | awk '{print $NF}')
 Report **every** missing prerequisite in one pass with its remedy, then stop.
 Discovering them one restart at a time is the frustrating version of this.
 
-`jq` is needed by `scripts/sync-registry.sh`; `thurbox-cli` only by step 4. If
+`jq` is needed by both `scripts/sync-registry.sh` (step 3) and
+`scripts/install-extension.sh` (step 4); `thurbox-cli` only by step 4. If
 thurbox is the only thing missing you may still do steps 1 to 3 — say plainly
 that step 4 is deferred and what to run once thurbox is installed.
 
