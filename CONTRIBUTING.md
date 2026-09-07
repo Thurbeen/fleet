@@ -1,7 +1,7 @@
 # Contributing
 
 This is a **control plane**, not a code base: markdown playbooks, a handful of
-shell scripts, a generated registry, and one agent skill. Everything below
+shell scripts, a generated registry, and agent skills. Everything below
 follows from that.
 
 ## The gate
