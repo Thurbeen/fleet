@@ -28,19 +28,55 @@
 # A template cannot hardcode a path that exists on exactly one machine. Hence
 # `__REPO_PATH__`, rendered at install time.
 #
+# AND RENDERING IT AGAIN IS NOT ENOUGH IF THE CLONE MOVED. thurbox's
+# `ensure_extension` finds an extension's session by NAME and reuses the one it
+# finds; it never compares that session's directory against the manifest's. So a
+# re-install rewrites this file, reports success, and leaves the live session
+# opening the OLD path — with `extension status` still calling it healthy.
+# `scripts/install-extension.sh` closes that gap itself: it compares the live
+# session's cwd against this clone and exits non-zero naming the remedy
+# (`extension deactivate`, which deletes the session, then re-install).
+#
 # thurbox lays down the [[files]] / [[symlinks]] under `home`, registers the
 # [[agents]] in agents.toml (existing entries are kept), then activates the
 # [[sessions]] and self-heals it if it is ever deleted. Turn it off with
 # `thurbox-cli extension deactivate fleet`.
 #
-# There are deliberately NO [[automations]]. The only scheduled candidate — the
-# registry sync — commits and pushes to `main`. That stays a manual
-# `./scripts/sync-registry.sh`, run by a human who can read the diff.
+# WHAT THIS MANIFEST DELIBERATELY LEAVES OUT. thurbox's manifest format offers
+# more than fleet uses; each omission below is a decision, not an oversight.
+#
+#   [[automations]]   No scheduled resource, in either flavour. The `send` one
+#                     (session_ref + prompt) and the headless `exec` one
+#                     (command) would both fit the registry sync — and the sync
+#                     commits and pushes to `main`, so it stays a manual
+#                     `./scripts/sync-registry.sh` run by a human who can read
+#                     the diff. `./scripts/update-from-template.sh` is the other
+#                     candidate and stays manual for the same kind of reason: it
+#                     rewrites the instructions the running session is holding.
+#   [[external_files]]
+#   [[agent_patches]]
+#   [[config_merges]] The three payload kinds that reach OUTSIDE the extension
+#                     home, into an agent's own config. They exist so a hook or
+#                     skill can reach a CLI that has no launch flag. fleet ships
+#                     neither: its skills live in the checkout under
+#                     `.agents/skills/`, where the session already reads them.
+#                     A control plane should not edit your agent's global config.
+#   home / --home     Omitted, so the home defaults to
+#                     `<config>/extensions/fleet`. Do NOT "fix" the placeholder
+#                     by installing with `--home <your clone>`: that would make
+#                     `{home}` the checkout, lay this extension's payload and
+#                     symlinks into your working tree, and — because
+#                     `uninstall --purge` only refuses paths shallower than two
+#                     components or `$HOME` itself — let a purge delete the
+#                     clone.
+#   [[files]] flags   `executable`, `if_absent` and `substitute` all go unused:
+#                     the single payload file is prose, is not a user-edited
+#                     seed, and contains no `{home}` to substitute.
 
 name = "fleet"
 description = "Control-plane session: the repo map and thurbox orchestration"
 config_version = 1
-version = "1.0.0"                # this extension's own version; bump on changes
+version = "1.1.0"                # this extension's own version; bump on changes
 
 # WHY THE FLOOR IS 2.19.0 — it is a claim about what this control plane's own
 # prose relies on, not a note about the version somebody happens to run.

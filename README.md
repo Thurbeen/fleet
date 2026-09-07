@@ -243,10 +243,11 @@ together:
 ```text
 extension.toml.in
   name = "fleet"                (1) the extension id — the argument to every
-                                    `thurbox-cli extension ...` command, so it
-                                    also appears in the three hints
-                                    scripts/install-extension.sh prints on exit
-                                    and in its own header comment
+                                    `thurbox-cli extension ...` command.
+                                    scripts/install-extension.sh reads this
+                                    value out of the manifest for the hints and
+                                    the remedy it prints, so a rename reaches
+                                    the script without editing it
   [[agents]] name = "fleet"     (2) the agent id, registered in agents.toml
   [[sessions]] name  = "fleet"  (3) the session's name
   [[sessions]] agent = "fleet"      ... bound to the agent in (2)
@@ -331,7 +332,8 @@ orchestration/
 scripts/
   check.sh                 The whole gate: shell, markdown, YAML, profiles,
                            skills.
-  install-extension.sh     Renders extension.toml, then installs it.
+  install-extension.sh     Renders extension.toml, installs it, and verifies
+                           the live session really opens this clone.
   sync-registry.sh         Regenerates repos.generated.yaml from the GitHub API.
   sync-checkout.sh         Fast-forwards main from YOUR origin when safe.
   update-from-template.sh  Updates this control plane from the TEMPLATE remote.
@@ -493,19 +495,70 @@ hand.
 A template cannot hardcode a path that exists on one machine. So the manifest
 ships as `extension.toml.in` with a `__REPO_PATH__` placeholder, and
 `scripts/install-extension.sh` renders it to a gitignored `extension.toml`
-carrying your clone's real path. Re-run the installer after moving the clone.
+carrying your clone's real path.
 
-There are deliberately **no automations**. The two candidates both stay manual:
-the registry sync, because a human should read what changed in the map, and
-`./scripts/update-from-template.sh`, because an update rewrites the instructions
-the running `fleet` session is operating on and someone has to decide when that
-is welcome.
+Do not try to retire the placeholder by installing with `--home <your clone>`.
+That does make `{home}` your checkout, but it also moves the extension's whole
+payload into your working tree — and `uninstall --purge` refuses only paths
+shallower than two components, or `$HOME` itself, so a purge would delete the
+clone.
+
+### If you move the clone
+
+Re-running the installer is **not** enough on its own, and this is the one sharp
+edge in the whole install path. thurbox finds an extension's session by **name**
+and reuses the one it finds; it never compares that session's directory against
+the manifest's. So a second install rewrites `extension.toml`, reports success,
+and leaves the live session opening the old path — while `extension status`
+still calls it healthy, because it checks that the session *exists*, not where
+it points.
+
+The installer closes that gap itself: it compares the live session's directory
+against your clone and exits non-zero naming the remedy. That remedy deletes the
+session and its conversation history, so it is yours to run, not the script's:
+
+```bash
+thurbox-cli extension deactivate fleet   # deletes the session
+./scripts/install-extension.sh           # respawns it at the new path
+```
+
+### Updating it
+
+`./scripts/install-extension.sh` is this extension's real update command. Run it
+after any change to `extension.toml.in` or `FLEET.md` — including one that
+arrives via `./scripts/update-from-template.sh`.
+
+`thurbox-cli extension update fleet` is not that command. The install stamped
+your clone as the extension's `source`, and update re-fetches the **rendered**
+`extension.toml` from it — never `extension.toml.in`. So it refreshes to
+whatever was last rendered, and fails outright if the gitignored
+`extension.toml` was cleaned away. The same applies to the automatic refresh
+thurbox runs for stale extensions after you upgrade the binary.
+
+### What the manifest deliberately does not use
+
+thurbox's manifest format offers more than fleet needs. What it uses:
+`[[agents]]`, one `[[files]]` payload, three `[[symlinks]]`, one `[[sessions]]`,
+and the version/compat declarations. What it declines, and why:
+
+| Feature | Why not |
+| --- | --- |
+| `[[automations]]` (both the `session_ref` + `prompt` flavour and the headless `command` one) | The two candidates stay manual: the registry sync, because a human should read what changed in the map, and `./scripts/update-from-template.sh`, because an update rewrites the instructions the running `fleet` session is operating on. |
+| `[[external_files]]`, `[[agent_patches]]`, `[[config_merges]]` | The three payload kinds that reach outside the extension home into an agent's own config. fleet's skills live in the checkout under `.agents/skills/`, where the session already reads them; a control plane should not edit your agent's global config. |
+| `home` / `--home` | Omitted, so the home defaults to `~/.config/thurbox/extensions/fleet`. See above for why pointing it at your clone is a bad trade. |
+| `[[files]]` flags — `executable`, `if_absent`, `substitute` | The single payload file is prose: not a script, not a user-edited seed, and it contains no `{home}` to substitute. |
 
 ```bash
 thurbox-cli extension status fleet     # per-resource health
 thurbox-cli extension deactivate fleet # the real off-switch
 thurbox-cli extension uninstall fleet  # reverse the install
+thurbox-cli extension uninstall fleet --purge  # ... and delete the home dir
 ```
+
+`--purge` is safe here: the extension home holds only the `FLEET.md` mirror and
+its symlinks, all of which the next install lays down again. Your checkout —
+the registry, the playbooks, the run logs — is a different directory entirely,
+which is the other reason the home is not pointed at it.
 
 ## License
 

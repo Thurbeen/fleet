@@ -54,7 +54,8 @@ have=$(thurbox-cli --version | awk '{print $NF}')
 Report **every** missing prerequisite in one pass with its remedy, then stop.
 Discovering them one restart at a time is the frustrating version of this.
 
-`jq` is needed by `scripts/sync-registry.sh`; `thurbox-cli` only by step 4. If
+`jq` is needed by both `scripts/sync-registry.sh` (step 3) and
+`scripts/install-extension.sh` (step 4); `thurbox-cli` only by step 4. If
 thurbox is the only thing missing you may still do steps 1 to 3 — say plainly
 that step 4 is deferred and what to run once thurbox is installed.
 
@@ -215,7 +216,20 @@ registered, which is the honest signal that the install did not take.
 install time. Run this from **the clone the user intends to keep** — not a
 thurbox worktree, not a scratch copy, not a temp directory. A `fleet` session
 registered against a disposable path self-heals forever against a directory
-that is about to vanish. If the clone later moves, re-run the installer.
+that is about to vanish.
+
+Getting it wrong is not fixed by re-running the installer. thurbox reuses an
+extension's session by name and never moves it, so a second install rewrites
+the manifest, reports success, and leaves the session on the old path — and
+`extension status` still calls that healthy, because it checks that the session
+EXISTS, not where it points. The installer catches this for you and exits
+non-zero; the remedy it names deletes the session and its history, so hand that
+decision to the user rather than running it for them:
+
+```bash
+thurbox-cli extension deactivate fleet   # deletes the session
+./scripts/install-extension.sh           # respawns it at the right path
+```
 
 ## 5. Hand over
 
