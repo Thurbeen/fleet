@@ -30,6 +30,7 @@ jobs:
       shell: ${{ steps.filter.outputs.shell }}
       markdown: ${{ steps.filter.outputs.markdown }}
       yaml: ${{ steps.filter.outputs.yaml }}
+      profiles: ${{ steps.filter.outputs.profiles }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
@@ -51,6 +52,12 @@ jobs:
               - '**/*.yaml'
               - '**/*.yml'
               - 'scripts/lib/check_yaml.py'
+              - 'scripts/check.sh'
+              - '.github/workflows/ci.yml'
+            profiles:
+              - 'orchestration/session-profiles.yaml'
+              - 'scripts/session-flags.sh'
+              - 'scripts/lib/session_profiles.py'
               - 'scripts/check.sh'
               - '.github/workflows/ci.yml'
 
@@ -87,6 +94,15 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - run: ./scripts/check.sh yaml
 
+  profiles:
+    name: Session profiles
+    needs: changes
+    if: needs.changes.outputs.profiles == 'true'
+    runs-on: ubuntu-latest # PyYAML is preinstalled on the runner
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - run: ./scripts/check.sh profiles
+
   # Unfiltered on purpose. `.claude/skills` is a committed symlink to
   # `.agents/skills`, and the way that breaks is a CHECKOUT that materialises it
   # as a regular file rather than a link — which no diff mentions. Running this
@@ -110,6 +126,7 @@ jobs:
       - shell
       - markdown
       - yaml
+      - profiles
       - skills
     runs-on: ubuntu-latest
     steps:

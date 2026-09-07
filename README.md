@@ -58,13 +58,15 @@ the squash-only merge policy, and the layout conventions.
 
 ## Customizing
 
-Three things are yours to change, in descending order of how likely you are to
+Four things are yours to change, in descending order of how likely you are to
 want to:
 
 1. **`registry/owners.txt`** — required, and `/fleet-onboarding` writes it for
    you. It is the only edit a fresh clone actually needs.
-2. **The agent and model** — optional.
-3. **The name `fleet`** — optional, and leaving it alone is a fine answer.
+2. **The agent and model** — optional. This is the `fleet` session itself.
+3. **What worker sessions start with** — optional. This is everything `fleet`
+   spawns.
+4. **The name `fleet`** — optional, and leaving it alone is a fine answer.
 
 ### The agent and model
 
@@ -89,6 +91,46 @@ manifest is where the entry is *generated* from, and that makes it the durable
 place. An `agents.toml` edit lives on one machine and does not survive
 `extension uninstall`; a manifest edit is committed, and every install of your
 control plane gets it.
+
+### What worker sessions start with
+
+`extension.toml.in` above pins the **lead** — the long-lived `fleet` session.
+The workers it spawns are a different question, and their settings live in
+`orchestration/session-profiles.yaml`: one named profile per set, committed so
+a diff shows what changed.
+
+```yaml
+profiles:
+  sweep:
+    env:
+      MAX_THINKING_TOKENS: "8000"
+      BASH_DEFAULT_TIMEOUT_MS: "120000"
+```
+
+A profile carries environment (`env:`), and — for a setting that is a command
+line flag rather than a variable — the command that launches the agent
+(`command:`, `args:`, `reports_as:`). `./scripts/session-flags.sh <profile>`
+turns one into the flags `thurbox-cli session create` takes, so a playbook
+names a profile and never hand-assembles the flags:
+
+```bash
+mapfile -d '' -t flags < <(./scripts/session-flags.sh sweep)
+thurbox-cli session create --name 'Add a license header' \
+  --repo-path /repos/widgets "${flags[@]}" --json
+```
+
+Without a profile a worker inherits whatever environment the thurbox server
+happens to have — which is what every fleet worker did before this file
+existed, and is still exactly what the shipped `default` profile means.
+
+**No secrets.** The file is committed, and this is a public template. A worker
+inherits the server's environment, so an API key belongs where that process
+gets it — your shell profile, your keyring, or the agent's own login — and
+reaches the worker without passing through the repo. `./scripts/check.sh` also
+refuses a `THURBOX_*` key (thurbox's own identity variables always win over
+`--env`, so setting one here would look applied and do nothing) and a
+`command` without a `reports_as` to declare what the pane really runs.
+`CONTRIBUTING.md` has the reasoning; the file's own header has the schema.
 
 ### The name `fleet`
 
@@ -165,6 +207,8 @@ registry/
     <repo>.md              Curated notes: purpose, relations, active goals.
 
 orchestration/
+  session-profiles.yaml    Named settings a worker session STARTS under.
+                           Rendered into flags by scripts/session-flags.sh.
   playbooks/
     _TEMPLATE.md           Copy this to add a reusable orchestration recipe.
     <name>.md              A repeatable way to run thurbox for a class of work.
@@ -173,12 +217,16 @@ orchestration/
     <date>-<slug>.md       Log of one run: goal, sessions, outcomes.
 
 scripts/
-  check.sh                 The whole gate: shell, markdown, YAML, skills.
+  check.sh                 The whole gate: shell, markdown, YAML, profiles,
+                           skills.
   install-extension.sh     Renders extension.toml, then installs it.
   sync-registry.sh         Regenerates repos.generated.yaml from the GitHub API.
   sync-checkout.sh         Fast-forwards main when that is unambiguously safe.
   trust-thurbox-dir.sh     Seeds Claude Code workspace trust for a worktree.
+  session-flags.sh         Renders one session profile into session-create flags.
   lib/check_yaml.py        The YAML + registry-shape assertions check.sh runs.
+  lib/session_profiles.py  The profile validation and rendering session-flags.sh
+                           runs.
 
 .agents/skills/
   <name>/SKILL.md          Agent skills. ONE tree, agent-agnostic.

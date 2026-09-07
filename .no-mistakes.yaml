@@ -16,7 +16,7 @@
 commands:
   # scripts/check.sh IS the repo's gate — shellcheck, rumdl over every tracked
   # markdown file, a YAML parse of the whole tree plus the registry's shape,
-  # and the skills-symlink check. Named explicitly rather than left to agent
+  # the session profiles, and the skills-symlink check. Named explicitly rather than left to agent
   # detection so the step is deterministic, and pointed at the same script CI
   # and the prek hooks run, so a green local run and a green pull request mean
   # the same thing. That parity matters more here than in most repos: CI only
@@ -110,6 +110,11 @@ document:
     work; orchestration/runs/<date>-<slug>.md owns what happened in one run and
     is append-only history, never edited to match a later decision.
     registry/context/<repo>.md owns the human truth about one project.
+    orchestration/session-profiles.yaml owns the settings a worker session
+    starts under, and its own header comment owns the schema and the three
+    rules; README.md owns it as a customization surface and CONTRIBUTING.md
+    the rationale for the gate check over it. Point at one of those rather
+    than restating a rule in a fourth place.
 
     This repository has no CHANGELOG.md and does not need one. Do not add a new
     documentation file to close a perceived gap when an owner above already
@@ -162,6 +167,19 @@ review:
         conventions — it points at them.
 
         Do not request test coverage for either.
+
+        orchestration/session-profiles.yaml is neither: it is configuration
+        that renders into `thurbox-cli session create` flags, so judge it the
+        way you would judge a command line. It is committed and this is a
+        public template, so a credential in it is a finding regardless of how
+        it is spelled. Two further rules are machine-enforced by
+        `./scripts/check.sh profiles` — a `THURBOX_*` key (thurbox's identity
+        vars always win over --env, so it would look applied and do nothing)
+        and a `command` without a `reports_as` (thurbox reads hook coverage
+        against the command's file stem, so an undeclared session reports
+        nothing and renders as `uncovered` while it works). If a diff
+        weakens either assertion in scripts/lib/session_profiles.py, that is
+        the finding, not the profile that would then pass.
 
     - path: "registry/**"
       instructions: |

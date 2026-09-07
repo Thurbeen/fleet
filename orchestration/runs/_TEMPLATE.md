@@ -5,6 +5,9 @@
 
 - **Goal.** What this run is meant to achieve.
 - **Playbook.** `../playbooks/<name>.md` (or "ad hoc").
+- **Profile.** `../session-profiles.yaml` name the workers started under
+  (`default` if you did not pick one). Settings are part of what produced the
+  result, so a run that does not name one cannot be reproduced.
 - **Started.** <date/time> · **Status.** planning | running | done | abandoned
 
 ## Sessions

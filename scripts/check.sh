@@ -12,8 +12,9 @@
 #   scripts/check.sh shell yaml          # only the named ones
 #   scripts/check.sh --fix markdown      # apply the fixes a check can apply
 #
-# Checks: shell, markdown, yaml, skills. Only `markdown` has a fixer; `--fix`
-# is a no-op for the rest, so `scripts/check.sh --fix` is always safe to run.
+# Checks: shell, markdown, yaml, profiles, skills. Only `markdown` has a
+# fixer; `--fix` is a no-op for the rest, so `scripts/check.sh --fix` is
+# always safe to run.
 #
 # Requires: shellcheck, rumdl, python3 (with PyYAML). A missing tool fails the
 # check rather than skipping it — a gate that silently passes when its linter
@@ -98,6 +99,23 @@ check_yaml() {
 	fi
 }
 
+# The session profiles render into `thurbox-cli session create` flags, so the
+# rules that make a profile safe — no secrets, no `THURBOX_*` key thurbox
+# would discard, no `command` without the `reports_as` that keeps the session
+# reporting — are only worth anything if a profile that breaks one cannot be
+# committed. scripts/session-flags.sh owns those assertions; this runs them
+# over every profile so there is one implementation rather than two.
+check_profiles() {
+	need python3 profiles || return
+
+	local out
+	if out="$(./scripts/session-flags.sh --check)"; then
+		ok "profiles: $out"
+	else
+		fail "profiles: scripts/session-flags.sh --check"
+	fi
+}
+
 # The agent-agnostic skills layout: `.agents/skills/` holds the real files and
 # `.claude/skills` is a symlink to it, so one copy serves every CLI. Two ways
 # that breaks silently and this catches both — a clone with `core.symlinks`
@@ -143,7 +161,7 @@ for arg in "$@"; do
 done
 
 if [ ${#checks[@]} -eq 0 ]; then
-	checks=(shell markdown yaml skills)
+	checks=(shell markdown yaml profiles skills)
 fi
 
 for c in "${checks[@]}"; do
@@ -151,9 +169,10 @@ for c in "${checks[@]}"; do
 	shell) check_shell ;;
 	markdown) check_markdown ;;
 	yaml) check_yaml ;;
+	profiles) check_profiles ;;
 	skills) check_skills ;;
 	*)
-		printf 'error: unknown check %q (want: shell markdown yaml skills)\n' "$c" >&2
+		printf 'error: unknown check %q (want: shell markdown yaml profiles skills)\n' "$c" >&2
 		exit 2
 		;;
 	esac
