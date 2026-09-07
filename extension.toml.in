@@ -58,8 +58,10 @@ version = "1.0.0"                # this extension's own version; bump on changes
 #           an older thurbox it would be reading a field that is not there.
 #   2.18.3  `detected_agent`, and `session get` stops answering `idle` for a
 #           session an outside harness launched an agent into (thurbox#1081).
-#           This control plane's own `fleet` session is exactly that shape, so
-#           the fix is not academic here.
+#           That fix is tagged v2.18.3, but the tag was never published as a
+#           release — nobody runs it standalone. It reached users bundled into
+#           2.19.0, alongside #1082. This control plane's own `fleet` session
+#           is exactly the shape #1081 fixes, so the fix is not academic here.
 #   2.19.0  hook coverage for `grok` and `kimi` alongside the agents already
 #           covered (thurbox#1082). This matters because the [[agents]] block
 #           below is documented as swappable — a control plane that invites you
