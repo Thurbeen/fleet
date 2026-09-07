@@ -383,7 +383,12 @@ scripts/
 .claude/skills             A committed SYMLINK to .agents/skills.
 
 media/
-  fleet-banner.jpg         The banner at the top of this README.
+  fleet-banner.jpg         The banner at the top of this README, also served
+                           to the monitor as its 46px header emblem.
+  fonts/
+    README.md              Why one font is vendored and where it comes from.
+    press-start-2p-400.woff2  The monitor's display face, offline-only.
+    OFL.txt                Its licence.
 
 .github/workflows/
   ci.yml                   PR checks feeding a single "All Checks" gate.
@@ -591,7 +596,7 @@ different files, which happen to be exactly the four questions a monitor asks:
 | the ask | `PROMPT.md` | you, verbatim, at intake |
 | the plan | `BRIEF.md` + `task.yaml` | the lead |
 | the progress | `progress.jsonl` | `queue.sh watch` |
-| the implementation | `result.md` | the worker, in its words |
+| the outcome | `result.md` | the worker, in its words |
 
 Topics are **classified** from their tasks' states each time the page is
 built — nothing stores a classification, so it cannot go stale:
@@ -668,9 +673,11 @@ cat orchestration/webui/url   # the same answer, from the file it wrote
 
 Nothing beyond what the gate already needs: Python's standard library and the
 PyYAML that `queue.sh` requires. No build step, no `node_modules`, no CDN — the
-page is one file of HTML, CSS and JavaScript the server hands over as it is.
-This repo is cloned by people who should not pay a toolchain to look at their
-own queue.
+page is one file of HTML, CSS and JavaScript the server hands over as it is,
+plus the two local assets (the banner crop and a vendored display font,
+[`media/fonts/README.md`](media/fonts/README.md)) it serves from a hard-coded
+whitelist rather than fetching from anywhere else. This repo is cloned by
+people who should not pay a toolchain to look at their own queue.
 
 `./scripts/check.sh webui` proves the two claims that break silently: that a
 second `ensure` adopts rather than starting a twin, and that a stop survives
