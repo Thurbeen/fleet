@@ -22,7 +22,10 @@ place to edit it, whichever CLI is reading.** Edit this file, not the pointer.
   `.claude/skills` is a **symlink** to it, so Claude Code and opencode (which
   auto-discovers `.claude/skills`) both load the same copy. Never add a second
   copy under `.claude/`, and do not mirror into `.opencode/skills` — that
-  registers the same skill twice.
+  registers the same skill twice. Two skills live there: `thurbox-session`
+  (driving workers) and `fleet-onboarding` (taking a fresh clone of this
+  template to a working control plane — it owns the setup story the README's
+  Quickstart used to spell out).
 
 ## Orchestration model
 
