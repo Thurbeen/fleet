@@ -1662,8 +1662,11 @@ def cmd_reap(args) -> int:
 # out. Every one was a person noticing something a machine could have.
 #
 # So this is a FOURTH thing, after `watch` and `collect` and deliberately not
-# folded into either. It reads every PR the queue's own tasks produced,
-# classifies it, DISPATCHES A FIXER for the ones that need work, and merges the
+# folded into either. It asks the forge for every open PR on the repos the
+# queue's tasks name — not just the ones recorded as a task's `artifact`,
+# because a task records exactly one and #25 was a second pull request from a
+# task whose artifact still pointed at the already-merged #23 — classifies
+# each one, DISPATCHES A FIXER for the ones that need work, and merges the
 # ones that have earned it. Noticing was never the expensive part, which is why
 # a status report would have saved none of those three round trips.
 #
@@ -1685,8 +1688,11 @@ def cmd_reap(args) -> int:
 #                No gh, no network, no thurbox: say what could not be
 #                determined and carry on. Spawning a fixer for a healthy PR is
 #                the one failure that costs more than the bug.
-#   Never touch  Only artifacts recorded on this queue's own tasks, and only
-#   a stranger.  when the artifact is a GitHub pull request URL.
+#   Never touch  A pull request whose head branch lives in someone else's
+#   a stranger.  fork is reported and left alone — never merged, never handed
+#                a fixer — because a stranger cannot create a branch inside
+#                this repository, so that is the one claim a pull request
+#                cannot make for itself.
 
 # GitHub-specific and deliberately NOT the forge-agnostic PR_URL_RE above: this
 # one exists to name `owner/repo`, which is what AUTO_MERGE_REPOS is checked

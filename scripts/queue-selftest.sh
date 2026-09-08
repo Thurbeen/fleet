@@ -1429,6 +1429,67 @@ refute "and never calls a PR it could not read ready" "would-merge" "$out"
 refute "the shepherd never closes a pull request" "pr close" "$(cat "$shep/gh.log")"
 refute "and never edits one" "pr edit" "$(cat "$shep/gh.log")"
 
+# --- 9h. a repo with more open PRs than gh's list can be trusted to return ---
+#
+# `gh pr list --limit N` is a request cap, not a page size: gh paginates the
+# GraphQL calls itself to reach it, so reaching N genuinely means "there may be
+# more". A repo that hits the limit exactly must be reported UNREADABLE, the
+# same as one `gh` could not reach at all — an empty answer and a possibly-
+# truncated one are not the same claim, and only one of them means "nothing is
+# open". Reported here rather than silently merging or fixing whatever
+# happened to fit in the first page.
+
+many="$shep/bin-many"
+mkdir -p "$many"
+: >"$shep/many.log"
+cat >"$many/gh" <<'SH'
+#!/bin/sh
+echo "$*" >>"$SHEP/many.log"
+if [ "$1 $2" = "pr list" ]; then
+	python3 -c '
+import json
+print(json.dumps([
+    {"number": i, "state": "OPEN", "isDraft": False,
+     "url": "https://github.com/many-owner/many-repo/pull/%d" % i,
+     "mergeable": "MERGEABLE", "reviewDecision": "", "statusCheckRollup": [],
+     "body": "", "headRefName": "branch-%d" % i, "baseRefName": "main",
+     "headRefOid": "0" * 40, "author": {"login": "someone", "is_bot": False},
+     "headRepositoryOwner": {"login": "many-owner"}, "isCrossRepository": False}
+    for i in range(1000)
+]))
+'
+	exit 0
+fi
+echo "gh: the many-repo stub is not allowed to run '$1 $2'" >&2
+exit 1
+SH
+chmod +x "$many/gh"
+
+trepo="$shep/repo-many"
+mkdir -p "$trepo"
+git -C "$trepo" init -q -b main
+git -C "$trepo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m base
+
+mtopic="$($QUEUE topic add many-prs --title 'A repo at the pagination limit' \
+	--prompt 'shepherd a repo with at least GH_PR_LIST_LIMIT open pull requests')"
+$QUEUE add "$mtopic" only --title only --repo "$trepo" --branch fix/only --number 1 >/dev/null
+cat >"$FLEET_QUEUE_DIR/$mtopic/1-only/result.md" <<EOF
+---
+outcome: shipped
+artifact: https://github.com/many-owner/many-repo/pull/9999
+---
+Shipped it.
+EOF
+env PATH="$many:$base_path" $QUEUE collect >/dev/null
+
+out="$(env PATH="$many:$base_path" $QUEUE shepherd --topic "$mtopic" 2>&1)"
+expect "a repo at gh's list limit is reported unreadable, not silently capped" \
+	"could not read the pull requests on many-owner/many-repo" "$out"
+expect "and says the result may be truncated" "may be truncated" "$out"
+refute "and nothing from it is merged" "pr merge" "$(cat "$shep/many.log")"
+refute "and it is not reported as having zero open pull requests either" \
+	"no open pull requests" "$out"
+
 # The worktrees the fixers got are real; take them back off the test repo so
 # the temp directory can be removed without leaving stale registrations.
 for slug in 01-conflicting 03-skipped 07-gone 08-second; do

@@ -73,9 +73,11 @@ YAML by hand. Nothing to push — the map is gitignored.
    happened as it happens. It is gitignored and not backed up by the repo.
 6. **`shepherd`, as reflexively as `collect`.** The pull request outlives the
    task, and `collect` names `shepherd` whenever it closed one that left a PR
-   open. It dispatches a fixer for a PR that conflicts, fails a check, was
-   reviewed with changes requested, or skipped the pipeline, and squash-merges
-   one that clears all three gates in the repos `AUTO_MERGE_REPOS` allows.
+   open. It asks the forge for every open PR on the queue's repos, not just
+   recorded artifacts, dispatches a fixer for one that conflicts, fails a
+   check, was reviewed with changes requested, or carries no `no-mistakes`
+   attestation for its current head, and squash-merges one that clears every
+   gate in the repos `AUTO_MERGE_REPOS` allows.
 7. Review the PRs; the operator merges every one `shepherd` did not. Sessions
    release themselves once a pull request merges — `collect` reaps them,
    `queue.sh reap --dry-run` shows what it would do — see `AGENTS.md`.
