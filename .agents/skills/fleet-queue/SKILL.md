@@ -195,8 +195,9 @@ that makes independent progress unsafe.**
 `block` refuses it and points you at `--touches`; two agents editing one file in
 two worktrees is an ordinary rebase.
 
-A blocker clears only when the task it names is genuinely `done` — a session
-that stopped does not clear it, and neither does an abandoned task.
+A blocker clears only when the task it names has **landed** — concluded AND its
+artifact merged (§5b). A session that stopped does not clear it, `done` with an
+open pull request does not, and neither does an abandoned task.
 
 ## 4. Dispatch — the whole ready set, in one go
 
@@ -259,6 +260,15 @@ WHAT   ./scripts/queue.sh collect
        it verifies that task's artifact before it does.
 ```
 
+And then a third thing, which happens LATER and is not a completion at all:
+
+```text
+RELEASE ./scripts/queue.sh reap [--dry-run]
+        Asks the forge whether each concluded task's pull request merged,
+        moves the ones that did to `landed`, and deletes those sessions and
+        their worktrees. `collect` runs it for you — see §5b.
+```
+
 ### `collect` verifies the artifact — you do not have to take the PR on trust
 
 A worker that reports `shipped` with a pull request URL is making two claims,
@@ -294,6 +304,65 @@ When a task is held open: read the pull request, then send that worker back to
 re-open it with `/no-mistakes --yes` and collect again. If you have read it
 yourself and judged it good as it stands, `collect --allow-unverified` closes
 it and records that you did.
+
+### 5b. `reap` — a session lives until its work lands, and not one turn longer
+
+Four worker sessions once accumulated on one machine. Three had merged pull
+requests; the oldest had been idle for fifteen hours and its worktree held
+twenty gigabytes. The loop already said "delete each session as it closes out"
+— documented, manual, and therefore never done.
+
+**The gate is the merge, not the conclusion, and that distinction was expensive
+to learn.** `outcome: shipped` means a pull request is OPEN. Twice, a pull
+request collected as `shipped` turned out to have been opened by hand rather
+than through the pipeline; the fix was a follow-up to a session that was still
+alive, which cost a message. Reaping at collect time would have made the same
+fix cost a re-spawn: a new worktree, a cold agent, the brief read from nothing.
+
+So a task gets a state AFTER `done`:
+
+| state | means | its session |
+|---|---|---|
+| `done` | the worker concluded; its pull request is open | **kept** — the cheap way to fix what review finds |
+| `landed` | the artifact merged, or there was never one | released |
+| `abandoned` | the pull request was closed unmerged | released; the work is NOT on main |
+| `stuck` / `failed` | the worker gave up | **kept** — that session is the evidence, and you decide |
+
+`landed` comes from asking `gh`, never from a worker claiming it, so it works
+long after the session is gone. **Blockers clear on `landed`**, not on `done`
+— a dependent task waits for the code to actually be on `main`, which is the
+same bug in its other form: a task collected `shipped` once released its
+dependents while its pull request sat unreviewed.
+
+```text
+    topic/01-drop-idle-default   landed     https://…/pull/999 is merged
+    topic/01-drop-idle-default   reaped     11111111-…  (idle)
+    topic/02-document-the-states kept       thurbox says `working`; only idle, done, stopped are reaped
+    topic/06-investigate-crash   kept       the worker's own verdict is `failed` — its session is the evidence
+```
+
+Before it deletes anything it asks `thurbox-cli session get --json` and reads
+the word. `idle`, `done` and `stopped` are the only three it acts on:
+`running`, `uncovered` and `unreported` are not the agent saying it is at rest
+(`thurbox-session` §4a), and treating them as `idle` kills live work. Deletion
+is `session delete <id> --force`, because a plain delete only soft-deletes the
+row and leaves the TUI to reap the window and worktrees on a sync that, run
+headless, never comes — and freeing the disk is the whole point. The record
+keeps a receipt, so `list` and `show` stop naming an id that no longer
+resolves.
+
+**`collect` runs the reap itself**, and that is deliberate: the failure being
+fixed is exactly "a documented manual step that never ran", so the release
+belongs in the command you already run rather than in one more you have to
+remember. Its gate is not collect's — nothing collected a moment ago has a
+merged pull request — so it can only ever act on work from an earlier pass.
+`collect --no-reap` records what landed and touches no session;
+`queue.sh reap --dry-run` says what it would do and writes nothing. Reach for
+the dry run first whenever you are unsure.
+
+It only ever considers sessions THIS QUEUE recorded. Your own session and
+anything spawned by hand are not in the records; the lead's is refused by name
+as well.
 
 **Never treat a transition as a completion.** `watch` will tell you a task's
 turn ended with no result file — a worker that stopped, hit an approval, or
@@ -357,5 +426,7 @@ six weeks later.
 5. `plan`, read the ready set, then `dispatch` — all of it, at once. Check the
    report for any session that was spawned but NOT prompted.
 6. `watch` on your own cadence; `collect` when a result is waiting.
-7. `plan` again. Review the PRs. `thurbox-cli session delete <uuid> --force` as
-   each closes out, and record the run in `orchestration/runs/` as it happens.
+7. `plan` again. Review the PRs; the operator merges them. Sessions release
+   themselves once their pull requests land — `collect` reaps, `reap
+   --dry-run` shows you what it would do — and you record the run in
+   `orchestration/runs/` as it happens.

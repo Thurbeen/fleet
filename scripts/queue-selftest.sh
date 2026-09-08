@@ -24,6 +24,11 @@
 #      for it, and "could not check" is a third answer that is neither pass
 #      nor fail. The brief scaffold points at the standing policy rather than
 #      restating it.
+#   9. A session is released when its work LANDS, and never before: a merged
+#      pull request is reapable, an open one is not, a session thurbox says is
+#      working is never touched whatever the record claims, and a task the
+#      worker gave up in keeps its session because that session is the
+#      evidence. A blocker clears on the merge, not on the conclusion.
 #
 # Test 4 is also the wake proof. The event source is `thurbox-cli watch`, which
 # this script replaces with a recorded stream through `FLEET_QUEUE_WATCH_CMD` —
@@ -36,9 +41,11 @@
 # in a temp directory rather than against this one, so it answers the same on a
 # machine with thurbox installed and on CI without it.
 
-# Test 8 is the enforcement proof. `gh` is stubbed on PATH for the whole run
-# (see the stub below), so every collect here answers offline and CI, an
-# operator's laptop and a machine with no network all agree.
+# Test 8 is the enforcement proof, and test 9 the release proof. `gh` and
+# `thurbox-cli` are both stubbed on PATH for the whole run (see the stubs
+# below), so every collect and every reap here answers the same offline, on CI,
+# on an operator's laptop and on a machine with no network — and so that a run
+# of this file can never delete a real session.
 #
 # Usage: scripts/queue-selftest.sh        (also: ./scripts/check.sh queue)
 #
@@ -104,22 +111,81 @@ echo "queue-selftest: $FLEET_QUEUE_DIR"
 # way an unreachable API fails, for a number it has no file for.
 
 bodies="$tmp/pr-bodies"
+states="$tmp/pr-states"
 ghbin="$tmp/gh-bin"
-mkdir -p "$bodies" "$ghbin"
+mkdir -p "$bodies" "$states" "$ghbin"
 
 cat >"$ghbin/gh" <<SH
 #!/bin/sh
-# Stands in for \`gh pr view <url> --json body -q .body\`.
-for a in "\$@"; do case "\$a" in http*) url="\$a" ;; esac; done
-f="$bodies/\${url##*/}.md"
-if [ ! -f "\$f" ]; then
+# Stands in for \`gh pr view <url> --json body\` (collect's pipeline check) and
+# \`gh pr view <url> --json state\` (reap's landing check). A pull request with
+# no body file is one the API cannot be reached for; one with no state file is
+# OPEN, which is what a pull request is until something changes it.
+prev=""
+for a in "\$@"; do
+	case "\$a" in http*) url="\$a" ;; esac
+	[ "\$prev" = --json ] && want="\$a"
+	prev="\$a"
+done
+n="\${url##*/}"
+if [ ! -f "$bodies/\$n.md" ]; then
 	echo "could not resolve host: api.github.com" >&2
 	exit 1
 fi
-cat "\$f"
+case "\${want:-body}" in
+*state*) cat "$states/\$n.state" 2>/dev/null || echo OPEN ;;
+*) cat "$bodies/\$n.md" ;;
+esac
 SH
 chmod +x "$ghbin/gh"
-export PATH="$ghbin:$PATH"
+
+# --- `thurbox-cli`, stubbed on PATH for the whole run ------------------------
+#
+# `reap` asks thurbox what a session is doing before it deletes anything, and
+# deletes with `session delete <id> --force`. Both are stubbed here: the states
+# come from one file per session id, and every delete is APPENDED TO A LOG
+# rather than performed, so a test can assert on exactly what would have been
+# killed — including that nothing was.
+
+sessions="$tmp/sessions"
+deletions="$tmp/deletions.log"
+tbxbin="$tmp/tbx-bin"
+mkdir -p "$sessions" "$tbxbin"
+: >"$deletions"
+
+cat >"$tbxbin/thurbox-cli" <<SH
+#!/bin/sh
+# session list --json | session get <id> --json | session delete <id> --force
+case "\$1 \$2" in
+"session list")
+	printf '['
+	sep=""
+	for f in "$sessions"/*.json; do
+		[ -e "\$f" ] || continue
+		printf '%s%s' "\$sep" "\$(cat "\$f")"
+		sep=","
+	done
+	printf ']\n'
+	;;
+"session get")
+	[ -f "$sessions/\$3.json" ] || { echo "no such session: \$3" >&2; exit 1; }
+	cat "$sessions/\$3.json"
+	;;
+"session delete")
+	echo "\$*" >>"$deletions"
+	;;
+*) exit 0 ;;
+esac
+SH
+chmod +x "$tbxbin/thurbox-cli"
+
+# Record a session the stub will report, in whatever state the test needs.
+session_is() {
+	printf '{"id":"%s","name":"%s","state":"%s"}\n' "$1" "worker $1" "$2" \
+		>"$sessions/$1.json"
+}
+
+export PATH="$ghbin:$tbxbin:$PATH"
 
 # A compliant body for the pull request test 3 collects, so that test says what
 # it always said — that a blocker clears on a real conclusion — and nothing
@@ -365,13 +431,22 @@ expect "watch passes --since 0 to the real stream rather than dropping it" \
 
 rm -rf "$zerotmp"
 
-# --- 3. the blocker clears only when the task it names is really done --------
+# --- 3 and 9. the blocker clears on the MERGE, not on the conclusion ---------
+#
+# The bug this proves gone: a task collected `shipped` released its dependents
+# while its pull request was still open and unreviewed, and the lead had to
+# hold the dependent task by hand. `outcome: shipped` in a result means a pull
+# request EXISTS. Whether it landed is a question only the forge can answer,
+# and it is the same question that decides whether a session may be reaped.
 
 out="$($QUEUE collect 2>&1)"
 expect "collect finds nothing to conclude yet" "0 result" "$out"
 
 plan="$($QUEUE plan 2>&1)"
 expect "03 still waits after its blocker's turn ended" "waiting: 1" "$plan"
+
+session_is 11111111-1111-1111-1111-111111111111 idle
+session_is 22222222-2222-2222-2222-222222222222 working
 
 cat >"$FLEET_QUEUE_DIR/$topic/01-drop-idle-default/result.md" <<'EOF'
 ---
@@ -384,9 +459,45 @@ EOF
 out="$($QUEUE collect 2>&1)"
 expect "collect reads the worker's own conclusion" "shipped" "$out"
 expect "collect names the artifact" "pull/999" "$out"
+expect "and keeps the session, saying the pull request is still open" \
+	"still open" "$out"
+refute "an open pull request's session is never reaped" "reaped" "$out"
 
 plan="$($QUEUE plan 2>&1)"
-expect "03 becomes ready once 01 is genuinely done" "03-render-detected-agent" "$plan"
+expect "03 keeps waiting: its blocker concluded but did not land" "waiting: 1" "$plan"
+refute "so the ready set has not grown" "ready: 2" "$plan"
+
+# The merge — the only thing that lands a task, and the only thing that
+# authorises deleting the session that produced it.
+echo MERGED >"$states/999.state"
+
+out="$($QUEUE reap --dry-run 2>&1)"
+expect "a dry run says what would land" "would be landed" "$out"
+expect "and which session it would release" "would reap" "$out"
+if [ -s "$deletions" ]; then
+	fail "a dry run deletes nothing" "$(cat "$deletions")"
+else
+	pass "a dry run deletes nothing"
+fi
+plan="$($QUEUE plan 2>&1)"
+expect "and a dry run wrote nothing either: 03 still waits" "waiting: 1" "$plan"
+
+out="$($QUEUE reap 2>&1)"
+expect "the merge lands the task" "landed" "$out"
+expect "and its session is released" "reaped" "$out"
+expect "the deletion is forced, or the worktree is never actually freed" \
+	"--force" "$(cat "$deletions")"
+expect "and it names the session the record held" \
+	"11111111-1111-1111-1111-111111111111" "$(cat "$deletions")"
+
+state="$($QUEUE show "$topic/01-drop-idle-default" 2>&1)"
+expect "the record says landed" "state:       landed" "$state"
+expect "and keeps the receipt for the session it released" "reaped:" "$state"
+refute "and stops pointing at an id that no longer resolves" \
+	"session:     11111111" "$state"
+
+plan="$($QUEUE plan 2>&1)"
+expect "03 becomes ready once 01 has LANDED" "03-render-detected-agent" "$plan"
 expect "and it joins 04, which never waited" "ready: 2" "$plan"
 refute "01 has left the plan entirely" "01-drop-idle-default" "$plan"
 
@@ -510,6 +621,112 @@ expect "and the refusal says the task was not closed" "NOT CLOSED" "$out"
 state="$($QUEUE show "$topic/05-ship-without-proof" 2>&1)"
 refute "a shipped claim with no pull request is not closed" "state:       done" "$state"
 expect "and the record says missing, not skipped" "missing" "$state"
+
+# --- 9. what is never reaped, and why ---------------------------------------
+#
+# Four sessions had accumulated on one machine, three with merged pull
+# requests, the oldest holding twenty gigabytes since the previous day. The
+# loop already said "delete each session as it closes out"; it was documented,
+# it was manual, and it did not happen. The cases below are the ones where the
+# answer is still "leave it", and getting any of them wrong kills live work or
+# throws away the only evidence of a failure.
+
+# (a) A session thurbox says is WORKING is never touched, whatever the record
+#     claims. 02's pull request merges here, so the record says the task is
+#     finished — and the session stays anyway.
+echo MERGED >"$states/1001.state"
+
+out="$($QUEUE reap 2>&1)"
+expect "a merged artifact lands its task" "02-document-the-states" "$out"
+expect "but a session thurbox says is working is kept" "working" "$out"
+refute "and nothing was deleted for it" \
+	"22222222-2222-2222-2222-222222222222" "$(cat "$deletions")"
+
+state="$($QUEUE show "$topic/02-document-the-states" 2>&1)"
+expect "the task still landed — landing and releasing are two questions" \
+	"state:       landed" "$state"
+expect "and it still names its session, because it still has one" \
+	"22222222" "$state"
+
+# (b) A task the worker gave up in keeps its session: that session IS the
+#     evidence, and a human decides what to do with it.
+$QUEUE add "$topic" investigate-the-crash --title 'Investigate the crash' \
+	--repo /tmp/repo-a --branch fix/investigate-the-crash --number 06 >/dev/null
+$QUEUE attach "$topic/06-investigate-the-crash" \
+	66666666-6666-6666-6666-666666666666 >/dev/null
+session_is 66666666-6666-6666-6666-666666666666 idle
+
+cat >"$FLEET_QUEUE_DIR/$topic/06-investigate-the-crash/result.md" <<'EOF'
+---
+outcome: failed
+---
+The crash does not reproduce here. The worktree has the logs.
+EOF
+
+out="$($QUEUE collect 2>&1)"
+expect "a failed task is closed by its own result" "06-investigate-the-crash" "$out"
+expect "but its session is kept as the evidence" "evidence" "$out"
+refute "and an idle session is still not deleted when the task failed" \
+	"66666666-6666-6666-6666-666666666666" "$(cat "$deletions")"
+
+# (c) A task that produced no artifact skips straight through rather than
+#     waiting forever for a merge that is never coming — and `collect` does the
+#     reaping itself, because a step only a human remembers does not run.
+$QUEUE add "$topic" answer-a-question --title 'Answer a question' \
+	--repo /tmp/repo-b --branch fix/answer-a-question --number 07 >/dev/null
+$QUEUE attach "$topic/07-answer-a-question" \
+	77777777-7777-7777-7777-777777777777 >/dev/null
+session_is 77777777-7777-7777-7777-777777777777 idle
+
+cat >"$FLEET_QUEUE_DIR/$topic/07-answer-a-question/result.md" <<'EOF'
+---
+outcome: not-applicable
+---
+The behaviour already worked; there was nothing to change.
+EOF
+
+out="$($QUEUE collect 2>&1)"
+expect "a task with no artifact lands without waiting for a merge" \
+	"07-answer-a-question" "$out"
+expect "and collect releases its session without being asked to" "reaped" "$out"
+expect "with --force, so the worktree actually goes" "--force" "$(cat "$deletions")"
+expect "and it is the session the record held" \
+	"77777777-7777-7777-7777-777777777777" "$(cat "$deletions")"
+
+state="$($QUEUE show "$topic/07-answer-a-question" 2>&1)"
+expect "the record keeps the receipt" "deleted" "$state"
+
+# (d) `uncovered` is not `idle`. An agent wired to report nothing says nothing
+#     by being quiet, so the reap reads the word and never the silence.
+$QUEUE add "$topic" tidy-the-readme --title 'Tidy the readme' \
+	--repo /tmp/repo-b --branch fix/tidy-the-readme --number 08 >/dev/null
+$QUEUE attach "$topic/08-tidy-the-readme" \
+	88888888-8888-8888-8888-888888888888 >/dev/null
+session_is 88888888-8888-8888-8888-888888888888 uncovered
+
+cat >"$FLEET_QUEUE_DIR/$topic/08-tidy-the-readme/result.md" <<'EOF'
+---
+outcome: not-applicable
+---
+Nothing to tidy.
+EOF
+
+out="$($QUEUE collect 2>&1)"
+expect "an uncovered session is not an idle one" "uncovered" "$out"
+refute "so it is kept, not deleted" \
+	"88888888-8888-8888-8888-888888888888" "$(cat "$deletions")"
+
+# (e) The lead's own session is not a worker and is never a candidate, even if
+#     a record somehow names it.
+out="$(THURBOX_SESSION=88888888-8888-8888-8888-888888888888 \
+	$QUEUE reap --dry-run 2>&1)"
+expect "the lead's own session is refused by name" "lead" "$out"
+
+# (f) The reap can be told to stand down, and then it writes what landed and
+#     touches nothing else.
+out="$($QUEUE collect --no-reap 2>&1)"
+expect "collect can be told to leave every session alone" "no-reap" "$out"
+refute "and then it releases nothing" "reaped" "$out"
 
 # --- the brief scaffold points at the policy instead of restating it ---------
 #

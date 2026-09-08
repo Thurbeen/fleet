@@ -510,6 +510,11 @@ window and worktrees on its next sync. **When the TUI isn't running, pass
 workspace), and cancels pending scheduled commands. `session restore <uuid>`
 undoes a soft delete.
 
+**A session the queue dispatched is not yours to delete by hand.**
+`./scripts/queue.sh reap` releases those itself once the forge says their pull
+requests merged, and it reads this section's state table before it does — see
+`fleet-queue` §5b. The commands here are for sessions you spawned yourself.
+
 ## Run loop
 
 1. Clarify the goal. Pick or write a playbook in `orchestration/playbooks/`.
@@ -518,7 +523,8 @@ undoes a soft delete.
 3. Per unit of work: `session create` — with an `--on-existing` mode (§1c) and
    the run's profile flags (§1d) — → `session send`, unless `created` came back
    `false` → read the result file it writes → record.
-4. Review PRs. `session delete --force` as each closes out.
+4. Review PRs. `session delete --force` as each closes out — for a session
+   the queue dispatched, `queue.sh reap` does this once the PR merges.
 
 For more than one unit of work, drive it through `./scripts/queue.sh` and the
 `fleet-queue` skill instead of by hand: it owns the records, the ordering, and

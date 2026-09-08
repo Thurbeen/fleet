@@ -303,7 +303,11 @@ steps and its header is the full usage.
    names the sessions left unprompted.
 5. **Read the stream, then read the results.** Record outcomes in a run log from
    `orchestration/runs/_TEMPLATE.md` as they happen.
-6. **Review the PRs**, then delete each session as it closes out.
+6. **Review the PRs.** Sessions release themselves: once the forge says a
+   task's pull request merged, the task moves to `landed` and `collect` reaps
+   its session and worktree — never one thurbox says is working, and never one
+   a worker gave up in. `./scripts/queue.sh reap --dry-run` says what it would
+   do.
 
 Fast-forward a target repo's base branch *before* spawning a worker against it.
 A stale local `main` is inherited by the new worktree: the worker does correct

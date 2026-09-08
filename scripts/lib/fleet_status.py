@@ -63,7 +63,9 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 LABEL = 10  # the left gutter every section header shares
 
 # A task in one of these has said what it concluded; the rest are open.
-CONCLUDED = {"done", "stuck", "failed", "abandoned"}
+# `landed` is concluded AND merged — the state whose session `queue.sh reap`
+# has already released, so its absence from thurbox is expected, not news.
+CONCLUDED = {"done", "landed", "stuck", "failed", "abandoned"}
 
 
 # --- probing -----------------------------------------------------------------
@@ -423,7 +425,8 @@ def render_queue(sec: dict) -> list:
     topics, tasks = sec["topics"], sum(len(t["tasks"]) for t in sec["topics"])
     if not tasks:
         return lines + [cont("empty — `queue.sh topic add` opens one")]
-    order = ("ready", "waiting", "dispatched", "done", "stuck", "failed", "abandoned")
+    order = ("ready", "waiting", "dispatched", "done", "landed", "stuck", "failed",
+             "abandoned")
     tally = [f"{k} {sec['counts'][k]}" for k in order if sec["counts"].get(k)]
     lines.append(cont(f"{len(topics)} topic(s), {tasks} task(s) — " + ", ".join(tally)))
     for topic in topics:
