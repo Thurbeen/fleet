@@ -448,6 +448,14 @@ survives the next `ensure`.
 
 ## The queue pane
 
+![The fleet queue pane open in thurbox: topics grouped by what their tasks are
+doing, each task showing its title, state, age and the four files behind it,
+with one task waiting on a recorded dependency](media/fleet-queue-pane.gif)
+
+That is an **example queue**, not anyone's real one — `media/fleet-queue-pane.tape`
+regenerates the recording against whatever `FLEET_QUEUE_DIR` points at, and its
+header says why it uses a fixture and what the fixture needs to contain.
+
 ```bash
 ./scripts/install-extension.sh     # onboarding runs this for you
 ```
