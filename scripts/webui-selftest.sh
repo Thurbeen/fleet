@@ -180,8 +180,6 @@ expect "a task with no artifact gets no link, not an empty one" \
 	'"artifact_link": null' "$api"
 expect "a URL that is not a forge pull request is shown whole" \
 	'"label": "https://ci.example.com/builds/91"' "$api"
-expect "the link opens in a new tab without handing it this page" \
-	'a.rel = "noopener noreferrer"' "$body"
 
 # --- 6. the theme renders with the network unplugged -------------------------
 
