@@ -820,6 +820,9 @@ let detailCache = {};
 // Whether the archived rows are on screen. Kept across the poll for the same
 // reason `openTopics` is: a refresh must not close what someone is reading.
 let showArchived = false;
+// The last /api/archived response, painted instead of refetched when the
+// poll rebuilds `main` while the panel is left open.
+let archivedCache = null;
 
 // The bar reads left to right as work leaving the queue: what is finished,
 // then what is moving, then what has not started, then what needs someone.
@@ -1136,31 +1139,42 @@ function archivedBar(n, list) {
   const b = el("button", "archived-toggle", shut);
   bar.appendChild(b);
 
+  function paint(topics) {
+    for (const t of topics) {
+      const node = renderTopic(t);
+      node.classList.add("is-archived");
+      list.appendChild(node);
+    }
+    b.textContent = "hide the " + n + " archived topic(s)";
+  }
+
   async function open() {
     b.textContent = "reading\u2026";
     try {
       const r = await fetch("api/archived", { cache: "no-store" });
-      for (const t of (await r.json()).topics || []) {
-        const node = renderTopic(t);
-        node.classList.add("is-archived");
-        list.appendChild(node);
-      }
-      b.textContent = "hide the " + n + " archived topic(s)";
+      archivedCache = (await r.json()).topics || [];
+      paint(archivedCache);
     } catch (e) {
       showArchived = false;
+      archivedCache = null;
       b.textContent = "could not read them \u2014 " + e;
     }
   }
 
   b.addEventListener("click", () => {
     showArchived = !showArchived;
+    archivedCache = null;
     if (showArchived) return open();
     b.textContent = shut;
     for (const node of list.querySelectorAll(".topic.is-archived")) node.remove();
   });
   // The poll rebuilds `main` from scratch, so a set that was on screen has to
-  // be asked for again — the flag survives the render, the rows do not.
-  if (showArchived) open();
+  // be redrawn from the cached response, never fetched again — that only
+  // happens on the click that opened it.
+  if (showArchived) {
+    if (archivedCache) paint(archivedCache);
+    else open();
+  }
   return bar;
 }
 

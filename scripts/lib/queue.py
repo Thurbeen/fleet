@@ -607,6 +607,7 @@ class Queue:
                 tpath = os.path.join(self.root, topic)
                 if os.path.isdir(os.path.join(tpath, ref)):
                     candidates.append((topic, ref))
+        found = []
         for topic, tid in candidates:
             if not (is_record_dir(topic) and is_record_dir(tid)):
                 continue
@@ -614,7 +615,13 @@ class Queue:
             rec = os.path.join(dpath, "task.yaml")
             if not os.path.exists(rec):
                 continue
-            task = Task(topic, tid, dpath, read_yaml(rec))
+            found.append(Task(topic, tid, dpath, read_yaml(rec)))
+        if len(found) > 1:
+            raise QueueError(
+                f"{ref} names {len(found)} tasks across topics; use <topic>/<task>"
+            )
+        if found:
+            task = found[0]
             self._fetched[ref] = task
             return task
         return None
