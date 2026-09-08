@@ -207,7 +207,7 @@ that loaded but is placed by nothing, naming the file and the line to add.
 
 | It says | What it means | What you do |
 |---|---|---|
-| `✓ loads — … fleetqueue …`, exits 0 | installed and placed | say that `F5` opens it |
+| `✓ loads — … fleetqueue …`, exits 0 | installed and placed | say that `F3` opens it |
 | `✗ … nothing places slot "fleetqueue"` | installed, invisible | print the line below |
 | no `fleetqueue` anywhere | the install did not take | re-run step 4 and read its output |
 
@@ -224,7 +224,7 @@ end
 
 Give them the guard, not just the slot. `plugin check` suggests a bare
 `{ slot = "fleetqueue" }`, and that is enough to make the pane DRAW — which is
-all `check` knows about. It is not enough to make `F5` work: an unguarded slot
+all `check` knows about. It is not enough to make `F3` work: an unguarded slot
 is carved on every frame, so the key flips a panel state nothing reads and the
 pane opens and never closes. `panels` and `filled` already exist in the stock
 `layout.lua`, guarding the session list the same way.

@@ -141,7 +141,7 @@ else
 	ui_dir="$(thurbox-cli plugin dir --text 2>/dev/null | head -1)" || true
 
 	if [ "$pane_ok" = 1 ]; then
-		printf '\nThe fleet queue pane is installed and placed. Press F5 in thurbox.\n'
+		printf '\nThe fleet queue pane is installed and placed. Press F3 in thurbox.\n'
 	else
 		cat <<-EOF
 
@@ -158,10 +158,10 @@ else
 			  end
 
 			The \`panels.shown\` guard is not optional: without it the column is
-			carved on every frame and F5 toggles a value nothing reads, so the
+			carved on every frame and F3 toggles a value nothing reads, so the
 			pane opens and never closes. \`panels\` and \`filled\` both already
 			exist in the stock layout.lua, beside the same guard on the session
-			list. Then \`thurbox-cli plugin check\` goes green and F5 opens and
+			list. Then \`thurbox-cli plugin check\` goes green and F3 opens and
 			closes the pane. What it reported:
 
 		EOF
