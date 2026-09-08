@@ -138,7 +138,7 @@ else
 	# no arrangement. It is the only thing that can tell those two apart, so its
 	# verdict is read here rather than assumed.
 	pane_report="$(thurbox-cli plugin check --text 2>&1)" && pane_ok=1 || pane_ok=0
-	ui_dir="$(thurbox-cli plugin dir --text 2>/dev/null | head -1)"
+	ui_dir="$(thurbox-cli plugin dir --text 2>/dev/null | head -1)" || true
 
 	if [ "$pane_ok" = 1 ]; then
 		printf '\nThe fleet queue pane is installed and placed. Press F6 in thurbox.\n'

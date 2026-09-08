@@ -690,7 +690,11 @@ return {
       local note = line({
         { text = "  ↓ " .. hidden .. " more", style = { fg = theme.muted } },
       })
-      if drawn > 0 then
+      if drawn > 0 or offset > 0 then
+        -- Replace, not append: at room == 1 the "↑ above" note already spent
+        -- this frame's one annotation line, and drawn == 0 there means there
+        -- is no row to swap out either — swap the up-note itself instead of
+        -- pushing the frame one line past its rect.
         children[#children] = note
       else
         children[#children + 1] = note
