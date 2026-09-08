@@ -91,7 +91,20 @@ local SCROLL_STEP = 3
 ---   R <queue root>
 ---   E <what went wrong>
 ---   T <topic slug> <topic title>
----   K <id> <state> <title> <outcome> <artifact> <blockers> <brief> <events> <result>
+---   K <id> <state> <title> <outcome> <artifact> <blockers> <brief> <events>
+---     <result> <branch> <moved-at, epoch seconds>
+---
+--- `<blockers>` is `ref|kind` pairs, comma separated. The KIND travels with the
+--- ref because it is the whole reason the edge exists: `queue.sh block` refuses
+--- a blocker that names no kind, so an edge without one is not a thing fleet can
+--- have recorded, and a tree that showed only refs would be hiding the answer to
+--- the only question a reader has about it.
+---
+--- `moved-at` is resolved and converted by the SHELL rather than in Lua, for
+--- two reasons. `os` does not exist inside a pane, so there is no date parsing
+--- here; and the queue writes three timestamps whose precedence is a fact about
+--- the record — concluded, else dispatched, else created — which belongs beside
+--- the record rather than in a renderer.
 local PROBE = [==[
 if [ ! -x ./scripts/queue.sh ]; then
   printf 'E\tnot the control-plane checkout\n'; exit 0
@@ -112,12 +125,23 @@ for topic in */; do
     [ -f "$dir/progress.jsonl" ] && events=$(wc -l <"$dir/progress.jsonl" | tr -d ' ')
     brief=0; [ -f "$dir/BRIEF.md" ] && brief=1
     result=0; [ -f "$dir/result.md" ] && result=1
-    awk -v b="$brief" -v p="$events" -v r="$result" '
+    moved=""
+    for field in concluded_at dispatched_at created; do
+      [ -n "$moved" ] && continue
+      moved=$(sed -n "s/^$field: *'\(.*\)'$/\1/p" "$dir/task.yaml" | head -1)
+    done
+    at=0
+    [ -n "$moved" ] && at=$(date -d "$moved" +%s 2>/dev/null || echo 0)
+    awk -v b="$brief" -v p="$events" -v r="$result" -v at="$at" '
       /^[a-z_]+: / { i = index($0, ": "); f[substr($0, 1, i - 1)] = substr($0, i + 2) }
-      /^- task: / { n = n + 1; bl = bl (n > 1 ? "," : "") substr($0, 9) }
-      END { printf "K\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+      /^- task: / { n = n + 1; refs[n] = substr($0, 9) }
+      /^  kind: / { kinds[n] = substr($0, 9) }
+      END {
+        for (i = 1; i <= n; i++) bl = bl (i > 1 ? "," : "") refs[i] "|" kinds[i]
+        printf "K\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
               f["id"], f["state"], f["title"], f["outcome"], f["artifact"],
-              bl, b, p, r }
+              bl, b, p, r, f["branch"], at
+      }
     ' "$dir/task.yaml"
   done
 done
@@ -147,6 +171,21 @@ local function split_tabs(line)
   return out
 end
 
+--- The dependency edges one task records, as `ref|kind` pairs.
+---
+--- This is the ordering fleet DECIDED, and it is the one thing in the queue a
+--- reader cannot reconstruct from anywhere else: `touches` overlap is reported
+--- and holds nothing up, so an edge here means somebody wrote down a concrete
+--- reason that independent progress was unsafe.
+local function edges(field)
+  local out = {}
+  for pair in field:gmatch("[^,]+") do
+    local ref, kind = pair:match("^(.-)|(.*)$")
+    out[#out + 1] = { ref = ref or pair, kind = kind or "" }
+  end
+  return out
+end
+
 --- The display state `queue.sh list` and the monitor both draw: a queued task
 --- holding on a blocker reads as `waiting`, which is not a state on disk.
 ---
@@ -158,9 +197,14 @@ local function resolve_states(model)
   for _, topic in ipairs(model.topics) do
     for _, task in ipairs(topic.tasks) do
       local held = nil
-      for ref in task.blockers:gmatch("[^,]+") do
-        if model.state_of[ref] ~= "landed" then
-          held = held or ref
+      for _, edge in ipairs(task.blocked_by) do
+        -- A blocker clears when the task it names is `landed` — the forge's
+        -- answer that the code is on `main`, not a worker's claim that it
+        -- opened a pull request. That rule is `queue.py`'s `blocker_cleared`;
+        -- this is the same rule and not a second opinion about it.
+        edge.cleared = model.state_of[edge.ref] == "landed"
+        if not edge.cleared then
+          held = held or edge.ref
         end
       end
       task.held_by = held
@@ -224,7 +268,7 @@ local CLASS_ORDER = {
 
 --- The whole queue, out of one probe's stdout.
 local function build_model(stdout)
-  local model = { topics = {}, state_of = {}, counts = {} }
+  local model = { topics = {}, state_of = {}, counts = {}, per_class = {} }
   local topic
 
   for line in (stdout .. "\n"):gmatch("(.-)\n") do
@@ -245,10 +289,13 @@ local function build_model(stdout)
         title = scalar(f[4]),
         outcome = scalar(f[5]),
         artifact = scalar(f[6]),
-        blockers = f[7] or "",
+        topic = topic.slug,
+        blocked_by = edges(f[7] or ""),
         brief = f[8] == "1",
         events = tonumber(f[9]) or 0,
         result = f[10] == "1",
+        branch = scalar(f[11]),
+        moved_at = tonumber(f[12]) or 0,
       }
       topic.tasks[#topic.tasks + 1] = task
       model.state_of[topic.slug .. "/" .. task.id] = task.state
@@ -258,6 +305,9 @@ local function build_model(stdout)
   resolve_states(model)
   for _, entry in ipairs(model.topics) do
     entry.class = classify(entry.tasks)
+    -- Tasks per classification, so a heading can say how many rows it covers
+    -- with the same unit the counter at the top of the pane uses.
+    model.per_class[entry.class] = (model.per_class[entry.class] or 0) + #entry.tasks
     -- SETTLED, which is not the same as the `done` classification. A task that
     -- is `done` has an OPEN pull request and the operator's next move is to
     -- review it — so its artifact row is the most useful row in the pane, and
@@ -342,10 +392,38 @@ end
 ---
 --- A blank pane and a broken pane look identical, so every state that has no
 --- rows still says which state it is.
-local function saying(lines)
+local function saying(lines, width)
+  local room = math.max(1, (width or 40) - 2)
   local children = {}
   for _, sentence in ipairs(lines) do
-    children[#children + 1] = line({ { text = "  " .. sentence, style = { fg = theme.muted } } })
+    -- Wrapped rather than cut: these sentences are the pane's whole content in
+    -- the states that have no rows, and half of "settings → Interface → t" is
+    -- not an instruction. A word wider than the column is truncated, because a
+    -- path or a url routinely is one.
+    local current = ""
+    local function flush()
+      if current ~= "" then
+        children[#children + 1] =
+          line({ { text = "  " .. current, style = { fg = theme.muted } } })
+        current = ""
+      end
+    end
+    for word in sentence:gmatch("%S+") do
+      if widgets.len(word) > room then
+        flush()
+        children[#children + 1] = line({
+          { text = "  " .. widgets.truncate(word, room), style = { fg = theme.muted } },
+        })
+      elseif current == "" then
+        current = word
+      elseif widgets.len(current) + 1 + widgets.len(word) <= room then
+        current = current .. " " .. word
+      else
+        flush()
+        current = word
+      end
+    end
+    flush()
   end
   return { type = "box", frame = frame(), children = children }
 end
@@ -393,30 +471,88 @@ end
 --- queue of forty tasks costs forty small tables here and spans for only the
 --- rows that land on screen.
 ---
---- A SETTLED topic — every task merged or abandoned — collapses to its heading.
---- It is the same judgement the monitor's ordering makes, what needs an operator
---- goes first, said in the one currency a column has, which is rows. A topic
---- whose tasks are merely `done` stays open on purpose: `done` means the pull
---- request is OPEN, so its artifact row is the row the operator came here to
---- click.
+--- How long ago the task last moved, compactly.
+---
+--- `widgets.time_ago` is the interface's own formatter and it is used rather
+--- than a private one so an age here reads exactly like an age anywhere else in
+--- thurbox. The " ago" is dropped because in a column this narrow the word is
+--- 4 columns saying what the position already says. A task with no timestamp,
+--- or a snapshot with no instant, gets no age rather than a wrong one.
+local function age_of(task)
+  local now = widgets.now_ms()
+  if (task.moved_at or 0) <= 0 or now <= 0 then
+    return nil
+  end
+  return (widgets.time_ago(task.moved_at * 1000, now):gsub(" ago", ""))
+end
+
+--- The monitor's own classification vocabulary, in its own order. Spelling the
+--- bucket out as a heading is what the web page gets for free from having a
+--- whole screen: there, `attention` is red and at the top and that reads as a
+--- group. In one column the group has to say its own name.
+--- The four blocker kinds `queue.sh block` accepts, in words that fit a column.
+--- The set is closed on purpose — queue.py's BLOCKER_KINDS — so an unknown one
+--- is shown verbatim rather than mapped to something plausible.
+local BLOCKER_KIND = {
+  ["semantic-dependency"] = "consumes",
+  ["shared-external-state"] = "shared state",
+  ["incompatible-migration"] = "migration",
+  other = "other",
+}
+
+local CLASS_LABEL = {
+  attention = "ATTENTION",
+  running = "RUNNING",
+  ready = "READY",
+  blocked = "BLOCKED",
+  done = "DONE",
+  empty = "EMPTY",
+}
+
+--- The rows the pane would draw, as descriptors rather than spans.
+---
+--- Built before anything is measured so the window can be taken out of it: a
+--- queue of forty tasks costs forty small tables here and spans for only the
+--- rows that land on screen.
+---
+--- THE SHAPE IS THE MONITOR'S, said in rows. Topics arrive already ordered by
+--- classification, so a change of class opens a heading; each unsettled topic
+--- opens a rule with its slug; and each task is its TITLE first, because that
+--- is the only line that says what the work actually is. The record id, which
+--- is what `queue.sh` takes, sits under it with the state and the age.
+---
+--- A SETTLED topic — every task merged or abandoned — collapses to one row. A
+--- topic whose tasks are merely `done` stays open on purpose: `done` means the
+--- pull request is OPEN, so its artifact row is the row worth clicking.
 local function descriptors(model)
   local out = {}
+  local class = nil
   for _, topic in ipairs(model.topics) do
-    out[#out + 1] = { kind = "topic", topic = topic }
-    if not topic.settled and topic.class ~= "empty" then
-      for index, task in ipairs(topic.tasks) do
-        if index > 1 then
-          out[#out + 1] = { kind = "blank" }
-        end
+    if topic.class ~= class then
+      class = topic.class
+      if #out > 0 and out[#out].kind ~= "blank" then
+        out[#out + 1] = { kind = "blank" }
+      end
+      out[#out + 1] = { kind = "class", class = class, count = model.per_class[class] or 0 }
+    end
+    if topic.settled or topic.class == "empty" then
+      out[#out + 1] = { kind = "settled", topic = topic }
+    else
+      out[#out + 1] = { kind = "topic", topic = topic }
+      for _, task in ipairs(topic.tasks) do
         out[#out + 1] = { kind = "task", task = task }
-        if task.held_by then
-          out[#out + 1] = { kind = "blocker", task = task }
+        out[#out + 1] = { kind = "meta", task = task }
+        for _, edge in ipairs(task.blocked_by) do
+          out[#out + 1] = { kind = "blocker", task = task, edge = edge }
         end
         out[#out + 1] = { kind = "docs", task = task }
         if task.artifact ~= "" then
           out[#out + 1] = { kind = "artifact", task = task }
         end
       end
+      -- Close an expanded topic. Its own rule opens it, but nothing marked the
+      -- END of one, so a collapsed topic that followed a task read as another
+      -- of that task's rows.
       out[#out + 1] = { kind = "blank" }
     end
   end
@@ -427,28 +563,90 @@ end
 ---
 --- In the order the queue produces them — plan, progress, outcome — with the
 --- artifact on its own row below because it is a link and links are clicked.
---- A missing plan is said out loud rather than left blank: `dispatch` refuses a
---- placeholder brief, so a task with no brief is a task that never went out.
+--- Each one is NAMED rather than implied: `brief` is BRIEF.md, `events` are
+--- progress.jsonl's lines, and the last word is the outcome result.md carried.
+--- A missing brief is said out loud, because `dispatch` refuses a placeholder
+--- one, so a task without it is a task that never went out.
+---
+--- BUDGETED, because this row is the one that overflows. `brief · 0 events ·
+--- uncollected` is 29 columns before its indent, and the column it lives in is
+--- 26% of the terminal — so at any ordinary width the kernel clipped it and the
+--- outcome, the most important word on the row, was the half that went.
+---
+--- So the row gives things up in a fixed order instead of being cut: the WORD
+--- "events" first, then the count, then the brief marker, and the OUTCOME last,
+--- because it is the only part a reader acts on. Truncation is the final
+--- fallback, not the first response.
 local function docs_spans(task, width)
-  local row = ui.row({ width = width })
-  row:add("   ")
-  if task.brief then
-    row:add("plan", { fg = theme.muted })
-  else
-    row:add("no plan", { fg = theme.bad })
-  end
-  row:add(" · ", { fg = theme.muted })
-  row:add(task.events .. (task.events == 1 and " event" or " events"), { fg = theme.muted })
+  local budget = math.max(1, width - 3)
+
+  local plan = task.brief and "brief" or "no brief"
+  local plan_tone = task.brief and theme.muted or theme.bad
+
+  local outcome, outcome_tone
   if task.outcome ~= "" then
-    local tone = (task.outcome == "shipped" or task.outcome == "not-applicable") and theme.ok
+    outcome = task.outcome
+    outcome_tone = (task.outcome == "shipped" or task.outcome == "not-applicable")
+        and theme.ok
       or theme.bad
-    row:add(" · ", { fg = theme.muted })
-    row:add(task.outcome, { fg = tone })
   elseif task.result then
     -- result.md is on disk but `collect` has not read it yet, which is a real
     -- and temporary state rather than "no outcome".
-    row:add(" · ", { fg = theme.muted })
-    row:add("uncollected", { fg = theme.warn })
+    outcome = "uncollected"
+    outcome_tone = theme.warn
+  end
+
+  --- The segments this row would carry at one level of detail.
+  local function segments(level)
+    local out = {}
+    if level ~= "outcome" then
+      out[#out + 1] = { text = plan, tone = plan_tone }
+    end
+    if level == "full" then
+      out[#out + 1] = {
+        text = task.events .. (task.events == 1 and " event" or " events"),
+        tone = theme.muted,
+      }
+    elseif level == "short" then
+      out[#out + 1] = { text = task.events .. " ev", tone = theme.muted }
+    end
+    if outcome then
+      out[#out + 1] = { text = outcome, tone = outcome_tone }
+    end
+    return out
+  end
+
+  local function columns(list)
+    local n = 0
+    for index, seg in ipairs(list) do
+      n = n + widgets.len(seg.text) + (index > 1 and 3 or 0)
+    end
+    return n
+  end
+
+  local chosen
+  for _, level in ipairs({ "full", "short", "plain", "outcome" }) do
+    local list = segments(level)
+    if columns(list) <= budget then
+      chosen = list
+      break
+    end
+  end
+  if not chosen then
+    -- Narrower than the outcome word itself. Truncate that and nothing else.
+    chosen = segments("outcome")
+    if chosen[1] then
+      chosen[1].text = widgets.truncate(chosen[1].text, budget)
+    end
+  end
+
+  local row = ui.row({ width = width })
+  row:add("   ")
+  for index, seg in ipairs(chosen) do
+    if index > 1 then
+      row:add(" · ", { fg = theme.muted })
+    end
+    row:add(seg.text, { fg = seg.tone })
   end
   return row:spans_list()
 end
@@ -459,57 +657,123 @@ local function draw(entry, width, spinner)
     return blank()
   end
 
-  if entry.kind == "topic" then
-    local topic = entry.topic
-    local glyph, tone = class_look(topic.class, spinner)
+  -- The classification heading. Its own colour, and the number of TASKS under
+  -- it rather than topics: "3" beside RUNNING should mean the same three the
+  -- counter at the top of the pane is counting.
+  if entry.kind == "class" then
+    local glyph, tone = class_look(entry.class, spinner)
+    local label = CLASS_LABEL[entry.class] or entry.class
     local row = ui.row({ width = width })
     row:add(" " .. glyph .. " ", { fg = tone })
-    row:add(widgets.truncate(topic.slug, math.max(4, width - 14)), {
-      fg = theme.accent,
-      bold = true,
-    })
-    if topic.settled then
-      local word = topic.landed == #topic.tasks and " landed" or " closed"
-      row:trailing(#topic.tasks .. word, { fg = theme.muted })
-    else
-      row:trailing(topic.title, { fg = theme.muted })
-    end
+    row:add(widgets.truncate(label, math.max(1, width - 3)), { fg = tone, bold = true })
+    row:trailing(tostring(entry.count), { fg = theme.muted })
     return line(row:spans_list())
+  end
+
+  -- A settled topic: one row, because there is nothing left to do about it.
+  if entry.kind == "settled" then
+    local topic = entry.topic
+    local word = topic.landed == #topic.tasks and " landed" or " closed"
+    local row = ui.row({ width = width })
+    row:add("   ")
+    row:add(widgets.truncate(topic.slug, math.max(1, width - 14)), { fg = theme.ok })
+    row:trailing(#topic.tasks .. word, { fg = theme.muted })
+    return line(row:spans_list())
+  end
+
+  -- An open topic: a rule carrying its slug, so the tasks under it read as a
+  -- group without spending a colour on each of them.
+  if entry.kind == "topic" then
+    local topic = entry.topic
+    local lead = width >= 10 and " ── " or " "
+    local label = widgets.truncate(topic.slug, math.max(1, width - widgets.len(lead) - 2))
+    local used = widgets.len(lead) + widgets.len(label)
+    local spans = {
+      { text = lead, style = { fg = theme.muted } },
+      { text = label, style = { fg = theme.accent, bold = true } },
+    }
+    if width > used then
+      spans[#spans + 1] = {
+        text = " " .. string.rep("─", math.max(0, width - used - 1)),
+        style = { fg = theme.muted },
+      }
+    end
+    return line(spans)
   end
 
   local task = entry.task
+
+  -- The task's TITLE. This is the line the pane was missing: an id is a handle,
+  -- a title is what the work IS, and the monitor leads with it for that reason.
   if entry.kind == "task" then
     local glyph, tone = state_look(task.display_state, spinner)
-    local word = task.display_state
-    local row = ui.row({ width = width })
-    row:add("   " .. glyph .. " ", { fg = tone })
-    row:add(widgets.truncate(task.id, math.max(4, width - 8 - widgets.len(word))), {
-      fg = theme.text,
-      bold = true,
-    })
-    row:trailing(word, { fg = tone })
-    return line(row:spans_list())
-  end
-
-  -- What a `waiting` task is waiting ON, on a row of its own.
-  --
-  -- It was the trailing note on the row above, and there it crushed the thing it
-  -- was annotating: "waiting on 01-first" is twenty columns of a thirty-column
-  -- row, and the task id it belongs to came out as `02-s…`. A blocker is also
-  -- the one piece of state here a reader may want to type into `queue.sh`, so it
-  -- is shown whole rather than budgeted against something else.
-  if entry.kind == "blocker" then
+    local title = task.title ~= "" and task.title or task.id
     return line({
-      { text = "     ↳ ", style = { fg = theme.secondary } },
+      { text = " " .. glyph .. " ", style = { fg = tone } },
       {
-        text = widgets.truncate(task.held_by, math.max(4, width - 7)),
-        style = { fg = theme.secondary },
+        text = widgets.truncate(title, math.max(1, width - 3)),
+        style = { fg = theme.text, bold = true },
       },
     })
   end
 
+  -- The handle, the state and the age on one row: what to type into `queue.sh`,
+  -- what it is doing, and how long it has been doing it.
+  if entry.kind == "meta" then
+    local _, tone = state_look(task.display_state, spinner)
+    local note = task.display_state
+    local age = age_of(task)
+    if age then
+      note = note .. " " .. age
+    end
+    local row = ui.row({ width = width })
+    row:add("   ")
+    row:add(widgets.truncate(task.id, math.max(1, width - 5 - widgets.len(note))), {
+      fg = theme.secondary,
+    })
+    row:trailing(note, { fg = tone })
+    return line(row:spans_list())
+  end
+
   if entry.kind == "docs" then
     return line(docs_spans(task, width))
+  end
+
+  -- One dependency edge, under the task that carries it: the ordering fleet
+  -- decided, with the reason it recorded.
+  --
+  -- CLEARED EDGES ARE DRAWN TOO. Showing only what is still holding answers
+  -- "why is this stuck" and silently drops "why was this ever ordered" — and a
+  -- ready task whose blocker just landed is exactly the row an operator wants
+  -- to see, because it explains why the task became ready.
+  --
+  -- The ref loses its topic when it names a sibling, since the rule above it
+  -- already says which topic that is; a cross-topic edge keeps the whole ref,
+  -- because that one is genuinely elsewhere.
+  if entry.kind == "blocker" then
+    local edge = entry.edge
+    local ref = edge.ref
+    local sibling = task.topic .. "/"
+    if ref:sub(1, #sibling) == sibling then
+      ref = ref:sub(#sibling + 1)
+    end
+    local glyph = edge.cleared and "✓" or "◆"
+    local tone = edge.cleared and theme.ok or theme.secondary
+    local kind = BLOCKER_KIND[edge.kind] or edge.kind
+    -- The prefix is budgeted like everything else: below about a dozen columns
+    -- the indent and the marks cost more than the ref they are annotating, so
+    -- they go and the ref stays.
+    local lead, mark = "   ↳ ", glyph .. " "
+    if widgets.len(lead) + widgets.len(mark) + 1 > width then
+      lead, mark = "", ""
+    end
+    local room = width - widgets.len(lead) - widgets.len(mark) - widgets.len(kind)
+    local row = ui.row({ width = width })
+    row:add(lead, { fg = theme.muted })
+    row:add(mark, { fg = tone })
+    row:add(widgets.truncate(ref, math.max(1, room - 2)), { fg = tone })
+    row:trailing(kind, { fg = theme.muted })
+    return line(row:spans_list())
   end
 
   -- The pull request, as a link rather than as text about a link. `url:` is the
@@ -519,9 +783,9 @@ local function draw(entry, width, spinner)
   -- truncated in the MIDDLE because both ends identify a pull request — the host
   -- says which forge, the tail says which number.
   return line({
-    { text = "     " },
+    { text = "   " },
     {
-      text = widgets.middle_truncate(task.artifact, math.max(8, width - 5)),
+      text = widgets.middle_truncate(task.artifact, math.max(1, width - 3)),
       style = { fg = theme.accent, underline = true },
     },
   }, "url:" .. task.artifact)
@@ -530,32 +794,71 @@ end
 --- The counters, in the monitor's own order and buckets: ready, running,
 --- waiting, done, failed. `webui.py`'s HUD_GROUPS, and the same rule that every
 --- display state lands in exactly one of them.
+---
+--- The glyph beside each is the one the classification heading below uses, so
+--- the top of the pane and the groups under it speak with one vocabulary.
 local HUD = {
-  { label = "failed", role = "bad", states = { "stuck", "failed" } },
-  { label = "running", role = "warn", states = { "dispatched" } },
-  { label = "ready", role = "accent", states = { "queued" } },
-  { label = "waiting", role = "secondary", states = { "waiting" } },
-  { label = "done", role = "muted", states = { "done", "landed", "abandoned" } },
+  { label = "failed", glyph = "✗", role = "bad", states = { "stuck", "failed" } },
+  { label = "running", glyph = "◐", role = "warn", states = { "dispatched" } },
+  { label = "ready", glyph = "▶", role = "accent", states = { "queued" } },
+  { label = "waiting", glyph = "◆", role = "secondary", states = { "waiting" } },
+  { label = "done", glyph = "●", role = "muted", states = { "done", "landed", "abandoned" } },
 }
 
+--- The counter row, in the widest form that fits.
+---
+--- Budgeted for the same reason the documents row is: `1 failed  2 ready
+--- 1 waiting  4 done` is 37 columns, and this pane's column is routinely thirty.
+--- Clipped, it lost the buckets on the right — which are the ones that say work
+--- is finished, so a busy queue looked like an idle one. Under pressure the
+--- WORDS go and the glyphs stay, because the headings below name them anyway.
 local function summary_spans(model, width)
-  local row = ui.row({ width = width })
-  local drew = false
+  local shown = {}
   for _, group in ipairs(HUD) do
     local total = 0
     for _, name in ipairs(group.states) do
       total = total + (model.counts[name] or 0)
     end
     if total > 0 then
-      row:add((drew and "  " or " ") .. total .. " " .. group.label, {
-        fg = theme[group.role],
-        bold = group.role ~= "muted",
-      })
-      drew = true
+      shown[#shown + 1] = { group = group, total = total }
     end
   end
-  if not drew then
+
+  local row = ui.row({ width = width })
+  if #shown == 0 then
     row:add(" no tasks", { fg = theme.muted })
+    return row:spans_list()
+  end
+
+  local function label_of(entry, long)
+    if long then
+      return entry.total .. " " .. entry.group.label
+    end
+    return entry.group.glyph .. entry.total
+  end
+
+  local function columns(list, long)
+    local n = 0
+    for index, entry in ipairs(list) do
+      n = n + (index == 1 and 1 or 2) + widgets.len(label_of(entry, long))
+    end
+    return n
+  end
+
+  local long = columns(shown, true) <= width
+  -- Still too wide even in glyphs. Drop buckets from the RIGHT, which is the
+  -- order HUD is written in: what needs an operator survives, what is merely
+  -- finished goes first.
+  while #shown > 1 and columns(shown, long) > width do
+    shown[#shown] = nil
+  end
+
+  for index, entry in ipairs(shown) do
+    local lead = index == 1 and " " or "  "
+    row:add(lead .. widgets.truncate(label_of(entry, long), math.max(1, width - 1)), {
+      fg = theme[entry.group.role],
+      bold = entry.group.role ~= "muted",
+    })
   end
   return row:spans_list()
 end
@@ -608,11 +911,13 @@ return {
   },
 
   render = function(ctx)
+    local width = math.max(4, (ctx.width or 30) - 2)
+
     if not run then
       return saying({
         "not trusted yet",
         "settings → Interface → t",
-      })
+      }, width)
     end
 
     -- The control-plane checkout, named by the session fleet's own extension
@@ -630,13 +935,12 @@ return {
         "no '" .. CONTROL_PLANE .. "' session",
         "run ./scripts/install-extension.sh",
         "in your fleet checkout",
-      })
+      }, width)
     end
     if lead.status == "unreachable" then
-      return saying({ "the " .. CONTROL_PLANE .. " session is unreachable" })
+      return saying({ "the " .. CONTROL_PLANE .. " session is unreachable" }, width)
     end
 
-    local width = math.max(12, (ctx.width or 30) - 2)
     local spinner = theme.spinner_frame(ctx.elapsed)
 
     -- Asked every frame on purpose: the TTL decides whether a process runs, and
@@ -646,7 +950,7 @@ return {
     local answer = (thurbox.runs or {})[key]
 
     if not answer or answer.state == "pending" then
-      return saying({ spinner .. " reading the queue…" })
+      return saying({ spinner .. " reading the queue…" }, width)
     end
     if answer.state == "failed" or (answer.stdout or "") == "" then
       -- NOT `not answer.ok`. The probe spells every condition it can tell apart
@@ -654,15 +958,15 @@ return {
       -- reading it as a failure is how a queue with nothing in it gets reported
       -- as a broken pane. Only a probe the kernel could not RUN, or one that
       -- said nothing at all, is a failure.
-      return saying({ "the queue probe did not run", "in " .. lead.cwd })
+      return saying({ "the queue probe did not run", "in " .. lead.cwd }, width)
     end
 
     local model = model_for(answer.stdout or "")
     if model.error then
-      return saying({ model.error, lead.cwd })
+      return saying({ model.error, lead.cwd }, width)
     end
     if #model.topics == 0 then
-      return saying({ "the queue is empty", model.root or lead.cwd })
+      return saying({ "the queue is empty", model.root or lead.cwd }, width)
     end
 
     local children = { line(summary_spans(model, width)), widgets.divider(width) }

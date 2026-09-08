@@ -218,7 +218,7 @@ say plainly that you stopped there on purpose:
 
 ```lua
 if panels.shown("fleetqueue") and filled(ctx, "fleetqueue") then
-  columns[#columns + 1] = { slot = "fleetqueue", pct = 26, min = 32 }
+  columns[#columns + 1] = { slot = "fleetqueue", pct = 30, min = 34 }
 end
 ```
 

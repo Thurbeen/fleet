@@ -154,7 +154,7 @@ else
 			beside the other side columns, inside the \`columns\` list:
 
 			  if panels.shown("fleetqueue") and filled(ctx, "fleetqueue") then
-			    columns[#columns + 1] = { slot = "fleetqueue", pct = 26, min = 32 }
+			    columns[#columns + 1] = { slot = "fleetqueue", pct = 30, min = 34 }
 			  end
 
 			The \`panels.shown\` guard is not optional: without it the column is

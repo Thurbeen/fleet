@@ -486,7 +486,7 @@ nothing here writes to it. The installer prints the line and where it goes:
 
 ```lua
 if panels.shown("fleetqueue") and filled(ctx, "fleetqueue") then
-  columns[#columns + 1] = { slot = "fleetqueue", pct = 26, min = 32 }
+  columns[#columns + 1] = { slot = "fleetqueue", pct = 30, min = 34 }
 end
 ```
 
