@@ -47,9 +47,9 @@ names every path and the reason for each.
   serves, drawn in a thurbox column. `scripts/install-extension.sh` installs it
   with `thurbox-cli plugin install`; the file's own header owns the view, and
   `extension.toml.in`'s header argues why it is not an `[[external_files]]`
-  payload. **Placing it is one line in the user's `layout.lua` and nothing here
-  writes that line** — a pane no arrangement places loads, lists, and draws
-  nothing.
+  payload. **Placing it is a guarded block in the user's `layout.lua` and
+  nothing here writes it** — a pane no arrangement places loads, lists, and
+  draws nothing.
 - `orchestration/playbooks/<name>.md` — reusable recipes for running thurbox.
   All tracked; write new ones here, from `_TEMPLATE.md`.
 - `orchestration/runs/<date>-<slug>.md` — a log per orchestration run.

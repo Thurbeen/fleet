@@ -204,22 +204,22 @@ thurbox-cli plugin check
 ```
 
 It loads the interface exactly as thurbox does and **exits non-zero** on a pane
-that loaded but is placed by nothing, naming the file and the line to add.
+that loaded but is placed by nothing, naming the file and the block to add.
 
 | It says | What it means | What you do |
 |---|---|---|
 | `✓ loads — … fleetqueue …`, exits 0 | installed and placed | say that `F3` opens it |
-| `✗ … nothing places slot "fleetqueue"` | installed, invisible | print the line below |
+| `✗ … nothing places slot "fleetqueue"` | installed, invisible | print the block below |
 | no `fleetqueue` anywhere | the install did not take | re-run step 4 and read its output |
 
-**The line is the user's edit, not yours.** `layout.lua` is shared by every pane
+**The block is the user's edit, not yours.** `layout.lua` is shared by every pane
 on their screen — a mistake there takes the whole interface, not one column — so
 do not write it for them and do not offer to. Print it, say where it goes, and
 say plainly that you stopped there on purpose:
 
 ```lua
 if panels.shown("fleetqueue") and filled(ctx, "fleetqueue") then
-  columns[#columns + 1] = { slot = "fleetqueue", pct = 26, min = 32 }
+  columns[#columns + 1] = { slot = "fleetqueue", pct = 30, min = 34 }
 end
 ```
 
@@ -247,9 +247,9 @@ Until they do, the pane draws an honest "not trusted yet" rather than an empty
 column, so nothing is broken in the meantime.
 
 **On a re-run**, `plugin install` reports the pane `current` and changes nothing,
-and the `layout.lua` line is one the user either already added or has not — which
+and the `layout.lua` block is one the user either already added or has not — which
 is exactly what `plugin check` answers. Check before you speak; a second run must
-never suggest adding a line that is already there. If `thurbox-cli` was missing at
+never suggest adding a block that is already there. If `thurbox-cli` was missing at
 preflight, defer this step exactly as step 4 is deferred: same script, same
 sentence.
 
@@ -336,7 +336,7 @@ Assume someone runs this twice. Every step above **converges**:
 | Owners | adds only missing entries; never duplicates or reorders |
 | Registry | the script rewrites the file wholesale from live GitHub |
 | Extension | a reinstall keeps existing `agents.toml` entries, so a customized model survives |
-| Queue pane | `plugin install` reports it `current`; `plugin check` says whether the `layout.lua` line is already there, so it is never suggested twice |
+| Queue pane | `plugin install` reports it `current`; `plugin check` says whether the `layout.lua` block is already there, so it is never suggested twice |
 | Monitor | `ensure` adopts a running one and respects a `down` flag; never a twin |
 
 So do not refuse on an already-configured clone. Detect it —

@@ -59,7 +59,7 @@ The [onboarding skill](.agents/skills/fleet-onboarding/SKILL.md) does the setup
 rather than instructing you through it — prerequisites, your GitHub owners, the
 repo map, the thurbox extension, the queue pane and the monitor — verifying
 each step and naming anything missing with its remedy before it writes a thing.
-Run it twice and it converges. It hands you exactly one line to add yourself:
+Run it twice and it converges. It hands you a guarded block to add yourself:
 the pane's slot in your thurbox `layout.lua`.
 
 Requires `gh` (authenticated), `jq`, and `thurbox-cli` **2.19.0 or newer**.
@@ -79,6 +79,10 @@ not control** — `./scripts/queue.sh` stays the only thing that writes:
 
 Each shows four things per task and no fifth: the plan, the progress, the
 outcome, and the pull request.
+
+![The queue pane in a thurbox column beside the session list: two workers
+running, the topics they are working on grouped above the finished ones, and
+each task showing its plan, progress and outcome](media/fleet-queue-pane.gif)
 
 ## Your working copy
 
