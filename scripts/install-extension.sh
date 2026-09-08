@@ -141,7 +141,7 @@ else
 	ui_dir="$(thurbox-cli plugin dir --text 2>/dev/null | head -1)" || true
 
 	if [ "$pane_ok" = 1 ]; then
-		printf '\nThe fleet queue pane is installed and placed. Press F6 in thurbox.\n'
+		printf '\nThe fleet queue pane is installed and placed. Press F3 in thurbox.\n'
 	else
 		cat <<-EOF
 
@@ -153,10 +153,16 @@ else
 
 			beside the other side columns, inside the \`columns\` list:
 
-			  columns[#columns + 1] = { slot = "fleetqueue", pct = 26, min = 32 }
+			  if panels.shown("fleetqueue") and filled(ctx, "fleetqueue") then
+			    columns[#columns + 1] = { slot = "fleetqueue", pct = 26, min = 32 }
+			  end
 
-			Then \`thurbox-cli plugin check\` goes green and F6 opens the pane.
-			What it reported:
+			The \`panels.shown\` guard is not optional: without it the column is
+			carved on every frame and F3 toggles a value nothing reads, so the
+			pane opens and never closes. \`panels\` and \`filled\` both already
+			exist in the stock layout.lua, beside the same guard on the session
+			list. Then \`thurbox-cli plugin check\` goes green and F3 opens and
+			closes the pane. What it reported:
 
 		EOF
 		printf '%s\n' "$pane_report" | sed 's/^/  /'

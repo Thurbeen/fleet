@@ -231,6 +231,15 @@ check_pane() {
 			fail "pane: $f does not name slot \"$slot\" in a layout.lua line"
 			miss=1
 		}
+		# The guard, and not only the slot. A placement line without
+		# `panels.shown` is carved on every frame, so the pane's F-key flips a
+		# panel state nothing reads and the column opens and never closes —
+		# which `thurbox-cli plugin check` cannot catch, because the pane DOES
+		# draw. That shipped once; this is what keeps it from shipping twice.
+		grep -q "panels.shown(\"$slot\")" "$f" || {
+			fail "pane: $f documents slot \"$slot\" without the panels.shown guard, so its F-key would not close the column"
+			miss=1
+		}
 	done
 
 	# The installed name, which README documents as the argument to
@@ -248,6 +257,14 @@ check_pane() {
 		miss=1
 	fi
 
+	# The chord must not be one the KERNEL already owns. A plugin-scoped
+	# binding does not outrank a kernel one, and the failure is silent in the
+	# worst way: the pane still registers, `ui.chord` still finds it, the pane's
+	# own title still advertises it — and the key never reaches the pane,
+	# because thurbox's action band answers it first. F6 shipped exactly like
+	# that, reading "F6 hides" in a title while F6 opened Settings.
+	local reserved="f1 f4 f6 f10 f12"
+
 	# The chord, which three files promise and only the pane binds.
 	local chord
 	chord="$(sed -n 's/^      key = "\(f[0-9]*\)",$/\1/p' "$pane" | head -1)"
@@ -255,6 +272,12 @@ check_pane() {
 		fail "pane: could not read the F-key from $pane"
 		miss=1
 	else
+		case " $reserved " in
+		*" $chord "*)
+			fail "pane: $chord is a kernel chord (help/theme/settings/reload/perf); a plugin binding loses to it and the key would never reach the pane"
+			miss=1
+			;;
+		esac
 		local upper
 		upper="$(printf '%s' "$chord" | tr '[:lower:]' '[:upper:]')"
 		for f in scripts/install-extension.sh README.md; do

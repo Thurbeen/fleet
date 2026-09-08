@@ -578,7 +578,19 @@ return {
 
   keys = {
     {
-      key = "f6",
+      -- F3, and NOT F4 or F6. The kernel binds F1 Help, F4 Theme, F6
+      -- Settings, F10 reload and F12 the perf HUD, and advertises four of
+      -- them in the action band; F7, F8 and F9 belong to the bundled panes.
+      -- A plugin-scoped chord does not outrank a kernel one, so on F6 this
+      -- pane registered in the key registry, rendered "F6 hides" in its own
+      -- title, and never saw the key — the collision is invisible from in
+      -- here. F2, F3, F5 and F11 are unclaimed.
+      --
+      -- Nothing about the pane depends on this being F3. The title below
+      -- resolves its own chord from the key registry with `ui.chord`, so
+      -- rebinding the action in thurbox's settings moves both the binding and
+      -- the hint that advertises it; nothing here spells a key twice.
+      key = "f3",
       action = TOGGLE,
       desc = "hide or show the fleet queue column",
       -- Global, so it works from inside a focused terminal — and an F-key, so it

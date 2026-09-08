@@ -453,7 +453,7 @@ survives the next `ensure`.
 ```
 
 The same queue as [the monitor](#the-monitor), in a thurbox column, so it is
-readable without leaving the terminal. `F6` opens and closes it. It reads the
+readable without leaving the terminal. `F3` opens and closes it. It reads the
 same four files per task the monitor reads, and shows the same four things —
 the plan (`BRIEF.md`), the progress (`progress.jsonl`), the outcome
 (`result.md`) and the pull request, which is a link you can click. It adds no
@@ -461,6 +461,20 @@ field of its own, for the reason [the monitor](#the-monitor) adds none.
 
 **It displays; it does not control.** The pane cannot even take focus, so
 there is no key on it to press: no dispatch, no collect, no merge.
+
+**The chord is yours to change.** `F3` is a default, not a constant. The pane
+declares its key as data, which is what lets thurbox enumerate, conflict-check
+and rebind it without asking the pane — so rebinding `fleetqueue.toggle` in
+thurbox's settings moves the binding, and the hint in the pane's own title
+moves with it, because that title resolves the chord from the key registry
+rather than spelling it a second time.
+
+What `F3` is avoiding is a collision, not a preference. `F1`, `F4`, `F6`, `F10`
+and `F12` belong to the kernel (help, theme, settings, reload, the perf HUD)
+and `F7`, `F8` and `F9` to the bundled panes. A plugin chord does not outrank a
+kernel one, and losing that contest is silent: the binding registers, the title
+advertises it, and the key never arrives. `./scripts/check.sh pane` refuses a
+chord from the kernel's set for that reason.
 
 Two things about it are worth knowing before you install it.
 
@@ -471,8 +485,16 @@ with no symptom. `layout.lua` is shared by every pane on your screen, so
 nothing here writes to it. The installer prints the line and where it goes:
 
 ```lua
-columns[#columns + 1] = { slot = "fleetqueue", pct = 26, min = 32 }
+if panels.shown("fleetqueue") and filled(ctx, "fleetqueue") then
+  columns[#columns + 1] = { slot = "fleetqueue", pct = 26, min = 32 }
+end
 ```
+
+The `panels.shown` guard is what makes `F3` a toggle rather than a one-way
+door. Place the slot unconditionally and the column is carved on every frame:
+the key still flips the panel state, nothing reads it, and the pane opens and
+never closes. `panels` and `filled` are already in the stock `layout.lua` —
+the session list is guarded the same way.
 
 `thurbox-cli plugin check` is the proof: it loads your interface exactly as
 thurbox does, and it fails on a pane that loads but is placed by nothing.
