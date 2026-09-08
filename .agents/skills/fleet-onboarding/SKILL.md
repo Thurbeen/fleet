@@ -247,9 +247,9 @@ Until they do, the pane draws an honest "not trusted yet" rather than an empty
 column, so nothing is broken in the meantime.
 
 **On a re-run**, `plugin install` reports the pane `current` and changes nothing,
-and the `layout.lua` line is one the user either already added or has not — which
+and the `layout.lua` block is one the user either already added or has not — which
 is exactly what `plugin check` answers. Check before you speak; a second run must
-never suggest adding a line that is already there. If `thurbox-cli` was missing at
+never suggest adding a block that is already there. If `thurbox-cli` was missing at
 preflight, defer this step exactly as step 4 is deferred: same script, same
 sentence.
 
@@ -336,7 +336,7 @@ Assume someone runs this twice. Every step above **converges**:
 | Owners | adds only missing entries; never duplicates or reorders |
 | Registry | the script rewrites the file wholesale from live GitHub |
 | Extension | a reinstall keeps existing `agents.toml` entries, so a customized model survives |
-| Queue pane | `plugin install` reports it `current`; `plugin check` says whether the `layout.lua` line is already there, so it is never suggested twice |
+| Queue pane | `plugin install` reports it `current`; `plugin check` says whether the `layout.lua` block is already there, so it is never suggested twice |
 | Monitor | `ensure` adopts a running one and respects a `down` flag; never a twin |
 
 So do not refuse on an already-configured clone. Detect it —

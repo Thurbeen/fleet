@@ -207,8 +207,8 @@ check_status() {
 #
 # What DOES belong here is the failure this repo can cause on its own. The pane
 # names a slot, and `install-extension.sh` and the onboarding skill each print
-# a `layout.lua` line naming that slot. If either drifts, the operator is
-# handed a line that places a slot nothing fills: the pane loads, lists, and
+# a `layout.lua` block naming that slot. If either drifts, the operator is
+# handed a block that places a slot nothing fills: the pane loads, lists, and
 # draws nothing, and every message they have says it should work.
 check_pane() {
 	local pane="interface/fleet_queue.lua"
@@ -225,16 +225,16 @@ check_pane() {
 		return
 	fi
 
-	# The two files that DOCUMENT the placement line, which the README
+	# The two files that DOCUMENT the placement block, which the README
 	# deliberately does not: it is a setup step, the onboarding skill runs the
-	# setup, and the installer prints the line at the moment it is needed.
+	# setup, and the installer prints the block at the moment it is needed.
 	local f miss=0
 	for f in scripts/install-extension.sh .agents/skills/fleet-onboarding/SKILL.md; do
 		grep -q "slot = \"$slot\"" "$f" || {
 			fail "pane: $f does not name slot \"$slot\" in a layout.lua line"
 			miss=1
 		}
-		# The guard, and not only the slot. A placement line without
+		# The guard, and not only the slot. A placement block without
 		# `panels.shown` is carved on every frame, so the pane's F-key flips a
 		# panel state nothing reads and the column opens and never closes —
 		# which `thurbox-cli plugin check` cannot catch, because the pane DOES

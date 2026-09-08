@@ -868,7 +868,7 @@ return {
 
   -- Placed by `layout.lua` as a side column. Without that edit this file loads,
   -- declares its key, and draws nothing — which is what `thurbox-cli plugin
-  -- check` fails on, and it prints the line to add.
+  -- check` fails on, and it prints the block to add.
   slot = SLOT,
   order = 80,
 

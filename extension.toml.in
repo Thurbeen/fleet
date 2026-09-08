@@ -75,7 +75,7 @@
 #                         entry and the lock. An external file is copied once and
 #                         belongs to nobody afterwards.
 #                       * It is the mechanism thurbox INTENDS for a pane, and the
-#                         only one that prints the `layout.lua` line the pane
+#                         only one that prints the `layout.lua` block the pane
 #                         needs in order to be placed. A pane that is laid down
 #                         silently loads, appears in `plugin list`, and draws
 #                         nothing — which is the failure mode with no symptom.
