@@ -30,9 +30,10 @@
 #      working is never touched whatever the record claims, and a task the
 #      worker gave up in keeps its session because that session is the
 #      evidence. A blocker clears on the merge, not on the conclusion.
-#  10. A pull request that goes bad after its worker stopped gets a FIXER, and
-#      a green one opened through the pipeline gets merged. Everything the
-#      shepherd cannot read is left exactly as it is.
+#  10. EVERY open pull request on the repo is shepherded, whether or not a task
+#      records it: one that goes bad gets a FIXER, and one that clears every
+#      merge gate gets merged. A stranger's is neither. Everything the shepherd
+#      cannot read is left exactly as it is.
 #
 # Test 4 is also the wake proof. The event source is `thurbox-cli watch`, which
 # this script replaces with a recorded stream through `FLEET_QUEUE_WATCH_CMD` —
@@ -927,13 +928,23 @@ rm -rf "$clonetmp"
 # broken PR gets a FIXER and a good one gets MERGED — not that a status line
 # gets printed.
 #
-# Six claims, and the last three are the ones that make it safe to run at all:
+# The list comes from the FORGE and not from the task records, because a task
+# records one artifact — the first PR its worker reported — and #25 was a
+# second PR from a task still pointing at the already-merged #23.
+#
+# The claims, and the ones after the first four are what make it safe to run
+# unattended against a public repo that has a fork:
 #
 #   a conflicting PR dispatches exactly ONE fixer, on the branch that exists
 #   a second pass over the same PR dispatches NONE
 #   a green PR in an allowlisted repo is squash-merged
-#   a PR that skipped the pipeline is NEVER merged, however green it looks
 #   a PR outside the allowlist is never merged, whatever its state
+#   a PR NO TASK RECORDS is discovered, classified and merged all the same
+#   a second PR on a task's branch is linked back to that task
+#   a PR from a FORK is never merged and never handed to an agent
+#   a PR opened by someone who cannot push here is never merged
+#   an attestation for an EARLIER head sha does not authorise this one
+#   the five `## ` headings, which anyone can paste, authorise nothing
 #   an unreachable `gh` dispatches none and merges none — "could not check"
 #     is never "broken", and it is never "ready" either
 #
@@ -956,8 +967,39 @@ if [ -n "${SHEP_GH_DOWN:-}" ]; then
 	echo "gh: could not connect to github.com" >&2
 	exit 1
 fi
+# Who has push access, which is what "opened by the repository owner" means
+# once the owner is an organisation and the author is a person in it.
+if [ "$1" = api ]; then
+	login=$(printf '%s' "$2" | sed 's#/permission$##; s#.*/##')
+	printf '{"permission":"%s"}\n' "$(cat "$SHEP/perms/$login" 2>/dev/null || echo none)"
+	exit 0
+fi
 n=$(printf '%s' "$3" | sed 's#/*$##; s#.*/##')
 case "$1 $2" in
+"pr list")
+	# The forge is the source of truth now, so this answers with every OPEN
+	# pull request on the repo asked for — including ones no task records.
+	repo=""
+	while [ $# -gt 0 ]; do
+		case "$1" in
+		--repo) repo="$2" ;;
+		esac
+		shift
+	done
+	python3 -c '
+import glob, json, sys
+repo, where = sys.argv[1], sys.argv[2]
+docs = []
+for f in sorted(glob.glob(where + "/*.json")):
+    d = json.load(open(f))
+    if d.get("state") != "OPEN":
+        continue
+    if d["url"].split("/pull/")[0][len("https://github.com/"):] != repo:
+        continue
+    docs.append(d)
+print(json.dumps(docs))
+' "$repo" "$SHEP/gh"
+	;;
 "pr view")
 	if [ ! -f "$SHEP/gh/$n.json" ]; then
 		echo "gh: no pull request $n" >&2
@@ -1025,15 +1067,21 @@ srepo="$shep/repo"
 mkdir -p "$srepo"
 git -C "$srepo" init -q -b main
 git -C "$srepo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m base
-for br in conflicting green skipped elsewhere busy unrun gone; do
+for br in conflicting green skipped elsewhere busy unrun gone second; do
 	git -C "$srepo" branch "fix/$br"
 done
+
+# Push access, which is what "opened by the repository owner" means once the
+# owner is an organisation and the author is a person inside it. `stranger` has
+# no file here, so the stub answers `none` for them.
+mkdir -p "$shep/perms"
+echo admin >"$shep/perms/LeTuR"
 
 stopic="$($QUEUE topic add shepherd-cases --title 'The PRs, after the work' \
 	--prompt 'watch every open PR and dispatch a fixer when one goes bad')"
 
 for spec in 01:conflicting:101 02:green:102 03:skipped:103 04:elsewhere:104 \
-	05:busy:105 06:unrun:106 07:gone:107; do
+	05:busy:105 06:unrun:106 07:gone:107 08:second:113; do
 	IFS=: read -r n slug pr <<<"$spec"
 	$QUEUE add "$stopic" "$slug" --title "A PR that is $slug" --repo "$srepo" \
 		--branch "fix/$slug" --number "$n" >/dev/null
@@ -1054,19 +1102,37 @@ import json
 import sys
 
 out = sys.argv[1]
-body = "\n".join(
+headings = "\n".join(
     f"## {h}\nx\n"
     for h in ("Intent", "What Changed", "Risk Assessment", "Testing", "Pipeline")
 )
 green = {"__typename": "CheckRun", "name": "CI", "status": "COMPLETED", "conclusion": "SUCCESS"}
 
+# Copied from a real no-mistakes body. The attestation is written DURING the
+# `pr` step, so `pr` reads `running` and `ci` `pending` in every body that
+# carries one; everything up to and including the push is `completed`.
+STEPS = [
+    {"step": s, "status": "completed"}
+    for s in ("intent", "rebase", "review", "test", "document", "lint", "push")
+] + [{"step": "pr", "status": "running"}, {"step": "ci", "status": "pending"}]
 
-def pr(n, owner="Thurbeen/fleet", **kw):
+
+def attested(sha, steps=None):
+    payload = json.dumps({"head_sha": sha, "steps": steps or STEPS})
+    return f"<!-- no-mistakes-pipeline-attestation:v1 {payload} -->\n\n" + headings
+
+
+def pr(n, owner="Thurbeen/fleet", sha=None, body=None, **kw):
+    sha = sha or f"{n:040d}"
     doc = {
         "number": n, "state": "OPEN", "title": f"PR {n}", "isDraft": False,
         "url": f"https://github.com/{owner}/pull/{n}",
         "mergeable": "MERGEABLE", "reviewDecision": "", "statusCheckRollup": [green],
-        "body": body, "headRefName": "fix/x", "baseRefName": "main",
+        "body": attested(sha) if body is None else body,
+        "headRefName": "fix/x", "baseRefName": "main", "headRefOid": sha,
+        "author": {"login": "LeTuR", "is_bot": False},
+        "headRepositoryOwner": {"login": owner.split("/")[0]},
+        "isCrossRepository": False,
     }
     doc.update(kw)
     json.dump(doc, open(f"{out}/{n}.json", "w"))
@@ -1081,6 +1147,29 @@ pr(104, owner="someone-else/their-repo", headRefName="fix/elsewhere")
 pr(106, headRefName="fix/unrun", statusCheckRollup=[])
 pr(107, mergeable="CONFLICTING", headRefName="fix/gone")
 pr(105, mergeable="CONFLICTING", headRefName="fix/busy")
+
+# --- the four the forge knows about and the task records do not -------------
+
+# 108: no task ever recorded it, and it is perfect. Discovery from the forge
+# is the whole point: this one is invisible to a shepherd reading artifacts.
+pr(108, headRefName="fix/nobody-sent-me")
+# 109: a stranger's, from the fork this public repo has. Green, and attested
+# with this PR's own head sha — everything a body can be made to say.
+pr(109, headRefName="patch-1", author={"login": "stranger", "is_bot": False},
+   headRepositoryOwner={"login": "stranger"}, isCrossRepository=True)
+# 110: attested for the sha BEFORE the last push. The pipeline ran on code
+# that is no longer what would be merged.
+pr(110, headRefName="fix/stale", body=attested("f" * 40))
+# 111: all five headings, which anyone can type, and no attestation at all.
+pr(111, headRefName="fix/headings-only", body=headings)
+# 112: the branch IS ours — anyone with read access can open a pull request
+# between two branches that already exist, and the body would then be theirs.
+pr(112, headRefName="fix/green", author={"login": "stranger", "is_bot": False})
+
+# --- the #25 case: a SECOND pull request from a task whose artifact is the
+# first one, already merged. Only the head branch connects 114 to that task.
+pr(113, state="MERGED", headRefName="fix/second")
+pr(114, mergeable="CONFLICTING", headRefName="fix/second")
 PY
 
 # 05's own worker is still mid-turn. `working` is the agent SAYING it is not at
@@ -1129,8 +1218,8 @@ out="$(env PATH="$shep/bin:$base_path" $QUEUE shepherd --topic "$stopic" 2>&1)"
 count_is "a conflicting PR dispatches exactly one fixer" \
 	"$(grep -c 'session create .*__01-conflicting' "$shep/tbx.log")" 1 \
 	"$out$nl$(cat "$shep/tbx.log")"
-count_is "one fixer per broken PR, and none for the four that are not" \
-	"$(creates)" 3 "$out$nl$(cat "$shep/tbx.log")"
+count_is "one fixer per broken PR, and none for the ones that are not" \
+	"$(creates)" 4 "$out$nl$(cat "$shep/tbx.log")"
 expect "the fixer is prompted, not left on its trust dialog" "session send" \
 	"$(cat "$shep/tbx.log")"
 
@@ -1194,6 +1283,80 @@ else
 	pass "a PR outside the allowlisted repo is never merged"
 fi
 expect "and is handed back to the operator by name" "fleet does not merge in" "$out"
+
+# --- 9c2. every open PR, whether or not a task ever recorded it --------------
+#
+# The bug this closes: a task records ONE artifact, the first pull request its
+# worker reported. #25 was a SECOND pull request from a task whose artifact
+# still pointed at the already-merged #23, so a shepherd reading artifacts
+# could not see it and the unattended pass would never have merged it.
+# Discovery comes from the forge now, so a pull request nobody recorded is
+# shepherded like any other.
+
+expect "a pull request no task records is discovered from the forge" \
+	"pull/108" "$out"
+if grep -qx 108 "$shep/merged" 2>/dev/null; then
+	pass "and an eligible unlinked pull request is merged like any other"
+else
+	fail "and an eligible unlinked pull request is merged like any other" \
+		"$out$nl$(cat "$shep/merged" 2>/dev/null)"
+fi
+expect "and it is named as belonging to no task, not passed over in silence" \
+	"no task" "$out"
+
+# --- 9c3. a stranger's pull request is never merged and never fixed ----------
+#
+# Thurbeen/fleet is public and has a fork, and this command runs unattended on
+# a timer. A body cannot authorise its own merge: the five `## ` headings are
+# text anyone can paste, which is why they were never the gate they looked
+# like. 109 is green, attested for its own head sha, and still not ours.
+
+if grep -qx 109 "$shep/merged" 2>/dev/null; then
+	fail "a pull request from a fork is never merged, however green" \
+		"$(cat "$shep/merged")"
+else
+	pass "a pull request from a fork is never merged, however green"
+fi
+refute "and no agent is ever dispatched at a stranger's branch" \
+	"patch-1" "$(cat "$shep/tbx.log")"
+expect "and it is reported by name rather than skipped silently" "pull/109" "$out"
+
+# --- 9c4. the attestation, and not the headings anyone can type --------------
+
+if grep -qx 110 "$shep/merged" 2>/dev/null; then
+	fail "an attestation for an earlier head sha does not authorise this one" \
+		"$(cat "$shep/merged")"
+else
+	pass "an attestation for an earlier head sha does not authorise this one"
+fi
+expect "and it says the attestation names another commit" "attestation" "$out"
+
+if grep -qx 111 "$shep/merged" 2>/dev/null; then
+	fail "the five headings alone never authorise a merge" "$(cat "$shep/merged")"
+else
+	pass "the five headings alone never authorise a merge"
+fi
+
+# --- 9c4b. ours by branch, and still not opened by anyone who can push -------
+
+if grep -qx 112 "$shep/merged" 2>/dev/null; then
+	fail "a pull request opened by someone who cannot push here is not merged" \
+		"$(cat "$shep/merged")"
+else
+	pass "a pull request opened by someone who cannot push here is not merged"
+fi
+expect "and it says whose access fell short" "stranger has no access" "$out"
+
+# --- 9c5. a second pull request links back to its task by branch -------------
+
+expect "a second PR on a task's branch is linked back to that task" \
+	"08-second" "$out"
+if grep -q 'session create .*__08-second' "$shep/tbx.log"; then
+	pass "and its fixer works in that task's own branch checkout"
+else
+	fail "and its fixer works in that task's own branch checkout" \
+		"$(cat "$shep/tbx.log")"
+fi
 
 # --- 9d. a worker still mid-turn is left alone -------------------------------
 
@@ -1266,9 +1429,70 @@ refute "and never calls a PR it could not read ready" "would-merge" "$out"
 refute "the shepherd never closes a pull request" "pr close" "$(cat "$shep/gh.log")"
 refute "and never edits one" "pr edit" "$(cat "$shep/gh.log")"
 
+# --- 9h. a repo with more open PRs than gh's list can be trusted to return ---
+#
+# `gh pr list --limit N` is a request cap, not a page size: gh paginates the
+# GraphQL calls itself to reach it, so reaching N genuinely means "there may be
+# more". A repo that hits the limit exactly must be reported UNREADABLE, the
+# same as one `gh` could not reach at all — an empty answer and a possibly-
+# truncated one are not the same claim, and only one of them means "nothing is
+# open". Reported here rather than silently merging or fixing whatever
+# happened to fit in the first page.
+
+many="$shep/bin-many"
+mkdir -p "$many"
+: >"$shep/many.log"
+cat >"$many/gh" <<'SH'
+#!/bin/sh
+echo "$*" >>"$SHEP/many.log"
+if [ "$1 $2" = "pr list" ]; then
+	python3 -c '
+import json
+print(json.dumps([
+    {"number": i, "state": "OPEN", "isDraft": False,
+     "url": "https://github.com/many-owner/many-repo/pull/%d" % i,
+     "mergeable": "MERGEABLE", "reviewDecision": "", "statusCheckRollup": [],
+     "body": "", "headRefName": "branch-%d" % i, "baseRefName": "main",
+     "headRefOid": "0" * 40, "author": {"login": "someone", "is_bot": False},
+     "headRepositoryOwner": {"login": "many-owner"}, "isCrossRepository": False}
+    for i in range(1000)
+]))
+'
+	exit 0
+fi
+echo "gh: the many-repo stub is not allowed to run '$1 $2'" >&2
+exit 1
+SH
+chmod +x "$many/gh"
+
+trepo="$shep/repo-many"
+mkdir -p "$trepo"
+git -C "$trepo" init -q -b main
+git -C "$trepo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m base
+
+mtopic="$($QUEUE topic add many-prs --title 'A repo at the pagination limit' \
+	--prompt 'shepherd a repo with at least GH_PR_LIST_LIMIT open pull requests')"
+$QUEUE add "$mtopic" only --title only --repo "$trepo" --branch fix/only --number 1 >/dev/null
+cat >"$FLEET_QUEUE_DIR/$mtopic/1-only/result.md" <<EOF
+---
+outcome: shipped
+artifact: https://github.com/many-owner/many-repo/pull/9999
+---
+Shipped it.
+EOF
+env PATH="$many:$base_path" $QUEUE collect >/dev/null
+
+out="$(env PATH="$many:$base_path" $QUEUE shepherd --topic "$mtopic" 2>&1)"
+expect "a repo at gh's list limit is reported unreadable, not silently capped" \
+	"could not read the pull requests on many-owner/many-repo" "$out"
+expect "and says the result may be truncated" "may be truncated" "$out"
+refute "and nothing from it is merged" "pr merge" "$(cat "$shep/many.log")"
+refute "and it is not reported as having zero open pull requests either" \
+	"no open pull requests" "$out"
+
 # The worktrees the fixers got are real; take them back off the test repo so
 # the temp directory can be removed without leaving stale registrations.
-for slug in 01-conflicting 03-skipped 07-gone; do
+for slug in 01-conflicting 03-skipped 07-gone 08-second; do
 	git -C "$srepo" worktree remove --force \
 		"$FLEET_QUEUE_DIR/.worktrees/${stopic}__${slug}" 2>/dev/null
 done

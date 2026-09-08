@@ -58,11 +58,18 @@
 #
 # AND THEN THE PULL REQUEST OUTLIVES THE TASK, which is what `shepherd` is for:
 #
-#   `shepherd` reads every PR a task recorded as its `artifact`, DISPATCHES A
-#              FIXER for one that conflicts, fails a check, has a review
-#              asking for changes, or was opened outside the pipeline — and
-#              squash-merges one that passes all three of the operator's gates.
+#   `shepherd` asks the FORGE for every open PR on the repos this queue's
+#              tasks name, DISPATCHES A FIXER for one that conflicts, fails a
+#              check, has a review asking for changes, or carries no pipeline
+#              attestation — and squash-merges one that clears every gate.
 #              It is a fourth thing, after both halves of completion.
+#
+#              It reads the forge and not the task records because a task
+#              records ONE artifact, the first PR its worker reported: #25 was
+#              a SECOND pull request from a task still pointing at the merged
+#              #23, and a PR opened outside the queue was invisible the same
+#              way. A PR no task records is shepherded like any other; it just
+#              has no session to send a fixer into, and that is said out loud.
 #
 # It exists because noticing was never the expensive part. In one day: #14 went
 # CONFLICTING when #13 merged and nothing saw it; #11 and #12 were opened with
@@ -93,7 +100,7 @@
 #                        PR failed the pipeline check, after you have judged
 #                        that PR; --no-reap leaves every session alone
 #   scripts/queue.sh reap [--dry-run]     # land what merged, release its session
-#   scripts/queue.sh shepherd [--dry-run] # the PRs after the work: fix or merge
+#   scripts/queue.sh shepherd [--dry-run] # every open PR on the repo: fix or merge
 #                        [--json] [--topic T] [--ref R] [--no-merge] [--force]
 #   scripts/queue.sh list [--topic T]     # the lead's view: a line per task
 #   scripts/queue.sh show <ref>           # one task's whole record

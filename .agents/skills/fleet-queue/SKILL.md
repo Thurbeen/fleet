@@ -397,17 +397,28 @@ person noticing something a machine could have.
 ./scripts/queue.sh shepherd             # do it
 ```
 
-It reads every PR recorded as a task's `artifact`, and each one gets exactly
-one of these:
+**It asks the forge, not the records.** A task records ONE `artifact` — the
+first pull request its worker reported. #25 was a *second* pull request from a
+task whose artifact still pointed at the already-merged #23, so a shepherd
+reading artifacts could not see it and the unattended pass would never have
+merged it; a PR opened outside the queue was invisible the same way. So it runs
+`gh pr list --state open` against every repo the queue's tasks name, and each
+open pull request gets exactly one of these:
 
 | What `gh` says | What happens |
 |---|---|
+| the head branch is in someone else's fork | reported, never merged, **never given an agent** |
 | `mergeable: CONFLICTING` | a fixer is dispatched to rebase |
 | a check failed | a fixer is dispatched to fix it |
 | `reviewDecision: CHANGES_REQUESTED` | a fixer is dispatched to address it |
-| the body has no pipeline sections | a fixer is dispatched to re-run `/no-mistakes --yes` |
-| sections present, checks green, `MERGEABLE` | **squash-merged**, in the allowlisted repos only |
+| no attestation for this head commit | a fixer is dispatched to re-run `/no-mistakes --yes` |
+| attested, checks green, `MERGEABLE`, ours | **squash-merged**, in the allowlisted repos only |
 | anything it could not read | reported, and otherwise left alone |
+
+A PR is tied back to a task by its recorded `artifact` or by its **head
+branch** matching the task's. One that matches neither is still classified and
+still merged — it simply has no session to send a fixer into, and the output
+names it as belonging to no task rather than passing over it in silence.
 
 **Dispatching the fixer is the point.** A status report would have saved none
 of those three round trips, because noticing was never the expensive part. The
@@ -433,13 +444,28 @@ Three things it will not do, and they are what make it safe to run:
   not determine and carries on. A PR it could not read is never called broken
   and never called ready.
 
-**On merging.** Fleet merges only in the repos on `AUTO_MERGE_REPOS` in
-`scripts/lib/queue.py` — `Thurbeen/fleet` — and only when all three of the
-operator's gates hold: the body carries the five pipeline sections, every check
-has concluded and passed, and GitHub itself says `MERGEABLE`. A PR that skipped
-the pipeline is never merged however green it looks, and neither is one whose
-checks have not reported yet. Everywhere else it reports `ready to merge` and
-stops, which is what every repo did before that list existed.
+**On merging, which is the part that runs unattended.** `Thurbeen/fleet` is
+public and has a fork, so "merge every open PR on a timer" has to survive a
+stranger opening one. Fleet merges only in the repos on `AUTO_MERGE_REPOS` in
+`scripts/lib/queue.py` — `Thurbeen/fleet` — and only when **all** of these
+hold:
+
+- **The head branch is in that repository**, not a fork. A stranger cannot
+  create a branch here, so this is the one claim about a pull request that
+  whoever opened it cannot write for themselves.
+- **Whoever opened it can push there.** Anyone with read access can open a
+  pull request between two branches that already exist, and the body would
+  then be theirs to write.
+- **A `no-mistakes` attestation naming its CURRENT head commit.** Not the five
+  `## ` headings — those are text anyone can paste, so counting them let a
+  body authorise its own merge. The attestation is an HTML comment carrying
+  the commit the pipeline ran on and a status per step; one from an earlier
+  push is refused, because a verdict is about the code it saw.
+- **Every check concluded and passed, and GitHub says `MERGEABLE`.**
+
+A PR failing any of them is not merged, and one that is not ours is not given
+an agent either. Everywhere outside the allowlist it reports `ready to merge`
+and stops, which is what every repo did before that list existed.
 
 **Run it the way you run `collect`.** It is a sibling and not part of it —
 `collect` reads local files and works with the network down, and folding a
