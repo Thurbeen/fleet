@@ -44,10 +44,12 @@
 # WORKING STATE. The task queue: topics, per-task briefs, the transitions a run
 # produced, and what each worker concluded. This is the whole of the control
 # plane's working memory — one operator's prompts and one operator's work — and
-# it is exactly what must not reach a public repo. README.md documents the
-# layout and stays, so an empty queue still shows what goes in it.
+# it is exactly what must not reach a public repo. Two tracked files stay:
+# README.md, which documents the layout, and POLICY.md, the standing policy
+# every brief points its worker at instead of restating it.
 /orchestration/queue/*
 !/orchestration/queue/README.md
+!/orchestration/queue/POLICY.md
 
 # GENERATED. Python's bytecode cache. scripts/lib/webui.py loads queue.py as a
 # module, and importing anything writes one of these beside the source — so it

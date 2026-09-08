@@ -35,7 +35,13 @@
 #              transition into the task's progress.jsonl. It closes NOTHING.
 #              A turn ending is not a task finishing.
 #   `collect`  reads the result.md a worker wrote when it knew what it had
-#              concluded, and only that closes a task.
+#              concluded, and only that closes a task. It also CHECKS that
+#              task's artifact: a `no-mistakes` pull request body carries five
+#              headings, so "open the PR through the pipeline" stops being an
+#              unverifiable instruction about a method. A pull request without
+#              them is reported and the task is left OPEN; a check that could
+#              not run (no `gh`, no network) says so and is never read as
+#              either verdict.
 #
 # Both are things the lead READS when it chooses. Neither pushes anything into
 # its terminal, which is what `thurbox-cli message send` does and why the queue
@@ -51,7 +57,9 @@
 #   scripts/queue.sh dispatch [--dry-run] # launch the whole ready set at once
 #   scripts/queue.sh attach <ref> <uuid>  # record a session you spawned by hand
 #   scripts/queue.sh watch [--for-secs N] # fold transitions in; close nothing
-#   scripts/queue.sh collect              # read the results; close what is done
+#   scripts/queue.sh collect [--allow-unverified]  # read results, close what is
+#                        done; --allow-unverified closes one whose PR failed
+#                        the pipeline check, after you have judged that PR
 #   scripts/queue.sh list [--topic T]     # the lead's view: a line per task
 #   scripts/queue.sh show <ref>           # one task's whole record
 #   scripts/queue.sh check                # validate every record (./scripts/check.sh queue)
@@ -83,9 +91,9 @@
 # question the tooling answers about itself.
 #
 # Everything under orchestration/queue/ is WORKING STATE and gitignored — this
-# repo is public and your prompts are not. `_TEMPLATE/` beside it is the form
-# and stays tracked, the same split registry/context/ and orchestration/runs/
-# use. .gitignore's header owns the reason.
+# repo is public and your prompts are not — except README.md and POLICY.md,
+# which stay tracked: the layout, and the standing policy every brief points a
+# worker at instead of restating it. .gitignore's header owns the reason.
 #
 # Environment:
 #   FLEET_QUEUE_DIR        where the queue lives (default: this checkout's

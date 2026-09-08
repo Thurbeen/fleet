@@ -1,9 +1,16 @@
 # The task queue
 
 This directory is **yours**. Everything the control plane writes here is
-gitignored — this README is the only tracked file. `.gitignore`'s header owns
-the reason: this repo is public, and your prompts, your briefs and your workers'
-results are not a thing to publish.
+gitignored; the two tracked files are this README and [`POLICY.md`](POLICY.md).
+`.gitignore`'s header owns the reason: this repo is public, and your prompts,
+your briefs and your workers' results are not a thing to publish.
+
+`POLICY.md` is the standing policy every worker runs under — the pipeline
+requirement and the five headings that prove it, squash-merge, who merges, the
+gate, one-brief-one-worker, and the result contract. Every `BRIEF.md` the
+scaffold writes points at it by absolute path rather than restating it, so it
+is written once and cannot drift between briefs. **Task-specific detail still
+belongs in the brief**; only the repetition moved.
 
 `../../scripts/queue.sh` owns it. Its header is the full usage; this file is
 the layout, so a fresh clone with an empty queue still shows what goes here.
@@ -24,6 +31,7 @@ across several repos. The topic decomposes into **tasks**, and each task is a
 directory holding everything about it and nothing about any other.
 
 ```text
+POLICY.md                            standing policy — tracked, read by workers
 <topic>/                             e.g. report-status-honestly/
   topic.yaml                         slug, title, when it opened
   PROMPT.md                          the prompt that opened it, VERBATIM
@@ -49,7 +57,7 @@ outcome — is therefore the directory listing. It needs no field that is not
 already here. `../../scripts/webui.sh` serves exactly that view in a browser,
 as a reader: it opens these four files and adds nothing to them.
 
-## Two rules worth knowing before you edit anything
+## Three rules worth knowing before you edit anything
 
 **Only `blocked_by` makes a task wait.** It records a kind from a closed set
 (`semantic-dependency`, `shared-external-state`, `incompatible-migration`,
@@ -61,3 +69,12 @@ risk beside the ready set and holds nothing up.
 `progress.jsonl`. A transition says a turn ended, which is not the claim that a
 task finished — only the worker's own `result.md`, read by `queue.sh collect`,
 closes anything.
+
+**`collect` checks the artifact it is handed.** A `no-mistakes` pull request
+body carries `## Intent`, `## What Changed`, `## Risk Assessment`, `## Testing`
+and `## Pipeline`; a task whose PR is missing any of them is reported and left
+OPEN, because "open the PR through the pipeline" is an instruction about a
+METHOD and a method leaves no trace anyone can read. A check that could not run
+— no `gh`, no network — says exactly that and is never counted as either
+verdict. `collect --allow-unverified` closes a flagged task once you have read
+that pull request yourself.
