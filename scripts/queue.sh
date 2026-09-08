@@ -126,9 +126,13 @@
 # question the tooling answers about itself.
 #
 # Everything under orchestration/queue/ is WORKING STATE and gitignored — this
-# repo is public and your prompts are not — except README.md and POLICY.md,
-# which stay tracked: the layout, and the standing policy every brief points a
-# worker at instead of restating it. .gitignore's header owns the reason.
+# repo is public and your prompts are not — except README.md, POLICY.md and
+# OPERATOR.example.md, which stay tracked: the layout, the standing policy every
+# brief points a worker at instead of restating it, and the form of OPERATOR.md.
+# That last one is the OPERATOR's counterpart to the policy — their own standing
+# instructions to every worker, ignored like the rest of the queue, and pointed
+# at by every brief scaffolded while it exists and is not empty.
+# .gitignore's header owns the reason for each.
 #
 # Environment:
 #   FLEET_QUEUE_DIR        where the queue lives (default: this checkout's
