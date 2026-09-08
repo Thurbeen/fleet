@@ -257,6 +257,14 @@ check_pane() {
 		miss=1
 	fi
 
+	# The chord must not be one the KERNEL already owns. A plugin-scoped
+	# binding does not outrank a kernel one, and the failure is silent in the
+	# worst way: the pane still registers, `ui.chord` still finds it, the pane's
+	# own title still advertises it — and the key never reaches the pane,
+	# because thurbox's action band answers it first. F6 shipped exactly like
+	# that, reading "F6 hides" in a title while F6 opened Settings.
+	local reserved="f1 f4 f6 f10 f12"
+
 	# The chord, which three files promise and only the pane binds.
 	local chord
 	chord="$(sed -n 's/^      key = "\(f[0-9]*\)",$/\1/p' "$pane" | head -1)"
@@ -264,6 +272,12 @@ check_pane() {
 		fail "pane: could not read the F-key from $pane"
 		miss=1
 	else
+		case " $reserved " in
+		*" $chord "*)
+			fail "pane: $chord is a kernel chord (help/theme/settings/reload/perf); a plugin binding loses to it and the key would never reach the pane"
+			miss=1
+			;;
+		esac
 		local upper
 		upper="$(printf '%s' "$chord" | tr '[:lower:]' '[:upper:]')"
 		for f in scripts/install-extension.sh README.md; do

@@ -446,7 +446,7 @@ survives the next `ensure`.
 ```
 
 The same queue as [the monitor](#the-monitor), in a thurbox column, so it is
-readable without leaving the terminal. `F6` opens and closes it. It reads the
+readable without leaving the terminal. `F5` opens and closes it. It reads the
 same four files per task the monitor reads, and shows the same four things —
 the plan (`BRIEF.md`), the progress (`progress.jsonl`), the outcome
 (`result.md`) and the pull request, which is a link you can click. It adds no
@@ -469,7 +469,7 @@ if panels.shown("fleetqueue") and filled(ctx, "fleetqueue") then
 end
 ```
 
-The `panels.shown` guard is what makes `F6` a toggle rather than a one-way
+The `panels.shown` guard is what makes `F5` a toggle rather than a one-way
 door. Place the slot unconditionally and the column is carved on every frame:
 the key still flips the panel state, nothing reads it, and the pane opens and
 never closes. `panels` and `filled` are already in the stock `layout.lua` —
