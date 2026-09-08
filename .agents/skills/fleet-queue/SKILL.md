@@ -47,8 +47,9 @@ pointing at a throwaway queue.
 ## 1. Intake — a prompt becomes a topic
 
 Do this before doing anything else with a new ask, including one that looks
-like a single task. A topic with one task costs nothing; a task with no topic
-costs you the prompt.
+like a single task, and including one phrased as a question rather than a
+change — *find out why X* is a brief, not an investigation you run here. A
+topic with one task costs nothing; a task with no topic costs you the prompt.
 
 ```bash
 ./scripts/queue.sh topic add report-status-honestly \
