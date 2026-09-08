@@ -292,7 +292,10 @@ steps and its header is the full usage.
    one branch, one thing a single worker can finish and validate on its own.
 2. **Write each `BRIEF.md`.** Workers share no context with the lead and none
    with each other, so each brief states the goal, the constraints, and what
-   "done" looks like, from scratch. `dispatch` refuses an unwritten one.
+   "done" looks like, from scratch. `dispatch` refuses an unwritten one. The
+   scaffold points every brief at `orchestration/queue/POLICY.md` by absolute
+   path for what is true of every task, so only the task-specific part is
+   written by hand.
 3. **Order — and mostly, do not.** See below.
 4. **Dispatch the whole ready set at once.** One invocation, one session per
    task, each pointed at its own brief and nothing else. `dispatch` runs
@@ -358,6 +361,12 @@ task's record and **closes nothing**; `./scripts/queue.sh collect` reads the
 result files and only that closes a task. `not-applicable` is why a file beats
 polling `gh pr list`: the absence of a PR cannot be distinguished from "still
 working", but a worker saying so can.
+
+`collect` also checks a `shipped` task's pull request for the pipeline's
+proof — five headings a `no-mistakes` PR body carries — before it closes the
+task, and leaves one that fails the check open rather than trusting the
+worker's word. `.agents/skills/fleet-queue/SKILL.md` has the full contract,
+including the `--allow-unverified` escape hatch.
 
 The mailbox is still right for something genuinely urgent a human should see
 now, and wrong for routine completion.
