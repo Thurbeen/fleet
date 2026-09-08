@@ -24,7 +24,8 @@ is tracked is the machinery plus the `_TEMPLATE.md` forms. Say that when it
 comes up; a user who finds half the layout missing should hear that it is
 correct.
 
-The scripts remain the supported manual path — see the README.
+The scripts remain the supported manual path — each one's own header is its
+full usage.
 
 ## 0. Preflight — before anything is written
 
@@ -345,5 +346,5 @@ the map rather than redoing everything.
 
 The one thing a re-run does **not** fix is a **rename**. If the session has been
 renamed away from `fleet`, the extension is registered under the new name and
-`extension status fleet` is the wrong question to ask. The README's customizing
-section owns that; don't reimplement it here.
+`extension status fleet` is the wrong question to ask. `extension.toml.in`'s
+header owns the rename procedure; don't reimplement it here.

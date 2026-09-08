@@ -35,6 +35,16 @@
 # user's own `layout.lua` — a file every pane on their screen shares — so this
 # prints the line and where it goes rather than writing it for them.
 #
+# TAKING THE PANE BACK is `plugin remove`, and its argument is the DESTINATION
+# PATH below, not the file's basename:
+#
+#     thurbox-cli plugin remove plugins/91_fleet_queue.lua
+#
+# `plugin remove 91_fleet_queue.lua` answers "not listed in plugins.toml" and
+# removes nothing. Because the pane went in through `plugin install`, that one
+# command takes back the file, its `plugins.toml` entry and the lock together —
+# `plugin list` says where it came from in the meantime.
+#
 # Requires: git, thurbox-cli, jq.
 
 set -euo pipefail
@@ -83,7 +93,8 @@ trap - EXIT
 printf 'rendered %s (repo_path = %s)\n' "$OUT" "$REPO_ROOT"
 
 # Read the names out of the manifest rather than hardcoding them, so a rename
-# (README's "Renaming" section) reaches this script's checks and hints for free.
+# (extension.toml.in's header owns the procedure) reaches this script's checks
+# and hints for free.
 # The extension name is the first top-level `name`; the session's is the first
 # one after `[[sessions]]`.
 ext_name="$(sed -n 's/^name *= *"\(.*\)"/\1/p' "$OUT" | head -1)"
