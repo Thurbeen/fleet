@@ -1113,7 +1113,7 @@ rm -rf "$clonetmp"
 # extension name, not the session's. That was invisible for exactly as long as
 # the extension and the session shared a word, and returns the wrong name the
 # moment they differ, which is exactly what renaming the session to
-# "mission control" while the extension stays "fleet" does. manifest_session()
+# "⌖ Mission Control" while the extension stays "fleet" does. manifest_session()
 # now anchors on the table header at the start of a line, the same thing
 # scripts/install-extension.sh matches with `/^\[\[sessions\]\]/`.
 
@@ -1127,7 +1127,7 @@ name = "fleet"
 name = "fleet"
 
 [[sessions]]
-name = "mission control"
+name = "⌖ Mission Control"
 repo_path = "/tmp/does-not-matter"
 EOF
 
@@ -1138,7 +1138,7 @@ import queue as q
 print(q.manifest_session(sys.argv[1]))
 ' "$manifesttmp/extension.toml")"
 expect "manifest_session reads the TABLE's name, not the prose above it" \
-	"('mission control', '/tmp/does-not-matter')" "$out"
+	"('⌖ Mission Control', '/tmp/does-not-matter')" "$out"
 
 rm -rf "$manifesttmp"
 
@@ -1149,7 +1149,7 @@ import queue as q
 print(q.manifest_session(sys.argv[1]))
 ' "$PWD/extension.toml.in")"
 expect "and the real extension.toml.in resolves to the same session name" \
-	"mission control" "$out"
+	"⌖ Mission Control" "$out"
 
 # --- 9. the shepherd: the pull request, after the worker stopped -------------
 #

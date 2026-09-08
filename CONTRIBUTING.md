@@ -180,7 +180,7 @@ Hand-wrap markdown at 80 columns — `scripts/check.sh markdown` enforces it.
 Each class of fact has exactly one owner, and `.no-mistakes.yaml`'s
 `document.instructions` is the map. In short: `README.md` is the human-facing
 guide, `AGENTS.md` the agent-facing operating guide for working *inside* this
-repo, `FLEET.md` the standing context of the long-lived `mission control`
+repo, `FLEET.md` the standing context of the long-lived Mission Control
 session, this file the contribution process and the configuration of external
 tooling, and `.agents/skills/thurbox-session/SKILL.md` the working reference
 for driving `thurbox-cli`. A script's or config file's own header owns how that

@@ -42,7 +42,7 @@ interrupts whoever is talking to it. A stream that is read and a file that is
 read interrupt nobody.
 
 WHICH CHECKOUT. The queue belongs to the CONTROL PLANE's clone — the one the
-`mission control` session opens — and never to the process cwd. A second clone
+Mission Control session opens — and never to the process cwd. A second clone
 of this repo is supported and common (a control plane with no `origin` needs one
 that workers push from), and resolving the queue against the cwd meant working
 in that clone silently forked it. `queue_root()` and `guard_creating()` below
@@ -272,7 +272,7 @@ SESSION_NAME_RE = re.compile(r'^\s*name\s*=\s*"([^"]*)"', re.M)
 # substring search finds the manifest header's own PROSE about `[[sessions]]`
 # first and reads the top-level extension name as the session's. That was
 # invisible for as long as the two were the same word, and stopped being
-# invisible the day the session was renamed to `mission control`.
+# invisible the day the session was renamed to `⌖ Mission Control`.
 SESSION_TABLE_RE = re.compile(r"^\[\[sessions\]\]", re.M)
 
 

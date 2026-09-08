@@ -15,7 +15,7 @@
 #   strictly behind + clean   -> `git merge --ff-only`
 #
 # RESTART THE LEAD when a sync brings new INSTRUCTIONS in. The running
-# `mission control` session froze FLEET.md and every skill it had loaded at
+# Mission Control session froze FLEET.md and every skill it had loaded at
 # launch, and nothing reloads them from disk — so new bytes arriving here change
 # nothing for it until the agent is replaced. That is invisible unless something
 # says it, so a fast-forward that touched one of those paths says it, as an
@@ -29,7 +29,7 @@
 
 set -uo pipefail
 
-# Changing one of these means the running `mission control` session is holding
+# Changing one of these means the running Mission Control session is holding
 # stale instructions; changing one of the wiring paths means the installed
 # thurbox extension no longer matches the manifest it was rendered from. Neither
 # is fixable from here, so both are reported as actions for the operator.
@@ -109,12 +109,13 @@ if git merge --ff-only --quiet "$remote_ref" 2>/dev/null; then
 	if [ -n "$instr" ]; then
 		msg="$msg
 restart-lead: yes — $(printf '%s' "$instr" | tr '\n' ' ')
-The running 'mission control' session froze FLEET.md and every skill it had
+The running Mission Control session froze FLEET.md and every skill it had
 loaded at launch; new bytes on disk change nothing for it. Replace the agent
-with: thurbox-cli session restart 'mission control' — that resumes the
+with: thurbox-cli session restart '⌖ Mission Control' — that resumes the
 conversation, so the old copy is still in its history. For an instruction change
-that has to win, start a fresh one instead: thurbox-cli session delete 'mission
-control' (the extension self-heals it)."
+that has to win, start a fresh one instead: thurbox-cli session delete
+'⌖ Mission Control' (the extension self-heals it). Copy those names rather than
+retyping them: the glyph is part of the session name and is not on a keyboard."
 	fi
 
 	if [ -n "$wiring" ]; then
