@@ -206,10 +206,11 @@ check_status() {
 # thurbox install, so it belongs at install time and not here.
 #
 # What DOES belong here is the failure this repo can cause on its own. The pane
-# names a slot, and `install-extension.sh` and the onboarding skill each print
-# a `layout.lua` block naming that slot. If either drifts, the operator is
-# handed a block that places a slot nothing fills: the pane loads, lists, and
-# draws nothing, and every message they have says it should work.
+# names a slot, and `install-extension.sh`, the onboarding skill and the
+# fleet-pane skill each print a `layout.lua` block naming that slot. If any of
+# them drifts, the operator is handed a block that places a slot nothing
+# fills: the pane loads, lists, and draws nothing, and every message they have
+# says it should work.
 check_pane() {
 	local pane="interface/fleet_queue.lua"
 
