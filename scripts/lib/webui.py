@@ -12,12 +12,15 @@ view. Three things follow from that split and are worth stating up front:
    Read-only is also what keeps a bound socket a modest risk rather than a
    serious one.
 
-2. IT ADDS NO FIELD. Every value it shows is already on disk, because the
-   queue's four-files-per-task layout answers exactly the four questions a
-   monitor asks — intent (task.yaml + BRIEF.md), progress (progress.jsonl),
-   outcome (result.md), and where it stands (task.yaml's `state`). The topic
-   classification below is DERIVED from its tasks' states each time it is
-   asked; it is not stored anywhere and nothing reads it back.
+2. IT ADDS NO FACT. Every value it shows traces to what is already on disk,
+   because the queue's four-files-per-task layout answers exactly the four
+   questions a monitor asks — intent (task.yaml + BRIEF.md), progress
+   (progress.jsonl), outcome (result.md), and where it stands (task.yaml's
+   `state`). Some values are DERIVED rather than copied verbatim — the topic
+   classification below from its tasks' states, a task's `artifact_link` label
+   from its own recorded `artifact` URL (see `artifact_link()`) — but derived
+   is not invented: each is a pure function of a fact already on disk, stored
+   nowhere and read back by nothing, so it can never disagree with that fact.
 
 3. IT REUSES queue.py. The Queue class, the state vocabulary, `is_ready`, the
    blocker rule and the overlap report all come from the module that owns

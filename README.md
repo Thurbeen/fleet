@@ -382,11 +382,13 @@ for one session's mechanics: spawning, prompting, state, cleanup.
 
 A local web page over `orchestration/queue`, so you can see what the fleet is
 doing without asking the lead and interrupting it. It **reads** the same files
-`queue.sh` writes and adds no field of its own — the ask from `PROMPT.md`, the
+`queue.sh` writes and adds no fact of its own — the ask from `PROMPT.md`, the
 plan from `BRIEF.md` and `task.yaml`, the progress from `progress.jsonl`, the
-outcome from `result.md` — so it cannot disagree with `queue.sh list`. Topics
-are classified from their tasks' states each time the page is built, so a
-classification cannot go stale:
+outcome from `result.md` — so it cannot disagree with `queue.sh list`. A few
+things it shows are derived rather than copied verbatim, such as a topic's
+classification from its tasks' states and a task's pull request rendered as a
+labelled link from its own recorded `artifact` URL, but each is a pure
+function of a fact already on disk, so it too cannot go stale:
 
 | Class | Means |
 |---|---|
