@@ -1084,22 +1084,31 @@ def parse_result(text: str) -> tuple[dict, str]:
     return meta, body.strip()
 
 
-def pipeline_verdict(url) -> tuple[str, str]:
+def pipeline_verdict(outcome, url) -> tuple[str, str]:
     """Does this task's artifact carry the pipeline's proof? Three answers.
 
-        skipped   nothing to check — no artifact, or one that is not a PR.
-                  `not-applicable` and `stuck` produce none, and that is fine.
+        skipped   nothing to check — the outcome does not require a PR
+                  (`not-applicable` or `stuck`), and none, or one that is not
+                  a PR, was given.
         passed    the PR body carries all five PIPELINE_HEADINGS.
-        missing   a PR body without them: the pipeline was skipped.
+        missing   `shipped` with no PR to check, or a PR body without them:
+                  the pipeline was skipped, or never proven at all.
         unknown   the check could not run — no `gh`, no network, no such PR.
 
     `unknown` is a fourth word on purpose and never collapses into `passed` or
     `missing`. An offline machine and a CI runner with no `gh` must both still
     be able to collect, and "could not check" must never be reported as either
     verdict — that is how a trusted claim gets manufactured out of a timeout.
+
+    A worker that writes `outcome: shipped` is claiming a merged pull request,
+    so a missing or malformed `artifact` is not the same silence as
+    `not-applicable`/`stuck` legitimately producing none — it is `missing`,
+    held open like any other unproven `shipped` claim.
     """
     match = PR_URL_RE.match((url or "").strip())
     if not match:
+        if outcome == "shipped":
+            return "missing", "shipped with no pull request to check"
         return "skipped", "no pull request to check"
     url = match.group(1)
     if not shutil.which("gh"):
@@ -1129,7 +1138,7 @@ def report_unverified(task: Task, url, detail: str) -> None:
     """The loud half of the check: the lead sees this AT COLLECT TIME."""
     print(
         f"    {task.ref}: NOT CLOSED — its pull request skipped the pipeline\n"
-        f"        {url}\n"
+        f"        {url or '(no pull request given)'}\n"
         f"        {detail}\n"
         "        A `no-mistakes` pull request body carries all five of: "
         + ", ".join(PIPELINE_HEADINGS)
@@ -1160,7 +1169,7 @@ def cmd_collect(args) -> int:
             )
             continue
         artifact = meta.get("artifact")
-        verdict, detail = pipeline_verdict(artifact)
+        verdict, detail = pipeline_verdict(outcome, artifact)
         # Recorded before the branch below, so a held-back task carries the
         # reason in its record and not only in the terminal that saw it.
         task.doc["artifact_check"] = {"verdict": verdict, "detail": detail, "at": now()}
