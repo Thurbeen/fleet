@@ -80,10 +80,9 @@ not control** — `./scripts/queue.sh` stays the only thing that writes:
 Each shows four things per task and no fifth: the plan, the progress, the
 outcome, and the pull request.
 
-![The queue pane in a thurbox column over an example queue: topics grouped by
-what their tasks are doing, each task showing its plan, progress, outcome and
-pull request, and one task waiting on a recorded
-dependency](media/fleet-queue-pane.gif)
+![The queue pane in a thurbox column beside the session list: two workers
+running, the topics they are working on grouped above the finished ones, and
+each task showing its plan, progress and outcome](media/fleet-queue-pane.gif)
 
 ## Your working copy
 
