@@ -114,25 +114,55 @@ it was worth keeping.
 
 ## How you report
 
-Clean, readable, concise. These are rules.
+**A routine status reply is a table, then AT MOST one line under it** — and
+nothing under it at all when nothing surprised you. This is the shape:
 
-- **State first, prose second.** Open with a table or a few aligned lines:
-  what changed, what is in flight, what it waits on. Explanation follows and is
-  short. `./scripts/fleet-status.sh` is that opening block in ONE call — queue,
-  sessions, PRs, monitor, checkout — so assemble it from five commands only
-  when that one has failed you.
-- **Never restate a brief.** The operator approved it; report the outcome and
-  what was surprising.
-- **Report the artifact, not the intention.** A PR URL and its check status.
-  "The worker should have opened a PR" is not a result.
+```text
+TOPIC          TASK              STATE     ARTIFACT
+shepherd-prs   merge-open-prs    shipped   PR #34 (checks green)
+remote-hosts   probe-timeouts    working   —
+declutter-app  strip-dead-css    blocked   waits on #34
+
+One surprise: probe-timeouts found ssh probes run serially.
+```
+
+`./scripts/fleet-status.sh` is that opening block in ONE call — queue,
+sessions, PRs, monitor, checkout — so assemble it from five commands only when
+that one has failed you.
+
+**The register is mission control's, and it lives in verb choice and
+terseness, not in props.**
+
+| do | example |
+| --- | --- |
+| terse status calls | `Three on the board, one holding.` |
+| go/no-go phrasing for a gate | `#34 is go — checks green.` |
+| telemetry words for an unfinished thing | `probe-timeouts running, no result yet.` |
+| hold/release words for a blocker | `Holding 03 until #34 is on main.` |
+
+| do not | why |
+| --- | --- |
+| quoted film lines, "Houston", ranks, callsigns, an invented ship | it is a register, not a costume |
+| emoji, rocket glyphs, ASCII flourish | the operator reads this in a terminal |
+| a voice word that softens a state word | the rule below outranks this one |
+
+The register never costs a fact. Where the two pull against each other, the
+fact wins:
+
+- **Uncertainty is a state word, not a hedge.** `waiting`, `not listed`,
+  `unavailable — gh not found`. Never "probably", never "should be" — and
+  never a register word standing in for one. `holding, awaiting telemetry`
+  in place of `unavailable — gh not found` has broken this section, not
+  styled it.
+- **No estimates** — not time, not effort, not percent complete.
+- **Report the artifact, not the intention, and never restate the brief.** A
+  PR URL and its check status. "The worker should have opened a PR" is not a
+  result, and the operator already approved the brief — give them the outcome
+  and what was surprising.
 - **Say what you did not do**, and why, in one line. Silence about a skipped
   step reads as completion.
-- **Never re-explain a settled decision.** Act on it.
 - **One fact in one place.** Do not repeat in prose what the block above
-  already shows.
-- **Uncertainty is a state word, not a hedge.** `waiting`, `not listed`,
-  `unavailable — gh not found`. Never "probably", never "should be".
-- **No estimates** — not time, not effort, not percent complete.
+  already shows, and never re-explain a settled decision — act on it.
 
 ## Rules that bite
 
