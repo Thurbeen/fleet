@@ -1,0 +1,230 @@
+#!/usr/bin/env bash
+# Prove that `scripts/fleet-status.sh` degrades rather than fails.
+#
+# A status command is read by an agent that is about to decide something, so
+# its two failure modes are both silent and both expensive:
+#
+#   1. IT DIES WHEN A PROBE DIES. No network, no `gh`, no thurbox running, no
+#      monitor — any one of those must cost exactly its own section and
+#      nothing else. A status command that exits non-zero because one probe
+#      failed is worse than none, because the lead learns nothing at all.
+#   2. IT FLATTENS THE STATE VOCABULARY. `idle`, `running`, `uncovered` and
+#      `unreported` are four different facts (thurbox-session SKILL §4a), and
+#      reporting any of the last three as `idle` reports a worker mid-turn as
+#      finished. This asserts the words survive the trip.
+#
+# It also holds the line on the third promise: the command READS. It must not
+# start the monitor, dispatch a task, or touch a single byte of the queue.
+#
+# Every probe is a stub on a sandboxed PATH, so the run is hermetic: no real
+# thurbox, no GitHub, no monitor, and no queue but the throwaway one.
+#
+# Usage: scripts/fleet-status-selftest.sh     (also: ./scripts/check.sh status)
+#
+# Requires: python3 (with PyYAML) and git — the gate's own dependencies.
+
+set -uo pipefail
+
+cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 2
+
+STATUS="./scripts/fleet-status.sh"
+QUEUE="./scripts/queue.sh"
+nl=$'\n'
+failed=0
+tmp=""
+
+trap '[ -n "$tmp" ] && rm -rf "$tmp"' EXIT
+
+pass() { printf '  \033[32mok\033[0m    %s\n' "$1"; }
+
+fail() {
+	printf '  \033[31mFAIL\033[0m  %s\n' "$1" >&2
+	if [ $# -gt 1 ]; then printf '%s\n' "$2" | sed 's/^/          /' >&2; fi
+	failed=1
+}
+
+# A herestring, not a pipeline: this file runs under `set -o pipefail`, where a
+# pipeline reports the whole pipeline's status rather than the reader's, and a
+# helper built on one can report FAIL for input that plainly matched.
+expect() {
+	local label="$1" want="$2" out="$3"
+	if grep -qF -- "$want" <<<"$out"; then
+		pass "$label"
+	else
+		fail "$label" "expected to find: $want${nl}--- got ---${nl}$out"
+	fi
+}
+
+refute() {
+	local label="$1" unwanted="$2" out="$3"
+	if grep -qF -- "$unwanted" <<<"$out"; then
+		fail "$label" "did not want: $unwanted${nl}--- got ---${nl}$out"
+	else
+		pass "$label"
+	fi
+}
+
+for tool in python3 git; do
+	command -v "$tool" >/dev/null || {
+		echo "error: $tool not found" >&2
+		exit 2
+	}
+done
+
+tmp="$(mktemp -d)"
+export FLEET_QUEUE_DIR="$tmp/queue"
+# The monitor's runtime state, pointed somewhere empty so this reads "down"
+# without going anywhere near the operator's real one.
+export FLEET_WEBUI_DIR="$tmp/rt"
+mkdir -p "$FLEET_QUEUE_DIR" "$tmp/rt" "$tmp/repo"
+
+# A sandboxed PATH holding only the tools the command is allowed to find. This
+# is the whole point: `gh` and `thurbox-cli` exist on the machine running the
+# gate, so "absent" has to be constructed rather than assumed.
+REAL_PATH="$PATH"
+sandbox() {
+	local dir="$1" tool src
+	shift
+	rm -rf "$dir"
+	mkdir -p "$dir"
+	for tool in "$@"; do
+		src="$(PATH="$REAL_PATH" command -v "$tool")" || continue
+		ln -sf "$src" "$dir/$tool"
+	done
+	printf '%s\n' "$dir"
+}
+
+BASE_TOOLS=(bash env sh python3 git dirname basename awk sed cat grep ps uname)
+bare="$(sandbox "$tmp/bin-bare" "${BASE_TOOLS[@]}")"
+stubbed="$(sandbox "$tmp/bin-stubbed" "${BASE_TOOLS[@]}")"
+
+# --- a queue with something in it -------------------------------------------
+
+"$QUEUE" topic add selftest --title "Selftest topic" --prompt 'the prompt, verbatim' >/dev/null
+printf 'Do the thing.\n' >"$tmp/brief.md"
+"$QUEUE" add selftest dispatched-task --title "A dispatched task" --repo "$tmp/repo" \
+	--branch t/dispatched --touches FLEET.md --brief-file "$tmp/brief.md" >/dev/null
+"$QUEUE" add selftest ready-task --title "A ready task" --repo "$tmp/repo" \
+	--branch t/ready --touches FLEET.md --brief-file "$tmp/brief.md" >/dev/null
+"$QUEUE" add selftest waiting-task --title "A waiting task" --repo "$tmp/repo" \
+	--branch t/waiting --brief-file "$tmp/brief.md" >/dev/null
+"$QUEUE" block selftest/03-waiting-task --on selftest/01-dispatched-task \
+	--kind semantic-dependency --why 'consumes the flag the first one adds' >/dev/null
+"$QUEUE" attach selftest/01-dispatched-task 11111111-1111-1111-1111-111111111111 >/dev/null
+
+# --- 1. every probe missing, and it still answers ----------------------------
+
+out="$(PATH="$bare" "$STATUS" 2>&1)"
+rc=$?
+if [ "$rc" -eq 0 ]; then
+	pass "exits 0 with no thurbox-cli, no gh and no monitor"
+else
+	fail "exits 0 with every probe missing" "exit $rc${nl}--- got ---${nl}$out"
+fi
+
+for section in QUEUE SESSIONS PRS MONITOR CHECKOUT; do
+	expect "$section still prints when the probes are gone" "$section" "$out"
+done
+
+expect "it names the tool it could not find (thurbox-cli)" "thurbox-cli not found" "$out"
+expect "it names the tool it could not find (gh)" "gh not found" "$out"
+expect "the queue section survives the others failing" "01-dispatched-task" "$out"
+expect "a blocked task says what is holding it" "semantic-dependency" "$out"
+expect "and why, in the words that were recorded" "consumes the flag" "$out"
+expect "a ready task is called ready, not queued" "ready" "$out"
+expect "file overlap is reported as a risk, not a blocker" "FLEET.md" "$out"
+expect "the monitor reads as down rather than as an error" "down" "$out"
+
+# --- 2. --json degrades in the same shape ------------------------------------
+
+js="$(PATH="$bare" "$STATUS" --json 2>&1)"
+rc=$?
+if [ "$rc" -eq 0 ]; then pass "--json exits 0 too"; else
+	fail "--json exits 0" "exit $rc${nl}$js"
+fi
+
+probe="$(PATH="$bare" python3 - "$js" <<'PY' 2>&1
+import json, sys
+doc = json.loads(sys.argv[1])
+for key in ("queue", "sessions", "prs", "monitor", "checkout"):
+    assert key in doc, f"missing section {key}"
+    assert "unavailable" in doc[key], f"{key} has no unavailable field"
+assert doc["sessions"]["unavailable"], "sessions should be unavailable"
+assert doc["prs"]["unavailable"], "prs should be unavailable"
+assert doc["queue"]["unavailable"] is None, "the queue is on disk and readable"
+assert len(doc["queue"]["topics"][0]["tasks"]) == 3, "three tasks expected"
+print("parsed")
+PY
+)"
+expect "--json is valid, has every section, and marks the missing ones" "parsed" "$probe"
+
+# --- 3. a queue directory that is not there ----------------------------------
+
+gone="$(PATH="$bare" FLEET_QUEUE_DIR="$tmp/no-such-queue" "$STATUS" 2>&1)"
+rc=$?
+if [ "$rc" -eq 0 ]; then
+	pass "a missing queue directory costs the queue section and nothing else"
+else
+	fail "a missing queue directory does not fail the command" "exit $rc${nl}$gone"
+fi
+expect "the checkout still reports with no queue at all" "CHECKOUT" "$gone"
+
+# --- 4. the state vocabulary is not flattened --------------------------------
+#
+# THE TEST THIS FILE EXISTS FOR. `uncovered` means "wired to report nothing",
+# `unreported` means "can report and has not", `running` means "something holds
+# the pane". Printing any of them as `idle` tells the lead a worker mid-turn
+# has finished.
+
+cat >"$stubbed/thurbox-cli" <<'STUB'
+#!/bin/sh
+# Only `session list --json` is read; anything else is not this stub's business.
+cat <<'JSON'
+[{"id":"11111111-1111-1111-1111-111111111111","name":"A dispatched task",
+  "state":"uncovered","state_source":"process","hook_state_age_secs":null,
+  "stopped":false,"hook_reported":false},
+ {"id":"22222222-2222-2222-2222-222222222222","name":"Someone else's session",
+  "state":"unreported","state_source":"process","hook_state_age_secs":null,
+  "stopped":false,"hook_reported":false}]
+JSON
+STUB
+chmod +x "$stubbed/thurbox-cli"
+
+cat >"$stubbed/gh" <<'STUB'
+#!/bin/sh
+cat <<'JSON'
+[{"number":13,"url":"https://github.com/Thurbeen/fleet/pull/13",
+  "title":"Add one-call fleet status","headRefName":"t/dispatched","state":"OPEN",
+  "statusCheckRollup":[{"__typename":"CheckRun","name":"gate","status":"COMPLETED","conclusion":"SUCCESS"}]}]
+JSON
+STUB
+chmod +x "$stubbed/gh"
+
+full="$(PATH="$stubbed" "$STATUS" 2>&1)"
+expect "thurbox's own word for the session survives the trip" "uncovered" "$full"
+refute "and is not flattened to idle" "idle" "$full"
+refute "nor to unknown" "unknown" "$full"
+
+# --- 5. it reports the artifact, with its checks -----------------------------
+
+expect "an open PR is reported against the task that owns the branch" \
+	"Thurbeen/fleet#13" "$full"
+expect "with its check status, not just its existence" "passing" "$full"
+
+# --- 6. it reads, and only reads ---------------------------------------------
+
+snapshot() { find "$FLEET_QUEUE_DIR" "$tmp/rt" -type f -exec sha256sum {} + | sort; }
+before="$(snapshot)"
+PATH="$stubbed" "$STATUS" >/dev/null 2>&1
+PATH="$stubbed" "$STATUS" --json >/dev/null 2>&1
+after="$(snapshot)"
+if [ "$before" = "$after" ]; then
+	pass "neither the queue nor the monitor's runtime state was touched"
+else
+	fail "the command is read-only" "$(diff <(printf '%s\n' "$before") <(printf '%s\n' "$after"))"
+fi
+
+if [ "$failed" -eq 0 ]; then
+	echo "fleet-status selftest: all claims hold"
+fi
+exit "$failed"

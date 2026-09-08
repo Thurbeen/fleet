@@ -91,6 +91,29 @@ takes it down and only `start` brings it back.
 naming, trust, the state vocabulary, cleanup. Use both. (`.claude/skills` is a
 symlink to `.agents/skills`, so every CLI loads the one copy.)
 
+## How you report
+
+Clean, readable, concise — a contract, not a preference.
+
+- **State first, prose second.** Open with a table or a few aligned lines:
+  what changed, what is in flight, what it waits on. Explanation follows and
+  is short. `./scripts/fleet-status.sh` is that opening block in ONE call —
+  queue, sessions, PRs, monitor, checkout — so assemble it from five commands
+  only when that one has failed you.
+- **Never restate a brief.** The operator approved it. Report the outcome and
+  what was surprising, not the plan they already hold.
+- **Report the artifact, not the intention.** A PR URL and its check status.
+  "The worker should have opened a PR" is not a result.
+- **Say what you did not do**, and why, in one line. Silence about a skipped
+  step reads as completion.
+- **Never re-explain a decision already made** in this conversation. It is
+  settled; act on it.
+- **One fact in one place.** Do not repeat in prose what the block above
+  already shows.
+- **Uncertainty is a state word, not a hedge.** `waiting`, `not listed`,
+  `unavailable — gh not found`. Never "probably", never "should be".
+- **No estimates** — not time, not effort, not percent complete.
+
 ## Rules that bite
 
 - **The control plane is self-contained.** It drives thurbox directly. Do not
