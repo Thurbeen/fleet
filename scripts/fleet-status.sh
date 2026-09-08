@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Where everything stands, in one call — the queue, the workers, the pull
-# requests, the monitor and this checkout, on one screen.
+# Where everything stands, in one call — the fuel, the queue, the workers, the
+# pull requests, the monitor and this checkout, on one screen.
 #
 # It exists because orienting used to cost three to five commands across three
 # checkouts and four tools, and most of a long lead session's tool calls were
@@ -23,11 +23,20 @@
 # serving a different queue than the one above it — which is the whole answer
 # to "why is the dashboard not updated?".
 #
+# FUEL IS THE ACCOUNT'S, NOT A SESSION'S. It comes from `quota-axi`, the only
+# source that has a number at all — `thurbox-cli session get --json` carries no
+# token, usage, cost or limit field. quota-axi measures the subscription window
+# every session spends at once, so there is one reading and no per-worker
+# breakdown to be had. FLEET.md's `## Fuel` section owns the reserve and what
+# the lead does near it.
+#
 # Environment: FLEET_QUEUE_DIR and FLEET_WEBUI_DIR, honoured exactly as
 # scripts/queue.sh and scripts/webui.sh honour them.
 #
-# Requires: python3 (with PyYAML). thurbox-cli, gh and git are each optional
-# and cost only their own section. scripts/fleet-status-selftest.sh proves it.
+# Requires: python3 (with PyYAML). thurbox-cli, gh, git and quota-axi are each
+# optional and cost only their own section — quota-axi in particular is a tool
+# on the operator's PATH, never a dependency this repo vendors.
+# scripts/fleet-status-selftest.sh proves it.
 
 set -uo pipefail
 
