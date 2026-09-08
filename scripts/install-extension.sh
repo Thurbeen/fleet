@@ -31,9 +31,9 @@
 #
 # What this script will NOT do is place it. A pane names a slot and the
 # arrangement decides where that slot goes, so a pane nothing places loads,
-# appears in `plugin list`, and draws nothing. That edit is one line in the
-# user's own `layout.lua` — a file every pane on their screen shares — so this
-# prints the line and where it goes rather than writing it for them.
+# appears in `plugin list`, and draws nothing. That edit is a guarded block in
+# the user's own `layout.lua` — a file every pane on their screen shares — so
+# this prints the block and where it goes rather than writing it for them.
 #
 # Requires: git, thurbox-cli, jq.
 
@@ -147,7 +147,7 @@ else
 
 			The fleet queue pane is installed but NOT PLACED, so it will draw
 			nothing yet. Nothing here will edit your arrangement for you — every
-			pane on your screen shares that file. Add one line to:
+			pane on your screen shares that file. Add this block to:
 
 			  ${ui_dir:-<thurbox-cli plugin dir>}/layout.lua
 

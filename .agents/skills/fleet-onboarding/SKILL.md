@@ -203,15 +203,15 @@ thurbox-cli plugin check
 ```
 
 It loads the interface exactly as thurbox does and **exits non-zero** on a pane
-that loaded but is placed by nothing, naming the file and the line to add.
+that loaded but is placed by nothing, naming the file and the block to add.
 
 | It says | What it means | What you do |
 |---|---|---|
 | `✓ loads — … fleetqueue …`, exits 0 | installed and placed | say that `F3` opens it |
-| `✗ … nothing places slot "fleetqueue"` | installed, invisible | print the line below |
+| `✗ … nothing places slot "fleetqueue"` | installed, invisible | print the block below |
 | no `fleetqueue` anywhere | the install did not take | re-run step 4 and read its output |
 
-**The line is the user's edit, not yours.** `layout.lua` is shared by every pane
+**The block is the user's edit, not yours.** `layout.lua` is shared by every pane
 on their screen — a mistake there takes the whole interface, not one column — so
 do not write it for them and do not offer to. Print it, say where it goes, and
 say plainly that you stopped there on purpose:

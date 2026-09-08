@@ -490,7 +490,7 @@ Two things about it are worth knowing before you install it.
 the arrangement decides where that slot goes. A pane nothing places loads
 cleanly, appears in `thurbox-cli plugin list`, and draws nothing — a failure
 with no symptom. `layout.lua` is shared by every pane on your screen, so
-nothing here writes to it. The installer prints the line and where it goes:
+nothing here writes to it. The installer prints the block and where it goes:
 
 ```lua
 if panels.shown("fleetqueue") and filled(ctx, "fleetqueue") then
