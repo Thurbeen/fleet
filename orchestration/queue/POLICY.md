@@ -89,9 +89,7 @@ A short paragraph: what you actually did, and anything the lead must know.
 
 `outcome` is one of those four words and nothing else. `artifact` is the pull
 request URL when there is one; `not-applicable` and `stuck` usually have none,
-and that is fine. `shipped` is a claim that a pull request exists, so report it
-without one, or with something that is not a pull request URL, and the lead's
-`collect` holds your task open rather than trusting the word alone.
+and that is fine — an absent artifact is never treated as a failed pipeline.
 
 That file is what closes your task. Without it the lead sees only that a turn
 ended, which is not the same claim, so a task with no result file stays open
