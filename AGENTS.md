@@ -123,7 +123,7 @@ CI only runs on pull requests, and routine control-plane changes go straight to
 `main`. So gate locally before you push:
 
 ```bash
-./scripts/check.sh          # shellcheck, markdown, YAML, profiles, queue, monitor, skills
+./scripts/check.sh          # shellcheck, markdown, YAML, profiles, queue, monitor, status, skills
 ./scripts/check.sh --fix    # same, applying the fixes a check can apply
 ```
 

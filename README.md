@@ -349,7 +349,7 @@ orchestration/
 
 scripts/
   check.sh                 The whole gate: shell, markdown, YAML, profiles,
-                           queue, monitor, skills.
+                           queue, monitor, status, skills.
   queue.sh                 The task queue: intake, ordering, dispatch, and both
                            halves of completion. Its header is the full usage.
   queue-selftest.sh        Proves the queue's ordering and wake claims against
@@ -358,6 +358,12 @@ scripts/
                            restart, status. Its header is the full usage.
   webui-selftest.sh        Proves the monitor adopts rather than duplicates and
                            that a stop stays stopped. Part of the gate.
+  fleet-status.sh          Answers "where are we?" in one call: queue,
+                           sessions, PRs, monitor, checkout. Read-only;
+                           --json for scripts. Its header is the full usage.
+  fleet-status-selftest.sh Proves it degrades a section at a time, keeps
+                           thurbox's state words, and touches neither the
+                           queue nor the monitor. Part of the gate.
   install-extension.sh     Renders extension.toml, installs it, and verifies
                            the live session really opens this clone.
   sync-registry.sh         Regenerates repos.generated.yaml from the GitHub API.
@@ -372,6 +378,9 @@ scripts/
   lib/queue.py             The queue model queue.sh drives.
   lib/webui.py             The read-only web view over that model. Standard
                            library only — no build step, no node_modules.
+  lib/fleet_status.py      The probes fleet-status.sh runs and the JSON shape
+                           it prints. Loads queue.py by path, same trick as
+                           webui.py, so there is one queue model, not two.
   lib/session_profiles.py  The profile validation and rendering session-flags.sh
                            runs.
 
