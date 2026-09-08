@@ -49,7 +49,8 @@ names every path and the reason for each.
   `extension.toml.in`'s header argues why it is not an `[[external_files]]`
   payload. **Placing it is a guarded block in the user's `layout.lua` and
   nothing here writes it** — a pane no arrangement places loads, lists, and
-  draws nothing.
+  draws nothing. `.agents/skills/fleet-pane/` is the driving surface for all of
+  it: install, verify, place, hide, remove, diagnose.
 - `orchestration/playbooks/<name>.md` — reusable recipes for running thurbox.
   All tracked; write new ones here, from `_TEMPLATE.md`.
 - `orchestration/runs/<date>-<slug>.md` — a log per orchestration run.
@@ -57,10 +58,12 @@ names every path and the reason for each.
   `.claude/skills` is a **symlink** to it, so Claude Code and opencode (which
   auto-discovers `.claude/skills`) both load the same copy. Never add a second
   copy under `.claude/`, and do not mirror into `.opencode/skills` — that
-  registers the same skill twice. Three skills live there: `fleet-queue` (the
+  registers the same skill twice. Four skills live there: `fleet-queue` (the
   queue: intake, ordering, dispatch, and the two halves of completion),
-  `thurbox-session` (driving one worker session), and `fleet-onboarding` (a
-  fresh clone to a working control plane, including bringing the monitor up).
+  `thurbox-session` (driving one worker session), `fleet-onboarding` (a fresh
+  clone to a working control plane, including bringing the monitor up), and
+  `fleet-pane` (getting the TUI queue pane onto a screen, and diagnosing one
+  that is installed and drawing nothing).
 
 ## Orchestration model
 

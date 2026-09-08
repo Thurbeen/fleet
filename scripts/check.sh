@@ -225,11 +225,11 @@ check_pane() {
 		return
 	fi
 
-	# The two files that DOCUMENT the placement block, which the README
-	# deliberately does not: it is a setup step, the onboarding skill runs the
-	# setup, and the installer prints the block at the moment it is needed.
+	# The files that DOCUMENT the placement block, which the README deliberately
+	# does not: it is a setup step, two skills walk an operator through it, and
+	# the installer prints the block at the moment it is needed.
 	local f miss=0
-	for f in scripts/install-extension.sh .agents/skills/fleet-onboarding/SKILL.md; do
+	for f in scripts/install-extension.sh .agents/skills/fleet-onboarding/SKILL.md .agents/skills/fleet-pane/SKILL.md; do
 		grep -q "slot = \"$slot\"" "$f" || {
 			fail "pane: $f does not name slot \"$slot\" in a layout.lua line"
 			miss=1
@@ -268,7 +268,7 @@ check_pane() {
 	# that, reading "F6 hides" in a title while F6 opened Settings.
 	local reserved="f1 f4 f6 f10 f12"
 
-	# The chord, which three files promise and only the pane binds.
+	# The chord, which the docs promise and only the pane binds.
 	local chord
 	chord="$(sed -n 's/^      key = "\(f[0-9]*\)",$/\1/p' "$pane" | head -1)"
 	if [ -z "$chord" ]; then
@@ -283,7 +283,7 @@ check_pane() {
 		esac
 		local upper
 		upper="$(printf '%s' "$chord" | tr '[:lower:]' '[:upper:]')"
-		for f in scripts/install-extension.sh README.md; do
+		for f in scripts/install-extension.sh README.md .agents/skills/fleet-pane/SKILL.md; do
 			grep -q "$upper" "$f" || {
 				fail "pane: $f does not mention the pane's $upper chord"
 				miss=1
