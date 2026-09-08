@@ -98,9 +98,19 @@ worker sent an unwritten brief has nothing to do and will invent something.
 
 Write it as if the reader knows nothing, because it does: workers share no
 context with you and none with each other. State the goal, the constraints, and
-what "done" looks like, from scratch. The scaffold already tells the worker that
-other tasks are running beside it, not to read their briefs, and not to wait for
-them.
+what "done" looks like, from scratch.
+
+**Do not restate standing policy in a brief.** The scaffold already points the
+worker at `orchestration/queue/POLICY.md`, by absolute path, and that file
+holds everything true of every task: open the PR with `/no-mistakes --yes` and
+what proves you did, squash merge, the operator merges and you do not, gate
+locally first, one brief per worker, and the result contract. Retyping any of
+it is how it drifts — it measurably did, across five briefs written by hand.
+Task-specific detail still belongs here in full; long briefs are why workers
+get it right on the first pass. Only the repetition moved.
+
+If a rule turns out to be standing after all, put it in POLICY.md rather than
+in the brief you happen to be writing.
 
 ## 3. Order — the part that is counterintuitive
 
@@ -212,8 +222,45 @@ WHEN   ./scripts/queue.sh watch --for-secs 60
        progress.jsonl. Closes NOTHING.
 
 WHAT   ./scripts/queue.sh collect
-       Reads the result.md each worker wrote. Only this closes a task.
+       Reads the result.md each worker wrote. Only this closes a task, and
+       it verifies that task's artifact before it does.
 ```
+
+### `collect` verifies the artifact — you do not have to take the PR on trust
+
+A worker that reports `shipped` with a pull request URL is making two claims,
+and the second one used to go unchecked: that the pull request came through the
+`no-mistakes` pipeline. Two did not, both were reported to the operator as
+shipped, and he found it by reading the bodies himself. "Use the pipeline"
+describes a METHOD, and a method leaves no trace — so `collect` checks the
+trace the pipeline does leave, the five headings in the body:
+
+```text
+## Intent   ## What Changed   ## Risk Assessment   ## Testing   ## Pipeline
+```
+
+```text
+    topic/02-document-the-states  shipped  https://…/pull/1001  [pipeline verified]
+    topic/03-render-detected-agent: NOT CLOSED — its pull request skipped the pipeline
+```
+
+Three answers, and the third is not the second:
+
+| the check says | what collect does |
+|---|---|
+| all five present | closes the task, marked verified |
+| a heading missing | **leaves the task OPEN** and says so, loudly |
+| could not run | closes the task, and says the check could not run |
+
+"Could not run" is `gh` absent, no network, or a pull request it cannot read.
+That must never read as a pass or a fail — CI and an offline laptop both still
+have to collect. `queue.sh show <ref>` prints the verdict, so it survives the
+scrollback.
+
+When a task is held open: read the pull request, then send that worker back to
+re-open it with `/no-mistakes --yes` and collect again. If you have read it
+yourself and judged it good as it stands, `collect --allow-unverified` closes
+it and records that you did.
 
 **Never treat a transition as a completion.** `watch` will tell you a task's
 turn ended with no result file — that is a worker that stopped, hit an
@@ -259,9 +306,12 @@ do not clear it on their behalf.
 
 Everything under `orchestration/queue/` is gitignored working state — your
 prompts, your briefs, your results. The machinery is tracked; the queue is not,
-because this repo is public and none of that belongs in it. It also means **the
-repo does not back your queue up**. Say that plainly when someone assumes
-otherwise. `.gitignore`'s header owns the full reasoning.
+because this repo is public and none of that belongs in it. `README.md` and
+`POLICY.md` are the two exceptions: standing documentation, not one operator's
+data, which is exactly why every brief can point at the policy instead of
+carrying a copy. It also means **the repo does not back your queue up**. Say
+that plainly when someone assumes otherwise. `.gitignore`'s header owns the
+full reasoning.
 
 `orchestration/webui/` is the same kind of thing for the monitor: the port it
 chose, its pid, its log and its down flag, all gitignored, all local.

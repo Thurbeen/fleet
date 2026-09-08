@@ -20,6 +20,10 @@
 #   6. A task whose BRIEF.md was never written does not go out.
 #   7. The queue belongs to a CHECKOUT, not to the shell's cwd — and a checkout
 #      that is not the control plane cannot silently open a second one.
+#   8. `collect` VERIFIES the artifact rather than trusting the worker's word
+#      for it, and "could not check" is a third answer that is neither pass
+#      nor fail. The brief scaffold points at the standing policy rather than
+#      restating it.
 #
 # Test 4 is also the wake proof. The event source is `thurbox-cli watch`, which
 # this script replaces with a recorded stream through `FLEET_QUEUE_WATCH_CMD` —
@@ -31,6 +35,10 @@
 # Test 7 is the silent-fork proof, and it runs against a THROWAWAY CLONE built
 # in a temp directory rather than against this one, so it answers the same on a
 # machine with thurbox installed and on CI without it.
+
+# Test 8 is the enforcement proof. `gh` is stubbed on PATH for the whole run
+# (see the stub below), so every collect here answers offline and CI, an
+# operator's laptop and a machine with no network all agree.
 #
 # Usage: scripts/queue-selftest.sh        (also: ./scripts/check.sh queue)
 #
@@ -86,6 +94,48 @@ tmp="$(mktemp -d)"
 export FLEET_QUEUE_DIR="$tmp/queue"
 
 echo "queue-selftest: $FLEET_QUEUE_DIR"
+
+# --- `gh`, stubbed on PATH for the whole run ---------------------------------
+#
+# `collect` fetches each artifact's pull request body to check that it came
+# from the pipeline (test 8). Every collect below therefore has to answer
+# offline and identically on CI, so the real `gh` is replaced here rather than
+# in test 8 alone: this stub serves one body file per PR number and fails, the
+# way an unreachable API fails, for a number it has no file for.
+
+bodies="$tmp/pr-bodies"
+ghbin="$tmp/gh-bin"
+mkdir -p "$bodies" "$ghbin"
+
+cat >"$ghbin/gh" <<SH
+#!/bin/sh
+# Stands in for \`gh pr view <url> --json body -q .body\`.
+for a in "\$@"; do case "\$a" in http*) url="\$a" ;; esac; done
+f="$bodies/\${url##*/}.md"
+if [ ! -f "\$f" ]; then
+	echo "could not resolve host: api.github.com" >&2
+	exit 1
+fi
+cat "\$f"
+SH
+chmod +x "$ghbin/gh"
+export PATH="$ghbin:$PATH"
+
+# A compliant body for the pull request test 3 collects, so that test says what
+# it always said — that a blocker clears on a real conclusion — and nothing
+# about the pipeline.
+cat >"$bodies/999.md" <<'EOF'
+## Intent
+Drop the idle default.
+## What Changed
+src/state.rs.
+## Risk Assessment
+Low.
+## Testing
+cargo test.
+## Pipeline
+no-mistakes, all gates green.
+EOF
 
 # --- a topic, and four tasks under it ----------------------------------------
 #
@@ -327,6 +377,112 @@ expect "list is one line per task, not a brief" "04-log-state-changes" "$out"
 
 out="$($QUEUE check 2>&1)"
 expect "check validates every record" "ok" "$out"
+
+# --- 8. collect verifies the artifact instead of trusting the worker ---------
+#
+# The bug this proves gone: a brief said "open the PR by running
+# `/no-mistakes --yes`", which is an instruction about a METHOD, and a method
+# leaves no trace a checker can read. Two tasks were collected `shipped` with
+# hand-made `gh pr create` PRs and nothing noticed until an operator read the
+# bodies himself. A `no-mistakes` PR body carries five headings; `collect`
+# fetches the body and looks for them.
+#
+# The `gh` stub at the top of this file serves one body file per PR number, so
+# all three answers are reachable offline: a compliant body, a non-compliant
+# one, and a pull request the stub cannot fetch at all.
+
+cat >"$bodies/1001.md" <<'EOF'
+## Intent
+Document the state vocabulary.
+## What Changed
+docs/states.md, rewritten.
+## Risk Assessment
+Docs only.
+## Testing
+`./scripts/check.sh` green.
+## Pipeline
+no-mistakes, all gates green.
+EOF
+
+cat >"$bodies/1002.md" <<'EOF'
+## Summary
+Rendered detected_agent in the session list.
+
+Opened with `gh pr create`, which is exactly the thing that must be caught.
+EOF
+
+cat >"$FLEET_QUEUE_DIR/$topic/02-document-the-states/result.md" <<'EOF'
+---
+outcome: shipped
+artifact: https://github.com/Thurbeen/thurbox/pull/1001
+---
+Documented the state vocabulary.
+EOF
+
+cat >"$FLEET_QUEUE_DIR/$topic/03-render-detected-agent/result.md" <<'EOF'
+---
+outcome: shipped
+artifact: https://github.com/Thurbeen/thurbox/pull/1002
+---
+Rendered detected_agent, and opened the PR by hand.
+EOF
+
+cat >"$FLEET_QUEUE_DIR/$topic/04-log-state-changes/result.md" <<'EOF'
+---
+outcome: shipped
+artifact: https://github.com/Thurbeen/thurbox/pull/1003
+---
+Logged every state change. The PR body cannot be fetched from here.
+EOF
+
+out="$($QUEUE collect 2>&1)"
+
+expect "a compliant PR body collects clean" "02-document-the-states" "$out"
+expect "and collect says the pipeline was verified" "verified" "$out"
+
+expect "a PR that skipped the pipeline is caught" "03-render-detected-agent" "$out"
+expect "the refusal names the headings that are missing" "Risk Assessment" "$out"
+expect "the refusal says the task was not closed" "NOT CLOSED" "$out"
+expect "and names the remedy" "no-mistakes" "$out"
+
+state="$($QUEUE show "$topic/03-render-detected-agent" 2>&1)"
+refute "a task whose PR failed the check is not closed" "state:       done" "$state"
+
+expect "an unreachable gh degrades to unknown" "04-log-state-changes" "$out"
+expect "and says the check could not run" "could not" "$out"
+refute "an unchecked artifact is never reported as verified" \
+	"04-log-state-changes  shipped  https://github.com/Thurbeen/thurbox/pull/1003  [pipeline verified]" "$out"
+
+state="$($QUEUE show "$topic/04-log-state-changes" 2>&1)"
+expect "but the loop still closes it — no network must not break collect" \
+	"state:       done" "$state"
+expect "and the record says the check could not run, not that it passed" \
+	"unknown" "$state"
+
+out="$($QUEUE collect --allow-unverified 2>&1)"
+expect "the lead can close a flagged task deliberately" "03-render-detected-agent" "$out"
+state="$($QUEUE show "$topic/03-render-detected-agent" 2>&1)"
+expect "and the record keeps saying the artifact failed the check" "missing" "$state"
+
+# --- the brief scaffold points at the policy instead of restating it ---------
+#
+# 871 lines of brief across five tasks, ~30 of them the same hand-copied
+# policy, and `squash merge` had made it into one of the five. One tracked
+# document, referenced by absolute path, is what the scaffold hands a worker.
+
+brief="$(cat "$FLEET_QUEUE_DIR/$topic/02-document-the-states/BRIEF.md")"
+policy="$PWD/orchestration/queue/POLICY.md"
+if [ -f "$policy" ] && ! git check-ignore -q "$policy"; then
+	pass "the policy document is tracked beside the ignored queue"
+else
+	fail "the policy document is tracked beside the ignored queue" \
+		"missing or gitignored: $policy"
+fi
+expect "a scaffolded brief points the worker at it, by absolute path" \
+	"$policy" "$brief"
+expect "the policy carries the pipeline requirement" "no-mistakes" "$(cat "$policy" 2>&1)"
+expect "and squash merge, which drifted out of four briefs in five" \
+	"Squash merge" "$(cat "$policy" 2>&1)"
 
 # --- 7. the queue belongs to a CHECKOUT, not to a cwd ------------------------
 #

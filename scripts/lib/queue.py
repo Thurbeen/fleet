@@ -65,6 +65,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -93,6 +94,31 @@ OUTCOMES = {
 
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,60}$")
 BRIEF_PLACEHOLDER = "<!-- WRITE THE INSTRUCTIONS HERE -->"
+
+# The five headings a `no-mistakes` pull request body carries, and the ONE
+# place they are written down: POLICY.md quotes this list, collect checks
+# against it, and nothing else restates it.
+#
+# WHY A CHECK AT ALL. "Open the pull request by running `/no-mistakes --yes`"
+# is an instruction about a METHOD, and a method leaves no trace: a worker that
+# produced a good-looking PR with a bare `gh pr create` satisfied every visible
+# requirement. Two tasks were once collected `shipped` that way and nothing
+# noticed until the operator read the bodies himself. These headings are the
+# artifact the pipeline leaves behind, so this is the requirement restated as
+# something a reader can verify.
+PIPELINE_HEADINGS = ("Intent", "What Changed", "Risk Assessment", "Testing", "Pipeline")
+
+# A pull request URL, and nothing else — group 1 is the canonical form, so a
+# link someone pasted with `/files` or a `#comment` on the end still resolves
+# to the pull request it names. `not-applicable` and `stuck` produce no
+# artifact at all, and an artifact that is not a PR (an issue, a doc, a commit)
+# is not a pipeline claim — neither is a failure, and neither is checked.
+PR_URL_RE = re.compile(r"^(https?://[^/\s]+/[^/\s]+/[^/\s]+/pull/\d+)(?:[/?#].*)?$")
+
+# Standing policy for every worker, tracked beside the otherwise-gitignored
+# queue. Anchored to the CHECKOUT, not to FLEET_QUEUE_DIR: it lives with the
+# repo and does not move when the queue does.
+POLICY_FILE = os.path.join("orchestration", "queue", "POLICY.md")
 
 
 class QueueError(Exception):
@@ -126,6 +152,16 @@ def queue_root() -> str:
     return os.environ.get("FLEET_QUEUE_DIR") or os.path.join(
         checkout_root(), "orchestration", "queue"
     )
+
+
+def policy_path() -> str:
+    """The standing worker policy every brief points at, absolute.
+
+    Deliberately not under queue_root(): a queue may be anywhere
+    FLEET_QUEUE_DIR names, while the policy is tracked and lives in the
+    checkout that ships it.
+    """
+    return os.path.join(checkout_root(), POLICY_FILE)
 
 
 # --- which checkout owns the queue -------------------------------------------
@@ -528,11 +564,18 @@ def cmd_add(args) -> int:
 
 
 def render_brief(task: Task, topic: dict, body: str | None) -> str:
-    """The worker's whole world, in one file it reads by absolute path.
+    """The worker's whole world: this file, and the one policy file it names.
 
-    The result contract at the end is the half of completion the event stream
-    cannot supply: a transition says a turn ended, and only this file says what
-    the worker concluded.
+    What is TASK-SPECIFIC is written here — the goal, the repo, the branch, and
+    the absolute path of the result file that closes it. What is true of EVERY
+    task is not: it lives in POLICY.md and is pointed at, because policy the
+    lead retypes per brief is policy that drifts. It measurably did — `squash
+    merge` made it into one hand-written brief in five.
+
+    The result contract stays here even so, because the path is this task's
+    alone, and because it is the half of completion the event stream cannot
+    supply: a transition says a turn ended, and only this file says what the
+    worker concluded.
     """
     d = task.doc
     result = os.path.abspath(task.file("result.md"))
@@ -545,12 +588,12 @@ The prompt this came from is at `{prompt}`; read it if the goal here is unclear.
 - **Repo.** `{d["repo"]}`
 - **Branch.** `{d["branch"]}` off `{d["base"]}`
 - **Expected to touch.** {", ".join(f"`{p}`" for p in d["touches"]) or "not recorded"}
+- **Standing policy.** `{policy_path()}`
 
-This brief is the only instruction set you need. Other tasks are running
-against other briefs at the same time, possibly in this same repo — that is
-normal and expected. Do not read their briefs, do not widen your scope to
-tidy what they are doing, and do not wait for them. If your change conflicts
-with theirs, an ordinary rebase resolves it.
+**Read that policy file before you start.** It is the rest of your
+instructions and it is not repeated here: how to open the pull request and how
+that is verified, who merges it, the gate to run before you push, and what the
+other workers running beside you mean for you. This brief does not override it.
 
 ## What to do
 
@@ -572,10 +615,8 @@ artifact: <PR url, or omit>
 A short paragraph: what you actually did, and anything the lead must know.
 ```
 
-The lead reads that file on its own schedule. Do **not** use
-`thurbox-cli message send` — it injects into the lead's terminal and
-interrupts whoever is talking to it. Your file is what closes this task;
-without it the lead sees only that a turn ended, which is not the same claim.
+That file is what closes this task, and the policy's last section says why it,
+and not a message, is what does it.
 """
 
 
@@ -1043,9 +1084,68 @@ def parse_result(text: str) -> tuple[dict, str]:
     return meta, body.strip()
 
 
+def pipeline_verdict(url) -> tuple[str, str]:
+    """Does this task's artifact carry the pipeline's proof? Three answers.
+
+        skipped   nothing to check — no artifact, or one that is not a PR.
+                  `not-applicable` and `stuck` produce none, and that is fine.
+        passed    the PR body carries all five PIPELINE_HEADINGS.
+        missing   a PR body without them: the pipeline was skipped.
+        unknown   the check could not run — no `gh`, no network, no such PR.
+
+    `unknown` is a fourth word on purpose and never collapses into `passed` or
+    `missing`. An offline machine and a CI runner with no `gh` must both still
+    be able to collect, and "could not check" must never be reported as either
+    verdict — that is how a trusted claim gets manufactured out of a timeout.
+    """
+    match = PR_URL_RE.match((url or "").strip())
+    if not match:
+        return "skipped", "no pull request to check"
+    url = match.group(1)
+    if not shutil.which("gh"):
+        return "unknown", "gh not found on PATH"
+    try:
+        proc = subprocess.run(
+            ["gh", "pr", "view", url, "--json", "body", "-q", ".body"],
+            capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return "unknown", f"gh pr view could not run: {exc}"
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout).strip().splitlines()
+        return "unknown", "gh pr view failed: " + (detail[-1] if detail else "no output")
+
+    body = proc.stdout
+    missing = [
+        h for h in PIPELINE_HEADINGS
+        if not re.search(rf"^\s*#{{1,6}}\s+{re.escape(h)}\s*$", body, re.M | re.I)
+    ]
+    if missing:
+        return "missing", "the PR body has no " + " or ".join(missing) + " heading"
+    return "passed", "all five pipeline headings present"
+
+
+def report_unverified(task: Task, url, detail: str) -> None:
+    """The loud half of the check: the lead sees this AT COLLECT TIME."""
+    print(
+        f"    {task.ref}: NOT CLOSED — its pull request skipped the pipeline\n"
+        f"        {url}\n"
+        f"        {detail}\n"
+        "        A `no-mistakes` pull request body carries all five of: "
+        + ", ".join(PIPELINE_HEADINGS)
+        + ".\n"
+        "        Send the worker back to re-open it with `/no-mistakes --yes`,\n"
+        "        then collect again. If you have read this pull request and\n"
+        "        judged it good as it stands, close it deliberately with\n"
+        "        `queue.sh collect --allow-unverified`.",
+        file=sys.stderr,
+    )
+
+
 def cmd_collect(args) -> int:
     q = Queue(queue_root())
     concluded = 0
+    held = 0
     for task in sorted(q.tasks.values(), key=lambda t: t.ref):
         path = task.file("result.md")
         if task.state in ("done", "stuck", "failed", "abandoned") or not os.path.exists(path):
@@ -1059,21 +1159,45 @@ def cmd_collect(args) -> int:
                 file=sys.stderr,
             )
             continue
+        artifact = meta.get("artifact")
+        verdict, detail = pipeline_verdict(artifact)
+        # Recorded before the branch below, so a held-back task carries the
+        # reason in its record and not only in the terminal that saw it.
+        task.doc["artifact_check"] = {"verdict": verdict, "detail": detail, "at": now()}
+
+        if verdict == "missing" and not args.allow_unverified:
+            task.save()
+            report_unverified(task, artifact, detail)
+            held += 1
+            continue
+
         task.doc["outcome"] = outcome
-        task.doc["artifact"] = meta.get("artifact")
+        task.doc["artifact"] = artifact
         task.doc["state"] = OUTCOMES[outcome]
         task.doc["concluded_at"] = now()
         task.save()
         concluded += 1
         line = f"    {task.ref}  {outcome}"
-        if meta.get("artifact"):
-            line += f"  {meta['artifact']}"
+        if artifact:
+            line += f"  {artifact}"
+        if verdict == "passed":
+            line += "  [pipeline verified]"
+        elif verdict == "missing":
+            line += "  [pipeline NOT verified — closed by --allow-unverified]"
+        elif verdict == "unknown":
+            line += f"  [pipeline unchecked: could not check — {detail}]"
         print(line)
         first = body.splitlines()[0] if body.splitlines() else ""
         if first:
             print(f"        {first}")
 
     print(f"collect: {concluded} result(s) read")
+    if held:
+        print(
+            f"         {held} task(s) HELD OPEN — their pull requests skipped the "
+            "pipeline; see above.",
+            file=sys.stderr,
+        )
     if concluded:
         print("         Run `queue.sh plan` — a blocker may have cleared.")
     return 0
@@ -1114,6 +1238,9 @@ def cmd_show(args) -> int:
     for key in ("state", "repo", "branch", "base", "agent", "profile", "session",
                 "prompted", "outcome", "artifact"):
         print(f"    {key + ':':<12} {d.get(key)}")
+    check = d.get("artifact_check") or {}
+    if check.get("verdict"):
+        print(f"    {'pipeline:':<12} {check['verdict']} — {check.get('detail', '')}")
     if task.touches:
         print(f"    {'touches:':<12} {', '.join(task.touches)}")
     for b in task.blockers:
@@ -1238,6 +1365,12 @@ def build_parser() -> argparse.ArgumentParser:
     w.set_defaults(func=cmd_watch)
 
     c = sub.add_parser("collect", help="read the results workers wrote")
+    c.add_argument(
+        "--allow-unverified",
+        action="store_true",
+        help="close a task whose PR body is missing the pipeline's headings, "
+        "after you have read that PR and judged it good anyway",
+    )
     c.set_defaults(func=cmd_collect)
 
     li = sub.add_parser("list", help="one line per task, grouped by topic")
