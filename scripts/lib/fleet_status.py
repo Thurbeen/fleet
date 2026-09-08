@@ -517,9 +517,9 @@ def probe_fuel() -> dict:
         "read_at": int(time.time()),
         "unavailable": None, "source": "quota-axi", "provider": FUEL_PROVIDER,
         "remaining": None, "reserve": FUEL_RESERVE, "below_reserve": None,
-        "binding": None, "windows": [], "stale": None, "state": None,
-        "refreshed_at": None, "retry_after": None, "error": None,
-        "schema_version": None,
+        "binding": None, "resets_at": None, "windows": [], "stale": None,
+        "state": None, "refreshed_at": None, "retry_after": None,
+        "error": None, "schema_version": None,
     }
     doc, why = run_json(
         ["quota-axi", "--provider", FUEL_PROVIDER, "--full", "--json",
@@ -565,6 +565,7 @@ def probe_fuel() -> dict:
     sec["binding"] = binding["id"]
     sec["remaining"] = binding["remaining"]
     sec["below_reserve"] = binding["remaining"] < FUEL_RESERVE
+    sec["resets_at"] = binding["resets_at"]
     return sec
 
 
@@ -746,9 +747,13 @@ def render_fuel_record(sec: dict) -> str:
     `remaining` line reading 0 is the one way this could say "the window is
     spent" when it means "nobody could tell".
     """
+    # `limited_by` is the wire name a reader with no JSON parses; `probe_fuel`
+    # itself calls the same fact `binding`, since the fuel record is the only
+    # place that has to speak the pane's vocabulary.
+    source = {"limited_by": "binding"}
     lines = []
     for name in RECORD_FIELDS:
-        value = sec.get(name)
+        value = sec.get(source.get(name, name))
         if value is None or value == "":
             continue
         if isinstance(value, bool):
