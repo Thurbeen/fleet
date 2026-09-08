@@ -1,7 +1,7 @@
 <!-- rumdl-disable MD041 -->
 <!-- The banner is the first line by design; MD041 wants a level-1 heading. -->
 
-![Fleet: fighter craft over a volcanic canyon, powered by thurbox][banner]
+![Fleet: operators at consoles in a red mission control room, a squadron of fighter craft above them, powered by thurbox][banner]
 
 [banner]: media/fleet-banner.jpg
 
