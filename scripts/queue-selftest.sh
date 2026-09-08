@@ -1172,6 +1172,29 @@ count_is "a second pass over the same broken PR dispatches no second fixer" \
 	"$(creates)" "$before" "$out$nl$(cat "$shep/tbx.log")"
 expect "and says the fixer it already sent is still in flight" "in-flight" "$out"
 
+# --- 9e2. a fixer that died without fixing anything gets replaced -----------
+#
+# The same "gone reads as no session" rule 9d2 checks for the task's own
+# worker has to hold for the shepherd's own record too, or a fixer that
+# crashes or gets cleaned up after dispatch stalls that PR's recovery forever.
+
+fixer_101="$(python3 -c "
+import yaml
+doc = yaml.safe_load(open('$FLEET_QUEUE_DIR/$stopic/01-conflicting/task.yaml'))
+print(doc['shepherd']['session'])
+")"
+rm -f "$shep/sessions/$fixer_101.json"
+before="$(creates)"
+out="$(env PATH="$shep/bin:$base_path" $QUEUE shepherd --topic "$stopic" 2>&1)"
+count_is "a dead fixer's PR gets a fresh fixer, not silence" \
+	"$(creates)" "$((before + 1))" "$out$nl$(cat "$shep/tbx.log")"
+expect "and it is reported dispatched, not still in-flight" "dispatched:" "$out"
+if grep -q 'session create .*__01-conflicting' "$shep/tbx.log"; then
+	pass "and it is dispatched on the same branch as before"
+else
+	fail "and it is dispatched on the same branch as before" "$(cat "$shep/tbx.log")"
+fi
+
 # --- 9f. an unreachable gh does nothing at all -------------------------------
 #
 # The one failure that costs more than the bug it fixes: a shepherd that reads

@@ -1721,9 +1721,9 @@ def missing_sections(body: str) -> list:
 def classify(pr: dict) -> tuple[str, str]:
     """(condition, one line saying why).
 
-    Four conditions get a fixer, in the order they have to be fixed in.
-    `ready` means all three merge gates hold. `undetermined` means the answer
-    is not knowable yet and is never treated as either of the other two.
+    Four conditions get a fixer, in the order FIXABLE lists them. `ready`
+    means all three merge gates hold. `undetermined` means the answer is not
+    knowable yet and is never treated as either of the other two.
     """
     if str(pr.get("state") or "").upper() != "OPEN":
         return "closed", f"the pull request is {str(pr.get('state')).lower()}"
@@ -1732,18 +1732,25 @@ def classify(pr: dict) -> tuple[str, str]:
 
     mergeable = str(pr.get("mergeable") or "").upper()
     base = pr.get("baseRefName") or "its base branch"
-    if mergeable == "CONFLICTING":
-        return "conflicting", f"conflicts with {base} and cannot be merged as it stands"
-
     failed, pending = check_verdicts(pr.get("statusCheckRollup"))
-    if failed:
-        return "checks-failed", "failed checks: " + ", ".join(failed[:4])
-    if str(pr.get("reviewDecision") or "").upper() == "CHANGES_REQUESTED":
-        return "changes-requested", "a reviewer requested changes"
-
     missing = missing_sections(pr.get("body"))
-    if missing:
-        return "policy", "the body is missing " + ", ".join(missing)
+
+    fixable = {
+        "conflicting": (
+            mergeable == "CONFLICTING",
+            f"conflicts with {base} and cannot be merged as it stands",
+        ),
+        "checks-failed": (bool(failed), "failed checks: " + ", ".join(failed[:4])),
+        "changes-requested": (
+            str(pr.get("reviewDecision") or "").upper() == "CHANGES_REQUESTED",
+            "a reviewer requested changes",
+        ),
+        "policy": (bool(missing), "the body is missing " + ", ".join(missing)),
+    }
+    for condition in FIXABLE:
+        hit, why = fixable[condition]
+        if hit:
+            return condition, why
 
     if pending:
         return "undetermined", "checks still running: " + ", ".join(pending[:4])
@@ -2090,14 +2097,17 @@ def shepherd_one(task: Task, repo_slug: str, args) -> dict:
 
     # Everything below here needs a fixer.
     if not args.force and rec.get("condition") == condition and rec.get("session"):
-        state, why = session_state(str(rec["session"]))
-        row["action"] = "in-flight"
-        row["note"] = (
-            f"a fixer went out for this at {rec.get('at')} "
-            f"(session {rec['session']}, now {state or why or 'gone'}). "
-            "Nothing sent. `--force` overrides."
-        )
-        return row
+        state, _why = session_state(str(rec["session"]))
+        # A gone session reads as no session, same as the worker path below —
+        # otherwise a dead fixer stalls this PR's recovery forever.
+        if state:
+            row["action"] = "in-flight"
+            row["note"] = (
+                f"a fixer went out for this at {rec.get('at')} "
+                f"(session {rec['session']}, now {state}). "
+                "Nothing sent. `--force` overrides."
+            )
+            return row
 
     # The task's own session has the context and the worktree, so it is the
     # first choice — but only its own word puts it at rest (§4a). A session
