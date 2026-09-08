@@ -7,11 +7,10 @@ allowed-tools: Read, Edit, Write, Bash, Glob, Grep
 
 ## thurbox-session
 
-New work brought to the control plane runs in a **dedicated thurbox worker
-session**, not inline in this checkout. The control plane holds the plan and the
-run log; workers hold the branches. The exception is the control plane's own
-content — `registry/`, `orchestration/`, `.agents/` — edited inline and pushed
-straight to main.
+FLEET.md's **What you delegate** section owns whether a task runs inline or
+here. This skill is the reference for driving the session once you've decided
+to spawn one — naming, prompting, completion detection, cleanup. The control
+plane holds the plan and the run log; workers hold the branches.
 
 ## Interface: use the CLI
 
