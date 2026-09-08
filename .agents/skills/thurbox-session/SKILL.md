@@ -9,10 +9,9 @@ allowed-tools: Read, Edit, Write, Bash, Glob, Grep
 
 New work brought to the control plane runs in a **dedicated thurbox worker
 session**, not inline in this checkout. The control plane holds the plan and the
-run log; workers hold the branches.
-
-Exception: the control plane's own content — `registry/`, `orchestration/`,
-`.agents/` — is edited inline and pushed straight to main.
+run log; workers hold the branches. The exception is the control plane's own
+content — `registry/`, `orchestration/`, `.agents/` — edited inline and pushed
+straight to main.
 
 ## Interface: use the CLI
 
@@ -60,12 +59,10 @@ thurbox-cli session create --name 'Run exec automations off the TUI thread' \
 | `--on-existing` | what a name collision means — never leave it defaulted, see §1c |
 | `--env` / `--command` / `--arg` / `--reports-as` | how the agent starts; render them from a profile, see §1d |
 
-The first seven rows place the work. The eighth says what a name already in
-use means, and the ninth shapes the agent that does the work. This skill used
-to cover only the first group, and the two gaps that left are worth naming: a
-re-run silently made a second session under the same name, and every session
-it spawned inherited whatever ambient environment the thurbox server happened
-to have.
+The first seven rows place the work; the eighth says what a name already in use
+means (§1c) and the ninth shapes the agent that does it (§1d). Leave neither
+defaulted: the defaults silently make a second session under the same name, and
+give the new session whatever ambient environment the thurbox server has.
 
 Capture the returned UUID — every later command keys off it. `create --json`
 also returns **`created`**, which is `false` when `--on-existing adopt`
@@ -73,8 +70,8 @@ handed back a session that was already there; §1c is what to do with that.
 
 ### Naming a session
 
-A session name is an **imperative summary of the work, in sentence case**. It
-says what the worker is being asked to do; it is not an identifier for it.
+A session name is an **imperative summary of the work, in sentence case**: what
+the worker is being asked to do, not an identifier for it.
 
 ```
 Run exec automations off the TUI thread     good
@@ -83,10 +80,9 @@ thurbox-automation-nonblocking              bad — a kebab slug, reads as an id
 Fix stuff                                   bad — says nothing
 ```
 
-Spaces are allowed. `session create`, `session get --json`, and
-`message send --to` all round-trip a spaced name intact; any claim that names
-must be hyphenated is wrong. The rest of the rules follow from how the name is
-used:
+Spaces are allowed: `session create`, `session get --json`, and
+`message send --to` all round-trip a spaced name intact. The rest of the rules
+follow from how the name is used:
 
 - **Imperative mood, sentence case.** Capitalize the first word only. Leave
   identifiers in the casing they already have — `gh`, `TUI`, `extension.toml`.
@@ -106,8 +102,7 @@ Hosts come from `~/.config/thurbox/hosts.toml`; a host `foo` registers the
 backend `ssh:foo`.
 
 With `--host`, **everything runs on the remote**: the agent process, the tmux
-window, and the git worktrees. Only the TUI is local. Three consequences that
-bite:
+window, and the git worktrees. Only the TUI is local. Three consequences:
 
 - **`--repo-path` is a path on the remote host**, not locally. A local absolute
   path that happens to exist on your machine will simply not be found there.
@@ -116,8 +111,7 @@ bite:
   worker reads nothing.
 - **The remote needs its own GitHub credentials** to clone, fetch, and push.
   Yours are not inherited. Forwarding your SSH agent fixes it, but forwards
-  every key the agent holds — decide that deliberately, don't reach for it
-  reflexively.
+  every key the agent holds — decide that before reaching for it.
 
 Before spawning remotely, check all three, in this order:
 
@@ -137,7 +131,7 @@ A Windows/PowerShell host is not a POSIX shell: probes like `command -v` and
 
 An agent started in a directory it has not seen asks whether it may work
 there, and thurbox mints a **fresh worktree path per session**. So a worker
-sits on that dialog: the session exists, the pane is live, the agent has not
+sits on that dialog — the session exists, the pane is live, the agent has not
 started — and `session send` then types the brief INTO the dialog. This broke
 every worker fleet spawned.
 
@@ -156,7 +150,7 @@ the keys that agent needs, then confirms the dialog is gone. If it cannot
 confirm either, it sends nothing and exits 3 — a session waiting on a dialog is
 visible and fixable; a session that has been typed into randomly is neither.
 
-The per-agent differences are real, and one is a trap:
+The per-agent differences, one of which is a trap:
 
 | agent | gate |
 |---|---|
@@ -181,21 +175,20 @@ scripts/trust-thurbox-dir.sh /abs/path/to/worktree   # one path
 scripts/trust-thurbox-dir.sh --all-worktrees         # every existing one
 ```
 
-It still works and it is the right tool when a dialog cannot be answered, or to
-pre-seed before an unattended run. It is **not** the default: it writes to a
-file the operator owns, for a tool fleet did not install, and it needs a
-different format per agent. Prefer answering.
+Use it when a dialog cannot be answered, or to pre-seed before an unattended
+run. It is **not** the default: it writes to a file the operator owns, for a
+tool fleet did not install, it needs a different format per agent, and
+`~/.claude.json` is rewritten by every live Claude Code process, so a concurrent
+write can clobber a seed. Prefer answering.
 
-Trust is a real guard either way: accepting it vouches for the code in that
-directory. Only ever point either tool at worktrees of repos you already trust.
-And `~/.claude.json` is rewritten by every live Claude Code process, so a
-concurrent write can clobber a seed — one more reason the keystroke is better.
+Trust is a real guard either way — accepting it vouches for the code in that
+directory, so only ever point either tool at worktrees of repos you trust.
 
 ## 1c. Re-running a spawn (`--on-existing`)
 
-`session create` defaults to `--on-existing allow`, which is what thurbox has
-always done: a second create under a name already in use makes a **second
-session** carrying that name. In this control plane that is a one-way door.
+`session create` defaults to `--on-existing allow`: a second create under a name
+already in use makes a **second session** carrying that name. In this control
+plane that is a one-way door.
 
 A worker's name is an imperative sentence describing the work, and it is also
 its **mailbox address**. Once two sessions share one, every by-name command
@@ -218,9 +211,9 @@ collision means, every time:
 | `replace` | you have decided to start this work over | the old session **and its worktree** torn down, then a fresh one |
 | `allow` | never, here | a twin, and by-name addressing broken for both |
 
-`replace` deletes uncommitted work in the old worktree. It is the honest
-answer for a worker that is wedged and whose branch you do not want, and the
-wrong answer for anything else — reach for `session restart` first.
+`replace` deletes uncommitted work in the old worktree. It is the answer for a
+worker that is wedged and whose branch you do not want, and wrong for anything
+else — reach for `session restart` first.
 
 **The rule that goes with `adopt`: read `created` before you send.**
 
@@ -240,13 +233,11 @@ running* — go and read its state (§4a) instead.
 
 ## 1d. How the agent starts (`--env`, `--command`)
 
-Everything so far is about the session. These are about the **agent** inside
-it: model, effort, feature flags, and the command line itself.
-
-They are not written on the spawn command line. They live in
-`orchestration/session-profiles.yaml` — one named profile per set of settings,
-committed and reviewed like everything else here — and
-`./scripts/session-flags.sh` renders one into flags:
+Everything so far is about the session. These are about the **agent** inside it:
+model, effort, feature flags, and the command line itself. Do not write them on
+the spawn command line — they live in `orchestration/session-profiles.yaml`, one
+named profile per set of settings, and `./scripts/session-flags.sh` renders one
+into flags:
 
 ```bash
 mapfile -d '' -t flags < <(./scripts/session-flags.sh sweep)
@@ -294,15 +285,14 @@ stem**, not against whatever is really in the pane:
   hook_states_reportable: ["working","blocked","done","idle"]
 ```
 
-The first row is a session that reports nothing, forever, and therefore reads
-as idle while it works — see §4a for why `uncovered` is not `idle`. The second
-is the same launch, declared. `--reports-as` changes nothing about what runs;
-it tells thurbox which agent's hooks the pane speaks.
+The first row is a session that reports nothing, forever, and therefore reads as
+idle while it works — §4a has why `uncovered` is not `idle`. The second is the
+same launch, declared: `--reports-as` changes nothing about what runs, it tells
+thurbox which agent's hooks the pane speaks.
 
-So the two ship together or not at all, and `session-flags.sh` refuses a
-profile with `command` and no `reports_as` rather than trusting anyone to
-remember. `thurbox-cli session reports-as <session> <agent>` makes the same
-declaration after the fact, with `--clear` to undo it.
+So the two ship together or not at all, and `session-flags.sh` refuses a profile
+with `command` and no `reports_as`. `thurbox-cli session reports-as <session>
+<agent>` makes the same declaration after the fact, with `--clear` to undo it.
 
 ## 2. Multi-repo mode
 
@@ -326,12 +316,12 @@ thurbox-cli session create --name 'Add a license header to every source file' \
 **What the worker actually sees.** With two or more members, thurbox launches
 the agent in a per-session **symlink workspace**
 (`~/.local/share/thurbox/workspaces/<agent_session_id>/`) holding one symlink
-per repo, with the agent's cwd set there. Every repo appears as a subdirectory.
-This is deliberately agent-neutral — thurbox passes no `--add-dir`-style flags
-to Claude itself. The workspace is symlinks only, rebuilt idempotently on each
-launch, removed on delete without touching the repos.
+per repo, with the agent's cwd set there, so every repo appears as a
+subdirectory. It is agent-neutral — thurbox passes no `--add-dir`-style flags to
+Claude itself — symlinks only, rebuilt idempotently on each launch, and removed
+on delete without touching the repos.
 
-Consequences worth knowing:
+The consequences:
 
 - The session's `cwd` field still points at the **primary** repo (display,
   editor, git context). The workspace is a spawn-time process-cwd detail, never
@@ -351,7 +341,7 @@ repo is a subdirectory, and that it should open **one PR per repo**.
 thurbox-cli session send <uuid> '<single-line prompt>'
 ```
 
-Two traps, both learned the hard way:
+Two traps:
 
 - **`send` takes a UUID, not a name.** Capture it from `create --json`.
 - **`send` types the text and presses Enter**, so a multi-line prompt fires the
@@ -377,12 +367,9 @@ was adopted, not created, and is already working on this (§1c).
 
 ## 4. Detect completion
 
-**A worker writes a FILE. It does not send mail.** That is a deliberate
-reversal of what this skill used to say, and the reason is concrete:
-`thurbox-cli message send` **wakes** its recipient — it injects into the lead's
-terminal, so a worker reporting in interrupts whoever is talking to the lead at
-that moment. The property the CLI calls "immediate" is immediate in exactly the
-way that hurts.
+**A worker writes a FILE. It does not send mail.** `thurbox-cli message send`
+**wakes** its recipient — it injects into the lead's terminal, so a worker
+reporting in interrupts whoever is talking to the lead at that moment.
 
 So completion arrives as two things the lead READS, on its own cadence:
 
@@ -439,11 +426,8 @@ repo, each with `repo_path`, `worktree_path`, and `branch`.
 
 ## 4a. Session state: supervision, not completion
 
-`session get`/`list --json` **do** carry the session's state. That is a
-correction: this skill used to say the lifecycle state was persisted for the TUI
-alone and not exposed by the CLI, and an agent that believed it never looked.
-
-Read `state` — one word, always present:
+`session get`/`list --json` carry the session's state. Read `state` — one word,
+always present:
 
 | `state` | What it means |
 |---|---|
@@ -459,10 +443,10 @@ Read `state` — one word, always present:
 
 **The trap this table exists to prevent:** `idle` is not "no news". The last
 five words above are *not* the agent saying it is at rest, and treating any of
-them as `idle` — as anything that reads state here once did — reports a worker
-mid-turn as finished. Read the word, never the absence of one.
+them as `idle` reports a worker mid-turn as finished. Read the word, never the
+absence of one.
 
-`get` and `list` deliberately answer differently:
+`get` and `list` answer differently, and the difference is intended:
 
 - **`session get <uuid> --json` probes the pane** (pass `--no-verify` to skip).
   Only the probe can see an agent thurbox did not launch, which is why `get`
@@ -481,16 +465,14 @@ thurbox 2.19.0 that includes `grok` and `kimi` alongside the agents covered
 before). `state_source` says whether the answer came from a hook or the
 process.
 
-`detected_agent` names the registered agent observed holding the pane when it
-is not the one the row was created as. Three names, three fields: `agent` is
-what the row was created as, `reports_as` what a driver declared, and
-`detected_agent` what is observably running. It is a live reading, never
-written back. It is `null` when the observation cannot pick one profile —
-several registered agents can share an executable — and that case answers
-`hook_corroboration: "foreign-agent"` with `state: "running"`: an agent is
-there, and which one is not knowable from a process listing. A remote session
-has no pane to look at from here and answers `hook_corroboration:
-"unavailable"`.
+Three names, three fields: `agent` is what the row was created as, `reports_as`
+what a driver declared, and `detected_agent` what is observably running — a live
+reading, never written back. `detected_agent` is `null` when the observation
+cannot pick one profile (several registered agents can share an executable), and
+that case answers `hook_corroboration: "foreign-agent"` with `state: "running"`:
+an agent is there, and which one is not knowable from a process listing. A
+remote session has no pane to look at from here and answers
+`hook_corroboration: "unavailable"`.
 
 A worked reading of a control-plane session created as a bare shell, which a
 harness then launched Claude into:
@@ -509,8 +491,8 @@ same moment, and both are true.
 that the work is finished — an agent reports `done` at the end of every turn it
 takes. Use state to supervise: to spot a `blocked` worker waiting on an approval
 nobody is going to give, or a `working` one whose report has aged past anything
-plausible. Completion still arrives by mail (or the sentinel below), because
-only the worker knows whether it is done.
+plausible. Completion still arrives as the result file of §4, because only the
+worker knows whether it is done.
 
 ## 5. Collect and clean up
 

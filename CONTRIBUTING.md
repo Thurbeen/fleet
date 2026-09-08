@@ -1,8 +1,7 @@
 # Contributing
 
-This is a **control plane**, not a code base: markdown playbooks, a handful of
-shell scripts, a generated registry, and agent skills. Everything below
-follows from that.
+This is a **control plane**: markdown playbooks, a handful of shell scripts, a
+generated registry, and agent skills. Everything below follows from that.
 
 ## The gate
 
@@ -15,14 +14,14 @@ One script is the whole gate:
 ```
 
 CI runs that script, the pre-commit hooks run it, and `.no-mistakes.yaml` points
-its `lint` command at it. One definition means a green local run and a green
-pull request mean the same thing — which matters more here than in most repos,
-because **CI only fires on pull requests** while routine control-plane changes
-go straight to `main`. The local run is the one doing the work.
+its `lint` command at it, so a green local run and a green pull request mean the
+same thing. That matters more here than in most repos: **CI only fires on pull
+requests** while routine control-plane changes go straight to `main`, so the
+local run is the one doing the work.
 
 It needs `shellcheck`, `rumdl` and `python3` with PyYAML. A missing tool fails
-the check rather than skipping it: a gate that passes silently when its linter
-is absent is worse than no gate.
+the check rather than skipping it — a gate that passes silently when its linter
+is absent is worse than no gate. The script's header is the full usage.
 
 ### Pre-commit hooks
 
@@ -45,10 +44,9 @@ every key it sets.
 
 Its **gate-control** fields — `commands.*`, `agent`, `document.instructions`,
 `review.path_instructions`, `ci.rerun_transient`, `no_ci`,
-`disable_project_settings` — are read only from the trusted default branch,
-never from a pushed branch. A contributor therefore cannot weaken the gate that
-reviews their own change; an edit to one of those fields takes effect once it
-has merged to `main`.
+`disable_project_settings` — are read only from the trusted default branch. A
+contributor therefore cannot weaken the gate that reviews their own change; an
+edit to one of those fields takes effect once it has merged to `main`.
 
 ## Merging: squash only
 
@@ -56,7 +54,7 @@ has merged to `main`.
 rebase merging are both disabled on the remote, and the branch is deleted on
 merge.
 
-The consequence worth internalising:
+The consequence:
 
 ```text
 docs: name worker sessions with an imperative sentence
@@ -64,9 +62,9 @@ docs: name worker sessions with an imperative sentence
 docs: name worker sessions with an imperative sentence (#12)
 ```
 
-The commit that reaches `main` is **not** any commit from your branch. GitHub
-builds it from the **pull request title** plus its own `(#N)` suffix, and takes
-its body from the pull request body. So:
+The commit that reaches `main` is not any commit from your branch: GitHub builds
+it from the **pull request title** plus its own `(#N)` suffix, and takes its
+body from the pull request body. So:
 
 - Title the pull request the way you would write the commit. This repository's
   history is conventional and scopeless — `feat:`, `docs:`, `chore:`, `fix:`.
@@ -75,11 +73,11 @@ its body from the pull request body. So:
 - Anything that has to survive into the history goes in the pull request
   **body**, not in a branch commit's footer. The squash discards those.
 
-Branch commits themselves are cheap: they are a working record, not the
-artifact. `main` is a straight line of one commit per pull request.
+Branch commits are a working record. `main` is a straight line of one commit per
+pull request.
 
 > This deviates from the standing "allow rebase merging, disable merge commits"
-> preference in favour of squash, deliberately: it is what
+> preference in favour of squash: it is what
 > [thurbox](https://github.com/Thurbeen/thurbox) does, and it satisfies the same
 > underlying rule that `main` carries no merge commits.
 
@@ -90,10 +88,10 @@ artifact. `main` is a straight line of one commit per pull request.
 `.agents/skills/<name>/SKILL.md` holds the real files. `.claude/skills` is a
 **symlink** to that directory, committed as a symlink (git mode `120000`).
 
-One tree, every CLI: Claude Code reads `.claude/skills`, and opencode
-auto-discovers `.claude/skills` too — so the symlink already serves it. Do not
-mirror the tree into `.opencode/skills`, which would register the same skill
-twice, and do not add a second copy under `.claude/`.
+One tree, every CLI: Claude Code reads `.claude/skills` and opencode
+auto-discovers the same path, so the symlink already serves both. Do not mirror
+the tree into `.opencode/skills`, which would register the same skill twice, and
+do not add a second copy under `.claude/`.
 
 `scripts/check.sh skills` guards both failure modes: it asserts the link is a
 symlink pointing at `../.agents/skills` (a clone made with `core.symlinks=false`
@@ -102,8 +100,8 @@ and that every skill directory has a `SKILL.md`.
 
 ### What is tracked, and what is not
 
-This is the convention every other one now hangs off, so read `.gitignore`'s
-header before adding a path. **The machinery is tracked; what a running fleet
+Read `.gitignore`'s header before adding a path; it owns this split and the
+reason for every entry. **The machinery is tracked; what a running fleet
 writes is not.** This repo is public, and the queue, the map and the run logs
 are the operator's own working state, which has no business in it.
 
@@ -163,8 +161,8 @@ session reports nothing and renders as `uncovered` while it works.
 absolute path. Edit the `.in` file and re-run the installer.
 
 `min_thurbox_version` there is a claim about the whole range the manifest
-supports, and the file records why the floor sits where it does. Raising it is
-only correct alongside the reason.
+supports, and the file's header records why the floor sits where it does, along
+with why the path cannot be a `~`. Raise it only alongside the reason.
 
 ## Dependencies
 
@@ -185,5 +183,5 @@ guide, `AGENTS.md` the agent-facing operating guide for working *inside* this
 repo, `FLEET.md` the standing context of the long-lived `fleet` session, this
 file the contribution process and the configuration of external tooling, and
 `.agents/skills/thurbox-session/SKILL.md` the working reference for driving
-`thurbox-cli`. Reduce a duplicate to a pointer rather than keeping two copies in
-step.
+`thurbox-cli`. A script's or config file's own header owns how that thing works.
+Reduce a duplicate to a pointer rather than keeping two copies in step.

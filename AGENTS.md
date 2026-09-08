@@ -1,23 +1,26 @@
 # AGENTS.md — operating guide for this control plane
 
-This is a **control-plane** repo, not a code repo. When you work here you are
-helping orchestrate and map projects, not shipping application code.
+This is a **control-plane** repo. When you work here you are helping orchestrate
+and map projects, not shipping application code.
 
 This file is the one copy. `CLAUDE.md` beside it is a two-line pointer that
 imports it, the same way `.claude/skills` is a symlink to `.agents/skills` and
-the extension surfaces one `FLEET.md` under three names: **one document, one
-place to edit it, whichever CLI is reading.** Edit this file, not the pointer.
+the extension surfaces one `FLEET.md` under three names. Edit this file, not the
+pointer.
 
 ## What this repo is
 
+The machinery is tracked; what a running fleet writes is not — this repo is
+public, and that content is not something to publish. `.gitignore`'s header
+names every path and the reason for each.
+
 - `registry/owners.txt` — the GitHub owners the map covers, one per line.
-  Gitignored; `registry/owners.example.txt` is the tracked copy it starts from.
+  `registry/owners.example.txt` is the tracked copy it starts from.
 - `registry/repos.generated.yaml` — generated index of every repo under those
-  owners. **Never hand-edit it.** To refresh, run `./scripts/sync-registry.sh`.
-  Gitignored, so a sync leaves nothing to commit.
+  owners. **Never hand-edit it.** Refresh with `./scripts/sync-registry.sh`.
 - `registry/context/<repo>.md` — the human-owned truth about a project: what it
   is, how it relates to others, current goals. Read the relevant one before
-  reasoning about a project. Keep them short and current. Gitignored.
+  reasoning about a project, and keep it short and current.
 - `orchestration/session-profiles.yaml` — named default settings a worker
   session STARTS under (`--env`, and `--command` for a setting that is a flag),
   as opposed to where its work goes. `./scripts/session-flags.sh <profile>`
@@ -35,28 +38,25 @@ place to edit it, whichever CLI is reading.** Edit this file, not the pointer.
   everything else warns, and `queue.sh root` names the directory in use.
 - `orchestration/webui/` — the monitor's runtime state: the port it chose at
   bind time, its supervisor's pid, its log, and the `down` flag. Written by
-  `./scripts/webui.sh`, gitignored, and created on first start. The server's
-  code (`scripts/webui.sh`, `scripts/lib/webui.py`) is tracked; nothing it
-  writes is.
+  `./scripts/webui.sh` and created on first start. The server's code
+  (`scripts/webui.sh`, `scripts/lib/webui.py`) is tracked; nothing it writes is.
 - `orchestration/playbooks/<name>.md` — reusable recipes for running thurbox.
   All tracked; write new ones here, from `_TEMPLATE.md`.
 - `orchestration/runs/<date>-<slug>.md` — a log per orchestration run.
-  Gitignored: local working state, not something this repo keeps for you.
 - `.agents/skills/<name>/SKILL.md` — agent skills, in one agent-agnostic tree.
   `.claude/skills` is a **symlink** to it, so Claude Code and opencode (which
   auto-discovers `.claude/skills`) both load the same copy. Never add a second
   copy under `.claude/`, and do not mirror into `.opencode/skills` — that
   registers the same skill twice. Three skills live there: `fleet-queue` (the
   queue: intake, ordering, dispatch, and the two halves of completion),
-  `thurbox-session` (driving one worker session), and `fleet-onboarding`
-  (taking a fresh clone to a working control plane — it owns the setup story
-  the README's Quickstart used to spell out, and bringing the monitor up).
+  `thurbox-session` (driving one worker session), and `fleet-onboarding` (a
+  fresh clone to a working control plane, including bringing the monitor up).
 
 ## Orchestration model
 
 This repo drives [thurbox](https://github.com/Thurbeen/thurbox) **directly**. Do
 not invoke an external `orchestrate` skill or any other outside orchestration
-workflow — the control plane is deliberately self-contained.
+workflow — the control plane is self-contained.
 
 The loop, driven by `./scripts/queue.sh`:
 
@@ -67,7 +67,7 @@ The loop, driven by `./scripts/queue.sh`:
    looks like, from scratch. `dispatch` refuses a brief that is still the
    scaffold's placeholder.
 3. **Order, then dispatch the whole ready set at once.** File or subsystem
-   overlap is a RISK SIGNAL that gets reported, not a reason to wait. Serialize
+   overlap is a RISK SIGNAL that gets reported rather than held back. Serialize
    only for a true semantic dependency, shared mutable external state, an
    incompatible concurrent migration, or another concrete condition that makes
    independent progress unsafe — and record it with `queue.sh block`, which
@@ -82,26 +82,23 @@ The loop, driven by `./scripts/queue.sh`:
    `queue.sh watch` folds `thurbox-cli watch`'s event stream into each task's
    record and closes nothing; `queue.sh collect` reads the `result.md` the
    worker wrote and only that closes a task. A turn ending is not a task
-   finishing. Record the run in `orchestration/runs/` as it happens; it is
-   gitignored, so it is not backed up and dies with the checkout.
+   finishing. Record the run in `orchestration/runs/` as it happens.
 6. Review the PRs. Delete each session as it closes out.
 
 `./scripts/webui.sh` serves a read-only web view of that same queue on
-localhost — topics classified by what their tasks are doing, each with its
-plan, progress and outcome. It READS the records and never writes them, so it
-cannot disagree with `queue.sh list`. Its header owns the lifecycle; the one
-thing to know before touching it is that `ensure` and `start` differ only in
-whether they honour the `down` flag `stop` wrote, and the onboarding skill must
-call `ensure`.
+localhost — topics classified by what their tasks are doing, each with its plan,
+progress and outcome. It READS the records and never writes them, so it cannot
+disagree with `queue.sh list`. Its header owns the lifecycle; the one thing to
+know before touching it is that `ensure` and `start` differ only in whether they
+honour the `down` flag `stop` wrote, and the onboarding skill must call `ensure`.
 
-`.agents/skills/fleet-queue/` is the driving surface for 1–3 and 5.
-`.agents/skills/thurbox-session/` is the driving surface for one session:
-spawning, prompting, cleanup. Use both. In particular, read the latter's
-**session state** section before you judge whether a worker is still working:
-`idle` means the agent said it is at rest, and `running`, `uncovered` and
-`unreported` each mean something else. Its §1c and §1d cover the two choices
-every spawn makes — what a name collision means, and what settings the agent
-starts with.
+`.agents/skills/fleet-queue/` is the driving surface for 1–3 and 5, and
+`.agents/skills/thurbox-session/` for one session: spawning, prompting, cleanup.
+Use both. In particular, read the latter's **session state** section before you
+judge whether a worker is still working: `idle` means the agent said it is at
+rest, and `running`, `uncovered` and `unreported` each mean something else. Its
+§1c and §1d cover the two choices every spawn makes — what a name collision
+means, and what settings the agent starts with.
 
 ## Keeping the map honest
 
@@ -127,15 +124,13 @@ That one script is the whole gate. CI runs it, the prek hooks run it, and
 `.no-mistakes.yaml` points its `lint` command at it, so a green local run and a
 green pull request mean the same thing.
 
-Changes that open a pull request land by **squash merge** — it is the only
-merge method the remote allows — so the pull request title becomes the commit on
+Changes that open a pull request land by **squash merge** — the only merge
+method the remote allows — so the pull request title becomes the commit on
 `main`. `CONTRIBUTING.md` owns that process.
 
 `extension.toml` is generated by `./scripts/install-extension.sh` and gitignored.
-Edit `extension.toml.in` instead, and re-run the installer.
-
-Two consequences of that file being generated, both worth knowing before you
-debug the extension:
+Edit `extension.toml.in` instead, and re-run the installer. Two consequences to
+know before you debug the extension:
 
 - **Re-installing does not move the `fleet` session.** thurbox reuses an
   extension's session by name and never repoints it, so after the clone moves,

@@ -10,16 +10,9 @@ allowed-tools: Read, Edit, Write, Bash, Glob, Grep
 A prompt is not a turn in this conversation. It is a **topic** on disk, which
 becomes **tasks** on disk, each carrying its own instructions in its own file.
 `./scripts/queue.sh` owns all of it and its header is the full usage; this skill
-is how to think while driving it.
-
-Three things it buys, and they are the three the control plane could not do
-before:
-
-- **Nothing is lost to a context reset.** The prompt is kept verbatim, the plan
-  is a file, and the record survives you.
-- **Independent work goes out all at once.** Not one at a time, not capped.
-- **Your context stays clean.** You read a line per task. Each worker reads one
-  brief and never sees another.
+is how to think while driving it. Three things it buys: nothing is lost to a
+context reset, independent work goes out all at once, and your context stays
+clean — you read a line per task, and each worker reads one brief.
 
 ### Where it sits next to `thurbox-session`
 
@@ -32,11 +25,10 @@ completion, this one wins: **workers write result files, they do not send mail.*
 ### Which checkout you are in
 
 **The queue lives in the CONTROL PLANE's checkout** — the clone the `fleet`
-session opens — and nowhere else. A second clone of this repo is normal and
-supported: a control plane with no `origin` of its own needs one that workers
-can branch and push from. Opening a topic in that clone gives you a whole
-second queue the monitor is right not to show, which is how this rule was
-learned rather than guessed.
+session opens — and nowhere else. A second clone of this repo is normal: a
+control plane with no `origin` of its own needs one that workers can branch and
+push from. Opening a topic there gives you a whole second queue the monitor is
+right not to show.
 
 Ask the tooling rather than the shell prompt:
 
@@ -45,12 +37,12 @@ Ask the tooling rather than the shell prompt:
 ./scripts/webui.sh status    # the queue the dashboard is serving
 ```
 
-Those two must name the same directory. If they do not, you are in the wrong
-checkout — go to the one `queue.sh root` reports as the control plane and work
-there. `topic add` and `add` refuse outside it anyway, naming both paths, and
-every other command warns; but the two lines above answer it before you type
-anything. `FLEET_QUEUE_DIR` overrides all of it, verbatim and unguarded, for a
-harness pointing at a throwaway queue.
+Those two must name the same directory. If they do not, go to the one
+`queue.sh root` reports as the control plane and work there. `topic add` and
+`add` refuse outside it anyway, naming both paths, and every other command
+warns — but the two lines above answer it before you type anything.
+`FLEET_QUEUE_DIR` overrides all of it, verbatim and unguarded, for a harness
+pointing at a throwaway queue.
 
 ## 1. Intake — a prompt becomes a topic
 
@@ -66,12 +58,12 @@ costs you the prompt.
 EOF
 ```
 
-The prompt is stored verbatim on purpose. Your summary of it is a lossy copy
-made at the moment you understood it least.
+Store the prompt verbatim: your summary of it is a lossy copy made at the moment
+you understood it least.
 
 Then decompose. A topic is the unit of **intent**; a task is the unit of
 **work** — one repo, one branch, one thing a single worker can finish and
-validate on its own. The decomposition is the judgement call, and it is yours.
+validate on its own. The decomposition is yours.
 
 ```bash
 ./scripts/queue.sh add report-status-honestly drop-idle-default \
@@ -131,13 +123,11 @@ waiting: 1 task(s) — each held by a durable, recorded blocker
         detected_agent field 01 introduces
 ```
 
-**The whole value is in that first block being big.** Most work needs no
-ordering at all; the job is finding the small set that does and letting
-everything else go at once. A queue that runs one task at a time is slower than
-no queue, because it adds bookkeeping and removes nothing.
-
-So: **serialize only for a concrete condition that makes independent progress
-unsafe.**
+**The value is in that first block being big.** Most work needs no ordering; the
+job is finding the small set that does and letting everything else go at once. A
+queue that runs one task at a time is slower than no queue, because it adds
+bookkeeping and removes nothing. So **serialize only for a concrete condition
+that makes independent progress unsafe.**
 
 ```bash
 ./scripts/queue.sh block report-status-honestly/03-render-detected-agent \
@@ -146,7 +136,7 @@ unsafe.**
   --why 'reads the detected_agent field 01 introduces'
 ```
 
-`--kind` is a closed set, and it is the doctrine written down:
+`--kind` is a closed set:
 
 | kind | when |
 |---|---|
@@ -156,9 +146,8 @@ unsafe.**
 | `other` | another concrete condition — say what it is in `--why` |
 
 "They edit the same file" is **not on that list** and cannot be spelled as one.
-`block` refuses it and points you at `--touches`. Two agents editing one file in
-two worktrees is an ordinary rebase, not a hazard; treating it as one is how a
-controller ends up slower than no controller.
+`block` refuses it and points you at `--touches`; two agents editing one file in
+two worktrees is an ordinary rebase.
 
 A blocker clears only when the task it names is genuinely `done` — a session
 that stopped does not clear it, and neither does an abandoned task.
@@ -185,12 +174,11 @@ are no longer `queued` and are not spawned twice.
 Every spawn runs `./scripts/session-trust.sh` between `session create` and the
 first `session send`. An agent started in a fresh worktree asks whether it may
 work there, and sending the brief while that dialog is up types the brief INTO
-the dialog — which is how every fleet-spawned worker used to break.
-
-The script confirms the dialog is really there before sending a key, answers
-with the sequence that agent needs (Claude's default selection is **`No, exit`**
-— a bare Enter dismisses it), and confirms the dialog is gone. `thurbox-session`
-§1b has the per-agent table and the config-seeding fallback.
+the dialog — which is how every fleet-spawned worker used to break. The script
+confirms the dialog is really there before sending a key, answers with the
+sequence that agent needs (Claude's default selection is **`No, exit`**, so a
+bare Enter dismisses it), and confirms the dialog is gone. `thurbox-session` §1b
+has the per-agent table and the config-seeding fallback.
 
 When it cannot confirm, **nothing is typed and the task is left unprompted**:
 
@@ -210,10 +198,9 @@ all — they take a launch flag, so spawn them under the `cursor-trusted` /
 
 ## 5. Learn what happened — read, do not be interrupted
 
-This is the part the captain changed, and the reason matters. `thurbox-cli
-message send` is exact, but it **wakes** the recipient: an arriving worker
-message injects into your terminal and interrupts whoever is talking to you.
-So the queue splits completion into two things you READ:
+`thurbox-cli message send` is exact, but it **wakes** the recipient: an arriving
+worker message injects into your terminal and interrupts whoever is talking to
+you. So the queue splits completion into two things you READ:
 
 ```text
 WHEN   ./scripts/queue.sh watch --for-secs 60
@@ -263,14 +250,12 @@ yourself and judged it good as it stands, `collect --allow-unverified` closes
 it and records that you did.
 
 **Never treat a transition as a completion.** `watch` will tell you a task's
-turn ended with no result file — that is a worker that stopped, hit an
-approval, or crashed, and it is emphatically not a finished task. Closing it
-would mark failed work as shipped. Go and look at the pane (`thurbox-cli
-session capture`), or read `thurbox-session`'s state table before you judge it.
+turn ended with no result file — a worker that stopped, hit an approval, or
+crashed. Closing it would mark failed work as shipped. Look at the pane
+(`thurbox-cli session capture`) or read `thurbox-session`'s state table first.
 
 Run `watch` when you choose: between turns, when the operator asks, before a
-`plan`. There is no cadence you owe it — the cursor means a long gap costs you
-nothing but the wait.
+`plan`. The cursor means a long gap costs you nothing but the wait.
 
 After `collect`, run `plan` again. A blocker may have cleared, and the tasks it
 was holding go out immediately.
@@ -284,37 +269,33 @@ was holding go out immediately.
 ```
 
 `list` is what you read when someone asks what is in flight. **Do not read the
-briefs.** They are each written for one worker and reading five of them is
-exactly the mixing-up the queue exists to prevent. `show` when you need one.
+briefs.** Each is written for one worker, and reading five of them is exactly
+the mixing-up the queue exists to prevent. `show` when you need one.
 
 A ref is `<topic>/<task>`, or a bare task id when only one topic has it.
 
-**The operator has a third view you should point them at rather than narrate
-into.** `./scripts/webui.sh ensure` serves the same records on localhost as a
-page: topics classified by what their tasks are doing, each with its plan,
-progress and outcome. It is a reader over these files, so it never disagrees
-with `list`, and it lets someone watch a run without asking you and
-interrupting whatever you are doing. When they ask "what is in flight" for the
-third time, give them the URL.
+**The operator has a third view: point them at it rather than narrating into
+it.** `./scripts/webui.sh ensure` serves the same records on localhost — topics
+classified by what their tasks are doing, each with its plan, progress and
+outcome. It is a reader over these files, so it never disagrees with `list`, and
+it lets someone watch a run without interrupting you. When they ask "what is in
+flight" for the third time, give them the URL.
 
-It **displays and does not control** — there is no route that dispatches,
-cancels or reorders. You remain the only thing that writes here. And a stop is
-durable: `webui.sh stop` writes a flag that `ensure` honours forever after, so
-do not clear it on their behalf.
+It **displays and does not control** — no route dispatches, cancels or reorders,
+and you remain the only thing that writes here. A stop is durable: `webui.sh
+stop` writes a flag that `ensure` honours forever after, so do not clear it on
+their behalf.
 
 ## 7. Where this lives, and what that costs
 
 Everything under `orchestration/queue/` is gitignored working state — your
-prompts, your briefs, your results. The machinery is tracked; the queue is not,
-because this repo is public and none of that belongs in it. `README.md` and
-`POLICY.md` are the two exceptions: standing documentation, not one operator's
-data, which is exactly why every brief can point at the policy instead of
-carrying a copy. It also means **the repo does not back your queue up**. Say
-that plainly when someone assumes otherwise. `.gitignore`'s header owns the
-full reasoning.
-
-`orchestration/webui/` is the same kind of thing for the monitor: the port it
-chose, its pid, its log and its down flag, all gitignored, all local.
+prompts, your briefs, your results — as is `orchestration/webui/` for the
+monitor. `README.md` and `POLICY.md` are the two exceptions: standing
+documentation, not one operator's data, which is exactly why every brief can
+point at the policy instead of carrying a copy. The machinery is tracked; the
+queue is not, because this repo is public and none of that belongs in it. It
+also means **the repo does not back your queue up**. Say that plainly when
+someone assumes otherwise; `.gitignore`'s header owns the full reasoning.
 
 `./scripts/check.sh queue` validates your records and re-proves the ordering and
 wake claims against a throwaway queue. It runs in the gate, so a change that
