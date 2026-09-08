@@ -101,7 +101,7 @@ HUD_GROUPS = (
     ("ready", "ready", ("queued",)),
     ("running", "running", ("dispatched",)),
     ("waiting", "blocked", ("waiting",)),
-    ("done", "done", ("done", "abandoned")),
+    ("done", "done", ("done", "landed", "abandoned")),
     ("failed", "attention", ("stuck", "failed")),
 )
 
@@ -245,7 +245,8 @@ def task_view(q: fleetqueue.Queue, task: fleetqueue.Task) -> dict:
 def hud_counts(by_state: dict) -> list:
     """The five HUD numbers, folded out of the same by-state tally the pills
     use. Buckets, not new states: `failed` is stuck plus failed, `done` is done
-    plus abandoned, and every display state lands in exactly one of them."""
+    plus landed plus abandoned, and every display state lands in exactly one of
+    them."""
     return [
         {
             "key": key,
@@ -274,7 +275,7 @@ def classify(tasks: list) -> str:
         return "ready"
     if any(s == "waiting" for s in states):
         return "blocked"
-    if all(s in ("done", "abandoned") for s in states):
+    if all(s in ("done", "landed", "abandoned") for s in states):
         return "done"
     return "ready"
 
@@ -428,7 +429,7 @@ PAGE = """<!doctype html>
 .c-running, .s-dispatched  { --hue: var(--st-running);   --glow: var(--glow-green); }
 .c-blocked, .s-waiting     { --hue: var(--st-blocked);   --glow: none; }
 .c-attention, .s-stuck, .s-failed { --hue: var(--st-attention); --glow: var(--glow-red); }
-.c-done, .s-done, .s-abandoned    { --hue: var(--st-done);     --glow: none; }
+.c-done, .s-done, .s-landed, .s-abandoned { --hue: var(--st-done); --glow: none; }
 .c-empty                   { --hue: var(--st-empty);     --glow: none; }
 /* The pipeline verdict `queue.sh collect` recorded, borrowing the same three
    hues rather than inventing a fourth vocabulary for it. */
@@ -768,7 +769,7 @@ let detailCache = {};
 
 // The bar reads left to right as work leaving the queue: what is finished,
 // then what is moving, then what has not started, then what needs someone.
-const BAR_ORDER = ["done", "abandoned", "dispatched", "queued", "waiting", "stuck", "failed"];
+const BAR_ORDER = ["landed", "done", "abandoned", "dispatched", "queued", "waiting", "stuck", "failed"];
 
 function pill(word) { return el("span", "pill c-" + word + " s-" + word, word); }
 
@@ -843,9 +844,9 @@ function progress(states, total) {
     bar.appendChild(seg);
   }
   wrap.appendChild(bar);
-  const closed = (states.done || 0) + (states.abandoned || 0);
+  const closed = (states.done || 0) + (states.landed || 0) + (states.abandoned || 0);
   const frac = el("span", "frac", closed + "/" + total + " done");
-  frac.title = closed + " of " + total + " task(s) concluded as done or abandoned";
+  frac.title = closed + " of " + total + " task(s) concluded as done, landed or abandoned";
   wrap.appendChild(frac);
   return wrap;
 }

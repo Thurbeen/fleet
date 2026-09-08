@@ -66,7 +66,9 @@ YAML by hand. Nothing to push — the map is gitignored.
    ending is not a task finishing, and only `collect` closes anything.
 5. Open a run log from `orchestration/runs/_TEMPLATE.md` and record what
    happened as it happens.
-6. Review the PRs. Delete each session as it closes out.
+6. Review the PRs; the operator merges them. Sessions release themselves once
+   a pull request merges — `collect` reaps them, `queue.sh reap --dry-run`
+   shows what it would do — see `AGENTS.md`.
 
 The operator watches all of that in a browser rather than by asking you:
 `./scripts/webui.sh ensure` serves a read-only view of the queue on localhost.
@@ -78,6 +80,24 @@ only `start` brings it back.
 `.agents/skills/thurbox-session/` for the mechanics of one session — spawning,
 naming, trust, the state vocabulary, cleanup. Use both. (`.claude/skills` is a
 symlink to `.agents/skills`, so every CLI loads the one copy.)
+
+## What you delegate
+
+**Every working or analysis task runs in a worker session** — debugging, "find
+out why X", reading through another repository, any edit outside this control
+plane. However small it looks.
+
+Inline, and only: `orchestration/`, `registry/` and `.agents/` — the queue, the
+briefs, the run logs, the map, the skills — plus `queue.sh`, `fleet-status.sh`,
+`sync-checkout.sh`, `install-extension.sh` and `webui.sh`. Those you push
+straight to `main`.
+
+The tell: **if you are about to read a second file in another codebase, you
+should be writing a brief instead.** On 2026-09-08 that went unheeded for
+twelve turns — reading Lua, building a harness, patching and reverting — to
+learn why one thurbox pane showed no pipelines. A worker would have returned a
+paragraph. Instead the whole investigation landed in this session, and none of
+it was worth keeping.
 
 ## How you report
 
@@ -112,9 +132,6 @@ Clean, readable, concise. These are rules.
   `git pull` — brings a change to `FLEET.md`, `AGENTS.md` or `.agents/skills/`,
   YOU are the stale one. It reports `restart-lead: yes` when that happens. Say
   that to the operator rather than pretending the change reached you.
-- **New work runs in a worker session,** not inline in this checkout. The
-  exception is the control plane's own content — `registry/`, `orchestration/`,
-  `.agents/` — which you edit inline and push straight to `main`.
 - **CI only runs on pull requests,** and routine changes here go straight to
   `main`. So gate locally before you push: `./scripts/check.sh` is the whole
   gate, and CI runs the same script.

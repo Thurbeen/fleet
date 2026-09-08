@@ -30,6 +30,12 @@ WHAT A COMPLETION IS. Two halves, deliberately from two sources:
     the WHAT   result.md, which the worker writes when it knows what it
                concluded. `collect` reads it and only then does a task close.
 
+And a THIRD thing, after both: a task that is `done` has an OPEN pull request,
+not a merged one, and its session is still the cheap way to fix what review
+finds. When the artifact actually lands — which only the forge knows, usually
+long after the worker is gone — the task moves to `landed` and its session and
+worktree are released. `reap` below owns that, and argues it.
+
 The pair replaces `thurbox-cli message send`, which is exact but WAKES the
 recipient: an arriving worker message injects into the lead's terminal and
 interrupts whoever is talking to it. A stream that is read and a file that is
@@ -84,7 +90,11 @@ BLOCKER_KINDS = {
 
 # `stuck` and `failed` are the worker's own verdicts, not an observation of its
 # session. Nothing here derives a state from a transition.
-STATES = ("queued", "dispatched", "done", "stuck", "failed", "abandoned")
+#
+# `landed` is the one state a WORKER never produces. It comes after `done` and
+# it is the forge's answer, not anyone's claim — see the landing section below
+# for why the two have to be different words.
+STATES = ("queued", "dispatched", "done", "landed", "stuck", "failed", "abandoned")
 OUTCOMES = {
     "shipped": "done",
     "not-applicable": "done",
@@ -457,8 +467,11 @@ class Queue:
         return out
 
     # The whole ordering rule, in one method. A task waits only for a recorded
-    # blocker, and only until that blocker's task is genuinely `done` — a
-    # session that stopped, or a task abandoned, never releases it.
+    # blocker, and only until that blocker's task has LANDED — concluded AND
+    # its artifact on main. A session that stopped does not release it, an
+    # abandoned task does not, and neither does `done`: a task collected
+    # `shipped` once cleared its dependents while its pull request was still
+    # open and unreviewed, and the lead had to hold them by hand.
     def is_ready(self, task: Task) -> bool:
         if task.state != "queued":
             return False
@@ -466,7 +479,7 @@ class Queue:
 
     def blocker_cleared(self, blocker: dict) -> bool:
         try:
-            return self.get(blocker["task"]).state == "done"
+            return self.get(blocker["task"]).state == "landed"
         except QueueError:
             return False
 
@@ -1180,7 +1193,9 @@ def cmd_collect(args) -> int:
     held = 0
     for task in sorted(q.tasks.values(), key=lambda t: t.ref):
         path = task.file("result.md")
-        if task.state in ("done", "stuck", "failed", "abandoned") or not os.path.exists(path):
+        if task.state in ("done", "landed", "stuck", "failed", "abandoned") or not os.path.exists(
+            path
+        ):
             continue
         meta, body = parse_result(open(path).read())
         outcome = str(meta.get("outcome", "")).strip()
@@ -1230,8 +1245,331 @@ def cmd_collect(args) -> int:
             "pipeline; see above.",
             file=sys.stderr,
         )
-    if concluded:
-        print("         Run `queue.sh plan` — a blocker may have cleared.")
+
+    # The third thing, wired into the command the lead already runs rather than
+    # left as a chore for it to remember — a step only a human remembers is the
+    # step that let twenty gigabytes of merged-and-forgotten worktree pile up.
+    # It is safe to run here because its gate is not this command's: it acts on
+    # a task whose artifact the FORGE says has landed, which is never true of a
+    # result collected a moment ago. Everything else is reported and left be.
+    reap(q, dry=False, release=not args.no_reap)
+    return 0
+
+
+# --- land and reap: the third thing, after both halves of completion ---------
+#
+# A task that finishes leaves a thurbox session and a git worktree running
+# forever, and nothing used to reap them. Four had accumulated on one machine;
+# the oldest held twenty gigabytes and its pull request had merged the day
+# before. `AGENTS.md` already said "delete each session as it closes out" — it
+# was documented, it was manual, and a step only a human remembers is a step
+# that does not run.
+#
+# THE TRAP THAT DECIDES THE GATE. The obvious design is "reap when `collect`
+# closes the task". It is wrong, and it was learned expensively. `collect`
+# closes a task on the worker's result.md, and `outcome: shipped` there means A
+# PULL REQUEST IS OPEN — not merged. Hours after two tasks were collected
+# `shipped`, both pull requests turned out to have been opened by hand instead
+# of through the pipeline. The fix was a follow-up message to each still-living
+# session. Had collect reaped them, the same fix would have cost a full
+# re-spawn: a new worktree, a cold agent, and the brief read again from
+# nothing.
+#
+# So the gate is not "the task is done". It is "the artifact LANDED", which
+# only the forge knows and usually long after the worker is gone:
+#
+#     done       the worker concluded. Its pull request is open, under review,
+#                and its session is the cheap way to fix whatever review finds.
+#     landed     ... and the artifact reached main, or there was never one to
+#                reach it. Nothing more will be asked of that session.
+#     abandoned  ... and the pull request was closed unmerged. Nothing more
+#                will be asked of the session either — but the work is NOT on
+#                main, so a task that waited on this one still waits.
+#
+# `landed` is a state the record keeps and everything reads: reaping, blocker
+# clearing, and `list`. Nothing re-opens — this is a LATER transition out of
+# `done`, discovered by asking `gh`, never by a worker claiming it.
+
+# The only session states a reap will act on. `working` and `blocked` are the
+# ones that must never be touched, but they are not the whole exclusion:
+# `running` is an agent holding the pane with nothing signalled, `uncovered` is
+# an agent wired to report nothing, and `unreported` is one that can report and
+# has not yet. None of those three is the agent saying it is at rest, and
+# treating them as `idle` is how live work gets killed. Read the word, never
+# the absence of one. (`.agents/skills/thurbox-session/SKILL.md` §4a.)
+REAPABLE_SESSION_STATES = ("idle", "done", "stopped")
+
+# The task states that still hold a session worth reporting on. `queued` never
+# had one and `dispatched` is a worker mid-flight.
+HOLDING_STATES = ("done", "landed", "abandoned", "stuck", "failed")
+
+# What a landing promotes a `done` task to. `open` and `unknown` are absent on
+# purpose: a task waits rather than move on a fact nobody could establish.
+LANDED_STATE = {"merged": "landed", "none": "landed", "closed": "abandoned"}
+
+
+def artifact_landing(artifact) -> tuple[str, str]:
+    """Has this task's artifact reached main? Asked of the forge, never of a worker.
+
+        none      nothing to wait for — `not-applicable` produced no artifact,
+                  or the artifact is not a pull request. Such a task skips
+                  straight through rather than waiting forever for a merge
+                  that is never going to happen.
+        merged    the pull request is on main.
+        closed    it was closed unmerged: nothing more will happen on that
+                  branch, and the work did not land either.
+        open      the normal state of work awaiting review. Not an error and
+                  not a warning.
+        unknown   the forge could not be asked — no `gh`, no network, no such
+                  pull request. It never collapses into any of the others, for
+                  the same reason `collect`'s pipeline check has a fourth word:
+                  a timeout must not be able to manufacture a merge, and a
+                  merge is what authorises a deletion.
+    """
+    match = PR_URL_RE.match((artifact or "").strip())
+    if not match:
+        return "none", "no pull request to wait for"
+    url = match.group(1)
+    if not shutil.which("gh"):
+        return "unknown", "gh not found on PATH"
+    try:
+        proc = subprocess.run(
+            ["gh", "pr", "view", url, "--json", "state", "-q", ".state"],
+            capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return "unknown", f"gh pr view could not run: {exc}"
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout).strip().splitlines()
+        return "unknown", "gh pr view failed: " + (detail[-1] if detail else "no output")
+
+    state = proc.stdout.strip().upper()
+    if state == "MERGED":
+        return "merged", f"{url} is merged"
+    if state == "CLOSED":
+        return "closed", f"{url} was closed without merging"
+    if state == "OPEN":
+        return "open", f"{url} is still open — work awaiting review"
+    return "unknown", f"gh answered an unrecognised pull request state: {state!r}"
+
+
+def sweep_landings(q: Queue, dry: bool) -> dict:
+    """Ask the forge about every `done` task and promote the ones that landed.
+
+    Works from the RECORD and `gh` alone. That is a requirement, not an
+    accident: a merge normally happens after the session that produced it is
+    gone, so nothing here may depend on a worker being alive to say so.
+
+    Returns {ref: (kind, detail)} for every task it asked about, so the caller
+    can say why a task it did not promote is being kept.
+    """
+    seen: dict = {}
+    for task in sorted(q.tasks.values(), key=lambda t: t.ref):
+        if task.state != "done":
+            continue
+        kind, detail = artifact_landing(task.doc.get("artifact"))
+        seen[task.ref] = (kind, detail)
+        nxt = LANDED_STATE.get(kind)
+        if dry:
+            if nxt:
+                print(f"    {task.ref:<46} would be {nxt:<10} {detail}")
+            continue
+        task.doc["landing"] = {"state": kind, "detail": detail, "at": now()}
+        if nxt:
+            task.doc["state"] = nxt
+            print(f"    {task.ref:<46} {nxt:<10} {detail}")
+        task.save()
+    return seen
+
+
+def live_sessions() -> tuple[set | None, str]:
+    """Every session thurbox currently knows about, or None when it cannot be asked.
+
+    None is emphatically not an empty set. "thurbox did not answer" must never
+    read as "every session is already gone" — that would drop the id of a
+    session still holding a worktree, and the worktree with it.
+    """
+    if not shutil.which("thurbox-cli"):
+        return None, "thurbox-cli not found on PATH"
+    try:
+        proc = subprocess.run(
+            ["thurbox-cli", "session", "list", "--json"],
+            capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return None, f"thurbox-cli session list could not run: {exc}"
+    if proc.returncode != 0:
+        return None, "thurbox-cli session list failed"
+    try:
+        doc = json.loads(proc.stdout)
+    except ValueError:
+        return None, "thurbox-cli session list did not answer JSON"
+    if not isinstance(doc, list):
+        return None, "thurbox-cli session list did not answer a list"
+    return {s.get("id") for s in doc if isinstance(s, dict)}, ""
+
+
+def session_state(sid: str) -> tuple[str | None, str]:
+    """What thurbox says the session is doing, or None with the reason it cannot say.
+
+    `session get` and not `session list`: only `get` probes the pane, and that
+    probe is the whole difference between `uncovered` — this agent is wired to
+    report nothing, so its silence means nothing — and `running`, an agent
+    holding the pane right now. A reap that read the cheaper answer would
+    delete both.
+    """
+    try:
+        proc = subprocess.run(
+            ["thurbox-cli", "session", "get", sid, "--json"],
+            capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return None, f"thurbox-cli session get could not run: {exc}"
+    if proc.returncode != 0:
+        return None, "thurbox-cli session get failed"
+    try:
+        doc = json.loads(proc.stdout)
+    except ValueError:
+        return None, "thurbox-cli session get did not answer JSON"
+    state = doc.get("state") if isinstance(doc, dict) else None
+    if not state:
+        return None, "thurbox-cli session get answered no state"
+    return str(state), ""
+
+
+def record_reaped(task: Task, sid: str, how: str) -> None:
+    """The receipt.
+
+    `session` is cleared so `list` and `show` stop pointing at an id that no
+    longer resolves; the id itself moves into `reaped`, because "which session
+    did this task have" stays a real question after the session is gone.
+    """
+    task.doc["reaped"] = {"session": sid, "how": how, "at": now()}
+    task.doc["session"] = None
+    task.save()
+
+
+def reap(q: Queue, dry: bool = False, release: bool = True) -> int:
+    """Land what has landed, then release the session of every task that is finished.
+
+    Only ever acts on a session THIS QUEUE recorded. The lead's own session and
+    anything made by hand are not in the records and so are never candidates;
+    the lead's is additionally named and refused, because a task attached to it
+    by mistake would otherwise be a deletion.
+
+    Returns how many tasks it had something to say about, so a caller can stay
+    silent when there was nothing.
+    """
+    landings = sweep_landings(q, dry)
+    acted = sum(1 for kind, _ in landings.values() if kind in LANDED_STATE)
+    if acted and not dry:
+        print("      Run `queue.sh plan` — a blocker clears when the task it names LANDS.")
+    if not release:
+        print("      Sessions left alone (--no-reap); `queue.sh reap` releases them.")
+        return acted
+
+    # A dry run promotes nothing, so the state on disk still says `done` for a
+    # task that just landed. Project the sweep's answer forward instead, or a
+    # dry run would report every reap it is about to do as a task it is keeping.
+    def state_of(task: Task) -> str:
+        kind = (landings.get(task.ref) or (None,))[0]
+        return LANDED_STATE.get(kind, task.state) if dry else task.state
+
+    holders = [
+        t
+        for t in sorted(q.tasks.values(), key=lambda t: t.ref)
+        if t.doc.get("session") and state_of(t) in HOLDING_STATES
+    ]
+    if not holders:
+        return acted
+
+    lead = os.environ.get("THURBOX_SESSION")
+    live: set | None = None
+    live_detail = ""
+    if any(state_of(t) in ("landed", "abandoned") for t in holders):
+        live, live_detail = live_sessions()
+
+    reaped = kept = dropped = 0
+    for task in holders:
+        sid = task.doc["session"]
+        state = state_of(task)
+        acted += 1
+        if sid == lead:
+            why = "that is the lead's own session, not a worker's"
+        elif state in ("stuck", "failed"):
+            why = (
+                f"the worker's own verdict is `{state}` — its session is the "
+                "evidence, and a human decides"
+            )
+        elif state == "done":
+            why = landings.get(task.ref, ("", "its artifact has not landed"))[1]
+        elif live is None:
+            why = live_detail
+        else:
+            why = ""
+        if why:
+            print(f"    {task.ref:<46} kept       {why}")
+            kept += 1
+            continue
+
+        if sid not in live:
+            if dry:
+                print(f"    {task.ref:<46} would drop {sid}  thurbox no longer has it")
+            else:
+                record_reaped(task, sid, "already gone")
+                print(f"    {task.ref:<46} gone       {sid}  thurbox no longer had it")
+                dropped += 1
+            continue
+
+        live_state, detail = session_state(sid)
+        if live_state not in REAPABLE_SESSION_STATES:
+            print(
+                f"    {task.ref:<46} kept       thurbox says `{live_state or detail}`; "
+                "only " + ", ".join(REAPABLE_SESSION_STATES) + " are reaped"
+            )
+            kept += 1
+            continue
+
+        if dry:
+            print(f"    {task.ref:<46} would reap {sid}  ({live_state})")
+            reaped += 1
+            continue
+
+        # `--force`, never a plain `delete`. Plain delete soft-deletes the row
+        # and leaves the TUI to reap the tmux window and the worktrees on its
+        # next sync; headless — which this is — that never happens and the disk
+        # is never actually freed, which is the entire point.
+        proc = subprocess.run(
+            ["thurbox-cli", "session", "delete", sid, "--force"],
+            capture_output=True, text=True,
+        )
+        if proc.returncode != 0:
+            err = (proc.stderr or proc.stdout).strip().splitlines()
+            print(
+                f"    {task.ref:<46} NOT REAPED  session delete failed: "
+                + (err[-1] if err else "no output"),
+                file=sys.stderr,
+            )
+            kept += 1
+            continue
+        record_reaped(task, sid, "deleted")
+        print(f"    {task.ref:<46} reaped     {sid}  ({live_state})")
+        reaped += 1
+
+    if reaped or kept or dropped:
+        line = (
+            f"reap: {'would release' if dry else 'released'} {reaped} session(s), "
+            f"kept {kept}"
+        )
+        if dropped:
+            line += f", dropped {dropped} stale id(s)"
+        print(line)
+    return acted
+
+
+def cmd_reap(args) -> int:
+    if reap(Queue(queue_root()), dry=args.dry_run) == 0:
+        print("reap: nothing has landed and no finished task is still holding a session")
     return 0
 
 
@@ -1273,6 +1611,15 @@ def cmd_show(args) -> int:
     check = d.get("artifact_check") or {}
     if check.get("verdict"):
         print(f"    {'pipeline:':<12} {check['verdict']} — {check.get('detail', '')}")
+    landing = d.get("landing") or {}
+    if landing.get("state"):
+        print(f"    {'landing:':<12} {landing['state']} — {landing.get('detail', '')}")
+    reaped = d.get("reaped") or {}
+    if reaped.get("session"):
+        print(
+            f"    {'reaped:':<12} {reaped['session']} {reaped.get('how', '')} "
+            f"at {reaped.get('at', '')}"
+        )
     if task.touches:
         print(f"    {'touches:':<12} {', '.join(task.touches)}")
     for b in task.blockers:
@@ -1398,12 +1745,25 @@ def build_parser() -> argparse.ArgumentParser:
 
     c = sub.add_parser("collect", help="read the results workers wrote")
     c.add_argument(
+        "--no-reap",
+        action="store_true",
+        help="record what landed but leave every session alone",
+    )
+    c.add_argument(
         "--allow-unverified",
         action="store_true",
         help="close a task whose PR body is missing the pipeline's headings, "
         "after you have read that PR and judged it good anyway",
     )
     c.set_defaults(func=cmd_collect)
+
+    rp = sub.add_parser("reap", help="release the sessions of tasks whose work has landed")
+    rp.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="say what would land and what would be released, and write nothing",
+    )
+    rp.set_defaults(func=cmd_reap)
 
     li = sub.add_parser("list", help="one line per task, grouped by topic")
     li.add_argument("--topic")

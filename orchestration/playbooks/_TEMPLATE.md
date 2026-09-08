@@ -45,8 +45,9 @@ How to decompose the goal into thurbox sessions. For each session, define:
    timing, `collect` for the conclusions); record each outcome in the run log
    as it lands. Do not have workers mail you — `message send` wakes the lead
    and interrupts whoever is talking to it.
-5. Review artifacts (PRs). `session delete <uuid> --force` per session as it
-   closes out.
+5. Review artifacts (PRs). A queue-dispatched session releases itself once its
+   pull request merges (`collect` reaps it; `reap --dry-run` first if unsure);
+   `session delete <uuid> --force` is for one you spawned by hand.
 
 ## Notes
 
