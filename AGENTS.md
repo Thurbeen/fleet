@@ -34,11 +34,11 @@ names every path and the reason for each.
   every brief points its worker at instead of restating it, and
   `OPERATOR.example.md` — the form of the operator's own `OPERATOR.md`, which
   is theirs, stays ignored, and is pointed at by every brief scaffolded while
-  it exists and is not empty. **The
-  queue belongs to the control-plane checkout — the clone the `fleet` session
-  opens — and not to whatever directory your shell is in**, so a second clone
-  of this repo cannot silently fork it: `topic add` and `add` refuse there,
-  everything else warns, and `queue.sh root` names the directory in use.
+  it exists and is not empty. **The queue belongs to the control-plane
+  checkout — the clone the `fleet` session opens — and not to whatever
+  directory your shell is in**, so a second clone of this repo cannot
+  silently fork it: `topic add` and `add` refuse there, everything else
+  warns, and `queue.sh root` names the directory in use.
 - `orchestration/webui/` — the monitor's runtime state: the port it chose at
   bind time, its supervisor's pid, its log, and the `down` flag. Written by
   `./scripts/webui.sh` and created on first start. The server's code
