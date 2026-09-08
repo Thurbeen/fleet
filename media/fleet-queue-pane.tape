@@ -2,11 +2,23 @@
 #
 #     FLEET_QUEUE_DIR=/path/to/an/example/queue vhs media/fleet-queue-pane.tape
 #
-# then optimise (the raw capture is roughly twice the size):
+# then redact and optimise in one pass (the raw capture is roughly twice the
+# size, and the Sessions column is real machine state — see below):
 #
 #     ffmpeg -i media/fleet-queue-pane.gif \
-#       -vf "fps=10,scale=1000:-1:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=128[p];[s1][p]paletteuse=dither=none" \
+#       -vf "drawbox=x=18:y=47:w=228:h=587:color=0x161616:t=fill,fps=10,scale=1000:-1:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=128[p];[s1][p]paletteuse=dither=none" \
 #       -loop 0 -y media/fleet-queue-pane.gif
+#
+# THE SESSIONS COLUMN IS NOT PART OF THE FIXTURE AND CANNOT BE. `FLEET_QUEUE_DIR`
+# isolates the queue pane's data, but the Sessions column left of it reads this
+# machine's real, running thurbox sessions — there is no equivalent env var for
+# that, and thurbox has no command-palette entry for its F9 sessions-list toggle
+# (`vhs` cannot send an F-key either, which is why the centre pane uses Ctrl+P
+# instead of F8 below). So the `drawbox` above blanks that column's body after
+# the fact, the same privacy call the centre pane makes by switching to the
+# Shell tab before `Show`. The coordinates are this recording's fixed geometry
+# (`Set Width`/`Set Height`/`Set Padding` below); re-measure them with the pixel
+# probe in this tape's PR if any of those change.
 #
 # IT READS AN EXAMPLE QUEUE, not the machine's own. `queue.py` honours
 # FLEET_QUEUE_DIR verbatim precisely so a harness can point at a temp directory,
