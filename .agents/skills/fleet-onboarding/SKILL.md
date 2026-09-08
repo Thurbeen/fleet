@@ -1,6 +1,6 @@
 ---
 name: fleet-onboarding
-description: Take a fresh clone of this control plane to a working fleet — discover the GitHub owners, write registry/owners.txt, sync the registry, install the thurbox extension, bring the queue monitor up, and verify each step. Use when someone has just cloned the repo, asks how to set the control plane up, asks to start or restart the fleet monitor, or invokes /fleet-onboarding.
+description: Take a fresh clone of this control plane to a working fleet — discover the GitHub owners, write registry/owners.txt, sync the registry, install the thurbox extension and the TUI queue pane, bring the queue monitor up, and verify each step. Use when someone has just cloned the repo, asks how to set the control plane up, asks to start or restart the fleet monitor, or invokes /fleet-onboarding.
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Glob, Grep, AskUserQuestion
 ---
@@ -8,7 +8,8 @@ allowed-tools: Read, Edit, Write, Bash, Glob, Grep, AskUserQuestion
 ## fleet-onboarding
 
 Takes a fresh clone of fleet to a control plane that actually runs: owners
-known, registry synced, thurbox extension installed, and the queue monitor up.
+known, registry synced, thurbox extension and TUI queue pane installed, and the
+queue monitor up.
 
 **Do the work, don't narrate it.** The steps are mechanical —
 `registry/owners.txt`, `scripts/sync-registry.sh`, `scripts/install-extension.sh`,
@@ -53,9 +54,10 @@ Report **every** missing prerequisite in one pass with its remedy, then stop;
 discovering them one restart at a time is the frustrating version of this.
 
 `jq` is needed by both `scripts/sync-registry.sh` (step 3) and
-`scripts/install-extension.sh` (step 4); `thurbox-cli` only by step 4. If
+`scripts/install-extension.sh` (step 4); `thurbox-cli` by steps 4 and 5. If
 thurbox is the only thing missing you may still do steps 1 to 3 — say plainly
-that step 4 is deferred and what to run once thurbox is installed.
+that steps 4 and 5 are deferred and what to run once thurbox is installed. Both
+are the same command, so that is one sentence, not two.
 
 ## 1. The checkout — is this the one to keep?
 
@@ -184,7 +186,64 @@ thurbox-cli extension deactivate fleet   # deletes the session
 ./scripts/install-extension.sh           # respawns it at the right path
 ```
 
-## 5. The monitor
+## 5. The queue pane
+
+`./scripts/install-extension.sh` in step 4 installed it already — it installs
+the thurbox extension and the TUI pane in one pass. This step is about the half
+of it that **is not finished when that script exits 0**.
+
+A thurbox pane names a *slot*; the arrangement decides where that slot goes. A
+pane no arrangement places loads cleanly, declares its keys, appears in
+`thurbox-cli plugin list` — and draws nothing. It is the failure with no
+symptom, so do not take the installer's word for it. Ask the thing that can tell
+the two apart:
+
+```bash
+thurbox-cli plugin check
+```
+
+It loads the interface exactly as thurbox does and **exits non-zero** on a pane
+that loaded but is placed by nothing, naming the file and the line to add.
+
+| It says | What it means | What you do |
+|---|---|---|
+| `✓ loads — … fleetqueue …`, exits 0 | installed and placed | say that `F6` opens it |
+| `✗ … nothing places slot "fleetqueue"` | installed, invisible | print the line below |
+| no `fleetqueue` anywhere | the install did not take | re-run step 4 and read its output |
+
+**The line is the user's edit, not yours.** `layout.lua` is shared by every pane
+on their screen — a mistake there takes the whole interface, not one column — so
+do not write it for them and do not offer to. Print it, say where it goes, and
+say plainly that you stopped there on purpose:
+
+```lua
+columns[#columns + 1] = { slot = "fleetqueue", pct = 26, min = 32 }
+```
+
+It belongs beside the other side columns, inside the `columns` list of
+`layout.lua` in the interface directory. Read that directory back rather than
+assuming `~/.config/thurbox/ui` — a dev build's is elsewhere, and this says which
+rule chose it:
+
+```bash
+thurbox-cli plugin dir --text | head -1
+```
+
+One more thing that is theirs and not yours: the pane finds the queue by running
+`./scripts/queue.sh root` in the `fleet` session's checkout, which needs the
+**`run` capability**. Declaring it does not grant it and you cannot grant it for
+them — the switch is thurbox's own settings, `Ctrl+,` → `]` → `t`. Say it once.
+Until they do, the pane draws an honest "not trusted yet" rather than an empty
+column, so nothing is broken in the meantime.
+
+**On a re-run**, `plugin install` reports the pane `current` and changes nothing,
+and the `layout.lua` line is one the user either already added or has not — which
+is exactly what `plugin check` answers. Check before you speak; a second run must
+never suggest adding a line that is already there. If `thurbox-cli` was missing at
+preflight, defer this step exactly as step 4 is deferred: same script, same
+sentence.
+
+## 6. The monitor
 
 ```bash
 ./scripts/webui.sh ensure
@@ -225,7 +284,7 @@ Two things to pass on, once:
 - To switch it off for good: `./scripts/webui.sh stop`. To bring it back:
   `./scripts/webui.sh start`.
 
-## 6. Hand over
+## 7. Hand over
 
 **Nothing this skill wrote is tracked.** `registry/owners.txt`,
 `registry/repos.generated.yaml` and `extension.toml` are all gitignored, so
@@ -267,6 +326,7 @@ Assume someone runs this twice. Every step above **converges**:
 | Owners | adds only missing entries; never duplicates or reorders |
 | Registry | the script rewrites the file wholesale from live GitHub |
 | Extension | a reinstall keeps existing `agents.toml` entries, so a customized model survives |
+| Queue pane | `plugin install` reports it `current`; `plugin check` says whether the `layout.lua` line is already there, so it is never suggested twice |
 | Monitor | `ensure` adopts a running one and respects a `down` flag; never a twin |
 
 So do not refuse on an already-configured clone. Detect it —

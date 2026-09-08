@@ -23,6 +23,18 @@
 # That discards the lead session's conversation history, so this script refuses
 # to do it for you — it detects the drift, names the remedy, and exits non-zero.
 #
+# IT ALSO INSTALLS THE TUI PANE. `interface/fleet_queue.lua` is a thurbox
+# interface pane, and a pane does not travel in an extension manifest — it is
+# recorded in the user's `plugins.toml` by `thurbox-cli plugin install`, which is
+# the front door thurbox intends for one. `extension.toml.in`'s header argues
+# why it is not an `[[external_files]]` payload instead.
+#
+# What this script will NOT do is place it. A pane names a slot and the
+# arrangement decides where that slot goes, so a pane nothing places loads,
+# appears in `plugin list`, and draws nothing. That edit is one line in the
+# user's own `layout.lua` — a file every pane on their screen shares — so this
+# prints the line and where it goes rather than writing it for them.
+#
 # Requires: git, thurbox-cli, jq.
 
 set -euo pipefail
@@ -104,6 +116,50 @@ if [ -n "$session_name" ]; then
 			  ./scripts/install-extension.sh
 		EOF
 		exit 1
+	fi
+fi
+
+# --- the TUI queue pane -------------------------------------------------------
+#
+# Separate from the extension install above, and deliberately not fatal to it: a
+# control plane with no pane still works, and a `plugin install` that failed
+# should not make the manifest look like it did too.
+
+PANE_SRC="$REPO_ROOT/interface/fleet_queue.lua"
+PANE_DEST="plugins/91_fleet_queue.lua"
+
+if [ ! -f "$PANE_SRC" ]; then
+	printf '\nwarning: %s is missing; the TUI queue pane was not installed\n' "$PANE_SRC" >&2
+elif ! thurbox-cli plugin install "$PANE_SRC" --as "$PANE_DEST" --text; then
+	printf '\nwarning: could not install the TUI queue pane from %s\n' "$PANE_SRC" >&2
+else
+	# `plugin check` loads the interface the way thurbox does and exits non-zero
+	# on the failure that looks like success — a pane that loads and is placed by
+	# no arrangement. It is the only thing that can tell those two apart, so its
+	# verdict is read here rather than assumed.
+	pane_report="$(thurbox-cli plugin check --text 2>&1)" && pane_ok=1 || pane_ok=0
+	ui_dir="$(thurbox-cli plugin dir --text 2>/dev/null | head -1)"
+
+	if [ "$pane_ok" = 1 ]; then
+		printf '\nThe fleet queue pane is installed and placed. Press F6 in thurbox.\n'
+	else
+		cat <<-EOF
+
+			The fleet queue pane is installed but NOT PLACED, so it will draw
+			nothing yet. Nothing here will edit your arrangement for you — every
+			pane on your screen shares that file. Add one line to:
+
+			  ${ui_dir:-<thurbox-cli plugin dir>}/layout.lua
+
+			beside the other side columns, inside the \`columns\` list:
+
+			  columns[#columns + 1] = { slot = "fleetqueue", pct = 26, min = 32 }
+
+			Then \`thurbox-cli plugin check\` goes green and F6 opens the pane.
+			What it reported:
+
+		EOF
+		printf '%s\n' "$pane_report" | sed 's/^/  /'
 	fi
 fi
 
