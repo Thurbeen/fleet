@@ -8,6 +8,15 @@ whose tracked tree matches the template's can always `git pull` a fast-forward.
 `../../scripts/queue.sh` owns it. Its header is the full usage; this file is
 the layout, so a fresh clone with an empty queue still shows what goes here.
 
+**One queue, one checkout.** This directory belongs to the control plane — the
+clone the `fleet` session opens — and is resolved from `queue.sh`'s own
+location, never from the shell's cwd. If you landed here in a second clone (the
+one workers branch and push from, because the control plane may have no
+`origin`), this is not the queue anyone is reading: `../../scripts/queue.sh
+root` prints the one in use, `queue.sh topic add` refuses here, and
+`../../scripts/webui.sh status` prints the directory the dashboard serves. Set
+`FLEET_QUEUE_DIR` to override all of that, verbatim.
+
 ## Shape
 
 A prompt opens a **topic** — one unit of intent, usually several units of work

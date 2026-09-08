@@ -29,6 +29,29 @@ the state vocabulary. This skill is the layer above: what work exists, what
 order it goes in, and how you find out it finished. When the two disagree about
 completion, this one wins: **workers write result files, they do not send mail.**
 
+### Which checkout you are in
+
+**The queue lives in the CONTROL PLANE's checkout** — the clone the `fleet`
+session opens — and nowhere else. A second clone of this repo is normal and
+supported: a control plane with no `origin` of its own needs one that workers
+can branch and push from. Opening a topic in that clone gives you a whole
+second queue the monitor is right not to show, which is how this rule was
+learned rather than guessed.
+
+Ask the tooling rather than the shell prompt:
+
+```bash
+./scripts/queue.sh root      # the queue this invocation would use, absolute
+./scripts/webui.sh status    # the queue the dashboard is serving
+```
+
+Those two must name the same directory. If they do not, you are in the wrong
+checkout — go to the one `queue.sh root` reports as the control plane and work
+there. `topic add` and `add` refuse outside it anyway, naming both paths, and
+every other command warns; but the two lines above answer it before you type
+anything. `FLEET_QUEUE_DIR` overrides all of it, verbatim and unguarded, for a
+harness pointing at a throwaway queue.
+
 ## 1. Intake — a prompt becomes a topic
 
 Do this before doing anything else with a new ask, including one that looks
