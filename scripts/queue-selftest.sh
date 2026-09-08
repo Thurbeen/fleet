@@ -950,6 +950,16 @@ case "$1 $2" in
 		exit 1
 	fi
 	;;
+"session list")
+	printf '['
+	sep=""
+	for f in "$SHEP"/sessions/*.json; do
+		[ -e "$f" ] || continue
+		printf '%s%s' "$sep" "$(cat "$f")"
+		sep=","
+	done
+	printf ']'
+	;;
 "session create")
 	n=$(cat "$SHEP/creates" 2>/dev/null || echo 0)
 	n=$((n + 1))

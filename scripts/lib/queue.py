@@ -1438,6 +1438,24 @@ def session_state(sid: str) -> tuple[str | None, str]:
     return str(state), ""
 
 
+def session_status(sid: str, live: set | None) -> str:
+    """Where a session stands against a `session list` snapshot: 'gone', a
+    thurbox-reported state, or 'unknown'.
+
+    'gone' only when the snapshot itself proves the id absent. A snapshot
+    that could not be taken, or a `session get` that could not read the pane
+    despite the id being listed, both answer 'unknown' — and unknown must
+    never be read as gone, or a probe hiccup looks exactly like a session
+    that finished.
+    """
+    if live is None:
+        return "unknown"
+    if sid not in live:
+        return "gone"
+    state, _why = session_state(sid)
+    return state or "unknown"
+
+
 def record_reaped(task: Task, sid: str, how: str) -> None:
     """The receipt.
 
@@ -2095,16 +2113,32 @@ def shepherd_one(task: Task, repo_slug: str, args) -> dict:
             record_shepherd(task, {"condition": "merged", "detail": note, "at": now()})
         return row
 
-    # Everything below here needs a fixer.
-    if not args.force and rec.get("condition") == condition and rec.get("session"):
-        state, _why = session_state(str(rec["session"]))
-        # A gone session reads as no session, same as the worker path below —
-        # otherwise a dead fixer stalls this PR's recovery forever.
-        if state:
+    # Everything below here needs a fixer. Both liveness checks below share
+    # one `session list` snapshot, so a fixer and the task's own worker read
+    # "gone" from the same evidence.
+    rec_session = str(rec["session"]) if rec.get("session") else ""
+    worker = str(task.doc.get("session") or "")
+    live, live_why = live_sessions() if (rec_session or worker) else (set(), "")
+
+    # A fixer already dispatched for THIS pull request is still the one
+    # doing the work, whatever the PR now classifies as — the condition can
+    # drift between passes while the fixer is mid-fix, and that drift must
+    # never look like nobody is on it.
+    if not args.force and rec_session:
+        status = session_status(rec_session, live)
+        if status == "unknown":
+            row["action"] = "left-alone"
+            row["note"] = (
+                f"could not tell whether the fixer sent for this at {rec.get('at')} "
+                f"(session {rec_session}) is still working ({live_why or 'no state reported'}). "
+                "Nothing sent."
+            )
+            return row
+        if status != "gone":
             row["action"] = "in-flight"
             row["note"] = (
                 f"a fixer went out for this at {rec.get('at')} "
-                f"(session {rec['session']}, now {state}). "
+                f"(session {rec_session}, now {status}). "
                 "Nothing sent. `--force` overrides."
             )
             return row
@@ -2114,22 +2148,28 @@ def shepherd_one(task: Task, repo_slug: str, args) -> dict:
     # that is gone reads as no session at all, which is the ordinary case once
     # a run has been cleaned up.
     reuse = ""
-    worker = str(task.doc.get("session") or "")
     if worker:
-        state, _why = session_state(worker)
-        if state in SESSION_BUSY:
+        status = session_status(worker, live)
+        if status == "unknown":
             row["action"] = "left-alone"
             row["note"] = (
-                f"its own worker {worker} is {state} — probably already on it. "
+                f"could not tell whether its own worker {worker} is still there "
+                f"({live_why or 'no state reported'}). Nothing sent."
+            )
+            return row
+        if status in SESSION_BUSY:
+            row["action"] = "left-alone"
+            row["note"] = (
+                f"its own worker {worker} is {status} — probably already on it. "
                 "Interrupting a turn is how a fix gets half-applied."
             )
             return row
-        if state in SESSION_AT_REST:
+        if status in SESSION_AT_REST:
             reuse = worker
-        elif state:
+        elif status != "gone":
             row["action"] = "left-alone"
             row["note"] = (
-                f"its own worker {worker} reads {state}, which is an observation "
+                f"its own worker {worker} reads {status}, which is an observation "
                 "and not the agent saying it is at rest. Nothing sent; look at "
                 f"the pane: thurbox-cli session capture {worker}"
             )
