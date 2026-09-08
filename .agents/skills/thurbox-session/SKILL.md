@@ -124,7 +124,26 @@ Until all three pass, **spawn locally**. A remote worker will start and then
 fail at its first `git` call, which looks like an agent bug and is not one.
 
 A Windows/PowerShell host is not a POSIX shell: probes like `command -v` and
-`2>/dev/null` misfire there; use `Get-Command`.
+`2>/dev/null` misfire there; use `Get-Command`. `hosts.toml` spells such a host
+by giving it a non-`tmux` `multiplexer` (`psmux`), and that also turns off its
+remote hook status — a Windows worker never reports `working`/`done` on its
+own, so its `state` sits at `unreported` and you read the pane instead.
+
+**The pane IS reachable on a remote host.** `session get`, `session capture`,
+`session key` and `session send` each delegate the whole verb to the
+thurbox-cli on that machine, so `scripts/session-trust.sh` answers a remote
+trust dialog exactly as it answers a local one. The config-seeding fallback
+does not travel: `scripts/trust-thurbox-dir.sh` writes THIS machine's
+`~/.claude.json`, and a remote agent reads the remote one. Run it on the host
+if you need it. The one host where delegation is unavailable is one whose
+`hosts.toml` entry sets `share_sessions = false`; there, nothing can see the
+pane and nothing can answer the dialog.
+
+**`./scripts/queue.sh add --host <name>` is the driven version of all of it**,
+and is what the control plane should use rather than a hand-rolled spawn: it
+refuses an unknown, non-POSIX or unshared host at `add` time, runs the three
+probes above before it spawns, copies the brief into the remote worktree, and
+fetches the worker's `result.md` back over ssh. `fleet-queue` §1 and §4 own it.
 
 ## 1b. Get past the trust dialog — as part of the spawn, not after it
 
@@ -437,13 +456,22 @@ always present:
 | `running` | an agent holds the pane and nothing has signalled — an observation, not a claim about what it is doing |
 | `uncovered` | this agent is wired to report nothing, so its silence means nothing |
 | `unreported` | the agent *can* report and has not yet |
-| `unreachable` | a remote session whose host cannot be reached |
+| `unreachable` | a remote session whose host cannot be reached — **the TUI's word, and not one the CLI ever prints** |
 | `stopped` | parked by `session stop`; also `stopped: true` |
 
 **The trap this table exists to prevent:** `idle` is not "no news". The last
 five words above are *not* the agent saying it is at rest, and treating any of
 them as `idle` reports a worker mid-turn as finished. Read the word, never the
 absence of one.
+
+**And `unreachable` has a trap of its own, which is that you will not be told
+it.** It reaches the interface's session rows and stops there; `session get`
+and `session list` cannot produce it. A session whose host has gone away
+answers with the state that was LATCHED before it went — so a worker that last
+reported `idle` still reads `idle` an hour after its machine died, and nothing
+in the JSON says otherwise. For a remote session, ask the HOST (`ssh <host>
+true`) before you believe a resting state. `queue.sh reap` does exactly that
+before it deletes anything.
 
 `get` and `list` answer differently, and the difference is intended:
 

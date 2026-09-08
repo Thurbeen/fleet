@@ -34,6 +34,19 @@
 # has been typed into that pane yet, so there is no composer content to
 # corrupt. Do not run it against a session that is already working.
 #
+# A REMOTE SESSION IS ANSWERED THE SAME WAY, and this is the reason the
+# keystroke is the default rather than the config edit. `session get`, `session
+# capture` and `session key` each DELEGATE to the thurbox-cli on the host, so
+# every command below reaches a pane on another machine unchanged. The config
+# edit does not: `trust-thurbox-dir.sh` writes THIS machine's ~/.claude.json,
+# and a remote agent reads the remote one, so seeding here would do nothing at
+# all for a worker over there — silently.
+#
+# The one host this cannot answer is one whose hosts.toml entry sets
+# `share_sessions = false`, which switches that delegation off wholesale.
+# `queue.sh add --host` refuses such a host outright rather than dispatching a
+# worker that would sit on a dialog nothing can see.
+#
 # PER-AGENT, and the differences are real (see the table in the code):
 #
 #   claude          a dialog whose default selection is "No, exit". A bare
@@ -262,5 +275,7 @@ say "sent '$keys' but $agent's trust dialog is still on the pane. Do not
              prompt this session; look at it:
                thurbox-cli session capture $uuid
              The config-seeding fallback is:
-               $here/trust-thurbox-dir.sh <that session's worktree path>" unconfirmed
+               $here/trust-thurbox-dir.sh <that session's worktree path>
+             — which seeds THIS machine. For a session on a remote host, run
+             that script ON THE HOST, against the worktree path there." unconfirmed
 exit 3

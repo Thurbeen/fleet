@@ -62,6 +62,14 @@ gitignored):
 Those four files are why a topic view needs no field this file does not
 already have: intent, progress and outcome are separate artifacts rather than
 one status word.
+
+WHERE A TASK RUNS. A task may name a `host` from thurbox's hosts.toml, and then
+its worker — agent, tmux window and worktree — lives on that machine while the
+queue stays here. That changes the transport and NOTHING else: the brief is
+copied to the host before the worker is prompted, and the result is fetched back
+into this same result.md before it is read. See the remote-hosts section below
+for why the alternative (a worker reporting through `message send`) was refused.
+A task with no host is untouched by any of it.
 """
 
 from __future__ import annotations
@@ -74,6 +82,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tomllib
 from datetime import datetime, timezone
 
 import yaml
@@ -610,6 +619,19 @@ def cmd_add(args) -> int:
     path = os.path.join(tpath, tid)
     if os.path.exists(path):
         raise QueueError(f"task {args.topic}/{tid} already exists")
+
+    # Refused here, before a directory exists and long before a brief is
+    # written: a host thurbox does not know, or one fleet cannot drive, is a
+    # typo or a decision to make, and both are cheapest at `add` time.
+    if args.host:
+        entry, why = host_entry(args.host)
+        if not entry:
+            raise QueueError(
+                f"--host {args.host}: {why}\n"
+                "A host is a name from thurbox's hosts.toml, and `--repo` is then "
+                "a path on THAT machine."
+            )
+
     os.makedirs(path)
 
     doc = {
@@ -618,6 +640,10 @@ def cmd_add(args) -> int:
         "title": args.title or args.slug.replace("-", " "),
         "state": "queued",
         "repo": args.repo,
+        # None is a local task, and every path below treats it as today's
+        # behaviour verbatim. A name here moves the worker — agent, tmux window
+        # and worktree — to that machine, and `repo` above is then a path there.
+        "host": args.host,
         "branch": args.branch,
         "base": args.base,
         "profile": args.profile,
@@ -664,8 +690,16 @@ def render_brief(task: Task, topic: dict, body: str | None) -> str:
     The operator's own standing instructions ride the same pointer when there
     are any, and NOTHING when there are not — a fresh clone has no such file,
     and its briefs must not name one that does not exist.
+
+    A REMOTE task's brief differs in exactly one place: where the result goes.
+    An absolute control-plane path is not on the worker's filesystem, and the
+    worktree it will get is minted at dispatch time and unknowable here, so the
+    contract is stated RELATIVE to the brief itself — the one path a remote
+    worker can always resolve. `collect` fetches that file over ssh into this
+    task's own result.md, so the closing claim is the same file either way.
     """
     d = task.doc
+    host = d.get("host")
     result = os.path.abspath(task.file("result.md"))
     prompt = os.path.abspath(os.path.join(os.path.dirname(task.path), "PROMPT.md"))
     has_operator = bool(operator_instructions())
@@ -686,12 +720,30 @@ def render_brief(task: Task, topic: dict, body: str | None) -> str:
     sections = "\n\n".join(
         f"## {h}\n\n{filled.get(h, BRIEF_PLACEHOLDER)}" for h in BRIEF_SECTIONS
     )
+    where = f" on host `{host}`" if host else ""
+    if host:
+        result_target = (
+            "    result.md — in the root of this worktree, beside the BRIEF.md\n"
+            "    you are reading now"
+        )
+        result_note = f"""
+You are running on the remote host `{host}`, so the control plane's own
+directories are not on this filesystem and an absolute path to one would
+resolve to nothing here. `queue.sh collect` fetches that file over ssh, and it
+closes this task exactly as it would locally.
+
+**Delete `BRIEF.md` before you commit**, or it lands in your pull request.
+Write `result.md` after the pull request is open, and do not commit it either.
+"""
+    else:
+        result_target = f"    {result}"
+        result_note = ""
     return f"""# {d["title"]}
 
 Task `{task.ref}` of topic **{topic.get("title", task.topic)}**.
 The prompt this came from is at `{prompt}`; read it if the goal here is unclear.
 
-- **Repo.** `{d["repo"]}`
+- **Repo.** `{d["repo"]}`{where}
 - **Branch.** `{d["branch"]}` off `{d["base"]}`
 - **Expected to touch.** {", ".join(f"`{p}`" for p in d["touches"]) or "not recorded"}
 - **Standing policy.** `{policy_path()}`{operator_line}
@@ -708,7 +760,7 @@ it.{operator_note}
 
 When you are finished, or when you have concluded you cannot finish, write:
 
-    {result}
+{result_target}
 
 with exactly this shape:
 
@@ -722,7 +774,7 @@ A short paragraph: what you actually did, and anything the lead must know.
 
 That file is what closes this task, and the policy's last section says why it,
 and not a message, is what does it.
-"""
+{result_note}"""
 
 
 def cmd_block(args) -> int:
@@ -820,7 +872,7 @@ def cmd_plan(args) -> int:
         "there is no concurrency cap"
     )
     for t in ready:
-        print(f"    {t.ref:<52} {t.doc['repo']}  {t.doc['branch']}")
+        print(f"    {t.ref:<52} {where_it_runs(t)}  {t.doc['branch']}")
     for o in overlaps:
         print(f"    risk: {', '.join(o['tasks'])} all touch {o['touches']}")
         print(
@@ -837,6 +889,376 @@ def cmd_plan(args) -> int:
                 continue
             print(f"        {b['kind']} on {b['task']}: {b['why']}")
     return 0
+
+
+# --- remote hosts ------------------------------------------------------------
+#
+# A task may name a HOST from thurbox's hosts.toml, and `session create --host`
+# then puts the agent, its tmux window and its git worktrees on that machine.
+# Only the TUI stays here. Everything in this section exists because the queue's
+# model assumes a shared filesystem and a remote worker has none.
+#
+# THE DECISION THAT SHAPED IT. `collect` closes a task by reading the result.md
+# a worker wrote into that task's directory — which is HERE, on the control
+# plane. A worker on another machine cannot write to it. Two ways out, and they
+# are not equivalent:
+#
+#   ssh transport   the brief is pushed to the host before the worker is
+#                   prompted, and the result is pulled back INTO this same
+#                   result.md before `collect` reads it. One completion model,
+#                   at the cost of the plumbing below.
+#   message send    the worker reports through thurbox's own database, which
+#                   needs no shared filesystem and almost no code here.
+#
+# The second was refused. `message send` INJECTS into the lead's terminal and
+# interrupts whoever is talking to it — that is why this file's header says
+# workers write files and do not send mail, and it is as true of a remote worker
+# as of a local one. It would also make completion arrive by two mechanisms
+# depending on where a task happened to run, so `collect`, `reap`, `shepherd`
+# and the monitor would each have to learn the difference. ssh confines that
+# difference to `push_brief` and `fetch_result`. By the time anything else reads
+# a task, its result.md is a local file that says nothing about where it came
+# from.
+#
+# POSIX HOSTS ONLY, and it is checked rather than assumed. Every remote command
+# here is POSIX shell — `printf`, `test`, `cat >`. A Windows host answering ssh
+# with PowerShell runs none of them the way they read, and the operator's own
+# hosts.toml has one such host in it. So probe 1 asks the host to print a
+# sentinel and a shell that cannot is refused BY NAME, before any session
+# exists, instead of producing a worker that fails at its first command.
+#
+# CREDENTIALS ARE NEVER MOVED. The host needs its OWN forge credentials to
+# clone, fetch and push; ours are not inherited and nothing here sends them.
+# Probe 2 asks whether the host has any, and refuses the dispatch when it does
+# not — that is the whole of fleet's involvement. Forwarding an SSH agent would
+# also fix it and would forward every key that agent holds; that is the
+# operator's call to make on their own machine, not something a dispatch makes
+# for them.
+
+# What probe 1 asks the host to print. A POSIX shell echoes it; a PowerShell
+# host has no `printf` and answers with an error, which is the distinction.
+POSIX_SENTINEL = "fleet-posix-ok"
+
+# ssh's own reserved exit code: the connection itself failed, as opposed to the
+# remote command running and exiting non-zero. It is what tells "unreachable"
+# apart from "reachable, and that command did not work there".
+SSH_CONNECTION_FAILED = 255
+
+# Every ssh here is bounded twice: BatchMode, so a host that wants a password
+# fails instead of waiting for one nobody is there to type, and a hard timeout
+# on the process. A probe that hangs is worse than a probe that fails — the
+# dispatch it guards is holding every other task in the wave behind it.
+#
+# Appended AFTER the operator's own ssh_opts on purpose: ssh takes the FIRST
+# value it obtains for an option, so anything they set in hosts.toml still wins.
+SSH_GUARD_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]
+SSH_TIMEOUT = 60
+
+HOSTS_TOML_FALLBACK = os.path.expanduser("~/.config/thurbox/hosts.toml")
+
+
+def first_line(proc) -> str:
+    """The one line of an ssh failure worth reporting, stderr before stdout."""
+    for stream in (proc.stderr, proc.stdout):
+        lines = [ln.strip() for ln in (stream or "").splitlines() if ln.strip()]
+        if lines:
+            return lines[-1]
+    return ""
+
+
+def thurbox_config() -> dict:
+    """`thurbox-cli config show --json`, or {} when it cannot be asked.
+
+    Only ever used to LOCATE hosts.toml and to name the hosts thurbox knows, so
+    an empty answer degrades to the default path and a vaguer refusal — never
+    to a guess about whether a host exists.
+    """
+    if not shutil.which("thurbox-cli"):
+        return {}
+    try:
+        proc = subprocess.run(
+            ["thurbox-cli", "config", "show", "--json"],
+            capture_output=True, text=True, timeout=30,
+        )
+        return json.loads(proc.stdout) if proc.returncode == 0 else {}
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return {}
+
+
+def hosts_file() -> str:
+    """Where thurbox reads hosts.toml — asked of thurbox rather than assumed."""
+    path = ((thurbox_config().get("paths") or {}).get("hosts_toml")) or ""
+    return str(path) or HOSTS_TOML_FALLBACK
+
+
+def host_entry(name: str) -> tuple[dict | None, str]:
+    """The hosts.toml entry for `name`, or None and the reason there is not one.
+
+    Read out of hosts.toml and not out of `config show`, because a dispatch
+    needs the `destination` and the `ssh_opts` to talk to the host at all and
+    `config show` reports only the names. A name thurbox does not know is
+    refused here, at `add` time, where it costs nothing.
+    """
+    path = hosts_file()
+    try:
+        with open(path, "rb") as fh:
+            doc = tomllib.load(fh)
+    except OSError as exc:
+        return None, f"{path} could not be read: {exc}"
+    except tomllib.TOMLDecodeError as exc:
+        return None, f"{path} is not valid TOML: {exc}"
+
+    hosts = [h for h in (doc.get("hosts") or []) if isinstance(h, dict)]
+    entry = next((h for h in hosts if h.get("name") == name), None)
+    if entry is None:
+        known = ", ".join(str(h.get("name")) for h in hosts if h.get("name"))
+        return None, f"no host named {name!r} in {path} (it knows: {known or 'none'})"
+    if not entry.get("destination"):
+        return None, f"host {name!r} in {path} has no `destination` to ssh to"
+
+    # hosts.toml spells a Windows host by giving it a non-tmux multiplexer.
+    # Refused by name here rather than discovered by a worker that cannot run
+    # its first command — see this section's header.
+    mux = str(entry.get("multiplexer") or "tmux")
+    if mux != "tmux":
+        return None, (
+            f"host {name!r} runs the {mux!r} multiplexer, which is how hosts.toml "
+            "spells a non-POSIX host. Fleet dispatches to POSIX hosts only: its "
+            "probes, its brief copy and its result fetch are all POSIX shell. "
+            "Run this task locally, or name a POSIX host."
+        )
+
+    # THE TRUST DIALOG, decided here. `session capture`, `key` and `send` all
+    # work against a remote session — thurbox delegates each verb to the
+    # thurbox-cli on the host — so `session-trust.sh` answers a remote dialog
+    # exactly as it answers a local one. That delegation is switched off
+    # wholesale by `share_sessions = false`, and then nothing can see the pane:
+    # the worker would sit on its dialog with the brief unread, which is the
+    # silent stall this whole mechanism exists to prevent. So it is refused,
+    # rather than dispatched and hoped for.
+    if entry.get("share_sessions") is False:
+        return None, (
+            f"host {name!r} sets `share_sessions = false`, which switches off the "
+            "delegation that lets `session capture` and `session key` see a pane on "
+            "that machine. Fleet could spawn the worker but could not get it past "
+            "its agent's trust dialog, and it would sit there with the brief unread. "
+            "Drop that setting (it defaults to true), or run this task locally."
+        )
+    return entry, ""
+
+
+def ssh_argv(entry: dict) -> list:
+    opts = [str(o) for o in (entry.get("ssh_opts") or [])]
+    return ["ssh", *opts, *SSH_GUARD_OPTS, str(entry["destination"])]
+
+
+def ssh_run(entry: dict, script: str, stdin: str | None = None):
+    """One POSIX shell command on the host. Never raises; the caller reads it."""
+    try:
+        return subprocess.run(
+            ssh_argv(entry) + [script],
+            input=stdin, capture_output=True, text=True, timeout=SSH_TIMEOUT,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return subprocess.CompletedProcess(
+            args=[], returncode=SSH_CONNECTION_FAILED, stdout="", stderr=str(exc)
+        )
+
+
+# What probe 2 accepts, and why it is two questions and not one. §1a names
+# `ssh -T git@github.com`, which proves an SSH key. A host that clones over
+# HTTPS with a `gh` token has no such key and is perfectly able to push, so
+# testing only the key would refuse a working host. Either credential passes;
+# neither is read, moved, or reported beyond the word that says which was found.
+FORGE_PROBE = """\
+if ssh -o BatchMode=yes -T git@github.com 2>&1 | grep -q 'successfully authenticated'; then
+	printf 'an ssh key'
+	exit 0
+fi
+if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+	printf 'a gh token'
+	exit 0
+fi
+exit 1
+"""
+
+
+def probe_host(entry: dict, repo: str) -> list:
+    """§1a's questions, in §1a's order, stopping at the first NO.
+
+    Returns one {check, ok, detail} per probe run. Nothing is spawned until
+    every one of them passes: a remote worker that starts and then fails at its
+    first `git` call looks exactly like an agent bug and is not one, and the
+    lead pays for the difference in reading a pane on another machine.
+    """
+    out: list = []
+
+    reach = ssh_run(entry, f"printf %s {POSIX_SENTINEL}")
+    if reach.returncode == SSH_CONNECTION_FAILED and POSIX_SENTINEL not in reach.stdout:
+        out.append({"check": "reachable", "ok": False,
+                    "detail": first_line(reach) or "ssh could not connect"})
+        return out
+    if POSIX_SENTINEL not in reach.stdout:
+        out.append({"check": "posix shell", "ok": False, "detail": (
+            "the host answered ssh but did not print the POSIX sentinel "
+            f"({first_line(reach) or 'no output'}). Fleet dispatches to POSIX "
+            "hosts only.")})
+        return out
+    out.append({"check": "reachable", "ok": True, "detail": "answers ssh, POSIX shell"})
+
+    forge = ssh_run(entry, FORGE_PROBE)
+    if forge.returncode != 0:
+        out.append({"check": "forge", "ok": False, "detail": (
+            "the host has no GitHub credentials of its own — neither an ssh key "
+            "nor a `gh` login. It cannot clone, fetch or push. Give that MACHINE "
+            "its own credentials; nothing here sends yours.")})
+        return out
+    out.append({"check": "forge", "ok": True,
+                "detail": f"reaches GitHub with {forge.stdout.strip() or 'a credential'}"})
+
+    quoted = shlex.quote(repo)
+    check = (
+        f"if [ ! -d {quoted} ]; then printf no-dir; exit 1; fi\n"
+        f"if [ ! -e {quoted}/.git ]; then printf no-git; exit 1; fi\n"
+        "printf ok\n"
+    )
+    seen = ssh_run(entry, check)
+    if seen.returncode != 0:
+        why = {
+            "no-dir": f"{repo} does not exist on that host",
+            "no-git": f"{repo} exists on that host but is not a git checkout",
+        }.get(seen.stdout.strip(), first_line(seen) or "could not be checked")
+        out.append({"check": "repo", "ok": False, "detail": (
+            f"{why}. `--repo` is a path on the HOST for a remote task, and "
+            "nothing local validates it.")})
+        return out
+    out.append({"check": "repo", "ok": True, "detail": f"{repo} is a git checkout there"})
+    return out
+
+
+def host_reachable(name: str) -> tuple[bool, str]:
+    """Is this host answering right now? (ok, the reason it is not).
+
+    THE FACT THAT MAKES THIS NECESSARY. thurbox has an `unreachable` state and
+    its CLI never produces it — that word reaches the interface's session rows
+    and nothing else. `session get --json` on a session whose host is down
+    answers with the LATCHED hook state instead, so a worker that last reported
+    `idle` before its machine went away still reads `idle` hours later. Nothing
+    downstream can tell that apart from an agent at rest, and `reap` deletes
+    sessions that are at rest. So a remote session is asked about its HOST, not
+    only about its state, before anything is deleted — and `unreachable` is a
+    word this file derives rather than one it waits to be told.
+    """
+    entry, why = host_entry(name)
+    if not entry:
+        return False, why
+    probe = ssh_run(entry, f"printf %s {POSIX_SENTINEL}")
+    if POSIX_SENTINEL in probe.stdout:
+        return True, ""
+    return False, first_line(probe) or "ssh could not connect"
+
+
+def remote_path(worktree: str, name: str) -> str:
+    return f"{worktree.rstrip('/')}/{name}"
+
+
+def session_worktree(sid: str) -> tuple[str, str]:
+    """The worktree thurbox made for this session. (path, reason it could not say).
+
+    For a remote session this is a path on the HOST — thurbox mints it there —
+    which is exactly what the brief copy and the result fetch need.
+    """
+    try:
+        proc = subprocess.run(
+            ["thurbox-cli", "session", "get", sid, "--json"],
+            capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return "", f"thurbox-cli session get could not run: {exc}"
+    if proc.returncode != 0:
+        return "", "thurbox-cli session get failed"
+    try:
+        doc = json.loads(proc.stdout)
+    except ValueError:
+        return "", "thurbox-cli session get did not answer JSON"
+    trees = (doc or {}).get("worktrees") or []
+    path = str((trees[0] or {}).get("worktree_path") or "") if trees else ""
+    return (path, "") if path else ("", "thurbox reported no worktree for that session")
+
+
+def push_brief(entry: dict, dest: str, text: str) -> str:
+    """Put the brief where the remote worker can read it. '' on success.
+
+    The canonical brief stays HERE — it is what the lead wrote, what `check`
+    validates and what `dispatch` refuses when it is unwritten. This is a copy,
+    made after that refusal has already had its say.
+    """
+    proc = ssh_run(entry, f"cat > {shlex.quote(dest)}", stdin=text)
+    if proc.returncode != 0:
+        return first_line(proc) or "could not write the brief on the host"
+    return ""
+
+
+def fetch_result(entry: dict, src: str) -> tuple[str | None, str]:
+    """The worker's result.md, read off the host. (text, reason).
+
+    None is 'not there yet, or could not be read' — the same answer a local task
+    gives when the file does not exist, and it closes nothing either way. A
+    result that cannot be fetched must never be able to look like a task that
+    concluded, for the same reason a timeout cannot manufacture a merge.
+    """
+    proc = ssh_run(entry, f"cat {shlex.quote(src)}")
+    if proc.returncode != 0:
+        return None, first_line(proc) or "no result.md on the host yet"
+    return proc.stdout, ""
+
+
+def settle_remote(task: Task, entry: dict) -> tuple[bool, str]:
+    """Resolve the host-side worktree and put the brief in it. (ok, what happened).
+
+    Runs between `session create` and the first `session send`, because the
+    worker is about to be told to read a file that does not exist yet.
+    """
+    wt, why = session_worktree(task.doc["session"])
+    if not wt:
+        return False, why
+    brief = remote_path(wt, "BRIEF.md")
+    why = push_brief(entry, brief, read_text(task.file("BRIEF.md")))
+    if why:
+        return False, f"could not copy the brief to {entry['destination']}: {why}"
+    task.doc["remote"] = {
+        "host": task.doc["host"],
+        "destination": str(entry["destination"]),
+        "worktree": wt,
+        "brief": brief,
+        "result": remote_path(wt, "result.md"),
+        "at": now(),
+    }
+    task.save()
+    return True, f"brief copied to {entry['destination']}:{brief}"
+
+
+def pull_remote_result(task: Task) -> str:
+    """Fetch a remote worker's result.md into this task's own. '' when there is
+    nothing to say.
+
+    This is the whole of the remote completion model: after it runs, the task
+    has a local result.md and everything downstream reads it without knowing or
+    caring which machine wrote it.
+    """
+    rec = task.doc.get("remote") or {}
+    src = rec.get("result")
+    if not src:
+        return "dispatched to a host but no remote worktree was ever recorded"
+    entry, why = host_entry(str(task.doc.get("host") or ""))
+    if not entry:
+        return f"host {task.doc.get('host')}: {why}"
+    text, why = fetch_result(entry, str(src))
+    if text is None:
+        return ""  # not there yet is the normal state of a working task
+    with open(task.file("result.md"), "w") as fh:
+        fh.write(text)
+    return f"result fetched from {rec.get('destination')}:{src}"
 
 
 # --- dispatch ----------------------------------------------------------------
@@ -864,6 +1286,21 @@ def profile_flags(profile: str) -> list:
     return [f for f in out.decode().split("\0") if f]
 
 
+def brief_target(task: Task) -> str:
+    """The path the worker is told to read.
+
+    This queue's own file for a local task. For a remote one, the copy
+    `settle_remote` put in the host's worktree — the control plane's path is
+    not on that machine and would resolve to nothing there. Before that copy
+    exists the answer is a description and not a path, which is what a dry run
+    should print and what `prompt` refuses to send.
+    """
+    rec = task.doc.get("remote") or {}
+    if task.doc.get("host"):
+        return rec.get("brief") or f"<{task.doc['host']}>:<worktree>/BRIEF.md"
+    return os.path.abspath(task.file("BRIEF.md"))
+
+
 def spawn_commands(task: Task) -> tuple[list, str]:
     d = task.doc
     create = [
@@ -877,6 +1314,11 @@ def spawn_commands(task: Task) -> tuple[list, str]:
         # addressing for both of them permanently.
         "--on-existing", "fail",
     ]
+    # The whole of what moves a worker to another machine. `--repo-path` above
+    # is then a path on THAT machine, which is why nothing here looks for it
+    # locally — see `probe_host`, which asks the host instead.
+    if d.get("host"):
+        create += ["--host", d["host"]]
     flags = profile_flags(d.get("profile") or "default")
     # A profile carrying `command` replaces `--agent`; thurbox refuses both.
     if "--command" not in flags:
@@ -885,7 +1327,7 @@ def spawn_commands(task: Task) -> tuple[list, str]:
     if parent:
         create += ["--parent", parent]
     create += flags + ["--json"]
-    send = f"Read {os.path.abspath(task.file('BRIEF.md'))} and do what it says."
+    send = f"Read {brief_target(task)} and do what it says."
     return create, send
 
 
@@ -917,7 +1359,15 @@ def cmd_dispatch(args) -> int:
         for t in ready:
             create, send = spawn_commands(t)
             print(f"    {t.ref}")
+            if t.doc.get("host"):
+                print(f"      on host {t.doc['host']} — probed first, and not spawned"
+                      " until all three pass:")
+                print("        reachable and a POSIX shell / has its own GitHub"
+                      " credentials / the repo is there")
             print(f"      {shell_quote(create)}")
+            if t.doc.get("host"):
+                print("      ssh <host> 'cat > <worktree>/BRIEF.md'   # the worker's"
+                      " filesystem is not this one")
             print("      ./scripts/session-trust.sh <uuid>   # answer the trust dialog first")
             print(f"      thurbox-cli session send <uuid> {shell_quote([send])}")
         return 0
@@ -928,6 +1378,29 @@ def cmd_dispatch(args) -> int:
     # session creation for task 2 does not wait on task 1's trust confirmation.
     attached: list[Task] = []
     for t in ready:
+        # A remote task is probed BEFORE it is spawned, in §1a's order, and one
+        # failed probe stops it there. A remote worker that starts and then
+        # fails at its first `git` call looks exactly like an agent bug and is
+        # not one — and the lead pays for that difference by reading a pane on
+        # another machine. The task stays `queued`, so fixing the host and
+        # re-running `dispatch` sends it.
+        entry = None
+        if t.doc.get("host"):
+            entry, why = host_entry(t.doc["host"])
+            if not entry:
+                print(f"    {t.ref}: NOT SPAWNED — host {t.doc['host']}: {why}",
+                      file=sys.stderr)
+                continue
+            probes = probe_host(entry, t.doc["repo"])
+            for p in probes:
+                mark = "ok  " if p["ok"] else "FAIL"
+                print(f"    {t.ref}  probe {mark} {p['check']}: {p['detail']}",
+                      file=None if p["ok"] else sys.stderr)
+            if not probes[-1]["ok"]:
+                print(f"    {t.ref}: NOT SPAWNED — the `{probes[-1]['check']}` probe "
+                      f"failed on host {t.doc['host']}", file=sys.stderr)
+                continue
+
         create, _send = spawn_commands(t)
         try:
             out = subprocess.run(create, capture_output=True, check=True).stdout
@@ -937,6 +1410,17 @@ def cmd_dispatch(args) -> int:
             print(f"    {t.ref}: spawn failed: {detail.decode().strip() or exc}", file=sys.stderr)
             continue
         attach(t, session)
+
+        # The remote worker is about to be told to read a file that is not on
+        # its filesystem. Put it there first, and record where — `collect`
+        # fetches the result back from beside it.
+        if entry:
+            ok, note = settle_remote(t, entry)
+            print(f"    {t.ref}  {note}", file=None if ok else sys.stderr)
+            if not ok:
+                print(f"    {t.ref}: session exists but was NOT prompted — the brief "
+                      "never reached the host", file=sys.stderr)
+                continue
         attached.append(t)
 
     # Phase 2: the session exists, but the agent may be sitting on a trust
@@ -982,9 +1466,29 @@ def prompt_session(task: Task, timeout: int = 20) -> tuple[bool, str]:
     session = task.doc.get("session")
     if not session:
         return False, "no session attached"
+
+    # A remote task whose brief never reached the host has nothing to point a
+    # worker at. Sending the control plane's own path would have it read a file
+    # that is not on its filesystem, which is a worker that stalls with no
+    # visible reason — the one outcome this whole path exists to avoid.
+    if task.doc.get("host") and not (task.doc.get("remote") or {}).get("brief"):
+        entry, why = host_entry(task.doc["host"])
+        if not entry:
+            return False, f"host {task.doc['host']}: {why}"
+        ok, note = settle_remote(task, entry)
+        if not ok:
+            return False, f"the brief is not on the host: {note}"
+
     _, send = spawn_commands(task)
     ok, report = trust_and_send(session, send, timeout)
     if not ok:
+        if task.doc.get("host"):
+            report += (
+                f"\n(this worker is on host {task.doc['host']}: `session capture` and "
+                "`session key` reach it by delegation to the thurbox-cli there, so the "
+                "pane is answerable — but `scripts/trust-thurbox-dir.sh` seeds THIS "
+                "machine's ~/.claude.json and would do nothing for it.)"
+            )
         return False, report
     task.doc["prompted"] = True
     task.save()
@@ -1253,9 +1757,21 @@ def cmd_collect(args) -> int:
     artifacts = 0
     for task in sorted(q.tasks.values(), key=lambda t: t.ref):
         path = task.file("result.md")
-        if task.state in ("done", "landed", "stuck", "failed", "abandoned") or not os.path.exists(
-            path
-        ):
+        if task.state in ("done", "landed", "stuck", "failed", "abandoned"):
+            continue
+
+        # The remote transport, and the whole of it. A worker on another machine
+        # wrote its result into its own worktree; this pulls that file into the
+        # task's own result.md, after which every line below reads a local file
+        # and neither knows nor cares which machine wrote it. Nothing is closed
+        # here: a result that could not be fetched leaves the task exactly as a
+        # missing local one does.
+        if task.doc.get("host") and task.state == "dispatched":
+            note = pull_remote_result(task)
+            if note:
+                print(f"    {task.ref}  {note}")
+
+        if not os.path.exists(path):
             continue
         meta, body = parse_result(open(path).read())
         outcome = str(meta.get("outcome", "")).strip()
@@ -1367,6 +1883,15 @@ def cmd_collect(args) -> int:
 # has not yet. None of those three is the agent saying it is at rest, and
 # treating them as `idle` is how live work gets killed. Read the word, never
 # the absence of one. (`.agents/skills/thurbox-session/SKILL.md` §4a.)
+#
+# `unreachable` — a remote session whose host cannot be reached — is absent for
+# the same reason, and it is the one word on that list the CLI does not say out
+# loud: it reaches the interface's session rows and nothing else, so `session
+# get --json` on a session whose host went away answers with the state that was
+# LATCHED before it did. A worker that last reported `idle` therefore still
+# reads `idle`, and `idle` is reapable. `host_reachable` is what closes that:
+# a remote session is asked about its host before anything is deleted, and this
+# file derives the word rather than waiting to be told it.
 REAPABLE_SESSION_STATES = ("idle", "done", "stopped")
 
 # The task states that still hold a session worth reporting on. `queued` never
@@ -1599,6 +2124,18 @@ def reap(q: Queue, dry: bool = False, release: bool = True) -> int:
             print(f"    {task.ref:<46} kept       {why}")
             kept += 1
             continue
+
+        # A remote session is asked about its HOST first. Both answers below
+        # would otherwise be wrong for a host that is merely down: an absent id
+        # would read as a session that finished, and a latched `idle` would
+        # read as an agent at rest. See REAPABLE_SESSION_STATES.
+        if task.doc.get("host"):
+            up, unreachable_why = host_reachable(task.doc["host"])
+            if not up:
+                print(f"    {task.ref:<46} kept       unreachable: host "
+                      f"{task.doc['host']} — {unreachable_why}")
+                kept += 1
+                continue
 
         if sid not in live:
             if dry:
@@ -2209,6 +2746,19 @@ def spawn_fixer(task: Task, name: str, brief_path: str, branch: str) -> tuple[st
     it: a task can carry a second pull request on a different branch, and the
     fix has to land on the branch the pull request is actually open from.
     """
+    # A remote task's `repo` is a path on its host, and `branch_checkout` below
+    # is local git. Said plainly rather than left to that function, which would
+    # otherwise answer "is not a git checkout" about a checkout that exists and
+    # is simply somewhere else — a true sentence that sends the reader looking
+    # in the wrong place.
+    if task.doc.get("host"):
+        return "", (
+            f"this task ran on host {task.doc['host']} and its checkout is there, so "
+            "a fixer would have to be spawned there too — which this does not yet do. "
+            "The pull request is still classified and still merged; only the fixer is "
+            "withheld. Send the fix into that worker's own session, or fix it by hand."
+        )
+
     slug = f"{task.topic}__{task.id}"
     path, note = branch_checkout(task.doc["repo"], branch, slug)
     if not path:
@@ -2682,6 +3232,16 @@ def cmd_shepherd(args) -> int:
 # --- read-only views ---------------------------------------------------------
 
 
+def where_it_runs(task: Task) -> str:
+    """`repo` for a local task; `host:repo` for one that runs somewhere else.
+
+    One string in every view, in the ssh spelling the operator already types,
+    so a path that is not on this machine can never be read as one that is.
+    """
+    host = task.doc.get("host")
+    return f"{host}:{task.doc['repo']}" if host else str(task.doc["repo"])
+
+
 def cmd_list(args) -> int:
     root = queue_root()
     # The first line answers "which queue am I looking at?" without being asked.
@@ -2701,7 +3261,7 @@ def cmd_list(args) -> int:
         for t in tasks:
             mark = "waiting" if t.state == "queued" and not q.is_ready(t) else t.state
             extra = t.doc.get("artifact") or t.doc.get("session") or ""
-            print(f"    {t.id:<34} {mark:<11} {t.doc['repo']}  {extra}")
+            print(f"    {t.id:<34} {mark:<11} {where_it_runs(t)}  {extra}")
         print()
     return 0
 
@@ -2711,9 +3271,15 @@ def cmd_show(args) -> int:
     task = q.get(args.ref)
     d = task.doc
     print(f"{task.ref} — {d['title']}")
-    for key in ("state", "repo", "branch", "base", "agent", "profile", "session",
+    for key in ("state", "repo", "host", "branch", "base", "agent", "profile", "session",
                 "prompted", "outcome", "artifact"):
         print(f"    {key + ':':<12} {d.get(key)}")
+    remote = d.get("remote") or {}
+    if remote.get("worktree"):
+        # Named in full because it is the only place the worker's actual
+        # filesystem appears: the brief it reads and the result that closes
+        # this task are both files on that machine.
+        print(f"    {'remote:':<12} {remote.get('destination')}:{remote['worktree']}")
     check = d.get("artifact_check") or {}
     if check.get("verdict"):
         print(f"    {'pipeline:':<12} {check['verdict']} — {check.get('detail', '')}")
@@ -2771,6 +3337,13 @@ def cmd_check(args) -> int:
                 problems.append(f"{ref}: blocker names {b.get('task')}, which does not exist")
         if not os.path.exists(t.file("BRIEF.md")):
             problems.append(f"{ref}: no BRIEF.md")
+        # The host name only — never whether that host exists. A queue is read
+        # on machines that are not the one it dispatches from, and a check that
+        # asked thurbox would report a perfectly good record as broken there.
+        if d.get("host") is not None and not isinstance(d.get("host"), str):
+            problems.append(f"{ref}: host {d.get('host')!r} is not a name")
+        if (d.get("remote") or {}) and not d.get("host"):
+            problems.append(f"{ref}: carries a remote worktree but names no host")
 
     cycle = find_cycle(q)
     if cycle:
@@ -2811,7 +3384,19 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("topic")
     a.add_argument("slug")
     a.add_argument("--title")
-    a.add_argument("--repo", required=True)
+    a.add_argument(
+        "--repo",
+        required=True,
+        help="the repository the worker branches from. WITH --host this is a path "
+        "on THAT HOST: nothing local validates it, and dispatch asks the host "
+        "whether it is there",
+    )
+    a.add_argument(
+        "--host",
+        help="run this task on a remote thurbox host (a name from hosts.toml). The "
+        "agent, its tmux window and its worktree live there; --repo is then a path "
+        "on that machine. Omit it and everything runs here, unchanged",
+    )
     a.add_argument("--branch", required=True)
     a.add_argument("--base", default="main")
     a.add_argument("--profile", default="default")

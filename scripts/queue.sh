@@ -89,7 +89,7 @@
 # Usage:
 #   scripts/queue.sh topic add <slug> --title T --prompt 'the ask'   # or --prompt-file F|-
 #   scripts/queue.sh add <topic> <slug> --title T --repo P --branch B [--base main]
-#                        [--profile default] [--touches a,b] [--brief-file F]
+#                        [--host H] [--profile default] [--touches a,b] [--brief-file F]
 #   scripts/queue.sh block <ref> --on <ref> --kind KIND --why 'reason'   # or --clear
 #   scripts/queue.sh plan [--json]        # what goes out now, what waits, and why
 #   scripts/queue.sh dispatch [--dry-run] # launch the whole ready set at once
@@ -108,6 +108,26 @@
 #   scripts/queue.sh root                 # the resolved queue directory, absolute
 #
 # A ref is `<topic>/<task>`, or a bare task id when only one topic has it.
+#
+# A TASK CAN NAME A HOST, and then its worker runs there instead of here:
+# `add --host <name>` takes a name from thurbox's hosts.toml, `dispatch` passes
+# it to `session create`, and the agent, its tmux window and its worktree all
+# live on that machine. `--repo` is then a path ON THAT HOST and nothing local
+# validates it. No `--host` means no change: a local task takes every path
+# through this file that it took before the flag existed.
+#
+# The transport is ssh and the model is unchanged. A remote worker cannot write
+# into this queue's directory, so `dispatch` copies the brief into the worktree
+# thurbox made on the host, and `collect` fetches the worker's result.md back
+# into the task's own before it reads it. Completion is still a FILE the lead
+# reads — `message send` would have needed no plumbing at all and was refused,
+# because it injects into the lead's terminal whatever machine it comes from.
+#
+# Three probes run before anything is spawned, and one failure stops that task
+# where it stands: the host answers ssh as a POSIX shell, it has GitHub
+# credentials OF ITS OWN, and the repo is a checkout at that path. Fleet never
+# sends credentials anywhere. POSIX hosts only — a Windows host (hosts.toml
+# spells one with a non-tmux `multiplexer`) is refused by name.
 #
 # THE QUEUE BELONGS TO ONE CHECKOUT — the CONTROL PLANE's, the clone the
 # `mission control` session opens. It is never resolved against the shell's cwd,
@@ -154,8 +174,9 @@
 # Requires: python3 (with PyYAML) — the same dependency the rest of the gate
 # has. `dispatch`, `watch` and `reap` additionally need thurbox-cli, and
 # `collect`, `reap` and `shepherd` ask `gh` about a pull request, and
-# `shepherd` needs git as well. Every one of those degrades to "could not
-# check" rather than to a guess.
+# `shepherd` needs git as well. A task that names a `--host` additionally needs
+# `ssh`. Every one of those degrades to "could not check" rather than to a
+# guess.
 
 set -uo pipefail
 

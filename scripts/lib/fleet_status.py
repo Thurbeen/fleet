@@ -137,6 +137,10 @@ def probe_queue() -> dict:
                     "state": t.state,
                     "display_state": state,
                     "repo": t.doc.get("repo"),
+                    # None for a local task. When it is set, `repo` above is a
+                    # path on THAT machine and not on this one — a reader that
+                    # showed the path alone would be showing a lie.
+                    "host": t.doc.get("host"),
                     "branch": t.doc.get("branch"),
                     "session": t.doc.get("session"),
                     "outcome": t.doc.get("outcome"),
@@ -281,11 +285,23 @@ def probe_prs(tasks: list) -> dict:
     One `gh pr list` per distinct repo, not one per task.
     """
     sec: dict = {"unavailable": None, "prs": [], "errors": []}
+    # A remote task's `repo` is a path on its host, so `gh -C` here would ask
+    # the wrong filesystem and report "no such directory" about a checkout that
+    # exists. Skipped and SAID, rather than turned into an error that reads as
+    # a broken record.
     live = [t for t in tasks if t.get("repo") and t.get("state") != "queued"]
+    remote = [
+        {"repo": f"(on host {h})",
+         "reason": "runs on a remote host; its pull requests are read by "
+                   "`queue.sh shepherd`, which asks the forge and not a checkout"}
+        for h in sorted({t["host"] for t in live if t.get("host")})
+    ]
+    live = [t for t in live if not t.get("host")]
     repos: dict = {}
     for t in live:
         repos.setdefault(t["repo"], []).append(t)
     if not repos:
+        sec["errors"] = remote
         return sec
 
     reasons = []
@@ -333,6 +349,9 @@ def probe_prs(tasks: list) -> dict:
     if reasons and len(sec["errors"]) == len(repos) and len(set(reasons)) == 1:
         sec["unavailable"] = reasons[0]
         sec["errors"] = []
+    # After the collapse, never inside it: a remote task is not a repo that
+    # failed, so it must not count towards "every repo failed the same way".
+    sec["errors"] += remote
     sec["prs"].sort(key=lambda p: p["ref"])
     return sec
 
@@ -438,6 +457,10 @@ def render_queue(sec: dict) -> list:
                 extra = t["session"][:8]
             else:
                 extra = t["branch"] or ""
+            # The host, when there is one, comes before everything else on the
+            # line: where a task RUNS changes what every other field on it means.
+            if t.get("host"):
+                extra = f"on {t['host']}  {extra}".rstrip()
             lines.append(f"    {t['id']:<34} {t['display_state']:<11} {extra}")
             for b in t["blockers"]:
                 if not b["cleared"]:
