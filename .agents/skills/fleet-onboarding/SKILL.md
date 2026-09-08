@@ -70,7 +70,7 @@ git remote -v      # origin -> their own copy of fleet
 
 The question worth asking here is not about remotes; it is **which directory
 this is**. Step 4 bakes this checkout's absolute path into the thurbox
-extension, and a `mission control` session registered against a scratch copy
+extension, and a Mission Control session registered against a scratch copy
 self-heals forever against a directory that is about to vanish. So if the
 working
 directory is a thurbox worktree, a temp directory or an obvious throwaway, say
@@ -172,7 +172,7 @@ registered, which is the honest signal that the install did not take.
 
 **The trap that matters most here:** `[[sessions]] repo_path` is baked in at
 install time. Run this from **the clone the user intends to keep** — not a
-thurbox worktree, not a scratch copy, not a temp directory. A `mission control`
+thurbox worktree, not a scratch copy, not a temp directory. A Mission Control
 session registered against a disposable path self-heals forever against a
 directory that is about to vanish.
 
@@ -241,7 +241,7 @@ thurbox-cli plugin dir --text | head -1
 ```
 
 One more thing that is theirs and not yours: the pane finds the queue by running
-`./scripts/queue.sh root` in the `mission control` session's checkout, which
+`./scripts/queue.sh root` in the Mission Control session's checkout, which
 needs the **`run` capability**. Declaring it does not grant it and you cannot
 grant it for them — the switch is thurbox's own settings, `Ctrl+,` → `]` → `t`.
 Say it once. Until they do, the pane draws an honest "not trusted yet" rather
@@ -350,7 +350,7 @@ when it SPAWNS it and has no verb that renames one, and `ensure_extension`
 matches a declared session to a live one by NAME — so a manifest edit alone
 spawns a SECOND session beside the old one and calls that healthy.
 
-The lead is called `mission control`; the EXTENSION and its agent are still
+The lead is called `⌖ Mission Control`; the EXTENSION and its agent are still
 `fleet`, which is deliberate and is why `extension status fleet` stays the right
 question no matter what the session is called. `extension.toml.in`'s RENAMING
 header owns both sequences — the `session fork` one that carries the lead's

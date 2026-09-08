@@ -104,9 +104,9 @@
 # the same word (`fleet`) until the lead was renamed, which is what made them
 # look like one name in six places. They are not:
 #
-#   the session     `mission control`  what the TUI lists, what the mailbox
+#   the session   `⌖ Mission Control`  what the TUI lists, what the mailbox
 #                                      addresses, what the queue pane probes
-#   the extension   `fleet`            the id every `thurbox-cli extension ...`
+#   the extension `fleet`              the id every `thurbox-cli extension ...`
 #                                      command takes, the directory it derives
 #                                      (`~/.config/thurbox/extensions/fleet`),
 #                                      and the [[agents]] entry registered in
@@ -118,6 +118,28 @@
 # `thurbox-cli extension status fleet` the right question to ask AFTER a
 # session rename, which is the one thing a rename used to break.
 #
+# THE GLYPH IS PART OF THE NAME, because thurbox has no field for it. Its
+# `ExtensionSession` carries `name`, `agent` and `repo_path` and nothing else,
+# and `session create` has no icon flag — so a lead that wants a mark in the
+# session list can only wear it in its name. `⌖` is U+2316 POSITION MARKER:
+# East_Asian_Width Neutral, so it is one cell wide in the tmux grid the TUI
+# draws on, and not an emoji, so it drags in no variation selector and no
+# color font. Both of those are load-bearing — a double-width glyph shears
+# every column after it in the session list.
+#
+# SO THE MAILBOX ADDRESS IS NO LONGER TYPEABLE, and that is the cost. `⌖` is
+# not on a keyboard, so `--to '⌖ Mission Control'` has to be COPY-PASTED — from
+# this file, from FLEET.md, or from `thurbox-cli session list`. That is on top
+# of the quoting the space already demanded, not instead of it. Anything
+# addressed to a hand-typed `Mission Control` finds no session at all.
+#
+# WHERE THE FULL LITERAL GOES, AND WHERE IT DOES NOT. `⌖ Mission Control`
+# belongs everywhere the string is USED — this manifest, the pane's
+# CONTROL_PLANE constant, the selftest's expectations, and every shell command
+# that names the session. Prose that merely REFERS to the lead calls it
+# Mission Control, without backticks, because a backtick here means "this is
+# the literal thing" and a literal missing its glyph is a lie.
+#
 # RENAMING THE SESSION AGAIN. The name is in four places and they move together:
 #
 #   [[sessions]] name                (1) here — the only place that decides
@@ -125,16 +147,23 @@
 #   interface/fleet_queue.lua        (2) CONTROL_PLANE: the TUI pane probes the
 #                                        lead BY NAME to find the checkout
 #   FLEET.md                         (3) the [[files]] payload, whose text
-#                                        opens "You are the **mission control**
+#                                        opens "You are the **Mission Control**
 #                                        session"
-#   --to 'mission control'           (4) the mailbox address, for anything
+#   --to '⌖ Mission Control'         (4) the mailbox address, for anything
 #                                        urgent enough to interrupt the lead.
 #                                        QUOTE IT — the name has a space, and
-#                                        unquoted the shell splits it
+#                                        unquoted the shell splits it. PASTE
+#                                        IT — the name has a glyph, and no
+#                                        keyboard has that key
 #
-# A PARTIAL RENAME is the failure mode: change (1) alone and the pane says
-# "no 'fleet' session" forever, and anything still addressed `--to fleet`
-# either bounces or lands in an inbox nobody drains.
+# A fifth place moves with them without being one of the four:
+# `scripts/queue-selftest.sh` asserts the name THIS FILE resolves to, so the
+# gate fails on a rename that stops here.
+#
+# A PARTIAL RENAME is the failure mode: change (1) alone and thurbox spawns the
+# new name while the pane goes on probing the old one, so the queue pane says
+# "no session" forever, and anything still addressed to the old name either
+# bounces or lands in an inbox nobody drains.
 #
 # AND EDITING THIS FILE IS NOT THE RENAME. thurbox names a session when it
 # SPAWNS it and has no verb that renames one afterwards (`session --help` lists
@@ -271,11 +300,12 @@ target = "FLEET.md"
 # --- runtime resources: ensured on activate, self-healed if deleted -----------
 #
 # A single long-lived session, so the control plane is always there to plan a
-# run, hold the log, and receive worker mail (`message send --to 'mission
-# control'`) — which needs the lead to *be* a session, not an ad-hoc terminal.
+# run, hold the log, and receive worker mail (`message send --to '⌖ Mission
+# Control'`) — which needs the lead to *be* a session, not an ad-hoc terminal.
+# Paste that address; the glyph is not on a keyboard. See the RENAMING header.
 
 [[sessions]]
-name = "mission control"
+name = "⌖ Mission Control"
 agent = "fleet"
 # The session opens your checkout, not the extension home: it needs registry/
 # and orchestration/ in hand, and the repo's SessionStart hook

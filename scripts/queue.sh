@@ -130,7 +130,7 @@
 # spells one with a non-tmux `multiplexer`) is refused by name.
 #
 # THE QUEUE BELONGS TO ONE CHECKOUT — the CONTROL PLANE's, the clone the
-# `mission control` session opens. It is never resolved against the shell's cwd,
+# Mission Control session opens. It is never resolved against the shell's cwd,
 # so this script does the same thing from any directory. That matters because a
 # second clone of this repo is the SUPPORTED shape here: a control plane with no
 # `origin` of its own needs one that workers can branch and push from. Running
@@ -144,7 +144,7 @@
 #       carries on, because a second clone is a fine place to read a queue from
 #       and taking that away helps nobody.
 #   Neither fires when the control plane cannot be identified — no rendered
-#       extension.toml and no live `mission control` session. A fleet used
+#       extension.toml and no live Mission Control session. A fleet used
 #       without the thurbox extension is legitimate and must not be made
 #       unusable by a guard that cannot tell whether it is warranted.
 #

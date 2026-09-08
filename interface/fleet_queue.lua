@@ -24,7 +24,7 @@
 -- nothing about fleet, so it cannot guess the control-plane checkout — and it
 -- must not, because `queue.sh` refuses to be run from a second clone for
 -- exactly that reason. The one honest answer is `./scripts/queue.sh root`, run
--- in the checkout the `mission control` session opens. That session is what
+-- in the checkout the Mission Control session opens. That session is what
 -- fleet's own extension installs, so it is the same answer `queue.sh` itself
 -- would give.
 --
@@ -57,7 +57,7 @@ local TOGGLE = "fleetqueue.toggle"
 --- that file's RENAMING header lists this line as one of the four places the
 --- session's name lives, and a rename that misses it leaves the pane hunting a
 --- session nobody spawns.
-local CONTROL_PLANE = "mission control"
+local CONTROL_PLANE = "⌖ Mission Control"
 
 --- Seconds an answer stays fresh.
 ---
