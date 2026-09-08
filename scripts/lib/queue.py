@@ -75,6 +75,8 @@ A task with no host is untouched by any of it.
 from __future__ import annotations
 
 import argparse
+import glob
+import importlib.util
 import json
 import os
 import re
@@ -2227,6 +2229,505 @@ def cmd_reap(args) -> int:
     return 0
 
 
+# --- refuel: the fuel, and the sessions that ran dry -------------------------
+#
+# WHY THIS EXISTS. A worker that hits its agent's token limit does not fail —
+# it SITS. thurbox reports the last state its hook saw, and the hook that would
+# have said `idle` never fires, so a session that ran dry mid-turn reads
+# `working` for as long as it is left there. `watch` folds no transition,
+# `collect` finds no result, `reap` sees a task that is not finished. Nothing
+# in the loop notices, and the operator finds it hours later.
+#
+# THE THING THAT DECIDES THE WHOLE DESIGN: the limit is not the session's, it
+# is the ACCOUNT's. `quota-axi` reads the vendor's own quota windows off the
+# credentials already on this machine, and what it reports is the operator's
+# subscription window — the one the lead and every worker draw on together. So
+# while that window is spent, every session is stuck for the same reason and
+# restarting them is worse than useless: each one resumes, hits the same wall
+# within seconds, and burns the reset it was waiting for. That is not a
+# hypothetical — three concurrent pipeline runs did exactly it on 2026-08-29
+# and lost every step in flight.
+#
+# Hence the order, and it is the point of this section:
+#
+#   1. ask the ACCOUNT. Spent -> restart NOTHING, print `resetsAt`, and say the
+#      fleet is waiting on the window rather than on any session. Unreadable ->
+#      `undetermined`, which is never a pass and never a failure.
+#   2. only with fuel in the account, look for the individual session that is
+#      wedged anyway — which is the only case a restart recovers anything.
+#
+# And detection of ONE wedged session is a conjunction, because either half
+# alone is wrong:
+#
+#   the state is STALE   `hook_state` says `working` and its age has grown past
+#                        anything a turn takes (STALE_WORKING_SECS below).
+#                        On its own this is a SLOW worker, and slow is not dry.
+#   the agent SAYS SO    its own limit banner on the pane, or — more precisely —
+#                        the rate-limit record in its transcript, which names
+#                        the window that rejected the turn.
+#
+# A restart is neither a completion nor a failure: nothing here writes `state`
+# or `outcome`. `collect` stays the only thing that closes a task.
+
+# How long a `working` hook state has to have stood before it is worth looking
+# at the pane at all. MEASURED, not guessed: 306 fleet-worker turns from this
+# machine's Claude Code transcripts (~/.claude/projects, the sessions whose
+# first prompt is this queue's own "Read <BRIEF.md> and do what it says") that
+# carry NO rate-limit record ran p50 3.7 min, p90 19.1 min, p95 25.1 min. Half
+# an hour is past 95% of real work, and the eight turns that ran longer are the
+# multi-hour ones a whole brief occasionally takes — which is exactly why age
+# alone never restarts anything here.
+STALE_WORKING_SECS = 30 * 60
+
+# How many times one task's session may be restarted before it is left to a
+# human. A session that runs dry, is restarted, and runs dry again is a task
+# too big for the window it is drawing on; a fourth restart is a loop, not a
+# recovery.
+REFUEL_CAP = 3
+
+# The agent's own limit line, as observed on 2026-09-08 in this machine's
+# transcripts and on the pane that renders them:
+#
+#     You've hit your session limit · resets 11:30pm (Europe/Paris)
+#
+# Matched on the sentence and not the whole line, so the window's name and the
+# reset time can vary. Nothing is matched that was not observed: an agent whose
+# banner reads differently answers `quiet` here and is reported as such rather
+# than guessed at.
+LIMIT_BANNER_RE = re.compile(r"you'?ve hit your \w+ limit", re.I)
+
+# How much pane to ask for, and how much of it the banner has to be in. The
+# banner sits in the scrollback of a session that already recovered from an
+# earlier limit, so only the tail counts as evidence about NOW.
+CAPTURE_LINES = 200
+PANE_TAIL_LINES = 40
+
+# The tail of a transcript is all that matters, and a long one is megabytes.
+TRANSCRIPT_TAIL_BYTES = 512 * 1024
+
+# The account's own quota window, and the ONE thing that decides whether any
+# restart is worth making. It is read through `fleet_status.probe_fuel()` —
+# `refuel/02-fuel-gauge` put that there for the lead's screen — rather than
+# parsed a second time here: one reader means quota-axi's schema moving costs
+# one edit, and the lead's gauge and this command can never disagree about how
+# much fuel there is.
+#
+# Loaded by path and LAZILY, because fleet_status.py imports this file: at
+# import time that is a cycle, and inside the one function that needs it, it is
+# not.
+QUOTA_CMD = "quota-axi"
+
+# The provider that gauge reads, and so the only agent whose account this can
+# speak for. A task running something else is not refused — its account window
+# is undetermined, and undetermined restarts nothing.
+FUEL_AGENT = "claude"
+
+
+def fuel_gauge():
+    """The `fleet_status` module, loaded from beside this file."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fleet_status.py")
+    spec = importlib.util.spec_from_file_location("fleet_status_for_queue", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def account_fuel() -> tuple[str, str]:
+    """('fuel' | 'spent' | 'unknown', detail) for the account every session spends.
+
+    `effectivePercentRemaining` is the subscription window the lead and every
+    worker draw on at once — six workers dispatched together spend one window
+    six ways — so this is ONE reading for the whole pass and never a per-session
+    one. There is no per-session number anywhere: `session get --json` carries
+    no token, usage, cost or limit field at all.
+    """
+    try:
+        sec = fuel_gauge().probe_fuel()
+    except (OSError, ImportError, AttributeError, SyntaxError) as exc:
+        return "unknown", f"the fuel gauge could not be loaded: {exc}"
+    if sec.get("unavailable"):
+        return "unknown", str(sec["unavailable"])
+    remaining = sec.get("remaining")
+    detail = f"{remaining}% remaining"
+    if sec.get("limited_by"):
+        detail += f" — limited by {', '.join(sec['limited_by'])}"
+    if sec.get("resets_at"):
+        detail += f", resets {sec['resets_at']}"
+    if sec.get("stale"):
+        # quota-axi's own word for a reading it could not refresh. Reported,
+        # not acted on differently: it still carries a number it measured.
+        detail += "  (quota-axi calls this reading stale)"
+    return ("spent" if remaining <= 0 else "fuel"), detail
+
+
+def transcript_root() -> str:
+    """Where Claude Code keeps its transcripts. `CLAUDE_CONFIG_DIR` is its own
+    knob for moving them, so this reads that rather than assuming a home."""
+    home = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+    return os.path.join(home, "projects")
+
+
+def transcript_file(agent_sid: str) -> str:
+    """The agent's own transcript, named by the session id thurbox records."""
+    root = transcript_root()
+    hits = glob.glob(os.path.join(root, "*", f"{agent_sid}.jsonl"))
+    if not hits:
+        hits = glob.glob(os.path.join(root, "**", f"{agent_sid}.jsonl"), recursive=True)
+    return hits[0] if hits else ""
+
+
+def transcript_exhaustion(agent_sid: str) -> tuple[str, str]:
+    """Did the agent's LAST turn end on the quota rejecting it?
+
+    The precise source, and the one this section derives its number from: the
+    record carries `error: "rate_limit"`, `apiErrorStatus: 429` and the
+    `quotaLimits` window that rejected the request, `resetsAt` included. The
+    pane only renders the sentence.
+
+    It has to be the last CONVERSATIONAL entry. What follows a rejection in a
+    wedged session is bookkeeping — `system`, `file-history-snapshot`,
+    `last-prompt` — and a session that came back has an ordinary turn after it.
+    """
+    if not agent_sid:
+        return "unknown", "the session records no agent_session_id"
+    path = transcript_file(agent_sid)
+    if not path:
+        return "unknown", f"no transcript for {agent_sid} under {transcript_root()}"
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            size = fh.tell()
+            fh.seek(max(0, size - TRANSCRIPT_TAIL_BYTES))
+            tail = fh.read().decode("utf-8", "replace")
+    except OSError as exc:
+        return "unknown", f"could not read {path}: {exc}"
+
+    last = None
+    for line in tail.splitlines():
+        # A tail read can start mid-line; an unparseable line is that, or a
+        # record shape this does not know. Either way it is not evidence.
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(row, dict) or row.get("isSidechain"):
+            continue
+        if row.get("type") in ("user", "assistant"):
+            last = row
+    name = os.path.basename(path)
+    if last is None:
+        return "unknown", f"transcript {name} records no turn yet"
+    if last.get("error") != "rate_limit":
+        return "quiet", f"transcript {name}: its last turn is an ordinary one"
+    quota = last.get("quotaLimits") or {}
+    resets = quota.get("resetsAt")
+    if isinstance(resets, (int, float)) and not isinstance(resets, bool):
+        resets = datetime.fromtimestamp(resets, timezone.utc).isoformat()
+    return "exhausted", (
+        f"transcript {name}: the last turn was rejected "
+        f"{last.get('apiErrorStatus', '')} rate_limit on the "
+        f"{quota.get('rateLimitType', 'unknown')} window, resets {resets}"
+    )
+
+
+def pane_exhaustion(sid: str) -> tuple[str, str]:
+    """Does the agent's own limit banner stand at the bottom of its pane?
+
+    The tail only. The banner stays in the scrollback of a session that already
+    came back from an earlier limit, and that is history, not a verdict.
+    """
+    if not shutil.which("thurbox-cli"):
+        return "unknown", "thurbox-cli not found on PATH"
+    try:
+        proc = subprocess.run(
+            ["thurbox-cli", "session", "capture", sid, "--lines", str(CAPTURE_LINES), "--json"],
+            capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return "unknown", f"session capture could not run: {exc}"
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout).strip().splitlines()
+        return "unknown", "session capture failed: " + (detail[-1] if detail else "no output")
+    try:
+        doc = json.loads(proc.stdout)
+    except ValueError:
+        return "unknown", "session capture did not answer JSON"
+    lines = [ln.strip() for ln in str(doc.get("output") or "").splitlines() if ln.strip()]
+    for line in lines[-PANE_TAIL_LINES:]:
+        if LIMIT_BANNER_RE.search(line):
+            return "exhausted", f"the pane ends on the agent's own banner: {line}"
+    return "quiet", f"no limit banner in the pane's last {PANE_TAIL_LINES} lines"
+
+
+def exhaustion(doc: dict) -> tuple[str, str]:
+    """('exhausted' | 'quiet' | 'undetermined', detail) for one live session.
+
+    The transcript outranks the pane wherever it can be read: it is the same
+    event, recorded rather than rendered, and it says which window rejected the
+    turn. The pane is what answers for an agent that keeps no transcript here.
+    """
+    seen, detail = transcript_exhaustion(doc.get("agent_session_id") or "")
+    if seen != "unknown":
+        return seen, detail
+    pane, pane_detail = pane_exhaustion(str(doc.get("id") or ""))
+    if pane != "unknown":
+        return pane, pane_detail
+    return "undetermined", f"{detail}; {pane_detail}"
+
+
+def session_doc(sid: str) -> tuple[dict | None, str]:
+    """`session get --json` in full — the hook fields are the whole point here."""
+    if not shutil.which("thurbox-cli"):
+        return None, "thurbox-cli not found on PATH"
+    try:
+        proc = subprocess.run(
+            ["thurbox-cli", "session", "get", sid, "--json"],
+            capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return None, f"thurbox-cli session get could not run: {exc}"
+    if proc.returncode != 0:
+        return None, "thurbox-cli session get failed"
+    try:
+        doc = json.loads(proc.stdout)
+    except ValueError:
+        return None, "thurbox-cli session get did not answer JSON"
+    if not isinstance(doc, dict):
+        return None, "thurbox-cli session get did not answer an object"
+    return doc, ""
+
+
+def record_refuel(task: Task, sid: str, why: str, prompted: bool) -> None:
+    """The receipt, and the cap's only memory.
+
+    Appended, never replaced: a session that keeps running dry is a fact about
+    the task, and one that is invisible if each pass overwrites the last.
+    """
+    task.doc.setdefault("refuels", []).append(
+        {"at": now(), "session": sid, "why": why, "prompted": prompted}
+    )
+    task.save()
+
+
+def restart_session(sid: str) -> tuple[bool, str]:
+    """`session restart`: kill the window, re-spawn with `--resume`.
+
+    The conversation survives, so the worker still holds its brief and whatever
+    it had already worked out — which is why this and not a fresh spawn.
+    """
+    try:
+        proc = subprocess.run(
+            ["thurbox-cli", "session", "restart", sid], capture_output=True, text=True, timeout=120
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, f"session restart could not run: {exc}"
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout).strip().splitlines()
+        return False, "session restart failed: " + (detail[-1] if detail else "no output")
+    return True, ""
+
+
+def stale_since(age: float) -> float:
+    """When the state this age describes was reported, as an epoch second."""
+    return datetime.now(timezone.utc).timestamp() - age
+
+
+def record_time(stamp) -> float:
+    """One of this file's own `at` timestamps as an epoch second.
+
+    Unreadable reads as the beginning of time, which makes an unparseable
+    receipt fall through to the ordinary path rather than block it.
+    """
+    try:
+        return datetime.fromisoformat(str(stamp)).timestamp()
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def refuel(q: Queue, ref: str | None = None, dry: bool = False) -> int:
+    """Restart the workers that ran dry — and only once the account can pay.
+
+    Returns how many sessions it had something to say about.
+    """
+    tasks = [q.get(ref)] if ref else sorted(q.tasks.values(), key=lambda t: t.ref)
+    holders = [t for t in tasks if t.doc.get("session")]
+    if not holders:
+        print("refuel: no task here is holding a session")
+        return 0
+
+    print(
+        f"refuel: {len(holders)} recorded session(s); the cap is {REFUEL_CAP} "
+        "restart(s) per task"
+    )
+    verdict, detail = account_fuel()
+    print(f"    account {FUEL_AGENT:<10} "
+          f"{'undetermined' if verdict == 'unknown' else verdict:<12} {detail}")
+    if verdict == "spent":
+        print(
+            "      The account window is SPENT, and it is the operator's own "
+            "subscription —\n"
+            "      the lead and every worker draw on it. The fleet is waiting on "
+            "the window,\n"
+            "      not on any session: resuming a worker now would hit the same "
+            "wall and burn\n"
+            "      the reset. Nothing is touched until it comes back."
+        )
+    if verdict == "unknown":
+        print(
+            "      The account's own quota could not be read, and undetermined is "
+            "never a pass\n"
+            f"      and never a failure — so nothing is acted on. {QUOTA_CMD}: "
+            "https://github.com/kunchenguid/quota-axi"
+        )
+
+    lead = os.environ.get("THURBOX_SESSION")
+    acted = fired = kept = 0
+    for task in holders:
+        sid = task.doc["session"]
+        acted += 1
+
+        if sid == lead:
+            # `reap`'s guard, for the same reason and a worse consequence: a
+            # restart of the lead kills the operator's own conversation.
+            print(f"    {task.ref:<46} kept          that is the session running this "
+                  "command — the lead's own, not a worker's")
+            kept += 1
+            continue
+        if task.state != "dispatched":
+            print(f"    {task.ref:<46} kept          its task is `{task.state}`; only a "
+                  "worker still in flight is refuelled")
+            kept += 1
+            continue
+        agent = task.doc.get("agent") or FUEL_AGENT
+        if agent != FUEL_AGENT:
+            print(f"    {task.ref:<46} undetermined  the fuel gauge reads the "
+                  f"{FUEL_AGENT} account and this task runs `{agent}`")
+            kept += 1
+            continue
+        if verdict != "fuel":
+            # The reason is the account line above, printed once: repeating a
+            # hundred characters of it per task buries the one thing a reader
+            # is looking for, which is which tasks it applies to.
+            word = "kept" if verdict == "spent" else "undetermined"
+            print(f"    {task.ref:<46} {word:<13} the {FUEL_AGENT} account window is "
+                  f"{'spent' if verdict == 'spent' else 'unreadable'} — see above")
+            kept += 1
+            continue
+        if task.doc.get("host"):
+            # `session capture` is local-only and the transcript is on that
+            # machine, so neither half of the detection can be established from
+            # here. Undetermined, and never a guess.
+            print(f"    {task.ref:<46} undetermined  runs on host {task.doc['host']}: its "
+                  "pane and its transcript are there, not here")
+            kept += 1
+            continue
+
+        doc, why = session_doc(sid)
+        if doc is None:
+            print(f"    {task.ref:<46} undetermined  {why}")
+            kept += 1
+            continue
+
+        # The agent's own word, and only that. `running`, `uncovered` and
+        # `unreported` are observations about a pane, not a claim by the agent
+        # about itself (`thurbox-session` §4a), and a worker that is genuinely
+        # at rest is `collect`'s business, not this command's.
+        hook = doc.get("hook_state")
+        age = doc.get("hook_state_age_secs")
+        if hook != "working":
+            print(f"    {task.ref:<46} kept          its hook says `{hook or doc.get('state')}`, "
+                  "which is not a stale working state")
+            kept += 1
+            continue
+        if not isinstance(age, (int, float)) or isinstance(age, bool):
+            print(f"    {task.ref:<46} undetermined  thurbox reports no age for that "
+                  "`working` state")
+            kept += 1
+            continue
+        if age < STALE_WORKING_SECS:
+            print(f"    {task.ref:<46} kept          working for {age / 60:.0f}m, under the "
+                  f"{STALE_WORKING_SECS // 60}m staleness threshold")
+            kept += 1
+            continue
+
+        seen, detail = exhaustion(doc)
+        if seen == "undetermined":
+            print(f"    {task.ref:<46} undetermined  {detail}")
+            kept += 1
+            continue
+        if seen != "exhausted":
+            # The whole reason detection is a conjunction: this worker has been
+            # in one turn for a long time and its agent has said nothing about
+            # a limit. Slow is not dry.
+            print(f"    {task.ref:<46} kept          working for {age / 60:.0f}m and quiet "
+                  f"about it — slow, not dry ({detail})")
+            kept += 1
+            continue
+
+        # A `working` state REPORTED BEFORE the last restart is evidence from
+        # before that restart: the re-spawned agent has simply not reported yet.
+        # Without this, two passes a minute apart spend the cap on one wedge and
+        # kill a window that was coming back up.
+        history = task.doc.get("refuels") or []
+        if history and stale_since(age) < record_time(history[-1].get("at")):
+            print(f"    {task.ref:<46} kept          restarted at "
+                  f"{history[-1].get('at')}, and this `working` was reported before "
+                  "that — give it a moment")
+            kept += 1
+            continue
+
+        already = len(history)
+        if already >= REFUEL_CAP:
+            print(f"    {task.ref:<46} kept          ran dry again after {already} restart(s); "
+                  f"the cap is {REFUEL_CAP} — a human decides now")
+            kept += 1
+            continue
+
+        if dry:
+            print(f"    {task.ref:<46} would restart {sid}  {detail}")
+            fired += 1
+            continue
+
+        ok, note = restart_session(sid)
+        if not ok:
+            print(f"    {task.ref:<46} NOT RESTARTED {note}", file=sys.stderr)
+            kept += 1
+            continue
+
+        # The dispatch path's handoff, in dispatch's order and for its reason:
+        # a re-spawned agent in a worktree can ask the trust question again, and
+        # `session send` into that dialog types the prompt INTO it.
+        send = (
+            f"Read {brief_target(task)} and do what it says. Your session was "
+            "restarted after your agent ran out of quota mid-task, so the "
+            "conversation above is yours: continue from where you stopped rather "
+            "than starting over."
+        )
+        prompted, report = trust_and_send(sid, send)
+        record_refuel(task, sid, detail, prompted)
+        print(f"    {task.ref:<46} restarted     {sid}"
+              f"{'' if prompted else '  NOT PROMPTED'}")
+        print(f"        {detail}")
+        if not prompted:
+            print(f"        the session is up but was NOT prompted: {report}\n"
+                  f"        nothing was typed into it — retry with `queue.sh prompt {task.ref}`",
+                  file=sys.stderr)
+        fired += 1
+
+    if fired or kept:
+        print(
+            f"refuel: {fired} restart(s){' (dry run)' if dry else ''}, "
+            f"{kept} session(s) left alone"
+        )
+    return acted
+
+
+def cmd_refuel(args) -> int:
+    if refuel(Queue(queue_root()), ref=args.ref, dry=args.dry_run) == 0:
+        print("refuel: nothing to look at")
+    return 0
+
+
 # --- shepherd: the pull request, after the worker stopped ---------------------
 #
 # WHY THIS EXISTS. A task closes when its worker writes result.md. The pull
@@ -3315,6 +3816,10 @@ def cmd_show(args) -> int:
     landing = d.get("landing") or {}
     if landing.get("state"):
         print(f"    {'landing:':<12} {landing['state']} — {landing.get('detail', '')}")
+    refuels = d.get("refuels") or []
+    if refuels:
+        print(f"    {'refuelled:':<12} {len(refuels)} restart(s) of {REFUEL_CAP}, last "
+              f"{refuels[-1].get('at', '')} — {refuels[-1].get('why', '')}")
     reaped = d.get("reaped") or {}
     if reaped.get("session"):
         print(
@@ -3488,6 +3993,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="say what would land and what would be released, and write nothing",
     )
     rp.set_defaults(func=cmd_reap)
+
+    rf = sub.add_parser("refuel", help="restart the workers that ran out of quota")
+    rf.add_argument("ref", nargs="?",
+                    help="one task; every recorded session by default")
+    rf.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="name what would be restarted, and write nothing",
+    )
+    rf.set_defaults(func=cmd_refuel)
 
     sh = sub.add_parser("shepherd", help="inspect the PRs this queue produced and act")
     sh.add_argument("--dry-run", action="store_true",

@@ -464,6 +464,71 @@ Run `watch` when you choose: between turns, when the operator asks, before a
 After `collect`, run `plan` again. A blocker may have cleared, and the tasks it
 was holding go out immediately.
 
+### 5c. `refuel` — the account's fuel first, then the workers that ran dry
+
+A worker that hits its agent's token limit **does not fail — it sits.** The hook
+that would have said `idle` never fires, so thurbox reports `working` for as
+long as you leave it there: `watch` folds no transition, `collect` finds no
+result, `reap` sees a task that is not finished. Nothing in the loop notices.
+
+```bash
+./scripts/queue.sh refuel --dry-run     # what it would restart, writing nothing
+./scripts/queue.sh refuel               # every recorded session
+./scripts/queue.sh refuel <ref>         # just that task's
+```
+
+**It asks the ACCOUNT before it looks at a single session, and that order is the
+whole point.** The quota window it reads is the operator's own subscription —
+the lead and every worker draw on it. It is the same reading `fleet-status.sh`
+shows as `FUEL`, through the same function (`fleet_status.probe_fuel`), so the
+gauge and this command can never disagree; it covers the `claude` account, and
+a task running another agent is reported undetermined rather than guessed at. So while it is spent,
+every session is stuck for the same reason, and restarting them is worse than
+useless: each one resumes, hits the same wall within seconds, and burns the
+reset it was waiting for. Three concurrent pipeline runs did exactly that on
+2026-08-29 and lost every step in flight.
+
+```text
+    account claude     spent        0% remaining — five_hour resets 2026-09-09T02:10:00+00:00
+      The account window is SPENT … The fleet is waiting on the window, not on
+      any session … Nothing is touched until it comes back.
+```
+
+A quota that could not be read is `undetermined` — never a pass, never a
+failure, and nothing is acted on. That is the common case, not an edge one: the
+vendor's own quota endpoint rate-limits, and quota-axi says `stale` rather than
+serving old numbers as current. Read the `retry after` it prints and run it
+again; do not work around it.
+
+**With fuel in the account, one wedged session is a conjunction**, because
+either half alone gets it wrong:
+
+| half | read from | on its own it means |
+|---|---|---|
+| the state is stale | `hook_state: working` with `hook_state_age_secs` past 30 min | a SLOW worker — and slow is not dry |
+| the agent says so | its limit banner on the pane, or the `rate_limit` record in its transcript | a limit it may already have come back from |
+
+The transcript outranks the pane wherever it can be read: keyed by
+`agent_session_id`, it is the same event recorded rather than rendered, and it
+names the window that rejected the turn and when that window resets. `session
+get --json` carries no usage field at all — do not look for one.
+
+The restart is `session restart` (kills the window, re-spawns with `--resume`,
+so the conversation and the brief survive) followed by dispatch's own handoff:
+`session-trust.sh` first, because a re-spawned agent in a worktree can ask the
+trust question again and sending into that dialog types the prompt INTO it.
+Every restart is recorded on the task and **capped at three** — a session that
+runs dry, resumes and runs dry again is a task too big for its window, and a
+fourth restart is a loop rather than a recovery. A `working` state that was
+reported BEFORE the last restart is evidence from before it, so a second pass
+minutes later gives the re-spawned agent a moment instead of spending the cap
+on one wedge.
+
+**A restart is neither a completion nor a failure.** `refuel` writes no `state`
+and no `outcome`; `collect` stays the only thing that closes a task. The lead's
+own session is refused by name, and a remote task's pane and transcript are on
+its host, so that one is reported `undetermined` rather than guessed at.
+
 ## 5a. Shepherd the pull requests — the fourth thing
 
 A task closes when its worker writes `result.md`. **The pull request it named
@@ -618,7 +683,10 @@ six weeks later.
 6. `watch` on your own cadence; `collect` when a result is waiting.
 7. `shepherd` — as reflexively as `collect`, and it is what `collect` tells you
    to do. A PR goes bad long after the worker that wrote it stopped.
-8. `plan` again. Review the PRs; the operator merges every one `shepherd`
+8. `refuel` when a worker has been `working` far too long, or when the operator
+   says the fleet has hit a limit. It reads the account's fuel first and
+   restarts nothing while that is spent.
+9. `plan` again. Review the PRs; the operator merges every one `shepherd`
    did not. Sessions release
    themselves once their pull requests land — `collect` reaps, `reap
    --dry-run` shows you what it would do — and you record the run in

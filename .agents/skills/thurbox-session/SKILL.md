@@ -521,6 +521,36 @@ nobody is going to give, or a `working` one whose report has aged past anything
 plausible. Completion still arrives as the result file of §4, because only the
 worker knows whether it is done.
 
+### 4b. A `working` that never ends — the session that ran out of fuel
+
+An agent that hits its token limit **does not exit and does not report.** It
+prints its own limit line and sits, so the last hook state stands forever: the
+session reads `working` hours later and nothing about it changes. `session get`
+carries **no token, usage, cost or limit field** — do not look for one. Two
+readings tell it apart from a genuinely slow turn:
+
+| where | what it says |
+|---|---|
+| `session capture <uuid> --lines 200 --json` | the agent's own banner, as rendered: `You've hit your session limit · resets 11:30pm (Europe/Paris)` |
+| `~/.claude/projects/**/<agent_session_id>.jsonl` | the same event recorded, and more precisely: `"error": "rate_limit"`, `"apiErrorStatus": 429`, and the `quotaLimits` window that rejected the turn — `rateLimitType` and `resetsAt` |
+
+`agent_session_id` from `session get --json` is what names that transcript, and
+the record has to be the LAST conversational entry: what follows a rejection in
+a wedged session is bookkeeping, and a session that came back has an ordinary
+turn after it.
+
+**Ask the account before you restart anything.** The limit is not the session's,
+it is the operator's subscription window, shared by every session on this
+machine — `quota-axi` reads it. While it is spent, a `session restart` resumes
+the worker straight into the same wall and burns the reset everyone is waiting
+for. With fuel in the account, `session restart <uuid>` re-spawns with
+`--resume`, so the conversation and the brief survive; answer the trust dialog
+again (§1b) before you send anything into the new pane.
+
+**For a session the queue dispatched, `./scripts/queue.sh refuel` is all of the
+above in one verb** — the account first, the conjunction, the trusted handoff,
+a cap and a record. Do not hand-restart those; see `fleet-queue` §5c.
+
 ## 5. Collect and clean up
 
 Record every session in the run log **as it happens** — name, repo(s), prompt

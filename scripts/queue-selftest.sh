@@ -40,6 +40,14 @@
 #      filesystem and the result really comes back off it; and a session whose
 #      host cannot be reached is kept, not reaped — thurbox's CLI still calls
 #      it `idle`, which is the trap.
+#  12. `refuel` asks the ACCOUNT's quota window first and restarts nothing
+#      while it is spent — that window is the operator's subscription, shared
+#      by the lead and every worker, so a restart there burns the reset it was
+#      waiting for. With fuel in the account, a session wedged on its agent's
+#      own limit banner is restarted through dispatch's own handoff, capped and
+#      recorded; a merely slow one is not, nor is one whose stale state predates
+#      the restart it already got; the lead is refused; and a quota that cannot
+#      be read is undetermined, which acts on nothing.
 #
 # Test 4 is also the wake proof. The event source is `thurbox-cli watch`, which
 # this script replaces with a recorded stream through `FLEET_QUEUE_WATCH_CMD` —
@@ -53,8 +61,8 @@
 # machine with thurbox installed and on CI without it.
 
 # Test 8 is the enforcement proof, and test 9 the release proof. `gh`,
-# `thurbox-cli` and `ssh` are all stubbed on PATH for the whole run (see the
-# stubs below), so every collect and every reap here answers the same offline,
+# `thurbox-cli`, `ssh` and `quota-axi` are all stubbed on PATH for the whole
+# run (see the stubs below), so every collect and every reap here answers the same offline,
 # on CI, on an operator's laptop and on a machine with no network — and so that
 # a run of this file can never delete a real session or touch a real host. Test
 # 11 needs that last part most: the machine this was written on has hosts
@@ -172,9 +180,14 @@ chmod +x "$ghbin/gh"
 
 sessions="$tmp/sessions"
 deletions="$tmp/deletions.log"
+panes="$tmp/panes"
+restarts="$tmp/restarts.log"
+sends="$tmp/sends.log"
 tbxbin="$tmp/tbx-bin"
-mkdir -p "$sessions" "$tbxbin"
+mkdir -p "$sessions" "$tbxbin" "$panes"
 : >"$deletions"
+: >"$restarts"
+: >"$sends"
 
 cat >"$tbxbin/thurbox-cli" <<SH
 #!/bin/sh
@@ -193,9 +206,22 @@ case "\$1 \$2" in
 	cat "$tmp/next-session.json" 2>/dev/null || echo '{"id":"stub","created":true}'
 	;;
 "session capture")
-	# No dialog on the pane. session-trust.sh then falls through to the
-	# hook_reported check, which is what the session fixtures answer.
-	echo '{"output":""}'
+	# A pane fixture when a test wrote one — that is how refuel is shown an
+	# agent's own limit banner — and otherwise an empty pane, on which
+	# session-trust.sh sees no dialog and falls through to hook_reported.
+	if [ -f "$panes/\$3.txt" ]; then
+		python3 -c 'import json,sys; print(json.dumps({"output": open(sys.argv[1]).read()}))' \
+			"$panes/\$3.txt"
+	else
+		echo '{"output":""}'
+	fi
+	;;
+"session restart")
+	echo "\$*" >>"$restarts"
+	echo '{"id":"'"\$3"'","restarted":true}'
+	;;
+"session send")
+	echo "\$*" >>"$sends"
 	;;
 "session list")
 	printf '['
@@ -220,9 +246,14 @@ SH
 chmod +x "$tbxbin/thurbox-cli"
 
 # Record a session the stub will report, in whatever state the test needs.
+# `session_is <id> <state> [hook_state_age_secs]`. The hook fields come with
+# it because `refuel` reads them: a session that ran dry reads `working` with an
+# age that keeps growing, and nothing else in `get --json` says so.
 session_is() {
-	printf '{"id":"%s","name":"%s","state":"%s"}\n' "$1" "worker $1" "$2" \
-		>"$sessions/$1.json"
+	printf '{"id":"%s","name":"%s","state":"%s","agent":"claude","hook_reported":true,' \
+		"$1" "worker $1" "$2" >"$sessions/$1.json"
+	printf '"hook_state":"%s","hook_state_age_secs":%s,"agent_session_id":"agent-%s"}\n' \
+		"$2" "${3:-5}" "$1" >>"$sessions/$1.json"
 }
 
 # --- `ssh`, stubbed on PATH for the whole run --------------------------------
@@ -314,7 +345,45 @@ destination = "me@lonebox"
 share_sessions = false
 EOF
 
-export PATH="$ghbin:$tbxbin:$sshbin:$PATH"
+# --- `quota-axi`, stubbed on PATH for the whole run --------------------------
+#
+# The ACCOUNT's quota window, which the lead and every worker share. `refuel`
+# asks it FIRST and restarts nothing while it is spent, so this run must be
+# able to say "spent" and "has fuel" without an account, a network or a
+# credential. The shape is quota-axi's own schemaVersion 5, trimmed to the
+# fields read: one file per answer, and no file at all is the tool failing the
+# way an expired credential fails.
+
+quotabin="$tmp/quota-bin"
+quota="$tmp/quota.json"
+mkdir -p "$quotabin"
+
+cat >"$quotabin/quota-axi" <<SH
+#!/bin/sh
+[ -f "$quota" ] || { echo "quota-axi: no credentials for provider claude" >&2; exit 1; }
+cat "$quota"
+SH
+chmod +x "$quotabin/quota-axi"
+
+# `quota_is <percent remaining> <resets at>` for the five-hour window, which is
+# the one a session runs dry against.
+quota_is() {
+	cat >"$quota" <<EOF
+{"generatedAt": "2026-09-08T21:18:52.142Z", "schemaVersion": 5,
+ "providers": [{"provider": "claude", "plan": "max",
+  "windows": [
+   {"id": "five_hour", "label": "session", "kind": "session",
+    "resetsAt": "$2", "percentRemaining": $1},
+   {"id": "seven_day", "label": "week", "kind": "weekly",
+    "resetsAt": "2026-09-15T00:00:00+00:00", "percentRemaining": 75}],
+  "state": {"status": "fresh", "stale": false},
+  "quotaSemantics": {"status": "known", "effectiveAvailability": [
+   {"scope": "all_models", "status": "known", "effectivePercentRemaining": $1,
+    "boundedBy": ["five_hour", "seven_day"], "limitingWindowIds": ["five_hour"]}]}}]}
+EOF
+}
+
+export PATH="$ghbin:$tbxbin:$sshbin:$quotabin:$PATH"
 
 # A compliant body for the pull request test 3 collects, so that test says what
 # it always said — that a blocker clears on a real conclusion — and nothing
@@ -1874,6 +1943,234 @@ out="$($QUEUE reap 2>&1)"
 expect "and once the host answers again, the merged task's session is released" \
 	"reaped" "$out"
 expect "with --force, on the host thurbox owns" "$rsession" "$(cat "$deletions")"
+
+# --- 12. refuel: the account window first, then the session that ran dry -----
+#
+# A worker that hits its agent's token limit does not fail — it sits. thurbox
+# goes on reporting the last state its hook saw, so the session reads `working`
+# forever and neither `watch` nor `collect` nor `reap` ever touches it.
+#
+# The claims, and the first one is the one that costs real money to get wrong:
+#
+#   the ACCOUNT window outranks every per-session reading. It is the
+#     operator's subscription, shared by the lead and every worker, so while it
+#     is spent a restart resumes, hits the same wall and burns the reset.
+#   a stale `working` on its own is a SLOW worker, and is never restarted
+#   a session whose pane carries the agent's own limit banner IS restarted, and
+#     the handoff is the dispatch path's: trust the pane, then send the brief
+#   the transcript, keyed by `agent_session_id`, is the precise source — it
+#     names the reset time the pane only implies
+#   the lead is refused by name
+#   the cap holds, so a session that keeps running dry is visible rather than
+#     restarted in a loop
+#   no quota-axi is `undetermined`: never a pass, never a failure, and nothing
+#     restarted on a guess
+#   nothing here ever writes `state` or `outcome` — `collect` stays the only
+#     thing that closes a task
+
+export FLEET_QUEUE_DIR="$tmp/queue-refuel"
+: >"$restarts"
+: >"$sends"
+
+ftopic="$($QUEUE topic add ran-dry --title 'Workers that ran dry' \
+	--prompt 'restart the sessions that hit the token limit')"
+
+# `f1` sits on a limit banner, `f2` is merely slow, `f3` never went stale.
+fuelled() {
+	$QUEUE add "$ftopic" "$1" --title "Task $1" --repo /tmp/repo-a \
+		--branch "fix/$1" --number "$2" >/dev/null
+	$QUEUE attach "$ftopic/$2-$1" "$3" >/dev/null
+}
+fuelled ran-dry 01 aaaaaaa1-0000-0000-0000-000000000001
+fuelled just-slow 02 aaaaaaa2-0000-0000-0000-000000000002
+fuelled busy 03 aaaaaaa3-0000-0000-0000-000000000003
+
+# Observed on a real pane, 2026-09-08: Claude Code prints its limit as one
+# line in the transcript view and then stops. Nothing else in `session get`
+# changes when it does.
+cat >"$panes/aaaaaaa1-0000-0000-0000-000000000001.txt" <<'EOF'
+● Now I will run the gate.
+
+You've hit your session limit · resets 11:30pm (Europe/Paris)
+/upgrade to increase your usage limit
+EOF
+
+# All three have been `working` for two hours by the hook's own clock; only the
+# first has anything on its pane to say why.
+session_is aaaaaaa1-0000-0000-0000-000000000001 working 7200
+session_is aaaaaaa2-0000-0000-0000-000000000002 working 7200
+session_is aaaaaaa3-0000-0000-0000-000000000003 working 90
+
+# (a) The account window is spent. Every session is stuck for the same reason
+#     and none of them is restarted — including the one with the banner.
+quota_is 0 "2026-09-09T02:10:00+00:00"
+out="$($QUEUE refuel 2>&1)"
+expect "a spent account window stops the whole sweep" "account" "$out"
+expect "and says when it comes back, from quota-axi's own resetsAt" \
+	"2026-09-09T02:10:00+00:00" "$out"
+expect "and says the fleet waits on the window, not on any session" \
+	"waiting on the window" "$out"
+refute "so nothing is restarted while the fuel is gone" \
+	"aaaaaaa1" "$(cat "$restarts")"
+
+# (b) The account has fuel again. Now — and only now — a wedged session is a
+#     session a restart can actually recover.
+quota_is 62 "2026-09-09T02:10:00+00:00"
+
+out="$($QUEUE refuel --dry-run 2>&1)"
+expect "a dry run names what it would restart" "would restart" "$out"
+expect "and names the session that carries the banner" "01-ran-dry" "$out"
+refute "and restarts nothing" "aaaaaaa1" "$(cat "$restarts")"
+refute "and writes nothing" "refuels" \
+	"$(cat "$FLEET_QUEUE_DIR/$ftopic/01-ran-dry/task.yaml")"
+
+out="$($QUEUE refuel 2>&1)"
+expect "a session whose pane carries the limit banner is restarted" \
+	"restarted" "$out"
+expect "and it is the one that ran dry" \
+	"aaaaaaa1-0000-0000-0000-000000000001" "$(cat "$restarts")"
+expect "a stale working state on its own is a SLOW worker, not a dry one" \
+	"02-just-slow" "$out"
+refute "so it is left alone" "aaaaaaa2" "$(cat "$restarts")"
+refute "and a session still reporting fresh is never a candidate" \
+	"aaaaaaa3" "$(cat "$restarts")"
+
+# The handoff is dispatch's, in dispatch's order: the trust dialog is answered
+# before anything is typed, and what is typed is the brief's own absolute path.
+expect "the restarted worker is pointed back at its own BRIEF.md" \
+	"$FLEET_QUEUE_DIR/$ftopic/01-ran-dry/BRIEF.md" "$(cat "$sends")"
+expect "and told to continue where it stopped" "continue" "$(cat "$sends")"
+
+state="$($QUEUE show "$ftopic/01-ran-dry" 2>&1)"
+expect "the restart is recorded on the task" "refuelled:" "$state"
+expect "and the task is still exactly as dispatched — a restart is not a
+        completion" "state:       dispatched" "$state"
+refute "and no outcome was invented for it" "outcome:     shipped" "$state"
+
+# (c) The transcript is the precise source. `agent_session_id` names it, and it
+#     carries the reset time the rendered pane only implies.
+proj="$tmp/claude-config/projects/-tmp-repo-a"
+mkdir -p "$proj"
+export CLAUDE_CONFIG_DIR="$tmp/claude-config"
+fuelled from-transcript 04 aaaaaaa4-0000-0000-0000-000000000004
+session_is aaaaaaa4-0000-0000-0000-000000000004 working 7200
+python3 - "$proj/agent-aaaaaaa4-0000-0000-0000-000000000004.jsonl" <<'PY'
+import json
+import sys
+
+# The shape Claude Code actually writes when the window rejects a request,
+# copied from a transcript in ~/.claude/projects: a synthetic assistant turn
+# carrying `error`, `apiErrorStatus` and the quota window that rejected it.
+rows = [
+    {"type": "user", "timestamp": "2026-09-08T18:00:00.000Z",
+     "message": {"role": "user", "content": "Read /brief and do what it says."}},
+    {"type": "assistant", "timestamp": "2026-09-08T19:56:38.987Z",
+     "isApiErrorMessage": True, "error": "rate_limit", "apiErrorStatus": 429,
+     "quotaLimits": {"status": "rejected", "resetsAt": 1788999000,
+                     "rateLimitType": "five_hour"},
+     "message": {"role": "assistant", "model": "<synthetic>", "content": [
+         {"type": "text", "text": "You've hit your session limit · resets 11:30pm (Europe/Paris)"}]}},
+    {"type": "last-prompt"},
+]
+with open(sys.argv[1], "w") as fh:
+    for row in rows:
+        fh.write(json.dumps(row) + "\n")
+PY
+
+out="$($QUEUE refuel "$ftopic/04-from-transcript" --dry-run 2>&1)"
+expect "the agent's own transcript is read, keyed by agent_session_id" \
+	"transcript" "$out"
+expect "and it is the source that names the window that rejected the turn" \
+	"five_hour" "$out"
+expect "so that session would be restarted too" "would restart" "$out"
+
+# A single ref narrows the sweep; the default is every recorded session.
+refute "and a ref narrows the sweep to that one task" "01-ran-dry" "$out"
+
+# (d) The lead's own session is not a worker. A restart of it kills the
+#     operator's conversation, so it is refused by name — the same guard reap
+#     already makes.
+out="$(THURBOX_SESSION=aaaaaaa1-0000-0000-0000-000000000001 \
+	$QUEUE refuel --dry-run 2>&1)"
+expect "the lead's own session is refused by name" "lead" "$out"
+refute "and is never named as something to restart" "would restart  aaaaaaa1" "$out"
+
+# (e) The cap. A session that runs dry AGAIN after a restart is restarted
+#     again; one that keeps running dry becomes visible instead of looping.
+#
+#     The receipts are rewound between passes because a restart seconds ago is
+#     deliberately not a second wedge: a `working` state reported BEFORE the
+#     last restart is evidence from before it, and refuel waits rather than
+#     spending the cap on one wedge. Three hours back is a session that came up,
+#     worked, and ran dry all over again.
+rewind_refuels() {
+	python3 -c '
+import datetime
+import sys
+
+import yaml
+
+path = sys.argv[1]
+doc = yaml.safe_load(open(path))
+for rec in doc.get("refuels") or []:
+    rec["at"] = (
+        datetime.datetime.fromisoformat(rec["at"]) - datetime.timedelta(hours=3)
+    ).isoformat()
+yaml.safe_dump(doc, open(path, "w"))
+' "$1"
+}
+
+for _ in 1 2 3 4; do
+	$QUEUE refuel >/dev/null 2>&1
+	rewind_refuels "$FLEET_QUEUE_DIR/$ftopic/01-ran-dry/task.yaml"
+done
+out="$($QUEUE refuel 2>&1)"
+expect "a session that keeps running dry stops being restarted" \
+	"the cap is 3" "$out"
+expect "and the record says how many times it has run dry" "ran dry again" "$out"
+capped="$(grep -c aaaaaaa1-0000-0000-0000-000000000001 "$restarts")"
+if [ "$capped" -eq 3 ]; then
+	pass "so it was restarted exactly 3 times across five passes, and no more"
+else
+	fail "so it was restarted exactly 3 times across five passes, and no more" \
+		"restarted $capped times"
+fi
+
+# And a restart that just happened is not a second wedge: the same session,
+# asked again with its receipt where refuel wrote it, is left to come back up.
+$QUEUE show "$ftopic/01-ran-dry" >/dev/null
+python3 -c '
+import datetime
+import sys
+
+import yaml
+
+path = sys.argv[1]
+doc = yaml.safe_load(open(path))
+# One receipt, stamped where refuel itself would have stamped it: just now.
+doc["refuels"] = doc["refuels"][:1]
+doc["refuels"][0]["at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+yaml.safe_dump(doc, open(path, "w"))
+' "$FLEET_QUEUE_DIR/$ftopic/01-ran-dry/task.yaml"
+before="$(wc -l <"$restarts")"
+out="$($QUEUE refuel 2>&1)"
+expect "a session restarted moments ago is given a moment" "give it a moment" "$out"
+if [ "$(wc -l <"$restarts")" -eq "$before" ]; then
+	pass "and is not restarted again on evidence from before that restart"
+else
+	fail "and is not restarted again on evidence from before that restart" \
+		"$(tail -2 "$restarts")"
+fi
+
+# (f) The account reading is the gate, and a gate that could not be read is
+#     `undetermined` — never a pass and never a failure. quota-axi refusing
+#     (an expired credential, a provider it cannot see) is that case.
+rm -f "$quota"
+out="$($QUEUE refuel 2>&1)"
+expect "a quota reading that cannot be taken is undetermined" "undetermined" "$out"
+refute "and undetermined restarts nothing" "restarted" "$out"
+
+unset CLAUDE_CONFIG_DIR
 
 echo
 if [ "$failed" -eq 0 ]; then
