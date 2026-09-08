@@ -9,9 +9,10 @@ workers' results are not a thing to publish.
 `POLICY.md` is the standing policy every worker runs under — the pipeline
 requirement and the five headings that prove it, squash-merge, who merges, the
 gate, one-brief-one-worker, and the result contract. Every `BRIEF.md` the
-scaffold writes points at it by absolute path rather than restating it, so it
-is written once and cannot drift between briefs. **Task-specific detail still
-belongs in the brief**; only the repetition moved.
+scaffold writes points at it — by absolute path, or, for a task running on a
+remote host, by a path relative to the brief itself — rather than restating
+it, so it is written once and cannot drift between briefs. **Task-specific
+detail still belongs in the brief**; only the repetition moved.
 
 `OPERATOR.md` is its counterpart with the ownership reversed: fleet owns the
 policy, **you** own that file, and it is gitignored like the rest of this

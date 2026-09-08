@@ -82,9 +82,10 @@ until the operator read the bodies himself.
 
 ## Reporting back — write a file, do not send mail
 
-Your brief names an absolute path for `result.md`. Write it when you are
-finished, or when you have concluded you cannot finish, with exactly this
-shape:
+Your brief names where `result.md` goes — an absolute path, or, if you are
+running on a remote host, a path relative to the brief itself. Write it when
+you are finished, or when you have concluded you cannot finish, with exactly
+this shape:
 
 ```markdown
 ---
