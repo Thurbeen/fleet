@@ -94,6 +94,40 @@ only `start` brings it back.
 naming, trust, the state vocabulary, cleanup. Use both. (`.claude/skills` is a
 symlink to `.agents/skills`, so every CLI loads the one copy.)
 
+## Fuel
+
+**Fuel is how much of the account's provider window is left**, read by
+`./scripts/fleet-status.sh` from `quota-axi` and printed as its `FUEL` section.
+It measures the ACCOUNT, not a session: one window, which you and every worker
+spend at once, so six workers dispatched together spend it six ways. There is
+no per-worker reading to be had — `thurbox-cli session get` carries no token,
+usage, cost or limit field at all.
+
+**The reserve is 20%. Below it you dispatch nothing new.** That is the rule,
+and it is checkable rather than a feeling: the screen prints the reading and
+the reserve on one line. Nothing enforces it for you — `queue.sh dispatch`
+does not read fuel and must not, because a queue that stops on a bad parse is
+worse than one that spends.
+
+Near the floor you spend fuel on dispatching and on nothing else:
+
+- **Dispatch; do not investigate.** A worker holds its own context, and reading
+  a second file in another codebase spends yours. That is already the rule
+  below; near the floor it is the only one.
+- **`list`, not `show`. `show`, not the brief.** You never read a brief.
+- **Hand over the monitor URL** instead of narrating the queue into the
+  terminal. `./scripts/webui.sh ensure` serves the operator the same records
+  without spending a token of yours.
+- **`collect` and `shepherd`, not a re-read.** One file and one forge call each
+  close what is already finished.
+
+**The reading is a fact you report**, in the same register as every other state
+word here: `fuel 64% remaining, reserve 20%`, or `fuel unavailable — quota-axi
+not found`. Never a zero, never a guess. quota-axi also publishes `runway` and
+`projectedExhaustedAt`; those are its projections and you do not restate them
+as yours. `resetsAt` is the fact — a spent window is spent, and that is when it
+comes back.
+
 ## What you delegate
 
 **Every working or analysis task runs in a worker session** — debugging, "find

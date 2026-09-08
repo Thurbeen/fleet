@@ -122,12 +122,13 @@ else
 	fail "exits 0 with every probe missing" "exit $rc${nl}--- got ---${nl}$out"
 fi
 
-for section in QUEUE SESSIONS PRS MONITOR CHECKOUT; do
+for section in FUEL QUEUE SESSIONS PRS MONITOR CHECKOUT; do
 	expect "$section still prints when the probes are gone" "$section" "$out"
 done
 
 expect "it names the tool it could not find (thurbox-cli)" "thurbox-cli not found" "$out"
 expect "it names the tool it could not find (gh)" "gh not found" "$out"
+expect "it names the tool it could not find (quota-axi)" "quota-axi not found" "$out"
 expect "the queue section survives the others failing" "01-dispatched-task" "$out"
 expect "a blocked task says what is holding it" "semantic-dependency" "$out"
 expect "and why, in the words that were recorded" "consumes the flag" "$out"
@@ -146,11 +147,13 @@ fi
 probe="$(PATH="$bare" python3 - "$js" <<'PY' 2>&1
 import json, sys
 doc = json.loads(sys.argv[1])
-for key in ("queue", "sessions", "prs", "monitor", "checkout"):
+for key in ("fuel", "queue", "sessions", "prs", "monitor", "checkout"):
     assert key in doc, f"missing section {key}"
     assert "unavailable" in doc[key], f"{key} has no unavailable field"
 assert doc["sessions"]["unavailable"], "sessions should be unavailable"
 assert doc["prs"]["unavailable"], "prs should be unavailable"
+assert doc["fuel"]["unavailable"], "fuel should be unavailable"
+assert doc["fuel"]["remaining"] is None, "no reading is None, never 0"
 assert doc["queue"]["unavailable"] is None, "the queue is on disk and readable"
 assert len(doc["queue"]["topics"][0]["tasks"]) == 3, "three tasks expected"
 print("parsed")
@@ -200,6 +203,32 @@ JSON
 STUB
 chmod +x "$stubbed/gh"
 
+# quota-axi in its real shape (schemaVersion 5), carrying BOTH the measured
+# fields and the projected ones — so section 6 can prove which of them reach
+# the screen.
+fuel_stub() {
+	cat >"$1/quota-axi" <<STUB
+#!/bin/sh
+cat <<'JSON'
+{"generatedAt":"2026-03-15T16:42:00.000Z","schemaVersion":5,"providers":[
+ {"provider":"claude","plan":"pro",
+  "windows":[{"id":"five_hour","label":"session","kind":"session","percentRemaining":82,
+              "resetsAt":"2026-03-15T20:10:48.000Z"},
+             {"id":"seven_day","label":"week","kind":"weekly","percentRemaining":$2,
+              "resetsAt":"2026-03-20T17:59:45.600Z"}],
+  "state":{"status":"fresh","stale":false},
+  "quotaSemantics":{"status":"known","effectiveAvailability":[
+    {"scope":"all_models","status":"known","effectivePercentRemaining":$2,
+     "boundedBy":["five_hour","seven_day"],"limitingWindowIds":["seven_day"],
+     "runway":{"status":"projected_exhaustion","usableRunwaySeconds":298906,
+               "projectedExhaustedAt":"2026-03-19T03:43:45.600Z",
+               "limitingWindowId":"seven_day","projectionConfidence":"established"}}]}}]}
+JSON
+STUB
+	chmod +x "$1/quota-axi"
+}
+fuel_stub "$stubbed" 64
+
 full="$(PATH="$stubbed" "$STATUS" 2>&1)"
 expect "thurbox's own word for the session survives the trip" "uncovered" "$full"
 refute "and is not flattened to idle" "idle" "$full"
@@ -211,7 +240,49 @@ expect "an open PR is reported against the task that owns the branch" \
 	"Thurbeen/fleet#13" "$full"
 expect "with its check status, not just its existence" "passing" "$full"
 
-# --- 6. it reads, and only reads ---------------------------------------------
+# --- 6. fuel is measured, never projected ------------------------------------
+#
+# quota-axi hands back measurements AND forecasts in one document. The
+# operator's standing rule forbids fleet from carrying a forecast, so the
+# second half of that document must not reach the screen — and `resetsAt`, the
+# fact that says when a spent window comes back, must.
+
+expect "the reading is the account's remaining headroom" "64% remaining" "$full"
+expect "the reserve is on the same line, so the rule is checkable" "reserve 20%" "$full"
+expect "the binding window is named" "seven_day" "$full"
+expect "and when it comes back" "resets 2026-03-20T17:59:45.600Z" "$full"
+refute "quota-axi's projected exhaustion instant does not reach the screen" \
+	"2026-03-19T03:43:45.600Z" "$full"
+refute "nor its runway in seconds" "298906" "$full"
+refute "nor the verdict built on them" "projected_exhaustion" "$full"
+
+lowfuel="$(sandbox "$tmp/bin-lowfuel" "${BASE_TOOLS[@]}")"
+fuel_stub "$lowfuel" 8
+low="$(PATH="$lowfuel" "$STATUS" 2>&1)"
+expect "under the reserve, the reading is still just the reading" "8% remaining" "$low"
+expect "and the floor is named as the thing it is under" "under the 20% reserve" "$low"
+
+# A provider with no number is the case the section exists to get right: an
+# absent reading is reported as absent, in quota-axi's own words, and never as
+# a zero — which would read as an empty window rather than a missing one.
+mute="$(sandbox "$tmp/bin-mute" "${BASE_TOOLS[@]}")"
+cat >"$mute/quota-axi" <<'STUB'
+#!/bin/sh
+cat <<'JSON'
+{"generatedAt":"2026-03-15T16:42:00.000Z","schemaVersion":5,"providers":[
+ {"provider":"claude","windows":[],
+  "state":{"status":"auth_required","stale":false,"error":"Claude sign-in required",
+           "reason":"credentials_missing"},
+  "quotaSemantics":{"status":"unknown","effectiveAvailability":[]}}]}
+JSON
+STUB
+chmod +x "$mute/quota-axi"
+silent="$(PATH="$mute" "$STATUS" 2>&1)"
+expect "a provider with no number says so in quota-axi's words" \
+	"unavailable — auth_required; Claude sign-in required" "$silent"
+refute "and never invents a zero" "0% remaining" "$silent"
+
+# --- 7. it reads, and only reads ---------------------------------------------
 
 snapshot() { find "$FLEET_QUEUE_DIR" "$tmp/rt" -type f -exec sha256sum {} + | sort; }
 before="$(snapshot)"
