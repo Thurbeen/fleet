@@ -35,7 +35,7 @@ names every path and the reason for each.
   `OPERATOR.example.md` — the form of the operator's own `OPERATOR.md`, which
   is theirs, stays ignored, and is pointed at by every brief scaffolded while
   it exists and is not empty. **The queue belongs to the control-plane
-  checkout — the clone the `fleet` session opens — and not to whatever
+  checkout — the clone the `mission control` session opens — and not to whatever
   directory your shell is in**, so a second clone of this repo cannot
   silently fork it: `topic add` and `add` refuse there, everything else
   warns, and `queue.sh root` names the directory in use.
@@ -164,9 +164,9 @@ method the remote allows — so the pull request title becomes the commit on
 Edit `extension.toml.in` instead, and re-run the installer. Two consequences to
 know before you debug the extension:
 
-- **Re-installing does not move the `fleet` session.** thurbox reuses an
-  extension's session by name and never repoints it, so after the clone moves,
-  a re-install rewrites the manifest and changes nothing that runs. The
+- **Re-installing does not move the `mission control` session.** thurbox reuses
+  an extension's session by name and never repoints it, so after the clone
+  moves, a re-install rewrites the manifest and changes nothing that runs. The
   installer detects the mismatch and exits non-zero naming the remedy
   (`thurbox-cli extension deactivate fleet`, which deletes the session, then
   install again). `extension status` will not catch it — it checks that the
@@ -176,6 +176,12 @@ know before you debug the extension:
   `source`. So it refreshes to whatever was last rendered, and fails outright if
   `extension.toml` was cleaned away. `./scripts/install-extension.sh` is this
   extension's real update command.
+- **The lead SESSION is `mission control`; the EXTENSION and its agent are
+  still `fleet`**, which is why every command above still takes `fleet`. The
+  session carries the operator's name for the lead, the extension carries the
+  repo's — nothing reads the repo name, so the two are free to differ.
+  `extension.toml.in`'s RENAMING header owns the split and the sequence for
+  renaming either, including which one costs the lead its conversation.
 
 ## Pulling changes in
 
@@ -184,10 +190,10 @@ know before you debug the extension:
 forces on a dirty tree, a feature branch, or a divergence.
 
 **After a sync that touched `FLEET.md`, `AGENTS.md` or `.agents/skills/`, the
-running `fleet` session is holding stale instructions** — it froze them at
-launch and nothing reloads them from disk. This is equally true of a plain
-`git pull`. The sync script says so when it happens; act on it rather than
-assuming the new instructions reached the lead.
+running `mission control` session is holding stale instructions** — it froze
+them at launch and nothing reloads them from disk. This is equally true of a
+plain `git pull`. The sync script says so when it happens; act on it rather
+than assuming the new instructions reached the lead.
 
 ## Maintaining this file
 

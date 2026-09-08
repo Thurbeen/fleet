@@ -24,10 +24,11 @@ completion, this one wins: **workers write result files, they do not send mail.*
 
 ### Which checkout you are in
 
-**The queue lives in the CONTROL PLANE's checkout** — the clone the `fleet`
-session opens — and nowhere else. A second clone of this repo is normal: a
-control plane with no `origin` of its own needs one that workers can branch and
-push from. Opening a topic there gives you a whole second queue the monitor is
+**The queue lives in the CONTROL PLANE's checkout** — the clone the `mission
+control` session opens — and nowhere else. A second clone of this repo is
+normal: a control plane with no `origin` of its own needs one that workers can
+branch and push from. Opening a topic there gives you a whole second queue the
+monitor is
 right not to show.
 
 Ask the tooling rather than the shell prompt:

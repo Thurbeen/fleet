@@ -42,11 +42,11 @@ interrupts whoever is talking to it. A stream that is read and a file that is
 read interrupt nobody.
 
 WHICH CHECKOUT. The queue belongs to the CONTROL PLANE's clone — the one the
-`fleet` session opens — and never to the process cwd. A second clone of this
-repo is supported and common (a control plane with no `origin` needs one that
-workers push from), and resolving the queue against the cwd meant working in
-that clone silently forked it. `queue_root()` and `guard_creating()` below own
-that; the refuse-vs-warn split is argued at `guard_creating`.
+`mission control` session opens — and never to the process cwd. A second clone
+of this repo is supported and common (a control plane with no `origin` needs one
+that workers push from), and resolving the queue against the cwd meant working
+in that clone silently forked it. `queue_root()` and `guard_creating()` below
+own that; the refuse-vs-warn split is argued at `guard_creating`.
 
 Layout under $FLEET_QUEUE_DIR (default: this checkout's orchestration/queue,
 gitignored):
@@ -245,8 +245,9 @@ def operator_instructions() -> str:
 #   extension.toml   rendered into the control-plane clone by
 #                    scripts/install-extension.sh, with `repo_path` naming it.
 #                    Gitignored, so its presence IS the claim. No thurbox needed.
-#   the live session thurbox-cli reports the fleet session's real `cwd`, which
-#                    is the only authority when the clone has moved.
+#   the live session thurbox-cli reports the lead session's real `cwd`, which
+#                    is the only authority when the clone has moved. Its NAME
+#                    comes from the manifest, never from a constant here.
 #
 # When neither answers — no rendered manifest, no thurbox-cli, no such session —
 # the answer is "unknown", and unknown must stay SILENT. A fleet used without
@@ -255,6 +256,13 @@ def operator_instructions() -> str:
 
 SESSION_REPO_PATH_RE = re.compile(r'^\s*repo_path\s*=\s*"([^"]*)"', re.M)
 SESSION_NAME_RE = re.compile(r'^\s*name\s*=\s*"([^"]*)"', re.M)
+# The TABLE HEADER, anchored at the start of a line — the same thing
+# scripts/install-extension.sh matches with `/^\[\[sessions\]\]/`. A plain
+# substring search finds the manifest header's own PROSE about `[[sessions]]`
+# first and reads the top-level extension name as the session's. That was
+# invisible for as long as the two were the same word, and stopped being
+# invisible the day the session was renamed to `mission control`.
+SESSION_TABLE_RE = re.compile(r"^\[\[sessions\]\]", re.M)
 
 
 def manifest_session(path: str) -> tuple[str | None, str | None]:
@@ -264,9 +272,10 @@ def manifest_session(path: str) -> tuple[str | None, str | None]:
             text = fh.read()
     except OSError:
         return None, None
-    _, sep, sessions = text.partition("[[sessions]]")
-    if not sep:
+    table = SESSION_TABLE_RE.search(text)
+    if not table:
         return None, None
+    sessions = text[table.end():]
     name = SESSION_NAME_RE.search(sessions)
     repo = SESSION_REPO_PATH_RE.search(sessions)
     return (name.group(1) if name else None, repo.group(1) if repo else None)

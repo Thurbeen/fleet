@@ -64,7 +64,7 @@ the pane's slot in your thurbox `layout.lua`.
 
 Requires `gh` (authenticated), `jq`, and `thurbox-cli` **2.19.0 or newer**.
 
-That done, open the `fleet` session in thurbox and give it a goal.
+That done, open the `mission control` session in thurbox and give it a goal.
 
 ## Watching it
 
