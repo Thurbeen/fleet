@@ -464,6 +464,32 @@ expect "the lead can close a flagged task deliberately" "03-render-detected-agen
 state="$($QUEUE show "$topic/03-render-detected-agent" 2>&1)"
 expect "and the record keeps saying the artifact failed the check" "missing" "$state"
 
+# --- `shipped` with no pull request is a claim, not a skip -------------------
+#
+# `not-applicable` and `stuck` legitimately produce no artifact, and that is
+# `skipped`. `shipped` is a claim that a pull request exists, so a worker that
+# omits `artifact` (or writes something that is not a pull request URL) must
+# not sail through as if it were that same legitimate silence.
+
+$QUEUE add "$topic" ship-without-proof --title 'Ship without proof' \
+	--repo /tmp/repo-a --branch fix/ship-without-proof --number 05 >/dev/null
+
+cat >"$FLEET_QUEUE_DIR/$topic/05-ship-without-proof/result.md" <<'EOF'
+---
+outcome: shipped
+---
+Shipped it, but did not say where.
+EOF
+
+out="$($QUEUE collect 2>&1)"
+expect "a shipped claim with no pull request is caught, not skipped" \
+	"05-ship-without-proof" "$out"
+expect "and the refusal says the task was not closed" "NOT CLOSED" "$out"
+
+state="$($QUEUE show "$topic/05-ship-without-proof" 2>&1)"
+refute "a shipped claim with no pull request is not closed" "state:       done" "$state"
+expect "and the record says missing, not skipped" "missing" "$state"
+
 # --- the brief scaffold points at the policy instead of restating it ---------
 #
 # 871 lines of brief across five tasks, ~30 of them the same hand-copied
@@ -480,9 +506,27 @@ else
 fi
 expect "a scaffolded brief points the worker at it, by absolute path" \
 	"$policy" "$brief"
-expect "the policy carries the pipeline requirement" "no-mistakes" "$(cat "$policy" 2>&1)"
-expect "and squash merge, which drifted out of four briefs in five" \
-	"Squash merge" "$(cat "$policy" 2>&1)"
+
+# Design decision (d): the heading list is ONE constant, and POLICY.md quotes
+# it rather than restating it. Prove that by parsing POLICY.md's fenced
+# heading block into the same shape as PIPELINE_HEADINGS and comparing the
+# two, instead of grepping the prose for a phrase — a rewording of the policy
+# text around the headings would not touch this, only a drift between the
+# quoted list and the code's would.
+policy_vs_code="$(python3 - "$policy" <<'PY'
+import re
+import sys
+
+sys.path.insert(0, "scripts/lib")
+import queue as q
+
+text = open(sys.argv[1]).read()
+block = re.search(r"```text\n(.*?)```", text, re.S).group(1)
+quoted = tuple(line.removeprefix("## ").strip() for line in block.splitlines() if line.strip())
+print("match" if quoted == q.PIPELINE_HEADINGS else f"policy={quoted} code={q.PIPELINE_HEADINGS}")
+PY
+)"
+expect "the policy quotes PIPELINE_HEADINGS exactly, not a second copy" "match" "$policy_vs_code"
 
 # --- 7. the queue belongs to a CHECKOUT, not to a cwd ------------------------
 #
