@@ -59,7 +59,7 @@ The [onboarding skill](.agents/skills/fleet-onboarding/SKILL.md) does the setup
 rather than instructing you through it — prerequisites, your GitHub owners, the
 repo map, the thurbox extension, the queue pane and the monitor — verifying
 each step and naming anything missing with its remedy before it writes a thing.
-Run it twice and it converges. It hands you exactly one line to add yourself:
+Run it twice and it converges. It hands you a guarded block to add yourself:
 the pane's slot in your thurbox `layout.lua`.
 
 Requires `gh` (authenticated), `jq`, and `thurbox-cli` **2.19.0 or newer**.
