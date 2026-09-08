@@ -214,6 +214,27 @@ else
 fi
 
 # --- 6. an unwritten brief stops the dispatch --------------------------------
+#
+# And the brief it refuses is a SKELETON: seven hand-written briefs invented 20
+# headings between them on top of the scaffold's, several of those headings
+# being the same rhetorical construction the lead had just told another worker
+# to strip from the repo's docs. The scaffold emits the sections, so the lead
+# supplies content instead of designing a document -- and because every section
+# starts unwritten, a half-written brief is refused here too, not just a blank
+# one.
+
+raw="$(cat "$FLEET_QUEUE_DIR/$topic/01-drop-idle-default/BRIEF.md")"
+for heading in "## What to do" "## Hard constraints" "## Coordination" \
+	"## Done means"; do
+	expect "the scaffold emits the section \`$heading\`" "$heading" "$raw"
+done
+unwritten="$(printf '%s\n' "$raw" | grep -c 'WRITE THE INSTRUCTIONS HERE')"
+if [ "$unwritten" = 4 ]; then
+	pass "every scaffolded section starts unwritten, so a half-written brief is refused"
+else
+	fail "every scaffolded section starts unwritten" \
+		"counted $unwritten placeholder(s)${nl}$raw"
+fi
 
 if out="$($QUEUE dispatch --dry-run 2>&1)"; then
 	fail "a task with an unwritten BRIEF.md does not go out" "$out"
