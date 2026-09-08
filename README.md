@@ -35,8 +35,10 @@ cd fleet
 The [onboarding skill](.agents/skills/fleet-onboarding/SKILL.md) does the setup
 rather than instructing you through it: prerequisites, your GitHub owners
 (discovered from your `gh` session and confirmed in one question), the registry
-sync, the thurbox extension, and [the monitor](#the-monitor) — verifying each
-step. Run it twice and it converges.
+sync, the thurbox extension, [the queue pane](#the-queue-pane) and
+[the monitor](#the-monitor) — verifying each step. Run it twice and it
+converges. It hands you exactly one line to add yourself, and says why: the
+pane's slot in your thurbox `layout.lua`.
 
 Then open the `fleet` session in thurbox and give it a goal.
 
@@ -54,8 +56,10 @@ debug it when the skill fails:
    the file has no active entries rather than emit an empty map.
 2. `./scripts/sync-registry.sh` — writes `registry/repos.generated.yaml` from
    your live `gh` session.
-3. `./scripts/install-extension.sh` — renders `extension.toml` and installs the
-   thurbox extension.
+3. `./scripts/install-extension.sh` — renders `extension.toml`, installs the
+   thurbox extension, and installs [the queue pane](#the-queue-pane). It prints
+   the one `layout.lua` line you add yourself, because that file is shared by
+   every pane on your screen.
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the gate (`./scripts/check.sh`),
 the squash-only merge policy, and the layout conventions.
@@ -220,7 +224,7 @@ prefix.
 
 ## Where things live
 
-Four top-level directories, and each file's own header is the authority on it:
+Five top-level directories, and each file's own header is the authority on it:
 
 - **`registry/`** — the map. `owners.txt` lists the GitHub owners it covers;
   `repos.generated.yaml` is written by `./scripts/sync-registry.sh` and is never
@@ -233,6 +237,8 @@ Four top-level directories, and each file's own header is the authority on it:
 - **`scripts/`** — the tooling. Every script's header is its full usage;
   `check.sh` is the whole gate, and `fleet-status.sh` answers "where are we?"
   in one read-only call — queue, sessions, PRs, monitor, checkout.
+- **`interface/`** — the thurbox TUI pane, `fleet_queue.lua`. One file, drawn
+  in a column beside your terminal, showing the queue the monitor shows.
 - **`.agents/skills/`** — agent skills, one agent-agnostic tree.
   `.claude/skills` is a committed symlink to it, so Claude Code and opencode
   both load the one copy. Never add a second copy under `.claude/`.
@@ -432,6 +438,50 @@ banner crop and a vendored display font,
 whitelist. `./scripts/check.sh webui` proves the two claims that break silently:
 that a second `ensure` adopts rather than starting a twin, and that a stop
 survives the next `ensure`.
+
+## The queue pane
+
+```bash
+./scripts/install-extension.sh     # onboarding runs this for you
+```
+
+The same queue as [the monitor](#the-monitor), in a thurbox column, so it is
+readable without leaving the terminal. `F6` opens and closes it. It reads the
+same four files per task the monitor reads, and shows the same four things —
+the plan (`BRIEF.md`), the progress (`progress.jsonl`), the outcome
+(`result.md`) and the pull request, which is a link you can click. It adds no
+field of its own, for the reason [the monitor](#the-monitor) adds none.
+
+**It displays; it does not control.** The pane cannot even take focus, so
+there is no key on it to press: no dispatch, no collect, no merge.
+
+Two things about it are worth knowing before you install it.
+
+**Placing it is your edit, and only yours.** A thurbox pane names a *slot*, and
+the arrangement decides where that slot goes. A pane nothing places loads
+cleanly, appears in `thurbox-cli plugin list`, and draws nothing — a failure
+with no symptom. `layout.lua` is shared by every pane on your screen, so
+nothing here writes to it. The installer prints the line and where it goes:
+
+```lua
+columns[#columns + 1] = { slot = "fleetqueue", pct = 26, min = 32 }
+```
+
+`thurbox-cli plugin check` is the proof: it loads your interface exactly as
+thurbox does, and it fails on a pane that loads but is placed by nothing.
+
+**It asks for the `run` capability, and asking is not having.** The pane finds
+the queue by running `./scripts/queue.sh root` in the checkout your `fleet`
+session opens — the only honest answer, since a pane inside thurbox knows
+nothing about fleet and the queue deliberately refuses to be guessed at. That
+needs the `run` capability, which **you** grant, in thurbox's settings
+(`Ctrl+,` → `]` → `t`). Until you do, the pane says so rather than drawing an
+empty column.
+
+It is installed with `thurbox-cli plugin install`, thurbox's own front door for
+a pane, so `thurbox-cli plugin list` says where it came from and
+`thurbox-cli plugin remove plugins/91_fleet_queue.lua` takes it back —
+`extension.toml.in`'s header argues why it is not an extension payload.
 
 ## Thurbox extension
 

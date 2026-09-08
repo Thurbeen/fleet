@@ -158,6 +158,18 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - run: ./scripts/check.sh skills
 
+  # Unfiltered, like the skills job above and for a related reason: what this
+  # catches spans a Lua file, a shell script and two documents at once, so a
+  # paths filter would have to list all four to be correct — and a filter that
+  # is wrong here fails silently, which is the exact failure the check exists
+  # to prevent. It is four greps; running it always costs seconds.
+  pane:
+    name: TUI pane
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - run: ./scripts/check.sh pane
+
   # Single required status check. Every job feeds this gate; a branch ruleset
   # requires only "All Checks", so adding or removing jobs never needs a
   # ruleset change — but a new job MUST be added to `needs:` below, or it can
@@ -174,6 +186,7 @@ jobs:
       - queue
       - webui
       - skills
+      - pane
     runs-on: ubuntu-latest
     steps:
       - name: Verify all checks passed

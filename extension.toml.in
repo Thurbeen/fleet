@@ -59,6 +59,35 @@
 #                     neither: its skills live in the checkout under
 #                     `.agents/skills/`, where the session already reads them.
 #                     A control plane should not edit your agent's global config.
+#
+#                     THE TUI QUEUE PANE DID NOT CHANGE THIS, and it is the
+#                     obvious candidate that would. `interface/fleet_queue.lua`
+#                     has to land in the thurbox INTERFACE directory, outside
+#                     this extension's home, and `[[external_files]]` is exactly
+#                     the payload kind that puts a file there. It still goes
+#                     through `thurbox-cli plugin install`, called from
+#                     `scripts/install-extension.sh`, for three reasons a
+#                     manifest payload cannot match:
+#
+#                       * It is RECORDED. The pane is written into the user's
+#                         `plugins.toml`, so `plugin list` says where it came
+#                         from and `plugin remove` takes back the file, the spec
+#                         entry and the lock. An external file is copied once and
+#                         belongs to nobody afterwards.
+#                       * It is the mechanism thurbox INTENDS for a pane, and the
+#                         only one that prints the `layout.lua` line the pane
+#                         needs in order to be placed. A pane that is laid down
+#                         silently loads, appears in `plugin list`, and draws
+#                         nothing — which is the failure mode with no symptom.
+#                       * `plugin sync` keeps it in step afterwards, and a copy
+#                         the user edited is reported `kept` rather than
+#                         overwritten.
+#
+#                     So the stance holds unchanged: nothing in THIS FILE reaches
+#                     outside the extension home. The pane is installed by a
+#                     script, through thurbox's own front door for panes, and
+#                     placing it stays the user's own edit — see
+#                     `scripts/install-extension.sh`.
 #   home / --home     Omitted, so the home defaults to
 #                     `<config>/extensions/fleet`. Do NOT "fix" the placeholder
 #                     by installing with `--home <your clone>`: that would make
@@ -74,7 +103,7 @@
 name = "fleet"
 description = "Control-plane session: the repo map and thurbox orchestration"
 config_version = 1
-version = "1.1.0"                # this extension's own version; bump on changes
+version = "1.2.0"                # this extension's own version; bump on changes
 
 # WHY THE FLOOR IS 2.19.0 — it is a claim about what this control plane's own
 # prose relies on, not a note about the version somebody happens to run.

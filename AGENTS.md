@@ -40,6 +40,13 @@ names every path and the reason for each.
   bind time, its supervisor's pid, its log, and the `down` flag. Written by
   `./scripts/webui.sh` and created on first start. The server's code
   (`scripts/webui.sh`, `scripts/lib/webui.py`) is tracked; nothing it writes is.
+- `interface/fleet_queue.lua` — the TUI queue pane: the same view the monitor
+  serves, drawn in a thurbox column. `scripts/install-extension.sh` installs it
+  with `thurbox-cli plugin install`; the file's own header owns the view, and
+  `extension.toml.in`'s header argues why it is not an `[[external_files]]`
+  payload. **Placing it is one line in the user's `layout.lua` and nothing here
+  writes that line** — a pane no arrangement places loads, lists, and draws
+  nothing.
 - `orchestration/playbooks/<name>.md` — reusable recipes for running thurbox.
   All tracked; write new ones here, from `_TEMPLATE.md`.
 - `orchestration/runs/<date>-<slug>.md` — a log per orchestration run.
@@ -125,7 +132,7 @@ CI only runs on pull requests, and routine control-plane changes go straight to
 `main`. So gate locally before you push:
 
 ```bash
-./scripts/check.sh          # shellcheck, markdown, YAML, profiles, queue, monitor, status, skills
+./scripts/check.sh          # shellcheck, markdown, YAML, profiles, queue, monitor, status, skills, pane
 ./scripts/check.sh --fix    # same, applying the fixes a check can apply
 ```
 

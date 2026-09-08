@@ -12,7 +12,7 @@
 #   scripts/check.sh shell yaml          # only the named ones
 #   scripts/check.sh --fix markdown      # apply the fixes a check can apply
 #
-# Checks: shell, markdown, yaml, profiles, queue, webui, status, skills. Only `markdown` has a
+# Checks: shell, markdown, yaml, profiles, queue, webui, status, skills, pane. Only `markdown` has a
 # fixer; `--fix` is a no-op for the rest, so `scripts/check.sh --fix` is
 # always safe to run.
 #
@@ -194,6 +194,80 @@ check_status() {
 # that breaks silently and this catches both — a clone with `core.symlinks`
 # off (Windows) materialises the link as a text file holding its target, and a
 # hand-added skill can land under `.claude/` where only Claude Code sees it.
+# The pane, its installer and the three documents that tell an operator how to
+# place it, held to one spelling of the two strings that must agree.
+#
+# NOT A LUA LINTER, and deliberately not. `selene` and `stylua` are the tools
+# that would lint this file, and neither is on the CI runners or on a fresh
+# clone — and this gate FAILS on a missing tool rather than skipping, on purpose
+# (see the header), so requiring one would make a green run impossible for
+# anyone who has not installed a Rust toolchain. The pane's own gate is
+# `thurbox-cli plugin check`, which loads it the way thurbox does; that needs a
+# thurbox install, so it belongs at install time and not here.
+#
+# What DOES belong here is the failure this repo can cause on its own. The pane
+# names a slot, and `install-extension.sh`, the README and the onboarding skill
+# each print a `layout.lua` line naming that slot. If any of them drifts, the
+# operator is handed a line that places a slot nothing fills: the pane loads,
+# lists, and draws nothing, and every message they have says it should work.
+check_pane() {
+	local pane="interface/fleet_queue.lua"
+
+	if [ ! -f "$pane" ]; then
+		fail "pane: $pane is missing"
+		return
+	fi
+
+	local slot
+	slot="$(sed -n 's/^local SLOT = "\(.*\)"$/\1/p' "$pane" | head -1)"
+	if [ -z "$slot" ]; then
+		fail "pane: could not read the slot name from $pane"
+		return
+	fi
+
+	local f miss=0
+	for f in scripts/install-extension.sh README.md .agents/skills/fleet-onboarding/SKILL.md; do
+		grep -q "slot = \"$slot\"" "$f" || {
+			fail "pane: $f does not name slot \"$slot\" in a layout.lua line"
+			miss=1
+		}
+	done
+
+	# The installed name, which README documents as the argument to
+	# `plugin remove`. It is the destination PATH and not its basename —
+	# `plugin remove 91_fleet_queue.lua` answers "not listed in plugins.toml"
+	# and removes nothing, which is how this check earned its place: the README
+	# documented the basename until the command was actually run.
+	local dest
+	dest="$(sed -n 's/^PANE_DEST="\(.*\)"$/\1/p' scripts/install-extension.sh | head -1)"
+	if [ -z "$dest" ]; then
+		fail "pane: could not read PANE_DEST from scripts/install-extension.sh"
+		miss=1
+	elif ! grep -q "plugin remove $dest" README.md; then
+		fail "pane: README does not document 'plugin remove $dest'"
+		miss=1
+	fi
+
+	# The chord, which three files promise and only the pane binds.
+	local chord
+	chord="$(sed -n 's/^      key = "\(f[0-9]*\)",$/\1/p' "$pane" | head -1)"
+	if [ -z "$chord" ]; then
+		fail "pane: could not read the F-key from $pane"
+		miss=1
+	else
+		local upper
+		upper="$(printf '%s' "$chord" | tr '[:lower:]' '[:upper:]')"
+		for f in scripts/install-extension.sh README.md; do
+			grep -q "$upper" "$f" || {
+				fail "pane: $f does not mention the pane's $upper chord"
+				miss=1
+			}
+		done
+	fi
+
+	[ "$miss" -eq 0 ] && ok "pane: slot \"$slot\", $dest and $chord agree across installer and docs"
+}
+
 check_skills() {
 	local link=".claude/skills"
 
@@ -234,7 +308,7 @@ for arg in "$@"; do
 done
 
 if [ ${#checks[@]} -eq 0 ]; then
-	checks=(shell markdown yaml profiles queue webui status skills)
+	checks=(shell markdown yaml profiles queue webui status skills pane)
 fi
 
 for c in "${checks[@]}"; do
@@ -247,8 +321,9 @@ for c in "${checks[@]}"; do
 	webui) check_webui ;;
 	status) check_status ;;
 	skills) check_skills ;;
+	pane) check_pane ;;
 	*)
-		printf 'error: unknown check %q (want: shell markdown yaml profiles queue webui status skills)\n' "$c" >&2
+		printf 'error: unknown check %q (want: shell markdown yaml profiles queue webui status skills pane)\n' "$c" >&2
 		exit 2
 		;;
 	esac
