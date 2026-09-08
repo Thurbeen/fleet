@@ -464,8 +464,16 @@ with no symptom. `layout.lua` is shared by every pane on your screen, so
 nothing here writes to it. The installer prints the line and where it goes:
 
 ```lua
-columns[#columns + 1] = { slot = "fleetqueue", pct = 26, min = 32 }
+if panels.shown("fleetqueue") and filled(ctx, "fleetqueue") then
+  columns[#columns + 1] = { slot = "fleetqueue", pct = 26, min = 32 }
+end
 ```
+
+The `panels.shown` guard is what makes `F6` a toggle rather than a one-way
+door. Place the slot unconditionally and the column is carved on every frame:
+the key still flips the panel state, nothing reads it, and the pane opens and
+never closes. `panels` and `filled` are already in the stock `layout.lua` —
+the session list is guarded the same way.
 
 `thurbox-cli plugin check` is the proof: it loads your interface exactly as
 thurbox does, and it fails on a pane that loads but is placed by nothing.

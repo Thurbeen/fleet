@@ -231,6 +231,15 @@ check_pane() {
 			fail "pane: $f does not name slot \"$slot\" in a layout.lua line"
 			miss=1
 		}
+		# The guard, and not only the slot. A placement line without
+		# `panels.shown` is carved on every frame, so the pane's F-key flips a
+		# panel state nothing reads and the column opens and never closes —
+		# which `thurbox-cli plugin check` cannot catch, because the pane DOES
+		# draw. That shipped once; this is what keeps it from shipping twice.
+		grep -q "panels.shown(\"$slot\")" "$f" || {
+			fail "pane: $f documents slot \"$slot\" without the panels.shown guard, so its F-key would not close the column"
+			miss=1
+		}
 	done
 
 	# The installed name, which README documents as the argument to

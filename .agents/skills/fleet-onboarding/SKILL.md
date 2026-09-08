@@ -217,8 +217,17 @@ do not write it for them and do not offer to. Print it, say where it goes, and
 say plainly that you stopped there on purpose:
 
 ```lua
-columns[#columns + 1] = { slot = "fleetqueue", pct = 26, min = 32 }
+if panels.shown("fleetqueue") and filled(ctx, "fleetqueue") then
+  columns[#columns + 1] = { slot = "fleetqueue", pct = 26, min = 32 }
+end
 ```
+
+Give them the guard, not just the slot. `plugin check` suggests a bare
+`{ slot = "fleetqueue" }`, and that is enough to make the pane DRAW — which is
+all `check` knows about. It is not enough to make `F6` work: an unguarded slot
+is carved on every frame, so the key flips a panel state nothing reads and the
+pane opens and never closes. `panels` and `filled` already exist in the stock
+`layout.lua`, guarding the session list the same way.
 
 It belongs beside the other side columns, inside the `columns` list of
 `layout.lua` in the interface directory. Read that directory back rather than
