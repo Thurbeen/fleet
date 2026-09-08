@@ -126,8 +126,7 @@
 #                                       "You are the **fleet** session"
 #     --to fleet / --for fleet      (6) the mailbox address, used for anything
 #                                       urgent enough to interrupt the lead. In
-#                                       FLEET.md, in README.md, and in this
-#                                       header comment
+#                                       FLEET.md and in this header comment
 #
 # A PARTIAL RENAME is the failure mode: change (1) and the extension installs
 # as `mission-control`, but leave (6) and anything still addressed `--to fleet`

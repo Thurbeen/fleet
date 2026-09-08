@@ -93,7 +93,8 @@ trap - EXIT
 printf 'rendered %s (repo_path = %s)\n' "$OUT" "$REPO_ROOT"
 
 # Read the names out of the manifest rather than hardcoding them, so a rename
-# (README's "Renaming" section) reaches this script's checks and hints for free.
+# (extension.toml.in's header owns the procedure) reaches this script's checks
+# and hints for free.
 # The extension name is the first top-level `name`; the session's is the first
 # one after `[[sessions]]`.
 ext_name="$(sed -n 's/^name *= *"\(.*\)"/\1/p' "$OUT" | head -1)"
