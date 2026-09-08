@@ -12,7 +12,7 @@
 #   scripts/check.sh shell yaml          # only the named ones
 #   scripts/check.sh --fix markdown      # apply the fixes a check can apply
 #
-# Checks: shell, markdown, yaml, profiles, queue, webui, skills. Only `markdown` has a
+# Checks: shell, markdown, yaml, profiles, queue, webui, status, skills. Only `markdown` has a
 # fixer; `--fix` is a no-op for the rest, so `scripts/check.sh --fix` is
 # always safe to run.
 #
@@ -168,6 +168,27 @@ check_webui() {
 	fi
 }
 
+# The status command's two promises, both invisible until they cost something.
+# It must DEGRADE — a missing `gh`, a missing thurbox, a monitor that is down
+# each cost exactly their own section and never the reading — and it must carry
+# thurbox's state vocabulary through unflattened, because reporting `uncovered`
+# or `unreported` as `idle` tells the lead a worker mid-turn has finished. Both
+# are only observable with those things MISSING, which is never the state a
+# gate run is in, so the selftest constructs it out of stubs on a sandboxed
+# PATH. It also holds the third promise: the command reads and writes nothing.
+check_status() {
+	need python3 status || return
+	need git status || return
+
+	if ./scripts/fleet-status-selftest.sh >/dev/null; then
+		ok "status: degrades a section at a time, keeps thurbox's words, writes nothing"
+	else
+		# Re-run visibly: a failing claim is the whole message.
+		./scripts/fleet-status-selftest.sh
+		fail "status: scripts/fleet-status-selftest.sh"
+	fi
+}
+
 # The agent-agnostic skills layout: `.agents/skills/` holds the real files and
 # `.claude/skills` is a symlink to it, so one copy serves every CLI. Two ways
 # that breaks silently and this catches both — a clone with `core.symlinks`
@@ -213,7 +234,7 @@ for arg in "$@"; do
 done
 
 if [ ${#checks[@]} -eq 0 ]; then
-	checks=(shell markdown yaml profiles queue webui skills)
+	checks=(shell markdown yaml profiles queue webui status skills)
 fi
 
 for c in "${checks[@]}"; do
@@ -224,9 +245,10 @@ for c in "${checks[@]}"; do
 	profiles) check_profiles ;;
 	queue) check_queue ;;
 	webui) check_webui ;;
+	status) check_status ;;
 	skills) check_skills ;;
 	*)
-		printf 'error: unknown check %q (want: shell markdown yaml profiles queue webui skills)\n' "$c" >&2
+		printf 'error: unknown check %q (want: shell markdown yaml profiles queue webui status skills)\n' "$c" >&2
 		exit 2
 		;;
 	esac

@@ -9,7 +9,7 @@ follows from that.
 One script is the whole gate:
 
 ```bash
-./scripts/check.sh          # shellcheck, markdown, YAML, session profiles, skills
+./scripts/check.sh          # shellcheck, markdown, YAML, profiles, queue, monitor, status, skills
 ./scripts/check.sh --fix    # the same, applying the fixes a check can apply
 ./scripts/check.sh shell    # just one check
 ```
