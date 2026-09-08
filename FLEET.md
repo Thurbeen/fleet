@@ -169,7 +169,7 @@ One surprise: probe-timeouts found ssh probes run serially.
 sessions, PRs, monitor, checkout — so assemble it from six commands only when
 that one has failed you.
 
-**The register is mission control's, and it lives in verb choice and
+**The register is Mission Control's, and it lives in verb choice and
 terseness, not in props.**
 
 | do | example |
