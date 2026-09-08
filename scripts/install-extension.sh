@@ -35,6 +35,16 @@
 # user's own `layout.lua` — a file every pane on their screen shares — so this
 # prints the line and where it goes rather than writing it for them.
 #
+# TAKING THE PANE BACK is `plugin remove`, and its argument is the DESTINATION
+# PATH below, not the file's basename:
+#
+#     thurbox-cli plugin remove plugins/91_fleet_queue.lua
+#
+# `plugin remove 91_fleet_queue.lua` answers "not listed in plugins.toml" and
+# removes nothing. Because the pane went in through `plugin install`, that one
+# command takes back the file, its `plugins.toml` entry and the lock together —
+# `plugin list` says where it came from in the meantime.
+#
 # Requires: git, thurbox-cli, jq.
 
 set -euo pipefail
