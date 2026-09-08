@@ -12,12 +12,15 @@ view. Three things follow from that split and are worth stating up front:
    Read-only is also what keeps a bound socket a modest risk rather than a
    serious one.
 
-2. IT ADDS NO FIELD. Every value it shows is already on disk, because the
-   queue's four-files-per-task layout answers exactly the four questions a
-   monitor asks — intent (task.yaml + BRIEF.md), progress (progress.jsonl),
-   outcome (result.md), and where it stands (task.yaml's `state`). The topic
-   classification below is DERIVED from its tasks' states each time it is
-   asked; it is not stored anywhere and nothing reads it back.
+2. IT ADDS NO FACT. Every value it shows traces to what is already on disk,
+   because the queue's four-files-per-task layout answers exactly the four
+   questions a monitor asks — intent (task.yaml + BRIEF.md), progress
+   (progress.jsonl), outcome (result.md), and where it stands (task.yaml's
+   `state`). Some values are DERIVED rather than copied verbatim — the topic
+   classification below from its tasks' states, a task's `artifact_link` label
+   from its own recorded `artifact` URL (see `artifact_link()`) — but derived
+   is not invented: each is a pure function of a fact already on disk, stored
+   nowhere and read back by nothing, so it can never disagree with that fact.
 
 3. IT REUSES queue.py. The Queue class, the state vocabulary, `is_ready`, the
    blocker rule and the overlap report all come from the module that owns
@@ -50,7 +53,7 @@ import os
 import sys
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlsplit
 
 
 def _load_queue():
@@ -157,6 +160,49 @@ def display_state(q: fleetqueue.Queue, task: fleetqueue.Task) -> str:
     return task.state
 
 
+# The path segment a forge puts before a pull/merge request's number. Three
+# spellings cover GitHub, GitLab and Bitbucket; anything else is a URL we show
+# whole rather than a pattern we guess at.
+FORGE_MARKERS = ("pull", "pulls", "merge_requests", "pull-requests")
+
+
+def artifact_link(url) -> dict | None:
+    """A task's `artifact` URL, plus a label short enough to sit in a row.
+
+    Derived from the URL's own text and nothing else. The monitor never
+    reaches the network (see this file's header), so the label can say WHICH
+    pull request a task produced and can never say whether it is open, merged
+    or green — that would have to be recorded by whatever does have the
+    network, and read from disk like everything else here.
+
+    Returns None for a task with no artifact, so the page renders nothing at
+    all rather than an empty link. Only http(s) survives the scheme check: the
+    field is written by a worker into a file, so a `javascript:` URL is input
+    to distrust, not markup to pass through.
+    """
+    if not isinstance(url, str) or not url.strip():
+        return None
+    url = url.strip()
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return None
+    if parts.scheme not in ("http", "https") or not parts.netloc:
+        return None
+
+    label = url
+    segments = [s for s in parts.path.split("/") if s]
+    for i in range(len(segments) - 1, 0, -1):
+        if segments[i - 1] in FORGE_MARKERS and segments[i].isdigit():
+            # Everything left of the marker is the project path. GitLab wedges
+            # a "-" in before it, and a nested group keeps every segment, so
+            # `Thurbeen/fleet#14` and `group/sub/repo#14` both come out exact.
+            repo = "/".join(s for s in segments[: i - 1] if s != "-")
+            label = (repo + "#" + segments[i]) if repo else "#" + segments[i]
+            break
+    return {"url": url, "label": label}
+
+
 def task_view(q: fleetqueue.Queue, task: fleetqueue.Task) -> dict:
     d = task.doc
     progress = read_progress(task.file("progress.jsonl"))
@@ -187,6 +233,8 @@ def task_view(q: fleetqueue.Queue, task: fleetqueue.Task) -> dict:
         ],
         "outcome": d.get("outcome"),
         "artifact": d.get("artifact"),
+        "artifact_link": artifact_link(d.get("artifact")),
+        "artifact_check": d.get("artifact_check"),
         "created": d.get("created"),
         "dispatched_at": d.get("dispatched_at"),
         "concluded_at": d.get("concluded_at"),
@@ -386,6 +434,11 @@ PAGE = """<!doctype html>
 .c-attention, .s-stuck, .s-failed { --hue: var(--st-attention); --glow: var(--glow-red); }
 .c-done, .s-done, .s-landed, .s-abandoned { --hue: var(--st-done); --glow: none; }
 .c-empty                   { --hue: var(--st-empty);     --glow: none; }
+/* The pipeline verdict `queue.sh collect` recorded, borrowing the same three
+   hues rather than inventing a fourth vocabulary for it. */
+.v-passed                  { --hue: var(--st-running);   --glow: none; }
+.v-unknown                 { --hue: var(--st-blocked);   --glow: none; }
+.v-missing                 { --hue: var(--st-attention); --glow: none; }
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -634,6 +687,20 @@ main { max-width: 1440px; margin: 0 auto; padding: var(--space-md) var(--space-l
 .absent { padding: 10px; color: var(--text-muted); font-style: italic; font-size: 12px; }
 a { color: var(--green); text-decoration: none; }
 a:hover { text-shadow: var(--glow-green); }
+/* The artifact link. Green because that is what a link is on this page
+   already; underlined so it reads as one where it sits among plain metadata. */
+.artifact {
+  font-family: var(--font-mono); white-space: nowrap;
+  border-bottom: 1px solid color-mix(in srgb, currentColor 45%, transparent);
+}
+.task-meta .artifact { font-size: 11px; }
+.verdict {
+  font-family: var(--font-mono); font-size: 10.5px; line-height: 1.5;
+  padding: 0 5px; white-space: nowrap; color: var(--hue);
+  border: 1px solid currentColor;
+  background: color-mix(in srgb, currentColor 10%, transparent);
+}
+.pane-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 10px 2px; }
 
 /* --- notices ------------------------------------------------------------- */
 
@@ -709,6 +776,33 @@ const BAR_ORDER = ["landed", "done", "abandoned", "dispatched", "queued", "waiti
 
 function pill(word) { return el("span", "pill c-" + word + " s-" + word, word); }
 
+// The artifact as a link, or nothing at all. `link` is what the server derived
+// from the recorded URL (webui.py's artifact_link): it is null when the task
+// has no artifact, and its label is a forge shorthand like `Thurbeen/fleet#14`
+// or, when the URL is not one this recognises, the URL itself. Nothing is
+// fetched to build it — the label is the URL, read.
+function artifactLink(link) {
+  if (!link || !link.url) return null;
+  const a = el("a", "artifact", link.label || link.url);
+  a.href = link.url;
+  a.target = "_blank";
+  a.rel = "noopener noreferrer";
+  a.title = link.url;
+  // A task head toggles on click; the link must open the pull request without
+  // also collapsing the task under the operator's cursor.
+  a.addEventListener("click", (e) => e.stopPropagation());
+  return a;
+}
+
+// What `queue.sh collect` recorded about the pull request body's five
+// no-mistakes headings. A verdict it never reached is shown as nothing.
+function verdictBadge(check) {
+  if (!check || !check.verdict) return null;
+  const b = el("span", "verdict v-" + check.verdict, "pipeline " + check.verdict);
+  if (check.detail) b.title = check.detail + (check.at ? " (" + check.at + ")" : "");
+  return b;
+}
+
 function renderCounters(counts) {
   const host = document.getElementById("counters");
   host.textContent = "";
@@ -760,7 +854,7 @@ function progress(states, total) {
   return wrap;
 }
 
-function paneDoc(title, file, text, absent) {
+function paneDoc(title, file, text, absent, foot) {
   const p = el("div", "pane");
   const h = el("h4", null, title);
   h.appendChild(el("em", null, file));
@@ -769,6 +863,12 @@ function paneDoc(title, file, text, absent) {
     p.appendChild(el("div", "absent", absent));
   } else {
     p.appendChild(el("pre", "doc", text));
+  }
+  const nodes = (foot || []).filter(Boolean);
+  if (nodes.length) {
+    const bar = el("div", "pane-foot");
+    for (const node of nodes) bar.appendChild(node);
+    p.appendChild(bar);
   }
   return p;
 }
@@ -802,7 +902,7 @@ function paneRecord(d) {
     ["repo", d.repo], ["branch", d.branch + " off " + d.base],
     ["agent", d.agent], ["profile", d.profile], ["session", d.session],
     ["prompted", String(d.prompted)], ["touches", (d.touches || []).join(", ")],
-    ["outcome", d.outcome], ["artifact", d.artifact],
+    ["outcome", d.outcome], ["artifact", d.artifact_link || d.artifact],
     ["created", d.created], ["dispatched", d.dispatched_at],
     ["concluded", d.concluded_at],
   ].filter(([, v]) => v !== null && v !== undefined && v !== "");
@@ -814,12 +914,15 @@ function paneRecord(d) {
   for (const [k, v] of facts) {
     const row = el("div", "row");
     row.appendChild(el("span", "key", k));
-    if (k === "artifact" && /^https?:/.test(v)) {
-      const a = el("a", null, v); a.href = v; a.target = "_blank";
-      a.rel = "noreferrer"; row.appendChild(a);
-    } else {
-      row.appendChild(el("span", null, String(v)));
-    }
+    const a = k === "artifact" ? artifactLink(v) : null;
+    row.appendChild(a || el("span", null, String(v)));
+    box.appendChild(row);
+  }
+  const verdict = verdictBadge(d.artifact_check);
+  if (verdict) {
+    const row = el("div", "row");
+    row.appendChild(el("span", "key", "pipeline"));
+    row.appendChild(verdict);
     box.appendChild(row);
   }
   p.appendChild(box);
@@ -836,7 +939,8 @@ function renderDetail(host, ref) {
   panes.appendChild(paneDoc("plan", "BRIEF.md", d.brief,
     "no BRIEF.md. `queue.sh dispatch` refuses a task without one."));
   panes.appendChild(paneDoc("outcome", "result.md", d.result,
-    "no result.md yet. Only the worker writes this, and only it closes a task."));
+    "no result.md yet. Only the worker writes this, and only it closes a task.",
+    [artifactLink(d.artifact_link), verdictBadge(d.artifact_check)]));
   panes.appendChild(paneProgress(d.progress));
   panes.appendChild(paneRecord(d));
   host.appendChild(panes);
@@ -868,7 +972,13 @@ function renderTask(t) {
   if (t.has_result && (t.state === "queued" || t.state === "dispatched")) {
     bits.push("result waiting to be collected");
   }
-  head.appendChild(el("div", "task-meta", bits.filter(Boolean).join("  \\u00b7  ")));
+  const meta = el("div", "task-meta", bits.filter(Boolean).join("  \\u00b7  "));
+  const a = artifactLink(t.artifact_link);
+  if (a) {
+    if (meta.textContent) meta.appendChild(el("span", null, "  \\u00b7  "));
+    meta.appendChild(a);
+  }
+  head.appendChild(meta);
   wrap.appendChild(head);
 
   for (const b of t.blocked_by || []) {

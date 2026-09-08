@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Prove the monitor's lifecycle claims, rather than assert them.
 #
-# `scripts/webui.sh` makes six promises that are easy to write down and easy
-# to get backwards, and five of them are invisible until the day they matter.
-# Each gets a test here, against a throwaway queue and a throwaway runtime
+# The monitor makes seven promises that are easy to write down and easy to get
+# backwards, and most of them are invisible until the day they matter. Each
+# gets a test here, against a throwaway queue and a throwaway runtime
 # directory, so a change that quietly inverts one fails the gate:
 #
 #   1. IT ADOPTS, IT NEVER DUPLICATES. A second `ensure` over a running
@@ -26,6 +26,12 @@
 #      CDN font is the kind of thing that works on the machine it was written
 #      on and fails on a laptop in a train, which is where a monitor is least
 #      able to tell you what went wrong.
+#   7. A PULL REQUEST IS A LINK, AND ONLY A LINK. A task's artifact is served
+#      with a label read out of the URL itself — `Thurbeen/fleet#14` — a task
+#      without one is served no link at all, and a URL that is not a forge's
+#      is served whole. All three are derived from what is on disk, which is
+#      the same claim as 6: the label cannot say a pull request is merged,
+#      because saying so would mean asking somebody.
 #
 # Test 2 is the one to read first. It is the captain's third sentence — always
 # up unless the user asks it down — and the half that is not free.
@@ -94,6 +100,33 @@ printf 'Do the thing.\n' >"$tmp/brief.md"
 "$QUEUE" add selftest a-task --title "A task" --repo "$tmp/repo" --branch t/a \
 	--brief-file "$tmp/brief.md" >/dev/null
 
+# Three tasks, because the artifact is three cases and not one: a pull request
+# on a forge this can name, a URL it cannot, and a task that has produced
+# neither. `artifact` is set here the way `queue.sh collect` sets it — a field
+# on task.yaml — because collect reads a worker's result.md and there is no
+# worker.
+set_artifact() {
+	# `queue.sh add` numbers the directory it creates, so the task id alone does
+	# not name a path; the glob is what turns `pr-task` into `NN-pr-task`.
+	local yaml
+	yaml="$(echo "$FLEET_QUEUE_DIR"/selftest/*-"$1"/task.yaml)"
+	python3 - "$yaml" "$2" <<-'PY'
+		import sys, yaml
+
+		path, url = sys.argv[1], sys.argv[2]
+		doc = yaml.safe_load(open(path)) or {}
+		doc["artifact"] = url
+		yaml.safe_dump(doc, open(path, "w"), sort_keys=False)
+	PY
+}
+
+for t in pr-task odd-task; do
+	"$QUEUE" add selftest "$t" --title "Task $t" --repo "$tmp/repo" --branch "t/$t" \
+		--brief-file "$tmp/brief.md" >/dev/null
+done
+set_artifact pr-task "https://github.com/Thurbeen/fleet/pull/14"
+set_artifact odd-task "https://ci.example.com/builds/91"
+
 # --- 1. it adopts a running monitor, never duplicating it ---------------------
 
 first="$("$WEBUI" ensure 2>&1)"
@@ -137,6 +170,16 @@ expect "it binds loopback and nothing wider by default" "127.0.0.1" \
 # pills use, so the bar and the list cannot disagree about what a state means.
 expect "the API carries the HUD's counters" '"key": "ready"' "$api"
 expect "a HUD counter names the states it buckets" '"dispatched"' "$api"
+
+# --- 7. the artifact is a link, labelled from the URL and nothing else -------
+
+expect "a forge pull request gets a short label" '"label": "Thurbeen/fleet#14"' "$api"
+expect "the link still points at the whole URL" \
+	'"url": "https://github.com/Thurbeen/fleet/pull/14"' "$api"
+expect "a task with no artifact gets no link, not an empty one" \
+	'"artifact_link": null' "$api"
+expect "a URL that is not a forge pull request is shown whole" \
+	'"label": "https://ci.example.com/builds/91"' "$api"
 
 # --- 6. the theme renders with the network unplugged -------------------------
 
