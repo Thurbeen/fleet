@@ -110,7 +110,7 @@ disagree with `queue.sh list`. Its header owns the lifecycle; the one thing to
 know before touching it is that `ensure` and `start` differ only in whether they
 honour the `down` flag `stop` wrote, and the onboarding skill must call `ensure`.
 
-`.agents/skills/fleet-queue/` is the driving surface for 1–3, 5 and 6, and
+`.agents/skills/fleet-queue/` is the driving surface for 1–3 and 5–7, and
 `.agents/skills/thurbox-session/` for one session: spawning, prompting, cleanup.
 Use both. In particular, read the latter's **session state** section before you
 judge whether a worker is still working: `idle` means the agent said it is at
