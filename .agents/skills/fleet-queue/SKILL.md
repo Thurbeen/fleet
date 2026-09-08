@@ -376,6 +376,71 @@ Run `watch` when you choose: between turns, when the operator asks, before a
 After `collect`, run `plan` again. A blocker may have cleared, and the tasks it
 was holding go out immediately.
 
+## 5a. Shepherd the pull requests — the fourth thing
+
+A task closes when its worker writes `result.md`. **The pull request it named
+goes on living.** In one day this control plane lost three round trips to that
+gap: #14 went `CONFLICTING` the moment #13 merged and nothing noticed; #11 and
+#12 were opened outside the pipeline and nobody saw for hours; a pipeline
+review finding sat in a PR body until a human read it out. Every one was a
+person noticing something a machine could have.
+
+```bash
+./scripts/queue.sh shepherd --dry-run   # what it would dispatch and merge
+./scripts/queue.sh shepherd             # do it
+```
+
+It reads every PR recorded as a task's `artifact`, and each one gets exactly
+one of these:
+
+| What `gh` says | What happens |
+|---|---|
+| `mergeable: CONFLICTING` | a fixer is dispatched to rebase |
+| a check failed | a fixer is dispatched to fix it |
+| `reviewDecision: CHANGES_REQUESTED` | a fixer is dispatched to address it |
+| the body has no pipeline sections | a fixer is dispatched to re-run `/no-mistakes --yes` |
+| sections present, checks green, `MERGEABLE` | **squash-merged**, in the allowlisted repos only |
+| anything it could not read | reported, and otherwise left alone |
+
+**Dispatching the fixer is the point.** A status report would have saved none
+of those three round trips, because noticing was never the expensive part. The
+fixer gets a written brief of its own — the condition, which PR merged
+underneath it and what that deleted, and that the fix updates the PR **in
+place** — and it lands on a checkout of the branch that already exists, so the
+push reaches the pull request that is already open.
+
+Three things it will not do, and they are what make it safe to run:
+
+- **It will not dispatch twice for one pull request.** The fixer it sent is
+  recorded on the task under `shepherd`; a second pass checks that session's
+  liveness, not whether the condition still matches — a PR can drift to a
+  different condition while the fixer is mid-fix, and that drift never reads
+  as nobody being on it. A liveness check that comes back unknown is left
+  alone rather than guessed. `--force` overrides, once you have decided the
+  first one is not coming back.
+- **It will not interrupt a working session.** A PR whose own worker is
+  `working` or `blocked` is left alone. So is one whose state is merely
+  *observed* — `running`, `uncovered`, `unreported` are not the agent saying it
+  is at rest (`thurbox-session` §4a).
+- **It will not guess.** No `gh`, no network, no thurbox: it says what it could
+  not determine and carries on. A PR it could not read is never called broken
+  and never called ready.
+
+**On merging.** Fleet merges only in the repos on `AUTO_MERGE_REPOS` in
+`scripts/lib/queue.py` — `Thurbeen/fleet` — and only when all three of the
+operator's gates hold: the body carries the five pipeline sections, every check
+has concluded and passed, and GitHub itself says `MERGEABLE`. A PR that skipped
+the pipeline is never merged however green it looks, and neither is one whose
+checks have not reported yet. Everywhere else it reports `ready to merge` and
+stops, which is what every repo did before that list existed.
+
+**Run it the way you run `collect`.** It is a sibling and not part of it —
+`collect` reads local files and works with the network down, and folding a
+session-spawning, GitHub-calling side effect into it would make it fail for
+reasons unrelated to what it was asked. So `collect` names it whenever it
+closed a task that left a PR open, and `shepherd --json` is the seam anything
+else reads it through.
+
 ## 6. The views, and keeping your context clean
 
 ```bash
@@ -427,7 +492,10 @@ six weeks later.
 5. `plan`, read the ready set, then `dispatch` — all of it, at once. Check the
    report for any session that was spawned but NOT prompted.
 6. `watch` on your own cadence; `collect` when a result is waiting.
-7. `plan` again. Review the PRs; the operator merges them. Sessions release
+7. `shepherd` — as reflexively as `collect`, and it is what `collect` tells you
+   to do. A PR goes bad long after the worker that wrote it stopped.
+8. `plan` again. Review the PRs; the operator merges every one `shepherd`
+   did not. Sessions release
    themselves once their pull requests land — `collect` reaps, `reap
    --dry-run` shows you what it would do — and you record the run in
    `orchestration/runs/` as it happens.

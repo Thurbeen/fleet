@@ -99,7 +99,16 @@ The loop, driven by `./scripts/queue.sh`:
    working or blocked, nor one a worker gave up in: that session is the
    evidence. `reap --dry-run` says what it would do. Blockers clear on `landed`
    too, so a dependent task waits for the code to actually be on `main`.
-7. Review the PRs; the operator merges them. Everything after that is `reap`'s.
+7. **The pull request outlives the task, so `queue.sh shepherd` is a fourth
+   thing, run as reflexively as `collect`** — which names it whenever it closed
+   a task that left a PR open. It dispatches a fixer for a PR that conflicts,
+   fails a check, has a review asking for changes, or was opened outside the
+   pipeline, and squash-merges one that passes all three gates. It merges only
+   in the repos `AUTO_MERGE_REPOS` names in `scripts/lib/queue.py`, and never a
+   PR that skipped the pipeline. `--dry-run` first; the fleet-queue skill owns
+   the rest.
+8. Review the PRs; the operator merges every one `shepherd` did not, and
+   everything after that is `reap`'s.
 
 `./scripts/webui.sh` serves a read-only web view of that same queue on
 localhost — topics classified by what their tasks are doing, each with its plan,
@@ -108,7 +117,7 @@ disagree with `queue.sh list`. Its header owns the lifecycle; the one thing to
 know before touching it is that `ensure` and `start` differ only in whether they
 honour the `down` flag `stop` wrote, and the onboarding skill must call `ensure`.
 
-`.agents/skills/fleet-queue/` is the driving surface for 1–3, 5 and 6, and
+`.agents/skills/fleet-queue/` is the driving surface for 1–3 and 5–7, and
 `.agents/skills/thurbox-session/` for one session: spawning, prompting, cleanup.
 Use both. In particular, read the latter's **session state** section before you
 judge whether a worker is still working: `idle` means the agent said it is at

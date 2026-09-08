@@ -913,20 +913,10 @@ def prompt_session(task: Task, timeout: int = 20) -> tuple[bool, str]:
     session = task.doc.get("session")
     if not session:
         return False, "no session attached"
-    trust = subprocess.run(
-        ["./scripts/session-trust.sh", session, "--timeout", str(timeout)],
-        capture_output=True,
-        check=False,
-    )
-    report = (trust.stdout + trust.stderr).decode().strip()
-    if trust.returncode != 0:
-        return False, report
     _, send = spawn_commands(task)
-    subprocess.run(
-        ["thurbox-cli", "session", "send", session, send],
-        capture_output=True,
-        check=False,
-    )
+    ok, report = trust_and_send(session, send, timeout)
+    if not ok:
+        return False, report
     task.doc["prompted"] = True
     task.save()
     return True, report
@@ -1191,6 +1181,7 @@ def cmd_collect(args) -> int:
     q = Queue(queue_root())
     concluded = 0
     held = 0
+    artifacts = 0
     for task in sorted(q.tasks.values(), key=lambda t: t.ref):
         path = task.file("result.md")
         if task.state in ("done", "landed", "stuck", "failed", "abandoned") or not os.path.exists(
@@ -1224,6 +1215,7 @@ def cmd_collect(args) -> int:
         task.doc["concluded_at"] = now()
         task.save()
         concluded += 1
+        artifacts += 1 if pr_ref(task.doc.get("artifact")) else 0
         line = f"    {task.ref}  {outcome}"
         if artifact:
             line += f"  {artifact}"
@@ -1244,6 +1236,15 @@ def cmd_collect(args) -> int:
             f"         {held} task(s) HELD OPEN — their pull requests skipped the "
             "pipeline; see above.",
             file=sys.stderr,
+        )
+    if artifacts:
+        # The bug the shepherd fixes is "a step only a human remembers", so
+        # the command that closes a task names the one that watches what it
+        # left behind. A sibling nobody runs reproduces the bug exactly.
+        print(
+            f"         {artifacts} of them left an open pull request. Run\n"
+            "         `queue.sh shepherd --dry-run` — a PR can go bad long\n"
+            "         after the worker that wrote it stopped."
         )
 
     # The third thing, wired into the command the lead already runs rather than
@@ -1437,6 +1438,24 @@ def session_state(sid: str) -> tuple[str | None, str]:
     return str(state), ""
 
 
+def session_status(sid: str, live: set | None) -> str:
+    """Where a session stands against a `session list` snapshot: 'gone', a
+    thurbox-reported state, or 'unknown'.
+
+    'gone' only when the snapshot itself proves the id absent. A snapshot
+    that could not be taken, or a `session get` that could not read the pane
+    despite the id being listed, both answer 'unknown' — and unknown must
+    never be read as gone, or a probe hiccup looks exactly like a session
+    that finished.
+    """
+    if live is None:
+        return "unknown"
+    if sid not in live:
+        return "gone"
+    state, _why = session_state(sid)
+    return state or "unknown"
+
+
 def record_reaped(task: Task, sid: str, how: str) -> None:
     """The receipt.
 
@@ -1573,6 +1592,683 @@ def cmd_reap(args) -> int:
     return 0
 
 
+# --- shepherd: the pull request, after the worker stopped ---------------------
+#
+# WHY THIS EXISTS. A task closes when its worker writes result.md. The pull
+# request it named goes on living, and in one day this control plane lost three
+# round trips to that gap: #14 went CONFLICTING the moment #13 merged and
+# nothing noticed; #11 and #12 were opened outside the pipeline and nobody saw
+# for hours; a pipeline review finding sat in a PR body until a human read it
+# out. Every one was a person noticing something a machine could have.
+#
+# So this is a FOURTH thing, after `watch` and `collect` and deliberately not
+# folded into either. It reads every PR the queue's own tasks produced,
+# classifies it, DISPATCHES A FIXER for the ones that need work, and merges the
+# ones that have earned it. Noticing was never the expensive part, which is why
+# a status report would have saved none of those three round trips.
+#
+# WHY NOT INSIDE `collect`. `collect` reads local files, closes tasks, and
+# works with the network down; shepherding calls out to GitHub and spawns
+# sessions. Folding a session-spawning side effect into the command whose whole
+# contract is "read a file, close a task" makes `collect` fail when gh is down,
+# for a reason unrelated to what it was asked to do. It is a sibling — and
+# because a command nobody remembers to run reproduces the bug this fixes,
+# `collect` ends by naming it whenever it closed a task carrying an artifact,
+# and `--json` is the seam `scripts/fleet-status.sh` reads it through.
+#
+# THE RULES THAT KEEP IT FROM BEING WORSE THAN NOTHING:
+#
+#   Idempotent.  A dispatched fixer is recorded on the task under `shepherd`,
+#                with the condition it went out for. A second pass over the
+#                same still-broken PR sees work in flight, not a second job.
+#   Never guess. "Could not check" is its own outcome and is never `broken`.
+#                No gh, no network, no thurbox: say what could not be
+#                determined and carry on. Spawning a fixer for a healthy PR is
+#                the one failure that costs more than the bug.
+#   Never touch  Only artifacts recorded on this queue's own tasks, and only
+#   a stranger.  when the artifact is a GitHub pull request URL.
+
+# GitHub-specific and deliberately NOT the forge-agnostic PR_URL_RE above: this
+# one exists to name `owner/repo`, which is what AUTO_MERGE_REPOS is checked
+# against. Defining a second `PR_URL_RE` here shadowed that one and broke the
+# pipeline check; the two answer different questions and keep different names.
+GH_PR_URL_RE = re.compile(r"^https://github\.com/([^/\s]+/[^/\s]+)/pull/(\d+)/?$")
+
+
+GH_PR_FIELDS = (
+    "number,state,url,title,isDraft,mergeable,reviewDecision,"
+    "statusCheckRollup,body,headRefName,baseRefName"
+)
+
+# A check that FAILED. Anything still running is NOT a failure — reading a
+# pending check as a broken one is how a shepherd spawns fixers for PRs whose
+# CI simply has not finished, and how it would merge one whose CI has not
+# either. Both directions of that mistake are covered by `checks-pending`.
+CHECK_FAILED = {"FAILURE", "TIMED_OUT", "STARTUP_FAILURE", "ACTION_REQUIRED", "ERROR"}
+CHECK_PASSED = {"SUCCESS", "NEUTRAL", "SKIPPED"}
+
+# §4a of .agents/skills/thurbox-session/SKILL.md, as code. These two groups are
+# the AGENT SPEAKING about itself. Every other word in that table is an
+# observation — `running`, `uncovered`, `unreported` — and an observation is
+# not permission to type into somebody's pane.
+SESSION_BUSY = {"working", "blocked"}
+SESSION_AT_REST = {"idle", "done"}
+
+# Conditions that get a fixer, worst first: one PR gets ONE fixer, for the
+# thing that has to be fixed before any of the others can even be judged.
+FIXABLE = ("conflicting", "checks-failed", "changes-requested", "policy")
+
+# WHERE FLEET IS ALLOWED TO MERGE. An explicit allowlist and not a flag,
+# because the blast radius of getting this wrong is somebody else's repository.
+# A repo that is not named here is reported `ready to merge` and left for a
+# human, which is what every repo did before this list existed.
+#
+# The three gates below are the operator's, and all three must hold: the body
+# carries the pipeline's sections (so a PR that skipped the pipeline can never
+# be merged by fleet, however green it looks), every check has CONCLUDED and
+# passed, and GitHub itself says MERGEABLE. `--squash --delete-branch` because
+# squash is the only method the remote allows; CONTRIBUTING.md owns that.
+AUTO_MERGE_REPOS = {"Thurbeen/fleet"}
+
+
+def pr_ref(artifact: str) -> tuple[str, int] | None:
+    """('owner/repo', number) for a GitHub PR URL, or None for anything else."""
+    m = GH_PR_URL_RE.match((artifact or "").strip())
+    return (m.group(1), int(m.group(2))) if m else None
+
+
+def gh_json(argv: list) -> tuple[object, str]:
+    """Run gh and parse its JSON. A non-empty second value is why it could not.
+
+    Every caller treats that string as UNDETERMINED and never as a verdict.
+    """
+    if not shutil.which("gh"):
+        return None, "gh is not installed"
+    try:
+        out = subprocess.run(["gh"] + argv, capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return None, f"gh could not be run: {exc}"
+    if out.returncode != 0:
+        first = (out.stderr or "").strip().splitlines()
+        return None, first[0] if first else f"gh exited {out.returncode}"
+    try:
+        return json.loads(out.stdout), ""
+    except ValueError:
+        return None, "gh returned output that is not JSON"
+
+
+def check_verdicts(rollup) -> tuple[list, list]:
+    """(names that failed, names still running). Everything else passed."""
+    failed, pending = [], []
+    for c in rollup or []:
+        if not isinstance(c, dict):
+            continue
+        name = c.get("name") or c.get("context") or "a required check"
+        if "state" in c and "conclusion" not in c:
+            # A StatusContext: one word, and PENDING is not a failure.
+            verdict = str(c.get("state") or "").upper()
+        elif str(c.get("status") or "").upper() != "COMPLETED":
+            pending.append(name)
+            continue
+        else:
+            verdict = str(c.get("conclusion") or "").upper()
+        if verdict in CHECK_FAILED:
+            failed.append(name)
+        elif verdict not in CHECK_PASSED:
+            pending.append(name)
+    return failed, pending
+
+
+def missing_sections(body: str) -> list:
+    """The pipeline headings this body does not carry.
+
+    PIPELINE_HEADINGS and this matcher are `pipeline_verdict`'s, reused rather
+    than restated: `collect` asks the same question of the same bodies, and two
+    copies of "what the pipeline leaves behind" would drift. The difference is
+    only where the body comes from — the shepherd already has it in hand, so it
+    does not spend a second `gh pr view` to re-fetch it.
+    """
+    text = body or ""
+    return [
+        f"## {h}"
+        for h in PIPELINE_HEADINGS
+        if not re.search(rf"^\s*#{{1,6}}\s+{re.escape(h)}\s*$", text, re.M | re.I)
+    ]
+
+
+def classify(pr: dict) -> tuple[str, str]:
+    """(condition, one line saying why).
+
+    Four conditions get a fixer, in the order FIXABLE lists them. `ready`
+    means all three merge gates hold. `undetermined` means the answer is not
+    knowable yet and is never treated as either of the other two.
+    """
+    if str(pr.get("state") or "").upper() != "OPEN":
+        return "closed", f"the pull request is {str(pr.get('state')).lower()}"
+    if pr.get("isDraft"):
+        return "undetermined", "still a draft"
+
+    mergeable = str(pr.get("mergeable") or "").upper()
+    base = pr.get("baseRefName") or "its base branch"
+    failed, pending = check_verdicts(pr.get("statusCheckRollup"))
+    missing = missing_sections(pr.get("body"))
+
+    fixable = {
+        "conflicting": (
+            mergeable == "CONFLICTING",
+            f"conflicts with {base} and cannot be merged as it stands",
+        ),
+        "checks-failed": (bool(failed), "failed checks: " + ", ".join(failed[:4])),
+        "changes-requested": (
+            str(pr.get("reviewDecision") or "").upper() == "CHANGES_REQUESTED",
+            "a reviewer requested changes",
+        ),
+        "policy": (bool(missing), "the body is missing " + ", ".join(missing)),
+    }
+    for condition in FIXABLE:
+        hit, why = fixable[condition]
+        if hit:
+            return condition, why
+
+    if pending:
+        return "undetermined", "checks still running: " + ", ".join(pending[:4])
+    if not pr.get("statusCheckRollup"):
+        # An EMPTY rollup is not a pass. CI here only fires on pull requests,
+        # so a PR whose checks have not been created yet reads exactly like a
+        # PR with nothing to run — and merging the first one merges code CI
+        # never saw. "No check has reported" is its own answer.
+        return "undetermined", "no check has reported yet"
+    if mergeable != "MERGEABLE":
+        # UNKNOWN is GitHub still computing the merge, not a verdict.
+        return "undetermined", f"mergeable is {mergeable or 'absent'}; ask again shortly"
+    return "ready", "pipeline sections present, checks green, mergeable"
+
+
+# --- what changed underneath -------------------------------------------------
+
+
+def git_out(repo: str, argv: list, timeout: int = 30) -> str:
+    """git, best effort. A failure is the empty string — never an exception."""
+    try:
+        out = subprocess.run(
+            ["git", "-C", repo] + argv, capture_output=True, text=True, timeout=timeout
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return out.stdout if out.returncode == 0 else ""
+
+
+def base_drift(repo: str, base: str, branch: str) -> str:
+    """What landed on the base branch since this branch last moved.
+
+    This is the sentence a fixer prompt lives or dies on. "Fix PR #14" is
+    useless; "#13 merged and deleted these four files" is a rebase somebody can
+    actually do. Squash merge is the only method this remote allows, so a
+    base-branch commit subject carries its own PR number — which means one
+    `git log` answers "which PR merged" and one `git diff --name-status`
+    answers "and what it deleted", with no extra API calls.
+    """
+    git_out(repo, ["fetch", "--quiet", "origin", base], timeout=60)
+    for ref in (f"origin/{base}", base):
+        mb = git_out(repo, ["merge-base", ref, branch]).strip()
+        if not mb:
+            continue
+        log = git_out(repo, ["log", "--oneline", "--no-decorate", f"{mb}..{ref}"]).strip()
+        if not log:
+            return ""
+        diff = git_out(repo, ["diff", "--name-status", f"{mb}..{ref}"]).strip()
+        block = f"Landed on `{base}` since your branch last moved:\n\n```\n{log}\n```"
+        if diff:
+            block += (
+                "\n\nWhat those commits did to the tree "
+                "(`D` is a file that is gone now):\n\n"
+                f"```\n{diff}\n```"
+            )
+        return block
+    return ""
+
+
+# --- the fixer's brief -------------------------------------------------------
+
+FIXER_TITLES = {
+    "conflicting": "Rebase PR #{n} onto {base}",
+    "checks-failed": "Fix the failing checks on PR #{n}",
+    "changes-requested": "Address the review on PR #{n}",
+    "policy": "Re-open PR #{n} through the pipeline",
+}
+
+FIXER_WORK = {
+    "conflicting": """\
+Rebase this branch onto `origin/{base}` and resolve every conflict. The base
+moved under you after the pull request was opened; the commits below are what
+moved it. Resolve in favour of what those commits intended — they are already
+on `{base}` and are not up for debate here.
+
+Then force-push the rebased branch (`git push --force-with-lease`) so the
+existing pull request updates.""",
+    "checks-failed": """\
+Make the failing checks pass. `./scripts/check.sh` is this repo's whole gate
+and CI runs the same script, so a green local run is the thing to get to.
+Push to the same branch so the existing pull request re-runs them.""",
+    "changes-requested": """\
+Address the review that requested changes, then push to the same branch. Reply
+to the review only if something in it was mistaken; otherwise let the diff be
+the answer.""",
+    "policy": """\
+This pull request was opened outside the required pipeline — its body is
+missing sections the pipeline always writes. Re-run it:
+
+    /no-mistakes --yes
+
+on this branch, so the pull request body is rewritten with `## Intent`,
+`## What Changed`, `## Risk Assessment`, `## Testing` and `## Pipeline`, and
+the checks the pipeline runs actually run. Do not open a second pull request —
+the pipeline updates the one that is already there.""",
+}
+
+
+def fixer_brief(task: Task, pr: dict, condition: str, detail: str, drift: str) -> str:
+    n = pr.get("number")
+    base = pr.get("baseRefName") or task.doc.get("base") or "main"
+    work = FIXER_WORK[condition].format(base=base)
+    parts = [
+        f"# {FIXER_TITLES[condition].format(n=n, base=base)}",
+        "",
+        f"An open pull request from fleet task `{task.ref}` needs work. This is "
+        f"the whole instruction set; you share no context with whoever wrote the "
+        f"branch.",
+        "",
+        f"- **Pull request.** {pr.get('url')} — {pr.get('title') or ''}".rstrip(" —"),
+        f"- **Repo.** `{task.doc['repo']}`",
+        f"- **Branch.** `{pr.get('headRefName') or task.doc['branch']}` "
+        f"onto `{base}`. It already exists and you are already on it.",
+        f"- **What is wrong.** {detail}.",
+        "",
+        "## What to do",
+        "",
+        work,
+    ]
+    if drift:
+        parts += ["", "## What changed underneath you", "", drift]
+    parts += [
+        "",
+        "## Hard constraints",
+        "",
+        "- **Fix the pull request in place.** Push to the branch that is already"
+        " open. Do not open a second pull request, and do not close this one.",
+        "- **Do not merge it, and do not merge anything into it.** Merging is not"
+        " yours to do here; rebase rather than merging the base branch in.",
+        "- Do not widen the change. Fix the stated condition and nothing else —"
+        " other work is in flight on other branches in this repo.",
+        "",
+        "## Done means",
+        "",
+        f"- {pr.get('url')} is open, updated in place, and the condition above is"
+        " gone.",
+        "- Nothing else about the pull request changed.",
+        "",
+        "Reply in your own session when you are done; fleet reads the pull"
+        " request itself and does not need a message.",
+    ]
+    return "\n".join(parts) + "\n"
+
+
+def next_fix_file(task: Task, condition: str) -> str:
+    n = 1 + len([f for f in os.listdir(task.path) if f.startswith("fix-")])
+    return task.file(f"fix-{n:02d}-{condition}.md")
+
+
+# --- reaching the worker that is already there, or making a new one ----------
+
+
+def branch_checkout(repo: str, branch: str, slug: str) -> tuple[str, str]:
+    """A checkout of an EXISTING branch, to hand thurbox as `--repo-path`.
+
+    THE TRAP THIS EXISTS FOR. `session create --worktree-branch X` only ever
+    CREATES X, and fails with `a branch named 'X' already exists` — which is
+    every branch that has a pull request on it, which is every branch this
+    command cares about. Today's manual workaround was to rename the branch
+    aside and base a new one off it; that leaves the pull request pointing at a
+    branch nobody is working on, so the fix never reaches the PR.
+
+    The answer is to stop asking thurbox for a branch at all. git already makes
+    a second checkout of an existing branch, and `--repo-path` takes any
+    directory. So: reuse the worktree the branch is already in, or add one, and
+    hand over the path. The fixer then commits on the real branch and its push
+    updates the real pull request.
+
+    Returns (path, note). An empty path is a reason, not a path.
+    """
+    if not os.path.isdir(os.path.join(repo, ".git")) and not os.path.exists(
+        os.path.join(repo, ".git")
+    ):
+        return "", f"{repo} is not a git checkout"
+    git_out(repo, ["worktree", "prune"])
+    listed = git_out(repo, ["worktree", "list", "--porcelain"])
+    path = ""
+    for block in listed.split("\n\n"):
+        lines = [ln.strip() for ln in block.splitlines() if ln.strip()]
+        here = next((ln[9:] for ln in lines if ln.startswith("worktree ")), "")
+        on = next((ln[7:] for ln in lines if ln.startswith("branch ")), "")
+        if on == f"refs/heads/{branch}" and here:
+            path = here
+            break
+    if path:
+        return path, "already checked out there"
+
+    dest = os.path.join(queue_root(), ".worktrees", slug)
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    if os.path.exists(dest):
+        return "", f"{dest} is in the way; remove it and run again"
+    try:
+        out = subprocess.run(
+            ["git", "-C", repo, "worktree", "add", dest, branch],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return "", f"git worktree add failed: {exc}"
+    if out.returncode != 0:
+        first = (out.stderr or "").strip().splitlines()
+        return "", first[-1] if first else "git worktree add failed"
+    return dest, "new worktree on the existing branch"
+
+
+def trust_and_send(session: str, text: str, timeout: int = 20) -> tuple[bool, str]:
+    """Answer the trust dialog, then type. The order is the whole point (§1b)."""
+    trust = subprocess.run(
+        ["./scripts/session-trust.sh", session, "--timeout", str(timeout)],
+        capture_output=True,
+        check=False,
+    )
+    report = (trust.stdout + trust.stderr).decode().strip()
+    if trust.returncode != 0:
+        return False, report
+    subprocess.run(
+        ["thurbox-cli", "session", "send", session, text],
+        capture_output=True,
+        check=False,
+    )
+    return True, report
+
+
+def spawn_fixer(task: Task, name: str, brief_path: str) -> tuple[str, str]:
+    """A session on the branch that already exists. (session id, note)."""
+    slug = f"{task.topic}__{task.id}"
+    path, note = branch_checkout(task.doc["repo"], task.doc["branch"], slug)
+    if not path:
+        return "", note
+    create = [
+        "thurbox-cli", "session", "create",
+        "--name", name[:64],
+        "--repo-path", path,
+        # Reconciling desired state, so a name already in use is the fixer that
+        # is already there rather than news (§1c). `created` is read below.
+        "--on-existing", "adopt",
+    ]
+    flags = profile_flags(task.doc.get("profile") or "default")
+    if "--command" not in flags:
+        create += ["--agent", task.doc.get("agent") or "claude"]
+    parent = os.environ.get("THURBOX_SESSION")
+    if parent:
+        create += ["--parent", parent]
+    create += flags + ["--json"]
+    try:
+        out = subprocess.run(create, capture_output=True, check=True).stdout
+        doc = json.loads(out)
+        session = doc["id"]
+    except (OSError, subprocess.CalledProcessError, ValueError, KeyError) as exc:
+        detail = (getattr(exc, "stderr", b"") or b"").decode().strip()
+        return "", f"could not spawn a fixer: {detail or exc}"
+    if not doc.get("created", True):
+        # Adopted, so it may be mid-turn. The same rule as everywhere else:
+        # only the agent's own word puts it at rest (§4a).
+        state, _ = session_state(session)
+        if state not in SESSION_AT_REST:
+            return "", f"adopted an existing session in state {state or 'unknown'}; not typing into it"
+    send = f"Read {os.path.abspath(brief_path)} and do what it says."
+    ok, report = trust_and_send(session, send)
+    if not ok:
+        return "", f"session {session} exists but was NOT prompted: {report}"
+    return session, f"{note}; session {session}"
+
+
+def gh_merge(url: str) -> tuple[bool, str]:
+    """Squash-merge, which is the only method this remote allows."""
+    if not shutil.which("gh"):
+        return False, "gh is not installed"
+    try:
+        out = subprocess.run(
+            ["gh", "pr", "merge", url, "--squash", "--delete-branch"],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, f"gh could not be run: {exc}"
+    if out.returncode != 0:
+        first = ((out.stderr or "") + (out.stdout or "")).strip().splitlines()
+        return False, first[0] if first else f"gh exited {out.returncode}"
+    return True, "squash-merged, branch deleted"
+
+
+# --- the pass itself ---------------------------------------------------------
+
+
+def record_shepherd(task: Task, entry: dict | None) -> None:
+    """The idempotency record. Its absence means nothing is outstanding."""
+    if entry is None:
+        task.doc.pop("shepherd", None)
+    else:
+        task.doc["shepherd"] = entry
+    task.save()
+    with open(task.file("progress.jsonl"), "a") as fh:
+        fh.write(json.dumps({"shepherd": entry, "observed": now()}) + "\n")
+
+
+def shepherd_one(task: Task, repo_slug: str, args) -> dict:
+    """Inspect one pull request and do the one thing it calls for."""
+    row = {
+        "task": task.ref,
+        "pr": task.doc["artifact"],
+        "repo": repo_slug,
+        "condition": "undetermined",
+        "detail": "",
+        "action": "none",
+        "note": "",
+    }
+    pr, err = gh_json(["pr", "view", task.doc["artifact"], "--json", GH_PR_FIELDS])
+    if err or not isinstance(pr, dict):
+        row["detail"] = f"could not read the pull request: {err or 'unexpected output'}"
+        return row
+
+    condition, detail = classify(pr)
+    row["condition"], row["detail"] = condition, detail
+    rec = task.doc.get("shepherd") or {}
+
+    if condition in ("closed", "undetermined"):
+        if condition == "closed" and rec:
+            record_shepherd(task, None)
+        return row
+
+    if condition == "ready":
+        if rec:
+            record_shepherd(task, None)
+        if repo_slug not in AUTO_MERGE_REPOS:
+            row["action"] = "ready"
+            row["note"] = f"fleet does not merge in {repo_slug}; this one is yours"
+            return row
+        if args.no_merge:
+            row["action"] = "ready"
+            row["note"] = "--no-merge"
+            return row
+        if args.dry_run:
+            row["action"] = "would-merge"
+            row["note"] = "gh pr merge --squash --delete-branch"
+            return row
+        ok, note = gh_merge(task.doc["artifact"])
+        row["action"], row["note"] = ("merged" if ok else "merge-failed"), note
+        if ok:
+            record_shepherd(task, {"condition": "merged", "detail": note, "at": now()})
+        return row
+
+    # Everything below here needs a fixer. Both liveness checks below share
+    # one `session list` snapshot, so a fixer and the task's own worker read
+    # "gone" from the same evidence.
+    rec_session = str(rec["session"]) if rec.get("session") else ""
+    worker = str(task.doc.get("session") or "")
+    live, live_why = live_sessions() if (rec_session or worker) else (set(), "")
+
+    # A fixer already dispatched for THIS pull request is still the one
+    # doing the work, whatever the PR now classifies as — the condition can
+    # drift between passes while the fixer is mid-fix, and that drift must
+    # never look like nobody is on it.
+    if not args.force and rec_session:
+        status = session_status(rec_session, live)
+        if status == "unknown":
+            row["action"] = "left-alone"
+            row["note"] = (
+                f"could not tell whether the fixer sent for this at {rec.get('at')} "
+                f"(session {rec_session}) is still working ({live_why or 'no state reported'}). "
+                "Nothing sent."
+            )
+            return row
+        if status != "gone":
+            row["action"] = "in-flight"
+            row["note"] = (
+                f"a fixer went out for this at {rec.get('at')} "
+                f"(session {rec_session}, now {status}). "
+                "Nothing sent. `--force` overrides."
+            )
+            return row
+
+    # The task's own session has the context and the worktree, so it is the
+    # first choice — but only its own word puts it at rest (§4a). A session
+    # that is gone reads as no session at all, which is the ordinary case once
+    # a run has been cleaned up.
+    reuse = ""
+    if worker:
+        status = session_status(worker, live)
+        if status == "unknown":
+            row["action"] = "left-alone"
+            row["note"] = (
+                f"could not tell whether its own worker {worker} is still there "
+                f"({live_why or 'no state reported'}). Nothing sent."
+            )
+            return row
+        if status in SESSION_BUSY:
+            row["action"] = "left-alone"
+            row["note"] = (
+                f"its own worker {worker} is {status} — probably already on it. "
+                "Interrupting a turn is how a fix gets half-applied."
+            )
+            return row
+        if status in SESSION_AT_REST:
+            reuse = worker
+        elif status != "gone":
+            row["action"] = "left-alone"
+            row["note"] = (
+                f"its own worker {worker} reads {status}, which is an observation "
+                "and not the agent saying it is at rest. Nothing sent; look at "
+                f"the pane: thurbox-cli session capture {worker}"
+            )
+            return row
+
+    base = pr.get("baseRefName") or task.doc.get("base") or "main"
+    title = FIXER_TITLES[condition].format(n=pr.get("number"), base=base)
+
+    if args.dry_run:
+        row["action"] = "would-dispatch"
+        how = f"reusing its own worker {reuse}" if reuse else "a fresh session on the branch"
+        row["note"] = f"{title} ({how})"
+        return row
+
+    drift = base_drift(task.doc["repo"], base, task.doc["branch"]) if condition == "conflicting" else ""
+    path = next_fix_file(task, condition)
+    with open(path, "w") as fh:
+        fh.write(fixer_brief(task, pr, condition, detail, drift))
+
+    if reuse:
+        ok, report = trust_and_send(
+            reuse, f"Read {os.path.abspath(path)} and do what it says."
+        )
+        session = reuse if ok else ""
+        note = report if not ok else "reused its own worker"
+    else:
+        session, note = spawn_fixer(task, title, path)
+
+    if not session:
+        row["action"] = "not-dispatched"
+        row["note"] = note
+        return row
+    row["action"] = "dispatched"
+    row["note"] = f"{title} -> {session}"
+    record_shepherd(
+        task,
+        {
+            "condition": condition,
+            "detail": detail,
+            "session": session,
+            "brief": os.path.basename(path),
+            "at": now(),
+        },
+    )
+    return row
+
+
+def cmd_shepherd(args) -> int:
+    """The fourth thing: the pull requests, after `watch` and after `collect`."""
+    q = Queue(queue_root())
+    only = q.get(args.ref).ref if args.ref else ""
+    targets = []
+    for task in sorted(q.tasks.values(), key=lambda t: t.ref):
+        if args.topic and task.topic != args.topic:
+            continue
+        if only and task.ref != only:
+            continue
+        ref = pr_ref(task.doc.get("artifact"))
+        if ref:
+            targets.append((task, ref[0]))
+
+    rows = [shepherd_one(task, slug, args) for task, slug in targets]
+
+    if args.json:
+        print(json.dumps({"queue": os.path.abspath(queue_root()), "prs": rows}, indent=2))
+        return 0
+
+    if not targets:
+        print("shepherd: no task carries a GitHub pull request yet")
+        return 0
+
+    verb = "would do" if args.dry_run else "did"
+    print(f"shepherd: {len(rows)} pull request(s) on this queue's own tasks — what it {verb}:\n")
+    for r in rows:
+        print(f"    {r['task']}  {r['pr']}")
+        print(f"        {r['condition']}: {r['detail']}")
+        if r["action"] != "none":
+            print(f"        {r['action']}: {r['note']}" if r["note"] else f"        {r['action']}")
+    counts: dict[str, int] = {}
+    for r in rows:
+        counts[r["action"]] = counts.get(r["action"], 0) + 1
+    print("\nshepherd: " + ", ".join(f"{n} {a}" for a, n in sorted(counts.items())))
+    undetermined = [r for r in rows if r["condition"] == "undetermined"]
+    if undetermined:
+        print(
+            f"          {len(undetermined)} could not be determined and were left "
+            "exactly as they are —\n          a PR that cannot be read is not a broken one."
+        )
+    if not args.dry_run and any(r["action"] == "dispatched" for r in rows):
+        print("          Fixers are working in place on the existing branches; nothing forked.")
+    print(
+        "          Merging is limited to " + ", ".join(sorted(AUTO_MERGE_REPOS))
+        + ", and only for a PR whose body\n"
+        "          carries the pipeline's sections, whose checks passed, and that "
+        "GitHub calls MERGEABLE."
+    )
+    return 0
+
+
 # --- read-only views ---------------------------------------------------------
 
 
@@ -1622,6 +2318,10 @@ def cmd_show(args) -> int:
         )
     if task.touches:
         print(f"    {'touches:':<12} {', '.join(task.touches)}")
+    rec = d.get("shepherd")
+    if rec:
+        print(f"    {'shepherd:':<12} {rec.get('condition')} — fixer {rec.get('session')} "
+              f"sent {rec.get('at')}")
     for b in task.blockers:
         cleared = "cleared" if q.blocker_cleared(b) else "HOLDING"
         print(f"    blocked_by:  {b['task']} [{cleared}] {b['kind']}: {b['why']}")
@@ -1764,6 +2464,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="say what would land and what would be released, and write nothing",
     )
     rp.set_defaults(func=cmd_reap)
+
+    sh = sub.add_parser("shepherd", help="inspect the PRs this queue produced and act")
+    sh.add_argument("--dry-run", action="store_true",
+                    help="say exactly what would be dispatched and merged, and change nothing")
+    sh.add_argument("--json", action="store_true", help="the machine-readable seam")
+    sh.add_argument("--topic", help="only this topic's tasks")
+    sh.add_argument("--ref", help="only this task")
+    sh.add_argument("--no-merge", action="store_true",
+                    help="classify and dispatch as usual, but merge nothing")
+    sh.add_argument("--force", action="store_true",
+                    help="dispatch again for a condition a fixer is already out for")
+    sh.set_defaults(func=cmd_shepherd)
 
     li = sub.add_parser("list", help="one line per task, grouped by topic")
     li.add_argument("--topic")

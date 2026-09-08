@@ -70,8 +70,10 @@ until the operator read the bodies himself.
 
 - **Squash merge only.** It is the only method the remote allows, so the pull
   request title becomes the commit on `main`. Write the title accordingly.
-- **You do not merge.** The operator reviews and merges every pull request
-  himself. Opening it is where your work ends.
+- **You do not merge.** Opening it is where your work ends. `queue.sh
+  shepherd` may later merge it for you in the repos its `AUTO_MERGE_REPOS`
+  allowlist names, but only once your pull request clears its gates — never
+  merge it yourself in the meantime.
 
 ## Reporting back — write a file, do not send mail
 

@@ -56,6 +56,29 @@
 # does not use it: an arriving worker message interrupts whoever is talking to
 # the lead.
 #
+# AND THEN THE PULL REQUEST OUTLIVES THE TASK, which is what `shepherd` is for:
+#
+#   `shepherd` reads every PR a task recorded as its `artifact`, DISPATCHES A
+#              FIXER for one that conflicts, fails a check, has a review
+#              asking for changes, or was opened outside the pipeline — and
+#              squash-merges one that passes all three of the operator's gates.
+#              It is a fourth thing, after both halves of completion.
+#
+# It exists because noticing was never the expensive part. In one day: #14 went
+# CONFLICTING when #13 merged and nothing saw it; #11 and #12 were opened with
+# a bare `gh pr create` and nobody knew for hours; a review finding sat in a PR
+# body until a human read it out. A status report would have saved none of it.
+#
+# Three rules make it safe to run, and `--dry-run` shows all of them:
+#   IDEMPOTENT   the fixer it sent is recorded on the task; a second pass sees
+#                work in flight rather than a still-broken PR. `--force` to mean
+#                it anyway.
+#   NEVER GUESS  no gh, no network, no thurbox — it says what it could not
+#                determine and carries on. A PR it could not read is never
+#                called broken, and never called ready.
+#   NEVER TOUCH  only artifacts recorded on this queue's own tasks, and it
+#   A STRANGER   merges only in the repos AUTO_MERGE_REPOS names.
+#
 # Usage:
 #   scripts/queue.sh topic add <slug> --title T --prompt 'the ask'   # or --prompt-file F|-
 #   scripts/queue.sh add <topic> <slug> --title T --repo P --branch B [--base main]
@@ -70,6 +93,8 @@
 #                        PR failed the pipeline check, after you have judged
 #                        that PR; --no-reap leaves every session alone
 #   scripts/queue.sh reap [--dry-run]     # land what merged, release its session
+#   scripts/queue.sh shepherd [--dry-run] # the PRs after the work: fix or merge
+#                        [--json] [--topic T] [--ref R] [--no-merge] [--force]
 #   scripts/queue.sh list [--topic T]     # the lead's view: a line per task
 #   scripts/queue.sh show <ref>           # one task's whole record
 #   scripts/queue.sh check                # validate every record (./scripts/check.sh queue)
@@ -117,8 +142,9 @@
 #
 # Requires: python3 (with PyYAML) — the same dependency the rest of the gate
 # has. `dispatch`, `watch` and `reap` additionally need thurbox-cli, and
-# `collect` and `reap` ask `gh` about a pull request. Every one of those
-# degrades to "could not check" rather than to a guess.
+# `collect`, `reap` and `shepherd` ask `gh` about a pull request, and
+# `shepherd` needs git as well. Every one of those degrades to "could not
+# check" rather than to a guess.
 
 set -uo pipefail
 

@@ -65,10 +65,15 @@ YAML by hand. Nothing to push — the map is gitignored.
    a turn ended; the worker's own result file says WHAT it concluded. A turn
    ending is not a task finishing, and only `collect` closes anything.
 5. Open a run log from `orchestration/runs/_TEMPLATE.md` and record what
-   happened as it happens.
-6. Review the PRs; the operator merges them. Sessions release themselves once
-   a pull request merges — `collect` reaps them, `queue.sh reap --dry-run`
-   shows what it would do — see `AGENTS.md`.
+   happened as it happens. It is gitignored and not backed up by the repo.
+6. **`shepherd`, as reflexively as `collect`.** The pull request outlives the
+   task, and `collect` names `shepherd` whenever it closed one that left a PR
+   open. It dispatches a fixer for a PR that conflicts, fails a check, was
+   reviewed with changes requested, or skipped the pipeline, and squash-merges
+   one that clears all three gates in the repos `AUTO_MERGE_REPOS` allows.
+7. Review the PRs; the operator merges every one `shepherd` did not. Sessions
+   release themselves once a pull request merges — `collect` reaps them,
+   `queue.sh reap --dry-run` shows what it would do — see `AGENTS.md`.
 
 The operator watches all of that in a browser rather than by asking you:
 `./scripts/webui.sh ensure` serves a read-only view of the queue on localhost.
@@ -76,7 +81,7 @@ It is a READER over the same files, so it never disagrees with `list` and never
 writes anything. `ensure` adopts a running one; only `stop` takes it down and
 only `start` brings it back.
 
-`.agents/skills/fleet-queue/` is the driving surface for 1–4 and
+`.agents/skills/fleet-queue/` is the driving surface for 1–4 and 6, and
 `.agents/skills/thurbox-session/` for the mechanics of one session — spawning,
 naming, trust, the state vocabulary, cleanup. Use both. (`.claude/skills` is a
 symlink to `.agents/skills`, so every CLI loads the one copy.)

@@ -278,7 +278,7 @@ The control plane drives [thurbox](https://github.com/Thurbeen/thurbox)
 
 A prompt is a **topic** on disk, which becomes **tasks** on disk, each carrying
 its own instructions in its own file — so nothing is lost to a context reset and
-no agent holds every task's detail at once. `./scripts/queue.sh` owns all six
+no agent holds every task's detail at once. `./scripts/queue.sh` owns all seven
 steps and its header is the full usage.
 
 ```bash
@@ -309,11 +309,16 @@ steps and its header is the full usage.
    names the sessions left unprompted.
 5. **Read the stream, then read the results.** Record outcomes in a run log from
    `orchestration/runs/_TEMPLATE.md` as they happen.
-6. **Review the PRs.** Sessions release themselves: once the forge says a
-   task's pull request merged, the task moves to `landed` and `collect` reaps
-   its session and worktree — never one thurbox says is working, and never one
-   a worker gave up in. `./scripts/queue.sh reap --dry-run` says what it would
-   do.
+6. **`./scripts/queue.sh shepherd`**, run as reflexively as `collect` — the pull
+   request outlives the task, and `collect` names `shepherd` whenever it closed
+   one that left a PR open. It dispatches a fixer for a PR that conflicts,
+   fails a check, or was reviewed with changes requested, and squash-merges one
+   that clears all its gates in the allowlisted repos.
+7. **Review the PRs**, and merge every one `shepherd` did not. Sessions release
+   themselves: once the forge says a task's pull request merged, the task moves
+   to `landed` and `collect` reaps its session and worktree — never one thurbox
+   says is working, and never one a worker gave up in.
+   `./scripts/queue.sh reap --dry-run` says what it would do.
 
 Fast-forward a target repo's base branch *before* spawning a worker against it.
 A stale local `main` is inherited by the new worktree: the worker does correct
