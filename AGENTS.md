@@ -104,12 +104,16 @@ The loop, driven by `./scripts/queue.sh`:
    too, so a dependent task waits for the code to actually be on `main`.
 7. **The pull request outlives the task, so `queue.sh shepherd` is a fourth
    thing, run as reflexively as `collect`** — which names it whenever it closed
-   a task that left a PR open. It dispatches a fixer for a PR that conflicts,
-   fails a check, has a review asking for changes, or was opened outside the
-   pipeline, and squash-merges one that passes all three gates. It merges only
-   in the repos `AUTO_MERGE_REPOS` names in `scripts/lib/queue.py`, and never a
-   PR that skipped the pipeline. `--dry-run` first; the fleet-queue skill owns
-   the rest.
+   a task that left a PR open. It asks the FORGE for every open PR on the repos
+   the queue's tasks name, not the tasks' recorded artifacts: a task records one
+   artifact and #25 was a second PR from a task still pointing at the merged
+   #23. A PR is linked back by artifact or head branch; an unlinked one is
+   still classified and merged, it just has no session to fix it. It merges
+   only in the repos `AUTO_MERGE_REPOS` names in `scripts/lib/queue.py`, and
+   only for a PR whose head branch is in that repo, opened by someone who can
+   push there, carrying a `no-mistakes` attestation for its **current** head —
+   the five headings are text anyone can paste and were never the gate they
+   looked like. `--dry-run` first; the fleet-queue skill owns the rest.
 8. Review the PRs; the operator merges every one `shepherd` did not, and
    everything after that is `reap`'s.
 

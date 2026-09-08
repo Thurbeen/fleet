@@ -1695,9 +1695,14 @@ def cmd_reap(args) -> int:
 GH_PR_URL_RE = re.compile(r"^https://github\.com/([^/\s]+/[^/\s]+)/pull/(\d+)/?$")
 
 
+# One `gh pr list` answers everything below, so a pass costs one call per
+# repository rather than one per pull request. The last four are the safety
+# fields: `headRefOid` is what an attestation has to name, and the other three
+# are how a fork's pull request is told from ours.
 GH_PR_FIELDS = (
     "number,state,url,title,isDraft,mergeable,reviewDecision,"
-    "statusCheckRollup,body,headRefName,baseRefName"
+    "statusCheckRollup,body,headRefName,baseRefName,headRefOid,"
+    "author,headRepositoryOwner,isCrossRepository"
 )
 
 # A check that FAILED. Anything still running is NOT a failure — reading a
@@ -1757,6 +1762,31 @@ def gh_json(argv: list) -> tuple[object, str]:
         return None, "gh returned output that is not JSON"
 
 
+def open_prs(slug: str) -> tuple[list, str]:
+    """Every OPEN pull request on one repository, straight from the forge.
+
+    THE BUG THIS FIXES. A task records ONE `artifact` — the first pull request
+    its worker reported — so a shepherd that enumerated artifacts saw exactly
+    those. #25 was a SECOND pull request from a task whose artifact still
+    pointed at the already-merged #23; the unattended pass could not see it and
+    would never have merged it, and a pull request opened outside the queue was
+    equally invisible. The forge knows what is open; the records only know what
+    was reported once.
+
+    A non-empty second value is why it could not be read, and a repository that
+    could not be read contributes nothing rather than an empty answer.
+    """
+    docs, err = gh_json(
+        ["pr", "list", "--repo", slug, "--state", "open", "--limit", "100",
+         "--json", GH_PR_FIELDS]
+    )
+    if err:
+        return [], err
+    if not isinstance(docs, list):
+        return [], "gh returned something that is not a list of pull requests"
+    return [d for d in docs if isinstance(d, dict)], ""
+
+
 def check_verdicts(rollup) -> tuple[list, list]:
     """(names that failed, names still running). Everything else passed."""
     failed, pending = [], []
@@ -1779,39 +1809,123 @@ def check_verdicts(rollup) -> tuple[list, list]:
     return failed, pending
 
 
-def missing_sections(body: str) -> list:
-    """The pipeline headings this body does not carry.
+# WHY NOT THE FIVE HEADINGS. `collect` looks for `## Intent` and its four
+# siblings to check that a WORKER used the pipeline, and that is the right
+# check there: it holds a task open until its own worker redoes the push, and
+# the worker has no reason to lie to a queue it does not know exists.
+#
+# It is the wrong check HERE, and this is the whole safety question. This repo
+# is public and has a fork, and this command merges unattended on a timer. The
+# five headings are text, and text in a pull request body is written by whoever
+# opened the pull request — so a check that counts them lets a body authorise
+# its own merge. `no-mistakes` leaves something a body cannot fake as easily:
+# an attestation naming the exact commit the pipeline ran on. A stale one from
+# an earlier push is refused for the same reason, because the pipeline's
+# verdict is about the code it saw and not about the branch's name.
+ATTESTATION_RE = re.compile(
+    r"<!--\s*no-mistakes-pipeline-attestation:v1\s+(\{.*?\})\s*-->", re.S
+)
 
-    PIPELINE_HEADINGS and this matcher are `pipeline_verdict`'s, reused rather
-    than restated: `collect` asks the same question of the same bodies, and two
-    copies of "what the pipeline leaves behind" would drift. The difference is
-    only where the body comes from — the shepherd already has it in hand, so it
-    does not spend a second `gh pr view` to re-fetch it.
+# The attestation is written DURING the pipeline's `pr` step, so in every body
+# that carries one `pr` reads `running` and `ci` reads `pending`. Demanding
+# `completed` from those two would reject every real pull request; `ci` is what
+# the separate checks-passed gate is for, and the steps that decide whether the
+# code is fit — review, test, lint, push — are the ones held to `completed`.
+ATTESTATION_TRAILING_STEPS = {"pr", "ci"}
+ATTESTATION_DONE = {"completed", "skipped"}
+ATTESTATION_TRAILING_OK = ATTESTATION_DONE | {"running", "pending"}
+
+
+def attestation_verdict(body: str, head_sha: str) -> tuple[bool, str]:
+    """(did the pipeline run on THIS commit, one line saying how it is known).
+
+    False is never "probably fine": every way of failing to read the
+    attestation is a way of not being merged.
     """
-    text = body or ""
-    return [
-        f"## {h}"
-        for h in PIPELINE_HEADINGS
-        if not re.search(rf"^\s*#{{1,6}}\s+{re.escape(h)}\s*$", text, re.M | re.I)
-    ]
+    m = ATTESTATION_RE.search(body or "")
+    if not m:
+        return False, (
+            "the body carries no no-mistakes attestation, so nothing but its own "
+            "prose says the pipeline ever ran"
+        )
+    try:
+        doc = json.loads(m.group(1))
+    except ValueError:
+        return False, "the no-mistakes attestation is not valid JSON"
+    if not isinstance(doc, dict):
+        return False, "the no-mistakes attestation is not an object"
+
+    attested = str(doc.get("head_sha") or "")
+    if not attested:
+        return False, "the no-mistakes attestation names no head_sha"
+    if not head_sha:
+        return False, "GitHub did not say which commit this pull request's head is"
+    if attested.lower() != head_sha.lower():
+        return False, (
+            f"the no-mistakes attestation is for {attested[:8]}, and the head is "
+            f"{head_sha[:8]} — it attests a push that is no longer what would merge"
+        )
+
+    steps = doc.get("steps")
+    if not isinstance(steps, list) or not steps:
+        return False, "the no-mistakes attestation lists no steps"
+    unfinished = []
+    for st in steps:
+        if not isinstance(st, dict):
+            return False, "the no-mistakes attestation's steps are malformed"
+        name = str(st.get("step") or "an unnamed step")
+        status = str(st.get("status") or "").lower()
+        allowed = (
+            ATTESTATION_TRAILING_OK
+            if name in ATTESTATION_TRAILING_STEPS
+            else ATTESTATION_DONE
+        )
+        if status not in allowed:
+            unfinished.append(f"{name} is {status or 'unreported'}")
+    if unfinished:
+        return False, "the pipeline did not finish: " + ", ".join(unfinished[:4])
+    return True, f"the pipeline attests {attested[:8]}, which is this head"
 
 
-def classify(pr: dict) -> tuple[str, str]:
+def head_owner(pr: dict) -> str:
+    """The login owning the repository the head branch lives in, or ''."""
+    return str((pr.get("headRepositoryOwner") or {}).get("login") or "")
+
+
+def classify(pr: dict, slug: str) -> tuple[str, str]:
     """(condition, one line saying why).
 
     Four conditions get a fixer, in the order FIXABLE lists them. `ready`
-    means all three merge gates hold. `undetermined` means the answer is not
-    knowable yet and is never treated as either of the other two.
+    means the merge gates GitHub can answer hold. `foreign` is a pull request
+    that is not ours, which is neither merged nor handed to an agent.
+    `undetermined` means the answer is not knowable yet and is never treated
+    as any of the others.
     """
     if str(pr.get("state") or "").upper() != "OPEN":
         return "closed", f"the pull request is {str(pr.get('state')).lower()}"
     if pr.get("isDraft"):
         return "undetermined", "still a draft"
 
+    # NOT OURS, ASKED BEFORE ANYTHING ELSE. A stranger cannot create a branch
+    # inside this repository, so where the head branch lives is the one claim
+    # about a pull request that whoever opened it cannot write for themselves.
+    # It gates the fixer as hard as it gates the merge: sending an agent to
+    # "fix" a stranger's branch is worse than merging one, because it happens
+    # without even the pretence of a gate.
+    owner = slug.split("/", 1)[0]
+    where = head_owner(pr)
+    if not where:
+        return "undetermined", "GitHub did not say which repository the head branch is in"
+    if pr.get("isCrossRepository") or where.lower() != owner.lower():
+        return "foreign", (
+            f"its head branch is in {where}'s repository, not {slug} — "
+            "fleet neither merges nor sends an agent at a pull request that is not ours"
+        )
+
     mergeable = str(pr.get("mergeable") or "").upper()
     base = pr.get("baseRefName") or "its base branch"
     failed, pending = check_verdicts(pr.get("statusCheckRollup"))
-    missing = missing_sections(pr.get("body"))
+    attested, attest_why = attestation_verdict(pr.get("body"), pr.get("headRefOid") or "")
 
     fixable = {
         "conflicting": (
@@ -1823,7 +1937,7 @@ def classify(pr: dict) -> tuple[str, str]:
             str(pr.get("reviewDecision") or "").upper() == "CHANGES_REQUESTED",
             "a reviewer requested changes",
         ),
-        "policy": (bool(missing), "the body is missing " + ", ".join(missing)),
+        "policy": (not attested, attest_why),
     }
     for condition in FIXABLE:
         hit, why = fixable[condition]
@@ -1841,7 +1955,7 @@ def classify(pr: dict) -> tuple[str, str]:
     if mergeable != "MERGEABLE":
         # UNKNOWN is GitHub still computing the merge, not a verdict.
         return "undetermined", f"mergeable is {mergeable or 'absent'}; ask again shortly"
-    return "ready", "pipeline sections present, checks green, mergeable"
+    return "ready", f"{attest_why}; checks green, mergeable, and the branch is ours"
 
 
 # --- what changed underneath -------------------------------------------------
@@ -1915,15 +2029,17 @@ Address the review that requested changes, then push to the same branch. Reply
 to the review only if something in it was mistaken; otherwise let the diff be
 the answer.""",
     "policy": """\
-This pull request was opened outside the required pipeline — its body is
-missing sections the pipeline always writes. Re-run it:
+Nothing on this pull request shows the required pipeline ran on the commit it
+would merge. `no-mistakes` leaves an attestation in the body naming the exact
+head commit it ran against, and this one either has none or has one for an
+earlier push. Re-run it:
 
     /no-mistakes --yes
 
-on this branch, so the pull request body is rewritten with `## Intent`,
-`## What Changed`, `## Risk Assessment`, `## Testing` and `## Pipeline`, and
-the checks the pipeline runs actually run. Do not open a second pull request —
-the pipeline updates the one that is already there.""",
+on this branch. That rewrites the body — attestation and all five sections —
+and actually runs the checks, against what is on the branch now. Do not open a
+second pull request; the pipeline updates the one that is already there, and
+do not hand-edit the body, because an attestation you typed attests nothing.""",
 }
 
 
@@ -2053,10 +2169,15 @@ def trust_and_send(session: str, text: str, timeout: int = 20) -> tuple[bool, st
     return True, report
 
 
-def spawn_fixer(task: Task, name: str, brief_path: str) -> tuple[str, str]:
-    """A session on the branch that already exists. (session id, note)."""
+def spawn_fixer(task: Task, name: str, brief_path: str, branch: str) -> tuple[str, str]:
+    """A session on the branch that already exists. (session id, note).
+
+    `branch` is the pull request's own head branch and not the task's record of
+    it: a task can carry a second pull request on a different branch, and the
+    fix has to land on the branch the pull request is actually open from.
+    """
     slug = f"{task.topic}__{task.id}"
-    path, note = branch_checkout(task.doc["repo"], task.doc["branch"], slug)
+    path, note = branch_checkout(task.doc["repo"], branch, slug)
     if not path:
         return "", note
     create = [
@@ -2094,6 +2215,52 @@ def spawn_fixer(task: Task, name: str, brief_path: str) -> tuple[str, str]:
     return session, f"{note}; session {session}"
 
 
+# One answer per (repo, login) per pass. The question does not change inside
+# a run and every open pull request would otherwise ask it again.
+_PUSH_ACCESS: dict[tuple[str, str], tuple[bool, str]] = {}
+PUSH_PERMISSIONS = {"admin", "maintain", "write"}
+
+
+def author_can_push(slug: str, pr: dict) -> tuple[bool, str]:
+    """Was this pull request opened by someone who owns the repository?
+
+    `classify`'s `foreign` check already proves the CODE is ours: a stranger
+    cannot create a branch here. This proves the PULL REQUEST is. Anyone with
+    read access can open one between two branches that already exist, and the
+    body carrying the attestation would then be theirs to write — so the last
+    thing checked before an unattended merge is who opened it.
+
+    Asked as "may this login push here" rather than "is this login the owner"
+    because the owner of `Thurbeen/fleet` is an organisation and no pull
+    request is ever authored by one. `gh` has no `authorAssociation` field in
+    every version; the collaborator permission endpoint is in all of them.
+    """
+    author = pr.get("author") or {}
+    login = str(author.get("login") or "")
+    if not login:
+        return False, "GitHub did not say who opened it"
+    if author.get("is_bot"):
+        return False, f"{login} is a bot"
+    key = (slug, login)
+    if key not in _PUSH_ACCESS:
+        doc, err = gh_json(["api", f"repos/{slug}/collaborators/{login}/permission"])
+        if err or not isinstance(doc, dict):
+            _PUSH_ACCESS[key] = (
+                False,
+                f"could not check whether {login} can push to {slug}: "
+                f"{err or 'unexpected output'}",
+            )
+        else:
+            perm = str(doc.get("permission") or "").lower()
+            # GitHub spells "no access" as the literal string `none`.
+            said = "no" if perm in ("", "none") else perm
+            _PUSH_ACCESS[key] = (
+                perm in PUSH_PERMISSIONS,
+                f"{login} has {said} access to {slug}",
+            )
+    return _PUSH_ACCESS[key]
+
+
 def gh_merge(url: str) -> tuple[bool, str]:
     """Squash-merge, which is the only method this remote allows."""
     if not shutil.which("gh"):
@@ -2127,50 +2294,99 @@ def record_shepherd(task: Task, entry: dict | None) -> None:
         fh.write(json.dumps({"shepherd": entry, "observed": now()}) + "\n")
 
 
-def shepherd_one(task: Task, repo_slug: str, args) -> dict:
-    """Inspect one pull request and do the one thing it calls for."""
+def rec_for(task, url: str) -> dict:
+    """The shepherd record, but only if it is about THIS pull request.
+
+    A task's branch can carry a second pull request once its first one merged —
+    that is the whole bug this command was rewritten for. Without this, the
+    record left behind by the fixer sent for the FIRST one reads as "a fixer is
+    already in flight" and the second one is never touched again.
+    """
+    rec = (task.doc.get("shepherd") or {}) if task else {}
+    if not rec:
+        return {}
+    # A record written before this field existed is about the task's artifact,
+    # which is the only pull request the old command could ever have seen.
+    return rec if rec.get("pr", url) == url else {}
+
+
+def shepherd_pr(pr: dict, slug: str, task, args) -> dict:
+    """Inspect one open pull request and do the one thing it calls for.
+
+    `task` is the task it belongs to, or None: the forge is the source of the
+    list now, so a pull request nobody recorded is shepherded like any other.
+    It simply has no session to send a fixer into, which is said out loud.
+    """
+    url = pr.get("url") or f"https://github.com/{slug}/pull/{pr.get('number')}"
     row = {
-        "task": task.ref,
-        "pr": task.doc["artifact"],
-        "repo": repo_slug,
+        "task": task.ref if task else "",
+        "pr": url,
+        "repo": slug,
         "condition": "undetermined",
         "detail": "",
         "action": "none",
         "note": "",
     }
-    pr, err = gh_json(["pr", "view", task.doc["artifact"], "--json", GH_PR_FIELDS])
-    if err or not isinstance(pr, dict):
-        row["detail"] = f"could not read the pull request: {err or 'unexpected output'}"
+
+    condition, detail = classify(pr, slug)
+    row["condition"], row["detail"] = condition, detail
+    rec = rec_for(task, url)
+
+    # A dry run writes nothing at all, including the record-clearing below:
+    # "change nothing" is the flag's whole contract, and a stale record
+    # cleared by a dry run is a fixer that a later real pass re-sends.
+    if condition in ("closed", "undetermined"):
+        if condition == "closed" and rec and not args.dry_run:
+            record_shepherd(task, None)
         return row
 
-    condition, detail = classify(pr)
-    row["condition"], row["detail"] = condition, detail
-    rec = task.doc.get("shepherd") or {}
-
-    if condition in ("closed", "undetermined"):
-        if condition == "closed" and rec:
-            record_shepherd(task, None)
+    if condition == "foreign":
+        # Reported, and nothing else. Not merged, and not handed to an agent.
+        row["action"] = "left-alone"
+        row["note"] = "not ours; fleet only merges and only fixes its own"
         return row
 
     if condition == "ready":
-        if rec:
+        if rec and not args.dry_run:
             record_shepherd(task, None)
-        if repo_slug not in AUTO_MERGE_REPOS:
+        if slug not in AUTO_MERGE_REPOS:
             row["action"] = "ready"
-            row["note"] = f"fleet does not merge in {repo_slug}; this one is yours"
+            row["note"] = f"fleet does not merge in {slug}; this one is yours"
             return row
         if args.no_merge:
             row["action"] = "ready"
             row["note"] = "--no-merge"
             return row
+        # The last gate, and the one a pull request body cannot write for
+        # itself. Asked before --dry-run answers, so a dry run is honest
+        # about what it would actually merge.
+        allowed, why = author_can_push(slug, pr)
+        if not allowed:
+            row["action"] = "not-merged"
+            row["note"] = (
+                f"{why} — fleet merges unattended only what someone who can "
+                "push here opened"
+            )
+            return row
         if args.dry_run:
             row["action"] = "would-merge"
-            row["note"] = "gh pr merge --squash --delete-branch"
+            row["note"] = f"gh pr merge --squash --delete-branch ({why})"
             return row
-        ok, note = gh_merge(task.doc["artifact"])
+        ok, note = gh_merge(url)
         row["action"], row["note"] = ("merged" if ok else "merge-failed"), note
-        if ok:
-            record_shepherd(task, {"condition": "merged", "detail": note, "at": now()})
+        if ok and task:
+            record_shepherd(task, {"condition": "merged", "detail": note,
+                                   "pr": url, "at": now()})
+        return row
+
+    # Fixable, but only a task carries a session, a worktree and a brief
+    # directory to fix it from.
+    if not task:
+        row["action"] = "no-task"
+        row["note"] = (
+            "no task records this pull request, so there is no session to send a "
+            "fixer into; it is classified and left for you"
+        )
         return row
 
     # Everything below here needs a fixer. Both liveness checks below share
@@ -2236,6 +2452,7 @@ def shepherd_one(task: Task, repo_slug: str, args) -> dict:
             return row
 
     base = pr.get("baseRefName") or task.doc.get("base") or "main"
+    branch = pr.get("headRefName") or task.doc["branch"]
     title = FIXER_TITLES[condition].format(n=pr.get("number"), base=base)
 
     if args.dry_run:
@@ -2244,7 +2461,7 @@ def shepherd_one(task: Task, repo_slug: str, args) -> dict:
         row["note"] = f"{title} ({how})"
         return row
 
-    drift = base_drift(task.doc["repo"], base, task.doc["branch"]) if condition == "conflicting" else ""
+    drift = base_drift(task.doc["repo"], base, branch) if condition == "conflicting" else ""
     path = next_fix_file(task, condition)
     with open(path, "w") as fh:
         fh.write(fixer_brief(task, pr, condition, detail, drift))
@@ -2256,7 +2473,7 @@ def shepherd_one(task: Task, repo_slug: str, args) -> dict:
         session = reuse if ok else ""
         note = report if not ok else "reused its own worker"
     else:
-        session, note = spawn_fixer(task, title, path)
+        session, note = spawn_fixer(task, title, path, branch)
 
     if not session:
         row["action"] = "not-dispatched"
@@ -2270,6 +2487,7 @@ def shepherd_one(task: Task, repo_slug: str, args) -> dict:
             "condition": condition,
             "detail": detail,
             "session": session,
+            "pr": url,
             "brief": os.path.basename(path),
             "at": now(),
         },
@@ -2277,34 +2495,126 @@ def shepherd_one(task: Task, repo_slug: str, args) -> dict:
     return row
 
 
+GH_REMOTE_RE = re.compile(r"github\.com[:/]([^/\s]+/[^/\s]+?)(?:\.git)?/?$")
+
+
+def slug_from_remote(repo_path: str) -> str:
+    """`owner/repo` from a checkout's `origin`, or ''. Local, and no network.
+
+    The last resort, and the one that makes this work on a topic whose tasks
+    have not shipped anything yet: before the first artifact is reported, the
+    only thing naming the repository is the checkout the tasks were given.
+    """
+    if not repo_path or not os.path.isdir(repo_path):
+        return ""
+    m = GH_REMOTE_RE.search(git_out(repo_path, ["remote", "get-url", "origin"]).strip())
+    return m.group(1) if m else ""
+
+
+def shepherd_targets(tasks: list) -> dict:
+    """task.ref -> `owner/repo`, derived and never hardcoded.
+
+    The queue's tasks name their repositories: an artifact URL gives
+    `owner/repo` outright, and a task that has not reported one yet inherits
+    the slug of the other tasks sharing its local checkout. Merging stays
+    limited to AUTO_MERGE_REPOS whatever comes out of here — knowing about a
+    repository and being allowed to merge in it are different questions.
+    """
+    slug_of: dict[str, str] = {}
+    by_path: dict[str, str] = {}
+    for task in tasks:
+        ref = pr_ref(task.doc.get("artifact"))
+        if ref:
+            slug_of[task.ref] = ref[0]
+            by_path.setdefault(str(task.doc.get("repo") or ""), ref[0])
+    for task in tasks:
+        if task.ref in slug_of:
+            continue
+        path = str(task.doc.get("repo") or "")
+        slug = by_path.get(path)
+        if not slug:
+            slug = slug_from_remote(path)
+            if slug:
+                by_path[path] = slug
+        if slug:
+            slug_of[task.ref] = slug
+    return slug_of
+
+
+def link_task(pr: dict, tasks: list) -> object:
+    """The task this pull request belongs to, or None.
+
+    Two ways, and the second is the one that matters. The artifact is what a
+    worker reported once. The HEAD BRANCH is what the pull request is actually
+    open from, and it is what connects a task's second pull request back to it
+    after its first one merged and its artifact stopped being current.
+    """
+    number = pr.get("number")
+    for task in tasks:
+        ref = pr_ref(task.doc.get("artifact"))
+        if ref and ref[1] == number:
+            return task
+    head = str(pr.get("headRefName") or "")
+    if head:
+        for task in tasks:
+            if str(task.doc.get("branch") or "") == head:
+                return task
+    return None
+
+
 def cmd_shepherd(args) -> int:
     """The fourth thing: the pull requests, after `watch` and after `collect`."""
     q = Queue(queue_root())
     only = q.get(args.ref).ref if args.ref else ""
-    targets = []
+    tasks = []
     for task in sorted(q.tasks.values(), key=lambda t: t.ref):
         if args.topic and task.topic != args.topic:
             continue
         if only and task.ref != only:
             continue
-        ref = pr_ref(task.doc.get("artifact"))
-        if ref:
-            targets.append((task, ref[0]))
+        tasks.append(task)
 
-    rows = [shepherd_one(task, slug, args) for task, slug in targets]
+    slug_of = shepherd_targets(tasks)
+    slugs = sorted(set(slug_of.values()))
+
+    rows, unreadable = [], []
+    for slug in slugs:
+        here = [t for t in tasks if slug_of.get(t.ref) == slug]
+        prs, err = open_prs(slug)
+        if err:
+            # A repository that could not be listed contributes nothing. An
+            # empty answer and an unreadable one are not the same claim, and
+            # only one of them means "nothing is open".
+            unreadable.append({"repo": slug, "detail": err})
+            continue
+        for pr in sorted(prs, key=lambda d: d.get("number") or 0):
+            rows.append(shepherd_pr(pr, slug, link_task(pr, here), args))
 
     if args.json:
-        print(json.dumps({"queue": os.path.abspath(queue_root()), "prs": rows}, indent=2))
+        print(json.dumps({
+            "queue": os.path.abspath(queue_root()),
+            "repos": slugs,
+            "unreadable": unreadable,
+            "prs": rows,
+        }, indent=2))
         return 0
 
-    if not targets:
-        print("shepherd: no task carries a GitHub pull request yet")
+    if not slugs:
+        print("shepherd: no task names a GitHub repository yet")
+        return 0
+    for bad in unreadable:
+        print(f"shepherd: could not read the pull requests on {bad['repo']}: "
+              f"{bad['detail']} — nothing there was touched")
+    if not rows:
+        if not unreadable:
+            print("shepherd: no open pull requests on " + ", ".join(slugs))
         return 0
 
     verb = "would do" if args.dry_run else "did"
-    print(f"shepherd: {len(rows)} pull request(s) on this queue's own tasks — what it {verb}:\n")
+    print(f"shepherd: {len(rows)} open pull request(s) on {', '.join(slugs)} "
+          f"— what it {verb}:\n")
     for r in rows:
-        print(f"    {r['task']}  {r['pr']}")
+        print(f"    {r['task'] or '(no task records it)'}  {r['pr']}")
         print(f"        {r['condition']}: {r['detail']}")
         if r["action"] != "none":
             print(f"        {r['action']}: {r['note']}" if r["note"] else f"        {r['action']}")
@@ -2312,6 +2622,11 @@ def cmd_shepherd(args) -> int:
     for r in rows:
         counts[r["action"]] = counts.get(r["action"], 0) + 1
     print("\nshepherd: " + ", ".join(f"{n} {a}" for a, n in sorted(counts.items())))
+    unlinked = [r for r in rows if not r["task"]]
+    if unlinked:
+        print(f"          {len(unlinked)} belong to no task — the forge is what "
+              "lists these, not the\n          records, so a pull request nobody "
+              "queued is still watched and still merged.")
     undetermined = [r for r in rows if r["condition"] == "undetermined"]
     if undetermined:
         print(
@@ -2322,9 +2637,11 @@ def cmd_shepherd(args) -> int:
         print("          Fixers are working in place on the existing branches; nothing forked.")
     print(
         "          Merging is limited to " + ", ".join(sorted(AUTO_MERGE_REPOS))
-        + ", and only for a PR whose body\n"
-        "          carries the pipeline's sections, whose checks passed, and that "
-        "GitHub calls MERGEABLE."
+        + ", and only for a pull request whose\n"
+        "          head branch is in that repo, that someone who can push there "
+        "opened, that\n"
+        "          carries a no-mistakes attestation for its CURRENT head, whose "
+        "checks passed,\n          and that GitHub calls MERGEABLE."
     )
     return 0
 
