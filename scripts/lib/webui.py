@@ -302,14 +302,40 @@ def snapshot() -> dict:
             "counts": {
                 "topics": 0,
                 "tasks": 0,
+                "archived": 0,
                 "by_state": {},
                 "hud": hud_counts({}),
             },
             "overlaps": [],
         }
 
-    grouped = q.by_topic()
-    for slug, tasks in sorted(grouped.items()):
+    topics, by_state = topic_views(q, root)
+
+    return {
+        "generated": now(),
+        "queue_root": os.path.abspath(root),
+        "topics": topics,
+        "counts": {
+            "topics": len(topics),
+            "tasks": sum(len(t["tasks"]) for t in topics),
+            # Not a topic in `topics` and not a task in `tasks`: this is the
+            # number of topics this snapshot DECLINED to open. The page shows
+            # it, because a monitor that silently dropped twenty-two topics
+            # would read as a queue with nothing in it.
+            "archived": len(q.archived_hidden),
+            "by_state": by_state,
+            "hud": hud_counts(by_state),
+        },
+        # queue.py's own risk report, over the set that would go out together.
+        "overlaps": q.overlaps(q.ready()),
+    }
+
+
+def topic_views(q, root: str) -> tuple[list, dict]:
+    """Every loaded topic, in the order an operator should read them."""
+    topics = []
+    by_state: dict[str, int] = {}
+    for slug, tasks in sorted(q.by_topic().items()):
         meta = q.topics.get(slug, {})
         views = [task_view(q, t) for t in tasks]
         for v in views:
@@ -320,15 +346,29 @@ def snapshot() -> dict:
                 "slug": slug,
                 "title": meta.get("title") or slug,
                 "created": meta.get("created"),
+                "archived": meta.get("archived"),
                 "prompt": read_file(os.path.join(tpath, "PROMPT.md")),
                 "classification": classify(views),
                 "tasks": views,
             }
         )
-
     # Ordered by classification, so what needs an operator is at the top.
     topics.sort(key=lambda t: (TOPIC_CLASSES.index(t["classification"]), t["slug"]))
+    return topics, by_state
 
+
+def archived_snapshot() -> dict:
+    """The topics `snapshot` left on disk, read only when someone asks for them.
+
+    A separate route rather than a flag on the main one, because the main one
+    is polled every four seconds and this is the "fetch if really useful" path:
+    the archived set is opened when an operator clicks to see it, and never on
+    the schedule. Same builder, same shapes — the page renders these rows with
+    exactly the code it renders the live ones with.
+    """
+    root = fleetqueue.queue_root()
+    q = fleetqueue.Queue(root, scope="archived")
+    topics, by_state = topic_views(q, root)
     return {
         "generated": now(),
         "queue_root": os.path.abspath(root),
@@ -337,10 +377,7 @@ def snapshot() -> dict:
             "topics": len(topics),
             "tasks": sum(len(t["tasks"]) for t in topics),
             "by_state": by_state,
-            "hud": hud_counts(by_state),
         },
-        # queue.py's own risk report, over the set that would go out together.
-        "overlaps": q.overlaps(q.ready()),
     }
 
 
@@ -719,6 +756,18 @@ a:hover { text-shadow: var(--glow-green); }
   padding: 4rem 1rem; border: 1px dashed var(--border);
 }
 
+/* The line that says what this view is not showing. Deliberately quiet — it
+   is a fact about the queue, not a thing that needs an operator — but it is
+   always there when there is anything behind it. */
+.archived-bar { margin-top: var(--space-sm); text-align: center; }
+.archived-toggle {
+  font-family: var(--font-mono); font-size: 11.5px; cursor: pointer;
+  color: var(--text-muted); background: none; padding: 7px 14px;
+  border: 1px dashed var(--border);
+}
+.archived-toggle:hover { color: var(--text-secondary); border-color: var(--border-light); }
+.topic.is-archived { opacity: .72; }
+
 /* --- narrow: the readout drops under the title, nothing scrolls sideways - */
 
 @media (max-width: 1080px) {
@@ -768,6 +817,9 @@ const el = (t, c, txt) => {
 const openTopics = new Set();
 const openTasks = new Set();
 let detailCache = {};
+// Whether the archived rows are on screen. Kept across the poll for the same
+// reason `openTopics` is: a refresh must not close what someone is reading.
+let showArchived = false;
 
 // The bar reads left to right as work leaving the queue: what is finished,
 // then what is moving, then what has not started, then what needs someone.
@@ -1061,7 +1113,7 @@ function render(data) {
       " \\u2014 overlap is a risk signal, not a reason to wait."));
     main.appendChild(r);
   }
-  if (!data.topics.length) {
+  if (!data.topics.length && !(data.counts.archived > 0)) {
     main.appendChild(el("div", "empty-state",
       "The queue is empty. `scripts/queue.sh topic add` opens one."));
     return;
@@ -1069,6 +1121,47 @@ function render(data) {
   const list = el("div", "topics");
   for (const t of data.topics) list.appendChild(renderTopic(t));
   main.appendChild(list);
+  if (data.counts.archived > 0) main.appendChild(archivedBar(data.counts.archived, list));
+}
+
+// The topics this snapshot did not open, as a count and a way to open them.
+//
+// The count is not optional: hiding twenty-two finished topics and saying
+// nothing turns a long queue into what looks like an empty one. The rows
+// behind it are fetched from api/archived when someone asks, and never on the
+// four-second poll — that is the whole point of the flag.
+function archivedBar(n, list) {
+  const shut = n + " archived topic(s) \u2014 finished, and out of the default view";
+  const bar = el("div", "archived-bar");
+  const b = el("button", "archived-toggle", shut);
+  bar.appendChild(b);
+
+  async function open() {
+    b.textContent = "reading\u2026";
+    try {
+      const r = await fetch("api/archived", { cache: "no-store" });
+      for (const t of (await r.json()).topics || []) {
+        const node = renderTopic(t);
+        node.classList.add("is-archived");
+        list.appendChild(node);
+      }
+      b.textContent = "hide the " + n + " archived topic(s)";
+    } catch (e) {
+      showArchived = false;
+      b.textContent = "could not read them \u2014 " + e;
+    }
+  }
+
+  b.addEventListener("click", () => {
+    showArchived = !showArchived;
+    if (showArchived) return open();
+    b.textContent = shut;
+    for (const node of list.querySelectorAll(".topic.is-archived")) node.remove();
+  });
+  // The poll rebuilds `main` from scratch, so a set that was on screen has to
+  // be asked for again — the flag survives the render, the rows do not.
+  if (showArchived) open();
+  return bar;
 }
 
 function link(ok, text) {
@@ -1153,6 +1246,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, PAGE.encode(), "text/html; charset=utf-8")
         elif path == "/api/queue":
             self._json(200, snapshot())
+        elif path == "/api/archived":
+            self._json(200, archived_snapshot())
         elif path == "/api/task":
             ref = (parse_qs(query).get("ref") or [""])[0]
             try:

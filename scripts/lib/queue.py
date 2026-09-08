@@ -136,6 +136,19 @@ OUTCOME_STATES = {
     "failed": ("failed",),
 }
 
+# The task states a topic can be archived out from under, and the ONE place
+# the predicate is written down: the automatic sweep, the manual `archive` and
+# the clear `add` does all call `unfinished()` below rather than spelling this
+# again. A view that hides live work is worse than the clutter archiving
+# removes, so the three must never be able to drift apart.
+#
+# `stuck` and `failed` are deliberately absent. They are the WORKER's own
+# verdicts, the sessions behind them are kept as evidence rather than reaped
+# (see HOLDING_STATES and the reap gate below), and the whole point of keeping
+# a session is that a human comes and looks at it. A topic holding either has
+# to stay in front of the operator, however finished the rest of it is.
+TERMINAL_STATES = ("landed", "abandoned")
+
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,60}$")
 BRIEF_PLACEHOLDER = "<!-- WRITE THE INSTRUCTIONS HERE -->"
 
@@ -502,11 +515,30 @@ class Task:
         write_yaml(self.file("task.yaml"), self.doc, TASK_HEADER)
 
 
+# What a Queue loads. The default is the operator's default view, and it is
+# the reason `archived` is worth having at all: a topic marked archived costs
+# ONE read of its topic.yaml and its task directories are never opened, so
+# twenty-two finished topics stop being twenty-seven file reads and twenty-two
+# screenfuls on every list, every status line, every monitor poll and every
+# pane refresh.
+SCOPES = ("live", "archived", "all")
+
+
 class Queue:
-    def __init__(self, root: str):
+    def __init__(self, root: str, scope: str = "live"):
         self.root = root
+        self.scope = scope
         self.topics: dict[str, dict] = {}
         self.tasks: dict[str, Task] = {}
+        # Topics this view deliberately did not open, so every reader can say
+        # how many it is hiding. A queue that merely LOOKS small is worse than
+        # one that looks long: the operator has to be able to tell the
+        # difference between "nothing is queued" and "you cannot see it".
+        self.archived_hidden: list[str] = []
+        # Tasks fetched by ref out of a topic this view skipped — `show` and a
+        # blocker that names an archived task. Kept apart from `self.tasks` so
+        # a targeted fetch can never leak into a listing.
+        self._fetched: dict[str, Task] = {}
         self._load()
 
     def _load(self) -> None:
@@ -519,7 +551,14 @@ class Queue:
             meta = os.path.join(tpath, "topic.yaml")
             if not os.path.exists(meta):
                 continue
-            self.topics[topic] = read_yaml(meta)
+            doc = read_yaml(meta)
+            archived = bool(doc.get("archived"))
+            if archived and self.scope == "live":
+                self.archived_hidden.append(topic)
+                continue
+            if not archived and self.scope == "archived":
+                continue
+            self.topics[topic] = doc
             for tid in sorted(os.listdir(tpath)):
                 dpath = os.path.join(tpath, tid)
                 if not os.path.isdir(dpath) or not is_record_dir(tid):
@@ -540,7 +579,45 @@ class Queue:
             raise QueueError(
                 f"{ref} names {len(hits)} tasks across topics; use <topic>/<task>"
             )
+        fetched = self._fetch(ref)
+        if fetched:
+            return fetched
         raise QueueError(f"no such task: {ref}")
+
+    def _fetch(self, ref: str) -> Task | None:
+        """One task out of a topic this view skipped, read on demand.
+
+        This is the "fetch if really useful" half of archiving, and it is what
+        keeps the filter from being a lie in two places. `show <ref>` reaches
+        an archived task without unarchiving anything; and a live task BLOCKED
+        on one whose topic has since been archived still sees that it landed —
+        without it, that blocker would read as uncleared forever and the
+        dependent task would wait on work that is already on main.
+
+        At most one directory listing and one task.yaml per miss, and only on a
+        ref the loaded set could not answer.
+        """
+        if ref in self._fetched:
+            return self._fetched[ref]
+        candidates = []
+        if "/" in ref:
+            candidates.append(tuple(ref.split("/", 1)))
+        else:
+            for topic in self.archived_hidden:
+                tpath = os.path.join(self.root, topic)
+                if os.path.isdir(os.path.join(tpath, ref)):
+                    candidates.append((topic, ref))
+        for topic, tid in candidates:
+            if not (is_record_dir(topic) and is_record_dir(tid)):
+                continue
+            dpath = os.path.join(self.root, topic, tid)
+            rec = os.path.join(dpath, "task.yaml")
+            if not os.path.exists(rec):
+                continue
+            task = Task(topic, tid, dpath, read_yaml(rec))
+            self._fetched[ref] = task
+            return task
+        return None
 
     def by_topic(self) -> dict:
         out: dict[str, list] = {t: [] for t in self.topics}
@@ -723,6 +800,133 @@ def task_notes(q: Queue, task: Task) -> list:
     return notes
 
 
+# --- archiving: a flag on the topic, and a filter in every reader ------------
+#
+# The queue reached 24 topics with 27 of its 30 tasks `landed`, and the two
+# topics with live work were buried under twenty-two finished ones in both
+# readers. Archiving is the operator's "only fetch if really useful", spelled
+# as a flag and a filter and NOTHING else: no record is moved, deleted or
+# rewritten. This queue is gitignored and the repo does not back it up, so
+# anything archiving moved would be gone.
+#
+# WHY THE FLAG LIVES ON topic.yaml. It is the file that already holds `slug`,
+# `title` and `created`, and it is the one file every reader opens per topic
+# anyway — the TUI pane's shell probe already `sed`s it for the title and
+# never opens a task directory. So skipping an archived topic costs one more
+# `sed` there and one more key lookup everywhere else. A design that had to
+# read every `task.yaml` to decide what to hide would have made the default
+# view more expensive, not less, which is the opposite of the ask.
+#
+# WHY IT IS DERIVED BUT STORED. Everything else a reader shows about a topic is
+# derived on the spot (webui.py's `classify`), and this could have been too.
+# It is not, because deriving it is exactly the read the flag exists to avoid.
+# The cost of storing it is that it can go stale — which is what `add` clearing
+# it below is for, and what makes `unfinished()` the single predicate.
+
+
+def topic_meta_path(root: str, slug: str) -> str:
+    return os.path.join(root, slug, "topic.yaml")
+
+
+def unfinished(tasks: list, state_of=None) -> Task | None:
+    """The first task that is not finished, or None when every one of them is.
+
+    THE one predicate. The automatic sweep, `cmd_archive` and `cmd_check` all
+    ask this and nothing else, because three implementations of "is this topic
+    done" is three chances to hide a topic somebody is still working in.
+    Returns the task rather than a bool so a refusal can name it.
+
+    `state_of` is how the sweep asks the question during a dry run, where the
+    state on disk is still the one the landing sweep did not write. It is the
+    only thing that varies between the callers, so it is the only thing passed
+    in — the rule itself has one spelling.
+    """
+    read = state_of or (lambda t: t.state)
+    for task in sorted(tasks, key=lambda t: t.ref):
+        if read(task) not in TERMINAL_STATES:
+            return task
+    return None
+
+
+def set_archived(root: str, slug: str, at: str | None) -> None:
+    """Write or clear `archived` on one topic, leaving the rest of it alone."""
+    path = topic_meta_path(root, slug)
+    doc = read_yaml(path)
+    if at is None:
+        doc.pop("archived", None)
+    else:
+        doc["archived"] = at
+    write_yaml(path, doc, TOPIC_HEADER)
+
+
+def sweep_archives(q: Queue, state_of, dry: bool) -> int:
+    """Archive every loaded topic whose tasks have all reached a terminal state.
+
+    Run by the pass that MOVES a task into one — `reap`'s landing sweep, which
+    `collect` ends by running — because that is the only moment a topic can
+    become finished. Nothing else has to remember to do it, which is the same
+    reason `reap` itself is wired into `collect`: a step only a human runs is a
+    step that does not run.
+
+    `state_of` projects a dry run's answer forward the way `reap` does, so
+    `reap --dry-run` reports the archive it would write instead of reporting
+    the topic as still live.
+    """
+    archived = 0
+    for slug, tasks in sorted(q.by_topic().items()):
+        if not tasks or q.topics.get(slug, {}).get("archived"):
+            continue
+        if unfinished(tasks, state_of):
+            continue
+        archived += 1
+        word = "would archive" if dry else "archived"
+        print(f"    {slug:<46} {word:<10} {len(tasks)} task(s) landed or abandoned")
+        if not dry:
+            set_archived(q.root, slug, now())
+    if archived and not dry:
+        print("      `queue.sh list --archived` still shows them; `show <ref>` still reaches them.")
+    return archived
+
+
+def cmd_archive(args) -> int:
+    # `all`, because the topic being archived is by definition one the default
+    # view is about to stop loading — and because `archive` on an
+    # already-archived topic should say so rather than say it does not exist.
+    root = queue_root()
+    q = Queue(root, scope="all")
+    if args.topic not in q.topics:
+        raise QueueError(f"no such topic: {args.topic}")
+    if q.topics[args.topic].get("archived"):
+        print(f"{args.topic} is already archived")
+        return 0
+    held = unfinished(q.by_topic().get(args.topic) or [])
+    if held:
+        raise QueueError(
+            f"{args.topic} is not finished: {held.ref} is `{held.state}`.\n"
+            "       Archiving hides a topic from every default view, so a topic "
+            "holding live\n"
+            "       work is never archived — `stuck` and `failed` included: those "
+            "sessions are\n"
+            "       kept as evidence and somebody has to see them."
+        )
+    set_archived(root, args.topic, now())
+    print(f"{args.topic} archived")
+    return 0
+
+
+def cmd_unarchive(args) -> int:
+    root = queue_root()
+    q = Queue(root, scope="all")
+    if args.topic not in q.topics:
+        raise QueueError(f"no such topic: {args.topic}")
+    if not q.topics[args.topic].get("archived"):
+        print(f"{args.topic} is not archived")
+        return 0
+    set_archived(root, args.topic, None)
+    print(f"{args.topic} unarchived")
+    return 0
+
+
 # --- commands ----------------------------------------------------------------
 
 
@@ -772,6 +976,14 @@ def cmd_add(args) -> int:
         raise QueueError(f"no such topic: {args.topic} (open one with `topic add`)")
     if not SLUG_RE.match(args.slug):
         raise QueueError(f"{args.slug!r} is not a slug (lowercase, digits, hyphens)")
+
+    # A topic that grows a new task is live again, whatever it was. Without
+    # this an operator who did not notice the flag would add and dispatch into
+    # a topic no default view draws — and would then be watching for progress
+    # on a screen that had already decided not to show it.
+    if read_yaml(os.path.join(tpath, "topic.yaml")).get("archived"):
+        set_archived(root, args.topic, None)
+        print(f"{args.topic} was archived; a new task un-archives it", file=sys.stderr)
 
     number = args.number or next_number(tpath)
     tid = f"{number}-{args.slug}"
@@ -2266,9 +2478,6 @@ def reap(q: Queue, dry: bool = False, release: bool = True) -> int:
     acted = sum(1 for kind, _ in landings.values() if kind in LANDED_STATE)
     if acted and not dry:
         print("      Run `queue.sh plan` — a blocker clears when the task it names LANDS.")
-    if not release:
-        print("      Sessions left alone (--no-reap); `queue.sh reap` releases them.")
-        return acted
 
     # A dry run promotes nothing, so the state on disk still says `done` for a
     # task that just landed. Project the sweep's answer forward instead, or a
@@ -2276,6 +2485,17 @@ def reap(q: Queue, dry: bool = False, release: bool = True) -> int:
     def state_of(task: Task) -> str:
         kind = (landings.get(task.ref) or (None,))[0]
         return LANDED_STATE.get(kind, task.state) if dry else task.state
+
+    # A topic can only become finished when one of its tasks moves into a
+    # terminal state, and this is the pass that moves them — so the flag is
+    # written here rather than left as something the lead has to remember.
+    # Before the `--no-reap` return: archiving is a flag on a topic and has
+    # nothing to do with whether a session is released.
+    acted += sweep_archives(q, state_of, dry)
+
+    if not release:
+        print("      Sessions left alone (--no-reap); `queue.sh reap` releases them.")
+        return acted
 
     holders = [
         t
@@ -3834,7 +4054,15 @@ def link_task(pr: dict, tasks: list) -> object:
 
 def cmd_shepherd(args) -> int:
     """The fourth thing: the pull requests, after `watch` and after `collect`."""
-    q = Queue(queue_root())
+    # `all`, and deliberately not the default view. This does not act on the
+    # tasks it loads — it derives the REPOSITORIES they name and then asks the
+    # forge for every open pull request in each, including ones no task ever
+    # recorded (the #25 case). Narrowing that to live topics would mean a queue
+    # whose topics have all finished stops watching the repos it worked in, and
+    # a pull request that goes bad after the last topic closed would be seen by
+    # nobody. It is already a network pass over every repo; reading the
+    # archived records costs it nothing it was not already paying.
+    q = Queue(queue_root(), scope="all")
     only = q.get(args.ref).ref if args.ref else ""
     tasks = []
     for task in sorted(q.tasks.values(), key=lambda t: t.ref):
@@ -3935,16 +4163,24 @@ def cmd_list(args) -> int:
     # webui.sh status prints the same path, so the two can never disagree
     # silently about what they are showing.
     print(f"queue: {os.path.abspath(root)}")
-    q = Queue(root)
+    # Named explicitly, so a topic stays reachable BY NAME however it is
+    # flagged: `list --topic <archived>` is a request for that topic, not a
+    # request for the default view narrowed to it.
+    scope = "all" if (args.all_topics or args.topic) else (
+        "archived" if args.archived else "live"
+    )
+    q = Queue(root, scope=scope)
     grouped = q.by_topic()
     if args.topic:
         grouped = {k: v for k, v in grouped.items() if k == args.topic}
     if not grouped:
         print("queue: empty")
+        hidden(q)
         return 0
     for topic, tasks in sorted(grouped.items()):
         meta = q.topics.get(topic, {})
-        print(f"{topic} — {meta.get('title', '')}")
+        flag = "  [archived]" if meta.get("archived") else ""
+        print(f"{topic} — {meta.get('title', '')}{flag}")
         for t in tasks:
             mark = "waiting" if t.state == "queued" and not q.is_ready(t) else t.state
             extra = t.doc.get("artifact") or t.doc.get("session") or ""
@@ -3954,7 +4190,22 @@ def cmd_list(args) -> int:
             for note in task_notes(q, t):
                 print(f"        {note}")
         print()
+    hidden(q)
     return 0
+
+
+def hidden(q: Queue) -> None:
+    """What this view did not show, said out loud.
+
+    Every reader prints this line, in these words. A filter that silently
+    dropped twenty-two topics would leave an operator reading a short queue as
+    an idle one, which is a worse failure than the clutter archiving removes.
+    """
+    if q.archived_hidden:
+        print(
+            f"{len(q.archived_hidden)} archived topic(s) hidden — "
+            "`list --archived` shows them, `list --all` shows both"
+        )
 
 
 def cmd_show(args) -> int:
@@ -4019,8 +4270,26 @@ def cmd_check(args) -> int:
         print(f"queue check: ok — {root} not created yet, nothing to validate")
         return 0
 
-    q = Queue(root)
+    # `all`: a record does not stop being a record because its topic left the
+    # default view, and a check that only validated what is on screen would go
+    # quiet about exactly the records nobody is looking at.
+    q = Queue(root, scope="all")
     problems = []
+    for slug, meta in sorted(q.topics.items()):
+        at = meta.get("archived")
+        if at is not None and not isinstance(at, str):
+            problems.append(f"{slug}: archived {at!r} is not a timestamp")
+            continue
+        # An archived topic holding a live task is the one way this flag can
+        # be actively harmful: it is work nothing draws. Nothing fleet does
+        # produces one — `add` clears the flag — but a hand-edited topic.yaml
+        # can, and this is the check that says so out loud.
+        held = unfinished(q.by_topic().get(slug) or []) if at else None
+        if held:
+            problems.append(
+                f"{slug}: archived while {held.ref} is `{held.state}` — "
+                "run `queue.sh unarchive` on it"
+            )
     for ref, t in sorted(q.tasks.items()):
         d = t.doc
         for key in ("id", "topic", "title", "state", "repo", "branch"):
@@ -4187,8 +4456,20 @@ def build_parser() -> argparse.ArgumentParser:
     sh.set_defaults(func=cmd_shepherd)
 
     li = sub.add_parser("list", help="one line per task, grouped by topic")
-    li.add_argument("--topic")
+    li.add_argument("--topic", help="one topic, archived or not")
+    li.add_argument("--archived", action="store_true",
+                    help="only the archived topics, which the default view hides")
+    li.add_argument("--all", action="store_true", dest="all_topics",
+                    help="archived topics as well as live ones")
     li.set_defaults(func=cmd_list)
+
+    ar = sub.add_parser("archive", help="hide a finished topic from the default views")
+    ar.add_argument("topic")
+    ar.set_defaults(func=cmd_archive)
+
+    ua = sub.add_parser("unarchive", help="put an archived topic back in every view")
+    ua.add_argument("topic")
+    ua.set_defaults(func=cmd_unarchive)
 
     s = sub.add_parser("show", help="one task's whole record")
     s.add_argument("ref")

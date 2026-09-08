@@ -108,7 +108,8 @@ def run_json(argv: list, cwd: str | None = None, timeout: int = 10):
 
 def probe_queue() -> dict:
     root = os.path.abspath(fleetqueue.queue_root())
-    sec: dict = {"unavailable": None, "root": root, "topics": [], "counts": {}, "risks": []}
+    sec: dict = {"unavailable": None, "root": root, "topics": [], "counts": {},
+                 "risks": [], "archived": 0}
     try:
         q = fleetqueue.Queue(root)
     except Exception as exc:  # a malformed record must cost this section only
@@ -161,6 +162,11 @@ def probe_queue() -> dict:
         sec["topics"].append(entry)
 
     sec["counts"] = counts
+    # Topics this reading declined to open. Same number `queue.sh list` prints
+    # and the monitor shows: they are three readers over one set of records,
+    # and the whole point of a status screen is that it cannot disagree with
+    # the thing it is reporting on.
+    sec["archived"] = len(q.archived_hidden)
     # Overlap across everything IN FLIGHT, not just the ready set: two workers
     # already editing one file is the risk the lead is living with right now.
     # It is reported and never acted on — a rebase reconciles it.
@@ -606,11 +612,17 @@ def render_queue(sec: dict) -> list:
     lines = [head("QUEUE", sec["root"])]
     topics, tasks = sec["topics"], sum(len(t["tasks"]) for t in sec["topics"])
     if not tasks:
+        if sec.get("archived"):
+            return lines + [cont(f"{sec['archived']} archived topic(s) and nothing "
+                                 "live — `queue.sh list --archived`")]
         return lines + [cont("empty — `queue.sh topic add` opens one")]
     order = ("ready", "waiting", "dispatched", "done", "landed", "stuck", "failed",
              "abandoned")
     tally = [f"{k} {sec['counts'][k]}" for k in order if sec["counts"].get(k)]
     lines.append(cont(f"{len(topics)} topic(s), {tasks} task(s) — " + ", ".join(tally)))
+    if sec.get("archived"):
+        lines.append(cont(f"{sec['archived']} archived topic(s) hidden — "
+                          "`queue.sh list --archived`"))
     for topic in topics:
         lines.append(f"  {topic['slug']} — {topic['title']}")
         for t in topic["tasks"]:
