@@ -37,7 +37,7 @@ rather than instructing you through it: prerequisites, your GitHub owners
 (discovered from your `gh` session and confirmed in one question), the registry
 sync, the thurbox extension, [the queue pane](#the-queue-pane) and
 [the monitor](#the-monitor) — verifying each step. Run it twice and it
-converges. It hands you exactly one line to add yourself, and says why: the
+converges. It hands you a guarded block to add yourself, and says why: the
 pane's slot in your thurbox `layout.lua`.
 
 Then open the `fleet` session in thurbox and give it a goal.
