@@ -78,6 +78,40 @@ validate on its own. The decomposition is yours.
 `--touches` is the paths you expect the task to change. It is a **risk signal
 that gets reported**, never a reason to hold anything back — see §3.
 
+### `--host` — running a task on another machine
+
+`add --host <name>` takes a name from thurbox's `hosts.toml` and moves the
+worker there: the agent, its tmux window and its git worktree all live on that
+machine, and only the TUI stays here. **Omit it and nothing changes** — a task
+with no host takes the same path it always did.
+
+```bash
+./scripts/queue.sh add report-status-honestly build-the-arm-image \
+  --title 'Build the arm64 image' \
+  --host devbox \
+  --repo /srv/code/thurbox \        # ON DEVBOX. Not a path here.
+  --branch fix/build-the-arm-image
+```
+
+**`--repo` is a path on the host.** Nothing local reads it, so a path that
+happens to exist on your machine tells you nothing about whether it exists on
+theirs — `dispatch` asks the host, and refuses when the answer is no.
+
+Three things follow, and each of them is a refusal you will meet rather than a
+rule to remember:
+
+| what | when | what you get |
+|---|---|---|
+| the host must be known | `add` | the name is checked against `hosts.toml`, and the refusal lists the hosts that do exist |
+| POSIX hosts only | `add` | a host with a non-`tmux` `multiplexer` is how `hosts.toml` spells a Windows host, and is refused by name. Every remote command fleet runs is POSIX shell |
+| session sharing must be on | `add` | `share_sessions = false` switches off the delegation that lets `session capture` see that pane, so the trust dialog could not be answered and the worker would stall unread |
+
+**Credentials are never moved.** The host needs its OWN GitHub credentials to
+clone, fetch and push; yours are not inherited and nothing sends them. Probe 2
+below asks whether the host has any and refuses the dispatch when it does not.
+Forwarding your SSH agent also fixes it and forwards every key that agent holds
+— your call to make on that machine, not something a dispatch makes for you.
+
 ## 2. Write the brief
 
 `add` scaffolds `BRIEF.md` with the repo, the branch, the pointer back to
@@ -225,6 +259,31 @@ its worktree, so nothing can land in its PR.
 If a spawn fails, the others still go. Re-run `dispatch`; the ones already out
 are no longer `queued` and are not spawned twice.
 
+### A remote task is probed before it is spawned
+
+A task with a `--host` gets three questions asked of that host first, in this
+order, and one NO stops that task where it stands — still `queued`, so fixing
+the host and re-running `dispatch` sends it:
+
+```text
+    reachable   it answers ssh, and answers as a POSIX shell
+    forge       it has GitHub credentials of its own — an ssh key, or a gh login
+    repo        --repo is a git checkout at that path ON THAT MACHINE
+```
+
+The report names the probe that failed. This exists because a remote worker
+that starts and then fails at its first `git` call looks exactly like an agent
+bug and is not one — and finding that out costs you a pane on another machine.
+
+Then the brief, PROMPT.md, POLICY.md and (when the operator has one) OPERATOR.md
+are each **copied to the host**, into the worktree thurbox made there, because
+the absolute paths a local worker is handed are not on that filesystem. Each
+canonical copy stays here and is still what `check` validates and `dispatch`
+refuses when the brief is unwritten; what lands on the host is a copy, made
+after that refusal has already had its say. A remote worker is told to write
+`result.md` beside the brief it is reading, and to delete all of these copies
+before it commits.
+
 ### The trust dialog, handled here rather than remembered
 
 Every spawn runs `./scripts/session-trust.sh` between `session create` and the
@@ -277,6 +336,12 @@ RELEASE ./scripts/queue.sh reap [--dry-run]
         moves the ones that did to `landed`, and deletes those sessions and
         their worktrees. `collect` runs it for you — see §5b.
 ```
+
+**A remote task completes the same way.** `collect` fetches that worker's
+`result.md` off its host over ssh and writes it into the task's own, then reads
+it like any other. Everything downstream sees a local file and never learns
+which machine wrote it — which is the point, and why a remote worker still does
+not send mail.
 
 ### `collect` verifies the artifact — you do not have to take the PR on trust
 
@@ -373,6 +438,21 @@ It only ever considers sessions THIS QUEUE recorded. Your own session and
 anything spawned by hand are not in the records; the lead's is refused by name
 as well.
 
+**A remote session is asked about its HOST before its state**, and this is the
+one place where reading thurbox's word is not enough. thurbox has an
+`unreachable` state and its CLI never says it — that word reaches the interface
+and nothing else. `session get --json` on a session whose machine has gone away
+answers with the state that was LATCHED before it went, so a worker that last
+reported `idle` still reads `idle` hours later, and `idle` is reapable. So the
+host is probed first, and a session it cannot reach is kept:
+
+```text
+    topic/22-build-on-devbox     kept       unreachable: host devbox — No route to host
+```
+
+That is a temporary outage, not a finished worker. Nothing is deleted, nothing
+is recorded, and the next pass reaps it if the host comes back.
+
 **Never treat a transition as a completion.** `watch` will tell you a task's
 turn ended with no result file — a worker that stopped, hit an approval, or
 crashed. Closing it would mark failed work as shipped. Look at the pane
@@ -420,6 +500,14 @@ A PR is tied back to a task by its recorded `artifact` or by its **head
 branch** matching the task's. One that matches neither is still classified and
 still merged — it simply has no session to send a fixer into, and the output
 names it as belonging to no task rather than passing over it in silence.
+
+**A remote task's pull request is classified and merged like any other, and its
+fixer is withheld.** The fixer needs a checkout of the PR's head branch, and a
+remote task's checkout is on its host; spawning there is not yet built. The
+shepherd says so by name rather than reporting the host's repo as "not a git
+checkout", which is true and sends you looking in the wrong place. Send the fix
+into that worker's own session while it is still alive — which is exactly what
+§5b keeps it alive for.
 
 **Dispatching the fixer is the point.** A status report would have saved none
 of those three round trips, because noticing was never the expensive part. The

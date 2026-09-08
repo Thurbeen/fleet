@@ -34,6 +34,12 @@
 #      records it: one that goes bad gets a FIXER, and one that clears every
 #      merge gate gets merged. A stranger's is neither. Everything the shepherd
 #      cannot read is left exactly as it is.
+#  11. A task can name a HOST and run there, and a task that names none takes
+#      exactly the path it took before the flag existed. Nothing is spawned on
+#      a host until three probes pass; the brief really lands on that host's
+#      filesystem and the result really comes back off it; and a session whose
+#      host cannot be reached is kept, not reaped — thurbox's CLI still calls
+#      it `idle`, which is the trap.
 #
 # Test 4 is also the wake proof. The event source is `thurbox-cli watch`, which
 # this script replaces with a recorded stream through `FLEET_QUEUE_WATCH_CMD` —
@@ -46,11 +52,14 @@
 # in a temp directory rather than against this one, so it answers the same on a
 # machine with thurbox installed and on CI without it.
 
-# Test 8 is the enforcement proof, and test 9 the release proof. `gh` and
-# `thurbox-cli` are both stubbed on PATH for the whole run (see the stubs
-# below), so every collect and every reap here answers the same offline, on CI,
-# on an operator's laptop and on a machine with no network — and so that a run
-# of this file can never delete a real session.
+# Test 8 is the enforcement proof, and test 9 the release proof. `gh`,
+# `thurbox-cli` and `ssh` are all stubbed on PATH for the whole run (see the
+# stubs below), so every collect and every reap here answers the same offline,
+# on CI, on an operator's laptop and on a machine with no network — and so that
+# a run of this file can never delete a real session or touch a real host. Test
+# 11 needs that last part most: the machine this was written on has hosts
+# configured in a real hosts.toml, and a selftest that reached one would be
+# acting on someone's else's machine.
 #
 # Usage: scripts/queue-selftest.sh        (also: ./scripts/check.sh queue)
 #
@@ -170,7 +179,24 @@ mkdir -p "$sessions" "$tbxbin"
 cat >"$tbxbin/thurbox-cli" <<SH
 #!/bin/sh
 # session list --json | session get <id> --json | session delete <id> --force
+# | session create --json | session capture --json | config show --json
 case "\$1 \$2" in
+"config show")
+	# Only ever read to LOCATE hosts.toml. Pointed at the fixture below so a
+	# selftest run can never read — let alone act on — the operator's own
+	# hosts.toml, whatever machine it runs on.
+	printf '{"paths":{"hosts_toml":"%s"}}\n' "$tmp/hosts.toml"
+	;;
+"session create")
+	# The id the next create hands back, so a test can name its own session
+	# and then say what that session is doing.
+	cat "$tmp/next-session.json" 2>/dev/null || echo '{"id":"stub","created":true}'
+	;;
+"session capture")
+	# No dialog on the pane. session-trust.sh then falls through to the
+	# hook_reported check, which is what the session fixtures answer.
+	echo '{"output":""}'
+	;;
 "session list")
 	printf '['
 	sep=""
@@ -199,7 +225,96 @@ session_is() {
 		>"$sessions/$1.json"
 }
 
-export PATH="$ghbin:$tbxbin:$PATH"
+# --- `ssh`, stubbed on PATH for the whole run --------------------------------
+#
+# A remote task's brief, result and every probe travel over ssh, and this run
+# has no remote host to travel to — the machine it is written on has hosts
+# configured that a test must never touch. So `ssh` is a fake host here, with a
+# real filesystem under $remotes: `cat > path` writes into it and `cat path`
+# reads back out, which is what makes the brief push and the result fetch
+# provable rather than asserted.
+#
+# A host is made to fail by touching a flag file: `<dest>.down` for an
+# unreachable one, `.nonposix` for a Windows-shaped shell, `.noforge` for one
+# with no GitHub credentials, `.norepo` for one where the repo is not there.
+
+remotes="$tmp/remotes"
+sshstate="$tmp/ssh-state"
+sshbin="$tmp/ssh-bin"
+mkdir -p "$remotes" "$sshstate" "$sshbin"
+
+cat >"$sshbin/ssh" <<SH
+#!/bin/sh
+# ssh [opts...] <destination> <script>. Only the last two arguments matter.
+dest=""
+prev=""
+for a in "\$@"; do
+	dest="\$prev"
+	prev="\$a"
+done
+script="\$prev"
+
+[ -f "$sshstate/\$dest.down" ] && {
+	echo "ssh: connect to host \$dest port 22: No route to host" >&2
+	exit 255
+}
+
+case "\$script" in
+*fleet-posix-ok*)
+	[ -f "$sshstate/\$dest.nonposix" ] && {
+		echo "printf : The term 'printf' is not recognized as a cmdlet." >&2
+		exit 1
+	}
+	printf fleet-posix-ok
+	;;
+*successfully?authenticated*)
+	[ -f "$sshstate/\$dest.noforge" ] && exit 1
+	printf 'an ssh key'
+	;;
+*no-dir*)
+	[ -f "$sshstate/\$dest.norepo" ] && { printf no-dir; exit 1; }
+	printf ok
+	;;
+"cat > "*)
+	p="\${script#cat > }"
+	p="\$(printf %s "\$p" | sed "s/^'//; s/'\$//")"
+	mkdir -p "$remotes/\$dest\$(dirname "\$p")"
+	cat >"$remotes/\$dest\$p"
+	;;
+"cat "*)
+	p="\${script#cat }"
+	p="\$(printf %s "\$p" | sed "s/^'//; s/'\$//")"
+	[ -f "$remotes/\$dest\$p" ] || {
+		echo "cat: \$p: No such file or directory" >&2
+		exit 1
+	}
+	cat "$remotes/\$dest\$p"
+	;;
+*) exit 0 ;;
+esac
+SH
+chmod +x "$sshbin/ssh"
+
+# The hosts thurbox is told about, in hosts.toml's own shape. `devbox` is the
+# ordinary POSIX host; the other two are the shapes fleet refuses outright,
+# and both refusals happen at `add` time without any host being contacted.
+cat >"$tmp/hosts.toml" <<'EOF'
+[[hosts]]
+name = "devbox"
+destination = "me@devbox"
+
+[[hosts]]
+name = "winbox"
+destination = "me@winbox"
+multiplexer = "psmux"
+
+[[hosts]]
+name = "lonebox"
+destination = "me@lonebox"
+share_sessions = false
+EOF
+
+export PATH="$ghbin:$tbxbin:$sshbin:$PATH"
 
 # A compliant body for the pull request test 3 collects, so that test says what
 # it always said — that a blocker clears on a real conclusion — and nothing
@@ -1544,6 +1659,221 @@ for slug in 01-conflicting 03-skipped 07-gone 08-second; do
 	git -C "$srepo" worktree remove --force \
 		"$FLEET_QUEUE_DIR/.worktrees/${stopic}__${slug}" 2>/dev/null
 done
+
+# --- 11. a task can name a HOST, and a local task does not change ------------
+#
+# The two halves that matter, in that order. A remote worker's filesystem is
+# not this one, so the brief has to reach it and the result has to come back —
+# and none of that may show up in the path a task with no host takes. The `ssh`
+# stub above is a real fake host: what the push writes, the fetch reads.
+#
+# In a queue of its own, because `dispatch` acts on every ready task in the
+# whole queue and the sections above deliberately leave some of theirs
+# unwritten. Same stubs, same PATH — only the records are separate.
+
+export FLEET_QUEUE_DIR="$tmp/queue-remote"
+
+rtopic="$($QUEUE topic add run-somewhere-else \
+	--title 'Run a task on another machine' \
+	--prompt 'fleet should be able to spawn a worker on a remote thurbox host')"
+
+# (a) The refusals that cost nothing, all at `add` time and none of them
+#     touching a host: a name thurbox does not know, a Windows host, and a
+#     host whose session sharing is off — which is the trust dialog, decided.
+for spec in \
+	"nosuch:no host named" \
+	"winbox:POSIX hosts only" \
+	"lonebox:share_sessions = false"; do
+	IFS=: read -r hname want <<<"$spec"
+	if out="$($QUEUE add "$rtopic" "reject-$hname" --title "Reject $hname" \
+		--repo /srv/code/app --host "$hname" --branch fix/reject 2>&1)"; then
+		fail "--host $hname is refused at add time" "$out"
+	else
+		expect "--host $hname is refused at add time" "$want" "$out"
+	fi
+done
+expect "and the refusal for an unknown host names the ones that exist" \
+	"devbox" "$($QUEUE add "$rtopic" x --title x --repo /srv/code/app \
+		--host nosuch --branch fix/x 2>&1)"
+
+# (b) A local task, dispatched exactly as before: no --host anywhere near the
+#     spawn, no ssh in the plan, and a brief named by ITS OWN absolute path on
+#     this machine. This is the half that must not have changed.
+$QUEUE add "$rtopic" stay-local --title 'Stay local' --repo /tmp/repo-a \
+	--branch fix/stay-local --number 20 >/dev/null
+localbrief="$(cat "$FLEET_QUEUE_DIR/$rtopic/20-stay-local/BRIEF.md")"
+expect "a local brief still names the queue's own result.md, absolutely" \
+	"$FLEET_QUEUE_DIR/$rtopic/20-stay-local/result.md" "$localbrief"
+refute "and says nothing about a host" "on host" "$localbrief"
+refute "and never tells the worker to write beside its brief" \
+	"in the root of this worktree" "$localbrief"
+printf 'Do the local thing.\n' >"$FLEET_QUEUE_DIR/$rtopic/20-stay-local/BRIEF.md"
+
+out="$($QUEUE dispatch --dry-run 2>&1)"
+refute "a task with no host spawns with no --host" "--host" "$out"
+refute "and its dispatch plan mentions no ssh at all" "ssh <host>" "$out"
+expect "and it is pointed at its brief here, by absolute path" \
+	"$FLEET_QUEUE_DIR/$rtopic/20-stay-local/BRIEF.md" "$out"
+
+# (c) A remote task's brief is the same document, but every control-plane path
+#     it would otherwise name — the result, the prompt, the standing policy —
+#     is not on that filesystem, so each is stated relative to the brief itself,
+#     the one path a remote worker can always resolve.
+$QUEUE add "$rtopic" build-on-devbox --title 'Build it on devbox' \
+	--repo /srv/code/app --host devbox --branch fix/build-on-devbox \
+	--number 22 >/dev/null
+rbrief="$(cat "$FLEET_QUEUE_DIR/$rtopic/22-build-on-devbox/BRIEF.md")"
+expect "a remote brief says which host the repo is on" "on host \`devbox\`" "$rbrief"
+expect "and points the result at the worktree it is sitting in" \
+	"in the root of this worktree" "$rbrief"
+refute "and never at a control-plane path the worker cannot reach" \
+	"$FLEET_QUEUE_DIR/$rtopic/22-build-on-devbox/result.md" "$rbrief"
+expect "and points the prompt at a sibling of itself, not a control-plane path" \
+	"PROMPT.md\`, alongside this file" "$rbrief"
+refute "and never at the control plane's own PROMPT.md path" \
+	"$FLEET_QUEUE_DIR/$rtopic/PROMPT.md" "$rbrief"
+expect "and points the standing policy at a sibling of itself too" \
+	"POLICY.md\`, alongside this file" "$rbrief"
+refute "and never at the control plane's own POLICY.md path" \
+	"$PWD/orchestration/queue/POLICY.md" "$rbrief"
+expect "and says to delete every copy before committing" \
+	"Delete \`BRIEF.md\`, \`POLICY.md\`, and \`PROMPT.md\` before you commit" "$rbrief"
+
+expect "\`show\` says where a task runs" "host:        devbox" \
+	"$($QUEUE show "$rtopic/22-build-on-devbox")"
+expect "\`list\` spells a remote repo host-first, so it cannot read as local" \
+	"devbox:/srv/code/app" "$($QUEUE list --topic "$rtopic")"
+expect "\`plan\` does too" "devbox:/srv/code/app" "$($QUEUE plan)"
+
+printf 'Build the thing on devbox.\n' \
+	>"$FLEET_QUEUE_DIR/$rtopic/22-build-on-devbox/BRIEF.md"
+
+# (d) Every probe runs before anything is spawned, and one failure stops that
+#     task where it stands. A remote worker that starts and then fails at its
+#     first `git` call looks like an agent bug and is not one.
+for spec in \
+	"down:reachable:No route to host" \
+	"nonposix:posix shell:POSIX" \
+	"noforge:forge:credentials of its own" \
+	"norepo:repo:not on the machine"; do
+	IFS=: read -r flag probe want <<<"$spec"
+	: >"$sshstate/me@devbox.$flag"
+	out="$($QUEUE dispatch 2>&1)"
+	expect "a host that fails the \`$probe\` probe is not spawned" \
+		"NOT SPAWNED" "$out"
+	expect "and the failing probe is named: $probe" "$probe" "$out"
+	rm -f "$sshstate/me@devbox.$flag"
+	state="$($QUEUE show "$rtopic/22-build-on-devbox" | grep -F 'state:')"
+	expect "and the task is left queued, so fixing the host and re-running sends it" \
+		"queued" "$state"
+done
+expect "the repo probe says --repo is a path on the host, not here" \
+	"nothing local validates it" \
+	"$(: >"$sshstate/me@devbox.norepo"
+	$QUEUE dispatch 2>&1
+	rm -f "$sshstate/me@devbox.norepo")"
+
+# (e) Probes pass: the session is spawned WITH --host, and the brief is put on
+#     the host before the worker is told to read it.
+rsession=aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+worktree=/home/me/.local/share/thurbox/worktrees/app-1234/fix-build-on-devbox
+printf '{"id":"%s","created":true}\n' "$rsession" >"$tmp/next-session.json"
+cat >"$sessions/$rsession.json" <<EOF
+{"id":"$rsession","name":"Build it on devbox","state":"working",
+ "agent":"claude","hook_reported":true,
+ "worktrees":[{"repo_path":"/srv/code/app","worktree_path":"$worktree",
+               "branch":"fix/build-on-devbox"}]}
+EOF
+
+out="$($QUEUE dispatch 2>&1)"
+expect "every probe passing is reported, not just the failures" "probe ok" "$out"
+expect "and the brief is copied to the host" "brief copied to me@devbox" "$out"
+
+if [ -f "$remotes/me@devbox$worktree/BRIEF.md" ]; then
+	pass "the brief really is on the host's filesystem, not only claimed to be"
+else
+	fail "the brief really is on the host's filesystem" \
+		"nothing at $remotes/me@devbox$worktree/BRIEF.md"
+fi
+expect "and it is the brief the lead wrote" "Build the thing on devbox" \
+	"$(cat "$remotes/me@devbox$worktree/BRIEF.md" 2>/dev/null)"
+if [ -f "$remotes/me@devbox$worktree/POLICY.md" ]; then
+	pass "the standing policy is copied to the host too, not only claimed to be"
+else
+	fail "the standing policy is copied to the host" \
+		"nothing at $remotes/me@devbox$worktree/POLICY.md"
+fi
+expect "and it is the same policy the checkout ships" \
+	"$(cat "$PWD/orchestration/queue/POLICY.md")" \
+	"$(cat "$remotes/me@devbox$worktree/POLICY.md" 2>/dev/null)"
+if [ -f "$remotes/me@devbox$worktree/PROMPT.md" ]; then
+	pass "the topic's prompt is copied to the host too, not only claimed to be"
+else
+	fail "the topic's prompt is copied to the host" \
+		"nothing at $remotes/me@devbox$worktree/PROMPT.md"
+fi
+expect "and it is this topic's own prompt" \
+	"$(cat "$FLEET_QUEUE_DIR/$rtopic/PROMPT.md")" \
+	"$(cat "$remotes/me@devbox$worktree/PROMPT.md" 2>/dev/null)"
+expect "the record keeps the host-side worktree, so collect knows where to look" \
+	"me@devbox:$worktree" "$($QUEUE show "$rtopic/22-build-on-devbox")"
+
+# (f) The completion model is the same one: the worker writes a file, and
+#     `collect` reads a file. ssh is only how it gets here.
+mkdir -p "$remotes/me@devbox$worktree"
+cat >"$remotes/me@devbox$worktree/result.md" <<'EOF'
+---
+outcome: shipped
+artifact: https://github.com/remote-owner/app/pull/4242
+---
+Built it on devbox and opened the pull request.
+EOF
+cat >"$bodies/4242.md" <<'EOF'
+## Intent
+Build it there.
+## What Changed
+src/main.rs.
+## Risk Assessment
+Low.
+## Testing
+cargo test on the host.
+## Pipeline
+no-mistakes, all gates green.
+EOF
+session_is "$rsession" idle
+cat >"$sessions/$rsession.json" <<EOF
+{"id":"$rsession","name":"Build it on devbox","state":"idle","agent":"claude"}
+EOF
+
+out="$($QUEUE collect 2>&1)"
+expect "collect fetches a remote worker's result over ssh" \
+	"result fetched from me@devbox" "$out"
+expect "and closes the task on it, exactly as it would locally" "shipped" "$out"
+expect "and the pipeline check ran on it like any other" "pipeline verified" "$out"
+if [ -f "$FLEET_QUEUE_DIR/$rtopic/22-build-on-devbox/result.md" ]; then
+	pass "the fetched result lands in the queue, where it outlives the host"
+else
+	fail "the fetched result lands in the queue" "no local result.md"
+fi
+
+# (g) An unreachable remote session is never reaped. thurbox's CLI never says
+#     `unreachable` — a down host leaves the LATCHED state standing, so this
+#     session still reads `idle`, and `idle` is reapable. The host is asked
+#     first, and that is the only thing between a temporary outage and a
+#     deleted worktree.
+echo MERGED >"$states/4242.state"
+: >"$sshstate/me@devbox.down"
+out="$($QUEUE reap 2>&1)"
+expect "a session on an unreachable host is kept" "unreachable: host devbox" "$out"
+refute "and nothing is deleted for it" "$rsession" "$(cat "$deletions")"
+expect "thurbox still calls that session idle, which is the whole trap" \
+	'"state":"idle"' "$(cat "$sessions/$rsession.json")"
+
+rm -f "$sshstate/me@devbox.down"
+out="$($QUEUE reap 2>&1)"
+expect "and once the host answers again, the merged task's session is released" \
+	"reaped" "$out"
+expect "with --force, on the host thurbox owns" "$rsession" "$(cat "$deletions")"
 
 echo
 if [ "$failed" -eq 0 ]; then

@@ -87,7 +87,11 @@ The loop, driven by `./scripts/queue.sh`:
    holds the plan and the log, never the workers' branches. `dispatch` gets each
    new session past its agent's trust dialog before it sends the brief
    (`./scripts/session-trust.sh`), because sending one into that dialog is how
-   every fleet-spawned worker used to break.
+   every fleet-spawned worker used to break. A task may name a `--host` from
+   thurbox's `hosts.toml` and run on that machine instead; `--repo` is then a
+   path THERE, three probes run before anything is spawned, and the brief and
+   the result travel by ssh so that completion stays one model. No host means
+   no change.
 5. **Completion is two things you read, never something that interrupts you.**
    `queue.sh watch` folds `thurbox-cli watch`'s event stream into each task's
    record and closes nothing; `queue.sh collect` reads the `result.md` the

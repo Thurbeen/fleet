@@ -5,11 +5,12 @@ and write your own. That copy is **yours and gitignored**; this one is tracked
 and only documents the format.
 
 `queue.sh add` reads your copy when it scaffolds a `BRIEF.md`. If it exists and
-is not empty, every brief written from then on points its worker at it by
-absolute path, so a preference you write once reaches every task without being
-retyped into a brief or edited into a tracked file. If it does not exist,
-briefs say nothing about it — a fresh clone behaves exactly as it did before
-this file existed.
+is not empty, every brief written from then on points its worker at it — by
+absolute path, or, for a task running on a remote host, by a path relative to
+the brief itself — so a preference you write once reaches every task without
+being retyped into a brief or edited into a tracked file. If it does not
+exist, briefs say nothing about it — a fresh clone behaves exactly as it did
+before this file existed.
 
 **Why not `CONSTITUTION.md`,** which is what you probably call it: thurbox
 ships a `docs/CONSTITUTION.md` that means something else entirely, and a worker
