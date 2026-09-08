@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Prove the monitor's lifecycle claims, rather than assert them.
 #
-# `scripts/webui.sh` makes five promises that are easy to write down and easy
-# to get backwards, and four of them are invisible until the day they matter.
+# `scripts/webui.sh` makes six promises that are easy to write down and easy
+# to get backwards, and five of them are invisible until the day they matter.
 # Each gets a test here, against a throwaway queue and a throwaway runtime
 # directory, so a change that quietly inverts one fails the gate:
 #
