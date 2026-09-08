@@ -522,8 +522,8 @@ def probe_fuel() -> dict:
         "unavailable": None, "source": "quota-axi", "provider": FUEL_PROVIDER,
         "remaining": None, "reserve": FUEL_RESERVE, "below_reserve": None,
         "binding": None, "resets_at": None, "windows": [], "stale": None,
-        "state": None, "refreshed_at": None, "retry_after": None,
-        "error": None, "schema_version": None,
+        "state": None, "refreshed_at": None, "retry_after": None, "error": None,
+        "schema_version": None,
     }
     doc, why = run_json(
         ["quota-axi", "--provider", FUEL_PROVIDER, "--full", "--json",
