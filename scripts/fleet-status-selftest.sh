@@ -203,19 +203,26 @@ JSON
 STUB
 chmod +x "$stubbed/gh"
 
-# quota-axi in its real shape (schemaVersion 5), carrying BOTH the measured
-# fields and the projected ones — so section 6 can prove which of them reach
-# the screen.
+# quota-axi in its real shape (schemaVersion 5): three windows that reset
+# independently, carrying BOTH the measured fields and the projected ones — so
+# section 6 can prove which of them reach the screen.
 fuel_stub() {
 	cat >"$1/quota-axi" <<STUB
 #!/bin/sh
 cat <<'JSON'
 {"generatedAt":"2026-03-15T16:42:00.000Z","schemaVersion":5,"providers":[
- {"provider":"claude","plan":"pro",
-  "windows":[{"id":"five_hour","label":"session","kind":"session","percentRemaining":82,
-              "resetsAt":"2026-03-15T20:10:48.000Z"},
-             {"id":"seven_day","label":"week","kind":"weekly","percentRemaining":$2,
-              "resetsAt":"2026-03-20T17:59:45.600Z"}],
+ {"provider":"claude","plan":"max","source":"oauth",
+  "windows":[
+    {"id":"five_hour","label":"session","kind":"session","percentRemaining":90,
+     "resetsAt":"2026-03-15T20:10:48.000Z",
+     "pace":{"status":"behind","reservePercentPoints":12.4,"burnMultiple":0.5921,
+             "projectedExhaustedAt":"2026-03-15T18:02:11.000Z"}},
+    {"id":"seven_day","label":"week","kind":"weekly","percentRemaining":$2,
+     "resetsAt":"2026-03-20T17:59:45.600Z",
+     "pace":{"status":"ahead","reservePercentPoints":-8.2,"burnMultiple":1.295,
+             "projectedExhaustedAt":"2026-03-19T03:43:45.600Z"}},
+    {"id":"model:fable","label":"Fable week","kind":"model","percentRemaining":100,
+     "resetsAt":"2026-03-20T08:25:12.000Z"}],
   "state":{"status":"fresh","stale":false},
   "quotaSemantics":{"status":"known","effectiveAvailability":[
     {"scope":"all_models","status":"known","effectivePercentRemaining":$2,
@@ -247,14 +254,18 @@ expect "with its check status, not just its existence" "passing" "$full"
 # second half of that document must not reach the screen — and `resetsAt`, the
 # fact that says when a spent window comes back, must.
 
-expect "the reading is the account's remaining headroom" "64% remaining" "$full"
+expect "the binding window's headroom is the reading" "64% remaining" "$full"
 expect "the reserve is on the same line, so the rule is checkable" "reserve 20%" "$full"
-expect "the binding window is named" "seven_day" "$full"
-expect "and when it comes back" "resets 2026-03-20T17:59:45.600Z" "$full"
+expect "the window that binds is named" "binding seven_day" "$full"
+expect "and every window is printed, since they reset independently" "five_hour" "$full"
+expect "including the per-model one" "model:fable" "$full"
+expect "each with its own reset" "resets 2026-03-20T17:59:45.600Z" "$full"
 refute "quota-axi's projected exhaustion instant does not reach the screen" \
 	"2026-03-19T03:43:45.600Z" "$full"
 refute "nor its runway in seconds" "298906" "$full"
-refute "nor the verdict built on them" "projected_exhaustion" "$full"
+refute "nor its pace residual, which is a different thing from fleet's reserve" \
+	"-8.2" "$full"
+refute "nor the burn multiple built on them" "1.295" "$full"
 
 lowfuel="$(sandbox "$tmp/bin-lowfuel" "${BASE_TOOLS[@]}")"
 fuel_stub "$lowfuel" 8
@@ -262,9 +273,45 @@ low="$(PATH="$lowfuel" "$STATUS" 2>&1)"
 expect "under the reserve, the reading is still just the reading" "8% remaining" "$low"
 expect "and the floor is named as the thing it is under" "under the 20% reserve" "$low"
 
-# A provider with no number is the case the section exists to get right: an
-# absent reading is reported as absent, in quota-axi's own words, and never as
-# a zero — which would read as an empty window rather than a missing one.
+# THE CASE THAT BITES, taken from a live run. A rate-limited fetch answers with
+# an EMPTY `quota[]` and a `headroom_unknown` row per scope, while the numbers
+# survive in `windows[]` from cache. That is a degraded reading, not zero fuel
+# and not an error — so the number is reported, and its age is reported with it.
+
+stale="$(sandbox "$tmp/bin-stale" "${BASE_TOOLS[@]}")"
+cat >"$stale/quota-axi" <<'STUB'
+#!/bin/sh
+cat <<'JSON'
+{"generatedAt":"2026-09-08T21:29:21.000Z","schemaVersion":5,"providers":[
+ {"provider":"claude","plan":"max","source":"cache",
+  "windows":[
+    {"id":"five_hour","label":"session","kind":"session","percentRemaining":90,
+     "resetsAt":"2026-09-09T02:09:59.840656+00:00",
+     "pace":{"status":"unknown","reason":"stale"}},
+    {"id":"seven_day","label":"week","kind":"weekly","percentRemaining":74,
+     "resetsAt":"2026-09-14T23:59:59.840676+00:00",
+     "pace":{"status":"unknown","reason":"stale"}},
+    {"id":"model:fable","label":"Fable week","kind":"model","percentRemaining":100,
+     "resetsAt":"2026-09-15T00:00:00+00:00","pace":{"status":"unknown","reason":"stale"}}],
+  "state":{"status":"stale","stale":true,
+           "refreshedAt":"2026-09-08T21:28:34.926Z",
+           "error":"Claude quota endpoint rate limited retry after 2026-09-08T21:33:47.413Z"},
+  "quotaSemantics":{"status":"unknown","effectiveAvailability":[
+    {"scope":"all_models","status":"unknown","boundedBy":["five_hour","seven_day"]}]}}]}
+JSON
+STUB
+chmod +x "$stale/quota-axi"
+cached="$(PATH="$stale" "$STATUS" 2>&1)"
+expect "an empty quota[] still yields a reading, from the cached windows" \
+	"74% remaining" "$cached"
+refute "and is never rendered as an empty window" "0% remaining" "$cached"
+expect "the reading says it is stale" "stale" "$cached"
+expect "and how old it is, because the age is part of the fact" \
+	"last refreshed 2026-09-08T21:28:34.926Z" "$cached"
+expect "and why it could not be refreshed" "rate limited" "$cached"
+
+# A provider with no window at all is the other half: an absent reading is
+# reported as absent, in quota-axi's own words, and never as a zero.
 mute="$(sandbox "$tmp/bin-mute" "${BASE_TOOLS[@]}")"
 cat >"$mute/quota-axi" <<'STUB'
 #!/bin/sh
@@ -278,7 +325,7 @@ JSON
 STUB
 chmod +x "$mute/quota-axi"
 silent="$(PATH="$mute" "$STATUS" 2>&1)"
-expect "a provider with no number says so in quota-axi's words" \
+expect "a provider with no window says so in quota-axi's words" \
 	"unavailable — auth_required; Claude sign-in required" "$silent"
 refute "and never invents a zero" "0% remaining" "$silent"
 

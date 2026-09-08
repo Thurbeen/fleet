@@ -413,9 +413,15 @@ def probe_checkout() -> dict:
 # --- fuel --------------------------------------------------------------------
 
 FUEL_PROVIDER = "claude"
-FUEL_SCOPE = "all_models"
-# The floor the lead does not dispatch past. FLEET.md's `## Fuel` section is
-# where the rule lives; this is the same number so the screen can show it.
+# The floor the lead does not dispatch past, in percent remaining. FLEET.md's
+# `## Fuel` section owns the rule; this is the same number so the screen can
+# print it beside the reading.
+#
+# IT IS NOT quota-axi's `reserve`. That field is `pace.reservePercentPoints` —
+# `percentRemaining - timeRemainingPercent`, a signed residual against the
+# reset clock, which is negative whenever you are burning faster than linear
+# and is `unknown` for every window whose pace could not be computed. Fleet
+# needs an absolute floor that survives a stale reading, so it states its own.
 FUEL_RESERVE = 20
 
 
@@ -431,8 +437,35 @@ def fuel_reason(state: dict) -> str:
     return "; ".join(bits)
 
 
+def fuel_windows(provider: dict) -> list:
+    """The provider's windows that carry a number, in declaration order.
+
+    Claude has three and they reset independently — `five_hour`, `seven_day`
+    and a `model:<name>` week — so there is no one reset to report and
+    quota-axi deliberately does not invent one. A window with no `resetsAt` has
+    not been triggered yet rather than being a gap, so it is kept and its reset
+    is simply absent.
+    """
+    out = []
+    for w in provider.get("windows") or []:
+        if not isinstance(w, dict):
+            continue
+        remaining = w.get("percentRemaining")
+        if not isinstance(remaining, (int, float)) or isinstance(remaining, bool):
+            continue
+        out.append(
+            {
+                "id": str(w.get("id") or "?"),
+                "label": w.get("label"),
+                "remaining": remaining,
+                "resets_at": str(w["resetsAt"]) if w.get("resetsAt") else None,
+            }
+        )
+    return out
+
+
 def probe_fuel() -> dict:
-    """How much of the account's provider window is left, per quota-axi.
+    """How much of the account's provider windows is left, per quota-axi.
 
     THE ONLY SOURCE. `thurbox-cli session get --json` carries no token, usage,
     cost or limit field, so nothing thurbox knows can answer this. quota-axi
@@ -440,22 +473,35 @@ def probe_fuel() -> dict:
     normalises them. It is a tool on the operator's PATH and never a bundled
     dependency: absent, it costs this section and says so.
 
-    IT MEASURES THE ACCOUNT, NOT A SESSION. `effectivePercentRemaining` is the
-    subscription window the lead and every worker spend at once, so this
-    section carries ONE reading and can never say what a given worker burned.
-    Six workers dispatched together spend one window six ways.
+    IT MEASURES THE ACCOUNT, NOT A SESSION. These are the subscription windows
+    the lead and every worker spend at once, so this section carries ONE
+    reading and can never say what a given worker burned. Six workers
+    dispatched together spend one window set six ways.
+
+    IT READS `windows[]`, NOT THE HEADROOM SUMMARY. On a rate-limited fetch
+    quota-axi answers with an empty `quota[]` and an `attention[]` row per
+    scope — `headroom_unknown` — while the per-window percentages survive from
+    its cache. Reading `effectiveAvailability[].effectivePercentRemaining`
+    would report that live case as no reading at all; reading the windows
+    reports a stale number and says it is stale, which is the true statement.
+    The binding window is whichever has least remaining, and every window is
+    printed so the reader can see the rest.
 
     IT REPORTS WHAT WAS MEASURED, NEVER WHAT WAS PROJECTED. quota-axi also
-    publishes `runway`, `usableRunwaySeconds` and `projectedExhaustedAt`; those
-    are forecasts, and FLEET.md forbids fleet from carrying one. Read here:
-    `effectivePercentRemaining`, `limitingWindowIds`, and that window's
-    `resetsAt` — a spent window is spent, and when it comes back is the fact
-    that can be acted on.
+    publishes `pace`, `burnMultiple`, `runway`, `usableRunwaySeconds` and
+    `projectedExhaustedAt`; those are forecasts, and FLEET.md forbids fleet
+    from carrying one. `percentRemaining` and `resetsAt` are measurements — a
+    spent window is spent, and when it comes back is the fact that can be acted
+    on.
 
-    `--no-credential-refresh` because this command READS: a plain quota read
-    may delegate an expired session's renewal to the vendor CLI that owns it,
-    and that is a write. `--provider claude` because that is the agent the
-    fleet runs, and asking every vendor buys readings nobody here uses.
+    `--provider claude` because that is the agent the fleet runs: every other
+    provider on this machine is one the operator does not reach through fleet,
+    and its auth state is not fleet's problem to report. `--full` because
+    `state.refreshedAt` — the age that makes a cached number honest — is
+    demoted out of the default tier; the account identity `--full` also returns
+    is never read and never printed. `--no-credential-refresh` because this
+    command READS: a plain quota read may delegate an expired session's
+    renewal to the vendor CLI that owns it, and that is a write.
 
     Written against `schemaVersion` 5 and parsed defensively rather than
     pinned — a field this cannot find costs the section its reading and names
@@ -463,12 +509,14 @@ def probe_fuel() -> dict:
     """
     sec: dict = {
         "unavailable": None, "source": "quota-axi", "provider": FUEL_PROVIDER,
-        "scope": FUEL_SCOPE, "remaining": None, "reserve": FUEL_RESERVE,
-        "below_reserve": None, "limited_by": [], "resets_at": None,
-        "stale": None, "state": None, "schema_version": None,
+        "remaining": None, "reserve": FUEL_RESERVE, "below_reserve": None,
+        "binding": None, "windows": [], "stale": None, "state": None,
+        "refreshed_at": None, "retry_after": None, "error": None,
+        "schema_version": None,
     }
     doc, why = run_json(
-        ["quota-axi", "--provider", FUEL_PROVIDER, "--json", "--no-credential-refresh"],
+        ["quota-axi", "--provider", FUEL_PROVIDER, "--full", "--json",
+         "--no-credential-refresh"],
         timeout=20,
     )
     if why:
@@ -488,32 +536,28 @@ def probe_fuel() -> dict:
         return sec
 
     state = provider.get("state") if isinstance(provider.get("state"), dict) else {}
-    sec["state"], sec["stale"] = state.get("status"), state.get("stale")
+    sec["state"], sec["stale"] = state.get("status"), bool(state.get("stale"))
+    sec["error"] = state.get("error")
+    sec["refreshed_at"] = state.get("refreshedAt")
+    # `retryAfter` is documented as a state rather than a shape, so it is
+    # printed only when it is already a sentence. When it is not, the same
+    # instant is in `state.error`, which always is.
+    if isinstance(state.get("retryAfter"), str):
+        sec["retry_after"] = state["retryAfter"]
 
-    semantics = provider.get("quotaSemantics")
-    scopes = (semantics or {}).get("effectiveAvailability") or []
-    scope = next(
-        (s for s in scopes if isinstance(s, dict) and s.get("scope") == FUEL_SCOPE),
-        None,
-    )
-    remaining = scope.get("effectivePercentRemaining") if scope else None
-    if not isinstance(remaining, (int, float)) or isinstance(remaining, bool):
-        # An absent number is quota-axi's own encoding of "no number", so it is
-        # reported as one — never as a zero, which reads as an empty window.
+    windows = fuel_windows(provider)
+    if not windows:
+        # No number is quota-axi's own encoding of "no number", so it is
+        # reported as one — never as a zero, which reads as a spent window
+        # rather than an unread one.
         sec["unavailable"] = fuel_reason(state)
         return sec
 
-    sec["remaining"] = remaining
-    sec["below_reserve"] = remaining < FUEL_RESERVE
-    sec["limited_by"] = [w for w in scope.get("limitingWindowIds") or [] if isinstance(w, str)]
-    windows = {
-        w.get("id"): w for w in provider.get("windows") or [] if isinstance(w, dict)
-    }
-    for wid in sec["limited_by"]:
-        resets = (windows.get(wid) or {}).get("resetsAt")
-        if resets:
-            sec["resets_at"] = str(resets)
-            break
+    sec["windows"] = windows
+    binding = min(windows, key=lambda w: w["remaining"])
+    sec["binding"] = binding["id"]
+    sec["remaining"] = binding["remaining"]
+    sec["below_reserve"] = binding["remaining"] < FUEL_RESERVE
     return sec
 
 
@@ -644,13 +688,26 @@ def render_fuel(sec: dict) -> list:
     if sec["unavailable"]:
         return [head("FUEL", f"unavailable — {sec['unavailable']}")]
     line = f"{sec['remaining']}% remaining   reserve {sec['reserve']}%"
-    if sec["limited_by"]:
-        line += f"   limited by {', '.join(sec['limited_by'])}"
-    lines = [head("FUEL", line)]
-    where = f"{sec['provider']} {sec['scope']} — one window, every session spends it"
-    lines.append(cont(f"resets {sec['resets_at']}  ·  {where}" if sec["resets_at"] else where))
-    if sec["stale"]:
-        lines.append(cont(f"quota-axi calls this reading stale (state {sec['state']})"))
+    if sec["binding"]:
+        line += f"   binding {sec['binding']}"
+    lines = [
+        head("FUEL", line),
+        cont(f"{sec['provider']} — account windows, every session spends them at once"),
+    ]
+    for w in sec["windows"]:
+        resets = f"resets {w['resets_at']}" if w["resets_at"] else "not triggered yet"
+        binds = "  binds" if w["id"] == sec["binding"] else ""
+        lines.append(f"    {w['id']:<16}{w['remaining']:>4}%  {resets}{binds}")
+    # A cached number is a fact with an age, and the age is part of the fact.
+    if sec["stale"] or (sec["state"] and sec["state"] != "fresh"):
+        detail = [str(sec["state"] or "stale")]
+        if sec["refreshed_at"]:
+            detail.append(f"last refreshed {sec['refreshed_at']}")
+        if sec["error"]:
+            detail.append(str(sec["error"]))
+        if sec["retry_after"]:
+            detail.append(f"retry after {sec['retry_after']}")
+        lines.append(cont("; ".join(detail)))
     if sec["below_reserve"]:
         lines.append(cont(f"! under the {sec['reserve']}% reserve — dispatch, do not investigate (FLEET.md `## Fuel`)"))
     return lines

@@ -96,18 +96,26 @@ symlink to `.agents/skills`, so every CLI loads the one copy.)
 
 ## Fuel
 
-**Fuel is how much of the account's provider window is left**, read by
+**Fuel is how much of the account's provider windows is left**, read by
 `./scripts/fleet-status.sh` from `quota-axi` and printed as its `FUEL` section.
-It measures the ACCOUNT, not a session: one window, which you and every worker
-spend at once, so six workers dispatched together spend it six ways. There is
-no per-worker reading to be had — `thurbox-cli session get` carries no token,
+It measures the ACCOUNT, not a session: the windows you and every worker spend
+at once, so six workers dispatched together spend them six ways. There is no
+per-worker reading to be had — `thurbox-cli session get` carries no token,
 usage, cost or limit field at all.
+
+There are three windows and they reset independently — a session window, a
+week, and a per-model week. The reading is the lowest of them, the screen names
+which one binds and prints all three with their own resets, and a reading
+served from cache says `stale` and how old it is. A cached number is a fact
+with an age, and the age is part of the fact.
 
 **The reserve is 20%. Below it you dispatch nothing new.** That is the rule,
 and it is checkable rather than a feeling: the screen prints the reading and
-the reserve on one line. Nothing enforces it for you — `queue.sh dispatch`
-does not read fuel and must not, because a queue that stops on a bad parse is
-worse than one that spends.
+the reserve on one line. It is fleet's own floor and not `quota-axi`'s
+`reserve` field, which is that window's pace against its reset clock and is
+`unknown` for every window whose fetch failed. Nothing enforces the floor for
+you — `queue.sh dispatch` does not read fuel and must not, because a queue that
+stops on a bad parse is worse than one that spends.
 
 Near the floor you spend fuel on dispatching and on nothing else:
 
@@ -122,11 +130,11 @@ Near the floor you spend fuel on dispatching and on nothing else:
   close what is already finished.
 
 **The reading is a fact you report**, in the same register as every other state
-word here: `fuel 64% remaining, reserve 20%`, or `fuel unavailable — quota-axi
-not found`. Never a zero, never a guess. quota-axi also publishes `runway` and
-`projectedExhaustedAt`; those are its projections and you do not restate them
-as yours. `resetsAt` is the fact — a spent window is spent, and that is when it
-comes back.
+word here: `fuel 74% remaining, reserve 20%, binding seven_day`, or `fuel
+unavailable — quota-axi not found`. Never a zero, never a guess. quota-axi also
+publishes `pace`, `runway` and `projectedExhaustedAt`; those are its
+projections and you do not restate them as yours. `resetsAt` is the fact — a
+spent window is spent, and that is when it comes back.
 
 ## What you delegate
 
