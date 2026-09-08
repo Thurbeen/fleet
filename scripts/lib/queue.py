@@ -2552,7 +2552,6 @@ def refuel(q: Queue, ref: str | None = None, dry: bool = False) -> int:
     tasks = [q.get(ref)] if ref else sorted(q.tasks.values(), key=lambda t: t.ref)
     holders = [t for t in tasks if t.doc.get("session")]
     if not holders:
-        print("refuel: no task here is holding a session")
         return 0
 
     print(
@@ -2724,7 +2723,7 @@ def refuel(q: Queue, ref: str | None = None, dry: bool = False) -> int:
 
 def cmd_refuel(args) -> int:
     if refuel(Queue(queue_root()), ref=args.ref, dry=args.dry_run) == 0:
-        print("refuel: nothing to look at")
+        print("refuel: no task here is holding a session")
     return 0
 
 
