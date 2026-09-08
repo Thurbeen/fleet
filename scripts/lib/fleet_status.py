@@ -246,12 +246,11 @@ def rollup(entries) -> str:
         if not isinstance(e, dict):
             continue
         verdict = (e.get("conclusion") or e.get("state") or "").upper()
-        status = (e.get("status") or "").upper()
         if verdict in CHECK_FAIL:
             failing += 1
         elif verdict in CHECK_PASS:
             continue
-        elif status and status != "COMPLETED" or verdict in ("PENDING", "EXPECTED", ""):
+        else:
             pending += 1
     if failing:
         return "failing"
