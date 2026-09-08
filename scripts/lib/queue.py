@@ -95,6 +95,22 @@ OUTCOMES = {
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,60}$")
 BRIEF_PLACEHOLDER = "<!-- WRITE THE INSTRUCTIONS HERE -->"
 
+# The sections every brief has, in order. The lead was designing a document per
+# brief instead of filling one in: across seven hand-written briefs, 1191 lines,
+# the scaffold's four headings were joined by 20 invented ones. A fixed skeleton
+# costs the lead nothing and removes that whole decision.
+#
+# Every section starts as the SAME placeholder `dispatch` refuses, so the
+# refusal now covers a half-written brief and not only a blank one. A section
+# with nothing to say is filled in with "None" -- which is a claim the worker
+# can rely on, unlike an absent heading.
+BRIEF_SECTIONS = (
+    "What to do",
+    "Hard constraints",
+    "Coordination",
+    "Done means",
+)
+
 # The five headings a `no-mistakes` pull request body carries, and the ONE
 # place they are written down: POLICY.md quotes this list, collect checks
 # against it, and nothing else restates it.
@@ -576,10 +592,19 @@ def render_brief(task: Task, topic: dict, body: str | None) -> str:
     alone, and because it is the half of completion the event stream cannot
     supply: a transition says a turn ended, and only this file says what the
     worker concluded.
+
+    Between the two comes BRIEF_SECTIONS, unwritten: the lead supplies content,
+    not structure. `--brief-file` fills the first section and leaves the rest
+    for the lead, so a body handed in on the command line still gets the same
+    skeleton and the same refusal.
     """
     d = task.doc
     result = os.path.abspath(task.file("result.md"))
     prompt = os.path.abspath(os.path.join(os.path.dirname(task.path), "PROMPT.md"))
+    filled = {BRIEF_SECTIONS[0]: body.strip()} if body and body.strip() else {}
+    sections = "\n\n".join(
+        f"## {h}\n\n{filled.get(h, BRIEF_PLACEHOLDER)}" for h in BRIEF_SECTIONS
+    )
     return f"""# {d["title"]}
 
 Task `{task.ref}` of topic **{topic.get("title", task.topic)}**.
@@ -595,9 +620,7 @@ instructions and it is not repeated here: how to open the pull request and how
 that is verified, who merges it, the gate to run before you push, and what the
 other workers running beside you mean for you. This brief does not override it.
 
-## What to do
-
-{body.strip() if body else BRIEF_PLACEHOLDER}
+{sections}
 
 ## Reporting back — write a file, do not send mail
 

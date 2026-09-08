@@ -87,18 +87,64 @@ that gets reported**, never a reason to hold anything back — see §3.
 ## 2. Write the brief
 
 `add` scaffolds `BRIEF.md` with the repo, the branch, the pointer back to
-PROMPT.md and the result contract already filled in, and one placeholder:
+PROMPT.md, the pointer to standing policy and the result contract already
+filled in, plus four empty sections. That outline is the whole structure of a
+brief; you supply content for it.
+
+| section | what goes in it |
+|---|---|
+| `What to do` | the goal, and every task-specific detail the worker cannot read off the repo |
+| `Hard constraints` | what it must not do, and the concrete failure each constraint prevents |
+| `Coordination` | the other tasks in flight it has to know about — write `None.` when there are none |
+| `Done means` | the checks that pass and the artifact that exists when the task is over |
+
+Each arrives as the same placeholder:
 
 ```markdown
 <!-- WRITE THE INSTRUCTIONS HERE -->
 ```
 
-Replace it. **`dispatch` refuses a task that still carries it**, because a
-worker sent an unwritten brief has nothing to do and will invent something.
+Replace every one of them. **`dispatch` refuses a task that still carries one**,
+so a half-written brief is stopped as firmly as a blank one.
 
 Write it as if the reader knows nothing, because it does: workers share no
 context with you and none with each other. State the goal, the constraints, and
 what "done" looks like, from scratch.
+
+### The style contract
+
+A brief is read once, by a worker with no context and a token budget. Two
+kinds of writing inflate one without informing it, and a third looks like
+padding and is the reason the worker gets it right on the first pass.
+
+**Cut invented headings and rhetorical contrast.** A fifth heading means
+content that belongs under one of the four. Inside a section, `X, not Y` — and
+`is not`, `That is …`, `deliberately`, `on purpose` — earns its place only
+where the reader would otherwise believe Y. Seven briefs written before this
+rule ran to 1191 lines and carried 33 `X, not Y`s, 18 bare `is not`s and 20
+invented headings; several of the headings were themselves the construction
+("The lever, and it is the repo's own rule"). None of it told a worker
+anything.
+
+**Cut persuasion.** The worker follows the brief; it does not have to be
+convinced. Drop the sentence explaining why the task is worth doing, the one
+saying a decision was weighed carefully, and the one reassuring the reader
+that something is settled. "Serialize with `queue.sh block`" carries
+everything that "Serialize with `queue.sh block` — this is deliberate and the
+right call" carries.
+
+**Keep every measured fact.** Counts, file paths, sizes, exact token and
+version values, command names, and the specific past failure a constraint
+exists to prevent. One brief carries a `20G` figure and the failure it came
+from, and those two facts are why its worker chooses the correct gate over the
+obvious wrong one. **Deleting evidence to shorten a brief is the failure to
+fear here**: it spends the thing that buys one-pass quality in order to buy
+tokens. A brief is too long when it repeats itself or argues. It is never too
+long for being specific.
+
+Applied while writing: after each sentence, ask whether it states a fact the
+worker will act on. If it names a number, a path, a command or a failure, keep
+it. If it exists to frame, justify or reassure, delete it.
 
 **Do not restate standing policy in a brief.** The scaffold already points the
 worker at `orchestration/queue/POLICY.md`, by absolute path, and that file
