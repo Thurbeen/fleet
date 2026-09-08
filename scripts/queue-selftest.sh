@@ -58,6 +58,11 @@
 #      One task still running, or one a worker gave up in, keeps the whole
 #      topic in front of the operator — and all four readers answer the same,
 #      out of the topic file alone.
+#  15. NO TRANSITION IS LOST. Every event thurbox reports for a task's session
+#      reaches that task's progress.jsonl — whether another task's events came
+#      through the same batch, whether the task was dispatched while the watch
+#      was already streaming, whether nothing was watching at the time, and
+#      whether the run that read them died part-way. Exactly once each.
 #
 # Test 4 is also the wake proof. The event source is `thurbox-cli watch`, which
 # this script replaces with a recorded stream through `FLEET_QUEUE_WATCH_CMD` —
@@ -554,8 +559,8 @@ expect "and the trust step comes before the prompt" \
 # --- 4. a turn ending is not a task finishing --------------------------------
 
 # The stream is already at seq 100 before either task attaches, so attach can
-# prove it seeds the cursor from the high-water mark rather than from 0 or
-# from "now".
+# prove it stamps each task's own floor from the high-water mark rather than
+# from 0 or from "now".
 events="$tmp/events.jsonl"
 cat >"$events" <<'EOF'
 {"seq":100,"at":1788792150000,"session":"11111111-1111-1111-1111-111111111111","event":"present","from_state":null,"to_state":"working","state":"working","reason":null}
@@ -566,11 +571,20 @@ export FLEET_QUEUE_WATCH_CMD="cat $events"
 $QUEUE attach "$topic/01-drop-idle-default" 11111111-1111-1111-1111-111111111111 >/dev/null
 $QUEUE attach "$topic/02-document-the-states" 22222222-2222-2222-2222-222222222222 >/dev/null
 
-cursor="$(cat "$FLEET_QUEUE_DIR/.cursor" 2>/dev/null || echo '<missing>')"
-if [ "$cursor" = 100 ]; then
-	pass "attach seeds the cursor from the stream's high-water mark"
+seeded="$(grep -h '^watch_from:' \
+	"$FLEET_QUEUE_DIR/$topic/01-drop-idle-default/task.yaml" \
+	"$FLEET_QUEUE_DIR/$topic/02-document-the-states/task.yaml" | sort -u)"
+if [ "$seeded" = "watch_from: 100" ]; then
+	pass "attach stamps each task's own floor from the stream's high-water mark"
 else
-	fail "attach seeds the cursor from the stream's high-water mark" "cursor: $cursor"
+	fail "attach stamps each task's own floor from the stream's high-water mark" \
+		"got: $seeded"
+fi
+if [ -e "$FLEET_QUEUE_DIR/.cursor" ]; then
+	fail "and writes no queue-wide cursor for another task to consume" \
+		"$FLEET_QUEUE_DIR/.cursor exists"
+else
+	pass "and writes no queue-wide cursor for another task to consume"
 fi
 
 cat >>"$events" <<'EOF'
@@ -596,19 +610,176 @@ else
 fi
 
 out="$($QUEUE watch --for-secs 1 2>&1)"
-refute "the cursor resumes, so a second watch replays nothing" "seq 101" "$out"
+refute "each floor resumes, so a second watch replays nothing" "seq 101" "$out"
 
-# --- 7. a genuinely zero cursor is not treated as "no cursor" ----------------
+# --- 15. no transition is lost between watch runs ----------------------------
 #
-# seed_cursor legitimately writes 0 when the stream's high-water mark really
-# is 0 (a brand-new thurbox instance). read_cursor must tell that apart from
-# "no cursor file at all": cmd_watch used to test the cursor for truthiness,
-# so a real 0 was silently treated the same as "no cursor" and the --since
-# flag was dropped from the real `thurbox-cli watch` call, starting the first
-# watch after a dispatch from "now" instead of replaying from seq 0 — quietly
-# losing any transition in between. This needs the real command path (not
-# FLEET_QUEUE_WATCH_CMD, which replaces the whole command and never sees the
-# flags), so it stubs `thurbox-cli` on PATH and reads what it was called with.
+# The bug this proves gone: 19 of 20 live tasks had an EMPTY progress.jsonl
+# while the stream still held their transitions. `watch` kept one queue-wide
+# `.cursor` and advanced it over every event it read — folded or not — while
+# deciding what to fold from a `by_session` map snapshotted before the stream
+# was opened. Two things fell through that seam:
+#
+#   (a) a task dispatched WHILE a watch is streaming is not in that map, so its
+#       transitions were skipped and the shared cursor was written past them.
+#       They are then unreachable on every later run: the stream was consumed
+#       for a task that was never updated.
+#   (b) a watch that died part-way through a batch had written no cursor at
+#       all, so the next one replayed and re-appended what it had already
+#       folded.
+#
+# The floor is now per task and derived from the task's OWN progress.jsonl, so
+# a task advances only over the events it actually folded, and a crash costs
+# neither a skip nor a duplicate. This runs against its own throwaway queue so
+# the fixtures above keep the state the tests before it left them in.
+
+captmp="$(mktemp -d)"
+capq="$captmp/queue"
+capev="$captmp/events.jsonl"
+capseed="$captmp/seed.jsonl"
+sesa=aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+sesb=bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
+sesc=cccccccc-cccc-cccc-cccc-cccccccccccc
+
+capqueue() { FLEET_QUEUE_DIR="$capq" $QUEUE "$@"; }
+
+capline() {
+	printf '{"seq":%s,"at":1788793000000,"session":"%s","event":"state",' "$1" "$2"
+	printf '"from_state":null,"to_state":"%s","state":"%s","reason":"hook"}\n' "$3" "$3"
+}
+
+# The sequence numbers a task's record actually holds, in order, so a SKIP and
+# a DUPLICATE are both visible in one string.
+capseqs() {
+	python3 - "$1" <<'CAPPY'
+import json, os, sys
+path = sys.argv[1]
+if not os.path.exists(path):
+    print("<missing>")
+    raise SystemExit
+print(" ".join(str(json.loads(line)["seq"]) for line in open(path) if line.strip()))
+CAPPY
+}
+
+capheld() {
+	local label="$1" want="$2" ref="$3" got
+	got="$(capseqs "$capq/$capt/$ref/progress.jsonl")"
+	if [ "$got" = "$want" ]; then
+		pass "$label"
+	else
+		fail "$label" "$ref holds: $got${nl}expected:  $want"
+	fi
+}
+
+: >"$capseed"
+export FLEET_QUEUE_WATCH_CMD="cat $capseed"
+capt="$(capqueue topic add capture-every-transition \
+	--prompt 'prove no transition is lost between watch runs')" || exit 1
+capqueue add "$capt" task-a --title 'task a' \
+	--repo /tmp/repo-a --branch fix/a --number 01 >/dev/null
+capqueue add "$capt" task-b --title 'task b' \
+	--repo /tmp/repo-b --branch fix/b --number 02 >/dev/null
+capqueue attach "$capt/01-task-a" "$sesa" >/dev/null
+
+# (a) One batch, two tasks — and the second one is dispatched INSIDE the watch
+#     window. The stream command itself does that attach, which is the only
+#     honest way to write "a dispatch landed while the stream was open": it is
+#     precisely the instant `by_session` cannot know about. The nested attach
+#     reads the seed stream, not this one, so task b's own floor starts where
+#     its session did and not past its first transition.
+{
+	capline 101 "$sesa" "working"
+	capline 102 "$sesb" "idle"
+	capline 103 "$sesa" "working"
+} >"$capev"
+
+export FLEET_QUEUE_WATCH_CMD="FLEET_QUEUE_WATCH_CMD='cat $capseed' FLEET_QUEUE_DIR='$capq' $QUEUE attach '$capt/02-task-b' $sesb >/dev/null 2>&1; cat $capev"
+capqueue watch --for-secs 0 >/dev/null 2>&1
+export FLEET_QUEUE_WATCH_CMD="cat $capev"
+capqueue watch --for-secs 0 >/dev/null 2>&1
+
+capheld "a batch carrying two tasks leaves the first one complete" "101 103" 01-task-a
+capheld "and the one dispatched mid-window keeps its transition too" "102" 02-task-b
+
+# (b) Nothing is watching while the next two events happen. The stream is
+#     replayed from each task's own floor, so the gap costs only the wait.
+{
+	capline 104 "$sesa" "done"
+	capline 105 "$sesb" "done"
+} >>"$capev"
+capqueue watch --for-secs 0 >/dev/null 2>&1
+capheld "events that arrived with no watch running are folded by the next one" \
+	"101 103 104" 01-task-a
+capheld "for every task in the gap, not just the first" "102 105" 02-task-b
+
+# (c) A watch that dies part-way. task b's record is replaced by a DIRECTORY,
+#     so the append fails for real — no permission trick that a run as root
+#     would sail straight through. The run stops after folding 106 into task a
+#     and before writing 107 anywhere; what matters is what the NEXT run does
+#     with the events it never reached.
+{
+	capline 106 "$sesa" "working"
+	capline 107 "$sesb" "working"
+	capline 108 "$sesa" "idle"
+} >>"$capev"
+
+bprog="$capq/$capt/02-task-b/progress.jsonl"
+mv "$bprog" "$captmp/b-progress.saved"
+mkdir "$bprog"
+if out="$(capqueue watch --for-secs 0 2>&1)"; then
+	fail "a watch that cannot write a record stops instead of walking past it" "$out"
+else
+	expect "a watch that cannot write a record stops instead of walking past it" \
+		"02-task-b" "$out"
+fi
+rmdir "$bprog"
+mv "$captmp/b-progress.saved" "$bprog"
+
+capqueue watch --for-secs 0 >/dev/null 2>&1
+capheld "an interrupted watch skips nothing it had not written" \
+	"101 103 104 106 108" 01-task-a
+capheld "and replays nothing it had" "102 105 107" 02-task-b
+
+# (d) The queue this landed on already had a `.cursor` and no per-task floors.
+#     A record written before the floor moved onto the task falls back to that
+#     retired file, once, so the live queue resumes where its old cursor
+#     stopped — neither replaying the whole backlog nor skipping the gap. The
+#     legacy value is set to 109 and an event at 109 is offered with it: a
+#     fallback of 0 would fold that one too, and a fallback of "now" would fold
+#     neither.
+capqueue add "$capt" task-c --title 'task c' \
+	--repo /tmp/repo-c --branch fix/c --number 03 >/dev/null
+capqueue attach "$capt/03-task-c" "$sesc" >/dev/null
+python3 - "$capq/$capt/03-task-c/task.yaml" <<'CAPPY'
+import sys
+path = sys.argv[1]
+kept = [line for line in open(path) if not line.startswith("watch_from:")]
+open(path, "w").write("".join(kept))
+CAPPY
+echo 109 >"$capq/.cursor"
+{
+	capline 109 "$sesc" "idle"
+	capline 110 "$sesc" "working"
+} >>"$capev"
+capqueue watch --for-secs 0 >/dev/null 2>&1
+capheld "a record from before per-task floors resumes at the retired cursor" \
+	"110" 03-task-c
+
+rm -rf "$captmp"
+export FLEET_QUEUE_WATCH_CMD="cat $events"
+
+# --- 7. a genuinely zero floor is not treated as "no floor" ------------------
+#
+# `attach` legitimately stamps 0 when the stream's high-water mark really is 0
+# (a brand-new thurbox instance), and that must stay distinct from a task with
+# no floor recorded at all: cmd_watch used to test its cursor for truthiness,
+# so a real 0 was silently treated the same as "nothing recorded" and the
+# --since flag was dropped from the real `thurbox-cli watch` call, starting the
+# first watch after a dispatch from "now" instead of replaying from seq 0 —
+# quietly losing any transition in between. This needs the real command path
+# (not FLEET_QUEUE_WATCH_CMD, which replaces the whole command and never sees
+# the flags), so it stubs `thurbox-cli` on PATH and reads what it was called
+# with.
 zerotmp="$(mktemp -d)"
 fakebin="$zerotmp/bin"
 mkdir -p "$fakebin"
@@ -632,11 +803,13 @@ chmod +x "$fakebin/thurbox-cli"
 	FLEET_QUEUE_DIR="$zerotmp/queue" $QUEUE watch --for-secs 0 >/dev/null 2>&1
 )
 
-cursor="$(cat "$zerotmp/queue/.cursor" 2>/dev/null || echo '<missing>')"
-if [ "$cursor" = 0 ]; then
-	pass "seed_cursor writes a genuine zero when the stream's high-water mark is 0"
+floor="$(grep -h '^watch_from:' \
+	"$zerotmp"/queue/*/01-only-task/task.yaml 2>/dev/null || echo '<missing>')"
+if [ "$floor" = "watch_from: 0" ]; then
+	pass "attach stamps a genuine zero when the stream's high-water mark is 0"
 else
-	fail "seed_cursor writes a genuine zero when the stream's high-water mark is 0" "cursor: $cursor"
+	fail "attach stamps a genuine zero when the stream's high-water mark is 0" \
+		"got: $floor"
 fi
 
 expect "watch passes --since 0 to the real stream rather than dropping it" \
