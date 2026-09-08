@@ -29,6 +29,9 @@
 #      working is never touched whatever the record claims, and a task the
 #      worker gave up in keeps its session because that session is the
 #      evidence. A blocker clears on the merge, not on the conclusion.
+#  10. A pull request that goes bad after its worker stopped gets a FIXER, and
+#      a green one opened through the pipeline gets merged. Everything the
+#      shepherd cannot read is left exactly as it is.
 #
 # Test 4 is also the wake proof. The event source is `thurbox-cli watch`, which
 # this script replaces with a recorded stream through `FLEET_QUEUE_WATCH_CMD` —
@@ -49,7 +52,9 @@
 #
 # Usage: scripts/queue-selftest.sh        (also: ./scripts/check.sh queue)
 #
-# Requires: python3 (with PyYAML) — the same dependency the rest of the gate has.
+# Requires: python3 (with PyYAML), plus git and jq for test 9 — `gh` and
+# `thurbox-cli` are stubbed on PATH there, but session-trust.sh, which test 9
+# drives for real, reads their output with jq.
 
 set -uo pipefail
 
@@ -92,13 +97,20 @@ refute() {
 	fi
 }
 
-command -v python3 >/dev/null || {
-	echo "error: python3 not found" >&2
-	exit 2
-}
+for tool in python3 git jq; do
+	command -v "$tool" >/dev/null || {
+		echo "error: $tool not found" >&2
+		exit 2
+	}
+done
 
 tmp="$(mktemp -d)"
 export FLEET_QUEUE_DIR="$tmp/queue"
+
+# Captured here, before test 7's subshell exports its own PATH: reading $PATH
+# after that point is what SC2031 is about, and the stubbed sections below
+# want the PATH this script started with, not whatever a subshell left.
+base_path="$PATH"
 
 echo "queue-selftest: $FLEET_QUEUE_DIR"
 
@@ -863,6 +875,328 @@ fi
 refute "and the guard says nothing about it" "control plane" "$out"
 
 rm -rf "$clonetmp"
+
+# --- 9. the shepherd: the pull request, after the worker stopped -------------
+#
+# The gap this closes, three times in one day: #14 went CONFLICTING when #13
+# merged and nothing noticed; #11 and #12 were opened outside the pipeline and
+# nobody saw for hours; a review finding sat in a PR body until a human read it
+# out. Noticing was never the expensive part, so the claim under test is that a
+# broken PR gets a FIXER and a good one gets MERGED — not that a status line
+# gets printed.
+#
+# Six claims, and the last three are the ones that make it safe to run at all:
+#
+#   a conflicting PR dispatches exactly ONE fixer, on the branch that exists
+#   a second pass over the same PR dispatches NONE
+#   a green PR in an allowlisted repo is squash-merged
+#   a PR that skipped the pipeline is NEVER merged, however green it looks
+#   a PR outside the allowlist is never merged, whatever its state
+#   an unreachable `gh` dispatches none and merges none — "could not check"
+#     is never "broken", and it is never "ready" either
+#
+# Both dependencies are stubbed on PATH, the way test 7's zero-cursor case
+# stubs `thurbox-cli` and reads back what it was called with. The stubs are
+# themselves assertions: the `gh` stub refuses every subcommand it was not
+# taught, so an unexpected reach for `pr close` fails the run rather than
+# passing quietly.
+
+shep="$tmp/shepherd"
+mkdir -p "$shep/bin" "$shep/gh" "$shep/sessions"
+export SHEP="$shep"
+: >"$shep/gh.log"
+: >"$shep/tbx.log"
+
+cat >"$shep/bin/gh" <<'SH'
+#!/bin/sh
+echo "$*" >>"$SHEP/gh.log"
+if [ -n "${SHEP_GH_DOWN:-}" ]; then
+	echo "gh: could not connect to github.com" >&2
+	exit 1
+fi
+n=$(printf '%s' "$3" | sed 's#/*$##; s#.*/##')
+case "$1 $2" in
+"pr view")
+	if [ ! -f "$SHEP/gh/$n.json" ]; then
+		echo "gh: no pull request $n" >&2
+		exit 1
+	fi
+	# `collect`'s pipeline check asks for one field with a jq filter; the
+	# shepherd asks for the whole set. Answer whichever was asked for.
+	case "$*" in
+	*"-q .body") python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["body"])' \
+		"$SHEP/gh/$n.json" ;;
+	*) cat "$SHEP/gh/$n.json" ;;
+	esac
+	;;
+"pr merge")
+	echo "$n" >>"$SHEP/merged"
+	echo "merged"
+	;;
+*)
+	echo "gh: the shepherd is not allowed to run '$1 $2'" >&2
+	exit 1
+	;;
+esac
+SH
+
+cat >"$shep/bin/thurbox-cli" <<'SH'
+#!/bin/sh
+echo "$*" >>"$SHEP/tbx.log"
+case "$1 $2" in
+"session get")
+	if [ -f "$SHEP/sessions/$3.json" ]; then cat "$SHEP/sessions/$3.json"; else
+		echo "no such session: $3" >&2
+		exit 1
+	fi
+	;;
+"session create")
+	n=$(cat "$SHEP/creates" 2>/dev/null || echo 0)
+	n=$((n + 1))
+	echo "$n" >"$SHEP/creates"
+	id="f1xe4000-0000-0000-0000-00000000000$n"
+	# Up and reporting, so session-trust.sh confirms with no keystroke.
+	printf '{"id":"%s","state":"idle","agent":"claude","hook_reported":true}\n' \
+		"$id" >"$SHEP/sessions/$id.json"
+	printf '{"id":"%s","created":true}\n' "$id"
+	;;
+"session capture") echo '{"output":""}' ;;
+esac
+exit 0
+SH
+chmod +x "$shep/bin/gh" "$shep/bin/thurbox-cli"
+
+# A real repository, because the fix for the branch trap is a real git
+# worktree: `--worktree-branch` only ever CREATES a branch, and every branch
+# with a pull request on it already exists.
+srepo="$shep/repo"
+mkdir -p "$srepo"
+git -C "$srepo" init -q -b main
+git -C "$srepo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m base
+for br in conflicting green skipped elsewhere busy unrun gone; do
+	git -C "$srepo" branch "fix/$br"
+done
+
+stopic="$($QUEUE topic add shepherd-cases --title 'The PRs, after the work' \
+	--prompt 'watch every open PR and dispatch a fixer when one goes bad')"
+
+for spec in 01:conflicting:101 02:green:102 03:skipped:103 04:elsewhere:104 \
+	05:busy:105 06:unrun:106 07:gone:107; do
+	IFS=: read -r n slug pr <<<"$spec"
+	$QUEUE add "$stopic" "$slug" --title "A PR that is $slug" --repo "$srepo" \
+		--branch "fix/$slug" --number "$n" >/dev/null
+	owner=Thurbeen/fleet
+	[ "$slug" = elsewhere ] && owner=someone-else/their-repo
+	cat >"$FLEET_QUEUE_DIR/$stopic/$n-$slug/result.md" <<EOF
+---
+outcome: shipped
+artifact: https://github.com/$owner/pull/$pr
+---
+Shipped it.
+EOF
+done
+env PATH="$shep/bin:$base_path" $QUEUE collect >/dev/null
+
+python3 - "$shep/gh" <<'PY'
+import json
+import sys
+
+out = sys.argv[1]
+body = "\n".join(
+    f"## {h}\nx\n"
+    for h in ("Intent", "What Changed", "Risk Assessment", "Testing", "Pipeline")
+)
+green = {"__typename": "CheckRun", "name": "CI", "status": "COMPLETED", "conclusion": "SUCCESS"}
+
+
+def pr(n, owner="Thurbeen/fleet", **kw):
+    doc = {
+        "number": n, "state": "OPEN", "title": f"PR {n}", "isDraft": False,
+        "url": f"https://github.com/{owner}/pull/{n}",
+        "mergeable": "MERGEABLE", "reviewDecision": "", "statusCheckRollup": [green],
+        "body": body, "headRefName": "fix/x", "baseRefName": "main",
+    }
+    doc.update(kw)
+    json.dump(doc, open(f"{out}/{n}.json", "w"))
+
+
+pr(101, mergeable="CONFLICTING", headRefName="fix/conflicting")
+pr(102, headRefName="fix/green")
+# Green in every way GitHub can see, and opened outside the pipeline.
+pr(103, headRefName="fix/skipped", body="Fixed it.\n")
+pr(104, owner="someone-else/their-repo", headRefName="fix/elsewhere")
+# Green in the only sense GitHub can offer before its checks exist.
+pr(106, headRefName="fix/unrun", statusCheckRollup=[])
+pr(107, mergeable="CONFLICTING", headRefName="fix/gone")
+pr(105, mergeable="CONFLICTING", headRefName="fix/busy")
+PY
+
+# 05's own worker is still mid-turn. `working` is the agent SAYING it is not at
+# rest, and a shepherd that types into that pane interrupts a fix in progress.
+busy=99999999-9999-9999-9999-999999999999
+printf '{"id":"%s","state":"working","agent":"claude","hook_reported":true}\n' \
+	"$busy" >"$shep/sessions/$busy.json"
+$QUEUE attach "$stopic/05-busy" "$busy" >/dev/null
+
+# 07's worker was cleaned up after the run, which is the ordinary case: the
+# session id is still on the record and there is nothing behind it. A shepherd
+# that reads "no such session" as "not busy, go ahead" types a brief at an id
+# that answers nobody, and the fix never happens.
+gone=88888888-8888-8888-8888-888888888888
+$QUEUE attach "$stopic/07-gone" "$gone" >/dev/null
+
+creates() { grep -c 'session create' "$shep/tbx.log" 2>/dev/null || true; }
+merges() { grep -c 'pr merge' "$shep/gh.log" 2>/dev/null || true; }
+count_is() {
+	if [ "$2" = "$3" ]; then pass "$1"; else fail "$1" "expected $3, counted $2$nl$4"; fi
+}
+
+# --- read-only by default ----------------------------------------------------
+
+out="$(env PATH="$shep/bin:$base_path" $QUEUE shepherd --topic "$stopic" --dry-run 2>&1)"
+expect "a dry run names the conflicting PR" "pull/101" "$out"
+expect "and says what it would dispatch" "would-dispatch" "$out"
+expect "and why, in the pull request's own terms" "conflicts with main" "$out"
+expect "a dry run also names what it would merge" "would-merge" "$out"
+expect "and the command it would merge with" "--squash --delete-branch" "$out"
+count_is "a dry run spawns nothing" "$(creates)" 0 "$(cat "$shep/tbx.log")"
+count_is "a dry run merges nothing" "$(merges)" 0 "$(cat "$shep/gh.log")"
+
+json="$(env PATH="$shep/bin:$base_path" $QUEUE shepherd --dry-run --json 2>&1)"
+if printf '%s' "$json" | python3 -c 'import json,sys; json.load(sys.stdin)["prs"]' 2>/dev/null; then
+	pass "--json is a clean seam for scripts/fleet-status.sh"
+else
+	fail "--json is a clean seam for scripts/fleet-status.sh" "$json"
+fi
+
+# --- 9a. a conflicting PR dispatches exactly one fixer -----------------------
+
+out="$(env PATH="$shep/bin:$base_path" $QUEUE shepherd --topic "$stopic" 2>&1)"
+# ONE per broken PR, not one per pass: 101 conflicts and 103 skipped the
+# pipeline, so two fixers is right and two for either one of them is the bug.
+count_is "a conflicting PR dispatches exactly one fixer" \
+	"$(grep -c 'session create .*__01-conflicting' "$shep/tbx.log")" 1 \
+	"$out$nl$(cat "$shep/tbx.log")"
+count_is "one fixer per broken PR, and none for the four that are not" \
+	"$(creates)" 3 "$out$nl$(cat "$shep/tbx.log")"
+expect "the fixer is prompted, not left on its trust dialog" "session send" \
+	"$(cat "$shep/tbx.log")"
+
+created="$(grep 'session create' "$shep/tbx.log")"
+expect "the fixer is spawned on a checkout of the branch that already exists" \
+	"--repo-path" "$created"
+refute "and never asks thurbox to create a branch that is already there" \
+	"--worktree-branch" "$created"
+if git -C "$srepo" worktree list | grep -q 'fix/conflicting'; then
+	pass "the existing branch is checked out as a worktree, not renamed aside"
+else
+	fail "the existing branch is checked out as a worktree, not renamed aside" \
+		"$(git -C "$srepo" worktree list)"
+fi
+
+fixbrief="$(find "$FLEET_QUEUE_DIR/$stopic/01-conflicting" -name 'fix-*.md' | head -1)"
+if [ -n "$fixbrief" ]; then
+	fixbody="$(cat "$fixbrief")"
+	expect "the fixer's brief states the condition, not just a PR number" \
+		"conflicts with main" "$fixbody"
+	expect "and names the pull request it must update" "pull/101" "$fixbody"
+	expect "and says the fix lands on that PR in place" "in place" "$fixbody"
+	expect "and forbids a second pull request" "Do not open a second" "$fixbody"
+	expect "and forbids merging" "Do not merge it" "$fixbody"
+else
+	fail "the fixer gets a written brief of its own" "no fix-*.md under 01-conflicting"
+fi
+
+# --- 9b. a green PR in an allowlisted repo is merged -------------------------
+
+expect "a green, pipeline-opened PR is merged" "merged" "$out"
+if grep -qx 102 "$shep/merged" 2>/dev/null; then
+	pass "and it is the green one that got merged"
+else
+	fail "and it is the green one that got merged" "$(cat "$shep/merged" 2>/dev/null)"
+fi
+expect "the merge is a squash, the only method the remote allows" \
+	"pr merge https://github.com/Thurbeen/fleet/pull/102 --squash --delete-branch" \
+	"$(cat "$shep/gh.log")"
+
+# --- 9c. the two things that are never merged --------------------------------
+
+if grep -qx 103 "$shep/merged" 2>/dev/null; then
+	fail "a PR that skipped the pipeline is never merged, however green" \
+		"$(cat "$shep/merged")"
+else
+	pass "a PR that skipped the pipeline is never merged, however green"
+fi
+expect "it gets a fixer's condition instead" "policy" "$out"
+
+if grep -qx 106 "$shep/merged" 2>/dev/null; then
+	fail "a PR whose checks have not reported is never merged" "$(cat "$shep/merged")"
+else
+	pass "a PR whose checks have not reported is never merged"
+fi
+expect "an empty check rollup is its own answer, not a pass" "no check has reported" "$out"
+
+if grep -qx 104 "$shep/merged" 2>/dev/null; then
+	fail "a PR outside the allowlisted repo is never merged" "$(cat "$shep/merged")"
+else
+	pass "a PR outside the allowlisted repo is never merged"
+fi
+expect "and is handed back to the operator by name" "fleet does not merge in" "$out"
+
+# --- 9d. a worker still mid-turn is left alone -------------------------------
+
+expect "a PR whose own worker is working is left alone, not interrupted" \
+	"left-alone" "$out"
+refute "and nothing was typed into that pane" "$busy" \
+	"$(grep 'session send' "$shep/tbx.log")"
+
+# --- 9d2. a session that is gone is not a session to send to -----------------
+
+if grep -q "session send $gone" "$shep/tbx.log"; then
+	fail "a brief is never typed at a session id that answers nobody" \
+		"$(grep "$gone" "$shep/tbx.log")"
+else
+	pass "a brief is never typed at a session id that answers nobody"
+fi
+if grep -q 'session create .*__07-gone' "$shep/tbx.log"; then
+	pass "and its PR gets a fresh session on the branch instead"
+else
+	fail "and its PR gets a fresh session on the branch instead" "$(cat "$shep/tbx.log")"
+fi
+
+# --- 9e. a second pass dispatches none ---------------------------------------
+
+before="$(creates)"
+out="$(env PATH="$shep/bin:$base_path" $QUEUE shepherd --topic "$stopic" 2>&1)"
+count_is "a second pass over the same broken PR dispatches no second fixer" \
+	"$(creates)" "$before" "$out$nl$(cat "$shep/tbx.log")"
+expect "and says the fixer it already sent is still in flight" "in-flight" "$out"
+
+# --- 9f. an unreachable gh does nothing at all -------------------------------
+#
+# The one failure that costs more than the bug it fixes: a shepherd that reads
+# "could not check" as "broken" spawns fixers for healthy pull requests, and
+# one that reads it as "fine" merges PRs it never looked at.
+
+before="$(creates)"
+beforem="$(merges)"
+out="$(env PATH="$shep/bin:$base_path" SHEP_GH_DOWN=1 $QUEUE shepherd --topic "$stopic" 2>&1)"
+count_is "an unreachable gh dispatches nothing" "$(creates)" "$before" "$out"
+count_is "an unreachable gh merges nothing" "$(merges)" "$beforem" "$out"
+expect "and says what it could not determine" "could not read the pull request" "$out"
+refute "and never calls a PR it could not read ready" "would-merge" "$out"
+
+# --- 9g. the shepherd only ever reads and merges -----------------------------
+
+refute "the shepherd never closes a pull request" "pr close" "$(cat "$shep/gh.log")"
+refute "and never edits one" "pr edit" "$(cat "$shep/gh.log")"
+
+# The worktrees the fixers got are real; take them back off the test repo so
+# the temp directory can be removed without leaving stale registrations.
+for slug in 01-conflicting 03-skipped 07-gone; do
+	git -C "$srepo" worktree remove --force \
+		"$FLEET_QUEUE_DIR/.worktrees/${stopic}__${slug}" 2>/dev/null
+done
 
 echo
 if [ "$failed" -eq 0 ]; then

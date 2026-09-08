@@ -92,7 +92,16 @@ The loop, driven by `./scripts/queue.sh`:
    working or blocked, nor one a worker gave up in: that session is the
    evidence. `reap --dry-run` says what it would do. Blockers clear on `landed`
    too, so a dependent task waits for the code to actually be on `main`.
-7. Review the PRs; the operator merges them. Everything after that is `reap`'s.
+7. **The pull request outlives the task, so `queue.sh shepherd` is a fourth
+   thing, run as reflexively as `collect`** — which names it whenever it closed
+   a task that left a PR open. It dispatches a fixer for a PR that conflicts,
+   fails a check, has a review asking for changes, or was opened outside the
+   pipeline, and squash-merges one that passes all three gates. It merges only
+   in the repos `AUTO_MERGE_REPOS` names in `scripts/lib/queue.py`, and never a
+   PR that skipped the pipeline. `--dry-run` first; the fleet-queue skill owns
+   the rest.
+8. Review the PRs; the operator merges every one `shepherd` did not, and
+   everything after that is `reap`'s.
 
 `./scripts/webui.sh` serves a read-only web view of that same queue on
 localhost — topics classified by what their tasks are doing, each with its plan,
