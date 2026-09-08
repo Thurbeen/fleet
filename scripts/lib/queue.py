@@ -1705,6 +1705,12 @@ GH_PR_FIELDS = (
     "author,headRepositoryOwner,isCrossRepository"
 )
 
+# `gh pr list --limit` is a request cap, not a page size — gh paginates the
+# GraphQL calls itself to reach it. Set high enough that hitting it means the
+# repository genuinely has that many open pull requests, which open_prs then
+# treats as unreadable rather than silently returning a truncated list.
+GH_PR_LIST_LIMIT = 1000
+
 # A check that FAILED. Anything still running is NOT a failure — reading a
 # pending check as a broken one is how a shepherd spawns fixers for PRs whose
 # CI simply has not finished, and how it would merge one whose CI has not
@@ -1782,14 +1788,21 @@ def open_prs(slug: str) -> tuple[list, str]:
     could not be read contributes nothing rather than an empty answer.
     """
     docs, err = gh_json(
-        ["pr", "list", "--repo", slug, "--state", "open", "--limit", "100",
-         "--json", GH_PR_FIELDS]
+        ["pr", "list", "--repo", slug, "--state", "open", "--limit",
+         str(GH_PR_LIST_LIMIT), "--json", GH_PR_FIELDS]
     )
     if err:
         return [], err
     if not isinstance(docs, list):
         return [], "gh returned something that is not a list of pull requests"
-    return [d for d in docs if isinstance(d, dict)], ""
+    docs = [d for d in docs if isinstance(d, dict)]
+    if len(docs) >= GH_PR_LIST_LIMIT:
+        return [], (
+            f"{slug} has at least {GH_PR_LIST_LIMIT} open pull requests; "
+            "gh's result may be truncated, so treating it as unreadable "
+            "rather than silently dropping some"
+        )
+    return docs, ""
 
 
 def check_verdicts(rollup) -> tuple[list, list]:
