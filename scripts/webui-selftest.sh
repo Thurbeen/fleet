@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Prove the monitor's lifecycle claims, rather than assert them.
 #
-# `scripts/webui.sh` makes five promises that are easy to write down and easy
-# to get backwards, and four of them are invisible until the day they matter.
+# `scripts/webui.sh` makes six promises that are easy to write down and easy
+# to get backwards, and five of them are invisible until the day they matter.
 # Each gets a test here, against a throwaway queue and a throwaway runtime
 # directory, so a change that quietly inverts one fails the gate:
 #
@@ -21,6 +21,11 @@
 #   5. A PHANTOM IS NEVER "UP". A supervisor stuck retrying a bind that never
 #      succeeds is a live process, not a running monitor — it must never be
 #      adopted, and never reported healthy with a blank URL.
+#   6. IT RENDERS OFFLINE. The page names no origin it does not serve itself,
+#      and the two files the theme needs come out of media/ in this repo. A
+#      CDN font is the kind of thing that works on the machine it was written
+#      on and fails on a laptop in a train, which is where a monitor is least
+#      able to tell you what went wrong.
 #
 # Test 2 is the one to read first. It is the captain's third sentence — always
 # up unless the user asks it down — and the half that is not free.
@@ -53,9 +58,14 @@ fail() {
 	failed=1
 }
 
+# A herestring, not `printf ... | grep`. This file runs under `set -o pipefail`,
+# where a pipeline reports the whole pipeline's status rather than the reader's,
+# so a helper built on one can report FAIL for input that plainly matched — seen
+# once here against the served page, and a false negative in the helper fails
+# the gate for the wrong reason. One command has one status; nothing to misread.
 expect() {
 	local label="$1" want="$2" out="$3"
-	if printf '%s' "$out" | grep -qF -- "$want"; then
+	if grep -qF -- "$want" <<<"$out"; then
 		pass "$label"
 	else
 		fail "$label" "expected to find: $want${nl}--- got ---${nl}$out"
@@ -122,6 +132,39 @@ done
 
 expect "it binds loopback and nothing wider by default" "127.0.0.1" \
 	"$(cat "$FLEET_WEBUI_DIR/host")"
+
+# The HUD's counters are folded server-side out of the same by-state tally the
+# pills use, so the bar and the list cannot disagree about what a state means.
+expect "the API carries the HUD's counters" '"key": "ready"' "$api"
+expect "a HUD counter names the states it buckets" '"dispatched"' "$api"
+
+# --- 6. the theme renders with the network unplugged -------------------------
+
+for asset in assets/press-start-2p.woff2 assets/fleet-banner.jpg; do
+	code="$(curl -sS -o /dev/null -w '%{http_code}' "${url}${asset}" 2>&1)"
+	if [ "$code" = "200" ]; then
+		pass "$asset is served from this repo, not fetched"
+	else
+		fail "$asset is served from this repo" "got HTTP $code, wanted 200"
+	fi
+done
+
+if grep -qE 'https?://' <<<"$body"; then
+	fail "the page names no off-machine origin" \
+		"$(grep -nE 'https?://' <<<"$body" | head -3)"
+else
+	pass "the page names no off-machine origin"
+fi
+
+# The asset table is a whitelist of names, not a document root, so a path that
+# is not in it is a 404 whether or not it exists on disk.
+code="$(curl -sS --path-as-is -o /dev/null -w '%{http_code}' \
+	"${url}assets/../../../etc/passwd" 2>&1)"
+if [ "$code" = "404" ]; then
+	pass "an asset outside the whitelist is a 404, not a file"
+else
+	fail "an asset outside the whitelist is a 404" "got HTTP $code, wanted 404"
+fi
 
 # --- 2. down is durable across the call the skill makes ----------------------
 
@@ -198,7 +241,7 @@ bad_status="$(FLEET_WEBUI_DIR="$badrt" FLEET_WEBUI_PORT="not-a-port" "$WEBUI" st
 expect "status reports it down, not adopted" "not running" "$bad_status"
 
 bad_ensure2="$(FLEET_WEBUI_DIR="$badrt" FLEET_WEBUI_PORT="not-a-port" "$WEBUI" ensure 2>&1)"
-if printf '%s' "$bad_ensure2" | grep -qF -- "adopted"; then
+if grep -qF -- "adopted" <<<"$bad_ensure2"; then
 	fail "a second ensure still refuses to adopt the phantom" "$bad_ensure2"
 else
 	pass "a second ensure still refuses to adopt the phantom"

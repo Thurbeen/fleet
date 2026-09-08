@@ -25,6 +25,12 @@ view. Three things follow from that split and are worth stating up front:
    the queue's within a release, and the drift would look like a bug in the
    queue.
 
+The look is the thurbox website's, token for token (website/css/variables.css),
+and it is entirely local: the two files the page needs — the emblem cropped out
+of media/fleet-banner.jpg and the vendored display font — are served from this
+repo by the ASSETS whitelist below. Nothing is fetched at runtime, and the
+Content-Security-Policy says so rather than trusting it.
+
 Binding: 127.0.0.1 by default and nothing wider without an explicit
 FLEET_WEBUI_HOST. This serves the operator's prompts, their plans and their
 workers' output; nobody should discover it is reachable.
@@ -68,6 +74,36 @@ fleetqueue = _load_queue()
 DEFAULT_PORT = 7413
 PORT_SPAN = 20
 LOOPBACK = {"127.0.0.1", "::1", "localhost", "ip6-localhost"}
+
+# The repo this file ships in, found from this file rather than from the
+# working directory — webui.sh may start the server from anywhere.
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# The only files this server hands out besides the page itself, named one by
+# one. A whitelist rather than a document root: there is no path to join, so
+# there is no traversal to get wrong, and the set stays small enough to read.
+#
+# They exist because the page must render with the network unplugged — no CDN
+# and no Google Fonts, which the Content-Security-Policy below also enforces.
+ASSETS = {
+    "/assets/fleet-banner.jpg": ("media/fleet-banner.jpg", "image/jpeg"),
+    "/assets/press-start-2p.woff2": (
+        "media/fonts/press-start-2p-400.woff2",
+        "font/woff2",
+    ),
+}
+
+# The HUD's counters, in the order the bar shows them: a bucket of display
+# states, the class that gives the bucket its one colour, and the word that
+# always travels with it. Derived on every request and stored nowhere — the
+# same rule the topic classification follows.
+HUD_GROUPS = (
+    ("ready", "ready", ("queued",)),
+    ("running", "running", ("dispatched",)),
+    ("waiting", "blocked", ("waiting",)),
+    ("done", "done", ("done", "abandoned")),
+    ("failed", "attention", ("stuck", "failed")),
+)
 
 # The topic classification the view groups by, most urgent first. Every one is
 # derived from the states of the topic's tasks — see classify().
@@ -161,6 +197,21 @@ def task_view(q: fleetqueue.Queue, task: fleetqueue.Task) -> dict:
     }
 
 
+def hud_counts(by_state: dict) -> list:
+    """The five HUD numbers, folded out of the same by-state tally the pills
+    use. Buckets, not new states: `failed` is stuck plus failed, `done` is done
+    plus abandoned, and every display state lands in exactly one of them."""
+    return [
+        {
+            "key": key,
+            "class": cls,
+            "count": sum(by_state.get(s, 0) for s in states),
+            "states": list(states),
+        }
+        for key, cls, states in HUD_GROUPS
+    ]
+
+
 def classify(tasks: list) -> str:
     """One word for a topic, derived from its tasks and stored nowhere.
 
@@ -203,7 +254,12 @@ def snapshot() -> dict:
             "queue_root": os.path.abspath(root),
             "error": str(exc),
             "topics": [],
-            "counts": {"topics": 0, "tasks": 0, "by_state": {}},
+            "counts": {
+                "topics": 0,
+                "tasks": 0,
+                "by_state": {},
+                "hud": hud_counts({}),
+            },
             "overlaps": [],
         }
 
@@ -236,6 +292,7 @@ def snapshot() -> dict:
             "topics": len(topics),
             "tasks": sum(len(t["tasks"]) for t in topics),
             "by_state": by_state,
+            "hud": hud_counts(by_state),
         },
         # queue.py's own risk report, over the set that would go out together.
         "overlaps": q.overlaps(q.ready()),
@@ -269,117 +326,366 @@ PAGE = """<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>fleet monitor</title>
 <style>
+/* The thurbox website's tokens, verbatim (website/css/variables.css), because
+   this is the same product's second surface and not a parallel theme. Its own
+   comment is the rule this page is held to: Doom is an accent, not the whole
+   room. The room is warm charcoal; red is the frame, the emphasis and the
+   alarm, and nothing that has to be READ sits on a glow. */
 :root {
-  color-scheme: light dark;
-  --bg: #f6f7f9; --panel: #fff; --ink: #16181d; --dim: #6b7280;
-  --line: #e3e6ea; --accent: #2f6feb;
-  --running: #1f7a4d; --attention: #b3261e; --ready: #2f6feb;
-  --blocked: #8a6100; --done: #6b7280; --empty: #9aa1ab;
-  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  color-scheme: dark;
+
+  --bg-primary: #15120f; --bg-secondary: #1e1a16; --bg-card: #1e1a16;
+  --bg-code: #0d0b09;    --bg-hover: #2a241e;
+  --text-primary: #e0e0e0; --text-secondary: #a0a0a0; --text-muted: #948a7d;
+  --accent: #ff5c54; --red: #ff3b30; --green: #6eff6e;
+  --yellow: #ffb627;  --blue: #00d9ff; --purple: #ff8c8c;
+  --border: #36302a; --border-light: #26211c;
+
+  --glow-red: 0 0 5px rgb(255, 92, 84, .7), 0 0 12px rgb(255, 59, 48, .4);
+  --glow-green: 0 0 5px rgb(110, 255, 110, .7), 0 0 12px rgb(110, 255, 110, .4);
+  --glow-cyan: 0 0 5px rgb(0, 217, 255, .7), 0 0 12px rgb(0, 217, 255, .4);
+  --scanline: rgb(0, 0, 0, .2);
+  /* Softer than the website's: that one frames a hero, this one frames a
+     wall of text that has to stay readable out to the corners of a second
+     monitor. Same technique, a third of the weight. */
+  --vignette: radial-gradient(ellipse at 50% 35%, transparent 72%, rgb(0, 0, 0, .22));
+
+  --hud-height: 30px; --hud-bg: #14110e; --hud-bg-deep: #0a0807; --hud-edge: #3a322b;
+  --bevel-light: rgb(255, 255, 255, .14); --bevel-dark: rgb(0, 0, 0, .62);
+  --bevel-frame: #07060a;
+  --bevel: 0 0 0 2px var(--bevel-frame), inset 2px 2px 0 0 var(--bevel-light),
+           inset -2px -2px 0 0 var(--bevel-dark);
+
+  --space-sm: .5rem; --space-md: 1rem; --space-lg: 1.5rem;
+  --border-radius: 0;
+
+  --font-display: 'Press Start 2P', ui-monospace, monospace;
+  --font-mono: ui-monospace, 'JetBrains Mono', SFMono-Regular, Menlo, Consolas, monospace;
+  --font-body: Inter, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+
+  /* ONE HUE PER STATE, and the same hue wherever that state appears — pill,
+     row edge, tally chip, progress segment, HUD counter. The word always
+     travels with it; colour never carries the meaning on its own. */
+  --st-ready: var(--blue);
+  --st-running: var(--green);
+  --st-blocked: var(--yellow);
+  --st-attention: var(--red);
+  --st-done: var(--text-muted);
+  --st-empty: #5f574e;
+  --hue: var(--text-secondary);
+  --glow: none;
 }
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #0f1115; --panel: #171a20; --ink: #e6e8ec; --dim: #9aa1ab;
-    --line: #262b33; --accent: #6ea0ff;
-    --running: #4ade80; --attention: #ff8a80; --ready: #6ea0ff;
-    --blocked: #e0b64a; --done: #8b929c; --empty: #6b7280;
-  }
+
+/* Every element that carries a state gets one of these, and takes its colour
+   from --hue by inheritance. Both vocabularies land here: `c-` is a topic
+   classification, `s-` is a task's display state. */
+.c-ready, .s-queued        { --hue: var(--st-ready);     --glow: var(--glow-cyan); }
+.c-running, .s-dispatched  { --hue: var(--st-running);   --glow: var(--glow-green); }
+.c-blocked, .s-waiting     { --hue: var(--st-blocked);   --glow: none; }
+.c-attention, .s-stuck, .s-failed { --hue: var(--st-attention); --glow: var(--glow-red); }
+.c-done, .s-done, .s-abandoned    { --hue: var(--st-done);     --glow: none; }
+.c-empty                   { --hue: var(--st-empty);     --glow: none; }
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+/* Vendored, not fetched: this page must render with the network unplugged.
+   media/fonts/README.md says why it is the only face that ships. */
+@font-face {
+  font-family: 'Press Start 2P';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('assets/press-start-2p.woff2') format('woff2');
 }
-* { box-sizing: border-box; }
+
 body {
-  margin: 0; background: var(--bg); color: var(--ink);
-  font: 14px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  min-height: 100vh;
+  font-family: var(--font-body); font-size: 14px; line-height: 1.55;
+  color: var(--text-primary); background-color: var(--bg-primary);
+  background-image: radial-gradient(ellipse at 50% -15%, rgb(255, 59, 48, .07), transparent 60%);
+  background-attachment: fixed;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: clip;
+  scrollbar-color: var(--border) transparent;
 }
-header {
-  position: sticky; top: 0; z-index: 5; background: var(--panel);
-  border-bottom: 1px solid var(--line); padding: 12px 20px;
-  display: flex; gap: 16px; align-items: baseline; flex-wrap: wrap;
+* { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+
+/* CRT scanline overlay — one global, click-through pseudo-element, the same
+   technique base.css uses. A 1px dark line every 3px; the 2px->3px band is
+   the line. It sits over everything and can be clicked through. */
+body::after {
+  content: ''; position: fixed; inset: 0; z-index: 9999; pointer-events: none;
+  background: repeating-linear-gradient(to bottom,
+    transparent 0, transparent 2px, var(--scanline) 2px, var(--scanline) 3px);
+  mix-blend-mode: multiply;
 }
-header h1 { font-size: 15px; margin: 0; letter-spacing: .02em; }
-header .path { font-family: var(--mono); font-size: 12px; color: var(--dim); }
-header .tally { margin-left: auto; font-size: 12px; color: var(--dim); }
-main { padding: 20px; max-width: 1100px; margin: 0 auto; }
+body::before {
+  content: ''; position: fixed; inset: 0; z-index: 9998; pointer-events: none;
+  background: var(--vignette);
+}
+
+/* --- the HUD: the one thing visible without scrolling -------------------- */
+
+.hud {
+  position: sticky; top: 0; z-index: 50;
+  background: linear-gradient(180deg, var(--hud-bg), var(--hud-bg-deep));
+  border-bottom: 2px solid var(--bevel-frame);
+  box-shadow: 0 1px 0 0 rgb(232, 24, 11, .45), 0 8px 20px rgb(0, 0, 0, .55);
+  display: flex; flex-wrap: wrap; align-items: center;
+  gap: var(--space-sm) var(--space-md); padding: 9px var(--space-lg) 8px;
+}
+.hud-brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.hud-mark {
+  --mark: 46px;
+  width: var(--mark); height: var(--mark); flex: none;
+  background-color: var(--bg-code);
+  background-image: url('assets/fleet-banner.jpg');
+  background-repeat: no-repeat;
+  /* The banner's central emblem is a 164px square at (430,304) of 1024x572.
+     Cropping in CSS keeps one image on disk instead of a second, cut copy. */
+  background-size: calc(var(--mark) * 1024 / 164) auto;
+  background-position: calc(var(--mark) * -430 / 164) calc(var(--mark) * -304 / 164);
+  /* The banner is a dark painting; at 46px it needs lifting or it reads as
+     a smudge. */
+  filter: brightness(1.22) saturate(1.15) contrast(1.05);
+  box-shadow: var(--bevel), 0 0 12px rgb(232, 24, 11, .45);
+}
+.hud-word { display: flex; flex-direction: column; gap: 4px; line-height: 1; }
+.hud-word b {
+  font-family: var(--font-display); font-size: 15px; font-weight: 400;
+  color: var(--accent); text-shadow: var(--glow-red); letter-spacing: .02em;
+}
+.hud-word i {
+  font-family: var(--font-display); font-size: 7px; font-style: normal;
+  color: var(--text-muted); letter-spacing: .2em;
+}
+
+.counters { display: flex; flex-wrap: wrap; gap: 5px; margin-left: auto; }
+.counter {
+  min-width: 5.4rem; min-height: var(--hud-height);
+  padding: 6px 9px; background: var(--hud-bg); box-shadow: var(--bevel);
+  border-top: 2px solid var(--hue);
+  display: flex; flex-direction: column; justify-content: center; gap: 4px;
+}
+.counter b {
+  font-family: var(--font-display); font-size: 15px; font-weight: 400;
+  line-height: 1; color: var(--hue); text-shadow: var(--glow);
+}
+.counter span {
+  font-family: var(--font-display); font-size: 6.5px; letter-spacing: .12em;
+  color: var(--text-muted); text-transform: uppercase;
+}
+/* A counter at zero stops shouting, so the ones that are not at zero read as
+   the signal. The label stays, so an empty bucket is still legible. */
+.counter.zero { border-top-color: var(--border); }
+.counter.zero b { color: var(--text-muted); text-shadow: none; opacity: .7; }
+.vrule { width: 1px; align-self: stretch; background: var(--hud-edge); margin: 2px 5px; }
+
+.hud-meta {
+  width: 100%; display: flex; flex-wrap: wrap; align-items: baseline;
+  gap: 4px var(--space-md);
+  font-family: var(--font-mono); font-size: 11px; color: var(--text-muted);
+}
+.hud-meta .path { color: var(--text-secondary); overflow-wrap: anywhere; min-width: 0; }
+.link { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
+.link .led {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--st-running); box-shadow: var(--glow-green);
+  animation: blip 2.4s ease-in-out infinite;
+}
+.link.bad { color: var(--red); }
+.link.bad .led { background: var(--red); box-shadow: var(--glow-red); }
+@keyframes blip { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
+@media (prefers-reduced-motion: reduce) { .link .led { animation: none; } }
+
+/* --- the list ------------------------------------------------------------ */
+
+main { max-width: 1440px; margin: 0 auto; padding: var(--space-md) var(--space-lg) 3rem; }
+.topics { display: flex; flex-direction: column; gap: 5px; }
+
 .topic {
-  background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
-  margin-bottom: 18px; overflow: hidden;
+  background: var(--bg-card);
+  border: 1px solid var(--border-light); border-left: 4px solid var(--hue);
+  box-shadow: 0 1px 0 0 rgb(0, 0, 0, .5);
 }
 .topic > summary {
-  cursor: pointer; padding: 14px 18px; display: flex; gap: 12px;
-  align-items: center; flex-wrap: wrap; list-style: none;
+  cursor: pointer; list-style: none;
+  display: grid; align-items: center;
+  grid-template-columns: 1.1rem 7.6rem minmax(0, 1fr) minmax(0, 30rem);
+  grid-template-areas: "car pil tit rdo";
+  gap: 4px var(--space-md); padding: 9px 12px;
 }
+.topic > summary:hover { background: var(--bg-hover); }
 .topic > summary::-webkit-details-marker { display: none; }
-.topic > summary::before { content: "\\25B8"; color: var(--dim); }
-.topic[open] > summary::before { content: "\\25BE"; }
-.topic h2 { font-size: 15px; margin: 0; font-weight: 600; }
-.slug { font-family: var(--mono); font-size: 12px; color: var(--dim); }
+.topic > summary::before {
+  grid-area: car; content: '\\25B8'; color: var(--hue); font-size: 11px;
+}
+.topic[open] > summary::before { content: '\\25BE'; }
+.topic > summary > .pill { grid-area: pil; }
+.topic-title { grid-area: tit; min-width: 0; }
+.topic-title h2 {
+  font-family: var(--font-mono); font-size: 13.5px; font-weight: 700;
+  color: var(--text-primary); line-height: 1.35; overflow-wrap: anywhere;
+}
+.topic-title .slug { font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); }
+.readout {
+  grid-area: rdo; display: flex; flex-wrap: wrap; align-items: center;
+  justify-content: flex-end; gap: 6px var(--space-md); min-width: 0;
+}
+
 .pill {
-  font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
-  padding: 2px 8px; border-radius: 999px; border: 1px solid currentColor;
-  font-weight: 600;
+  display: inline-block; justify-self: start; white-space: nowrap;
+  font-family: var(--font-display); font-size: 7.5px; line-height: 1;
+  letter-spacing: .06em; text-transform: uppercase;
+  padding: 6px 6px 5px; color: var(--hue);
+  border: 1px solid currentColor;
+  background: var(--bg-code);
+  background: color-mix(in srgb, currentColor 12%, var(--bg-code));
+  text-shadow: var(--glow);
 }
-.c-running, .s-dispatched { color: var(--running); }
-.c-attention, .s-stuck, .s-failed { color: var(--attention); }
-.c-ready, .s-queued { color: var(--ready); }
-.c-blocked, .s-waiting { color: var(--blocked); }
-.c-done, .s-done, .s-abandoned { color: var(--done); }
-.c-empty { color: var(--empty); }
-.body { padding: 0 18px 18px; }
+
+.chips { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
+.chip {
+  font-family: var(--font-mono); font-size: 10.5px; line-height: 1.5;
+  padding: 1px 6px; white-space: nowrap; color: var(--hue);
+  border: 1px solid currentColor;
+  background: color-mix(in srgb, currentColor 10%, transparent);
+}
+
+.prog { display: flex; align-items: center; gap: 8px; min-width: 9rem; flex: 1 1 9rem; }
+.bar {
+  flex: 1 1 auto; min-width: 0; height: 12px; display: flex;
+  background: var(--bg-code); box-shadow: var(--bevel);
+}
+.bar > i { display: block; height: 100%; background: var(--hue); }
+/* Concluded work is solid; work still in flight is drawn back to a tint, so a
+   topic with three running tasks does not read as a full bar. */
+.bar > i.s-dispatched, .bar > i.s-queued, .bar > i.s-waiting { opacity: .3; }
+.bar > i.s-abandoned { opacity: .55; }
+.frac { font-family: var(--font-mono); font-size: 11px; color: var(--text-secondary); white-space: nowrap; }
+
+/* --- inside a topic ------------------------------------------------------ */
+
+.body { padding: 0 12px 10px; }
 .prompt {
-  border-left: 3px solid var(--accent); padding: 8px 0 8px 12px;
-  margin: 0 0 14px; white-space: pre-wrap; font-family: var(--mono);
-  font-size: 12.5px; color: var(--dim); max-height: 12em; overflow: auto;
+  border-left: 3px solid var(--accent); background: var(--bg-code);
+  padding: 8px 12px; margin: 2px 0 8px; white-space: pre-wrap;
+  font-family: var(--font-mono); font-size: 11.5px; color: var(--text-secondary);
+  max-height: 11em; overflow: auto;
 }
-.task { border-top: 1px solid var(--line); padding: 12px 0; }
+.task { border-top: 1px solid var(--border-light); }
 .task-head {
-  display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
-  cursor: pointer;
+  cursor: pointer; display: grid; align-items: center;
+  grid-template-columns: 1.1rem 7.6rem minmax(0, 1fr) minmax(0, 30rem);
+  grid-template-areas: "car pil tit rdo";
+  gap: 4px var(--space-md); padding: 8px 0;
 }
-.task-head .id { font-family: var(--mono); font-size: 12.5px; }
-.task-head .title { font-weight: 600; }
-.meta { color: var(--dim); font-size: 12px; font-family: var(--mono); }
-.blocker { color: var(--blocked); font-size: 12.5px; margin-top: 6px; }
-.blocker.cleared { color: var(--done); text-decoration: line-through; }
-.risk {
-  color: var(--blocked); font-size: 12.5px; background: var(--panel);
-  border: 1px dashed currentColor; border-radius: 8px; padding: 10px 14px;
-  margin-bottom: 18px;
+.task-head:hover { background: var(--bg-hover); }
+.task-head::before { grid-area: car; content: '\\25B8'; color: var(--hue); font-size: 11px; }
+.task.open .task-head::before { content: '\\25BE'; }
+.task-head > .pill { grid-area: pil; }
+.task-title { grid-area: tit; min-width: 0; }
+.task-title .id { font-family: var(--font-mono); font-size: 12px; color: var(--text-muted); }
+.task-title .name { font-family: var(--font-mono); font-size: 13px; font-weight: 700; overflow-wrap: anywhere; }
+.task-meta {
+  grid-area: rdo; justify-self: end; text-align: right; min-width: 0;
+  font-family: var(--font-mono); font-size: 11px; color: var(--text-muted);
+  overflow-wrap: anywhere;
 }
-.panes { margin-top: 12px; display: grid; gap: 12px; }
-@media (min-width: 860px) { .panes { grid-template-columns: 1fr 1fr; } }
+.blocker {
+  font-family: var(--font-mono); font-size: 11.5px; color: var(--yellow);
+  padding: 0 0 6px 2.1rem;
+}
+.blocker.cleared { color: var(--text-muted); text-decoration: line-through; }
+
+/* --- the four panes: intent, plan, progress, outcome --------------------- */
+
+/* Columns, not a grid: the four panes are wildly different heights — a long
+   brief beside a one-line "no result.md yet" — and a grid row would stretch
+   the short one to match. Columns pack them, so an unfinished task does not
+   render as a screen of empty boxes. */
+.panes { columns: 2; column-gap: 8px; padding: 4px 0 8px 2.1rem; }
+@media (max-width: 979px) { .panes { columns: 1; } }
 .pane {
-  border: 1px solid var(--line); border-radius: 8px; overflow: hidden;
-  min-width: 0;
+  background: var(--bg-secondary); box-shadow: var(--bevel); min-width: 0;
+  break-inside: avoid; margin-bottom: 8px;
 }
 .pane > h4 {
-  margin: 0; padding: 7px 12px; font-size: 11px; font-weight: 600;
-  letter-spacing: .06em; text-transform: uppercase; color: var(--dim);
-  border-bottom: 1px solid var(--line);
+  display: flex; align-items: center; gap: 8px;
+  font-family: var(--font-display); font-size: 7px; font-weight: 400;
+  letter-spacing: .12em; text-transform: uppercase; color: var(--accent);
+  padding: 9px 10px; background: var(--hud-bg-deep);
+  border-bottom: 1px solid var(--hud-edge);
 }
-.pane .doc, .pane .rows {
-  margin: 0; padding: 10px 12px; max-height: 22em; overflow: auto;
-  font-family: var(--mono); font-size: 12px; white-space: pre-wrap;
-  word-break: break-word;
+.pane > h4 em {
+  font-style: normal; font-family: var(--font-mono); font-size: 10.5px;
+  letter-spacing: 0; color: var(--text-muted); margin-left: auto;
 }
-.pane.wide { grid-column: 1 / -1; }
-.rows { white-space: normal; }
-.row { display: flex; gap: 10px; padding: 2px 0; }
-.row .seq { color: var(--dim); min-width: 4.5em; }
-.row .arrow { color: var(--dim); }
-.absent { color: var(--dim); font-style: italic; padding: 10px 12px; }
-a { color: var(--accent); }
-.empty-state { color: var(--dim); text-align: center; padding: 60px 20px; }
-.err {
-  color: var(--attention); border: 1px solid currentColor; border-radius: 8px;
-  padding: 10px 14px; margin-bottom: 16px; font-family: var(--mono);
-  font-size: 12.5px;
+.doc, .rows {
+  padding: 9px 10px; max-height: 22em; overflow: auto;
+  font-family: var(--font-mono); font-size: 11.5px;
+}
+.doc { white-space: pre-wrap; word-break: break-word; color: var(--text-secondary); background: var(--bg-code); }
+.row { display: flex; flex-wrap: wrap; gap: 8px; padding: 2px 0; }
+.row .key { color: var(--text-muted); min-width: 6em; }
+.row .arrow { color: var(--accent); }
+.row .at { color: var(--text-muted); margin-left: auto; }
+.absent { padding: 10px; color: var(--text-muted); font-style: italic; font-size: 12px; }
+a { color: var(--green); text-decoration: none; }
+a:hover { text-shadow: var(--glow-green); }
+
+/* --- notices ------------------------------------------------------------- */
+
+.risk, .err, .empty-state {
+  font-family: var(--font-mono); font-size: 11.5px;
+  padding: 9px 12px; margin-bottom: 6px;
+  display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline;
+}
+.risk { color: var(--yellow); background: var(--bg-card); border: 1px dashed currentColor; }
+.err { color: var(--red); background: var(--bg-card); border: 1px solid currentColor; }
+.risk b, .err b {
+  font-family: var(--font-display); font-size: 7px; font-weight: 400;
+  letter-spacing: .12em; text-transform: uppercase;
+}
+.empty-state {
+  display: block; text-align: center; color: var(--text-muted);
+  padding: 4rem 1rem; border: 1px dashed var(--border);
+}
+
+/* --- narrow: the readout drops under the title, nothing scrolls sideways - */
+
+@media (max-width: 1080px) {
+  .topic > summary, .task-head {
+    grid-template-columns: 1.1rem 7.6rem minmax(0, 1fr);
+    grid-template-areas: "car pil tit" "car rdo rdo";
+  }
+  .readout, .task-meta { justify-content: flex-start; justify-self: start; text-align: left; }
+}
+@media (max-width: 620px) {
+  .hud { padding: 9px var(--space-md) 8px; }
+  .counters { margin-left: 0; width: 100%; }
+  .counter { flex: 1 1 4.4rem; min-width: 0; }
+  main { padding: var(--space-sm) var(--space-sm) 3rem; }
+  .panes, .blocker { padding-left: 0; }
+  .topic > summary, .task-head {
+    grid-template-columns: 1.1rem minmax(0, 1fr);
+    grid-template-areas: "car pil" "car tit" "car rdo";
+  }
 }
 </style>
 </head>
 <body>
-<header>
-  <h1>fleet monitor</h1>
-  <span class="path" id="root"></span>
-  <span class="tally" id="tally">loading…</span>
+<header class="hud">
+  <div class="hud-brand">
+    <span class="hud-mark" aria-hidden="true"></span>
+    <span class="hud-word"><b>FLEET</b><i>MONITOR</i></span>
+  </div>
+  <div class="counters" id="counters"></div>
+  <div class="hud-meta">
+    <span class="path" id="root"></span>
+    <span id="stamp"></span>
+    <span class="link" id="link"><span class="led"></span><span id="linktext">linking\\u2026</span></span>
+  </div>
 </header>
 <main id="main"></main>
 <script>
@@ -396,11 +702,68 @@ const openTopics = new Set();
 const openTasks = new Set();
 let detailCache = {};
 
+// The bar reads left to right as work leaving the queue: what is finished,
+// then what is moving, then what has not started, then what needs someone.
+const BAR_ORDER = ["done", "abandoned", "dispatched", "queued", "waiting", "stuck", "failed"];
+
 function pill(word) { return el("span", "pill c-" + word + " s-" + word, word); }
 
-function paneDoc(title, text, absent) {
+function renderCounters(counts) {
+  const host = document.getElementById("counters");
+  host.textContent = "";
+  for (const c of counts.hud || []) {
+    const cell = el("div", "counter c-" + c["class"] + (c.count ? "" : " zero"));
+    cell.title = c.count + " " + c.key + " \\u2014 " + c.states.join(", ");
+    cell.appendChild(el("b", null, String(c.count)));
+    cell.appendChild(el("span", null, c.key));
+    host.appendChild(cell);
+  }
+  host.appendChild(el("div", "vrule"));
+  const topics = el("div", "counter" + (counts.topics ? "" : " zero"));
+  topics.appendChild(el("b", null, String(counts.topics)));
+  topics.appendChild(el("span", null, "topics"));
+  host.appendChild(topics);
+}
+
+function tally(tasks) {
+  const states = {};
+  for (const t of tasks) states[t.display_state] = (states[t.display_state] || 0) + 1;
+  return states;
+}
+
+function chips(states) {
+  const box = el("div", "chips");
+  for (const s of BAR_ORDER) {
+    if (!states[s]) continue;
+    box.appendChild(el("span", "chip s-" + s, states[s] + " " + s));
+  }
+  if (!box.childNodes.length) box.appendChild(el("span", "chip", "no tasks"));
+  return box;
+}
+
+function progress(states, total) {
+  const wrap = el("div", "prog");
+  const bar = el("div", "bar");
+  for (const s of BAR_ORDER) {
+    if (!states[s]) continue;
+    const seg = el("i", "s-" + s);
+    seg.style.width = (100 * states[s] / total) + "%";
+    seg.title = states[s] + " " + s;
+    bar.appendChild(seg);
+  }
+  wrap.appendChild(bar);
+  const closed = (states.done || 0) + (states.abandoned || 0);
+  const frac = el("span", "frac", closed + "/" + total + " done");
+  frac.title = closed + " of " + total + " task(s) concluded as done or abandoned";
+  wrap.appendChild(frac);
+  return wrap;
+}
+
+function paneDoc(title, file, text, absent) {
   const p = el("div", "pane");
-  p.appendChild(el("h4", null, title));
+  const h = el("h4", null, title);
+  h.appendChild(el("em", null, file));
+  p.appendChild(h);
   if (text === null || text === undefined || !String(text).trim()) {
     p.appendChild(el("div", "absent", absent));
   } else {
@@ -411,7 +774,9 @@ function paneDoc(title, text, absent) {
 
 function paneProgress(rows) {
   const p = el("div", "pane");
-  p.appendChild(el("h4", null, "progress — progress.jsonl"));
+  const h = el("h4", null, "progress");
+  h.appendChild(el("em", null, "progress.jsonl"));
+  p.appendChild(h);
   if (!rows || !rows.length) {
     p.appendChild(el("div", "absent",
       "no transition observed yet. `queue.sh watch` writes this file."));
@@ -420,27 +785,18 @@ function paneProgress(rows) {
   const box = el("div", "rows");
   for (const r of rows) {
     const row = el("div", "row");
-    row.appendChild(el("span", "seq", "seq " + (r.seq ?? "-")));
+    row.appendChild(el("span", "key", "seq " + (r.seq ?? "-")));
     row.appendChild(el("span", null, (r.from || "-")));
     row.appendChild(el("span", "arrow", "\\u2192"));
     row.appendChild(el("span", null, (r.to || "-")));
-    row.appendChild(el("span", "meta", r.at || r.observed || ""));
+    row.appendChild(el("span", "at", r.at || r.observed || ""));
     box.appendChild(row);
   }
   p.appendChild(box);
   return p;
 }
 
-function renderDetail(host, ref) {
-  host.textContent = "";
-  const d = detailCache[ref];
-  if (!d) { host.appendChild(el("div", "absent", "loading\\u2026")); return; }
-  const panes = el("div", "panes");
-  panes.appendChild(paneDoc("plan — BRIEF.md", d.brief,
-    "no BRIEF.md. `queue.sh dispatch` refuses a task without one."));
-  panes.appendChild(paneDoc("implementation — result.md", d.result,
-    "no result.md yet. Only the worker writes this, and only it closes a task."));
-  panes.appendChild(paneProgress(d.progress));
+function paneRecord(d) {
   const facts = [
     ["repo", d.repo], ["branch", d.branch + " off " + d.base],
     ["agent", d.agent], ["profile", d.profile], ["session", d.session],
@@ -450,11 +806,13 @@ function renderDetail(host, ref) {
     ["concluded", d.concluded_at],
   ].filter(([, v]) => v !== null && v !== undefined && v !== "");
   const p = el("div", "pane");
-  p.appendChild(el("h4", null, "record — task.yaml"));
+  const h = el("h4", null, "record");
+  h.appendChild(el("em", null, "task.yaml"));
+  p.appendChild(h);
   const box = el("div", "rows");
   for (const [k, v] of facts) {
     const row = el("div", "row");
-    row.appendChild(el("span", "seq", k));
+    row.appendChild(el("span", "key", k));
     if (k === "artifact" && /^https?:/.test(v)) {
       const a = el("a", null, v); a.href = v; a.target = "_blank";
       a.rel = "noreferrer"; row.appendChild(a);
@@ -464,7 +822,22 @@ function renderDetail(host, ref) {
     box.appendChild(row);
   }
   p.appendChild(box);
-  panes.appendChild(p);
+  return p;
+}
+
+// Four panes, because the queue keeps four files and each answers a different
+// question — orchestration/queue/README.md owns that table. Not three, not five.
+function renderDetail(host, ref) {
+  host.textContent = "";
+  const d = detailCache[ref];
+  if (!d) { host.appendChild(el("div", "absent", "loading\\u2026")); return; }
+  const panes = el("div", "panes");
+  panes.appendChild(paneDoc("plan", "BRIEF.md", d.brief,
+    "no BRIEF.md. `queue.sh dispatch` refuses a task without one."));
+  panes.appendChild(paneDoc("outcome", "result.md", d.result,
+    "no result.md yet. Only the worker writes this, and only it closes a task."));
+  panes.appendChild(paneProgress(d.progress));
+  panes.appendChild(paneRecord(d));
   host.appendChild(panes);
 }
 
@@ -479,11 +852,14 @@ async function loadDetail(ref, host) {
 }
 
 function renderTask(t) {
-  const wrap = el("div", "task");
+  const open = openTasks.has(t.ref);
+  const wrap = el("div", "task s-" + t.display_state + (open ? " open" : ""));
   const head = el("div", "task-head");
   head.appendChild(pill(t.display_state));
-  head.appendChild(el("span", "id", t.id));
-  head.appendChild(el("span", "title", t.title));
+  const title = el("div", "task-title");
+  title.appendChild(el("div", "id", t.id));
+  title.appendChild(el("div", "name", t.title));
+  head.appendChild(title);
   const bits = [t.repo, t.branch];
   if (t.transitions) bits.push(t.transitions + " transition(s)");
   // Only before `collect` has read it. On a closed task the result is the
@@ -491,28 +867,27 @@ function renderTask(t) {
   if (t.has_result && (t.state === "queued" || t.state === "dispatched")) {
     bits.push("result waiting to be collected");
   }
-  head.appendChild(el("span", "meta", bits.filter(Boolean).join("  \\u00b7  ")));
+  head.appendChild(el("div", "task-meta", bits.filter(Boolean).join("  \\u00b7  ")));
   wrap.appendChild(head);
 
   for (const b of t.blocked_by || []) {
-    const line = el("div", "blocker" + (b.cleared ? " cleared" : ""),
+    wrap.appendChild(el("div", "blocker" + (b.cleared ? " cleared" : ""),
       (b.cleared ? "cleared: " : "waits on ") + b.task +
-      " \\u2014 " + b.kind + ": " + b.why);
-    wrap.appendChild(line);
+      " \\u2014 " + b.kind + ": " + b.why));
   }
 
   const detail = el("div");
-  detail.hidden = !openTasks.has(t.ref);
+  detail.hidden = !open;
   wrap.appendChild(detail);
-  if (openTasks.has(t.ref)) {
+  if (open) {
     renderDetail(detail, t.ref);
     loadDetail(t.ref, detail);
   }
   head.addEventListener("click", () => {
     if (openTasks.has(t.ref)) {
-      openTasks.delete(t.ref); detail.hidden = true;
+      openTasks.delete(t.ref); detail.hidden = true; wrap.classList.remove("open");
     } else {
-      openTasks.add(t.ref); detail.hidden = false;
+      openTasks.add(t.ref); detail.hidden = false; wrap.classList.add("open");
       renderDetail(detail, t.ref); loadDetail(t.ref, detail);
     }
   });
@@ -520,27 +895,28 @@ function renderTask(t) {
 }
 
 function renderTopic(topic) {
-  const d = el("details", "topic");
+  const d = el("details", "topic c-" + topic.classification);
   d.open = openTopics.has(topic.slug);
   d.addEventListener("toggle", () => {
     d.open ? openTopics.add(topic.slug) : openTopics.delete(topic.slug);
   });
+
   const s = el("summary");
   s.appendChild(pill(topic.classification));
-  s.appendChild(el("h2", null, topic.title));
-  s.appendChild(el("span", "slug", topic.slug));
-  const states = {};
-  for (const t of topic.tasks) {
-    states[t.display_state] = (states[t.display_state] || 0) + 1;
-  }
-  const tally = Object.entries(states).map(([k, v]) => v + " " + k).join(", ");
-  s.appendChild(el("span", "meta", tally || "no tasks"));
+  const title = el("div", "topic-title");
+  title.appendChild(el("h2", null, topic.title));
+  title.appendChild(el("div", "slug", topic.slug));
+  s.appendChild(title);
+
+  const states = tally(topic.tasks);
+  const readout = el("div", "readout");
+  readout.appendChild(chips(states));
+  if (topic.tasks.length) readout.appendChild(progress(states, topic.tasks.length));
+  s.appendChild(readout);
   d.appendChild(s);
 
   const body = el("div", "body");
-  if (topic.prompt) {
-    body.appendChild(el("blockquote", "prompt", topic.prompt.trim()));
-  }
+  if (topic.prompt) body.appendChild(el("blockquote", "prompt", topic.prompt.trim()));
   for (const t of topic.tasks) body.appendChild(renderTask(t));
   d.appendChild(body);
   return d;
@@ -548,36 +924,48 @@ function renderTopic(topic) {
 
 function render(data) {
   document.getElementById("root").textContent = data.queue_root;
-  const c = data.counts;
-  const parts = Object.entries(c.by_state).map(([k, v]) => v + " " + k);
-  document.getElementById("tally").textContent =
-    c.topics + " topic(s), " + c.tasks + " task(s)" +
-    (parts.length ? " \\u2014 " + parts.join(", ") : "") +
-    "  \\u00b7  read at " + data.generated;
+  renderCounters(data.counts);
+  document.getElementById("stamp").textContent =
+    data.counts.tasks + " task(s) \\u00b7 read at " + data.generated;
 
   const main = document.getElementById("main");
   main.textContent = "";
-  if (data.error) main.appendChild(el("div", "err", data.error));
+  if (data.error) {
+    const e = el("div", "err");
+    e.appendChild(el("b", null, "queue error"));
+    e.appendChild(el("span", null, data.error));
+    main.appendChild(e);
+  }
   for (const o of data.overlaps || []) {
-    main.appendChild(el("div", "risk",
-      "risk: " + o.tasks.join(", ") + " all touch " + o.touches +
+    const r = el("div", "risk");
+    r.appendChild(el("b", null, "risk"));
+    r.appendChild(el("span", null,
+      o.tasks.join(", ") + " all touch " + o.touches +
       " \\u2014 overlap is a risk signal, not a reason to wait."));
+    main.appendChild(r);
   }
   if (!data.topics.length) {
     main.appendChild(el("div", "empty-state",
       "The queue is empty. `scripts/queue.sh topic add` opens one."));
     return;
   }
-  for (const t of data.topics) main.appendChild(renderTopic(t));
+  const list = el("div", "topics");
+  for (const t of data.topics) list.appendChild(renderTopic(t));
+  main.appendChild(list);
+}
+
+function link(ok, text) {
+  document.getElementById("link").className = ok ? "link" : "link bad";
+  document.getElementById("linktext").textContent = text;
 }
 
 async function poll() {
   try {
     const r = await fetch("api/queue", { cache: "no-store" });
     render(await r.json());
+    link(true, "link ok");
   } catch (e) {
-    document.getElementById("tally").textContent =
-      "cannot reach the server \\u2014 " + e;
+    link(false, "no link \\u2014 " + e);
   }
 }
 poll();
@@ -600,17 +988,22 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):  # noqa: A003
         pass
 
-    def _send(self, code: int, body: bytes, ctype: str) -> None:
+    def _send(self, code: int, body: bytes, ctype: str, cache: str = "no-store") -> None:
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
+        self.send_header("Cache-Control", cache)
         # This page reads local files and talks only to itself; nothing it
-        # renders should ever be able to fetch or frame anything else.
+        # renders should ever be able to fetch or frame anything else. The
+        # img-src and font-src entries are 'self' and nothing more, which is
+        # the rule that keeps the theme offline: a CDN font or a remote image
+        # would be blocked here rather than quietly working on this machine
+        # and failing on a laptop with no network.
         self.send_header(
             "Content-Security-Policy",
             "default-src 'none'; style-src 'unsafe-inline'; "
-            "script-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'",
+            "script-src 'unsafe-inline'; img-src 'self'; font-src 'self'; "
+            "connect-src 'self'; frame-ancestors 'none'",
         )
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
@@ -649,10 +1042,28 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, task_detail(ref))
             except fleetqueue.QueueError as exc:
                 self._json(404, {"error": str(exc)})
+        elif path in ASSETS:
+            self._asset(*ASSETS[path])
         elif path == "/api/health":
             self._json(200, {"ok": True, "at": now()})
         else:
             self._json(404, {"error": f"no such path: {path}"})
+
+    def _asset(self, relpath: str, ctype: str) -> None:
+        """One of the named files in ASSETS, read from the repo this file is in.
+
+        Cached hard, because these two never change under a running monitor and
+        the page asks for them on every reload. A missing one is a 404 and not
+        an error: the theme degrades to a system font and an empty tile, which
+        is the right outcome for a checkout without media/.
+        """
+        try:
+            with open(os.path.join(REPO_ROOT, relpath), "rb") as fh:
+                body = fh.read()
+        except OSError:
+            self._json(404, {"error": f"asset not found: {relpath}"})
+            return
+        self._send(200, body, ctype, cache="max-age=86400")
 
     def do_HEAD(self) -> None:  # noqa: N802
         self.do_GET()
