@@ -82,6 +82,11 @@ YAML by hand. Nothing to push — the map is gitignored.
 7. Review the PRs; the operator merges every one `shepherd` did not. Sessions
    release themselves once a pull request merges — `collect` reaps them,
    `queue.sh reap --dry-run` shows what it would do — see `AGENTS.md`.
+8. **`refuel` a worker that hit its agent's token limit and never reported —
+   thurbox keeps saying `working` because the idle hook never fires.** It asks
+   the account's own quota window (below) before it looks at any session, and
+   restarts nothing while that window is spent; see `AGENTS.md` and
+   `fleet-queue` §5c.
 
 The operator watches all of that in a browser rather than by asking you:
 `./scripts/webui.sh ensure` serves a read-only view of the queue on localhost.
@@ -89,7 +94,7 @@ It is a READER over the same files, so it never disagrees with `list` and never
 writes anything. `ensure` adopts a running one; only `stop` takes it down and
 only `start` brings it back.
 
-`.agents/skills/fleet-queue/` is the driving surface for 1–4 and 6, and
+`.agents/skills/fleet-queue/` is the driving surface for 1–4, 6 and 8, and
 `.agents/skills/thurbox-session/` for the mechanics of one session — spawning,
 naming, trust, the state vocabulary, cleanup. Use both. (`.claude/skills` is a
 symlink to `.agents/skills`, so every CLI loads the one copy.)
