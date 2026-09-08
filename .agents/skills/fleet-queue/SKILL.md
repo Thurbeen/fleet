@@ -411,9 +411,13 @@ push reaches the pull request that is already open.
 
 Three things it will not do, and they are what make it safe to run:
 
-- **It will not dispatch twice for one condition.** The fixer it sent is
-  recorded on the task under `shepherd`; a second pass sees work in flight.
-  `--force` overrides, once you have decided the first one is not coming back.
+- **It will not dispatch twice for one pull request.** The fixer it sent is
+  recorded on the task under `shepherd`; a second pass checks that session's
+  liveness, not whether the condition still matches — a PR can drift to a
+  different condition while the fixer is mid-fix, and that drift never reads
+  as nobody being on it. A liveness check that comes back unknown is left
+  alone rather than guessed. `--force` overrides, once you have decided the
+  first one is not coming back.
 - **It will not interrupt a working session.** A PR whose own worker is
   `working` or `blocked` is left alone. So is one whose state is merely
   *observed* — `running`, `uncovered`, `unreported` are not the agent saying it
