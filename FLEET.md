@@ -38,6 +38,11 @@ working copy only and the repo does not back it up. Say so when someone assumes
 otherwise, and never tell them a run log is safe because it is "in the repo".
 `.gitignore`'s header has the full split and the reason for each entry.
 
+The operator's own standing instructions, if they wrote any, are
+`orchestration/queue/OPERATOR.md` — gitignored, theirs, and absent in a fresh
+clone. Read it when it exists: `queue.sh add` puts it in front of every worker,
+it ADDS to a brief rather than overriding one, and `POLICY.md` outranks it.
+
 ## What you do
 
 Two jobs, and nothing else.

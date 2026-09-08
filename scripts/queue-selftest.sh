@@ -23,7 +23,8 @@
 #   8. `collect` VERIFIES the artifact rather than trusting the worker's word
 #      for it, and "could not check" is a third answer that is neither pass
 #      nor fail. The brief scaffold points at the standing policy rather than
-#      restating it.
+#      restating it, and at the operator's own OPERATOR.md when there is one —
+#      and at no such file when there is not.
 #   9. A session is released when its work LANDS, and never before: a merged
 #      pull request is reapable, an open one is not, a session thurbox says is
 #      working is never touched whatever the record claims, and a task the
@@ -777,6 +778,47 @@ print("match" if quoted == q.PIPELINE_HEADINGS else f"policy={quoted} code={q.PI
 PY
 )"
 expect "the policy quotes PIPELINE_HEADINGS exactly, not a second copy" "match" "$policy_vs_code"
+
+# --- and it carries the OPERATOR's standing instructions, when there are any --
+#
+# `POLICY.md`'s counterpart: fleet owns the policy, the operator owns this, and
+# a fresh clone has neither the file nor any mention of it. Both halves are
+# proved here, because the absent case is the one that breaks a clone that
+# never had a constitution.
+
+refute "a brief written with no constitution mentions none" "OPERATOR.md" "$brief"
+
+constitution="$FLEET_QUEUE_DIR/OPERATOR.md"
+cat >"$constitution" <<'EOF'
+Always reach for the operator's own `xyz` skill before writing a script.
+EOF
+$QUEUE add "$topic" honour-the-constitution --title 'Honour the constitution' \
+	--repo /tmp/x --branch fix/honour --base main >/dev/null 2>&1
+with_c="$(cat "$FLEET_QUEUE_DIR/$topic/09-honour-the-constitution/BRIEF.md")"
+expect "a brief written with one points at it, by absolute path" \
+	"$constitution" "$with_c"
+expect "and says the brief still wins over it" "brief wins" "$with_c"
+
+: >"$constitution"
+$QUEUE add "$topic" empty-constitution --title 'Empty constitution' \
+	--repo /tmp/x --branch fix/empty --base main >/dev/null 2>&1
+refute "an empty constitution is the same as no constitution" "OPERATOR.md" \
+	"$(cat "$FLEET_QUEUE_DIR/$topic/10-empty-constitution/BRIEF.md")"
+rm -f "$constitution"
+
+if [ -f orchestration/queue/OPERATOR.example.md ] &&
+	! git check-ignore -q orchestration/queue/OPERATOR.example.md; then
+	pass "the example that documents the format is tracked"
+else
+	fail "the example that documents the format is tracked" \
+		"missing or gitignored: orchestration/queue/OPERATOR.example.md"
+fi
+if git check-ignore -q orchestration/queue/OPERATOR.md; then
+	pass "the operator's own copy is gitignored"
+else
+	fail "the operator's own copy is gitignored" \
+		"orchestration/queue/OPERATOR.md is not ignored"
+fi
 
 # --- 7. the queue belongs to a CHECKOUT, not to a cwd ------------------------
 #

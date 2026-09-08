@@ -151,6 +151,13 @@ get it right on the first pass. Only the repetition moved.
 If a rule turns out to be standing after all, put it in POLICY.md rather than
 in the brief you happen to be writing.
 
+**And do not restate the operator's preferences either.** If
+`orchestration/queue/OPERATOR.md` exists, the scaffold points every brief at it
+as well — that file is the operator's, not yours, so a preference they have
+already written there is already delivered. When they tell you a preference
+that is true of every task rather than this one, the answer is to offer to put
+it in that file, not to copy it into the brief in hand.
+
 ## 3. Order — the part that is counterintuitive
 
 Run `./scripts/queue.sh plan`. It answers two questions and refuses to blur them.
@@ -471,9 +478,11 @@ their behalf.
 
 Everything under `orchestration/queue/` is gitignored working state — your
 prompts, your briefs, your results — as is `orchestration/webui/` for the
-monitor. `README.md` and `POLICY.md` are the two exceptions: standing
-documentation, not one operator's data, which is exactly why every brief can
-point at the policy instead of carrying a copy. The machinery is tracked; the
+monitor. `README.md`, `POLICY.md` and `OPERATOR.example.md` are the three
+exceptions: standing documentation, not one operator's data, which is exactly
+why every brief can point at the policy instead of carrying a copy. The
+operator's own `OPERATOR.md` is ignored with the rest — theirs to write, read by
+every worker whose brief was scaffolded while it existed. The machinery is tracked; the
 queue is not, because this repo is public and none of that belongs in it. It
 also means **the repo does not back your queue up**. Say that plainly when
 someone assumes otherwise; `.gitignore`'s header owns the full reasoning.

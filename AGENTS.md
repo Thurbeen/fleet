@@ -30,12 +30,15 @@ names every path and the reason for each.
   holding its verbatim `PROMPT.md`; the topic decomposes into task directories,
   each with its own `task.yaml`, `BRIEF.md`, `progress.jsonl` and `result.md`.
   `./scripts/queue.sh` owns it end to end and its header is the full usage.
-  Gitignored except the `README.md` that documents the layout and the
-  `POLICY.md` every brief points its worker at instead of restating it. **The
-  queue belongs to the control-plane checkout — the clone the `fleet` session
-  opens — and not to whatever directory your shell is in**, so a second clone
-  of this repo cannot silently fork it: `topic add` and `add` refuse there,
-  everything else warns, and `queue.sh root` names the directory in use.
+  Gitignored except the `README.md` that documents the layout, the `POLICY.md`
+  every brief points its worker at instead of restating it, and
+  `OPERATOR.example.md` — the form of the operator's own `OPERATOR.md`, which
+  is theirs, stays ignored, and is pointed at by every brief scaffolded while
+  it exists and is not empty. **The queue belongs to the control-plane
+  checkout — the clone the `fleet` session opens — and not to whatever
+  directory your shell is in**, so a second clone of this repo cannot
+  silently fork it: `topic add` and `add` refuse there, everything else
+  warns, and `queue.sh root` names the directory in use.
 - `orchestration/webui/` — the monitor's runtime state: the port it chose at
   bind time, its supervisor's pid, its log, and the `down` flag. Written by
   `./scripts/webui.sh` and created on first start. The server's code
