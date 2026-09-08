@@ -99,7 +99,7 @@ machine. `.gitignore`'s header names every path and the reason for each.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — the gate (`./scripts/check.sh`), the
   squash-only merge policy, the layout conventions.
 - Every script's header is its own full usage. `./scripts/fleet-status.sh`
-  answers "where are we?" in one read-only call — queue, sessions, pull
+  answers "where are we?" in one read-only call — fuel, queue, sessions, pull
   requests, monitor, checkout.
 
 ## License

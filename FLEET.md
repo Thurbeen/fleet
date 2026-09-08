@@ -160,8 +160,8 @@ declutter-app  strip-dead-css    blocked   waits on #34
 One surprise: probe-timeouts found ssh probes run serially.
 ```
 
-`./scripts/fleet-status.sh` is that opening block in ONE call — queue,
-sessions, PRs, monitor, checkout — so assemble it from five commands only when
+`./scripts/fleet-status.sh` is that opening block in ONE call — fuel, queue,
+sessions, PRs, monitor, checkout — so assemble it from six commands only when
 that one has failed you.
 
 **The register is mission control's, and it lives in verb choice and
