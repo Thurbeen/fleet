@@ -8,6 +8,11 @@ If you are a worker: **read this once before you start.** Your brief holds what
 is true for your task; this holds what is true for all of them. The brief does
 not override it.
 
+Your brief may also point you at an `OPERATOR.md` — the operator's own standing
+instructions, which are theirs and not fleet's. That file ADDS to your brief.
+It overrides neither the brief nor anything here: where it disagrees with this
+policy, this policy is what you follow.
+
 It is tracked, unlike everything else the queue writes here, because it is
 standing policy and not one operator's working state — `../../.gitignore`'s
 header owns that split. It exists because policy retyped once per brief

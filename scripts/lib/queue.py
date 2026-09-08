@@ -146,6 +146,18 @@ PR_URL_RE = re.compile(r"^(https?://[^/\s]+/[^/\s]+/[^/\s]+/pull/\d+)(?:[/?#].*)
 # repo and does not move when the queue does.
 POLICY_FILE = os.path.join("orchestration", "queue", "POLICY.md")
 
+# The OPERATOR's own standing instructions: the same delivery mechanism as the
+# policy and the opposite ownership. Fleet writes POLICY.md and tracks it; the
+# operator writes this one and it is gitignored, so a fresh clone has none and
+# a brief must then say nothing about it.
+#
+# Not named CONSTITUTION.md, which is the operator's word for it: thurbox
+# already ships a docs/CONSTITUTION.md meaning something else entirely, and a
+# worker that reads both repos would have to guess which was meant. Named for
+# whose file it is instead, which is the one thing that distinguishes it from
+# POLICY.md sitting beside it.
+OPERATOR_FILE = "OPERATOR.md"
+
 
 class QueueError(Exception):
     """Something the operator can fix, reported without a traceback."""
@@ -188,6 +200,35 @@ def policy_path() -> str:
     checkout that ships it.
     """
     return os.path.join(checkout_root(), POLICY_FILE)
+
+
+def operator_path() -> str:
+    """The operator's standing instructions, absolute — beside their queue.
+
+    Anchored to queue_root() and deliberately NOT to the checkout, the opposite
+    choice from policy_path(). The policy is tracked and ships with the code;
+    this is the operator's own working state, gitignored like everything else
+    the queue holds, so it belongs wherever their queue is. The tracked
+    OPERATOR.example.md that documents the format stays in the checkout, beside
+    the default location.
+    """
+    return os.path.join(queue_root(), OPERATOR_FILE)
+
+
+def operator_instructions() -> str:
+    """What the operator wrote, or "" — absent, empty and unreadable are one.
+
+    A fresh clone has no such file, and a brief that pointed a worker at one
+    that is not there would be worse than saying nothing, so "" is the answer
+    the scaffold checks and every non-answer collapses into it. It is prose for
+    a worker to read, never configuration: nothing here parses it, and the only
+    question asked of it is whether there is any.
+    """
+    try:
+        with open(operator_path()) as fh:
+            return fh.read().strip()
+    except OSError:
+        return ""
 
 
 # --- which checkout owns the queue -------------------------------------------
@@ -610,10 +651,28 @@ def render_brief(task: Task, topic: dict, body: str | None) -> str:
     not structure. `--brief-file` fills the first section and leaves the rest
     for the lead, so a body handed in on the command line still gets the same
     skeleton and the same refusal.
+
+    The operator's own standing instructions ride the same pointer when there
+    are any, and NOTHING when there are not — a fresh clone has no such file,
+    and its briefs must not name one that does not exist.
     """
     d = task.doc
     result = os.path.abspath(task.file("result.md"))
     prompt = os.path.abspath(os.path.join(os.path.dirname(task.path), "PROMPT.md"))
+    has_operator = bool(operator_instructions())
+    operator_line = (
+        f"\n- **Operator's standing instructions.** `{operator_path()}`"
+        if has_operator
+        else ""
+    )
+    operator_note = (
+        "\n\nRead the operator's file too. It is how this operator wants work done\n"
+        "across every task, and it ADDS to this brief without replacing anything in\n"
+        "it: where the two disagree the brief wins, and where it disagrees with the\n"
+        "standing policy the policy wins."
+        if has_operator
+        else ""
+    )
     filled = {BRIEF_SECTIONS[0]: body.strip()} if body and body.strip() else {}
     sections = "\n\n".join(
         f"## {h}\n\n{filled.get(h, BRIEF_PLACEHOLDER)}" for h in BRIEF_SECTIONS
@@ -626,12 +685,13 @@ The prompt this came from is at `{prompt}`; read it if the goal here is unclear.
 - **Repo.** `{d["repo"]}`
 - **Branch.** `{d["branch"]}` off `{d["base"]}`
 - **Expected to touch.** {", ".join(f"`{p}`" for p in d["touches"]) or "not recorded"}
-- **Standing policy.** `{policy_path()}`
+- **Standing policy.** `{policy_path()}`{operator_line}
 
 **Read that policy file before you start.** It is the rest of your
 instructions and it is not repeated here: how to open the pull request and how
 that is verified, who merges it, the gate to run before you push, and what the
-other workers running beside you mean for you. This brief does not override it.
+other workers running beside you mean for you. This brief does not override
+it.{operator_note}
 
 {sections}
 

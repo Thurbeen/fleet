@@ -1,9 +1,10 @@
 # The task queue
 
 This directory is **yours**. Everything the control plane writes here is
-gitignored; the two tracked files are this README and [`POLICY.md`](POLICY.md).
-`.gitignore`'s header owns the reason: this repo is public, and your prompts,
-your briefs and your workers' results are not a thing to publish.
+gitignored; the three tracked files are this README, [`POLICY.md`](POLICY.md)
+and [`OPERATOR.example.md`](OPERATOR.example.md). `.gitignore`'s header owns
+the reason: this repo is public, and your prompts, your briefs and your
+workers' results are not a thing to publish.
 
 `POLICY.md` is the standing policy every worker runs under — the pipeline
 requirement and the five headings that prove it, squash-merge, who merges, the
@@ -11,6 +12,13 @@ gate, one-brief-one-worker, and the result contract. Every `BRIEF.md` the
 scaffold writes points at it by absolute path rather than restating it, so it
 is written once and cannot drift between briefs. **Task-specific detail still
 belongs in the brief**; only the repetition moved.
+
+`OPERATOR.md` is its counterpart with the ownership reversed: fleet owns the
+policy, **you** own that file, and it is gitignored like the rest of this
+directory. Write your standing preferences into it — "always use my `xyz`
+skill" — and every brief scaffolded afterwards points its worker there too. No
+such file, no pointer. Copy `OPERATOR.example.md` to start; its header holds
+the format, the precedence and why it is not called `CONSTITUTION.md`.
 
 `../../scripts/queue.sh` owns it. Its header is the full usage; this file is
 the layout, so a fresh clone with an empty queue still shows what goes here.
@@ -32,6 +40,8 @@ directory holding everything about it and nothing about any other.
 
 ```text
 POLICY.md                            standing policy — tracked, read by workers
+OPERATOR.example.md                  the form of the file below — tracked
+OPERATOR.md                          your standing instructions — yours, ignored
 <topic>/                             e.g. report-status-honestly/
   topic.yaml                         slug, title, when it opened
   PROMPT.md                          the prompt that opened it, VERBATIM

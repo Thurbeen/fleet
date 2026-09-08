@@ -44,12 +44,20 @@
 # WORKING STATE. The task queue: topics, per-task briefs, the transitions a run
 # produced, and what each worker concluded. This is the whole of the control
 # plane's working memory — one operator's prompts and one operator's work — and
-# it is exactly what must not reach a public repo. Two tracked files stay:
-# README.md, which documents the layout, and POLICY.md, the standing policy
-# every brief points its worker at instead of restating it.
+# it is exactly what must not reach a public repo. Three tracked files stay:
+# README.md, which documents the layout; POLICY.md, the standing policy every
+# brief points its worker at instead of restating it; and OPERATOR.example.md,
+# the form of the file below.
+#
+# OPERATOR.md itself is WORKING STATE and stays ignored: it is one operator's
+# own standing instructions to their workers — their preferences, their tools,
+# their habits — which is the same reason owners.txt is ignored while
+# owners.example.txt is tracked. Ignored is not secret, and that file's header
+# says so: credentials belong in the environment, not in it.
 /orchestration/queue/*
 !/orchestration/queue/README.md
 !/orchestration/queue/POLICY.md
+!/orchestration/queue/OPERATOR.example.md
 
 # GENERATED. Python's bytecode cache. scripts/lib/webui.py loads queue.py as a
 # module, and importing anything writes one of these beside the source — so it
