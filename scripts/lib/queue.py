@@ -197,8 +197,9 @@ def live_session_cwd(name: str) -> str | None:
 def control_plane() -> str | None:
     """The checkout that owns the queue, or None when it cannot be told."""
     here = checkout_root()
-    # The tracked template is the fallback source for the session's NAME, so a
-    # rename (README's "Renaming" section) reaches this without a second edit.
+    # The tracked extension.toml.in is the fallback source for the session's
+    # NAME, so a rename (README's "Renaming" section) reaches this without a
+    # second edit.
     name, repo_path = manifest_session(os.path.join(here, "extension.toml"))
     if repo_path:
         return repo_path.rstrip("/")

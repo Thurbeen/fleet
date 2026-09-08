@@ -256,10 +256,8 @@ thurbox-cli session create --name "$name" --repo-path "$repo" \
 
 `mapfile -d ''` because the flags come out NUL-separated: a `--arg` value is
 often a whole command line. `./scripts/session-flags.sh sweep | tr '\0' '\n'`
-is how you read them yourself, and `--check` validates every profile in **both**
-layers — the tracked `session-profiles.yaml` and the instance's gitignored
-`session-profiles.local.yaml`, where a profile of the same name replaces the
-shipped one and the renderer says on stderr that it did.
+is how you read them yourself, and `--check` validates every profile in
+`session-profiles.yaml`, which is the one file there is.
 
 Two rules the gate enforces, so a profile breaking either never reaches `main`:
 
@@ -270,12 +268,10 @@ Two rules the gate enforces, so a profile breaking either never reaches `main`:
 - **`--command` never ships without `--reports-as`.** This is the trap.
 
 And one **convention**, which the gate does not check and does not pretend to:
-the tracked file holds template defaults, so anything environment-specific — and
-anything you would not commit — goes in the gitignored
-`session-profiles.local.yaml` instead. Better still, a worker inherits the
-environment of the thurbox server that spawns it, so a real credential belongs
-where that process gets its own (your shell profile, your keyring, the agent's
-own login) and never lands in a file at all.
+the file is committed to a public repo, so nothing environment-specific goes in
+it. A worker inherits the environment of the thurbox server that spawns it, so a
+real credential belongs where that process gets its own (your shell profile,
+your keyring, the agent's own login) and never lands in a file at all.
 
 ### The `--command` trap
 

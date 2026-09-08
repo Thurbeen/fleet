@@ -82,10 +82,10 @@
 # `webui.sh status` prints the same one, so "why is the dashboard empty?" is a
 # question the tooling answers about itself.
 #
-# Everything under orchestration/queue/ is INSTANCE DATA and gitignored — your
-# queue, not the template's. `_TEMPLATE/` beside it is the shipped form and
-# stays tracked, the same split registry/context/ and orchestration/runs/ use.
-# .gitignore's header owns the reason.
+# Everything under orchestration/queue/ is WORKING STATE and gitignored — this
+# repo is public and your prompts are not. `_TEMPLATE/` beside it is the form
+# and stays tracked, the same split registry/context/ and orchestration/runs/
+# use. .gitignore's header owns the reason.
 #
 # Environment:
 #   FLEET_QUEUE_DIR        where the queue lives (default: this checkout's

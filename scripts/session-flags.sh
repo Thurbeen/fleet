@@ -7,11 +7,8 @@
 # hand-assembles `--env` pairs and a profile that breaks a rule fails here
 # rather than in a worker that started wrong.
 #
-# It reads TWO files. The tracked one above carries the defaults the template
-# ships; `orchestration/session-profiles.local.yaml` is yours, gitignored, and
-# a profile it names replaces the shipped one of that name. Tuning a profile
-# therefore puts no commit on `main`, which is what keeps
-# ./scripts/update-from-template.sh a fast-forward — see .gitignore.
+# One file, one layer: every profile there is lives in the file above, and it
+# is yours to edit.
 #
 # Usage:
 #   scripts/session-flags.sh                 # the `default` profile

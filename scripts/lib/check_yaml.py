@@ -39,7 +39,7 @@ def main() -> int:
 
     registry = "registry/repos.generated.yaml"
     # The map is generated from the operator's own `gh` session and gitignored,
-    # so it is absent in the template and in any clone that has not synced yet.
+    # so it is absent in a fresh clone and in any that has not synced yet.
     # That is a normal state, not a failure — there is simply nothing to assert.
     if not os.path.exists(registry):
         print(f"registry: {registry} not present (not synced yet) — nothing to check")

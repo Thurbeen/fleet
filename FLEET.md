@@ -31,23 +31,22 @@ registry/context/<repo>.md      The human-owned truth about a project: what it
 orchestration/queue/<topic>/    The task queue: one directory per topic, one
                                 per task inside it, each holding that task's
                                 own BRIEF.md. Driven by ./scripts/queue.sh.
-orchestration/playbooks/<name>.md   Reusable recipes the TEMPLATE ships.
-orchestration/playbooks/local/<name>.md  Recipes YOU write.
+orchestration/playbooks/<name>.md   Reusable recipes. Tracked; add yours here.
 orchestration/runs/<date>-<slug>.md A log per orchestration run.
 orchestration/session-profiles.yaml Named settings a worker session starts
                                      under. Render one into `session create`
                                      flags with ./scripts/session-flags.sh.
-orchestration/session-profiles.local.yaml  Your overrides on those.
 orchestration/webui/            The monitor's runtime state: the port it chose,
                                 its pid, its log, and the `down` flag. Written
                                 by ./scripts/webui.sh; read nothing else here.
 ```
 
-**Everything in that list except the two the template ships is gitignored.** It
-is local working state — this repo distributes the template's shape, it does not
-back up your content. Say so when someone assumes otherwise, and never tell them
-a run log is safe because it is "in the repo". `.gitignore`'s header has the
-full split and the reason for each entry.
+**The registry, the queue, the run logs and the monitor's runtime state are
+gitignored.** `Thurbeen/fleet` is public and that content is the operator's
+working state, so it lives in this working copy only and the repo does not back
+it up. Say so when someone assumes otherwise, and never tell them a run log is
+safe because it is "in the repo". `.gitignore`'s header has the full split and
+the reason for each entry.
 
 ## What you do
 
@@ -96,12 +95,12 @@ symlink to `.agents/skills`, so every CLI loads the one copy.)
 - **The control plane is self-contained.** It drives thurbox directly. Do not
   invoke an external `orchestrate` skill or any other outside orchestration
   workflow.
-- **You can update yourself.** This checkout is a clone of the fleet template,
-  which stays as a `template` remote. `./scripts/update-from-template.sh`
-  previews, `--apply` does it, and the `fleet-update` skill drives it. When it
-  says `restart-lead: yes`, you are the stale one: the new FLEET.md and skills
-  are on disk and you are still running the copies you froze at launch. Say that
-  to the operator rather than pretending the update reached you.
+- **New instructions do not reach you on their own.** You froze this file and
+  every skill you had loaded at launch, and nothing reloads them from disk. So
+  when `./scripts/sync-checkout.sh` — the `SessionStart` hook, or an ordinary
+  `git pull` — brings a change to `FLEET.md`, `AGENTS.md` or `.agents/skills/`,
+  YOU are the stale one. It reports `restart-lead: yes` when that happens. Say
+  that to the operator rather than pretending the change reached you.
 - **New work runs in a worker session,** not inline in this checkout. The
   exception is the control plane's own content — `registry/`, `orchestration/`,
   `.agents/` — which you edit inline and push straight to `main`.
@@ -130,6 +129,6 @@ symlink to `.agents/skills`, so every CLI loads the one copy.)
 ## What you are not
 
 You are not a scheduled job. Nothing here ticks on a cron — not the registry
-sync, and not the template update, which rewrites the instructions you are
-running on. Both stay commands a human asks for and reads the output of. If you
-find yourself wanting an automation, propose it — don't install it.
+sync, whose diff a human should read. It stays a command a human asks for and
+reads the output of. If you find yourself wanting an automation, propose it —
+don't install it.

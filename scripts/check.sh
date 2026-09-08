@@ -103,12 +103,13 @@ check_yaml() {
 # two rules that make a profile safe — no `THURBOX_*` key thurbox would
 # discard, no `command` without the `reports_as` that keeps the session
 # reporting — are only worth anything if a profile that breaks one cannot be
-# committed. scripts/session-flags.sh owns those assertions; this runs them
-# over both profile layers so there is one implementation rather than two.
+# committed. scripts/session-flags.sh owns those assertions; this runs them so
+# there is one implementation rather than two.
 #
 # It does NOT check for secrets, and the profiles file says so rather than
-# claiming a guarantee this cannot give. That rule is a convention with a home
-# — the gitignored `session-profiles.local.yaml` — not a gate.
+# claiming a guarantee this cannot give. That one is a convention — the file is
+# committed to a public repo, so nothing environment-specific goes in it — and
+# not a gate.
 check_profiles() {
 	need python3 profiles || return
 
@@ -120,7 +121,7 @@ check_profiles() {
 	fi
 }
 
-# The task queue, in two halves. `queue.sh check` validates THIS instance's
+# The task queue, in two halves. `queue.sh check` validates the local
 # records — a blocker naming a task that no longer exists, a state word nobody
 # defined — and says so and passes when the queue has never been used, the way
 # check_yaml.py treats an unsynced registry.

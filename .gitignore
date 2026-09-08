@@ -1,66 +1,51 @@
-# THE INVARIANT: this instance's TRACKED tree stays identical to the template's.
+# WHAT THIS REPO DOES NOT KEEP FOR YOU.
 #
-# That is what makes `git pull template main` a clean fast-forward every time
-# and never a merge. Nothing a running fleet writes is tracked, so there is no
-# divergence, so there is nothing to conflict. The gitignore split and
-# scripts/update-from-template.sh are one design, not two.
+# `Thurbeen/fleet` is PUBLIC. Everything a running fleet writes — your prompts,
+# your briefs, your workers' results, your map of every repo you can reach — is
+# working state that has no business in a public repository, so none of it is
+# tracked. That is the first reason for every entry below.
 #
-# Every entry below says WHY it is here, because the updater depends on this
-# split and an entry nobody understands is one somebody eventually removes.
-# Three reasons, and no others:
+# WHAT IT COSTS, stated plainly because the README says it too: this repo does
+# not back up your control plane's content. Your run logs, your project context
+# and your map live in ONE working copy and die with it unless you back that
+# copy up yourself. Nothing here is a substitute for that.
+#
+# Every entry says WHY it is here, because an entry nobody understands is one
+# somebody eventually removes. Three reasons, and no others:
 #
 #   GENERATED   written by a script from a live source; reproducible
-#   LOG         the record of something that happened in THIS instance
-#   PER-INSTANCE  true on one machine, or authored by one operator
-#
-# WHAT THIS COSTS, stated plainly because the README says it too: this repo no
-# longer backs up your control plane's content. It distributes the template's
-# SHAPE. Your run logs, your project context and your map live in one working
-# copy and die with it unless you back that copy up yourself.
-#
-# Files already tracked in an older instance are unaffected — git applies these
-# rules to untracked paths only. update-from-template.sh reports any it finds.
+#   MACHINE     true on one machine — a path, a port, a pid
+#   WORKING STATE  the operator's own content: what they asked for, what came
+#                  back, and what they concluded
 
-# PER-INSTANCE. Rendered from extension.toml.in by scripts/install-extension.sh
-# and carrying this clone's absolute path, which is true only on one machine —
+# MACHINE. Rendered from extension.toml.in by scripts/install-extension.sh and
+# carrying this clone's absolute path, which is true only on one machine —
 # extension.toml.in's header says why the path cannot be a `~`.
 /extension.toml
 
-# PER-INSTANCE. Your GitHub owners. registry/owners.example.txt is the tracked
-# copy that documents the format.
+# WORKING STATE. Your GitHub owners. registry/owners.example.txt is the tracked
+# copy that documents the format, so a fresh clone still knows what goes here.
 /registry/owners.txt
 
-# GENERATED. Rebuilt wholesale from your `gh` session by scripts/sync-registry.sh.
+# GENERATED. Rebuilt wholesale from your `gh` session by scripts/sync-registry.sh,
+# and an index of every repo you can reach is not a thing to publish.
 /registry/repos.generated.yaml
 
-# PER-INSTANCE. The judgement about one of your projects, written from
-# _TEMPLATE.md. The template ships the form; what you write into it is yours.
+# WORKING STATE. The judgement about one of your projects, written from
+# _TEMPLATE.md. The form is tracked; what you write into it is yours.
 /registry/context/*.md
 !/registry/context/_TEMPLATE.md
 
-# LOG. One file per orchestration run — the record of what this instance did.
-# _TEMPLATE.md is the shipped form and stays.
+# WORKING STATE. One file per orchestration run — the record of what you did,
+# when, and how it went. _TEMPLATE.md is the form and stays.
 /orchestration/runs/*.md
 !/orchestration/runs/_TEMPLATE.md
 
-# PER-INSTANCE. Playbooks you write. They live in their own directory rather
-# than beside the template's so this stays ONE rule that never needs a line
-# adding when the template ships a fourth playbook — a forgotten negation would
-# land that playbook ignored in every instance, silently.
-/orchestration/playbooks/local/*
-!/orchestration/playbooks/local/README.md
-
-# PER-INSTANCE. Your session-profile overrides, layered over the tracked
-# defaults in orchestration/session-profiles.yaml. scripts/session-flags.sh
-# reads both; a profile defined here replaces the shipped one of that name.
-/orchestration/session-profiles.local.yaml
-
-# LOG + PER-INSTANCE. The task queue: topics, per-task briefs, the transitions
-# a run produced, and what each worker concluded. This is the control plane's
-# working state — one operator's prompts and one operator's work — and it is
-# exactly what must not be tracked, or every instance's queue would collide on
-# the next pull. README.md is the shipped explanation of the layout and stays,
-# the same shape /orchestration/playbooks/local/ uses.
+# WORKING STATE. The task queue: topics, per-task briefs, the transitions a run
+# produced, and what each worker concluded. This is the whole of the control
+# plane's working memory — one operator's prompts and one operator's work — and
+# it is exactly what must not reach a public repo. README.md documents the
+# layout and stays, so an empty queue still shows what goes in it.
 /orchestration/queue/*
 !/orchestration/queue/README.md
 
@@ -69,9 +54,9 @@
 # appears the first time the monitor is started and never in a fresh clone.
 __pycache__/
 
-# LOG + PER-INSTANCE. The monitor's runtime state: the port it chose at bind
-# time, its supervisor's pid, its log, and the `down` flag that keeps an
+# MACHINE + WORKING STATE. The monitor's runtime state: the port it chose at
+# bind time, its supervisor's pid, its log, and the `down` flag that keeps an
 # explicit stop honoured across a restart, a reboot and the next onboarding
-# run. The SERVER'S CODE is template-owned and tracked (scripts/webui.sh,
-# scripts/lib/webui.py); everything it writes is this instance's and is not.
+# run. The server's CODE is tracked (scripts/webui.sh, scripts/lib/webui.py);
+# everything it writes at runtime is not.
 /orchestration/webui/

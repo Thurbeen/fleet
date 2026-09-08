@@ -86,7 +86,7 @@ document:
   instructions: |
     README.md is the human-facing guide: what the control plane is, the
     quickstart, the customization surface, and the layout. It owns the
-    template's setup story.
+    setup story.
 
     AGENTS.md is the agent-facing operating guide for working INSIDE this
     repo — what the trees are, the run loop, and the local gates. It is an
@@ -186,9 +186,9 @@ review:
 
         orchestration/session-profiles.yaml is neither: it is configuration
         that renders into `thurbox-cli session create` flags, so judge it the
-        way you would judge a command line. It is committed and this is a
-        public template, so a credential in it is a finding regardless of how
-        it is spelled. Two further rules are machine-enforced by
+        way you would judge a command line. It is committed and this repo is
+        public, so a credential in it is a finding regardless of how it is
+        spelled. Two further rules are machine-enforced by
         `./scripts/check.sh profiles` — a `THURBOX_*` key (thurbox's identity
         vars always win over --env, so it would look applied and do nothing)
         and a `command` without a `reports_as` (thurbox reads hook coverage

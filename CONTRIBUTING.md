@@ -103,34 +103,24 @@ and that every skill directory has a `SKILL.md`.
 ### What is tracked, and what is not
 
 This is the convention every other one now hangs off, so read `.gitignore`'s
-header before adding a path. **What the template ships is tracked; what a
-running fleet writes is not.** An instance's tracked tree therefore stays
-identical to the template's, which is the only reason
-`./scripts/update-from-template.sh` can be a clean fast-forward instead of a
-merge that conflicts on somebody's tuned playbook.
+header before adding a path. **The machinery is tracked; what a running fleet
+writes is not.** This repo is public, and the queue, the map and the run logs
+are the operator's own working state, which has no business in it.
 
-Adding a file to the template means deciding which side it is on, and saying so:
+Adding a file means deciding which side it is on, and saying so:
 
 | If it is… | Then | Example |
 |---|---|---|
-| shipped by the template, same for everyone | tracked | `scripts/`, `playbooks/ship-feature.md` |
+| machinery — scripts, skills, playbooks, prose | tracked | `scripts/`, `playbooks/ship-feature.md` |
 | generated from a live source | ignored | `repos.generated.yaml` |
-| a record of what one instance did | ignored | `runs/<date>-<slug>.md` |
-| authored by one operator, for themselves | ignored, in `local/` or `*.local.yaml` | `playbooks/local/`, `session-profiles.local.yaml` |
+| true on one machine | ignored | `extension.toml`, `orchestration/webui/` |
+| the operator's own working state | ignored | `runs/<date>-<slug>.md`, `queue/<topic>/` |
 
-Prefer a whole ignored **directory** over a per-file negation. A negation list
-has to be extended every time the template ships another file of that kind, and
-the day someone forgets, that file lands ignored in every instance and nobody
-sees it. `orchestration/playbooks/local/` is one rule that never needs touching;
-the alternative would have been a `!` line per shipped playbook.
-
-Never make the template stop tracking a file without knowing what that does to
-an instance that has one. A plain merge sees "you changed it, they deleted it"
-and conflicts. `update-from-template.sh` handles it — a path deleted upstream,
-tracked locally, and claimed by the incoming `.gitignore` is untracked with
-`git rm --cached` first, which leaves the file on disk, and the handover is
-reported — but that is the reason the change is safe to make, not a licence to
-skip thinking about it.
+Prefer a whole ignored **directory** with a `!` negation for the one tracked
+form it contains, the way `registry/context/`, `orchestration/runs/` and
+`orchestration/queue/` each do. A per-file negation list has to be extended
+every time another file of that kind is added, and the day someone forgets,
+that file lands ignored and nobody sees it.
 
 ### The generated registry
 
@@ -138,35 +128,28 @@ skip thinking about it.
 your live `gh` session. Never hand-edit it, and never commit it — it is
 gitignored, along with `registry/owners.txt`. Human judgement about a project
 goes in `registry/context/<repo>.md`, which the sync never touches and which is
-also gitignored: this repo distributes the template's shape, it does not back up
-an instance's content.
+also gitignored: this repo is public and holds the machinery, not the
+operator's content.
 
 ### The session profiles
 
 `orchestration/session-profiles.yaml` holds the settings a worker session
 starts under, and `./scripts/session-flags.sh` renders one profile into
-`thurbox-cli session create` flags. It is the **template's** file, committed so
-it is reviewed — which is the point, and also the convention: **template
-defaults only**. An instance tunes profiles in `orchestration/session-profiles.local.yaml`
-instead — copied from the tracked `.local.example.yaml`, gitignored, and layered
-over the defaults — so tuning costs nobody their fast-forward. A profile named
-there replaces the shipped one of that name wholesale, and the renderer says on
-stderr which profiles it is shadowing, so precedence is never silent.
+`thurbox-cli session create` flags. **One file, one layer**, committed so a
+change to it is reviewed in a diff — which is the point.
 
-Both layers are held to the two enforced rules below, and the tracked example is
-validated too so it cannot rot. **No-secrets is not one of them.** The gate does
-not read YAML for secrets and does not claim to — the profiles file used to say
-all three rules were enforced, which was a guarantee the code never gave, and
-that is the defect class worth avoiding everywhere in this repo. It is a
-convention with an obvious home instead: the tracked file holds template
-defaults because it is public, the gitignored local file is where a value you
-would not commit goes, and nothing has to force the point because an instance
-has no tracked changes of its own to push. A real credential is better off never
-in a file at all — a worker inherits the environment of the thurbox server that
-spawns it, so a credential belongs wherever that process gets its own.
+Every profile is held to the two enforced rules below. **No-secrets is not one
+of them.** The gate does not read YAML for secrets and does not claim to — the
+profiles file used to say all three rules were enforced, which was a guarantee
+the code never gave, and that is the defect class worth avoiding everywhere in
+this repo. It is a convention instead, and it has an obvious answer rather than
+just a prohibition: this repo is public, so nothing environment-specific belongs
+in the file, and a real credential is better off never in a file at all — a
+worker inherits the environment of the thurbox server that spawns it, so a
+credential belongs wherever that process gets its own.
 
-`scripts/check.sh profiles` enforces, across both layers, the two rules a
-reviewer should not have to catch by eye — and only those two. A `THURBOX_*`
+`scripts/check.sh profiles` enforces the two rules a reviewer should not have to
+catch by eye — and only those two. A `THURBOX_*`
 key is refused, because thurbox's own identity variables always win over
 `--env` and such a setting would look applied while doing nothing. And
 `command` without `reports_as` is refused, because thurbox reads hook coverage

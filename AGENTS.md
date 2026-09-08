@@ -21,10 +21,8 @@ place to edit it, whichever CLI is reading.** Edit this file, not the pointer.
 - `orchestration/session-profiles.yaml` — named default settings a worker
   session STARTS under (`--env`, and `--command` for a setting that is a flag),
   as opposed to where its work goes. `./scripts/session-flags.sh <profile>`
-  renders one into `session create` flags. The template's are tracked; yours
-  go in `orchestration/session-profiles.local.yaml`, gitignored, and replace a
-  shipped profile of the same name wholesale. The file's own header owns the
-  rules that keep a profile safe.
+  renders one into `session create` flags. One file, one layer — edit it
+  directly. The file's own header owns the rules that keep a profile safe.
 - `orchestration/queue/<topic>/` — the task queue. A prompt becomes a TOPIC
   holding its verbatim `PROMPT.md`; the topic decomposes into task directories,
   each with its own `task.yaml`, `BRIEF.md`, `progress.jsonl` and `result.md`.
@@ -40,21 +38,18 @@ place to edit it, whichever CLI is reading.** Edit this file, not the pointer.
   code (`scripts/webui.sh`, `scripts/lib/webui.py`) is tracked; nothing it
   writes is.
 - `orchestration/playbooks/<name>.md` — reusable recipes for running thurbox.
-  The template's are tracked; **yours go in `orchestration/playbooks/local/`**,
-  which is gitignored.
+  All tracked; write new ones here, from `_TEMPLATE.md`.
 - `orchestration/runs/<date>-<slug>.md` — a log per orchestration run.
   Gitignored: local working state, not something this repo keeps for you.
 - `.agents/skills/<name>/SKILL.md` — agent skills, in one agent-agnostic tree.
   `.claude/skills` is a **symlink** to it, so Claude Code and opencode (which
   auto-discovers `.claude/skills`) both load the same copy. Never add a second
   copy under `.claude/`, and do not mirror into `.opencode/skills` — that
-  registers the same skill twice. Four skills live there: `fleet-queue` (the
+  registers the same skill twice. Three skills live there: `fleet-queue` (the
   queue: intake, ordering, dispatch, and the two halves of completion),
-  `thurbox-session` (driving one worker session), `fleet-onboarding` (taking a
-  fresh clone of this template to a working control plane — it owns the setup
-  story the README's Quickstart used to spell out), and `fleet-update`
-  (bringing this control plane current with the template it was cloned from).
-  `fleet-onboarding` also owns bringing the queue monitor up.
+  `thurbox-session` (driving one worker session), and `fleet-onboarding`
+  (taking a fresh clone to a working control plane — it owns the setup story
+  the README's Quickstart used to spell out, and bringing the monitor up).
 
 ## Orchestration model
 
@@ -154,21 +149,17 @@ debug the extension:
   `extension.toml` was cleaned away. `./scripts/install-extension.sh` is this
   extension's real update command.
 
-## Keeping this control plane current
+## Pulling changes in
 
-This repo is a **clone** of the fleet template, which stays as a second remote
-called `template`. `./scripts/update-from-template.sh` brings its changes:
-preview by default, `--apply` to do it, and it refuses rather than forces on a
-dirty tree, a wrong branch, or a merge that would conflict.
-`.agents/skills/fleet-update/` is the driving surface, and `.gitignore`'s header
-explains the split that keeps the update a fast-forward.
+`./scripts/sync-checkout.sh` fast-forwards this checkout from `origin`, and the
+`SessionStart` hook runs it. It only ever fast-forwards and refuses rather than
+forces on a dirty tree, a feature branch, or a divergence.
 
-Do not confuse it with `./scripts/sync-checkout.sh`, which fast-forwards this
-checkout from its OWN origin. Different remote, different job, both safe.
-
-**After an update that touched `FLEET.md`, `AGENTS.md` or `.agents/skills/`, the
+**After a sync that touched `FLEET.md`, `AGENTS.md` or `.agents/skills/`, the
 running `fleet` session is holding stale instructions** — it froze them at
-launch and nothing reloads them from disk. The updater says so; act on it.
+launch and nothing reloads them from disk. This is equally true of a plain
+`git pull`. The sync script says so when it happens; act on it rather than
+assuming the new instructions reached the lead.
 
 ## Maintaining this file
 
