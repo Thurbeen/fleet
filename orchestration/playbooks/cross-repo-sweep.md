@@ -63,8 +63,9 @@ One worker session **per repo**, all with the same prompt shape.
    skill's session-state section before you act on any of those words —
    `idle` means the agent said it is at rest, and it is the only one that does.
 5. Collect PR URLs and `NOT_APPLICABLE` into the run log's session table.
-6. Review PRs in a batch. `session delete <uuid> --force` per repo as it closes
-   out.
+6. Review PRs in a batch. Each session goes when its pull request merges —
+   `./scripts/queue.sh collect` reaps it, `reap --dry-run` says what it would
+   do — so nothing is left holding a worktree per repo.
 
 ## Notes
 

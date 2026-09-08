@@ -66,7 +66,9 @@ YAML by hand. Nothing to push — the map is gitignored.
    ending is not a task finishing, and only `collect` closes anything.
 5. Open a run log from `orchestration/runs/_TEMPLATE.md` and record what
    happened as it happens.
-6. Review the PRs. Delete each session as it closes out.
+6. Review the PRs; the operator merges them. Sessions release themselves once
+   a pull request merges — `collect` reaps them, `queue.sh reap --dry-run`
+   shows what it would do — see `AGENTS.md`.
 
 The operator watches all of that in a browser rather than by asking you:
 `./scripts/webui.sh ensure` serves a read-only view of the queue on localhost.

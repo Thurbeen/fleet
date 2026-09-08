@@ -47,7 +47,9 @@ One worker session.
    mail you: `message send` wakes the lead and interrupts whoever is talking to
    it. `./scripts/queue.sh watch` gives the timing without interrupting anyone.
 5. Review the PR; record it in the run log; merge or hand back.
-6. `session delete <uuid> --force` once merged or abandoned.
+6. `./scripts/queue.sh collect` reaps the session once the pull request
+   merges. For a session you spawned outside the queue, `session delete <uuid>
+   --force` once merged or abandoned.
 
 ## Notes
 

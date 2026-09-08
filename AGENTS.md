@@ -83,7 +83,16 @@ The loop, driven by `./scripts/queue.sh`:
    record and closes nothing; `queue.sh collect` reads the `result.md` the
    worker wrote and only that closes a task. A turn ending is not a task
    finishing. Record the run in `orchestration/runs/` as it happens.
-6. Review the PRs. Delete each session as it closes out.
+6. **Release is a third thing, and it is not manual.** `outcome: shipped` means
+   a pull request is OPEN, and that session is the cheap way to fix what review
+   finds — reaping at `collect` time once turned a follow-up message into a
+   whole re-spawn. So a task moves to `landed` only when the FORGE says its
+   artifact merged, and `queue.sh reap` — which `collect` runs itself — deletes
+   the session and its worktree then. It never touches one thurbox says is
+   working or blocked, nor one a worker gave up in: that session is the
+   evidence. `reap --dry-run` says what it would do. Blockers clear on `landed`
+   too, so a dependent task waits for the code to actually be on `main`.
+7. Review the PRs; the operator merges them. Everything after that is `reap`'s.
 
 `./scripts/webui.sh` serves a read-only web view of that same queue on
 localhost — topics classified by what their tasks are doing, each with its plan,
@@ -92,7 +101,7 @@ disagree with `queue.sh list`. Its header owns the lifecycle; the one thing to
 know before touching it is that `ensure` and `start` differ only in whether they
 honour the `down` flag `stop` wrote, and the onboarding skill must call `ensure`.
 
-`.agents/skills/fleet-queue/` is the driving surface for 1–3 and 5, and
+`.agents/skills/fleet-queue/` is the driving surface for 1–3, 5 and 6, and
 `.agents/skills/thurbox-session/` for one session: spawning, prompting, cleanup.
 Use both. In particular, read the latter's **session state** section before you
 judge whether a worker is still working: `idle` means the agent said it is at

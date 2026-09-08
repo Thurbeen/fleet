@@ -50,7 +50,7 @@ Four files per task, because four different things want four different answers:
 | `task.yaml` + `BRIEF.md` | what is **intended** | the lead, at intake |
 | `progress.jsonl` | what has **happened**, and when | `queue.sh watch` |
 | `result.md` | what was **concluded** | the worker, when it knows |
-| `task.yaml`'s `state` | where it stands now | `queue.sh collect` |
+| `task.yaml`'s `state` | where it stands now | `queue.sh collect`, then `queue.sh reap` |
 
 A topic view — every task under one heading, plan beside progress beside
 outcome — is therefore the directory listing. It needs no field that is not
@@ -78,3 +78,10 @@ METHOD and a method leaves no trace anyone can read. A check that could not run
 — no `gh`, no network — says exactly that and is never counted as either
 verdict. `collect --allow-unverified` closes a flagged task once you have read
 that pull request yourself.
+
+**`done` is not the end of the record.** `queue.sh reap` — which `collect`
+runs for you — asks the forge whether a `done` task's pull request merged and
+moves it to `landed` (or, if the pull request closed unmerged, `abandoned`); a
+task with no PR artifact goes straight to `landed`. Landing releases the
+task's session and worktree and stamps `task.yaml` with a `reaped: {session,
+how, at}` receipt, because the id it names no longer resolves to anything.

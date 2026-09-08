@@ -29,7 +29,7 @@
 #
 # A queue that runs one task at a time is slower than no queue at all.
 #
-# COMPLETION COMES FROM TWO PLACES, on purpose:
+# COMPLETION COMES FROM TWO PLACES, on purpose, and RELEASE FROM A THIRD:
 #
 #   `watch`    reads `thurbox-cli watch` — the event stream — and folds each
 #              transition into the task's progress.jsonl. It closes NOTHING.
@@ -42,6 +42,14 @@
 #              them is reported and the task is left OPEN; a check that could
 #              not run (no `gh`, no network) says so and is never read as
 #              either verdict.
+#   `reap`     asks the FORGE whether each concluded task's pull request has
+#              merged, moves the ones that did to `landed`, and only then
+#              deletes their sessions and worktrees. `collect` runs it, because
+#              "delete each session as it closes out" was a documented MANUAL
+#              step and twenty gigabytes sat in a worktree whose pull request
+#              had merged the day before. It never touches a session thurbox
+#              says is working, and never one a worker gave up in — that
+#              session is the evidence.
 #
 # Both are things the lead READS when it chooses. Neither pushes anything into
 # its terminal, which is what `thurbox-cli message send` does and why the queue
@@ -57,9 +65,11 @@
 #   scripts/queue.sh dispatch [--dry-run] # launch the whole ready set at once
 #   scripts/queue.sh attach <ref> <uuid>  # record a session you spawned by hand
 #   scripts/queue.sh watch [--for-secs N] # fold transitions in; close nothing
-#   scripts/queue.sh collect [--allow-unverified]  # read results, close what is
-#                        done; --allow-unverified closes one whose PR failed
-#                        the pipeline check, after you have judged that PR
+#   scripts/queue.sh collect [--allow-unverified] [--no-reap]  # read results,
+#                        close what is done; --allow-unverified closes one whose
+#                        PR failed the pipeline check, after you have judged
+#                        that PR; --no-reap leaves every session alone
+#   scripts/queue.sh reap [--dry-run]     # land what merged, release its session
 #   scripts/queue.sh list [--topic T]     # the lead's view: a line per task
 #   scripts/queue.sh show <ref>           # one task's whole record
 #   scripts/queue.sh check                # validate every record (./scripts/check.sh queue)
@@ -102,10 +112,13 @@
 #   FLEET_QUEUE_WATCH_CMD  the event source, for a replay or another transport
 #                          (default: thurbox-cli watch --json)
 #   THURBOX_SESSION        set inside a thurbox session; dispatch passes it as
-#                          --parent so `session list --parent` enumerates workers
+#                          --parent so `session list --parent` enumerates
+#                          workers, and reap refuses to delete it
 #
 # Requires: python3 (with PyYAML) — the same dependency the rest of the gate
-# has. `dispatch` and `watch` additionally need thurbox-cli.
+# has. `dispatch`, `watch` and `reap` additionally need thurbox-cli, and
+# `collect` and `reap` ask `gh` about a pull request. Every one of those
+# degrades to "could not check" rather than to a guess.
 
 set -uo pipefail
 
