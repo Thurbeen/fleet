@@ -70,8 +70,9 @@ git remote -v      # origin -> their own copy of fleet
 
 The question worth asking here is not about remotes; it is **which directory
 this is**. Step 4 bakes this checkout's absolute path into the thurbox
-extension, and a `fleet` session registered against a scratch copy self-heals
-forever against a directory that is about to vanish. So if the working
+extension, and a `mission control` session registered against a scratch copy
+self-heals forever against a directory that is about to vanish. So if the
+working
 directory is a thurbox worktree, a temp directory or an obvious throwaway, say
 so now and stop — moving later costs a session deletion (see step 4), and it is
 free to avoid here.
@@ -171,9 +172,9 @@ registered, which is the honest signal that the install did not take.
 
 **The trap that matters most here:** `[[sessions]] repo_path` is baked in at
 install time. Run this from **the clone the user intends to keep** — not a
-thurbox worktree, not a scratch copy, not a temp directory. A `fleet` session
-registered against a disposable path self-heals forever against a directory
-that is about to vanish.
+thurbox worktree, not a scratch copy, not a temp directory. A `mission control`
+session registered against a disposable path self-heals forever against a
+directory that is about to vanish.
 
 Re-running the installer does not fix it. thurbox reuses an extension's session
 by name and never moves it, so a second install rewrites the manifest, reports
@@ -240,11 +241,11 @@ thurbox-cli plugin dir --text | head -1
 ```
 
 One more thing that is theirs and not yours: the pane finds the queue by running
-`./scripts/queue.sh root` in the `fleet` session's checkout, which needs the
-**`run` capability**. Declaring it does not grant it and you cannot grant it for
-them — the switch is thurbox's own settings, `Ctrl+,` → `]` → `t`. Say it once.
-Until they do, the pane draws an honest "not trusted yet" rather than an empty
-column, so nothing is broken in the meantime.
+`./scripts/queue.sh root` in the `mission control` session's checkout, which
+needs the **`run` capability**. Declaring it does not grant it and you cannot
+grant it for them — the switch is thurbox's own settings, `Ctrl+,` → `]` → `t`.
+Say it once. Until they do, the pane draws an honest "not trusted yet" rather
+than an empty column, so nothing is broken in the meantime.
 
 **On a re-run**, `plugin install` reports the pane `current` and changes nothing,
 and the `layout.lua` block is one the user either already added or has not — which
@@ -312,10 +313,10 @@ Gate anyway; the `yaml` check is the one that asserts the generated map's shape:
 ./scripts/check.sh
 ```
 
-Then tell them the one thing that is theirs to do next: open the `fleet` session
-in thurbox and give it a goal. Everything else — playbooks, run logs, worker
-sessions — follows from that, and `AGENTS.md` is where the session picks the
-loop up.
+Then tell them the one thing that is theirs to do next: open the `mission
+control` session in thurbox and give it a goal. Everything else — playbooks, run
+logs, worker sessions — follows from that, and `AGENTS.md` is where the session
+picks the loop up.
 
 Two things worth saying once, because neither is discoverable later:
 
@@ -344,7 +345,14 @@ So do not refuse on an already-configured clone. Detect it —
 extension healthy — say which parts are already in place, and offer to refresh
 the map rather than redoing everything.
 
-The one thing a re-run does **not** fix is a **rename**. If the session has been
-renamed away from `fleet`, the extension is registered under the new name and
-`extension status fleet` is the wrong question to ask. `extension.toml.in`'s
-header owns the rename procedure; don't reimplement it here.
+The one thing a re-run does **not** fix is a **rename**. thurbox names a session
+when it SPAWNS it and has no verb that renames one, and `ensure_extension`
+matches a declared session to a live one by NAME — so a manifest edit alone
+spawns a SECOND session beside the old one and calls that healthy.
+
+The lead is called `mission control`; the EXTENSION and its agent are still
+`fleet`, which is deliberate and is why `extension status fleet` stays the right
+question no matter what the session is called. `extension.toml.in`'s RENAMING
+header owns both sequences — the `session fork` one that carries the lead's
+conversation across, and the `extension deactivate` one that discards it —
+including which step must come before which. Don't reimplement it here.

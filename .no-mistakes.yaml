@@ -94,9 +94,10 @@ document:
     two-line pointer that imports it and owns nothing; never write content
     there.
 
-    FLEET.md is the standing context of the long-lived `fleet` session, laid
-    down at the extension home by extension.toml.in. It owns what that session
-    is FOR. It deliberately defers to AGENTS.md for how to work in the repo.
+    FLEET.md is the standing context of the long-lived `mission control`
+    session, laid down at the extension home by extension.toml.in. It owns what
+    that session is FOR. It deliberately defers to AGENTS.md for how to work in
+    the repo.
 
     CONTRIBUTING.md owns the contribution process — the branch-and-pull-request
     flow, the squash-only merge policy, the local gate, and the configuration

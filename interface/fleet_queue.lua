@@ -24,8 +24,9 @@
 -- nothing about fleet, so it cannot guess the control-plane checkout — and it
 -- must not, because `queue.sh` refuses to be run from a second clone for
 -- exactly that reason. The one honest answer is `./scripts/queue.sh root`, run
--- in the checkout the `fleet` session opens. That session is what fleet's own
--- extension installs, so it is the same answer `queue.sh` itself would give.
+-- in the checkout the `mission control` session opens. That session is what
+-- fleet's own extension installs, so it is the same answer `queue.sh` itself
+-- would give.
 --
 -- IDENTITY IS THE CWD, NEVER `session.repo`. `session.repo` is the BASENAME of
 -- a session's repository path — the lead's `~/fleet` and four worktrees of
@@ -52,8 +53,11 @@ local TOGGLE = "fleetqueue.toggle"
 --- The thurbox session that opens the control-plane checkout.
 ---
 --- fleet's `extension.toml.in` names this session and thurbox self-heals it, so
---- it is a contract rather than a guess. Rename it there and rename it here.
-local CONTROL_PLANE = "fleet"
+--- it is a contract rather than a guess. Rename it there and rename it here —
+--- that file's RENAMING header lists this line as one of the four places the
+--- session's name lives, and a rename that misses it leaves the pane hunting a
+--- session nobody spawns.
+local CONTROL_PLANE = "mission control"
 
 --- Seconds an answer stays fresh.
 ---
