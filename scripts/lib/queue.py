@@ -113,6 +113,29 @@ OUTCOMES = {
     "failed": "failed",
 }
 
+# A task in one of these has concluded. It is not waiting for anything, so a
+# blocker still recorded against it holds nothing — `landed` printed with a
+# "held by" line under it is what made this a named set rather than a
+# comparison written out three times.
+CONCLUDED_STATES = ("done", "landed", "stuck", "failed", "abandoned")
+
+# Concluded AND not on main. `sweep_landings` promotes a `done` task and only a
+# `done` task, so `landed` is unreachable from any of these: a blocker naming
+# one can never clear, and calling it "held by" describes a wait with no end.
+UNLANDABLE_STATES = ("stuck", "failed", "abandoned")
+
+# Where each outcome a worker may write says the task should stand once the
+# forge has answered. `landed` is the merge; `abandoned` is the other answer to
+# that same question, so it agrees with no outcome at all — `abandoned` beside
+# `shipped` is two recorded facts that contradict, and the display says so
+# instead of printing them side by side as though they agreed.
+OUTCOME_STATES = {
+    "shipped": ("done", "landed"),
+    "not-applicable": ("done", "landed"),
+    "stuck": ("stuck",),
+    "failed": ("failed",),
+}
+
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,60}$")
 BRIEF_PLACEHOLDER = "<!-- WRITE THE INSTRUCTIONS HERE -->"
 
@@ -566,6 +589,140 @@ class Queue:
         ]
 
 
+# --- what a record MEANS, in one place ---------------------------------------
+#
+# `queue.sh list`, `queue.sh plan`, `fleet-status.sh` and the monitor all show
+# these three readings, and each used to derive its own. That is how the queue
+# came to print `landed` with a "held by" line under it, a blocker on an
+# `abandoned` upstream as though a merge were still coming, and `abandoned`
+# beside `shipped` as though the state and the outcome agreed: four surfaces,
+# four answers, none of them obviously wrong on its own.
+#
+# Deriving here means the four can differ in LAYOUT and never in what they
+# claim. Nothing below writes: a contradiction in the records is history, and
+# the fix for one is always in what is said about it.
+
+
+def blocker_view(q: Queue, task: Task, blocker: dict) -> dict:
+    """One blocker, plus the one word for what it is doing to this task.
+
+        moot         the blocked task itself concluded; this holds nothing
+        cleared      the upstream landed
+        unclearable  the upstream can never land, so there is no release path
+        unknown      the upstream is not in this queue at all
+        holding      the ordinary case — a merge that can still come
+
+    `cleared` is kept as a field of its own because `is_ready` asks exactly
+    that question and nothing else.
+    """
+    ref = blocker.get("task")
+    try:
+        upstream = q.get(ref).state
+    except QueueError:
+        upstream = None
+
+    if task.state in CONCLUDED_STATES:
+        status = "moot"
+    elif upstream is None:
+        status = "unknown"
+    elif upstream == "landed":
+        status = "cleared"
+    elif upstream in UNLANDABLE_STATES:
+        status = "unclearable"
+    else:
+        status = "holding"
+
+    view = {
+        "task": ref,
+        "kind": blocker.get("kind"),
+        "why": blocker.get("why"),
+        "upstream_state": upstream,
+        "status": status,
+        "cleared": status == "cleared",
+    }
+    view["line"] = blocker_line(view)
+    return view
+
+
+def blocker_line(view: dict) -> str:
+    """The one sentence every surface prints for a blocker.
+
+    The upstream's STATE rides along in all but the moot line, because "held by
+    X" and "held by X, which is abandoned" are the difference between a wait
+    and a dead end, and only the second one tells the reader to go and do
+    something about it.
+    """
+    what = f"{view['kind']} on {view['task']}"
+    why = view["why"] or "no reason recorded"
+    if view["status"] == "moot":
+        return f"was held by {what}; this task concluded, so it holds nothing"
+    if view["status"] == "cleared":
+        return f"cleared: {what} has landed"
+    if view["status"] == "unknown":
+        return f"UNCLEARABLE: {what}, which is not in this queue: {why}"
+    if view["status"] == "unclearable":
+        return (
+            f"UNCLEARABLE: {what}, which is {view['upstream_state']} and can "
+            f"never land: {why}"
+        )
+    return f"held by {what} ({view['upstream_state']}): {why}"
+
+
+def state_conflict(task: Task) -> str | None:
+    """The task's own two recorded facts, when they disagree — else None.
+
+    Both are facts and neither is edited away: `abandoned` is the forge saying
+    the pull request was closed unmerged, `shipped` is the worker saying it
+    opened one. The line names the disagreement and, when `reap` recorded why,
+    what the forge actually answered.
+    """
+    outcome = task.doc.get("outcome")
+    if not outcome:
+        return None
+    agree = OUTCOME_STATES.get(outcome)
+    if agree is None:
+        return f"outcome {outcome!r} is not one of: {', '.join(sorted(OUTCOMES))}"
+    if task.state in agree:
+        return None
+    note = f"state {task.state} disagrees with outcome {outcome}"
+    detail = (task.doc.get("landing") or {}).get("detail")
+    return f"{note} — {detail}" if detail else note
+
+
+def dispatch_gap(q: Queue, task: Task) -> str | None:
+    """A task nothing is holding and nothing is running.
+
+    A FACT and not a countdown: this says a session was never attached, never
+    how long ago one should have been. `queue.sh` has no clock in its output
+    and this does not give it one.
+    """
+    if task.state != "queued" or task.doc.get("session"):
+        return None
+    return "no session dispatched" if q.is_ready(task) else None
+
+
+def task_notes(q: Queue, task: Task) -> list:
+    """Everything a one-line task row cannot say, in the order it matters.
+
+    The blockers here are the ACTIVE ones only: a moot or cleared blocker is
+    part of the record and not part of what is happening, and printing it under
+    a task that concluded is the contradiction this whole section exists for.
+    """
+    notes = []
+    conflict = state_conflict(task)
+    if conflict:
+        notes.append(f"! {conflict}")
+    gap = dispatch_gap(q, task)
+    if gap:
+        notes.append(gap)
+    notes += [
+        v["line"]
+        for v in (blocker_view(q, task, b) for b in task.blockers)
+        if v["status"] not in ("moot", "cleared")
+    ]
+    return notes
+
+
 # --- commands ----------------------------------------------------------------
 
 
@@ -899,9 +1056,10 @@ def cmd_plan(args) -> int:
     for t in waiting:
         print(f"    {t.ref}")
         for b in t.blockers:
-            if q.blocker_cleared(b):
+            view = blocker_view(q, t, b)
+            if view["status"] == "cleared":
                 continue
-            print(f"        {b['kind']} on {b['task']}: {b['why']}")
+            print(f"        {view['line']}")
     return 0
 
 
@@ -3791,6 +3949,10 @@ def cmd_list(args) -> int:
             mark = "waiting" if t.state == "queued" and not q.is_ready(t) else t.state
             extra = t.doc.get("artifact") or t.doc.get("session") or ""
             print(f"    {t.id:<34} {mark:<11} {where_it_runs(t)}  {extra}")
+            # The row is one line and a record can contradict it; task_notes is
+            # what says so, and it is the same list the monitor renders.
+            for note in task_notes(q, t):
+                print(f"        {note}")
         print()
     return 0
 
@@ -3831,9 +3993,16 @@ def cmd_show(args) -> int:
     if rec:
         print(f"    {'shepherd:':<12} {rec.get('condition')} — fixer {rec.get('session')} "
               f"sent {rec.get('at')}")
+    conflict = state_conflict(task)
+    if conflict:
+        print(f"    {'conflict:':<12} {conflict}")
+    gap = dispatch_gap(q, task)
+    if gap:
+        print(f"    {'dispatch:':<12} {gap}")
+    # Every blocker, moot and cleared ones included: this command is the record
+    # itself, and the record keeps what a status line has stopped showing.
     for b in task.blockers:
-        cleared = "cleared" if q.blocker_cleared(b) else "HOLDING"
-        print(f"    blocked_by:  {b['task']} [{cleared}] {b['kind']}: {b['why']}")
+        print(f"    blocked_by:  {blocker_view(q, task, b)['line']}")
     print(f"    {'brief:':<12} {task.file('BRIEF.md')}")
     progress = task.file("progress.jsonl")
     if os.path.exists(progress):

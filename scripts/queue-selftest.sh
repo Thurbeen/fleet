@@ -48,6 +48,11 @@
 #      recorded; a merely slow one is not, nor is one whose stale state predates
 #      the restart it already got; the lead is refused; and a quota that cannot
 #      be read is undetermined, which acts on nothing.
+#  13. The status output never contradicts itself. A terminal state shows no
+#      blocker, a blocker whose upstream can never land says so with that
+#      upstream's state, a state and an outcome that disagree are printed as a
+#      disagreement, a sweep that could not read every repo says so in its
+#      headline, and a queued task nobody dispatched is marked as one.
 #
 # Test 4 is also the wake proof. The event source is `thurbox-cli watch`, which
 # this script replaces with a recorded stream through `FLEET_QUEUE_WATCH_CMD` —
@@ -152,6 +157,11 @@ cat >"$ghbin/gh" <<SH
 # \`gh pr view <url> --json state\` (reap's landing check). A pull request with
 # no body file is one the API cannot be reached for; one with no state file is
 # OPEN, which is what a pull request is until something changes it.
+#
+# \`pr list\` is the third call, and it belongs to fleet-status.sh rather than to
+# the queue: a repo it CAN read and that has nothing open is what makes an
+# incomplete sweep distinguishable from an empty one.
+[ "\$1 \$2" = "pr list" ] && { echo "[]"; exit 0; }
 prev=""
 for a in "\$@"; do
 	case "\$a" in http*) url="\$a" ;; esac
@@ -2171,6 +2181,139 @@ expect "a quota reading that cannot be taken is undetermined" "undetermined" "$o
 refute "and undetermined restarts nothing" "restarted" "$out"
 
 unset CLAUDE_CONFIG_DIR
+
+# --- 13. the display never contradicts itself --------------------------------
+#
+# Five readings that were all wrong on one screen, every one of them produced
+# by records a real run wrote:
+#
+#   a `landed` task printed with a "held by" line under it
+#   that blocker naming an `abandoned` upstream, which can never land, so
+#     nothing would ever clear it and the output did not say so
+#   `abandoned` printed beside `shipped` and a pull request URL, as though the
+#     state and the outcome agreed
+#   a pull request sweep answering "none open" on the same screen as a repo it
+#     could not read
+#   a `queued` task nobody ever dispatched, indistinguishable from one queued a
+#     minute ago
+#
+# The records below ARE those contradictions, written deliberately. The fix is
+# in what the surfaces say about them and never in the records: a task.yaml is
+# the history of what happened, and tidying one so the output agrees with
+# itself deletes the evidence. So every claim here is about output.
+#
+# In a queue of its own, like test 11, because these states are reached through
+# collect, reap and the forge and the sections above own their own records.
+
+export FLEET_QUEUE_DIR="$tmp/queue-status"
+# The monitor's runtime state, pointed somewhere empty so `fleet-status.sh`
+# reads "down" rather than anywhere near the operator's own.
+export FLEET_WEBUI_DIR="$tmp/webui-rt"
+mkdir -p "$FLEET_WEBUI_DIR" "$tmp/repo-readable"
+
+# Rewrite one field of a THROWAWAY record, to reach a state a real run only
+# reaches through the forge. Nothing outside this fixture queue is ever edited.
+set_field() {
+	python3 - "$FLEET_QUEUE_DIR/$1/task.yaml" "$2" "$3" <<'FIELD'
+import sys, yaml
+path, key, value = sys.argv[1], sys.argv[2], sys.argv[3]
+doc = yaml.safe_load(open(path))
+doc[key] = value
+with open(path, "w") as fh:
+    yaml.safe_dump(doc, fh, sort_keys=False, default_flow_style=False)
+FIELD
+}
+
+ctopic="$($QUEUE topic add contradictions \
+	--title 'Records that disagree with themselves' \
+	--prompt 'the status output must not contradict itself')"
+
+# 05 names a checkout that is not there, which is the repo the sweep cannot
+# read; the rest share one that is, which is the repo it can.
+for spec in \
+	"01:upstream-abandoned:An upstream closed unmerged:$tmp/repo-readable" \
+	"02:landed-holder:A task that already landed:$tmp/repo-readable" \
+	"03:still-queued:A task still waiting on that upstream:$tmp/repo-readable" \
+	"04:never-dispatched:A task nobody ever sent out:$tmp/repo-readable" \
+	"05:sweeps-a-missing-repo:A task whose checkout is gone:$tmp/no-such-repo"; do
+	IFS=: read -r n slug title repo <<<"$spec"
+	if ! out="$($QUEUE add "$ctopic" "$slug" --title "$title" --repo "$repo" \
+		--branch "fix/$slug" --number "$n" 2>&1)"; then
+		fail "add $slug" "$out"
+	fi
+done
+
+$QUEUE block "$ctopic/02-landed-holder" --on "$ctopic/01-upstream-abandoned" \
+	--kind semantic-dependency --why 'reads the field the upstream adds' >/dev/null
+$QUEUE block "$ctopic/03-still-queued" --on "$ctopic/01-upstream-abandoned" \
+	--kind semantic-dependency --why 'needs that same field' >/dev/null
+
+# The worker reported it shipped; the forge closed the pull request unmerged.
+# Both are true, both are recorded, and the pair is the contradiction.
+set_field "$ctopic/01-upstream-abandoned" state abandoned
+set_field "$ctopic/01-upstream-abandoned" outcome shipped
+set_field "$ctopic/01-upstream-abandoned" artifact \
+	https://github.com/Thurbeen/thurbox/pull/1091
+set_field "$ctopic/02-landed-holder" state landed
+set_field "$ctopic/05-sweeps-a-missing-repo" state dispatched
+
+out="$($QUEUE list 2>&1)"
+refute "a landed task never displays a blocker" \
+	"reads the field the upstream adds" "$out"
+expect "a blocker whose upstream can never land is called unclearable" \
+	"UNCLEARABLE" "$out"
+expect "and the line carries the upstream's state, so the dead end is visible" \
+	"which is abandoned and can never land" "$out"
+expect "a state and an outcome that disagree are printed as a conflict" \
+	"state abandoned disagrees with outcome shipped" "$out"
+expect "a queued task nobody dispatched carries a marker" \
+	"no session dispatched" "$out"
+
+expect "the marker is on the task with no session" "no session dispatched" \
+	"$($QUEUE show "$ctopic/04-never-dispatched" 2>&1)"
+refute "and not on the one a blocker is holding, which is a different fact" \
+	"no session dispatched" "$($QUEUE show "$ctopic/03-still-queued" 2>&1)"
+
+held="$($QUEUE show "$ctopic/02-landed-holder" 2>&1)"
+refute "show does not call a landed task's blocker HOLDING either" "HOLDING" "$held"
+expect "it says the blocker holds nothing now" "holds nothing" "$held"
+
+plan="$($QUEUE plan 2>&1)"
+expect "plan names the unclearable blocker as one too" "UNCLEARABLE" "$plan"
+
+# --- 13b. the same five, in fleet-status.sh ----------------------------------
+
+status="$(./scripts/fleet-status.sh 2>&1)"
+refute "fleet-status drops the landed task's blocker as well" \
+	"reads the field the upstream adds" "$status"
+expect "it names the unclearable one" "UNCLEARABLE" "$status"
+expect "it shows the state/outcome conflict" \
+	"disagrees with outcome shipped" "$status"
+expect "it marks the task nobody dispatched" "no session dispatched" "$status"
+refute "the PR headline cannot read 'none open' when a repo went unread" \
+	"none open for these tasks" "$status"
+expect "the headline itself says the sweep was incomplete" "INCOMPLETE" "$status"
+expect "and the repo it could not read is still named" "no such directory" "$status"
+
+# --- 13c. and in the monitor, which reads the same records -------------------
+#
+# Read through webui.py's own snapshot rather than over HTTP: the claim is that
+# the monitor cannot disagree with `list`, and that is a question about the
+# derivation, not about the server. webui-selftest.sh owns the server.
+
+view="$(python3 - <<'VIEW' 2>&1
+import importlib.util, json
+spec = importlib.util.spec_from_file_location("fleet_webui", "scripts/lib/webui.py")
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+print(json.dumps(mod.snapshot()))
+VIEW
+)"
+expect "the monitor calls the unclearable blocker unclearable" \
+	'"status": "unclearable"' "$view"
+expect "and a landed task's blocker moot" '"status": "moot"' "$view"
+expect "it carries the same conflict note" "disagrees with outcome shipped" "$view"
+expect "and the same no-session marker" "no session dispatched" "$view"
 
 echo
 if [ "$failed" -eq 0 ]; then
