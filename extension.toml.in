@@ -100,6 +100,56 @@
 #                     the single payload file is prose, is not a user-edited
 #                     seed, and contains no `{home}` to substitute.
 
+# RENAMING IT — `fleet` names the SESSION, not your clone. Nothing reads the
+# repo name, so a control plane checked out as `mission-control` can still run
+# a session called `fleet`. If you do rename the session, the name is in six
+# places and they move together:
+#
+#   in this file
+#     name = "fleet"                (1) the extension id — the argument to
+#                                       every `thurbox-cli extension ...`
+#                                       command, and the value
+#                                       scripts/install-extension.sh reads out
+#                                       for its hints and remedies
+#     [[agents]] name = "fleet"     (2) the agent id, registered in agents.toml
+#     [[sessions]] name  = "fleet"  (3) the session's name
+#     [[sessions]] agent = "fleet"      ... bound to the agent in (2)
+#
+#   derived, not edited
+#     ~/.config/thurbox/extensions/fleet/
+#                                   (4) the extension home. This manifest has
+#                                       no `home` key, so thurbox derives it
+#                                       from (1)
+#
+#   prose that has to agree
+#     FLEET.md                      (5) the [[files]] payload, whose text opens
+#                                       "You are the **fleet** session"
+#     --to fleet / --for fleet      (6) the mailbox address, used for anything
+#                                       urgent enough to interrupt the lead. In
+#                                       FLEET.md and in this header comment
+#
+# A PARTIAL RENAME is the failure mode: change (1) and the extension installs
+# as `mission-control`, but leave (6) and anything still addressed `--to fleet`
+# either bounces or lands in an inbox nobody drains. So:
+#
+#   1. Change all six, and `interface/fleet_queue.lua`'s CONTROL_PLANE with
+#      them — the pane finds the checkout by probing that session by name.
+#   2. Uninstall first if it is already installed under the old name
+#      (`thurbox-cli extension uninstall fleet`). Skip this and you get two
+#      registered extensions and two self-healing sessions, each recreating
+#      itself.
+#   3. ./scripts/install-extension.sh
+#   4. `thurbox-cli extension status <newname>` to confirm.
+#
+# FLEET.md's FILENAME is separate: this manifest names it four times (one
+# [[files]] path, three [[symlinks]] targets), so renaming the file means
+# editing those four lines too. Renaming the session does not require it.
+#
+# WORKER session names are not among the six. They are free-form strings that
+# nothing resolves — by the convention in orchestration/playbooks/ each is an
+# imperative sentence describing the work, with no `fleet` prefix and no repo
+# prefix.
+
 name = "fleet"
 description = "Control-plane session: the repo map and thurbox orchestration"
 config_version = 1
@@ -142,6 +192,17 @@ min_thurbox_version = "2.19.0"
 #
 # Mirrors the stock `claude` agent's id handling, so the session resumes and
 # forks by its pinned {id} rather than "the last session in this directory".
+#
+# EDIT THIS BLOCK, then re-run ./scripts/install-extension.sh. `command` can
+# point at a different CLI entirely — `codex`, say — as long as the
+# `resume_args`, `fork_args` and `new_session_args` beneath it still carry
+# thurbox's {id} token, which is what pins a session to its own id.
+#
+# Editing the installed `agents.toml` instead also works and takes effect
+# immediately; a reinstall keeps existing entries, so it is not clobbered. But
+# that edit lives on one machine and does not survive `extension uninstall`,
+# while this manifest is committed and reaches every install of your control
+# plane.
 
 [[agents]]
 name = "fleet"

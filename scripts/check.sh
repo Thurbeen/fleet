@@ -206,10 +206,10 @@ check_status() {
 # thurbox install, so it belongs at install time and not here.
 #
 # What DOES belong here is the failure this repo can cause on its own. The pane
-# names a slot, and `install-extension.sh`, the README and the onboarding skill
-# each print a `layout.lua` line naming that slot. If any of them drifts, the
-# operator is handed a line that places a slot nothing fills: the pane loads,
-# lists, and draws nothing, and every message they have says it should work.
+# names a slot, and `install-extension.sh` and the onboarding skill each print
+# a `layout.lua` line naming that slot. If either drifts, the operator is
+# handed a line that places a slot nothing fills: the pane loads, lists, and
+# draws nothing, and every message they have says it should work.
 check_pane() {
 	local pane="interface/fleet_queue.lua"
 
@@ -225,8 +225,11 @@ check_pane() {
 		return
 	fi
 
+	# The two files that DOCUMENT the placement line, which the README
+	# deliberately does not: it is a setup step, the onboarding skill runs the
+	# setup, and the installer prints the line at the moment it is needed.
 	local f miss=0
-	for f in scripts/install-extension.sh README.md .agents/skills/fleet-onboarding/SKILL.md; do
+	for f in scripts/install-extension.sh .agents/skills/fleet-onboarding/SKILL.md; do
 		grep -q "slot = \"$slot\"" "$f" || {
 			fail "pane: $f does not name slot \"$slot\" in a layout.lua line"
 			miss=1
@@ -242,18 +245,18 @@ check_pane() {
 		}
 	done
 
-	# The installed name, which README documents as the argument to
-	# `plugin remove`. It is the destination PATH and not its basename —
-	# `plugin remove 91_fleet_queue.lua` answers "not listed in plugins.toml"
-	# and removes nothing, which is how this check earned its place: the README
-	# documented the basename until the command was actually run.
+	# The installed name, which the installer's own header documents as the
+	# argument to `plugin remove`. It is the destination PATH and not its
+	# basename — `plugin remove 91_fleet_queue.lua` answers "not listed in
+	# plugins.toml" and removes nothing, which is how this check earned its
+	# place: the docs said the basename until the command was actually run.
 	local dest
 	dest="$(sed -n 's/^PANE_DEST="\(.*\)"$/\1/p' scripts/install-extension.sh | head -1)"
 	if [ -z "$dest" ]; then
 		fail "pane: could not read PANE_DEST from scripts/install-extension.sh"
 		miss=1
-	elif ! grep -q "plugin remove $dest" README.md; then
-		fail "pane: README does not document 'plugin remove $dest'"
+	elif ! grep -q "plugin remove $dest" scripts/install-extension.sh; then
+		fail "pane: scripts/install-extension.sh does not document 'plugin remove $dest'"
 		miss=1
 	fi
 
