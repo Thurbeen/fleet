@@ -108,6 +108,8 @@ symlink to `.agents/skills`, so every CLI loads the one copy.)
 
 **Fuel is how much of the account's provider windows is left**, read by
 `./scripts/fleet-status.sh` from `quota-axi` and printed as its `FUEL` section.
+The TUI queue pane draws the same reading at the top of its column, asking for
+it with `./scripts/fleet-status.sh --fuel` — one reading, never a second parse.
 It measures the ACCOUNT, not a session: the windows you and every worker spend
 at once, so six workers dispatched together spend them six ways. There is no
 per-worker reading to be had — `thurbox-cli session get` carries no token,

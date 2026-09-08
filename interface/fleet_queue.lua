@@ -34,6 +34,21 @@
 -- NAME and reports `session.cwd`, so what it says it read is a directory rather
 -- than a label several directories share.
 --
+-- THE FUEL LINE IS THE SAME READING THE SCREEN PRINTS. `scripts/lib/
+-- fleet_status.py`'s `probe_fuel` is the only place the account's remaining
+-- window is read, and this pane asks it through `fleet-status.sh --fuel`
+-- rather than running `quota-axi` itself — a second parse of a document this
+-- file does not own is the "second writer's opinion" the paragraph above
+-- rejects, and it would disagree with the screen the moment either side moved.
+-- It draws what was MEASURED (percent, the binding window, when that window
+-- comes back) and never quota-axi's `runway` or `projectedExhaustedAt`, which
+-- FLEET.md forbids fleet from restating as its own.
+--
+-- AND IT IS THE ONE PROBE THAT COSTS THE NETWORK, so it has its own `FUEL_TTL`
+-- minutes long instead of the queue's seconds: a pane that refetched it per
+-- frame would burn the fuel it is reporting. What is drawn is therefore always
+-- a CACHED reading, and it is drawn with its age for exactly that reason.
+--
 -- NOT `pure`, deliberately. The bundled panes declare it and this one does not:
 -- `run` re-asks from `render`, and a pure pane whose tree still stands is not
 -- re-run at all — so on an otherwise idle screen the TTL below would never come
@@ -71,6 +86,22 @@ local TTL = 10
 --- A queue of a dozen topics is a few dozen small file reads, so a probe that
 --- has not answered in this long is wedged rather than slow.
 local TIMEOUT = 15
+
+--- Seconds the FUEL answer stays fresh, and it is minutes rather than seconds.
+---
+--- The queue is files on disk; the fuel reading is a network call to the
+--- provider, made on this pane's behalf by the account whose window it is
+--- measuring. At the queue's ten seconds that is 360 calls an hour to watch a
+--- number that moves as fast as an agent can spend it — the pane would be
+--- burning the fuel it is reporting. Five minutes is far finer than the
+--- windows involved (the shortest quota-axi reports is five hours) and coarse
+--- enough that the reading costs one process a screenful of work.
+local FUEL_TTL = 300
+
+--- quota-axi talks to the provider, so this waits longer than a file read
+--- does. `probe_fuel` already gives up on it at 20 seconds; this is that plus
+--- room for the process around it.
+local FUEL_TIMEOUT = 30
 
 --- Rows the wheel moves.
 local SCROLL_STEP = 3
@@ -149,6 +180,26 @@ for topic in */; do
     ' "$dir/task.yaml"
   done
 done
+]==]
+
+--- The fuel probe: the account's remaining window, asked of the one thing that
+--- reads it.
+---
+--- `fleet-status.sh --fuel` is `probe_fuel()` alone, printed as one
+--- `name<TAB>value` line per field — the format exists because a thurbox pane
+--- is Lua with no JSON parser, and `--json` would collect the whole screen
+--- (a `gh pr list` per repo in flight, a `thurbox-cli session list`) to answer
+--- one number.
+---
+--- IT SPELLS ITS OWN FAILURE, like the queue probe above and for the same
+--- reason: `unavailable` is a field the reader already knows how to draw, so a
+--- checkout that has no such script answers in the same vocabulary the
+--- provider does when it has no number.
+local FUEL_PROBE = [==[
+if [ ! -x ./scripts/fleet-status.sh ]; then
+  printf 'unavailable\tnot the control-plane checkout\n'; exit 0
+fi
+./scripts/fleet-status.sh --fuel 2>/dev/null
 ]==]
 
 -- ── Reading the probe ──────────────────────────────────────────────────────
@@ -360,6 +411,40 @@ local function model_for(stdout)
   parsed.src = stdout
   parsed.model = build_model(stdout)
   return parsed.model
+end
+
+--- The fuel record, as a table. One `name<TAB>value` line per field, and a
+--- field that has no value is ABSENT rather than empty — so `remaining` being
+--- nil is "nobody could tell", which is a different fact from 0%.
+local function build_fuel(stdout)
+  local out = {}
+  for line in (stdout .. "\n"):gmatch("(.-)\n") do
+    local name, value = line:match("^([a-z_]+)\t(.*)$")
+    if name then
+      out[name] = value
+    end
+  end
+  return {
+    unavailable = out.unavailable,
+    remaining = tonumber(out.remaining),
+    reserve = tonumber(out.reserve),
+    limited_by = out.limited_by,
+    resets_at = out.resets_at,
+    stale = out.stale == "1",
+    read_at = tonumber(out.read_at),
+  }
+end
+
+--- `build_fuel`, done again only when the record actually changed. The queue
+--- probe's memo, for the same reason: this pane is not `pure`, so it is asked
+--- on frames where nothing has been refetched.
+local fuel_parsed = { src = nil, fuel = nil }
+local function fuel_for(stdout)
+  if fuel_parsed.src ~= stdout then
+    fuel_parsed.src = stdout
+    fuel_parsed.fuel = build_fuel(stdout)
+  end
+  return fuel_parsed.fuel
 end
 
 -- ── Drawing ────────────────────────────────────────────────────────────────
@@ -867,6 +952,173 @@ local function summary_spans(model, width)
   return row:spans_list()
 end
 
+--- How old the cached reading is, said the way every other age in this pane is.
+---
+--- It is drawn because the reading is always cached — `FUEL_TTL` is minutes —
+--- and a number with no age silently claims to be now. `read_at` arrives as
+--- epoch seconds for this: a pane has no `os` and cannot parse an instant.
+local function read_age(fuel)
+  local now = widgets.now_ms()
+  if (fuel.read_at or 0) <= 0 or now <= 0 then
+    return nil
+  end
+  return (widgets.time_ago(fuel.read_at * 1000, now):gsub(" ago", ""))
+end
+
+--- An instant with detail taken off it — never a different instant.
+---
+--- `1` drops the seconds, `2` drops the year as well. Both are compactions of
+--- what quota-axi said and not a re-reading of it: the offset or `Z` stays on,
+--- because a reset time whose zone has been filed off is a wrong reset time.
+--- The year goes last and goes safely — the longest window quota-axi reports
+--- is a week, so a reset is always inside the year the reader is standing in.
+local function compact_instant(iso, level)
+  local out = iso
+  if level >= 1 then
+    local head, tail = out:match("^(.-T%d%d:%d%d):%d%d[%.%d]*(.*)$")
+    if head then
+      out = head .. tail
+    end
+  end
+  if level >= 2 then
+    out = (out:gsub("^%d%d%d%d%-", ""))
+  end
+  return out
+end
+
+--- What the detail row gives up as the column narrows, in order.
+---
+--- The reserve goes FIRST, because the row above it is already coloured
+--- against the reserve — losing the number costs a reader the arithmetic, not
+--- the verdict. The instant is compacted next and the word "resets" only after
+--- that, and the binding window is the last thing standing: a reset with no
+--- window named does not say what is resetting.
+local FUEL_DETAIL = {
+  { reserve = true, instant = 0, word = true },
+  { reserve = false, instant = 0, word = true },
+  { reserve = false, instant = 1, word = true },
+  { reserve = false, instant = 2, word = true },
+  { reserve = false, instant = 2, word = false },
+  { reserve = false },
+}
+
+local function detail_segments(fuel, level)
+  local segs = {}
+  if level.reserve and fuel.reserve then
+    segs[#segs + 1] = "reserve " .. fuel.reserve .. "%"
+  end
+  if (fuel.limited_by or "") ~= "" then
+    segs[#segs + 1] = fuel.limited_by
+  end
+  if level.instant and (fuel.resets_at or "") ~= "" then
+    local when = compact_instant(fuel.resets_at, level.instant)
+    segs[#segs + 1] = level.word and ("resets " .. when) or when
+  end
+  return segs
+end
+
+--- The reading's colour, taken from the reserve the reading itself carries.
+---
+--- The threshold is not this file's to hold: FLEET.md's `## Fuel` section owns
+--- it, `fleet_status.py` carries the same number, and it travels down with
+--- every record — so the pane compares and never spells it. AT the reserve is
+--- red as well as under it, because the rule that number stands for is "below
+--- it you dispatch nothing new", and a reading sitting exactly on the floor is
+--- not headroom to dispatch into.
+local function fuel_tone(fuel)
+  if not fuel.remaining or not fuel.reserve then
+    return theme.muted
+  end
+  if fuel.remaining <= fuel.reserve then
+    return theme.bad
+  end
+  return theme.ok
+end
+
+--- The fuel line: what the whole column below it is competing for.
+---
+--- Two rows rather than one, because the three facts the operator acts on —
+--- how much is left, which window is binding, when that window comes back —
+--- do not fit in a column that is routinely thirty cells wide, and the reset
+--- instant is the one of the three that a single budgeted line would drop
+--- first. `render_fuel` in `fleet_status.py` splits the same reading over a
+--- head and a continuation for the same reason; this is that shape in a
+--- narrower place.
+local function fuel_rows(fuel, width, spinner)
+  local head = " fuel "
+  local room = math.max(1, width - widgets.len(head))
+
+  --- The head row: a lead-in, one thing to say, and the age flush right.
+  local function headline(body, body_style, note, note_style)
+    local row = ui.row({ width = width })
+    row:add(head, { fg = theme.muted })
+    body = widgets.truncate(body, room)
+    row:add(body, body_style)
+    if note then
+      local pad = width - widgets.len(head) - widgets.len(body) - widgets.len(note)
+      if pad >= 2 then
+        row:add(string.rep(" ", pad))
+        row:add(note, note_style)
+      end
+    end
+    return line(row:spans_list())
+  end
+
+  --- The muted second row, at the most detail that fits.
+  local function detail(text)
+    return line({
+      { text = "   " .. widgets.truncate(text, math.max(1, width - 3)), style = { fg = theme.muted } },
+    })
+  end
+
+  if not fuel then
+    return { headline(spinner .. " reading", { fg = theme.muted }) }
+  end
+
+  local age = read_age(fuel)
+
+  -- An unreadable reading is drawn as unreadable, with the reason the probe
+  -- gave — never as a zero, which would read as a spent window rather than a
+  -- missing one.
+  if fuel.unavailable or not fuel.remaining then
+    return {
+      headline("unavailable", { fg = theme.warn }, age, { fg = theme.muted }),
+      detail(fuel.unavailable or "no reading"),
+    }
+  end
+
+  local note, note_style = age, { fg = theme.muted }
+  if fuel.stale then
+    -- quota-axi's own word for its reading, passed through rather than
+    -- interpreted: it means the number is remembered, not just observed.
+    note = age and (age .. " stale") or "stale"
+    note_style = { fg = theme.warn }
+  end
+
+  local rows = {
+    headline(fuel.remaining .. "%", { fg = fuel_tone(fuel), bold = true }, note, note_style),
+  }
+
+  -- The widest level that fits, and the narrowest one when none does — which
+  -- `detail` then truncates, the same last resort the documents row takes.
+  local budget = math.max(1, width - 3)
+  local chosen
+  for _, level in ipairs(FUEL_DETAIL) do
+    local segs = detail_segments(fuel, level)
+    if #segs == 0 then
+      break
+    end
+    chosen = table.concat(segs, " · ")
+    if widgets.len(chosen) <= budget then
+      break
+    end
+  end
+  if chosen then
+    rows[#rows + 1] = detail(chosen)
+  end
+  return rows
+end
+
 return {
   name = "fleetqueue",
 
@@ -953,6 +1205,24 @@ return {
     run(key, PROBE, { session = lead.id, ttl = TTL, timeout = TIMEOUT })
     local answer = (thurbox.runs or {})[key]
 
+    -- Its own key and its own TTL, so the network call the fuel reading costs
+    -- is made once every `FUEL_TTL` and never at the queue's cadence. Asked
+    -- here for the same reason the queue probe is: the TTL decides whether a
+    -- process runs, and a fresh answer is a table lookup.
+    local fuel_key = "fleetfuel:" .. lead.id
+    run(fuel_key, FUEL_PROBE, { session = lead.id, ttl = FUEL_TTL, timeout = FUEL_TIMEOUT })
+    local fuel_answer = (thurbox.runs or {})[fuel_key]
+    local fuel
+    if fuel_answer and fuel_answer.state ~= "pending" then
+      -- A probe that could not RUN is still a reading nobody could take, so it
+      -- is drawn as one rather than left blank.
+      if (fuel_answer.stdout or "") == "" then
+        fuel = { unavailable = "the fuel probe did not run" }
+      else
+        fuel = fuel_for(fuel_answer.stdout)
+      end
+    end
+
     if not answer or answer.state == "pending" then
       return saying({ spinner .. " reading the queue…" }, width)
     end
@@ -973,7 +1243,16 @@ return {
       return saying({ "the queue is empty", model.root or lead.cwd }, width)
     end
 
-    local children = { line(summary_spans(model, width)), widgets.divider(width) }
+    -- FUEL FIRST, above the counters and the topics both: it is the account
+    -- window every row below it is competing for, and the reading that decides
+    -- whether anything below it should be dispatched at all.
+    local children = {}
+    for _, row in ipairs(fuel_rows(fuel, width, spinner)) do
+      children[#children + 1] = row
+    end
+    children[#children + 1] = widgets.divider(width)
+    children[#children + 1] = line(summary_spans(model, width))
+    children[#children + 1] = widgets.divider(width)
 
     -- Window BEFORE building rows: the descriptors are cheap tables and only the
     -- slice that lands on screen is turned into spans.

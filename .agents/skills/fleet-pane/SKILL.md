@@ -37,6 +37,16 @@ browser tab, reading the same records. The web page is still the better place to
 read a `BRIEF.md`; the pane is for not alt-tabbing to notice a task changed
 state.
 
+**The top line is the fuel, not a task.** The account's remaining provider
+window is the constraint every row under it competes for, so it sits above the
+counters: percent left, the binding window, when that window comes back, and
+how old the reading is. The pane does not read `quota-axi` — it asks
+`./scripts/fleet-status.sh --fuel`, the same `probe_fuel()` the status screen
+prints, on a five-minute TTL of its own because that reading costs a network
+call. FLEET.md's `## Fuel` section owns the reserve it is coloured against, and
+a reading nobody could take is drawn as unavailable with its reason, never as a
+zero.
+
 It runs inside the thurbox interface, which knows nothing about fleet, so it
 finds the control plane by **probing the lead session by NAME** and running
 `./scripts/queue.sh root` in it. Two consequences that explain most of §7: the
