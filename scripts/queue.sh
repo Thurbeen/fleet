@@ -71,6 +71,28 @@
 #              way. A PR no task records is shepherded like any other; it just
 #              has no session to send a fixer into, and that is said out loud.
 #
+# AND A FIFTH THING, WHICH IS FUEL. A worker that hits its agent's token limit
+# does not fail — it SITS. The hook that would have said `idle` never fires, so
+# thurbox goes on reporting `working` and nothing in the loop above ever touches
+# it. `refuel` finds those and restarts them, and its first move is the one that
+# matters:
+#
+#   `refuel`   asks the ACCOUNT's quota window BEFORE it looks at any session.
+#              That window — `quota-axi`, reading the credentials already on
+#              this machine — is the operator's subscription, shared by the lead
+#              and every worker. While it is spent, every session is stuck for
+#              the same reason and a restart is worse than useless: the worker
+#              resumes, hits the same wall, and burns the reset it was waiting
+#              for. So a spent account restarts NOTHING and prints `resetsAt`,
+#              and a quota that could not be read restarts nothing either.
+#
+#              With fuel in the account, one wedged session is a conjunction:
+#              a `working` hook state older than any real turn, AND the agent's
+#              own limit banner on its pane or the rate-limit record in its
+#              transcript. Stale alone is a SLOW worker, and slow is not dry.
+#              The restart re-sends the brief through dispatch's own trusted
+#              handoff, is recorded on the task, and is capped.
+#
 # It exists because noticing was never the expensive part. In one day: #14 went
 # CONFLICTING when #13 merged and nothing saw it; #11 and #12 were opened with
 # a bare `gh pr create` and nobody knew for hours; a review finding sat in a PR
@@ -100,6 +122,8 @@
 #                        PR failed the pipeline check, after you have judged
 #                        that PR; --no-reap leaves every session alone
 #   scripts/queue.sh reap [--dry-run]     # land what merged, release its session
+#   scripts/queue.sh refuel [<ref>] [--dry-run]  # the account's fuel first, then
+#                        restart the workers that ran dry against it
 #   scripts/queue.sh shepherd [--dry-run] # every open PR on the repo: fix or merge
 #                        [--json] [--topic T] [--ref R] [--no-merge] [--force]
 #   scripts/queue.sh list [--topic T]     # the lead's view: a line per task
@@ -172,11 +196,13 @@
 #                          workers, and reap refuses to delete it
 #
 # Requires: python3 (with PyYAML) — the same dependency the rest of the gate
-# has. `dispatch`, `watch` and `reap` additionally need thurbox-cli, and
-# `collect`, `reap` and `shepherd` ask `gh` about a pull request, and
-# `shepherd` needs git as well. A task that names a `--host` additionally needs
-# `ssh`. Every one of those degrades to "could not check" rather than to a
-# guess.
+# has. `dispatch`, `watch`, `reap` and `refuel` additionally need thurbox-cli,
+# and `collect`, `reap` and `shepherd` ask `gh` about a pull request, and
+# `shepherd` needs git as well. `refuel` reads the account's quota window with
+# `quota-axi` (https://github.com/kunchenguid/quota-axi), which fleet neither
+# installs nor sends any credential to. A task that names a `--host`
+# additionally needs `ssh`. Every one of those degrades to "could not check"
+# rather than to a guess.
 
 set -uo pipefail
 

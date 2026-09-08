@@ -121,7 +121,15 @@ The loop, driven by `./scripts/queue.sh`:
    push there, carrying a `no-mistakes` attestation for its **current** head —
    the five headings are text anyone can paste and were never the gate they
    looked like. `--dry-run` first; the fleet-queue skill owns the rest.
-8. Review the PRs; the operator merges every one `shepherd` did not, and
+8. **A worker that hits its agent's token limit does not fail — it sits, and
+   nothing above ever notices.** `queue.sh refuel` is a fifth thing: it asks the
+   account's shared quota window first, via `quota-axi`, and restarts nothing
+   while that window is spent — a resumed worker would only hit the same wall
+   and burn the reset. With fuel in the account it restarts a session only when
+   a stale `working` state is paired with the agent's own limit signal, caps
+   restarts at three per task, and writes neither `state` nor `outcome` —
+   `collect` alone still closes the task.
+9. Review the PRs; the operator merges every one `shepherd` did not, and
    everything after that is `reap`'s.
 
 `./scripts/webui.sh` serves a read-only web view of that same queue on
@@ -131,7 +139,7 @@ disagree with `queue.sh list`. Its header owns the lifecycle; the one thing to
 know before touching it is that `ensure` and `start` differ only in whether they
 honour the `down` flag `stop` wrote, and the onboarding skill must call `ensure`.
 
-`.agents/skills/fleet-queue/` is the driving surface for 1–3 and 5–7, and
+`.agents/skills/fleet-queue/` is the driving surface for 1–3 and 5–8, and
 `.agents/skills/thurbox-session/` for one session: spawning, prompting, cleanup.
 Use both. In particular, read the latter's **session state** section before you
 judge whether a worker is still working: `idle` means the agent said it is at
