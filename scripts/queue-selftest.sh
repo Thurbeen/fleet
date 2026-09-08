@@ -1715,10 +1715,10 @@ refute "and its dispatch plan mentions no ssh at all" "ssh <host>" "$out"
 expect "and it is pointed at its brief here, by absolute path" \
 	"$FLEET_QUEUE_DIR/$rtopic/20-stay-local/BRIEF.md" "$out"
 
-# (c) A remote task's brief is the same document with one difference: where the
-#     result goes. The control plane's path is not on that filesystem, so the
-#     contract is stated relative to the brief itself — the one path a remote
-#     worker can always resolve.
+# (c) A remote task's brief is the same document, but every control-plane path
+#     it would otherwise name — the result, the prompt, the standing policy —
+#     is not on that filesystem, so each is stated relative to the brief itself,
+#     the one path a remote worker can always resolve.
 $QUEUE add "$rtopic" build-on-devbox --title 'Build it on devbox' \
 	--repo /srv/code/app --host devbox --branch fix/build-on-devbox \
 	--number 22 >/dev/null
@@ -1728,8 +1728,16 @@ expect "and points the result at the worktree it is sitting in" \
 	"in the root of this worktree" "$rbrief"
 refute "and never at a control-plane path the worker cannot reach" \
 	"$FLEET_QUEUE_DIR/$rtopic/22-build-on-devbox/result.md" "$rbrief"
-expect "and says to delete the brief before committing" \
-	"Delete \`BRIEF.md\` before you commit" "$rbrief"
+expect "and points the prompt at a sibling of itself, not a control-plane path" \
+	"PROMPT.md\`, alongside this file" "$rbrief"
+refute "and never at the control plane's own PROMPT.md path" \
+	"$FLEET_QUEUE_DIR/$rtopic/PROMPT.md" "$rbrief"
+expect "and points the standing policy at a sibling of itself too" \
+	"POLICY.md\`, alongside this file" "$rbrief"
+refute "and never at the control plane's own POLICY.md path" \
+	"$PWD/orchestration/queue/POLICY.md" "$rbrief"
+expect "and says to delete every copy before committing" \
+	"Delete \`BRIEF.md\`, \`POLICY.md\`, and \`PROMPT.md\` before you commit" "$rbrief"
 
 expect "\`show\` says where a task runs" "host:        devbox" \
 	"$($QUEUE show "$rtopic/22-build-on-devbox")"
@@ -1789,6 +1797,24 @@ else
 fi
 expect "and it is the brief the lead wrote" "Build the thing on devbox" \
 	"$(cat "$remotes/me@devbox$worktree/BRIEF.md" 2>/dev/null)"
+if [ -f "$remotes/me@devbox$worktree/POLICY.md" ]; then
+	pass "the standing policy is copied to the host too, not only claimed to be"
+else
+	fail "the standing policy is copied to the host" \
+		"nothing at $remotes/me@devbox$worktree/POLICY.md"
+fi
+expect "and it is the same policy the checkout ships" \
+	"$(cat "$PWD/orchestration/queue/POLICY.md")" \
+	"$(cat "$remotes/me@devbox$worktree/POLICY.md" 2>/dev/null)"
+if [ -f "$remotes/me@devbox$worktree/PROMPT.md" ]; then
+	pass "the topic's prompt is copied to the host too, not only claimed to be"
+else
+	fail "the topic's prompt is copied to the host" \
+		"nothing at $remotes/me@devbox$worktree/PROMPT.md"
+fi
+expect "and it is this topic's own prompt" \
+	"$(cat "$FLEET_QUEUE_DIR/$rtopic/PROMPT.md")" \
+	"$(cat "$remotes/me@devbox$worktree/PROMPT.md" 2>/dev/null)"
 expect "the record keeps the host-side worktree, so collect knows where to look" \
 	"me@devbox:$worktree" "$($QUEUE show "$rtopic/22-build-on-devbox")"
 

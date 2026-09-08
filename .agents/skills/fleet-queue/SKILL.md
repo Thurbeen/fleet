@@ -275,13 +275,14 @@ The report names the probe that failed. This exists because a remote worker
 that starts and then fails at its first `git` call looks exactly like an agent
 bug and is not one — and finding that out costs you a pane on another machine.
 
-Then the brief is **copied to the host**, into the worktree thurbox made there,
-because the absolute path a local worker is handed is not on that filesystem.
-The brief the lead wrote stays here and is still the one `check` validates and
-`dispatch` refuses when it is unwritten; the copy is made after that refusal has
-had its say. Its result contract is the one line that differs: a remote worker
-is told to write `result.md` beside the brief it is reading, and to delete the
-brief before it commits.
+Then the brief, PROMPT.md, POLICY.md and (when the operator has one) OPERATOR.md
+are each **copied to the host**, into the worktree thurbox made there, because
+the absolute paths a local worker is handed are not on that filesystem. Each
+canonical copy stays here and is still what `check` validates and `dispatch`
+refuses when the brief is unwritten; what lands on the host is a copy, made
+after that refusal has already had its say. A remote worker is told to write
+`result.md` beside the brief it is reading, and to delete all of these copies
+before it commits.
 
 ### The trust dialog, handled here rather than remembered
 

@@ -691,23 +691,29 @@ def render_brief(task: Task, topic: dict, body: str | None) -> str:
     are any, and NOTHING when there are not — a fresh clone has no such file,
     and its briefs must not name one that does not exist.
 
-    A REMOTE task's brief differs in exactly one place: where the result goes.
-    An absolute control-plane path is not on the worker's filesystem, and the
-    worktree it will get is minted at dispatch time and unknowable here, so the
-    contract is stated RELATIVE to the brief itself — the one path a remote
-    worker can always resolve. `collect` fetches that file over ssh into this
-    task's own result.md, so the closing claim is the same file either way.
+    A REMOTE task's brief differs in more than the result contract. An absolute
+    control-plane path — the prompt, the standing policy, the operator's
+    instructions — is not on the worker's filesystem either, so `settle_remote`
+    copies each of those alongside the brief in the worktree it mints there, and
+    every pointer below is stated RELATIVE to the brief itself for a host task,
+    the one thing a remote worker can always resolve. `collect` fetches the
+    result over ssh into this task's own result.md, so the closing claim is the
+    same file either way.
     """
     d = task.doc
     host = d.get("host")
     result = os.path.abspath(task.file("result.md"))
     prompt = os.path.abspath(os.path.join(os.path.dirname(task.path), "PROMPT.md"))
     has_operator = bool(operator_instructions())
-    operator_line = (
-        f"\n- **Operator's standing instructions.** `{operator_path()}`"
-        if has_operator
-        else ""
-    )
+    if host:
+        prompt_ref = "`PROMPT.md`, alongside this file"
+        policy_ref = "`POLICY.md`, alongside this file"
+        operator_ref = "`OPERATOR.md`, alongside this file"
+    else:
+        prompt_ref = f"`{prompt}`"
+        policy_ref = f"`{policy_path()}`"
+        operator_ref = f"`{operator_path()}`"
+    operator_line = f"\n- **Operator's standing instructions.** {operator_ref}" if has_operator else ""
     operator_note = (
         "\n\nRead the operator's file too. It is how this operator wants work done\n"
         "across every task, and it ADDS to this brief without replacing anything in\n"
@@ -726,14 +732,20 @@ def render_brief(task: Task, topic: dict, body: str | None) -> str:
             "    result.md — in the root of this worktree, beside the BRIEF.md\n"
             "    you are reading now"
         )
+        delete_names = (
+            "`BRIEF.md`, `POLICY.md`, `PROMPT.md`, and `OPERATOR.md`"
+            if has_operator
+            else "`BRIEF.md`, `POLICY.md`, and `PROMPT.md`"
+        )
         result_note = f"""
 You are running on the remote host `{host}`, so the control plane's own
 directories are not on this filesystem and an absolute path to one would
 resolve to nothing here. `queue.sh collect` fetches that file over ssh, and it
 closes this task exactly as it would locally.
 
-**Delete `BRIEF.md` before you commit**, or it lands in your pull request.
-Write `result.md` after the pull request is open, and do not commit it either.
+**Delete {delete_names} before you commit**, or they land in your pull
+request. Write `result.md` after the pull request is open, and do not commit
+it either.
 """
     else:
         result_target = f"    {result}"
@@ -741,12 +753,12 @@ Write `result.md` after the pull request is open, and do not commit it either.
     return f"""# {d["title"]}
 
 Task `{task.ref}` of topic **{topic.get("title", task.topic)}**.
-The prompt this came from is at `{prompt}`; read it if the goal here is unclear.
+The prompt this came from is at {prompt_ref}; read it if the goal here is unclear.
 
 - **Repo.** `{d["repo"]}`{where}
 - **Branch.** `{d["branch"]}` off `{d["base"]}`
 - **Expected to touch.** {", ".join(f"`{p}`" for p in d["touches"]) or "not recorded"}
-- **Standing policy.** `{policy_path()}`{operator_line}
+- **Standing policy.** {policy_ref}{operator_line}
 
 **Read that policy file before you start.** It is the rest of your
 instructions and it is not repeated here: how to open the pull request and how
@@ -1187,15 +1199,17 @@ def session_worktree(sid: str) -> tuple[str, str]:
 
 
 def push_brief(entry: dict, dest: str, text: str) -> str:
-    """Put the brief where the remote worker can read it. '' on success.
+    """Write text to a path on the host over ssh. '' on success.
 
-    The canonical brief stays HERE — it is what the lead wrote, what `check`
-    validates and what `dispatch` refuses when it is unwritten. This is a copy,
-    made after that refusal has already had its say.
+    Used for the brief itself and its companions (PROMPT.md, POLICY.md,
+    OPERATOR.md): the canonical copy of each stays HERE — the brief is what the
+    lead wrote, what `check` validates and what `dispatch` refuses when it is
+    unwritten. What lands on the host is a copy, made after that refusal has
+    already had its say.
     """
     proc = ssh_run(entry, f"cat > {shlex.quote(dest)}", stdin=text)
     if proc.returncode != 0:
-        return first_line(proc) or "could not write the brief on the host"
+        return first_line(proc) or f"could not write {dest} on the host"
     return ""
 
 
@@ -1218,6 +1232,11 @@ def settle_remote(task: Task, entry: dict) -> tuple[bool, str]:
 
     Runs between `session create` and the first `session send`, because the
     worker is about to be told to read a file that does not exist yet.
+
+    The brief points at PROMPT.md, POLICY.md and (when the operator has one)
+    OPERATOR.md as siblings of itself — see render_brief — so those must land
+    in the worktree too, not only BRIEF.md, or the brief tells the worker to
+    read control-plane paths that do not exist on this filesystem.
     """
     wt, why = session_worktree(task.doc["session"])
     if not wt:
@@ -1226,6 +1245,16 @@ def settle_remote(task: Task, entry: dict) -> tuple[bool, str]:
     why = push_brief(entry, brief, read_text(task.file("BRIEF.md")))
     if why:
         return False, f"could not copy the brief to {entry['destination']}: {why}"
+    companions = [
+        ("PROMPT.md", os.path.join(os.path.dirname(task.path), "PROMPT.md")),
+        ("POLICY.md", policy_path()),
+    ]
+    if operator_instructions():
+        companions.append(("OPERATOR.md", operator_path()))
+    for name, src in companions:
+        why = push_brief(entry, remote_path(wt, name), read_text(src))
+        if why:
+            return False, f"could not copy {name} to {entry['destination']}: {why}"
     task.doc["remote"] = {
         "host": task.doc["host"],
         "destination": str(entry["destination"]),
