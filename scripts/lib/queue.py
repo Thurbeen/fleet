@@ -1728,11 +1728,16 @@ FIXABLE = ("conflicting", "checks-failed", "changes-requested", "policy")
 # A repo that is not named here is reported `ready to merge` and left for a
 # human, which is what every repo did before this list existed.
 #
-# The three gates below are the operator's, and all three must hold: the body
-# carries the pipeline's sections (so a PR that skipped the pipeline can never
-# be merged by fleet, however green it looks), every check has CONCLUDED and
-# passed, and GitHub itself says MERGEABLE. `--squash --delete-branch` because
-# squash is the only method the remote allows; CONTRIBUTING.md owns that.
+# The gates below are the operator's, and all must hold: the head branch lives
+# in this repository (`classify`'s `foreign` check — a fork is never merged),
+# the body carries a `no-mistakes` attestation naming the pull request's
+# CURRENT head commit (so a stale attestation from an earlier push can never
+# authorise the push that replaced it), every check has CONCLUDED and passed,
+# GitHub itself says MERGEABLE, and whoever opened it can push to this repo
+# (`author_can_push` — the last thing checked, because it is the one claim the
+# pull request body cannot make for itself). `--squash --delete-branch`
+# because squash is the only method the remote allows; CONTRIBUTING.md owns
+# that.
 AUTO_MERGE_REPOS = {"Thurbeen/fleet"}
 
 
@@ -2846,8 +2851,10 @@ def build_parser() -> argparse.ArgumentParser:
     sh.add_argument("--dry-run", action="store_true",
                     help="say exactly what would be dispatched and merged, and change nothing")
     sh.add_argument("--json", action="store_true", help="the machine-readable seam")
-    sh.add_argument("--topic", help="only this topic's tasks")
-    sh.add_argument("--ref", help="only this task")
+    sh.add_argument("--topic", help="narrow which repos to derive to this topic's tasks — "
+                    "every open PR in those repos is still shepherded, not just theirs")
+    sh.add_argument("--ref", help="narrow which repo to derive to this task's — every open "
+                    "PR in that repo is still shepherded, not just this one's")
     sh.add_argument("--no-merge", action="store_true",
                     help="classify and dispatch as usual, but merge nothing")
     sh.add_argument("--force", action="store_true",
