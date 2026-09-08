@@ -13,26 +13,22 @@ known, registry synced, thurbox extension installed, and the queue monitor up.
 **Do the work, don't narrate it.** The steps are mechanical —
 `registry/owners.txt`, `scripts/sync-registry.sh`, `scripts/install-extension.sh`,
 `scripts/webui.sh` — and the user should not be reading a numbered list and
-typing along. Infer
-what is discoverable, ask once about the one thing that genuinely needs them,
-run the scripts, and **verify each step landed** rather than assuming it did.
+typing along. Infer what is discoverable, ask once about the one thing that
+genuinely needs them, run the scripts, and **verify each step landed**.
 
-**A fresh clone is mostly empty on purpose.** No `registry/owners.txt`, no
-generated map, no context files, no run logs, no queue. Everything a running
-fleet writes is gitignored — this repo is public and that content is the
-operator's — so what is tracked is the machinery plus the `_TEMPLATE.md` forms,
-and nothing else. Say that when it comes up; a user who reads the layout and
-finds half of it missing should hear that it is correct, not wonder what
-failed.
+**A fresh clone is mostly empty.** No `registry/owners.txt`, no generated map,
+no context files, no run logs, no queue: everything a running fleet writes is
+gitignored, because this repo is public and that content is the operator's. What
+is tracked is the machinery plus the `_TEMPLATE.md` forms. Say that when it
+comes up; a user who finds half the layout missing should hear that it is
+correct.
 
-The scripts remain the supported manual path — see the README. This skill is
-the easy road over them, not a replacement for them.
+The scripts remain the supported manual path — see the README.
 
 ## 0. Preflight — before anything is written
 
 Probe every prerequisite **first**. A half-onboarded clone (owners written, no
-registry) is worse than one that never started, and a bad error message here
-costs the user entirely.
+registry) is worse than one that never started.
 
 | Need | Probe | If missing, say |
 |---|---|---|
@@ -53,8 +49,8 @@ have=$(thurbox-cli --version | awk '{print $NF}')
   echo "thurbox-cli $have is below the $floor floor"
 ```
 
-Report **every** missing prerequisite in one pass with its remedy, then stop.
-Discovering them one restart at a time is the frustrating version of this.
+Report **every** missing prerequisite in one pass with its remedy, then stop;
+discovering them one restart at a time is the frustrating version of this.
 
 `jq` is needed by both `scripts/sync-registry.sh` (step 3) and
 `scripts/install-extension.sh` (step 4); `thurbox-cli` only by step 4. If
@@ -84,9 +80,9 @@ pull left the running lead session holding stale instructions.
 
 ## 2. Owners — infer, then confirm once
 
-`registry/owners.txt` is the one input that genuinely needs the user. It is
-also mostly **discoverable**, so asking them to type what an authenticated `gh`
-session already knows is exactly the friction this skill exists to remove.
+`registry/owners.txt` is the one input that genuinely needs the user, and it is
+mostly **discoverable** — asking them to type what an authenticated `gh` session
+already knows is the friction this skill exists to remove.
 
 ```bash
 gh api user --jq .login          # their username
@@ -94,8 +90,8 @@ gh api user/orgs --jq '.[].login' # the orgs they belong to
 ```
 
 If the org call errors or comes back empty on an account you expect orgs for,
-the token is missing the scope: `gh auth refresh -s read:org`. Do not treat
-that as "no orgs" silently — say which it was.
+the token is missing the scope: `gh auth refresh -s read:org`. Say which it was
+rather than silently treating it as "no orgs".
 
 Then **one** question, not one per owner: show the discovered list and ask
 whether to cover all of it, just their username, or a subset they name. An
@@ -118,7 +114,7 @@ Then write the confirmed owners into it:
   present, and leave the existing order alone — the sync emits owners in this
   file's order, so reshuffling it churns the generated map for nothing.
 
-Verify before moving on — the sync refuses to run on a file with no active
+Verify before moving on; the sync refuses to run on a file with no active
 entries, and it is better to catch that here:
 
 ```bash
@@ -138,13 +134,11 @@ by inheriting the thurbox server's environment rather than by living in a file.
 ./scripts/sync-registry.sh
 ```
 
-It enumerates every repo the user's own `gh` session can reach and keeps the
-ones under those owners. It writes `registry/repos.generated.yaml`, which is
-**generated** — never hand-edit it, and never hand-write it if the script
-fails.
+It enumerates every repo the user's own `gh` session can reach, keeps the ones
+under those owners, and writes `registry/repos.generated.yaml` — **generated**,
+so never hand-edit it and never hand-write it if the script fails.
 
-Verify the map is not empty, and read the totals back to the user as the
-evidence that this worked:
+Verify the map is not empty, and read the totals back as the evidence:
 
 ```bash
 tail -3 registry/repos.generated.yaml   # totals: repos / owners
@@ -152,9 +146,8 @@ tail -3 registry/repos.generated.yaml   # totals: repos / owners
 
 **The trap:** a mistyped owner does not fail the sync. The script prints
 `warning: no accessible repos for owner '<x>'` on stderr and carries on, so a
-typo yields a quietly thinner map. Surface that warning — it almost always
-means a typo or an org the token cannot see, and it is fixable in seconds now
-and confusing a week from now.
+typo yields a quietly thinner map. Surface that warning — it almost always means
+a typo or an org the token cannot see, and it is fixable in seconds now.
 
 ## 4. Thurbox extension
 
@@ -179,13 +172,12 @@ thurbox worktree, not a scratch copy, not a temp directory. A `fleet` session
 registered against a disposable path self-heals forever against a directory
 that is about to vanish.
 
-Getting it wrong is not fixed by re-running the installer. thurbox reuses an
-extension's session by name and never moves it, so a second install rewrites
-the manifest, reports success, and leaves the session on the old path — and
-`extension status` still calls that healthy, because it checks that the session
-EXISTS, not where it points. The installer catches this for you and exits
-non-zero; the remedy it names deletes the session and its history, so hand that
-decision to the user rather than running it for them:
+Re-running the installer does not fix it. thurbox reuses an extension's session
+by name and never moves it, so a second install rewrites the manifest, reports
+success, and leaves the session on the old path — and `extension status` still
+calls that healthy, because it checks that the session EXISTS, not where it
+points. The installer catches this and exits non-zero; the remedy it names
+deletes the session and its history, so hand that decision to the user:
 
 ```bash
 thurbox-cli extension deactivate fleet   # deletes the session
@@ -200,27 +192,24 @@ thurbox-cli extension deactivate fleet   # deletes the session
 
 A local, read-only web view of `orchestration/queue`: every topic classified by
 what its tasks are doing, and under each the plan (`BRIEF.md`), the progress
-(`progress.jsonl`) and the outcome (`result.md`). It binds `127.0.0.1` and
-picks its own port, so run it and read back the URL it prints rather than
-assuming one.
+(`progress.jsonl`) and the outcome (`result.md`). It binds `127.0.0.1` and picks
+its own port, so read back the URL it prints rather than assuming one.
 
-**Run `ensure`, never `start`.** They differ in exactly one way and it is the
-one that matters here:
+**Run `ensure`, never `start`.** They differ in exactly one way:
 
 | | On a running monitor | After the user asked it down |
 |---|---|---|
 | `ensure` | adopts it, prints the URL | leaves it down |
 | `start` | adopts it, prints the URL | **brings it back up** |
 
-`stop` writes a flag to `orchestration/webui/down`, and that flag is the whole
-reason "down" means anything: it survives a restart, a reboot and this skill
-being run again. `ensure` reads it and does nothing. If this step used `start`,
-every onboarding run would quietly resurrect a monitor the user had switched
-off, which is a stop that does not stop.
+`stop` writes a flag to `orchestration/webui/down`, and that flag is what makes
+"down" mean anything: it survives a restart, a reboot and this skill being run
+again. `ensure` reads it and does nothing. Using `start` here would quietly
+resurrect a monitor the user had switched off.
 
-So on a re-run, `ensure` says one of three things and all three are correct:
-it started it, it adopted the one already running, or the user asked it down
-and it stayed down. Read the output back rather than announcing a URL.
+So on a re-run, `ensure` says one of three things and all three are correct: it
+started it, it adopted the one already running, or the user asked it down and it
+stayed down. Read the output back rather than announcing a URL.
 
 Verify, and say where it is:
 
@@ -245,28 +234,27 @@ design, not a step you forgot: this repo is public, and an index of every repo
 the operator can reach — along with one machine's absolute paths — does not
 belong in it. `.gitignore`'s header has the reasoning.
 
-Say it explicitly. A user who set up a control plane and sees an empty
+Say it explicitly — a user who set up a control plane and sees an empty
 `git status` will otherwise assume it failed.
 
-Gate anyway — this repo's whole convention is that a green local run is the real
-gate, and the `yaml` check is the one that asserts the generated map's shape:
+Gate anyway; the `yaml` check is the one that asserts the generated map's shape:
 
 ```bash
 ./scripts/check.sh
 ```
 
-Then tell them the one thing that is genuinely theirs to do next: open the
-`fleet` session in thurbox and give it a goal. Everything else — playbooks, run
-logs, worker sessions — follows from that, and `AGENTS.md` is where the session
-picks the loop up.
+Then tell them the one thing that is theirs to do next: open the `fleet` session
+in thurbox and give it a goal. Everything else — playbooks, run logs, worker
+sessions — follows from that, and `AGENTS.md` is where the session picks the
+loop up.
 
-Two things are worth saying once, because neither is discoverable later:
+Two things worth saying once, because neither is discoverable later:
 
 - The map, the run logs and the context notes live in **this working copy
   only**. If they matter beyond this machine, that is theirs to back up.
 - `registry/context/_TEMPLATE.md` is where the judgement about a project goes.
   The generated map says which repos exist; a context file says what one is
-  *for*. That is the first thing worth writing, not a setup step they missed.
+  *for*. That is the first thing worth writing.
 
 ## Re-running
 
@@ -281,12 +269,12 @@ Assume someone runs this twice. Every step above **converges**:
 | Extension | a reinstall keeps existing `agents.toml` entries, so a customized model survives |
 | Monitor | `ensure` adopts a running one and respects a `down` flag; never a twin |
 
-So the right move on an already-configured clone is not to refuse. Detect it —
-`registry/owners.txt` has active entries, the generated map exists, the
-extension status is healthy — say which parts are already in place, and offer to
-refresh the map rather than redoing the whole thing.
+So do not refuse on an already-configured clone. Detect it —
+`registry/owners.txt` with active entries, the generated map there, the
+extension healthy — say which parts are already in place, and offer to refresh
+the map rather than redoing everything.
 
-The one thing a re-run does **not** fix is a **rename**. If the session has
-been renamed away from `fleet`, the extension is registered under the new name
-and `extension status fleet` is the wrong question to ask. The README's
-customizing section owns that; don't reimplement it here.
+The one thing a re-run does **not** fix is a **rename**. If the session has been
+renamed away from `fleet`, the extension is registered under the new name and
+`extension status fleet` is the wrong question to ask. The README's customizing
+section owns that; don't reimplement it here.
