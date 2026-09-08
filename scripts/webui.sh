@@ -43,8 +43,8 @@
 #   scripts/webui.sh logs [-f]  # the server log
 #
 # Runtime state lives in orchestration/webui/ and is GITIGNORED — the port it
-# chose, its pid, its log and the down flag are this instance's, not the
-# template's. The server's code is tracked; nothing it writes is.
+# chose, its pid, its log and the down flag are true on one machine only. The
+# server's code is tracked; nothing it writes at runtime is.
 #
 # Binding: 127.0.0.1. Anything wider is an explicit FLEET_WEBUI_HOST the
 # operator sets, never a default they discover — this serves their prompts,

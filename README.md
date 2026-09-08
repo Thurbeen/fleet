@@ -14,22 +14,20 @@ that the control plane holds the plan and the log, and never holds the workers'
 branches — real work happens in thurbox worker sessions, each in its own git
 worktree in a real repo.
 
-What this repo **accumulates** is playbooks and intent — the reusable part, and
-the part the template ships. What a running fleet **writes** — run logs, your
-project context, the generated map — is local working state and is gitignored,
-so it lives in your working copy and is not backed up by this repo. That is a
-deliberate trade, and [Staying current](#staying-current) is what it buys.
+What this repo **accumulates** is the machinery and the playbooks — the
+reusable part. What a running fleet **writes** — run logs, project context, the
+generated map, the queue — is working state and is gitignored, so it lives in
+your working copy and is not backed up by this repo. This repo is public, and
+that content is not something to publish; `.gitignore`'s header gives the
+reason for each entry.
 
 ## Quickstart
 
-**Clone it** — do not use "Use this template", and do not fork; the next section
-says why. Then open the clone in your agent CLI and run:
+Clone it, then open the clone in your agent CLI and run the onboarding skill:
 
 ```bash
-git clone https://github.com/Thurbeen/fleet.git my-control-plane
-cd my-control-plane
-git remote rename origin template          # the template you update FROM
-gh repo create my-control-plane --private --source=. --remote=origin --push
+git clone https://github.com/Thurbeen/fleet.git
+cd fleet
 ```
 
 ```text
@@ -64,83 +62,39 @@ yourself — to automate the setup, or to debug it when the skill fails:
    your live `gh` session. Nothing to commit: it is gitignored.
 3. `./scripts/install-extension.sh` — renders `extension.toml` and installs the
    thurbox extension.
-4. `git remote -v` — confirm `template` points at the fleet template. Without
-   it there is nothing to update from.
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the gate (`./scripts/check.sh`),
 the squash-only merge policy, and the layout conventions.
 
-## Staying current
+## Pulling changes in
 
-Your control plane is a **clone** of the template, so it carries the template's
-history and the template stays as a second remote. Updating is ordinary git:
+`./scripts/sync-checkout.sh` fast-forwards this checkout from `origin`, and the
+`SessionStart` hook in `.claude/settings.json` runs it so every session starts
+from an up-to-date base. It only ever fast-forwards, never rebases or resets,
+and reports rather than acts on a dirty tree, a feature branch, or a divergence.
 
-```bash
-./scripts/update-from-template.sh          # preview: what would change
-./scripts/update-from-template.sh --apply  # do it
+**When a sync brings new instructions, the running `fleet` session does not get
+them.** It froze `FLEET.md` and every skill it had loaded at launch, and nothing
+reloads them from disk — so the new bytes are on disk and the lead is still
+running the old copies. This is equally true of a plain `git pull`, which is why
+the sync says so on the syncs where it matters:
+
+```text
+restart-lead: yes — FLEET.md .agents/skills/fleet-queue/SKILL.md
 ```
 
-`git pull template main` does the same thing when your instance has nothing of
-its own — which, given the split below, is the normal state. The script earns
-its place in the cases where a bare pull does not: it refuses safely instead of
-leaving you mid-merge, says what it skipped and why, tells you the running
-`fleet` session is now holding stale instructions, and handles the one case a
-plain pull genuinely cannot — see the note below. `/fleet-update` is the same
-thing with an agent reading the report for you.
-
-**If your instance is older than this change**, it has `registry/owners.txt` and
-the generated map committed, and the template has just stopped tracking both. A
-bare pull sees "you changed it, they deleted it" and stops on a modify/delete
-conflict. The script untracks those two paths first — the files stay exactly
-where they are on disk — so the update goes through and you keep them. Take the
-script before you run it, since your checkout does not have it yet:
+Replace the agent to act on it. A restart resumes the conversation, so the old
+copy is still in its history; for an instruction change that has to win, start a
+fresh session instead:
 
 ```bash
-git fetch template
-git show template/main:scripts/update-from-template.sh > /tmp/fleet-update.sh
-bash /tmp/fleet-update.sh            # preview; add --apply when it looks right
+thurbox-cli session restart fleet
+thurbox-cli session delete fleet    # the extension self-heals it
 ```
 
-### Why a clone, and not the two obvious alternatives
-
-| Shape | Shared history? | Can be private? |
-|---|---|---|
-| **Use this template** | no — a generated repo has no common ancestor with its source, so `git merge` has nothing to work with | yes |
-| **Fork** | yes | **no** — GitHub answers `Public forks can't be made private` (HTTP 422) |
-| **Clone, repoint `origin`** | yes | yes |
-
-A control plane is private and needs to update. Only the clone gives both.
-
-What the clone costs, plainly: you lose the one-click **Use this template**
-button for a four-line clone-and-repoint, and your `git log` starts with the
-template's commits rather than your own. Both are real. Neither is worth giving
-up updates for.
-
-### The invariant that keeps it a fast-forward
-
-Your **tracked** tree stays identical to the template's. Nothing a running fleet
-writes is tracked — `.gitignore` says which paths and why — so your `main` never
-diverges, so a pull is always a clean fast-forward and never a merge that can
-conflict on something you care about.
-
-That is why your own playbooks live in `orchestration/playbooks/local/` and your
-profile tuning in `orchestration/session-profiles.local.yaml`: both are yours,
-both are ignored, and neither puts a commit on `main`.
-
-### If your control plane predates this
-
-An instance made with **Use this template**, or bootstrapped on its own, shares
-no commit with the template. Join the two once — this keeps your tree byte for
-byte and imports nothing:
-
-```bash
-git remote add template https://github.com/Thurbeen/fleet.git
-./scripts/update-from-template.sh --adopt
-```
-
-From then on it is an ordinary update. The adopt step deliberately does **not**
-bring the improvements that already exist upstream; take those when you want
-them, for example `git checkout template/main -- scripts/ .agents/skills/`.
+It reports `reinstall-extension: yes` on the same basis when `extension.toml.in`
+or `FLEET.md` moves — the installed extension no longer matches the manifest it
+was rendered from, and `./scripts/install-extension.sh` is the fix.
 
 ## Customizing
 
@@ -184,12 +138,9 @@ control plane gets it.
 
 `extension.toml.in` above pins the **lead** — the long-lived `fleet` session.
 The workers it spawns are a different question, and their settings live in
-`orchestration/session-profiles.yaml`: one named profile per set. That file is
-the **template's**, holding the shipped defaults. Yours go in
-`orchestration/session-profiles.local.yaml` — copied from the tracked
-`.local.example.yaml`, gitignored, and a profile named there replaces the
-shipped one of that name wholesale. `session-flags.sh` prints which profiles an
-override is shadowing, so precedence is never silent:
+`orchestration/session-profiles.yaml`: one named profile per set. One file, one
+layer — it is tracked, it is yours to edit, and a change to it is reviewed in a
+diff like anything else here:
 
 ```yaml
 profiles:
@@ -215,17 +166,14 @@ Without a profile a worker inherits whatever environment the thurbox server
 happens to have — which is what every fleet worker did before this file
 existed, and is still exactly what the shipped `default` profile means.
 
-**Template defaults only in the shipped file** — it is committed, and this is a
-public template. The gitignored `.local.yaml` is where anything
-environment-specific goes, and anything you would not commit. That is a
-convention, not a gate: nothing scans these files for secrets. It needs no
-enforcement, because nothing a running fleet writes is tracked, so an instance
-has no changes of its own to push. Better still, a worker inherits the server's
-environment, so an API key belongs where that process gets it — your shell
-profile, your keyring, or the agent's own login — and reaches the worker without
-passing through any file here.
+**No secrets in it** — it is committed, and this repo is public. That is a
+convention, not a gate: nothing scans this file for secrets. It needs no
+enforcement either, because a worker inherits the environment of the thurbox
+server that spawns it — so an API key belongs where that process gets it (your
+shell profile, your keyring, the agent's own login) and reaches the worker
+without passing through any file here at all.
 
-`./scripts/check.sh` holds **both** layers to the two rules it does enforce: it
+`./scripts/check.sh` holds the file to the two rules it does enforce: it
 refuses a `THURBOX_*` key (thurbox's own identity variables always win over
 `--env`, so setting one would look applied and do nothing) and a `command`
 without a `reports_as` to declare what the pane really runs.
@@ -296,10 +244,9 @@ follows a rename rather than driving one.
 
 ## Layout
 
-`[yours]` marks a path that is **gitignored** — written by your fleet, never by
-the template. Everything else is the template's and is tracked; that is the
-split [Staying current](#staying-current) depends on, and `.gitignore` gives the
-reason for each entry.
+`[yours]` marks a path that is **gitignored** — written by a running fleet, and
+working state rather than machinery. Everything else is tracked. `.gitignore`
+gives the reason for each entry.
 
 ```text
 registry/
@@ -322,19 +269,11 @@ orchestration/
         BRIEF.md           The instructions ONE worker reads.
         progress.jsonl     One line per observed transition.
         result.md          What that worker concluded, in its words.
-  session-profiles.yaml    Named settings a worker session STARTS under —
-                           the template's defaults.
-  session-profiles.local.example.yaml
-                           The tracked example. Copy it to the next line.
-  session-profiles.local.yaml
-                           [yours] Your overrides, layered over those defaults.
+  session-profiles.yaml    Named settings a worker session STARTS under.
   playbooks/
     _TEMPLATE.md           Copy this to add a reusable orchestration recipe.
-    cross-repo-sweep.md    Shipped playbooks. Improve one upstream, not here.
+    cross-repo-sweep.md    Reusable recipes. Add yours beside them.
     ship-feature.md
-    local/
-      README.md            Why this directory exists.
-      <name>.md            [yours] Playbooks you write.
   runs/
     _TEMPLATE.md           Copy this per orchestration run.
     <date>-<slug>.md       [yours] Log of one run: goal, sessions, outcomes.
@@ -361,9 +300,8 @@ scripts/
   install-extension.sh     Renders extension.toml, installs it, and verifies
                            the live session really opens this clone.
   sync-registry.sh         Regenerates repos.generated.yaml from the GitHub API.
-  sync-checkout.sh         Fast-forwards main from YOUR origin when safe.
-  update-from-template.sh  Updates this control plane from the TEMPLATE remote.
-                           A different remote and a different job — see its header.
+  sync-checkout.sh         Fast-forwards main from origin when safe, and says
+                           when what arrived leaves the lead session stale.
   trust-thurbox-dir.sh     Seeds Claude Code workspace trust for a worktree.
   session-flags.sh         Renders one session profile into session-create flags.
   session-trust.sh         Confirms, answers and re-confirms a new session's
@@ -378,7 +316,7 @@ scripts/
 .agents/skills/
   <name>/SKILL.md          Agent skills. ONE tree, agent-agnostic.
     fleet-onboarding/      Fresh clone -> working control plane.
-    fleet-update/          Update this control plane from the template.
+    fleet-queue/           The task queue, end to end.
     thurbox-session/       Spawning and driving worker sessions.
 .claude/skills             A committed SYMLINK to .agents/skills.
 
@@ -399,7 +337,7 @@ CLAUDE.md                  A two-line pointer that imports AGENTS.md.
 FLEET.md                   Standing context for the `fleet` SESSION — what it
                            is for, as opposed to how to work in the checkout.
 CONTRIBUTING.md            The gate, the squash-only policy, the conventions.
-.gitignore                 The tracked/yours split, with a reason per entry.
+.gitignore                 What this repo does not keep, and why, per entry.
 ```
 
 Skills live in `.agents/skills/` and `.claude/skills` is a symlink to it, so one
@@ -429,7 +367,8 @@ gitignored:
 
 Both the map and your context notes therefore live in **one working copy**. If
 they matter to you beyond this machine, back that copy up yourself — this repo
-does not, by design, and [Staying current](#staying-current) is what that buys.
+does not, by design: it is public, and an index of every repo you can reach is
+not a thing to publish.
 
 ## Orchestration
 
@@ -724,8 +663,8 @@ but it resolves to the *extension home*, not your checkout — while the session
 must open the checkout, because it needs `registry/` and `orchestration/` in
 hand.
 
-A template cannot hardcode a path that exists on one machine. So the manifest
-ships as `extension.toml.in` with a `__REPO_PATH__` placeholder, and
+A committed file cannot hardcode a path that exists on one machine. So the
+manifest ships as `extension.toml.in` with a `__REPO_PATH__` placeholder, and
 `scripts/install-extension.sh` renders it to a gitignored `extension.toml`
 carrying your clone's real path.
 
@@ -758,7 +697,8 @@ thurbox-cli extension deactivate fleet   # deletes the session
 
 `./scripts/install-extension.sh` is this extension's real update command. Run it
 after any change to `extension.toml.in` or `FLEET.md` — including one that
-arrives via `./scripts/update-from-template.sh`.
+arrives with a `git pull`, which `./scripts/sync-checkout.sh` reports as
+`reinstall-extension: yes`.
 
 `thurbox-cli extension update fleet` is not that command. The install stamped
 your clone as the extension's `source`, and update re-fetches the **rendered**
@@ -775,7 +715,7 @@ and the version/compat declarations. What it declines, and why:
 
 | Feature | Why not |
 | --- | --- |
-| `[[automations]]` (both the `session_ref` + `prompt` flavour and the headless `command` one) | The two candidates stay manual: the registry sync, because a human should read what changed in the map, and `./scripts/update-from-template.sh`, because an update rewrites the instructions the running `fleet` session is operating on. |
+| `[[automations]]` (both the `session_ref` + `prompt` flavour and the headless `command` one) | The obvious candidate is the registry sync, and it stays manual: a human should read what changed in the map. |
 | `[[external_files]]`, `[[agent_patches]]`, `[[config_merges]]` | The three payload kinds that reach outside the extension home into an agent's own config. fleet's skills live in the checkout under `.agents/skills/`, where the session already reads them; a control plane should not edit your agent's global config. |
 | `home` / `--home` | Omitted, so the home defaults to `~/.config/thurbox/extensions/fleet`. See above for why pointing it at your clone is a bad trade. |
 | `[[files]]` flags — `executable`, `if_absent`, `substitute` | The single payload file is prose: not a script, not a user-edited seed, and it contains no `{home}` to substitute. |

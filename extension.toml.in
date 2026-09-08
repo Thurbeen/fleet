@@ -1,4 +1,4 @@
-# Control-plane extension manifest — TEMPLATE.
+# Control-plane extension manifest — the UNRENDERED source.
 #
 # This file is not installable as-is. `scripts/install-extension.sh` renders it
 # to a gitignored `extension.toml`, substituting `__REPO_PATH__` with the
@@ -25,8 +25,8 @@
 # (`~/.config/thurbox/extensions/fleet`), not to your checkout. The session must
 # open the checkout, because it needs `registry/` and `orchestration/` in hand.
 #
-# A template cannot hardcode a path that exists on exactly one machine. Hence
-# `__REPO_PATH__`, rendered at install time.
+# A committed file cannot hardcode a path that exists on exactly one machine.
+# Hence `__REPO_PATH__`, rendered at install time.
 #
 # AND RENDERING IT AGAIN IS NOT ENOUGH IF THE CLONE MOVED. thurbox's
 # `ensure_extension` finds an extension's session by NAME and reuses the one it
@@ -50,9 +50,7 @@
 #                     (command) would both fit the registry sync — and the sync
 #                     commits and pushes to `main`, so it stays a manual
 #                     `./scripts/sync-registry.sh` run by a human who can read
-#                     the diff. `./scripts/update-from-template.sh` is the other
-#                     candidate and stays manual for the same kind of reason: it
-#                     rewrites the instructions the running session is holding.
+#                     the diff.
 #   [[external_files]]
 #   [[agent_patches]]
 #   [[config_merges]] The three payload kinds that reach OUTSIDE the extension

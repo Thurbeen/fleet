@@ -3,7 +3,7 @@
 #
 # `[[sessions]] repo_path` must be an absolute path to *this clone*. thurbox has
 # no token for "my clone" — `{home}` is the extension home, not your checkout —
-# and a template cannot ship one machine's path. So the manifest carries the
+# and a committed file cannot carry one machine's path. So the manifest has the
 # `__REPO_PATH__` placeholder and this script substitutes the real path at
 # install time. The rendered `extension.toml` is gitignored. See its header,
 # which also records the tilde bug that used to be a second reason and no

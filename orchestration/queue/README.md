@@ -1,9 +1,9 @@
 # The task queue
 
-This directory is **yours**, not the template's. Everything the control plane
-writes here is gitignored — this README is the only tracked file, exactly as
-`../playbooks/local/` works. `.gitignore`'s header owns the reason: an instance
-whose tracked tree matches the template's can always `git pull` a fast-forward.
+This directory is **yours**. Everything the control plane writes here is
+gitignored — this README is the only tracked file. `.gitignore`'s header owns
+the reason: this repo is public, and your prompts, your briefs and your workers'
+results are not a thing to publish.
 
 `../../scripts/queue.sh` owns it. Its header is the full usage; this file is
 the layout, so a fresh clone with an empty queue still shows what goes here.

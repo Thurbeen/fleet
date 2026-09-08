@@ -1,15 +1,14 @@
 ---
 name: fleet-onboarding
-description: Take a fresh clone of this control-plane template to a working fleet — check the clone is wired to update, discover the GitHub owners, write registry/owners.txt, sync the registry, install the thurbox extension, bring the queue monitor up, and verify each step. Use when someone has just cloned the template, asks how to set the control plane up, asks to start or restart the fleet monitor, or invokes /fleet-onboarding.
+description: Take a fresh clone of this control plane to a working fleet — discover the GitHub owners, write registry/owners.txt, sync the registry, install the thurbox extension, bring the queue monitor up, and verify each step. Use when someone has just cloned the repo, asks how to set the control plane up, asks to start or restart the fleet monitor, or invokes /fleet-onboarding.
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Glob, Grep, AskUserQuestion
 ---
 
 ## fleet-onboarding
 
-Takes a fresh clone of the fleet template to a control plane that actually runs:
-wired to update, owners known, registry synced, thurbox extension installed, and
-the queue monitor up.
+Takes a fresh clone of fleet to a control plane that actually runs: owners
+known, registry synced, thurbox extension installed, and the queue monitor up.
 
 **Do the work, don't narrate it.** The steps are mechanical —
 `registry/owners.txt`, `scripts/sync-registry.sh`, `scripts/install-extension.sh`,
@@ -19,11 +18,12 @@ what is discoverable, ask once about the one thing that genuinely needs them,
 run the scripts, and **verify each step landed** rather than assuming it did.
 
 **A fresh clone is mostly empty on purpose.** No `registry/owners.txt`, no
-generated map, no context files, no run logs, no `orchestration/playbooks/local/`
-content. Everything a running fleet writes is gitignored, so the template ships
-the *shape* — the `_TEMPLATE.md` files and the directories — and nothing else.
-Say that when it comes up; a user who reads the layout and finds half of it
-missing should hear that it is correct, not wonder what failed.
+generated map, no context files, no run logs, no queue. Everything a running
+fleet writes is gitignored — this repo is public and that content is the
+operator's — so what is tracked is the machinery plus the `_TEMPLATE.md` forms,
+and nothing else. Say that when it comes up; a user who reads the layout and
+finds half of it missing should hear that it is correct, not wonder what
+failed.
 
 The scripts remain the supported manual path — see the README. This skill is
 the easy road over them, not a replacement for them.
@@ -61,56 +61,26 @@ Discovering them one restart at a time is the frustrating version of this.
 thurbox is the only thing missing you may still do steps 1 to 3 — say plainly
 that step 4 is deferred and what to run once thurbox is installed.
 
-## 1. Remotes — the update path, before anything else
+## 1. The checkout — is this the one to keep?
 
-A control plane that cannot update itself is the failure this skill exists to
-prevent, and it is invisible later: everything works until the day someone tries
-to pull and there is nothing to pull from.
+There is one remote and nothing to wire:
 
 ```bash
-git remote -v
+git remote -v      # origin -> their own copy of fleet
 ```
 
-Two remotes are wanted, and they are not interchangeable:
+The question worth asking here is not about remotes; it is **which directory
+this is**. Step 4 bakes this checkout's absolute path into the thurbox
+extension, and a `fleet` session registered against a scratch copy self-heals
+forever against a directory that is about to vanish. So if the working
+directory is a thurbox worktree, a temp directory or an obvious throwaway, say
+so now and stop — moving later costs a session deletion (see step 4), and it is
+free to avoid here.
 
-| Remote | Points at | Used by |
-|---|---|---|
-| `origin` | **their** repo | `git push`, `scripts/sync-checkout.sh` |
-| `template` | the fleet template | `scripts/update-from-template.sh` |
-
-Fix whatever is missing:
-
-- **`template` missing, `origin` still the template** — they cloned and have not
-  repointed yet. Rename it, then create their own repo as the new `origin`:
-
-  ```bash
-  git remote rename origin template
-  gh repo create <name> --private --source=. --remote=origin --push
-  ```
-
-  Ask before creating a repo on their account. Offer the name of the checkout
-  directory as the default.
-
-- **`template` missing, `origin` already theirs** — just add it:
-
-  ```bash
-  git remote add template https://github.com/Thurbeen/fleet.git
-  ```
-
-- **Neither, and no shared history** — this is a repo made with "Use this
-  template" or bootstrapped on its own. Add the remote as above; the update path
-  then needs a one-time `./scripts/update-from-template.sh --adopt`, which
-  `/fleet-update` owns. Do not run it here without saying what it does.
-
-Verify by asking for the answer rather than assuming:
-
-```bash
-./scripts/update-from-template.sh     # previews; writes nothing
-```
-
-`already current` or a preview both mean the path works. `skipped: no 'template'
-remote` or `skipped: no shared history` mean it does not — say which, and fix it
-before moving on.
+`./scripts/sync-checkout.sh` is how changes arrive afterwards. It runs from the
+`SessionStart` hook and only ever fast-forwards, so there is nothing to
+configure; it is worth knowing it exists because it is also what reports that a
+pull left the running lead session holding stale instructions.
 
 ## 2. Owners — infer, then confirm once
 
@@ -155,23 +125,12 @@ entries, and it is better to catch that here:
 grep -vE '^[[:space:]]*(#|$)' registry/owners.txt
 ```
 
-Two more instance-owned locations exist so nobody has to conjure them. Seed the
-profile overrides from the tracked example if it is not there yet, and say where
-both live — a user who cannot find where their own work goes will edit the
-tracked file, diverge, and lose the fast-forward on their first customisation:
-
-```bash
-[ -f orchestration/session-profiles.local.yaml ] ||
-  cp orchestration/session-profiles.local.example.yaml \
-     orchestration/session-profiles.local.yaml
-ls orchestration/playbooks/local/          # your playbooks go here
-```
-
-| You want to… | Edit | Not |
-|---|---|---|
-| write a playbook | `playbooks/local/<name>.md` | `playbooks/<name>.md` |
-| tune a worker's settings | `session-profiles.local.yaml` | `session-profiles.yaml` |
-| set a value you would not commit | `session-profiles.local.yaml` | anything tracked |
+Nothing else needs seeding. Playbooks and session profiles are tracked files
+the operator edits directly — `orchestration/playbooks/<name>.md` from
+`_TEMPLATE.md`, and `orchestration/session-profiles.yaml` in place. The one
+thing worth saying about the latter: it is committed to a **public** repo, so
+nothing environment-specific goes in it, and a credential should reach a worker
+by inheriting the thurbox server's environment rather than by living in a file.
 
 ## 3. Registry
 
@@ -282,9 +241,9 @@ Two things to pass on, once:
 **Nothing this skill wrote is tracked.** `registry/owners.txt`,
 `registry/repos.generated.yaml` and `extension.toml` are all gitignored, so
 `git status` is clean and there is nothing to commit or push. That is the
-design, not a step you forgot: an instance's tracked tree stays identical to the
-template's, which is what keeps `./scripts/update-from-template.sh` a clean
-fast-forward. `.gitignore`'s header has the reasoning.
+design, not a step you forgot: this repo is public, and an index of every repo
+the operator can reach — along with one machine's absolute paths — does not
+belong in it. `.gitignore`'s header has the reasoning.
 
 Say it explicitly. A user who set up a control plane and sees an empty
 `git status` will otherwise assume it failed.
@@ -316,17 +275,16 @@ Assume someone runs this twice. Every step above **converges**:
 | Step | Second run |
 |---|---|
 | Preflight | pure probes, writes nothing |
-| Remotes | `git remote add` on an existing remote fails harmlessly; check before adding |
+| Checkout | a question, not a write |
 | Owners | adds only missing entries; never duplicates or reorders |
 | Registry | the script rewrites the file wholesale from live GitHub |
 | Extension | a reinstall keeps existing `agents.toml` entries, so a customized model survives |
 | Monitor | `ensure` adopts a running one and respects a `down` flag; never a twin |
 
 So the right move on an already-configured clone is not to refuse. Detect it —
-both remotes are present, `registry/owners.txt` has active entries, the
-generated map exists, the extension status is healthy — say which parts are
-already in place, and offer to refresh the map rather than redoing the whole
-thing.
+`registry/owners.txt` has active entries, the generated map exists, the
+extension status is healthy — say which parts are already in place, and offer to
+refresh the map rather than redoing the whole thing.
 
 The one thing a re-run does **not** fix is a **rename**. If the session has
 been renamed away from `fleet`, the extension is registered under the new name

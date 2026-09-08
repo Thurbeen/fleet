@@ -14,11 +14,26 @@
 #   diverged from upstream    -> report, change nothing (never rebase/reset here)
 #   strictly behind + clean   -> `git merge --ff-only`
 #
+# RESTART THE LEAD when a sync brings new INSTRUCTIONS in. The running `fleet`
+# session froze FLEET.md and every skill it had loaded at launch, and nothing
+# reloads them from disk — so new bytes arriving here change nothing for it
+# until the agent is replaced. That is invisible unless something says it, so
+# a fast-forward that touched one of those paths says it, as an action for the
+# operator. The same goes for the extension manifest: once it or FLEET.md
+# moves, the installed extension no longer matches what it was rendered from.
+#
 # Prints a single JSON object on stdout. Claude Code reads `systemMessage` and
 # shows it to the user; `suppressOutput` keeps the raw text out of the
 # transcript. Always exits 0 — a sync problem must never block a session.
 
 set -uo pipefail
+
+# Changing one of these means the running `fleet` session is holding stale
+# instructions; changing one of the wiring paths means the installed thurbox
+# extension no longer matches the manifest it was rendered from. Neither is
+# fixable from here, so both are reported as actions for the operator.
+INSTRUCTION_PATHS=(FLEET.md AGENTS.md CLAUDE.md .agents/skills .claude/skills .claude/settings.json)
+WIRING_PATHS=(extension.toml.in FLEET.md)
 
 emit() {
 	# $1 = message. jq -n builds valid JSON regardless of quoting in $1.
@@ -80,8 +95,34 @@ if [ "$dirty" -eq 1 ]; then
 	emit "control-plane sync: '$branch' is $behind commit(s) behind $remote_ref, but the tree is dirty. Not fast-forwarding."
 fi
 
+before="$(git rev-parse HEAD)"
 if git merge --ff-only --quiet "$remote_ref" 2>/dev/null; then
-	emit "control-plane sync: fast-forwarded '$branch' $behind commit(s) to $(git rev-parse --short HEAD)."
+	msg="control-plane sync: fast-forwarded '$branch' $behind commit(s) to $(git rev-parse --short HEAD)."
+
+	# What arrived, not what exists: only a path this sync actually moved is
+	# worth an action. `git diff` over an empty pathspec list would match the
+	# whole tree, so both arrays are non-empty literals above.
+	instr="$(git diff --name-only "$before" HEAD -- "${INSTRUCTION_PATHS[@]}" 2>/dev/null)"
+	wiring="$(git diff --name-only "$before" HEAD -- "${WIRING_PATHS[@]}" 2>/dev/null)"
+
+	if [ -n "$instr" ]; then
+		msg="$msg
+restart-lead: yes — $(printf '%s' "$instr" | tr '\n' ' ')
+The running 'fleet' session froze FLEET.md and every skill it had loaded at
+launch; new bytes on disk change nothing for it. Replace the agent with
+'thurbox-cli session restart fleet' — that resumes the conversation, so the old
+copy is still in its history. For an instruction change that has to win, start a
+fresh one instead: 'thurbox-cli session delete fleet' (the extension self-heals it)."
+	fi
+
+	if [ -n "$wiring" ]; then
+		msg="$msg
+reinstall-extension: yes — $(printf '%s' "$wiring" | tr '\n' ' ')
+That changed, so the installed extension no longer matches the manifest it was
+rendered from. Re-render and reinstall it: './scripts/install-extension.sh'."
+	fi
+
+	emit "$msg"
 fi
 
 emit "control-plane sync: '$branch' is $behind commit(s) behind $remote_ref and would not fast-forward. Left alone."

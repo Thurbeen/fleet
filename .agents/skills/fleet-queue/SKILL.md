@@ -257,14 +257,14 @@ do not clear it on their behalf.
 
 ## 7. Where this lives, and what that costs
 
-Everything under `orchestration/queue/` is gitignored instance data — your
-prompts, your briefs, your results. The machinery is tracked; the queue is not.
-That split is what keeps `./scripts/update-from-template.sh` a fast-forward, and
-it means **the repo does not back your queue up**. Say that plainly when someone
-assumes otherwise. `.gitignore`'s header owns the full reasoning.
+Everything under `orchestration/queue/` is gitignored working state — your
+prompts, your briefs, your results. The machinery is tracked; the queue is not,
+because this repo is public and none of that belongs in it. It also means **the
+repo does not back your queue up**. Say that plainly when someone assumes
+otherwise. `.gitignore`'s header owns the full reasoning.
 
 `orchestration/webui/` is the same kind of thing for the monitor: the port it
-chose, its pid, its log and its down flag, all gitignored, all this instance's.
+chose, its pid, its log and its down flag, all gitignored, all local.
 
 `./scripts/check.sh queue` validates your records and re-proves the ordering and
 wake claims against a throwaway queue. It runs in the gate, so a change that
