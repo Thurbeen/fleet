@@ -90,8 +90,9 @@ The default for every task here is the frontmatter at the top of this file.
   request title becomes the commit on `main`. Write the title accordingly.
 - **You do not merge.** Opening it is where your work ends. `queue.sh
   shepherd` may later merge it for you in the repos its `AUTO_MERGE_REPOS`
-  allowlist names, but only once your pull request clears its gates — never
-  merge it yourself in the meantime.
+  allowlist names (host-qualified, as in `github.com/owner/repo`), but only
+  once your pull request clears its gates — never merge it yourself in the
+  meantime.
 
 ## Reporting back — write a file, do not send mail
 

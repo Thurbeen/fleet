@@ -5,12 +5,12 @@
 # WHY THIS EXISTS. Answering "where are we?" used to cost three to five
 # commands spread over three checkouts and four tools: a `git status` and a
 # `git log` per checkout, `queue.sh list`, `queue.sh plan`, `thurbox-cli
-# session list`, `gh pr list`. Most of a long session's tool
+# session list`, the forge's own list. Most of a long session's tool
 # calls were situational awareness rather than work, and every one of them cost
 # a round trip and a piece of the context window. This is those calls, folded
 # into one screen the lead can afford to run reflexively.
 #
-# THE ONE RULE: DEGRADE, NEVER FAIL. No network, no `gh`, no thurbox, no
+# THE ONE RULE: DEGRADE, NEVER FAIL. No network, no forge CLI, no thurbox, no
 # queue — each of those costs exactly its own section, which then
 # says what it could not determine and why. Every probe funnels through run(),
 # which converts every way a subprocess can go wrong into a reason string, and
@@ -54,6 +54,11 @@ def _load_queue():
 
 
 fleetqueue = _load_queue()
+
+# The forge seam, which queue.py has already loaded and keyed in sys.modules —
+# so this is the SAME module object and therefore the same registry, not a
+# second opinion about which forges are configured.
+forge = fleetqueue.forge
 
 # The checkout this file ships in, found from the file rather than from the
 # working directory — the lead may run this from anywhere.
@@ -242,57 +247,35 @@ def probe_sessions(tasks: list) -> dict:
     return sec
 
 
-# --- pull requests -----------------------------------------------------------
-
-CHECK_FAIL = {"FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE", "ERROR"}
-CHECK_PASS = {"SUCCESS", "NEUTRAL", "SKIPPED"}
+# --- change requests ---------------------------------------------------------
 
 
-def rollup(entries) -> str:
-    """One word for a PR's checks: passing, failing, pending, or none."""
-    if not isinstance(entries, list) or not entries:
+def rollup(checks) -> str:
+    """One word for a change request's checks: passing, failing, pending, or none."""
+    if not checks:
         return "none"
-    failing = pending = 0
-    for e in entries:
-        if not isinstance(e, dict):
-            continue
-        verdict = (e.get("conclusion") or e.get("state") or "").upper()
-        if verdict in CHECK_FAIL:
-            failing += 1
-        elif verdict in CHECK_PASS:
-            continue
-        else:
-            pending += 1
-    if failing:
+    if any(c.verdict == "failed" for c in checks):
         return "failing"
-    return "pending" if pending else "passing"
-
-
-def pr_slug(url: str) -> str:
-    """`Thurbeen/fleet#13` out of the URL gh already handed back.
-
-    Deliberately not a second `gh repo view`: the identity is in the artifact,
-    and a status command should not spend an API call to pretty-print a name.
-    """
-    parts = [p for p in str(url).split("/") if p]
-    if len(parts) >= 4 and parts[-2] == "pull":
-        return f"{parts[-4]}/{parts[-3]}#{parts[-1]}"
-    return str(url)
+    return "pending" if any(c.verdict == "pending" for c in checks) else "passing"
 
 
 def probe_prs(tasks: list) -> dict:
-    """Open PRs in the repos this queue is working in, matched back to tasks.
+    """Open change requests in the repos this queue works in, matched to tasks.
 
-    Matched by recorded artifact first, then by branch — so a PR a worker
-    opened and has not reported yet still shows up, which is exactly the gap
-    between "the worker should have opened a PR" and the artifact itself.
+    Matched by recorded artifact first, then by branch — so one a worker opened
+    and has not reported yet still shows up, which is exactly the gap between
+    "the worker should have opened a pull request" and the artifact itself.
 
-    One `gh pr list` per distinct repo, not one per task.
+    One list call per distinct repo, not one per task. Asked of the CHECKOUT
+    and not of a repository id: this command has a path on disk and no identity
+    for it, and a directory that is not a git repository at all still has to
+    produce a sentence rather than an empty list that reads as "nothing is
+    open". `scripts/lib/forge.py` decides which forge answers.
     """
     sec: dict = {"unavailable": None, "prs": [], "errors": []}
-    # A remote task's `repo` is a path on its host, so `gh -C` here would ask
-    # the wrong filesystem and report "no such directory" about a checkout that
-    # exists. Skipped and SAID, rather than turned into an error that reads as
+    # A remote task's `repo` is a path on its host, so asking a forge CLI here
+    # would ask the wrong filesystem and report "no such directory" about a
+    # checkout that exists. Skipped and SAID, rather than turned into an error that reads as
     # a broken record.
     live = [t for t in tasks if t.get("repo") and t.get("state") != "queued"]
     # `kind` is what the headline counts. `unread` is a repo this sweep tried
@@ -300,7 +283,7 @@ def probe_prs(tasks: list) -> dict:
     # swept, which is a different sentence and must not read as a failure.
     remote = [
         {"repo": f"(on host {h})", "kind": "skipped",
-         "reason": "runs on a remote host; its pull requests are read by "
+         "reason": "runs on a remote host; its change requests are read by "
                    "`queue.sh shepherd`, which asks the forge and not a checkout"}
         for h in sorted({t["host"] for t in live if t.get("host")})
     ]
@@ -319,41 +302,33 @@ def probe_prs(tasks: list) -> dict:
             sec["errors"].append({"repo": repo, "kind": "unread",
                                   "reason": "no such directory"})
             continue
-        doc, why = run_json(
-            ["gh", "pr", "list", "--state", "open", "--limit", "50", "--json",
-             "number,url,title,headRefName,state,statusCheckRollup"],
-            cwd=repo,
-            timeout=20,
-        )
+        crs, why = forge.open_change_requests_in_checkout(repo)
         if why:
             reasons.append(why)
             sec["errors"].append({"repo": repo, "kind": "unread", "reason": why})
             continue
-        for pr in doc if isinstance(doc, list) else []:
-            if not isinstance(pr, dict):
-                continue
-            url = str(pr.get("url") or "")
-            head = pr.get("headRefName")
+        for cr in crs:
+            url, head = cr.url, cr.head_branch
             owner = next(
                 (t for t in owners if t.get("artifact") and str(t["artifact"]).rstrip("/") == url.rstrip("/")),
                 None,
             ) or next((t for t in owners if head and t.get("branch") == head), None)
             if owner is None:
-                continue  # somebody else's PR in the same repo
+                continue  # somebody else's change request in the same repo
             sec["prs"].append(
                 {
                     "ref": owner["ref"],
                     "repo": repo,
-                    "slug": pr_slug(url),
-                    "number": pr.get("number"),
+                    "slug": cr.name,
+                    "number": cr.number,
                     "url": url,
-                    "title": pr.get("title"),
+                    "title": cr.title,
                     "branch": head,
-                    "checks": rollup(pr.get("statusCheckRollup")),
+                    "checks": rollup(cr.checks),
                 }
             )
 
-    # Every repo failed the same way — `gh` absent, most likely — so that is
+    # Every repo failed the same way — no forge CLI, most likely — so that is
     # the section's story rather than a list of identical per-repo errors.
     if reasons and len(sec["errors"]) == len(repos) and len(set(reasons)) == 1:
         sec["unavailable"] = reasons[0]

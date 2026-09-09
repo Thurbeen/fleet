@@ -47,6 +47,17 @@ names every path and the reason for each.
   directory your shell is in**, so a second clone of this repo cannot
   silently fork it: `topic add` and `add` refuse there, everything else
   warns, and `queue.sh root` names the directory in use.
+- `scripts/lib/forge.py` — the FORGE seam. Everything fleet knows about a
+  change request — a pull request on GitHub, a merge request on GitLab — it
+  asks this module for; `scripts/lib/queue.py` runs no forge CLI itself and
+  builds no forge URL. GitHub, through `gh`, is the one implementation shipped,
+  and it is a CONFIGURATION and not an assumption. The file's own header owns
+  the interface and how to add another. Two things follow: a repository is
+  identified by HOST plus path (`github.com/Thurbeen/fleet`), because a bare
+  `owner/repo` names two different repositories once two forges exist; and
+  `queue-selftest.sh` drives `collect`, the landing check and `shepherd`
+  through a second, fake forge with no network and no `gh` behind it, which is
+  what keeps the seam honest rather than merely asserted.
 - `orchestration/reconcile/` — the reconciler's runtime state: its supervisor's
   pid, the heartbeat proving its loop is ticking, its log, the advisory `nudge`
   flag and the `down` flag. Written by `./scripts/reconcile.sh` and created on
@@ -141,8 +152,10 @@ The loop, driven by `./scripts/queue.sh`:
    the queue's tasks name, not the tasks' recorded artifacts. A PR is linked
    back by artifact or head branch; an unlinked one is
    still classified and merged, it just has no session to fix it. It merges
-   only in the repos `AUTO_MERGE_REPOS` names in `scripts/lib/queue.py`, and
-   only for a PR whose head branch is in that repo, opened by someone who can
+   only in the repos `AUTO_MERGE_REPOS` names in `scripts/lib/queue.py` — each
+   entry host-qualified, and one that names no forge refused rather than
+   matched — and only for a PR whose head branch is in that repo, opened by
+   someone who can
    push there, carrying a `no-mistakes` attestation for its **current** head.
    That attestation gate is the one thing the declared publish
    method moves: a task that was declared `no-mistakes` and carries none gets a

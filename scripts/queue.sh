@@ -139,11 +139,12 @@
 #   IDEMPOTENT   the fixer it sent is recorded on the task; a second pass sees
 #                work in flight rather than a still-broken PR. `--force` to mean
 #                it anyway.
-#   NEVER GUESS  no gh, no network, no thurbox — it says what it could not
+#   NEVER GUESS  no forge, no network, no thurbox — it says what it could not
 #                determine and carries on. A PR it could not read is never
 #                called broken, and never called ready.
 #   NEVER TOUCH  only artifacts recorded on this queue's own tasks, and it
-#   A STRANGER   merges only in the repos AUTO_MERGE_REPOS names.
+#   A STRANGER   merges only in the repos AUTO_MERGE_REPOS names, each of
+#                which names its forge (`github.com/owner/repo`).
 #
 # Usage:
 #   scripts/queue.sh topic add <slug> --title T --prompt 'the ask'   # or --prompt-file F|-
@@ -283,7 +284,8 @@
 #
 # Requires: python3 (with PyYAML) — the same dependency the rest of the gate
 # has. `dispatch`, `watch`, `reap` and `refuel` additionally need thurbox-cli,
-# and `collect`, `reap` and `shepherd` ask `gh` about a pull request, and
+# and `collect`, `reap` and `shepherd` ask the FORGE about a pull request —
+# whichever `scripts/lib/forge.py` has configured, `gh` for GitHub — and
 # `shepherd` needs git as well. `refuel` reads the account's quota window with
 # `quota-axi` (https://github.com/kunchenguid/quota-axi), which fleet neither
 # installs nor sends any credential to. A task that names a `--host`

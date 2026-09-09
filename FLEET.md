@@ -90,7 +90,9 @@ YAML by hand. Nothing to push — the map is gitignored.
    recorded artifacts, dispatches a fixer for one that conflicts, fails a
    check, was reviewed with changes requested, or was declared `no-mistakes`
    and carries no attestation for its current head, and squash-merges one that
-   clears every gate in the repos `AUTO_MERGE_REPOS` allows. It writes down
+   clears every gate in the repos `AUTO_MERGE_REPOS` allows — entries there
+   name their forge (`github.com/Thurbeen/fleet`), because a bare `owner/repo`
+   is two different repositories once two forges are configured. It writes down
    what it saw either way, so a task's record says `checks-running` or
    `unattested` and not just `shipped`.
 7. Review the PRs; the operator merges every one `shepherd` did not. Sessions
@@ -240,7 +242,8 @@ The register never costs a fact. Where the two pull against each other, the
 fact wins:
 
 - **Uncertainty is a state word, not a hedge.** `waiting`, `not listed`,
-  `unavailable — gh not found`. Never "probably", never "should be" — and
+  `unavailable — gh not found` (that word is the GitHub adapter's own; another
+  forge names its own tool). Never "probably", never "should be" — and
   never a register word standing in for one. `holding, awaiting telemetry`
   in place of `unavailable — gh not found` has broken this section, not
   styled it.

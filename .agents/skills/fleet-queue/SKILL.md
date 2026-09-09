@@ -736,15 +736,18 @@ Three things it will not do, and they are what make it safe to run:
   `working` or `blocked` is left alone. So is one whose state is merely
   *observed* — `running`, `uncovered`, `unreported` are not the agent saying it
   is at rest (`thurbox-session` §4a).
-- **It will not guess.** No `gh`, no network, no thurbox: it says what it could
-  not determine and carries on. A PR it could not read is never called broken
+- **It will not guess.** No forge, no network, no thurbox: it says what it
+  could not determine and carries on. A PR it could not read is never called broken
   and never called ready.
 
 **On merging, which is the part that runs unattended.** `Thurbeen/fleet` is
 public and has a fork, so "merge every open PR on a timer" has to survive a
 stranger opening one. Fleet merges only in the repos on `AUTO_MERGE_REPOS` in
-`scripts/lib/queue.py` — `Thurbeen/fleet` — and only when **all** of these
-hold:
+`scripts/lib/queue.py` — `github.com/Thurbeen/fleet` and
+`github.com/Thurbeen/thurview` — and only when **all** of these hold. Entries
+there are HOST-QUALIFIED and one that names no forge is refused rather than
+matched: `Thurbeen/fleet` on github.com and `Thurbeen/fleet` on a self-hosted
+instance are not the same repository.
 
 - **The head branch is in that repository**, not a fork. A stranger cannot
   create a branch here, so this is the one claim about a pull request that

@@ -1378,7 +1378,9 @@ expect "and the record says gh was never there to ask" "gh not found" "$state"
 bare="$tmp/bare-clone"
 mkdir -p "$bare/scripts/lib" "$bare/orchestration/queue"
 cp scripts/queue.sh "$bare/scripts/queue.sh"
-ln -s "$PWD/scripts/lib/queue.py" "$bare/scripts/lib/queue.py"
+for lib in queue.py forge.py; do
+	ln -s "$PWD/scripts/lib/$lib" "$bare/scripts/lib/$lib"
+done
 cat >"$bare/orchestration/queue/POLICY.md" <<'EOF'
 # Standing policy for fleet workers
 
@@ -1663,16 +1665,18 @@ fi
 #
 # The whole thing is exercised against a THROWAWAY CLONE rather than this one,
 # so the test says the same thing on a machine with thurbox and on CI without
-# it: a directory holding `scripts/queue.sh`, a symlink to the real
-# `scripts/lib/queue.py` (the anchor is the script's own path, so a symlink is
-# a whole clone for this purpose) and a rendered `extension.toml` that decides
+# it: a directory holding `scripts/queue.sh`, symlinks to the real
+# `scripts/lib/*.py` (the anchor is the script's own path, so a symlink is a
+# whole clone for this purpose) and a rendered `extension.toml` that decides
 # whether that clone IS the control plane.
 
 clonetmp="$(mktemp -d)"
 fake="$clonetmp/second-clone"
 mkdir -p "$fake/scripts/lib" "$fake/deep/sub/dir"
 cp scripts/queue.sh "$fake/scripts/queue.sh"
-ln -s "$PWD/scripts/lib/queue.py" "$fake/scripts/lib/queue.py"
+for lib in queue.py forge.py; do
+	ln -s "$PWD/scripts/lib/$lib" "$fake/scripts/lib/$lib"
+done
 FAKEQ="$fake/scripts/queue.sh"
 
 # Render the manifest install-extension.sh would have written, naming whichever
@@ -4093,6 +4097,387 @@ if grep -qE '/home/|/Users/|[0-9a-f]{8}-[0-9a-f]{4}' orchestration/runs/_TEMPLAT
 else
 	pass "the tracked template carries no path and no session id"
 fi
+
+# --- 13. THE SEAM: the whole queue driven by a forge that is not GitHub ------
+#
+# A seam with one implementation is a claim. This is the second implementation:
+# a forge with no network, no `gh` and no GitHub anywhere in it, that `collect`,
+# `reap`'s landing check and `shepherd` are driven all the way through.
+#
+# It is also the regression test. `gh` on this section's PATH is a TRIPWIRE, not
+# a stub — it logs the call and fails — so any code that reaches around
+# `scripts/lib/forge.py` and runs `gh` directly again shows up here by name
+# instead of quietly working on the operator's machine and nowhere else.
+#
+# What it proves, beyond "the calls go through the interface":
+#
+#   a self-hosted host with a PORT round-trips — identity is host + path, and
+#     `forge.test:8443/acme/widgets` is not `github.com/acme/widgets`
+#   a `/-/merge_requests/<n>` URL is a change request, the same as `/pull/<n>`
+#   AUTO_MERGE_REPOS is matched host-qualified, and an entry naming no forge
+#     is refused rather than matched against a bare slug
+#   a repository is discovered from a checkout's `origin` through the same seam
+#   a forge that cannot perform fleet's merge method SAYS SO, and nothing is
+#     merged by some other method instead
+
+fk="$tmp/fake-forge"
+mkdir -p "$fk/crs" "$fk/push" "$fk/bin"
+export FAKE_FORGE_DIR="$fk"
+: >"$fk/gh-calls.log"
+: >"$fk/merged.log"
+printf '["squash"]\n' >"$fk/merge-methods.json"
+
+# A TRIPWIRE. Nothing in this section may reach GitHub, so `gh` records who
+# tried and then fails the way an unreachable API fails.
+cat >"$fk/bin/gh" <<'SH'
+#!/bin/sh
+echo "gh $*" >>"$FAKE_FORGE_DIR/gh-calls.log"
+echo "gh: nothing in the fake-forge section may reach GitHub" >&2
+exit 1
+SH
+chmod +x "$fk/bin/gh"
+
+# The second implementation. It answers the questions in scripts/lib/forge.py's
+# header and knows nothing else — if it had to grow a field to keep the queue
+# working, the seam would be in the wrong place and the fix would be to move
+# the seam rather than to widen this.
+cat >"$fk/forge_plugin.py" <<'PY'
+"""A forge that is not GitHub: files on disk, no network, no CLI.
+
+Deliberately shaped like the forge fleet does NOT run on. It is self-hosted
+with a port, it spells a change request `/-/merge_requests/<n>`, and it can be
+told it cannot squash — three of the ways a second adapter is expected to
+differ.
+"""
+
+import json
+import os
+import re
+
+import fleet_forge as fg
+
+HOST = "forge.test:8443"
+URL_RE = re.compile(r"^https://" + re.escape(HOST) + r"/(.+?)/-/merge_requests/(\d+)$")
+REMOTE_RE = re.compile(r"^https://" + re.escape(HOST) + r"/(.+?)(?:\.git)?/?$")
+
+
+def _dir():
+    return os.environ["FAKE_FORGE_DIR"]
+
+
+def _down():
+    return os.path.exists(os.path.join(_dir(), "down"))
+
+
+def _docs():
+    out = []
+    crs = os.path.join(_dir(), "crs")
+    for name in sorted(os.listdir(crs)):
+        if name.endswith(".json"):
+            with open(os.path.join(crs, name)) as fh:
+                out.append(json.load(fh))
+    return out
+
+
+class FakeForge(fg.Forge):
+    name = "fake"
+    hosts = (HOST,)
+
+    @property
+    def merge_methods(self):
+        with open(os.path.join(_dir(), "merge-methods.json")) as fh:
+            return tuple(json.load(fh))
+
+    def parse_change_url(self, url):
+        m = URL_RE.match((url or "").strip())
+        if not m:
+            return None
+        return fg.ChangeRef(fg.RepoId(HOST, m.group(1)), int(m.group(2)), m.group(0))
+
+    def repo_from_remote(self, remote_url):
+        m = REMOTE_RE.match((remote_url or "").strip())
+        return fg.RepoId(HOST, m.group(1)) if m else None
+
+    def _find(self, ref):
+        if _down():
+            return None, "the fake forge is unreachable"
+        for d in _docs():
+            if d["number"] == ref.number and d["repo"] == ref.repo.path:
+                return d, ""
+        return None, f"no change request {ref.number} on {ref.repo}"
+
+    def get(self, ref):
+        d, why = self._find(ref)
+        return (None, why) if why else (self._change_request(d, ref.repo), "")
+
+    def state(self, ref):
+        d, why = self._find(ref)
+        return (None, why) if why else (d.get("state", "open"), "")
+
+    def open_change_requests(self, repo):
+        if _down():
+            return [], "the fake forge is unreachable"
+        return [
+            self._change_request(d, repo)
+            for d in _docs()
+            if d["repo"] == repo.path and d.get("state", "open") == "open"
+        ], ""
+
+    def open_change_requests_in_checkout(self, path):
+        repo = self.repo_from_remote(fg._git_remote(path))
+        if repo is None:
+            return [], "not a checkout of a fake-forge repository"
+        return self.open_change_requests(repo)
+
+    def _change_request(self, d, repo):
+        n = d["number"]
+        return fg.ChangeRequest(
+            ref=fg.ChangeRef(repo, n, f"https://{HOST}/{repo.path}/-/merge_requests/{n}"),
+            title=d.get("title", ""),
+            state=d.get("state", "open"),
+            body=d.get("body", ""),
+            head_branch=d.get("head_branch", ""),
+            base_branch=d.get("base_branch", "main"),
+            head_sha=d.get("head_sha", ""),
+            author=d.get("author", ""),
+            mergeable=d.get("mergeable", "mergeable"),
+            checks=[fg.Check(c[0], c[1]) for c in d.get("checks", [])],
+            commits=[fg.Commit(c[0], c[1]) for c in d.get("commits", [])],
+            head_is_ours=d.get("head_is_ours", True),
+            head_location=d.get("head_location", ""),
+        )
+
+    def can_push(self, repo, login):
+        if _down():
+            return False, "the fake forge is unreachable"
+        ok = os.path.exists(os.path.join(_dir(), "push", login))
+        return ok, f"{login} {'may' if ok else 'may not'} push to {repo}"
+
+    def describe_merge(self, method, delete_branch):
+        return f"fake forge: {method}" + (" and delete the branch" if delete_branch else "")
+
+    def merge(self, cr, method, delete_branch):
+        if method not in self.merge_methods:
+            return False, f"this project forbids {method} merges"
+        with open(os.path.join(_dir(), "merged.log"), "a") as fh:
+            fh.write(f"{cr.number} {method}\n")
+        return True, f"{method}-merged on the fake forge"
+
+
+def forges():
+    return [FakeForge()]
+PY
+
+# One change request, written the way the fake forge stores them. The body it
+# gets is what the pipeline would have written: the attestation naming THIS
+# head, which is what both `collect` and the merge gate demand.
+fake_cr() {
+	python3 - "$fk/crs" "$@" <<'PY'
+import json
+import sys
+
+out, n = sys.argv[1], int(sys.argv[2])
+sha = f"{n:040d}"
+steps = [{"step": s, "status": "completed"} for s in
+         ("intent", "rebase", "review", "test", "document", "lint", "push")]
+steps += [{"step": "pr", "status": "running"}, {"step": "ci", "status": "pending"}]
+payload = json.dumps({"head_sha": sha, "steps": steps})
+body = f"<!-- no-mistakes-pipeline-attestation:v1 {payload} -->\n\n" + "\n".join(
+    f"## {h}\nx\n" for h in
+    ("Intent", "What Changed", "Risk Assessment", "Testing", "Pipeline")
+)
+doc = {"number": n, "repo": "acme/widgets", "state": "open", "body": body,
+       "title": f"change {n}", "base_branch": "main", "head_sha": sha,
+       "author": "letur", "mergeable": "mergeable", "checks": [["gate", "passed"]]}
+for pair in sys.argv[3:]:
+    key, _, value = pair.partition("=")
+    doc[key] = json.loads(value)
+json.dump(doc, open(f"{out}/{n}.json", "w"))
+PY
+}
+
+frepo="$fk/repo"
+mkdir -p "$frepo"
+git -C "$frepo" init -q -b main
+git -C "$frepo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m base
+# The repository this checkout belongs to, discovered through the seam rather
+# than recorded anywhere: no task below has to name it.
+git -C "$frepo" remote add origin "https://forge.test:8443/acme/widgets.git"
+for br in landed conflicting green foreign; do git -C "$frepo" branch "fix/$br"; done
+
+touch "$fk/push/letur" # can push; `stranger` has no file here, so cannot
+
+FPATH="$fk/bin:$tbxbin:$sshbin:$base_path"
+fq() {
+	env PATH="$FPATH" FLEET_QUEUE_DIR="$tmp/queue-fake" \
+		FLEET_FORGE_PLUGINS="$fk/forge_plugin.py" \
+		FLEET_AUTO_MERGE_REPOS="forge.test:8443/acme/widgets" \
+		"$QUEUE" "$@"
+}
+
+ftopic="$(fq topic add on-another-forge --title 'Work on a forge that is not GitHub' \
+	--prompt 'fleet must not assume GitHub')"
+
+for spec in 01:landed:201 02:conflicting:202 03:green:203 04:foreign:204; do
+	IFS=: read -r n slug num <<<"$spec"
+	fq add "$ftopic" "$slug" --title "A change that is $slug" --repo "$frepo" \
+		--branch "fix/$slug" --number "$n" >/dev/null
+	cat >"$tmp/queue-fake/$ftopic/$n-$slug/result.md" <<EOF
+---
+outcome: shipped
+artifact: https://forge.test:8443/acme/widgets/-/merge_requests/$num
+---
+Shipped it.
+EOF
+done
+
+fake_cr 201 'head_branch="fix/landed"'
+fake_cr 202 'head_branch="fix/conflicting"' 'mergeable="conflicting"'
+fake_cr 203 'head_branch="fix/green"'
+fake_cr 204 'head_branch="fix/foreign"' 'head_is_ours=false' \
+	'head_location="a stranger'"'"'s fork"'
+
+# --- 13a. collect reads the change request through the seam ------------------
+
+session_is aaaaaaaa-0000-0000-0000-000000000001 idle
+fq attach "$ftopic/01-landed" aaaaaaaa-0000-0000-0000-000000000001 >/dev/null
+
+out="$(fq collect 2>&1)"
+expect "collect verifies a publish claim on a forge that is not GitHub" \
+	"01-landed" "$out"
+expect "and it read a /-/merge_requests/ URL as a change request" \
+	"merge_requests/201" "$out"
+refute "its pull request is open, so nothing was reaped" "reaped" "$out"
+
+# A change request nobody can read is `unknown`, never `missing` — the fourth
+# word has to survive the seam, or an unreachable forge starts holding tasks
+# open on evidence nobody has.
+fq add "$ftopic" unreadable --title 'One the forge cannot answer for' \
+	--repo "$frepo" --branch fix/unreadable --number 05 >/dev/null
+cat >"$tmp/queue-fake/$ftopic/05-unreadable/result.md" <<'EOF'
+---
+outcome: shipped
+artifact: https://forge.test:8443/acme/widgets/-/merge_requests/999
+---
+Shipped it; the forge cannot be asked about it from here.
+EOF
+out="$(fq collect 2>&1)"
+expect "a change request the forge cannot answer for degrades to unknown" \
+	"unchecked" "$out"
+expect "and says what the forge said" "no change request 999" "$out"
+
+# --- 13b. the landing check asks the same seam -------------------------------
+
+out="$(fq reap --dry-run 2>&1)"
+refute "an open change request lands nothing" "would be landed" "$out"
+
+fake_cr 201 'head_branch="fix/landed"' 'state="merged"'
+out="$(fq reap 2>&1)"
+expect "a merge on the fake forge lands the task" "landed" "$out"
+expect "and releases the session that produced it" "reaped" "$out"
+expect "and it is the session the record held" \
+	"aaaaaaaa-0000-0000-0000-000000000001" "$(cat "$deletions")"
+
+# --- 13c. shepherd, all the way through --------------------------------------
+
+out="$(fq shepherd --topic "$ftopic" --dry-run 2>&1)"
+expect "shepherd names the self-hosted repository, port and all" \
+	"acme/widgets on forge.test:8443" "$out"
+expect "and says what it would merge, in the fake forge's own words" \
+	"fake forge: squash" "$out"
+if [ -s "$fk/merged.log" ]; then
+	fail "a dry run merges nothing on the fake forge" "$(cat "$fk/merged.log")"
+else
+	pass "a dry run merges nothing on the fake forge"
+fi
+
+out="$(fq shepherd --topic "$ftopic" 2>&1)"
+if grep -q '^203 squash$' "$fk/merged.log"; then
+	pass "a green, attested change request is merged through the seam"
+else
+	fail "a green, attested change request is merged through the seam" \
+		"$out$nl$(cat "$fk/merged.log")"
+fi
+expect "a conflicting one gets a fixer, in the base branch's own terms" \
+	"conflicts with main" "$out"
+expect "and the fixer is dispatched" "dispatched:" "$out"
+expect "one whose head is not ours is left alone" "left-alone" "$out"
+expect "and named as where the forge said it lives" "a stranger's fork" "$out"
+refute "and a change request that is not ours is never merged" \
+	"204 " "$(cat "$fk/merged.log")"
+
+# --- 13d. a forge that cannot do fleet's merge method says so ----------------
+#
+# THE MISMATCH WORTH CATCHING BEFORE A SECOND ADAPTER EXISTS. Fleet merges by
+# squash because that is the only method its own remotes allow, and a project
+# on another forge can forbid exactly that. "The forge refused this merge
+# method" has to be a sentence the interface can say, and it has to be said
+# BEFORE the merge rather than after one that quietly used another method.
+
+printf '["merge"]\n' >"$fk/merge-methods.json"
+fake_cr 205 'head_branch="fix/green"'
+before="$(wc -l <"$fk/merged.log")"
+out="$(fq shepherd --topic "$ftopic" 2>&1)"
+expect "a forge that cannot squash says so rather than merging some other way" \
+	"cannot merge by squash" "$out"
+count_is "and nothing is merged while it cannot" "$(wc -l <"$fk/merged.log")" \
+	"$before" "$out"
+printf '["squash"]\n' >"$fk/merge-methods.json"
+
+# --- 13e. the allowlist is host-qualified, and a bare slug is not a match ----
+
+out="$(env PATH="$FPATH" FLEET_QUEUE_DIR="$tmp/queue-fake" \
+	FLEET_FORGE_PLUGINS="$fk/forge_plugin.py" \
+	FLEET_AUTO_MERGE_REPOS="acme/widgets" \
+	"$QUEUE" shepherd --topic "$ftopic" --dry-run 2>&1)"
+expect "an auto-merge entry that names no forge is refused, not matched" \
+	"must name its forge" "$out"
+refute "and nothing under it would be merged" "would-merge" "$out"
+
+# --- 13f. the regression test: nobody reached around the seam ----------------
+
+if [ -s "$fk/gh-calls.log" ]; then
+	fail "no code path ran \`gh\` while a different forge was configured" \
+		"$(cat "$fk/gh-calls.log")"
+else
+	pass "no code path ran \`gh\` while a different forge was configured"
+fi
+
+# And the same claim read off the source, so a path this section happens not to
+# exercise cannot quietly grow a `gh` call either. Three named exceptions, and
+# each is a line of prose about why: the ssh credential probe is git HOSTING
+# rather than the forge API and is left whole for its own task; the auto-merge
+# allowlist NAMES github.com, which is the entire point of host-qualifying it;
+# and quota-axi is an unrelated third-party tool that happens to live there.
+reach="$(python3 - <<'PY'
+import re
+
+BAD = re.compile(r'"gh"|\bgh (pr|api|auth|repo) |github\.com')
+ALLOWED = (
+    "git@github.com",          # the ssh probe: git hosting, its own task
+    "gh auth status",          # the same probe's other half
+    "`gh` login",              # and the sentence that reports it
+    "AUTO_MERGE_REPOS = ",     # host-qualified on purpose
+    "as in github.com/owner",  # the refusal that teaches the shape
+    "quota-axi",               # an unrelated tool that lives on GitHub
+)
+bad = []
+for path in ("scripts/lib/queue.py", "scripts/lib/fleet_status.py"):
+    for n, line in enumerate(open(path), 1):
+        if line.lstrip().startswith("#") or not BAD.search(line):
+            continue
+        if any(a in line for a in ALLOWED):
+            continue
+        bad.append(f"{path}:{n}: {line.strip()}")
+print("\n".join(bad) if bad else "clean")
+PY
+)"
+expect "and no source outside the adapter names gh or github.com" "clean" "$reach"
+
+# The fixer above got a real worktree; take it back off the test repo so the
+# temp directory can be removed without leaving a stale registration.
+git -C "$frepo" worktree remove --force \
+	"$tmp/queue-fake/.worktrees/${ftopic}__02-conflicting" 2>/dev/null
 
 echo
 if [ "$failed" -eq 0 ]; then
