@@ -218,6 +218,22 @@ else
 		"watch=$(count_calls watch) collect=$(count_calls collect) shepherd=$(count_calls shepherd)"
 fi
 
+# --- regression: a moved count of 10, 20, 100... is not mistaken for "quiet" -
+#
+# `run_pass`'s quiet-unless-moved check reads the literal "0 task(s) moved" out
+# of the watch summary line. A moved count whose decimal form ends in 0 — 10,
+# 20, 100 — contains that same substring ("...1[0 task(s) moved]..."), so an
+# unanchored match would treat a pass that moved real tasks as the nothing-
+# happened case and never write it to the log. Drive the stub to report 10
+# moved and prove the pass is logged rather than swallowed.
+echo 10 >"$MOVED"
+if wait_for 10 grep -qF -- "10 task(s) moved" "$FLEET_RECONCILE_DIR/reconcile.log"; then
+	pass "a watch pass reporting 10 moved is logged, not swallowed as quiet"
+else
+	fail "a watch pass reporting 10 moved is logged" "$(cat "$FLEET_RECONCILE_DIR/reconcile.log" 2>/dev/null)"
+fi
+echo 0 >"$MOVED"
+
 # --- 5. it is not a writer ---------------------------------------------------
 #
 # The stub refuses any subcommand it was not taught, so a `dispatch` would have

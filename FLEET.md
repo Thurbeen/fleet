@@ -182,8 +182,8 @@ plane. However small it looks.
 
 Inline, and only: `orchestration/`, `registry/` and `.agents/` — the queue, the
 briefs, the run logs, the map, the skills — plus `queue.sh`, `fleet-status.sh`,
-`sync-checkout.sh`, `install-extension.sh` and `webui.sh`. Those you push
-straight to `main`.
+`sync-checkout.sh`, `install-extension.sh`, `webui.sh` and `reconcile.sh`.
+Those you push straight to `main`.
 
 The tell: **if you are about to read a second file in another codebase, you
 should be writing a brief instead.** On 2026-09-08 that went unheeded for
