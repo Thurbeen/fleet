@@ -72,8 +72,26 @@ collect time and sends you back. So verify your own artifact before you report
 done. For a `no-mistakes` task that is one command:
 
 ```sh
-gh pr view <url> --json body -q .body | grep no-mistakes-pipeline-attestation
+gh pr view <url> --json headRefOid,body -q \
+  '.headRefOid[0:8] as $head
+   | ([.body | capture("head_sha\"\\s*:\\s*\"(?<s>[0-9a-f]+)").s] | .[0]) as $attested
+   | $head + " is the head; the attestation names "
+     + ($attested | if . then .[0:8] else "no attestation found in the body" end)'
 ```
+
+**Those two must be the same commit.** An attestation is a verdict about the
+code the pipeline saw, so one naming any other commit proves nothing about
+what would merge, and `collect` holds your task open exactly as it does for a
+body with no attestation at all.
+
+They come apart on their own. The pipeline writes the attestation while it
+opens the pull request and can then push its own `no-mistakes: apply CI fixes`
+commit on top, which leaves the head one commit ahead of what was attested —
+this is what happened to #38, #40 and #48. **Run `/no-mistakes --yes` again**
+and it re-attests the new head; then run the command above once more before
+you write `result.md`. Never hand-edit the body to name the head: an
+attestation you typed attests nothing, and it is the one thing in the body a
+reader trusts you did not write.
 
 That check exists because the instruction it replaces could not be checked:
 "use the pipeline" describes a METHOD, and a method leaves no trace. Two tasks

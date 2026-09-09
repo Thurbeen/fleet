@@ -2591,6 +2591,10 @@ def pull_request_verdict(task: Task, method: str, outcome, url) -> tuple[str, st
     strictly stronger, because it names the head commit the pipeline ran on and
     a stale one is refused. It is also the check the shepherd already makes, so
     the two commands now agree about what proves a pipeline ran.
+
+    The commit list comes back in the same call and is read only to WORD the
+    refusal — `pipeline_moved_the_head` tells the one stale attestation the
+    pipeline caused itself apart from every other. It cannot change a verdict.
     """
     match = PR_URL_RE.match((url or "").strip())
     if not match:
@@ -2602,7 +2606,8 @@ def pull_request_verdict(task: Task, method: str, outcome, url) -> tuple[str, st
         return "unknown", "gh not found on PATH"
     try:
         proc = subprocess.run(
-            ["gh", "pr", "view", url, "--json", "body,headRefOid,headRefName,state"],
+            ["gh", "pr", "view", url, "--json",
+             "body,headRefOid,headRefName,state,commits"],
             capture_output=True, text=True, timeout=30,
         )
     except (OSError, subprocess.SubprocessError) as exc:
@@ -2625,13 +2630,74 @@ def pull_request_verdict(task: Task, method: str, outcome, url) -> tuple[str, st
         )
 
     if method == "no-mistakes":
-        attested, why = attestation_verdict(pr.get("body"), pr.get("headRefOid") or "")
+        body = pr.get("body")
+        attested, why = attestation_verdict(body, pr.get("headRefOid") or "")
+        if not attested:
+            why += pipeline_moved_the_head(pr, body)
         return ("passed" if attested else "missing"), why
 
     state = str(pr.get("state") or "").upper()
     if state not in ("OPEN", "MERGED"):
         return "missing", f"the pull request is {state.lower() or 'in no state gh named'}"
     return "passed", f"the pull request is {state.lower()} and is from {branch}"
+
+
+# The pipeline's own commits, which are the ONE way a `no-mistakes` branch
+# grows a new head without anybody having touched it. The attestation is
+# written during the `pr` step and CI fixes are pushed on top of it, so the
+# body ends up attesting a commit that is now an ancestor of the head.
+#
+# Refusing that is right and stays right — an attestation for an ancestor
+# describes code that is not what would merge. But "somebody pushed over the
+# pipeline" and "the pipeline did this to itself" are the same refusal with
+# different remedies, and only the second is answered by running the tool
+# again. Reading #48 today, a lead cannot tell which one it is looking at.
+PIPELINE_COMMIT_RE = re.compile(r"^(?:chore:\s*)?no-mistakes[:\s]", re.I)
+
+
+def pipeline_moved_the_head(pr: dict, body: str) -> str:
+    """The clause naming the pipeline's own commits, or "" for every other case.
+
+    It only ever ADDS to `attestation_verdict`'s line. The verdict itself is
+    not consulted and cannot be changed from here: this says why a refusal
+    happened, never whether it should have.
+
+    "" is also what a case that cannot be TOLD APART reads as — `gh` answering
+    with no commit list, or with one whose last commit is not the head. An
+    absent list is silence, and silence must not become a claim about who
+    pushed what.
+    """
+    m = ATTESTATION_RE.search(body or "")
+    if not m:
+        return ""
+    try:
+        doc = json.loads(m.group(1))
+    except ValueError:
+        return ""
+    attested = str(doc.get("head_sha") or "").lower() if isinstance(doc, dict) else ""
+    head = str(pr.get("headRefOid") or "").lower()
+    commits = pr.get("commits")
+    if not attested or not head or not isinstance(commits, list) or not commits:
+        return ""
+    if not all(isinstance(c, dict) for c in commits):
+        return ""
+    oids = [str(c.get("oid") or "").lower() for c in commits]
+    if oids[-1] != head or attested not in oids:
+        return ""
+
+    after = commits[oids.index(attested) + 1:]
+    headlines = [str(c.get("messageHeadline") or "") for c in after]
+    if not after or not all(PIPELINE_COMMIT_RE.match(h) for h in headlines):
+        return ""
+    named = ", ".join(
+        f"{str(c.get('oid'))[:8]} “{h}”"
+        for c, h in zip(after[:2], headlines[:2])
+    )
+    return (
+        f"; the pipeline pushed that head itself ({named}) after it attested, so "
+        "nothing else has moved this branch — re-run `/no-mistakes --yes` and it "
+        "will attest the commit that would merge"
+    )
 
 
 def commit_verdict(task: Task, outcome, url) -> tuple[str, str]:
