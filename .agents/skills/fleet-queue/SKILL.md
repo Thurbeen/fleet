@@ -208,9 +208,14 @@ ready: 3 task(s) — every one of them goes out now, there is no concurrency cap
 
 waiting: 1 task(s) — each held by a durable, recorded blocker
     report-status-honestly/03-render-detected-agent
-        semantic-dependency on .../01-drop-idle-default: reads the
-        detected_agent field 01 introduces
+        held by semantic-dependency on .../01-drop-idle-default (queued):
+        reads the detected_agent field 01 introduces
 ```
+
+The upstream's own state rides along in that line — `(queued)` here — because a
+blocker on a `stuck`, `failed` or `abandoned` upstream can never clear, and the
+line says so as `UNCLEARABLE` instead of reading like an ordinary wait.
+`scripts/lib/queue.py`'s `blocker_line` is what every surface prints this from.
 
 **The value is in that first block being big.** Most work needs no ordering; the
 job is finding the small set that does and letting everything else go at once. A

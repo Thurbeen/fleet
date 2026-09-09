@@ -148,14 +148,14 @@ def probe_queue() -> dict:
                     "artifact": t.doc.get("artifact"),
                     "touches": list(t.touches),
                     "blockers": [
-                        {
-                            "task": b.get("task"),
-                            "kind": b.get("kind"),
-                            "why": b.get("why"),
-                            "cleared": q.blocker_cleared(b),
-                        }
-                        for b in t.blockers
+                        fleetqueue.blocker_view(q, t, b) for b in t.blockers
                     ],
+                    # Everything the one-line row cannot say: a state that
+                    # disagrees with its own outcome, a task nothing dispatched,
+                    # and the blockers that are actually holding something.
+                    # queue.py derives it, so this cannot say it differently
+                    # from `queue.sh list` or the monitor.
+                    "notes": fleetqueue.task_notes(q, t),
                 }
             )
         sec["topics"].append(entry)
@@ -291,8 +291,11 @@ def probe_prs(tasks: list) -> dict:
     # exists. Skipped and SAID, rather than turned into an error that reads as
     # a broken record.
     live = [t for t in tasks if t.get("repo") and t.get("state") != "queued"]
+    # `kind` is what the headline counts. `unread` is a repo this sweep tried
+    # and failed to read — a hole in the finding. `skipped` is one it never
+    # swept, which is a different sentence and must not read as a failure.
     remote = [
-        {"repo": f"(on host {h})",
+        {"repo": f"(on host {h})", "kind": "skipped",
          "reason": "runs on a remote host; its pull requests are read by "
                    "`queue.sh shepherd`, which asks the forge and not a checkout"}
         for h in sorted({t["host"] for t in live if t.get("host")})
@@ -309,7 +312,8 @@ def probe_prs(tasks: list) -> dict:
     for repo, owners in sorted(repos.items()):
         if not os.path.isdir(repo):
             reasons.append(f"{repo}: no such directory")
-            sec["errors"].append({"repo": repo, "reason": "no such directory"})
+            sec["errors"].append({"repo": repo, "kind": "unread",
+                                  "reason": "no such directory"})
             continue
         doc, why = run_json(
             ["gh", "pr", "list", "--state", "open", "--limit", "50", "--json",
@@ -319,7 +323,7 @@ def probe_prs(tasks: list) -> dict:
         )
         if why:
             reasons.append(why)
-            sec["errors"].append({"repo": repo, "reason": why})
+            sec["errors"].append({"repo": repo, "kind": "unread", "reason": why})
             continue
         for pr in doc if isinstance(doc, list) else []:
             if not isinstance(pr, dict):
@@ -518,8 +522,8 @@ def probe_fuel() -> dict:
         "unavailable": None, "source": "quota-axi", "provider": FUEL_PROVIDER,
         "remaining": None, "reserve": FUEL_RESERVE, "below_reserve": None,
         "binding": None, "resets_at": None, "windows": [], "stale": None,
-        "state": None, "refreshed_at": None, "retry_after": None,
-        "error": None, "schema_version": None,
+        "state": None, "refreshed_at": None, "retry_after": None, "error": None,
+        "schema_version": None,
     }
     doc, why = run_json(
         ["quota-axi", "--provider", FUEL_PROVIDER, "--full", "--json",
@@ -621,9 +625,8 @@ def render_queue(sec: dict) -> list:
             if t.get("host"):
                 extra = f"on {t['host']}  {extra}".rstrip()
             lines.append(f"    {t['id']:<34} {t['display_state']:<11} {extra}")
-            for b in t["blockers"]:
-                if not b["cleared"]:
-                    lines.append(f"        held by {b['kind']} on {b['task']}: {b['why']}")
+            for note in t["notes"]:
+                lines.append(f"        {note}")
     for risk in sec["risks"]:
         lines.append(f"  risk: {', '.join(risk['tasks'])} all touch {risk['touches']}")
     return lines
@@ -654,10 +657,34 @@ def render_sessions(sec: dict) -> list:
 
 
 def render_prs(sec: dict) -> list:
+    """The finding, and how much of the sweep it rests on — on the SAME line.
+
+    "none open for these tasks" and "gh exited 1: no git remotes found" once
+    printed on adjacent lines, and a reader takes the headline: "none open" is
+    a finding, "one of the repos could not be read" means there is no finding
+    yet. So a hole in the sweep is part of the headline, and "none open" is
+    unreachable whenever anything went unread or unswept.
+    """
     if sec["unavailable"]:
         return [head("PRS", f"unavailable — {sec['unavailable']}")]
     prs = sec["prs"]
-    lines = [head("PRS", f"{len(prs)} open, matched to this queue's tasks" if prs else "none open for these tasks")]
+    unread = [e for e in sec["errors"] if e.get("kind") == "unread"]
+    skipped = [e for e in sec["errors"] if e.get("kind") != "unread"]
+    if prs:
+        line = f"{len(prs)} open, matched to this queue's tasks"
+    elif unread or skipped:
+        line = "none open in the repos that were read"
+    else:
+        line = "none open for these tasks"
+    # INCOMPLETE is for a hole: a repo this tried to read and could not. A
+    # remote host was never in the sweep, which is expected and stated without
+    # the alarm word — but it still keeps "none open" off the line.
+    gaps = [f"INCOMPLETE: {len(unread)} repo(s) unread"] if unread else []
+    if skipped:
+        gaps.append(f"{len(skipped)} not swept (remote)")
+    if gaps:
+        line += " — " + ", ".join(gaps)
+    lines = [head("PRS", line)]
     for p in prs:
         lines.append(f"    {p['slug']:<24} {p['checks']:<8} {p['branch'] or '':<32} {p['ref']}")
     for e in sec["errors"]:

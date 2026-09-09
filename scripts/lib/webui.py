@@ -222,15 +222,11 @@ def task_view(q: fleetqueue.Queue, task: fleetqueue.Task) -> dict:
         "session": d.get("session"),
         "prompted": d.get("prompted"),
         "touches": task.touches,
-        "blocked_by": [
-            {
-                "task": b.get("task"),
-                "kind": b.get("kind"),
-                "why": b.get("why"),
-                "cleared": q.blocker_cleared(b),
-            }
-            for b in task.blockers
-        ],
+        "blocked_by": [fleetqueue.blocker_view(q, task, b) for b in task.blockers],
+        # The row's contradictions and its active blockers, derived by queue.py
+        # so this page cannot disagree with `queue.sh list` about a record they
+        # both read off the same disk.
+        "notes": fleetqueue.task_notes(q, task),
         "outcome": d.get("outcome"),
         "artifact": d.get("artifact"),
         "artifact_link": artifact_link(d.get("artifact")),
@@ -651,6 +647,9 @@ main { max-width: 1440px; margin: 0 auto; padding: var(--space-md) var(--space-l
   padding: 0 0 6px 2.1rem;
 }
 .blocker.cleared { color: var(--text-muted); text-decoration: line-through; }
+/* Two recorded facts that disagree. Not an error state — both are true, and
+   the colour is the one the HUD already gives a task needing an operator. */
+.blocker.conflict { color: var(--st-attention); }
 
 /* --- the four panes: intent, plan, progress, outcome --------------------- */
 
@@ -981,10 +980,17 @@ function renderTask(t) {
   head.appendChild(meta);
   wrap.appendChild(head);
 
+  // The notes carry the active blockers, a state that disagrees with its own
+  // outcome, and a task nothing ever dispatched. A blocker that is cleared or
+  // moot is not in them and is shown struck through below, where it reads as
+  // record rather than as something holding this task up.
+  for (const n of t.notes || []) {
+    wrap.appendChild(el("div", "blocker" + (n[0] === "!" ? " conflict" : ""), n));
+  }
   for (const b of t.blocked_by || []) {
-    wrap.appendChild(el("div", "blocker" + (b.cleared ? " cleared" : ""),
-      (b.cleared ? "cleared: " : "waits on ") + b.task +
-      " \\u2014 " + b.kind + ": " + b.why));
+    if (b.status === "cleared" || b.status === "moot") {
+      wrap.appendChild(el("div", "blocker cleared", b.line));
+    }
   }
 
   const detail = el("div");
