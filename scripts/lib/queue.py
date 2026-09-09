@@ -86,6 +86,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import textwrap
 import tomllib
 from datetime import datetime, timezone
 
@@ -170,18 +171,58 @@ BRIEF_SECTIONS = (
     "Done means",
 )
 
-# The five headings a `no-mistakes` pull request body carries, and the ONE
-# place they are written down: POLICY.md quotes this list, collect checks
-# against it, and nothing else restates it.
+# HOW A TASK PUBLISHES, as three words about the ARTIFACT it leaves behind —
+# and the ONE place each is written down. `render_brief` writes `brief` into
+# the worker's instructions, `publish_verdict` goes and looks for `artifact`,
+# and `report_unverified` and `cmd_show` quote `proof` when it does not hold.
 #
 # WHY A CHECK AT ALL. "Open the pull request by running `/no-mistakes --yes`"
 # is an instruction about a METHOD, and a method leaves no trace: a worker that
 # produced a good-looking PR with a bare `gh pr create` satisfied every visible
 # requirement. Two tasks were once collected `shipped` that way and nothing
-# noticed until the operator read the bodies himself. These headings are the
-# artifact the pipeline leaves behind, so this is the requirement restated as
-# something a reader can verify.
-PIPELINE_HEADINGS = ("Intent", "What Changed", "Risk Assessment", "Testing", "Pipeline")
+# noticed until the operator read the bodies himself. Naming the ARTIFACT is
+# that requirement restated as something a reader can verify.
+#
+# WHY ARTIFACT SHAPES AND NOT TOOL NAMES. A tool fleet has never heard of — an
+# operator's own `/publish` skill, a repo's `make release` — still ends in a
+# pull request or a commit on the base branch, so these three words cover every
+# tool there will ever be while naming none of them. The tool itself rides on
+# the record as `publish.how`: free text, rendered into the brief, never
+# parsed. That is the whole of fleet's agnosticism, and it lasts exactly as
+# long as nothing branches on it.
+PUBLISH_DEFAULT = "pr"
+
+PUBLISH_METHODS = {
+    "no-mistakes": {
+        "brief": (
+            "open a pull request through the `no-mistakes` pipeline, which is "
+            "the review, the tests, the lint, the push and the pull request in "
+            "one pass"
+        ),
+        "artifact": "that pull request's URL",
+        "proof": (
+            "the pull request is from this task's branch and its body carries a "
+            "`no-mistakes` attestation for the commit that would merge"
+        ),
+    },
+    "pr": {
+        "brief": (
+            "open a pull request from this task's branch onto its base, by "
+            "whatever means this repo uses"
+        ),
+        "artifact": "that pull request's URL",
+        "proof": (
+            "the pull request is open or merged and is from this task's branch"
+        ),
+    },
+    "push": {
+        "brief": (
+            "commit onto the base branch and push it; there is no pull request"
+        ),
+        "artifact": "that commit's URL",
+        "proof": "the commit is an ancestor of the base branch on `origin`",
+    },
+}
 
 # A pull request URL, and nothing else — group 1 is the canonical form, so a
 # link someone pasted with `/files` or a `#comment` on the end still resolves
@@ -189,6 +230,12 @@ PIPELINE_HEADINGS = ("Intent", "What Changed", "Risk Assessment", "Testing", "Pi
 # artifact at all, and an artifact that is not a PR (an issue, a doc, a commit)
 # is not a pipeline claim — neither is a failure, and neither is checked.
 PR_URL_RE = re.compile(r"^(https?://[^/\s]+/[^/\s]+/[^/\s]+/pull/\d+)(?:[/?#].*)?$")
+
+# The `push` method's artifact, in the same forge-agnostic shape. Group 1 is
+# the canonical link and group 2 the sha, which is the half git is asked about.
+COMMIT_URL_RE = re.compile(
+    r"^(https?://[^/\s]+/[^/\s]+/[^/\s]+/commit/([0-9a-f]{7,40}))(?:[/?#].*)?$", re.I
+)
 
 # Standing policy for every worker, tracked beside the otherwise-gitignored
 # queue. Anchored to the CHECKOUT, not to FLEET_QUEUE_DIR: it lives with the
@@ -249,6 +296,63 @@ def policy_path() -> str:
     checkout that ships it.
     """
     return os.path.join(checkout_root(), POLICY_FILE)
+
+
+def policy_publish_default() -> tuple[str, str | None]:
+    """The operator's own publish default, from POLICY.md's YAML frontmatter.
+
+        ---
+        publish:
+          method: no-mistakes
+          how: run `/no-mistakes --yes`
+        ---
+
+    Here, and deliberately not in OPERATOR.md, whose own example file says in
+    bold that it is prose and that nothing parses it. POLICY.md is fleet's
+    standing policy, it is tracked, it is already the file that says how a
+    worker publishes, and every brief already points at it — so a change to
+    this default is reviewable in a diff rather than a surprise in a record.
+
+    It exists because the alternative is the lead retyping `--publish` on every
+    task, and a forgotten flag would silently downgrade that task's
+    verification, which is the failure this whole subsystem exists to prevent.
+
+    No frontmatter is the SHIPPED state and answers `pr` with no `how`: a fresh
+    clone needs no configuration at all. A word that is not a method is refused
+    rather than ignored, for the same reason — ignoring it would downgrade
+    quietly.
+    """
+    try:
+        with open(policy_path()) as fh:
+            text = fh.read()
+    except OSError:
+        return PUBLISH_DEFAULT, None
+
+    block: dict = {}
+    if text.startswith("---"):
+        parts = text.split("---", 2)
+        if len(parts) == 3:
+            try:
+                doc = yaml.safe_load(parts[1])
+            except yaml.YAMLError as exc:
+                raise QueueError(f"{policy_path()}: its frontmatter is not YAML: {exc}")
+            if isinstance(doc, dict) and "publish" in doc:
+                pub = doc["publish"]
+                if not isinstance(pub, dict):
+                    raise QueueError(
+                        f"{policy_path()}: publish is {pub!r}, and must be a "
+                        "mapping with method/how, not a bare value"
+                    )
+                block = pub
+
+    method = str(block.get("method") or "").strip() or PUBLISH_DEFAULT
+    if method not in PUBLISH_METHODS:
+        raise QueueError(
+            f"{policy_path()}: publish.method is {method!r}, and the methods are "
+            + ", ".join(sorted(PUBLISH_METHODS))
+        )
+    how = str(block.get("how") or "").strip()
+    return method, how or None
 
 
 def operator_path() -> str:
@@ -450,6 +554,27 @@ def is_record_dir(name: str) -> bool:
 
 def now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def age_of(stamp) -> str:
+    """How long ago, as one short token — or "" for anything unreadable.
+
+    Freshness is part of the fact. `collect` and `shepherd` run on the lead's
+    cadence, so a state observed forty minutes ago has to look forty minutes
+    old wherever it is drawn, rather than reading as what is true now.
+    """
+    try:
+        then = datetime.fromisoformat(str(stamp))
+    except (TypeError, ValueError):
+        return ""
+    if then.tzinfo is None:
+        then = then.replace(tzinfo=timezone.utc)
+    secs = max(0, int((datetime.now(timezone.utc) - then).total_seconds()))
+    if secs < 3600:
+        return f"{secs // 60}m"
+    if secs < 86400:
+        return f"{secs // 3600}h"
+    return f"{secs // 86400}d"
 
 
 def read_yaml(path: str) -> dict:
@@ -1012,6 +1137,17 @@ def cmd_add(args) -> int:
                 "a path on THAT machine."
             )
 
+    # Resolution, first hit wins and per FIELD. A stated method with no stated
+    # tool drops the operator's global one rather than inheriting it: "run
+    # `/no-mistakes --yes`" is the wrong sentence to hand a `push` task. A
+    # stated `how` alone keeps the operator's method, because a lead adding a
+    # note about the tool must not be able to downgrade the check by accident.
+    method, how = policy_publish_default()
+    if args.publish:
+        method, how = args.publish, args.how
+    elif args.how:
+        how = args.how
+
     os.makedirs(path)
 
     doc = {
@@ -1029,6 +1165,9 @@ def cmd_add(args) -> int:
         "profile": args.profile,
         "agent": args.agent,
         "touches": [s.strip() for s in (args.touches or "").split(",") if s.strip()],
+        # What this task must PRODUCE, and — as free text nothing ever parses —
+        # what the operator calls the tool that produces it.
+        "publish": {"method": method, "how": how},
         "blocked_by": [],
         "session": None,
         "prompted": False,
@@ -1085,6 +1224,16 @@ def render_brief(task: Task, topic: dict, body: str | None) -> str:
     """
     d = task.doc
     host = d.get("host")
+    method, how = task_publish(task)
+    spec = PUBLISH_METHODS[method]
+    publish_line = textwrap.fill(
+        f"- **Publish.** `{method}` — {spec['brief']}."
+        + (f" Here that means: {how}." if how else "")
+        + f" Your result's `artifact:` is {spec['artifact']}, and `collect`"
+        f" closes this task only once {spec['proof']}.",
+        width=78,
+        subsequent_indent="  ",
+    )
     result = os.path.abspath(task.file("result.md"))
     prompt = os.path.abspath(os.path.join(os.path.dirname(task.path), "PROMPT.md"))
     has_operator = bool(operator_instructions())
@@ -1140,14 +1289,14 @@ The prompt this came from is at {prompt_ref}; read it if the goal here is unclea
 
 - **Repo.** `{d["repo"]}`{where}
 - **Branch.** `{d["branch"]}` off `{d["base"]}`
+{publish_line}
 - **Expected to touch.** {", ".join(f"`{p}`" for p in d["touches"]) or "not recorded"}
 - **Standing policy.** {policy_ref}{operator_line}
 
 **Read that policy file before you start.** It is the rest of your
-instructions and it is not repeated here: how to open the pull request and how
-that is verified, who merges it, the gate to run before you push, and what the
-other workers running beside you mean for you. This brief does not override
-it.{operator_note}
+instructions and it is not repeated here: how to verify your own publish, who
+merges it, the gate to run before you push, and what the other workers running
+beside you mean for you. This brief does not override it.{operator_note}
 
 {sections}
 
@@ -1162,7 +1311,7 @@ with exactly this shape:
 ```markdown
 ---
 outcome: shipped | stuck | failed | not-applicable
-artifact: <PR url, or omit>
+artifact: <PR URL, or commit URL for a `push` task, or omit>
 ---
 A short paragraph: what you actually did, and anything the lead must know.
 ```
@@ -2172,26 +2321,71 @@ def parse_result(text: str) -> tuple[dict, str]:
     return meta, body.strip()
 
 
-def pipeline_verdict(outcome, url) -> tuple[str, str]:
-    """Does this task's artifact carry the pipeline's proof? Three answers.
+def task_publish(task: Task) -> tuple[str, str | None]:
+    """(method, how) for one task — the resolved default when it declares none.
 
-        skipped   nothing to check — the outcome does not require a PR
-                  (`not-applicable` or `stuck`), and none, or one that is not
-                  a PR, was given.
-        passed    the PR body carries all five PIPELINE_HEADINGS.
-        missing   `shipped` with no PR to check, or a PR body without them:
-                  the pipeline was skipped, or never proven at all.
-        unknown   the check could not run — no `gh`, no network, no such PR.
+    A record written before this field existed has no `publish` block, and it
+    must keep being verified exactly as it was dispatched. So the fallback is
+    the OPERATOR's default from POLICY.md and never the bare `pr` that ships as
+    fleet's: this repo's frontmatter says `no-mistakes`, so every task already
+    in its queue keeps the check it was opened under.
+
+    A record that DOES declare a method declares its `how` with it, absent
+    included — the operator's global tool is the wrong sentence to append to a
+    task that was deliberately given another method.
+    """
+    method, how = policy_publish_default()
+    block = task.doc.get("publish") or {}
+    if block.get("method") in PUBLISH_METHODS:
+        method, how = block["method"], block.get("how")
+    text = str(how).strip() if how else ""
+    return method, text or None
+
+
+def publish_verdict(task: Task, outcome, url) -> tuple[str, str]:
+    """Does this task's artifact prove it published? Four answers, per method.
+
+        skipped   nothing to check — the outcome does not require an artifact
+                  (`not-applicable` or `stuck`), and none, or one of the wrong
+                  shape, was given.
+        passed    the forge, or git, says the artifact this task's method names
+                  is there, from this task's branch, in the state claimed.
+        missing   `shipped` with no such artifact, or one that does not hold up.
+        unknown   the check could not run — no `gh`, no network, no such pull
+                  request, a base branch this machine cannot read.
 
     `unknown` is a fourth word on purpose and never collapses into `passed` or
     `missing`. An offline machine and a CI runner with no `gh` must both still
     be able to collect, and "could not check" must never be reported as either
     verdict — that is how a trusted claim gets manufactured out of a timeout.
+    Every git call below goes through `git_out`, whose empty answer IS a
+    failure, so `push` keeps that rule as strictly as the two forge methods do.
 
-    A worker that writes `outcome: shipped` is claiming a merged pull request,
-    so a missing or malformed `artifact` is not the same silence as
-    `not-applicable`/`stuck` legitimately producing none — it is `missing`,
-    held open like any other unproven `shipped` claim.
+    A worker that writes `outcome: shipped` is claiming an artifact, so a
+    missing or malformed one is not the same silence as `not-applicable` and
+    `stuck` legitimately producing none — it is `missing`, held open like any
+    other unproven `shipped` claim.
+    """
+    method, _how = task_publish(task)
+    if method == "push":
+        return commit_verdict(task, outcome, url)
+    return pull_request_verdict(task, method, outcome, url)
+
+
+def pull_request_verdict(task: Task, method: str, outcome, url) -> tuple[str, str]:
+    """The forge as witness, for the two methods that end in a pull request.
+
+    THE HEAD BRANCH IS CHECKED FOR BOTH, and it costs nothing — the field
+    arrives in the same `gh pr view`. It closes the one hole no body check ever
+    closed: a worker pasting somebody ELSE's good pull request. "This pull
+    request is from this task's branch" is the one claim about it that a worker
+    cannot write into its own result.md.
+
+    `no-mistakes` then asks for the attestation rather than for headings in the
+    prose. Same class of evidence — the tool's own trace in the body — and
+    strictly stronger, because it names the head commit the pipeline ran on and
+    a stale one is refused. It is also the check the shepherd already makes, so
+    the two commands now agree about what proves a pipeline ran.
     """
     match = PR_URL_RE.match((url or "").strip())
     if not match:
@@ -2203,7 +2397,7 @@ def pipeline_verdict(outcome, url) -> tuple[str, str]:
         return "unknown", "gh not found on PATH"
     try:
         proc = subprocess.run(
-            ["gh", "pr", "view", url, "--json", "body", "-q", ".body"],
+            ["gh", "pr", "view", url, "--json", "body,headRefOid,headRefName,state"],
             capture_output=True, text=True, timeout=30,
         )
     except (OSError, subprocess.SubprocessError) as exc:
@@ -2211,29 +2405,105 @@ def pipeline_verdict(outcome, url) -> tuple[str, str]:
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout).strip().splitlines()
         return "unknown", "gh pr view failed: " + (detail[-1] if detail else "no output")
+    try:
+        pr = json.loads(proc.stdout)
+    except ValueError:
+        return "unknown", "gh pr view did not answer with JSON"
 
-    body = proc.stdout
-    missing = [
-        h for h in PIPELINE_HEADINGS
-        if not re.search(rf"^\s*#{{1,6}}\s+{re.escape(h)}\s*$", body, re.M | re.I)
-    ]
-    if missing:
-        return "missing", "the PR body has no " + " or ".join(missing) + " heading"
-    return "passed", "all five pipeline headings present"
+    branch = str(task.doc.get("branch") or "")
+    head = str(pr.get("headRefName") or "")
+    if not head:
+        return "unknown", "GitHub did not say which branch this pull request is from"
+    if head != branch:
+        return "missing", (
+            f"the pull request is from branch {head}, and this task's is {branch}"
+        )
+
+    if method == "no-mistakes":
+        attested, why = attestation_verdict(pr.get("body"), pr.get("headRefOid") or "")
+        return ("passed" if attested else "missing"), why
+
+    state = str(pr.get("state") or "").upper()
+    if state not in ("OPEN", "MERGED"):
+        return "missing", f"the pull request is {state.lower() or 'in no state gh named'}"
+    return "passed", f"the pull request is {state.lower()} and is from {branch}"
+
+
+def commit_verdict(task: Task, outcome, url) -> tuple[str, str]:
+    """git as witness, for the method that ends on the base branch and not in a PR.
+
+    The ancestry question is asked in two halves rather than one, because
+    `git_out` answers "" both for a command that failed and for one that
+    printed nothing — and `merge-base --is-ancestor` prints nothing either way.
+    So: read the two commits first, where an empty answer is `unknown` exactly
+    as an unreachable `gh` is; then ask for their merge base, where the answer
+    IS the ancestry and an empty one means histories that do not meet.
+    """
+    match = COMMIT_URL_RE.match((url or "").strip())
+    if not match:
+        if outcome == "shipped":
+            return "missing", "shipped with no commit URL to check"
+        return "skipped", "no commit to check"
+    sha = match.group(2)
+
+    host = task.doc.get("host")
+    if host:
+        return "unknown", f"the base branch is on host {host}; not checked from here"
+    repo = str(task.doc.get("repo") or "")
+    base = str(task.doc.get("base") or "main")
+
+    git_out(repo, ["fetch", "--quiet", "origin", base], timeout=60)
+    head = git_out(repo, ["rev-parse", "--verify", "--quiet", f"origin/{base}^{{commit}}"]).strip()
+    if not head:
+        return "unknown", f"origin/{base} could not be read in {repo}"
+    commit = git_out(repo, ["rev-parse", "--verify", "--quiet", f"{sha}^{{commit}}"]).strip()
+    if not commit:
+        return "unknown", f"{sha[:8]} is not a commit {repo} holds; it cannot be checked here"
+    mb = git_out(repo, ["merge-base", commit, head]).strip()
+    if not mb:
+        return "unknown", f"{sha[:8]} and origin/{base} have no common history to compare"
+    if mb == commit:
+        return "passed", f"{sha[:8]} is on origin/{base}"
+    return "missing", f"{sha[:8]} is not on origin/{base} — it never reached the base branch"
+
+
+def collect_publish_state(verdict: str, method: str) -> str:
+    """What `collect` writes into `publish.state`, or "" for nothing to record.
+
+    `skipped` is the "" — a task that legitimately produced no artifact has no
+    publish to observe, and an absent state is what says "nothing has looked".
+    `pushed` is terminal: the code is on the base branch, so the task lands in
+    this same run and there is nothing left for the shepherd to watch.
+    """
+    if verdict == "passed":
+        return "pushed" if method == "push" else "open"
+    return {"missing": "unverified", "unknown": "unknown"}.get(verdict, "")
+
+
+def record_publish(task: Task, state: str, detail: str, by: str) -> None:
+    """The publish block, stamped by whoever LOOKED — never by a worker.
+
+    Merged into whatever is already there, so the method and the `how` the lead
+    declared at intake survive an observation being written over them.
+    """
+    block = dict(task.doc.get("publish") or {})
+    block.update({"state": state, "detail": detail, "at": now(), "by": by})
+    task.doc["publish"] = block
 
 
 def report_unverified(task: Task, url, detail: str) -> None:
     """The loud half of the check: the lead sees this AT COLLECT TIME."""
+    method, how = task_publish(task)
+    spec = PUBLISH_METHODS[method]
+    told = f"\n        Its brief said: {how}." if how else ""
     print(
-        f"    {task.ref}: NOT CLOSED — its pull request skipped the pipeline\n"
-        f"        {url or '(no pull request given)'}\n"
+        f"    {task.ref}: NOT CLOSED — nothing proves this task published\n"
+        f"        {url or '(no artifact given)'}\n"
         f"        {detail}\n"
-        "        A `no-mistakes` pull request body carries all five of: "
-        + ", ".join(PIPELINE_HEADINGS)
-        + ".\n"
-        "        Send the worker back to re-open it with `/no-mistakes --yes`,\n"
-        "        then collect again. If you have read this pull request and\n"
-        "        judged it good as it stands, close it deliberately with\n"
+        f"        A `{method}` task is proven when {spec['proof']}.{told}\n"
+        "        Send the worker back to publish again, then collect again.\n"
+        "        If you have read the artifact yourself and judged it good as\n"
+        "        it stands, close it deliberately with\n"
         "        `queue.sh collect --allow-unverified`.",
         file=sys.stderr,
     )
@@ -2272,10 +2542,18 @@ def cmd_collect(args) -> int:
             )
             continue
         artifact = meta.get("artifact")
-        verdict, detail = pipeline_verdict(outcome, artifact)
+        method, _how = task_publish(task)
+        verdict, detail = publish_verdict(task, outcome, artifact)
         # Recorded before the branch below, so a held-back task carries the
-        # reason in its record and not only in the terminal that saw it.
-        task.doc["artifact_check"] = {"verdict": verdict, "detail": detail, "at": now()}
+        # reason in its record and not only in the terminal that saw it. The
+        # METHOD is recorded with it because a verdict is only readable beside
+        # what it was asked to prove.
+        task.doc["artifact_check"] = {
+            "verdict": verdict, "detail": detail, "at": now(), "method": method,
+        }
+        state = collect_publish_state(verdict, method)
+        if state:
+            record_publish(task, state, detail, "collect")
 
         if verdict == "missing" and not args.allow_unverified:
             task.save()
@@ -2294,11 +2572,11 @@ def cmd_collect(args) -> int:
         if artifact:
             line += f"  {artifact}"
         if verdict == "passed":
-            line += "  [pipeline verified]"
+            line += f"  [publish verified: {method}]"
         elif verdict == "missing":
-            line += "  [pipeline NOT verified — closed by --allow-unverified]"
+            line += "  [publish NOT verified — closed by --allow-unverified]"
         elif verdict == "unknown":
-            line += f"  [pipeline unchecked: could not check — {detail}]"
+            line += f"  [publish unchecked: could not check — {detail}]"
         print(line)
         first = body.splitlines()[0] if body.splitlines() else ""
         if first:
@@ -2307,8 +2585,8 @@ def cmd_collect(args) -> int:
     print(f"collect: {concluded} result(s) read")
     if held:
         print(
-            f"         {held} task(s) HELD OPEN — their pull requests skipped the "
-            "pipeline; see above.",
+            f"         {held} task(s) HELD OPEN — nothing proves they published; "
+            "see above.",
             file=sys.stderr,
         )
     if artifacts:
@@ -4272,6 +4550,12 @@ def cmd_list(args) -> int:
         for t in tasks:
             mark = "waiting" if t.state == "queued" and not q.is_ready(t) else t.state
             extra = t.doc.get("artifact") or t.doc.get("session") or ""
+            # The publish state, with the age of the look that produced it —
+            # the same field the pane and the monitor draw, so the three views
+            # cannot disagree about what was last seen.
+            pub = t.doc.get("publish") or {}
+            if pub.get("state"):
+                extra = f"{extra}  {pub['state']} {age_of(pub.get('at'))}".strip()
             print(f"    {t.id:<34} {mark:<11} {where_it_runs(t)}  {extra}")
             # The row is one line and a record can contradict it; task_notes is
             # what says so, and it is the same list the monitor renders.
@@ -4310,9 +4594,17 @@ def cmd_show(args) -> int:
         # filesystem appears: the brief it reads and the result that closes
         # this task are both files on that machine.
         print(f"    {'remote:':<12} {remote.get('destination')}:{remote['worktree']}")
+    method, how = task_publish(task)
+    print(f"    {'publish:':<12} {method}{f' — {how}' if how else ''}")
     check = d.get("artifact_check") or {}
     if check.get("verdict"):
-        print(f"    {'pipeline:':<12} {check['verdict']} — {check.get('detail', '')}")
+        print(f"    {'checked:':<12} {check['verdict']} — {check.get('detail', '')}")
+    pub = d.get("publish") or {}
+    if pub.get("state"):
+        print(
+            f"    {'published:':<12} {pub['state']} — {pub.get('detail', '')} "
+            f"({pub.get('by', '')}, {age_of(pub.get('at'))} ago)"
+        )
     landing = d.get("landing") or {}
     if landing.get("state"):
         print(f"    {'landing:':<12} {landing['state']} — {landing.get('detail', '')}")
@@ -4383,6 +4675,17 @@ def cmd_check(args) -> int:
         for key in ("id", "topic", "title", "state", "repo", "branch"):
             if not d.get(key):
                 problems.append(f"{ref}: missing {key}")
+        pub = d.get("publish") or {}
+        if "method" in pub and pub["method"] not in PUBLISH_METHODS:
+            problems.append(
+                f"{ref}: publish method {pub['method']!r} is not one of "
+                + ", ".join(sorted(PUBLISH_METHODS))
+            )
+        # The ONLY thing ever asked of `how`. It names a tool fleet does not
+        # know, so "it is text" is the whole contract — anything more is fleet
+        # deciding which tools exist.
+        if pub.get("how") is not None and not isinstance(pub["how"], str):
+            problems.append(f"{ref}: publish how {pub['how']!r} is not text")
         if d.get("state") not in STATES:
             problems.append(f"{ref}: state {d.get('state')!r} is not one of {', '.join(STATES)}")
         if d.get("id") != t.id:
@@ -4460,6 +4763,19 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--base", default="main")
     a.add_argument("--profile", default="default")
     a.add_argument("--agent", default="claude", help="the agent to launch (default claude)")
+    a.add_argument(
+        "--publish",
+        choices=sorted(PUBLISH_METHODS),
+        help="what this task must PRODUCE. Defaults to the publish block in "
+        "POLICY.md's frontmatter, and to `pr` when there is none",
+    )
+    a.add_argument(
+        "--how",
+        help="the tool the worker should publish with, in your own words "
+        "(\"run `/publish`\", \"use `make release`\"). Free text: it is rendered "
+        "into the brief and nothing ever parses it, which is what lets it name "
+        "a tool fleet knows nothing about",
+    )
     a.add_argument("--touches", help="comma-separated paths this task expects to change")
     a.add_argument("--brief-file")
     a.add_argument("--number", help="two-digit ordinal; the next free one by default")
@@ -4506,8 +4822,8 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument(
         "--allow-unverified",
         action="store_true",
-        help="close a task whose PR body is missing the pipeline's headings, "
-        "after you have read that PR and judged it good anyway",
+        help="close a task whose artifact does not prove it published, after "
+        "you have read that artifact and judged it good anyway",
     )
     c.set_defaults(func=cmd_collect)
 

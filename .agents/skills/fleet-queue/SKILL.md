@@ -176,8 +176,9 @@ it. If it exists to frame, justify or reassure, delete it.
 
 **Do not restate standing policy in a brief.** The scaffold already points the
 worker at `orchestration/queue/POLICY.md`, by absolute path, and that file
-holds everything true of every task: open the PR with `/no-mistakes --yes` and
-what proves you did, squash merge, the operator merges and you do not, gate
+holds everything true of every task: publish the way the brief's Publish line
+says and verify your own artifact, squash merge, the operator merges and you
+do not, gate
 locally first, one brief per worker, and the result contract. Retyping any of
 it is how it drifts — it measurably did, across five briefs written by hand.
 Task-specific detail still belongs here in full; long briefs are why workers
@@ -339,7 +340,9 @@ And then a third thing, which happens LATER and is not a completion at all:
 RELEASE ./scripts/queue.sh reap [--dry-run]
         Asks the forge whether each concluded task's pull request merged,
         moves the ones that did to `landed`, and deletes those sessions and
-        their worktrees. `collect` runs it for you — see §5b.
+        their worktrees. A `push` task has nothing left to ask — its commit
+        was already confirmed on the base branch before `collect` closed it —
+        so it lands in this same pass. `collect` runs it for you — see §5b.
 ```
 
 **A remote task completes the same way.** `collect` fetches that worker's
@@ -348,41 +351,58 @@ it like any other. Everything downstream sees a local file and never learns
 which machine wrote it — which is the point, and why a remote worker still does
 not send mail.
 
-### `collect` verifies the artifact — you do not have to take the PR on trust
+### `collect` verifies the artifact — you do not have to take the worker on trust
 
-A worker that reports `shipped` with a pull request URL is making two claims,
-and the second one used to go unchecked: that the pull request came through the
-`no-mistakes` pipeline. Two did not, both were reported to the operator as
-shipped, and he found it by reading the bodies himself. "Use the pipeline"
-describes a METHOD, and a method leaves no trace — so `collect` checks the
-trace the pipeline does leave, the five headings in the body:
+A worker that reports `shipped` with a URL is making two claims, and the second
+one used to go unchecked: that it published the way it was told to. Twice it
+had not, both were reported to the operator as shipped, and he found it by
+reading the bodies himself. "Use the pipeline" describes a METHOD, and a method
+leaves no trace — so a task declares instead what its publish must LEAVE
+BEHIND, and `collect` goes and looks for that:
+
+| `--publish` | the worker produces | what collect asks |
+|---|---|---|
+| `no-mistakes` | a PR through the pipeline | the forge: a PR from this task's branch, its body carrying a `no-mistakes` attestation for the commit that would merge |
+| `pr` | a PR by any means at all | the forge: a PR from this task's branch, open or merged |
+| `push` | a commit on the base branch | git: that commit is an ancestor of `origin/<base>` |
+
+`--how` is the other half and it is FREE TEXT — "run `/no-mistakes --yes`", "run
+`/publish`", "use `make release`". It is rendered into the brief's Publish line
+and **nothing ever parses it**, which is exactly what lets a task name a
+publisher fleet has never heard of. Fleet knows the artifact's shape; your words
+tell the worker how to make one.
+
+You rarely type either. `orchestration/queue/POLICY.md`'s YAML frontmatter holds
+this operator's default (`no-mistakes`, `run /no-mistakes --yes`), and every
+task takes it unless `add` says otherwise — because a `--publish` forgotten on
+one task would downgrade that task's verification in silence.
 
 ```text
-## Intent   ## What Changed   ## Risk Assessment   ## Testing   ## Pipeline
-```
-
-```text
-    topic/02-document-the-states  shipped  https://…/pull/1001  [pipeline verified]
-    topic/03-render-detected-agent: NOT CLOSED — its pull request skipped the pipeline
+    topic/02-document-the-states  shipped  https://…/pull/1001  [publish verified: no-mistakes]
+    topic/03-render-detected-agent: NOT CLOSED — nothing proves this task published
 ```
 
 Three answers, and the third is not the second:
 
 | the check says | what collect does |
 |---|---|
-| all five present | closes the task, marked verified |
-| a heading missing | **leaves the task OPEN** and says so, loudly |
+| the artifact is there | closes the task, marked verified |
+| it is not, or not from this branch | **leaves the task OPEN** and says so, loudly |
 | could not run | closes the task, and says the check could not run |
 
-"Could not run" is `gh` absent, no network, or a pull request it cannot read.
-That must never read as a pass or a fail — CI and an offline laptop both still
-have to collect. `queue.sh show <ref>` prints the verdict, so it survives the
-scrollback.
+"Could not run" is `gh` absent, no network, a pull request it cannot read, or a
+base branch this machine cannot see. That must never read as a pass or a fail —
+CI and an offline laptop both still have to collect. `queue.sh show <ref>`
+prints the method and the verdict, so both survive the scrollback.
 
-When a task is held open: read the pull request, then send that worker back to
-re-open it with `/no-mistakes --yes` and collect again. If you have read it
-yourself and judged it good as it stands, `collect --allow-unverified` closes
-it and records that you did.
+**The head-branch check is the one a worker cannot write for itself.** Whatever
+the body says, "this pull request comes from this task's branch" is a fact of
+the forge — which closes the hole that reading prose never could: a worker
+pasting somebody else's good pull request.
+
+When a task is held open: read the artifact, then send that worker back to
+publish again and collect again. If you have read it yourself and judged it good
+as it stands, `collect --allow-unverified` closes it and records that you did.
 
 ### 5b. `reap` — a session lives until its work lands, and not one turn longer
 
@@ -392,18 +412,24 @@ twenty gigabytes. The loop already said "delete each session as it closes out"
 — documented, manual, and therefore never done.
 
 **The gate is the merge, not the conclusion, and that distinction was expensive
-to learn.** `outcome: shipped` means a pull request is OPEN. Twice, a pull
-request collected as `shipped` turned out to have been opened by hand rather
-than through the pipeline; the fix was a follow-up to a session that was still
-alive, which cost a message. Reaping at collect time would have made the same
-fix cost a re-spawn: a new worktree, a cold agent, the brief read from nothing.
+to learn.** For the two methods that end in a pull request, `outcome: shipped`
+only means one is OPEN. Twice, a pull request collected as `shipped` turned out
+to have been opened by hand rather than through the pipeline; the fix was a
+follow-up to a session that was still alive, which cost a message. Reaping at
+collect time would have made the same fix cost a re-spawn: a new worktree, a
+cold agent, the brief read from nothing. A `push` task has no such gap —
+`collect` refuses to conclude it `shipped` until it has already asked git
+whether the commit reached the base branch (above, "`collect` verifies the
+artifact"), so by the time one sits in `done` its work is already confirmed on
+`main`, and reap's own pass promotes it to `landed` in that same run with
+nothing left to ask the forge.
 
 So a task gets a state AFTER `done`:
 
 | state | means | its session |
 |---|---|---|
-| `done` | the worker concluded; its pull request is open | **kept** — the cheap way to fix what review finds |
-| `landed` | the artifact merged, or there was never one | released |
+| `done` | the worker concluded; its pull request is open, or its already-confirmed `push` commit is about to be promoted by this same `collect` run | **kept** — the cheap way to fix what review finds |
+| `landed` | the pull request merged, the pushed commit reached the base branch, or there was never an artifact | released |
 | `abandoned` | the pull request was closed unmerged | released; the work is NOT on main |
 | `stuck` / `failed` | the worker gave up | **kept** — that session is the evidence, and you decide |
 

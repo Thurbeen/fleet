@@ -1,3 +1,18 @@
+---
+# The publish method every task under this policy gets unless `queue.sh add`
+# says otherwise, and the words the brief uses to name the tool. `method` is
+# one of `no-mistakes`, `pr` or `push` — what a task must PRODUCE — and `how`
+# is free text that fleet renders into the brief and never parses.
+#
+# Delete this block and tasks default to `pr`, which needs no setup: a pull
+# request from the task's branch is the whole proof. It says `no-mistakes`
+# here because that is what this operator's fleet publishes with, and stating
+# it once beats retyping `--publish` per task and forgetting it on one.
+publish:
+  method: no-mistakes
+  how: run `/no-mistakes --yes`
+---
+
 # Standing policy for fleet workers
 
 This is the policy every task in every repo runs under. `queue.sh add`'s brief
@@ -43,33 +58,30 @@ can apply. Where a repo names a different gate in its `AGENTS.md` or
 CI here only fires on pull requests, so the local run is what catches a break
 before anyone else sees it.
 
-## Open the pull request through the pipeline
+## Publish the way your brief says
 
-**Open every pull request by running the `no-mistakes` skill with `--yes`**
-(`/no-mistakes --yes`). Not `gh pr create`, and not the web UI. The pipeline is
-the review, the tests, the lint, the push and the pull request in one pass; a
-pull request that skipped it has had none of them.
+Your brief's **Publish** line names one of three methods, what it must leave
+behind, and what proves it. It is rendered from fleet's own vocabulary, so it
+is the authority — this section does not restate it and cannot drift from it.
+Where the line names a tool, use that tool. Do not switch methods.
 
-The proof is the body it writes. A `no-mistakes` pull request carries all five
-of these headings:
+`queue.sh collect` then goes and looks for that artifact: the forge for a pull
+request, git for a commit on the base branch. A task whose artifact is not
+there, or is not from your branch, **is not closed** — the lead sees it at
+collect time and sends you back. So verify your own artifact before you report
+done. For a `no-mistakes` task that is one command:
 
-```text
-## Intent
-## What Changed
-## Risk Assessment
-## Testing
-## Pipeline
+```sh
+gh pr view <url> --json body -q .body | grep no-mistakes-pipeline-attestation
 ```
-
-`queue.sh collect` fetches your pull request body and looks for exactly those
-five. A task whose body is missing any of them **is not closed** — the lead
-sees it at collect time and sends you back to redo the push. So verify your own
-pull request body before you report done.
 
 That check exists because the instruction it replaces could not be checked:
 "use the pipeline" describes a METHOD, and a method leaves no trace. Two tasks
 were once collected as shipped with hand-made pull requests, and nobody noticed
-until the operator read the bodies himself.
+until the operator read the bodies himself. Naming the artifact is that same
+requirement written as something a reader can go and verify.
+
+The default for every task here is the frontmatter at the top of this file.
 
 ## Do not merge
 
@@ -90,15 +102,16 @@ this shape:
 ```markdown
 ---
 outcome: shipped | stuck | failed | not-applicable
-artifact: <PR url, or omit>
+artifact: <PR URL, or commit URL for a `push` task, or omit>
 ---
 A short paragraph: what you actually did, and anything the lead must know.
 ```
 
-`outcome` is one of those four words and nothing else. `artifact` is the pull
-request URL when there is one; `not-applicable` and `stuck` usually have none,
-and that is fine. `shipped` is a claim that a pull request exists, so report it
-without one, or with something that is not a pull request URL, and the lead's
+`outcome` is one of those four words and nothing else. `artifact` is whatever
+your brief's Publish line says it is — a pull request URL for two of the three
+methods, a commit URL for `push`; `not-applicable` and `stuck` usually have
+none, and that is fine. `shipped` is a claim that the artifact exists, so
+report it without one, or with something of the wrong shape, and the lead's
 `collect` holds your task open rather than trusting the word alone.
 
 That file is what closes your task. Without it the lead sees only that a turn

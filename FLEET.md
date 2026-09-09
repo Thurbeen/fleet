@@ -85,8 +85,10 @@ YAML by hand. Nothing to push — the map is gitignored.
    attestation for its current head, and squash-merges one that clears every
    gate in the repos `AUTO_MERGE_REPOS` allows.
 7. Review the PRs; the operator merges every one `shepherd` did not. Sessions
-   release themselves once a pull request merges — `collect` reaps them,
-   `queue.sh reap --dry-run` shows what it would do — see `AGENTS.md`.
+   release themselves once their artifact lands on the base branch — a merged
+   pull request, or, for a task that published by pushing directly, the
+   commit itself — `collect` reaps them, `queue.sh reap --dry-run` shows what
+   it would do — see `AGENTS.md`.
 8. **`refuel` a worker that hit its agent's token limit and never reported —
    thurbox keeps saying `working` because the idle hook never fires.** It asks
    the account's own quota window (below) before it looks at any session, and

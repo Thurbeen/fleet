@@ -6,13 +6,15 @@ and [`OPERATOR.example.md`](OPERATOR.example.md). `.gitignore`'s header owns
 the reason: this repo is public, and your prompts, your briefs and your
 workers' results are not a thing to publish.
 
-`POLICY.md` is the standing policy every worker runs under — the pipeline
-requirement and the five headings that prove it, squash-merge, who merges, the
-gate, one-brief-one-worker, and the result contract. Every `BRIEF.md` the
-scaffold writes points at it — by absolute path, or, for a task running on a
-remote host, by a path relative to the brief itself — rather than restating
-it, so it is written once and cannot drift between briefs. **Task-specific
-detail still belongs in the brief**; only the repetition moved.
+`POLICY.md` is the standing policy every worker runs under — publish the way
+your brief says and verify your own artifact, squash-merge, who merges, the
+gate, one-brief-one-worker, and the result contract. Its YAML frontmatter holds
+this operator's default publish method, the one thing in the file fleet parses.
+Every `BRIEF.md` the scaffold writes points at it — by absolute path, or, for a
+task running on a remote host, by a path relative to the brief itself — rather
+than restating it, so it is written once and cannot drift between briefs.
+**Task-specific detail still belongs in the brief**; only the repetition
+moved.
 
 `OPERATOR.md` is its counterpart with the ownership reversed: fleet owns the
 policy, **you** own that file, and it is gitignored like the rest of this
@@ -84,14 +86,19 @@ risk beside the ready set and holds nothing up.
 task finished — only the worker's own `result.md`, read by `queue.sh collect`,
 closes anything.
 
-**`collect` checks the artifact it is handed.** A `no-mistakes` pull request
-body carries `## Intent`, `## What Changed`, `## Risk Assessment`, `## Testing`
-and `## Pipeline`; a task whose PR is missing any of them is reported and left
-OPEN, because "open the PR through the pipeline" is an instruction about a
-METHOD and a method leaves no trace anyone can read. A check that could not run
-— no `gh`, no network — says exactly that and is never counted as either
-verdict. `collect --allow-unverified` closes a flagged task once you have read
-that pull request yourself.
+**`collect` checks the artifact it is handed.** Each task declares a publish
+METHOD — `no-mistakes`, `pr` or `push` — naming what it must produce, and
+`collect` goes and looks: the forge for a pull request from that task's own
+branch (carrying a `no-mistakes` attestation for its head, for that method),
+git for a commit that reached the base branch. A task whose artifact is not
+there is reported and left OPEN, because "use the pipeline" is an instruction
+about a method and a method leaves no trace anyone can read. A check that could
+not run — no `gh`, no network, a base branch this machine cannot see — says
+exactly that and is never counted as either verdict. `collect
+--allow-unverified` closes a flagged task once you have read that artifact
+yourself. `queue.sh show` prints the method, the verdict and the publish state
+that came of it; the tool itself is `publish.how`, free text fleet renders into
+the brief and never parses.
 
 **`done` is not the end of the record.** `queue.sh reap` — which `collect`
 runs for you — asks the forge whether a `done` task's pull request merged and

@@ -46,8 +46,8 @@ otherwise is how a worker gets it wrong:
 - **A brief wins over it.** The constitution ADDS to a brief's task-specific
   instructions and never replaces them. If a brief says to use a particular
   tool for this one task, that is what happens here.
-- **`POLICY.md` wins over it.** How a pull request is opened and what proves
-  it, squash merge, that the operator merges and the worker does not, the gate
+- **`POLICY.md` wins over it.** How a task publishes and what proves it,
+  squash merge, that the operator merges and the worker does not, the gate
   run before the push, the result file that closes a task. Writing "skip the
   tests" or "just merge it" here does not make those go away — the worker
   follows the policy and your line is the one that loses.
