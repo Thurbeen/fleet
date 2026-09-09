@@ -255,9 +255,10 @@ plain `git pull`. The sync script says so when it happens; act on it rather
 than assuming the new instructions reached the lead.
 
 `.agents/skills/update-fleet/` drives that whole update — the sync, then only
-the pieces it left stale (extension manifest, queue pane, registry, monitor),
-then the lead hand-over the sync can only report. It is the counterpart to
-`fleet-onboarding`: that one builds a fleet, this one catches a working one up.
+the pieces it left stale (extension manifest, queue pane, registry, monitor,
+reconciler), then the lead hand-over the sync can only report. It is the
+counterpart to `fleet-onboarding`: that one builds a fleet, this one catches a
+working one up.
 
 ## Maintaining this file
 
