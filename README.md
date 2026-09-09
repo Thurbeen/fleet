@@ -78,10 +78,12 @@ It reads the same four files per task and no fifth: the plan, the progress, the
 outcome, and the pull request. A column is narrow, so it draws only what you
 would act on from a glance and leaves the rest to `./scripts/queue.sh show`.
 
-![The queue pane in a thurbox column beside the session list: two workers
-running, the topics they are working on grouped above the finished ones, and
-each task collapsed to one row — its ordinal and state glyph, with landed and
-abandoned tasks folded into a muted count](media/fleet-queue-pane.gif)
+![The queue pane in a thurbox column beside the session list: the account's fuel
+drawn as a labelled bar with its reserve above the queue, then six running
+topics with each task collapsed to one row — its ordinal, title and age, landed
+and abandoned tasks folded into a muted count. Beside it the session list holds
+one mission-control lead and the workers it spawned as its children, each
+marked with an emoji](media/fleet-queue-pane.gif)
 
 ## Your working copy
 

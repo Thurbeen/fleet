@@ -14,10 +14,12 @@
 # did not. A transcript redraws more of the frame than a bare prompt, and a live
 # agent's elapsed-time and token counters tick every single frame, so almost
 # nothing compresses between frames. The shell take fit ~16 visible seconds at
-# 128 colours in ~600K; this one runs ~11s at 64 and still weighs ~800K, and
-# neither a lower framerate nor a shorter dwell buys much more — measured, 8fps
-# saved 13K. Do not chase the old number by gutting the demo: TRIM DWELLS
-# BEFORE YOU DROP THE F3 TOGGLE, and the toggle is the demo.
+# 128 colours in ~600K; this one runs ~11s at 64 and weighs ~1.0M, and neither a
+# lower framerate nor a shorter dwell buys much more — measured, 8fps saved 13K.
+# Do not chase the old number by gutting the demo: TRIM DWELLS BEFORE YOU DROP
+# THE F3 TOGGLE, and the toggle is the demo. The fuel block and a centre pane
+# that scrolls on the toggle are what took it past the ~800K the last take
+# weighed; both are things the picture is now for.
 #
 # IT RECORDS THE REAL QUEUE AND THE REAL SESSION LIST, and that is the point.
 # An earlier take drove the pane from a fixture through FLEET_QUEUE_DIR and left
@@ -54,9 +56,22 @@
 # session that dispatched the work, and whatever it happens to be doing is
 # unrelated to the topic the queue shows RUNNING (one take caught it blocked on
 # a question about a different repo entirely). `next session` steps onto a
-# WORKER, so the centre is the agent whose topic the pane names. Check the
-# selection before you keep a take: with a different set of sessions in flight,
-# one step may land somewhere else.
+# WORKER, so the centre is the agent whose topic the pane names.
+#
+# THE NUMBER OF STEPS IS PART OF THE TAKE, NOT A CONSTANT. It was one while the
+# list was flat; the workers are now drawn as CHILDREN of the lead, so one step
+# lands on the first child and four land on the fourth. Whoever re-records this
+# counts the steps against their own list and edits the block below — there is
+# no command that selects a session by name, only `sessions.next`, so stepping
+# is the only route. Two things decide the count, and both need looking at:
+#
+#   THE TOPIC MUST BE ONE THE PANE SHOWS RUNNING, so the two halves of the
+#   frame are the same run of work. That is the requirement.
+#
+#   PREFER A WORKER THAT IS ACTUALLY WORKING. An earlier take of this landed on
+#   an idle one whose transcript ended in a red "you've hit your session limit"
+#   — honest, but it sat beside a fuel bar reading 53% and read as the pane
+#   contradicting itself, in the very demo the fuel block exists for.
 #
 # NOTHING IS TYPED INTO THE CENTRE once the agent tab is selected. The shell
 # take cleared its pane with a `clear`; the same two lines here would deliver
@@ -88,7 +103,25 @@ Sleep 800ms
 Type "next session"
 Sleep 800ms
 Enter
-Sleep 1500ms
+Sleep 600ms
+Ctrl+P
+Sleep 800ms
+Type "next session"
+Sleep 800ms
+Enter
+Sleep 600ms
+Ctrl+P
+Sleep 800ms
+Type "next session"
+Sleep 800ms
+Enter
+Sleep 600ms
+Ctrl+P
+Sleep 800ms
+Type "next session"
+Sleep 800ms
+Enter
+Sleep 600ms
 Ctrl+P
 Sleep 800ms
 Type "agent tab"
