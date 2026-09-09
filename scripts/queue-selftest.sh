@@ -3295,6 +3295,7 @@ MD
 $QUEUE add "$etopic" fenced-body --title 'Fenced body' --repo /tmp/repo-a \
 	--branch fix/fenced-body --number 04 --brief-file "$tmp/fenced-brief.md" >/dev/null
 fenced="$(brief_text "$FLEET_QUEUE_DIR/$etopic/04-fenced-body/BRIEF.md")"
+# shellcheck disable=SC2016  # literal backticks in expected fenced text, not a substitution
 expect "a \`## \` inside a fence stays in the section it was written in" \
 	'```markdown ## Done means not a real heading ```' "$fenced"
 expect "and the real heading after the fence still fills its section" \
