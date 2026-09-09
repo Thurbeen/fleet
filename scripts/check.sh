@@ -16,9 +16,9 @@
 # skills, pane. Only `markdown` has a fixer; `--fix` is a no-op for the rest,
 # so `scripts/check.sh --fix` is always safe to run.
 #
-# Requires: shellcheck, rumdl, python3 (with PyYAML), curl. A missing tool fails the
-# check rather than skipping it — a gate that silently passes when its linter
-# is absent is worse than no gate.
+# Requires: shellcheck, rumdl, python3 (with PyYAML), curl, lua. A missing tool
+# fails the check rather than skipping it — a gate that silently passes when
+# its linter is absent is worse than no gate.
 
 set -uo pipefail
 
@@ -385,6 +385,23 @@ check_pane() {
 		miss=1
 	elif [ "$fuel_ttl" -le "$ttl" ]; then
 		fail "pane: FUEL_TTL ($fuel_ttl s) is not longer than the queue's TTL ($ttl s); the fuel probe hits the network"
+		miss=1
+	fi
+
+	# AND THE ROWS THEMSELVES, which every grep above is blind to. The pane's
+	# real failure is a wall of uniform text, and it has now been one: eight
+	# tasks in thirty-eight rows, with a merged task drawn exactly like a
+	# running one. `pane-selftest.sh` renders this file offline and asserts the
+	# design it is supposed to have, at 44 columns and again at 30.
+	if [ -f scripts/pane-selftest.sh ] && need lua pane; then
+		if ./scripts/pane-selftest.sh >/dev/null; then
+			ok "pane: scripts/pane-selftest.sh"
+		else
+			./scripts/pane-selftest.sh
+			fail "pane: scripts/pane-selftest.sh"
+			miss=1
+		fi
+	else
 		miss=1
 	fi
 

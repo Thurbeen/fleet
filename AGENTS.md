@@ -53,8 +53,11 @@ names every path and the reason for each.
   `extension.toml.in`'s header argues why it is not an `[[external_files]]`
   payload. **Placing it is a guarded block in the user's `layout.lua` and
   nothing here writes it** — a pane no arrangement places loads, lists, and
-  draws nothing. `.agents/skills/fleet-pane/` is the driving surface for all of
-  it: install, verify, place, hide, remove, diagnose.
+  draws nothing. `./scripts/pane-selftest.sh` renders it offline — no thurbox,
+  no queue, no session — which is how a claim about what it DRAWS gets argued
+  with rather than squinted at; `check.sh pane` runs it.
+  `.agents/skills/fleet-pane/` is the driving surface for all of it: install,
+  verify, place, hide, remove, diagnose.
 - `orchestration/playbooks/<name>.md` — reusable recipes for running thurbox.
   All tracked; write new ones here, from `_TEMPLATE.md`.
 - `orchestration/runs/<date>-<slug>.md` — a log per orchestration run.

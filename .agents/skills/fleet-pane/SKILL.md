@@ -1,6 +1,6 @@
 ---
 name: fleet-pane
-description: Put the fleet queue pane on the operator's thurbox screen and diagnose it when it is installed and drawing nothing. Covers the install (a side effect of scripts/install-extension.sh), what verifies it, the layout.lua block that places it and that nothing here writes, the F-key that hides it, and removal. Use when asked to install, place, hide, remove or debug the TUI queue pane, or when the pane is there and empty.
+description: Put the fleet queue pane on the operator's thurbox screen and diagnose it when it is installed and drawing nothing, or drawing the wrong thing. Covers the install (a side effect of scripts/install-extension.sh), what verifies it, the layout.lua block that places it and that nothing here writes, the F-key that hides it, and removal. Use when asked to install, place, hide, remove or debug the TUI queue pane, when the pane is there and empty, or when it draws too much to read.
 user-invocable: true
 allowed-tools: Read, Bash, Glob, Grep
 ---
@@ -273,6 +273,22 @@ broken pane.
 Stale rows are also not a fault. The pane re-asks on a TTL rather than per
 frame; the constant and the reasoning are at the top of `fleet_queue.lua`.
 
+**And a pane that draws the WRONG thing is a different problem from a pane that
+draws nothing.** "It draws too much", "I cannot tell what is running", "a row
+appeared that should not be there" are claims about layout, and none of the
+messages above apply to them. Render it instead of squinting at it:
+
+```sh
+lua scripts/lib/pane_harness.lua 44        # the pane, as text, at 44 columns
+lua scripts/lib/pane_harness.lua 30        # and at the width it routinely gets
+lua scripts/lib/pane_harness.lua 44 --marks   # `B` marks a row carrying bold
+```
+
+The harness stubs thurbox's four `lib.*` modules and feeds the pane a fixed
+queue, so it needs no thurbox, no queue and no session — and it shows what the
+pane BUILDS, never what a terminal paints. Edit the fixture at the bottom of
+the harness to reproduce a shape you are chasing.
+
 ## 8. The gate
 
 `./scripts/check.sh pane` is what keeps this skill and the installer from
@@ -284,6 +300,13 @@ refuses a binding on a chord the kernel owns. Read `check_pane` in
 so an edit to any of those strings must go green in `./scripts/check.sh` before
 it ships.
 
-It is not a Lua linter and does not try to be. The pane's own gate is
-`thurbox-cli plugin check`, which needs a thurbox install, so it belongs at
-install time — §3.
+It also runs `./scripts/pane-selftest.sh`, which is the half the greps cannot
+reach: it renders the pane offline and asserts the design rather than the
+wiring — one row per task, no row that carries no information, finished work
+weighing less than running work, the counter row and the section headings not
+contradicting each other, and all of it still fitting thirty columns. The pane
+spent a long time as a wall of uniform text precisely because nothing here
+could see a row. It needs `lua`.
+
+Neither half is a Lua linter. The pane's own gate is `thurbox-cli plugin
+check`, which needs a thurbox install, so it belongs at install time — §3.
