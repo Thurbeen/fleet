@@ -231,6 +231,10 @@ def task_view(q: fleetqueue.Queue, task: fleetqueue.Task) -> dict:
         "artifact": d.get("artifact"),
         "artifact_link": artifact_link(d.get("artifact")),
         "artifact_check": d.get("artifact_check"),
+        # What `collect`, `shepherd` and `reap` LOOKED at and wrote down. Served
+        # whole and unmapped: the state word here is the word the pane and
+        # `queue.sh list` draw, and this page adds nothing to it.
+        "publish": d.get("publish"),
         "created": d.get("created"),
         "dispatched_at": d.get("dispatched_at"),
         "concluded_at": d.get("concluded_at"),
@@ -467,11 +471,28 @@ PAGE = """<!doctype html>
 .c-attention, .s-stuck, .s-failed { --hue: var(--st-attention); --glow: var(--glow-red); }
 .c-done, .s-done, .s-landed, .s-abandoned { --hue: var(--st-done); --glow: none; }
 .c-empty                   { --hue: var(--st-empty);     --glow: none; }
-/* The pipeline verdict `queue.sh collect` recorded, borrowing the same three
-   hues rather than inventing a fourth vocabulary for it. */
-.v-passed                  { --hue: var(--st-running);   --glow: none; }
-.v-unknown                 { --hue: var(--st-blocked);   --glow: none; }
-.v-missing                 { --hue: var(--st-attention); --glow: none; }
+/* The publish state `collect`, `shepherd` and `reap` recorded, in four
+   buckets — done, waiting on somebody, wrong, and not known — borrowing the
+   hues the states above already use rather than inventing a palette for it.
+   The word is never mapped; only its colour is.
+
+   `green` IS DELIBERATELY NOT THE OK HUE, and this is the one line in the
+   file to leave alone. It means every forge gate holds on a `pr`-method pull
+   request that carries no attestation: checks passed, mergeable, ours, and
+   NOBODY VETTED THE CODE. Fleet will not merge it, which is exactly why it
+   must not look like `ready`, the one fleet would. An operator merging on the
+   colour is the sharpest risk this whole subsystem carries, and a warn hue
+   beside `ready`'s green is half the mitigation — the other half is that they
+   stayed two words.
+
+   `open` takes the ok hue because it is what the old `.v-passed` was: collect
+   went and looked, and the pull request is there, from this task's branch.
+   `closed` takes the muted one, not the bad one — the pull request is gone and
+   the task is `abandoned` beside it, which is a fact, not an alert. */
+.p-open, .p-pushed, .p-ready, .p-merged { --hue: var(--st-running);   --glow: none; }
+.p-draft, .p-checks-running, .p-green   { --hue: var(--st-blocked);   --glow: none; }
+.p-unverified, .p-checks-failed, .p-conflicting, .p-changes-requested, .p-unattested { --hue: var(--st-attention); --glow: none; }
+.p-unknown, .p-closed                   { --hue: var(--st-done);      --glow: none; }
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -730,7 +751,7 @@ a:hover { text-shadow: var(--glow-green); }
   border-bottom: 1px solid color-mix(in srgb, currentColor 45%, transparent);
 }
 .task-meta .artifact { font-size: 11px; }
-.verdict {
+.publish {
   font-family: var(--font-mono); font-size: 10.5px; line-height: 1.5;
   padding: 0 5px; white-space: nowrap; color: var(--hue);
   border: 1px solid currentColor;
@@ -848,12 +869,23 @@ function artifactLink(link) {
   return a;
 }
 
-// What `queue.sh collect` recorded about the pull request body's five
-// no-mistakes headings. A verdict it never reached is shown as nothing.
-function verdictBadge(check) {
-  if (!check || !check.verdict) return null;
-  const b = el("span", "verdict v-" + check.verdict, "pipeline " + check.verdict);
-  if (check.detail) b.title = check.detail + (check.at ? " (" + check.at + ")" : "");
+// The publish state off the record, drawn as the word that is written there.
+// Whoever looked — `collect`, `shepherd`, `reap` — decided it; this only
+// paints it, so the page cannot disagree with the pane or `queue.sh list`.
+//
+// No state, no badge: a task nobody has looked at yet and a record written
+// before the field existed both render exactly as they did before. The older
+// `artifact_check` is read only for the detail and the timestamp a `collect`
+// from that era left behind — never for the word, because a monitor that
+// derived a state would be a monitor that could disagree with the record.
+function publishBadge(publish, check) {
+  const state = publish && publish.state;
+  if (!state) return null;
+  const b = el("span", "publish p-" + state, state);
+  const detail = (publish.detail || (check && check.detail) || "").trim();
+  const at = publish.at || (check && check.at) || "";
+  const title = [detail, at ? "(" + at + ")" : ""].filter(Boolean).join(" ");
+  if (title) b.title = title;
   return b;
 }
 
@@ -972,11 +1004,16 @@ function paneRecord(d) {
     row.appendChild(a || el("span", null, String(v)));
     box.appendChild(row);
   }
-  const verdict = verdictBadge(d.artifact_check);
-  if (verdict) {
+  // The method and the state on one row, in that order, because a state is
+  // only readable beside what it was asked to prove: `open` under `pr` and
+  // `open` under `no-mistakes` are two different amounts of evidence.
+  const publish = d.publish || null;
+  const badge = publishBadge(publish, d.artifact_check);
+  if (publish && (publish.method || badge)) {
     const row = el("div", "row");
-    row.appendChild(el("span", "key", "pipeline"));
-    row.appendChild(verdict);
+    row.appendChild(el("span", "key", "publish"));
+    if (publish.method) row.appendChild(el("span", null, publish.method));
+    if (badge) row.appendChild(badge);
     box.appendChild(row);
   }
   p.appendChild(box);
@@ -994,7 +1031,7 @@ function renderDetail(host, ref) {
     "no BRIEF.md. `queue.sh dispatch` refuses a task without one."));
   panes.appendChild(paneDoc("outcome", "result.md", d.result,
     "no result.md yet. Only the worker writes this, and only it closes a task.",
-    [artifactLink(d.artifact_link), verdictBadge(d.artifact_check)]));
+    [artifactLink(d.artifact_link), publishBadge(d.publish, d.artifact_check)]));
   panes.appendChild(paneProgress(d.progress));
   panes.appendChild(paneRecord(d));
   host.appendChild(panes);
@@ -1031,6 +1068,14 @@ function renderTask(t) {
   if (a) {
     if (meta.textContent) meta.appendChild(el("span", null, "  \\u00b7  "));
     meta.appendChild(a);
+  }
+  // Last on the row, after the artifact it is about. It earns the space
+  // because it is the one fact here an operator acts on without opening the
+  // task: a red `unverified` or `checks-failed` needs somebody now.
+  const badge = publishBadge(t.publish, t.artifact_check);
+  if (badge) {
+    if (meta.textContent) meta.appendChild(el("span", null, "  \\u00b7  "));
+    meta.appendChild(badge);
   }
   head.appendChild(meta);
   wrap.appendChild(head);
