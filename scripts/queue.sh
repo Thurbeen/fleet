@@ -72,6 +72,26 @@
 # does not use it: an arriving worker message interrupts whoever is talking to
 # the lead.
 #
+# AND THE OTHER DIRECTION IS `send`, WHICH IS NOT A SIXTH THING. It is how the
+# lead course-corrects a worker mid-flight, and the only reason it belongs here
+# rather than in `thurbox-cli session send` is that it WRITES THE INSTANT DOWN.
+# The lead knows when it sent; nothing recorded it, and without that instant
+# there is nothing to compare a later observation against. On 2026-09-09 a
+# parked worker was sent new scope, `session send` reported success, and ten
+# minutes later the session read `done` with an age of 3043s — a state from
+# before the message. The worker had taken it, done the work and committed it,
+# and the lead found that out by running `git log` in a foreign worktree.
+#
+# So `send` records the send plus a BASELINE (the branch head), and the
+# read-only views compare it against two things a worker cannot fake: the head
+# of its branch, read out of the task's own repo because a worktree shares that
+# object store, and a transition in progress.jsonl DATED after the message.
+# `list` says `messaged 12m ago · committed 4m ago` or `messaged 12m ago · no
+# transition since, no commit since`; `show` says it source by source. Both are
+# facts. Neither is ever "the worker is stuck", and a source that could not be
+# read is `not checked` rather than a silent no. It adds no daemon, no poll and
+# no state: `collect` is still the only thing that closes a task.
+#
 # AND THEN THE PULL REQUEST OUTLIVES THE TASK, which is what `shepherd` is for:
 #
 #   `shepherd` asks the FORGE for every open PR on the repos this queue's
@@ -142,6 +162,9 @@
 #                        exactly those, refuse one that is not ready, and leave
 #                        the rest queued with nothing recorded
 #   scripts/queue.sh attach <ref> <uuid>  # record a session you spawned by hand
+#   scripts/queue.sh send <ref> 'one line'  # message a task's worker, and
+#                        RECORD that you did, so `list` and `show` can compare
+#                        that instant against what moved after it
 #   scripts/queue.sh watch [--for-secs N] # fold transitions in; close nothing
 #   scripts/queue.sh collect [--allow-unverified] [--no-reap]  # read results,
 #                        close what is done; --allow-unverified closes one whose

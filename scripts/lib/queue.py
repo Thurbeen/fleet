@@ -4376,11 +4376,18 @@ def trust_and_send(session: str, text: str, timeout: int = 20) -> tuple[bool, st
     report = (trust.stdout + trust.stderr).decode().strip()
     if trust.returncode != 0:
         return False, report
-    subprocess.run(
+    # The returncode is READ. It used to be thrown away, so a send into a
+    # session that had gone away returned `True` and every caller reported a
+    # prompt it had not delivered — the same silence, one layer down, that
+    # `sends` exists to end.
+    sent = subprocess.run(
         ["thurbox-cli", "session", "send", session, text],
         capture_output=True,
         check=False,
     )
+    if sent.returncode != 0:
+        detail = (sent.stderr + sent.stdout).decode().strip().splitlines()
+        return False, "session send failed: " + (detail[-1] if detail else "no output")
     return True, report
 
 
@@ -4907,6 +4914,291 @@ def cmd_shepherd(args) -> int:
     return 0
 
 
+# --- did that message land, and has anything moved since? --------------------
+#
+# WHY THIS EXISTS. On 2026-09-09 the lead sent new scope to a parked worker
+# with `thurbox-cli session send`. The CLI answered `sent: true, submitted:
+# true`; ten minutes later the session read `state: done | hook: done | age(s):
+# 3043` — a state reported BEFORE the message was sent. On that evidence the
+# worker looked dead. It was not: it had taken the message, done the work and
+# committed it. The lead found out by opening the worker's worktree and running
+# `git log`, which is the third thing the orchestration model exists to avoid.
+#
+# The gap is not that thurbox lies. It is that the lead knows one thing nothing
+# records — WHEN IT SENT — and without that instant there is nothing to compare
+# a later observation against. `refuel` already reasons about staleness, but
+# only about a stale `working`; a stale `done` after a send has no reader.
+#
+# So `send` writes the instant down, together with a BASELINE of the things a
+# worker cannot fake, and every read-only view compares:
+#
+#   the branch head   the sha `refs/heads/<branch>` pointed at when the message
+#                     went out. A linked worktree's commits update that ref in
+#                     the SHARED object store, so the task's own `repo` answers
+#                     for a branch it does not have checked out — no session to
+#                     ask thurbox about, no worktree path to resolve, and
+#                     nothing to go wrong when the session is already reaped.
+#   the transitions   progress.jsonl, which `watch` folds thurbox's own event
+#                     stream into. Compared on the EVENT's time and never on
+#                     the fold's, so a `watch` run that catches up on three
+#                     transitions from before the message is not read as three
+#                     things the worker did after it.
+#
+# THREE RULES, and they are the whole design:
+#
+#   NO NEW PRODUCER   nothing here polls and nothing here runs in the
+#                     background. The observations are files `watch` and the
+#                     worker's own git already wrote; the comparison happens
+#                     when the lead reads.
+#   NEVER GUESS       "nothing has moved since" is a fact. "the worker is
+#                     stuck" is not, and is never printed. A source that cannot
+#                     be read is `not checked` — never a silent `still`.
+#   WRITES NOTHING    no `state`, no `outcome`. `collect` stays the only thing
+#                     that closes a task, exactly as `refuel` respects.
+
+
+def branch_head(task: Task) -> tuple[str | None, str | None, str]:
+    """(sha, committed_at, why-not) for the head of this task's branch.
+
+    Read out of the task's own `repo` rather than the worker's worktree: they
+    share one object store, so the checkout fleet already knows the path of
+    answers for a branch it does not have checked out. That is what makes this
+    degrade instead of erroring — a session that was reaped, or a worktree that
+    was deleted, takes nothing away from the ref.
+    """
+    host = task.doc.get("host")
+    if host:
+        return None, None, f"runs on host {host}, whose git is there and not here"
+    repo, branch = task.doc.get("repo"), task.doc.get("branch")
+    if not repo or not branch:
+        return None, None, "the record names no repo and branch"
+    if not os.path.isdir(str(repo)):
+        return None, None, f"{repo} is not a directory on this machine"
+    out = git_out(str(repo), ["log", "-1", "--format=%H%x09%cI", str(branch), "--"]).strip()
+    if not out:
+        return None, None, f"git could not read `{branch}` in {repo}"
+    sha, _, at = out.partition("\t")
+    return sha, (at or None), ""
+
+
+def send_baseline(task: Task) -> dict:
+    """What the movable things looked like BEFORE a message goes out.
+
+    Taken before the send and not after, because the gap between them is
+    exactly where a fast worker's first commit would land — and baselining
+    that commit would hide the movement this whole section exists to see.
+    """
+    sha, at, why = branch_head(task)
+    return {"head": sha, "head_at": at, "head_note": why}
+
+
+def record_send(
+    task: Task, sid: str, text: str, delivered: bool, detail: str, baseline: dict
+) -> dict:
+    """The receipt. Appended, never replaced — a worker messaged four times is
+    a fact about the task, and one that disappears if each send overwrites the
+    last. Nothing else on the record is touched.
+    """
+    entry = {
+        "at": now(),
+        "session": sid,
+        "text": text,
+        "delivered": delivered,
+        "baseline": baseline,
+    }
+    if detail:
+        entry["detail"] = detail
+    task.doc.setdefault("sends", []).append(entry)
+    task.save()
+    return entry
+
+
+def last_transition(task: Task) -> tuple[str | None, str]:
+    """The newest transition in progress.jsonl, by the event's own time.
+
+    `at` is when thurbox says the session changed state; `observed` is when
+    `watch` folded it in. The first is what answers "has this worker moved",
+    so a fold that happens to run after the message cannot manufacture
+    movement that predates it.
+    """
+    path = task.file("progress.jsonl")
+    if not os.path.exists(path):
+        return None, ""
+    try:
+        rows = open(path).read().splitlines()
+    except OSError as exc:
+        return None, f"progress.jsonl could not be read: {exc}"
+    newest = None
+    for row in rows:
+        try:
+            ev = json.loads(row)
+        except ValueError:
+            continue
+        stamp = ev.get("at")
+        when = record_time(stamp)
+        if when and (newest is None or when > newest[0]):
+            newest = (when, str(stamp))
+    return (newest[1] if newest else None), ""
+
+
+def movement_since(task: Task, entry: dict) -> list:
+    """One row per source, each saying moved / still / not checked, and when.
+
+    Both sources are LOCAL and free: a file this queue already writes and one
+    ref read out of a checkout. Nothing here asks thurbox, which is deliberate
+    — `hook_state_age_secs` is the reading that produced the wrong answer in
+    the first place, and a per-task subprocess is not something a view the
+    monitor polls every four seconds can afford.
+    """
+    sent = record_time(entry.get("at"))
+    rows = []
+
+    at, why = last_transition(task)
+    if why:
+        rows.append({"source": "transition", "status": "unchecked", "at": None, "why": why})
+    elif at and record_time(at) > sent:
+        rows.append({"source": "transition", "status": "moved", "at": at, "why": ""})
+    else:
+        rows.append({"source": "transition", "status": "still", "at": at, "why": ""})
+
+    base = entry.get("baseline") or {}
+    was = base.get("head")
+    if not was:
+        rows.append({
+            "source": "commit",
+            "status": "unchecked",
+            "at": None,
+            "why": base.get("head_note") or "no branch head was recorded with the message",
+        })
+        return rows
+    sha, at, why = branch_head(task)
+    if not sha:
+        rows.append({"source": "commit", "status": "unchecked", "at": None, "why": why})
+    elif sha != was:
+        rows.append({"source": "commit", "status": "moved", "at": at, "why": ""})
+    else:
+        rows.append({"source": "commit", "status": "still", "at": at, "why": ""})
+    return rows
+
+
+MOVED_WORD = {"transition": "transitioned", "commit": "committed"}
+
+
+def liveness(task: Task) -> dict | None:
+    """"I sent that worker a message. Did it land, and has anything moved?"
+
+    None when nothing ever sent one — which is the ordinary task and has to
+    read as TODAY rather than as "no movement", because a question nobody
+    asked has no answer and printing one under every row would bury the tasks
+    that were actually messaged.
+    """
+    sends = task.doc.get("sends")
+    if not isinstance(sends, list) or not sends:
+        return None
+    entry = sends[-1] if isinstance(sends[-1], dict) else {}
+    ago = age_of(entry.get("at"))
+
+    if not entry.get("delivered"):
+        detail = entry.get("detail") or "no reason recorded"
+        return {
+            "at": entry.get("at"),
+            "status": "undelivered",
+            "movement": [],
+            "line": f"messaged {ago} ago — NOT DELIVERED: {detail}",
+        }
+
+    # A concluded task answers this question with its result.md, so the send is
+    # part of the record and not part of what is happening. `blocker_view`
+    # calls the same thing `moot` for the same reason.
+    if task.state in CONCLUDED_STATES:
+        return {
+            "at": entry.get("at"),
+            "status": "moot",
+            "movement": [],
+            "line": f"was messaged {ago} ago; this task concluded",
+        }
+
+    rows = movement_since(task, entry)
+    for row in rows:
+        word = MOVED_WORD[row["source"]]
+        if row["status"] == "moved":
+            row["line"] = f"{word} {age_of(row['at'])} ago" if row["at"] else f"{word} since"
+        elif row["status"] == "still":
+            row["line"] = f"no {row['source']} since"
+        else:
+            row["line"] = f"{row['source']} not checked: {row['why']}"
+
+    moved = [r for r in rows if r["status"] == "moved"]
+    still = [r for r in rows if r["status"] == "still"]
+    if moved:
+        status, tail = "moved", ", ".join(r["line"] for r in moved)
+    elif still:
+        # Named source by source rather than as one "no movement", so the
+        # reader can see WHICH silences this is made of — a remote task's
+        # unreadable git is not the same claim as a branch that has not moved.
+        status = "still"
+        tail = "; ".join(r["line"] for r in rows)
+    else:
+        status = "unknown"
+        tail = "; ".join(r["line"] for r in rows)
+    return {
+        "at": entry.get("at"),
+        "status": status,
+        "movement": rows,
+        "line": f"messaged {ago} ago · {tail}",
+    }
+
+
+# What every view prints under a liveness line that reports no movement, and
+# the reason this whole section is a reading and not a verdict. A worker that
+# has not answered yet and a worker that never got the message look the same
+# from here, and the queue does not guess between them — `AGENTS.md` step 5 and
+# the `thurbox-session` skill's session-state section draw that line for
+# sessions, and this holds it for messages.
+LIVENESS_CAVEAT = (
+    "that is what was observed, not what the worker is doing: a message it has "
+    "not\n                 answered yet reads exactly like one it never received."
+)
+
+
+def cmd_send(args) -> int:
+    q = Queue(queue_root(), scope="all")
+    task = q.get(args.ref)
+    text = args.message
+    if "\n" in text or "\r" in text:
+        raise QueueError(
+            "a message is ONE line: `session send` types it and presses Enter, so "
+            "the\nsecond line fires the agent on the first and lands in a "
+            "half-started turn.\nPut anything longer in a file and send a line "
+            "pointing at it — the same shape\nevery brief already uses."
+        )
+    sid = task.doc.get("session")
+    if not sid:
+        raise QueueError(
+            f"{task.ref} has no session recorded, so there is nobody to send to.\n"
+            "`queue.sh dispatch` starts one; `queue.sh attach <ref> <uuid>` records "
+            "one you\nspawned by hand."
+        )
+
+    baseline = send_baseline(task)
+    ok, report = trust_and_send(sid, text, args.timeout)
+    record_send(task, sid, text, ok, "" if ok else report, baseline)
+
+    print(f"send: {task.ref} -> {sid}  {'delivered' if ok else 'NOT DELIVERED'}")
+    if baseline["head"]:
+        print(f"    baseline: {baseline['head'][:12]} on {task.doc.get('branch')}")
+    else:
+        print(f"    baseline: no branch head — {baseline['head_note']}")
+    if ok:
+        print(
+            "    Recorded. `queue.sh list` and `queue.sh show` now answer whether "
+            "anything\n    has moved since, without opening a worktree."
+        )
+    else:
+        print(f"    nothing was typed into that session: {report}", file=sys.stderr)
+    return 0 if ok else 1
+
+
 # --- read-only views ---------------------------------------------------------
 
 
@@ -4958,6 +5250,12 @@ def cmd_list(args) -> int:
             # what says so, and it is the same list the pane renders.
             for note in task_notes(q, t):
                 print(f"        {note}")
+            # "I sent that worker a message — did it land, and has anything
+            # moved since?" Drawn only on a task somebody actually messaged,
+            # so a queue nobody has course-corrected looks exactly as it did.
+            live = liveness(t)
+            if live and live["status"] != "moot":
+                print(f"        {live['line']}")
         print()
     hidden(q)
     return 0
@@ -5002,6 +5300,13 @@ def cmd_show(args) -> int:
             f"    {'published:':<12} {pub['state']} — {pub.get('detail', '')} "
             f"({pub.get('by', '')}, {age_of(pub.get('at'))} ago)"
         )
+    live = liveness(task)
+    if live:
+        print(f"    {'messaged:':<12} {live['line']}")
+        for row in live["movement"]:
+            print(f"    {'':<12}   {row['line']}")
+        if live["status"] in ("still", "unknown"):
+            print(f"    {'':<12} {LIVENESS_CAVEAT}")
     landing = d.get("landing") or {}
     if landing.get("state"):
         print(f"    {'landing:':<12} {landing['state']} — {landing.get('detail', '')}")
@@ -5237,6 +5542,14 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("ref", nargs="?", help="one task; every unprompted one by default")
     pr.add_argument("--timeout", type=int, default=20)
     pr.set_defaults(func=cmd_prompt)
+
+    sd = sub.add_parser(
+        "send", help="send one line to a task's worker, and record that you did"
+    )
+    sd.add_argument("ref")
+    sd.add_argument("message", help="ONE line; longer text goes in a file you point at")
+    sd.add_argument("--timeout", type=int, default=20)
+    sd.set_defaults(func=cmd_send)
 
     at = sub.add_parser("attach", help="record the session doing a task")
     at.add_argument("ref")

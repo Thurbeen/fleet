@@ -397,6 +397,13 @@ scratch.
 **Do not send at all** when the spawn returned `created: false` — that session
 was adopted, not created, and is already working on this (§1c).
 
+**`send` tells you it typed, and nothing more.** `sent: true, submitted: true`
+is a claim about the keystrokes, not about the worker — the agent may take the
+message and work for an hour while every field in `session get` stands still
+(§4c). If the worker has a queue record, message it with `./scripts/queue.sh
+send <ref> '<one line>'` instead: same handoff, and it writes down WHEN, which
+is the only thing that makes a later observation mean anything.
+
 ## 4. Detect completion
 
 **A worker writes a FILE. It does not send mail.** `thurbox-cli message send`
@@ -564,6 +571,39 @@ again (§1b) before you send anything into the new pane.
 **For a session the queue dispatched, `./scripts/queue.sh refuel` is all of the
 above in one verb** — the account first, the conjunction, the trusted handoff,
 a cap and a record. Do not hand-restart those; see `fleet-queue` §5c.
+
+### 4c. "I sent it a message — did it land?"
+
+`session get` cannot answer this, and the trap is that it looks like it can.
+Observed on 2026-09-09: a parked worker was sent new scope, `session send`
+reported success, and ten minutes later the session read
+
+```text
+state: done | hook: done | age(s): 3043
+```
+
+Fifty-one minutes of "no change", from a state latched **before** the message
+was sent. The worker was neither dead nor unreachable: it had taken the
+message, done the work and committed it.
+
+Nothing in `session get` moves when an agent accepts a queued message and
+starts thinking, and a `done` that predates your send is not evidence of
+anything. Reading a foreign worktree's `git log` is what is left, and it does
+not scale.
+
+So compare against something the worker cannot fake, from an instant you
+recorded:
+
+| ask | what a change after your send means |
+|---|---|
+| the head of its branch, in the repo the worktree came from | it committed |
+| `thurbox-cli watch --json --since <seq>` | its session transitioned |
+
+`./scripts/queue.sh send` records the instant and the branch head for you, and
+`queue.sh list` / `queue.sh show` print the comparison — see `fleet-queue` §4a.
+None of it is a verdict about the worker: "nothing has moved since" is a fact,
+and a worker that has not answered yet reads exactly like one that never got
+the message.
 
 ## 5. Collect and clean up
 
