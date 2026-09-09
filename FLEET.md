@@ -122,8 +122,10 @@ providers hold a working credential — `claude`, and whatever else is signed in
 on the machine — and those, in one call, are what gets read; a provider with no
 credential is never probed. Each is its OWN reading, on its own clock, and
 nothing is summed or averaged across them: the screen prints a block per
-provider and the pane draws each as a labelled bar beside its percentage. A
-provider whose fetch failed says so and carries no number at all, never a zero.
+provider and the pane draws a labelled bar beside each percentage. A provider
+whose fetch failed says so on the screen and carries no number at all, never a
+zero; the pane leaves it out entirely, and says `unavailable` only when nothing
+read.
 
 A provider's windows reset independently — claude has three, a session window,
 a week and a per-model week. That provider's reading is the lowest of them, the

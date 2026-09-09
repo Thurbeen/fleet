@@ -49,17 +49,32 @@ on a five-minute TTL of its own because that reading costs a network call.
 FLEET.md's `## Fuel` section owns the reserve, which arrives on the record so
 the pane never spells the number itself.
 
-**Three readings are not bars**, and each looks different on purpose: a probe
-that has not answered is a spinner, a provider that could not be read says
-`unavailable` with its reason — an empty bar there would read as a spent window
-rather than a missing one — and a stale reading is hatched and flagged, because
-a number that is remembered rather than observed must not look identical to one
-that was just measured.
+**A provider that could not be read is not drawn at all** — no bar, no number,
+no row. The exception is nothing reading at all: then the head row itself says
+`unavailable` with the reason under it, because a fuel block that quietly
+disappeared would read as "nothing to report" when it means "nobody could
+tell". Either way `./scripts/fleet-status.sh` names every provider and the
+reason its fetch failed.
+
+**Two readings are not bars**, and each looks different on purpose: a probe
+that has not answered is a spinner, and a stale reading is hatched and flagged,
+because a number that is remembered rather than observed must not look
+identical to one that was just measured.
+
+**The ⛽ on the head row has an off switch, and it is `FUEL_GLYPH` at the top of
+`interface/fleet_queue.lua`.** Set it to nil and the block draws exactly what it
+drew before the glyph existed. It is a switch because U+26FD is
+East_Asian_Width WIDE — two terminal cells, not one. The pane's own budgets
+measure it correctly (`widgets.len` is the kernel's `unicode-width`, the table
+the painter lays out with), but a font that draws it narrow, or a multiplexer
+that disagrees about its width, shears every row below it. **If the column looks
+sheared by one cell, turn the glyph off before looking anywhere else** — and no
+variation selector is used, so the terminal draws whatever presentation it
+already has.
 
 **What a narrow column drops**, and this one is routinely thirty cells wide: the
 reserve on the head row first, then the bar (under five cells it is a
-decoration), then the reason on an unavailable row, which truncates. The number
-never goes. The detail row under a reading — the binding window and when it
+decoration). The number never goes. The detail row under a reading — the binding window and when it
 comes back — is drawn only when exactly one provider carries a number; several
 readings at two rows each would push the queue itself off the column, and
 `./scripts/fleet-status.sh` is where every window is printed in full.

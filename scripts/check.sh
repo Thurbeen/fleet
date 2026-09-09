@@ -344,6 +344,18 @@ check_pane() {
 		miss=1
 	fi
 
+	# NO VARIATION SELECTOR, AND NOTHING BUILT OUT OF ONE. The pane's fuel
+	# glyph is a bare codepoint on purpose: U+FE0F asks for an emoji
+	# presentation the terminal may not have, adds a character some terminals
+	# count as a column and others do not, and a zero-width joiner builds a
+	# glyph whose width nothing agrees on. Every row here is budgeted in
+	# cells, so a character the painter and the terminal measure differently
+	# shears the whole column.
+	if LC_ALL=C grep -qP '\xef\xb8\x8f|\xef\xb8\x8e|\xe2\x80\x8d' "$pane" 2>/dev/null; then
+		fail "pane: $pane carries a variation selector or a zero-width joiner; the fuel glyph is a bare codepoint so its width is one both sides agree on"
+		miss=1
+	fi
+
 	# AND ONE COST MODEL. `quota-axi` makes a network call, so the fuel probe
 	# must not run at the queue probe's cadence — a pane that refetched it
 	# every ten seconds would burn the fuel it is reporting.
