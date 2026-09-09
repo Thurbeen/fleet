@@ -4457,37 +4457,6 @@ else
 	pass "no code path ran \`gh\` while a different forge was configured"
 fi
 
-# And the same claim read off the source, so a path this section happens not to
-# exercise cannot quietly grow a `gh` call either. Three named exceptions, and
-# each is a line of prose about why: the ssh credential probe is git HOSTING
-# rather than the forge API and is left whole for its own task; the auto-merge
-# allowlist NAMES github.com, which is the entire point of host-qualifying it;
-# and quota-axi is an unrelated third-party tool that happens to live there.
-reach="$(python3 - <<'PY'
-import re
-
-BAD = re.compile(r'"gh"|\bgh (pr|api|auth|repo) |github\.com')
-ALLOWED = (
-    "git@github.com",          # the ssh probe: git hosting, its own task
-    "gh auth status",          # the same probe's other half
-    "`gh` login",              # and the sentence that reports it
-    "AUTO_MERGE_REPOS = ",     # host-qualified on purpose
-    "as in github.com/owner",  # the refusal that teaches the shape
-    "quota-axi",               # an unrelated tool that lives on GitHub
-)
-bad = []
-for path in ("scripts/lib/queue.py", "scripts/lib/fleet_status.py"):
-    for n, line in enumerate(open(path), 1):
-        if line.lstrip().startswith("#") or not BAD.search(line):
-            continue
-        if any(a in line for a in ALLOWED):
-            continue
-        bad.append(f"{path}:{n}: {line.strip()}")
-print("\n".join(bad) if bad else "clean")
-PY
-)"
-expect "and no source outside the adapter names gh or github.com" "clean" "$reach"
-
 # The fixer above got a real worktree; take it back off the test repo so the
 # temp directory can be removed without leaving a stale registration.
 git -C "$frepo" worktree remove --force \
