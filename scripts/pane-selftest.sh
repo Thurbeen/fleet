@@ -24,6 +24,12 @@
 #   4. THE TWO TALLIES AGREE. The counter row counts TASKS by state; a section
 #      heading covers TOPICS. They were both drawn as bare numbers, and
 #      `4 running` above `RUNNING 5` is the pane contradicting itself.
+#   5. THE PUBLISH ROW SAYS THE NEXT MOVE, AT BOTH WIDTHS. A state word is a
+#      fact about the pull request; what the operator does about it is a
+#      second thing, and the row's `note` is where it lives. The note was the
+#      FIRST thing the width ladder dropped, so it reached neither width this
+#      file renders while `no-mistakes` — one word under every task in the
+#      queue — reached both. These assert the order that fixes it.
 #
 # And the rule none of that may cost: it still degrades. The pane routinely
 # gets thirty columns, so every assertion here runs at 30 as well as at 44.
@@ -117,6 +123,23 @@ expect "a result nothing has collected is still said" "uncollected" "$WIDE"
 expect "the pull request is still named" "#47" "$WIDE"
 expect "the publish verdict is still drawn" "green" "$WIDE"
 
+# --- 5. the publish row says the next move ----------------------------------
+
+# `open` is the state EVERY task passes through — `collect` proved the pull
+# request exists and nothing has looked at its checks yet — and it is drawn
+# muted, because a fact is not a verdict. Muted beside a collapsed `n landed`
+# row reads as settled, which is the opposite of what it means, so the row says
+# the move in words instead of borrowing a colour that would claim one.
+expect "an open pull request says what to do about it" "open — review" "$WIDE"
+expect "and the second pull request is named" "#52" "$WIDE"
+expect "a green one still says whose merge it is" "green — yours to merge" "$WIDE"
+
+# The order the ladder gives things up in, pinned: the METHOD is provenance and
+# the NOTE is the action, so a row too narrow for both keeps the action. Before
+# this, `no-mistakes · #47 · green` is what 44 columns drew and the note was
+# drawn at no width at all.
+refute "the method gives way to the note, not the reverse" "no-mistakes · #47" "$WIDE"
+
 # A blocker recorded against a task that is NOT waiting holds nothing —
 # `queue.py` clears a `queued` task and no other — so drawing it would explain
 # why a task is stuck about a task that is running.
@@ -162,5 +185,8 @@ fi
 expect "the running work is still named at 30" "Cut the pane back" "$NARROW"
 expect "the blocker that holds is still there at 30" "↳ 02-shepherd" "$NARROW"
 refute "and still no cleared blocker" "✓ 01-declare" "$NARROW"
+# The width the pane routinely gets, which is the whole reason the note moved
+# up the ladder: a next move drawn only at 44 is a next move nobody reads.
+expect "the next move survives 30 columns" "open — review" "$NARROW"
 
 exit "$failed"

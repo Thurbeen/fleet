@@ -219,6 +219,12 @@ _G.thurbox = { taken_at_ms = NOW * 1000, sessions = {}, runs = {} }
 -- a RUNNING topic that also holds a task the forge already merged, a chain of
 -- blockers of which one is long since cleared, tasks nothing has emitted an
 -- event for, and one settled topic underneath.
+--
+-- It also holds the publish state EVERY task passes through and no fixture used
+-- to reach: `open`, on a task `shepherd` linked by head branch before `collect`
+-- read the worker's result. That is why the pane's most common publish row went
+-- unrendered by anything that could be argued with, and it is the row the
+-- operator's next move — review it — hangs off.
 local function ago(minutes)
   return NOW - minutes * 60
 end
@@ -275,7 +281,9 @@ local TOPICS = {
       },
       {
         id = "03-drop-the-webui-selftest", state = "dispatched", title = "Drop the monitor's selftest and its CI job",
+        artifact = "https://github.com/Thurbeen/fleet/pull/52",
         brief = 1, events = 2, result = 1, moved = ago(3),
+        publish = { "no-mistakes", "open", ago(3) },
       },
     },
   },
