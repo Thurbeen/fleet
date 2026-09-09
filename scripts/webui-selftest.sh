@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Prove the monitor's lifecycle claims, rather than assert them.
 #
-# The monitor makes seven promises that are easy to write down and easy to get
+# The monitor makes eight promises that are easy to write down and easy to get
 # backwards, and most of them are invisible until the day they matter. Each
 # gets a test here, against a throwaway queue and a throwaway runtime
 # directory, so a change that quietly inverts one fails the gate:
@@ -32,6 +32,12 @@
 #      is served whole. All three are derived from what is on disk, which is
 #      the same claim as 6: the label cannot say a pull request is merged,
 #      because saying so would mean asking somebody.
+#   8. IT RENDERS THE PUBLISH STATE IT WAS GIVEN, AND NEVER ONE IT DECIDED.
+#      The monitor reads `publish` off the record and draws the word it finds,
+#      unmapped, so the page, the pane and `queue.sh list` say the same thing.
+#      Every word in the vocabulary has a hue; `green` — the forge is happy,
+#      nobody vetted it — has the WARN one and never the ok one; and a record
+#      written before the field existed grows no badge at all.
 #
 # Test 2 is the one to read first. It is the captain's third sentence — always
 # up unless the user asks it down — and the half that is not free.
@@ -127,6 +133,38 @@ done
 set_artifact pr-task "https://github.com/Thurbeen/fleet/pull/14"
 set_artifact odd-task "https://ci.example.com/builds/91"
 
+# Three more, because the publish block is three cases and not one: a task
+# somebody has LOOKED at (`collect` or `shepherd` wrote a state onto it), a
+# task that declares a method and has never been looked at, and a record from
+# before the field existed at all. The methods are named at `add` here rather
+# than left to POLICY.md's default, so this asserts what the page did with the
+# record and not what this checkout's policy happens to say.
+publish_block() {
+	local yaml
+	yaml="$(echo "$FLEET_QUEUE_DIR"/selftest/*-"$1"/task.yaml)"
+	shift
+	# Flat on purpose: `<<-` strips leading TABS, so an indented Python block
+	# inside one arrives dedented and does not parse.
+	python3 - "$yaml" "$@" <<-'PY'
+		import sys, yaml
+
+		path, fields = sys.argv[1], sys.argv[2:5]
+		stamp = {"at": "2026-09-09T09:12:00+00:00", "by": "shepherd"}
+		block = dict(zip(("method", "state", "detail"), fields), **stamp)
+		doc = yaml.safe_load(open(path)) or {}
+		doc.pop("publish", None)
+		doc.update({"publish": block} if fields else {})
+		yaml.safe_dump(doc, open(path, "w"), sort_keys=False)
+	PY
+}
+
+for t in green-task pending-task legacy-task; do
+	"$QUEUE" add selftest "$t" --title "Task $t" --repo "$tmp/repo" --branch "t/$t" \
+		--publish push --brief-file "$tmp/brief.md" >/dev/null
+done
+publish_block green-task pr green "checks passed, mergeable, ours, not attested"
+publish_block legacy-task
+
 # --- 1. it adopts a running monitor, never duplicating it ---------------------
 
 first="$("$WEBUI" ensure 2>&1)"
@@ -180,6 +218,48 @@ expect "a task with no artifact gets no link, not an empty one" \
 	'"artifact_link": null' "$api"
 expect "a URL that is not a forge pull request is shown whole" \
 	'"label": "https://ci.example.com/builds/91"' "$api"
+
+# --- 8. the publish state is drawn, never decided -----------------------------
+
+expect "the record's publish state reaches the page" '"state": "green"' "$api"
+expect "and the detail that explains it travels with it" \
+	'"detail": "checks passed, mergeable, ours, not attested"' "$api"
+expect "a task nobody has looked at yet carries its method and no state" \
+	'"method": "push"' "$api"
+expect "a record written before the field existed serves no block, not an empty one" \
+	'"publish": null' "$api"
+
+# Every word `collect`, `shepherd` and `reap` can write, and the four buckets
+# they fall into. A state with no rule would render in the inherited hue —
+# legible, and silently wrong about what it is telling the operator to do.
+for state in unverified unknown open pushed draft checks-running checks-failed \
+	conflicting changes-requested unattested ready green merged closed; do
+	if grep -qE "\.p-$state([ ,{]|\$)" <<<"$body"; then
+		pass "the publish state \`$state\` has a hue of its own"
+	else
+		fail "the publish state \`$state\` has a hue" "no .p-$state rule in the page"
+	fi
+done
+
+# THE ONE THIS SECTION EXISTS FOR. `green` is "every forge gate holds, and
+# nothing vetted the code" — a `pr`-method PR fleet will never merge for you.
+# Painting it the colour of `ready` is how an operator merges on habit, and it
+# is the sharpest risk this whole topic carries.
+green_rule="$(grep -E '^\.p-[a-z-]*(,|\s)' <<<"$body" | grep -F '.p-green')"
+if [ -z "$green_rule" ]; then
+	fail "green does not borrow the ok hue" "no .p-green rule to read"
+elif grep -qF -- "--st-running" <<<"$green_rule"; then
+	fail "green does not borrow the ok hue" "$green_rule"
+else
+	pass "green does not borrow the ok hue — the forge is happy, nobody vetted it"
+fi
+ready_rule="$(grep -E '^\.p-[a-z-]*(,|\s)' <<<"$body" | grep -F '.p-ready')"
+if [ -n "$ready_rule" ] && [ "$green_rule" != "$ready_rule" ]; then
+	pass "green and ready are two words with two colours"
+else
+	fail "green and ready are two words with two colours" \
+		"green: $green_rule${nl}ready: $ready_rule"
+fi
 
 # --- 6. the theme renders with the network unplugged -------------------------
 
