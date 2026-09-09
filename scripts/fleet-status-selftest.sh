@@ -329,6 +329,92 @@ expect "a provider with no window says so in quota-axi's words" \
 	"unavailable — auth_required; Claude sign-in required" "$silent"
 refute "and never invents a zero" "0% remaining" "$silent"
 
+# --- 6b. `--fuel` is the same reading, in one record and at one probe's cost --
+#
+# The TUI queue pane draws this reading too, and a pane cannot afford `--json`:
+# that collects every section, which is a `gh pr list` per repo in flight and a
+# `thurbox-cli session list`. So `--fuel` exists — the fuel section alone, one
+# `name<TAB>value` line per field, parseable by a reader with no JSON at all.
+# What it must NOT be is a second reading: it is `probe_fuel()`'s own dict,
+# printed.
+
+reclaim="$(sandbox "$tmp/bin-record" "${BASE_TOOLS[@]}")"
+fuel_stub "$reclaim" 64
+# Tripwires: a probe this flag is not allowed to spend. They record being run
+# and answer nothing, so calling one costs a file rather than a hang.
+for tool in gh thurbox-cli; do
+	cat >"$reclaim/$tool" <<STUB
+#!/bin/sh
+: >"$tmp/spent-$tool"
+exit 1
+STUB
+	chmod +x "$reclaim/$tool"
+done
+rm -f "$tmp/spent-gh" "$tmp/spent-thurbox-cli"
+
+rec="$(PATH="$reclaim" "$STATUS" --fuel 2>&1)"
+rc=$?
+if [ "$rc" -eq 0 ]; then pass "--fuel exits 0"; else
+	fail "--fuel exits 0" "exit $rc${nl}$rec"
+fi
+
+if [ -e "$tmp/spent-gh" ] || [ -e "$tmp/spent-thurbox-cli" ]; then
+	fail "--fuel probes fuel and nothing else" "it ran a section it was not asked for"
+else
+	pass "--fuel spends neither gh nor thurbox-cli"
+fi
+
+expect "the record carries the reading" "remaining	64" "$rec"
+expect "and the reserve, so a reader never spells the number itself" "reserve	20" "$rec"
+expect "and the binding window" "limited_by	seven_day" "$rec"
+expect "and when it comes back" "resets_at	2026-03-20T17:59:45.600Z" "$rec"
+expect "and quota-axi's own word for the reading's freshness" "state	fresh" "$rec"
+refute "no projection reaches the record either" "2026-03-19T03:43:45.600Z" "$rec"
+refute "nor the runway it was built on" "298906" "$rec"
+
+# `read_at` is EPOCH SECONDS and is the whole reason the pane can say how old a
+# cached reading is: a pane has no `os` and cannot parse an instant, so the age
+# has to be subtractable where it is drawn.
+age="$(PATH="$reclaim" python3 - "$rec" <<'PY' 2>&1
+import sys, time
+fields = dict(
+    line.split("\t", 1) for line in sys.argv[1].splitlines() if "\t" in line
+)
+read_at = int(fields["read_at"])
+assert abs(time.time() - read_at) < 300, f"read_at is not now: {read_at}"
+print("epoch")
+PY
+)"
+expect "read_at is epoch seconds a pane can subtract" "epoch" "$age"
+
+# The unavailable case is the one a pane gets wrong: it must be a REASON, never
+# a zero and never an empty record that reads as 0% left.
+mutrec="$(PATH="$mute" "$STATUS" --fuel 2>&1)"
+expect "an unreadable reading is a reason, in quota-axi's words" \
+	"unavailable	auth_required; Claude sign-in required" "$mutrec"
+refute "and carries no invented number" "remaining	" "$mutrec"
+expect "while still naming the reserve the reader colours against" "reserve	20" "$mutrec"
+
+# One model, one renderer: the flag prints `probe_fuel()`'s fields, so the
+# screen and the pane cannot disagree about what was read.
+same="$(PATH="$reclaim" python3 - <<'PY' 2>&1
+import json, subprocess
+record = subprocess.run(
+    ["./scripts/fleet-status.sh", "--fuel"], capture_output=True, text=True
+).stdout
+fields = dict(line.split("\t", 1) for line in record.splitlines() if "\t" in line)
+doc = json.loads(
+    subprocess.run(
+        ["./scripts/fleet-status.sh", "--fuel", "--json"], capture_output=True, text=True
+    ).stdout
+)
+assert str(doc["remaining"]) == fields["remaining"], "record and json disagree"
+assert str(doc["reserve"]) == fields["reserve"], "reserve disagrees"
+print("agree")
+PY
+)"
+expect "the record and --fuel --json are the same reading" "agree" "$same"
+
 # --- 7. it reads, and only reads ---------------------------------------------
 
 snapshot() { find "$FLEET_QUEUE_DIR" "$tmp/rt" -type f -exec sha256sum {} + | sort; }

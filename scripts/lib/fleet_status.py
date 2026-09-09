@@ -37,6 +37,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 
 
@@ -508,11 +509,17 @@ def probe_fuel() -> dict:
     itself, which is the same bargain every other probe makes.
     """
     sec: dict = {
+        # EPOCH SECONDS, not the ISO instant the rest of this document speaks
+        # in, because the reading is CACHED by its readers and an age is what
+        # a cached number has to be drawn with. The TUI pane is the one that
+        # cannot do the arithmetic itself: a thurbox pane has no `os`, so an
+        # instant it cannot subtract is an instant it cannot age.
+        "read_at": int(time.time()),
         "unavailable": None, "source": "quota-axi", "provider": FUEL_PROVIDER,
         "remaining": None, "reserve": FUEL_RESERVE, "below_reserve": None,
-        "binding": None, "windows": [], "stale": None, "state": None,
-        "refreshed_at": None, "retry_after": None, "error": None,
-        "schema_version": None,
+        "binding": None, "resets_at": None, "windows": [], "stale": None,
+        "state": None, "refreshed_at": None, "retry_after": None,
+        "error": None, "schema_version": None,
     }
     doc, why = run_json(
         ["quota-axi", "--provider", FUEL_PROVIDER, "--full", "--json",
@@ -558,6 +565,7 @@ def probe_fuel() -> dict:
     sec["binding"] = binding["id"]
     sec["remaining"] = binding["remaining"]
     sec["below_reserve"] = binding["remaining"] < FUEL_RESERVE
+    sec["resets_at"] = binding["resets_at"]
     return sec
 
 
@@ -713,6 +721,49 @@ def render_fuel(sec: dict) -> list:
     return lines
 
 
+RECORD_FIELDS = (
+    "read_at", "unavailable", "reserve", "remaining", "below_reserve",
+    "limited_by", "resets_at", "stale", "state", "provider", "scope",
+)
+
+
+def render_fuel_record(sec: dict) -> str:
+    """The same reading, one `name<TAB>value` line per field.
+
+    FOR A READER WITH NO JSON. `interface/fleet_queue.lua` draws this reading
+    in the TUI column, and a thurbox pane is Lua with no JSON parser and no
+    `os` — so the one format it can afford is lines and tabs, which is already
+    how its queue probe answers. A tab because none of these values carries
+    one.
+
+    IT IS NOT A SECOND READING. Every field here is `probe_fuel()`'s own, under
+    its own name, so the record and the FUEL section on the screen cannot come
+    to different conclusions about what quota-axi said. Nothing is computed
+    here and nothing is phrased here; `render_fuel` stays the only renderer
+    that puts this into words.
+
+    A FIELD WITH NO VALUE IS ABSENT, never empty and never zero. An unreadable
+    reading carries `unavailable` and no `remaining` at all, because a
+    `remaining` line reading 0 is the one way this could say "the window is
+    spent" when it means "nobody could tell".
+    """
+    # `limited_by` is the wire name a reader with no JSON parses; `probe_fuel`
+    # itself calls the same fact `binding`, since the fuel record is the only
+    # place that has to speak the pane's vocabulary.
+    source = {"limited_by": "binding"}
+    lines = []
+    for name in RECORD_FIELDS:
+        value = sec.get(source.get(name, name))
+        if value is None or value == "":
+            continue
+        if isinstance(value, bool):
+            value = "1" if value else "0"
+        elif isinstance(value, list):
+            value = ",".join(str(v) for v in value)
+        lines.append(f"{name}\t{value}")
+    return "\n".join(lines) + "\n"
+
+
 def render(doc: dict) -> str:
     blocks = [
         render_fuel(doc["fuel"]),
@@ -748,7 +799,24 @@ def collect() -> dict:
 def main(argv: list) -> int:
     p = argparse.ArgumentParser(prog="fleet-status.sh", add_help=True)
     p.add_argument("--json", action="store_true", help="the same reading, machine-readable")
+    p.add_argument(
+        "--fuel", action="store_true",
+        help="only the fuel reading, as one name<TAB>value record per field",
+    )
     args = p.parse_args(argv)
+
+    # THE FUEL SECTION ALONE, AND AT ITS OWN COST. `--json` collects
+    # everything, which is a `gh pr list` per repo in flight and a
+    # `thurbox-cli session list` — a bill a reader that only wants the fuel
+    # number should not pay, and one the TUI pane could not pay at all.
+    if args.fuel:
+        sec = probe_fuel()
+        if args.json:
+            print(json.dumps(sec, indent=2))
+        else:
+            sys.stdout.write(render_fuel_record(sec))
+        return 0
+
     doc = collect()
     if args.json:
         print(json.dumps(doc, indent=2))

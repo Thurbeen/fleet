@@ -292,7 +292,42 @@ check_pane() {
 		done
 	fi
 
-	[ "$miss" -eq 0 ] && ok "pane: slot \"$slot\", $dest and $chord agree across installer and docs"
+	# ONE SOURCE FOR THE FUEL READING. The pane draws the account's fuel, and
+	# the only place that reading exists is `probe_fuel()` in
+	# scripts/lib/fleet_status.py. A pane that ran `quota-axi` itself would be
+	# a second parse of a document it does not own, disagreeing with the screen
+	# the moment either side is touched — so the pane asks the flag, and the
+	# flag has to still be there.
+	if ! grep -q -- "fleet-status.sh --fuel" "$pane"; then
+		fail "pane: $pane does not read fuel through 'fleet-status.sh --fuel'"
+		miss=1
+	fi
+	if ! grep -q -- '"--fuel"' scripts/lib/fleet_status.py; then
+		fail "pane: scripts/lib/fleet_status.py no longer offers --fuel, which the pane's probe calls"
+		miss=1
+	fi
+	# Comment lines dropped first: the pane's header has to be able to EXPLAIN
+	# that it does not read quota-axi. What is banned is code that does.
+	if grep -v '^[[:space:]]*--' "$pane" | grep -q "quota-axi"; then
+		fail "pane: $pane reads quota-axi itself; the reading comes from fleet-status.sh, never from a second parse"
+		miss=1
+	fi
+
+	# AND ONE COST MODEL. `quota-axi` makes a network call, so the fuel probe
+	# must not run at the queue probe's cadence — a pane that refetched it
+	# every ten seconds would burn the fuel it is reporting.
+	local ttl fuel_ttl
+	ttl="$(sed -n 's/^local TTL = \([0-9]*\)$/\1/p' "$pane" | head -1)"
+	fuel_ttl="$(sed -n 's/^local FUEL_TTL = \([0-9]*\)$/\1/p' "$pane" | head -1)"
+	if [ -z "$ttl" ] || [ -z "$fuel_ttl" ]; then
+		fail "pane: could not read TTL and FUEL_TTL from $pane"
+		miss=1
+	elif [ "$fuel_ttl" -le "$ttl" ]; then
+		fail "pane: FUEL_TTL ($fuel_ttl s) is not longer than the queue's TTL ($ttl s); the fuel probe hits the network"
+		miss=1
+	fi
+
+	[ "$miss" -eq 0 ] && ok "pane: slot \"$slot\", $dest and $chord agree across installer and docs; fuel is one reading at ${fuel_ttl}s"
 }
 
 check_skills() {
