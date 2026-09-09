@@ -251,10 +251,15 @@ def probe_sessions(tasks: list) -> dict:
 
 
 def rollup(checks) -> str:
-    """One word for a change request's checks: passing, failing, pending, or none."""
+    """One word for a change request's checks: passing, failing, pending, or none.
+
+    `cancelled` counts as failing here — this line's own long-standing
+    reading, separate from the shepherd's, which is why the forge hands back
+    `cancelled` as its own verdict rather than pre-deciding for either.
+    """
     if not checks:
         return "none"
-    if any(c.verdict == "failed" for c in checks):
+    if any(c.verdict in ("failed", "cancelled") for c in checks):
         return "failing"
     return "pending" if any(c.verdict == "pending" for c in checks) else "passing"
 

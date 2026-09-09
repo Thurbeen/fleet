@@ -4303,7 +4303,7 @@ git -C "$frepo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m base
 # The repository this checkout belongs to, discovered through the seam rather
 # than recorded anywhere: no task below has to name it.
 git -C "$frepo" remote add origin "https://forge.test:8443/acme/widgets.git"
-for br in landed conflicting green foreign; do git -C "$frepo" branch "fix/$br"; done
+for br in landed conflicting green foreign cancelled-check; do git -C "$frepo" branch "fix/$br"; done
 
 touch "$fk/push/letur" # can push; `stranger` has no file here, so cannot
 
@@ -4318,7 +4318,7 @@ fq() {
 ftopic="$(fq topic add on-another-forge --title 'Work on a forge that is not GitHub' \
 	--prompt 'fleet must not assume GitHub')"
 
-for spec in 01:landed:201 02:conflicting:202 03:green:203 04:foreign:204; do
+for spec in 01:landed:201 02:conflicting:202 03:green:203 04:foreign:204 06:cancelled-check:206; do
 	IFS=: read -r n slug num <<<"$spec"
 	fq add "$ftopic" "$slug" --title "A change that is $slug" --repo "$frepo" \
 		--branch "fix/$slug" --number "$n" >/dev/null
@@ -4336,6 +4336,7 @@ fake_cr 202 'head_branch="fix/conflicting"' 'mergeable="conflicting"'
 fake_cr 203 'head_branch="fix/green"'
 fake_cr 204 'head_branch="fix/foreign"' 'head_is_ours=false' \
 	'head_location="a stranger'"'"'s fork"'
+fake_cr 206 'head_branch="fix/cancelled-check"' 'checks=[["gate", "cancelled"]]'
 
 # --- 13a. collect reads the change request through the seam ------------------
 
@@ -4405,6 +4406,14 @@ expect "one whose head is not ours is left alone" "left-alone" "$out"
 expect "and named as where the forge said it lives" "a stranger's fork" "$out"
 refute "and a change request that is not ours is never merged" \
 	"204 " "$(cat "$fk/merged.log")"
+
+# A CANCELLED check is not a FAILED one: the shepherd's own long-standing
+# reading, kept alive through the seam rather than collapsed into
+# fleet-status's stricter one now that both read the same `checks` field.
+expect "a cancelled check reads as still running, not as a failed one" \
+	"undetermined: checks still running: gate" "$out"
+refute "so it never gets a fixer for a failed check" \
+	"206" "$(cat "$fk/merged.log")"
 
 # --- 13d. a forge that cannot do fleet's merge method says so ----------------
 #

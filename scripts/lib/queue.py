@@ -4084,10 +4084,16 @@ def open_prs(repo: forge.RepoId) -> tuple[list, str]:
 
 
 def check_verdicts(cr: forge.ChangeRequest) -> tuple[list, list]:
-    """(names that failed, names still running). Everything else passed."""
+    """(names that failed, names still running). Everything else passed.
+
+    A `cancelled` check counts as still running here, not as a failure: that
+    is the shepherd's own long-standing reading (`checks-pending`, not
+    `checks-failed`), separate from fleet-status's, which is why the forge
+    hands back `cancelled` as its own word instead of pre-deciding for either.
+    """
     return (
         [c.name for c in cr.checks if c.verdict == "failed"],
-        [c.name for c in cr.checks if c.verdict == "pending"],
+        [c.name for c in cr.checks if c.verdict in ("pending", "cancelled")],
     )
 
 

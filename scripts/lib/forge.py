@@ -141,15 +141,19 @@ class Commit:
 
 @dataclass(frozen=True)
 class Check:
-    """One CI check, in three words rather than each forge's own vocabulary.
+    """One CI check, in fleet's own words rather than each forge's vocabulary.
 
     `pending` is never `failed`: reading a check that has not finished as a
     broken one is how a shepherd spawns fixers for healthy change requests, and
-    reading it as passed is how it merges one whose CI never ran.
+    reading it as passed is how it merges one whose CI never ran. `cancelled`
+    is its own word rather than folded into either: a check somebody called
+    off is not a passing one, but the shepherd and fleet-status have always
+    disagreed about whether it blocks a merge — see `GH_CHECK_FAILED` below —
+    and a shared verdict must let both keep their own answer.
     """
 
     name: str
-    verdict: str  # "passed" | "failed" | "pending"
+    verdict: str  # "passed" | "failed" | "pending" | "cancelled"
 
 
 @dataclass
@@ -304,11 +308,13 @@ GH_STATUS_FIELDS = "number,url,title,headRefName,state,statusCheckRollup"
 GH_ONE_FIELDS = "body,headRefOid,headRefName,state,commits"
 
 # A check that FAILED. Anything still running is NOT a failure. `CANCELLED` is
-# absent from the shepherd's list and present in fleet-status's; both were
-# already so before this module existed, and neither is worth changing here.
-GH_CHECK_FAILED = {"FAILURE", "TIMED_OUT", "STARTUP_FAILURE", "ACTION_REQUIRED",
-                   "ERROR", "CANCELLED"}
+# its own conclusion, mapped to the `cancelled` verdict rather than in here:
+# it is absent from the shepherd's list and present in fleet-status's, both
+# already so before this module existed, and this keeps that difference alive
+# instead of erasing it onto whichever caller happened to read second.
+GH_CHECK_FAILED = {"FAILURE", "TIMED_OUT", "STARTUP_FAILURE", "ACTION_REQUIRED", "ERROR"}
 GH_CHECK_PASSED = {"SUCCESS", "NEUTRAL", "SKIPPED"}
+GH_CHECK_CANCELLED = {"CANCELLED"}
 
 GH_URL_RE = re.compile(
     r"^https?://([^/\s]+)/([^/\s]+/[^/\s]+?)(?:\.git)?/pull/(\d+)(?:[/?#].*)?$"
@@ -528,6 +534,8 @@ class GitHubForge(Forge):
                 out.append(Check(name, "failed"))
             elif said in GH_CHECK_PASSED:
                 out.append(Check(name, "passed"))
+            elif said in GH_CHECK_CANCELLED:
+                out.append(Check(name, "cancelled"))
             else:
                 out.append(Check(name, "pending"))
         return out
