@@ -174,11 +174,14 @@ echo "queue-selftest: $FLEET_QUEUE_DIR"
 bodies="$tmp/pr-bodies"
 states="$tmp/pr-states"
 heads="$tmp/pr-heads"
+commits="$tmp/pr-commits"
 ghbin="$tmp/gh-bin"
-mkdir -p "$bodies" "$states" "$heads" "$ghbin"
+mkdir -p "$bodies" "$states" "$heads" "$commits" "$ghbin"
 
-# What `--json body,headRefOid,headRefName,state` answers with, assembled from
-# the fixture files a test wrote for that number.
+# What `--json body,headRefOid,headRefName,state,commits` answers with,
+# assembled from the fixture files a test wrote for that number. A pull request
+# with no commits file gets an EMPTY list, which is what the real API gives for
+# one `gh` could not enumerate — and which no message may read anything into.
 cat >"$tmp/pr-json.py" <<'PY'
 import json
 import sys
@@ -193,17 +196,25 @@ def read(path):
         return ""
 
 
+# One `<oid> <headline>` per line, oldest first, the way `gh` orders them.
+commits = [
+    {"oid": line.split(" ", 1)[0], "messageHeadline": line.split(" ", 1)[1]}
+    for line in read(f"{root}/pr-commits/{n}.txt").splitlines()
+    if " " in line
+]
+
 print(json.dumps({
     "body": read(f"{root}/pr-bodies/{n}.md"),
     "state": read(f"{root}/pr-states/{n}.state").strip() or "OPEN",
     "headRefName": read(f"{root}/pr-heads/{n}.branch").strip(),
     "headRefOid": read(f"{root}/pr-heads/{n}.sha").strip(),
+    "commits": commits,
 }))
 PY
 
 cat >"$ghbin/gh" <<SH
 #!/bin/sh
-# Stands in for \`gh pr view <url> --json body,headRefOid,headRefName,state\`
+# Stands in for \`gh pr view <url> --json body,headRefOid,headRefName,state,commits\`
 # (collect's publish check) and \`gh pr view <url> --json state\` (reap's
 # landing check). A pull request with no body file is one the API cannot be
 # reached for; one with no state file is OPEN, which is what a pull request is
@@ -258,6 +269,16 @@ pipeline_pr() {
 	printf '%s' "$2" >"$heads/$1.branch"
 	printf '%s' "$sha" >"$heads/$1.sha"
 	python3 "$tmp/attest.py" "${3:-$sha}" >"$bodies/$1.md"
+}
+
+# The commits `gh` would list for a pull request, oldest first, one
+# `<oid> <headline>` per line. Only a test that cares WHO moved the head past
+# the attestation writes one; every other pull request here is enumerated as
+# nothing, which is the answer that must never be read as evidence.
+pr_history() {
+	local n="$1"
+	shift
+	printf '%s\n' "$@" >"$commits/$n.txt"
 }
 
 # One opened by any other means: a branch, a body, and no attestation at all.
@@ -1348,6 +1369,73 @@ b="$(brief_text "$tmp/bare-queue/unconfigured/01-first-task/BRIEF.md" 2>&1)"
 expect "and its task defaults to pr, which needs no setup at all" \
 	"**Publish.** \`pr\`" "$b"
 refute "with no tool named, because nobody named one" "Here that means" "$b"
+
+# (i) The stale attestation the pipeline caused ITSELF, told apart from every
+#     other one. `no-mistakes` writes the attestation while it opens the pull
+#     request and can then push its own CI fixes on top, which leaves the body
+#     naming an ancestor of the head — the shape of #38, #40 and #48, three
+#     pull requests that could never auto-merge and that read, at collect
+#     time, exactly like a worker force-pushing over the pipeline. One is
+#     fixed by running the tool again and the other is not.
+#
+#     Both are still REFUSED, and by the same line of code. Only the wording
+#     is new.
+
+$QUEUE add "$ptopic" pipeline-pushed-after \
+	--title 'Let the pipeline push its own CI fix after it attested' \
+	--repo /tmp/repo-a --branch fix/pipeline-pushed-after --number 10 >/dev/null
+attested_sha="$(printf 'a%.0s' $(seq 40))"
+pipeline_pr 1014 fix/pipeline-pushed-after "$attested_sha"
+pr_history 1014 \
+	"$attested_sha chore: no-mistakes document - Sync the docs" \
+	"$(printf '%040d' 1014) no-mistakes: apply CI fixes"
+cat >"$FLEET_QUEUE_DIR/$ptopic/10-pipeline-pushed-after/result.md" <<'EOF'
+---
+outcome: shipped
+artifact: https://github.com/acme/app/pull/1014
+---
+Ran the pipeline. It attested, opened the PR, and then pushed a CI fix.
+EOF
+
+$QUEUE add "$ptopic" pushed-over-pipeline \
+	--title 'Push over the pipeline by hand' \
+	--repo /tmp/repo-a --branch fix/pushed-over-pipeline --number 11 >/dev/null
+pipeline_pr 1015 fix/pushed-over-pipeline "$attested_sha"
+pr_history 1015 \
+	"$attested_sha chore: no-mistakes document - Sync the docs" \
+	"$(printf '%040d' 1015) fix: one more thing I thought of"
+cat >"$FLEET_QUEUE_DIR/$ptopic/11-pushed-over-pipeline/result.md" <<'EOF'
+---
+outcome: shipped
+artifact: https://github.com/acme/app/pull/1015
+---
+Ran the pipeline, then remembered one more thing and pushed it.
+EOF
+
+out="$($QUEUE collect --no-reap 2>&1)"
+expect "an attestation the pipeline outran is still not proof" \
+	"10-pipeline-pushed-after" "$out"
+expect "and the refusal names what moved the head" \
+	"the pipeline pushed that head itself" "$out"
+expect "and the commit that did it, so a lead need not go and look" \
+	"no-mistakes: apply CI fixes" "$out"
+expect "and the one thing that fixes it" "re-run \`/no-mistakes --yes\`" "$out"
+
+state="$($QUEUE show "$ptopic/10-pipeline-pushed-after" 2>&1)"
+refute "the gate is exactly as strict as it was — nothing here closes a task" \
+	"state:       done" "$state"
+expect "and the record carries the whole reason, not just the terminal" \
+	"the pipeline pushed that head itself" "$state"
+
+state="$($QUEUE show "$ptopic/11-pushed-over-pipeline" 2>&1)"
+expect "a head a PERSON moved is refused for the same reason" \
+	"no longer what would merge" "$state"
+refute "and is never blamed on the pipeline" \
+	"the pipeline pushed that head itself" "$state"
+
+state="$($QUEUE show "$ptopic/05-stale-attestation" 2>&1)"
+refute "nor is one whose commits the forge would not enumerate" \
+	"the pipeline pushed that head itself" "$state"
 
 # --- 9. what is never reaped, and why ---------------------------------------
 #
