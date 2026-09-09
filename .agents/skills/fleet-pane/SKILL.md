@@ -89,10 +89,14 @@ became one. Every word on it comes off `task.yaml`'s `publish` block, written by
 pane calls no `gh` and says nothing `queue.sh show` would not print in the same
 word. Colour carries the verdict, and **`green` is not the ok colour**: it means
 every gate the forge knows about holds and nobody vetted it, which is a
-different claim from `ready` and is why fleet will not merge it for you. A
-narrow column drops the parts in a fixed order — the `— yours to merge` note,
-then the method, then the age, then the `#44` — and the link survives losing its
-label.
+different claim from `ready` and is why fleet will not merge it for you. The
+note beside a state is its next move, not its colour — `— yours to merge` on
+green, `— review` on `open`, since `open` is a fact `collect` proved, not a
+verdict, and gets no colour that would claim one. A narrow column drops the
+parts in a fixed order — the method first, then the note, then the age, then
+the `#44` — and the link survives losing its label. `interface/fleet_queue.lua`
+(`PUBLISH_WORD`, `PUBLISH_LADDER`) is the owner of that order and argues it in
+place.
 
 **No row is drawn for a task with nothing to report about its publish**: a
 record from before `publish` existed, or a task whose publish has not started.
