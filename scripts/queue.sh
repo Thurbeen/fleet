@@ -36,12 +36,20 @@
 #              A turn ending is not a task finishing.
 #   `collect`  reads the result.md a worker wrote when it knew what it had
 #              concluded, and only that closes a task. It also CHECKS that
-#              task's artifact: a `no-mistakes` pull request body carries five
-#              headings, so "open the PR through the pipeline" stops being an
-#              unverifiable instruction about a method. A pull request without
-#              them is reported and the task is left OPEN; a check that could
-#              not run (no `gh`, no network) says so and is never read as
-#              either verdict.
+#              task's artifact against the PUBLISH METHOD the task declares —
+#              `no-mistakes`, `pr` or `push`, which name what the work must
+#              LEAVE BEHIND rather than which tool made it. So "publish the way
+#              your brief says" stops being an unverifiable instruction about a
+#              method: collect asks the forge for a pull request from this
+#              task's own branch (and, for `no-mistakes`, an attestation for the
+#              commit that would merge), or asks git whether a `push` task's
+#              commit reached the base branch. An artifact that is not there is
+#              reported and the task is left OPEN; a check that could not run
+#              (no `gh`, no network, a base branch this machine cannot read)
+#              says so and is never read as either verdict. The TOOL is
+#              `--how`: free text rendered into the brief and never parsed,
+#              which is what lets a task name a publisher fleet has never heard
+#              of. `add` takes both, defaulting to POLICY.md's frontmatter.
 #   `reap`     asks the FORGE whether each concluded task's pull request has
 #              merged, moves the ones that did to `landed`, and only then
 #              deletes their sessions and worktrees. `collect` runs it, because
@@ -112,6 +120,7 @@
 #   scripts/queue.sh topic add <slug> --title T --prompt 'the ask'   # or --prompt-file F|-
 #   scripts/queue.sh add <topic> <slug> --title T --repo P --branch B [--base main]
 #                        [--host H] [--profile default] [--touches a,b] [--brief-file F]
+#                        [--publish no-mistakes|pr|push] [--how 'run `/publish`']
 #   scripts/queue.sh block <ref> --on <ref> --kind KIND --why 'reason'   # or --clear
 #   scripts/queue.sh plan [--json]        # what goes out now, what waits, and why
 #   scripts/queue.sh dispatch [--dry-run] # launch the whole ready set at once
@@ -119,8 +128,9 @@
 #   scripts/queue.sh watch [--for-secs N] # fold transitions in; close nothing
 #   scripts/queue.sh collect [--allow-unverified] [--no-reap]  # read results,
 #                        close what is done; --allow-unverified closes one whose
-#                        PR failed the pipeline check, after you have judged
-#                        that PR; --no-reap leaves every session alone
+#                        artifact failed the publish check, after you have
+#                        judged that artifact; --no-reap leaves every session
+#                        alone
 #   scripts/queue.sh reap [--dry-run]     # land what merged, release its session
 #   scripts/queue.sh refuel [<ref>] [--dry-run]  # the account's fuel first, then
 #                        restart the workers that ran dry against it
