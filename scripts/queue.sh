@@ -152,7 +152,10 @@
 #                        [--publish no-mistakes|pr|push] [--how 'run `/publish`']
 #                        # --brief-file fills whichever of the brief's four
 #                        # sections its own `## ` headings name; a body with no
-#                        # headings all goes into `What to do`
+#                        # headings all goes into `What to do`. A file that
+#                        # leaves any section unwritten is refused HERE, naming
+#                        # them, and nothing is created — as is a --branch no
+#                        # worktree could be cut for, which includes --base
 #   scripts/queue.sh block <ref> --on <ref> --kind KIND --why 'reason'   # or --clear,
 #                        which names the blocker to remove, since a task can
 #                        carry several; `block --help` lists the valid kinds

@@ -210,6 +210,75 @@ def split_brief_body(body: str) -> dict:
     return {h: v for h, v in filled.items() if v}
 
 
+def brief_sections(text: str) -> dict:
+    """A RENDERED brief's four sections, mapped to the body written under each.
+
+    `split_brief_body` above reads what the lead HANDS IN; this reads what the
+    file on disk ended up saying, which is a different question with a
+    different rule. Here a `## ` heading of any kind ENDS the section it
+    follows -- the scaffold puts `## Reporting back` after the last one, and a
+    body that carried its own headings keeps them in place -- while only one of
+    BRIEF_SECTIONS opens a new one. Text before the first is the preamble the
+    scaffold wrote and belongs to nobody.
+
+    A `## ` inside a fence is quoted markdown, exactly as it is on the way in.
+    """
+    out: dict[str, list] = {}
+    current = None
+    fence = None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if fence is not None:
+            if stripped.startswith(fence):
+                fence = None
+        elif stripped.startswith("```") or stripped.startswith("~~~"):
+            fence = stripped[:3]
+        elif line.startswith("## "):
+            heading = line[3:].strip()
+            current = heading if heading in BRIEF_SECTIONS else None
+            if current:
+                out.setdefault(current, [])
+            continue
+        if current is not None:
+            out.setdefault(current, []).append(line)
+    return {h: "\n".join(v).strip() for h, v in out.items()}
+
+
+def unfilled_sections(text: str) -> list:
+    """Which sections still hold the scaffold's own text, and nothing else.
+
+    The check this replaces was a substring grep for BRIEF_PLACEHOLDER over the
+    whole file, which answers a different question: does this brief MENTION the
+    placeholder. A brief about the scaffold mentions it, so the queue could not
+    carry a task about its own scaffold -- the brief for the task that fixed
+    this had the quotation cut out of it to get dispatched.
+
+    So compare each section against what the scaffold wrote there. A section
+    saying anything else is written, including one that quotes the placeholder
+    while describing it. This weakens nothing: the placeholder standing alone
+    is still exactly what it always was, and every section is still checked.
+
+    A section whose heading is gone is not reported. The scaffold writes all
+    four, so a missing one is a lead who restructured the file deliberately,
+    and this is a check on the scaffold's text and not on the lead's shape.
+    """
+    body = brief_sections(text)
+    return [h for h in BRIEF_SECTIONS if body.get(h, "").strip() == BRIEF_PLACEHOLDER]
+
+
+def brief_shortfall(path: str) -> str:
+    """Why this BRIEF.md is not something to send a worker, or "" if it is."""
+    try:
+        with open(path) as fh:
+            text = fh.read()
+    except OSError:
+        return "never written"
+    missing = unfilled_sections(text)
+    if missing:
+        return "still the scaffold's own text under " + ", ".join(missing)
+    return ""
+
+
 # HOW A TASK PUBLISHES, as three words about the ARTIFACT it leaves behind —
 # and the ONE place each is written down. `render_brief` writes `brief` into
 # the worker's instructions, `publish_verdict` goes and looks for `artifact`,
@@ -1227,6 +1296,48 @@ def next_number(tpath: str) -> str:
     return f"{max(used) + 1 if used else 1:02d}"
 
 
+def branch_refusal(repo: str, branch: str, base: str, host: str | None) -> str:
+    """Why `session create` would fail on this branch, asked at `add` time.
+
+    `--worktree-branch X` only ever CREATES X (see `branch_checkout` below,
+    which exists for the same reason), so a branch that is already there fails
+    the spawn with thurbox's own non-zero exit. The task then stays `queued`
+    and the operator hand-edits task.yaml and dispatches again -- the whole
+    cost of learning at dispatch what `add` was told.
+
+    branch == base is the instance the operator hit, and it is answered from
+    the arguments alone: a base branch exists by definition, so no worktree can
+    ever be cut for a task whose branch IS it. Every other existing branch --
+    a re-used name, one left behind by an earlier run, one carrying commits
+    base has not got -- is the same failure and needs the repo to see. A repo
+    this machine cannot read, which is every `--host` task's, is left to
+    dispatch exactly as before.
+    """
+    if branch == base:
+        return (
+            f"--branch and --base are both {branch!r}, and no worktree can be "
+            "cut there:\n"
+            "thurbox's --worktree-branch only ever CREATES a branch, and the "
+            "base of a\n"
+            "task exists by definition. The spawn fails and the task stays "
+            "queued.\n"
+            "Name the branch the work goes ON, off the branch it starts from."
+        )
+    if host or not os.path.isdir(repo):
+        return ""
+    if not git_out(repo, ["rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"]):
+        return ""
+    return (
+        f"--branch {branch} already exists in {repo}, so no worktree can be "
+        "cut for it:\n"
+        "thurbox's --worktree-branch only ever CREATES a branch. The spawn "
+        "fails with\n"
+        f"`a branch named '{branch}' already exists` and the task stays "
+        "queued.\n"
+        "Name a branch that is not there yet, or delete that one first."
+    )
+
+
 def cmd_add(args) -> int:
     root = queue_root()
     tpath = os.path.join(root, args.topic)
@@ -1261,6 +1372,14 @@ def cmd_add(args) -> int:
                 "a path on THAT machine."
             )
 
+    # Same argument, one layer down: a branch no worktree can be made on is a
+    # spawn failure `add` can see coming, and refusing it here costs the
+    # operator one re-run instead of a dead dispatch and a hand-edited
+    # task.yaml.
+    refusal = branch_refusal(args.repo, args.branch, args.base, args.host)
+    if refusal:
+        raise QueueError(refusal)
+
     # Resolution, first hit wins and per FIELD. A stated method with no stated
     # tool drops the operator's global one rather than inheriting it: "run
     # `/no-mistakes --yes`" is the wrong sentence to hand a `push` task. A
@@ -1271,8 +1390,6 @@ def cmd_add(args) -> int:
         method, how = args.publish, args.how
     elif args.how:
         how = args.how
-
-    os.makedirs(path)
 
     doc = {
         "id": tid,
@@ -1305,11 +1422,37 @@ def cmd_add(args) -> int:
         "concluded_at": None,
     }
     task = Task(args.topic, tid, path, doc)
-    task.save()
 
+    # Rendered BEFORE anything exists on disk, so that the one thing `add` can
+    # be wrong about costs nothing to be wrong about. `--brief-file` is a claim
+    # to have written the brief; a file that names three of the four sections
+    # leaves the fourth holding the scaffold's placeholder, which `dispatch`
+    # then refuses as "unwritten" -- about a brief the lead did write, without
+    # saying which heading it means. That round-trip ran three times in one
+    # session before the operator started patching the rendered file by hand.
+    #
+    # `add` with no --brief-file is untouched. That is the deliberate "scaffold
+    # it, I will write it" path, and dispatch stays its backstop.
     brief = open(args.brief_file).read() if args.brief_file else None
+    text = render_brief(task, read_yaml(os.path.join(tpath, "topic.yaml")), brief)
+    if args.brief_file:
+        missing = unfilled_sections(text)
+        if missing:
+            raise QueueError(
+                f"{args.brief_file} leaves {len(missing)} of the brief's "
+                "sections unwritten:\n"
+                + "\n".join(f"    {h}" for h in missing)
+                + "\nA worker gets all four whatever the file says, so one the "
+                "file does not\nname stays the scaffold's placeholder and "
+                "`dispatch` refuses it. Add the\nheading — `None.` is a "
+                "complete answer — and run this again. Nothing was created."
+            )
+
+    os.makedirs(path)
+    task.save()
     with open(task.file("BRIEF.md"), "w") as fh:
-        fh.write(render_brief(task, read_yaml(os.path.join(tpath, "topic.yaml")), brief))
+        fh.write(text)
+
     print(task.ref)
     return 0
 
@@ -1330,9 +1473,9 @@ def render_brief(task: Task, topic: dict, body: str | None) -> str:
 
     Between the two comes BRIEF_SECTIONS, unwritten: the lead supplies content,
     not structure. `--brief-file` fills whichever of those four sections its own
-    `## ` headings name (`split_brief_body`) and leaves the rest for the lead,
-    so a body handed in on the command line still gets the same skeleton and the
-    same refusal.
+    `## ` headings name (`split_brief_body`), so a body handed in on the command
+    line gets the same skeleton -- and `cmd_add` refuses it on the spot if any
+    section came out of this still holding the placeholder.
 
     The operator's own standing instructions ride the same pointer when there
     are any, and NOTHING when there are not — a fresh clone has no such file,
@@ -1977,7 +2120,12 @@ def pull_remote_result(task: Task) -> str:
 
 
 def read_text(path: str) -> str:
-    """A brief that is missing reads as unwritten, which stops the dispatch."""
+    """A file's content, best effort. A missing one reads as the placeholder.
+
+    What the REMOTE push makes of that: a brief that is not there lands on the
+    host as a scaffold, and the worker has nothing to do. `brief_shortfall`
+    above is what stops that reaching a host at all, at dispatch.
+    """
     try:
         with open(path) as fh:
             return fh.read()
@@ -2099,12 +2247,21 @@ def cmd_dispatch(args) -> int:
     q = Queue(queue_root())
     ready = select_for_dispatch(q, args.ref)
 
-    unfilled = [t for t in ready if BRIEF_PLACEHOLDER in read_text(t.file("BRIEF.md"))]
+    # The backstop for `add`'s own check, and it says the same thing: WHICH
+    # sections, so the answer is in the refusal and not in a file the lead has
+    # to go and grep. It fires on a task scaffolded and never written, and on
+    # one hand-edited back into a placeholder after `add` accepted it.
+    unfilled = [(t, why) for t in ready if (why := brief_shortfall(t.file("BRIEF.md")))]
     if unfilled:
         raise QueueError(
-            "these tasks still carry an unwritten BRIEF.md, and a worker sent one\n"
-            "would have nothing to do:\n"
-            + "\n".join(f"    {t.file('BRIEF.md')}" for t in unfilled)
+            "these tasks carry a BRIEF.md a worker would have nothing to do "
+            "with:\n"
+            + "\n".join(
+                f"    {t.ref}: {why}\n        {t.file('BRIEF.md')}"
+                for t, why in unfilled
+            )
+            + "\nWrite those sections, or hand the whole brief to `add "
+            "--brief-file`."
         )
     if not ready:
         print("dispatch: nothing ready")

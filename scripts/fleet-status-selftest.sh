@@ -101,7 +101,23 @@ stubbed="$(sandbox "$tmp/bin-stubbed" "${BASE_TOOLS[@]}")"
 # --- a queue with something in it -------------------------------------------
 
 "$QUEUE" topic add selftest --title "Selftest topic" --prompt 'the prompt, verbatim' >/dev/null 2>&1
-printf 'Do the thing.\n' >"$tmp/brief.md"
+cat >"$tmp/brief.md" <<'MD'
+## What to do
+
+Do the thing.
+
+## Hard constraints
+
+None.
+
+## Coordination
+
+None.
+
+## Done means
+
+It is done.
+MD
 "$QUEUE" add selftest dispatched-task --title "A dispatched task" --repo "$tmp/repo" \
 	--branch t/dispatched --touches FLEET.md --brief-file "$tmp/brief.md" >/dev/null
 "$QUEUE" add selftest ready-task --title "A ready task" --repo "$tmp/repo" \
