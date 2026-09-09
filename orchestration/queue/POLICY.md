@@ -73,8 +73,10 @@ done. For a `no-mistakes` task that is one command:
 
 ```sh
 gh pr view <url> --json headRefOid,body -q \
-  '.headRefOid[0:8] + " is the head; the attestation names "
-   + (.body | capture("head_sha\"\\s*:\\s*\"(?<s>[0-9a-f]+)").s[0:8])'
+  '.headRefOid[0:8] as $head
+   | ([.body | capture("head_sha\"\\s*:\\s*\"(?<s>[0-9a-f]+)").s] | .[0]) as $attested
+   | $head + " is the head; the attestation names "
+     + ($attested | if . then .[0:8] else "no attestation found in the body" end)'
 ```
 
 **Those two must be the same commit.** An attestation is a verdict about the
