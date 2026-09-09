@@ -4303,7 +4303,6 @@ git -C "$frepo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m base
 # The repository this checkout belongs to, discovered through the seam rather
 # than recorded anywhere: no task below has to name it.
 git -C "$frepo" remote add origin "https://forge.test:8443/acme/widgets.git"
-for br in landed conflicting green foreign cancelled-check; do git -C "$frepo" branch "fix/$br"; done
 
 touch "$fk/push/letur" # can push; `stranger` has no file here, so cannot
 
@@ -4330,6 +4329,12 @@ artifact: https://forge.test:8443/acme/widgets/-/merge_requests/$num
 Shipped it.
 EOF
 done
+
+# The branches only appear once each task is `add`ed and recorded as already
+# shipped: `add` itself refuses a branch that already exists in the repo (a
+# spawn thurbox could never cut a worktree for), and every task here is
+# standing in for one whose worker already created and pushed its branch.
+for br in landed conflicting green foreign cancelled-check; do git -C "$frepo" branch "fix/$br"; done
 
 fake_cr 201 'head_branch="fix/landed"'
 fake_cr 202 'head_branch="fix/conflicting"' 'mergeable="conflicting"'
