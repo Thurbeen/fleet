@@ -82,8 +82,7 @@
 #      silence as a silence and never as a verdict about the worker, a git this
 #      machine cannot read as `not checked`, and a task nobody messaged as
 #      nothing at all. Nothing there writes `state` or `outcome`.
-#
-#  12. The run log is something the queue PRODUCES. Opening a topic opens
+#  19. The run log is something the queue PRODUCES. Opening a topic opens
 #      one; the loop's own commands refresh the facts inside a fenced block
 #      and rewrite it rather than appending to it; and prose the lead wrote
 #      outside that block survives every later pass.
