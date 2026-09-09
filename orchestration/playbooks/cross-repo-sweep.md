@@ -72,7 +72,7 @@ One worker session **per repo**, all with the same prompt shape.
 
 - Prompts must be self-contained and repo-agnostic — workers don't share context
   with you or with each other.
-- Record the profile in the run log alongside the repo list. Two sweeps of the
+- The run log's facts name the profile without being asked. Two sweeps of the
   same goal under different settings are two different runs.
 - Log every repo that reported `NOT_APPLICABLE` so the sweep is auditable and
   not silently partial. This is the reason to prefer a result file over polling
