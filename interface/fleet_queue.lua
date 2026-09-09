@@ -472,9 +472,10 @@ local function build_model(stdout)
     model.per_class[entry.class] = (model.per_class[entry.class] or 0) + #entry.tasks
     -- SETTLED, which is not the same as the `done` classification. A task that
     -- is `done` has an OPEN pull request and the operator's next move is to
-    -- review it — so its artifact row is the most useful row in the pane, and
-    -- collapsing it would hide the one link worth clicking. Only `landed` (the
-    -- forge says it merged) and `abandoned` leave nothing to look at.
+    -- review it — so the row naming it (publish, or artifact for a record with
+    -- no `publish.method`) is the most useful row in the pane, and collapsing
+    -- it would hide the one link worth clicking. Only `landed` (the forge says
+    -- it merged) and `abandoned` leave nothing to look at.
     entry.settled = #entry.tasks > 0
     entry.landed = 0
     for _, task in ipairs(entry.tasks) do
@@ -825,7 +826,8 @@ local CLASS_LABEL = {
 ---
 --- A SETTLED topic — every task merged or abandoned — collapses to one row. A
 --- topic whose tasks are merely `done` stays open on purpose: `done` means the
---- pull request is OPEN, so its artifact row is the row worth clicking.
+--- pull request is OPEN, so the row naming it — publish, or artifact for a
+--- record with no `publish.method` — is the row worth clicking.
 local function descriptors(model)
   local out = {}
   local class = nil
