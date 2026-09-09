@@ -5042,9 +5042,11 @@ def run_events(tasks: list) -> list:
                                       f"`{reaped.get('session')}` ({reaped.get('how')})"))
         shep = d.get("shepherd") or {}
         if shep.get("at"):
-            out.append((shep["at"], f"shepherd: `{t.id}`'s pull request is "
-                                    f"`{shep.get('condition')}` — fixer "
-                                    f"`{shep.get('session')}`"))
+            said = (f"shepherd: `{t.id}`'s pull request is "
+                    f"`{shep.get('condition')}`")
+            if shep.get("session"):
+                said += f" — fixer `{shep['session']}`"
+            out.append((shep["at"], said))
     return sorted(out, key=lambda e: e[0])
 
 
