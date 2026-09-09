@@ -189,12 +189,15 @@ ASSISTANT_NAME="$(voice_setting ASSISTANT_NAME)"
 [ -n "$ASSISTANT_NAME" ] || die "no ASSISTANT_NAME in $VOICE_CONF"
 
 # `|` is the sed delimiter below, and a backslash or a `&` in the replacement is
-# sed's own syntax rather than the name the operator typed. Refuse rather than
-# render something they did not write.
+# sed's own syntax rather than the name the operator typed. `@` is the
+# placeholder delimiter itself: a name containing `@ASSISTANT_NAME@` or
+# `@OPERATOR_NAME@` would have the OTHER substitution rewrite it after this
+# one applied, silently swapping one operator's name for the other's. Refuse
+# rather than render something they did not write.
 for name in "$OPERATOR_NAME" "$ASSISTANT_NAME"; do
 	case "$name" in
-	*'|'* | *\\* | *'&'* | *"'"* | *'"'*)
-		die "a name in $VOICE_CONF contains a quote, a pipe, a backslash or an '&': $name"
+	*'|'* | *\\* | *'&'* | *"'"* | *'"'* | *'@'*)
+		die "a name in $VOICE_CONF contains a quote, a pipe, a backslash, an '&' or an '@': $name"
 		;;
 	esac
 done
