@@ -73,6 +73,15 @@
 #      refs, so holding a task back needs no invented blocker, and a bare
 #      `dispatch` still sends everything; and `block --kind` lists its four
 #      values in `--help` instead of only in the refusal.
+#  17. ONE setting puts fleet's mark on the lead and on every worker, and takes
+#      it back off both — rendered into the name thurbox is actually asked to
+#      create, and cut to thurbox's byte cap on a codepoint boundary.
+#  18. A MESSAGE THE LEAD SENT IS COMPARABLE AGAINST WHAT MOVED AFTER IT.
+#      `send` records the instant and a baseline of the branch head; `list` and
+#      `show` report a commit or a transition dated after it as movement, a
+#      silence as a silence and never as a verdict about the worker, a git this
+#      machine cannot read as `not checked`, and a task nobody messaged as
+#      nothing at all. Nothing there writes `state` or `outcome`.
 #
 # Test 4 is also the wake proof. The event source is `thurbox-cli watch`, which
 # this script replaces with a recorded stream through `FLEET_QUEUE_WATCH_CMD` —
@@ -3524,6 +3533,180 @@ expect "the mark reaches the name thurbox is asked to create" \
 	"🚀 Wear the mark" "$out"
 rm -rf "$FLEET_GLYPH_ROOT"
 unset FLEET_GLYPH_ROOT
+
+# --- 18. did that message land, and has anything moved since? ----------------
+#
+# The failure this answers, from a real session on 2026-09-09: the lead sent
+# new scope to a parked worker, `session send` reported success, and ten
+# minutes later the session read `done`, age 3043s — a state from BEFORE the
+# message. On that evidence the worker looked dead. It had taken the message,
+# done the work and committed it, and the only way the lead found out was
+# opening the worker's worktree and running `git log`.
+#
+# The claims:
+#
+#   a send is RECORDED, with a baseline of the things a worker cannot fake
+#   a worker that received it and moved is visible as moved — from the branch
+#     head, and from a transition dated after the message
+#   a send with nothing moving since says exactly that, and never that the
+#     worker is stuck, dead or unreachable
+#   a task NOBODY messaged reads as it always did: no line at all, because a
+#     question nobody asked has no answer
+#   a send that did not go in is `NOT DELIVERED`, which is the other half of
+#     "did it land"
+#   a branch this machine cannot read is `not checked` — never a silent
+#     "no movement"
+#   nothing here writes `state` or `outcome`
+
+export FLEET_QUEUE_DIR="$tmp/queue-live"
+: >"$sends"
+
+# A real checkout, because the branch head is read out of the task's own repo:
+# a worker's worktree shares this object store, so a commit made there moves
+# `refs/heads/<branch>` right here — which is what makes the reading work with
+# no session to ask and no worktree path to resolve.
+liverepo="$tmp/live-repo"
+mkdir -p "$liverepo"
+git -C "$liverepo" init -q -b main
+git -C "$liverepo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m base
+git -C "$liverepo" branch feat/moved
+git -C "$liverepo" branch feat/quiet
+git -C "$liverepo" branch feat/never
+git -C "$liverepo" branch feat/remote
+
+ltopic="$($QUEUE topic add course-correct --title 'Message a worker mid-flight' \
+	--prompt 'tell a parked worker about new scope')"
+messaged() {
+	$QUEUE add "$ltopic" "$1" --title "Task $1" --repo "$liverepo" \
+		--branch "feat/$1" --number "$2" >/dev/null
+	$QUEUE attach "$ltopic/$2-$1" "$3" >/dev/null
+	session_is "$3" done 3043
+}
+messaged moved 01 cccccccc-0000-0000-0000-000000000001
+messaged quiet 02 cccccccc-0000-0000-0000-000000000002
+messaged never 03 cccccccc-0000-0000-0000-000000000003
+
+out="$($QUEUE send "$ltopic/01-moved" 'Also update the changelog.' 2>&1)"
+expect "the queue sends the message itself, so the lead stops reaching past it" \
+	"delivered" "$out"
+expect "and it really reached that worker's session" \
+	"Also update the changelog." "$(cat "$sends")"
+expect "and the branch head it will be compared against is written down" \
+	"baseline:" "$out"
+$QUEUE send "$ltopic/02-quiet" 'Anything to report?' >/dev/null 2>&1
+
+# (a) A SEND RECORDED, THEN MOVEMENT. The worker committed on its branch —
+#     the exact evidence the lead had to go and dig out of a foreign worktree.
+git -C "$liverepo" -c user.email=t@t -c user.name=t commit -q --allow-empty \
+	-m 'the work the lead thought had never happened'
+git -C "$liverepo" branch -f feat/moved HEAD
+row="$($QUEUE list --topic "$ltopic" 2>&1 | grep -A2 01-moved)"
+expect "a worker that moved after the message is visible as moved" \
+	"committed" "$row"
+refute "and is never reported quiet" "no commit since" "$row"
+
+# A transition dated after the message is the other half, and it is the half
+# `watch` produces — `session get` was still reporting a state from before the
+# send. The older event in the same file is the trap: a `watch` run catching up
+# folds it in AFTER the message, and it is still not movement.
+python3 - "$FLEET_QUEUE_DIR/$ltopic/01-moved" <<'PY'
+import json
+import sys
+from datetime import datetime, timedelta
+
+import yaml
+
+# Dated against the RECORDED SEND rather than against the wall clock, so one
+# event is unambiguously before it and one after, however fast this runs.
+task = yaml.safe_load(open(f"{sys.argv[1]}/task.yaml"))
+sent = datetime.fromisoformat(task["sends"][-1]["at"])
+now = datetime.now(sent.tzinfo).isoformat()
+rows = [
+    {"seq": 1, "at": (sent - timedelta(hours=2)).isoformat(), "to": "working",
+     "observed": now},
+    {"seq": 2, "at": (sent + timedelta(seconds=1)).isoformat(), "to": "done",
+     "observed": now},
+]
+with open(f"{sys.argv[1]}/progress.jsonl", "w") as fh:
+    for row in rows:
+        fh.write(json.dumps(row) + "\n")
+PY
+out="$($QUEUE show "$ltopic/01-moved" 2>&1)"
+expect "a transition dated after the message counts as movement" \
+	"transitioned" "$out"
+expect "and the message itself is on the record, with its age" "messaged:" "$out"
+
+# (b) A SEND RECORDED, NOTHING MOVED. A FACT, and never a verdict.
+out="$($QUEUE show "$ltopic/02-quiet" 2>&1)"
+expect "a message with nothing moving since says exactly that" \
+	"no commit since" "$out"
+expect "and says the same of the transitions it folded" "no transition since" "$out"
+expect "and refuses to turn that into a claim about the worker" \
+	"not what the worker is doing" "$out"
+for guess in "is stuck" "is dead" unreachable; do
+	refute "and never guesses the worker $guess" "$guess" "$out"
+done
+expect "the record keeps the send itself, not a flag" "sends:" \
+	"$(cat "$FLEET_QUEUE_DIR/$ltopic/02-quiet/task.yaml")"
+expect "and the task is still exactly as dispatched — a message is not a
+        completion" "state:       dispatched" "$out"
+refute "with no outcome invented for it" "outcome:     shipped" "$out"
+
+# (c) NO SEND EVER RECORDED. Today, and not "no movement": a question nobody
+#     asked gets no answer, so an unmessaged queue reads as it always did.
+out="$($QUEUE show "$ltopic/03-never" 2>&1)"
+refute "a task nobody messaged says nothing about a message" "messaged" "$out"
+refute "and nothing about a silence it was never asked to explain" \
+	"no commit since" "$out"
+row="$($QUEUE list --topic "$ltopic" 2>&1 | grep -A2 03-never)"
+refute "and its row is the row it always was" "messaged" "$row"
+
+# A branch this machine cannot read degrades to `not checked`, and a task that
+# runs on a host is the case that matters: its git is over there.
+messaged remote 04 cccccccc-0000-0000-0000-000000000004
+python3 - "$FLEET_QUEUE_DIR/$ltopic/04-remote/task.yaml" <<'PY'
+import sys
+
+import yaml
+
+path = sys.argv[1]
+doc = yaml.safe_load(open(path))
+doc["host"] = "devbox"
+yaml.safe_dump(doc, open(path, "w"), sort_keys=False)
+PY
+$QUEUE send "$ltopic/04-remote" 'How is it going?' >/dev/null 2>&1
+out="$($QUEUE show "$ltopic/04-remote" 2>&1)"
+expect "a git this machine cannot read is 'not checked', never a false negative" \
+	"commit not checked" "$out"
+expect "and it names the host whose git it would have had to read" "devbox" "$out"
+
+# A send that did not go in. `session-trust.sh` cannot get past a session the
+# stub has never heard of, so nothing was typed — and that is the other half of
+# "did it land", written down rather than guessed at from a silence.
+$QUEUE attach "$ltopic/03-never" cccccccc-0000-0000-0000-0000000dead1 >/dev/null
+out="$($QUEUE send "$ltopic/03-never" 'Are you there?' 2>&1)"
+expect "a send that could not be delivered says so" "NOT DELIVERED" "$out"
+out="$($QUEUE show "$ltopic/03-never" 2>&1)"
+expect "and the record carries it, so a silence is never read as delivery" \
+	"NOT DELIVERED" "$out"
+
+# Once the task closes, the send is part of the RECORD and not part of what is
+# happening: `collect` answered the question with a result file.
+python3 - "$FLEET_QUEUE_DIR/$ltopic/02-quiet/task.yaml" <<'PY'
+import sys
+
+import yaml
+
+path = sys.argv[1]
+doc = yaml.safe_load(open(path))
+doc["state"] = "done"
+yaml.safe_dump(doc, open(path, "w"), sort_keys=False)
+PY
+row="$($QUEUE list --topic "$ltopic" 2>&1 | grep -A2 02-quiet)"
+refute "a concluded task's row drops the liveness line" "no commit since" "$row"
+out="$($QUEUE show "$ltopic/02-quiet" 2>&1)"
+expect "and \`show\`, which is the record itself, keeps it" \
+	"this task concluded" "$out"
 
 echo
 if [ "$failed" -eq 0 ]; then

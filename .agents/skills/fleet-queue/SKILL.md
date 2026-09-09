@@ -346,6 +346,54 @@ to retry the handoff. `cursor` and `muse` are not answered by a keystroke at
 all — they take a launch flag, so spawn them under the `cursor-trusted` /
 `muse-trusted` profiles instead.
 
+### 4a. Course-correcting a worker — `send`, and never `session send`
+
+New scope for a worker that is already running goes through the queue:
+
+```bash
+./scripts/queue.sh send <ref> 'Also update the changelog before you open the PR.'
+```
+
+**One line.** `session send` types the text and presses Enter, so a second line
+fires the agent on the first and lands in a half-started turn; `send` refuses a
+message with a newline in it and tells you to point at a file instead. It
+answers the trust dialog first, exactly as dispatch does, and reads the
+returncode — a send into a session that has gone away is `NOT DELIVERED`, on
+the record, rather than a success nobody checked.
+
+**Why not `thurbox-cli session send`?** Because it leaves no trace, and the one
+honest signal you have is that you know WHEN YOU SENT. On 2026-09-09 a parked
+worker was sent new scope; the CLI answered `sent: true, submitted: true`; ten
+minutes later the session read `state: done | hook: done | age(s): 3043` — a
+state reported *before* the message. The worker looked dead. It had taken the
+message, done the work and committed it, and the only way that was discovered
+was `git log` in the worker's worktree.
+
+So `send` writes the instant down with a baseline of the branch head, and
+`list` and `show` compare it against two things a worker cannot fake:
+
+| source | what moving means | when it is `not checked` |
+|---|---|---|
+| the branch head | a commit landed after your message. Read from the task's own `repo` — a worktree shares that object store, so this works with the session already reaped | the task runs on a `--host`, the repo is not on this machine, or git cannot read the branch |
+| `progress.jsonl` | a transition DATED after your message. `watch` folds these; the event's own time is what counts, so a catch-up fold of old events is not movement | the file cannot be read |
+
+```text
+    02-worker-liveness  dispatched  /home/…/fleet  cccccccc-…
+        messaged 12m ago · committed 4m ago
+        messaged 12m ago · no transition since; no commit since
+        messaged 12m ago — NOT DELIVERED: session-trust: no such session
+```
+
+**Read the middle line as a fact and nothing more.** "Nothing has moved since"
+is an observation; "the worker is stuck" is a guess, and the queue does not
+make guesses about sessions (§5, and `thurbox-session` §4a). A worker that has
+not answered yet and one that never got the message read exactly the same from
+here — which is why `NOT DELIVERED` is a separate line and not an inference.
+
+A task nobody messaged prints nothing at all, and a task that has concluded
+drops the line from `list` and keeps it in `show`: `collect` answered the
+question with a result file. Nothing here writes `state` or `outcome`.
+
 ## 5. Learn what happened — read, do not be interrupted
 
 `thurbox-cli message send` is exact, but it **wakes** the recipient: an arriving
