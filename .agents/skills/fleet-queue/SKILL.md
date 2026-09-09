@@ -28,18 +28,16 @@ completion, this one wins: **workers write result files, they do not send mail.*
 control` session opens — and nowhere else. A second clone of this repo is
 normal: a control plane with no `origin` of its own needs one that workers can
 branch and push from. Opening a topic there gives you a whole second queue the
-monitor is
-right not to show.
+TUI pane is right not to show.
 
 Ask the tooling rather than the shell prompt:
 
 ```bash
 ./scripts/queue.sh root      # the queue this invocation would use, absolute
-./scripts/webui.sh status    # the queue the dashboard is serving
 ```
 
-Those two must name the same directory. If they do not, go to the one
-`queue.sh root` reports as the control plane and work there. `topic add` and
+If that is not the control plane's checkout, go there and work there. `topic
+add` and
 `add` refuse outside it anyway, naming both paths, and every other command
 warns — but the two lines above answer it before you type anything.
 `FLEET_QUEUE_DIR` overrides all of it, verbatim and unguarded, for a harness
@@ -618,7 +616,8 @@ their own intervals. Three things to know and nothing else:
   briefs, still `dispatch`. It reconciles the RECORDS with the world; deciding
   what runs is yours and it has no verb for it.
 - **`queue.sh` is still the only writer.** The loop shells out and never
-  touches a record. So `list` and the monitor cannot start disagreeing with it.
+  touches a record. So `list` and the TUI pane cannot start disagreeing with
+  it.
 - **Run the commands anyway when you want an answer NOW.** `collect` is
   idempotent and reading it yourself is always allowed; the loop only means you
   are rarely the first to notice.
@@ -758,7 +757,7 @@ A ref is `<topic>/<task>`, or a bare task id when only one topic has it.
 A topic whose every task reached `landed` or `abandoned` gets an `archived`
 timestamp in its `topic.yaml`, written by the landing sweep `collect` and
 `reap` run. Archived topics **leave every default view** — `list`,
-`fleet-status.sh`, the monitor and the TUI pane — and each of those still
+`fleet-status.sh` and the TUI pane — and each of those still
 prints how many it is hiding, so a short queue is never mistaken for an idle
 one. Nothing is moved or deleted: it is a flag and a filter, and `show <ref>`
 reaches an archived task with no unarchiving first.
@@ -775,23 +774,21 @@ whole topic in view.
 `queue.sh add` onto an archived topic un-archives it, so you can never dispatch
 into a topic no view draws.
 
-**The operator has a third view: point them at it rather than narrating into
-it.** `./scripts/webui.sh ensure` serves the same records on localhost — topics
-classified by what their tasks are doing, each with its plan, progress and
-outcome. It is a reader over these files, so it never disagrees with `list`, and
-it lets someone watch a run without interrupting you. When they ask "what is in
-flight" for the third time, give them the URL.
+**The operator has their own view: point them at it rather than narrating into
+it.** The TUI queue pane (`F3`) draws the same records — topics classified by
+what their tasks are doing, each with its plan, progress and outcome. It is a
+reader over these files, so it never disagrees with `list`, and it lets someone
+watch a run without interrupting you. When they ask "what is in flight" for the
+third time, point at the pane.
 
-It **displays and does not control** — no route dispatches, cancels or reorders,
-and you remain the only thing that writes here. A stop is durable: `webui.sh
-stop` writes a flag that `ensure` honours forever after, so do not clear it on
-their behalf.
+It **displays and does not control** — no key dispatches, cancels or reorders,
+and you remain the only thing that writes here.
 
 ## 7. Where this lives, and what that costs
 
 Everything under `orchestration/queue/` is gitignored working state — your
-prompts, your briefs, your results — as is `orchestration/webui/` for the
-monitor. `README.md`, `POLICY.md` and `OPERATOR.example.md` are the three
+prompts, your briefs, your results. `README.md`, `POLICY.md` and
+`OPERATOR.example.md` are the three
 exceptions: standing documentation, not one operator's data, which is exactly
 why every brief can point at the policy instead of carrying a copy. The
 operator's own `OPERATOR.md` is ignored with the rest — theirs to write, read by

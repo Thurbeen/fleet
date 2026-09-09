@@ -1,6 +1,6 @@
 ---
 name: fleet-onboarding
-description: Take a fresh clone of this control plane to a working fleet — discover the GitHub owners, write registry/owners.txt, sync the registry, install the thurbox extension and the TUI queue pane, bring the queue monitor up, and verify each step. Use when someone has just cloned the repo, asks how to set the control plane up, asks to start or restart the fleet monitor, or invokes /fleet-onboarding.
+description: Take a fresh clone of this control plane to a working fleet — discover the GitHub owners, write registry/owners.txt, sync the registry, install the thurbox extension and the TUI queue pane, bring the reconciler up, and verify each step. Use when someone has just cloned the repo, asks how to set the control plane up, asks to start or restart the fleet reconciler, or invokes /fleet-onboarding.
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Glob, Grep, AskUserQuestion
 ---
@@ -9,11 +9,11 @@ allowed-tools: Read, Edit, Write, Bash, Glob, Grep, AskUserQuestion
 
 Takes a fresh clone of fleet to a control plane that actually runs: owners
 known, registry synced, thurbox extension and TUI queue pane installed, and the
-queue monitor and the reconciler up.
+reconciler up.
 
 **Do the work, don't narrate it.** The steps are mechanical —
 `registry/owners.txt`, `scripts/sync-registry.sh`,
-`scripts/install-extension.sh`, `scripts/webui.sh`, `scripts/reconcile.sh` —
+`scripts/install-extension.sh`, `scripts/reconcile.sh` —
 and the user should not be reading a numbered list and typing along. Infer what is discoverable, ask once about the one thing that
 genuinely needs them, run the scripts, and **verify each step landed**.
 
@@ -254,48 +254,7 @@ never suggest adding a block that is already there. If `thurbox-cli` was missing
 preflight, defer this step exactly as step 4 is deferred: same script, same
 sentence.
 
-## 6. The monitor
-
-```bash
-./scripts/webui.sh ensure
-```
-
-A local, read-only web view of `orchestration/queue`: every topic classified by
-what its tasks are doing, and under each the plan (`BRIEF.md`), the progress
-(`progress.jsonl`) and the outcome (`result.md`). It binds `127.0.0.1` and picks
-its own port, so read back the URL it prints rather than assuming one.
-
-**Run `ensure`, never `start`.** They differ in exactly one way:
-
-| | On a running monitor | After the user asked it down |
-|---|---|---|
-| `ensure` | adopts it, prints the URL | leaves it down |
-| `start` | adopts it, prints the URL | **brings it back up** |
-
-`stop` writes a flag to `orchestration/webui/down`, and that flag is what makes
-"down" mean anything: it survives a restart, a reboot and this skill being run
-again. `ensure` reads it and does nothing. Using `start` here would quietly
-resurrect a monitor the user had switched off.
-
-So on a re-run, `ensure` says one of three things and all three are correct: it
-started it, it adopted the one already running, or the user asked it down and it
-stayed down. Read the output back rather than announcing a URL.
-
-Verify, and say where it is:
-
-```bash
-./scripts/webui.sh status
-```
-
-Two things to pass on, once:
-
-- It **displays and does not control**. There is no button that dispatches,
-  cancels or reorders anything — `scripts/queue.sh` remains the only thing
-  that writes to the queue.
-- To switch it off for good: `./scripts/webui.sh stop`. To bring it back:
-  `./scripts/webui.sh start`.
-
-## 6a. The reconciler
+## 6. The reconciler
 
 ```bash
 ./scripts/reconcile.sh ensure
@@ -321,7 +280,7 @@ Two things to pass on, once:
 
 - It **reconciles and does not decide**. No dispatch, no cancel, no reorder,
   and it writes no record itself — `scripts/queue.sh` stays the only writer,
-  the same rule the monitor lives under.
+  which is what keeps the queue single-writer.
 - To switch it off for good: `./scripts/reconcile.sh stop`. To bring it back:
   `./scripts/reconcile.sh start`.
 
@@ -375,8 +334,7 @@ Assume someone runs this twice. Every step above **converges**:
 | Registry | the script rewrites the file wholesale from live GitHub |
 | Extension | a reinstall keeps existing `agents.toml` entries, so a customized model survives |
 | Queue pane | `plugin install` reports it `current`; `plugin check` says whether the `layout.lua` block is already there, so it is never suggested twice |
-| Monitor | `ensure` adopts a running one and respects a `down` flag; never a twin |
-| Reconciler | the same: `ensure` adopts, and a `down` flag it wrote stays honoured |
+| Reconciler | `ensure` adopts a running one, and a `down` flag it wrote stays honoured; never a twin |
 
 So do not refuse on an already-configured clone. Detect it —
 `registry/owners.txt` with active entries, the generated map there, the

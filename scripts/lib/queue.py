@@ -397,9 +397,9 @@ def session_name(title: str, glyph: str) -> str:
 def queue_root() -> str:
     """Where the queue lives, as an absolute path.
 
-    FLEET_QUEUE_DIR is honoured verbatim and never second-guessed — webui.sh,
-    the selftests and anyone pointing a harness at a temp directory rely on
-    that. Otherwise the queue belongs to this CHECKOUT, not to the process cwd.
+    FLEET_QUEUE_DIR is honoured verbatim and never second-guessed — the
+    selftests and anyone pointing a harness at a temp directory rely on that.
+    Otherwise the queue belongs to this CHECKOUT, not to the process cwd.
     """
     return os.environ.get("FLEET_QUEUE_DIR") or os.path.join(
         checkout_root(), "orchestration", "queue"
@@ -508,7 +508,7 @@ def operator_instructions() -> str:
 # SUPPORTED shape — the control plane may have no `origin` of its own, so
 # workers branch and push from a clone that does — and that is exactly how the
 # queue silently forked: a `topic add` run with the shell in the second clone
-# wrote records the monitor was right to not show, and nothing said a word.
+# wrote records the TUI pane was right to not show, and nothing said a word.
 #
 # Two ways to recognise the control plane, cheapest first, and both are things
 # the install already produced rather than new state this file invents:
@@ -626,7 +626,7 @@ def guard_creating() -> None:
         "refusing to create queue records outside the control plane.\n"
         f"    this checkout: {here}\n"
         f"    control plane: {owner}\n"
-        "  Records written here are invisible to the monitor and to the lead.\n"
+        "  Records written here are invisible to the pane and to the lead.\n"
         "  Open the topic where the queue lives:\n"
         f"      {os.path.join(owner, 'scripts', 'queue.sh')} ...\n"
         "  or, if you really mean this checkout's queue, name it:\n"
@@ -660,7 +660,7 @@ def warn_foreign(root: str) -> None:
     print(
         f"queue: warning — {root}\n"
         f"       is not the control plane's queue. The control plane is {owner};\n"
-        "       records here are invisible to its monitor and to its lead.",
+        "       records here are invisible to its pane and to its lead.",
         file=sys.stderr,
     )
 
@@ -764,8 +764,7 @@ class Task:
 # the reason `archived` is worth having at all: a topic marked archived costs
 # ONE read of its topic.yaml and its task directories are never opened, so
 # twenty-two finished topics stop being twenty-seven file reads and twenty-two
-# screenfuls on every list, every status line, every monitor poll and every
-# pane refresh.
+# screenfuls on every list, every status line and every pane refresh.
 SCOPES = ("live", "archived", "all")
 
 
@@ -920,7 +919,7 @@ class Queue:
 
 # --- what a record MEANS, in one place ---------------------------------------
 #
-# `queue.sh list`, `queue.sh plan`, `fleet-status.sh` and the monitor all show
+# `queue.sh list`, `queue.sh plan`, `fleet-status.sh` and the TUI pane all show
 # these three readings, and each used to derive its own. That is how the queue
 # came to print `landed` with a "held by" line under it, a blocker on an
 # `abandoned` upstream as though a merge were still coming, and `abandoned`
@@ -1070,7 +1069,7 @@ def task_notes(q: Queue, task: Task) -> list:
 # view more expensive, not less, which is the opposite of the ask.
 #
 # WHY IT IS DERIVED BUT STORED. Everything else a reader shows about a topic is
-# derived on the spot (webui.py's `classify`), and this could have been too.
+# derived on the spot (the pane's `classify`), and this could have been too.
 # It is not, because deriving it is exactly the read the flag exists to avoid.
 # The cost of storing it is that it can go stale — which is what `add` clearing
 # it below is for, and what makes `unfinished()` the single predicate.
@@ -1604,7 +1603,7 @@ def cmd_plan(args) -> int:
 # workers write files and do not send mail, and it is as true of a remote worker
 # as of a local one. It would also make completion arrive by two mechanisms
 # depending on where a task happened to run, so `collect`, `reap`, `shepherd`
-# and the monitor would each have to learn the difference. ssh confines that
+# and the pane would each have to learn the difference. ssh confines that
 # difference to `push_brief` and `fetch_result`. By the time anything else reads
 # a task, its result.md is a local file that says nothing about where it came
 # from.
@@ -4858,7 +4857,7 @@ def where_it_runs(task: Task) -> str:
 def cmd_list(args) -> int:
     root = queue_root()
     # The first line answers "which queue am I looking at?" without being asked.
-    # webui.sh status prints the same path, so the two can never disagree
+    # `queue.sh root` prints the same path, so the two can never disagree
     # silently about what they are showing.
     print(f"queue: {os.path.abspath(root)}")
     # Named explicitly, so a topic stays reachable BY NAME however it is
@@ -4883,14 +4882,14 @@ def cmd_list(args) -> int:
             mark = "waiting" if t.state == "queued" and not q.is_ready(t) else t.state
             extra = t.doc.get("artifact") or t.doc.get("session") or ""
             # The publish state, with the age of the look that produced it —
-            # the same field the pane and the monitor draw, so the three views
-            # cannot disagree about what was last seen.
+            # the same field the pane draws, so the two views cannot
+            # disagree about what was last seen.
             pub = t.doc.get("publish") or {}
             if pub.get("state"):
                 extra = f"{extra}  {pub['state']} {age_of(pub.get('at'))}".strip()
             print(f"    {t.id:<34} {mark:<11} {where_it_runs(t)}  {extra}")
             # The row is one line and a record can contradict it; task_notes is
-            # what says so, and it is the same list the monitor renders.
+            # what says so, and it is the same list the pane renders.
             for note in task_notes(q, t):
                 print(f"        {note}")
         print()

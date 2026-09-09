@@ -111,11 +111,10 @@ you still plan, still write briefs, still dispatch. When something is
 unexpectedly current, that is why; `./scripts/reconcile.sh status` says whether
 it is up, and `logs` says what it has been doing.
 
-The operator watches all of that in a browser rather than by asking you:
-`./scripts/webui.sh ensure` serves a read-only view of the queue on localhost.
-It is a READER over the same files, so it never disagrees with `list` and never
-writes anything. `ensure` adopts a running one; only `stop` takes it down and
-only `start` brings it back.
+The operator watches all of that in the TUI queue pane rather than by asking
+you: `interface/fleet_queue.lua` draws the queue in a thurbox column, `F3`
+opens and closes it. It is a READER over the same files, so it never disagrees
+with `list` and never writes anything.
 
 `.agents/skills/fleet-queue/` is the driving surface for 1–4, 6 and 8, and
 `.agents/skills/thurbox-session/` for the mechanics of one session — spawning,
@@ -167,9 +166,9 @@ Near the floor you spend fuel on dispatching and on nothing else:
   a second file in another codebase spends yours. That is already the rule
   below; near the floor it is the only one.
 - **`list`, not `show`. `show`, not the brief.** You never read a brief.
-- **Hand over the monitor URL** instead of narrating the queue into the
-  terminal. `./scripts/webui.sh ensure` serves the operator the same records
-  without spending a token of yours.
+- **Point at the queue pane** instead of narrating the queue into the
+  terminal. It draws the operator the same records without spending a token of
+  yours.
 - **`collect` and `shepherd`, not a re-read.** One file and one forge call each
   close what is already finished.
 
@@ -188,7 +187,7 @@ plane. However small it looks.
 
 Inline, and only: `orchestration/`, `registry/` and `.agents/` — the queue, the
 briefs, the run logs, the map, the skills — plus `queue.sh`, `fleet-status.sh`,
-`sync-checkout.sh`, `install-extension.sh`, `webui.sh` and `reconcile.sh`.
+`sync-checkout.sh`, `install-extension.sh` and `reconcile.sh`.
 Those you push straight to `main`.
 
 The tell: **if you are about to read a second file in another codebase, you
@@ -213,8 +212,8 @@ One surprise: probe-timeouts found ssh probes run serially.
 ```
 
 `./scripts/fleet-status.sh` is that opening block in ONE call — fuel, queue,
-sessions, PRs, monitor, checkout — so assemble it from six commands only when
-that one has failed you.
+sessions, PRs, checkout — so assemble it from five commands only when that one
+has failed you.
 
 **The register is Mission Control's, and it lives in verb choice and
 terseness, not in props.**
@@ -268,15 +267,14 @@ fact wins:
   gate, and CI runs the same script.
 - **Anything that opens a pull request lands by squash merge**, so the pull
   request title is the commit that reaches `main`. See `CONTRIBUTING.md`.
-- **The monitor displays; it does not control.** It has no route that
+- **The queue pane displays; it does not control.** It has no key that
   dispatches, cancels or reorders anything, and `./scripts/queue.sh` stays the
   only thing that writes to the queue. If the operator asks for a button, that
-  is a change to propose and make, not one to add because the page is there.
-- **A stop stays stopped.** `./scripts/webui.sh stop` writes
-  `orchestration/webui/down`, and `ensure` — which onboarding runs — honours it
-  across a reboot and every later run. `./scripts/reconcile.sh` works exactly
-  the same way, with its own flag. Do not clear either on the operator's
-  behalf; `start` is theirs to type.
+  is a change to propose and make, not one to add because the pane is there.
+- **A stop stays stopped.** `./scripts/reconcile.sh stop` writes
+  `orchestration/reconcile/down`, and `ensure` honours it across a reboot and
+  every later run. Do not clear it on the operator's behalf; `start` is theirs
+  to type.
 - **Workers write files; they do not mail you.** `thurbox-cli message send`
   WAKES its recipient — it injects into your terminal and interrupts whoever is
   talking to you. So a worker writes `result.md` into its task directory and you
@@ -303,10 +301,9 @@ and accepted, and everything the rule was protecting is still true of it —
   `shepherd` and `refuel` on their own clocks. It never dispatches, cancels or
   reorders anything. Choosing what runs is still yours.
 - **It writes no record.** Every effect goes through `./scripts/queue.sh`,
-  which stays the only writer, exactly as the monitor stays the only reader.
-- **It is stoppable, and a stop stays stopped.** Same flag, same durability,
-  same rule as the monitor's: `orchestration/reconcile/down` is the operator's
-  to clear with `start`, never yours.
+  which stays the only writer, exactly as the pane stays a pure reader.
+- **It is stoppable, and a stop stays stopped.** `orchestration/reconcile/down`
+  is the operator's to clear with `start`, never yours.
 - **It never restarts a worker into a spent quota window.** That rule lives in
   `refuel` and the loop calls the command rather than re-deciding it.
 

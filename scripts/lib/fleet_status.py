@@ -5,13 +5,13 @@
 # WHY THIS EXISTS. Answering "where are we?" used to cost three to five
 # commands spread over three checkouts and four tools: a `git status` and a
 # `git log` per checkout, `queue.sh list`, `queue.sh plan`, `thurbox-cli
-# session list`, `webui.sh status`, `gh pr list`. Most of a long session's tool
+# session list`, `gh pr list`. Most of a long session's tool
 # calls were situational awareness rather than work, and every one of them cost
 # a round trip and a piece of the context window. This is those calls, folded
 # into one screen the lead can afford to run reflexively.
 #
 # THE ONE RULE: DEGRADE, NEVER FAIL. No network, no `gh`, no thurbox, no
-# monitor, no queue — each of those costs exactly its own section, which then
+# queue — each of those costs exactly its own section, which then
 # says what it could not determine and why. Every probe funnels through run(),
 # which converts every way a subprocess can go wrong into a reason string, and
 # every section carries an `unavailable` field that is either None or that
@@ -23,10 +23,8 @@
 # scripts/fleet-status-selftest.sh proves both rules against stubs.
 #
 # It also does not re-derive what another command already resolves. The queue
-# root comes from queue.py and the monitor's line comes from `webui.sh status`,
-# so this can report that the dashboard is serving a DIFFERENT queue — the
-# reading that answers "why is the dashboard not updated?" in one look —
-# without being a third opinion about where either of them lives.
+# root comes from queue.py, so this is never a second opinion about which
+# records it is reading.
 
 from __future__ import annotations
 
@@ -44,8 +42,8 @@ from datetime import datetime, timezone
 def _load_queue():
     """Load scripts/lib/queue.py under a name that is not `queue`.
 
-    The same trick webui.py uses, and for the same reason: this directory on
-    sys.path would shadow the standard library's `queue` for the whole process.
+    Loaded under another name because this directory on sys.path would
+    shadow the standard library's `queue` for the whole process.
     """
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "queue.py")
     spec = importlib.util.spec_from_file_location("fleet_queue", path)
@@ -155,7 +153,7 @@ def probe_queue() -> dict:
                     # disagrees with its own outcome, a task nothing dispatched,
                     # and the blockers that are actually holding something.
                     # queue.py derives it, so this cannot say it differently
-                    # from `queue.sh list` or the monitor.
+                    # from `queue.sh list` or the pane.
                     "notes": fleetqueue.task_notes(q, t),
                 }
             )
@@ -163,7 +161,7 @@ def probe_queue() -> dict:
 
     sec["counts"] = counts
     # Topics this reading declined to open. Same number `queue.sh list` prints
-    # and the monitor shows: they are three readers over one set of records,
+    # and the TUI pane shows: they are three readers over one set of records,
     # and the whole point of a status screen is that it cannot disagree with
     # the thing it is reporting on.
     sec["archived"] = len(q.archived_hidden)
@@ -364,41 +362,6 @@ def probe_prs(tasks: list) -> dict:
     # failed, so it must not count towards "every repo failed the same way".
     sec["errors"] += remote
     sec["prs"].sort(key=lambda p: p["ref"])
-    return sec
-
-
-# --- monitor -----------------------------------------------------------------
-
-
-def probe_monitor(queue_root: str | None) -> dict:
-    """`webui.sh status`, read rather than re-derived.
-
-    Its `queue` line is the absolute directory the dashboard is actually
-    serving (#11 added it for this), so comparing it with the queue section's
-    root is what turns "why is the dashboard not updated?" into one look.
-    """
-    sec: dict = {
-        "unavailable": None, "up": None, "url": None, "pid": None,
-        "serving": None, "detail": None, "serves_this_queue": None,
-    }
-    script = os.path.join(REPO_ROOT, "scripts", "webui.sh")
-    out, why = run([script, "status"], cwd=REPO_ROOT, timeout=20)
-    if why:
-        sec["unavailable"] = why
-        return sec
-    for line in (out or "").splitlines():
-        head, _, rest = line.strip().partition(" ")
-        rest = rest.strip()
-        if head == "up":
-            sec["up"], sec["url"] = True, rest
-        elif head == "down":
-            sec["up"], sec["detail"] = False, rest
-        elif head == "pid":
-            sec["pid"] = rest
-        elif head == "queue":
-            sec["serving"] = rest
-    if sec["serving"] and queue_root:
-        sec["serves_this_queue"] = os.path.abspath(sec["serving"]) == os.path.abspath(queue_root)
     return sec
 
 
@@ -807,20 +770,6 @@ def render_prs(sec: dict) -> list:
     return lines
 
 
-def render_monitor(sec: dict) -> list:
-    if sec["unavailable"]:
-        return [head("MONITOR", f"unavailable — {sec['unavailable']}")]
-    if sec["up"]:
-        lines = [head("MONITOR", f"up    {sec['url']}")]
-    else:
-        lines = [head("MONITOR", f"down  {sec['detail'] or ''}".rstrip())]
-    if sec["serving"]:
-        lines.append(cont(f"serving {sec['serving']}"))
-        if sec["serves_this_queue"] is False:
-            lines.append(cont("! that is NOT the queue above — the dashboard is showing another one"))
-    return lines
-
-
 def render_checkout(sec: dict) -> list:
     if sec["unavailable"]:
         return [head("CHECKOUT", f"unavailable — {sec['unavailable']}")]
@@ -831,7 +780,6 @@ def render_checkout(sec: dict) -> list:
     else:
         tree = "clean"
     return [head("CHECKOUT", f"{sec['path']}  {sec['branch']} @ {sec['head'] or '?'}  {tree}")]
-
 
 
 def fuel_provider_lines(rec: dict) -> list:
@@ -954,7 +902,6 @@ def render(doc: dict) -> str:
         render_queue(doc["queue"]),
         render_sessions(doc["sessions"]),
         render_prs(doc["prs"]),
-        render_monitor(doc["monitor"]),
         render_checkout(doc["checkout"]),
     ]
     out = [f"fleet status  ·  {doc['generated']}", ""]
@@ -975,7 +922,6 @@ def collect() -> dict:
         "queue": queue,
         "sessions": probe_sessions(tasks),
         "prs": probe_prs(tasks),
-        "monitor": probe_monitor(None if queue["unavailable"] else queue["root"]),
         "checkout": probe_checkout(),
     }
 

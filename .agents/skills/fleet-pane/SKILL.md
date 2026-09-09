@@ -32,10 +32,9 @@ dispatches, collects or merges anything — `scripts/queue.sh` stays the only
 thing that writes to the queue. The wheel scrolls it. Its one action is the
 F-key in §5.
 
-It is the same view `./scripts/webui.sh` serves, in a column instead of a
-browser tab, reading the same records. The web page is still the better place to
-read a `BRIEF.md`; the pane is for not alt-tabbing to notice a task changed
-state.
+It is the fleet's only live view of the queue, over the same records
+`./scripts/queue.sh list` reads. `queue.sh show` is still the place to read a
+task in full; the pane is for not asking, to notice a task changed state.
 
 **The top rows are the fuel, not a task.** The account's remaining provider
 windows are the constraint every row under them competes for, so they sit above

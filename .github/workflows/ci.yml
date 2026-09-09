@@ -32,7 +32,6 @@ jobs:
       yaml: ${{ steps.filter.outputs.yaml }}
       profiles: ${{ steps.filter.outputs.profiles }}
       queue: ${{ steps.filter.outputs.queue }}
-      webui: ${{ steps.filter.outputs.webui }}
       reconcile: ${{ steps.filter.outputs.reconcile }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -76,15 +75,6 @@ jobs:
               # queue, so a change there can break it without touching a
               # reconcile file.
               - 'scripts/queue.sh'
-              - 'scripts/lib/queue.py'
-              - 'scripts/check.sh'
-              - '.github/workflows/ci.yml'
-            webui:
-              - 'scripts/webui.sh'
-              - 'scripts/webui-selftest.sh'
-              - 'scripts/lib/webui.py'
-              # The monitor reads the queue's model through queue.py, so a
-              # change there can break the view without touching a webui file.
               - 'scripts/lib/queue.py'
               - 'scripts/check.sh'
               - '.github/workflows/ci.yml'
@@ -145,25 +135,11 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - run: ./scripts/check.sh queue
 
-  # The monitor's lifecycle. The selftest binds a real socket, so this is a job
-  # and not an assertion: it proves a second `ensure` adopts the running server
-  # instead of starting a twin, and that an explicit `stop` survives the next
-  # `ensure` — which is the call the onboarding skill makes.
-  webui:
-    name: Monitor
-    needs: changes
-    if: needs.changes.outputs.webui == 'true'
-    runs-on: ubuntu-latest # PyYAML and curl are preinstalled on the runner
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
-      - run: ./scripts/check.sh webui
-
-  # The reconciler's lifecycle, and a job rather than an assertion for the same
-  # reason the monitor's is: it starts a real supervised loop under setsid and
-  # watches it tick. What it proves that the monitor's does not is that the
-  # loop asks the queue for watch, collect, shepherd and refuel and NOTHING
-  # else — no dispatch, no reap, no record of its own — which is the rule that
-  # keeps the queue single-writer.
+  # The reconciler's lifecycle, and a job rather than an assertion because it
+  # starts a real supervised loop under setsid and watches it tick. It also
+  # proves the loop asks the queue for watch, collect, shepherd and refuel and
+  # NOTHING else — no dispatch, no reap, no record of its own — which is the
+  # rule that keeps the queue single-writer.
   reconcile:
     name: Reconciler
     needs: changes
@@ -221,7 +197,6 @@ jobs:
       - yaml
       - profiles
       - queue
-      - webui
       - reconcile
       - skills
       - pane

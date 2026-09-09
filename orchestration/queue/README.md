@@ -31,8 +31,7 @@ clone the `fleet` session opens — and is resolved from `queue.sh`'s own
 location, never from the shell's cwd. If you landed here in a second clone (the
 one workers branch and push from, because the control plane may have no
 `origin`), this is not the queue anyone is reading: `../../scripts/queue.sh
-root` prints the one in use, `queue.sh topic add` refuses here, and
-`../../scripts/webui.sh status` prints the directory the dashboard serves. Set
+root` prints the one in use and `queue.sh topic add` refuses here. Set
 `FLEET_QUEUE_DIR` to override all of that, verbatim.
 
 ## Shape
@@ -70,8 +69,8 @@ Four files per task, because four different things want four different answers:
 
 A topic view — every task under one heading, plan beside progress beside
 outcome — is therefore the directory listing. It needs no field that is not
-already here. `../../scripts/webui.sh` serves exactly that view in a browser,
-as a reader: it opens these four files and adds nothing to them.
+already here. `interface/fleet_queue.lua` draws exactly that view in a thurbox
+column, as a reader: it opens these four files and adds nothing to them.
 
 ## Three rules worth knowing before you edit anything
 

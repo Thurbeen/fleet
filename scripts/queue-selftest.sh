@@ -1542,7 +1542,7 @@ fi
 # The bug this proves gone: `queue_root()` was relative, so it resolved against
 # whatever directory the shell happened to be in. A lead whose shell sat in a
 # second clone of this repo opened a topic there, dispatched from it, and the
-# monitor — reading the control plane's queue — correctly showed nothing. No
+# TUI pane — reading the control plane's queue — correctly showed nothing. No
 # warning at any point. Two queues, silently.
 #
 # The whole thing is exercised against a THROWAWAY CLONE rather than this one,
@@ -1621,8 +1621,8 @@ expect "check prints the resolved queue root too" "$fake/orchestration/queue" "$
 
 # --- FLEET_QUEUE_DIR is honoured verbatim, with no guard --------------------
 #
-# webui-selftest and this file both point the queue at a temp directory. Someone
-# who set it meant it, so nothing here may warn about it or refuse it.
+# The selftests point the queue at a temp directory. Someone who set it meant
+# it, so nothing here may warn about it or refuse it.
 
 out="$(cd "$fake" && FLEET_QUEUE_DIR="$clonetmp/explicit" ./scripts/queue.sh \
 	topic add explicit --prompt 'I named the directory I meant' 2>&1)"
@@ -2874,10 +2874,7 @@ unset CLAUDE_CONFIG_DIR
 # collect, reap and the forge and the sections above own their own records.
 
 export FLEET_QUEUE_DIR="$tmp/queue-status"
-# The monitor's runtime state, pointed somewhere empty so `fleet-status.sh`
-# reads "down" rather than anywhere near the operator's own.
-export FLEET_WEBUI_DIR="$tmp/webui-rt"
-mkdir -p "$FLEET_WEBUI_DIR" "$tmp/repo-readable"
+mkdir -p "$tmp/repo-readable"
 
 # Rewrite one field of a THROWAWAY record, to reach a state a real run only
 # reaches through the forge. Nothing outside this fixture queue is ever edited.
@@ -2963,21 +2960,14 @@ refute "the PR headline cannot read 'none open' when a repo went unread" \
 expect "the headline itself says the sweep was incomplete" "INCOMPLETE" "$status"
 expect "and the repo it could not read is still named" "no such directory" "$status"
 
-# --- 13c. and in the monitor, which reads the same records -------------------
+# --- 13c. and in the machine-readable reading, which is the same records -----
 #
-# Read through webui.py's own snapshot rather than over HTTP: the claim is that
-# the monitor cannot disagree with `list`, and that is a question about the
-# derivation, not about the server. webui-selftest.sh owns the server.
+# `--json` is the reading a program consumes, and it derives its blockers and
+# its notes through queue.py exactly as the text above does. The claim is that
+# the two cannot disagree, which is a question about the derivation.
 
-view="$(python3 - <<'VIEW' 2>&1
-import importlib.util, json
-spec = importlib.util.spec_from_file_location("fleet_webui", "scripts/lib/webui.py")
-mod = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(mod)
-print(json.dumps(mod.snapshot()))
-VIEW
-)"
-expect "the monitor calls the unclearable blocker unclearable" \
+view="$(./scripts/fleet-status.sh --json 2>&1)"
+expect "--json calls the unclearable blocker unclearable" \
 	'"status": "unclearable"' "$view"
 expect "and a landed task's blocker moot" '"status": "moot"' "$view"
 expect "it carries the same conflict note" "disagrees with outcome shipped" "$view"
@@ -3095,25 +3085,12 @@ out="$(./scripts/fleet-status.sh 2>&1)"
 expect "nor by fleet-status.sh, which counts them the same way" \
 	"1 archived topic(s)" "$out"
 refute "and does not draw the archived topic" "all-landed" "$out"
-monitor() {
-	python3 -c '
-import json, sys, importlib.util
-spec = importlib.util.spec_from_file_location("fleet_webui", "scripts/lib/webui.py")
-m = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(m)
-doc = getattr(m, sys.argv[1])()
-print(json.dumps({
-    "slugs": [t["slug"] for t in doc["topics"]],
-    "archived": doc["counts"].get("archived"),
-}))
-' "$1" 2>&1
-}
-out="$(monitor snapshot)"
-expect "nor by the monitor's snapshot, which counts them the same way" \
+out="$(./scripts/fleet-status.sh --json 2>&1)"
+expect "nor by the machine-readable reading, which counts them the same way" \
 	'"archived": 1' "$out"
 refute "and does not carry the archived topic" '"all-landed"' "$out"
 
-# The TUI pane is the fourth reader, and the only one that is not Python. Its
+# The TUI pane is the third reader, and the only one that is not Python. Its
 # probe is plain shell, so it is run here exactly as the pane runs it — a pane
 # that disagreed with `list` would be a second opinion about a model it does
 # not own.
@@ -3125,10 +3102,10 @@ refute "and never emits a record for it" "all-landed" "$out"
 expect "while still emitting the live ones" "half-live" "$out"
 mv "$tmp/parked-task.yaml" "$FLEET_QUEUE_DIR/$atopic/01-first-half/task.yaml"
 
-# And the other half of "not read": the monitor opens the archived set when
-# something asks it to, on a route the four-second poll never touches.
-expect "the monitor can fetch the archived set on demand" "all-landed" \
-	"$(monitor archived_snapshot)"
+# And the other half of "not read": `list --archived` opens the archived set
+# when something asks it to, on a route the default view never touches.
+expect "list --archived can fetch the archived set on demand" "all-landed" \
+	"$($QUEUE list --archived 2>&1)"
 
 # (d) The manual override, and the one refusal that keeps it honest.
 if out="$($QUEUE archive "$ltopic" 2>&1)"; then

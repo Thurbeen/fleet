@@ -53,12 +53,9 @@ names every path and the reason for each.
   pid, the heartbeat proving its loop is ticking, its log, the advisory `nudge`
   flag and the `down` flag. Written by `./scripts/reconcile.sh` and created on
   first start. The loop's code is tracked; nothing it writes is.
-- `orchestration/webui/` — the monitor's runtime state: the port it chose at
-  bind time, its supervisor's pid, its log, and the `down` flag. Written by
-  `./scripts/webui.sh` and created on first start. The server's code
-  (`scripts/webui.sh`, `scripts/lib/webui.py`) is tracked; nothing it writes is.
-- `interface/fleet_queue.lua` — the TUI queue pane: the same view the monitor
-  serves, drawn in a thurbox column. `scripts/install-extension.sh` installs it
+- `interface/fleet_queue.lua` — the TUI queue pane, and the fleet's only live
+  view of the queue, drawn in a thurbox column over the same records
+  `queue.sh list` reads. `scripts/install-extension.sh` installs it
   with `thurbox-cli plugin install`; the file's own header owns the view, and
   `extension.toml.in`'s header argues why it is not an `[[external_files]]`
   payload. **Placing it is a guarded block in the user's `layout.lua` and
@@ -78,7 +75,7 @@ names every path and the reason for each.
   registers the same skill twice. Five skills live there: `fleet-queue` (the
   queue: intake, ordering, dispatch, and the two halves of completion),
   `thurbox-session` (driving one worker session), `fleet-onboarding` (a fresh
-  clone to a working control plane, including bringing the monitor up),
+  clone to a working control plane),
   `fleet-pane` (getting the TUI queue pane onto a screen, and diagnosing one
   that is installed and drawing nothing), and `update-fleet` (a working control
   plane that is BEHIND origin, and the consequences of the sync that
@@ -165,15 +162,15 @@ The loop, driven by `./scripts/queue.sh`:
 
 **Nothing above happens because somebody remembered to run it.**
 `./scripts/reconcile.sh` is a supervised loop — `ensure` / `start` / `stop` /
-`status`, a supervisor pid, a log and a durable `down` flag, modelled on
-`webui.sh` and with the same rule that `ensure` honours the flag and `start`
-clears it. It consumes `queue.sh watch` continuously and calls `collect`,
+`status`, a supervisor pid, a log and a durable `down` flag, under the rule
+that `ensure` honours the flag and `start` clears it. It consumes `queue.sh
+watch` continuously and calls `collect`,
 `shepherd` and `refuel` on separate intervals; its header argues every number
 and is the full usage. Three things about it are load-bearing:
 
 - **It writes nothing.** Every effect goes through `./scripts/queue.sh`, which
-  stays the only writer over the records — the same rule the monitor lives
-  under. It calls exactly `watch`, `collect`, `shepherd` and `refuel`, and
+  stays the only writer over the records. It calls exactly `watch`,
+  `collect`, `shepherd` and `refuel`, and
   `scripts/reconcile-selftest.sh` asserts that the set is those four.
 - **It reconciles; it does not decide.** No dispatch, no cancel, no reorder,
   and it does not re-decide `refuel`'s rule about a spent quota window.
@@ -185,13 +182,6 @@ and is the full usage. Three things about it are load-bearing:
   (`~/.config/thurbox/hooks/claude.json`) is thurbox's, and a thurbox update
   rewrites it. `nudge` runs no queue command, so a worker firing it can never
   collect or reap itself.
-
-`./scripts/webui.sh` serves a read-only web view of that same queue on
-localhost — topics classified by what their tasks are doing, each with its plan,
-progress and outcome. It READS the records and never writes them, so it cannot
-disagree with `queue.sh list`. Its header owns the lifecycle; the one thing to
-know before touching it is that `ensure` and `start` differ only in whether they
-honour the `down` flag `stop` wrote, and the onboarding skill must call `ensure`.
 
 `.agents/skills/fleet-queue/` is the driving surface for 1–3 and 5–8, and
 `.agents/skills/thurbox-session/` for one session: spawning, prompting, cleanup.
@@ -217,7 +207,7 @@ CI only runs on pull requests, and routine control-plane changes go straight to
 `main`. So gate locally before you push:
 
 ```bash
-./scripts/check.sh          # shellcheck, markdown, YAML, profiles, queue, monitor,
+./scripts/check.sh          # shellcheck, markdown, YAML, profiles, queue,
                             # reconciler, status, skills, pane
 ./scripts/check.sh --fix    # same, applying the fixes a check can apply
 ```
@@ -274,7 +264,7 @@ plain `git pull`. The sync script says so when it happens; act on it rather
 than assuming the new instructions reached the lead.
 
 `.agents/skills/update-fleet/` drives that whole update — the sync, then only
-the pieces it left stale (extension manifest, queue pane, registry, monitor,
+the pieces it left stale (extension manifest, queue pane, registry,
 reconciler), then the lead hand-over the sync can only report. It is the
 counterpart to `fleet-onboarding`: that one builds a fleet, this one catches a
 working one up.
