@@ -64,6 +64,21 @@ profiles:
       MAX_THINKING_TOKENS: "8000"
       BASH_DEFAULT_TIMEOUT_MS: "120000"
 
+  # Pin the worker to Opus, for work where the reasoning is the expensive part
+  # rather than the edit — a subsystem change with an invariant to preserve.
+  #
+  # AN ENV VAR AND NOT `args`, on purpose. `args` REPLACES the stock agent's
+  # arguments rather than adding to them, and thurbox's stock `claude` entry
+  # carries `--settings <config>/hooks/claude.json` — the file that lets an
+  # agent report working/blocked/done/idle. Pinning the model with
+  # `args: ["--model", ...]` therefore trades away hook coverage silently: the
+  # session reports `uncovered`, and `watch`, `reap` and `refuel` each read it
+  # wrong. `529e7bc` fixed exactly that on the lead. `ANTHROPIC_MODEL` reaches
+  # the same setting through the environment and leaves the launch flags alone.
+  opus:
+    env:
+      ANTHROPIC_MODEL: "claude-opus-5"
+
   # THE FLAG HALF OF TRUST. Most agents ask about a directory they have not
   # seen with a DIALOG, which `scripts/session-trust.sh` answers with a
   # keystroke as part of every dispatch. Two do not: they take a launch flag,
