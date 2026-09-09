@@ -1,10 +1,8 @@
--- The fleet task queue, in a column: the same view the web monitor serves.
+-- The fleet task queue, in a column: the live view of the queue.
 --
--- WHY IT EXISTS. `scripts/webui.sh` already serves this queue as a local web
--- page, and that page is the better place to READ a brief. This pane is the
--- other half: the operator works in thurbox all day, and a monitor you have to
--- alt-tab to is a monitor you stop looking at. Same records, same information
--- architecture, no second model — `scripts/lib/webui.py`'s header owns both.
+-- WHY IT EXISTS. The operator works in thurbox all day, and a view you have to
+-- alt-tab to is a view you stop looking at. It reads the same records
+-- `queue.sh list` and `queue.sh show` read, and derives nothing they do not.
 --
 -- A GLANCE, NOT A RECORD. This pane answers ONE question — what is the fleet
 -- working on right now — and every row it draws is a row competing with that
@@ -100,7 +98,7 @@
 -- from their default. The queue keeps four files per task and they answer four
 -- questions: the PLAN (BRIEF.md), the PROGRESS (progress.jsonl), the OUTCOME
 -- (result.md, distilled into `outcome`) and the ARTIFACT (the pull request).
--- This pane still invents nothing beyond them — a monitor with a field of its
+-- This pane still invents nothing beyond them — a reader with a field of its
 -- own is a second writer's opinion about a model it does not own. What changed
 -- is that a fact equal to its default now costs no row.
 --
@@ -470,8 +468,8 @@ local function edges(field)
   return out
 end
 
---- The display state `queue.sh list` and the monitor both draw: a queued task
---- holding on a blocker reads as `waiting`, which is not a state on disk.
+--- The display state `queue.sh list` draws too: a queued task holding on a
+--- blocker reads as `waiting`, which is not a state on disk.
 ---
 --- A blocker clears when the task it names is `landed` — the forge's answer that
 --- the code is on `main`, not a worker's claim that it opened a pull request.
@@ -503,7 +501,7 @@ local function resolve_states(model)
 end
 
 --- Topic classification, ordered by what an operator should look at first.
---- `webui.py`'s `classify`, in Lua, with the same order and the same words.
+--- The only definition there is; nothing else in the repo derives it.
 local function classify(tasks)
   if #tasks == 0 then
     return "empty"
@@ -625,11 +623,10 @@ local function build_model(stdout)
     if ra ~= rb then
       return ra < rb
     end
-    -- Settled last WITHIN a class, which is the one ordering rule here the
-    -- monitor does not have. It needs none: a web page can afford to draw a
-    -- merged topic at full size. A column cannot, so the topics that collapsed
-    -- to one row sink below the ones that did not, and `review-me` with an open
-    -- pull request stops sitting under an archive of merged ones.
+    -- Settled last WITHIN a class, because a column cannot afford to draw a
+    -- merged topic at full size. The topics that collapsed to one row sink
+    -- below the ones that did not, and `review-me` with an open pull request
+    -- stops sitting under an archive of merged ones.
     if a.settled ~= b.settled then
       return b.settled
     end
@@ -844,10 +841,8 @@ local function age_of(task)
   return ago(task.moved_at)
 end
 
---- The monitor's own classification vocabulary, in its own order. Spelling the
---- bucket out as a heading is what the web page gets for free from having a
---- whole screen: there, `attention` is red and at the top and that reads as a
---- group. In one column the group has to say its own name.
+--- The classification vocabulary, in its own order. In one column a group
+--- cannot be a colour and a position alone, so the group says its own name.
 --- The four blocker kinds `queue.sh block` accepts, in words that fit a column.
 --- The set is closed on purpose — queue.py's BLOCKER_KINDS — so an unknown one
 --- is shown verbatim rather than mapped to something plausible.
@@ -1501,9 +1496,9 @@ local function draw(entry, width, spinner)
   }, "url:" .. task.artifact)
 end
 
---- The counters, in the monitor's own order and buckets: ready, running,
---- waiting, done, failed. `webui.py`'s HUD_GROUPS, and the same rule that every
---- display state lands in exactly one of them.
+--- The counters, in their own order and buckets: ready, running, waiting,
+--- done, failed — under the rule that every display state lands in exactly one
+--- of them.
 ---
 --- The glyph beside each is the one the classification heading below uses, so
 --- the top of the pane and the groups under it speak with one vocabulary.

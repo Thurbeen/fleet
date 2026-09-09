@@ -12,11 +12,11 @@
 #   scripts/check.sh shell yaml          # only the named ones
 #   scripts/check.sh --fix markdown      # apply the fixes a check can apply
 #
-# Checks: shell, markdown, yaml, profiles, queue, webui, reconcile, status,
-# skills, pane. Only `markdown` has a fixer; `--fix` is a no-op for the rest,
-# so `scripts/check.sh --fix` is always safe to run.
+# Checks: shell, markdown, yaml, profiles, queue, reconcile, status, skills,
+# pane. Only `markdown` has a fixer; `--fix` is a no-op for the rest, so
+# `scripts/check.sh --fix` is always safe to run.
 #
-# Requires: shellcheck, rumdl, python3 (with PyYAML), curl, lua. A missing tool
+# Requires: shellcheck, rumdl, python3 (with PyYAML), lua. A missing tool
 # fails the check rather than skipping it — a gate that silently passes when
 # its linter is absent is worse than no gate.
 
@@ -148,29 +148,9 @@ check_queue() {
 	fi
 }
 
-# The monitor's lifecycle, which is the part of it that can break silently. It
-# claims to adopt a running server rather than start a second one, and it
-# claims that an explicit `stop` survives the next `ensure` — the call the
-# onboarding skill makes. A regression in either is invisible until the day it
-# costs something: a duplicate server over one queue, or a monitor the operator
-# asked down that comes back up on its own. webui-selftest.sh binds a real
-# socket on a port well away from the default and proves both.
-check_webui() {
-	need python3 webui || return
-	need curl webui || return
-
-	if ./scripts/webui-selftest.sh >/dev/null; then
-		ok "webui: adopts rather than duplicates, and a stop stays stopped"
-	else
-		# Re-run visibly: a failing claim is the whole message.
-		./scripts/webui-selftest.sh
-		fail "webui: scripts/webui-selftest.sh"
-	fi
-}
-
-# The reconciler's lifecycle, which is the monitor's lifecycle with sharper
-# teeth: this one runs `collect`, so a second instance or a stop that does not
-# stop costs closed tasks and reaped sessions rather than a duplicate web page.
+# The reconciler's lifecycle, the part of it that can break silently: it runs
+# `collect`, so a second instance or a stop that does not stop costs closed
+# tasks and reaped sessions.
 # reconcile-selftest.sh proves adoption, a durable stop, and the two claims
 # that are specific to it — that the four cadences are four separate clocks,
 # and that the ONLY thing it ever asks the queue to do is watch, collect,
@@ -187,8 +167,8 @@ check_reconcile() {
 }
 
 # The status command's two promises, both invisible until they cost something.
-# It must DEGRADE — a missing `gh`, a missing thurbox, a monitor that is down
-# each cost exactly their own section and never the reading — and it must carry
+# It must DEGRADE — a missing `gh`, a missing thurbox, a missing queue each
+# cost exactly their own section and never the reading — and it must carry
 # thurbox's state vocabulary through unflattened, because reporting `uncovered`
 # or `unreported` as `idle` tells the lead a worker mid-turn has finished. Both
 # are only observable with those things MISSING, which is never the state a
@@ -493,7 +473,7 @@ for arg in "$@"; do
 done
 
 if [ ${#checks[@]} -eq 0 ]; then
-	checks=(shell markdown yaml profiles queue webui reconcile status skills pane)
+	checks=(shell markdown yaml profiles queue reconcile status skills pane)
 fi
 
 for c in "${checks[@]}"; do
@@ -503,13 +483,12 @@ for c in "${checks[@]}"; do
 	yaml) check_yaml ;;
 	profiles) check_profiles ;;
 	queue) check_queue ;;
-	webui) check_webui ;;
 	reconcile) check_reconcile ;;
 	status) check_status ;;
 	skills) check_skills ;;
 	pane) check_pane ;;
 	*)
-		printf 'error: unknown check %q (want: shell markdown yaml profiles queue webui reconcile status skills pane)\n' "$c" >&2
+		printf 'error: unknown check %q (want: shell markdown yaml profiles queue reconcile status skills pane)\n' "$c" >&2
 		exit 2
 		;;
 	esac

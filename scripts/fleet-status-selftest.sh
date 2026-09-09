@@ -4,20 +4,20 @@
 # A status command is read by an agent that is about to decide something, so
 # its two failure modes are both silent and both expensive:
 #
-#   1. IT DIES WHEN A PROBE DIES. No network, no `gh`, no thurbox running, no
-#      monitor — any one of those must cost exactly its own section and
-#      nothing else. A status command that exits non-zero because one probe
-#      failed is worse than none, because the lead learns nothing at all.
+#   1. IT DIES WHEN A PROBE DIES. No network, no `gh`, no thurbox running —
+#      any one of those must cost exactly its own section and nothing else. A
+#      status command that exits non-zero because one probe failed is worse
+#      than none, because the lead learns nothing at all.
 #   2. IT FLATTENS THE STATE VOCABULARY. `idle`, `running`, `uncovered` and
 #      `unreported` are four different facts (thurbox-session SKILL §4a), and
 #      reporting any of the last three as `idle` reports a worker mid-turn as
 #      finished. This asserts the words survive the trip.
 #
 # It also holds the line on the third promise: the command READS. It must not
-# start the monitor, dispatch a task, or touch a single byte of the queue.
+# dispatch a task or touch a single byte of the queue.
 #
 # Every probe is a stub on a sandboxed PATH, so the run is hermetic: no real
-# thurbox, no GitHub, no monitor, and no queue but the throwaway one.
+# thurbox, no GitHub, and no queue but the throwaway one.
 #
 # Usage: scripts/fleet-status-selftest.sh     (also: ./scripts/check.sh status)
 #
@@ -73,10 +73,7 @@ done
 
 tmp="$(mktemp -d)"
 export FLEET_QUEUE_DIR="$tmp/queue"
-# The monitor's runtime state, pointed somewhere empty so this reads "down"
-# without going anywhere near the operator's real one.
-export FLEET_WEBUI_DIR="$tmp/rt"
-mkdir -p "$FLEET_QUEUE_DIR" "$tmp/rt" "$tmp/repo"
+mkdir -p "$FLEET_QUEUE_DIR" "$tmp/repo"
 
 # A sandboxed PATH holding only the tools the command is allowed to find. This
 # is the whole point: `gh` and `thurbox-cli` exist on the machine running the
@@ -117,12 +114,12 @@ printf 'Do the thing.\n' >"$tmp/brief.md"
 out="$(PATH="$bare" "$STATUS" 2>&1)"
 rc=$?
 if [ "$rc" -eq 0 ]; then
-	pass "exits 0 with no thurbox-cli, no gh and no monitor"
+	pass "exits 0 with no thurbox-cli and no gh"
 else
 	fail "exits 0 with every probe missing" "exit $rc${nl}--- got ---${nl}$out"
 fi
 
-for section in FUEL QUEUE SESSIONS PRS MONITOR CHECKOUT; do
+for section in FUEL QUEUE SESSIONS PRS CHECKOUT; do
 	expect "$section still prints when the probes are gone" "$section" "$out"
 done
 
@@ -134,7 +131,6 @@ expect "a blocked task says what is holding it" "semantic-dependency" "$out"
 expect "and why, in the words that were recorded" "consumes the flag" "$out"
 expect "a ready task is called ready, not queued" "ready" "$out"
 expect "file overlap is reported as a risk, not a blocker" "FLEET.md" "$out"
-expect "the monitor reads as down rather than as an error" "down" "$out"
 
 # --- 2. --json degrades in the same shape ------------------------------------
 
@@ -147,7 +143,7 @@ fi
 probe="$(PATH="$bare" python3 - "$js" <<'PY' 2>&1
 import json, sys
 doc = json.loads(sys.argv[1])
-for key in ("fuel", "queue", "sessions", "prs", "monitor", "checkout"):
+for key in ("fuel", "queue", "sessions", "prs", "checkout"):
     assert key in doc, f"missing section {key}"
     assert "unavailable" in doc[key], f"{key} has no unavailable field"
 assert doc["sessions"]["unavailable"], "sessions should be unavailable"
@@ -533,13 +529,13 @@ fi
 
 # --- 7. it reads, and only reads ---------------------------------------------
 
-snapshot() { find "$FLEET_QUEUE_DIR" "$tmp/rt" -type f -exec sha256sum {} + | sort; }
+snapshot() { find "$FLEET_QUEUE_DIR" -type f -exec sha256sum {} + | sort; }
 before="$(snapshot)"
 PATH="$stubbed" "$STATUS" >/dev/null 2>&1
 PATH="$stubbed" "$STATUS" --json >/dev/null 2>&1
 after="$(snapshot)"
 if [ "$before" = "$after" ]; then
-	pass "neither the queue nor the monitor's runtime state was touched"
+	pass "not a byte of the queue was touched"
 else
 	fail "the command is read-only" "$(diff <(printf '%s\n' "$before") <(printf '%s\n' "$after"))"
 fi

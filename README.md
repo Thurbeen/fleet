@@ -40,7 +40,7 @@ in the repo that work belongs to.
 Independent tasks all go out at once — that is the point of it. Workers share
 no context with you and none with each other, so each gets a brief written from
 scratch, and each reports back by writing a file rather than by interrupting
-you. You watch it happen in the monitor or the queue pane.
+you. You watch it happen in the queue pane.
 
 ## Setup
 
@@ -57,8 +57,8 @@ Then open the clone in your agent CLI and run:
 
 The [onboarding skill](.agents/skills/fleet-onboarding/SKILL.md) does the setup
 rather than instructing you through it — prerequisites, your GitHub owners, the
-repo map, the thurbox extension, the queue pane, the monitor and the
-reconciler — verifying each step and naming anything missing with its remedy
+repo map, the thurbox extension, the queue pane and the reconciler —
+verifying each step and naming anything missing with its remedy
 before it writes a thing.
 Run it twice and it converges. It hands you a guarded block to add yourself:
 the pane's slot in your thurbox `layout.lua`.
@@ -69,20 +69,14 @@ That done, open the Mission Control session in thurbox and give it a goal.
 
 ## Watching it
 
-Two views of the same queue. Onboarding starts both, and both **display and do
-not control** — `./scripts/queue.sh` stays the only thing that writes:
+**The queue pane** is the live view: the queue in a thurbox column, so you do
+not leave the terminal for it, with a bar for each subscription's fuel above
+it. Onboarding installs it and `F3` opens and closes it. It **displays and
+does not control** — `./scripts/queue.sh` stays the only thing that writes.
 
-- **The monitor**, a local web page. `./scripts/webui.sh status` prints its
-  URL; `./scripts/webui.sh stop` takes it down for good, `start` brings it
-  back.
-- **The queue pane**, the same view in a thurbox column, so you do not leave
-  the terminal for it, with a bar for each subscription's fuel above the
-  queue. `F3` opens and closes it.
-
-Both read the same four files per task and no fifth: the plan, the progress,
-the outcome, and the pull request. The monitor has a whole screen and draws all
-four; the pane has a column, so it draws only what you would act on from a
-glance and leaves the rest to `queue.sh show`.
+It reads the same four files per task and no fifth: the plan, the progress, the
+outcome, and the pull request. A column is narrow, so it draws only what you
+would act on from a glance and leaves the rest to `./scripts/queue.sh show`.
 
 ![The queue pane in a thurbox column beside the session list: two workers
 running, the topics they are working on grouped above the finished ones, and
@@ -105,7 +99,7 @@ machine. `.gitignore`'s header names every path and the reason for each.
   squash-only merge policy, the layout conventions.
 - Every script's header is its own full usage. `./scripts/fleet-status.sh`
   answers "where are we?" in one read-only call — fuel, queue, sessions, pull
-  requests, monitor, checkout.
+  requests, checkout.
 
 ## License
 

@@ -192,7 +192,7 @@
 # second clone of this repo is the SUPPORTED shape here: a control plane with no
 # `origin` of its own needs one that workers can branch and push from. Running
 # `topic add` in that clone used to write a whole second queue in silence,
-# with the monitor correctly showing nothing. Now:
+# with the TUI pane correctly showing nothing. Now:
 #
 #   `topic add` and `add` REFUSE outside the control plane. Creating a record
 #       is the only act that can fork the queue, so that is where the hard stop
@@ -205,9 +205,8 @@
 #       without the thurbox extension is legitimate and must not be made
 #       unusable by a guard that cannot tell whether it is warranted.
 #
-# `queue.sh root`, `list` and `check` all print the resolved directory, and
-# `webui.sh status` prints the same one, so "why is the dashboard empty?" is a
-# question the tooling answers about itself.
+# `queue.sh root`, `list` and `check` all print the resolved directory, so
+# "why is the pane empty?" is a question the tooling answers about itself.
 #
 # Everything under orchestration/queue/ is WORKING STATE and gitignored — this
 # repo is public and your prompts are not — except README.md, POLICY.md and

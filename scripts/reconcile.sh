@@ -38,8 +38,7 @@
 # WHAT IT IS NOT. It is not a cron, and FLEET.md's `## What you are not` still
 # means what it says. A cron gives no supervision, no adoption of a running
 # instance, and no durable stop; it also cannot be asked what it is doing. This
-# is a loop the OPERATOR starts and the operator stops, modelled line for line
-# on scripts/webui.sh, which already solved this lifecycle:
+# is a loop the OPERATOR starts and the operator stops, with this lifecycle:
 #
 #   `ensure`  start it unless it is running or has been asked down. Adopts a
 #             live loop; never a second one over one queue.
@@ -50,9 +49,9 @@
 #             whole difference between the two.
 #
 # IT WRITES NOTHING ITSELF. Every effect it has goes through
-# `./scripts/queue.sh`, which stays the only writer over the records — the same
-# rule the monitor lives under, and what keeps the queue single-writer. Grep
-# this file for a write to a task and you will not find one.
+# `./scripts/queue.sh`, which stays the only writer over the records — the
+# rule that keeps the queue single-writer. Grep this file for a write to a
+# task and you will not find one.
 #
 # IT DOES NOT DECIDE WHAT RUNS. No dispatch, no cancel, no reorder. It
 # reconciles recorded state with observed state; choosing the work stays the
@@ -148,18 +147,16 @@ SHEPHERD_SECS="${FLEET_RECONCILE_SHEPHERD_SECS:-900}"
 # adoption turned on freshness, one slow pass would let a second loop start.
 STALL_SECS=$((WATCH_SECS + 600))
 
-# Keep the log to something a person can open. The reconciler is far chattier
-# than the monitor — a pass every couple of minutes, forever — so unlike
-# webui.sh this one trims itself.
+# Keep the log to something a person can open. A pass every couple of minutes,
+# forever, is chatty enough that this one trims itself.
 LOG_MAX_BYTES=$((4 * 1024 * 1024))
 LOG_KEEP_LINES=2000
 
 # The hidden subcommands. `supervisor` is the process `launch` puts under
 # setsid, and the word has to appear in its argv so a recycled pid belonging to
 # something else is never mistaken for the reconciler and never signalled.
-# `tick` is the loop it supervises, in its own process for the same reason
-# webui.sh's server is: the supervisor can then restart it without restarting
-# itself.
+# `tick` is the loop it supervises, in its own process so that the supervisor
+# can restart it without restarting itself.
 SUPERVISE="__fleet-reconcile-supervisor"
 TICK="__fleet-reconcile-tick"
 
@@ -241,8 +238,7 @@ run_pass() {
 tick() {
 	# Validated BEFORE the first heartbeat, so a reconciler that cannot run the
 	# one command it drives never reads as up. The supervisor will retry it
-	# with backoff and say so in the log, which is the same shape as the
-	# monitor failing to bind.
+	# with backoff and say so in the log.
 	if ! $QUEUE_CMD root >/dev/null 2>&1; then
 		printf '[%s] cannot run %q — nothing to reconcile\n' \
 			"$(date -Is)" "$QUEUE_CMD" >&2

@@ -8,7 +8,7 @@ generated registry, and agent skills. Everything below follows from that.
 One script is the whole gate:
 
 ```bash
-./scripts/check.sh          # shellcheck, markdown, YAML, profiles, queue, monitor, reconciler, status, skills, pane
+./scripts/check.sh          # shellcheck, markdown, YAML, profiles, queue, reconciler, status, skills, pane
 ./scripts/check.sh --fix    # the same, applying the fixes a check can apply
 ./scripts/check.sh shell    # just one check
 ```
@@ -111,7 +111,7 @@ Adding a file means deciding which side it is on, and saying so:
 |---|---|---|
 | machinery — scripts, skills, playbooks, prose | tracked | `scripts/`, `playbooks/ship-feature.md` |
 | generated from a live source | ignored | `repos.generated.yaml` |
-| true on one machine | ignored | `extension.toml`, `orchestration/webui/` |
+| true on one machine | ignored | `extension.toml`, `orchestration/reconcile/` |
 | the operator's own working state | ignored | `runs/<date>-<slug>.md`, `queue/<topic>/` |
 
 Prefer a whole ignored **directory** with a `!` negation for the one tracked

@@ -12,8 +12,7 @@
 #      would both run `collect`, which closes tasks and reaps sessions.
 #   2. DOWN IS DURABLE. `stop` writes a flag, and `ensure` reads it and does
 #      nothing — across a restart and a reboot, because the flag is on disk and
-#      not in a process. This is the same promise the monitor makes and the
-#      same half of it that is not free.
+#      not in a process.
 #   3. `start` IS THE WAY BACK. Only the operator asking for it clears the
 #      flag. That is the entire difference between `start` and `ensure`.
 #   4. IT FOLDS CONTINUOUSLY AND POLLS ON ITS OWN CLOCKS. `watch` runs back to
