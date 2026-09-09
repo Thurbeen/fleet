@@ -3580,7 +3580,7 @@ messaged() {
 	$QUEUE add "$ltopic" "$1" --title "Task $1" --repo "$liverepo" \
 		--branch "feat/$1" --number "$2" >/dev/null
 	$QUEUE attach "$ltopic/$2-$1" "$3" >/dev/null
-	session_is "$3" done 3043
+	session_is "$3" "done" 3043
 }
 messaged moved 01 cccccccc-0000-0000-0000-000000000001
 messaged quiet 02 cccccccc-0000-0000-0000-000000000002
