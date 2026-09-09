@@ -567,6 +567,39 @@ and no `outcome`; `collect` stays the only thing that closes a task. The lead's
 own session is refused by name, and a remote task's pane and transcript are on
 its host, so that one is reported `undetermined` rather than guessed at.
 
+### 5d. `reconcile.sh` — the loop that runs 5, 5a and 5c for you
+
+Everything in §5 is something you have to remember. On 2026-09-08 nobody did,
+for one session, and it cost four separate things: 19 of 20 progress timelines
+empty, three merges unnoticed for forty minutes, six workers sitting at a token
+limit that the OPERATOR spotted, and a reaped session discovered through a
+`Session not found` error.
+
+```sh
+./scripts/reconcile.sh ensure     # start it unless it is running or asked down
+./scripts/reconcile.sh status     # ticking? since when? on what queue?
+./scripts/reconcile.sh logs       # what it has been doing
+./scripts/reconcile.sh stop       # durably down; only `start` brings it back
+```
+
+It folds `watch` continuously and runs `collect`, `shepherd` and `refuel` on
+their own intervals. Three things to know and nothing else:
+
+- **It changes nothing about how you work.** You still plan, still write
+  briefs, still `dispatch`. It reconciles the RECORDS with the world; deciding
+  what runs is yours and it has no verb for it.
+- **`queue.sh` is still the only writer.** The loop shells out and never
+  touches a record. So `list` and the monitor cannot start disagreeing with it.
+- **Run the commands anyway when you want an answer NOW.** `collect` is
+  idempotent and reading it yourself is always allowed; the loop only means you
+  are rarely the first to notice.
+
+It is a supervised loop and not a cron — `FLEET.md`'s `## What you are not`
+owns why that distinction is the whole point, and `reconcile.sh`'s own header
+argues each interval. A worker's `Stop` hook can `reconcile.sh nudge` to bring
+the periodic pass forward, which is an accelerator: a worker that ran out of
+quota fires no hook, so the timer is what actually catches it.
+
 ## 5a. Shepherd the pull requests — the fourth thing
 
 A task closes when its worker writes `result.md`. **The pull request it named
@@ -748,8 +781,9 @@ six weeks later.
 8. `refuel` when a worker has been `working` far too long, or when the operator
    says the fleet has hit a limit. It reads the account's fuel first and
    restarts nothing while that is spent.
-9. `plan` again. Review the PRs; the operator merges every one `shepherd`
-   did not. Sessions release
-   themselves once their pull requests land — `collect` reaps, `reap
-   --dry-run` shows you what it would do — and you record the run in
-   `orchestration/runs/` as it happens.
+9. Or run none of 6, 7 and 8 by hand: `./scripts/reconcile.sh ensure` keeps
+   them ticking, and §5d says what that does and does not change.
+10. `plan` again. Review the PRs; the operator merges every one `shepherd` did
+    not. Sessions release themselves once their pull requests land — `collect`
+    reaps, `reap --dry-run` shows you what it would do — and you record the run
+    in `orchestration/runs/` as it happens.

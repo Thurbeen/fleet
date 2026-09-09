@@ -12,9 +12,9 @@
 #   scripts/check.sh shell yaml          # only the named ones
 #   scripts/check.sh --fix markdown      # apply the fixes a check can apply
 #
-# Checks: shell, markdown, yaml, profiles, queue, webui, status, skills, pane. Only `markdown` has a
-# fixer; `--fix` is a no-op for the rest, so `scripts/check.sh --fix` is
-# always safe to run.
+# Checks: shell, markdown, yaml, profiles, queue, webui, reconcile, status,
+# skills, pane. Only `markdown` has a fixer; `--fix` is a no-op for the rest,
+# so `scripts/check.sh --fix` is always safe to run.
 #
 # Requires: shellcheck, rumdl, python3 (with PyYAML), curl. A missing tool fails the
 # check rather than skipping it — a gate that silently passes when its linter
@@ -165,6 +165,24 @@ check_webui() {
 		# Re-run visibly: a failing claim is the whole message.
 		./scripts/webui-selftest.sh
 		fail "webui: scripts/webui-selftest.sh"
+	fi
+}
+
+# The reconciler's lifecycle, which is the monitor's lifecycle with sharper
+# teeth: this one runs `collect`, so a second instance or a stop that does not
+# stop costs closed tasks and reaped sessions rather than a duplicate web page.
+# reconcile-selftest.sh proves adoption, a durable stop, and the two claims
+# that are specific to it — that the four cadences are four separate clocks,
+# and that the ONLY thing it ever asks the queue to do is watch, collect,
+# shepherd and refuel. It stubs the queue command, so it needs no thurbox, no
+# `gh` and no network.
+check_reconcile() {
+	if ./scripts/reconcile-selftest.sh >/dev/null; then
+		ok "reconcile: adopts rather than duplicates, a stop stays stopped, and it writes nothing"
+	else
+		# Re-run visibly: a failing claim is the whole message.
+		./scripts/reconcile-selftest.sh
+		fail "reconcile: scripts/reconcile-selftest.sh"
 	fi
 }
 
@@ -413,7 +431,7 @@ for arg in "$@"; do
 done
 
 if [ ${#checks[@]} -eq 0 ]; then
-	checks=(shell markdown yaml profiles queue webui status skills pane)
+	checks=(shell markdown yaml profiles queue webui reconcile status skills pane)
 fi
 
 for c in "${checks[@]}"; do
@@ -424,11 +442,12 @@ for c in "${checks[@]}"; do
 	profiles) check_profiles ;;
 	queue) check_queue ;;
 	webui) check_webui ;;
+	reconcile) check_reconcile ;;
 	status) check_status ;;
 	skills) check_skills ;;
 	pane) check_pane ;;
 	*)
-		printf 'error: unknown check %q (want: shell markdown yaml profiles queue webui status skills pane)\n' "$c" >&2
+		printf 'error: unknown check %q (want: shell markdown yaml profiles queue webui reconcile status skills pane)\n' "$c" >&2
 		exit 2
 		;;
 	esac

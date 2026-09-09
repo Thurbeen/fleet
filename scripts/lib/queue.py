@@ -4723,7 +4723,25 @@ def cmd_check(args) -> int:
 
 
 def cmd_root(args) -> int:
-    """The resolved queue root, absolute, and nothing else — for scripts."""
+    """The resolved queue root, absolute, and nothing else — for scripts.
+
+    `--foreign` asks the other half of the same question: is THIS checkout
+    provably not the control plane? It prints the control plane's path and
+    exits 0 when it is, and prints nothing and exits 1 otherwise — so a caller
+    can branch on the exit status without parsing anything. `scripts/
+    reconcile.sh` is why it exists: that loop runs `collect`, which closes
+    tasks and reaps sessions, and a worker running it in its own worktree
+    would reap its own session. Silence covers both "this IS the control
+    plane" and "nothing here can tell", exactly as foreign_checkout() does,
+    because a guard that fires when it cannot tell is a guard that makes a
+    fleet without the thurbox extension unusable.
+    """
+    if getattr(args, "foreign", False):
+        owner = foreign_checkout()
+        if not owner:
+            return 1
+        print(owner)
+        return 0
     print(os.path.abspath(queue_root()))
     return 0
 
@@ -4885,6 +4903,12 @@ def build_parser() -> argparse.ArgumentParser:
     ch.set_defaults(func=cmd_check)
 
     rt = sub.add_parser("root", help="the resolved queue directory, absolute")
+    rt.add_argument(
+        "--foreign",
+        action="store_true",
+        help="print the control plane's checkout, and exit 0, only when THIS "
+        "checkout is provably not it; silent and 1 otherwise",
+    )
     rt.set_defaults(func=cmd_root)
 
     # `creates` splits the guard: the two commands that can bring a SECOND
