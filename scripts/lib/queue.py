@@ -2485,10 +2485,19 @@ def record_publish(task: Task, state: str, detail: str, by: str) -> None:
 
     Merged into whatever is already there, so the method and the `how` the lead
     declared at intake survive an observation being written over them.
+
+    Appended to progress.jsonl the way `record_shepherd` appends, because the
+    block holds only the LATEST look: "checks-running, then checks-failed, then
+    ready" is the story of a pull request, and every retelling of it would
+    otherwise be overwritten by the next pass. The entry carries no `seq`, so
+    it is not a stream event and never moves a watch floor (`folded_through`).
     """
     block = dict(task.doc.get("publish") or {})
     block.update({"state": state, "detail": detail, "at": now(), "by": by})
     task.doc["publish"] = block
+    task.save()
+    with open(task.file("progress.jsonl"), "a") as fh:
+        fh.write(json.dumps({"publish": dict(block), "observed": now()}) + "\n")
 
 
 def report_unverified(task: Task, url, detail: str) -> None:
@@ -2737,6 +2746,13 @@ def sweep_landings(q: Queue, dry: bool) -> dict:
                 print(f"    {task.ref:<46} would be {nxt:<10} {detail}")
             continue
         task.doc["landing"] = {"state": kind, "detail": detail, "at": now()}
+        if kind in ("merged", "closed"):
+            # The same fact in the block that carries every other observation
+            # of this task's publish, so a reader of that block alone is never
+            # left at the last thing the shepherd saw while the pull request
+            # has since merged. `open`, `none` and `unknown` write nothing:
+            # they say the sweep looked and learned nothing new.
+            record_publish(task, kind, detail, "reap")
         if nxt:
             task.doc["state"] = nxt
             print(f"    {task.ref:<46} {nxt:<10} {detail}")
@@ -3737,7 +3753,7 @@ def head_owner(pr: dict) -> str:
     return str((pr.get("headRepositoryOwner") or {}).get("login") or "")
 
 
-def classify(pr: dict, slug: str) -> tuple[str, str]:
+def classify(pr: dict, slug: str, method: str | None) -> tuple[str, str]:
     """(condition, one line saying why).
 
     Four conditions get a fixer, in the order FIXABLE lists them. `ready`
@@ -3745,6 +3761,15 @@ def classify(pr: dict, slug: str) -> tuple[str, str]:
     that is not ours, which is neither merged nor handed to an agent.
     `undetermined` means the answer is not knowable yet and is never treated
     as any of the others.
+
+    `method` is the publish method of the task this pull request belongs to,
+    or None when no task records it. It gates exactly ONE condition: `policy`,
+    "there is no attestation", is a fault only for a task that was declared
+    `no-mistakes`. A `pr`-method pull request was never supposed to carry one,
+    and the fixer sent at it would tell its worker to go and run a tool the
+    operator may not have installed. None keeps the old reading, because an
+    unlinked pull request is one fleet knows nothing about and the attestation
+    is still the only thing that would ever authorise merging it.
     """
     if str(pr.get("state") or "").upper() != "OPEN":
         return "closed", f"the pull request is {str(pr.get('state')).lower()}"
@@ -3782,7 +3807,7 @@ def classify(pr: dict, slug: str) -> tuple[str, str]:
             str(pr.get("reviewDecision") or "").upper() == "CHANGES_REQUESTED",
             "a reviewer requested changes",
         ),
-        "policy": (not attested, attest_why),
+        "policy": (not attested and method in (None, "no-mistakes"), attest_why),
     }
     for condition in FIXABLE:
         hit, why = fixable[condition]
@@ -3800,7 +3825,73 @@ def classify(pr: dict, slug: str) -> tuple[str, str]:
     if mergeable != "MERGEABLE":
         # UNKNOWN is GitHub still computing the merge, not a verdict.
         return "undetermined", f"mergeable is {mergeable or 'absent'}; ask again shortly"
-    return "ready", f"{attest_why}; checks green, mergeable, and the branch is ours"
+    if attested:
+        return "ready", f"{attest_why}; checks green, mergeable, and the branch is ours"
+    # Only a method that was never asked for an attestation reaches here —
+    # `policy` catches the others first. The sentence says what is actually
+    # known, because "ready" alone would read as "vetted" (see `publish_word`).
+    return "ready", (
+        "checks green, mergeable, and the branch is ours — and nothing attests "
+        "the head that would merge"
+    )
+
+
+def publish_word(pr: dict, condition: str, method: str | None) -> str:
+    """`classify`'s condition as one word of the `publish.state` vocabulary.
+
+    `classify` answers "what should fleet DO about this pull request"; the
+    record answers "what is this pull request DOING", and a reader of the
+    record wants two of those answers split finer than an action ever needs
+    them — `undetermined` into `draft` / `checks-running` / `undetermined`, and
+    `ready` into `ready` / `green`.
+
+    WHY `green` AND `ready` ARE TWO WORDS, AND MUST STAY TWO. They look
+    redundant. Both mean every gate GitHub can answer holds: checks passed, the
+    merge is clean, the branch is ours. They are not the same claim, and
+    collapsing them is the one edit to this file that would quietly undo the
+    property the whole subsystem exists for.
+
+        ready   the pipeline vetted the exact head that would merge. Review,
+                tests and lint ran on THIS commit and said so in a form the
+                body cannot fake (`attestation_verdict`, and see the comment
+                above `ATTESTATION_RE` for why the prose above it could).
+                This is what fleet merges unattended.
+        green   the forge is happy and NOBODY vetted anything. The checks that
+                passed are whatever checks that repo happens to have, which
+                for a repo fleet has never seen may be none at all. Fleet
+                reports it and leaves it; the operator merges it, having
+                looked.
+
+    For two months every pull request in this queue was a no-mistakes pull
+    request, so "the forge is happy" and "the pipeline vetted it" were the same
+    fact, and both the operator and this code learned to read one as the other.
+    The moment a `pr`-method task exists they come apart, and the only things
+    standing between them are this word, its colour in the pane, and
+    `shepherd_pr`'s refusal to hand a `green` one to `gh_merge`. One word is
+    evidence; the other is trust. Merging them merges on the worker's choice of
+    tool, for every repo at once, silently.
+    """
+    if condition == "undetermined":
+        # In `classify`'s own order: a draft is a draft whatever its checks say.
+        if pr.get("isDraft"):
+            return "draft"
+        _failed, pending = check_verdicts(pr.get("statusCheckRollup"))
+        if pending or not pr.get("statusCheckRollup"):
+            return "checks-running"
+        return "undetermined"
+    if condition == "ready":
+        attested, _why = attestation_verdict(pr.get("body"), pr.get("headRefOid") or "")
+        return "ready" if attested else "green"
+    if condition == "policy":
+        return "unattested"
+    if condition == "foreign":
+        # Determined, and not about this task's publish at all: the pull
+        # request linked here is open from somebody else's repository. The
+        # detail recorded beside this word is the sentence that says so.
+        return "unknown"
+    # `closed`, `conflicting`, `checks-failed` and `changes-requested` are
+    # already the vocabulary's own words.
+    return condition
 
 
 # --- what changed underneath -------------------------------------------------
@@ -4186,8 +4277,17 @@ def shepherd_pr(pr: dict, slug: str, task, args) -> dict:
         "note": "",
     }
 
-    condition, detail = classify(pr, slug)
+    method = task_publish(task)[0] if task else None
+    condition, detail = classify(pr, slug, method)
     row["condition"], row["detail"] = condition, detail
+    word = publish_word(pr, condition, method)
+    # What the pass SAW, written down for every linked task and whatever the
+    # condition — the facts all arrived in the one `gh pr list` above, and a
+    # record that keeps them is the difference between "shipped" and "its
+    # checks failed forty minutes ago". A dry run writes nothing, here as
+    # everywhere else below.
+    if task and not args.dry_run:
+        record_publish(task, word, detail, "shepherd")
     rec = rec_for(task, url)
 
     # A dry run writes nothing at all, including the record-clearing below:
@@ -4207,6 +4307,18 @@ def shepherd_pr(pr: dict, slug: str, task, args) -> dict:
     if condition == "ready":
         if rec and not args.dry_run:
             record_shepherd(task, None)
+        if word == "green":
+            # Asked BEFORE the allowlist, because this is the deeper reason:
+            # not "fleet does not merge here" but "nothing vetted the head
+            # that would land". Never passed to `gh_merge` — see `publish_word`
+            # for why this is not the same state as `ready`.
+            row["action"] = "ready"
+            row["note"] = (
+                "ready to merge — not attested; yours. Every gate the forge "
+                "can answer holds, and nothing says review, tests and lint "
+                "ever ran on the commit that would land"
+            )
+            return row
         if slug not in AUTO_MERGE_REPOS:
             row["action"] = "ready"
             row["note"] = f"fleet does not merge in {slug}; this one is yours"
@@ -4235,6 +4347,7 @@ def shepherd_pr(pr: dict, slug: str, task, args) -> dict:
         if ok and task:
             record_shepherd(task, {"condition": "merged", "detail": note,
                                    "pr": url, "at": now()})
+            record_publish(task, "merged", note, "shepherd")
         return row
 
     # Fixable, but only a task carries a session, a worktree and a brief

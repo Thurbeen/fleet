@@ -130,7 +130,11 @@ The loop, driven by `./scripts/queue.sh`:
    only for a PR whose head branch is in that repo, opened by someone who can
    push there, carrying a `no-mistakes` attestation for its **current** head —
    the five headings are text anyone can paste and were never the gate they
-   looked like. `--dry-run` first; the fleet-queue skill owns the rest.
+   looked like. That attestation gate is the one thing the declared publish
+   method moves: a task that was declared `no-mistakes` and carries none gets a
+   fixer, one that was never asked for one is recorded `green` and handed back
+   unmerged. Every pass writes what it saw onto the task's `publish` block.
+   `--dry-run` first; the fleet-queue skill owns the rest.
 8. **A worker that hits its agent's token limit does not fail — it sits, and
    nothing above ever notices.** `queue.sh refuel` is a fifth thing: it asks the
    account's shared quota window first, via `quota-axi`, and restarts nothing
