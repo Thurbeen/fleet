@@ -79,20 +79,27 @@ comes back — is drawn only when exactly one provider carries a number; several
 readings at two rows each would push the queue itself off the column, and
 `./scripts/fleet-status.sh` is where every window is printed in full.
 
-**The `⇡` row under a task is its ARTIFACT's state, and it is the fourth thing
-the pane draws rather than a fifth.** It says what the task was told to produce
-(`publish.method` — `no-mistakes`, `pr` or `push`), which pull request that
-turned out to be, what fleet last saw when it looked at it, and how long ago it
-looked. Every word on it comes off `task.yaml`'s `publish` block, written by
+**The `⇡` row under a task is its ARTIFACT's state, and it IS the artifact
+row** — it replaces it rather than sitting above it. It says what the task was
+told to produce (`publish.method` — `no-mistakes`, `pr` or `push`), which pull
+request or commit that turned out to be, what fleet last saw when it looked at
+it, and how long ago it looked. The whole row is the link: Ctrl+Click it and the
+terminal opens the pull request, exactly as the URL row did before the two
+became one. Every word on it comes off `task.yaml`'s `publish` block, written by
 `collect`, `shepherd` and `reap` — the commands that do the looking — so the
 pane calls no `gh` and says nothing `queue.sh show` would not print in the same
 word. Colour carries the verdict, and **`green` is not the ok colour**: it means
 every gate the forge knows about holds and nobody vetted it, which is a
-different claim from `ready` and is why fleet will not merge it for you. A task
-whose record has no `publish` block grows no row at all. A narrow column drops
-the parts in a fixed order — the `— yours to merge` note, then the method, then
-the age, then the `#number` that the artifact row directly under it still spells
-out in full.
+different claim from `ready` and is why fleet will not merge it for you. A
+narrow column drops the parts in a fixed order — the `— yours to merge` note,
+then the method, then the age, then the `#44` — and the link survives losing its
+label.
+
+**No row is drawn for a task with nothing to report about its publish**: a
+record from before `publish` existed, or a task whose publish has not started.
+The absence is what "nothing yet" has always looked like here, and a per-task
+row saying so would spend the columns this fold recovered on the tasks with the
+least to say. For the same reason the documents row no longer draws `0 events`.
 
 It runs inside the thurbox interface, which knows nothing about fleet, so it
 finds the control plane by **probing the lead session by NAME** and running
