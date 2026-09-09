@@ -19,8 +19,7 @@ same thing. That matters more here than in most repos: **CI only fires on pull
 requests** while routine control-plane changes go straight to `main`, so the
 local run is the one doing the work.
 
-A missing tool fails the check rather than skipping it — a gate that passes
-silently when its linter is absent is worse than no gate. The script's header
+A missing tool fails the check rather than skipping it. The script's header
 holds the full tool list and the full usage.
 
 ### Pre-commit hooks
@@ -75,11 +74,6 @@ body from the pull request body. So:
 
 Branch commits are a working record. `main` is a straight line of one commit per
 pull request.
-
-> This deviates from the standing "allow rebase merging, disable merge commits"
-> preference in favour of squash: it is what
-> [thurbox](https://github.com/Thurbeen/thurbox) does, and it satisfies the same
-> underlying rule that `main` carries no merge commits.
 
 ## Layout conventions
 
@@ -137,11 +131,8 @@ starts under, and `./scripts/session-flags.sh` renders one profile into
 change to it is reviewed in a diff — which is the point.
 
 Every profile is held to the two enforced rules below. **No-secrets is not one
-of them.** The gate does not read YAML for secrets and does not claim to — the
-profiles file used to say all three rules were enforced, which was a guarantee
-the code never gave, and that is the defect class worth avoiding everywhere in
-this repo. It is a convention instead, and it has an obvious answer rather than
-just a prohibition: this repo is public, so nothing environment-specific belongs
+of them** — the gate does not read YAML for secrets and does not claim to. It
+is a convention: this repo is public, so nothing environment-specific belongs
 in the file, and a real credential is better off never in a file at all — a
 worker inherits the environment of the thurbox server that spawns it, so a
 credential belongs wherever that process gets its own.

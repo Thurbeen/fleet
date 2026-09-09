@@ -68,14 +68,12 @@ There is one remote and nothing to wire:
 git remote -v      # origin -> their own copy of fleet
 ```
 
-The question worth asking here is not about remotes; it is **which directory
-this is**. Step 4 bakes this checkout's absolute path into the thurbox
-extension, and a Mission Control session registered against a scratch copy
-self-heals forever against a directory that is about to vanish. So if the
-working
-directory is a thurbox worktree, a temp directory or an obvious throwaway, say
-so now and stop — moving later costs a session deletion (see step 4), and it is
-free to avoid here.
+What matters here is **which directory this is**. Step 4 bakes this checkout's
+absolute path into the thurbox extension, and a Mission Control session
+registered against a scratch copy self-heals forever against a directory that is
+about to vanish. So if the working directory is a thurbox worktree, a temp
+directory or an obvious throwaway, say so now and stop — moving later costs a
+session deletion (see step 4), and it is free to avoid here.
 
 `./scripts/sync-checkout.sh` is how changes arrive afterwards. It runs from the
 `SessionStart` hook and only ever fast-forwards, so there is nothing to

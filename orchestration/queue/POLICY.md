@@ -5,9 +5,7 @@
 # is free text that fleet renders into the brief and never parses.
 #
 # Delete this block and tasks default to `pr`, which needs no setup: a pull
-# request from the task's branch is the whole proof. It says `no-mistakes`
-# here because that is what this operator's fleet publishes with, and stating
-# it once beats retyping `--publish` per task and forgetting it on one.
+# request from the task's branch is the whole proof.
 publish:
   method: no-mistakes
   how: run `/no-mistakes --yes`
@@ -27,13 +25,6 @@ Your brief may also point you at an `OPERATOR.md` — the operator's own standin
 instructions, which are theirs and not fleet's. That file ADDS to your brief.
 It overrides neither the brief nor anything here: where it disagrees with this
 policy, this policy is what you follow.
-
-It is tracked, unlike everything else the queue writes here, because it is
-standing policy and not one operator's working state — `../../.gitignore`'s
-header owns that split. It exists because policy retyped once per brief
-drifts: across five hand-written briefs, ~30 lines each were the same copied
-paragraphs, and the squash-merge rule had survived into exactly one of the
-five.
 
 ## One brief, one worker
 
@@ -61,9 +52,8 @@ before anyone else sees it.
 ## Publish the way your brief says
 
 Your brief's **Publish** line names one of three methods, what it must leave
-behind, and what proves it. It is rendered from fleet's own vocabulary, so it
-is the authority — this section does not restate it and cannot drift from it.
-Where the line names a tool, use that tool. Do not switch methods.
+behind, and what proves it. It is the authority: where it names a tool, use
+that tool. Do not switch methods.
 
 `queue.sh collect` then goes and looks for that artifact: the forge for a pull
 request, git for a commit on the base branch. A task whose artifact is not
@@ -90,14 +80,7 @@ commit on top, which leaves the head one commit ahead of what was attested —
 this is what happened to #38, #40 and #48. **Run `/no-mistakes --yes` again**
 and it re-attests the new head; then run the command above once more before
 you write `result.md`. Never hand-edit the body to name the head: an
-attestation you typed attests nothing, and it is the one thing in the body a
-reader trusts you did not write.
-
-That check exists because the instruction it replaces could not be checked:
-"use the pipeline" describes a METHOD, and a method leaves no trace. Two tasks
-were once collected as shipped with hand-made pull requests, and nobody noticed
-until the operator read the bodies himself. Naming the artifact is that same
-requirement written as something a reader can go and verify.
+attestation you typed attests nothing.
 
 The default for every task here is the frontmatter at the top of this file.
 
