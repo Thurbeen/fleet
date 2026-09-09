@@ -100,13 +100,20 @@ do. Otherwise map the list:
 | `interface/fleet_queue.lua` | §4 | the installed plugin is a stale copy of that file |
 | `registry/owners.txt` | §5 | the generated map covers the wrong owners |
 | `scripts/webui.sh`, `scripts/lib/webui.py` | §6 | the running monitor is serving old code |
+| `scripts/reconcile.sh` | §6a | the running reconciler loop is executing old code |
 | `FLEET.md`, `AGENTS.md`, `CLAUDE.md`, `.agents/skills`, `.claude/skills`, `.claude/settings.json` — or a `restart-lead:` line | §8 | the lead is holding instructions it froze at launch |
 
 `FLEET.md` is deliberately in two rows: it is the extension's `[[files]]`
 payload *and* the lead's standing context, so it needs both the reinstall in §3
 and the hand-over in §8.
 
-Run §3–§6 in any order, then §7, then §8 last — §8 is the one that cannot be
+`scripts/lib/queue.py` is deliberately absent from this table. The
+reconciler's loop never sources it — every pass calls `./scripts/queue.sh` as
+a fresh subprocess, so a change there reaches the loop on its very next call,
+with no restart needed. §6a covers only `scripts/reconcile.sh` itself, which
+the running loop does hold in memory.
+
+Run §3–§6a in any order, then §7, then §8 last — §8 is the one that cannot be
 automated, and everything else should already be done when you raise it.
 
 ## 3. Wiring — re-install the extension
@@ -175,6 +182,29 @@ If it reports the monitor asked down, say so and change nothing. If it is
 running, `./scripts/webui.sh restart` replaces it — but that command clears the
 flag, so use it only on a monitor that is actually up, and never as a way to
 bring a stopped one back. Report the URL it ends on.
+
+## 6a. Reconciler — restart it on new loop code, unless it was asked down
+
+```bash
+./scripts/reconcile.sh ensure
+```
+
+**`ensure`, never `start`** — the same rule as §6, for the same reason:
+`scripts/reconcile.sh`'s own header owns the `ensure`/`start`/`stop` split,
+modelled line for line on `webui.sh`'s.
+
+`ensure` adopts a loop that is already running, so on its own it will not pick
+up new code in `scripts/reconcile.sh` — the loop's body was read into the
+running shell at start. When §2 put you here, ask for the restart explicitly:
+
+```bash
+./scripts/reconcile.sh status   # ticking? since when? asked down?
+```
+
+If it reports the loop asked down, say so and change nothing. If it is
+running, `./scripts/reconcile.sh restart` replaces it — but that command
+clears the flag, so use it only on a loop that is actually up, and never as a
+way to bring a stopped one back. Report what `status` says it is watching.
 
 ## 7. Gate
 
@@ -265,7 +295,7 @@ instructions.
 One short report, in the order the work happened:
 
 - what the sync did, in its own words;
-- each of §3–§6 you ran and what it said, and each one you **skipped and why** —
+- each of §3–§6a you ran and what it said, and each one you **skipped and why** —
   "registry untouched, not crawled" is information, not silence;
 - the gate's verdict;
 - the hand-over, if §8 applies, with the command to copy.

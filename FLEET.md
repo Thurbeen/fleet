@@ -97,6 +97,16 @@ YAML by hand. Nothing to push — the map is gitignored.
    restarts nothing while that window is spent; see `AGENTS.md` and
    `fleet-queue` §5c.
 
+**Steps 4, 6 and 8 do not have to wait for you to remember them.**
+`./scripts/reconcile.sh ensure` runs a supervised loop that folds the event
+stream continuously and calls `collect`, `shepherd` and `refuel` on their own
+intervals — see `## What you are not`, which owns why an automation exists here
+at all. It closes the gap that emptied 19 of 20 progress timelines and let
+three merges sit unnoticed for forty minutes. It reconciles and never decides:
+you still plan, still write briefs, still dispatch. When something is
+unexpectedly current, that is why; `./scripts/reconcile.sh status` says whether
+it is up, and `logs` says what it has been doing.
+
 The operator watches all of that in a browser rather than by asking you:
 `./scripts/webui.sh ensure` serves a read-only view of the queue on localhost.
 It is a READER over the same files, so it never disagrees with `list` and never
@@ -174,8 +184,8 @@ plane. However small it looks.
 
 Inline, and only: `orchestration/`, `registry/` and `.agents/` — the queue, the
 briefs, the run logs, the map, the skills — plus `queue.sh`, `fleet-status.sh`,
-`sync-checkout.sh`, `install-extension.sh` and `webui.sh`. Those you push
-straight to `main`.
+`sync-checkout.sh`, `install-extension.sh`, `webui.sh` and `reconcile.sh`.
+Those you push straight to `main`.
 
 The tell: **if you are about to read a second file in another codebase, you
 should be writing a brief instead.** On 2026-09-08 that went unheeded for
@@ -260,7 +270,8 @@ fact wins:
   is a change to propose and make, not one to add because the page is there.
 - **A stop stays stopped.** `./scripts/webui.sh stop` writes
   `orchestration/webui/down`, and `ensure` — which onboarding runs — honours it
-  across a reboot and every later run. Do not clear that flag on the operator's
+  across a reboot and every later run. `./scripts/reconcile.sh` works exactly
+  the same way, with its own flag. Do not clear either on the operator's
   behalf; `start` is theirs to type.
 - **Workers write files; they do not mail you.** `thurbox-cli message send`
   WAKES its recipient — it injects into your terminal and interrupts whoever is
@@ -277,3 +288,23 @@ You are not a scheduled job. Nothing here ticks on a cron — not the registry
 sync, whose diff a human should read. It stays a command a human asks for and
 reads the output of. If you find yourself wanting an automation, propose it —
 don't install it.
+
+**One automation exists, and it is the shape of the exception rather than a
+hole in the rule.** `./scripts/reconcile.sh` is a supervised loop, not a cron:
+the operator starts it, the operator stops it, `status` says what it is doing,
+and `stop` writes a flag that keeps it down across a reboot. It was proposed
+and accepted, and everything the rule was protecting is still true of it —
+
+- **It observes; it does not decide.** It folds `watch`, and it runs `collect`,
+  `shepherd` and `refuel` on their own clocks. It never dispatches, cancels or
+  reorders anything. Choosing what runs is still yours.
+- **It writes no record.** Every effect goes through `./scripts/queue.sh`,
+  which stays the only writer, exactly as the monitor stays the only reader.
+- **It is stoppable, and a stop stays stopped.** Same flag, same durability,
+  same rule as the monitor's: `orchestration/reconcile/down` is the operator's
+  to clear with `start`, never yours.
+- **It never restarts a worker into a spent quota window.** That rule lives in
+  `refuel` and the loop calls the command rather than re-deciding it.
+
+The registry sync is still not on it, and still should not be: its diff is a
+thing a human reads. And the next automation is still one to PROPOSE.

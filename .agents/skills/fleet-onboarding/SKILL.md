@@ -9,12 +9,12 @@ allowed-tools: Read, Edit, Write, Bash, Glob, Grep, AskUserQuestion
 
 Takes a fresh clone of fleet to a control plane that actually runs: owners
 known, registry synced, thurbox extension and TUI queue pane installed, and the
-queue monitor up.
+queue monitor and the reconciler up.
 
 **Do the work, don't narrate it.** The steps are mechanical —
-`registry/owners.txt`, `scripts/sync-registry.sh`, `scripts/install-extension.sh`,
-`scripts/webui.sh` — and the user should not be reading a numbered list and
-typing along. Infer what is discoverable, ask once about the one thing that
+`registry/owners.txt`, `scripts/sync-registry.sh`,
+`scripts/install-extension.sh`, `scripts/webui.sh`, `scripts/reconcile.sh` —
+and the user should not be reading a numbered list and typing along. Infer what is discoverable, ask once about the one thing that
 genuinely needs them, run the scripts, and **verify each step landed**.
 
 **A fresh clone is mostly empty.** No `registry/owners.txt`, no generated map,
@@ -295,6 +295,43 @@ Two things to pass on, once:
 - To switch it off for good: `./scripts/webui.sh stop`. To bring it back:
   `./scripts/webui.sh start`.
 
+## 6a. The reconciler
+
+```bash
+./scripts/reconcile.sh ensure
+```
+
+A supervised loop that keeps the queue's records level with the world: it folds
+`thurbox-cli watch`'s event stream continuously and runs `queue.sh collect`,
+`shepherd` and `refuel` on their own intervals. Without it, every one of those
+happens only when the lead remembers — which is how one session ended with 19
+of 20 progress timelines empty and three merged pull requests unnoticed for
+forty minutes.
+
+**`ensure`, never `start`, for exactly the reason above.** It has the same
+`down` flag with the same durability, in `orchestration/reconcile/down`, and
+the same three correct answers on a re-run: started it, adopted it, or left it
+down because the user asked.
+
+```bash
+./scripts/reconcile.sh status
+```
+
+Two things to pass on, once:
+
+- It **reconciles and does not decide**. No dispatch, no cancel, no reorder,
+  and it writes no record itself — `scripts/queue.sh` stays the only writer,
+  the same rule the monitor lives under.
+- To switch it off for good: `./scripts/reconcile.sh stop`. To bring it back:
+  `./scripts/reconcile.sh start`.
+
+Optionally, and only if they ask for it: `./scripts/reconcile.sh hook` prints a
+Claude Code `Stop` hook that makes a finishing worker nudge the loop into its
+next pass immediately. It goes in `~/.config/thurbox/hooks/claude.json`, which
+is **thurbox's file and not fleet's** — so this prints the block and the user
+pastes it, and a thurbox update may take it away again. It is an accelerator,
+never the mechanism: a worker that ran out of quota fires no hook at all.
+
 ## 7. Hand over
 
 **Nothing this skill wrote is tracked.** `registry/owners.txt`,
@@ -339,6 +376,7 @@ Assume someone runs this twice. Every step above **converges**:
 | Extension | a reinstall keeps existing `agents.toml` entries, so a customized model survives |
 | Queue pane | `plugin install` reports it `current`; `plugin check` says whether the `layout.lua` block is already there, so it is never suggested twice |
 | Monitor | `ensure` adopts a running one and respects a `down` flag; never a twin |
+| Reconciler | the same: `ensure` adopts, and a `down` flag it wrote stays honoured |
 
 So do not refuse on an already-configured clone. Detect it —
 `registry/owners.txt` with active entries, the generated map there, the

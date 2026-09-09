@@ -64,6 +64,14 @@
 # appears the first time the monitor is started and never in a fresh clone.
 __pycache__/
 
+# MACHINE + WORKING STATE. The reconciler's runtime state: its supervisor's
+# pid, the heartbeat that says its loop is actually ticking, its log, the
+# advisory `nudge` flag a worker's Stop hook drops, and the `down` flag that
+# keeps an explicit stop honoured across a restart and a reboot. The loop's
+# CODE is tracked (scripts/reconcile.sh); everything it writes at runtime is
+# not, for the same reason the monitor's is not.
+/orchestration/reconcile/
+
 # MACHINE + WORKING STATE. The monitor's runtime state: the port it chose at
 # bind time, its supervisor's pid, its log, and the `down` flag that keeps an
 # explicit stop honoured across a restart, a reboot and the next onboarding

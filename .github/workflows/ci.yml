@@ -33,6 +33,7 @@ jobs:
       profiles: ${{ steps.filter.outputs.profiles }}
       queue: ${{ steps.filter.outputs.queue }}
       webui: ${{ steps.filter.outputs.webui }}
+      reconcile: ${{ steps.filter.outputs.reconcile }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
@@ -65,6 +66,16 @@ jobs:
             queue:
               - 'scripts/queue.sh'
               - 'scripts/queue-selftest.sh'
+              - 'scripts/lib/queue.py'
+              - 'scripts/check.sh'
+              - '.github/workflows/ci.yml'
+            reconcile:
+              - 'scripts/reconcile.sh'
+              - 'scripts/reconcile-selftest.sh'
+              # The loop drives queue.sh and asks it which checkout owns the
+              # queue, so a change there can break it without touching a
+              # reconcile file.
+              - 'scripts/queue.sh'
               - 'scripts/lib/queue.py'
               - 'scripts/check.sh'
               - '.github/workflows/ci.yml'
@@ -147,6 +158,21 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - run: ./scripts/check.sh webui
 
+  # The reconciler's lifecycle, and a job rather than an assertion for the same
+  # reason the monitor's is: it starts a real supervised loop under setsid and
+  # watches it tick. What it proves that the monitor's does not is that the
+  # loop asks the queue for watch, collect, shepherd and refuel and NOTHING
+  # else — no dispatch, no reap, no record of its own — which is the rule that
+  # keeps the queue single-writer.
+  reconcile:
+    name: Reconciler
+    needs: changes
+    if: needs.changes.outputs.reconcile == 'true'
+    runs-on: ubuntu-latest # the selftest stubs its queue command; no extra deps
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - run: ./scripts/check.sh reconcile
+
   # Unfiltered on purpose. `.claude/skills` is a committed symlink to
   # `.agents/skills`, and the way that breaks is a CHECKOUT that materialises it
   # as a regular file rather than a link — which no diff mentions. Running this
@@ -185,6 +211,7 @@ jobs:
       - profiles
       - queue
       - webui
+      - reconcile
       - skills
       - pane
     runs-on: ubuntu-latest

@@ -39,6 +39,10 @@ names every path and the reason for each.
   directory your shell is in**, so a second clone of this repo cannot
   silently fork it: `topic add` and `add` refuse there, everything else
   warns, and `queue.sh root` names the directory in use.
+- `orchestration/reconcile/` — the reconciler's runtime state: its supervisor's
+  pid, the heartbeat proving its loop is ticking, its log, the advisory `nudge`
+  flag and the `down` flag. Written by `./scripts/reconcile.sh` and created on
+  first start. The loop's code is tracked; nothing it writes is.
 - `orchestration/webui/` — the monitor's runtime state: the port it chose at
   bind time, its supervisor's pid, its log, and the `down` flag. Written by
   `./scripts/webui.sh` and created on first start. The server's code
@@ -146,6 +150,29 @@ The loop, driven by `./scripts/queue.sh`:
 9. Review the PRs; the operator merges every one `shepherd` did not, and
    everything after that is `reap`'s.
 
+**Nothing above happens because somebody remembered to run it.**
+`./scripts/reconcile.sh` is a supervised loop — `ensure` / `start` / `stop` /
+`status`, a supervisor pid, a log and a durable `down` flag, modelled on
+`webui.sh` and with the same rule that `ensure` honours the flag and `start`
+clears it. It consumes `queue.sh watch` continuously and calls `collect`,
+`shepherd` and `refuel` on separate intervals; its header argues every number
+and is the full usage. Three things about it are load-bearing:
+
+- **It writes nothing.** Every effect goes through `./scripts/queue.sh`, which
+  stays the only writer over the records — the same rule the monitor lives
+  under. It calls exactly `watch`, `collect`, `shepherd` and `refuel`, and
+  `scripts/reconcile-selftest.sh` asserts that the set is those four.
+- **It reconciles; it does not decide.** No dispatch, no cancel, no reorder,
+  and it does not re-decide `refuel`'s rule about a spent quota window.
+- **`nudge` is the accelerator and never the guarantee.** A worker's Claude
+  Code `Stop` hook can call `./scripts/reconcile.sh nudge` to bring the
+  periodic pass forward; a worker that died on a token limit fires no hook at
+  all, which is why the timer is what the design rests on. `reconcile.sh hook`
+  PRINTS the block rather than installing it — that file
+  (`~/.config/thurbox/hooks/claude.json`) is thurbox's, and a thurbox update
+  rewrites it. `nudge` runs no queue command, so a worker firing it can never
+  collect or reap itself.
+
 `./scripts/webui.sh` serves a read-only web view of that same queue on
 localhost — topics classified by what their tasks are doing, each with its plan,
 progress and outcome. It READS the records and never writes them, so it cannot
@@ -177,7 +204,8 @@ CI only runs on pull requests, and routine control-plane changes go straight to
 `main`. So gate locally before you push:
 
 ```bash
-./scripts/check.sh          # shellcheck, markdown, YAML, profiles, queue, monitor, status, skills, pane
+./scripts/check.sh          # shellcheck, markdown, YAML, profiles, queue, monitor,
+                            # reconciler, status, skills, pane
 ./scripts/check.sh --fix    # same, applying the fixes a check can apply
 ```
 
@@ -231,9 +259,10 @@ plain `git pull`. The sync script says so when it happens; act on it rather
 than assuming the new instructions reached the lead.
 
 `.agents/skills/update-fleet/` drives that whole update — the sync, then only
-the pieces it left stale (extension manifest, queue pane, registry, monitor),
-then the lead hand-over the sync can only report. It is the counterpart to
-`fleet-onboarding`: that one builds a fleet, this one catches a working one up.
+the pieces it left stale (extension manifest, queue pane, registry, monitor,
+reconciler), then the lead hand-over the sync can only report. It is the
+counterpart to `fleet-onboarding`: that one builds a fleet, this one catches a
+working one up.
 
 ## Maintaining this file
 
