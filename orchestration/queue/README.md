@@ -44,7 +44,7 @@ POLICY.md                            standing policy — tracked, read by worker
 OPERATOR.example.md                  the form of the file below — tracked
 OPERATOR.md                          your standing instructions — yours, ignored
 <topic>/                             e.g. report-status-honestly/
-  topic.yaml                         slug, title, when it opened
+  topic.yaml                         slug, title, when it opened, whether archived
   PROMPT.md                          the prompt that opened it, VERBATIM
   <NN>-<slug>/                       e.g. 01-drop-idle-default/
     task.yaml                        intent + current state — queue.sh owns it

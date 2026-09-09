@@ -637,8 +637,10 @@ else reads it through.
 
 ```bash
 ./scripts/queue.sh list              # a line per task, grouped by topic
-./scripts/queue.sh list --topic X    # one topic
-./scripts/queue.sh show <ref>        # one task's whole record
+./scripts/queue.sh list --topic X    # one topic, archived or not
+./scripts/queue.sh list --archived   # only the topics the default view hides
+./scripts/queue.sh list --all        # both
+./scripts/queue.sh show <ref>        # one task's whole record, archived or not
 ```
 
 `list` is what you read when someone asks what is in flight. **Do not read the
@@ -646,6 +648,28 @@ briefs.** Each is written for one worker, and reading five of them is exactly
 the mixing-up the queue exists to prevent. `show` when you need one.
 
 A ref is `<topic>/<task>`, or a bare task id when only one topic has it.
+
+### Finished topics archive themselves
+
+A topic whose every task reached `landed` or `abandoned` gets an `archived`
+timestamp in its `topic.yaml`, written by the landing sweep `collect` and
+`reap` run. Archived topics **leave every default view** — `list`,
+`fleet-status.sh`, the monitor and the TUI pane — and each of those still
+prints how many it is hiding, so a short queue is never mistaken for an idle
+one. Nothing is moved or deleted: it is a flag and a filter, and `show <ref>`
+reaches an archived task with no unarchiving first.
+
+`stuck` and `failed` are **not** terminal for this. Those sessions are kept as
+evidence (§5b) and the operator has to see them, so one of either keeps the
+whole topic in view.
+
+```bash
+./scripts/queue.sh archive <topic>    # early — refuses if any task is live
+./scripts/queue.sh unarchive <topic>  # put it back in every view
+```
+
+`queue.sh add` onto an archived topic un-archives it, so you can never dispatch
+into a topic no view draws.
 
 **The operator has a third view: point them at it rather than narrating into
 it.** `./scripts/webui.sh ensure` serves the same records on localhost — topics

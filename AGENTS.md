@@ -108,7 +108,12 @@ The loop, driven by `./scripts/queue.sh`:
    the session and its worktree then. It never touches one thurbox says is
    working or blocked, nor one a worker gave up in: that session is the
    evidence. `reap --dry-run` says what it would do. Blockers clear on `landed`
-   too, so a dependent task waits for the code to actually be on `main`.
+   too, so a dependent task waits for the code to actually be on `main`. The
+   same sweep ARCHIVES a topic whose every task reached `landed` or
+   `abandoned` — a flag on `topic.yaml` that drops it from all four default
+   views, each of which still prints how many it is hiding. `stuck` and
+   `failed` are not terminal for that, `list --archived` and `show <ref>` still
+   reach it, and `add` un-archives.
 7. **The pull request outlives the task, so `queue.sh shepherd` is a fourth
    thing, run as reflexively as `collect`** — which names it whenever it closed
    a task that left a PR open. It asks the FORGE for every open PR on the repos

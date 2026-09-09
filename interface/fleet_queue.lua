@@ -125,6 +125,7 @@ local SCROLL_STEP = 3
 ---
 ---   R <queue root>
 ---   E <what went wrong>
+---   A <archived topic count>
 ---   T <topic slug> <topic title>
 ---   K <id> <state> <title> <outcome> <artifact> <blockers> <brief> <events>
 ---     <result> <branch> <moved-at, epoch seconds>
@@ -150,9 +151,19 @@ if [ -z "$root" ] || [ ! -d "$root" ]; then
 fi
 printf 'R\t%s\n' "$root"
 cd "$root" || exit 0
+archived=0
 for topic in */; do
   topic=${topic%/}
   [ -f "$topic/topic.yaml" ] || continue
+  # One more sed of the file this loop already reads for the title, and the
+  # task directories below are never opened. That is the whole cost of the
+  # filter here, and it is why the flag lives on topic.yaml: deciding what to
+  # hide by reading every task.yaml would make the hidden case the expensive
+  # one.
+  if [ -n "$(sed -n 's/^archived: *//p' "$topic/topic.yaml" | head -1)" ]; then
+    archived=$((archived + 1))
+    continue
+  fi
   printf 'T\t%s\t%s\n' "$topic" "$(sed -n 's/^title: *//p' "$topic/topic.yaml" | head -1)"
   for dir in "$topic"/*/; do
     [ -f "$dir/task.yaml" ] || continue
@@ -180,6 +191,7 @@ for topic in */; do
     ' "$dir/task.yaml"
   done
 done
+printf 'A\t%s\n' "$archived"
 ]==]
 
 --- The fuel probe: the account's remaining window, asked of the one thing that
@@ -323,7 +335,7 @@ local CLASS_ORDER = {
 
 --- The whole queue, out of one probe's stdout.
 local function build_model(stdout)
-  local model = { topics = {}, state_of = {}, counts = {}, per_class = {} }
+  local model = { topics = {}, state_of = {}, counts = {}, per_class = {}, archived = 0 }
   local topic
 
   for line in (stdout .. "\n"):gmatch("(.-)\n") do
@@ -332,6 +344,8 @@ local function build_model(stdout)
       model.error = split_tabs(line)[2]
     elseif kind == "R" then
       model.root = split_tabs(line)[2]
+    elseif kind == "A" then
+      model.archived = tonumber(split_tabs(line)[2]) or 0
     elseif kind == "T" then
       local f = split_tabs(line)
       topic = { slug = f[2] or "", title = f[3] or "", tasks = {} }
@@ -1239,7 +1253,16 @@ return {
     if model.error then
       return saying({ model.error, lead.cwd }, width)
     end
+    local archived = model.archived or 0
     if #model.topics == 0 then
+      if archived > 0 then
+        -- Not an empty queue: a queue whose every topic has finished. Saying
+        -- "empty" here would be the one lie this pane is able to tell.
+        return saying({
+          archived .. " archived topic(s), nothing live",
+          "queue.sh list --archived",
+        }, width)
+      end
       return saying({ "the queue is empty", model.root or lead.cwd }, width)
     end
 
@@ -1253,6 +1276,14 @@ return {
     children[#children + 1] = widgets.divider(width)
     children[#children + 1] = line(summary_spans(model, width))
     children[#children + 1] = widgets.divider(width)
+    -- Above the scroll window rather than in it: the count is the pane saying
+    -- what it is NOT drawing, so a queue long enough to scroll is exactly the
+    -- queue where it must not be the row that scrolls off.
+    if archived > 0 then
+      children[#children + 1] = line({
+        { text = "  " .. archived .. " archived", style = { fg = theme.muted } },
+      })
+    end
 
     -- Window BEFORE building rows: the descriptors are cheap tables and only the
     -- slice that lands on screen is turned into spans.

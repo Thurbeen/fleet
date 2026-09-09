@@ -53,6 +53,11 @@
 #      upstream's state, a state and an outcome that disagree are printed as a
 #      disagreement, a sweep that could not read every repo says so in its
 #      headline, and a queued task nobody dispatched is marked as one.
+#  14. A topic whose every task reached `landed` or `abandoned` ARCHIVES
+#      itself, and leaves every default view while staying reachable by name.
+#      One task still running, or one a worker gave up in, keeps the whole
+#      topic in front of the operator — and all four readers answer the same,
+#      out of the topic file alone.
 #
 # Test 4 is also the wake proof. The event source is `thurbox-cli watch`, which
 # this script replaces with a recorded stream through `FLEET_QUEUE_WATCH_CMD` —
@@ -2314,6 +2319,224 @@ expect "the monitor calls the unclearable blocker unclearable" \
 expect "and a landed task's blocker moot" '"status": "moot"' "$view"
 expect "it carries the same conflict note" "disagrees with outcome shipped" "$view"
 expect "and the same no-session marker" "no session dispatched" "$view"
+
+# --- 14. a finished topic archives itself, and leaves every default view ------
+#
+# The queue reached 24 topics with 27 of its 30 tasks `landed`, and the two
+# topics with live work were buried under twenty-two finished ones in both
+# readers. Archiving is a FLAG and a FILTER — nothing is moved, deleted or
+# rewritten, because this queue is gitignored and the repo does not back it up.
+#
+# The one predicate underneath all of it: a topic is archivable when every
+# task it has is `landed` or `abandoned`. `stuck` and `failed` are the
+# worker's own verdicts, whose sessions §5b keeps alive as evidence, so a
+# topic holding either must stay in front of the operator. The automatic
+# sweep, the manual command and the `add` clear all ask the same question, and
+# the cases below are what stops the three drifting apart.
+#
+# In a queue of its own: the sections above leave tasks in every state there
+# is, and this one is about what a WHOLE topic adds up to.
+
+export FLEET_QUEUE_DIR="$tmp/queue-archive"
+
+# A task that really landed, by the only path that produces one: the worker's
+# result, a pipeline-compliant pull request body, and the forge saying merged.
+landed_task() {
+	local topic="$1" number="$2" slug="$3" pr="$4"
+	$QUEUE add "$topic" "$slug" --title "$slug" --repo /tmp/repo-a \
+		--branch "fix/$slug" --number "$number" >/dev/null
+	cat >"$bodies/$pr.md" <<'BODY'
+## Intent
+## What Changed
+## Risk Assessment
+## Testing
+## Pipeline
+BODY
+	echo MERGED >"$states/$pr.state"
+	cat >"$FLEET_QUEUE_DIR/$topic/$number-$slug/result.md" <<EOF
+---
+outcome: shipped
+artifact: https://github.com/Thurbeen/thurbox/pull/$pr
+---
+Landed.
+EOF
+}
+
+atopic="$($QUEUE topic add all-landed --title 'Every task merged' \
+	--prompt 'a topic whose work is entirely on main')"
+landed_task "$atopic" 01 first-half 2001
+landed_task "$atopic" 02 second-half 2002
+
+ltopic="$($QUEUE topic add half-live --title 'One merged, one still out' \
+	--prompt 'a topic with a worker still running in it')"
+landed_task "$ltopic" 01 merged-part 2003
+$QUEUE add "$ltopic" running-part --title 'running part' --repo /tmp/repo-a \
+	--branch fix/running-part --number 02 >/dev/null
+sed -i 's/^state: .*/state: dispatched/' \
+	"$FLEET_QUEUE_DIR/$ltopic/02-running-part/task.yaml"
+
+gtopic="$($QUEUE topic add gave-up --title 'One merged, one given up on' \
+	--prompt 'a topic a worker could not finish')"
+landed_task "$gtopic" 01 done-part 2004
+$QUEUE add "$gtopic" broken-part --title 'broken part' --repo /tmp/repo-a \
+	--branch fix/broken-part --number 02 >/dev/null
+cat >"$FLEET_QUEUE_DIR/$gtopic/02-broken-part/result.md" <<'EOF'
+---
+outcome: failed
+---
+Could not make the migration work; the session is the evidence.
+EOF
+
+# (a) The sweep that writes the flag is the one that moves the last task into a
+#     terminal state — `collect`, through the landing sweep `reap` owns.
+out="$($QUEUE collect 2>&1)"
+expect "the topic whose every task landed is archived" "all-landed" "$out"
+expect "and the sweep says so in the word the record uses" "archived" "$out"
+refute "a topic still holding a dispatched worker is not archived" \
+	"half-live      " "$out"
+
+meta="$(cat "$FLEET_QUEUE_DIR/$atopic/topic.yaml")"
+expect "the flag lands in topic.yaml, beside slug and title" "archived:" "$meta"
+expect "and topic.yaml keeps everything it already carried" "title: Every task merged" "$meta"
+
+refute "a topic with a live task carries no flag" "archived:" \
+	"$(cat "$FLEET_QUEUE_DIR/$ltopic/topic.yaml")"
+refute "and neither does one whose worker gave up: failed is not terminal here" \
+	"archived:" "$(cat "$FLEET_QUEUE_DIR/$gtopic/topic.yaml")"
+
+# (b) Every default view drops it, and every one of them still says how many it
+#     dropped — a queue that looks small is worse than a queue that looks long.
+out="$($QUEUE list 2>&1)"
+refute "list hides the archived topic" "all-landed" "$out"
+expect "but says how many it is hiding" "1 archived topic(s)" "$out"
+expect "and the live topics are still there" "half-live" "$out"
+expect "as is the one that needs an operator" "gave-up" "$out"
+
+out="$($QUEUE list --archived 2>&1)"
+expect "--archived shows only the archived set" "all-landed" "$out"
+refute "and nothing else" "half-live" "$out"
+
+out="$($QUEUE list --all 2>&1)"
+expect "--all shows the archived topic" "all-landed" "$out"
+expect "and the live ones beside it" "half-live" "$out"
+
+out="$($QUEUE show "$atopic/01-first-half" 2>&1)"
+expect "show reaches an archived task by name, with no unarchiving first" \
+	"01-first-half" "$out"
+expect "and its whole record with it" "state:       landed" "$out"
+
+# (c) Not read, not merely not shown. The point of the flag is that a finished
+#     topic costs one `sed` of topic.yaml and nothing else — so a task file
+#     that cannot be parsed at all must not reach any default view.
+mv "$FLEET_QUEUE_DIR/$atopic/01-first-half/task.yaml" "$tmp/parked-task.yaml"
+printf 'a: b: c\n' >"$FLEET_QUEUE_DIR/$atopic/01-first-half/task.yaml"
+out="$($QUEUE list 2>&1)"
+expect "an archived topic's task files are never opened by list" \
+	"1 archived topic(s)" "$out"
+expect "and the live topics still render" "half-live" "$out"
+out="$(./scripts/fleet-status.sh 2>&1)"
+expect "nor by fleet-status.sh, which counts them the same way" \
+	"1 archived topic(s)" "$out"
+refute "and does not draw the archived topic" "all-landed" "$out"
+monitor() {
+	python3 -c '
+import json, sys, importlib.util
+spec = importlib.util.spec_from_file_location("fleet_webui", "scripts/lib/webui.py")
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+doc = getattr(m, sys.argv[1])()
+print(json.dumps({
+    "slugs": [t["slug"] for t in doc["topics"]],
+    "archived": doc["counts"].get("archived"),
+}))
+' "$1" 2>&1
+}
+out="$(monitor snapshot)"
+expect "nor by the monitor's snapshot, which counts them the same way" \
+	'"archived": 1' "$out"
+refute "and does not carry the archived topic" '"all-landed"' "$out"
+
+# The TUI pane is the fourth reader, and the only one that is not Python. Its
+# probe is plain shell, so it is run here exactly as the pane runs it — a pane
+# that disagreed with `list` would be a second opinion about a model it does
+# not own.
+sed -n '/^local PROBE = \[==\[$/,/^\]==\]$/p' interface/fleet_queue.lua |
+	sed '1d;$d' >"$tmp/pane-probe.sh"
+out="$(sh "$tmp/pane-probe.sh" 2>/dev/null)"
+expect "the pane's probe counts the archived topic" "$(printf 'A\t1')" "$out"
+refute "and never emits a record for it" "all-landed" "$out"
+expect "while still emitting the live ones" "half-live" "$out"
+mv "$tmp/parked-task.yaml" "$FLEET_QUEUE_DIR/$atopic/01-first-half/task.yaml"
+
+# And the other half of "not read": the monitor opens the archived set when
+# something asks it to, on a route the four-second poll never touches.
+expect "the monitor can fetch the archived set on demand" "all-landed" \
+	"$(monitor archived_snapshot)"
+
+# (d) The manual override, and the one refusal that keeps it honest.
+if out="$($QUEUE archive "$ltopic" 2>&1)"; then
+	fail "archive refuses a topic with a live task" "$out"
+else
+	expect "archive refuses a topic with a live task" "not finished" "$out"
+	expect "and names the task that is holding it" "02-running-part" "$out"
+	expect "with the state that made it non-terminal" "dispatched" "$out"
+fi
+if out="$($QUEUE archive "$gtopic" 2>&1)"; then
+	fail "archive refuses a topic whose worker gave up" "$out"
+else
+	expect "archive refuses a topic whose worker gave up" "02-broken-part" "$out"
+fi
+
+$QUEUE unarchive "$atopic" >/dev/null
+refute "unarchive clears the flag" "archived:" \
+	"$(cat "$FLEET_QUEUE_DIR/$atopic/topic.yaml")"
+expect "and the topic is back in the default view" "all-landed" "$($QUEUE list 2>&1)"
+$QUEUE archive "$atopic" >/dev/null
+expect "and archive puts it back out of it" "1 archived topic(s)" "$($QUEUE list 2>&1)"
+
+# (e) A topic that grows a new task is live again, whatever it was. An
+#     operator who did not notice the flag would otherwise dispatch into a
+#     topic no default view draws.
+$QUEUE add "$atopic" third-half --title 'third half' --repo /tmp/repo-a \
+	--branch fix/third-half --number 03 >/dev/null
+refute "adding a task un-archives the topic it went into" "archived:" \
+	"$(cat "$FLEET_QUEUE_DIR/$atopic/topic.yaml")"
+out="$($QUEUE list 2>&1)"
+expect "so the new work is visible where it was dispatched from" "all-landed" "$out"
+refute "and nothing is left claiming to be hidden" "archived topic(s)" "$out"
+
+out="$($QUEUE check 2>&1)"
+expect "and every record still validates" "ok" "$out"
+
+# (f) What archiving must NOT narrow. The shepherd derives the repositories it
+#     watches from the tasks the queue holds, and then asks the forge about
+#     every open pull request in each — including ones no task recorded. A
+#     shepherd that only saw live topics would stop watching a repository the
+#     moment its last topic finished, which is exactly when a stray pull
+#     request has nobody left looking at it.
+$QUEUE archive "$atopic" >/dev/null 2>&1 || true
+$QUEUE unarchive "$atopic" >/dev/null 2>&1 || true
+sed -i 's/^state: .*/state: landed/' \
+	"$FLEET_QUEUE_DIR/$atopic/03-third-half/task.yaml"
+$QUEUE archive "$atopic" >/dev/null
+expect "the topic is archived again once its last task landed" \
+	"1 archived topic(s)" "$($QUEUE list 2>&1)"
+out="$($QUEUE shepherd --ref "$atopic/01-first-half" --dry-run 2>&1)"
+refute "the shepherd still reaches an archived task's record" "no such task" "$out"
+
+# (g) The one shape of this flag that is actively harmful: a topic marked
+#     archived while it still holds live work is work nothing draws. Nothing
+#     fleet does can produce one — the sweep refuses it and `add` clears the
+#     flag — but a hand-edited topic.yaml can, so `check` says so.
+printf "archived: '2026-01-01T00:00:00+00:00'\n" \
+	>>"$FLEET_QUEUE_DIR/$ltopic/topic.yaml"
+if out="$($QUEUE check 2>&1)"; then
+	fail "check catches a topic archived over live work" "$out"
+else
+	expect "check catches a topic archived over live work" "half-live" "$out"
+	expect "and names the task nothing would have drawn" "02-running-part" "$out"
+	expect "with the remedy" "unarchive" "$out"
+fi
 
 echo
 if [ "$failed" -eq 0 ]; then
