@@ -126,8 +126,12 @@
 #                        restart the workers that ran dry against it
 #   scripts/queue.sh shepherd [--dry-run] # every open PR on the repo: fix or merge
 #                        [--json] [--topic T] [--ref R] [--no-merge] [--force]
-#   scripts/queue.sh list [--topic T]     # the lead's view: a line per task
-#   scripts/queue.sh show <ref>           # one task's whole record
+#   scripts/queue.sh list [--topic T] [--archived] [--all]  # the lead's view:
+#                        a line per task; archived topics hidden by default
+#   scripts/queue.sh archive <topic>      # hide a finished topic from every
+#                        default view; refuses one with a live task
+#   scripts/queue.sh unarchive <topic>    # put it back in every view
+#   scripts/queue.sh show <ref>           # one task's whole record, archived or not
 #   scripts/queue.sh check                # validate every record (./scripts/check.sh queue)
 #   scripts/queue.sh root                 # the resolved queue directory, absolute
 #
