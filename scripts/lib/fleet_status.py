@@ -574,7 +574,6 @@ def probe_fuel() -> dict:
     binding = min(windows, key=lambda w: w["remaining"])
     sec["binding"] = binding["id"]
     sec["remaining"] = binding["remaining"]
-    sec["resets_at"] = binding["resets_at"]
     sec["below_reserve"] = binding["remaining"] < FUEL_RESERVE
     sec["resets_at"] = binding["resets_at"]
     return sec
