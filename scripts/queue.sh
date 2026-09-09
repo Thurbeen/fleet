@@ -52,7 +52,10 @@
 #              of. `add` takes both, defaulting to POLICY.md's frontmatter.
 #   `reap`     asks the FORGE whether each concluded task's pull request has
 #              merged, moves the ones that did to `landed`, and only then
-#              deletes their sessions and worktrees. `collect` runs it, because
+#              deletes their sessions and worktrees. A `push` task has nothing
+#              left to ask by this point — `collect` already confirmed its
+#              commit reached the base branch before closing it — so it lands
+#              in the same run reap follows. `collect` runs it, because
 #              "delete each session as it closes out" was a documented MANUAL
 #              step and twenty gigabytes sat in a worktree whose pull request
 #              had merged the day before. It never touches a session thurbox
