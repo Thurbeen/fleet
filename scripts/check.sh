@@ -362,6 +362,51 @@ check_pane() {
 		miss=1
 	fi
 
+	# ONE PLACE SPELLS THE LEAD'S GLYPH, AND IT IS NOT THIS FILE. The mark the
+	# lead wears is a setting (orchestration/session-glyphs.example.conf) that
+	# scripts/install-extension.sh renders into the manifest, so the pane holds
+	# the NAME and matches whatever mark is in front of it. A glyph in the
+	# pane's code would be a second copy of that setting, and the pane would
+	# report "no session" the day the operator flipped it — a partial rename
+	# reached without anyone renaming anything. Comment lines are dropped first:
+	# the pane's header has to be able to EXPLAIN the setting it does not carry.
+	local lead_name manifest_name
+	lead_name="$(sed -n 's/^local CONTROL_PLANE = "\(.*\)"$/\1/p' "$pane" | head -1)"
+	manifest_name="$(sed -n '/^\[\[sessions\]\]/,$p' extension.toml.in |
+		sed -n 's/^name *= *"\(.*\)"/\1/p' | head -1)"
+	if [ -z "$lead_name" ] || [ -z "$manifest_name" ]; then
+		fail "pane: could not read CONTROL_PLANE from $pane or the session name from extension.toml.in"
+		miss=1
+	else
+		if [ "$manifest_name" != "__LEAD_GLYPH__ $lead_name" ]; then
+			fail "pane: extension.toml.in spawns '$manifest_name' but $pane matches '$lead_name' behind one mark; a rename that stops at one of them leaves the pane hunting a session nobody spawns"
+			miss=1
+		fi
+	fi
+
+	# And the glyphs themselves appear in no line of the pane's CODE — only in
+	# the comment that explains why they do not.
+	local g key
+	for key in LEAD_GLYPH_ON LEAD_GLYPH_OFF WORKER_GLYPH_ON; do
+		g="$(sed -n "s/^$key=//p" orchestration/session-glyphs.example.conf | head -1)"
+		[ -n "$g" ] || continue
+		if grep -v '^[[:space:]]*--' "$pane" | grep -qF "$g"; then
+			fail "pane: $pane spells the $key glyph in code; the mark is a setting the pane matches around, never one it carries"
+			miss=1
+		fi
+	done
+
+	# The setting's own file, held to the same rule the pane's glyph is: bare
+	# codepoints, so the width both sides measure is the width that is drawn.
+	local glyphs="orchestration/session-glyphs.example.conf"
+	if [ ! -f "$glyphs" ]; then
+		fail "pane: $glyphs is missing; nothing would render the lead's mark"
+		miss=1
+	elif LC_ALL=C grep -qP '\xef\xb8\x8f|\xef\xb8\x8e|\xe2\x80\x8d' "$glyphs" 2>/dev/null; then
+		fail "pane: $glyphs carries a variation selector or a zero-width joiner; a session glyph is a bare codepoint so its width is one both sides agree on"
+		miss=1
+	fi
+
 	# NO VARIATION SELECTOR, AND NOTHING BUILT OUT OF ONE. The pane's fuel
 	# glyph is a bare codepoint on purpose: U+FE0F asks for an emoji
 	# presentation the terminal may not have, adds a character some terminals

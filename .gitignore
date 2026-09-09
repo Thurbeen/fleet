@@ -27,6 +27,13 @@
 # copy that documents the format, so a fresh clone still knows what goes here.
 /registry/owners.txt
 
+# MACHINE. Whether this terminal's font draws a two-cell emoji at two cells is
+# true of one machine, so the glyph setting is one machine's answer.
+# orchestration/session-glyphs.example.conf is the tracked copy that carries the
+# defaults, and both readers fall back to it — so this file only needs to exist
+# when you want something other than the default.
+/orchestration/session-glyphs.conf
+
 # GENERATED. Rebuilt wholesale from your `gh` session by scripts/sync-registry.sh,
 # and an index of every repo you can reach is not a thing to publish.
 /registry/repos.generated.yaml

@@ -110,6 +110,13 @@ thurbox's `run` capability to ask it anything. The name lives in the
 `extension.toml.in`, which owns renaming it — read it there rather than
 remembering it.
 
+The constant holds the name **without the glyph**, and matches the lead behind
+any single mark in front of it. That is deliberate: which glyph the lead wears
+is a setting (`orchestration/session-glyphs.example.conf`) that
+`scripts/install-extension.sh` renders into the manifest, and a pane spelling
+one of its values would say "no session" the day the operator flipped it.
+`./scripts/check.sh pane` holds the two files to the same name.
+
 ## 2. Installing it
 
 ```bash

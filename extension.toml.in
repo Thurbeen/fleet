@@ -104,8 +104,11 @@
 # the same word (`fleet`) until the lead was renamed, which is what made them
 # look like one name in six places. They are not:
 #
-#   the session   `⌖ Mission Control`  what the TUI lists, what the mailbox
-#                                      addresses, what the queue pane probes
+#   the session   `<glyph> Mission Control`
+#                                      what the TUI lists and what the mailbox
+#                                      addresses. The GLYPH is a setting and
+#                                      the rest is the name — see the glyph
+#                                      header below
 #   the extension `fleet`              the id every `thurbox-cli extension ...`
 #                                      command takes, the directory it derives
 #                                      and the directory it derives
@@ -122,56 +125,77 @@
 # THE GLYPH IS PART OF THE NAME, because thurbox has no field for it. Its
 # `ExtensionSession` carries `name`, `agent` and `repo_path` and nothing else,
 # and `session create` has no icon flag — so a lead that wants a mark in the
-# session list can only wear it in its name. `⌖` is U+2316 POSITION MARKER:
-# East_Asian_Width Neutral, so it is one cell wide in the tmux grid the TUI
-# draws on, and not an emoji, so it drags in no variation selector and no
-# color font. Both of those are load-bearing — a double-width glyph shears
-# every column after it in the session list.
+# session list can only wear it in its name.
 #
-# SO THE MAILBOX ADDRESS IS NO LONGER TYPEABLE, and that is the cost. `⌖` is
-# not on a keyboard, so `--to '⌖ Mission Control'` has to be COPY-PASTED — from
-# this file, from FLEET.md, or from `thurbox-cli session list`. That is on top
-# of the quoting the space already demanded, not instead of it. Anything
-# addressed to a hand-typed `Mission Control` finds no session at all.
+# WHICH MARK IS A SETTING, AND `__LEAD_GLYPH__` IN THE TABLE BELOW IS WHERE IT
+# ARRIVES.
+# `orchestration/session-glyphs.example.conf` is the one place it is chosen —
+# `GLYPHS=on` for `📡` (the default), `GLYPHS=off` for `⌖` — and
+# `scripts/install-extension.sh` substitutes it into the rendered manifest the
+# same way it substitutes `__REPO_PATH__`. That file's header owns the whole
+# argument; two things about it belong here, where the name is:
 #
-# WHERE THE FULL LITERAL GOES, AND WHERE IT DOES NOT. `⌖ Mission Control`
-# belongs everywhere the string is USED — this manifest, the pane's
-# CONTROL_PLANE constant, the selftest's expectations, and every shell command
-# that names the session. Prose that merely REFERS to the lead calls it
-# Mission Control, without backticks, because a backtick here means "this is
-# the literal thing" and a literal missing its glyph is a lie.
+#   * `📡` is U+1F4E1, East_Asian_Width WIDE: TWO cells in the tmux grid the TUI
+#     draws on. `⌖` is U+2316 POSITION MARKER, Neutral, so one cell and not an
+#     emoji. That is the entire difference between the two values, and the
+#     reason `off` is a real setting rather than a relic.
+#   * Neither needs a variation selector or a colour font. A selector would add
+#     a character some terminals count as a column and others do not, and every
+#     column after the name would shear.
 #
-# RENAMING THE SESSION AGAIN. The name is in four places and they move together:
+# SO THE MAILBOX ADDRESS IS NO LONGER TYPEABLE, and that is the cost, at either
+# setting. Neither glyph is on a keyboard, so `--to '<glyph> Mission Control'`
+# has to be COPY-PASTED — and the honest place to copy it from is
+# `thurbox-cli session list`, which shows the name the session was actually
+# SPAWNED with. This file shows what the next spawn will use, which is not the
+# same claim while a rename is un-applied. Quote it either way: the name has a
+# space, and unquoted the shell splits it. Anything addressed to a hand-typed
+# `Mission Control` finds no session at all.
+#
+# WHERE THE FULL LITERAL GOES, AND WHERE IT DOES NOT — and after the glyph
+# became a setting the answer is "almost nowhere". The rendered manifest is the
+# only file that spells the whole name, because it is the only one that decides
+# what thurbox spawns. Everything else names the lead the way prose always
+# did — Mission Control, no backticks, no glyph — or resolves the real string at
+# the moment it needs it, out of this manifest or out of `session list`. A
+# backtick here means "this is the literal thing", and a literal that hardcodes
+# one setting's value is a lie the moment the setting moves.
+#
+# RENAMING THE SESSION AGAIN — the NAME, not the glyph. It is in two places now
+# and they move together:
 #
 #   [[sessions]] name                (1) here — the only place that decides
 #                                        what thurbox spawns
 #   interface/fleet_queue.lua        (2) CONTROL_PLANE: the TUI pane probes the
-#                                        lead BY NAME to find the checkout
-#   FLEET.md                         (3) the [[files]] payload, whose text
-#                                        opens "You are the **Mission Control**
-#                                        session"
-#   --to '⌖ Mission Control'         (4) the mailbox address, for anything
-#                                        urgent enough to interrupt the lead.
-#                                        QUOTE IT — the name has a space, and
-#                                        unquoted the shell splits it. PASTE
-#                                        IT — the name has a glyph, and no
-#                                        keyboard has that key
+#                                        lead to find the checkout. It holds
+#                                        the name WITHOUT the glyph and accepts
+#                                        either mark in front of it, so the
+#                                        setting never reaches it — but the
+#                                        words still have to agree
 #
-# A fifth place moves with them without being one of the four:
-# `scripts/queue-selftest.sh` asserts the name THIS FILE resolves to, so the
-# gate fails on a rename that stops here.
+# Two more places move with them without being one of the two:
+# `scripts/queue-selftest.sh` asserts that (1) rendered ends in (2), and
+# `scripts/check.sh pane` asserts the same of the unrendered file, so the gate
+# fails a rename that stops at either. FLEET.md names the lead in prose and
+# carries no literal to update.
 #
 # A PARTIAL RENAME is the failure mode: change (1) alone and thurbox spawns the
 # new name while the pane goes on probing the old one, so the queue pane says
 # "no session" forever, and anything still addressed to the old name either
-# bounces or lands in an inbox nobody drains.
+# bounces or lands in an inbox nobody drains. The GLYPH can no longer cause
+# that — nothing but the manifest carries it — which is what made it safe to
+# put a two-cell emoji there at all.
 #
-# AND EDITING THIS FILE IS NOT THE RENAME. thurbox names a session when it
-# SPAWNS it and has no verb that renames one afterwards (`session --help` lists
-# none), while `ensure_extension` matches a declared session to a live one by
-# NAME — so installing a new name simply spawns a SECOND session and orphans
-# the first, with `extension status` calling that healthy. Both sequences below
-# leave exactly one session, under the new name. They differ in what they cost.
+# AND EDITING THIS FILE IS NOT THE RENAME — NOR IS FLIPPING THE GLYPH SETTING,
+# which is the same operation wearing a smaller word. thurbox names a session
+# when it SPAWNS it and has no verb that renames one afterwards (`session
+# --help` lists none), while `ensure_extension` matches a declared session to a
+# live one by NAME — so installing a new name simply spawns a SECOND session and
+# orphans the first, with `extension status` calling that healthy. A glyph the
+# operator changed and did not apply costs exactly this, because `📡 Mission
+# Control` and `⌖ Mission Control` are two names to everything that resolves
+# one. Both sequences below leave exactly one session, under the new name. They
+# differ in what they cost.
 #
 #   KEEPING THE CONVERSATION. `fork` continues it, because the stock `claude`
 #   agent this session binds to declares `fork_args`:
@@ -212,7 +236,13 @@
 # WORKER session names are in none of this. They are free-form strings that
 # nothing resolves — by the convention in orchestration/playbooks/ each is an
 # imperative sentence describing the work, with no `fleet` prefix and no repo
-# prefix.
+# prefix. They wear `🚀` under the SAME setting as the lead's mark (`GLYPHS=on`
+# in `orchestration/session-glyphs.example.conf`), applied by
+# `scripts/lib/queue.py` where the name is built at dispatch — and because
+# nothing resolves those names, that half cost none of the argument above.
+# Existing workers keep the name they were spawned with: there is no rename
+# verb for them either, and none of the sequences above is worth running on a
+# session that will be reaped when its pull request merges.
 
 name = "fleet"
 description = "Control-plane session: the repo map and thurbox orchestration"
@@ -303,12 +333,14 @@ target = "FLEET.md"
 # --- runtime resources: ensured on activate, self-healed if deleted -----------
 #
 # A single long-lived session, so the control plane is always there to plan a
-# run, hold the log, and receive worker mail (`message send --to '⌖ Mission
-# Control'`) — which needs the lead to *be* a session, not an ad-hoc terminal.
-# Paste that address; the glyph is not on a keyboard. See the RENAMING header.
+# run, hold the log, and receive worker mail (`message send --to '<the name
+# below, rendered>'`) — which needs the lead to *be* a session, not an ad-hoc
+# terminal. Paste that address out of `thurbox-cli session list`; no glyph is on
+# a keyboard, and the live session is the one that answers. See the glyph and
+# RENAMING headers.
 
 [[sessions]]
-name = "⌖ Mission Control"
+name = "__LEAD_GLYPH__ Mission Control"
 agent = "claude"
 # The session opens your checkout, not the extension home: it needs registry/
 # and orchestration/ in hand, and the repo's SessionStart hook

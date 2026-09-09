@@ -388,9 +388,12 @@ when it SPAWNS it and has no verb that renames one, and `ensure_extension`
 matches a declared session to a live one by NAME — so a manifest edit alone
 spawns a SECOND session beside the old one and calls that healthy.
 
-The lead is called `⌖ Mission Control`; the EXTENSION and its agent are still
-`fleet`, which is deliberate and is why `extension status fleet` stays the right
-question no matter what the session is called. `extension.toml.in`'s RENAMING
+The lead is called Mission Control, wearing a glyph that is a setting rather
+than a literal (`orchestration/session-glyphs.example.conf`, rendered into the
+manifest at install time) — so read its exact name off `thurbox-cli session
+list` rather than from any file. The EXTENSION and its agent are still `fleet`,
+which is deliberate and is why `extension status fleet` stays the right question
+no matter what the session is called. `extension.toml.in`'s RENAMING
 header owns both sequences — the `session fork` one that carries the lead's
 conversation across, and the `extension deactivate` one that discards it —
 including which step must come before which. Don't reimplement it here.
