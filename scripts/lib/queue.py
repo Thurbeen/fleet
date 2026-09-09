@@ -3714,7 +3714,15 @@ FIXABLE = ("conflicting", "checks-failed", "changes-requested", "policy")
 # pull request body cannot make for itself). `--squash --delete-branch`
 # because squash is the only method the remote allows; CONTRIBUTING.md owns
 # that.
-AUTO_MERGE_REPOS = {"Thurbeen/fleet"}
+#
+# `Thurbeen/thurview` was added on the operator's standing instruction, "merge
+# everything when ready". It qualifies on the same terms rather than looser
+# ones: it carries its own `.no-mistakes.yaml` and CI, so the attestation and
+# checks gates above mean there exactly what they mean here. A repo WITHOUT
+# those would be a repo where every gate but `author_can_push` is vacuous —
+# that is the test for adding the next one, not whether the fleet happens to
+# have work there.
+AUTO_MERGE_REPOS = {"Thurbeen/fleet", "Thurbeen/thurview"}
 
 
 def pr_ref(artifact: str) -> tuple[str, int] | None:
