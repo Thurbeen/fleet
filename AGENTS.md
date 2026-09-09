@@ -67,7 +67,12 @@ names every path and the reason for each.
   verify, place, hide, remove, diagnose.
 - `orchestration/playbooks/<name>.md` — reusable recipes for running thurbox.
   All tracked; write new ones here, from `_TEMPLATE.md`.
-- `orchestration/runs/<date>-<slug>.md` — a log per orchestration run.
+- `orchestration/runs/<date>-<topic>.md` — a log per orchestration run, one
+  per topic. **The queue writes it**: `topic add` opens it from `_TEMPLATE.md`
+  and the loop's own commands rewrite a fenced block of facts inside it.
+  Everything outside that fence is the lead's judgement and nothing ever
+  overwrites it. Gitignored, like everything a run produces; the template is
+  the one tracked file there.
 - `.agents/skills/<name>/SKILL.md` — agent skills, in one agent-agnostic tree.
   `.claude/skills` is a **symlink** to it, so Claude Code and opencode (which
   auto-discovers `.claude/skills`) both load the same copy. Never add a second
@@ -115,7 +120,10 @@ The loop, driven by `./scripts/queue.sh`:
    `queue.sh watch` folds `thurbox-cli watch`'s event stream into each task's
    record and closes nothing; `queue.sh collect` reads the `result.md` the
    worker wrote and only that closes a task. A turn ending is not a task
-   finishing. Record the run in `orchestration/runs/` as it happens.
+   finishing. The run log records itself as this happens — `topic add` opened
+   it and each of these commands refreshes its facts — so what is left for you
+   is the half no record can hold: the goal in your words, the decisions, what
+   went wrong, the outcome. Write those into it while you still know them.
 6. **Release is a third thing, and it is not manual.** `outcome: shipped` means
    a pull request is OPEN, or, for a task whose declared publish method is
    `push`, a commit already on the base branch — that session is the cheap way

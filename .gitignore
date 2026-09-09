@@ -44,7 +44,10 @@
 !/registry/context/_TEMPLATE.md
 
 # WORKING STATE. One file per orchestration run — the record of what you did,
-# when, and how it went. _TEMPLATE.md is the form and stays.
+# when, and how it went. scripts/queue.sh opens one per topic and refreshes the
+# facts inside it, so these carry machine paths and session ids freely; the
+# judgement around those facts is the operator's. _TEMPLATE.md is the form,
+# it is generic, and it stays.
 /orchestration/runs/*.md
 !/orchestration/runs/_TEMPLATE.md
 

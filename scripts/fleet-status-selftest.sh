@@ -73,6 +73,9 @@ done
 
 tmp="$(mktemp -d)"
 export FLEET_QUEUE_DIR="$tmp/queue"
+# `topic add` also opens a run log; keep this run's out of the operator's
+# orchestration/runs/, the same way FLEET_QUEUE_DIR keeps its queue out.
+export FLEET_RUNS_DIR="$tmp/runs"
 mkdir -p "$FLEET_QUEUE_DIR" "$tmp/repo"
 
 # A sandboxed PATH holding only the tools the command is allowed to find. This
@@ -97,7 +100,7 @@ stubbed="$(sandbox "$tmp/bin-stubbed" "${BASE_TOOLS[@]}")"
 
 # --- a queue with something in it -------------------------------------------
 
-"$QUEUE" topic add selftest --title "Selftest topic" --prompt 'the prompt, verbatim' >/dev/null
+"$QUEUE" topic add selftest --title "Selftest topic" --prompt 'the prompt, verbatim' >/dev/null 2>&1
 printf 'Do the thing.\n' >"$tmp/brief.md"
 "$QUEUE" add selftest dispatched-task --title "A dispatched task" --repo "$tmp/repo" \
 	--branch t/dispatched --touches FLEET.md --brief-file "$tmp/brief.md" >/dev/null

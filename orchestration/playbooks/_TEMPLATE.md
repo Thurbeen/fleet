@@ -33,7 +33,9 @@ How to decompose the goal into thurbox sessions. For each session, define:
 
 ## Run
 
-1. Open a run log from `../runs/_TEMPLATE.md`.
+1. `./scripts/queue.sh topic add` — which opens this run's log under
+   `../runs/` for you. Write the goal into it now; the facts arrive by
+   themselves.
 2. Fast-forward each target repo's base branch, then `thurbox-cli session create`
    with `--parent "$THURBOX_SESSION"`, the chosen `--on-existing` mode, and the
    profile's flags from `./scripts/session-flags.sh`.

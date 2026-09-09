@@ -83,6 +83,11 @@
 #      machine cannot read as `not checked`, and a task nobody messaged as
 #      nothing at all. Nothing there writes `state` or `outcome`.
 #
+#  12. The run log is something the queue PRODUCES. Opening a topic opens
+#      one; the loop's own commands refresh the facts inside a fenced block
+#      and rewrite it rather than appending to it; and prose the lead wrote
+#      outside that block survives every later pass.
+#
 # Test 4 is also the wake proof. The event source is `thurbox-cli watch`, which
 # this script replaces with a recorded stream through `FLEET_QUEUE_WATCH_CMD` —
 # the same override a different transport would use. What matters is the shape:
@@ -163,6 +168,9 @@ done
 
 tmp="$(mktemp -d)"
 export FLEET_QUEUE_DIR="$tmp/queue"
+# Run logs go to a throwaway directory too (test 12). Without this, every run
+# of this file would scaffold logs into the operator's own orchestration/runs/.
+export FLEET_RUNS_DIR="$tmp/runs"
 
 # Captured here, before test 7's subshell exports its own PATH: reading $PATH
 # after that point is what SC2031 is about, and the stubbed sections below
@@ -523,13 +531,16 @@ pipeline_pr 999 fix/drop-idle-default
 # `01` and `02` are independent. `03` genuinely depends on `01`. `04` edits the
 # same file as `01` and depends on nothing.
 
+# stdout is the VALUE and stderr is the note, so the topic id can be captured
+# with `$(...)` while the run log this also opened still gets named (test 12).
 if ! topic="$($QUEUE topic add report-status-honestly \
 	--title 'Make thurbox report agent status honestly' \
-	--prompt 'idle should mean the agent said it is at rest, nothing else' 2>&1)"; then
-	fail "topic add" "$topic"
+	--prompt 'idle should mean the agent said it is at rest, nothing else' \
+	2>"$tmp/topic-add.err")"; then
+	fail "topic add" "$topic$nl$(cat "$tmp/topic-add.err")"
 	exit 1
 fi
-expect "topic add returns a topic id" "report-status-honestly" "$topic"
+expect "topic add returns a topic id, and only that" "report-status-honestly" "$topic"
 
 for spec in \
 	"01:drop-idle-default:Stop defaulting an unreported session to idle:/tmp/repo-a:src/state.rs" \
@@ -890,7 +901,7 @@ chmod +x "$fakebin/thurbox-cli"
 (
 	export PATH="$fakebin:$PATH"
 	unset FLEET_QUEUE_WATCH_CMD
-	zt="$(FLEET_QUEUE_DIR="$zerotmp/queue" $QUEUE topic add zero-cursor \
+	zt="$(FLEET_QUEUE_DIR="$zerotmp/queue" $QUEUE topic add zero-cursor 2>/dev/null \
 		--prompt 'prove a real zero cursor is not dropped')" || exit 1
 	FLEET_QUEUE_DIR="$zerotmp/queue" $QUEUE add "$zt" only-task --title 'only task' \
 		--repo /tmp/repo-z --branch fix/only-task --number 01 >/dev/null
@@ -1686,6 +1697,11 @@ else
 fi
 refute "and says nothing about the control plane, because it is it" \
 	"control plane" "$out"
+# This throwaway clone has no orchestration/runs/_TEMPLATE.md, and intake must
+# not depend on one: a run log that cannot be scaffolded is reported and the
+# topic is opened anyway.
+expect "a missing run log template is reported, and stops nothing" \
+	"run log not scaffolded" "$out"
 
 # --- it is NOT the control plane: creating a second queue is refused ----------
 
@@ -1978,7 +1994,7 @@ mkdir -p "$shep/perms"
 echo admin >"$shep/perms/LeTuR"
 
 stopic="$($QUEUE topic add shepherd-cases --title 'The PRs, after the work' \
-	--prompt 'watch every open PR and dispatch a fixer when one goes bad')"
+	--prompt 'watch every open PR and dispatch a fixer when one goes bad' 2>/dev/null)"
 
 for spec in 01:conflicting:101 02:green:102 03:skipped:103 04:elsewhere:104 \
 	05:busy:105 06:unrun:106 07:gone:107 08:second:113; do
@@ -2369,7 +2385,7 @@ git -C "$trepo" init -q -b main
 git -C "$trepo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m base
 
 mtopic="$($QUEUE topic add many-prs --title 'A repo at the pagination limit' \
-	--prompt 'shepherd a repo with at least GH_PR_LIST_LIMIT open pull requests')"
+	--prompt 'shepherd a repo with at least GH_PR_LIST_LIMIT open pull requests' 2>/dev/null)"
 $QUEUE add "$mtopic" only --title only --repo "$trepo" --branch fix/only --number 1 >/dev/null
 cat >"$FLEET_QUEUE_DIR/$mtopic/1-only/result.md" <<EOF
 ---
@@ -2529,7 +2545,8 @@ export FLEET_QUEUE_DIR="$tmp/queue-remote"
 
 rtopic="$($QUEUE topic add run-somewhere-else \
 	--title 'Run a task on another machine' \
-	--prompt 'fleet should be able to spawn a worker on a remote thurbox host')"
+	--prompt 'fleet should be able to spawn a worker on a remote thurbox host' \
+	2>/dev/null)"
 
 # (a) The refusals that cost nothing, all at `add` time and none of them
 #     touching a host: a name thurbox does not know, a Windows host, and a
@@ -3772,6 +3789,102 @@ refute "a concluded task's row drops the liveness line" "no commit since" "$row"
 out="$($QUEUE show "$ltopic/02-quiet" 2>&1)"
 expect "and \`show\`, which is the record itself, keeps it" \
 	"this task concluded" "$out"
+
+# --- 19. the run log is produced, not remembered -----------------------------
+#
+# The gap this closes: `AGENTS.md` said "record the run in orchestration/runs/
+# as it happens", and two consecutive runs did not. One was written only
+# because its lead session was being migrated; the other was reconstructed from
+# chat history after the fact. An instruction two leads failed the same way is
+# a tool gap, so the queue writes the half it knows and leaves the half it
+# cannot know alone.
+#
+# Back in the main queue: this run's topic has been through dispatch, collect,
+# reap and shepherd by now, so the facts are real ones rather than a fixture's.
+
+export FLEET_QUEUE_DIR="$tmp/queue"
+runlog="$FLEET_RUNS_DIR/$(date -u +%F)-report-status-honestly.md"
+
+# (a) Opening a topic is what opens the run log. Nobody asked for it.
+if [ -f "$runlog" ]; then
+	pass "topic add scaffolds a run log without being asked"
+else
+	fail "topic add scaffolds a run log without being asked" \
+		"no $runlog${nl}$(ls -A "$FLEET_RUNS_DIR" 2>&1)"
+fi
+
+log="$(cat "$runlog" 2>/dev/null)"
+expect "the run log names the topic it was opened for" \
+	"Make thurbox report agent status honestly" "$log"
+expect "and topic add said where it is, on stderr rather than in the value" \
+	"$runlog" "$(cat "$tmp/topic-add.err")"
+expect "and the prose sections the lead owns are already there" "## Outcome" "$log"
+expect "and the generated block is fenced" "<!-- fleet:facts -->" "$log"
+
+# (b) The facts the queue already knows are in it, without being retyped.
+out="$($QUEUE collect 2>&1)"
+log="$(cat "$runlog")"
+expect "the facts block carries each task" "01-drop-idle-default" "$log"
+expect "with the branch it runs on" "fix/document-the-states" "$log"
+expect "and the artifact its worker reported" "/pull/1001" "$log"
+expect "and the timeline says when it was dispatched" "dispatched" "$log"
+expect "and the overlap that was accepted rather than serialized" \
+	"Overlap on \`src/state.rs\`" "$log"
+
+# (c) The lead's judgement is never clobbered — the whole reason the file
+#     exists is the part no record can produce.
+python3 - "$runlog" <<'PY'
+import sys
+p = sys.argv[1]
+body = open(p).read().replace(
+    "## Outcome", "## Outcome\n\nSerializing this topic would have been a mistake.", 1)
+open(p, "w").write(body)
+PY
+
+$QUEUE shepherd --dry-run >/dev/null 2>&1
+$QUEUE collect >/dev/null 2>&1
+log="$(cat "$runlog")"
+expect "prose the lead wrote survives every later refresh" \
+	"Serializing this topic would have been a mistake." "$log"
+
+# (d) A refresh REWRITES the block; it does not append to it. `collect` runs
+#     many times over one run, and a line appended per pass is the timeline
+#     nobody reads — this failure relocated rather than fixed.
+before="$(grep -c 'dispatched' "$runlog")"
+$QUEUE collect >/dev/null 2>&1
+$QUEUE collect >/dev/null 2>&1
+after="$(grep -c 'dispatched' "$runlog")"
+if [ "$before" = "$after" ]; then
+	pass "three refreshes leave the same file, not three copies of it"
+else
+	fail "three refreshes leave the same file, not three copies of it" \
+		"$before dispatch line(s) became $after"
+fi
+
+# (e) The explicit verb, for a topic older than this feature and for a lead
+#     that just wants the path.
+out="$($QUEUE run 2>&1)"
+expect "\`run\` names the log it maintains" "$runlog" "$out"
+
+# (f) A log whose fence was removed is a log the lead took over. Nothing is
+#     written into it again, and the queue says so rather than going quiet.
+taken="$FLEET_RUNS_DIR/$(date -u +%F)-taken-over.md"
+tk="$($QUEUE topic add taken-over --title 'Taken over' --prompt 'mine now' 2>/dev/null)"
+grep -v 'fleet:facts' "$FLEET_RUNS_DIR/$(date -u +%F)-$tk.md" >"$taken.tmp"
+mv "$taken.tmp" "$FLEET_RUNS_DIR/$(date -u +%F)-$tk.md"
+echo "Every word of this is mine." >>"$FLEET_RUNS_DIR/$(date -u +%F)-$tk.md"
+out="$($QUEUE run 2>&1)"
+expect "a log with no generated block is reported, not rewritten" "left alone" "$out"
+expect "and it keeps every word" "Every word of this is mine." \
+	"$(cat "$FLEET_RUNS_DIR/$(date -u +%F)-$tk.md")"
+
+# (g) Nothing machine-specific reaches the one file here that IS tracked.
+if grep -qE '/home/|/Users/|[0-9a-f]{8}-[0-9a-f]{4}' orchestration/runs/_TEMPLATE.md; then
+	fail "the tracked template carries no path and no session id" \
+		"$(grep -nE '/home/|/Users/' orchestration/runs/_TEMPLATE.md)"
+else
+	pass "the tracked template carries no path and no session id"
+fi
 
 echo
 if [ "$failed" -eq 0 ]; then
