@@ -34,10 +34,17 @@ set -uo pipefail
 # thurbox extension no longer matches the manifest it was rendered from. Neither
 # is fixable from here, so both are reported as actions for the operator.
 INSTRUCTION_PATHS=(FLEET.md AGENTS.md CLAUDE.md .agents/skills .claude/skills .claude/settings.json)
-# session-glyphs.example.conf is a wiring path because the installer RENDERS it
-# into the manifest: new defaults there are a new lead name, and a name is the
-# one thing a re-install cannot apply on its own.
-WIRING_PATHS=(extension.toml.in FLEET.md orchestration/session-glyphs.example.conf)
+# session-glyphs.example.conf and voice.example.conf are wiring paths because
+# the installer RENDERS both: new defaults in the first are a new lead name, and
+# a name is the one thing a re-install cannot apply on its own; new defaults in
+# the second change what the rendered FLEET payload calls the operator, which
+# needs the re-install AND the restart above.
+WIRING_PATHS=(
+	extension.toml.in
+	FLEET.md
+	orchestration/session-glyphs.example.conf
+	orchestration/voice.example.conf
+)
 
 # The lead's name as the INSTALLED manifest spells it — never a literal here.
 # The glyph in front of it is a setting (orchestration/session-glyphs.conf), so

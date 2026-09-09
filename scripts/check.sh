@@ -13,7 +13,7 @@
 #   scripts/check.sh --fix markdown      # apply the fixes a check can apply
 #
 # Checks: shell, markdown, yaml, profiles, queue, reconcile, status, skills,
-# pane. Only `markdown` has a fixer; `--fix` is a no-op for the rest, so
+# pane, voice. Only `markdown` has a fixer; `--fix` is a no-op for the rest, so
 # `scripts/check.sh --fix` is always safe to run.
 #
 # Requires: shellcheck, rumdl, python3 (with PyYAML), lua. A missing tool
@@ -464,6 +464,83 @@ check_skills() {
 	[ "$missing" -eq 0 ] && ok "skills: $link -> $target resolves; every skill has a SKILL.md"
 }
 
+# THE VOICE, WHICH IS A SETTING AND NOT A LITERAL. `FLEET.md` is the lead's
+# standing context and the source of the extension's payload, and the two names
+# in it — what the lead calls the operator and what it answers to — are the
+# operator's choice, exactly as the session glyph is. So `orchestration/voice.example.conf`
+# is the one place they are spelled, `scripts/install-extension.sh` renders them
+# into the gitignored `FLEET.rendered.md` the manifest actually ships, and
+# `FLEET.md` carries placeholders. A name written into FLEET.md would be a
+# second copy of the setting that no `voice.conf` could move.
+check_voice() {
+	need git voice || return
+
+	local conf="orchestration/voice.example.conf" miss=0
+	if [ ! -f "$conf" ]; then
+		fail "voice: $conf is missing; nothing would render the lead's names"
+		return
+	fi
+
+	local key val names=()
+	for key in OPERATOR_NAME ASSISTANT_NAME; do
+		val="$(sed -n "s/^$key=//p" "$conf" | head -1)"
+		if [ -z "$val" ]; then
+			fail "voice: $conf sets no $key"
+			miss=1
+		else
+			names+=("$val")
+		fi
+	done
+
+	# The placeholders have to be IN FLEET.md, and the defaults have to not be:
+	# the render is what puts a name in front of the lead, and a literal beside
+	# the placeholder is the copy that stops moving.
+	for key in @OPERATOR_NAME@ @ASSISTANT_NAME@; do
+		if ! grep -qF -- "$key" FLEET.md; then
+			fail "voice: FLEET.md carries no $key; the render would have nothing to substitute"
+			miss=1
+		fi
+	done
+	for val in ${names[@]+"${names[@]}"}; do
+		if grep -qF -- "$val" FLEET.md; then
+			fail "voice: FLEET.md spells '$val' itself; the name is a setting the render carries in, never one the prose holds"
+			miss=1
+		fi
+	done
+
+	# AND THE RENDER ITSELF, which is the only part of this a grep cannot
+	# argue with. Rendered into a temp directory, off an override conf, so the
+	# gate never touches the operator's own rendered payload.
+	local tmp
+	tmp="$(mktemp -d)" || {
+		fail "voice: could not make a temp directory to render into"
+		return
+	}
+	printf 'OPERATOR_NAME=GATEOP\nASSISTANT_NAME=GATEAI\n' >"$tmp/voice.conf"
+
+	local out="$tmp/FLEET.rendered.md" report
+	if ! report="$(FLEET_VOICE_CONF="$tmp/voice.conf" \
+		./scripts/install-extension.sh --render-only "$tmp" 2>&1)"; then
+		fail "voice: install-extension.sh --render-only failed: $report"
+		miss=1
+	elif [ ! -f "$out" ]; then
+		fail "voice: --render-only wrote no $out"
+		miss=1
+	else
+		grep -qF -- GATEOP "$out" ||
+			{ fail "voice: the rendered payload does not carry OPERATOR_NAME from the conf"; miss=1; }
+		grep -qF -- GATEAI "$out" ||
+			{ fail "voice: the rendered payload does not carry ASSISTANT_NAME from the conf"; miss=1; }
+		if grep -qE -- '@(OPERATOR|ASSISTANT)_NAME@' "$out"; then
+			fail "voice: a name placeholder survived into the rendered payload"
+			miss=1
+		fi
+	fi
+	rm -rf "$tmp"
+
+	[ "$miss" -eq 0 ] && ok "voice: $conf renders into FLEET.md's placeholders"
+}
+
 checks=()
 for arg in "$@"; do
 	case "$arg" in
@@ -473,7 +550,7 @@ for arg in "$@"; do
 done
 
 if [ ${#checks[@]} -eq 0 ]; then
-	checks=(shell markdown yaml profiles queue reconcile status skills pane)
+	checks=(shell markdown yaml profiles queue reconcile status skills pane voice)
 fi
 
 for c in "${checks[@]}"; do
@@ -487,8 +564,9 @@ for c in "${checks[@]}"; do
 	status) check_status ;;
 	skills) check_skills ;;
 	pane) check_pane ;;
+	voice) check_voice ;;
 	*)
-		printf 'error: unknown check %q (want: shell markdown yaml profiles queue reconcile status skills pane)\n' "$c" >&2
+		printf 'error: unknown check %q (want: shell markdown yaml profiles queue reconcile status skills pane voice)\n' "$c" >&2
 		exit 2
 		;;
 	esac

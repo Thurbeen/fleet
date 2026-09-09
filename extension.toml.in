@@ -229,9 +229,11 @@
 # extensions and two self-healing sessions, each recreating itself, plus an
 # orphaned `~/.config/thurbox/extensions/fleet/`.
 #
-# FLEET.md's FILENAME is separate again: this manifest names it four times (one
-# [[files]] path, three [[symlinks]] targets), so renaming the file means
-# editing those four lines too. Neither rename above requires it.
+# THE PAYLOAD's FILENAME is separate again: this manifest names
+# `FLEET.rendered.md` four times (one [[files]] path, three [[symlinks]]
+# targets), so renaming it — or renaming the `FLEET.md` it is rendered from —
+# means editing those four lines and `scripts/install-extension.sh` together.
+# Neither rename above requires it.
 #
 # WORKER session names are in none of this. They are free-form strings that
 # nothing resolves — by the convention in orchestration/playbooks/ each is an
@@ -247,7 +249,7 @@
 name = "fleet"
 description = "Control-plane session: the repo map and thurbox orchestration"
 config_version = 1
-version = "1.2.0"                # this extension's own version; bump on changes
+version = "1.3.0"                # this extension's own version; bump on changes
 
 # WHY THE FLOOR IS 2.19.0 — it is a claim about what this control plane's own
 # prose relies on, not a note about the version somebody happens to run.
@@ -312,23 +314,35 @@ min_thurbox_version = "2.19.0"
 # Only the standing context ships. The registry, playbooks and run logs stay in
 # the git checkout — they are versioned there, and `repos.generated.yaml` is
 # generated, so shipping a copy would immediately drift.
+#
+# AND WHAT SHIPS IS THE RENDERED COPY, NOT THE TRACKED ONE. `FLEET.md` is the
+# source and carries `@OPERATOR_NAME@` and `@ASSISTANT_NAME@`;
+# `scripts/install-extension.sh` substitutes the two names out of
+# `orchestration/voice.example.conf` (or the gitignored `voice.conf` beside it)
+# and writes `FLEET.rendered.md`, which is gitignored exactly as the rendered
+# manifest is. Rendering to a second file rather than in place is the whole
+# point: an operator who changed what the lead calls them has edited no tracked
+# file, so `scripts/sync-checkout.sh` still has a clean tree to fast-forward.
+#
+# The `substitute` flag below would not have done this. It substitutes `{home}`
+# and nothing else, so the names could never have travelled that way.
 
 [[files]]
-path = "FLEET.md"
+path = "FLEET.rendered.md"
 
-# --- context-file symlinks: surface FLEET.md to each CLI's convention ---------
+# --- context-file symlinks: surface the payload to each CLI's convention ------
 
 [[symlinks]]
 link = "CLAUDE.md"
-target = "FLEET.md"
+target = "FLEET.rendered.md"
 
 [[symlinks]]
 link = "AGENTS.md"
-target = "FLEET.md"
+target = "FLEET.rendered.md"
 
 [[symlinks]]
 link = "GEMINI.md"
-target = "FLEET.md"
+target = "FLEET.rendered.md"
 
 # --- runtime resources: ensured on activate, self-healed if deleted -----------
 #

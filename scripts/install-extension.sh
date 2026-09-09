@@ -19,6 +19,23 @@
 # spawns. Nothing else in the repo spells the glyph: the pane matches the lead
 # without it, and prose calls the lead Mission Control.
 #
+# IT ALSO RENDERS THE PAYLOAD, for the same reason and out of a second setting.
+# `FLEET.md` is the lead's standing context, and the two names it is written
+# around — what the lead calls the operator, and what it answers to — are the
+# operator's, not this repo's. So FLEET.md carries `@OPERATOR_NAME@` and
+# `@ASSISTANT_NAME@` — `@`-delimited and not `__`-delimited like the manifest's
+# placeholders, because markdown reads `__x__` as bold and the linter says so —
+# `orchestration/voice.example.conf` is the one place they
+# are chosen (`voice.conf` beside it is the gitignored override), and this
+# script writes the substituted copy to a gitignored `FLEET.rendered.md` that
+# the manifest ships as its `[[files]]` payload. Rendering to a SECOND file and
+# not in place is what keeps `scripts/sync-checkout.sh` a clean tree to
+# fast-forward: an operator who renamed themselves has changed no tracked file.
+#
+# AND A RENDERED PAYLOAD REACHES NO RUNNING LEAD. The session froze FLEET.md at
+# launch, so a new name is a re-install AND a restart — the same two steps a
+# glyph needs, and `.agents/skills/update-fleet/` owns them.
+#
 # CHANGING THE GLYPH IS A RENAME, and this script cannot apply one. It renders
 # and installs the new name; the session that is already running keeps the old
 # one, because thurbox has no rename verb and `ensure_extension` matches by
@@ -62,7 +79,19 @@
 # command takes back the file, its `plugins.toml` entry and the lock together —
 # `plugin list` says where it came from in the meantime.
 #
-# Requires: git, thurbox-cli, jq.
+# Usage:
+#   ./scripts/install-extension.sh                 # render, then install
+#   ./scripts/install-extension.sh --render-only <dir>
+#                                                  # render both files into
+#                                                  # <dir> and stop. Touches
+#                                                  # nothing thurbox owns and
+#                                                  # needs neither thurbox-cli
+#                                                  # nor jq, which is how
+#                                                  # `scripts/check.sh voice`
+#                                                  # exercises the substitution
+#                                                  # without installing.
+#
+# Requires: git, thurbox-cli, jq — the last two only for a real install.
 
 set -euo pipefail
 
@@ -71,17 +100,36 @@ die() {
 	exit 1
 }
 
+RENDER_ONLY=""
+case "${1-}" in
+--render-only)
+	[ $# -eq 2 ] || die "--render-only takes a directory"
+	RENDER_ONLY="$2"
+	[ -d "$RENDER_ONLY" ] || die "not a directory: $RENDER_ONLY"
+	;;
+"") ;;
+*) die "unknown argument: $1 (usage: $0 [--render-only <dir>])" ;;
+esac
+
 command -v git >/dev/null || die "git not found"
-command -v thurbox-cli >/dev/null || die "thurbox-cli not found; install thurbox first"
-command -v jq >/dev/null || die "jq not found"
+if [ -z "$RENDER_ONLY" ]; then
+	command -v thurbox-cli >/dev/null || die "thurbox-cli not found; install thurbox first"
+	command -v jq >/dev/null || die "jq not found"
+fi
 
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" ||
 	die "not inside a git repository; run this from your clone"
 
+DEST="${RENDER_ONLY:-$REPO_ROOT}"
+
 IN="$REPO_ROOT/extension.toml.in"
-OUT="$REPO_ROOT/extension.toml"
+OUT="$DEST/extension.toml"
+
+FLEET_IN="$REPO_ROOT/FLEET.md"
+FLEET_OUT="$DEST/FLEET.rendered.md"
 
 [ -f "$IN" ] || die "missing $IN"
+[ -f "$FLEET_IN" ] || die "missing $FLEET_IN"
 
 case "$REPO_ROOT" in
 /*) ;;
@@ -120,6 +168,40 @@ case "$LEAD_GLYPH" in
 	;;
 esac
 
+# The voice setting, read the same way and from the same kind of pair: the
+# operator's own copy when there is one, the tracked defaults when there is not.
+# FLEET_VOICE_CONF is the seam `scripts/check.sh voice` renders through, so the
+# gate can prove the substitution without writing over the operator's answer.
+VOICE_CONF="${FLEET_VOICE_CONF:-}"
+if [ -z "$VOICE_CONF" ]; then
+	VOICE_CONF="$REPO_ROOT/orchestration/voice.conf"
+	[ -f "$VOICE_CONF" ] || VOICE_CONF="$REPO_ROOT/orchestration/voice.example.conf"
+fi
+[ -f "$VOICE_CONF" ] || die "missing the voice setting: $VOICE_CONF"
+
+voice_setting() {
+	sed -n "s/^$1=//p" "$VOICE_CONF" | head -1
+}
+
+OPERATOR_NAME="$(voice_setting OPERATOR_NAME)"
+ASSISTANT_NAME="$(voice_setting ASSISTANT_NAME)"
+[ -n "$OPERATOR_NAME" ] || die "no OPERATOR_NAME in $VOICE_CONF"
+[ -n "$ASSISTANT_NAME" ] || die "no ASSISTANT_NAME in $VOICE_CONF"
+
+# `|` is the sed delimiter below, and a backslash or a `&` in the replacement is
+# sed's own syntax rather than the name the operator typed. `@` is the
+# placeholder delimiter itself: a name containing `@ASSISTANT_NAME@` or
+# `@OPERATOR_NAME@` would have the OTHER substitution rewrite it after this
+# one applied, silently swapping one operator's name for the other's. Refuse
+# rather than render something they did not write.
+for name in "$OPERATOR_NAME" "$ASSISTANT_NAME"; do
+	case "$name" in
+	*'|'* | *\\* | *'&'* | *"'"* | *'"'* | *'@'*)
+		die "a name in $VOICE_CONF contains a quote, a pipe, a backslash, an '&' or an '@': $name"
+		;;
+	esac
+done
+
 tmp="$(mktemp)"
 trap 'rm -f "$tmp"' EXIT
 
@@ -136,6 +218,30 @@ fi
 mv "$tmp" "$OUT"
 trap - EXIT
 printf 'rendered %s (repo_path = %s, lead glyph = %s)\n' "$OUT" "$REPO_ROOT" "$LEAD_GLYPH"
+
+# The payload, from the same tracked source and under the same refusal: a
+# surviving placeholder would ship the lead a context file telling it to address
+# the operator as @OPERATOR_NAME@.
+tmp="$(mktemp)"
+trap 'rm -f "$tmp"' EXIT
+
+sed -e "s|@OPERATOR_NAME@|$OPERATOR_NAME|g" \
+	-e "s|@ASSISTANT_NAME@|$ASSISTANT_NAME|g" "$FLEET_IN" >"$tmp"
+
+if grep -q '@OPERATOR_NAME@\|@ASSISTANT_NAME@' "$tmp"; then
+	die "placeholder survived substitution; $FLEET_OUT not written"
+fi
+[ -s "$tmp" ] || die "rendered payload is empty; $FLEET_OUT not written"
+
+mv "$tmp" "$FLEET_OUT"
+trap - EXIT
+printf 'rendered %s (operator = %s, lead answers to = %s)\n' \
+	"$FLEET_OUT" "$OPERATOR_NAME" "$ASSISTANT_NAME"
+
+if [ -n "$RENDER_ONLY" ]; then
+	printf '\n--render-only: nothing was installed.\n'
+	exit 0
+fi
 
 # Read the names out of the manifest rather than hardcoding them, so a rename
 # (extension.toml.in's header owns the procedure) reaches this script's checks

@@ -104,9 +104,9 @@ Adding a file means deciding which side it is on, and saying so:
 | If it is… | Then | Example |
 |---|---|---|
 | machinery — scripts, skills, playbooks, prose | tracked | `scripts/`, `playbooks/ship-feature.md` |
-| generated from a live source | ignored | `repos.generated.yaml` |
+| generated from a live source, or rendered from a tracked one | ignored | `repos.generated.yaml`, `FLEET.rendered.md` |
 | true on one machine | ignored | `extension.toml`, `orchestration/reconcile/` |
-| the operator's own working state | ignored | `runs/<date>-<slug>.md`, `queue/<topic>/` |
+| the operator's own working state | ignored | `runs/<date>-<slug>.md`, `queue/<topic>/`, `voice.conf` |
 
 Prefer a whole ignored **directory** with a `!` negation for the one tracked
 form it contains, the way `registry/context/`, `orchestration/runs/` and
@@ -150,6 +150,13 @@ session reports nothing and renders as `uncovered` while it works.
 `extension.toml` is rendered from `extension.toml.in` by
 `./scripts/install-extension.sh` and is gitignored — it carries your clone's
 absolute path. Edit the `.in` file and re-run the installer.
+
+The same run renders `FLEET.rendered.md`, the payload the manifest ships, from
+the tracked `FLEET.md` — substituting the two names in
+`orchestration/voice.example.conf` (or the gitignored `voice.conf` beside it).
+Edit `FLEET.md`, never the rendered copy. Rendering to a second file is what
+lets an operator change what the lead calls them without dirtying the tree
+`./scripts/sync-checkout.sh` has to fast-forward.
 
 `min_thurbox_version` there is a claim about the whole range the manifest
 supports, and the file's header records why the floor sits where it does, along

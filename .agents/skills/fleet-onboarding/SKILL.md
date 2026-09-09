@@ -157,9 +157,12 @@ a typo or an org the token cannot see, and it is fixable in seconds now.
 ./scripts/install-extension.sh
 ```
 
-It renders `extension.toml` (gitignored — it carries this clone's absolute
-path) from `extension.toml.in`, then installs it. Verify, rather than trusting
-the installer's own closing message:
+It renders two gitignored files and installs them: `extension.toml` from
+`extension.toml.in` (it carries this clone's absolute path), and
+`FLEET.rendered.md` from `FLEET.md` (it carries the two names in
+`orchestration/voice.example.conf` — what the lead calls the operator, and what
+it answers to; copy that file to `voice.conf` beside it to change either).
+Verify, rather than trusting the installer's own closing message:
 
 ```bash
 thurbox-cli extension status fleet --json
@@ -292,7 +295,8 @@ never the mechanism: a worker that ran out of quota fires no hook at all.
 ## 7. Hand over
 
 **Nothing this skill wrote is tracked.** `registry/owners.txt`,
-`registry/repos.generated.yaml` and `extension.toml` are all gitignored, so
+`registry/repos.generated.yaml`, `extension.toml` and `FLEET.rendered.md` are
+all gitignored, so
 `git status` is clean and there is nothing to commit or push. That is the
 design, not a step you forgot: this repo is public, and an index of every repo
 the operator can reach — along with one machine's absolute paths — does not
