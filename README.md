@@ -75,8 +75,8 @@ not control** — `./scripts/queue.sh` stays the only thing that writes:
   URL; `./scripts/webui.sh stop` takes it down for good, `start` brings it
   back.
 - **The queue pane**, the same view in a thurbox column, so you do not leave
-  the terminal for it, with the account's fuel on the line above the queue.
-  `F3` opens and closes it.
+  the terminal for it, with a bar for each subscription's fuel above the
+  queue. `F3` opens and closes it.
 
 Each shows four things per task and no fifth: the plan, the progress, the
 outcome, and the pull request.

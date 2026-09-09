@@ -3053,8 +3053,10 @@ TRANSCRIPT_TAIL_BYTES = 512 * 1024
 # restart is worth making. It is read through `fleet_status.probe_fuel()` —
 # `refuel/02-fuel-gauge` put that there for the lead's screen — rather than
 # parsed a second time here: one reader means quota-axi's schema moving costs
-# one edit, and the lead's gauge and this command can never disagree about how
-# much fuel there is.
+# one edit. `probe_fuel()` stays single-provider (`claude` alone) on purpose,
+# so the lead's screen, which reads every authenticated provider through
+# `probe_fuel_all()`, can legitimately show a different picture than this
+# command does.
 #
 # Loaded by path and LAZILY, because fleet_status.py imports this file: at
 # import time that is a cycle, and inside the one function that needs it, it is

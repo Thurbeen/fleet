@@ -512,10 +512,15 @@ result, `reap` sees a task that is not finished. Nothing in the loop notices.
 
 **It asks the ACCOUNT before it looks at a single session, and that order is the
 whole point.** The quota window it reads is the operator's own subscription —
-the lead and every worker draw on it. It is the same reading `fleet-status.sh`
-shows as `FUEL`, through the same function (`fleet_status.probe_fuel`), so the
-gauge and this command can never disagree; it covers the `claude` account, and
-a task running another agent is reported undetermined rather than guessed at. So while it is spent,
+the lead and every worker draw on it. It reads the `claude` account alone,
+through `fleet_status.probe_fuel`, deliberately kept single-provider: the fleet
+runs `claude` agents, so a spent window on a provider the fleet does not
+dispatch through must not strand a `claude` worker at its limit. `fleet-status.sh`'s
+`FUEL` section reads every authenticated provider instead
+(`fleet_status.probe_fuel_all`), so the two can legitimately disagree — the
+screen may show a provider fine while `refuel` still reports `claude` spent, or
+vice versa; a task running another agent is reported undetermined rather than
+guessed at. So while `claude` is spent,
 every session is stuck for the same reason, and restarting them is worse than
 useless: each one resumes, hits the same wall within seconds, and burns the
 reset it was waiting for. Three concurrent pipeline runs did exactly that on

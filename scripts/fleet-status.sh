@@ -27,16 +27,17 @@
 # FUEL IS THE ACCOUNT'S, NOT A SESSION'S. It comes from `quota-axi`, the only
 # source that has a number at all — `thurbox-cli session get --json` carries no
 # token, usage, cost or limit field. quota-axi measures the subscription window
-# every session spends at once, so there is one reading and no per-worker
-# breakdown to be had. FLEET.md's `## Fuel` section owns the reserve and what
-# the lead does near it.
+# every session spends at once, so there is one reading per authenticated
+# provider and no per-worker breakdown to be had. FLEET.md's `## Fuel` section
+# owns the reserve and what the lead does near it.
 #
-# `--fuel` IS THAT SECTION ALONE, as `name<TAB>value` lines. It exists for the
-# TUI queue pane, which draws the same reading and can afford neither `--json`
-# (which collects every section, so a `gh pr list` per repo in flight) nor a
-# JSON parser — a thurbox pane is Lua with no `os` and no `json`. It prints
-# `probe_fuel()`'s own fields under their own names, so the pane and this
-# screen cannot come to different conclusions about what quota-axi said.
+# `--fuel` IS THAT SECTION ALONE, as `name<TAB>value` records — one per
+# provider, separated by a blank line. It exists for the TUI queue pane, which
+# draws the same readings and can afford neither `--json` (which collects
+# every section, so a `gh pr list` per repo in flight) nor a JSON parser — a
+# thurbox pane is Lua with no `os` and no `json`. It prints `probe_fuel_all()`'s
+# own fields under their own names, so the pane and this screen cannot come to
+# different conclusions about what quota-axi said.
 #
 # Environment: FLEET_QUEUE_DIR and FLEET_WEBUI_DIR, honoured exactly as
 # scripts/queue.sh and scripts/webui.sh honour them.
