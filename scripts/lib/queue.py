@@ -4969,7 +4969,7 @@ def last_transition(task: Task) -> tuple[str | None, str]:
             ev = json.loads(row)
         except ValueError:
             continue
-        stamp = ev.get("at") or ev.get("observed")
+        stamp = ev.get("at")
         when = record_time(stamp)
         if when and (newest is None or when > newest[0]):
             newest = (when, str(stamp))
