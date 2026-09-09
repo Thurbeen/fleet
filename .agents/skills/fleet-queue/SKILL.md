@@ -61,6 +61,11 @@ EOF
 Store the prompt verbatim: your summary of it is a lossy copy made at the moment
 you understood it least.
 
+`topic add` also opens this run's log at
+`orchestration/runs/<opened>-<topic>.md` and names it on stderr. You do not
+have to make one, and you should not make a second — see **The run
+log** below.
+
 Then decompose. A topic is the unit of **intent**; a task is the unit of
 **work** — one repo, one branch, one thing a single worker can finish and
 validate on its own. The decomposition is yours.
@@ -784,6 +789,35 @@ reasons unrelated to what it was asked. So `collect` names it whenever it
 closed a task that left a PR open, and `shepherd --json` is the seam anything
 else reads it through.
 
+## The run log — the queue writes the facts, you write the judgement
+
+One log per topic, opened by `topic add`, refreshed by `dispatch`, `collect`
+and `shepherd` as they go. It exists because it used to not: two consecutive
+runs went unrecorded, one file surviving only because its lead was being
+migrated and the other reconstructed from chat history at the end. The
+instruction was there both times, which is what makes it a tool gap.
+
+```text
+<!-- fleet:facts -->     everything between the fences is GENERATED — the task
+   …                     table, what waited on what, what overlapped anyway,
+<!-- fleet:facts:end -->  and a timeline from the records' own timestamps
+```
+
+Outside the fence is yours and nothing ever rewrites it: **Goal** in your own
+words, **Decisions worth keeping**, **What went wrong**, **Outcome**. That is
+the half no record can produce, and it is the half worth having — write into it
+while you still know it, not at the end from scrollback.
+
+- The block is **rewritten, not appended to**, so refreshing three times leaves
+  one file rather than three copies of a timeline. A refresh that changes
+  nothing prints nothing.
+- `./scripts/queue.sh run [<topic>]` is that refresh made explicit — for a
+  topic older than this feature, or when you just want the path.
+- Delete the fence and the log is yours entirely: the queue reports it as
+  `left alone` and never writes into it again.
+- Run logs are gitignored, so machine paths and session ids are fine in them.
+  `_TEMPLATE.md` beside them is tracked; keep that one generic.
+
 ## 6. The views, and keeping your context clean
 
 ```bash
@@ -868,5 +902,5 @@ six weeks later.
    them ticking, and §5d says what that does and does not change.
 10. `plan` again. Review the PRs; the operator merges every one `shepherd` did
     not. Sessions release themselves once their pull requests land — `collect`
-    reaps, `reap --dry-run` shows you what it would do — and you record the run
-    in `orchestration/runs/` as it happens.
+    reaps, `reap --dry-run` shows you what it would do. The run log has been
+    recording itself since step 1; write your judgement into it.

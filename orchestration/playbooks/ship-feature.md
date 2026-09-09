@@ -12,8 +12,8 @@
 - `repo` — `owner/name`.
 - `base` — base branch (default the repo's default branch).
 - `profile` — the session profile the worker starts under, from
-  `../session-profiles.yaml` (default `default`). Record which one in the run
-  log: it is part of what produced the result.
+  `../session-profiles.yaml` (default `default`). It is part of what produced
+  the result, and the run log's facts name it without being asked.
 
 ## Sessions
 
@@ -33,7 +33,8 @@ One worker session.
 
 1. Read `registry/context/<repo>.md` for goals and gotchas; fold the relevant
    bits into the prompt.
-2. Open a run log.
+2. `./scripts/queue.sh topic add` opens this run's log; write the goal into it
+   now.
 3. Fast-forward `base` in the target repo, then `session create --parent
    "$THURBOX_SESSION" --on-existing adopt` with the profile's flags →
    `session send`.
@@ -46,7 +47,8 @@ One worker session.
 4. Read the result file the worker wrote, when you choose. Do not ask it to
    mail you: `message send` wakes the lead and interrupts whoever is talking to
    it. `./scripts/queue.sh watch` gives the timing without interrupting anyone.
-5. Review the PR; record it in the run log; merge or hand back.
+5. Review the PR — `collect`'s refresh already has it in the run log's facts —
+   then merge or hand back.
 6. `./scripts/queue.sh collect` reaps the session once the pull request
    merges. For a session you spawned outside the queue, `session delete <uuid>
    --force` once merged or abandoned.

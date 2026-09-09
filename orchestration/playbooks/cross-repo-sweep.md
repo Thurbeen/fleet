@@ -34,7 +34,8 @@ One worker session **per repo**, all with the same prompt shape.
 
 ## Run
 
-1. Build the repo list from the registry; write it into the run log up front.
+1. `./scripts/queue.sh topic add` opens this run's log. Build the repo list
+   from the registry; write it into the run log's Goal section up front.
 2. Fast-forward every target's base branch before spawning against it. A stale
    local `main` yields a worker that does correct work in a conflicting PR.
 3. Launch in waves of `max_parallel`, each with `--parent "$THURBOX_SESSION"`,
@@ -62,7 +63,7 @@ One worker session **per repo**, all with the same prompt shape.
    reports each one's `state`, and `blocked` is the word for that. Read the
    skill's session-state section before you act on any of those words —
    `idle` means the agent said it is at rest, and it is the only one that does.
-5. Collect PR URLs and `NOT_APPLICABLE` into the run log's session table.
+5. Collect PR URLs and `NOT_APPLICABLE` into the run log's Outcome section.
 6. Review PRs in a batch. Each session goes when its pull request merges —
    `./scripts/queue.sh collect` reaps it, `reap --dry-run` says what it would
    do — so nothing is left holding a worktree per repo.
@@ -71,7 +72,7 @@ One worker session **per repo**, all with the same prompt shape.
 
 - Prompts must be self-contained and repo-agnostic — workers don't share context
   with you or with each other.
-- Record the profile in the run log alongside the repo list. Two sweeps of the
+- The run log's facts name the profile without being asked. Two sweeps of the
   same goal under different settings are two different runs.
 - Log every repo that reported `NOT_APPLICABLE` so the sweep is auditable and
   not silently partial. This is the reason to prefer a result file over polling

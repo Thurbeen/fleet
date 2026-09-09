@@ -1207,6 +1207,13 @@ def cmd_topic_add(args) -> int:
     )
     with open(os.path.join(path, "PROMPT.md"), "w") as fh:
         fh.write(prompt.rstrip() + "\n")
+
+    # Opening a topic is where a run begins, so it is where its log begins —
+    # nobody has to decide to make one. On stderr because stdout is the VALUE
+    # here: `topic="$(queue.sh topic add ...)"` still gets a bare slug.
+    log, note = refresh_run_log(Queue(root), args.slug)
+    print(f"run log {note or 'ready'}: {log}", file=sys.stderr)
+
     print(args.slug)
     return 0
 
@@ -2210,6 +2217,7 @@ def cmd_dispatch(args) -> int:
             "    ./scripts/queue.sh prompt",
             file=sys.stderr,
         )
+    refresh_run_logs(q)
     return 0
 
 
@@ -2886,6 +2894,10 @@ def cmd_collect(args) -> int:
     # a task whose artifact the FORGE says has landed, which is never true of a
     # result collected a moment ago. Everything else is reported and left be.
     reap(q, dry=False, release=not args.no_reap)
+
+    # The run log's facts move when the records do, and this is the command
+    # that moves them most. It prints only when a file actually changed.
+    refresh_run_logs(q)
     return 0
 
 
@@ -4911,6 +4923,251 @@ def cmd_shepherd(args) -> int:
         "          carries a no-mistakes attestation for its CURRENT head, whose "
         "checks passed,\n          and that GitHub calls MERGEABLE."
     )
+    if not args.dry_run:
+        refresh_run_logs(q)
+    return 0
+
+
+# --- the run log: the half of it the queue already knows ---------------------
+#
+# `AGENTS.md` step 5 said "record the run in orchestration/runs/ as it happens".
+# Two consecutive runs did not: one file was written only because its lead
+# session was being migrated and would otherwise have lost everything it knew,
+# the other was reconstructed from chat history at the end of the run after the
+# operator asked what had gone wrong. An instruction two leads failed the same
+# way is not a discipline problem, it is a tool gap — every other artefact in
+# the loop (BRIEF.md, task.yaml, progress.jsonl, result.md) is scaffolded
+# without anyone choosing to make it, and the run log was the one that was not.
+#
+# So the queue writes the half it knows and never touches the half it cannot:
+#
+#   ONE LOG PER TOPIC.  A topic is one unit of intent, which is what a run is,
+#       and its slug and open date name the file — so every command finds the
+#       same one with no "current run" pointer to set, drift or get wrong.
+#   SCAFFOLDED AT `topic add`, from the tracked _TEMPLATE.md, because that is
+#       where a run begins and the point is that nobody has to decide to.
+#   REFRESHED BY THE LOOP'S OWN COMMANDS — `dispatch`, `collect`, `shepherd`
+#       and the explicit `run` — so the facts arrive without being retyped and
+#       without a daemon. A fenced block is REWRITTEN in place, never appended
+#       to: `collect` runs many times over one run, and a line appended per
+#       pass is a timeline nobody reads, which is this failure relocated rather
+#       than fixed. The block is a pure function of the records, so a refresh
+#       that changes nothing writes nothing and says nothing.
+#   AND EVERYTHING OUTSIDE THE FENCE IS THE LEAD'S. The goal in its own words,
+#       the decisions, what went wrong, the outcome — none of that can be
+#       generated from records, and it is why the file exists. Nothing here
+#       reads it, nothing here writes it, and a log whose fence has been
+#       removed is a log the lead has taken over: it is reported and left
+#       exactly as it is.
+
+RUNS_DIR = os.path.join("orchestration", "runs")
+RUN_TEMPLATE = "_TEMPLATE.md"
+
+# The fence, as a literal pair, so preserving what surrounds it is a string
+# search and not a parse of someone's prose.
+FACTS_BEGIN = "<!-- fleet:facts -->"
+FACTS_END = "<!-- fleet:facts:end -->"
+
+# A run is over when the queue has nothing left to do for it. `done` is not
+# here: that task's pull request is open, which is the middle of a run.
+RUN_CLOSED = ("landed", "abandoned", "stuck", "failed")
+
+
+def runs_root() -> str:
+    """Where run logs are written — FLEET_RUNS_DIR, as FLEET_QUEUE_DIR is.
+
+    A harness pointing the queue at a throwaway directory has to be able to
+    point the logs somewhere throwaway too, or every selftest run scaffolds
+    into the operator's own orchestration/runs/.
+    """
+    return os.environ.get("FLEET_RUNS_DIR") or os.path.join(checkout_root(), RUNS_DIR)
+
+
+def run_template_path() -> str:
+    """The tracked form, anchored to the CHECKOUT the way policy_path() is."""
+    return os.path.join(checkout_root(), RUNS_DIR, RUN_TEMPLATE)
+
+
+def run_log_path(slug: str, topic: dict) -> str:
+    """`<opened-date>-<topic>.md`, derived and never recorded.
+
+    Deriving it means the file has no pointer that can go stale and no field
+    two commands can disagree about. The date is the topic's, not today's, so
+    a run refreshed on its third day still writes to the file it opened.
+    """
+    day = str(topic.get("created") or now())[:10]
+    return os.path.join(runs_root(), f"{day}-{slug}.md")
+
+
+def cell(text) -> str:
+    """One markdown table cell: no pipe, no newline, and never empty."""
+    out = str(text if text not in (None, "") else "—").replace("|", "\\|")
+    return " ".join(out.split())
+
+
+def run_status(tasks: list) -> str:
+    if not tasks:
+        return "planning"
+    return "done" if all(t.state in RUN_CLOSED for t in tasks) else "running"
+
+
+def run_events(tasks: list) -> list:
+    """The run's timeline, from the timestamps the records already carry.
+
+    Four durable ones per task and the shepherd's outstanding fixer, which is
+    not durable and is not meant to be — it is cleared when that pull request
+    stops needing one, and this block says what the records say now.
+    """
+    out = []
+    for t in tasks:
+        d = t.doc
+        where = f" on `{d['host']}`" if d.get("host") else ""
+        session = d.get("session") or (d.get("reaped") or {}).get("session")
+        profile = d.get("profile") or "default"
+        if d.get("dispatched_at"):
+            out.append((d["dispatched_at"], f"dispatched `{t.id}`{where} to session "
+                                            f"`{session}` on profile `{profile}`"))
+        if d.get("concluded_at"):
+            check = (d.get("artifact_check") or {}).get("verdict") or ""
+            said = f"`{t.id}` concluded `{d.get('outcome')}`"
+            if d.get("artifact"):
+                said += f" — {cell(d['artifact'])}"
+            out.append((d["concluded_at"], said + (f" [pipeline {check}]" if check else "")))
+        landing = d.get("landing") or {}
+        if landing.get("at") and landing.get("state") in LANDED_STATE:
+            out.append((landing["at"], f"`{t.id}` {landing['state']} — {landing.get('detail', '')}"))
+        reaped = d.get("reaped") or {}
+        if reaped.get("at"):
+            out.append((reaped["at"], f"released `{t.id}`'s session "
+                                      f"`{reaped.get('session')}` ({reaped.get('how')})"))
+        shep = d.get("shepherd") or {}
+        if shep.get("at"):
+            said = (f"shepherd: `{t.id}`'s pull request is "
+                    f"`{shep.get('condition')}`")
+            if shep.get("session"):
+                said += f" — fixer `{shep['session']}`"
+            out.append((shep["at"], said))
+    return sorted(out, key=lambda e: e[0])
+
+
+def run_facts(q: Queue, slug: str) -> str:
+    """The fenced block, rendered from records and from nothing else."""
+    topic = q.topics.get(slug, {})
+    tasks = q.by_topic().get(slug, [])
+    profiles = sorted({t.doc.get("profile") or "default" for t in tasks})
+
+    lines = [
+        FACTS_BEGIN,
+        "",
+        "<!-- Generated from the queue's records by `./scripts/queue.sh`, and",
+        "     rewritten in place every time it runs. Write nothing in here;",
+        "     everything outside this fence is yours and is never touched. -->",
+        "",
+        f"- **Topic.** `{slug}` — {topic.get('title', '')}",
+        f"- **Prompt.** `{os.path.join(os.path.abspath(queue_root()), slug, 'PROMPT.md')}`",
+        f"- **Opened.** {topic.get('created', '—')} · **Status.** {run_status(tasks)}"
+        f" · **Profile(s).** {', '.join(f'`{p}`' for p in profiles) or '—'}",
+        "",
+    ]
+
+    if tasks:
+        lines += [
+            "| Task | Where it runs | Branch | State | Artifact |",
+            "|---|---|---|---|---|",
+        ]
+        for t in tasks:
+            d = t.doc
+            state = "waiting" if t.state == "queued" and not q.is_ready(t) else t.state
+            lines.append(
+                f"| `{t.id}` — {cell(d.get('title'))} | `{cell(where_it_runs(t))}` "
+                f"| `{cell(d.get('branch'))}` | {state} | {cell(d.get('artifact'))} |"
+            )
+        held = sorted({(t.id, bl["task"], bl["kind"], bl["why"])
+                       for t in tasks for bl in t.blockers})
+        # The two things about ordering worth having in a run log, and the
+        # reason the last one was typed by hand: what waited and on what
+        # condition, and what went out together anyway despite touching one
+        # file. The second is the queue's whole doctrine, so it is recorded
+        # here rather than left to a lead remembering to mention it.
+        for tid, on, kind, why in held:
+            lines += ["", f"- **`{tid}` waits on `{on}`** — {kind}: {why}"]
+        for o in q.overlaps(tasks):
+            refs = ", ".join(f"`{r.split('/')[-1]}`" for r in o["tasks"])
+            lines += ["", f"- **Overlap on `{o['touches']}`** — {refs}. A risk that "
+                          "was reported and accepted, never a reason to wait."]
+    else:
+        lines.append("No tasks yet.")
+
+    events = run_events(tasks)
+    if events:
+        lines += ["", "### Timeline", ""]
+        lines += [f"- `{at}` — {what}" for at, what in events]
+
+    lines += ["", FACTS_END]
+    return "\n".join(lines)
+
+
+def refresh_run_log(q: Queue, slug: str) -> tuple[str, str]:
+    """Write this topic's run log. Returns (path, what happened) — "" for nothing.
+
+    The three outcomes that matter: it did not exist and now does, it existed
+    and its facts moved on, or someone removed the fence and it is theirs now.
+    """
+    path = run_log_path(slug, q.topics.get(slug, {}))
+    old = ""
+    if os.path.exists(path):
+        with open(path) as fh:
+            old = fh.read()
+        verb = "updated"
+    else:
+        try:
+            with open(run_template_path()) as fh:
+                old = fh.read()
+        except OSError as exc:
+            return path, f"not scaffolded — {exc}"
+        old = old.replace("<YYYY-MM-DD>", os.path.basename(path)[:10]).replace("<slug>", slug)
+        verb = "opened"
+
+    if FACTS_BEGIN not in old or FACTS_END not in old:
+        return path, "left alone — no generated block in it"
+
+    head, _, rest = old.partition(FACTS_BEGIN)
+    _, _, tail = rest.partition(FACTS_END)
+    new = head + run_facts(q, slug) + tail
+    if new == old:
+        return path, ""
+
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as fh:
+        fh.write(new)
+    os.replace(tmp, path)
+    return path, verb
+
+
+def refresh_run_logs(q: Queue, only: str | None = None, always: bool = False) -> None:
+    """Refresh every topic's log and say only what changed.
+
+    Silence when nothing moved is the point: a loop that prints a line per
+    command per topic is the noise this was supposed to remove.
+    """
+    for slug in sorted(q.topics):
+        if only and slug != only:
+            continue
+        path, note = refresh_run_log(q, slug)
+        if note or always:
+            print(f"    run log {note or 'unchanged'}: {path}")
+
+
+def cmd_run(args) -> int:
+    """The refresh, made explicit — for a topic older than this and for the path."""
+    q = Queue(queue_root())
+    if args.topic and args.topic not in q.topics:
+        raise QueueError(f"no such topic: {args.topic}")
+    if not q.topics:
+        print("run: no topics, so no runs")
+        return 0
+    refresh_run_logs(q, only=args.topic, always=True)
     return 0
 
 
@@ -5605,6 +5862,10 @@ def build_parser() -> argparse.ArgumentParser:
     sh.add_argument("--force", action="store_true",
                     help="dispatch again for a condition a fixer is already out for")
     sh.set_defaults(func=cmd_shepherd)
+
+    rn = sub.add_parser("run", help="refresh the run log this topic writes into")
+    rn.add_argument("topic", nargs="?", help="one topic; every one by default")
+    rn.set_defaults(func=cmd_run)
 
     li = sub.add_parser("list", help="one line per task, grouped by topic")
     li.add_argument("--topic", help="one topic, archived or not")

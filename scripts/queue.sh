@@ -176,6 +176,7 @@
 #                        restart the workers that ran dry against it
 #   scripts/queue.sh shepherd [--dry-run] # every open PR on the repo: fix or merge
 #                        [--json] [--topic T] [--ref R] [--no-merge] [--force]
+#   scripts/queue.sh run [<topic>]        # refresh the run log(s) by hand
 #   scripts/queue.sh list [--topic T] [--archived] [--all]  # the lead's view:
 #                        a line per task; archived topics hidden by default
 #   scripts/queue.sh archive <topic>      # hide a finished topic from every
@@ -208,6 +209,30 @@
 # credentials OF ITS OWN, and the repo is a checkout at that path. Fleet never
 # sends credentials anywhere. POSIX hosts only — a Windows host (hosts.toml
 # spells one with a non-tmux `multiplexer`) is refused by name.
+#
+# THE RUN LOG IS PRODUCED, NOT REMEMBERED. `AGENTS.md` step 5 used to say
+# "record the run in orchestration/runs/ as it happens", and two consecutive
+# runs did not: one file existed only because its lead session was being
+# migrated, the other was reconstructed from chat history at the end. Every
+# other artefact of the loop is scaffolded without anyone choosing to make it,
+# so this one is too:
+#
+#   `topic add` opens `orchestration/runs/<opened>-<topic>.md` from the tracked
+#       _TEMPLATE.md — one log per topic, because a topic is one unit of intent
+#       and its slug and date name the file with no pointer to keep in step.
+#   `dispatch`, `collect` and `shepherd` REWRITE a fenced block inside it from
+#       the records — never append, because collect runs many times over one
+#       run and a line per pass is a timeline nobody reads. The block is a pure
+#       function of the records, so a refresh that changes nothing says nothing.
+#   EVERYTHING OUTSIDE THE FENCE IS THE LEAD'S — the goal in its own words, the
+#       decisions, what went wrong, the outcome. None of that can come from a
+#       record, and it is why the file exists. Remove the fence and the queue
+#       reports the file and never writes it again.
+#   `run` is that refresh made explicit, for a topic older than the feature and
+#       for a lead that just wants the path.
+#
+# Run logs are gitignored working state, like the queue: they may hold machine
+# paths and session ids freely, and _TEMPLATE.md is the one tracked file there.
 #
 # THE QUEUE BELONGS TO ONE CHECKOUT — the CONTROL PLANE's, the clone the
 # Mission Control session opens. It is never resolved against the shell's cwd,
@@ -244,6 +269,9 @@
 #   FLEET_QUEUE_DIR        where the queue lives (default: this checkout's
 #                          orchestration/queue). Honoured VERBATIM and never
 #                          guarded — someone who set it meant it.
+#   FLEET_RUNS_DIR         where run logs are written (default: this
+#                          checkout's orchestration/runs). The _TEMPLATE.md
+#                          they are scaffolded from is always the checkout's.
 #   FLEET_QUEUE_WATCH_CMD  the event source, for a replay or another transport
 #                          (default: thurbox-cli watch --json)
 #   THURBOX_SESSION        set inside a thurbox session; dispatch passes it as

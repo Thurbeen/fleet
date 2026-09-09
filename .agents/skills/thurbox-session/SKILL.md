@@ -607,8 +607,10 @@ the message.
 
 ## 5. Collect and clean up
 
-Record every session in the run log **as it happens** — name, repo(s), prompt
-intent, outcome, PR/artifact. The run log is the source of truth.
+For a session the queue dispatched, its facts refresh themselves in the run
+log — see `fleet-queue`'s **The run log**. For one you spawned by hand, note
+it there yourself; the judgement — goal, decisions, outcome — is always yours
+to write.
 
 ```bash
 thurbox-cli session restart <uuid>          # kill window, re-spawn with --resume
@@ -629,8 +631,8 @@ requests merged, and it reads this section's state table before it does — see
 ## Run loop
 
 1. Clarify the goal. Pick or write a playbook in `orchestration/playbooks/`.
-2. Open a run log from `orchestration/runs/_TEMPLATE.md`, named
-   `<YYYY-MM-DD>-<slug>.md`.
+2. `./scripts/queue.sh topic add` opens this run's log — see `fleet-queue`'s
+   **The run log**.
 3. Per unit of work: `session create` — with an `--on-existing` mode (§1c) and
    the run's profile flags (§1d) — → `session send`, unless `created` came back
    `false` → read the result file it writes → record.

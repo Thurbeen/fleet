@@ -1,30 +1,35 @@
 # Run: `<YYYY-MM-DD>` — `<slug>`
 
-> Copy to `orchestration/runs/<YYYY-MM-DD>-<slug>.md`. This log is the source of
-> truth for what happened.
+> One run, one topic. `./scripts/queue.sh topic add` opens this file, and
+> `dispatch`, `collect`, `shepherd` and `run` refresh the fenced block below
+> from the queue's own records as the run goes on.
+>
+> **Everything outside that fence is yours.** Nothing rewrites it, nothing
+> generates it, and it is the reason the file exists — the block says what
+> happened, and these sections say what you decided and what it cost.
 
-- **Goal.** What this run is meant to achieve.
-- **Playbook.** `../playbooks/<name>.md` (or "ad hoc").
-- **Profile.** `../session-profiles.yaml` name the workers started under
-  (`default` if you did not pick one). Settings are part of what produced the
-  result, so a run that does not name one cannot be reproduced.
-- **Started.** <date/time> · **Status.** planning | running | done | abandoned
+<!-- fleet:facts -->
+<!-- fleet:facts:end -->
 
-## Sessions
+## Goal
 
-Name each session as an imperative sentence describing the work, in sentence
-case — no repo prefix, the repo has its own column.
+What this run is meant to achieve, in your words.
 
-| Session name | Repo | Intent | Status | Artifact / PR |
-|---|---|---|---|---|
-| `Document the customization surface` | `owner/repo` | one line | running / done | link |
+## Playbook
 
-## Timeline
+`../playbooks/<name>.md`, or "ad hoc".
 
-- `<time>` — launched `Document the customization surface` against `owner/repo`.
-- `<time>` — drained the inbox; that session reported …
+## Decisions worth keeping
+
+The calls you made and why: what you serialized and on what condition, what you
+dispatched together despite an overlap, what you decided not to do at all.
+
+## What went wrong
+
+Where the tooling or the plan failed, and what the next lead should do instead.
+A defect written down here is the one that gets fixed.
 
 ## Outcome
 
-What shipped, what's pending, what to follow up on. Update the relevant
+What shipped, what is pending, what to follow up on. Update the relevant
 `registry/context/<repo>.md` if this run changed a project's goals or relations.

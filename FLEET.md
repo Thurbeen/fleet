@@ -39,7 +39,9 @@ registry/repos.generated.yaml   Generated index of every repo. NEVER hand-edit;
 orchestration/queue/<topic>/    The task queue: one directory per topic, one
                                 per task inside it, each holding that task's
                                 own BRIEF.md. Driven by ./scripts/queue.sh.
-orchestration/runs/<date>-<slug>.md   A log per orchestration run.
+orchestration/runs/<date>-<topic>.md   A log per topic. `topic add` opens it
+                                and `dispatch`/`collect`/`shepherd` keep its
+                                facts current; you write the judgement.
 ```
 
 **None of that is tracked.** `Thurbeen/fleet` is public and everything a
@@ -79,8 +81,10 @@ YAML by hand. Nothing to push — the map is gitignored.
 4. **`watch` on your own cadence, then `collect`.** The event stream says WHEN
    a turn ended; the worker's own result file says WHAT it concluded. A turn
    ending is not a task finishing, and only `collect` closes anything.
-5. Open a run log from `orchestration/runs/_TEMPLATE.md` and record what
-   happened as it happens. It is gitignored and not backed up by the repo.
+5. The run log records itself: `topic add` opened it and `dispatch`, `collect`
+   and `shepherd` keep its facts current as you run them. Write the goal,
+   decisions and outcome into it in your own words — that half never comes
+   from a record. It is gitignored and not backed up by the repo.
 6. **`shepherd`, as reflexively as `collect`.** The pull request outlives the
    task, and `collect` names `shepherd` whenever it closed one that left a PR
    open. It asks the forge for every open PR on the queue's repos, not just
