@@ -58,12 +58,14 @@ names every path and the reason for each.
   `.claude/skills` is a **symlink** to it, so Claude Code and opencode (which
   auto-discovers `.claude/skills`) both load the same copy. Never add a second
   copy under `.claude/`, and do not mirror into `.opencode/skills` — that
-  registers the same skill twice. Four skills live there: `fleet-queue` (the
+  registers the same skill twice. Five skills live there: `fleet-queue` (the
   queue: intake, ordering, dispatch, and the two halves of completion),
   `thurbox-session` (driving one worker session), `fleet-onboarding` (a fresh
-  clone to a working control plane, including bringing the monitor up), and
+  clone to a working control plane, including bringing the monitor up),
   `fleet-pane` (getting the TUI queue pane onto a screen, and diagnosing one
-  that is installed and drawing nothing).
+  that is installed and drawing nothing), and `update-fleet` (a working control
+  plane that is BEHIND origin, and the consequences of the sync that
+  `scripts/sync-checkout.sh` only ever reports).
 
 ## Orchestration model
 
@@ -220,6 +222,11 @@ running Mission Control session is holding stale instructions** — it froze
 them at launch and nothing reloads them from disk. This is equally true of a
 plain `git pull`. The sync script says so when it happens; act on it rather
 than assuming the new instructions reached the lead.
+
+`.agents/skills/update-fleet/` drives that whole update — the sync, then only
+the pieces it left stale (extension manifest, queue pane, registry, monitor),
+then the lead hand-over the sync can only report. It is the counterpart to
+`fleet-onboarding`: that one builds a fleet, this one catches a working one up.
 
 ## Maintaining this file
 

@@ -228,7 +228,9 @@ fact wins:
   when `./scripts/sync-checkout.sh` — the `SessionStart` hook, or an ordinary
   `git pull` — brings a change to `FLEET.md`, `AGENTS.md` or `.agents/skills/`,
   YOU are the stale one. It reports `restart-lead: yes` when that happens. Say
-  that to the operator rather than pretending the change reached you.
+  that to the operator rather than pretending the change reached you, and run
+  `.agents/skills/update-fleet/` — it does the sync, re-applies only what the
+  sync left stale, and ends on the hand-over that replaces you.
 - **CI only runs on pull requests,** and routine changes here go straight to
   `main`. So gate locally before you push: `./scripts/check.sh` is the whole
   gate, and CI runs the same script.
