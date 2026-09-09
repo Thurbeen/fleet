@@ -13,6 +13,33 @@
 -- and invents nothing else — a monitor with a field of its own is a second
 -- writer's opinion about a model it does not own.
 --
+-- THE `⇡` ROW IS THE ARTIFACT'S STATE, WHICH IS THE FOURTH THING AND NOT A
+-- FIFTH. `publish.method` on `task.yaml` says what a task must PRODUCE — a
+-- pull request, a commit on the base branch — and `publish.state` says what
+-- fleet last saw when it went and looked at that artifact. Both are written by
+-- `collect`, `shepherd` and `reap`, which are the commands that do the looking.
+-- So the row draws a field of the record, in the record's own words, and this
+-- pane still calls nothing: no `gh`, no `queue.sh`, no network. `queue.sh show`
+-- prints the same block and `queue.sh list` the same word, which is what keeps
+-- three readers of one field from becoming three opinions about it.
+--
+-- AND IT REPLACES THE ARTIFACT ROW, WHICH IS WHY IT COSTS NOTHING. Four rows
+-- per task plus one per dependency is what made this pane something you read
+-- rather than glance at, so a fifth was not available. The publish row names
+-- the artifact — `#44`, a short sha — and carries the same `url:` verb the
+-- artifact row carried, so the pull request is still one Ctrl+Click away and no
+-- longer spends a line repeating as a URL what the line above it just said.
+-- A task with an artifact is one row SHORTER than it was before this row
+-- existed, and no task is taller.
+--
+-- FOLLOW-UP, WRITTEN DOWN RATHER THAN DONE: the probe below should become
+-- `queue.sh list --tsv`. That would make "this pane cannot disagree with
+-- `list`" literal instead of argued, and it would drop a dozen `sed`/`awk`/
+-- `date` processes per refresh for one Python process the probe already pays
+-- for. It is the better long-term shape, and it was deliberately left out of
+-- the change that added the publish row: that change is six lines of awk, and
+-- this file was under live test when it was written.
+--
 -- READ-ONLY BY CONSTRUCTION. `focusable = false`, so the focus ring walks past
 -- it and `ctrl+h`/`ctrl+l` never land here: it is a readout, not a place you go,
 -- and there is no key on it that dispatches, collects or merges anything. Its
@@ -170,13 +197,23 @@ local SCROLL_STEP = 3
 ---   A <archived topic count>
 ---   T <topic slug> <topic title>
 ---   K <id> <state> <title> <outcome> <artifact> <blockers> <brief> <events>
----     <result> <branch> <moved-at, epoch seconds>
+---     <result> <branch> <moved-at, epoch seconds> <publish-method>
+---     <publish-state> <publish-at, epoch seconds>
 ---
 --- `<blockers>` is `ref|kind` pairs, comma separated. The KIND travels with the
 --- ref because it is the whole reason the edge exists: `queue.sh block` refuses
 --- a blocker that names no kind, so an edge without one is not a thing fleet can
 --- have recorded, and a tree that showed only refs would be hiding the answer to
 --- the only question a reader has about it.
+---
+--- The three `publish-*` fields come out of ONE NESTED BLOCK, parsed the way
+--- `- task:` / `  kind:` already is: a flag set on `publish:` and cleared by the
+--- next top-level key, with the two-space keys read while it is set. The flag is
+--- what makes it correct — `shepherd`, `artifact_check`, `landing` and `reaped`
+--- are blocks of the same shape on the same record, and `state:` and `at:` at
+--- two spaces of indent belong to whichever of them is open. For the same reason
+--- the publish block must never grow a key named `kind`: the blocker rule below
+--- has no such flag and would eat it.
 ---
 --- `moved-at` is resolved and converted by the SHELL rather than in Lua, for
 --- two reasons. `os` does not exist inside a pane, so there is no date parsing
@@ -220,15 +257,26 @@ for topic in */; do
     done
     at=0
     [ -n "$moved" ] && at=$(date -d "$moved" +%s 2>/dev/null || echo 0)
-    awk -v b="$brief" -v p="$events" -v r="$result" -v at="$at" '
+    # When fleet last LOOKED at this task's artifact, converted here for the
+    # same reason `moved` is: a pane has no clock and no date parser. The sed
+    # is ranged to the publish block because four other blocks on this record
+    # carry an `at:` at the same indent, and an unranged match would return
+    # whichever of them came first.
+    looked=$(sed -n "/^publish:/,/^[^ ]/s/^  at: *//p" "$dir/task.yaml" | head -1 | tr -d "'\"")
+    pat=0
+    [ -n "$looked" ] && pat=$(date -d "$looked" +%s 2>/dev/null || echo 0)
+    awk -v b="$brief" -v p="$events" -v r="$result" -v at="$at" -v pat="$pat" '
       /^[a-z_]+: / { i = index($0, ": "); f[substr($0, 1, i - 1)] = substr($0, i + 2) }
+      /^[^ ]/ { pub = ($0 ~ /^publish:/) }
+      pub && /^  method: / { pm = substr($0, 11) }
+      pub && /^  state: / { ps = substr($0, 10) }
       /^- task: / { n = n + 1; refs[n] = substr($0, 9) }
       /^  kind: / { kinds[n] = substr($0, 9) }
       END {
         for (i = 1; i <= n; i++) bl = bl (i > 1 ? "," : "") refs[i] "|" kinds[i]
-        printf "K\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+        printf "K\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
               f["id"], f["state"], f["title"], f["outcome"], f["artifact"],
-              bl, b, p, r, f["branch"], at
+              bl, b, p, r, f["branch"], at, pm, ps, pat
       }
     ' "$dir/task.yaml"
   done
@@ -407,6 +455,9 @@ local function build_model(stdout)
         result = f[10] == "1",
         branch = scalar(f[11]),
         moved_at = tonumber(f[12]) or 0,
+        publish_method = scalar(f[13]),
+        publish_state = scalar(f[14]),
+        publish_at = tonumber(f[15]) or 0,
       }
       topic.tasks[#topic.tasks + 1] = task
       model.state_of[topic.slug .. "/" .. task.id] = task.state
@@ -421,9 +472,10 @@ local function build_model(stdout)
     model.per_class[entry.class] = (model.per_class[entry.class] or 0) + #entry.tasks
     -- SETTLED, which is not the same as the `done` classification. A task that
     -- is `done` has an OPEN pull request and the operator's next move is to
-    -- review it — so its artifact row is the most useful row in the pane, and
-    -- collapsing it would hide the one link worth clicking. Only `landed` (the
-    -- forge says it merged) and `abandoned` leave nothing to look at.
+    -- review it — so the row naming it (publish, or artifact for a record with
+    -- no `publish.method`) is the most useful row in the pane, and collapsing
+    -- it would hide the one link worth clicking. Only `landed` (the forge says
+    -- it merged) and `abandoned` leave nothing to look at.
     entry.settled = #entry.tasks > 0
     entry.landed = 0
     for _, task in ipairs(entry.tasks) do
@@ -649,12 +701,21 @@ end
 --- thurbox. The " ago" is dropped because in a column this narrow the word is
 --- 4 columns saying what the position already says. A task with no timestamp,
 --- or a snapshot with no instant, gets no age rather than a wrong one.
-local function age_of(task)
+---
+--- Two rows ask for one: the task's own last move, and — on the publish row —
+--- when fleet last LOOKED at its artifact. They are different instants about
+--- the same task, so the epoch is the argument and neither row reads the
+--- other's field.
+local function ago(at)
   local now = widgets.now_ms()
-  if (task.moved_at or 0) <= 0 or now <= 0 then
+  if (at or 0) <= 0 or now <= 0 then
     return nil
   end
-  return (widgets.time_ago(task.moved_at * 1000, now):gsub(" ago", ""))
+  return (widgets.time_ago(at * 1000, now):gsub(" ago", ""))
+end
+
+local function age_of(task)
+  return ago(task.moved_at)
 end
 
 --- The monitor's own classification vocabulary, in its own order. Spelling the
@@ -669,6 +730,77 @@ local BLOCKER_KIND = {
   ["shared-external-state"] = "shared state",
   ["incompatible-migration"] = "migration",
   other = "other",
+}
+
+--- The publish states `queue.py` writes, in the words this pane says them in.
+---
+--- THE WORD IS THE RECORD'S WORD. `queue.sh show` prints `publish.state` and
+--- `queue.sh list` puts it in its extra column; a pane-only synonym would turn
+--- three readers of one field into three opinions about it. What happens here
+--- is abbreviation and nothing else: `⟳` and `✗` say "running" and "failed" in
+--- one cell each, and `conflict` and `changes` are the same words with their
+--- tails off. It is not cosmetic — `changes-requested`, a number and an age do
+--- not fit the thirty columns this pane routinely gets, and a row forced to
+--- truncate its only load-bearing word says nothing at all.
+---
+--- `green` IS NOT THE OK COLOUR, AND IT IS NOT `ready`. It means every gate the
+--- FORGE knows about holds and NOBODY VETTED IT: checks passed, the branch
+--- merges, and the task's method was `pr` — so there is no attestation that
+--- review, tests and lint ran on the head that would actually merge. `ready` is
+--- that same forge answer WITH that proof, and it is the only one fleet merges
+--- unattended. The two words look redundant and are not. Collapsing them —
+--- here, or by repainting `green` with `theme.ok` because warn "looks like a
+--- problem" — converts fleet's evidence-over-trust property back into trust,
+--- silently, and it is the sharpest risk this row's design names. The note
+--- beside it says whose job the merge is, and it is the first thing the ladder
+--- below drops.
+---
+--- `open` is muted rather than ok on purpose: `collect` proved the pull request
+--- exists and comes from this task's branch, and nothing has yet looked at its
+--- checks. That is a fact, not a verdict, so it gets no colour that reads as one.
+---
+--- A state this table does not know is drawn verbatim and muted — the same rule
+--- `BLOCKER_KIND` follows, and for the same reason: an unknown word is shown,
+--- never mapped to a plausible one.
+local PUBLISH_WORD = {
+  unverified = { text = "UNVERIFIED", tone = "bad" },
+  unknown = { text = "unknown", tone = "muted" },
+  open = { text = "open", tone = "muted" },
+  pushed = { text = "pushed ✓", tone = "ok" },
+  draft = { text = "draft", tone = "warn" },
+  ["checks-running"] = { text = "checks ⟳", tone = "warn" },
+  ["checks-failed"] = { text = "checks ✗", tone = "bad" },
+  conflicting = { text = "conflict", tone = "bad" },
+  ["changes-requested"] = { text = "changes", tone = "bad" },
+  unattested = { text = "unattested", tone = "bad" },
+  ready = { text = "ready ✓", tone = "ok" },
+  green = { text = "green", tone = "warn", note = "yours to merge" },
+  merged = { text = "merged", tone = "ok" },
+  closed = { text = "closed", tone = "muted" },
+}
+
+--- The mark on the publish row. One cell — U+21E1 is East_Asian_Width Neutral,
+--- unlike the `⛽` above it — so it needs no off switch of its own.
+local PUBLISH_GLYPH = "⇡"
+
+--- What the publish row gives up as the column narrows, in order.
+---
+--- The same shape `docs_spans` uses — drop in a fixed order, truncate last —
+--- and the order is what each part is FOR. The NOTE goes first: it is a
+--- sentence about whose job a merge is, and the coloured word already carries
+--- the fact. The METHOD next, because it is a property of the task that never
+--- changes and the pull request page says it anyway, while the STATE is the
+--- part an operator acts on. Then the AGE, then the artifact REFERENCE — which
+--- is a label for the link this row carries, and the link survives losing its
+--- label. Then the glyph. The state word is the last thing standing, and it is
+--- truncated only when the column is narrower than the word itself.
+local PUBLISH_LADDER = {
+  { note = true, method = true, ref = true, age = true, glyph = true },
+  { method = true, ref = true, age = true, glyph = true },
+  { ref = true, age = true, glyph = true },
+  { ref = true, glyph = true },
+  { glyph = true },
+  {},
 }
 
 local CLASS_LABEL = {
@@ -694,7 +826,8 @@ local CLASS_LABEL = {
 ---
 --- A SETTLED topic — every task merged or abandoned — collapses to one row. A
 --- topic whose tasks are merely `done` stays open on purpose: `done` means the
---- pull request is OPEN, so its artifact row is the row worth clicking.
+--- pull request is OPEN, so the row naming it — publish, or artifact for a
+--- record with no `publish.method` — is the row worth clicking.
 local function descriptors(model)
   local out = {}
   local class = nil
@@ -717,7 +850,19 @@ local function descriptors(model)
           out[#out + 1] = { kind = "blocker", task = task, edge = edge }
         end
         out[#out + 1] = { kind = "docs", task = task }
-        if task.artifact ~= "" then
+        -- The publish row REPLACES the artifact row rather than joining it. It
+        -- names the artifact and carries its link, so drawing both would spend
+        -- two lines on one pull request — and this pane's problem is that a
+        -- single running task already costs four lines before its blockers.
+        --
+        -- It is drawn only when it has something to report: an artifact to
+        -- name, or a state some producer actually recorded. A record from
+        -- before `publish` existed has neither and is unchanged, and so is a
+        -- task whose publish has not started — "nothing yet" is what the
+        -- absence of this row has always meant.
+        if task.publish_method ~= "" and (task.publish_state ~= "" or task.artifact ~= "") then
+          out[#out + 1] = { kind = "publish", task = task }
+        elseif task.artifact ~= "" then
           out[#out + 1] = { kind = "artifact", task = task }
         end
       end
@@ -748,6 +893,11 @@ end
 --- "events" first, then the count, then the brief marker, and the OUTCOME last,
 --- because it is the only part a reader acts on. Truncation is the final
 --- fallback, not the first response.
+---
+--- AND A COUNT OF ZERO IS NOT DRAWN AT ALL, at any level. `brief · 0 events`
+--- appeared under every task the queue had not heard from yet — the majority of
+--- rows on a busy screen — and it says only that this row has nothing to say.
+--- A count is worth its columns from one event on.
 local function docs_spans(task, width)
   local budget = math.max(1, width - 3)
 
@@ -773,13 +923,15 @@ local function docs_spans(task, width)
     if level ~= "outcome" then
       out[#out + 1] = { text = plan, tone = plan_tone }
     end
-    if level == "full" then
-      out[#out + 1] = {
-        text = task.events .. (task.events == 1 and " event" or " events"),
-        tone = theme.muted,
-      }
-    elseif level == "short" then
-      out[#out + 1] = { text = task.events .. " ev", tone = theme.muted }
+    if task.events > 0 then
+      if level == "full" then
+        out[#out + 1] = {
+          text = task.events .. (task.events == 1 and " event" or " events"),
+          tone = theme.muted,
+        }
+      elseif level == "short" then
+        out[#out + 1] = { text = task.events .. " ev", tone = theme.muted }
+      end
     end
     if outcome then
       out[#out + 1] = { text = outcome, tone = outcome_tone }
@@ -818,6 +970,161 @@ local function docs_spans(task, width)
       row:add(" · ", { fg = theme.muted })
     end
     row:add(seg.text, { fg = seg.tone })
+  end
+  return row:spans_list()
+end
+
+--- The artifact, in the fewest columns that still identify it.
+---
+--- This is what the row absorbed the artifact ROW to say. A pull request is its
+--- number and a `push` task's commit is a short sha — both are what a reader
+--- would have read off the end of the URL anyway — and anything else keeps the
+--- URL with its scheme off, because a shape this does not recognise is one it
+--- must not pretend to summarise. The whole row carries the link either way, so
+--- what is drawn here is a label for a click target rather than the target.
+local function artifact_ref(artifact)
+  if artifact == "" then
+    return nil
+  end
+  local number = artifact:match("/pull/(%d+)")
+  if number then
+    return "#" .. number
+  end
+  local sha = artifact:match("/commit/(%x%x%x%x%x%x%x+)")
+  if sha then
+    return sha:sub(1, 7)
+  end
+  return (artifact:gsub("^https?://", ""))
+end
+
+--- What fleet last saw when it looked at this task's artifact, on one row.
+---
+--- THE PANE ADDS NO FACT HERE. Every part of it is read off `task.yaml`:
+--- `publish.method`, `publish.state` and `publish.at`, written by `collect`,
+--- `shepherd` and `reap`, plus the artifact URL the record already carries.
+--- Nothing on this row calls `gh`, and there is no state here that `queue.sh
+--- show` would not print in the same word.
+---
+--- IT ABSORBS THE ARTIFACT ROW RATHER THAN SITTING ABOVE ONE. A task already
+--- spends four rows saying it exists — title, handle, documents, artifact — and
+--- a fifth for every dependency it records, which is how a pane meant to show
+--- what the fleet is working on became a pane you have to read. So this row
+--- names the artifact itself (`#44`, a short sha) and `draw` hands the WHOLE row
+--- the same `url:` verb the artifact row used to carry, which the kernel paints
+--- as OSC 8: the link is still one Ctrl+Click away, and it no longer costs a
+--- line of its own to say what this line already said. Net, a task with an
+--- artifact is one row SHORTER than before this row existed.
+---
+--- WHICH IS ALSO WHY IT IS NOT DRAWN FOR "nothing has happened yet". A method
+--- with no state and no artifact is a task whose publish has not started, and
+--- `descriptors` skips it: a row per task saying so would spend the columns
+--- this fold just recovered on the tasks that have the least to report.
+---
+--- COLOUR CARRIES THE VERDICT, which is the whole reason the row is worth a
+--- line: ok for the states that mean the artifact arrived (`ready`, `pushed`,
+--- `merged`), warn for the ones still in motion or still owed a human
+--- (`checks ⟳`, `draft`, `green`), bad for the ones an operator has to do
+--- something about, and muted for a fact with no verdict attached. The table
+--- above owns which is which, and owns the argument for `green`.
+---
+--- THE AGE IS THE AGE OF THE LOOK, not of the task. The shepherd runs on the
+--- lead's cadence rather than on a clock, so a `checks ⟳` recorded forty
+--- minutes ago has to read forty minutes old — a state word with no age
+--- silently claims to be now. A task nothing has looked at yet has no age,
+--- because there is no instant to draw.
+local function publish_spans(task, width)
+  local budget = math.max(1, width - 3)
+  local method = task.publish_method
+  local body, tone, note, age
+
+  if task.publish_state ~= "" then
+    local word = PUBLISH_WORD[task.publish_state]
+    body = word and word.text or task.publish_state
+    tone = word and word.tone or "muted"
+    note = word and word.note
+    age = ago(task.publish_at)
+  else
+    -- An artifact exists and nothing has recorded a verdict on it yet — a pull
+    -- request `watch` linked before `collect` read the worker's result, most
+    -- often. The method is the row's last-standing word, so the ladder still
+    -- has something to keep at every rung.
+    body, tone, method = method, "muted", nil
+  end
+
+  local ref = artifact_ref(task.artifact)
+
+  --- The segments this row would carry at one rung of the ladder.
+  local function segments(rung)
+    local out = {}
+    if rung.method and method and method ~= "" then
+      out[#out + 1] = method
+    end
+    if rung.ref and ref then
+      out[#out + 1] = ref
+    end
+    out[#out + 1] = (rung.note and note) and (body .. " — " .. note) or body
+    return out
+  end
+
+  local function columns(list, rung)
+    local n = rung.glyph and widgets.len(PUBLISH_GLYPH .. " ") or 0
+    for index, seg in ipairs(list) do
+      n = n + widgets.len(seg) + (index > 1 and 3 or 0)
+    end
+    if rung.age and age then
+      -- Two columns of gap before it, which is what the flush below wants.
+      n = n + 2 + widgets.len(age)
+    end
+    return n
+  end
+
+  local chosen, level
+  for _, rung in ipairs(PUBLISH_LADDER) do
+    local list = segments(rung)
+    if columns(list, rung) <= budget then
+      chosen, level = list, rung
+      break
+    end
+  end
+  if not chosen then
+    -- Narrower than the state word itself. Truncate that and nothing else.
+    level = PUBLISH_LADDER[#PUBLISH_LADDER]
+    chosen = segments(level)
+    chosen[#chosen] = widgets.truncate(chosen[#chosen], budget)
+  end
+
+  local row = ui.row({ width = width })
+  row:add("   ")
+  if level.glyph then
+    row:add(PUBLISH_GLYPH .. " ", { fg = theme[tone] })
+  end
+  for index, seg in ipairs(chosen) do
+    if index > 1 then
+      row:add(" · ", { fg = theme.muted })
+    end
+    if index == #chosen then
+      -- The STATE is the last segment and the only one that carries the
+      -- verdict. What precedes it is context — which method, which pull
+      -- request — and context in the verdict's colour would make every row
+      -- shout.
+      row:add(seg, { fg = theme[tone] })
+    elseif seg == ref then
+      -- The reference keeps the artifact row's own styling, because it is the
+      -- artifact row: underlined accent is what said "this is a link" before
+      -- the two rows became one, and the row is still the click target.
+      row:add(seg, { fg = theme.accent, underline = true })
+    else
+      row:add(seg, { fg = theme.muted })
+    end
+  end
+  if level.age and age then
+    -- Pushed to the right edge, so the ages down the column line up and a row
+    -- that has gone stale is visible without reading it.
+    local pad = width - row.used - widgets.len(age)
+    if pad >= 2 then
+      row:add(string.rep(" ", pad))
+      row:add(age, { fg = theme.muted })
+    end
   end
   return row:spans_list()
 end
@@ -908,6 +1215,15 @@ local function draw(entry, width, spinner)
 
   if entry.kind == "docs" then
     return line(docs_spans(task, width))
+  end
+
+  -- The publish row, carrying the artifact row's own click verb when there is
+  -- an artifact: the kernel re-prints the drawn cells wrapped in OSC 8, so the
+  -- whole row answers a Ctrl+Click and the pull request needs no line of its
+  -- own to be reachable.
+  if entry.kind == "publish" then
+    local role = task.artifact ~= "" and ("url:" .. task.artifact) or nil
+    return line(publish_spans(task, width), role)
   end
 
   -- One dependency edge, under the task that carries it: the ordering fleet
