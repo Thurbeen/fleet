@@ -595,8 +595,9 @@ open pull request gets exactly one of these:
 | `mergeable: CONFLICTING` | a fixer is dispatched to rebase |
 | a check failed | a fixer is dispatched to fix it |
 | `reviewDecision: CHANGES_REQUESTED` | a fixer is dispatched to address it |
-| no attestation for this head commit | a fixer is dispatched to re-run `/no-mistakes --yes` |
+| a `no-mistakes` task's PR with no attestation for this head commit | a fixer is dispatched to re-run `/no-mistakes --yes` |
 | attested, checks green, `MERGEABLE`, ours | **squash-merged**, in the allowlisted repos only |
+| checks green, `MERGEABLE`, ours, and nothing attested it | recorded `green` and reported `ready to merge — not attested; yours`, **never merged by fleet** |
 | anything it could not read | reported, and otherwise left alone |
 
 A PR is tied back to a task by its recorded `artifact` or by its **head
@@ -652,12 +653,20 @@ hold:
   `## ` headings — those are text anyone can paste, so counting them let a
   body authorise its own merge. The attestation is an HTML comment carrying
   the commit the pipeline ran on and a status per step; one from an earlier
-  push is refused, because a verdict is about the code it saw.
+  push is refused, because a verdict is about the code it saw. A PR whose task
+  declared another method carries none, is recorded `green` rather than
+  `ready`, and is handed back: the checks it passed are whatever checks that
+  repo happens to have, and nothing says review, tests and lint ran on the
+  head that would land.
 - **Every check concluded and passed, and GitHub says `MERGEABLE`.**
 
 A PR failing any of them is not merged, and one that is not ours is not given
-an agent either. Everywhere outside the allowlist it reports `ready to merge`
-and stops, which is what every repo did before that list existed.
+an agent either. Only the attestation gate is method-aware, and only in the one
+direction: a task that was declared `no-mistakes` and carries no attestation
+gets the fixer it always got, and a task that was never asked for one gets
+neither the fixer nor the merge. Everywhere outside the allowlist it reports
+`ready to merge` and stops, which is what every repo did before that list
+existed.
 
 **Run it the way you run `collect`.** It is a sibling and not part of it —
 `collect` reads local files and works with the network down, and folding a

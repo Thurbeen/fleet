@@ -33,7 +33,11 @@
 #  10. EVERY open pull request on the repo is shepherded, whether or not a task
 #      records it: one that goes bad gets a FIXER, and one that clears every
 #      merge gate gets merged. A stranger's is neither. Everything the shepherd
-#      cannot read is left exactly as it is.
+#      cannot read is left exactly as it is. What it saw is WRITTEN DOWN on the
+#      task, and the gate is method-aware: a pull request the forge is happy
+#      with but nobody attested is recorded `green`, handed back and never
+#      merged, while a `no-mistakes` task with no attestation is recorded
+#      `unattested` and still gets its fixer.
 #  11. A task can name a HOST and run there, and a task that names none takes
 #      exactly the path it took before the flag existed. Nothing is spawned on
 #      a host until three probes pass; the brief really lands on that host's
@@ -2242,9 +2246,128 @@ refute "and nothing from it is merged" "pr merge" "$(cat "$shep/many.log")"
 refute "and it is not reported as having zero open pull requests either" \
 	"no open pull requests" "$out"
 
+# --- 10. the shepherd writes down the publish state it already saw -----------
+#
+# Every fact below arrived in the ONE `gh pr list` the pass already makes, and
+# until now the pass threw all of it away between runs: the record said
+# `shipped` and nothing else, so "are its checks still running or did they fail
+# an hour ago" could only be answered by running the command again and reading
+# the terminal. A real pass now stamps `publish.state` on every task it linked.
+#
+# Four claims, and the first is the one this whole topic turns on:
+#
+#   a `pr` task whose PR is green, mergeable and ours is recorded `green`,
+#     gets no fixer, and is NOT merged — the forge is happy and NOTHING
+#     vetted the head that would land, which is a different sentence
+#   a `no-mistakes` task whose PR carries no attestation is still recorded
+#     `unattested` and still gets the `policy` fixer
+#   a dry run writes none of it
+#   the landing sweep says merged/closed in that same block
+
+$QUEUE add "$stopic" plain-pr --title 'A PR opened by whatever this repo uses' \
+	--repo "$srepo" --branch fix/plain-pr --number 09 --publish pr \
+	--how 'run the release script this repo already has' >/dev/null
+# A real branch, so "no fixer was sent" means fleet chose not to send one and
+# not that a fixer tried and fell over on a branch that was never there.
+git -C "$srepo" branch fix/plain-pr
+
+# Green in every way GitHub can see, and never claiming to be a pipeline:
+# 102's own fixture with another branch and a body nobody attested.
+python3 - "$shep/gh" <<'PY'
+import json
+import sys
+
+out = sys.argv[1]
+doc = json.load(open(f"{out}/102.json"))
+doc.update({
+    "number": 115,
+    "url": "https://github.com/Thurbeen/fleet/pull/115",
+    "headRefName": "fix/plain-pr",
+    "headRefOid": f"{115:040d}",
+    "body": "Opened with this repo's own release script.\n",
+})
+json.dump(doc, open(f"{out}/115.json", "w"))
+PY
+
+# (a) A dry run looks and tells you; it does not write.
+
+out="$(env PATH="$shep/bin:$base_path" $QUEUE shepherd --topic "$stopic" --dry-run 2>&1)"
+expect "a dry run classifies the pr-method pull request too" "pull/115" "$out"
+state="$($QUEUE show "$stopic/09-plain-pr" 2>&1)"
+refute "and records nothing — a dry run changes nothing, records included" \
+	"published:" "$state"
+
+# (b) The real pass, and the word it must not use.
+
+out="$(env PATH="$shep/bin:$base_path" $QUEUE shepherd --topic "$stopic" 2>&1)"
+row="$(printf '%s' "$out" | grep -A 2 'pull/115')"
+state="$($QUEUE show "$stopic/09-plain-pr" 2>&1)"
+expect "a real pass writes down what it saw" "published:   green" "$state"
+expect "and stamps the command that looked" "(shepherd," "$state"
+refute "a green pr-method PR is never recorded ready — nothing vetted its head" \
+	"published:   ready" "$state"
+if grep -qx 115 "$shep/merged" 2>/dev/null; then
+	fail "and fleet never merges it, however green" "$(cat "$shep/merged")"
+else
+	pass "and fleet never merges it, however green"
+fi
+expect "it is handed to the operator with the reason" "not attested" "$row"
+refute "and it is never called a policy breach — nobody asked it for an attestation" \
+	"policy:" "$row"
+count_is "and no fixer goes out for it, on a branch a fixer could have had" \
+	"$(grep -c 'session create .*__09-plain-pr' "$shep/tbx.log")" 0 \
+	"$out$nl$(cat "$shep/tbx.log")"
+
+# (c) The `no-mistakes` half of the same gate, unchanged: 03-skipped declared
+#     the pipeline and opened its pull request by hand.
+
+state="$($QUEUE show "$stopic/03-skipped" 2>&1)"
+expect "a no-mistakes PR with no attestation is recorded unattested" \
+	"published:   unattested" "$state"
+if grep -q 'session create .*__03-skipped' "$shep/tbx.log"; then
+	pass "and still gets the policy fixer it always got"
+else
+	fail "and still gets the policy fixer it always got" "$(cat "$shep/tbx.log")"
+fi
+
+# (d) The other producer: the landing sweep. Its own queue, because `reap`
+#     acts on every `done` task there is and the sections above are mid-flight.
+
+lq() { env FLEET_QUEUE_DIR="$tmp/queue-landings" $QUEUE "$@"; }
+
+lq topic add landings --title 'What the landing sweep writes down' \
+	--prompt 'the publish block must say what the sweep learned' >/dev/null
+lq add landings merged-pr --title 'A pull request that merged' \
+	--repo /tmp/repo-a --branch fix/merged-pr --publish pr >/dev/null
+lq add landings closed-pr --title 'A pull request that was closed unmerged' \
+	--repo /tmp/repo-a --branch fix/closed-pr --publish pr >/dev/null
+plain_pr 1020 fix/merged-pr
+plain_pr 1021 fix/closed-pr
+for spec in 01-merged-pr:1020 02-closed-pr:1021; do
+	IFS=: read -r dir n <<<"$spec"
+	cat >"$tmp/queue-landings/landings/$dir/result.md" <<EOF
+---
+outcome: shipped
+artifact: https://github.com/acme/app/pull/$n
+---
+Opened it.
+EOF
+done
+lq collect --no-reap >/dev/null
+expect "an open pull request is recorded open first" "published:   open" \
+	"$(lq show landings/01-merged-pr 2>&1)"
+
+echo MERGED >"$states/1020.state"
+echo CLOSED >"$states/1021.state"
+lq reap >/dev/null 2>&1
+expect "and the landing sweep overwrites it with the merge" \
+	"published:   merged" "$(lq show landings/01-merged-pr 2>&1)"
+expect "a pull request closed unmerged says so in the same place" \
+	"published:   closed" "$(lq show landings/02-closed-pr 2>&1)"
+
 # The worktrees the fixers got are real; take them back off the test repo so
 # the temp directory can be removed without leaving stale registrations.
-for slug in 01-conflicting 03-skipped 07-gone 08-second; do
+for slug in 01-conflicting 03-skipped 07-gone 08-second 09-plain-pr; do
 	git -C "$srepo" worktree remove --force \
 		"$FLEET_QUEUE_DIR/.worktrees/${stopic}__${slug}" 2>/dev/null
 done

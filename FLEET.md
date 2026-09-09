@@ -81,9 +81,11 @@ YAML by hand. Nothing to push — the map is gitignored.
    task, and `collect` names `shepherd` whenever it closed one that left a PR
    open. It asks the forge for every open PR on the queue's repos, not just
    recorded artifacts, dispatches a fixer for one that conflicts, fails a
-   check, was reviewed with changes requested, or carries no `no-mistakes`
-   attestation for its current head, and squash-merges one that clears every
-   gate in the repos `AUTO_MERGE_REPOS` allows.
+   check, was reviewed with changes requested, or was declared `no-mistakes`
+   and carries no attestation for its current head, and squash-merges one that
+   clears every gate in the repos `AUTO_MERGE_REPOS` allows. It writes down
+   what it saw either way, so a task's record says `checks-running` or
+   `unattested` and not just `shipped`.
 7. Review the PRs; the operator merges every one `shepherd` did not. Sessions
    release themselves once their artifact lands on the base branch — a merged
    pull request, or, for a task that published by pushing directly, the
