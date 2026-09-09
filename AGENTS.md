@@ -191,10 +191,13 @@ know before you debug the extension:
   `source`. So it refreshes to whatever was last rendered, and fails outright if
   `extension.toml` was cleaned away. `./scripts/install-extension.sh` is this
   extension's real update command.
-- **The lead SESSION is `⌖ Mission Control`; the EXTENSION and its agent are
-  still `fleet`**, which is why every command above still takes `fleet`. The
-  session carries the operator's name for the lead, the extension carries the
-  repo's — nothing reads the repo name, so the two are free to differ. The
+- **The lead SESSION is `⌖ Mission Control`; the EXTENSION is still `fleet`**,
+  which is why every command above still takes `fleet`. The session carries the
+  operator's name for the lead, the extension carries the repo's — nothing reads
+  the repo name, so the two are free to differ. The extension registers **no
+  agent of its own**: the lead binds to thurbox's stock `claude`, so it inherits
+  the hook settings that let it report state and whatever model `claude`
+  defaults to. `extension.toml.in`'s no-`[[agents]]` note owns why. The
   glyph is part of the session name because thurbox has no per-session icon
   field, so the mailbox address must be **pasted**, not typed — `⌖` is U+2316
   and no keyboard has it. `extension.toml.in`'s RENAMING header owns the split
