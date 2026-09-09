@@ -3504,7 +3504,8 @@ rm -rf "$glyphtmp"
 # selftest with their own gitignored GLYPHS=off must not see a spurious failure
 # here.
 export FLEET_QUEUE_DIR="$tmp/queue-glyph"
-export FLEET_GLYPH_ROOT="$(mktemp -d)"
+FLEET_GLYPH_ROOT="$(mktemp -d)"
+export FLEET_GLYPH_ROOT
 mkdir -p "$FLEET_GLYPH_ROOT/orchestration"
 cat >"$FLEET_GLYPH_ROOT/orchestration/session-glyphs.conf" <<'EOF'
 GLYPHS=on
