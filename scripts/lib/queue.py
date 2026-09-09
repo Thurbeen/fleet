@@ -171,6 +171,45 @@ BRIEF_SECTIONS = (
     "Done means",
 )
 
+
+def split_brief_body(body: str) -> dict:
+    """A `--brief-file`'s own `## ` headings, mapped onto BRIEF_SECTIONS.
+
+    The whole file used to go into section 0, so a body that already carried
+    the four standard headings produced a brief with `## What to do` twice and
+    three untouched placeholders -- which `dispatch` then refused. Five briefs
+    were hand-repaired that way in one session.
+
+    This relaxes nothing. BRIEF_SECTIONS is still every heading a brief has and
+    still the order they come in; a file only fills them. A heading that is NOT
+    one of the four is content and is kept verbatim, in place, under whichever
+    section it appeared in: dropping it loses what the lead wrote, and
+    promoting it is the 20 invented headings the skeleton exists to stop. Text
+    before the first heading is section 0's, so a body with no headings at all
+    lands exactly where it landed before.
+
+    A `## ` inside a fenced block is a brief quoting markdown, not opening a
+    section, and stays where it was written.
+    """
+    parts: dict[str, list] = {}
+    current = BRIEF_SECTIONS[0]
+    fence = None
+    for line in body.splitlines():
+        stripped = line.strip()
+        if fence is not None:
+            if stripped.startswith(fence):
+                fence = None
+        elif stripped.startswith("```") or stripped.startswith("~~~"):
+            fence = stripped[:3]
+        elif line.startswith("## ") and line[3:].strip() in BRIEF_SECTIONS:
+            current = line[3:].strip()
+            parts.setdefault(current, [])
+            continue
+        parts.setdefault(current, []).append(line)
+    filled = {h: "\n".join(v).strip() for h, v in parts.items()}
+    return {h: v for h, v in filled.items() if v}
+
+
 # HOW A TASK PUBLISHES, as three words about the ARTIFACT it leaves behind —
 # and the ONE place each is written down. `render_brief` writes `brief` into
 # the worker's instructions, `publish_verdict` goes and looks for `artifact`,
@@ -1205,9 +1244,10 @@ def render_brief(task: Task, topic: dict, body: str | None) -> str:
     worker concluded.
 
     Between the two comes BRIEF_SECTIONS, unwritten: the lead supplies content,
-    not structure. `--brief-file` fills the first section and leaves the rest
-    for the lead, so a body handed in on the command line still gets the same
-    skeleton and the same refusal.
+    not structure. `--brief-file` fills whichever of those four sections its own
+    `## ` headings name (`split_brief_body`) and leaves the rest for the lead,
+    so a body handed in on the command line still gets the same skeleton and the
+    same refusal.
 
     The operator's own standing instructions ride the same pointer when there
     are any, and NOTHING when there are not — a fresh clone has no such file,
@@ -1254,7 +1294,7 @@ def render_brief(task: Task, topic: dict, body: str | None) -> str:
         if has_operator
         else ""
     )
-    filled = {BRIEF_SECTIONS[0]: body.strip()} if body and body.strip() else {}
+    filled = split_brief_body(body) if body and body.strip() else {}
     sections = "\n\n".join(
         f"## {h}\n\n{filled.get(h, BRIEF_PLACEHOLDER)}" for h in BRIEF_SECTIONS
     )
@@ -1321,6 +1361,38 @@ and not a message, is what does it.
 {result_note}"""
 
 
+def blocker_kind_refusal() -> str:
+    """The paragraph a missed `--kind` or `--why` gets, in one place.
+
+    The half that matters is the last sentence: overlapping files are the
+    commonest thing someone reaches for `block` to express, and they are not a
+    blocker. `--touches` records them and `plan` reports them as a risk beside
+    the ready set, holding nothing up.
+    """
+    kinds = "\n".join(f"    {k:<24} {v}" for k, v in BLOCKER_KINDS.items())
+    return (
+        "a blocker needs --kind and --why, because it is the one thing that\n"
+        "makes work wait and it has to survive the next planning pass.\n"
+        f"--kind is one of:\n{kinds}\n"
+        "Overlapping files are not on that list. Record them with `add --touches`;\n"
+        "they are reported as a risk beside the ready set and hold nothing up."
+    )
+
+
+def blocker_kind(value: str) -> str:
+    """`--kind`'s validator, so a wrong one still gets the whole paragraph.
+
+    `choices` beside it is what puts the four values in `--help` — they used to
+    appear only in the refusal you got after guessing wrong, and the lead
+    guessed twice in one session. `choices` alone would then answer `invalid
+    choice` and lose the sentence about `--touches`, so the message stays here
+    and argparse never reaches its own.
+    """
+    if value in BLOCKER_KINDS:
+        return value
+    raise argparse.ArgumentTypeError("\n" + blocker_kind_refusal())
+
+
 def cmd_block(args) -> int:
     q = Queue(queue_root())
     task = q.get(args.ref)
@@ -1334,14 +1406,7 @@ def cmd_block(args) -> int:
         return 0
 
     if args.kind not in BLOCKER_KINDS or not (args.why or "").strip():
-        kinds = "\n".join(f"    {k:<24} {v}" for k, v in BLOCKER_KINDS.items())
-        raise QueueError(
-            "a blocker needs --kind and --why, because it is the one thing that\n"
-            "makes work wait and it has to survive the next planning pass.\n"
-            f"--kind is one of:\n{kinds}\n"
-            "Overlapping files are not on that list. Record them with `add --touches`;\n"
-            "they are reported as a risk beside the ready set and hold nothing up."
-        )
+        raise QueueError(blocker_kind_refusal())
     if target.ref == task.ref:
         raise QueueError(f"{task.ref} cannot block itself")
 
@@ -1897,9 +1962,57 @@ def shell_quote(argv: list) -> str:
     return " ".join(shlex.quote(a) for a in argv)
 
 
+def select_for_dispatch(q: Queue, refs: list) -> list:
+    """What this dispatch launches: the tasks named, or the whole ready set.
+
+    NO REF IS THE NORM, and it stays the default: `dispatch` alone sends
+    everything nothing is holding, because a queue that runs one task at a time
+    is slower than no queue at all. Refs exist for the one thing that had no
+    honest spelling. `dispatch` was all-or-nothing, so holding three of five
+    ready tasks back could only be done by inventing blockers for the other
+    two, and one was recorded with the reason "Operator has not been asked
+    whether to run it at all" -- which is not a dependency, does not survive a
+    planning pass, and holds that task until someone deletes it by hand.
+
+    Refs record NOTHING. A task left out is still `queued` and still in the
+    ready set, so the next bare `dispatch` sends it; "the operator has not said
+    yes yet" is a fact about this moment and not a property of the task.
+
+    A named task that is not ready is refused BY NAME, with whatever is
+    actually holding it, rather than quietly dropped from the wave.
+    """
+    if not refs:
+        return q.ready()
+    picked, seen = [], set()
+    for ref in refs:
+        task = q.get(ref)
+        if task.ref not in seen:
+            seen.add(task.ref)
+            picked.append(task)
+    refused = []
+    for task in picked:
+        if q.is_ready(task):
+            continue
+        held = [
+            blocker_view(q, task, b)["line"]
+            for b in task.blockers
+            if not q.blocker_cleared(b)
+        ]
+        refused += [f"    {task.ref}: {line}" for line in held] or [
+            f"    {task.ref}: {task.state}, and only a queued task is dispatched"
+        ]
+    if refused:
+        raise QueueError(
+            "these tasks were named and are not ready to go out:\n"
+            + "\n".join(refused)
+            + "\nClear what is holding them, or leave them out of the dispatch."
+        )
+    return sorted(picked, key=lambda t: t.ref)
+
+
 def cmd_dispatch(args) -> int:
     q = Queue(queue_root())
-    ready = q.ready()
+    ready = select_for_dispatch(q, args.ref)
 
     unfilled = [t for t in ready if BRIEF_PLACEHOLDER in read_text(t.file("BRIEF.md"))]
     if unfilled:
@@ -1912,10 +2025,24 @@ def cmd_dispatch(args) -> int:
         print("dispatch: nothing ready")
         return 0
 
-    print(
-        f"dispatch: {len(ready)} task(s), launched together — no concurrency cap,\n"
-        "          because every one of them has no recorded blocker left."
-    )
+    if args.ref:
+        rest = len(q.ready()) - len(ready)
+        print(
+            f"dispatch: {len(ready)} named task(s), launched together — no "
+            "concurrency cap."
+            + (
+                f"\n          {rest} other ready task(s) stay queued, and nothing "
+                "records that:\n          no ref is the norm, and the next bare "
+                "`dispatch` sends them."
+                if rest > 0
+                else ""
+            )
+        )
+    else:
+        print(
+            f"dispatch: {len(ready)} task(s), launched together — no concurrency cap,\n"
+            "          because every one of them has no recorded blocker left."
+        )
 
     if args.dry_run:
         for t in ready:
@@ -4916,12 +5043,23 @@ def build_parser() -> argparse.ArgumentParser:
 
     b = sub.add_parser("block", help="record why one task must wait for another")
     b.add_argument("ref")
-    b.add_argument("--on", required=True)
-    # Deliberately not an argparse `choices`: a wrong --kind gets the full
-    # explanation below rather than a bare "invalid choice".
-    b.add_argument("--kind")
-    b.add_argument("--why")
-    b.add_argument("--clear", action="store_true")
+    b.add_argument("--on", required=True, help="the task this one waits for")
+    # `choices` lists the four in --help; `type` is what answers a wrong one,
+    # so the explanation survives instead of argparse's bare "invalid choice".
+    b.add_argument(
+        "--kind",
+        type=blocker_kind,
+        choices=sorted(BLOCKER_KINDS),
+        help="the kind of condition that makes this task wait. Overlapping "
+        "files are not one of them — record those with `add --touches`",
+    )
+    b.add_argument("--why", help="the concrete reason, in your own words")
+    b.add_argument(
+        "--clear",
+        action="store_true",
+        help="remove the blocker naming --on. A task can carry more than one, "
+        "so clearing still has to say which",
+    )
     b.set_defaults(func=cmd_block)
 
     pl = sub.add_parser("plan", help="what dispatches now, what waits, and why")
@@ -4929,6 +5067,14 @@ def build_parser() -> argparse.ArgumentParser:
     pl.set_defaults(func=cmd_plan)
 
     d = sub.add_parser("dispatch", help="launch every ready task at once")
+    d.add_argument(
+        "ref",
+        nargs="*",
+        help="the tasks to launch. NO REF IS THE NORM and sends the whole ready "
+        "set at once; naming refs holds the rest back for this run only and "
+        "records nothing, so use it when the operator has not authorized a task "
+        "yet — never to drip-feed a queue, which is slower than no queue",
+    )
     d.add_argument("--dry-run", action="store_true")
     d.set_defaults(func=cmd_dispatch)
 

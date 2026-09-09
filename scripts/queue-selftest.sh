@@ -67,6 +67,12 @@
 #      through the same batch, whether the task was dispatched while the watch
 #      was already streaming, whether nothing was watching at the time, and
 #      whether the run that read them died part-way. Exactly once each.
+#  16. The tool leaves the lead no reason to work around it. A `--brief-file`
+#      that carries the four standard headings fills the four standard
+#      sections and one with none behaves as it always did; `dispatch` takes
+#      refs, so holding a task back needs no invented blocker, and a bare
+#      `dispatch` still sends everything; and `block --kind` lists its four
+#      values in `--help` instead of only in the refusal.
 #
 # Test 4 is also the wake proof. The event source is `thurbox-cli watch`, which
 # this script replaces with a recorded stream through `FLEET_QUEUE_WATCH_CMD` —
@@ -3148,6 +3154,243 @@ else
 	expect "check catches a topic archived over live work" "half-live" "$out"
 	expect "and names the task nothing would have drawn" "02-running-part" "$out"
 	expect "with the remedy" "unarchive" "$out"
+fi
+
+# --- 16. the three defects that made the lead work around the tool -----------
+#
+# All three were hit repeatedly in one orchestration session (2026-09-09), and
+# the second wrote a lie into the queue's own records: with `dispatch`
+# all-or-nothing, holding two of five ready tasks back could only be spelled as
+# a blocker, and one was recorded with the reason "Operator has not been asked
+# whether to run it at all".
+#
+# In a queue of its own, because a bare `dispatch` acts on every ready task in
+# the whole queue and the sections above leave some of theirs deliberately
+# unwritten.
+
+export FLEET_QUEUE_DIR="$tmp/queue-ergonomics"
+
+etopic="$($QUEUE topic add stop-the-workarounds \
+	--title 'Stop the lead working around the queue' \
+	--prompt 'three tool defects made the lead hand-repair what the tool should do')"
+
+# (a) A brief file carrying the four standard headings fills the four standard
+#     sections. The whole file used to go into section 0, which produced a
+#     brief with `## What to do` twice and three untouched placeholders --
+#     refused by `dispatch`, and hand-repaired five times in one session.
+
+cat >"$tmp/full-brief.md" <<'MD'
+## What to do
+
+Rewrite the state machine so `idle` means the agent said so.
+
+## Done means
+
+`cargo test` passes and the pull request is open.
+
+## Hard constraints
+
+Do not touch `src/list.rs`; another worker is in it.
+
+## Coordination
+
+`02-document-the-states` reads what you write here.
+MD
+
+$QUEUE add "$etopic" fill-every-section --title 'Fill every section' \
+	--repo /tmp/repo-a --branch fix/fill-every-section --number 01 \
+	--brief-file "$tmp/full-brief.md" >/dev/null
+fullraw="$(cat "$FLEET_QUEUE_DIR/$etopic/01-fill-every-section/BRIEF.md")"
+full="$(brief_text "$FLEET_QUEUE_DIR/$etopic/01-fill-every-section/BRIEF.md")"
+
+refute "a brief file with the four headings leaves no placeholder" \
+	"WRITE THE INSTRUCTIONS HERE" "$fullraw"
+dupes="$(printf '%s\n' "$fullraw" | grep -c '^## What to do$')"
+if [ "$dupes" = 1 ]; then
+	pass "and does not duplicate the heading it was filed under"
+else
+	fail "and does not duplicate the heading it was filed under" \
+		"counted $dupes \`## What to do\` headings${nl}$fullraw"
+fi
+expect "the body's own prose lands in \`What to do\`" \
+	"## What to do Rewrite the state machine" "$full"
+expect "and each other heading's content lands under that heading" \
+	"## Hard constraints Do not touch \`src/list.rs\`" "$full"
+expect "including the last one" \
+	"## Done means \`cargo test\` passes" "$full"
+
+# The skeleton is still the skeleton: the same four headings, in
+# BRIEF_SECTIONS' order, whatever order the file put them in.
+order="$(printf '%s\n' "$fullraw" | grep '^## ' | tr '\n' '|')"
+want='## What to do|## Hard constraints|## Coordination|## Done means|'
+case "$order" in
+"$want"*) pass "and the four sections keep the skeleton's order" ;;
+*) fail "and the four sections keep the skeleton's order" "got: $order" ;;
+esac
+
+# (b) A heading that is not one of the four is CONTENT, not structure. It is
+#     kept verbatim under whichever section it appeared in: dropping it loses
+#     what the lead wrote, and promoting it is the 20 invented headings that
+#     BRIEF_SECTIONS exists to stop.
+
+cat >"$tmp/odd-brief.md" <<'MD'
+Do the thing.
+
+## Background
+
+The reason it matters.
+
+## Done means
+
+It is done.
+MD
+
+$QUEUE add "$etopic" keep-odd-headings --title 'Keep odd headings' \
+	--repo /tmp/repo-a --branch fix/keep-odd-headings --number 02 \
+	--brief-file "$tmp/odd-brief.md" >/dev/null
+odd="$(brief_text "$FLEET_QUEUE_DIR/$etopic/02-keep-odd-headings/BRIEF.md")"
+expect "an unrecognised heading is kept in place, under the section it was in" \
+	"Do the thing. ## Background The reason it matters." "$odd"
+expect "and a recognised heading after it still fills its own section" \
+	"## Done means It is done." "$odd"
+refute "so that section is no longer unwritten" \
+	"## Done means <!-- WRITE THE INSTRUCTIONS HERE -->" "$odd"
+expect "while the sections it said nothing about stay unwritten" \
+	"## Coordination <!-- WRITE THE INSTRUCTIONS HERE -->" "$odd"
+
+# (c) A body with no headings at all behaves exactly as it did before: the
+#     whole file into `What to do`, the other three left for the lead.
+
+printf 'Just do it, there is nothing else to say.\n' >"$tmp/flat-brief.md"
+$QUEUE add "$etopic" headingless-body --title 'Headingless body' \
+	--repo /tmp/repo-a --branch fix/headingless-body --number 03 \
+	--brief-file "$tmp/flat-brief.md" >/dev/null
+flatraw="$(cat "$FLEET_QUEUE_DIR/$etopic/03-headingless-body/BRIEF.md")"
+expect "a headingless body still fills What to do" \
+	"## What to do Just do it, there is nothing else to say." \
+	"$(brief_text "$FLEET_QUEUE_DIR/$etopic/03-headingless-body/BRIEF.md")"
+left="$(printf '%s\n' "$flatraw" | grep -c 'WRITE THE INSTRUCTIONS HERE')"
+if [ "$left" = 3 ]; then
+	pass "and leaves the other three for the lead, as it always did"
+else
+	fail "and leaves the other three for the lead, as it always did" \
+		"counted $left placeholder(s)${nl}$flatraw"
+fi
+
+# A `## ` inside a fenced block is example text a brief is quoting, not a
+# heading it is opening.
+cat >"$tmp/fenced-brief.md" <<'MD'
+Copy this shape:
+
+```markdown
+## Done means
+
+not a real heading
+```
+
+## Done means
+
+The real one.
+MD
+$QUEUE add "$etopic" fenced-body --title 'Fenced body' --repo /tmp/repo-a \
+	--branch fix/fenced-body --number 04 --brief-file "$tmp/fenced-brief.md" >/dev/null
+fenced="$(brief_text "$FLEET_QUEUE_DIR/$etopic/04-fenced-body/BRIEF.md")"
+expect "a \`## \` inside a fence stays in the section it was written in" \
+	'```markdown ## Done means not a real heading ```' "$fenced"
+expect "and the real heading after the fence still fills its section" \
+	"## Done means The real one." "$fenced"
+
+# --- 16b. dispatch takes refs, so holding one back needs no fake blocker -----
+
+for spec in \
+	"10:goes-out-alone:Goes out alone" \
+	"11:goes-out-together:Goes out together" \
+	"12:waits-for-real:Waits for a real reason"; do
+	IFS=: read -r n slug title <<<"$spec"
+	$QUEUE add "$etopic" "$slug" --title "$title" --repo /tmp/repo-a \
+		--branch "fix/$slug" --number "$n" \
+		--brief-file "$tmp/full-brief.md" >/dev/null
+done
+$QUEUE block "$etopic/12-waits-for-real" --on "$etopic/10-goes-out-alone" \
+	--kind semantic-dependency --why 'reads the field 10 introduces' >/dev/null
+
+out="$($QUEUE dispatch "$etopic/10-goes-out-alone" --dry-run 2>&1)"
+spawns="$(printf '%s\n' "$out" | grep -c 'session create')"
+if [ "$spawns" = 1 ]; then
+	pass "dispatch <ref> launches only that task"
+else
+	fail "dispatch <ref> launches only that task" "counted $spawns${nl}$out"
+fi
+refute "and none of the other ready ones" "11-goes-out-together" "$out"
+expect "and says the rest were left queued with nothing recording the choice" \
+	"no ref is the norm" "$out"
+
+out="$($QUEUE dispatch "$etopic/10-goes-out-alone" "$etopic/11-goes-out-together" \
+	--dry-run 2>&1)"
+spawns="$(printf '%s\n' "$out" | grep -c 'session create')"
+if [ "$spawns" = 2 ]; then
+	pass "several refs launch exactly those"
+else
+	fail "several refs launch exactly those" "counted $spawns${nl}$out"
+fi
+
+if out="$($QUEUE dispatch "$etopic/12-waits-for-real" --dry-run 2>&1)"; then
+	fail "a named task that is blocked is refused" "$out"
+else
+	expect "a named task that is blocked is refused by name" \
+		"12-waits-for-real" "$out"
+	expect "and the refusal states the blocker holding it" \
+		"reads the field 10 introduces" "$out"
+fi
+
+if out="$($QUEUE dispatch "$etopic/99-no-such-task" --dry-run 2>&1)"; then
+	fail "a ref no task answers to is refused" "$out"
+else
+	expect "a ref no task answers to is refused" "no such task" "$out"
+fi
+
+# The default is unchanged, and stays the norm: no ref sends the whole ready
+# set, and still refuses this queue's half-written briefs before it sends any.
+if out="$($QUEUE dispatch --dry-run 2>&1)"; then
+	fail "a bare dispatch still refuses the queue's unwritten briefs" "$out"
+else
+	expect "a bare dispatch still refuses the queue's unwritten briefs" \
+		"BRIEF.md" "$out"
+fi
+for t in 02-keep-odd-headings 03-headingless-body 04-fenced-body; do
+	printf 'Written now.\n' >"$FLEET_QUEUE_DIR/$etopic/$t/BRIEF.md"
+done
+out="$($QUEUE dispatch --dry-run 2>&1)"
+spawns="$(printf '%s\n' "$out" | grep -c 'session create')"
+if [ "$spawns" = 6 ]; then
+	pass "a bare dispatch still launches the whole ready set"
+else
+	fail "a bare dispatch still launches the whole ready set" "counted $spawns${nl}$out"
+fi
+expect "and still says so in the words that make it the norm" \
+	"no concurrency cap" "$out"
+refute "and says nothing about holding anything back" "no ref is the norm" "$out"
+
+# --- 16c. block --kind lists its own valid values in --help ------------------
+#
+# The set only ever appeared in the refusal you got after guessing wrong, and
+# the lead guessed twice. COLUMNS keeps argparse from wrapping a hyphenated
+# choice across two lines.
+
+out="$(COLUMNS=200 $QUEUE block --help 2>&1)"
+for kind in semantic-dependency shared-external-state incompatible-migration other; do
+	expect "block --help lists \`$kind\`" "$kind" "$out"
+done
+expect "and says why --clear still names a blocker with --on" \
+	"more than one" "$out"
+
+if out="$($QUEUE block "$etopic/11-goes-out-together" --on "$etopic/10-goes-out-alone" \
+	--kind file-overlap --why 'both edit one file' 2>&1)"; then
+	fail "an invalid --kind is still refused with the guidance" "$out"
+else
+	expect "an invalid --kind is still refused with the guidance" \
+		"semantic-dependency" "$out"
+	expect "and still says where file overlap belongs instead" "--touches" "$out"
 fi
 
 echo

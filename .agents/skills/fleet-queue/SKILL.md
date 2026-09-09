@@ -135,6 +135,13 @@ Each arrives as the same placeholder:
 Replace every one of them. **`dispatch` refuses a task that still carries one**,
 so a half-written brief is stopped as firmly as a blank one.
 
+`add --brief-file <file>` fills them from a file instead. It reads the file's
+own `## ` headings and fills the section each one names; a heading that is not
+one of the four is kept where it is, as content, and a body with no headings at
+all goes into `What to do`. So write the file with the four headings and the
+brief comes out complete — the sections you leave out keep their placeholder
+and `dispatch` still refuses them.
+
 Write it as if the reader knows nothing, because it does: workers share no
 context with you and none with each other. State the goal, the constraints, and
 what "done" looks like, from scratch.
@@ -231,7 +238,7 @@ that makes independent progress unsafe.**
   --why 'reads the detected_agent field 01 introduces'
 ```
 
-`--kind` is a closed set:
+`--kind` is a closed set, and `queue.sh block --help` lists it:
 
 | kind | when |
 |---|---|
@@ -243,6 +250,9 @@ that makes independent progress unsafe.**
 "They edit the same file" is **not on that list** and cannot be spelled as one.
 `block` refuses it and points you at `--touches`; two agents editing one file in
 two worktrees is an ordinary rebase.
+
+`block <ref> --on <ref> --clear` removes one blocker. It still needs `--on`
+because a task can carry several, and clearing has to say which.
 
 A blocker clears only when the task it names has **landed** — concluded AND its
 artifact merged (§5b). A session that stopped does not clear it, `done` with an
@@ -264,6 +274,25 @@ its worktree, so nothing can land in its PR.
 
 If a spawn fails, the others still go. Re-run `dispatch`; the ones already out
 are no longer `queued` and are not spawned twice.
+
+### Naming refs, and the one thing they are for
+
+```bash
+./scripts/queue.sh dispatch report-status-honestly/01-drop-idle-default
+```
+
+Refs launch exactly those tasks and refuse, by name and with the blocker, one
+that is not ready. **Bare `dispatch` stays the default and the norm.** Refs are
+for the case that is neither ready nor blocked: the operator has not authorized
+a task yet. That is not a dependency, and writing it into the record as one is
+what this exists to stop — a blocker was once recorded with the reason
+"Operator has not been asked whether to run it at all", which held that task
+until someone deleted it by hand.
+
+So refs record nothing. A task left out is still `queued`, still in the ready
+set, and the next bare `dispatch` sends it. Do not use them to drip-feed: a
+queue that runs one task at a time is slower than no queue at all, and holding
+work back for any reason you could write down belongs in `block` instead.
 
 ### A remote task is probed before it is spawned
 
