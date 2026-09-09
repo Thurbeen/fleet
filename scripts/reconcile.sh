@@ -229,7 +229,7 @@ run_pass() {
 		printf '%s\n' "$out" | sed 's/^/    /' >>"$LOG"
 		return "$rc"
 	fi
-	if [ "$quiet" = "quiet-unless-moved" ] && grep -qF -- "0 task(s) moved" <<<"$out"; then
+	if [ "$quiet" = "quiet-unless-moved" ] && grep -qE '(^|[^0-9])0 task\(s\) moved' <<<"$out"; then
 		return 0
 	fi
 	log "$label:"
