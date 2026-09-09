@@ -474,7 +474,7 @@ Three answers, and the third is not the second:
 | it is not, or not from this branch | **leaves the task OPEN** and says so, loudly |
 | could not run | closes the task, and says the check could not run |
 
-"Could not run" is `gh` absent, no network, a pull request it cannot read, or a
+"Could not run" is the forge CLI absent, no network, a pull request it cannot read, or a
 base branch this machine cannot see. That must never read as a pass or a fail —
 CI and an offline laptop both still have to collect. `queue.sh show <ref>`
 prints the method and the verdict, so both survive the scrollback.
@@ -509,7 +509,7 @@ So a task gets a state AFTER `done`:
 | `abandoned` | the pull request was closed unmerged | released; the work is NOT on main |
 | `stuck` / `failed` | the worker gave up | **kept** — that session is the evidence, and you decide |
 
-`landed` comes from asking `gh`, never from a worker claiming it, so it works
+`landed` comes from asking the forge, never from a worker claiming it, so it works
 long after the session is gone. **Blockers clear on `landed`**, not on `done`
 — a dependent task waits for the code to actually be on `main`, which is the
 same bug in its other form: a task collected `shipped` once released its
@@ -689,11 +689,11 @@ opened it.
 first pull request its worker reported. #25 was a *second* pull request from a
 task whose artifact still pointed at the already-merged #23, so a shepherd
 reading artifacts could not see it and the unattended pass would never have
-merged it; a PR opened outside the queue was invisible the same way. So it runs
-`gh pr list --state open` against every repo the queue's tasks name, and each
-open pull request gets exactly one of these:
+merged it; a PR opened outside the queue was invisible the same way. So it asks
+the forge for every open change request against every repo the queue's tasks
+name, and each open pull request gets exactly one of these:
 
-| What `gh` says | What happens |
+| What the forge says | What happens |
 |---|---|
 | the head branch is in someone else's fork | reported, never merged, **never given an agent** |
 | `mergeable: CONFLICTING` | a fixer is dispatched to rebase |

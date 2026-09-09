@@ -50,7 +50,7 @@
 #              commit that would merge), or asks git whether a `push` task's
 #              commit reached the base branch. An artifact that is not there is
 #              reported and the task is left OPEN; a check that could not run
-#              (no `gh`, no network, a base branch this machine cannot read)
+#              (no forge CLI, no network, a base branch this machine cannot read)
 #              says so and is never read as either verdict. The TOOL is
 #              `--how`: free text rendered into the brief and never parsed,
 #              which is what lets a task name a publisher fleet has never heard

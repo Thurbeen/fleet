@@ -3110,7 +3110,7 @@ def cmd_collect(args) -> int:
 #
 # `landed` is a state the record keeps and everything reads: reaping, blocker
 # clearing, and `list`. Nothing re-opens — this is a LATER transition out of
-# `done`, discovered by asking `gh`, never by a worker claiming it.
+# `done`, discovered by asking the forge, never by a worker claiming it.
 
 # The only session states a reap will act on. `working` and `blocked` are the
 # ones that must never be touched, but they are not the whole exclusion:
@@ -3176,7 +3176,7 @@ def artifact_landing(artifact) -> tuple[str, str]:
 def sweep_landings(q: Queue, dry: bool) -> dict:
     """Ask the forge about every `done` task and promote the ones that landed.
 
-    Works from the RECORD and `gh` alone. That is a requirement, not an
+    Works from the RECORD and the forge alone. That is a requirement, not an
     accident: a merge normally happens after the session that produced it is
     gone, so nothing here may depend on a worker being alive to say so.
 
