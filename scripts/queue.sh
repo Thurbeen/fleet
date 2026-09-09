@@ -71,9 +71,10 @@
 #
 #   `shepherd` asks the FORGE for every open PR on the repos this queue's
 #              tasks name, DISPATCHES A FIXER for one that conflicts, fails a
-#              check, has a review asking for changes, or carries no pipeline
-#              attestation — and squash-merges one that clears every gate.
-#              It is a fourth thing, after both halves of completion.
+#              check, has a review asking for changes, or was declared
+#              `no-mistakes` and carries no attestation — and squash-merges
+#              one that clears every gate. It is a fourth thing, after both
+#              halves of completion.
 #
 #              It reads the forge and not the task records because a task
 #              records ONE artifact, the first PR its worker reported: #25 was
