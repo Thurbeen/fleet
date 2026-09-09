@@ -344,8 +344,13 @@ def glyph_conf(root: str | None = None) -> dict[str, str]:
 
     Read as DATA — `KEY=value`, no quoting, no continuation — and never
     executed. A setting that can run is a different kind of file.
+
+    `FLEET_GLYPH_ROOT` overrides where that setting is read from, the same way
+    `FLEET_QUEUE_DIR` relocates queue state — so a selftest can dispatch a real
+    task without inheriting whatever the developer's own gitignored
+    session-glyphs.conf says.
     """
-    root = root or checkout_root()
+    root = root or os.environ.get("FLEET_GLYPH_ROOT") or checkout_root()
     path = os.path.join(root, GLYPH_CONF)
     if not os.path.exists(path):
         path = os.path.join(root, GLYPH_CONF_DEFAULTS)
@@ -366,7 +371,10 @@ def glyph_conf(root: str | None = None) -> dict[str, str]:
 def worker_glyph(root: str | None = None) -> str:
     """The mark every worker fleet spawns wears, or "" when glyphs are off."""
     conf = glyph_conf(root)
-    if conf.get("GLYPHS", "on") == "off":
+    setting = conf.get("GLYPHS", "on")
+    if setting not in ("on", "off", ""):
+        raise QueueError(f"GLYPHS in {GLYPH_CONF} is neither 'on' nor 'off'")
+    if setting == "off":
         return ""
     return conf.get("WORKER_GLYPH_ON", "")
 

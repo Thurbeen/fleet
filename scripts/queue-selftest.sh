@@ -3499,9 +3499,19 @@ fi
 rm -rf "$glyphtmp"
 
 # The wiring, and not only the function: the mark has to reach the argv thurbox
-# is handed. This runs against the default setting, which is the one an operator
-# who never touched the file gets.
+# is handed. FLEET_GLYPH_ROOT points this dispatch at an isolated copy of the
+# default setting rather than the real checkout's — a developer running this
+# selftest with their own gitignored GLYPHS=off must not see a spurious failure
+# here.
 export FLEET_QUEUE_DIR="$tmp/queue-glyph"
+export FLEET_GLYPH_ROOT="$(mktemp -d)"
+mkdir -p "$FLEET_GLYPH_ROOT/orchestration"
+cat >"$FLEET_GLYPH_ROOT/orchestration/session-glyphs.conf" <<'EOF'
+GLYPHS=on
+LEAD_GLYPH_ON=📡
+LEAD_GLYPH_OFF=⌖
+WORKER_GLYPH_ON=🚀
+EOF
 gtopic="$($QUEUE topic add marked --title 'Sessions wear a mark' \
 	--prompt 'give every session a glyph')"
 $QUEUE add "$gtopic" wear-it --title 'Wear the mark' --repo /tmp/repo-a \
@@ -3511,6 +3521,8 @@ printf '# Wear the mark\n\nA brief with real content in it.\n' \
 out="$($QUEUE dispatch --dry-run 2>&1)"
 expect "the mark reaches the name thurbox is asked to create" \
 	"🚀 Wear the mark" "$out"
+rm -rf "$FLEET_GLYPH_ROOT"
+unset FLEET_GLYPH_ROOT
 
 echo
 if [ "$failed" -eq 0 ]; then
