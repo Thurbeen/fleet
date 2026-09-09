@@ -153,7 +153,7 @@ for key in ("fuel", "queue", "sessions", "prs", "monitor", "checkout"):
 assert doc["sessions"]["unavailable"], "sessions should be unavailable"
 assert doc["prs"]["unavailable"], "prs should be unavailable"
 assert doc["fuel"]["unavailable"], "fuel should be unavailable"
-assert doc["fuel"]["remaining"] is None, "no reading is None, never 0"
+assert doc["fuel"]["providers"] == [], "an unreadable fuel section names no provider"
 assert doc["queue"]["unavailable"] is None, "the queue is on disk and readable"
 assert len(doc["queue"]["topics"][0]["tasks"]) == 3, "three tasks expected"
 print("parsed")
@@ -209,6 +209,17 @@ chmod +x "$stubbed/gh"
 fuel_stub() {
 	cat >"$1/quota-axi" <<STUB
 #!/bin/sh
+# The auth subcommand is the credential read that decides WHICH providers are
+# worth asking. This machine has exactly one, which is what keeps every
+# assertion below about a single reading.
+if [ "\$1" = auth ]; then
+	cat <<'JSON'
+{"generatedAt":"2026-03-15T16:42:00.000Z","schemaVersion":1,"auth":[
+ {"provider":"claude","sources":[{"source":"oauth-file","status":"available"}]},
+ {"provider":"codex","sources":[{"source":"auth-json","status":"missing"}]}]}
+JSON
+	exit 0
+fi
 cat <<'JSON'
 {"generatedAt":"2026-03-15T16:42:00.000Z","schemaVersion":5,"providers":[
  {"provider":"claude","plan":"max","source":"oauth",
@@ -402,18 +413,123 @@ import json, subprocess
 record = subprocess.run(
     ["./scripts/fleet-status.sh", "--fuel"], capture_output=True, text=True
 ).stdout
-fields = dict(line.split("\t", 1) for line in record.splitlines() if "\t" in line)
+blocks = [
+    dict(line.split("\t", 1) for line in block.splitlines() if "\t" in line)
+    for block in record.split("\n\n") if block.strip()
+]
 doc = json.loads(
     subprocess.run(
         ["./scripts/fleet-status.sh", "--fuel", "--json"], capture_output=True, text=True
     ).stdout
 )
-assert str(doc["remaining"]) == fields["remaining"], "record and json disagree"
-assert str(doc["reserve"]) == fields["reserve"], "reserve disagrees"
+assert len(blocks) == len(doc["providers"]), "record and json count providers differently"
+for fields, rec in zip(blocks, doc["providers"]):
+    assert fields["provider"] == rec["provider"], "record and json order providers differently"
+    assert str(rec["remaining"]) == fields["remaining"], "record and json disagree"
+    assert str(rec["reserve"]) == fields["reserve"], "reserve disagrees"
 print("agree")
 PY
 )"
 expect "the record and --fuel --json are the same reading" "agree" "$same"
+
+# --- 6c. one reading per subscription the operator actually has --------------
+#
+# An account may hold several — claude, codex, zai — and they are separate
+# windows on separate clocks. Three claims here, and each of them was a way the
+# single-provider reading could have been widened wrongly:
+#
+#   1. WHICH providers are asked is decided by the credentials on disk, not by
+#      a list. Asking one the operator never signed in to buys a network round
+#      trip that ends in what `quota-axi auth` already said.
+#   2. It stays ONE fetch. The pane redraws on a timer, so a reading that cost
+#      a process per provider would burn the fuel it reports.
+#   3. A provider that failed carries its own reason and NO number, and the
+#      others are untouched by it. Nothing here is summed, averaged, or
+#      reduced to whichever provider is lowest.
+
+many="$(sandbox "$tmp/bin-many" "${BASE_TOOLS[@]}")"
+cat >"$many/quota-axi" <<STUB
+#!/bin/sh
+echo "\$*" >>"$tmp/quota-calls"
+if [ "\$1" = auth ]; then
+	cat <<'JSON'
+{"generatedAt":"2026-03-15T16:42:00.000Z","schemaVersion":1,"auth":[
+ {"provider":"claude","sources":[{"source":"oauth-file","status":"available"}]},
+ {"provider":"codex","sources":[{"source":"auth-json","status":"expired"},
+                                {"source":"cli-rpc","status":"available"}]},
+ {"provider":"cursor","sources":[{"source":"cli-authfile","status":"missing"}]},
+ {"provider":"zai","sources":[{"source":"opencode:auth.json","status":"available"}]},
+ {"provider":"grok","sources":[{"source":"auth-json","status":"missing"}]}]}
+JSON
+	exit 0
+fi
+cat <<'JSON'
+{"generatedAt":"2026-03-15T16:42:00.000Z","schemaVersion":5,"providers":[
+ {"provider":"claude","plan":"max","source":"oauth",
+  "windows":[
+    {"id":"five_hour","label":"session","kind":"session","percentRemaining":90,
+     "resetsAt":"2026-03-15T20:10:48.000Z"},
+    {"id":"seven_day","label":"week","kind":"weekly","percentRemaining":64,
+     "resetsAt":"2026-03-20T17:59:45.600Z"}],
+  "state":{"status":"fresh","stale":false}},
+ {"provider":"codex","windows":[],
+  "state":{"status":"auth_required","stale":false,"error":"Codex sign-in required"}},
+ {"provider":"zai","windows":[
+    {"id":"monthly","label":"month","kind":"monthly","percentRemaining":7,
+     "resetsAt":"2026-04-01T00:00:00.000Z"}],
+  "state":{"status":"fresh","stale":false}}]}
+JSON
+STUB
+chmod +x "$many/quota-axi"
+
+rm -f "$tmp/quota-calls"
+crowd="$(PATH="$many" "$STATUS" 2>&1)"
+expect "the screen reports fleet's own provider first" "claude  64% remaining" "$crowd"
+expect "and every other subscription that has a credential" "zai  7% remaining" "$crowd"
+expect "a provider whose fetch failed says so, in quota-axi's words" \
+	"codex  unavailable — auth_required; Codex sign-in required" "$crowd"
+refute "and never as a spent window" "codex  0% remaining" "$crowd"
+expect "the low one is under the reserve on its own, not on an average" \
+	"under the 20% reserve" "$crowd"
+
+asked="$(grep -v '^auth' "$tmp/quota-calls")"
+expect "the providers with a credential are asked for in one comma list" \
+	"--provider claude,codex,zai" "$asked"
+refute "a provider with no credential is never probed (cursor)" "cursor" "$asked"
+refute "nor grok, which has none either" "grok" "$asked"
+if [ "$(grep -cv '^auth' "$tmp/quota-calls")" -eq 1 ]; then
+	pass "three subscriptions still cost one quota fetch"
+else
+	fail "the reading is one fetch" "$(cat "$tmp/quota-calls")"
+fi
+
+rm -f "$tmp/quota-calls"
+multi="$(PATH="$many" "$STATUS" --fuel 2>&1)"
+shape="$(PATH="$many" python3 - "$multi" <<'PY' 2>&1
+import sys
+blocks = [
+    dict(line.split("\t", 1) for line in block.splitlines() if "\t" in line)
+    for block in sys.argv[1].split("\n\n") if block.strip()
+]
+by = {b["provider"]: b for b in blocks}
+assert [b["provider"] for b in blocks] == ["claude", "codex", "zai"], blocks
+assert by["claude"]["remaining"] == "64", "the binding window is the reading"
+assert by["zai"]["remaining"] == "7", "and each provider carries its own"
+assert "remaining" not in by["codex"], "a failed fetch carries no number at all"
+assert by["codex"]["unavailable"].startswith("auth_required"), by["codex"]
+for b in blocks:
+    assert b["reserve"] == "20", "every record names the floor it is read against"
+    assert b["read_at"] == blocks[0]["read_at"], "one probe, one instant"
+print("three records")
+PY
+)"
+expect "--fuel carries one blank-line-separated record per provider" \
+	"three records" "$shape"
+if [ "$(grep -cv '^auth' "$tmp/quota-calls")" -eq 1 ]; then
+	pass "--fuel spends one quota fetch for all three"
+else
+	fail "--fuel is one fetch" "$(cat "$tmp/quota-calls")"
+fi
 
 # --- 7. it reads, and only reads ---------------------------------------------
 

@@ -37,15 +37,32 @@ browser tab, reading the same records. The web page is still the better place to
 read a `BRIEF.md`; the pane is for not alt-tabbing to notice a task changed
 state.
 
-**The top line is the fuel, not a task.** The account's remaining provider
-window is the constraint every row under it competes for, so it sits above the
-counters: percent left, the binding window, when that window comes back, and
-how old the reading is. The pane does not read `quota-axi` — it asks
-`./scripts/fleet-status.sh --fuel`, the same `probe_fuel()` the status screen
-prints, on a five-minute TTL of its own because that reading costs a network
-call. FLEET.md's `## Fuel` section owns the reserve it is coloured against, and
-a reading nobody could take is drawn as unavailable with its reason, never as a
-zero.
+**The top rows are the fuel, not a task.** The account's remaining provider
+windows are the constraint every row under them competes for, so they sit above
+the counters: a head row carrying the reserve and how old the reading is, then
+**one row per subscription** — the provider's name, a bar, and its percentage.
+The bar is a second encoding of the number and never a replacement, it is
+coloured by the same reserve the head row names, and it marks where that floor
+falls across it. The pane does not read `quota-axi` — it asks
+`./scripts/fleet-status.sh --fuel`, the same reading the status screen prints,
+on a five-minute TTL of its own because that reading costs a network call.
+FLEET.md's `## Fuel` section owns the reserve, which arrives on the record so
+the pane never spells the number itself.
+
+**Three readings are not bars**, and each looks different on purpose: a probe
+that has not answered is a spinner, a provider that could not be read says
+`unavailable` with its reason — an empty bar there would read as a spent window
+rather than a missing one — and a stale reading is hatched and flagged, because
+a number that is remembered rather than observed must not look identical to one
+that was just measured.
+
+**What a narrow column drops**, and this one is routinely thirty cells wide: the
+reserve on the head row first, then the bar (under five cells it is a
+decoration), then the reason on an unavailable row, which truncates. The number
+never goes. The detail row under a reading — the binding window and when it
+comes back — is drawn only when exactly one provider carries a number; several
+readings at two rows each would push the queue itself off the column, and
+`./scripts/fleet-status.sh` is where every window is printed in full.
 
 It runs inside the thurbox interface, which knows nothing about fleet, so it
 finds the control plane by **probing the lead session by NAME** and running
