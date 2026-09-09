@@ -1,0 +1,714 @@
+#!/usr/bin/env python3
+"""The FORGE seam: what fleet needs to know about a proposed change, and
+nothing about which forge answers it.
+
+WHY THIS EXISTS. Fleet's queue used to run `gh` inline in six places and build
+`https://github.com/...` in a seventh, so "the forge" and "GitHub" were the
+same word. They are not: the operator's fleet runs on GitHub *today*, and that
+is a configuration, not a fact about the model. This module is the line between
+the two. Above it, `queue.py` asks questions; below it, one adapter per forge
+answers them with whatever CLI or API that forge has.
+
+THE WORD. A GitHub *pull request* and a GitLab *merge request* are the same
+thing to this code, so the code says CHANGE REQUEST and never picks a side.
+Prose that is genuinely about GitHub still says "pull request", because there
+it is describing GitHub. `ChangeRequest` below is the whole vocabulary.
+
+THE QUESTIONS, and they are the entire interface. Each one is something fleet
+actually decides on, and nothing here exists because a forge happens to offer
+it:
+
+    parse_change_url        is this URL a change request, and which one
+    repo_from_remote        which repository is this checkout's `origin`
+    get                     one change request in full: what `collect` needs to
+                            check a publish claim — the body carrying the
+                            no-mistakes attestation, the head commit it must
+                            name, the branch it is open from, and the commits
+                            that grew the head since
+    state                   open / merged / closed, for the landing check. A
+                            second, narrower question than `get` on purpose:
+                            `reap` sweeps every concluded task on a timer and
+                            must not pay for a body it will not read
+    open_change_requests    every open change request on a repository
+    open_change_requests_in_checkout
+                            the same, asked of a local checkout rather than of
+                            a repository id — what `fleet-status.sh` needs and
+                            the only caller that has a path but no identity
+    can_push                may this account push to this repository — the last
+                            gate before an unattended merge
+    merge                   merge it, by a named method
+
+REPOSITORY IDENTITY CARRIES A HOST. `Thurbeen/fleet` names two different
+repositories if two forges are configured, and self-hosted instances are the
+NORMAL case for everything that is not github.com. So a repository is a
+`RepoId(host, path)` and `AUTO_MERGE_REPOS` in queue.py is spelled
+`github.com/Thurbeen/fleet` — an entry that names no host is refused rather
+than guessed at.
+
+EVERY ANSWER CAN BE "I COULD NOT TELL". Each method returns its answer beside a
+non-empty string saying why it could not be had, and no caller is allowed to
+collapse that string into a verdict. A timeout must never be able to
+manufacture a merge.
+
+ADDING A FORGE. Write a class with the methods below and register it: either
+in `BUILTIN` here, or — for a test, or a forge that is not fleet's business to
+ship — through `FLEET_FORGE_PLUGINS`, a colon-separated list of Python files
+each exporting `forges()`. `scripts/queue-selftest.sh` drives the whole queue
+through a plugin with no network and no `gh` behind it, which is how this seam
+is proved rather than asserted.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from dataclasses import dataclass, field
+
+# --- identity ----------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RepoId:
+    """One repository, on one forge. The host is half of the name.
+
+    `path` is whatever that forge puts after the host — `owner/repo` on GitHub
+    and Gitea, `group/subgroup/project` on GitLab. Nothing here parses it apart
+    from `owner`, which is the first segment on every forge fleet has met.
+    """
+
+    host: str
+    path: str
+
+    def __str__(self) -> str:
+        # Reads as a sentence in a report: "... on many-owner/many-repo on
+        # github.com". `qualified` is the form for config and for JSON.
+        return f"{self.path} on {self.host}"
+
+    @property
+    def qualified(self) -> str:
+        """`github.com/Thurbeen/fleet` — the form config files are written in."""
+        return f"{self.host}/{self.path}"
+
+    @property
+    def owner(self) -> str:
+        return self.path.split("/", 1)[0]
+
+    @classmethod
+    def parse(cls, text: str) -> RepoId | None:
+        """A host-qualified repository, or None for anything else.
+
+        A bare `owner/repo` is REFUSED and not guessed at. It is ambiguous the
+        moment a second forge exists, and the config that used to be written
+        that way is the auto-merge allowlist — the one place where guessing
+        wrong means acting on somebody else's repository.
+        """
+        parts = [p for p in str(text or "").strip().split("/") if p]
+        if len(parts) < 3 or "." not in parts[0]:
+            return None
+        return cls(parts[0].lower(), "/".join(parts[1:]))
+
+
+@dataclass(frozen=True)
+class ChangeRef:
+    """A change request, named rather than fetched: which repository, and which number."""
+
+    repo: RepoId
+    number: int
+    url: str
+
+    def __str__(self) -> str:
+        return self.url
+
+
+@dataclass(frozen=True)
+class Commit:
+    """One commit on a change request's head branch, oldest first.
+
+    Read for ONE thing: telling the pipeline's own follow-up push apart from
+    somebody else pushing over it, which is the same refusal with two different
+    remedies. A forge that cannot enumerate them answers with an empty list,
+    and an empty list must never become a claim about who pushed what.
+    """
+
+    sha: str
+    headline: str
+
+
+@dataclass(frozen=True)
+class Check:
+    """One CI check, in fleet's own words rather than each forge's vocabulary.
+
+    `pending` is never `failed`: reading a check that has not finished as a
+    broken one is how a shepherd spawns fixers for healthy change requests, and
+    reading it as passed is how it merges one whose CI never ran. `cancelled`
+    is its own word rather than folded into either: a check somebody called
+    off is not a passing one, but the shepherd and fleet-status have always
+    disagreed about whether it blocks a merge — see `GH_CHECK_FAILED` below —
+    and a shared verdict must let both keep their own answer.
+    """
+
+    name: str
+    verdict: str  # "passed" | "failed" | "pending" | "cancelled"
+
+
+@dataclass
+class ChangeRequest:
+    """One proposed change, normalised. Every field is fleet's word, not a forge's.
+
+    An empty string means THE FORGE DID NOT SAY, everywhere. Callers that act
+    on a field check it rather than defaulting it — `head_is_ours` is `None`
+    for "could not tell" for exactly that reason, and `classify` treats that as
+    undetermined rather than as a stranger or as one of ours.
+    """
+
+    ref: ChangeRef
+    title: str = ""
+    state: str = ""  # "open" | "merged" | "closed" | "" (not said)
+    draft: bool = False
+    body: str = ""
+    head_branch: str = ""
+    base_branch: str = ""
+    head_sha: str = ""
+    author: str = ""
+    author_is_bot: bool = False
+    mergeable: str = ""  # "mergeable" | "conflicting" | "" (not said / still computing)
+    review_decision: str = ""  # "changes-requested" | "approved" | "" (not said)
+    checks: list = field(default_factory=list)
+    commits: list = field(default_factory=list)
+    # Is the head branch inside the target repository? The one claim about a
+    # change request that whoever opened it cannot write for themselves, and
+    # the only forge-specific judgement fleet delegates rather than derives:
+    # a fork, a mirror and a same-repo branch are told apart differently on
+    # every forge. `None` means the forge did not say.
+    head_is_ours: bool | None = None
+    head_location: str = ""  # a phrase naming where the head branch lives
+
+    @property
+    def repo(self) -> RepoId:
+        return self.ref.repo
+
+    @property
+    def number(self) -> int:
+        return self.ref.number
+
+    @property
+    def url(self) -> str:
+        return self.ref.url
+
+    @property
+    def name(self) -> str:
+        """`Thurbeen/fleet#13` — short enough for a status line."""
+        return f"{self.repo.path}#{self.number}"
+
+
+# The shape of a change request URL on any forge fleet has met: GitHub and
+# Gitea end in `/pull/<n>`, GitLab in `/-/merge_requests/<n>`. This answers
+# only "is that artifact a change request at all" — which forge OWNS it, and
+# whether that forge is configured, are separate questions with separate
+# answers, so that an artifact on a forge nobody configured reads as "could
+# not be checked" rather than as "the worker shipped nothing".
+CHANGE_URL_RE = re.compile(
+    r"^(https?://[^/\s]+/[^/\s]+(?:/[^/\s]+)+?/(?:pull|merge_requests)/\d+)"
+    r"(?:[/?#].*)?$"
+)
+
+
+def change_url(url) -> str:
+    """The canonical change-request URL inside `url`, or '' if it is not one.
+
+    Group 1 rather than the whole string, so a link someone pasted with
+    `/files` or a `#comment` on the end still resolves to what it names.
+    """
+    m = CHANGE_URL_RE.match((url or "").strip())
+    return m.group(1) if m else ""
+
+
+# --- the interface -----------------------------------------------------------
+
+
+class Forge:
+    """One forge. Subclass, implement, register.
+
+    The base class answers "I cannot" to everything, so a partial adapter
+    degrades into "could not be determined" — which every caller already
+    handles — instead of raising into the middle of a shepherd pass.
+    """
+
+    name = "forge"
+    hosts: tuple = ()
+    # The merge methods this forge can actually perform. A caller asking for
+    # one that is not here is told so BEFORE anything is merged: a GitLab
+    # project can forbid squash, and "the forge refused this merge method" has
+    # to be a sentence fleet can say.
+    merge_methods: tuple = ()
+
+    def owns_host(self, host: str) -> bool:
+        return (host or "").lower() in self.hosts
+
+    def parse_change_url(self, url: str) -> ChangeRef | None:
+        return None
+
+    def repo_from_remote(self, remote_url: str) -> RepoId | None:
+        return None
+
+    def get(self, ref: ChangeRef) -> tuple:
+        return None, f"{self.name} cannot read a change request"
+
+    def state(self, ref: ChangeRef) -> tuple:
+        return None, f"{self.name} cannot read a change request state"
+
+    def open_change_requests(self, repo: RepoId) -> tuple:
+        return [], f"{self.name} cannot list change requests"
+
+    def open_change_requests_in_checkout(self, path: str) -> tuple:
+        return [], f"{self.name} cannot list change requests"
+
+    def can_push(self, repo: RepoId, login: str) -> tuple:
+        return False, f"{self.name} cannot say who may push to {repo}"
+
+    def describe_merge(self, method: str, delete_branch: bool) -> str:
+        """What this forge would run, for a dry run to print."""
+        return f"{self.name}: merge by {method}"
+
+    def merge(self, cr: ChangeRequest, method: str, delete_branch: bool) -> tuple:
+        return False, f"{self.name} cannot merge"
+
+
+# --- GitHub, the first implementation ----------------------------------------
+
+
+# `gh pr list --limit` is a request cap, not a page size — gh paginates the
+# GraphQL calls itself to reach it. Set high enough that hitting it means the
+# repository genuinely has that many open pull requests, which the caller then
+# treats as unreadable rather than silently returning a truncated list.
+GH_LIST_LIMIT = 1000
+
+# One `gh pr list` answers every question the shepherd asks, so a pass costs
+# one call per repository rather than one per pull request. The last four are
+# the safety fields: `headRefOid` is what an attestation has to name, and the
+# other three are how a fork's pull request is told from ours.
+GH_FIELDS = (
+    "number,state,url,title,isDraft,mergeable,reviewDecision,"
+    "statusCheckRollup,body,headRefName,baseRefName,headRefOid,"
+    "author,headRepositoryOwner,isCrossRepository"
+)
+
+# The narrower set `fleet-status.sh` needs: it prints a line per pull request
+# and decides nothing, so it does not pay for the safety fields.
+GH_STATUS_FIELDS = "number,url,title,headRefName,state,statusCheckRollup"
+
+# What ONE change request costs when `collect` checks a publish claim. The head
+# branch is in there because it is the one claim about a pull request a worker
+# cannot write into its own result.md, and it arrives free with the body.
+GH_ONE_FIELDS = "body,headRefOid,headRefName,state,commits"
+
+# A check that FAILED. Anything still running is NOT a failure. `CANCELLED` is
+# its own conclusion, mapped to the `cancelled` verdict rather than in here:
+# it is absent from the shepherd's list and present in fleet-status's, both
+# already so before this module existed, and this keeps that difference alive
+# instead of erasing it onto whichever caller happened to read second.
+GH_CHECK_FAILED = {"FAILURE", "TIMED_OUT", "STARTUP_FAILURE", "ACTION_REQUIRED", "ERROR"}
+GH_CHECK_PASSED = {"SUCCESS", "NEUTRAL", "SKIPPED"}
+GH_CHECK_CANCELLED = {"CANCELLED"}
+
+GH_URL_RE = re.compile(
+    r"^https?://([^/\s]+)/([^/\s]+/[^/\s]+?)(?:\.git)?/pull/(\d+)(?:[/?#].*)?$"
+)
+GH_REMOTE_RE = re.compile(r"^(?:[^@/\s]+@)?([^:/\s]+)[:/]([^/\s]+/[^/\s]+?)(?:\.git)?/?$")
+
+# GitHub's own state words, mapped onto fleet's three. Anything else is not
+# translated into a guess: the caller is told the forge said something this
+# adapter does not know, which is `unknown` and never `open`.
+GH_STATES = {"OPEN": "open", "MERGED": "merged", "CLOSED": "closed"}
+
+GH_PUSH_PERMISSIONS = {"admin", "maintain", "write"}
+
+
+class GitHubForge(Forge):
+    """GitHub, through the `gh` CLI. Every `gh` invocation fleet makes is here.
+
+    `gh` rather than the REST API directly because it already holds the
+    operator's credentials, and because a fleet that needed its own token would
+    need one per machine a worker runs on.
+    """
+
+    name = "github"
+    merge_methods = ("squash", "merge", "rebase")
+
+    def __init__(self, hosts=None):
+        # `GH_HOST` is gh's own variable for a GitHub Enterprise instance, so a
+        # self-hosted GitHub round-trips through this adapter the same way a
+        # self-hosted GitLab will have to through its own.
+        extra = [h.strip().lower() for h in (hosts or []) if h and h.strip()]
+        enterprise = os.environ.get("GH_HOST", "").strip().lower()
+        if enterprise:
+            extra.append(enterprise)
+        self.hosts = tuple(dict.fromkeys(["github.com", "www.github.com"] + extra))
+        # One answer per (repo, login) per process. The question does not
+        # change inside a run and every open pull request would ask it again.
+        self._push: dict = {}
+
+    # --- naming ---
+
+    def parse_change_url(self, url: str) -> ChangeRef | None:
+        m = GH_URL_RE.match((url or "").strip())
+        if not m or not self.owns_host(m.group(1)):
+            return None
+        host = m.group(1).lower()
+        return ChangeRef(
+            RepoId(host, m.group(2)),
+            int(m.group(3)),
+            f"https://{host}/{m.group(2)}/pull/{m.group(3)}",
+        )
+
+    def repo_from_remote(self, remote_url: str) -> RepoId | None:
+        m = GH_REMOTE_RE.match((remote_url or "").strip())
+        if not m:
+            return None
+        host = m.group(1).lower()
+        # `git@github.com:owner/repo` has no scheme, so the host is whatever
+        # came before the colon; a URL that named none of our hosts is not ours.
+        if not self.owns_host(host):
+            return None
+        return RepoId(host, m.group(2))
+
+    # --- running gh ---
+
+    def _run(self, argv: list, cwd: str | None = None, timeout: int = 60) -> tuple:
+        """(stdout, why-not). A non-empty second value is never a verdict."""
+        if not shutil.which("gh"):
+            return None, "gh not found on PATH"
+        try:
+            out = subprocess.run(
+                ["gh"] + argv, capture_output=True, text=True, cwd=cwd, timeout=timeout
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            return None, f"gh could not be run: {exc}"
+        if out.returncode != 0:
+            detail = ((out.stderr or "") + (out.stdout or "")).strip().splitlines()
+            return None, (detail[0] if detail else f"gh exited {out.returncode}")
+        return out.stdout, ""
+
+    def _json(self, argv: list, cwd: str | None = None, timeout: int = 60) -> tuple:
+        out, why = self._run(argv, cwd=cwd, timeout=timeout)
+        if why:
+            return None, why
+        try:
+            return json.loads(out), ""
+        except ValueError:
+            return None, "gh returned output that is not JSON"
+
+    # --- the questions ---
+
+    def get(self, ref: ChangeRef) -> tuple:
+        doc, why = self._json(
+            ["pr", "view", ref.url, "--json", GH_ONE_FIELDS], timeout=30
+        )
+        if why:
+            return None, f"gh pr view failed: {why}"
+        if not isinstance(doc, dict):
+            return None, "gh pr view did not answer with an object"
+        doc["url"] = ref.url
+        cr = self._change_request(doc, ref.repo)
+        if cr is None:
+            return None, "gh pr view did not answer about a pull request"
+        return cr, ""
+
+    def state(self, ref: ChangeRef) -> tuple:
+        out, why = self._run(
+            ["pr", "view", ref.url, "--json", "state", "-q", ".state"], timeout=30
+        )
+        if why:
+            return None, f"gh pr view could not read the state: {why}"
+        said = (out or "").strip().upper()
+        state = GH_STATES.get(said)
+        if not state:
+            return None, f"gh answered an unrecognised pull request state: {said!r}"
+        return state, ""
+
+    def open_change_requests(self, repo: RepoId) -> tuple:
+        docs, why = self._json(
+            ["pr", "list", "--repo", repo.path, "--state", "open",
+             "--limit", str(GH_LIST_LIMIT), "--json", GH_FIELDS]
+        )
+        return self._listed(docs, why, repo, GH_LIST_LIMIT)
+
+    def open_change_requests_in_checkout(self, path: str) -> tuple:
+        docs, why = self._json(
+            ["pr", "list", "--state", "open", "--limit", "50",
+             "--json", GH_STATUS_FIELDS],
+            cwd=path,
+            timeout=20,
+        )
+        return self._listed(docs, why, None, 50)
+
+    def _listed(self, docs, why: str, repo: RepoId | None, limit: int) -> tuple:
+        if why:
+            return [], why
+        if not isinstance(docs, list):
+            return [], "gh returned something that is not a list of pull requests"
+        docs = [d for d in docs if isinstance(d, dict)]
+        if len(docs) >= limit:
+            return [], (
+                f"the repository has at least {limit} open pull requests; gh's "
+                "result may be truncated, so treating it as unreadable rather "
+                "than silently dropping some"
+            )
+        out = []
+        for d in docs:
+            cr = self._change_request(d, repo)
+            if cr:
+                out.append(cr)
+        return out, ""
+
+    def _change_request(self, d: dict, repo: RepoId | None) -> ChangeRequest | None:
+        url = str(d.get("url") or "")
+        ref = self.parse_change_url(url)
+        if ref is None:
+            if repo is None or not d.get("number"):
+                return None
+            # A repository was asked for by name and gh answered with a pull
+            # request whose url it did not give: rebuild it rather than drop it.
+            n = int(d["number"])
+            ref = ChangeRef(repo, n, url or f"https://{repo.host}/{repo.path}/pull/{n}")
+
+        owner = str((d.get("headRepositoryOwner") or {}).get("login") or "")
+        if not owner:
+            ours, where = None, ""
+        elif d.get("isCrossRepository"):
+            ours, where = False, f"{owner}'s fork"
+        else:
+            ours = owner.lower() == ref.repo.owner.lower()
+            where = f"{owner}'s repository"
+
+        author = d.get("author") or {}
+        return ChangeRequest(
+            ref=ref,
+            title=str(d.get("title") or ""),
+            state=GH_STATES.get(str(d.get("state") or "").upper(), ""),
+            draft=bool(d.get("isDraft")),
+            body=str(d.get("body") or ""),
+            head_branch=str(d.get("headRefName") or ""),
+            base_branch=str(d.get("baseRefName") or ""),
+            head_sha=str(d.get("headRefOid") or ""),
+            author=str(author.get("login") or ""),
+            author_is_bot=bool(author.get("is_bot")),
+            mergeable={"MERGEABLE": "mergeable", "CONFLICTING": "conflicting"}.get(
+                str(d.get("mergeable") or "").upper(), ""
+            ),
+            review_decision={"CHANGES_REQUESTED": "changes-requested",
+                             "APPROVED": "approved"}.get(
+                str(d.get("reviewDecision") or "").upper(), ""
+            ),
+            checks=self._checks(d.get("statusCheckRollup")),
+            commits=[
+                Commit(str(c.get("oid") or ""), str(c.get("messageHeadline") or ""))
+                for c in (d.get("commits") or [])
+                if isinstance(c, dict)
+            ],
+            head_is_ours=ours,
+            head_location=where,
+        )
+
+    @staticmethod
+    def _checks(rollup) -> list:
+        out = []
+        for c in rollup or []:
+            if not isinstance(c, dict):
+                continue
+            name = c.get("name") or c.get("context") or "a required check"
+            if "state" in c and "conclusion" not in c:
+                # A StatusContext: one word, and PENDING is not a failure.
+                said = str(c.get("state") or "").upper()
+            elif str(c.get("status") or "").upper() != "COMPLETED":
+                out.append(Check(name, "pending"))
+                continue
+            else:
+                said = str(c.get("conclusion") or "").upper()
+            if said in GH_CHECK_FAILED:
+                out.append(Check(name, "failed"))
+            elif said in GH_CHECK_PASSED:
+                out.append(Check(name, "passed"))
+            elif said in GH_CHECK_CANCELLED:
+                out.append(Check(name, "cancelled"))
+            else:
+                out.append(Check(name, "pending"))
+        return out
+
+    def can_push(self, repo: RepoId, login: str) -> tuple:
+        """Asked as "may this login push here" rather than "is this the owner".
+
+        The owner of `Thurbeen/fleet` is an organisation and no pull request is
+        ever authored by one. `gh` has no `authorAssociation` field in every
+        version; the collaborator permission endpoint is in all of them.
+        """
+        key = (repo.qualified, login)
+        if key in self._push:
+            return self._push[key]
+        doc, why = self._json(
+            ["api", f"repos/{repo.path}/collaborators/{login}/permission"]
+        )
+        if why or not isinstance(doc, dict):
+            answer = (
+                False,
+                f"could not check whether {login} can push to {repo}: "
+                f"{why or 'unexpected output'}",
+            )
+        else:
+            perm = str(doc.get("permission") or "").lower()
+            # GitHub spells "no access" as the literal string `none`.
+            said = "no" if perm in ("", "none") else perm
+            answer = (perm in GH_PUSH_PERMISSIONS, f"{login} has {said} access to {repo}")
+        self._push[key] = answer
+        return answer
+
+    def describe_merge(self, method: str, delete_branch: bool) -> str:
+        return "gh pr merge --" + method + (" --delete-branch" if delete_branch else "")
+
+    def merge(self, cr: ChangeRequest, method: str, delete_branch: bool) -> tuple:
+        if method not in self.merge_methods:
+            return False, f"github cannot merge by {method}"
+        argv = ["pr", "merge", cr.url, f"--{method}"]
+        if delete_branch:
+            argv.append("--delete-branch")
+        _, why = self._run(argv, timeout=120)
+        if why:
+            return False, why
+        return True, f"{method}-merged" + (", branch deleted" if delete_branch else "")
+
+
+# --- the registry ------------------------------------------------------------
+
+
+BUILTIN = (GitHubForge,)
+
+# A colon-separated list of Python files, each exporting `forges()`. This is
+# how the selftest drives the whole queue through a forge that has no network
+# and no `gh` behind it, and how a forge fleet does not ship can be tried out
+# without editing this file.
+PLUGIN_ENV = "FLEET_FORGE_PLUGINS"
+
+_REGISTRY: list | None = None
+
+# So a plugin file can `import fleet_forge` and get THIS module whichever name
+# it was loaded under — `forge` off sys.path, `fleet_forge` through queue.py's
+# importlib loader. One module object means one registry.
+sys.modules.setdefault("fleet_forge", sys.modules[__name__])
+
+
+def forges() -> list:
+    """Every configured forge, built-ins first. Cached for the process."""
+    global _REGISTRY
+    if _REGISTRY is None:
+        _REGISTRY = [cls() for cls in BUILTIN]
+        for path in os.environ.get(PLUGIN_ENV, "").split(":"):
+            path = path.strip()
+            if path:
+                _REGISTRY.extend(_load_plugin(path))
+    return _REGISTRY
+
+
+def reset() -> None:
+    """Forget the cached registry. For tests inside one process."""
+    global _REGISTRY
+    _REGISTRY = None
+
+
+def _load_plugin(path: str) -> list:
+    """Import one plugin file and take the forges it exports.
+
+    A plugin that cannot be loaded is reported on stderr and skipped, never
+    raised: a bad entry in an environment variable must not take down a
+    shepherd pass that had nothing to do with it.
+    """
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "fleet_forge_plugin_" + re.sub(r"\W", "_", path), path
+        )
+        if spec is None or spec.loader is None:
+            raise ImportError(f"{path} is not an importable Python file")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        got = mod.forges()
+        return [f for f in got if isinstance(f, Forge)]
+    except Exception as exc:  # noqa: BLE001 - a plugin may fail any way it likes
+        print(f"forge: could not load {PLUGIN_ENV} entry {path}: {exc}", file=sys.stderr)
+        return []
+
+
+def for_url(url: str) -> tuple:
+    """(forge, ref) for a change request URL, or (None, why-not).
+
+    "No configured forge owns that host" is a REASON and not a verdict: an
+    artifact on a forge nobody configured is one fleet could not ask about,
+    which is exactly what `collect` and the landing check call `unknown`.
+    """
+    canonical = change_url(url)
+    if not canonical:
+        return None, "not a change request URL"
+    for f in forges():
+        ref = f.parse_change_url(canonical)
+        if ref is not None:
+            return f, ref
+    host = canonical.split("/")[2] if "://" in canonical else canonical
+    return None, f"no configured forge owns {host}"
+
+
+def for_repo(repo: RepoId) -> tuple:
+    """(forge, '') for a repository, or (None, why-not)."""
+    for f in forges():
+        if f.owns_host(repo.host):
+            return f, ""
+    return None, f"no configured forge owns {repo.host}"
+
+
+def repo_from_remote(remote_url: str) -> RepoId | None:
+    """The repository a git remote URL names, asked of every configured forge."""
+    for f in forges():
+        repo = f.repo_from_remote(remote_url)
+        if repo is not None:
+            return repo
+    return None
+
+
+def open_change_requests_in_checkout(path: str) -> tuple:
+    """Every open change request in a local checkout, without naming its repository.
+
+    The one question asked of a PATH rather than of a `RepoId`, because
+    `fleet-status.sh` has a checkout on disk and no identity for it — and a
+    directory that is not a git repository at all still has to produce a
+    sentence rather than an empty list that reads as "nothing is open".
+    """
+    forge = None
+    remote = _git_remote(path)
+    if remote:
+        for f in forges():
+            if f.repo_from_remote(remote) is not None:
+                forge = f
+                break
+    candidates = [forge] if forge else list(forges())
+    why = "no forge is configured"
+    for f in candidates:
+        crs, err = f.open_change_requests_in_checkout(path)
+        if not err:
+            return crs, ""
+        why = err
+    return [], why
+
+
+def _git_remote(path: str) -> str:
+    if not path or not os.path.isdir(path):
+        return ""
+    try:
+        out = subprocess.run(
+            ["git", "-C", path, "remote", "get-url", "origin"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return out.stdout.strip() if out.returncode == 0 else ""
