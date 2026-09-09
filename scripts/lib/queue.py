@@ -336,8 +336,14 @@ def policy_publish_default() -> tuple[str, str | None]:
                 doc = yaml.safe_load(parts[1])
             except yaml.YAMLError as exc:
                 raise QueueError(f"{policy_path()}: its frontmatter is not YAML: {exc}")
-            if isinstance(doc, dict) and isinstance(doc.get("publish"), dict):
-                block = doc["publish"]
+            if isinstance(doc, dict) and "publish" in doc:
+                pub = doc["publish"]
+                if not isinstance(pub, dict):
+                    raise QueueError(
+                        f"{policy_path()}: publish is {pub!r}, and must be a "
+                        "mapping with method/how, not a bare value"
+                    )
+                block = pub
 
     method = str(block.get("method") or "").strip() or PUBLISH_DEFAULT
     if method not in PUBLISH_METHODS:

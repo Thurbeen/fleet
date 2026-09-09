@@ -2840,13 +2840,7 @@ landed_task() {
 	local topic="$1" number="$2" slug="$3" pr="$4"
 	$QUEUE add "$topic" "$slug" --title "$slug" --repo /tmp/repo-a \
 		--branch "fix/$slug" --number "$number" >/dev/null
-	cat >"$bodies/$pr.md" <<'BODY'
-## Intent
-## What Changed
-## Risk Assessment
-## Testing
-## Pipeline
-BODY
+	pipeline_pr "$pr" "fix/$slug"
 	echo MERGED >"$states/$pr.state"
 	cat >"$FLEET_QUEUE_DIR/$topic/$number-$slug/result.md" <<EOF
 ---
