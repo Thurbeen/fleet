@@ -126,6 +126,14 @@
 -- A task with an artifact is one row SHORTER than it was before this row
 -- existed, and no task is taller.
 --
+-- AND IT SAYS THE NEXT MOVE, NOT ONLY THE STATE. `open` and `green` are facts
+-- about a pull request; `review` and `yours to merge` are what the operator
+-- does about them, and colour can carry the first but never the second. That
+-- word used to be the first thing the row's width ladder dropped, so it was
+-- drawn at neither width `scripts/pane-selftest.sh` renders while the publish
+-- METHOD — one unchanging word under every task in the queue — was drawn at
+-- both. The ladder gives up provenance before it gives up the action now.
+--
 -- FOLLOW-UP, WRITTEN DOWN RATHER THAN DONE: the probe below should become
 -- `queue.sh list --tsv`. That would make "this pane cannot disagree with
 -- `list`" literal instead of argued, and it would drop a dozen `sed`/`awk`/
@@ -873,12 +881,28 @@ local BLOCKER_KIND = {
 --- here, or by repainting `green` with `theme.ok` because warn "looks like a
 --- problem" — converts fleet's evidence-over-trust property back into trust,
 --- silently, and it is the sharpest risk this row's design names. The note
---- beside it says whose job the merge is, and it is the first thing the ladder
---- below drops.
+--- beside it says whose job the merge is, which the ladder below now keeps
+--- ahead of the method rather than dropping first.
 ---
 --- `open` is muted rather than ok on purpose: `collect` proved the pull request
 --- exists and comes from this task's branch, and nothing has yet looked at its
 --- checks. That is a fact, not a verdict, so it gets no colour that reads as one.
+--- Muted next to a collapsed `n landed` row reads as SETTLED, though, and it is
+--- the opposite: `open` is the state every task passes through on its way to a
+--- review nobody has done yet. So it carries a NOTE instead of a colour — the
+--- one mechanism here that can say what to do without claiming a verdict, and
+--- `green` already used it. The note is what `descriptors` says of a `done`
+--- task in its own words: the pull request is open and the next move is to
+--- review it. One word, because the ladder below keeps a note only while the
+--- whole row fits, and thirty columns is the width this pane is usually given:
+--- `open — review` clears it and `open — review it` misses it by one column.
+---
+--- `green` KEEPS ITS LONGER NOTE AND THEREFORE LOSES IT AT THIRTY. `yours to
+--- merge` will not fit beside a reference and an age in a 30-column column, and
+--- the obvious shortening — `merge` — puts a word one letter from `merged` in
+--- the same column that draws `merged`, which is a worse row than no note. It
+--- says whose job the merge is, which is the half `green` itself cannot carry,
+--- and that half is worth more at 44 than a hazard is at 30.
 ---
 --- A state this table does not know is drawn verbatim and muted — the same rule
 --- `BLOCKER_KIND` follows, and for the same reason: an unknown word is shown,
@@ -886,7 +910,7 @@ local BLOCKER_KIND = {
 local PUBLISH_WORD = {
   unverified = { text = "UNVERIFIED", tone = "bad" },
   unknown = { text = "unknown", tone = "muted" },
-  open = { text = "open", tone = "muted" },
+  open = { text = "open", tone = "muted", note = "review" },
   pushed = { text = "pushed ✓", tone = "ok" },
   draft = { text = "draft", tone = "warn" },
   ["checks-running"] = { text = "checks ⟳", tone = "warn" },
@@ -907,17 +931,26 @@ local PUBLISH_GLYPH = "⇡"
 --- What the publish row gives up as the column narrows, in order.
 ---
 --- The same shape `note_spans` uses — drop in a fixed order, truncate last —
---- and the order is what each part is FOR. The NOTE goes first: it is a
---- sentence about whose job a merge is, and the coloured word already carries
---- the fact. The METHOD next, because it is a property of the task that never
---- changes and the pull request page says it anyway, while the STATE is the
---- part an operator acts on. Then the AGE, then the artifact REFERENCE — which
---- is a label for the link this row carries, and the link survives losing its
---- label. Then the glyph. The state word is the last thing standing, and it is
---- truncated only when the column is narrower than the word itself.
+--- and the order is what each part is FOR. The METHOD goes first, because it is
+--- a property of the task that never changes, the brief that dispatched the task
+--- declared it, and the pull request page says it anyway. The NOTE next. Then
+--- the AGE, then the artifact REFERENCE — which is a label for the link this row
+--- carries, and the link survives losing its label. Then the glyph. The state
+--- word is the last thing standing, and it is truncated only when the column is
+--- narrower than the word itself.
+---
+--- THE NOTE USED TO GO FIRST AND THEREFORE NEVER WENT ANYWHERE. `yours to
+--- merge` costs 21 columns beside its word, which put the full rung over budget
+--- at 44 and far over it at 30 — the two widths `scripts/pane-selftest.sh`
+--- renders, and 30 is what this pane routinely gets. So the one segment that
+--- answers "what do I do about this" was drawn at no width an operator has,
+--- while `no-mistakes` — the same word under every task in a fleet with one
+--- publish method — was drawn at both. The note is the row's ACTION and the
+--- method is its provenance; provenance is what a column this narrow can afford
+--- to lose.
 local PUBLISH_LADDER = {
   { note = true, method = true, ref = true, age = true, glyph = true },
-  { method = true, ref = true, age = true, glyph = true },
+  { note = true, ref = true, age = true, glyph = true },
   { ref = true, age = true, glyph = true },
   { ref = true, glyph = true },
   { glyph = true },
@@ -1191,6 +1224,13 @@ end
 --- (`checks ⟳`, `draft`, `green`), bad for the ones an operator has to do
 --- something about, and muted for a fact with no verdict attached. The table
 --- above owns which is which, and owns the argument for `green`.
+---
+--- AND THE NOTE CARRIES THE NEXT MOVE, WHICH COLOUR CANNOT. A tone says how
+--- worried to be; it cannot say `review` rather than `merge`, and those are
+--- different actions on rows that sit two lines apart. It is also the only way
+--- to say anything about a state whose whole point is that it has no verdict:
+--- `open` stays muted and still says what to do. The ladder above keeps it
+--- ahead of the method for that reason.
 ---
 --- THE AGE IS THE AGE OF THE LOOK, not of the task. The shepherd runs on the
 --- lead's cadence rather than on a clock, so a `checks ⟳` recorded forty
