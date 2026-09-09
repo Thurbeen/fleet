@@ -67,11 +67,16 @@
 #      through the same batch, whether the task was dispatched while the watch
 #      was already streaming, whether nothing was watching at the time, and
 #      whether the run that read them died part-way. Exactly once each.
-#  16. The tool leaves the lead no reason to work around it. A `--brief-file`
-#      that carries the four standard headings fills the four standard
-#      sections and one with none behaves as it always did; `dispatch` takes
-#      refs, so holding a task back needs no invented blocker, and a bare
-#      `dispatch` still sends everything; and `block --kind` lists its four
+#  16. The tool leaves the lead no reason to work around it, and it refuses at
+#      `add` what only `dispatch` used to discover. A `--brief-file` that
+#      carries the four standard headings fills the four standard sections,
+#      and one that leaves any of them unwritten is refused THERE, naming
+#      them, with nothing created; the check is structural, so a brief quoting
+#      the scaffold's placeholder to talk about it still dispatches; a branch
+#      no worktree could be cut for is refused before a task exists;
+#      `dispatch` takes refs, so holding a task back needs no invented
+#      blocker, and a bare `dispatch` still sends everything and still names
+#      the sections of a brief nobody wrote; and `block --kind` lists its four
 #      values in `--help` instead of only in the refusal.
 #  17. ONE setting puts fleet's mark on the lead and on every worker, and takes
 #      it back off both — rendered into the name thurbox is actually asked to
@@ -1146,7 +1151,8 @@ $QUEUE add "$ptopic" pr-task --title 'Publish as a plain pull request' \
 	--repo /tmp/repo-a --branch fix/pr-task --number 02 \
 	--publish pr --how 'run the operator xyz skill' >/dev/null
 $QUEUE add "$ptopic" push-task --title 'Publish straight onto the base branch' \
-	--repo "$pwork" --branch main --base main --number 03 --publish push >/dev/null
+	--repo "$pwork" --branch fix/push-task --base main --number 03 \
+	--publish push >/dev/null
 
 # (a) The declaration reaches the worker, rendered from the one dict in
 #     queue.py — with the operator's words for the tool when there are any, and
@@ -1234,7 +1240,8 @@ The pipeline ran, and then I pushed one more commit.
 EOF
 
 $QUEUE add "$ptopic" push-astray --title 'Push a commit that never landed' \
-	--repo "$pwork" --branch main --base main --number 06 --publish push >/dev/null
+	--repo "$pwork" --branch fix/push-astray --base main --number 06 \
+	--publish push >/dev/null
 cat >"$FLEET_QUEUE_DIR/$ptopic/06-push-astray/result.md" <<EOF
 ---
 outcome: shipped
@@ -1265,7 +1272,8 @@ done
 #     be able to collect, and a timeout must never manufacture a verdict.
 
 $QUEUE add "$ptopic" push-elsewhere --title 'Push on a machine that is not this one' \
-	--repo /srv/code/app --host devbox --branch main --base main --number 07 \
+	--repo /srv/code/app --host devbox --branch fix/push-elsewhere --base main \
+	--number 07 \
 	--publish push >/dev/null
 cat >"$FLEET_QUEUE_DIR/$ptopic/07-push-elsewhere/result.md" <<'EOF'
 ---
@@ -1276,7 +1284,8 @@ Pushed it on devbox.
 EOF
 
 $QUEUE add "$ptopic" push-unreadable --title 'Push into a repo this machine has not got' \
-	--repo /tmp/not-a-checkout --branch main --base main --number 08 \
+	--repo /tmp/not-a-checkout --branch fix/push-unreadable --base main \
+	--number 08 \
 	--publish push >/dev/null
 cat >"$FLEET_QUEUE_DIR/$ptopic/08-push-unreadable/result.md" <<'EOF'
 ---
@@ -1982,9 +1991,6 @@ srepo="$shep/repo"
 mkdir -p "$srepo"
 git -C "$srepo" init -q -b main
 git -C "$srepo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m base
-for br in conflicting green skipped elsewhere busy unrun gone second prose-only; do
-	git -C "$srepo" branch "fix/$br"
-done
 
 # Push access, which is what "opened by the repository owner" means once the
 # owner is an organisation and the author is a person inside it. `stranger` has
@@ -2010,6 +2016,15 @@ artifact: https://github.com/$owner/pull/$pr
 Shipped it.
 EOF
 done
+
+# The branches appear only NOW, which is the order the real thing happens in:
+# `add` records a branch that does not exist yet and refuses one that does, and
+# the worker's own spawn is what creates it. Every branch with a pull request
+# on it is therefore already there by the time the shepherd looks.
+for br in conflicting green skipped elsewhere busy unrun gone second prose-only; do
+	git -C "$srepo" branch "fix/$br"
+done
+
 env PATH="$shep/bin:$base_path" $QUEUE collect >/dev/null
 
 python3 - "$shep/gh" <<'PY'
@@ -3369,6 +3384,14 @@ Do the thing.
 
 The reason it matters.
 
+## Hard constraints
+
+None.
+
+## Coordination
+
+None.
+
 ## Done means
 
 It is done.
@@ -3384,26 +3407,23 @@ expect "and a recognised heading after it still fills its own section" \
 	"## Done means It is done." "$odd"
 refute "so that section is no longer unwritten" \
 	"## Done means <!-- WRITE THE INSTRUCTIONS HERE -->" "$odd"
-expect "while the sections it said nothing about stay unwritten" \
-	"## Coordination <!-- WRITE THE INSTRUCTIONS HERE -->" "$odd"
 
-# (c) A body with no headings at all behaves exactly as it did before: the
-#     whole file into `What to do`, the other three left for the lead.
+# (c) A body with no headings at all is still all `What to do` -- and that is
+#     now something you can READ, because a file filling only that section is
+#     refused at `add` naming the other three (16d). The mapping is the same
+#     one it always was; where you find out about it changed.
 
 printf 'Just do it, there is nothing else to say.\n' >"$tmp/flat-brief.md"
-$QUEUE add "$etopic" headingless-body --title 'Headingless body' \
+if out="$($QUEUE add "$etopic" headingless-body --title 'Headingless body' \
 	--repo /tmp/repo-a --branch fix/headingless-body --number 03 \
-	--brief-file "$tmp/flat-brief.md" >/dev/null
-flatraw="$(cat "$FLEET_QUEUE_DIR/$etopic/03-headingless-body/BRIEF.md")"
-expect "a headingless body still fills What to do" \
-	"## What to do Just do it, there is nothing else to say." \
-	"$(brief_text "$FLEET_QUEUE_DIR/$etopic/03-headingless-body/BRIEF.md")"
-left="$(printf '%s\n' "$flatraw" | grep -c 'WRITE THE INSTRUCTIONS HERE')"
-if [ "$left" = 3 ]; then
-	pass "and leaves the other three for the lead, as it always did"
+	--brief-file "$tmp/flat-brief.md" 2>&1)"; then
+	fail "a headingless body fills only What to do, and is refused for the rest" "$out"
 else
-	fail "and leaves the other three for the lead, as it always did" \
-		"counted $left placeholder(s)${nl}$flatraw"
+	pass "a headingless body fills only What to do, and is refused for the rest"
+	for heading in "Hard constraints" "Coordination" "Done means"; do
+		expect "and the refusal names \`$heading\`" "$heading" "$out"
+	done
+	refute "and not the one the body landed in" "What to do" "$out"
 fi
 
 # A `## ` inside a fenced block is example text a brief is quoting, not a
@@ -3416,6 +3436,14 @@ Copy this shape:
 
 not a real heading
 ```
+
+## Hard constraints
+
+None.
+
+## Coordination
+
+None.
 
 ## Done means
 
@@ -3480,16 +3508,16 @@ else
 fi
 
 # The default is unchanged, and stays the norm: no ref sends the whole ready
-# set, and still refuses this queue's half-written briefs before it sends any.
+# set, and still refuses a brief nobody has written before it sends any.
+$QUEUE add "$etopic" written-later --title 'Written later' --repo /tmp/repo-a \
+	--branch fix/written-later --number 13 >/dev/null
 if out="$($QUEUE dispatch --dry-run 2>&1)"; then
 	fail "a bare dispatch still refuses the queue's unwritten briefs" "$out"
 else
 	expect "a bare dispatch still refuses the queue's unwritten briefs" \
-		"BRIEF.md" "$out"
+		"13-written-later" "$out"
 fi
-for t in 02-keep-odd-headings 03-headingless-body 04-fenced-body; do
-	printf 'Written now.\n' >"$FLEET_QUEUE_DIR/$etopic/$t/BRIEF.md"
-done
+printf 'Written now.\n' >"$FLEET_QUEUE_DIR/$etopic/13-written-later/BRIEF.md"
 out="$($QUEUE dispatch --dry-run 2>&1)"
 spawns="$(printf '%s\n' "$out" | grep -c 'session create')"
 if [ "$spawns" = 6 ]; then
@@ -3521,6 +3549,184 @@ else
 	expect "an invalid --kind is still refused with the guidance" \
 		"semantic-dependency" "$out"
 	expect "and still says where file overlap belongs instead" "--touches" "$out"
+fi
+
+# --- 16d. the intake path refuses at `add`, where the repair is one edit -----
+#
+# Three more of the same family, all hit repeatedly on 2026-09-09. Each one is
+# something `add` already knew and `dispatch` was left to discover, which costs
+# the lead a whole round-trip per task: dispatch, read the refusal, go and look
+# at the file or the record, repair it, dispatch again.
+#
+#   (d) `--brief-file` is a CLAIM to have written the brief. A file that leaves
+#       a scaffolded section unwritten is refused at `add`, naming the sections
+#       — not accepted, then refused by `dispatch` as "unwritten", about a
+#       brief the lead did write.
+#   (e) The scaffold check is STRUCTURAL. It compares each section against what
+#       the scaffold wrote, so a brief that quotes the placeholder to talk
+#       about it still dispatches. A substring grep meant the queue could not
+#       carry a task about its own scaffold — this very task's brief hit it.
+#   (f) `--branch` equal to `--base` cannot be spawned: `--worktree-branch`
+#       only ever CREATES a branch, and a base exists by definition. `add` has
+#       both values, so `add` refuses — and asks the repo about every other
+#       branch that is already there, which is the same failure.
+#
+# `add` with NO --brief-file is untouched. That is the deliberate "scaffold it,
+# I will write it" path, and `dispatch` stays its backstop — with a refusal
+# that now names the sections too.
+
+cat >"$tmp/half-brief.md" <<'MD'
+## What to do
+
+Rewrite the state machine so `idle` means the agent said so.
+MD
+
+if out="$($QUEUE add "$etopic" half-written --title 'Half written' \
+	--repo /tmp/repo-a --branch fix/half-written --number 20 \
+	--brief-file "$tmp/half-brief.md" 2>&1)"; then
+	fail "a --brief-file that leaves a section unwritten is refused at add" "$out"
+else
+	pass "a --brief-file that leaves a section unwritten is refused at add"
+	for heading in "Hard constraints" "Coordination" "Done means"; do
+		expect "and the refusal names \`$heading\` as one of them" "$heading" "$out"
+	done
+	refute "and does not name the one the file did fill" "What to do" "$out"
+fi
+
+if [ -e "$FLEET_QUEUE_DIR/$etopic/20-half-written" ]; then
+	fail "and leaves nothing behind, so the repair is one edit and one re-run" \
+		"$(ls "$FLEET_QUEUE_DIR/$etopic/20-half-written")"
+else
+	pass "and leaves nothing behind, so the repair is one edit and one re-run"
+fi
+
+# The one-step property: the same `add`, once the file is whole, produces a
+# task that dispatches. No patching of the rendered brief in between.
+cat >>"$tmp/half-brief.md" <<'MD'
+
+## Hard constraints
+
+None.
+
+## Coordination
+
+None.
+
+## Done means
+
+`cargo test` passes.
+MD
+
+if out="$($QUEUE add "$etopic" half-written --title 'Half written' \
+	--repo /tmp/repo-a --branch fix/half-written --number 20 \
+	--brief-file "$tmp/half-brief.md" 2>&1)"; then
+	pass "a --brief-file that fills every section is accepted"
+	if out="$($QUEUE dispatch "$etopic/20-half-written" --dry-run 2>&1)"; then
+		pass "and dispatches in one step, with nothing hand-repaired between"
+	else
+		fail "and dispatches in one step, with nothing hand-repaired between" "$out"
+	fi
+else
+	fail "a --brief-file that fills every section is accepted" "$out"
+fi
+
+# The scaffold path is untouched, and its backstop now says WHICH sections.
+$QUEUE add "$etopic" scaffold-me --title 'Scaffold me' --repo /tmp/repo-a \
+	--branch fix/scaffold-me --number 21 >/dev/null
+if out="$($QUEUE dispatch "$etopic/21-scaffold-me" --dry-run 2>&1)"; then
+	fail "add with no --brief-file still scaffolds, and dispatch still refuses it" "$out"
+else
+	pass "add with no --brief-file still scaffolds, and dispatch still refuses it"
+	for heading in "What to do" "Hard constraints" "Coordination" "Done means"; do
+		expect "and the backstop names \`$heading\`, not just the path" "$heading" "$out"
+	done
+fi
+
+# (e) A brief that QUOTES the placeholder is a written brief. The check that
+#     could not tell the two apart is why this task's own brief had to have the
+#     quotation cut out of it before it could be dispatched.
+
+cat >"$tmp/quoting-brief.md" <<'MD'
+## What to do
+
+Every section of the scaffold starts as `<!-- WRITE THE INSTRUCTIONS HERE -->`
+and the dispatch precondition used to grep the whole file for that string, so
+a brief describing it refused to go out. Compare each section instead.
+
+## Hard constraints
+
+Do not weaken the check. A worker sent a scaffold has nothing to do.
+
+## Coordination
+
+None.
+
+## Done means
+
+This brief, which quotes `<!-- WRITE THE INSTRUCTIONS HERE -->`, dispatches.
+MD
+
+if out="$($QUEUE add "$etopic" quotes-the-scaffold --title 'Quotes the scaffold' \
+	--repo /tmp/repo-a --branch fix/quotes-the-scaffold --number 22 \
+	--brief-file "$tmp/quoting-brief.md" 2>&1)"; then
+	pass "a brief that quotes the placeholder is accepted at add"
+else
+	fail "a brief that quotes the placeholder is accepted at add" "$out"
+fi
+if out="$($QUEUE dispatch "$etopic/22-quotes-the-scaffold" --dry-run 2>&1)"; then
+	pass "and dispatches, so the queue can carry a task about its own scaffold"
+else
+	fail "and dispatches, so the queue can carry a task about its own scaffold" "$out"
+fi
+
+# (f) The branch. `--branch main --base main` was accepted and then died at
+#     spawn with thurbox's own non-zero exit, leaving the task queued and the
+#     operator editing task.yaml by hand.
+
+if out="$($QUEUE add "$etopic" branch-is-base --title 'Branch is base' \
+	--repo /tmp/repo-a --branch main --base main --number 23 2>&1)"; then
+	fail "--branch equal to --base is refused at add" "$out"
+else
+	pass "--branch equal to --base is refused at add"
+	expect "and the refusal names the branch" "main" "$out"
+	expect "and says why it could never be spawned" "worktree" "$out"
+fi
+
+# The same precondition, generally. `--worktree-branch` only ever CREATES the
+# branch, so ANY branch already in the repo fails the spawn — base is merely
+# the one that exists by definition. A repo this machine can read gets asked.
+
+brepo="$tmp/branch-repo"
+git init -q -b main "$brepo"
+git -C "$brepo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m base
+git -C "$brepo" branch fix/left-behind
+
+if out="$($QUEUE add "$etopic" branch-exists --title 'Branch exists' \
+	--repo "$brepo" --branch fix/left-behind --base main --number 24 2>&1)"; then
+	fail "a branch already in that repo is refused at add" "$out"
+else
+	pass "a branch already in that repo is refused at add"
+	expect "and the refusal names it" "fix/left-behind" "$out"
+	expect "and quotes the failure the spawn would have died with" \
+		"already exists" "$out"
+fi
+
+# A branch that is not there is the ordinary case, and nothing about this is
+# allowed to make it slower or louder.
+if out="$($QUEUE add "$etopic" branch-is-new --title 'Branch is new' \
+	--repo "$brepo" --branch fix/is-new --base main --number 25 2>&1)"; then
+	pass "a branch that is not there yet is created as it always was"
+else
+	fail "a branch that is not there yet is created as it always was" "$out"
+fi
+
+# A repo this machine has not got is not a repo to ask, so the check is silent
+# and dispatch stays the backstop it was — which is every `--host` task.
+if out="$($QUEUE add "$etopic" repo-not-here --title 'Repo not here' \
+	--repo /tmp/repo-a --branch fix/repo-not-here --base main --number 26 2>&1)"; then
+	pass "a repo this machine cannot read is left to dispatch, as before"
+else
+	fail "a repo this machine cannot read is left to dispatch, as before" "$out"
 fi
 
 # --- 17. one setting puts a mark on every session, and takes it back ---------
@@ -3650,10 +3856,6 @@ liverepo="$tmp/live-repo"
 mkdir -p "$liverepo"
 git -C "$liverepo" init -q -b main
 git -C "$liverepo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m base
-git -C "$liverepo" branch feat/moved
-git -C "$liverepo" branch feat/quiet
-git -C "$liverepo" branch feat/never
-git -C "$liverepo" branch feat/remote
 
 ltopic="$($QUEUE topic add course-correct --title 'Message a worker mid-flight' \
 	--prompt 'tell a parked worker about new scope')"
@@ -3666,6 +3868,12 @@ messaged() {
 messaged moved 01 cccccccc-0000-0000-0000-000000000001
 messaged quiet 02 cccccccc-0000-0000-0000-000000000002
 messaged never 03 cccccccc-0000-0000-0000-000000000003
+
+# The branches exist from here on, because the worker's own spawn is what
+# creates one — `add` above recorded a branch that was not there yet.
+git -C "$liverepo" branch feat/moved
+git -C "$liverepo" branch feat/quiet
+git -C "$liverepo" branch feat/never
 
 out="$($QUEUE send "$ltopic/01-moved" 'Also update the changelog.' 2>&1)"
 expect "the queue sends the message itself, so the lead stops reaching past it" \
@@ -3745,6 +3953,7 @@ refute "and its row is the row it always was" "messaged" "$row"
 # A branch this machine cannot read degrades to `not checked`, and a task that
 # runs on a host is the case that matters: its git is over there.
 messaged remote 04 cccccccc-0000-0000-0000-000000000004
+git -C "$liverepo" branch feat/remote
 python3 - "$FLEET_QUEUE_DIR/$ltopic/04-remote/task.yaml" <<'PY'
 import sys
 

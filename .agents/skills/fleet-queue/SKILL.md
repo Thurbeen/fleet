@@ -81,6 +81,14 @@ validate on its own. The decomposition is yours.
 `--touches` is the paths you expect the task to change. It is a **risk signal
 that gets reported**, never a reason to hold anything back — see §3.
 
+**`--branch` must not exist yet.** thurbox's `--worktree-branch` only ever
+CREATES a branch, so a name already in the repo — `main` itself, a branch left
+behind by an earlier run — cannot have a worktree cut for it. `add` refuses it
+here, naming it: the alternative was a spawn that died at `dispatch` with
+thurbox's own exit status, a task left `queued`, and a hand-edited `task.yaml`.
+A repo this machine cannot read is not asked, so a `--host` task still finds
+out at dispatch.
+
 ### `--host` — running a task on another machine
 
 `add --host <name>` takes a name from thurbox's `hosts.toml` and moves the
@@ -136,14 +144,18 @@ Each arrives as the same placeholder:
 ```
 
 Replace every one of them. **`dispatch` refuses a task that still carries one**,
-so a half-written brief is stopped as firmly as a blank one.
+naming the sections, so a half-written brief is stopped as firmly as a blank
+one. The check compares each section against what the scaffold wrote there, so
+a brief that QUOTES the placeholder while talking about it is a written brief
+and goes out.
 
 `add --brief-file <file>` fills them from a file instead. It reads the file's
 own `## ` headings and fills the section each one names; a heading that is not
 one of the four is kept where it is, as content, and a body with no headings at
-all goes into `What to do`. So write the file with the four headings and the
-brief comes out complete — the sections you leave out keep their placeholder
-and `dispatch` still refuses them.
+all goes into `What to do`. **Write the file with all four headings.** Handing
+in a file is a claim to have written the brief, so `add` refuses one that
+leaves a section unwritten, names which, and creates nothing — fix the file and
+run the same command again. `None.` is a complete section.
 
 Write it as if the reader knows nothing, because it does: workers share no
 context with you and none with each other. State the goal, the constraints, and
