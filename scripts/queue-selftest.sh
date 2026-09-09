@@ -1112,7 +1112,7 @@ b="$(brief_text "$FLEET_QUEUE_DIR/$ptopic/02-pr-task/BRIEF.md")"
 expect "a --publish pr task says so" "**Publish.** \`pr\`" "$b"
 expect "and carries the --how it was given" "operator xyz skill" "$b"
 refute "and not the operator's default tool, which belongs to another method" \
-	"no-mistakes" "$b"
+	"\`no-mistakes\`" "$b"
 
 b="$(brief_text "$FLEET_QUEUE_DIR/$ptopic/03-push-task/BRIEF.md")"
 expect "a --publish push task says so" "**Publish.** \`push\`" "$b"
