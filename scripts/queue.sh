@@ -29,6 +29,11 @@
 #
 # A queue that runs one task at a time is slower than no queue at all.
 #
+# `dispatch` takes refs for the one case that is neither ready nor blocked —
+# the operator has not authorized a task yet. That is a fact about this moment,
+# so it records nothing: the task stays queued and the next bare `dispatch`
+# sends it. Bare `dispatch` is still the norm and still sends everything.
+#
 # COMPLETION COMES FROM TWO PLACES, on purpose, and RELEASE FROM A THIRD:
 #
 #   `watch`    reads `thurbox-cli watch` — the event stream — and folds each
@@ -125,9 +130,17 @@
 #   scripts/queue.sh add <topic> <slug> --title T --repo P --branch B [--base main]
 #                        [--host H] [--profile default] [--touches a,b] [--brief-file F]
 #                        [--publish no-mistakes|pr|push] [--how 'run `/publish`']
-#   scripts/queue.sh block <ref> --on <ref> --kind KIND --why 'reason'   # or --clear
+#                        # --brief-file fills whichever of the brief's four
+#                        # sections its own `## ` headings name; a body with no
+#                        # headings all goes into `What to do`
+#   scripts/queue.sh block <ref> --on <ref> --kind KIND --why 'reason'   # or --clear,
+#                        which names the blocker to remove, since a task can
+#                        carry several; `block --help` lists the valid kinds
 #   scripts/queue.sh plan [--json]        # what goes out now, what waits, and why
-#   scripts/queue.sh dispatch [--dry-run] # launch the whole ready set at once
+#   scripts/queue.sh dispatch [<ref>...] [--dry-run]  # the whole ready set at
+#                        once with no ref, which is the norm; refs launch
+#                        exactly those, refuse one that is not ready, and leave
+#                        the rest queued with nothing recorded
 #   scripts/queue.sh attach <ref> <uuid>  # record a session you spawned by hand
 #   scripts/queue.sh watch [--for-secs N] # fold transitions in; close nothing
 #   scripts/queue.sh collect [--allow-unverified] [--no-reap]  # read results,
