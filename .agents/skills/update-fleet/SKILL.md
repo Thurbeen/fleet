@@ -96,15 +96,17 @@ do. Otherwise map the list:
 
 | A path in the range | Step | Why |
 |---|---|---|
-| `extension.toml.in`, `FLEET.md` — or a `reinstall-extension:` line | §3 | the installed extension no longer matches what it was rendered from |
+| `extension.toml.in`, `FLEET.md`, `orchestration/voice.example.conf` — or a `reinstall-extension:` line | §3 | the installed extension no longer matches what it was rendered from |
 | `interface/fleet_queue.lua` | §4 | the installed plugin is a stale copy of that file |
 | `registry/owners.txt` | §5 | the generated map covers the wrong owners |
 | `scripts/reconcile.sh` | §6 | the running reconciler loop is executing old code |
 | `FLEET.md`, `AGENTS.md`, `CLAUDE.md`, `.agents/skills`, `.claude/skills`, `.claude/settings.json` — or a `restart-lead:` line | §8 | the lead is holding instructions it froze at launch |
 
-`FLEET.md` is deliberately in two rows: it is the extension's `[[files]]`
-payload *and* the lead's standing context, so it needs both the reinstall in §3
-and the hand-over in §8.
+`FLEET.md` is deliberately in two rows: the extension's `[[files]]` payload is
+`FLEET.rendered.md`, which the installer renders FROM it, *and* it is the
+lead's standing context — so it needs both the reinstall in §3 and the
+hand-over in §8. A change to `orchestration/voice.example.conf` (or your own
+`voice.conf`) needs the same two: it moves what the rendered payload calls you.
 
 `scripts/lib/queue.py` is deliberately absent from this table. The
 reconciler's loop never sources it — every pass calls `./scripts/queue.sh` as
