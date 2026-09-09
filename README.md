@@ -86,7 +86,8 @@ glance and leaves the rest to `queue.sh show`.
 
 ![The queue pane in a thurbox column beside the session list: two workers
 running, the topics they are working on grouped above the finished ones, and
-each task showing its plan, progress and outcome](media/fleet-queue-pane.gif)
+each task collapsed to one row — its ordinal and state glyph, with landed and
+abandoned tasks folded into a muted count](media/fleet-queue-pane.gif)
 
 ## Your working copy
 
