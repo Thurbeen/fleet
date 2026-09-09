@@ -34,7 +34,22 @@ set -uo pipefail
 # thurbox extension no longer matches the manifest it was rendered from. Neither
 # is fixable from here, so both are reported as actions for the operator.
 INSTRUCTION_PATHS=(FLEET.md AGENTS.md CLAUDE.md .agents/skills .claude/skills .claude/settings.json)
-WIRING_PATHS=(extension.toml.in FLEET.md)
+# session-glyphs.example.conf is a wiring path because the installer RENDERS it
+# into the manifest: new defaults there are a new lead name, and a name is the
+# one thing a re-install cannot apply on its own.
+WIRING_PATHS=(extension.toml.in FLEET.md orchestration/session-glyphs.example.conf)
+
+# The lead's name as the INSTALLED manifest spells it — never a literal here.
+# The glyph in front of it is a setting (orchestration/session-glyphs.conf), so
+# a name written into this script would be one setting's value pretending to be
+# the answer. Empty when nothing is installed to read, and the message below
+# says so instead of guessing.
+lead_name() {
+	local manifest="$1/extension.toml"
+	[ -f "$manifest" ] || return 0
+	sed -n '/^\[\[sessions\]\]/,$p' "$manifest" |
+		sed -n 's/^name *= *"\(.*\)"/\1/p' | head -1
+}
 
 emit() {
 	# $1 = message. jq -n builds valid JSON regardless of quoting in $1.
@@ -107,15 +122,17 @@ if git merge --ff-only --quiet "$remote_ref" 2>/dev/null; then
 	wiring="$(git diff --name-only "$before" HEAD -- "${WIRING_PATHS[@]}" 2>/dev/null)"
 
 	if [ -n "$instr" ]; then
+		lead="$(lead_name "$repo_root")"
+		lead="${lead:-<the lead, from thurbox-cli session list>}"
 		msg="$msg
 restart-lead: yes — $(printf '%s' "$instr" | tr '\n' ' ')
 The running Mission Control session froze FLEET.md and every skill it had
 loaded at launch; new bytes on disk change nothing for it. Replace the agent
-with: thurbox-cli session restart '⌖ Mission Control' — that resumes the
+with: thurbox-cli session restart '$lead' — that resumes the
 conversation, so the old copy is still in its history. For an instruction change
 that has to win, start a fresh one instead: thurbox-cli session delete
-'⌖ Mission Control' (the extension self-heals it). Copy those names rather than
-retyping them: the glyph is part of the session name and is not on a keyboard."
+'$lead' (the extension self-heals it). Copy that name rather than
+retyping it: a glyph is part of the session name and is not on a keyboard."
 	fi
 
 	if [ -n "$wiring" ]; then

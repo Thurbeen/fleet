@@ -26,6 +26,16 @@ names every path and the reason for each.
   as opposed to where its work goes. `./scripts/session-flags.sh <profile>`
   renders one into `session create` flags. One file, one layer — edit it
   directly. The file's own header owns the rules that keep a profile safe.
+- `orchestration/session-glyphs.example.conf` — the mark fleet's sessions wear
+  in the thurbox session list: `📡` on the lead, `🚀` on every worker, under ONE
+  `GLYPHS=on|off` setting whose `off` is the one-cell `⌖` and no worker prefix.
+  Tracked defaults; copy it to a gitignored `session-glyphs.conf` beside it to
+  change anything, since editing a tracked file would leave
+  `scripts/sync-checkout.sh` a dirty tree. Two readers and no third:
+  `scripts/install-extension.sh` renders the lead's mark into the manifest, and
+  `scripts/lib/queue.py` puts the worker's on at dispatch. **Changing it is a
+  RENAME of the lead, and installing is not applying one** — see
+  `extension.toml.in`'s RENAMING header.
 - `orchestration/queue/<topic>/` — the task queue. A prompt becomes a TOPIC
   holding its verbatim `PROMPT.md`; the topic decomposes into task directories,
   each with its own `task.yaml`, `BRIEF.md`, `progress.jsonl` and `result.md`.
@@ -233,17 +243,19 @@ know before you debug the extension:
   `source`. So it refreshes to whatever was last rendered, and fails outright if
   `extension.toml` was cleaned away. `./scripts/install-extension.sh` is this
   extension's real update command.
-- **The lead SESSION is `⌖ Mission Control`; the EXTENSION is still `fleet`**,
+- **The lead SESSION is Mission Control; the EXTENSION is still `fleet`**,
   which is why every command above still takes `fleet`. The session carries the
   operator's name for the lead, the extension carries the repo's — nothing reads
   the repo name, so the two are free to differ. The extension registers **no
   agent of its own**: the lead binds to thurbox's stock `claude`, so it inherits
   the hook settings that let it report state and whatever model `claude`
-  defaults to. `extension.toml.in`'s no-`[[agents]]` note owns why. The
-  glyph is part of the session name because thurbox has no per-session icon
-  field, so the mailbox address must be **pasted**, not typed — `⌖` is U+2316
-  and no keyboard has it. `extension.toml.in`'s RENAMING header owns the split
-  and the sequence for renaming either, including which one costs the lead its
+  defaults to. `extension.toml.in`'s no-`[[agents]]` note owns why. A glyph is
+  part of the session name because thurbox has no per-session icon field, and
+  WHICH glyph is a setting (see the glyph bullet above), so the mailbox address
+  must be **pasted** out of `thurbox-cli session list`, not typed — no keyboard
+  has either glyph, and nothing here spells the full name except the rendered
+  manifest. `extension.toml.in`'s RENAMING header owns the split and the
+  sequence for renaming either, including which one costs the lead its
   conversation.
 
 ## Pulling changes in

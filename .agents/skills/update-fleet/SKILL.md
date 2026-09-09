@@ -234,8 +234,14 @@ run it on yourself and finish this turn.
 ### The sequence that keeps the conversation
 
 ```bash
-thurbox-cli session restart '⌖ Mission Control'
+thurbox-cli session restart '<the lead>'
 ```
+
+**`<the lead>` is a name to copy, never one to type.** The session wears a glyph
+because thurbox has no icon field, and which glyph is a setting
+(`orchestration/session-glyphs.example.conf`), so no file here spells the whole
+name — `thurbox-cli session list` shows the one that is actually running, and
+that is the string to paste.
 
 Verified against the CLI, and it is what `scripts/sync-checkout.sh` names in its
 own `restart-lead:` message:
@@ -250,9 +256,9 @@ own `restart-lead:` message:
   under any other name is a lead the pane says "no session" about forever.
 - Its help labels the argument `<UUID>`, but the resolver takes a name — a bad
   argument answers *"tried it as a UUID, a name, and an id prefix"*. **Copy the
-  name, do not retype it:** `⌖` is U+2316 and is not on a keyboard, and the
-  space needs the quotes. `extension.toml.in`'s RENAMING header owns why the
-  glyph is part of the name.
+  name, do not retype it:** neither glyph is on a keyboard, and the space needs
+  the quotes. `extension.toml.in`'s RENAMING header owns why the glyph is part
+  of the name.
 
 **This is not the fork sequence.** `extension.toml.in`'s RENAMING header
 documents a conversation-preserving fork, and that sequence exists to move a
@@ -263,7 +269,7 @@ lead still holds. `restart` needs none of it.
 Two costs to state before the operator runs it:
 
 - **A turn in flight dies with the window.** Check the lead is at rest first
-  (`thurbox-cli session get '⌖ Mission Control'`), and read the state word the
+  (`thurbox-cli session get '<the lead>'`), and read the state word the
   way `.agents/skills/thurbox-session/` §4a says to — `idle` is not the only
   word that is not `working`.
 - **The old instructions are still in the resumed history.** That is the
@@ -275,7 +281,7 @@ For an instruction change that must not be arguing with an older copy in the
 same context, start the lead fresh instead:
 
 ```bash
-thurbox-cli session delete '⌖ Mission Control'
+thurbox-cli session delete '<the lead>'
 ```
 
 The extension self-heals the session, so it comes back under the same name at

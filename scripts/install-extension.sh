@@ -9,6 +9,23 @@
 # which also records the tilde bug that used to be a second reason and no
 # longer applies at the manifest's current version floor.
 #
+# `__LEAD_GLYPH__` is the second placeholder and it is here for a different
+# reason: not "one machine's path" but one machine's TERMINAL. thurbox has no
+# per-session icon field, so the lead's mark can only live in its name — and
+# whether a two-cell emoji renders correctly is a property of the font in front
+# of the operator. `orchestration/session-glyphs.example.conf` is the single
+# place that choice is made, `session-glyphs.conf` beside it is the gitignored
+# override, and this script is what carries the answer into the name thurbox
+# spawns. Nothing else in the repo spells the glyph: the pane matches the lead
+# without it, and prose calls the lead Mission Control.
+#
+# CHANGING THE GLYPH IS A RENAME, and this script cannot apply one. It renders
+# and installs the new name; the session that is already running keeps the old
+# one, because thurbox has no rename verb and `ensure_extension` matches by
+# name. `extension.toml.in`'s RENAMING header holds the two sequences that
+# actually move it — the check below catches the analogous case for a moved
+# clone, and says the same thing about a name.
+#
 # MOVED THE CLONE? Re-running this is NOT enough on its own, and the closing
 # check below is what tells you so. thurbox's `ensure_extension` looks an
 # extension's session up by NAME and reuses the one it finds; it never compares
@@ -76,21 +93,49 @@ case "$REPO_ROOT" in
 *'|'*) die "repo path contains '|', which breaks the substitution: $REPO_ROOT" ;;
 esac
 
+# The glyph setting, from the operator's own copy when there is one and from the
+# tracked defaults when there is not. Read as DATA and never sourced: this file
+# is a setting, and a setting that can execute is a different kind of file.
+GLYPH_CONF="$REPO_ROOT/orchestration/session-glyphs.conf"
+[ -f "$GLYPH_CONF" ] || GLYPH_CONF="$REPO_ROOT/orchestration/session-glyphs.example.conf"
+[ -f "$GLYPH_CONF" ] || die "missing the glyph setting: $GLYPH_CONF"
+
+glyph_setting() {
+	sed -n "s/^$1=//p" "$GLYPH_CONF" | head -1
+}
+
+case "$(glyph_setting GLYPHS)" in
+off) LEAD_GLYPH="$(glyph_setting LEAD_GLYPH_OFF)" ;;
+on | "") LEAD_GLYPH="$(glyph_setting LEAD_GLYPH_ON)" ;;
+*) die "GLYPHS in $GLYPH_CONF is neither 'on' nor 'off'" ;;
+esac
+[ -n "$LEAD_GLYPH" ] || die "no lead glyph in $GLYPH_CONF"
+
+# `|` is the sed delimiter below and the name goes on to be a shell argument in
+# every hint this script prints, so a glyph carrying one of these would break
+# the substitution or the quoting rather than draw badly.
+case "$LEAD_GLYPH" in
+*'|'* | *"'"* | *'"'* | *' '*)
+	die "the lead glyph from $GLYPH_CONF contains a quote, a pipe or a space: $LEAD_GLYPH"
+	;;
+esac
+
 tmp="$(mktemp)"
 trap 'rm -f "$tmp"' EXIT
 
-sed "s|__REPO_PATH__|$REPO_ROOT|g" "$IN" >"$tmp"
+sed -e "s|__REPO_PATH__|$REPO_ROOT|g" -e "s|__LEAD_GLYPH__|$LEAD_GLYPH|g" "$IN" >"$tmp"
 
 # Refuse to install a half-rendered manifest: an unsubstituted placeholder would
-# register a session pointing at a directory literally named __REPO_PATH__.
-if grep -q '__REPO_PATH__' "$tmp"; then
+# register a session pointing at a directory literally named __REPO_PATH__, or
+# a lead whose name begins with the word __LEAD_GLYPH__.
+if grep -q '__REPO_PATH__\|__LEAD_GLYPH__' "$tmp"; then
 	die "placeholder survived substitution; $OUT not written"
 fi
 [ -s "$tmp" ] || die "rendered manifest is empty; $OUT not written"
 
 mv "$tmp" "$OUT"
 trap - EXIT
-printf 'rendered %s (repo_path = %s)\n' "$OUT" "$REPO_ROOT"
+printf 'rendered %s (repo_path = %s, lead glyph = %s)\n' "$OUT" "$REPO_ROOT" "$LEAD_GLYPH"
 
 # Read the names out of the manifest rather than hardcoding them, so a rename
 # (extension.toml.in's header owns the procedure) reaches this script's checks
@@ -127,6 +172,37 @@ if [ -n "$session_name" ]; then
 			  ./scripts/install-extension.sh
 		EOF
 		exit 1
+	fi
+
+	# THE GLYPH FLIP, WHICH LOOKS LIKE SUCCESS AND IS NOT. When the setting
+	# moves, the name above is one no session answers to yet — so the check
+	# above finds no live cwd to compare and says nothing, while the lead the
+	# operator is looking at still wears the old mark. thurbox will spawn the
+	# new name beside it on the next activate and `extension status` will call
+	# that healthy, which is the RENAMING header's failure mode arriving through
+	# a setting instead of an edit. So: if nothing answers to the new name and
+	# something answers to the other glyph's, say so here.
+	if [ -z "$live_cwd" ]; then
+		other="$(glyph_setting LEAD_GLYPH_OFF)"
+		[ "$other" = "$LEAD_GLYPH" ] && other="$(glyph_setting LEAD_GLYPH_ON)"
+		stale="${session_name#"$LEAD_GLYPH"}"
+		stale="$other$stale"
+		if [ -n "$other" ] && [ "$stale" != "$session_name" ] &&
+			thurbox-cli session list --json 2>/dev/null |
+			jq -e --arg n "$stale" 'any(.[]; .name == $n)' >/dev/null 2>&1; then
+			cat >&2 <<-EOF
+
+				note: the running lead is still '$stale'.
+
+				The manifest now declares '$session_name', but thurbox names a
+				session when it SPAWNS it and has no rename verb, so nothing that
+				is already running moved. Applying it is your call and costs
+				either the lead's conversation or a fork — extension.toml.in's
+				RENAMING header holds both sequences. Until you run one, the old
+				session is the live one and the new name is what the next spawn
+				would use.
+			EOF
+		fi
 	fi
 fi
 

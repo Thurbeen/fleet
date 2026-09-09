@@ -1674,14 +1674,53 @@ expect "manifest_session reads the TABLE's name, not the prose above it" \
 
 rm -rf "$manifesttmp"
 
+# --- 7b. the lead's glyph is rendered, and the WORDS still have to agree -----
+#
+# The glyph moved out of every file except the manifest, where it arrives as
+# `__LEAD_GLYPH__` and `scripts/install-extension.sh` substitutes it from
+# `orchestration/session-glyphs.conf`. Two things have to stay true for that to
+# be safe, and neither is visible by reading one file:
+#
+#   the manifest must NOT carry a literal glyph, or the setting is decoration
+#     over a name that never moves
+#   whatever it renders to must still END in the name the pane matches, or the
+#     pane hunts a session nobody spawns — the RENAMING header's partial rename,
+#     which is the failure this whole arrangement exists to keep impossible
+
 out="$(python3 -c '
 import sys
 sys.path.insert(0, "scripts/lib")
 import queue as q
-print(q.manifest_session(sys.argv[1]))
+print(q.manifest_session(sys.argv[1])[0])
 ' "$PWD/extension.toml.in")"
-expect "and the real extension.toml.in resolves to the same session name" \
-	"⌖ Mission Control" "$out"
+expect "the tracked manifest names the lead through the glyph placeholder" \
+	"__LEAD_GLYPH__ Mission Control" "$out"
+
+pane_name="$(sed -n 's/^local CONTROL_PLANE = "\(.*\)"$/\1/p' interface/fleet_queue.lua)"
+if [ -z "$pane_name" ]; then
+	fail "the pane names the lead in a CONTROL_PLANE constant" \
+		"could not read it from interface/fleet_queue.lua"
+else
+	pass "the pane names the lead in a CONTROL_PLANE constant ($pane_name)"
+fi
+
+# Rendered with each value the setting can take. Both must end in the pane's
+# constant, and neither may equal it — a lead with no mark at all would mean the
+# substitution silently produced nothing.
+for key in LEAD_GLYPH_ON LEAD_GLYPH_OFF; do
+	glyph="$(sed -n "s/^$key=//p" orchestration/session-glyphs.example.conf | head -1)"
+	if [ -z "$glyph" ]; then
+		fail "$key has a value in orchestration/session-glyphs.example.conf"
+		continue
+	fi
+	rendered="${out/__LEAD_GLYPH__/$glyph}"
+	if [ "$rendered" = "$glyph $pane_name" ]; then
+		pass "rendered with $key the lead is '$rendered', which the pane still matches"
+	else
+		fail "rendered with $key the lead is a name the pane does not match" \
+			"$rendered vs '<glyph> $pane_name'"
+	fi
+done
 
 # --- 9. the shepherd: the pull request, after the worker stopped -------------
 #
@@ -3393,6 +3432,98 @@ else
 		"semantic-dependency" "$out"
 	expect "and still says where file overlap belongs instead" "--touches" "$out"
 fi
+
+# --- 17. one setting puts a mark on every session, and takes it back ---------
+#
+# The lead's mark and the workers' are ONE setting, because the reason to turn
+# either off is the same one: this terminal draws a two-cell glyph badly. So the
+# claims are about the setting and not about a glyph.
+#
+#   `on` is the default, and it needs no file — the tracked defaults answer
+#   `off` restores EXACTLY the naming that predates the glyphs: the lead wears
+#     the one-cell mark it always wore, and a worker wears nothing
+#   the name is cut to thurbox's real cap, which is BYTES and not characters —
+#     `session create` refuses at 65 bytes with a message that says
+#     "64 characters", so a title that fits chars-wise can still fail at spawn,
+#     and a spawn that fails takes the whole dispatch with it
+#   the mark reaches the session thurbox is actually asked to create
+
+glyphs_at() {
+	python3 -c '
+import sys
+sys.path.insert(0, "scripts/lib")
+import queue as q
+root = sys.argv[1] or None
+print(q.glyph_conf(root).get("LEAD_GLYPH_ON", ""), q.worker_glyph(root), sep="\t")
+' "$1"
+}
+
+expect "with no local file the tracked defaults answer, and the marks are the emoji" \
+	"$(printf '\xf0\x9f\x93\xa1\t\xf0\x9f\x9a\x80')" "$(glyphs_at "")"
+
+glyphtmp="$(mktemp -d)"
+mkdir -p "$glyphtmp/orchestration"
+cat >"$glyphtmp/orchestration/session-glyphs.conf" <<'EOF'
+GLYPHS=off
+LEAD_GLYPH_ON=📡
+LEAD_GLYPH_OFF=⌖
+WORKER_GLYPH_ON=🚀
+EOF
+out="$(glyphs_at "$glyphtmp")"
+if [ "$out" = "$(printf '\xf0\x9f\x93\xa1\t')" ]; then
+	pass "GLYPHS=off gives a worker no mark at all"
+else
+	fail "GLYPHS=off gives a worker no mark at all" "$(printf '%s' "$out" | cat -A)"
+fi
+
+out="$(python3 -c '
+import sys
+sys.path.insert(0, "scripts/lib")
+import queue as q
+title = sys.argv[1]
+print(q.session_name(title, "\N{ROCKET}"))
+print(q.session_name(title, ""))
+print(len(q.session_name("a" * 70, "\N{ROCKET}").encode()))
+print(q.session_name("é" * 70, "\N{ROCKET}").encode().decode())
+' "Fix the thing")"
+expect "a worker wears its mark in front of the work" "🚀 Fix the thing" "$out"
+expect "and with the setting off the name is the title, unchanged" \
+	"Fix the thing" "$(printf '%s\n' "$out" | sed -n 2p)"
+expect "a long name is cut to thurbox's cap, counted in bytes" "64" "$out"
+if [ "$(printf '%s\n' "$out" | sed -n 4p | wc -c)" -le 65 ]; then
+	pass "and the cut lands on a codepoint boundary, so the name is still a name"
+else
+	fail "and the cut lands on a codepoint boundary, so the name is still a name" "$out"
+fi
+
+rm -rf "$glyphtmp"
+
+# The wiring, and not only the function: the mark has to reach the argv thurbox
+# is handed. FLEET_GLYPH_ROOT points this dispatch at an isolated copy of the
+# default setting rather than the real checkout's — a developer running this
+# selftest with their own gitignored GLYPHS=off must not see a spurious failure
+# here.
+export FLEET_QUEUE_DIR="$tmp/queue-glyph"
+FLEET_GLYPH_ROOT="$(mktemp -d)"
+export FLEET_GLYPH_ROOT
+mkdir -p "$FLEET_GLYPH_ROOT/orchestration"
+cat >"$FLEET_GLYPH_ROOT/orchestration/session-glyphs.conf" <<'EOF'
+GLYPHS=on
+LEAD_GLYPH_ON=📡
+LEAD_GLYPH_OFF=⌖
+WORKER_GLYPH_ON=🚀
+EOF
+gtopic="$($QUEUE topic add marked --title 'Sessions wear a mark' \
+	--prompt 'give every session a glyph')"
+$QUEUE add "$gtopic" wear-it --title 'Wear the mark' --repo /tmp/repo-a \
+	--branch feat/mark --number 01 >/dev/null
+printf '# Wear the mark\n\nA brief with real content in it.\n' \
+	>"$FLEET_QUEUE_DIR/$gtopic/01-wear-it/BRIEF.md"
+out="$($QUEUE dispatch --dry-run 2>&1)"
+expect "the mark reaches the name thurbox is asked to create" \
+	"🚀 Wear the mark" "$out"
+rm -rf "$FLEET_GLYPH_ROOT"
+unset FLEET_GLYPH_ROOT
 
 echo
 if [ "$failed" -eq 0 ]; then

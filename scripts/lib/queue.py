@@ -315,6 +315,85 @@ def checkout_root() -> str:
     return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
+# --- the session glyph, which is one setting and two names --------------------
+#
+# thurbox has no per-session icon field, so a session that wears a mark wears it
+# in its NAME. `orchestration/session-glyphs.example.conf` is the one place the
+# mark is chosen, `session-glyphs.conf` beside it is the operator's gitignored
+# override, and the two readers are this file (every worker fleet spawns) and
+# `scripts/install-extension.sh` (the lead). No line of CODE here spells a
+# glyph — one would be a second copy of a setting this file does not own — and
+# the comment below spells one only to do the arithmetic it is about.
+#
+# `GLYPHS=off` leaves a worker's name exactly what it was before glyphs existed,
+# which is what makes the setting a way back rather than a different mode.
+
+GLYPH_CONF = "orchestration/session-glyphs.conf"
+GLYPH_CONF_DEFAULTS = "orchestration/session-glyphs.example.conf"
+
+# thurbox's own cap, and it is BYTES despite what the error says. `session
+# create` refuses with "Name too long (max 64 characters)" at 65 bytes, so a
+# 61-character title wearing a 5-byte "🚀 " is already over — measured against
+# thurbox 2.19.5 rather than assumed. A name that fails at spawn fails the whole
+# dispatch, so the truncation below counts the same units thurbox does.
+SESSION_NAME_BYTES = 64
+
+
+def glyph_conf(root: str | None = None) -> dict[str, str]:
+    """The glyph setting, from the operator's copy or the tracked defaults.
+
+    Read as DATA — `KEY=value`, no quoting, no continuation — and never
+    executed. A setting that can run is a different kind of file.
+
+    `FLEET_GLYPH_ROOT` overrides where that setting is read from, the same way
+    `FLEET_QUEUE_DIR` relocates queue state — so a selftest can dispatch a real
+    task without inheriting whatever the developer's own gitignored
+    session-glyphs.conf says.
+    """
+    root = root or os.environ.get("FLEET_GLYPH_ROOT") or checkout_root()
+    path = os.path.join(root, GLYPH_CONF)
+    if not os.path.exists(path):
+        path = os.path.join(root, GLYPH_CONF_DEFAULTS)
+    conf: dict[str, str] = {}
+    try:
+        with open(path) as fh:
+            for raw in fh:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                conf[key.strip()] = value.strip()
+    except OSError:
+        return {}
+    return conf
+
+
+def worker_glyph(root: str | None = None) -> str:
+    """The mark every worker fleet spawns wears, or "" when glyphs are off."""
+    conf = glyph_conf(root)
+    setting = conf.get("GLYPHS", "on")
+    if setting not in ("on", "off", ""):
+        raise QueueError(f"GLYPHS in {GLYPH_CONF} is neither 'on' nor 'off'")
+    if setting == "off":
+        return ""
+    return conf.get("WORKER_GLYPH_ON", "")
+
+
+def session_name(title: str, glyph: str) -> str:
+    """A worker's session name: its title, wearing the mark, within the cap.
+
+    The glyph goes in FRONT and the title is what gets cut, so a run of workers
+    is a column of marks with the work beside it. Truncation is by byte and on a
+    codepoint boundary — thurbox counts bytes (see SESSION_NAME_BYTES) and a
+    name cut through the middle of a character is not a name it accepts either.
+    """
+    name = f"{glyph} {title}" if glyph else title
+    encoded = name.encode()
+    if len(encoded) <= SESSION_NAME_BYTES:
+        return name
+    return encoded[:SESSION_NAME_BYTES].decode(errors="ignore")
+
+
 def queue_root() -> str:
     """Where the queue lives, as an absolute path.
 
@@ -1932,7 +2011,7 @@ def spawn_commands(task: Task) -> tuple[list, str]:
     d = task.doc
     create = [
         "thurbox-cli", "session", "create",
-        "--name", d["title"][:64],
+        "--name", session_name(d["title"], worker_glyph()),
         "--repo-path", d["repo"],
         "--worktree-branch", d["branch"],
         "--base-branch", d["base"],
@@ -4266,7 +4345,10 @@ def spawn_fixer(task: Task, name: str, brief_path: str, branch: str) -> tuple[st
         return "", note
     create = [
         "thurbox-cli", "session", "create",
-        "--name", name[:64],
+        # A fixer is a worker fleet spawned, so it wears the same mark under the
+        # same setting — and the same byte-safe cut, which is the one that made
+        # `[:64]` wrong here rather than merely generous.
+        "--name", session_name(name, worker_glyph()),
         "--repo-path", path,
         # Reconciling desired state, so a name already in use is the fixer that
         # is already there rather than news (§1c). `created` is read below.

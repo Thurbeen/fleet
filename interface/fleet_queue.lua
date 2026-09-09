@@ -115,14 +115,40 @@ local widgets = require("lib.widgets")
 local SLOT = "fleetqueue"
 local TOGGLE = "fleetqueue.toggle"
 
---- The thurbox session that opens the control-plane checkout.
+--- The thurbox session that opens the control-plane checkout, WITHOUT its mark.
 ---
 --- fleet's `extension.toml.in` names this session and thurbox self-heals it, so
 --- it is a contract rather than a guess. Rename it there and rename it here —
---- that file's RENAMING header lists this line as one of the four places the
+--- that file's RENAMING header lists this line as one of the two places the
 --- session's name lives, and a rename that misses it leaves the pane hunting a
---- session nobody spawns.
-local CONTROL_PLANE = "⌖ Mission Control"
+--- session nobody spawns. `./scripts/check.sh pane` fails a rename that stops
+--- at one of them.
+---
+--- THE GLYPH IS DELIBERATELY NOT HERE, and that is the difference between this
+--- constant and `FUEL_GLYPH` below. The lead wears a mark because thurbox has
+--- no per-session icon field, and WHICH mark is a setting the operator can turn
+--- off (`orchestration/session-glyphs.example.conf`): `📡` by default, `⌖` when
+--- it is off. A pane that spelled one of those would be a second copy of a
+--- setting it does not own, and would report "no session" the day the operator
+--- flipped it — the RENAMING header's partial-rename failure, reached without
+--- anyone renaming anything. So the pane matches the NAME and treats the mark
+--- as decoration, which is the one arrangement in which the setting can move
+--- without this file moving with it.
+local CONTROL_PLANE = "Mission Control"
+
+--- Is this session the lead: the name, optionally wearing one mark?
+---
+--- The prefix is bounded rather than free — one non-space token of at most four
+--- bytes, which is one UTF-8 codepoint — because a worker's name is an
+--- imperative sentence about its work and one of those can end in these words.
+--- "🚀 Rename Mission Control" is a worker; "📡 Mission Control" is the lead.
+local function is_control_plane(name)
+  if name == CONTROL_PLANE then
+    return true
+  end
+  local mark = name:match("^(%S+) " .. CONTROL_PLANE .. "$")
+  return mark ~= nil and #mark <= 4
+end
 
 --- Seconds an answer stays fresh.
 ---
@@ -1727,14 +1753,14 @@ return {
     -- basename several different checkouts share.
     local lead
     for _, session in ipairs(thurbox.sessions or {}) do
-      if session.name == CONTROL_PLANE and session.cwd then
+      if session.cwd and is_control_plane(session.name or "") then
         lead = session
         break
       end
     end
     if not lead then
       return saying({
-        "no '" .. CONTROL_PLANE .. "' session",
+        "no " .. CONTROL_PLANE .. " session",
         "run ./scripts/install-extension.sh",
         "in your fleet checkout",
       }, width)

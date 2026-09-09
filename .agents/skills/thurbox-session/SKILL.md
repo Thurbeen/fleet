@@ -48,7 +48,7 @@ thurbox-cli session create --name 'Run exec automations off the TUI thread' \
 
 | Flag | Meaning |
 |---|---|
-| `--name` | 1–64 chars, no slashes, no leading `.`; spaces are fine — write an imperative sentence, not a slug |
+| `--name` | 1–64 **bytes**, no slashes, no leading `.`; spaces are fine — write an imperative sentence, not a slug |
 | `--repo-path` | absolute path to the **primary** repo |
 | `--worktree-branch` | create a git worktree on this branch |
 | `--base-branch` | base for the worktree (default `main`) |
@@ -86,7 +86,7 @@ follow from how the name is used:
 - **Imperative mood, sentence case.** Capitalize the first word only. Leave
   identifiers in the casing they already have — `gh`, `TUI`, `extension.toml`.
 - **No repo prefix.** The repo is already on the session (`session get --json`,
-  field `cwd`) and in the run log. Repeating it spends the 64 characters twice.
+  field `cwd`) and in the run log. Repeating it spends the 64-byte cap twice.
 - **Quote it.** The name is a mailbox address — `message send --to 'Run exec
   automations off the TUI thread'`. Unquoted, the shell splits it on spaces and
   the send addresses something that isn't there.
@@ -94,6 +94,20 @@ follow from how the name is used:
   contain slashes (`fix/automation-exec-nonblocking`); `--name` may not.
 - **Keep it short.** The TUI's window list truncates. Two names that only differ
   past the cut are the same name as far as the operator can see.
+- **The cap is 64 BYTES, whatever the error says.** `session create` refuses
+  with *"Name too long (max 64 characters)"*, but it counts bytes: measured
+  against thurbox 2.19.5, a 61-character name wearing a 5-byte `🚀 ` is
+  accepted at 64 bytes and refused at 65. So a name that fits in characters can
+  still fail at spawn the moment it carries anything non-ASCII, and a spawn that
+  fails takes its whole dispatch with it. `scripts/lib/queue.py`'s
+  `session_name()` cuts by byte, on a codepoint boundary, for exactly that
+  reason.
+- **fleet's own workers wear a mark.** `queue.sh dispatch` puts `🚀 ` in front
+  of the name it builds from the task title, under the one setting in
+  `orchestration/session-glyphs.example.conf` that also decides the lead's. The
+  convention above is unchanged — the name is still an imperative sentence, now
+  with a glyph before it — and a session you spawn by hand wears nothing unless
+  you type one.
 
 ## 1a. Remote hosts (`--host`)
 
