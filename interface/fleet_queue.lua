@@ -1216,8 +1216,10 @@ end
 --- freshly measured one.
 local function fuel_rows(fuel, width, spinner)
   -- Measured, never counted: with the glyph on this is nine columns and not
-  -- eight, and every budget below is taken from what it leaves.
-  local lead = FUEL_GLYPH and (" " .. FUEL_GLYPH .. " fuel ") or " fuel "
+  -- eight, and every budget below is taken from what it leaves. Clamped to
+  -- `width` itself, because at the narrowest columns even this mandatory
+  -- prefix does not fit whole.
+  local lead = widgets.keep_left(FUEL_GLYPH and (" " .. FUEL_GLYPH .. " fuel ") or " fuel ", width)
 
   --- The muted row under a reading, at the most detail that fits.
   local function detail(text)
