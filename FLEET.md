@@ -117,19 +117,33 @@ at once, so six workers dispatched together spend them six ways. There is no
 per-worker reading to be had — `thurbox-cli session get` carries no token,
 usage, cost or limit field at all.
 
-There are three windows and they reset independently — a session window, a
-week, and a per-model week. The reading is the lowest of them, the screen names
-which one binds and prints all three with their own resets, and a reading
-served from cache says `stale` and how old it is. A cached number is a fact
-with an age, and the age is part of the fact.
+**One reading per subscription you actually have.** `quota-axi auth` says which
+providers hold a working credential — `claude`, and whatever else is signed in
+on the machine — and those, in one call, are what gets read; a provider with no
+credential is never probed. Each is its OWN reading, on its own clock, and
+nothing is summed or averaged across them: the screen prints a block per
+provider and the pane draws a labelled bar beside each percentage. A provider
+whose fetch failed says so on the screen and carries no number at all, never a
+zero; the pane leaves it out entirely, and says `unavailable` only when nothing
+read.
 
-**The reserve is 20%. Below it you dispatch nothing new.** That is the rule,
-and it is checkable rather than a feeling: the screen prints the reading and
-the reserve on one line. It is fleet's own floor and not `quota-axi`'s
-`reserve` field, which is that window's pace against its reset clock and is
-`unknown` for every window whose fetch failed. Nothing enforces the floor for
+A provider's windows reset independently — claude has three, a session window,
+a week and a per-model week. That provider's reading is the lowest of them, the
+screen names which one binds and prints them all with their own resets, and a
+reading served from cache says `stale` and how old it is. A cached number is a
+fact with an age, and the age is part of the fact.
+
+**The reserve is 20%, per provider. Below it you dispatch nothing new.** That
+is the rule, and it is checkable rather than a feeling: the screen prints the
+reading and the reserve on one line, and the pane's bar marks where the floor
+falls across it. It is fleet's own floor and not `quota-axi`'s `reserve`
+field, which is that window's pace against its reset clock and is `unknown`
+for every window whose fetch failed. Nothing enforces the floor for
 you — `queue.sh dispatch` does not read fuel and must not, because a queue that
-stops on a bad parse is worse than one that spends.
+stops on a bad parse is worse than one that spends. `queue.sh refuel` does read
+it, and reads `claude` ALONE: that is the agent the workers run, so a spent
+window on a provider fleet does not dispatch is no reason to leave a `claude`
+worker sitting at its limit.
 
 Near the floor you spend fuel on dispatching and on nothing else:
 
@@ -144,10 +158,10 @@ Near the floor you spend fuel on dispatching and on nothing else:
   close what is already finished.
 
 **The reading is a fact you report**, in the same register as every other state
-word here: `fuel 74% remaining, reserve 20%, binding seven_day`, or `fuel
-unavailable — quota-axi not found`. Never a zero, never a guess. quota-axi also
-publishes `pace`, `runway` and `projectedExhaustedAt`; those are its
-projections and you do not restate them as yours. `resetsAt` is the fact — a
+word here: `fuel claude 74% remaining, reserve 20%, binding seven_day`, or
+`fuel codex unavailable — auth_required`. Never a zero, never a guess.
+quota-axi also publishes `pace`, `runway` and `projectedExhaustedAt`; those are
+its projections and you do not restate them as yours. `resetsAt` is the fact — a
 spent window is spent, and that is when it comes back.
 
 ## What you delegate

@@ -34,15 +34,38 @@
 -- NAME and reports `session.cwd`, so what it says it read is a directory rather
 -- than a label several directories share.
 --
--- THE FUEL LINE IS THE SAME READING THE SCREEN PRINTS. `scripts/lib/
--- fleet_status.py`'s `probe_fuel` is the only place the account's remaining
--- window is read, and this pane asks it through `fleet-status.sh --fuel`
--- rather than running `quota-axi` itself — a second parse of a document this
--- file does not own is the "second writer's opinion" the paragraph above
--- rejects, and it would disagree with the screen the moment either side moved.
--- It draws what was MEASURED (percent, the binding window, when that window
--- comes back) and never quota-axi's `runway` or `projectedExhaustedAt`, which
--- FLEET.md forbids fleet from restating as its own.
+-- THE FUEL ROWS ARE THE SAME READING THE SCREEN PRINTS. `scripts/lib/
+-- fleet_status.py` is the only place the account's remaining windows are read,
+-- and this pane asks it through `fleet-status.sh --fuel` rather than running
+-- `quota-axi` itself — a second parse of a document this file does not own is
+-- the "second writer's opinion" the paragraph above rejects, and it would
+-- disagree with the screen the moment either side moved. It draws what was
+-- MEASURED (percent, the binding window, when that window comes back) and
+-- never quota-axi's `runway` or `projectedExhaustedAt`, which FLEET.md forbids
+-- fleet from restating as its own.
+--
+-- ONE ROW PER SUBSCRIPTION THAT HAS A NUMBER, each with the provider's name, a
+-- bar and its percentage. The account may hold several and they are separate
+-- windows on separate clocks, so nothing here is summed across them and the
+-- name is what keeps three readings from being read as one. The bar is a
+-- SECOND encoding of the number beside it, coloured against the reserve that
+-- arrives on the record and marked where that floor falls — never a
+-- replacement for the number.
+--
+-- A provider that could NOT be read is not drawn: it has no bar and no number,
+-- and the column belongs to the readings. The exception is nothing reading at
+-- all, which the block says in its own head row — a fuel block that quietly
+-- disappeared would read as "nothing to report" when it means "nobody could
+-- tell". Every failure is named in full by `fleet-status.sh` either way.
+--
+-- THE ⛽ ON THE HEAD ROW IS A SETTING, AND IT IS `FUEL_GLYPH` BELOW. Set it to
+-- nil and this pane draws exactly what it drew before the glyph existed. It is
+-- a switch because U+26FD is East_Asian_Width WIDE — two terminal cells, not
+-- one. Every width here is measured with `widgets.len`, the kernel's own
+-- `unicode-width`, so the budgets count it correctly and the head row's ladder
+-- still fits at thirty columns; but a font that draws it narrow or a
+-- multiplexer that disagrees about its width shears every row below it, and
+-- that is a property of the operator's terminal rather than of this file.
 --
 -- AND IT IS THE ONE PROBE THAT COSTS THE NETWORK, so it has its own `FUEL_TTL`
 -- minutes long instead of the queue's seconds: a pane that refetched it per
@@ -102,6 +125,25 @@ local FUEL_TTL = 300
 --- does. `probe_fuel` already gives up on it at 20 seconds; this is that plus
 --- room for the process around it.
 local FUEL_TIMEOUT = 30
+
+--- The mark on the fuel head row. **Set it to nil to turn the glyph off.**
+---
+--- IT IS TWO CELLS WIDE, not one: U+26FD is East_Asian_Width WIDE, and that is
+--- the whole reason this is a setting rather than a decision. Every budget in
+--- this pane measures with `widgets.len`, which is the kernel's own
+--- `unicode-width` — the same table the painter lays out with — so the head
+--- row already counts this as two and the ladder below still fits at thirty
+--- columns. What no budget here can control is the far side: a terminal font
+--- that draws it narrow, or a multiplexer that disagrees about its width,
+--- shears every row after it. `extension.toml.in`'s glyph header describes the
+--- same hazard for the lead session's own mark, and answers it by choosing a
+--- one-cell glyph; a pane can offer the switch instead.
+---
+--- No variation selector and no colour font: the codepoint alone is drawn, in
+--- whatever presentation the terminal already has. A selector would add a
+--- zero-width character that some terminals count as one anyway, which is the
+--- shearing this is trying to avoid.
+local FUEL_GLYPH = "⛽"
 
 --- Rows the wheel moves.
 local SCROLL_STEP = 3
@@ -427,26 +469,52 @@ local function model_for(stdout)
   return parsed.model
 end
 
---- The fuel record, as a table. One `name<TAB>value` line per field, and a
---- field that has no value is ABSENT rather than empty — so `remaining` being
---- nil is "nobody could tell", which is a different fact from 0%.
+--- The fuel record, as a LIST of tables — one per provider.
+---
+--- The format is `name<TAB>value` lines with a BLANK LINE between records, and
+--- a field that has no value is ABSENT rather than empty — so `remaining`
+--- being nil is "nobody could tell", which is a different fact from 0%.
+--- `render_fuel_record` in `fleet_status.py` owns that format and this is its
+--- only reader; the blank line is what carries several subscriptions over a
+--- wire that had one, and it keeps the reader a splitter rather than a parser.
+---
+--- Every record names itself with `provider`, so three readings can never be
+--- drawn as one. A reading nobody could take at all — no quota-axi, no
+--- credential anywhere — arrives as a single record with `unavailable` and no
+--- provider, which is what a failed single-provider reading always looked like.
 local function build_fuel(stdout)
-  local out = {}
+  local out, fields = {}, nil
+
+  local function close()
+    if fields then
+      out[#out + 1] = {
+        provider = fields.provider,
+        unavailable = fields.unavailable,
+        remaining = tonumber(fields.remaining),
+        reserve = tonumber(fields.reserve),
+        limited_by = fields.limited_by,
+        resets_at = fields.resets_at,
+        stale = fields.stale == "1",
+        read_at = tonumber(fields.read_at),
+      }
+      fields = nil
+    end
+  end
+
   for line in (stdout .. "\n"):gmatch("(.-)\n") do
     local name, value = line:match("^([a-z_]+)\t(.*)$")
     if name then
-      out[name] = value
+      fields = fields or {}
+      fields[name] = value
+    else
+      -- Anything that is not a field ends the record, which makes the blank
+      -- line a separator without making it a syntax: a stray line cannot
+      -- silently merge two providers' readings into one.
+      close()
     end
   end
-  return {
-    unavailable = out.unavailable,
-    remaining = tonumber(out.remaining),
-    reserve = tonumber(out.reserve),
-    limited_by = out.limited_by,
-    resets_at = out.resets_at,
-    stale = out.stale == "1",
-    read_at = tonumber(out.read_at),
-  }
+  close()
+  return out
 end
 
 --- `build_fuel`, done again only when the record actually changed. The queue
@@ -1002,25 +1070,22 @@ end
 
 --- What the detail row gives up as the column narrows, in order.
 ---
---- The reserve goes FIRST, because the row above it is already coloured
---- against the reserve — losing the number costs a reader the arithmetic, not
---- the verdict. The instant is compacted next and the word "resets" only after
---- that, and the binding window is the last thing standing: a reset with no
---- window named does not say what is resetting.
+--- The reserve is no longer on this ladder: it is said once on the block's
+--- head row, for every provider at once, and each bar marks where it falls —
+--- so repeating it per reading would spend columns saying what the colour
+--- already says. The instant is compacted first, then the word "resets", and
+--- the binding window is the last thing standing: a reset with no window named
+--- does not say what is resetting.
 local FUEL_DETAIL = {
-  { reserve = true, instant = 0, word = true },
-  { reserve = false, instant = 0, word = true },
-  { reserve = false, instant = 1, word = true },
-  { reserve = false, instant = 2, word = true },
-  { reserve = false, instant = 2, word = false },
-  { reserve = false },
+  { instant = 0, word = true },
+  { instant = 1, word = true },
+  { instant = 2, word = true },
+  { instant = 2, word = false },
+  {},
 }
 
 local function detail_segments(fuel, level)
   local segs = {}
-  if level.reserve and fuel.reserve then
-    segs[#segs + 1] = "reserve " .. fuel.reserve .. "%"
-  end
   if (fuel.limited_by or "") ~= "" then
     segs[#segs + 1] = fuel.limited_by
   end
@@ -1049,86 +1114,237 @@ local function fuel_tone(fuel)
   return theme.ok
 end
 
---- The fuel line: what the whole column below it is competing for.
+--- The bar's four glyphs.
 ---
---- Two rows rather than one, because the three facts the operator acts on —
---- how much is left, which window is binding, when that window comes back —
---- do not fit in a column that is routinely thirty cells wide, and the reset
---- instant is the one of the three that a single budgeted line would drop
---- first. `render_fuel` in `fleet_status.py` splits the same reading over a
---- head and a continuation for the same reason; this is that shape in a
---- narrower place.
-local function fuel_rows(fuel, width, spinner)
-  local head = " fuel "
-  local room = math.max(1, width - widgets.len(head))
+--- A fresh reading is drawn solid and a STALE one hatched, because the number
+--- behind a stale bar is remembered rather than observed and a bar that looked
+--- identical either way would be the one part of the row that hid it. The
+--- reserve is a tick rather than a colour change, so it stays visible on both
+--- sides of itself.
+local BAR_FILLED, BAR_STALE, BAR_EMPTY, BAR_RESERVE = "█", "▒", "░", "┃"
 
-  --- The head row: a lead-in, one thing to say, and the age flush right.
-  local function headline(body, body_style, note, note_style)
-    local row = ui.row({ width = width })
-    row:add(head, { fg = theme.muted })
-    body = widgets.truncate(body, room)
-    row:add(body, body_style)
-    if note then
-      local pad = width - widgets.len(head) - widgets.len(body) - widgets.len(note)
-      if pad >= 2 then
-        row:add(string.rep(" ", pad))
-        row:add(note, note_style)
-      end
-    end
-    return line(row:spans_list())
+--- The narrowest bar that still reads as a proportion. Under it the bar is
+--- dropped and the number stands alone: a two-cell bar is a decoration wearing
+--- the columns the reading itself could have used.
+local FUEL_BAR_MIN = 5
+
+--- Columns the percentage is given, so every bar in the block ends in the same
+--- one. `100%` is the widest reading there is.
+local FUEL_NUMBER = 4
+
+--- Columns a provider's name may spend. Long enough for the names quota-axi
+--- reports, short enough that the bar is still a bar at thirty cells.
+local FUEL_LABEL_MAX = 8
+
+--- The reading as a bar, with the reserve marked where it falls across it.
+---
+--- THE BAR IS A SECOND ENCODING OF THE NUMBER, never a replacement: it makes
+--- "nearly gone" legible without reading, and the number beside it stays for
+--- everything a glance cannot do.
+---
+--- THE FLOOR IS MARKED because it is what the colour is computed against.
+--- `reserve N%` is the first thing the block gives up as it narrows, and a
+--- tick on the bar hands that arithmetic back without spending a row on it.
+--- The threshold itself is never spelled here — it rides in on the record.
+local function bar_spans(fuel, cells)
+  local filled = math.floor((fuel.remaining / 100) * cells + 0.5)
+  filled = math.max(0, math.min(cells, filled))
+  local mark
+  if fuel.reserve then
+    -- Clamped into the bar rather than off its end: a floor drawn nowhere is
+    -- a floor the reader has to take on trust.
+    mark = math.floor((fuel.reserve / 100) * cells + 0.5)
+    mark = math.max(1, math.min(cells, mark))
   end
 
-  --- The muted second row, at the most detail that fits.
+  local filled_style = { fg = fuel_tone(fuel) }
+  local empty_style = { fg = theme.muted }
+  local mark_style = { fg = theme.warn }
+  local glyph = fuel.stale and BAR_STALE or BAR_FILLED
+
+  -- Coalesced by style identity, so a bar is three spans rather than one per
+  -- cell: this is rebuilt on every frame the pane is asked for.
+  local spans, last = {}, nil
+  for cell = 1, cells do
+    local char, style = BAR_EMPTY, empty_style
+    if cell == mark then
+      char, style = BAR_RESERVE, mark_style
+    elseif cell <= filled then
+      char, style = glyph, filled_style
+    end
+    if last and last.style == style then
+      last.text = last.text .. char
+    else
+      last = { text = char, style = style }
+      spans[#spans + 1] = last
+    end
+  end
+  return spans
+end
+
+--- The fuel block: one row per subscription, above everything competing for it.
+---
+--- ONE ROW PER PROVIDER THAT HAS A NUMBER, with its name, a bar and its
+--- percentage. The name is not decoration: three subscriptions drawn without
+--- one are three numbers that read as one reading with two mistakes in it.
+---
+--- A PROVIDER THAT COULD NOT BE READ IS NOT DRAWN. It has no bar to draw and
+--- no number to compare, and a standing `unavailable` row for a provider the
+--- operator is not spending is a row the queue below could have used. What it
+--- could not say is still said in full by `./scripts/fleet-status.sh`, which
+--- prints every provider with the reason its fetch failed.
+---
+--- UNLESS NOTHING READ AT ALL. Then the head row itself says `unavailable`
+--- with the reason under it, because a fuel block that quietly disappeared
+--- would read as "nothing to report" when it means "nobody could tell" — and
+--- that is the one failure this pane must not commit silently.
+---
+--- WHAT A NARROW COLUMN DROPS, and this column is routinely thirty cells wide.
+--- In order: the reserve on the head row, then the bar — under FUEL_BAR_MIN
+--- cells it is a decoration and the number is the reading. The number never
+--- goes.
+---
+--- WHAT SEVERAL SUBSCRIPTIONS DROP. One reading keeps the detail row it always
+--- had: the binding window and when it comes back. Several do not, because N
+--- readings at two rows each pushes the queue itself off the column, and
+--- `./scripts/fleet-status.sh` is where every window is printed in full. So
+--- the detail row is drawn only when exactly one provider carries a number —
+--- which is still the common case, with the others unread rather than absent.
+---
+--- TWO READINGS ARE NOT BARS. No record yet is the spinner, and a stale
+--- reading is hatched and flagged, so a remembered number never looks like a
+--- freshly measured one.
+local function fuel_rows(fuel, width, spinner)
+  -- Measured, never counted: with the glyph on this is nine columns and not
+  -- eight, and every budget below is taken from what it leaves. Clamped to
+  -- `width` itself, because at the narrowest columns even this mandatory
+  -- prefix does not fit whole.
+  local lead = widgets.keep_left(FUEL_GLYPH and (" " .. FUEL_GLYPH .. " fuel ") or " fuel ", width)
+
+  --- The muted row under a reading, at the most detail that fits.
   local function detail(text)
     return line({
       { text = "   " .. widgets.truncate(text, math.max(1, width - 3)), style = { fg = theme.muted } },
     })
   end
 
-  if not fuel then
-    return { headline(spinner .. " reading", { fg = theme.muted }) }
+  --- A note pushed to the right edge, or dropped when it would not fit.
+  local function flush_right(row, note, style)
+    if not note then
+      return
+    end
+    local pad = width - row.used - widgets.len(note)
+    if pad >= 2 then
+      row:add(string.rep(" ", pad))
+      row:add(note, style)
+    end
   end
 
-  local age = read_age(fuel)
-
-  -- An unreadable reading is drawn as unreadable, with the reason the probe
-  -- gave — never as a zero, which would read as a spent window rather than a
-  -- missing one.
-  if fuel.unavailable or not fuel.remaining then
-    return {
-      headline("unavailable", { fg = theme.warn }, age, { fg = theme.muted }),
-      detail(fuel.unavailable or "no reading"),
-    }
+  if not fuel or #fuel == 0 then
+    local row = ui.row({ width = width })
+    row:add(lead, { fg = theme.muted })
+    row:add(widgets.truncate_hard(spinner .. " reading", math.max(0, width - row.used)),
+      { fg = theme.muted })
+    return { line(row:spans_list()) }
   end
 
-  local note, note_style = age, { fg = theme.muted }
-  if fuel.stale then
+  local shown = {}
+  for _, rec in ipairs(fuel) do
+    if rec.remaining and not rec.unavailable then
+      shown[#shown + 1] = rec
+    end
+  end
+
+  -- THE AGE BELONGS TO THE BLOCK, not to a provider: it is one probe, and
+  -- every record in it was read at the same instant. The reserve is the
+  -- block's too — one floor, applied to every provider — which is what frees
+  -- each reading's row for its bar.
+  local age = read_age(fuel[1])
+  local head = ui.row({ width = width })
+  head:add(lead, { fg = theme.muted })
+
+  if #shown == 0 then
+    head:add(widgets.truncate_hard("unavailable", math.max(0, width - head.used)),
+      { fg = theme.warn })
+    flush_right(head, age, { fg = theme.muted })
+    -- The first record's reason, named: fleet's own provider leads the record,
+    -- so this is the one whose failure matters most to what runs below.
+    local first = fuel[1]
+    local why = first.unavailable or "no reading"
+    if (first.provider or "") ~= "" then
+      why = first.provider .. " — " .. why
+    end
+    return { line(head:spans_list()), detail(why) }
+  end
+
+  local reserve = fuel[1].reserve and ("reserve " .. fuel[1].reserve .. "%") or ""
+  local right = age and (widgets.len(age) + 2) or 0
+  if reserve ~= "" and width - head.used - right >= widgets.len(reserve) then
+    head:add(reserve, { fg = theme.muted })
+  end
+  flush_right(head, age, { fg = theme.muted })
+
+  local rows = { line(head:spans_list()) }
+
+  -- The widest name drawn, held to what the column can spend on names: the
+  -- LABEL gives way before the number does, because a truncated provider is
+  -- still the right provider and a truncated percentage is not a reading.
+  local label_width = 1
+  for _, rec in ipairs(shown) do
+    label_width = math.max(label_width, widgets.len(rec.provider or ""))
+  end
+  label_width = math.min(label_width, FUEL_LABEL_MAX, math.max(1, width - 2 - FUEL_NUMBER))
+
+  for _, rec in ipairs(shown) do
+    local row = ui.row({ width = width })
+    row:add(" ")
+    row:add(widgets.pad(widgets.truncate(rec.provider or "", label_width), label_width),
+      { fg = theme.muted })
+    row:add(" ")
+    local number = rec.remaining .. "%"
+    number = string.rep(" ", math.max(0, FUEL_NUMBER - widgets.len(number))) .. number
     -- quota-axi's own word for its reading, passed through rather than
     -- interpreted: it means the number is remembered, not just observed.
-    note = age and (age .. " stale") or "stale"
-    note_style = { fg = theme.warn }
+    local note = rec.stale and "stale" or nil
+    local room = width - row.used
+    -- Dropped rather than overflowed. The hatched bar says the same thing, and
+    -- where there is no room for a bar either, `fleet-status.sh` still does.
+    if note and widgets.len(number) + widgets.len(note) + 1 > room then
+      note = nil
+    end
+    local cells = room - widgets.len(number) - 1
+      - (note and (widgets.len(note) + 1) or 0)
+    if cells >= FUEL_BAR_MIN then
+      for _, span in ipairs(bar_spans(rec, cells)) do
+        row:add(span.text, span.style)
+      end
+      row:add(" ")
+    end
+    row:add(number, { fg = fuel_tone(rec), bold = true })
+    if note then
+      row:add(" " .. note, { fg = theme.warn })
+    end
+    rows[#rows + 1] = line(row:spans_list())
   end
 
-  local rows = {
-    headline(fuel.remaining .. "%", { fg = fuel_tone(fuel), bold = true }, note, note_style),
-  }
-
-  -- The widest level that fits, and the narrowest one when none does — which
-  -- `detail` then truncates, the same last resort the documents row takes.
-  local budget = math.max(1, width - 3)
-  local chosen
-  for _, level in ipairs(FUEL_DETAIL) do
-    local segs = detail_segments(fuel, level)
-    if #segs == 0 then
-      break
+  if #shown == 1 then
+    -- The widest level that fits, and the narrowest one when none does — which
+    -- `detail` then truncates, the same last resort the documents row takes.
+    local budget = math.max(1, width - 3)
+    local chosen
+    for _, level in ipairs(FUEL_DETAIL) do
+      local segs = detail_segments(shown[1], level)
+      if #segs == 0 then
+        break
+      end
+      chosen = table.concat(segs, " · ")
+      if widgets.len(chosen) <= budget then
+        break
+      end
     end
-    chosen = table.concat(segs, " · ")
-    if widgets.len(chosen) <= budget then
-      break
+    if chosen then
+      rows[#rows + 1] = detail(chosen)
     end
-  end
-  if chosen then
-    rows[#rows + 1] = detail(chosen)
   end
   return rows
 end
@@ -1231,7 +1447,7 @@ return {
       -- A probe that could not RUN is still a reading nobody could take, so it
       -- is drawn as one rather than left blank.
       if (fuel_answer.stdout or "") == "" then
-        fuel = { unavailable = "the fuel probe did not run" }
+        fuel = { { unavailable = "the fuel probe did not run" } }
       else
         fuel = fuel_for(fuel_answer.stdout)
       end

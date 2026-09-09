@@ -313,6 +313,49 @@ check_pane() {
 		miss=1
 	fi
 
+	# AND ONE VOCABULARY. The record is `name<TAB>value` lines with a blank
+	# line between providers, and the pane is the only reader of it — so a
+	# field renamed on one side and not the other costs the pane exactly that
+	# fact, silently, with both files still perfectly valid. Every `fields.x`
+	# the pane reads has to be a name `RECORD_FIELDS` actually emits.
+	local wire fields f
+	wire="$(sed -n '/^RECORD_FIELDS = (/,/^)/p' scripts/lib/fleet_status.py |
+		tr -d ' \t"' | tr ',' '\n' | grep -E '^[a-z_]+$')"
+	fields="$(grep -oE 'fields\.[a-z_]+' "$pane" | sed 's/^fields\.//' | sort -u)"
+	for f in $fields; do
+		grep -qx "$f" <<<"$wire" || {
+			fail "pane: $pane reads a '$f' field that scripts/lib/fleet_status.py's RECORD_FIELDS does not emit"
+			miss=1
+		}
+	done
+
+	# AND ONE THRESHOLD, WHICH THE PANE NEVER SPELLS. FLEET.md's `## Fuel`
+	# section owns the reserve, `fleet_status.py` carries the same number, and
+	# it travels down on every record — so the pane compares against what it
+	# was handed and colours a bar by it. A literal here is a second copy of a
+	# rule that would then move in one place and not the other.
+	local reserve
+	reserve="$(sed -n 's/^FUEL_RESERVE = \([0-9]*\)$/\1/p' scripts/lib/fleet_status.py | head -1)"
+	if [ -z "$reserve" ]; then
+		fail "pane: could not read FUEL_RESERVE from scripts/lib/fleet_status.py"
+		miss=1
+	elif grep -v '^[[:space:]]*--' "$pane" | grep -qE "(^|[^0-9])$reserve([^0-9]|\$)"; then
+		fail "pane: $pane spells the reserve threshold ($reserve) itself; it arrives on the record, so the pane compares and never states it"
+		miss=1
+	fi
+
+	# NO VARIATION SELECTOR, AND NOTHING BUILT OUT OF ONE. The pane's fuel
+	# glyph is a bare codepoint on purpose: U+FE0F asks for an emoji
+	# presentation the terminal may not have, adds a character some terminals
+	# count as a column and others do not, and a zero-width joiner builds a
+	# glyph whose width nothing agrees on. Every row here is budgeted in
+	# cells, so a character the painter and the terminal measure differently
+	# shears the whole column.
+	if LC_ALL=C grep -qP '\xef\xb8\x8f|\xef\xb8\x8e|\xe2\x80\x8d' "$pane" 2>/dev/null; then
+		fail "pane: $pane carries a variation selector or a zero-width joiner; the fuel glyph is a bare codepoint so its width is one both sides agree on"
+		miss=1
+	fi
+
 	# AND ONE COST MODEL. `quota-axi` makes a network call, so the fuel probe
 	# must not run at the queue probe's cadence — a pane that refetched it
 	# every ten seconds would burn the fuel it is reporting.
@@ -327,7 +370,7 @@ check_pane() {
 		miss=1
 	fi
 
-	[ "$miss" -eq 0 ] && ok "pane: slot \"$slot\", $dest and $chord agree across installer and docs; fuel is one reading at ${fuel_ttl}s"
+	[ "$miss" -eq 0 ] && ok "pane: slot \"$slot\", $dest and $chord agree across installer and docs; fuel is one record per provider at ${fuel_ttl}s"
 }
 
 check_skills() {

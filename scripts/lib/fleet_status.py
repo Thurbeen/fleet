@@ -475,19 +475,83 @@ def fuel_windows(provider: dict) -> list:
     return out
 
 
-def probe_fuel() -> dict:
-    """How much of the account's provider windows is left, per quota-axi.
+def authenticated_providers() -> tuple[list, str | None]:
+    """The providers with a working credential, fleet's own first.
 
-    THE ONLY SOURCE. `thurbox-cli session get --json` carries no token, usage,
-    cost or limit field, so nothing thurbox knows can answer this. quota-axi
-    (MIT, github.com/kunchenguid/quota-axi) reads the first-party endpoints and
-    normalises them. It is a tool on the operator's PATH and never a bundled
-    dependency: absent, it costs this section and says so.
+    WHY ASK AT ALL. `quota-axi --provider a,b,c` will happily go and ask a
+    provider the operator has never signed in to, and pay a network round trip
+    to be told what was already on disk. `quota-axi auth` IS that disk read:
+    one entry per provider, each with its sources and a `status` per source.
+    `available` is the only status that means a fetch can succeed. `expired` is
+    not — and a provider can carry an expired source beside a working one, which
+    is exactly the case `--no-credential-refresh` exists to keep from turning
+    this read into a write.
 
-    IT MEASURES THE ACCOUNT, NOT A SESSION. These are the subscription windows
-    the lead and every worker spend at once, so this section carries ONE
-    reading and can never say what a given worker burned. Six workers
-    dispatched together spend one window set six ways.
+    FLEET'S OWN PROVIDER LEADS and the rest follow in quota-axi's order, so the
+    reading fleet's workers actually spend is the first one drawn. And when
+    `auth` cannot be read at all, that provider ALONE is the answer: a status
+    screen reporting no fuel because a discovery call failed is worse than one
+    reporting the single reading the fleet runs on.
+    """
+    doc, why = run_json(["quota-axi", "auth", "--json"], timeout=15)
+    if why:
+        return [FUEL_PROVIDER], why
+    names = []
+    for entry in (doc or {}).get("auth") or []:
+        if not isinstance(entry, dict):
+            continue
+        sources = entry.get("sources") or []
+        if any(isinstance(s, dict) and s.get("status") == "available" for s in sources):
+            name = str(entry.get("provider") or "").strip()
+            if name:
+                names.append(name)
+    if not names:
+        return [FUEL_PROVIDER], "quota-axi auth named no provider with a credential"
+    # Stable, so the rest keep quota-axi's own order behind the one fleet runs.
+    names.sort(key=lambda n: n != FUEL_PROVIDER)
+    return names, None
+
+
+def fuel_read(providers: list):
+    """ONE quota-axi invocation, however many providers are being measured.
+
+    The comma list is quota-axi's own way of asking for several at once, and it
+    is the only way this may ask: the pane redraws on a timer and a reading
+    that costs one process per provider is a reading that burns the fuel it
+    reports.
+
+    `--full` because `state.refreshedAt` — the age that makes a cached number
+    honest — is demoted out of the default tier; the account identity `--full`
+    also returns is never read and never printed. `--no-credential-refresh`
+    because this command READS: a plain quota read may delegate an expired
+    session's renewal to the vendor CLI that owns it, and that is a write.
+    """
+    return run_json(
+        ["quota-axi", "--provider", ",".join(providers), "--full", "--json",
+         "--no-credential-refresh"],
+        timeout=20,
+    )
+
+
+def fuel_blank(provider: str, read_at: int) -> dict:
+    """One provider's record with nothing read into it yet."""
+    return {
+        # EPOCH SECONDS, not the ISO instant the rest of this document speaks
+        # in, because the reading is CACHED by its readers and an age is what
+        # a cached number has to be drawn with. The TUI pane is the one that
+        # cannot do the arithmetic itself: a thurbox pane has no `os`, so an
+        # instant it cannot subtract is an instant it cannot age.
+        "read_at": read_at,
+        "unavailable": None, "source": "quota-axi", "provider": provider,
+        "remaining": None, "reserve": FUEL_RESERVE, "below_reserve": None,
+        "binding": None, "resets_at": None, "windows": [], "stale": None,
+        "state": None, "refreshed_at": None, "retry_after": None, "error": None,
+        "schema_version": None,
+    }
+
+
+def fuel_record(doc, provider: str, read_at: int) -> dict:
+    """One provider's reading, out of the document `fuel_read` answered.
 
     IT READS `windows[]`, NOT THE HEADROOM SUMMARY. On a rate-limited fetch
     quota-axi answers with an empty `quota[]` and an `attention[]` row per
@@ -496,7 +560,7 @@ def probe_fuel() -> dict:
     would report that live case as no reading at all; reading the windows
     reports a stale number and says it is stale, which is the true statement.
     The binding window is whichever has least remaining, and every window is
-    printed so the reader can see the rest.
+    kept so the reader can see the rest.
 
     IT REPORTS WHAT WAS MEASURED, NEVER WHAT WAS PROJECTED. quota-axi also
     publishes `pace`, `burnMultiple`, `runway`, `usableRunwaySeconds` and
@@ -505,54 +569,29 @@ def probe_fuel() -> dict:
     spent window is spent, and when it comes back is the fact that can be acted
     on.
 
-    `--provider claude` because that is the agent the fleet runs: every other
-    provider on this machine is one the operator does not reach through fleet,
-    and its auth state is not fleet's problem to report. `--full` because
-    `state.refreshedAt` — the age that makes a cached number honest — is
-    demoted out of the default tier; the account identity `--full` also returns
-    is never read and never printed. `--no-credential-refresh` because this
-    command READS: a plain quota read may delegate an expired session's
-    renewal to the vendor CLI that owns it, and that is a write.
+    A PROVIDER THAT COULD NOT BE READ CARRIES ITS OWN `unavailable` and no
+    `remaining` at all. One provider failing is not the others failing, and a
+    zero here would read as a spent window rather than an unread one.
 
     Written against `schemaVersion` 5 and parsed defensively rather than
-    pinned — a field this cannot find costs the section its reading and names
+    pinned — a field this cannot find costs the record its reading and names
     itself, which is the same bargain every other probe makes.
     """
-    sec: dict = {
-        # EPOCH SECONDS, not the ISO instant the rest of this document speaks
-        # in, because the reading is CACHED by its readers and an age is what
-        # a cached number has to be drawn with. The TUI pane is the one that
-        # cannot do the arithmetic itself: a thurbox pane has no `os`, so an
-        # instant it cannot subtract is an instant it cannot age.
-        "read_at": int(time.time()),
-        "unavailable": None, "source": "quota-axi", "provider": FUEL_PROVIDER,
-        "remaining": None, "reserve": FUEL_RESERVE, "below_reserve": None,
-        "binding": None, "resets_at": None, "windows": [], "stale": None,
-        "state": None, "refreshed_at": None, "retry_after": None, "error": None,
-        "schema_version": None,
-    }
-    doc, why = run_json(
-        ["quota-axi", "--provider", FUEL_PROVIDER, "--full", "--json",
-         "--no-credential-refresh"],
-        timeout=20,
-    )
-    if why:
-        sec["unavailable"] = why
-        return sec
+    sec = fuel_blank(provider, read_at)
     if not isinstance(doc, dict):
         sec["unavailable"] = "quota-axi did not answer a report"
         return sec
     sec["schema_version"] = doc.get("schemaVersion")
-    provider = next(
+    found = next(
         (p for p in doc.get("providers") or []
-         if isinstance(p, dict) and p.get("provider") == FUEL_PROVIDER),
+         if isinstance(p, dict) and p.get("provider") == provider),
         None,
     )
-    if provider is None:
-        sec["unavailable"] = f"quota-axi reported no {FUEL_PROVIDER} provider"
+    if found is None:
+        sec["unavailable"] = f"quota-axi reported no {provider} provider"
         return sec
 
-    state = provider.get("state") if isinstance(provider.get("state"), dict) else {}
+    state = found.get("state") if isinstance(found.get("state"), dict) else {}
     sec["state"], sec["stale"] = state.get("status"), bool(state.get("stale"))
     sec["error"] = state.get("error")
     sec["refreshed_at"] = state.get("refreshedAt")
@@ -562,7 +601,7 @@ def probe_fuel() -> dict:
     if isinstance(state.get("retryAfter"), str):
         sec["retry_after"] = state["retryAfter"]
 
-    windows = fuel_windows(provider)
+    windows = fuel_windows(found)
     if not windows:
         # No number is quota-axi's own encoding of "no number", so it is
         # reported as one — never as a zero, which reads as a spent window
@@ -576,6 +615,70 @@ def probe_fuel() -> dict:
     sec["remaining"] = binding["remaining"]
     sec["below_reserve"] = binding["remaining"] < FUEL_RESERVE
     sec["resets_at"] = binding["resets_at"]
+    return sec
+
+
+def probe_fuel(provider: str = FUEL_PROVIDER) -> dict:
+    """ONE provider's remaining windows, per quota-axi. Fleet's own by default.
+
+    THE ONLY SOURCE. `thurbox-cli session get --json` carries no token, usage,
+    cost or limit field, so nothing thurbox knows can answer this. quota-axi
+    (MIT, github.com/kunchenguid/quota-axi) reads the first-party endpoints and
+    normalises them. It is a tool on the operator's PATH and never a bundled
+    dependency: absent, it costs this section and says so.
+
+    IT MEASURES THE ACCOUNT, NOT A SESSION. These are the subscription windows
+    the lead and every worker spend at once, so this is ONE reading per
+    provider and can never say what a given worker burned. Six workers
+    dispatched together spend one window set six ways.
+
+    THIS IS THE GATE'S ENTRY POINT, and that is why it takes one provider.
+    `scripts/lib/queue.py`'s `account_fuel()` calls it to decide whether
+    `queue.sh refuel` restarts anything, and the fleet runs `claude` agents —
+    so it must gate on the `claude` window and never on an average or on
+    whichever provider happens to be lowest. A spent `zai` window is not a
+    reason to leave a `claude` worker sitting at its limit. The SCREEN reads
+    every authenticated provider instead, through `probe_fuel_all()`.
+    """
+    read_at = int(time.time())
+    doc, why = fuel_read([provider])
+    if why:
+        sec = fuel_blank(provider, read_at)
+        sec["unavailable"] = why
+        return sec
+    return fuel_record(doc, provider, read_at)
+
+
+def probe_fuel_all() -> dict:
+    """Every authenticated provider's reading, in one quota-axi call.
+
+    ONE READING PER SUBSCRIPTION THE OPERATOR ACTUALLY HAS. The account may
+    hold several — `claude`, `codex`, `zai` — and a screen that reported only
+    the first would be silent about the windows the operator is also spending.
+    Which ones exist is `authenticated_providers()`'s question, asked of
+    credentials on disk; a provider with none is never probed, because that
+    round trip only ever ends in what `auth` already said.
+
+    THE COST IS FIXED AT ONE FETCH. Discovery is a file read and the reading
+    itself is a single `--provider a,b,c` invocation, so three subscriptions
+    cost what one did. `unavailable` here is the whole reading failing —
+    quota-axi missing, or answering nothing; one provider failing is that
+    provider's own `unavailable` and leaves the others intact.
+    """
+    read_at = int(time.time())
+    names, why = authenticated_providers()
+    sec: dict = {
+        "read_at": read_at, "unavailable": None, "source": "quota-axi",
+        "reserve": FUEL_RESERVE, "discovery": why, "schema_version": None,
+        "providers": [],
+    }
+    doc, why = fuel_read(names)
+    if why:
+        sec["unavailable"] = why
+        return sec
+    if isinstance(doc, dict):
+        sec["schema_version"] = doc.get("schemaVersion")
+    sec["providers"] = [fuel_record(doc, name, read_at) for name in names]
     return sec
 
 
@@ -731,32 +834,57 @@ def render_checkout(sec: dict) -> list:
 
 
 
+def fuel_provider_lines(rec: dict) -> list:
+    """One provider's block: its reading, then every window behind it."""
+    label = str(rec.get("provider") or "?")
+    if rec["unavailable"]:
+        return [f"  {label}  unavailable — {rec['unavailable']}"]
+    line = f"{rec['remaining']}% remaining   reserve {rec['reserve']}%"
+    if rec["binding"]:
+        line += f"   binding {rec['binding']}"
+    lines = [f"  {label}  {line}"]
+    for w in rec["windows"]:
+        resets = f"resets {w['resets_at']}" if w["resets_at"] else "not triggered yet"
+        binds = "  binds" if w["id"] == rec["binding"] else ""
+        lines.append(f"      {w['id']:<16}{w['remaining']:>4}%  {resets}{binds}")
+    # A cached number is a fact with an age, and the age is part of the fact.
+    if rec["stale"] or (rec["state"] and rec["state"] != "fresh"):
+        detail = [str(rec["state"] or "stale")]
+        if rec["refreshed_at"]:
+            detail.append(f"last refreshed {rec['refreshed_at']}")
+        if rec["error"]:
+            detail.append(str(rec["error"]))
+        if rec["retry_after"]:
+            detail.append(f"retry after {rec['retry_after']}")
+        lines.append("      " + "; ".join(detail))
+    if rec["below_reserve"]:
+        lines.append(f"      ! under the {rec['reserve']}% reserve — dispatch, "
+                     "do not investigate (FLEET.md `## Fuel`)")
+    return lines
+
+
 def render_fuel(sec: dict) -> list:
+    """The FUEL section: one block per provider the operator is signed in to.
+
+    ONE READING PER SUBSCRIPTION, never one summed or averaged across them.
+    Each provider's windows reset on their own clock and are spent by whatever
+    reaches for that provider, so a single number over three subscriptions
+    would be a number nobody could act on.
+    """
     if sec["unavailable"]:
         return [head("FUEL", f"unavailable — {sec['unavailable']}")]
-    line = f"{sec['remaining']}% remaining   reserve {sec['reserve']}%"
-    if sec["binding"]:
-        line += f"   binding {sec['binding']}"
-    lines = [
-        head("FUEL", line),
-        cont(f"{sec['provider']} — account windows, every session spends them at once"),
-    ]
-    for w in sec["windows"]:
-        resets = f"resets {w['resets_at']}" if w["resets_at"] else "not triggered yet"
-        binds = "  binds" if w["id"] == sec["binding"] else ""
-        lines.append(f"    {w['id']:<16}{w['remaining']:>4}%  {resets}{binds}")
-    # A cached number is a fact with an age, and the age is part of the fact.
-    if sec["stale"] or (sec["state"] and sec["state"] != "fresh"):
-        detail = [str(sec["state"] or "stale")]
-        if sec["refreshed_at"]:
-            detail.append(f"last refreshed {sec['refreshed_at']}")
-        if sec["error"]:
-            detail.append(str(sec["error"]))
-        if sec["retry_after"]:
-            detail.append(f"retry after {sec['retry_after']}")
-        lines.append(cont("; ".join(detail)))
-    if sec["below_reserve"]:
-        lines.append(cont(f"! under the {sec['reserve']}% reserve — dispatch, do not investigate (FLEET.md `## Fuel`)"))
+    if not sec["providers"]:
+        return [head("FUEL", "unavailable — no provider has a credential to read")]
+    lines = [head(
+        "FUEL",
+        f"{len(sec['providers'])} provider(s) — account windows, "
+        "every session spends them at once",
+    )]
+    if sec.get("discovery"):
+        lines.append(cont(f"providers not discovered ({sec['discovery']}) — "
+                          f"read {FUEL_PROVIDER} alone"))
+    for rec in sec["providers"]:
+        lines += fuel_provider_lines(rec)
     return lines
 
 
@@ -767,7 +895,7 @@ RECORD_FIELDS = (
 
 
 def render_fuel_record(sec: dict) -> str:
-    """The same reading, one `name<TAB>value` line per field.
+    """The same reading, as `name<TAB>value` lines — ONE RECORD PER PROVIDER.
 
     FOR A READER WITH NO JSON. `interface/fleet_queue.lua` draws this reading
     in the TUI column, and a thurbox pane is Lua with no JSON parser and no
@@ -775,11 +903,20 @@ def render_fuel_record(sec: dict) -> str:
     how its queue probe answers. A tab because none of these values carries
     one.
 
-    IT IS NOT A SECOND READING. Every field here is `probe_fuel()`'s own, under
-    its own name, so the record and the FUEL section on the screen cannot come
-    to different conclusions about what quota-axi said. Nothing is computed
-    here and nothing is phrased here; `render_fuel` stays the only renderer
-    that puts this into words.
+    RECORDS ARE SEPARATED BY A BLANK LINE, and each names itself with its own
+    `provider` field. That is the whole extension for several subscriptions: a
+    reader that splits on blank lines and then on tabs is the same kind of
+    reader the single record needed, where a provider-qualified key would have
+    made every field name dynamic. A reading nobody could take at all — no
+    quota-axi, no credential anywhere — is ONE record carrying `unavailable`
+    and no provider, which is exactly what a single-provider reading that
+    failed used to look like.
+
+    IT IS NOT A SECOND READING. Every field here is `probe_fuel_all()`'s own,
+    under its own name, so the record and the FUEL section on the screen cannot
+    come to different conclusions about what quota-axi said. Nothing is
+    computed here and nothing is phrased here; `render_fuel` stays the only
+    renderer that puts this into words.
 
     A FIELD WITH NO VALUE IS ABSENT, never empty and never zero. An unreadable
     reading carries `unavailable` and no `remaining` at all, because a
@@ -790,17 +927,25 @@ def render_fuel_record(sec: dict) -> str:
     # itself calls the same fact `binding`, since the fuel record is the only
     # place that has to speak the pane's vocabulary.
     source = {"limited_by": "binding"}
-    lines = []
-    for name in RECORD_FIELDS:
-        value = sec.get(source.get(name, name))
-        if value is None or value == "":
-            continue
-        if isinstance(value, bool):
-            value = "1" if value else "0"
-        elif isinstance(value, list):
-            value = ",".join(str(v) for v in value)
-        lines.append(f"{name}\t{value}")
-    return "\n".join(lines) + "\n"
+    records = sec.get("providers") or [{
+        "read_at": sec.get("read_at"),
+        "reserve": sec.get("reserve"),
+        "unavailable": sec.get("unavailable") or "no provider has a credential to read",
+    }]
+    blocks = []
+    for rec in records:
+        lines = []
+        for name in RECORD_FIELDS:
+            value = rec.get(source.get(name, name))
+            if value is None or value == "":
+                continue
+            if isinstance(value, bool):
+                value = "1" if value else "0"
+            elif isinstance(value, list):
+                value = ",".join(str(v) for v in value)
+            lines.append(f"{name}\t{value}")
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks) + "\n"
 
 
 def render(doc: dict) -> str:
@@ -826,7 +971,7 @@ def collect() -> dict:
     tasks = all_tasks(queue)
     return {
         "generated": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
-        "fuel": probe_fuel(),
+        "fuel": probe_fuel_all(),
         "queue": queue,
         "sessions": probe_sessions(tasks),
         "prs": probe_prs(tasks),
@@ -840,7 +985,8 @@ def main(argv: list) -> int:
     p.add_argument("--json", action="store_true", help="the same reading, machine-readable")
     p.add_argument(
         "--fuel", action="store_true",
-        help="only the fuel reading, as one name<TAB>value record per field",
+        help="only the fuel reading, as one blank-line-separated "
+             "name<TAB>value record per provider",
     )
     args = p.parse_args(argv)
 
@@ -849,7 +995,7 @@ def main(argv: list) -> int:
     # `thurbox-cli session list` — a bill a reader that only wants the fuel
     # number should not pay, and one the TUI pane could not pay at all.
     if args.fuel:
-        sec = probe_fuel()
+        sec = probe_fuel_all()
         if args.json:
             print(json.dumps(sec, indent=2))
         else:
