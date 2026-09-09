@@ -4,9 +4,7 @@ This is a **control-plane** repo. When you work here you are helping orchestrate
 and map projects, not shipping application code.
 
 This file is the one copy. `CLAUDE.md` beside it is a two-line pointer that
-imports it, the same way `.claude/skills` is a symlink to `.agents/skills` and
-the extension surfaces one `FLEET.md` under three names. Edit this file, not the
-pointer.
+imports it. Edit this file, not the pointer.
 
 ## What this repo is
 
@@ -56,13 +54,11 @@ names every path and the reason for each.
 - `interface/fleet_queue.lua` — the TUI queue pane, and the fleet's only live
   view of the queue, drawn in a thurbox column over the same records
   `queue.sh list` reads. `scripts/install-extension.sh` installs it
-  with `thurbox-cli plugin install`; the file's own header owns the view, and
-  `extension.toml.in`'s header argues why it is not an `[[external_files]]`
-  payload. **Placing it is a guarded block in the user's `layout.lua` and
-  nothing here writes it** — a pane no arrangement places loads, lists, and
-  draws nothing. `./scripts/pane-selftest.sh` renders it offline — no thurbox,
-  no queue, no session — which is how a claim about what it DRAWS gets argued
-  with rather than squinted at; `check.sh pane` runs it.
+  with `thurbox-cli plugin install`; the file's own header owns the view.
+  **Placing it is a guarded block in the user's `layout.lua` and nothing here
+  writes it** — a pane no arrangement places loads, lists, and draws nothing.
+  `./scripts/pane-selftest.sh` renders it offline — no thurbox, no queue, no
+  session; `check.sh pane` runs it.
   `.agents/skills/fleet-pane/` is the driving surface for all of it: install,
   verify, place, hide, remove, diagnose.
 - `orchestration/playbooks/<name>.md` — reusable recipes for running thurbox.
@@ -124,35 +120,31 @@ The loop, driven by `./scripts/queue.sh`:
    it and each of these commands refreshes its facts — so what is left for you
    is the half no record can hold: the goal in your words, the decisions, what
    went wrong, the outcome. Write those into it while you still know them.
-6. **Release is a third thing, and it is not manual.** `outcome: shipped` means
-   a pull request is OPEN, or, for a task whose declared publish method is
-   `push`, a commit already on the base branch — that session is the cheap way
-   to fix what review finds — reaping at `collect` time once turned a
-   follow-up message into a whole re-spawn. So a task moves to `landed` only
-   when the FORGE says its artifact merged (immediately, for `push`, since
-   there is no pull request to wait on), and `queue.sh reap` — which `collect`
-   runs itself — deletes
-   the session and its worktree then. It never touches one thurbox says is
-   working or blocked, nor one a worker gave up in: that session is the
+6. **Release is a third thing, and it is not manual.** `outcome: shipped`
+   means a pull request is OPEN, or, for a task whose declared publish method is
+   `push`, a commit already on the base branch — and that session is kept as the
+   cheap way to fix what review finds. A task moves to `landed` only when the
+   FORGE says its artifact merged (immediately, for `push`, since there is no
+   pull request to wait on), and `queue.sh reap` — which `collect` runs itself —
+   deletes the session and its worktree then. It never touches one thurbox says
+   is working or blocked, nor one a worker gave up in: that session is the
    evidence. `reap --dry-run` says what it would do. Blockers clear on `landed`
    too, so a dependent task waits for the code to actually be on `main`. The
-   same sweep ARCHIVES a topic whose every task reached `landed` or
-   `abandoned` — a flag on `topic.yaml` that drops it from all four default
-   views, each of which still prints how many it is hiding. `stuck` and
-   `failed` are not terminal for that, `list --archived` and `show <ref>` still
-   reach it, and `add` un-archives.
+   same sweep ARCHIVES a topic whose every task reached `landed` or `abandoned`
+   — a flag on `topic.yaml` that drops it from all four default views, each of
+   which still prints how many it is hiding. `stuck` and `failed` are not
+   terminal for that, `list --archived` and `show <ref>` still reach it, and
+   `add` un-archives.
 7. **The pull request outlives the task, so `queue.sh shepherd` is a fourth
    thing, run as reflexively as `collect`** — which names it whenever it closed
    a task that left a PR open. It asks the FORGE for every open PR on the repos
-   the queue's tasks name, not the tasks' recorded artifacts: a task records one
-   artifact and #25 was a second PR from a task still pointing at the merged
-   #23. A PR is linked back by artifact or head branch; an unlinked one is
+   the queue's tasks name, not the tasks' recorded artifacts. A PR is linked
+   back by artifact or head branch; an unlinked one is
    still classified and merged, it just has no session to fix it. It merges
    only in the repos `AUTO_MERGE_REPOS` names in `scripts/lib/queue.py`, and
    only for a PR whose head branch is in that repo, opened by someone who can
-   push there, carrying a `no-mistakes` attestation for its **current** head —
-   the five headings are text anyone can paste and were never the gate they
-   looked like. That attestation gate is the one thing the declared publish
+   push there, carrying a `no-mistakes` attestation for its **current** head.
+   That attestation gate is the one thing the declared publish
    method moves: a task that was declared `no-mistakes` and carries none gets a
    fixer, one that was never asked for one is recorded `green` and handed back
    unmerged. Every pass writes what it saw onto the task's `publish` block.
@@ -245,19 +237,17 @@ know before you debug the extension:
   `extension.toml` was cleaned away. `./scripts/install-extension.sh` is this
   extension's real update command.
 - **The lead SESSION is Mission Control; the EXTENSION is still `fleet`**,
-  which is why every command above still takes `fleet`. The session carries the
-  operator's name for the lead, the extension carries the repo's — nothing reads
-  the repo name, so the two are free to differ. The extension registers **no
-  agent of its own**: the lead binds to thurbox's stock `claude`, so it inherits
-  the hook settings that let it report state and whatever model `claude`
-  defaults to. `extension.toml.in`'s no-`[[agents]]` note owns why. A glyph is
-  part of the session name because thurbox has no per-session icon field, and
-  WHICH glyph is a setting (see the glyph bullet above), so the mailbox address
-  must be **pasted** out of `thurbox-cli session list`, not typed — no keyboard
-  has either glyph, and nothing here spells the full name except the rendered
-  manifest. `extension.toml.in`'s RENAMING header owns the split and the
-  sequence for renaming either, including which one costs the lead its
-  conversation.
+  which is why every command above still takes `fleet`. The extension registers
+  **no agent of its own**: the lead binds to thurbox's stock `claude`, so it
+  inherits the hook settings that let it report state and whatever model
+  `claude` defaults to. `extension.toml.in`'s no-`[[agents]]` note owns why. A
+  glyph is part of the session name because thurbox has no per-session icon
+  field, and WHICH glyph is a setting (see the glyph bullet above), so the
+  mailbox address must be **pasted** out of `thurbox-cli session list`, not
+  typed — no keyboard has either glyph, and nothing here spells the full name
+  except the rendered manifest. `extension.toml.in`'s RENAMING header owns the
+  split and the sequence for renaming either, including which one costs the lead
+  its conversation.
 
 ## Pulling changes in
 

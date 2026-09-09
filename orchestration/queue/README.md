@@ -21,7 +21,7 @@ policy, **you** own that file, and it is gitignored like the rest of this
 directory. Write your standing preferences into it — "always use my `xyz`
 skill" — and every brief scaffolded afterwards points its worker there too. No
 such file, no pointer. Copy `OPERATOR.example.md` to start; its header holds
-the format, the precedence and why it is not called `CONSTITUTION.md`.
+the format and the precedence.
 
 `../../scripts/queue.sh` owns it. Its header is the full usage; this file is
 the layout, so a fresh clone with an empty queue still shows what goes here.

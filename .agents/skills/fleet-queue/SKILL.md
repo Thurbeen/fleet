@@ -171,10 +171,9 @@ padding and is the reason the worker gets it right on the first pass.
 content that belongs under one of the four. Inside a section, `X, not Y` — and
 `is not`, `That is …`, `deliberately`, `on purpose` — earns its place only
 where the reader would otherwise believe Y. Seven briefs written before this
-rule ran to 1191 lines and carried 33 `X, not Y`s, 18 bare `is not`s and 20
-invented headings; several of the headings were themselves the construction
-("The lever, and it is the repo's own rule"). None of it told a worker
-anything.
+rule carried 33 `X, not Y`s, 18 bare `is not`s and 20 invented headings between
+them — several of the headings were themselves the construction ("The lever,
+and it is the repo's own rule") — and none of it told a worker anything.
 
 **Cut persuasion.** The worker follows the brief; it does not have to be
 convinced. Drop the sentence explaining why the task is worth doing, the one
@@ -305,9 +304,9 @@ what this exists to stop — a blocker was once recorded with the reason
 until someone deleted it by hand.
 
 So refs record nothing. A task left out is still `queued`, still in the ready
-set, and the next bare `dispatch` sends it. Do not use them to drip-feed: a
-queue that runs one task at a time is slower than no queue at all, and holding
-work back for any reason you could write down belongs in `block` instead.
+set, and the next bare `dispatch` sends it. Do not use them to drip-feed:
+holding work back for any reason you could write down belongs in `block`
+instead.
 
 ### A remote task is probed before it is spawned
 
@@ -321,18 +320,16 @@ the host and re-running `dispatch` sends it:
     repo        --repo is a git checkout at that path ON THAT MACHINE
 ```
 
-The report names the probe that failed. This exists because a remote worker
-that starts and then fails at its first `git` call looks exactly like an agent
-bug and is not one — and finding that out costs you a pane on another machine.
+The report names the probe that failed. A remote worker that starts and then
+fails at its first `git` call looks exactly like an agent bug and is not one.
 
 Then the brief, PROMPT.md, POLICY.md and (when the operator has one) OPERATOR.md
 are each **copied to the host**, into the worktree thurbox made there, because
 the absolute paths a local worker is handed are not on that filesystem. Each
-canonical copy stays here and is still what `check` validates and `dispatch`
-refuses when the brief is unwritten; what lands on the host is a copy, made
-after that refusal has already had its say. A remote worker is told to write
-`result.md` beside the brief it is reading, and to delete all of these copies
-before it commits.
+canonical copy stays here and is still what `check` validates and what
+`dispatch` refuses when unwritten. A remote worker is told to write `result.md`
+beside the brief it is reading, and to delete all of these copies before it
+commits.
 
 ### The trust dialog, handled here rather than remembered
 
@@ -376,13 +373,9 @@ answers the trust dialog first, exactly as dispatch does, and reads the
 returncode — a send into a session that has gone away is `NOT DELIVERED`, on
 the record, rather than a success nobody checked.
 
-**Why not `thurbox-cli session send`?** Because it leaves no trace, and the one
-honest signal you have is that you know WHEN YOU SENT. On 2026-09-09 a parked
-worker was sent new scope; the CLI answered `sent: true, submitted: true`; ten
-minutes later the session read `state: done | hook: done | age(s): 3043` — a
-state reported *before* the message. The worker looked dead. It had taken the
-message, done the work and committed it, and the only way that was discovered
-was `git log` in the worker's worktree.
+`thurbox-cli session send` leaves no trace, and the one honest signal you have
+is that you know WHEN YOU SENT — `thurbox-session` §4c is the observation that
+established that.
 
 So `send` writes the instant down with a baseline of the branch head, and
 `list` and `show` compare it against two things a worker cannot fake:
@@ -446,11 +439,10 @@ not send mail.
 ### `collect` verifies the artifact — you do not have to take the worker on trust
 
 A worker that reports `shipped` with a URL is making two claims, and the second
-one used to go unchecked: that it published the way it was told to. Twice it
-had not, both were reported to the operator as shipped, and he found it by
-reading the bodies himself. "Use the pipeline" describes a METHOD, and a method
-leaves no trace — so a task declares instead what its publish must LEAVE
-BEHIND, and `collect` goes and looks for that:
+is that it published the way it was told to. Twice it had not, and both were
+reported to the operator as shipped. "Use the pipeline" describes a METHOD, and
+a method leaves no trace — so a task declares instead what its publish must
+LEAVE BEHIND, and `collect` goes and looks for that:
 
 | `--publish` | the worker produces | what collect asks |
 |---|---|---|
@@ -498,23 +490,15 @@ as it stands, `collect --allow-unverified` closes it and records that you did.
 
 ### 5b. `reap` — a session lives until its work lands, and not one turn longer
 
-Four worker sessions once accumulated on one machine. Three had merged pull
-requests; the oldest had been idle for fifteen hours and its worktree held
-twenty gigabytes. The loop already said "delete each session as it closes out"
-— documented, manual, and therefore never done.
-
-**The gate is the merge, not the conclusion, and that distinction was expensive
-to learn.** For the two methods that end in a pull request, `outcome: shipped`
-only means one is OPEN. Twice, a pull request collected as `shipped` turned out
-to have been opened by hand rather than through the pipeline; the fix was a
-follow-up to a session that was still alive, which cost a message. Reaping at
-collect time would have made the same fix cost a re-spawn: a new worktree, a
-cold agent, the brief read from nothing. A `push` task has no such gap —
-`collect` refuses to conclude it `shipped` until it has already asked git
-whether the commit reached the base branch (above, "`collect` verifies the
-artifact"), so by the time one sits in `done` its work is already confirmed on
-`main`, and reap's own pass promotes it to `landed` in that same run with
-nothing left to ask the forge.
+**The gate is the merge, not the conclusion.** For the two methods that end in a
+pull request, `outcome: shipped` only means one is OPEN, and the session that
+opened it is the cheap way to fix what review finds — reaping at collect time
+makes that fix cost a re-spawn: a new worktree, a cold agent, the brief read
+from nothing. A `push` task has no such gap — `collect` refuses to conclude it
+`shipped` until it has already asked git whether the commit reached the base
+branch (above, "`collect` verifies the artifact"), so by the time one sits in
+`done` its work is already confirmed on `main`, and reap's own pass promotes it
+to `landed` in that same run with nothing left to ask the forge.
 
 So a task gets a state AFTER `done`:
 
@@ -548,14 +532,12 @@ headless, never comes — and freeing the disk is the whole point. The record
 keeps a receipt, so `list` and `show` stop naming an id that no longer
 resolves.
 
-**`collect` runs the reap itself**, and that is deliberate: the failure being
-fixed is exactly "a documented manual step that never ran", so the release
-belongs in the command you already run rather than in one more you have to
-remember. Its gate is not collect's — nothing collected a moment ago has a
-merged pull request — so it can only ever act on work from an earlier pass.
-`collect --no-reap` records what landed and touches no session;
-`queue.sh reap --dry-run` says what it would do and writes nothing. Reach for
-the dry run first whenever you are unsure.
+**`collect` runs the reap itself**, so the release belongs to the command you
+already run rather than to one more you have to remember. Its gate is not
+collect's — nothing collected a moment ago has a merged pull request — so it can
+only ever act on work from an earlier pass. `collect --no-reap` records what
+landed and touches no session; `queue.sh reap --dry-run` says what it would do
+and writes nothing. Reach for the dry run first whenever you are unsure.
 
 It only ever considers sessions THIS QUEUE recorded. Your own session and
 anything spawned by hand are not in the records; the lead's is refused by name
@@ -605,18 +587,17 @@ result, `reap` sees a task that is not finished. Nothing in the loop notices.
 **It asks the ACCOUNT before it looks at a single session, and that order is the
 whole point.** The quota window it reads is the operator's own subscription —
 the lead and every worker draw on it. It reads the `claude` account alone,
-through `fleet_status.probe_fuel`, deliberately kept single-provider: the fleet
-runs `claude` agents, so a spent window on a provider the fleet does not
-dispatch through must not strand a `claude` worker at its limit. `fleet-status.sh`'s
-`FUEL` section reads every authenticated provider instead
-(`fleet_status.probe_fuel_all`), so the two can legitimately disagree — the
-screen may show a provider fine while `refuel` still reports `claude` spent, or
-vice versa; a task running another agent is reported undetermined rather than
-guessed at. So while `claude` is spent,
-every session is stuck for the same reason, and restarting them is worse than
-useless: each one resumes, hits the same wall within seconds, and burns the
-reset it was waiting for. Three concurrent pipeline runs did exactly that on
-2026-08-29 and lost every step in flight.
+through `fleet_status.probe_fuel`: the fleet runs `claude` agents, so a spent
+window on a provider the fleet does not dispatch through must not strand a
+`claude` worker at its limit. `fleet-status.sh`'s `FUEL` section reads every
+authenticated provider instead (`fleet_status.probe_fuel_all`), so the two can
+legitimately disagree — the screen may show a provider fine while `refuel` still
+reports `claude` spent, or vice versa; a task running another agent is reported
+undetermined rather than guessed at. So while `claude` is spent, every session
+is stuck for the same reason, and restarting them is worse than useless: each
+one resumes, hits the same wall within seconds, and burns the reset it was
+waiting for. Three concurrent pipeline runs did exactly that on 2026-08-29 and
+lost every step in flight.
 
 ```text
     account claude     spent        0% remaining — five_hour resets 2026-09-09T02:10:00+00:00
@@ -662,10 +643,9 @@ its host, so that one is reported `undetermined` rather than guessed at.
 ### 5d. `reconcile.sh` — the loop that runs 5, 5a and 5c for you
 
 Everything in §5 is something you have to remember. On 2026-09-08 nobody did,
-for one session, and it cost four separate things: 19 of 20 progress timelines
-empty, three merges unnoticed for forty minutes, six workers sitting at a token
-limit that the OPERATOR spotted, and a reaped session discovered through a
-`Session not found` error.
+for one session: 19 of 20 progress timelines empty, three merges unnoticed for
+forty minutes, and six workers sitting at a token limit that the OPERATOR
+spotted.
 
 ```sh
 ./scripts/reconcile.sh ensure     # start it unless it is running or asked down
@@ -696,11 +676,9 @@ quota fires no hook, so the timer is what actually catches it.
 ## 5a. Shepherd the pull requests — the fourth thing
 
 A task closes when its worker writes `result.md`. **The pull request it named
-goes on living.** In one day this control plane lost three round trips to that
-gap: #14 went `CONFLICTING` the moment #13 merged and nothing noticed; #11 and
-#12 were opened outside the pipeline and nobody saw for hours; a pipeline
-review finding sat in a PR body until a human read it out. Every one was a
-person noticing something a machine could have.
+goes on living** — it turns `CONFLICTING` when the one under it merges, its
+checks fail, a review lands on it, and none of that reaches the task that
+opened it.
 
 ```bash
 ./scripts/queue.sh shepherd --dry-run   # what it would dispatch and merge
@@ -739,12 +717,11 @@ checkout", which is true and sends you looking in the wrong place. Send the fix
 into that worker's own session while it is still alive — which is exactly what
 §5b keeps it alive for.
 
-**Dispatching the fixer is the point.** A status report would have saved none
-of those three round trips, because noticing was never the expensive part. The
-fixer gets a written brief of its own — the condition, which PR merged
-underneath it and what that deleted, and that the fix updates the PR **in
-place** — and it lands on a checkout of the branch that already exists, so the
-push reaches the pull request that is already open.
+**Dispatching the fixer is the point**, not the report: noticing was never the
+expensive part. The fixer gets a written brief of its own — the condition, which
+PR merged underneath it and what that deleted, and that the fix updates the PR
+**in place** — and it lands on a checkout of the branch that already exists, so
+the push reaches the pull request that is already open.
 
 Three things it will not do, and they are what make it safe to run:
 

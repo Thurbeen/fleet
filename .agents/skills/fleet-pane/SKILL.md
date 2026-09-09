@@ -55,10 +55,10 @@ disappeared would read as "nothing to report" when it means "nobody could
 tell". Either way `./scripts/fleet-status.sh` names every provider and the
 reason its fetch failed.
 
-**Two readings are not bars**, and each looks different on purpose: a probe
-that has not answered is a spinner, and a stale reading is hatched and flagged,
-because a number that is remembered rather than observed must not look
-identical to one that was just measured.
+**Two readings are not bars**, and each looks different: a probe that has not
+answered is a spinner, and a stale reading is hatched and flagged, because a
+number that is remembered rather than observed must not look identical to one
+that was just measured.
 
 **The ⛽ on the head row has an off switch, and it is `FUEL_GLYPH` at the top of
 `interface/fleet_queue.lua`.** Set it to nil and the block draws exactly what it
@@ -83,26 +83,24 @@ row** — it replaces it rather than sitting above it. It says what the task was
 told to produce (`publish.method` — `no-mistakes`, `pr` or `push`), which pull
 request or commit that turned out to be, what fleet last saw when it looked at
 it, and how long ago it looked. The whole row is the link: Ctrl+Click it and the
-terminal opens the pull request, exactly as the URL row did before the two
-became one. Every word on it comes off `task.yaml`'s `publish` block, written by
-`collect`, `shepherd` and `reap` — the commands that do the looking — so the
-pane calls no `gh` and says nothing `queue.sh show` would not print in the same
-word. Colour carries the verdict, and **`green` is not the ok colour**: it means
-every gate the forge knows about holds and nobody vetted it, which is a
-different claim from `ready` and is why fleet will not merge it for you. The
-note beside a state is its next move, not its colour — `— yours to merge` on
-green, `— review` on `open`, since `open` is a fact `collect` proved, not a
-verdict, and gets no colour that would claim one. A narrow column drops the
-parts in a fixed order — the method first, then the note, then the age, then
-the `#44` — and the link survives losing its label. `interface/fleet_queue.lua`
-(`PUBLISH_WORD`, `PUBLISH_LADDER`) is the owner of that order and argues it in
-place.
+terminal opens the pull request. Every word on it comes off `task.yaml`'s
+`publish` block, written by `collect`, `shepherd` and `reap` — the commands that
+do the looking — so the pane calls no `gh` and says nothing `queue.sh show`
+would not print in the same word. Colour carries the verdict, and **`green` is
+not the ok colour**: it means every gate the forge knows about holds and nobody
+vetted it, which is a different claim from `ready` and is why fleet will not
+merge it for you. The note beside a state is its next move, not its colour —
+`— yours to merge` on green, `— review` on `open`, since `open` is a fact
+`collect` proved, not a verdict, and gets no colour that would claim one. A
+narrow column drops the parts in a fixed order — the method first, then the
+note, then the age, then the `#44` — and the link survives losing its label.
+`interface/fleet_queue.lua` (`PUBLISH_WORD`, `PUBLISH_LADDER`) is the owner of
+that order and argues it in place.
 
 **No row is drawn for a task with nothing to report about its publish**: a
 record from before `publish` existed, or a task whose publish has not started.
-The absence is what "nothing yet" has always looked like here, and a per-task
-row saying so would spend the columns this fold recovered on the tasks with the
-least to say. For the same reason the documents row no longer draws `0 events`.
+The absence is what "nothing yet" looks like here, as it is for the documents
+row, which no longer draws `0 events`.
 
 It runs inside the thurbox interface, which knows nothing about fleet, so it
 finds the control plane by **probing the lead session by NAME** and running
@@ -114,8 +112,8 @@ thurbox's `run` capability to ask it anything. The name lives in the
 remembering it.
 
 The constant holds the name **without the glyph**, and matches the lead behind
-any single mark in front of it. That is deliberate: which glyph the lead wears
-is a setting (`orchestration/session-glyphs.example.conf`) that
+any single mark in front of it: which glyph the lead wears is a setting
+(`orchestration/session-glyphs.example.conf`) that
 `scripts/install-extension.sh` renders into the manifest, and a pane spelling
 one of its values would say "no session" the day the operator flipped it.
 `./scripts/check.sh pane` holds the two files to the same name.
@@ -129,8 +127,7 @@ one of its values would say "no session" the day the operator flipped it.
 That is the whole command. The pane is **not a separate step**: that script
 installs the thurbox extension and, in a second pass, hands
 `interface/fleet_queue.lua` to `thurbox-cli plugin install` with the destination
-name and `--text`. Its header owns the details and the reason a pane travels
-this way rather than as an `[[external_files]]` payload in the manifest.
+name and `--text`. Its header owns the details.
 
 Two things to get right before running it:
 
@@ -314,9 +311,8 @@ It also runs `./scripts/pane-selftest.sh`, which is the half the greps cannot
 reach: it renders the pane offline and asserts the design rather than the
 wiring — one row per task, no row that carries no information, finished work
 weighing less than running work, the counter row and the section headings not
-contradicting each other, and all of it still fitting thirty columns. The pane
-spent a long time as a wall of uniform text precisely because nothing here
-could see a row. It needs `lua`.
+contradicting each other, and all of it still fitting thirty columns. It needs
+`lua`.
 
 Neither half is a Lua linter. The pane's own gate is `thurbox-cli plugin
 check`, which needs a thurbox install, so it belongs at install time — §3.

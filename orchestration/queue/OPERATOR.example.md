@@ -8,15 +8,8 @@ and only documents the format.
 is not empty, every brief written from then on points its worker at it — by
 absolute path, or, for a task running on a remote host, by a path relative to
 the brief itself — so a preference you write once reaches every task without
-being retyped into a brief or edited into a tracked file. If it does not
-exist, briefs say nothing about it — a fresh clone behaves exactly as it did
-before this file existed.
-
-**Why not `CONSTITUTION.md`,** which is what you probably call it: thurbox
-ships a `docs/CONSTITUTION.md` that means something else entirely, and a worker
-reading both repos would have to guess which one was meant. This is named for
-whose file it is instead. `POLICY.md` beside it is fleet's standing policy;
-this is yours.
+being retyped into a brief or edited into a tracked file. If it does not exist,
+briefs say nothing about it.
 
 ## What goes in it
 
@@ -40,10 +33,9 @@ task loads it. A preference true of one repo is better recorded in that repo's
 
 ## What it does not do
 
-Three things it never overrides, because the conflict is real and pretending
-otherwise is how a worker gets it wrong:
+Three things it never overrides:
 
-- **A brief wins over it.** The constitution ADDS to a brief's task-specific
+- **A brief wins over it.** This file ADDS to a brief's task-specific
   instructions and never replaces them. If a brief says to use a particular
   tool for this one task, that is what happens here.
 - **`POLICY.md` wins over it.** How a task publishes and what proves it,

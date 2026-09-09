@@ -58,10 +58,9 @@ thurbox-cli session create --name 'Run exec automations off the TUI thread' \
 | `--on-existing` | what a name collision means — never leave it defaulted, see §1c |
 | `--env` / `--command` / `--arg` / `--reports-as` | how the agent starts; render them from a profile, see §1d |
 
-The first seven rows place the work; the eighth says what a name already in use
-means (§1c) and the ninth shapes the agent that does it (§1d). Leave neither
-defaulted: the defaults silently make a second session under the same name, and
-give the new session whatever ambient environment the thurbox server has.
+The first seven rows place the work. Leave the last two undefaulted: the
+defaults silently make a second session under the same name (§1c), and give the
+new session whatever ambient environment the thurbox server has (§1d).
 
 Capture the returned UUID — every later command keys off it. `create --json`
 also returns **`created`**, which is `false` when `--on-existing adopt`
