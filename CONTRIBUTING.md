@@ -19,9 +19,9 @@ same thing. That matters more here than in most repos: **CI only fires on pull
 requests** while routine control-plane changes go straight to `main`, so the
 local run is the one doing the work.
 
-It needs `shellcheck`, `rumdl` and `python3` with PyYAML. A missing tool fails
-the check rather than skipping it — a gate that passes silently when its linter
-is absent is worse than no gate. The script's header is the full usage.
+A missing tool fails the check rather than skipping it — a gate that passes
+silently when its linter is absent is worse than no gate. The script's header
+holds the full tool list and the full usage.
 
 ### Pre-commit hooks
 

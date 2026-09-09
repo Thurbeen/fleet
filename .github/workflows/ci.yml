@@ -188,12 +188,23 @@ jobs:
   # catches spans a Lua file, a shell script and two documents at once, so a
   # paths filter would have to list all four to be correct — and a filter that
   # is wrong here fails silently, which is the exact failure the check exists
-  # to prevent. It is four greps; running it always costs seconds.
+  # to prevent. It is greps and one offline render; running it always costs
+  # seconds.
   pane:
     name: TUI pane
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      # The pane is Lua, and `pane-selftest.sh` renders it rather than grepping
+      # it — so the gate needs an interpreter. `lua5.4` for `utf8.codes`, which
+      # is how the harness counts COLUMNS instead of bytes; the symlink is
+      # because the package ships no unversioned `lua` and `check.sh` looks for
+      # the same name an operator has locally.
+      - name: Install lua
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends lua5.4
+          sudo ln -sf /usr/bin/lua5.4 /usr/local/bin/lua
       - run: ./scripts/check.sh pane
 
   # Single required status check. Every job feeds this gate; a branch ruleset

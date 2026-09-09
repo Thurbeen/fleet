@@ -79,12 +79,15 @@ not control** — `./scripts/queue.sh` stays the only thing that writes:
   the terminal for it, with a bar for each subscription's fuel above the
   queue. `F3` opens and closes it.
 
-Each shows four things per task and no fifth: the plan, the progress, the
-outcome, and the pull request.
+Both read the same four files per task and no fifth: the plan, the progress,
+the outcome, and the pull request. The monitor has a whole screen and draws all
+four; the pane has a column, so it draws only what you would act on from a
+glance and leaves the rest to `queue.sh show`.
 
 ![The queue pane in a thurbox column beside the session list: two workers
 running, the topics they are working on grouped above the finished ones, and
-each task showing its plan, progress and outcome](media/fleet-queue-pane.gif)
+each task collapsed to one row — its ordinal and state glyph, with landed and
+abandoned tasks folded into a muted count](media/fleet-queue-pane.gif)
 
 ## Your working copy
 
