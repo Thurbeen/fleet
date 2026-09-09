@@ -86,7 +86,7 @@ follow from how the name is used:
 - **Imperative mood, sentence case.** Capitalize the first word only. Leave
   identifiers in the casing they already have — `gh`, `TUI`, `extension.toml`.
 - **No repo prefix.** The repo is already on the session (`session get --json`,
-  field `cwd`) and in the run log. Repeating it spends the 64 characters twice.
+  field `cwd`) and in the run log. Repeating it spends the 64-byte cap twice.
 - **Quote it.** The name is a mailbox address — `message send --to 'Run exec
   automations off the TUI thread'`. Unquoted, the shell splits it on spaces and
   the send addresses something that isn't there.
