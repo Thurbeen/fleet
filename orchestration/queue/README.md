@@ -92,7 +92,7 @@ branch (carrying a `no-mistakes` attestation for its head, for that method),
 git for a commit that reached the base branch. A task whose artifact is not
 there is reported and left OPEN, because "use the pipeline" is an instruction
 about a method and a method leaves no trace anyone can read. A check that could
-not run — no `gh`, no network, a base branch this machine cannot see — says
+not run — no forge CLI, no network, a base branch this machine cannot see — says
 exactly that and is never counted as either verdict. `collect
 --allow-unverified` closes a flagged task once you have read that artifact
 yourself. `queue.sh show` prints the method, the verdict and the publish state
