@@ -33,7 +33,8 @@ One worker session.
 
 1. Read `registry/context/<repo>.md` for goals and gotchas; fold the relevant
    bits into the prompt.
-2. Open a run log.
+2. `./scripts/queue.sh topic add` opens this run's log; write the goal into it
+   now.
 3. Fast-forward `base` in the target repo, then `session create --parent
    "$THURBOX_SESSION" --on-existing adopt` with the profile's flags →
    `session send`.
