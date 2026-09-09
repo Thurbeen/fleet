@@ -101,10 +101,13 @@ The loop, driven by `./scripts/queue.sh`:
    worker wrote and only that closes a task. A turn ending is not a task
    finishing. Record the run in `orchestration/runs/` as it happens.
 6. **Release is a third thing, and it is not manual.** `outcome: shipped` means
-   a pull request is OPEN, and that session is the cheap way to fix what review
-   finds — reaping at `collect` time once turned a follow-up message into a
-   whole re-spawn. So a task moves to `landed` only when the FORGE says its
-   artifact merged, and `queue.sh reap` — which `collect` runs itself — deletes
+   a pull request is OPEN, or, for a task whose declared publish method is
+   `push`, a commit already on the base branch — that session is the cheap way
+   to fix what review finds — reaping at `collect` time once turned a
+   follow-up message into a whole re-spawn. So a task moves to `landed` only
+   when the FORGE says its artifact merged (immediately, for `push`, since
+   there is no pull request to wait on), and `queue.sh reap` — which `collect`
+   runs itself — deletes
    the session and its worktree then. It never touches one thurbox says is
    working or blocked, nor one a worker gave up in: that session is the
    evidence. `reap --dry-run` says what it would do. Blockers clear on `landed`

@@ -410,18 +410,20 @@ twenty gigabytes. The loop already said "delete each session as it closes out"
 — documented, manual, and therefore never done.
 
 **The gate is the merge, not the conclusion, and that distinction was expensive
-to learn.** `outcome: shipped` means a pull request is OPEN. Twice, a pull
-request collected as `shipped` turned out to have been opened by hand rather
-than through the pipeline; the fix was a follow-up to a session that was still
-alive, which cost a message. Reaping at collect time would have made the same
-fix cost a re-spawn: a new worktree, a cold agent, the brief read from nothing.
+to learn.** `outcome: shipped` means a pull request is OPEN — or, for a `push`
+task, that its commit exists but has not yet been confirmed to have reached
+the base branch. Twice, a pull request collected as `shipped` turned out to
+have been opened by hand rather than through the pipeline; the fix was a
+follow-up to a session that was still alive, which cost a message. Reaping at
+collect time would have made the same fix cost a re-spawn: a new worktree, a
+cold agent, the brief read from nothing.
 
 So a task gets a state AFTER `done`:
 
 | state | means | its session |
 |---|---|---|
-| `done` | the worker concluded; its pull request is open | **kept** — the cheap way to fix what review finds |
-| `landed` | the artifact merged, or there was never one | released |
+| `done` | the worker concluded; its pull request is open, or, for a `push` task, its commit is not yet confirmed to have reached the base branch | **kept** — the cheap way to fix what review finds |
+| `landed` | the pull request merged, the pushed commit reached the base branch, or there was never an artifact | released |
 | `abandoned` | the pull request was closed unmerged | released; the work is NOT on main |
 | `stuck` / `failed` | the worker gave up | **kept** — that session is the evidence, and you decide |
 

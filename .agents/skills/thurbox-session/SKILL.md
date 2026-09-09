@@ -416,7 +416,7 @@ Write <absolute path>/result.md when you finish or conclude you cannot:
 
 ---
 outcome: shipped | stuck | failed | not-applicable
-artifact: <PR url, or omit>
+artifact: <PR url, or a commit url for a plain push, or omit>
 ---
 What you actually did, and anything the lead must know.
 ```
