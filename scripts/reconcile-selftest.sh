@@ -156,9 +156,9 @@ count_calls() { grep -c "^$1" "$calls" 2>/dev/null || true; }
 # reads the count ONCE, when the argv is built, and then waits twenty seconds
 # on a number that can no longer change — a test that passes or fails on the
 # first sample and calls it patience. These are re-run on every attempt.
-# shellcheck disable=SC2329  # invoked indirectly, as wait_for's predicate
+# shellcheck disable=SC2317,SC2329  # invoked indirectly, as wait_for's predicate
 atleast() { [ "$(count_calls "$1")" -ge "$2" ]; }
-# shellcheck disable=SC2329  # invoked indirectly, as wait_for's predicate
+# shellcheck disable=SC2317,SC2329  # invoked indirectly, as wait_for's predicate
 grew() { [ "$(count_calls "$1")" -gt "$2" ]; }
 
 # --- 1. it adopts a ticking loop, never duplicating it -----------------------
@@ -206,7 +206,7 @@ else
 	fail "collect runs on its own interval" "collect calls: $(count_calls collect)"
 fi
 
-# shellcheck disable=SC2329  # invoked indirectly, as wait_for's predicate
+# shellcheck disable=SC2317,SC2329  # invoked indirectly, as wait_for's predicate
 four_clocks() {
 	[ "$(count_calls watch)" -gt "$(count_calls collect)" ] &&
 		[ "$(count_calls collect)" -ge "$(count_calls shepherd)" ]
