@@ -324,9 +324,9 @@ you. So the queue splits completion into two things you READ:
 
 ```text
 WHEN   ./scripts/queue.sh watch --for-secs 60
-       Reads `thurbox-cli watch` — the event stream — from a saved cursor, so
-       a restart misses nothing. Folds each transition into the task's
-       progress.jsonl. Closes NOTHING.
+       Reads `thurbox-cli watch` — the event stream — resuming each task
+       from its own progress.jsonl, so a restart misses nothing and one
+       task's events never consume another's. Closes NOTHING.
 
 WHAT   ./scripts/queue.sh collect
        Reads the result.md each worker wrote. Only this closes a task, and
@@ -464,7 +464,9 @@ crashed. Closing it would mark failed work as shipped. Look at the pane
 (`thurbox-cli session capture`) or read `thurbox-session`'s state table first.
 
 Run `watch` when you choose: between turns, when the operator asks, before a
-`plan`. The cursor means a long gap costs you nothing but the wait.
+`plan`. Each task resumes from its own record, so a long gap — or a run that
+died half way, or a task dispatched while the stream was already open — costs
+you nothing but the wait.
 
 After `collect`, run `plan` again. A blocker may have cleared, and the tasks it
 was holding go out immediately.

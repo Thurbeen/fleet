@@ -57,7 +57,9 @@ gitignored):
     <topic>/<NN>-<slug>/BRIEF.md        what the worker reads     (the PLAN)
     <topic>/<NN>-<slug>/progress.jsonl  transitions, appended     (the PROGRESS)
     <topic>/<NN>-<slug>/result.md       the worker's conclusion   (the RESULT)
-    .cursor                       the last watch sequence handled
+
+There is no queue-wide cursor. Each task resumes the stream from its OWN
+progress.jsonl, so one task's events can never consume another's.
 
 Those four files are why a topic view needs no field this file does not
 already have: intent, progress and outcome are separate artifacts rather than
@@ -442,7 +444,7 @@ def warn_foreign(root: str) -> None:
 
 
 def is_record_dir(name: str) -> bool:
-    """`_TEMPLATE` and dotfiles are the shipped form and the cursor, not records."""
+    """`_TEMPLATE` and dotfiles are the shipped form and leftovers, not records."""
     return not name.startswith(("_", "."))
 
 
@@ -1030,6 +1032,9 @@ def cmd_add(args) -> int:
         "blocked_by": [],
         "session": None,
         "prompted": False,
+        # The stream sequence this task's history starts at, stamped by
+        # `attach`. Its floor thereafter comes from progress.jsonl itself.
+        "watch_from": None,
         "created": now(),
         "dispatched_at": None,
         "outcome": None,
@@ -1859,8 +1864,16 @@ def attach(task: Task, session: str) -> None:
     task.doc["state"] = "dispatched"
     task.doc["dispatched_at"] = now()
     task.doc["prompted"] = False
+    # Where the stream resumes FOR THIS TASK, fixed at the instant it attaches
+    # so the first `watch` after a dispatch starts from the dispatch and not
+    # from 0 (replays the whole backlog) or from "now" (drops the gap). Set
+    # once: a task re-dispatched into a fresh session keeps the older floor,
+    # which replays harmlessly and can never skip.
+    if task.doc.get("watch_from") is None:
+        high = stream_high_water()
+        if high is not None:
+            task.doc["watch_from"] = high
     task.save()
-    seed_cursor(queue_root())
 
 
 def prompt_session(task: Task, timeout: int = 20) -> tuple[bool, str]:
@@ -1938,17 +1951,16 @@ def cmd_attach(args) -> int:
 
 
 def read_cursor(root: str) -> int | None:
-    """None means no cursor was ever written, distinct from a written 0."""
+    """The retired queue-wide `.cursor`, read for one purpose: a task attached
+    before the floor moved onto the task has no `watch_from`, and this is the
+    only honest lower bound left for it. None means there is none to read,
+    distinct from a written 0. Nothing writes this file any more.
+    """
     path = os.path.join(root, ".cursor")
     try:
         return int(open(path).read().strip())
     except (OSError, ValueError):
         return None
-
-
-def write_cursor(root: str, seq: int) -> None:
-    with open(os.path.join(root, ".cursor"), "w") as fh:
-        fh.write(f"{seq}\n")
 
 
 def watch_command(extra: list) -> list:
@@ -1959,15 +1971,20 @@ def watch_command(extra: list) -> list:
     return ["thurbox-cli", "watch", "--json"] + extra
 
 
-def seed_cursor(root: str) -> None:
-    """Seed the cursor at the moment a task attaches, from the stream's
-    current high-water mark, so the first `watch` after a dispatch resumes
-    from the dispatch instant rather than from 0 (replays the whole backlog)
-    or from "now" (drops everything in between). Never touches a cursor that
-    already exists — a running watch owns it from here on.
+_STREAM_HIGH: list = []
+
+
+def stream_high_water() -> int | None:
+    """The stream's current high-water mark, asked once per process.
+
+    None means the stream could not be READ, which is never the same answer as
+    a genuine 0 (a brand-new thurbox instance): a task seeded at 0 replays from
+    the beginning and loses nothing, and a task left unseeded falls back
+    further still. Collapsing the two would seed a task at "now" on a machine
+    with no thurbox-cli and drop everything before its first watch.
     """
-    if os.path.exists(os.path.join(root, ".cursor")):
-        return
+    if _STREAM_HIGH:
+        return _STREAM_HIGH[0]
     try:
         proc = subprocess.run(
             watch_command(["--initial", "--for-secs", "0"]),
@@ -1975,11 +1992,19 @@ def seed_cursor(root: str) -> None:
             timeout=30,
         )
     except (OSError, subprocess.TimeoutExpired):
-        return
+        return None
     if proc.returncode != 0:
-        return
+        return None
     high = 0
-    for line in proc.stdout.decode(errors="replace").splitlines():
+    for ev in stream_events(proc.stdout):
+        high = max(high, int(ev.get("seq") or 0))
+    _STREAM_HIGH.append(high)
+    return high
+
+
+def stream_events(blob: bytes):
+    """The JSON objects in a stream's output, skipping whatever else it said."""
+    for line in blob.decode(errors="replace").splitlines():
         line = line.strip()
         if not line.startswith("{"):
             continue
@@ -1987,8 +2012,56 @@ def seed_cursor(root: str) -> None:
             ev = json.loads(line)
         except ValueError:
             continue
-        high = max(high, int(ev.get("seq") or 0))
-    write_cursor(root, high)
+        yield ev
+
+
+def folded_through(task: Task) -> int | None:
+    """The highest sequence number already in this task's own progress.jsonl.
+
+    The record IS the cursor. That is the whole fix: a floor derived from what
+    was actually appended cannot run ahead of what was appended, so a run that
+    dies part-way through a batch neither skips the events it had not written
+    nor re-appends the ones it had.
+    """
+    high = None
+    try:
+        fh = open(task.file("progress.jsonl"))
+    except OSError:
+        return None
+    with fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                seq = json.loads(line).get("seq")
+            except ValueError:
+                continue
+            # `shepherd` appends to this file too, and its entries carry no
+            # sequence number. They are not stream events and never move a
+            # floor.
+            if isinstance(seq, int):
+                high = seq if high is None else max(high, seq)
+    return high
+
+
+def task_floor(task: Task, legacy: int | None) -> int:
+    """Where the stream resumes for ONE task. Never shared with another.
+
+    A queue-wide cursor was the bug: `watch` advanced a single number over
+    every event it read, folded or not, having decided what to fold from a
+    session map snapshotted before the stream was opened. A task dispatched
+    inside that window was not in the map, so its transitions were skipped and
+    the shared number was written past them — consumed, for a task that was
+    never updated. Across 24 topics that emptied 19 of 20 timelines.
+    """
+    marks = [
+        m for m in (folded_through(task), task.doc.get("watch_from"))
+        if isinstance(m, int)
+    ]
+    if marks:
+        return max(marks)
+    return legacy if legacy is not None else 0
 
 
 def cmd_watch(args) -> int:
@@ -2006,44 +2079,40 @@ def cmd_watch(args) -> int:
         print("watch: no task has a session attached yet")
         return 0
 
-    since = read_cursor(root)
-    extra = ["--for-secs", str(args.for_secs)]
-    if since is not None:
-        extra += ["--since", str(since)]
-    cmd = watch_command(extra)
+    # One floor per task, and the request resumes from the LOWEST of them, so a
+    # task nobody has folded yet drags the whole read back far enough to reach
+    # its events. Each task then ignores whatever is already below its own
+    # floor, which is how the same batch can be a replay for one task and news
+    # for another.
+    legacy = read_cursor(root)
+    floors = {t.ref: task_floor(t, legacy) for t in by_session.values()}
+    since = min(floors.values())
+    cmd = watch_command(["--for-secs", str(args.for_secs), "--since", str(since)])
 
     try:
         proc = subprocess.run(cmd, capture_output=True, timeout=args.for_secs + 30)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise QueueError(f"could not read the event stream: {exc}") from exc
 
-    floor = since if since is not None else 0
-    high = floor
+    high = since
     touched: dict[str, dict] = {}
-    for line in proc.stdout.decode(errors="replace").splitlines():
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
-        try:
-            ev = json.loads(line)
-        except ValueError:
-            continue
+    for ev in stream_events(proc.stdout):
         seq = int(ev.get("seq") or 0)
         high = max(high, seq)
-        if seq <= floor:
-            continue
         task = by_session.get(ev.get("session"))
-        if task is None:
+        # An event belonging to no task of this queue — the lead's own session,
+        # a worker from another clone — moves NOTHING. It used to move the
+        # shared cursor, and so did an event whose task was attached after this
+        # map was built.
+        if task is None or seq <= floors[task.ref]:
             continue
         record_event(task, ev)
+        floors[task.ref] = seq
         touched[task.ref] = ev
         print(
             f"    seq {seq}  {task.ref}  "
             f"{ev.get('from_state') or '-'} -> {ev.get('to_state') or ev.get('state') or '-'}"
         )
-
-    if high > floor:
-        write_cursor(root, high)
 
     print(f"watch: {len(touched)} task(s) moved, stream at seq {high}")
     for ref, ev in sorted(touched.items()):
@@ -2063,6 +2132,11 @@ def cmd_watch(args) -> int:
 
 
 def record_event(task: Task, ev: dict) -> None:
+    """Append one transition. The task's floor is read back out of this file,
+    so a write that fails must STOP the run rather than be swallowed: a fold
+    that silently did nothing would leave the stream to be replayed, which is
+    right, but a caller that kept going would report the task as moved.
+    """
     entry = {
         "seq": ev.get("seq"),
         "at": ev.get("at"),
@@ -2071,8 +2145,15 @@ def record_event(task: Task, ev: dict) -> None:
         "reason": ev.get("reason"),
         "observed": now(),
     }
-    with open(task.file("progress.jsonl"), "a") as fh:
-        fh.write(json.dumps(entry) + "\n")
+    try:
+        with open(task.file("progress.jsonl"), "a") as fh:
+            fh.write(json.dumps(entry) + "\n")
+    except OSError as exc:
+        raise QueueError(
+            f"{task.ref}: could not append to progress.jsonl: {exc}\n"
+            "Nothing was lost — the stream is replayed from each task's own\n"
+            "record, so fix the path and run `queue.sh watch` again."
+        ) from exc
 
 
 # --- collect: the WHAT -------------------------------------------------------

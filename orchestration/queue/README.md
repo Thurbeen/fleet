@@ -51,8 +51,11 @@ OPERATOR.md                          your standing instructions — yours, ignor
     BRIEF.md                         the instructions ONE worker reads
     progress.jsonl                   one line per observed transition
     result.md                        what the worker concluded, in its words
-.cursor                              the last watch sequence handled
 ```
+
+There is no queue-wide cursor. `watch` resumes each task from the highest
+sequence number in that task's own `progress.jsonl`, so one task's events can
+never consume another's — the bug that left 19 of 20 timelines empty.
 
 Four files per task, because four different things want four different answers:
 
