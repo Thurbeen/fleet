@@ -233,14 +233,28 @@ ln -sf "$full"/* "$sign/" 2>/dev/null
 rm -f "$sign/git"
 ln -sf "$(command -v git)" "$sign/git"
 
+# GIT_CONFIG_COUNT/KEY/VALUE outrank GIT_CONFIG_GLOBAL, and a caller that
+# sets them — `check.sh` run with signing turned off, which is exactly how
+# this repo is gated on a machine whose signing is misconfigured — would
+# otherwise decide this test's answer for it. Unset them for these two cases
+# so the probe sees only the config the test wrote.
+unset_git_env() {
+	local i
+	unset GIT_CONFIG_SYSTEM
+	for i in $(seq 0 "${GIT_CONFIG_COUNT:-0}"); do
+		unset "GIT_CONFIG_KEY_$i" "GIT_CONFIG_VALUE_$i"
+	done
+	unset GIT_CONFIG_COUNT
+}
+
 printf '[commit]\n\tgpgsign = true\n' >"$tmp/gitconfig-nokey"
-out="$(GIT_CONFIG_GLOBAL="$tmp/gitconfig-nokey" PATH="$sign" "$REPO/scripts/preflight.sh" 2>&1)"
+out="$(unset_git_env; GIT_CONFIG_GLOBAL="$tmp/gitconfig-nokey" PATH="$sign" "$REPO/scripts/preflight.sh" 2>&1)"
 expect "1f signing on with no key is reported" "commit signing" "$out"
 expect "1f and it names what it costs" "sandbox" "$out"
 expect "1f with a remedy that is either half of the fix" "commit.gpgsign false" "$out"
 
 printf '[commit]\n\tgpgsign = true\n[user]\n\tsigningkey = ~/.ssh/k.pub\n' >"$tmp/gitconfig-key"
-out="$(GIT_CONFIG_GLOBAL="$tmp/gitconfig-key" PATH="$sign" "$REPO/scripts/preflight.sh" --tier gate 2>&1)"
+out="$(unset_git_env; GIT_CONFIG_GLOBAL="$tmp/gitconfig-key" PATH="$sign" "$REPO/scripts/preflight.sh" --tier gate 2>&1)"
 refute "1f signing with a key is not reported as a gap" "missing  commit signing" "$out"
 
 printf '\n\033[1m§2 discover-owners — three sources, and GitLab is not one of them\033[0m\n'
