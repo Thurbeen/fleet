@@ -339,8 +339,15 @@ else
 		cat <<-EOF
 
 			The fleet queue pane is installed but NOT PLACED, so it will draw
-			nothing yet. Nothing here will edit your arrangement for you — every
-			pane on your screen shares that file. Add this block to:
+			nothing yet. One command puts it to the right of the terminal, and
+			it is not run for you — every pane on your screen shares that file:
+
+			  ./scripts/place-pane.sh --dry-run   # what it would write, where
+			  ./scripts/place-pane.sh             # place it (--left for the other side)
+
+			It backs the file up first, refuses an arrangement it cannot read,
+			and re-reads its own edit. To do it by hand instead, add this block
+			to:
 
 			  ${ui_dir:-<thurbox-cli plugin dir>}/layout.lua
 

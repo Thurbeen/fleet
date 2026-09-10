@@ -91,6 +91,13 @@ names every path and the reason for each.
   Everything outside that fence is the lead's judgement and nothing ever
   overwrites it. Gitignored, like everything a run produces; the template is
   the one tracked file there.
+- `scripts/preflight.sh` — every dependency fleet needs, in one pass, in three
+  tiers (required / recommended / gate), each row carrying what breaks without
+  it and the command that installs it. It probes and prints; installing is the
+  operator's, which is what `--commands` is for. `scripts/discover-owners.sh`
+  is its counterpart for the one input the map needs: it reads the `gh`
+  session, the git config and the remotes of the clones already on the disk,
+  and prints owner candidates with the evidence for each. Both write nothing.
 - `.agents/skills/<name>/SKILL.md` — agent skills, in one agent-agnostic tree.
   `.claude/skills` is a **symlink** to it, so Claude Code and opencode (which
   auto-discovers `.claude/skills`) both load the same copy. Never add a second
@@ -98,7 +105,8 @@ names every path and the reason for each.
   registers the same skill twice. Five skills live there: `fleet-queue` (the
   queue: intake, ordering, dispatch, and the two halves of completion),
   `thurbox-session` (driving one worker session), `fleet-onboarding` (a fresh
-  clone to a working control plane),
+  clone to a working control plane: dependencies, owners, registry, extension,
+  the pane on screen, the loop up),
   `fleet-pane` (getting the TUI queue pane onto a screen, and diagnosing one
   that is installed and drawing nothing), and `update-fleet` (a working control
   plane that is BEHIND origin, and the consequences of the sync that
@@ -249,7 +257,8 @@ CI only runs on pull requests, and routine control-plane changes go straight to
 
 ```bash
 ./scripts/check.sh          # shellcheck, markdown, YAML, profiles, queue,
-                            # reconciler, status, skills, pane
+                            # reconciler, status, skills, pane, voice,
+                            # onboarding
 ./scripts/check.sh --fix    # same, applying the fixes a check can apply
 ```
 

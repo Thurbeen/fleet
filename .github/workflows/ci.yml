@@ -191,6 +191,27 @@ jobs:
           sudo ln -sf /usr/bin/lua5.4 /usr/local/bin/lua
       - run: ./scripts/check.sh pane
 
+  # Unfiltered, for the same reason the pane job is: what it covers spans four
+  # scripts, a fixture and the pane's own slot declaration, so a paths filter
+  # would have to list all of them to be correct. It is also the setup nobody
+  # re-runs — a regression here is invisible to every operator who is already
+  # set up, and total for the next one. Two seconds, offline, all stubs.
+  onboarding:
+    name: Onboarding
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      # place-pane.sh reads its own edit back with `lua` and restores the
+      # backup when the result no longer parses; without an interpreter that
+      # assertion silently skips. The apt dance is the pane job's — see there.
+      - name: Install lua
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list /etc/apt/sources.list.d/google-chrome.sources
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends lua5.4
+          sudo ln -sf /usr/bin/lua5.4 /usr/local/bin/lua
+      - run: ./scripts/check.sh onboarding
+
   # Single required status check. Every job feeds this gate; a branch ruleset
   # requires only "All Checks", so adding or removing jobs never needs a
   # ruleset change — but a new job MUST be added to `needs:` below, or it can
@@ -208,6 +229,7 @@ jobs:
       - reconcile
       - skills
       - pane
+      - onboarding
     runs-on: ubuntu-latest
     steps:
       - name: Verify all checks passed

@@ -13,8 +13,8 @@
 #   scripts/check.sh --fix markdown      # apply the fixes a check can apply
 #
 # Checks: shell, markdown, yaml, profiles, queue, reconcile, status, skills,
-# pane, voice. Only `markdown` has a fixer; `--fix` is a no-op for the rest, so
-# `scripts/check.sh --fix` is always safe to run.
+# pane, voice, onboarding. Only `markdown` has a fixer; `--fix` is a no-op for
+# the rest, so `scripts/check.sh --fix` is always safe to run.
 #
 # Requires: shellcheck, rumdl, python3 (with PyYAML), lua. A missing tool
 # fails the check rather than skipping it — a gate that silently passes when
@@ -542,6 +542,51 @@ check_voice() {
 	[ "$miss" -eq 0 ] && ok "voice: $conf renders into FLEET.md's placeholders"
 }
 
+# THE SETUP NOBODY RE-RUNS. Onboarding's three scripts — preflight,
+# discover-owners, place-pane — are the ones every operator runs once and never
+# again, so a regression in them is invisible to everyone who is already set up
+# and total for everyone who is not. `onboarding-selftest.sh` drives all three
+# offline, against stubs on a PATH built from scratch and a copy of a stock
+# layout, and its header argues each claim.
+#
+# What the greps here add is the seam that selftest cannot see: the pane's slot
+# has ONE spelling, in the pane, and `place-pane.sh` writes a block into the
+# operator's `layout.lua`. A copy of the slot name in the writer is a rename
+# that half-lands — the pane declaring one slot and the arrangement carving
+# another, which draws nothing and looks installed.
+check_onboarding() {
+	local miss=0 pane="interface/fleet_queue.lua" writer="scripts/place-pane.sh"
+	local slot
+	slot="$(sed -n 's/^local SLOT = "\(.*\)"$/\1/p' "$pane" | head -1)"
+
+	if [ -z "$slot" ]; then
+		fail "onboarding: could not read the slot name from $pane"
+		miss=1
+	elif grep -q "\"$slot\"" "$writer"; then
+		fail "onboarding: $writer spells the slot \"$slot\" itself; it reads it from $pane so a rename cannot half-land"
+		miss=1
+	elif ! grep -q "$pane" "$writer"; then
+		fail "onboarding: $writer no longer reads the slot from $pane"
+		miss=1
+	fi
+
+	# The floor has one owner too, and preflight is now a second reader of it.
+	if ! grep -q "min_thurbox_version" scripts/preflight.sh; then
+		fail "onboarding: scripts/preflight.sh does not read the thurbox floor from extension.toml.in"
+		miss=1
+	fi
+
+	if ./scripts/onboarding-selftest.sh >/dev/null 2>&1; then
+		ok "onboarding: scripts/onboarding-selftest.sh"
+	else
+		./scripts/onboarding-selftest.sh
+		fail "onboarding: scripts/onboarding-selftest.sh"
+		miss=1
+	fi
+
+	[ "$miss" -eq 0 ] && ok "onboarding: the pane's slot is spelled once, in $pane"
+}
+
 checks=()
 for arg in "$@"; do
 	case "$arg" in
@@ -551,7 +596,7 @@ for arg in "$@"; do
 done
 
 if [ ${#checks[@]} -eq 0 ]; then
-	checks=(shell markdown yaml profiles queue reconcile status skills pane voice)
+	checks=(shell markdown yaml profiles queue reconcile status skills pane voice onboarding)
 fi
 
 for c in "${checks[@]}"; do
@@ -566,8 +611,9 @@ for c in "${checks[@]}"; do
 	skills) check_skills ;;
 	pane) check_pane ;;
 	voice) check_voice ;;
+	onboarding) check_onboarding ;;
 	*)
-		printf 'error: unknown check %q (want: shell markdown yaml profiles queue reconcile status skills pane voice)\n' "$c" >&2
+		printf 'error: unknown check %q (want: shell markdown yaml profiles queue reconcile status skills pane voice onboarding)\n' "$c" >&2
 		exit 2
 		;;
 	esac
