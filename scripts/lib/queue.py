@@ -4018,7 +4018,19 @@ FIXABLE = ("conflicting", "checks-failed", "changes-requested", "policy")
 # those would be a repo where every gate but `author_can_push` is vacuous —
 # that is the test for adding the next one, not whether the fleet happens to
 # have work there.
-AUTO_MERGE_REPOS = {"github.com/Thurbeen/fleet", "github.com/Thurbeen/thurview"}
+#
+# `Thurbeen/thurbox` was added on the same instruction and passes the same
+# test: its own `.no-mistakes.yaml` runs `just lint` and a rustdoc build with
+# warnings denied, and its CI is four workflows. So the attestation gate has a
+# pipeline behind it there and the checks gate has checks behind it, which is
+# the whole of what the test asks. Nothing was relaxed for it — thurbox pull
+# requests clear the same five gates fleet's own do, and
+# `queue-selftest.sh`'s 9i is where that is checked.
+AUTO_MERGE_REPOS = {
+    "github.com/Thurbeen/fleet",
+    "github.com/Thurbeen/thurbox",
+    "github.com/Thurbeen/thurview",
+}
 
 # The one way to say it somewhere other than here, and it REPLACES the set
 # rather than adding to it: a fleet driving somebody else's repositories is a

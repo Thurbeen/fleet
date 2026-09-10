@@ -743,10 +743,10 @@ Three things it will not do, and they are what make it safe to run:
 **On merging, which is the part that runs unattended.** `Thurbeen/fleet` is
 public and has a fork, so "merge every open PR on a timer" has to survive a
 stranger opening one. Fleet merges only in the repos on `AUTO_MERGE_REPOS` in
-`scripts/lib/queue.py` — `github.com/Thurbeen/fleet` and
-`github.com/Thurbeen/thurview` — and only when **all** of these hold. Entries
-there are HOST-QUALIFIED and one that names no forge is refused rather than
-matched: `Thurbeen/fleet` on github.com and `Thurbeen/fleet` on a self-hosted
+`scripts/lib/queue.py` — `github.com/Thurbeen/fleet`,
+`github.com/Thurbeen/thurbox` and `github.com/Thurbeen/thurview` — and only
+when **all** of these hold. Entries there are HOST-QUALIFIED and one that names
+no forge is refused rather than matched: `Thurbeen/fleet` on github.com and `Thurbeen/fleet` on a self-hosted
 instance are not the same repository.
 
 - **The head branch is in that repository**, not a fork. A stranger cannot
