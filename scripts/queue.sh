@@ -45,8 +45,9 @@
 #              `no-mistakes`, `pr` or `push`, which name what the work must
 #              LEAVE BEHIND rather than which tool made it. So "publish the way
 #              your brief says" stops being an unverifiable instruction about a
-#              method: collect asks the forge for a pull request from this
-#              task's own branch (and, for `no-mistakes`, an attestation for the
+#              method: collect asks the forge for a change request — a pull
+#              request on GitHub, a merge request on GitLab — from this task's
+#              own branch (and, for `no-mistakes`, an attestation for the
 #              commit that would merge), or asks git whether a `push` task's
 #              commit reached the base branch. An artifact that is not there is
 #              reported and the task is left OPEN; a check that could not run
@@ -55,14 +56,14 @@
 #              `--how`: free text rendered into the brief and never parsed,
 #              which is what lets a task name a publisher fleet has never heard
 #              of. `add` takes both, defaulting to POLICY.md's frontmatter.
-#   `reap`     asks the FORGE whether each concluded task's pull request has
+#   `reap`     asks the FORGE whether each concluded task's change request has
 #              merged, moves the ones that did to `landed`, and only then
 #              deletes their sessions and worktrees. A `push` task has nothing
 #              left to ask by this point — `collect` already confirmed its
 #              commit reached the base branch before closing it — so it lands
 #              in the same run reap follows. `collect` runs it, because
 #              "delete each session as it closes out" was a documented MANUAL
-#              step and twenty gigabytes sat in a worktree whose pull request
+#              step and twenty gigabytes sat in a worktree whose change request
 #              had merged the day before. It never touches a session thurbox
 #              says is working, and never one a worker gave up in — that
 #              session is the evidence.
@@ -92,21 +93,22 @@
 # read is `not checked` rather than a silent no. It adds no daemon, no poll and
 # no state: `collect` is still the only thing that closes a task.
 #
-# AND THEN THE PULL REQUEST OUTLIVES THE TASK, which is what `shepherd` is for:
+# AND THEN THE CHANGE REQUEST OUTLIVES THE TASK, which is what `shepherd` is for:
 #
-#   `shepherd` asks the FORGE for every open PR on the repos this queue's
-#              tasks name, DISPATCHES A FIXER for one that conflicts, fails a
-#              check, has a review asking for changes, or was declared
+#   `shepherd` asks the FORGE for every open change request on the repos this
+#              queue's tasks name, DISPATCHES A FIXER for one that conflicts,
+#              fails a check, has a review asking for changes, or was declared
 #              `no-mistakes` and carries no attestation — and squash-merges
 #              one that clears every gate. It is a fourth thing, after both
 #              halves of completion.
 #
 #              It reads the forge and not the task records because a task
-#              records ONE artifact, the first PR its worker reported: #25 was
-#              a SECOND pull request from a task still pointing at the merged
-#              #23, and a PR opened outside the queue was invisible the same
-#              way. A PR no task records is shepherded like any other; it just
-#              has no session to send a fixer into, and that is said out loud.
+#              records ONE artifact, the first change request its worker
+#              reported: #25 was a SECOND pull request from a task still
+#              pointing at the merged #23, and a PR opened outside the queue
+#              was invisible the same way. One no task records is shepherded
+#              like any other; it just has no session to send a fixer into,
+#              and that is said out loud.
 #
 # AND A FIFTH THING, WHICH IS FUEL. A worker that hits its agent's token limit
 # does not fail — it SITS. The hook that would have said `idle` never fires, so
@@ -137,14 +139,15 @@
 #
 # Three rules make it safe to run, and `--dry-run` shows all of them:
 #   IDEMPOTENT   the fixer it sent is recorded on the task; a second pass sees
-#                work in flight rather than a still-broken PR. `--force` to mean
-#                it anyway.
+#                work in flight rather than a still-broken change request.
+#                `--force` to mean it anyway.
 #   NEVER GUESS  no forge, no network, no thurbox — it says what it could not
-#                determine and carries on. A PR it could not read is never
-#                called broken, and never called ready.
+#                determine and carries on. A change request it could not read
+#                is never called broken, and never called ready.
 #   NEVER TOUCH  only artifacts recorded on this queue's own tasks, and it
 #   A STRANGER   merges only in the repos AUTO_MERGE_REPOS names, each of
-#                which names its forge (`github.com/owner/repo`).
+#                which names its forge (`github.com/owner/repo`,
+#                `gitlab.example.com/group/project`).
 #
 # Usage:
 #   scripts/queue.sh topic add <slug> --title T --prompt 'the ask'   # or --prompt-file F|-
@@ -178,7 +181,7 @@
 #   scripts/queue.sh reap [--dry-run]     # land what merged, release its session
 #   scripts/queue.sh refuel [<ref>] [--dry-run]  # the account's fuel first, then
 #                        restart the workers that ran dry against it
-#   scripts/queue.sh shepherd [--dry-run] # every open PR on the repo: fix or merge
+#   scripts/queue.sh shepherd [--dry-run] # every open change request on the repo: fix or merge
 #                        [--json] [--topic T] [--ref R] [--no-merge] [--force]
 #   scripts/queue.sh run [<topic>]        # refresh the run log(s) by hand
 #   scripts/queue.sh list [--topic T] [--archived] [--all]  # the lead's view:
@@ -209,10 +212,14 @@
 # because it injects into the lead's terminal whatever machine it comes from.
 #
 # Three probes run before anything is spawned, and one failure stops that task
-# where it stands: the host answers ssh as a POSIX shell, it has GitHub
-# credentials OF ITS OWN, and the repo is a checkout at that path. Fleet never
-# sends credentials anywhere. POSIX hosts only — a Windows host (hosts.toml
-# spells one with a non-tmux `multiplexer`) is refused by name.
+# where it stands: the host answers ssh as a POSIX shell, the repo is a
+# checkout at that path, and it has credentials OF ITS OWN for the forge that
+# repo's `origin` names — GitHub or GitLab. The repo is asked about before its
+# forge because which forge to prove a credential against is a fact about that
+# checkout's origin, so it cannot be asked before the checkout is known to
+# exist. Fleet never sends credentials anywhere. POSIX hosts only — a Windows
+# host (hosts.toml spells one with a non-tmux `multiplexer`) is refused by
+# name.
 #
 # THE RUN LOG IS PRODUCED, NOT REMEMBERED. `AGENTS.md` step 5 used to say
 # "record the run in orchestration/runs/ as it happens", and two consecutive
@@ -284,9 +291,10 @@
 #
 # Requires: python3 (with PyYAML) — the same dependency the rest of the gate
 # has. `dispatch`, `watch`, `reap` and `refuel` additionally need thurbox-cli,
-# and `collect`, `reap` and `shepherd` ask the FORGE about a pull request —
-# whichever `scripts/lib/forge.py` has configured, `gh` for GitHub — and
-# `shepherd` needs git as well. `refuel` reads the account's quota window with
+# and `collect`, `reap` and `shepherd` ask the FORGE about a change request —
+# whichever `scripts/lib/forge.py` has configured: `gh` for GitHub, `glab` for
+# GitLab — and `shepherd` needs git as well. `refuel` reads the account's
+# quota window with
 # `quota-axi` (https://github.com/kunchenguid/quota-axi), which fleet neither
 # installs nor sends any credential to. A task that names a `--host`
 # additionally needs `ssh`. Every one of those degrades to "could not check"
