@@ -655,7 +655,7 @@ spotted.
 ```
 
 It folds `watch` continuously and runs `collect`, `shepherd` and `refuel` on
-their own intervals. Three things to know and nothing else:
+their own intervals. Four things to know and nothing else:
 
 - **It changes nothing about how you work.** You still plan, still write
   briefs, still `dispatch`. It reconciles the RECORDS with the world; deciding
@@ -663,6 +663,12 @@ their own intervals. Three things to know and nothing else:
 - **`queue.sh` is still the only writer.** The loop shells out and never
   touches a record. So `list` and the TUI pane cannot start disagreeing with
   it.
+- **It will type one line at you, and only ever this one:** that N tasks are
+  ready and nothing will dispatch them. A blocker cleared, the loop may not
+  act on it, and you were not looking — on 2026-09-10 that sat for six and a
+  half hours until the operator asked for status. Treat the line as `plan`
+  already run: `dispatch`. It arrives once per transition and never mid-turn,
+  so a second one means the ready set has grown again.
 - **Run the commands anyway when you want an answer NOW.** `collect` is
   idempotent and reading it yourself is always allowed; the loop only means you
   are rarely the first to notice.

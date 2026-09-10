@@ -48,15 +48,30 @@
 #   `start`   the operator asking for it back. It CLEARS the flag. That is the
 #             whole difference between the two.
 #
-# IT WRITES NOTHING ITSELF. Every effect it has goes through
+# IT WRITES NO RECORD. Every effect it has on the queue goes through
 # `./scripts/queue.sh`, which stays the only writer over the records — the
 # rule that keeps the queue single-writer. Grep this file for a write to a
-# task and you will not find one.
+# task and you will not find one. Its own runtime directory is the exception
+# and is not one: a pid, a heartbeat, a log, the flags and `notified.json` are
+# facts about this loop on this machine, not about any task.
 #
 # IT DOES NOT DECIDE WHAT RUNS. No dispatch, no cancel, no reorder. It
 # reconciles recorded state with observed state; choosing the work stays the
 # lead's. It does not second-guess `refuel` either — the rule that nothing is
 # restarted into a spent quota window lives there, and this calls the command.
+#
+# BUT IT DOES SAY WHEN THERE IS SOMETHING TO DECIDE, which is the one thing it
+# tells anybody. A task whose blocker clears becomes READY and has no actor:
+# this loop may not dispatch it, and the lead, which may, only acts when spoken
+# to. On 2026-09-10 that gap ran from 01:37 to 08:05 and the operator closed it
+# by typing "Status". So the pass that follows `collect` reads the ready set and
+# wakes the lead when it has grown — once per transition, never into a turn in
+# flight, and silently when there is no lead session at all.
+#
+# Notifying is not deciding. Nothing is dispatched, no record moves, and the
+# choice is still the lead's; all that changed is that it knows there is one to
+# make. `scripts/lib/notify_lead.py` owns the rules that keep it from becoming
+# noise, and reconcile-selftest.sh's test 8 holds it to them.
 #
 # Usage:
 #   scripts/reconcile.sh ensure     # start unless running or asked down
@@ -97,6 +112,11 @@
 #             pull request's own CI does not change state faster than that, so
 #             a tighter interval would ask the forge the same question several
 #             times for one answer.
+#   notify    collect's clock, and no clock of its own. What makes a task ready
+#             is a blocker clearing, and what clears a blocker is a landing
+#             `collect` has just recorded — so a fifth interval would only ask
+#             the same question at a second, worse moment. It reads local
+#             records and one local socket, so it costs nothing to ride along.
 #
 # Every one is overridable for a test or an unusual fleet; see Environment.
 #
@@ -111,12 +131,16 @@
 #   FLEET_RECONCILE_SHEPHERD_SECS   seconds between shepherds   (default 900)
 #   FLEET_QUEUE_DIR             the queue to reconcile (default: THIS
 #                               CHECKOUT's — see scripts/queue.sh root)
+#   FLEET_LEAD_SESSION          the lead session to wake (default: the name in
+#                               the rendered extension.toml). Read by
+#                               scripts/lib/notify_lead.py, which is where it
+#                               is argued.
 #
 # Requires: python3 and whatever the pass it is running needs — thurbox-cli for
-# `watch` and `refuel`, `gh` for `collect` and `shepherd`, `quota-axi` for the
-# fuel reading. Every one of those degrades to "could not check" inside
-# queue.sh rather than to a guess, so a missing tool costs its own pass and
-# never the loop.
+# `watch`, `refuel` and the notification, `gh` for `collect` and `shepherd`,
+# `quota-axi` for the fuel reading. Every one of those degrades to "could not
+# check" inside queue.sh rather than to a guess, so a missing tool costs its own
+# pass and never the loop.
 
 set -uo pipefail
 
@@ -234,6 +258,32 @@ run_pass() {
 	return 0
 }
 
+# THE ONE THING THIS LOOP SAYS OUT LOUD, and the one place it asks the queue a
+# question rather than telling it to reconcile something.
+#
+# A task whose blocker clears becomes ready and has NO ACTOR. This loop may not
+# dispatch — that is the constraint the whole design rests on — and the lead,
+# which may, is an interactive session that acts when someone speaks to it. On
+# 2026-09-10 that gap was six and a half hours long and the operator closed it
+# by hand. `scripts/lib/notify_lead.py` owns the rest: the transition test that
+# keeps this from being a stream of the same sentence, the refusal to type into
+# a lead mid-turn, and the silence when there is no lead at all.
+#
+# `plan` IS THE FIFTH VERB and it is a READ. It prints the ready set and writes
+# nothing; the assertion in reconcile-selftest.sh names it and argues why it may
+# be there while `dispatch` never can be. Telling the lead is not deciding.
+#
+# It cannot fail the pass. Every branch inside the notifier exits 0, and this
+# returns 0 regardless — a message is not worth the `collect` the loop just did.
+notify_lead() {
+	local plan out
+	plan="$($QUEUE_CMD plan --json 2>/dev/null)" || return 0
+	[ -n "$plan" ] || return 0
+	out="$(printf '%s\n' "$plan" | python3 scripts/lib/notify_lead.py --state-dir "$RT" 2>&1)"
+	[ -n "$out" ] && log "notify: $out"
+	return 0
+}
+
 # The loop. Read the cadences in the header before changing a number here.
 tick() {
 	# Validated BEFORE the first heartbeat, so a reconciler that cannot run the
@@ -245,7 +295,7 @@ tick() {
 		return 2
 	fi
 
-	local last_collect=0 last_refuel=0 last_shepherd=0 nudged stamp
+	local last_collect=0 last_refuel=0 last_shepherd=0 nudged did_collect stamp
 	while :; do
 		# The down flag is checked at the TOP of every pass as well as by the
 		# supervisor, so a `stop` that lands mid-pass is honoured at the next
@@ -269,9 +319,11 @@ tick() {
 		# collect first, and on its own: it is the one that CLOSES tasks, and
 		# shepherd's view of which pull requests still matter is better for
 		# running after it.
+		did_collect=0
 		if [ "$nudged" -eq 1 ] || [ $((stamp - last_collect)) -ge "$COLLECT_SECS" ]; then
 			run_pass collect always collect
 			last_collect="$stamp"
+			did_collect=1
 		fi
 		if [ $((stamp - last_shepherd)) -ge "$SHEPHERD_SECS" ]; then
 			run_pass shepherd always shepherd
@@ -281,6 +333,14 @@ tick() {
 			run_pass refuel always refuel
 			last_refuel="$stamp"
 		fi
+
+		# LAST, and on collect's clock, because it is the only pass that
+		# looks OUTWARD. The three above reconcile records with the world;
+		# this one reads the result and, when the ready set has just grown,
+		# tells the one actor that may act on it. Running it after them means
+		# it sees the landings collect just recorded rather than the ones it
+		# recorded a pass ago — which is the whole latency this exists to cut.
+		[ "$did_collect" -eq 1 ] && notify_lead
 
 		trim_log
 

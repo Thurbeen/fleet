@@ -60,8 +60,13 @@ names every path and the reason for each.
   what keeps the seam honest rather than merely asserted.
 - `orchestration/reconcile/` — the reconciler's runtime state: its supervisor's
   pid, the heartbeat proving its loop is ticking, its log, the advisory `nudge`
-  flag and the `down` flag. Written by `./scripts/reconcile.sh` and created on
-  first start. The loop's code is tracked; nothing it writes is.
+  flag, the `down` flag, and `notified.json` — which ready tasks the lead has
+  already been woken about, so a transition is told once. That last one is
+  runtime state and not a record for the same reason as all the others: "the
+  lead has been told" is true of one machine's loop and one conversation, and
+  writing it onto a task would make the loop a second writer over the queue.
+  Written by `./scripts/reconcile.sh` and created on first start. The loop's
+  code is tracked; nothing it writes is.
 - `interface/fleet_queue.lua` — the TUI queue pane, and the fleet's only live
   view of the queue, drawn in a thurbox column over the same records
   `queue.sh list` reads. `scripts/install-extension.sh` installs it
@@ -179,14 +184,26 @@ The loop, driven by `./scripts/queue.sh`:
 that `ensure` honours the flag and `start` clears it. It consumes `queue.sh
 watch` continuously and calls `collect`,
 `shepherd` and `refuel` on separate intervals; its header argues every number
-and is the full usage. Three things about it are load-bearing:
+and is the full usage. Four things about it are load-bearing:
 
-- **It writes nothing.** Every effect goes through `./scripts/queue.sh`, which
-  stays the only writer over the records. It calls exactly `watch`,
-  `collect`, `shepherd` and `refuel`, and
-  `scripts/reconcile-selftest.sh` asserts that the set is those four.
+- **It writes no record.** Every effect on the queue goes through
+  `./scripts/queue.sh`, which
+  stays the only writer over the records; its own runtime directory above holds
+  the rest. It calls exactly `watch`, `collect`,
+  `shepherd`, `refuel` and the read-only `plan`, and
+  `scripts/reconcile-selftest.sh` asserts that the set is those five and argues
+  in place why a READ may join it while `dispatch` never may.
 - **It reconciles; it does not decide.** No dispatch, no cancel, no reorder,
   and it does not re-decide `refuel`'s rule about a spent quota window.
+- **It tells the lead when the ready set grows, which is the one thing it says
+  out loud.** A task whose blocker clears is ready and has no actor: the loop
+  may not dispatch, and the lead only acts when spoken to — on 2026-09-10 that
+  cost six and a half hours. So after `collect` it reads `plan` and, when the
+  ready set has grown, types one line into the lead's terminal naming what is
+  ready and the command that sends it. Once per transition, never into a lead
+  mid-turn, and silent when no lead session is running.
+  `scripts/lib/notify_lead.py` owns those three rules. Notifying is not
+  deciding: nothing moves, and the choice is still the lead's.
 - **`nudge` is the accelerator and never the guarantee.** A worker's Claude
   Code `Stop` hook can call `./scripts/reconcile.sh nudge` to bring the
   periodic pass forward; a worker that died on a token limit fires no hook at
