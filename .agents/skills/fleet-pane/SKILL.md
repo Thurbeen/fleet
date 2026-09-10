@@ -83,7 +83,7 @@ row** — it replaces it rather than sitting above it. It says what the task was
 told to produce (`publish.method` — `no-mistakes`, `pr` or `push`), which pull
 request or commit that turned out to be, what fleet last saw when it looked at
 it, and how long ago it looked. The whole row is the link: Ctrl+Click it and the
-terminal opens the pull request. Every word on it comes off `task.yaml`'s
+terminal opens the change request. Every word on it comes off `task.yaml`'s
 `publish` block, written by `collect`, `shepherd` and `reap` — the commands that
 do the looking — so the pane calls no `gh` and says nothing `queue.sh show`
 would not print in the same word. Colour carries the verdict, and **`green` is

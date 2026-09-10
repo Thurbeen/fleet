@@ -55,11 +55,14 @@ Your brief's **Publish** line names one of three methods, what it must leave
 behind, and what proves it. It is the authority: where it names a tool, use
 that tool. Do not switch methods.
 
-`queue.sh collect` then goes and looks for that artifact: the forge for a pull
-request, git for a commit on the base branch. A task whose artifact is not
-there, or is not from your branch, **is not closed** — the lead sees it at
-collect time and sends you back. So verify your own artifact before you report
-done. For a `no-mistakes` task that is one command:
+`queue.sh collect` then goes and looks for that artifact: the forge for a change
+request — a pull request on GitHub, a merge request on GitLab — git for a commit
+on the base branch. A task whose artifact is not there, or is not from your
+branch, **is not closed** — the lead sees it at collect time and sends you back.
+So verify your own artifact before you report done. For a `no-mistakes` task
+that is one command, in the CLI your forge has.
+
+On GitHub:
 
 ```sh
 gh pr view <url> --json headRefOid,body -q \
@@ -69,13 +72,25 @@ gh pr view <url> --json headRefOid,body -q \
      + ($attested | if . then .[0:8] else "no attestation found in the body" end)'
 ```
 
+On GitLab — the same question, in GitLab's own field names (`sha` for the head,
+`description` for the body), and `-R` takes the project's full URL so that a
+self-hosted instance is asked and not gitlab.com:
+
+```sh
+glab mr view <number> -R https://<host>/<group>/<project> -F json --jq \
+  '.sha[0:8] as $head
+   | ([.description | capture("head_sha\"\\s*:\\s*\"(?<s>[0-9a-f]+)").s] | .[0]) as $attested
+   | $head + " is the head; the attestation names "
+     + ($attested | if . then .[0:8] else "no attestation found in the description" end)'
+```
+
 **Those two must be the same commit.** An attestation is a verdict about the
 code the pipeline saw, so one naming any other commit proves nothing about
 what would merge, and `collect` holds your task open exactly as it does for a
 body with no attestation at all.
 
 They come apart on their own. The pipeline writes the attestation while it
-opens the pull request and can then push its own `no-mistakes: apply CI fixes`
+opens the change request and can then push its own `no-mistakes: apply CI fixes`
 commit on top, which leaves the head one commit ahead of what was attested —
 this is what happened to #38, #40 and #48. **Run `/no-mistakes --yes` again**
 and it re-attests the new head; then run the command above once more before
@@ -86,13 +101,16 @@ The default for every task here is the frontmatter at the top of this file.
 
 ## Do not merge
 
-- **Squash merge only.** It is the only method the remote allows, so the pull
-  request title becomes the commit on `main`. Write the title accordingly.
+- **Squash merge only.** It is the only method fleet merges by, and on this
+  control plane's own remote it is the only one allowed, so the change
+  request's title becomes the commit on `main`. Write the title accordingly.
+  A repo that forbids squash — a GitLab project can, with
+  `squash_option: never` — is one fleet reports and leaves for you.
 - **You do not merge.** Opening it is where your work ends. `queue.sh
   shepherd` may later merge it for you in the repos its `AUTO_MERGE_REPOS`
-  allowlist names (host-qualified, as in `github.com/owner/repo`), but only
-  once your pull request clears its gates — never merge it yourself in the
-  meantime.
+  allowlist names (host-qualified, as in `github.com/owner/repo` or
+  `gitlab.example.com/group/project`), but only once it clears its gates —
+  never merge it yourself in the meantime.
 
 ## Reporting back — write a file, do not send mail
 
@@ -110,8 +128,8 @@ A short paragraph: what you actually did, and anything the lead must know.
 ```
 
 `outcome` is one of those four words and nothing else. `artifact` is whatever
-your brief's Publish line says it is — a pull request URL for two of the three
-methods, a commit URL for `push`; `not-applicable` and `stuck` usually have
+your brief's Publish line says it is — a change request URL for two of the
+three methods, a commit URL for `push`; `not-applicable` and `stuck` usually have
 none, and that is fine. `shipped` is a claim that the artifact exists, so
 report it without one, or with something of the wrong shape, and the lead's
 `collect` holds your task open rather than trusting the word alone.

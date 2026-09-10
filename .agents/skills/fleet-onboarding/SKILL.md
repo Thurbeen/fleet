@@ -37,9 +37,16 @@ registry) is worse than one that never started.
 | `git` | `command -v git` | install git |
 | `gh` | `command -v gh` | install the GitHub CLI: <https://cli.github.com> |
 | `gh` authenticated | `gh auth status` | `gh auth login` |
+| `glab`, only if this fleet works on GitLab | `command -v glab` | install the GitLab CLI: <https://gitlab.com/gitlab-org/cli> |
+| `glab` authenticated | `glab auth status` | `glab auth login` (`GITLAB_HOST` for a self-hosted instance) |
 | `jq` | `command -v jq` | install jq (`brew install jq`, `apt install jq`, …) |
 | `thurbox-cli` | `command -v thurbox-cli` | install thurbox: <https://github.com/Thurbeen/thurbox> |
 | thurbox ≥ floor | compare against `min_thurbox_version` in `extension.toml.in` | `thurbox-cli` is too old; upgrade to the floor or newer |
+
+`gh` is required even on a fleet whose work is entirely on GitLab: it is what
+builds the repo map from `registry/owners.txt`, which is a list of GITHUB
+owners. `glab` is what fleet asks about a GitLab merge request, and nothing
+here needs it until a task's repository lives there.
 
 **Read the version floor from the manifest, never from memory.** It is one
 number with one owner, and `extension.toml.in` records why it sits there:

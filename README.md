@@ -7,9 +7,10 @@
 
 # fleet
 
-A **control plane** for your work across GitHub. You hand it a goal; it splits
-the goal into tasks, runs an AI agent session on each one in a real repo, and
-gives you back pull requests to review.
+A **control plane** for your work across GitHub and GitLab. You hand it a goal;
+it splits the goal into tasks, runs an AI agent session on each one in a real
+repo, and gives you back change requests — pull requests, merge requests — to
+review.
 
 It is one repo holding two things: a **map** of your projects, and the
 **orchestration** of the agent sessions run against them, using
@@ -63,7 +64,9 @@ before it writes a thing.
 Run it twice and it converges. It hands you a guarded block to add yourself:
 the pane's slot in your thurbox `layout.lua`.
 
-Requires `gh` (authenticated), `jq`, and `thurbox-cli` **2.19.0 or newer**.
+Requires `jq` and `thurbox-cli` **2.19.0 or newer**, plus the CLI for each forge
+you work on: `gh` for GitHub, `glab` for GitLab, each authenticated. `gh` is not
+optional even on a GitLab-only fleet — it is what builds the repo map.
 
 That done, open the Mission Control session in thurbox and give it a goal.
 
@@ -75,7 +78,7 @@ it. Onboarding installs it and `F3` opens and closes it. It **displays and
 does not control** — `./scripts/queue.sh` stays the only thing that writes.
 
 It reads the same four files per task and no fifth: the plan, the progress, the
-outcome, and the pull request. A column is narrow, so it draws only what you
+outcome, and the change request. A column is narrow, so it draws only what you
 would act on from a glance and leaves the rest to `./scripts/queue.sh show`.
 
 ![The queue pane in a thurbox column beside the session list: the account's fuel

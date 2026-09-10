@@ -50,14 +50,20 @@ names every path and the reason for each.
 - `scripts/lib/forge.py` — the FORGE seam. Everything fleet knows about a
   change request — a pull request on GitHub, a merge request on GitLab — it
   asks this module for; `scripts/lib/queue.py` runs no forge CLI itself and
-  builds no forge URL. GitHub, through `gh`, is the one implementation shipped,
-  and it is a CONFIGURATION and not an assumption. The file's own header owns
-  the interface and how to add another. Two things follow: a repository is
-  identified by HOST plus path (`github.com/Thurbeen/fleet`), because a bare
-  `owner/repo` names two different repositories once two forges exist; and
-  `queue-selftest.sh` drives `collect`, the landing check and `shepherd`
-  through a second, fake forge with no network and no `gh` behind it, which is
-  what keeps the seam honest rather than merely asserted.
+  builds no forge URL. TWO implementations ship — GitHub through `gh`, GitLab
+  through `glab` — and each is a CONFIGURATION and not an assumption: which
+  hosts one owns comes from that CLI's own variable (`GH_HOST`, `GITLAB_HOST`),
+  so a self-hosted instance is the ordinary case and not a special one. The
+  file's own header owns the interface and how to add a third. Two things
+  follow: a repository is identified by HOST plus path
+  (`github.com/Thurbeen/fleet`), because a bare `owner/repo` names two
+  different repositories once two forges exist; and `queue-selftest.sh` drives
+  `collect`, the landing check and `shepherd` through a second forge with no
+  network behind it — §13 through a fake one, §14 through the real GitLab
+  adapter over recorded `glab` output in `scripts/fixtures/glab/` (whose README
+  says which files are recorded and which are constructed). `gh` on those
+  sections' PATH is a tripwire, which is what keeps the seam honest rather than
+  merely asserted.
 - `orchestration/reconcile/` — the reconciler's runtime state: its supervisor's
   pid, the heartbeat proving its loop is ticking, its log, the advisory `nudge`
   flag, the `down` flag, and `notified.json` — which ready tasks the lead has
@@ -125,9 +131,11 @@ The loop, driven by `./scripts/queue.sh`:
    (`./scripts/session-trust.sh`), because sending one into that dialog is how
    every fleet-spawned worker used to break. A task may name a `--host` from
    thurbox's `hosts.toml` and run on that machine instead; `--repo` is then a
-   path THERE, three probes run before anything is spawned, and the brief and
-   the result travel by ssh so that completion stays one model. No host means
-   no change.
+   path THERE, three probes run before anything is spawned — reachable, the
+   repo is there, and it has its own credentials for the forge THAT repo's
+   `origin` names, which is why a GitLab checkout is not probed against
+   github.com — and the brief and the result travel by ssh so that completion
+   stays one model. No host means no change.
 5. **Completion is two things you read, never something that interrupts you.**
    `queue.sh watch` folds `thurbox-cli watch`'s event stream into each task's
    record and closes nothing; `queue.sh collect` reads the `result.md` the
@@ -137,11 +145,11 @@ The loop, driven by `./scripts/queue.sh`:
    is the half no record can hold: the goal in your words, the decisions, what
    went wrong, the outcome. Write those into it while you still know them.
 6. **Release is a third thing, and it is not manual.** `outcome: shipped`
-   means a pull request is OPEN, or, for a task whose declared publish method is
-   `push`, a commit already on the base branch — and that session is kept as the
-   cheap way to fix what review finds. A task moves to `landed` only when the
-   FORGE says its artifact merged (immediately, for `push`, since there is no
-   pull request to wait on), and `queue.sh reap` — which `collect` runs itself —
+   means a change request is OPEN, or, for a task whose declared publish method
+   is `push`, a commit already on the base branch — and that session is kept as
+   the cheap way to fix what review finds. A task moves to `landed` only when
+   the FORGE says its artifact merged (immediately, for `push`, since there is
+   nothing open to wait on), and `queue.sh reap` — which `collect` runs itself —
    deletes the session and its worktree then. It never touches one thurbox says
    is working or blocked, nor one a worker gave up in: that session is the
    evidence. `reap --dry-run` says what it would do. Blockers clear on `landed`
@@ -151,17 +159,20 @@ The loop, driven by `./scripts/queue.sh`:
    which still prints how many it is hiding. `stuck` and `failed` are not
    terminal for that, `list --archived` and `show <ref>` still reach it, and
    `add` un-archives.
-7. **The pull request outlives the task, so `queue.sh shepherd` is a fourth
+7. **The change request outlives the task, so `queue.sh shepherd` is a fourth
    thing, run as reflexively as `collect`** — which names it whenever it closed
-   a task that left a PR open. It asks the FORGE for every open PR on the repos
-   the queue's tasks name, not the tasks' recorded artifacts. A PR is linked
-   back by artifact or head branch; an unlinked one is
+   a task that left one open. It asks the FORGE for every open change request
+   on the repos the queue's tasks name, not the tasks' recorded artifacts. One
+   is linked back by artifact or head branch; an unlinked one is
    still classified and merged, it just has no session to fix it. It merges
    only in the repos `AUTO_MERGE_REPOS` names in `scripts/lib/queue.py` — each
    entry host-qualified, and one that names no forge refused rather than
-   matched — and only for a PR whose head branch is in that repo, opened by
+   matched — and only for one whose head branch is in that repo, opened by
    someone who can
    push there, carrying a `no-mistakes` attestation for its **current** head.
+   Squash is the only method fleet merges by, and a forge or a project that
+   forbids squash — a GitLab project can — is a refusal fleet RECORDS rather
+   than a merge by some other method.
    That attestation gate is the one thing the declared publish
    method moves: a task that was declared `no-mistakes` and carries none gets a
    fixer, one that was never asked for one is recorded `green` and handed back

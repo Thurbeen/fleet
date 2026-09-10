@@ -244,7 +244,7 @@
 # nothing resolves those names, that half cost none of the argument above.
 # Existing workers keep the name they were spawned with: there is no rename
 # verb for them either, and none of the sequences above is worth running on a
-# session that will be reaped when its pull request merges.
+# session that will be reaped when its change request merges.
 
 name = "fleet"
 description = "Control-plane session: the repo map and thurbox orchestration"

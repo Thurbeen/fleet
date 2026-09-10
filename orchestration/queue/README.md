@@ -87,7 +87,7 @@ closes anything.
 
 **`collect` checks the artifact it is handed.** Each task declares a publish
 METHOD — `no-mistakes`, `pr` or `push` — naming what it must produce, and
-`collect` goes and looks: the forge for a pull request from that task's own
+`collect` goes and looks: the forge for a change request from that task's own
 branch (carrying a `no-mistakes` attestation for its head, for that method),
 git for a commit that reached the base branch. A task whose artifact is not
 there is reported and left OPEN, because "use the pipeline" is an instruction
@@ -100,8 +100,8 @@ that came of it; the tool itself is `publish.how`, free text fleet renders into
 the brief and never parses.
 
 **`done` is not the end of the record.** `queue.sh reap` — which `collect`
-runs for you — asks the forge whether a `done` task's pull request merged and
-moves it to `landed` (or, if the pull request closed unmerged, `abandoned`); a
-task with no PR artifact goes straight to `landed`. Landing releases the
+runs for you — asks the forge whether a `done` task's change request merged and
+moves it to `landed` (or, if it closed unmerged, `abandoned`); a task with no
+change-request artifact goes straight to `landed`. Landing releases the
 task's session and worktree and stamps `task.yaml` with a `reaped: {session,
 how, at}` receipt, because the id it names no longer resolves to anything.

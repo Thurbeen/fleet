@@ -1174,12 +1174,18 @@ end
 
 --- The artifact, in the fewest columns that still identify it.
 ---
---- This is what the row absorbed the artifact ROW to say. A pull request is its
---- number and a `push` task's commit is a short sha — both are what a reader
---- would have read off the end of the URL anyway — and anything else keeps the
---- URL with its scheme off, because a shape this does not recognise is one it
---- must not pretend to summarise. The whole row carries the link either way, so
---- what is drawn here is a label for a click target rather than the target.
+--- This is what the row absorbed the artifact ROW to say. A change request is
+--- its number and a `push` task's commit is a short sha — both are what a
+--- reader would have read off the end of the URL anyway — and anything else
+--- keeps the URL with its scheme off, because a shape this does not recognise
+--- is one it must not pretend to summarise. The whole row carries the link
+--- either way, so what is drawn here is a label for a click target rather than
+--- the target.
+---
+--- `#47` and `!52` are each their own forge's notation, kept rather than
+--- flattened: `#` is a pull request on GitHub and `!` is a merge request on
+--- GitLab, and an operator reading a queue that spans both wants to know which
+--- one a row points at without opening it.
 local function artifact_ref(artifact)
   if artifact == "" then
     return nil
@@ -1187,6 +1193,10 @@ local function artifact_ref(artifact)
   local number = artifact:match("/pull/(%d+)")
   if number then
     return "#" .. number
+  end
+  number = artifact:match("/%-/merge_requests/(%d+)")
+  if number then
+    return "!" .. number
   end
   local sha = artifact:match("/commit/(%x%x%x%x%x%x%x+)")
   if sha then

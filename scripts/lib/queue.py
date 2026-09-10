@@ -115,9 +115,10 @@ def _load_forge():
 
 # WHICH FORGE. Everything fleet knows about a change request — a pull request
 # on GitHub, a merge request on GitLab — it asks this module for. Nothing in
-# this file runs `gh` or builds a github.com URL; the one exception is
-# FORGE_PROBE's ssh check below, which is a different coupling (git hosting,
-# not the forge API) and says so where it lives.
+# this file runs a forge CLI or builds a forge URL; the one exception is
+# FORGE_PROBE_TEMPLATE's ssh check below, which is a different coupling (git
+# hosting, not the forge API) and reads the repository's own `origin` rather
+# than naming a forge.
 forge = _load_forge()
 
 # The four conditions that justify making one task wait for another. They are
@@ -1936,31 +1937,74 @@ def ssh_run(entry: dict, script: str, stdin: str | None = None):
         )
 
 
-# What probe 2 accepts, and why it is two questions and not one. §1a names
-# `ssh -T git@github.com`, which proves an SSH key. A host that clones over
-# HTTPS with a `gh` token has no such key and is perfectly able to push, so
-# testing only the key would refuse a working host. Either credential passes;
-# neither is read, moved, or reported beyond the word that says which was found.
+# GIT HOSTING, NOT THE FORGE API. `scripts/lib/forge.py` answers "what is this
+# change request"; this answers "can this machine clone, fetch and push". They
+# are different couplings and this is the one that lives here.
 #
-# STILL GITHUB-SHAPED, and knowingly. This is GIT HOSTING — can this machine
-# clone, fetch and push — and not the forge API that `scripts/lib/forge.py`
-# covers. They are different couplings, and this one is left whole for its own
-# task rather than half-done here.
-FORGE_PROBE = """\
-if ssh -o BatchMode=yes -T git@github.com 2>&1 | grep -q 'successfully authenticated'; then
-	printf 'an ssh key'
+# IT ASKS THE REPOSITORY'S OWN HOST, and that is the whole point. §1a used to
+# name `ssh -T git@github.com` flatly, which proves nothing about a checkout
+# whose `origin` is a GitLab instance — a remote GitLab task would pass the
+# probe and then fail at its first `git push`. So the script reads the repo's
+# `origin` on the host and probes THAT, port and all.
+#
+# TWO QUESTIONS AND NOT ONE. The ssh probe proves a key. A host that clones
+# over HTTPS with a CLI token has no key and is perfectly able to push, so
+# testing only the key would refuse a working host. Either credential passes;
+# neither is read, moved, or reported beyond the word that says which was
+# found. The banners are GitHub's and GitLab's own — the two forges fleet
+# ships adapters for — because `ssh -T` exits non-zero on a successful GitHub
+# authentication, so the exit status cannot be the test.
+FORGE_PROBE_TEMPLATE = """\
+url=$(git -C __REPO__ remote get-url origin 2>/dev/null || printf '')
+case "$url" in
+*://*) rest=${url#*://}; rest=${rest#*@}; hostport=${rest%%/*} ;;
+*@*:*) rest=${url#*@}; hostport=${rest%%:*} ;;
+*) hostport='' ;;
+esac
+host=${hostport%%:*}
+port=''
+case "$hostport" in *:*) port=${hostport#*:} ;; esac
+if [ -z "$host" ]; then
+	printf 'no forge: %s has no readable `origin`, so there is no host to prove a credential against' __REPO__
+	exit 1
+fi
+if [ -n "$port" ]; then
+	banner=$(ssh -o BatchMode=yes -p "$port" -T "git@$host" 2>&1)
+else
+	banner=$(ssh -o BatchMode=yes -T "git@$host" 2>&1)
+fi
+case "$banner" in
+*'successfully authenticated'*|*'Welcome to GitLab'*)
+	printf '%s with an ssh key' "$host"
+	exit 0
+	;;
+esac
+if command -v gh >/dev/null 2>&1 && gh auth status --hostname "$host" >/dev/null 2>&1; then
+	printf '%s with a gh token' "$host"
 	exit 0
 fi
-if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-	printf 'a gh token'
+if command -v glab >/dev/null 2>&1 && glab auth status --hostname "$host" >/dev/null 2>&1; then
+	printf '%s with a glab token' "$host"
 	exit 0
 fi
+printf '%s' "$host"
 exit 1
 """
 
 
+def forge_probe(repo: str) -> str:
+    """The credential probe, for one repository path on the host."""
+    return FORGE_PROBE_TEMPLATE.replace("__REPO__", shlex.quote(repo))
+
+
 def probe_host(entry: dict, repo: str) -> list:
-    """§1a's questions, in §1a's order, stopping at the first NO.
+    """§1a's questions, stopping at the first NO.
+
+    The repository is asked about BEFORE its forge, because which forge to
+    prove a credential against is a fact about that checkout's `origin` — a
+    remote task on a GitLab repository needs a GitLab credential, and asking
+    github.com about it is how one used to pass the probe and then fail at its
+    first `git push`.
 
     Returns one {check, ok, detail} per probe run. Nothing is spawned until
     every one of them passes: a remote worker that starts and then fails at its
@@ -1982,16 +2026,6 @@ def probe_host(entry: dict, repo: str) -> list:
         return out
     out.append({"check": "reachable", "ok": True, "detail": "answers ssh, POSIX shell"})
 
-    creds = ssh_run(entry, FORGE_PROBE)
-    if creds.returncode != 0:
-        out.append({"check": "forge", "ok": False, "detail": (
-            "the host has no GitHub credentials of its own — neither an ssh key "
-            "nor a `gh` login. It cannot clone, fetch or push. Give that MACHINE "
-            "its own credentials; nothing here sends yours.")})
-        return out
-    out.append({"check": "forge", "ok": True,
-                "detail": f"reaches GitHub with {creds.stdout.strip() or 'a credential'}"})
-
     quoted = shlex.quote(repo)
     check = (
         f"if [ ! -d {quoted} ]; then printf no-dir; exit 1; fi\n"
@@ -2009,6 +2043,24 @@ def probe_host(entry: dict, repo: str) -> list:
             "nothing local validates it.")})
         return out
     out.append({"check": "repo", "ok": True, "detail": f"{repo} is a git checkout there"})
+
+    creds = ssh_run(entry, forge_probe(repo))
+    if creds.returncode != 0:
+        # The probe names the host it tried, so a machine with a key for one
+        # forge and none for the other says WHICH — which is the whole reason
+        # this asks the repository rather than a constant.
+        tried = creds.stdout.strip() or "its forge"
+        detail = (
+            f"the host has no credentials of its own for {tried} — neither an ssh "
+            "key nor a `gh` or `glab` login. It cannot clone, fetch or push. Give "
+            "that MACHINE its own credentials; nothing here sends yours."
+        )
+        if tried.startswith("no forge: "):
+            detail = tried[len("no forge: "):]
+        out.append({"check": "forge", "ok": False, "detail": detail})
+        return out
+    out.append({"check": "forge", "ok": True,
+                "detail": f"reaches {creds.stdout.strip() or 'its forge with a credential'}"})
     return out
 
 
@@ -2331,8 +2383,8 @@ def cmd_dispatch(args) -> int:
             if t.doc.get("host"):
                 print(f"      on host {t.doc['host']} — probed first, and not spawned"
                       " until all three pass:")
-                print("        reachable and a POSIX shell / has its own GitHub"
-                      " credentials / the repo is there")
+                print("        reachable and a POSIX shell / the repo is there"
+                      " / it has its own credentials for that repo's forge")
             print(f"      {shell_quote(create)}")
             if t.doc.get("host"):
                 print("      ssh <host> 'cat > <worktree>/BRIEF.md'   # the worker's"

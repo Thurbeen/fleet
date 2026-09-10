@@ -438,8 +438,8 @@ case "\$script" in
 	printf fleet-posix-ok
 	;;
 *successfully?authenticated*)
-	[ -f "$sshstate/\$dest.noforge" ] && exit 1
-	printf 'an ssh key'
+	[ -f "$sshstate/\$dest.noforge" ] && { printf github.com; exit 1; }
+	printf 'github.com with an ssh key'
 	;;
 *no-dir*)
 	[ -f "$sshstate/\$dest.norepo" ] && { printf no-dir; exit 1; }
@@ -4549,6 +4549,503 @@ if [ -s "$fk/gh-calls.log" ]; then
 else
 	pass "no code path ran \`gh\` while a different forge was configured"
 fi
+
+# --- 14. GITLAB: the second REAL adapter, over recorded `glab` output --------
+#
+# Section 13 proves the seam with a forge that exists only in that section.
+# This proves the adapter fleet actually ships for GitLab, and it is a
+# different claim: the fake forge answers whatever fleet asks, while `glab`
+# answers what GitLab decided to answer, in GitLab's own words and shapes.
+#
+# So the fixtures matter more than the code here. `scripts/fixtures/glab/` is
+# real `glab` 1.117.0 output recorded from gitlab.com — its README says which
+# command produced each file and which two answers are behind authentication
+# and therefore CONSTRUCTED below rather than recorded. A fake `glab` on PATH
+# replays them; nothing in this section reaches a network, and `gh` is a
+# tripwire again, because a GitLab merge request is the one thing that must
+# never be asked about with `gh`.
+#
+# What it proves:
+#
+#   the recorded shapes parse — a fork's merge request is read as NOT ours,
+#     commits come back oldest-first out of a newest-first answer, and glab's
+#     two-stream error is read from the stream that carries the reason
+#   a pipeline for a commit that is no longer the head is NO check, not a pass
+#   a self-hosted instance round-trips: `GITLAB_HOST`, a subgroup path, and
+#     every call naming its host by full URL
+#   `squash_option: never` is a refusal fleet RECORDS, not a crash and not a
+#     merge by some other method
+#   the remote-host credential probe asks the repository's own forge
+
+gl="$tmp/gitlab"
+mkdir -p "$gl/mrs" "$gl/api" "$gl/bin"
+export FAKE_GLAB_DIR="$gl"
+: >"$gl/calls.log"
+: >"$gl/merged.log"
+: >"$gl/gh-calls.log"
+
+fixtures="$PWD/scripts/fixtures/glab"
+
+# A `glab` that reads files instead of an instance. It knows only the four
+# verbs the adapter uses, and it is deliberately literal about the two things
+# recorded output taught us: `--jq .state` prints a bare word, and a failure
+# puts its reason on STDOUT as JSON with a decorated box on stderr.
+cat >"$gl/bin/glab" <<'PY'
+#!/usr/bin/env python3
+import json
+import os
+import sys
+
+D = os.environ["FAKE_GLAB_DIR"]
+argv = sys.argv[1:]
+with open(os.path.join(D, "calls.log"), "a") as fh:
+    fh.write(" ".join(argv) + "\n")
+
+
+def flag(name, default=None):
+    for i, a in enumerate(argv):
+        if a == name and i + 1 < len(argv):
+            return argv[i + 1]
+        if a.startswith(name + "="):
+            return a.split("=", 1)[1]
+    return default
+
+
+def emit(doc):
+    sys.stdout.write(json.dumps(doc) + "\n")
+    raise SystemExit(0)
+
+
+def refuse(message, recorded=None):
+    # A refusal is two streams, and which one carries the REASON is the thing
+    # an adapter gets wrong. `recorded` replays the pair exactly as glab wrote
+    # it; everything else is built to the same shape.
+    if recorded and os.path.exists(recorded + ".json"):
+        sys.stdout.write(open(recorded + ".json").read())
+        sys.stderr.write(open(recorded + ".stderr").read())
+        raise SystemExit(1)
+    sys.stdout.write(json.dumps({"error": {"message": message}}) + "\n")
+    sys.stderr.write("\n          \n   ERROR  \n          \n  %s\n\n" % message)
+    raise SystemExit(1)
+
+
+def load(number):
+    path = os.path.join(D, "mrs", "%s.json" % number)
+    return json.load(open(path)) if os.path.exists(path) else None
+
+
+def opened():
+    out = []
+    for name in sorted(os.listdir(os.path.join(D, "mrs"))):
+        if not name.endswith(".json"):
+            continue
+        doc = json.load(open(os.path.join(D, "mrs", name)))
+        if doc.get("state") == "opened":
+            out.append(doc)
+    return out
+
+
+if argv[:2] == ["mr", "view"]:
+    doc = load(argv[2])
+    if doc is None:
+        refuse("failed to get merge request %s: 404 Not Found" % argv[2],
+               recorded=os.path.join(D, "missing")
+               if argv[2] == "999999" else None)
+    if flag("--jq") == ".state":
+        sys.stdout.write(str(doc.get("state") or "") + "\n")
+        raise SystemExit(0)
+    emit(doc)
+
+if argv[:2] == ["mr", "list"]:
+    emit([] if int(flag("--page", "1")) > 1 else opened())
+
+if argv[:2] == ["mr", "merge"]:
+    if os.path.exists(os.path.join(D, "merge-refused")):
+        refuse("405 Method Not Allowed")
+    with open(os.path.join(D, "merged.log"), "a") as fh:
+        fh.write(" ".join(argv) + "\n")
+    sys.stdout.write("Merged!\n")
+    raise SystemExit(0)
+
+if argv[:1] == ["api"]:
+    path = argv[1].split("?")[0]
+    if path.endswith("/commits"):
+        name = "commits"
+    elif "/members/all" in path:
+        name = "members"
+    elif path.count("/") == 1:
+        name = "project"
+    else:
+        refuse("404 Not Found")
+    served = os.path.join(D, "api", name + ".json")
+    if not os.path.exists(served):
+        refuse("404 Not Found")
+    sys.stdout.write(open(served).read())
+    raise SystemExit(0)
+
+refuse("unknown command: %s" % " ".join(argv))
+PY
+chmod +x "$gl/bin/glab"
+
+cat >"$gl/bin/gh" <<'SH'
+#!/bin/sh
+echo "gh $*" >>"$FAKE_GLAB_DIR/gh-calls.log"
+echo "gh: a GitLab merge request must never be asked about with gh" >&2
+exit 1
+SH
+chmod +x "$gl/bin/gh"
+
+# The recorded fork merge request, under its own number, exactly as recorded —
+# and the recorded refusal, replayed on both streams for merge request 999999,
+# which is the number it was recorded against.
+cp "$fixtures/mr-view.json" "$gl/mrs/3877.json"
+cp "$fixtures/mr-commits.json" "$gl/api/commits.json"
+cp "$fixtures/mr-view-missing.json" "$gl/missing.json"
+cp "$fixtures/mr-view-missing.stderr" "$gl/missing.stderr"
+
+# CONSTRUCTED, and labelled: `GET /projects/:id` and `/members/all` are behind
+# authentication, so these carry the field names from GitLab's REST API
+# documentation and values this test chooses. The README beside the recordings
+# says so too.
+printf '{"id": 42, "path_with_namespace": "acme/group/widgets", "squash_option": "default_on"}\n' \
+	>"$gl/api/project.json"
+printf '[{"id": 7, "username": "letur", "access_level": 40}]\n' >"$gl/api/members.json"
+
+# Every merge request below is DERIVED FROM THE RECORDED ONE: the recorded
+# object is loaded and named fields are overwritten, so each fixture keeps the
+# real shape and only the facts under test are this test's invention.
+glab_mr() {
+	python3 - "$fixtures/mr-view.json" "$gl/mrs" "$@" <<'PY'
+import json
+import sys
+
+recorded, out, number = sys.argv[1], sys.argv[2], int(sys.argv[3])
+doc = json.load(open(recorded))
+sha = "%040d" % number
+steps = [{"step": s, "status": "completed"} for s in
+         ("intent", "rebase", "review", "test", "document", "lint", "push")]
+steps += [{"step": "pr", "status": "running"}, {"step": "ci", "status": "pending"}]
+payload = json.dumps({"head_sha": sha, "steps": steps})
+doc.update({
+    "iid": number,
+    "id": 900000 + number,
+    "web_url": "https://gitlab.example.com/acme/group/widgets"
+               "/-/merge_requests/%d" % number,
+    "project_id": 42,
+    "source_project_id": 42,
+    "target_project_id": 42,
+    "state": "opened",
+    "draft": False,
+    "sha": sha,
+    "title": "change %d" % number,
+    "target_branch": "main",
+    "has_conflicts": False,
+    "detailed_merge_status": "mergeable",
+    "author": {"id": 7, "username": "letur", "name": "letur", "state": "active"},
+    "description": "<!-- no-mistakes-pipeline-attestation:v1 %s -->\n\n" % payload
+                   + "\n".join("## %s\nx\n" % h for h in
+                               ("Intent", "What Changed", "Risk Assessment",
+                                "Testing", "Pipeline")),
+    "head_pipeline": {"id": 5000 + number, "name": "", "sha": sha,
+                      "status": "success"},
+})
+for pair in sys.argv[4:]:
+    key, _, value = pair.partition("=")
+    doc[key] = json.loads(value)
+json.dump(doc, open("%s/%d.json" % (out, number), "w"))
+PY
+}
+
+# --- 14a. the recorded shapes parse, and the fork is read as not ours -------
+
+GLPATH="$gl/bin:$base_path"
+env PATH="$GLPATH" FAKE_GLAB_DIR="$gl" python3 - "$PWD/scripts/lib" >"$tmp/gl-unit.tsv" <<'PY'
+import json
+import os
+import sys
+
+sys.path.insert(0, sys.argv[1])
+import forge  # noqa: E402
+
+rows = []
+
+
+def claim(name, got, want):
+    rows.append(("PASS", name, "") if got == want
+                else ("FAIL", name, "wanted %r, got %r" % (want, got)))
+
+
+gl = forge.GitLabForge()
+
+# The recorded merge request, through the public interface and the fake CLI.
+ref = gl.parse_change_url("https://gitlab.com/gitlab-org/cli/-/merge_requests/3877")
+claim("a /-/merge_requests/ URL on gitlab.com is a change request", ref is not None, True)
+cr, why = gl.get(ref)
+claim("and glab answers for it", why, "")
+claim("its head commit is the recorded one", cr.head_sha,
+      "c152195ba6b110064690fca331b186c55a674fdf")
+claim("its head branch is the recorded one", cr.head_branch, "patch-1")
+claim("its base branch is the recorded one", cr.base_branch, "main")
+claim("GitLab's `opened` is fleet's `open`", cr.state, "open")
+claim("a merge request from a FORK is not ours", cr.head_is_ours, False)
+claim("and the refusal line says where it lives",
+      "another project on gitlab.com" in cr.head_location, True)
+claim("its failed pipeline is one failed check",
+      [(c.verdict) for c in cr.checks], ["failed"])
+claim("an undocumented detailed_merge_status is not read as mergeable",
+      cr.mergeable, "")
+claim("commits come back oldest-first out of a newest-first answer",
+      [c.headline for c in cr.commits][0],
+      "chore(lint): add comment volume and overlap scripts")
+claim("and the newest recorded commit is last",
+      [c.headline for c in cr.commits][-1],
+      "refactor: fix gocritic findings and delete comments that restate the code")
+
+# The recorded error: the reason is on stdout, and stderr's first line is a box.
+missing = forge.ChangeRef(ref.repo, 999999,
+                          "https://gitlab.com/gitlab-org/cli/-/merge_requests/999999")
+gone, why = gl.get(missing)
+claim("a merge request that is not there is a reason, not an exception", gone, None)
+claim("and the reason is the one glab put on stdout", "404 Not Found" in why, True)
+claim("not the decorated box it put on stderr", "ERROR" in why, False)
+
+# Hosts.
+claim("a github.com pull request is not this adapter's",
+      gl.parse_change_url("https://github.com/Thurbeen/fleet/pull/1"), None)
+claim("nor is a single-segment path, which GitLab has no such thing as",
+      gl.parse_change_url("https://gitlab.com/project/-/merge_requests/1"), None)
+claim("an unconfigured self-hosted host is not ours either",
+      gl.parse_change_url(
+          "https://gitlab.example.com/acme/group/widgets/-/merge_requests/9"), None)
+
+os.environ["GITLAB_HOST"] = "https://gitlab.example.com/"
+selfhosted = forge.GitLabForge()
+ref = selfhosted.parse_change_url(
+    "https://gitlab.example.com/acme/group/widgets/-/merge_requests/301")
+claim("GITLAB_HOST configures a self-hosted instance, scheme and all",
+      ref is not None, True)
+claim("and a subgroup path is the whole path", ref.repo.path, "acme/group/widgets")
+claim("whose first segment is the owner", ref.repo.owner, "acme")
+for remote in ("https://gitlab.example.com/acme/group/widgets.git",
+               "git@gitlab.example.com:acme/group/widgets.git",
+               "ssh://git@gitlab.example.com/acme/group/widgets"):
+    claim("a checkout's origin names the project: %s" % remote,
+          selfhosted.repo_from_remote(remote),
+          forge.RepoId("gitlab.example.com", "acme/group/widgets"))
+
+# Pipelines. Each case is written into the fake CLI's own store and read back
+# through `get`, so the interface under test is the one the queue calls.
+mrs = os.path.join(os.environ["FAKE_GLAB_DIR"], "mrs")
+recorded = json.load(open(os.path.join(mrs, "3877.json")))
+
+
+def pipeline_verdicts(pipeline):
+    doc = dict(recorded, iid=401, web_url=ref.url.replace("301", "401"),
+               source_project_id=42, target_project_id=42, head_pipeline=pipeline)
+    json.dump(doc, open(os.path.join(mrs, "401.json"), "w"))
+    got, _why = selfhosted.get(forge.ChangeRef(ref.repo, 401, doc["web_url"]))
+    return [c.verdict for c in got.checks]
+
+
+head = recorded["sha"]
+claim("a pipeline for a commit that is no longer the head is no check at all",
+      pipeline_verdicts({"id": 1, "sha": "0" * 40, "status": "success"}), [])
+claim("and a merge request with no pipeline at all is no check either",
+      pipeline_verdicts(None), [])
+for said, want in (("success", "passed"), ("skipped", "passed"), ("failed", "failed"),
+                   ("canceled", "cancelled"), ("running", "pending"),
+                   ("manual", "pending"), ("created", "pending")):
+    claim("pipeline %s reads as %s" % (said, want),
+          pipeline_verdicts({"id": 1, "sha": head, "status": said}), [want])
+
+for verdict, name, detail in rows:
+    print("%s\t%s\t%s" % (verdict, name, detail))
+PY
+
+while IFS=$'\t' read -r verdict claim detail; do
+	if [ "$verdict" = PASS ]; then pass "$claim"; else fail "$claim" "$detail"; fi
+done <"$tmp/gl-unit.tsv"
+
+# --- 14b. the whole queue, driven through the GitLab adapter -----------------
+#
+# The recorded merge request and the pipeline cases above belong to gitlab.com
+# and to no task; take them out of the fake CLI's store before the queue is
+# asked what is open, and start the call log over so that the "nothing was
+# aimed at gitlab.com" claim below is about this half of the section.
+
+rm -f "$gl/mrs/3877.json" "$gl/mrs/401.json"
+: >"$gl/calls.log"
+
+glrepo="$gl/repo"
+mkdir -p "$glrepo"
+git -C "$glrepo" init -q -b main
+git -C "$glrepo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m base
+git -C "$glrepo" remote add origin "https://gitlab.example.com/acme/group/widgets.git"
+
+glq() {
+	env PATH="$gl/bin:$tbxbin:$sshbin:$base_path" FLEET_QUEUE_DIR="$tmp/queue-gitlab" \
+		GITLAB_HOST=gitlab.example.com \
+		FLEET_AUTO_MERGE_REPOS="gitlab.example.com/acme/group/widgets" \
+		"$QUEUE" "$@"
+}
+
+gltopic="$(glq topic add on-gitlab --title 'Work on a self-hosted GitLab' \
+	--prompt 'fleet must work on GitLab too')"
+
+for spec in 01:landed:301 02:conflicting:302 03:green:303 04:foreign:304; do
+	IFS=: read -r n slug num <<<"$spec"
+	glq add "$gltopic" "$slug" --title "A change that is $slug" --repo "$glrepo" \
+		--branch "fix/$slug" --number "$n" >/dev/null
+	cat >"$tmp/queue-gitlab/$gltopic/$n-$slug/result.md" <<EOF
+---
+outcome: shipped
+artifact: https://gitlab.example.com/acme/group/widgets/-/merge_requests/$num
+---
+Shipped it.
+EOF
+done
+for br in landed conflicting green foreign; do git -C "$glrepo" branch "fix/$br"; done
+
+glab_mr 301 'source_branch="fix/landed"'
+glab_mr 302 'source_branch="fix/conflicting"' 'has_conflicts=true' \
+	'detailed_merge_status="conflict"'
+glab_mr 303 'source_branch="fix/green"'
+glab_mr 304 'source_branch="fix/foreign"' 'source_project_id=99'
+
+session_is bbbbbbbb-0000-0000-0000-000000000001 idle
+glq attach "$gltopic/01-landed" bbbbbbbb-0000-0000-0000-000000000001 >/dev/null
+
+out="$(glq collect 2>&1)"
+expect "collect verifies a publish claim on a self-hosted GitLab" "01-landed" "$out"
+expect "and it read a /-/merge_requests/ URL as a change request" \
+	"merge_requests/301" "$out"
+refute "its merge request is open, so nothing was reaped" "reaped" "$out"
+
+python3 - "$gl/mrs/301.json" <<'PY'
+import json
+import sys
+doc = json.load(open(sys.argv[1]))
+doc["state"] = "merged"
+json.dump(doc, open(sys.argv[1], "w"))
+PY
+out="$(glq reap 2>&1)"
+expect "a merged merge request lands the task" "landed" "$out"
+expect "and releases the session that produced it" "reaped" "$out"
+
+out="$(glq shepherd --topic "$gltopic" --dry-run 2>&1)"
+expect "shepherd names the self-hosted project, subgroup and all" \
+	"acme/group/widgets on gitlab.example.com" "$out"
+expect "and says what it would run, in glab's own flags" \
+	"glab mr merge --yes --auto-merge=false --squash" "$out"
+
+out="$(glq shepherd --topic "$gltopic" 2>&1)"
+if grep -q 'mr merge 303' "$gl/merged.log"; then
+	pass "a green, attested merge request is merged through the adapter"
+else
+	fail "a green, attested merge request is merged through the adapter" \
+		"$out$nl$(cat "$gl/merged.log")"
+fi
+expect "and the merge names the exact head it checked, so a race cannot slip in" \
+	"--sha 0000000000000000000000000000000000000303" "$(cat "$gl/merged.log")"
+expect "a conflicting one gets a fixer, in the base branch's own terms" \
+	"conflicts with main" "$out"
+expect "one whose head is in another project is left alone" "left-alone" "$out"
+refute "and is never merged" "mr merge 304" "$(cat "$gl/merged.log")"
+
+# Every call carried the host. This is the whole self-hosted claim: a slug
+# would have reached gitlab.com, and `RepoId` is host plus path for this reason.
+refute "no call was ever aimed at gitlab.com" "gitlab.com" "$(cat "$gl/calls.log")"
+expect "every call named the self-hosted instance by full URL" \
+	"-R https://gitlab.example.com/acme/group/widgets" "$(cat "$gl/calls.log")"
+
+# --- 14c. a project that forbids squash is a refusal, not a crash ------------
+#
+# GitLab's `squash` is not a merge method — it is a flag on the merge, and
+# `squash_option: never` is the PROJECT setting that forbids it. So the
+# mismatch section 13d proves at the forge level has a second form here, per
+# project, and it must still be a sentence fleet records rather than a merge
+# by whatever method the project does allow.
+
+printf '{"id": 42, "path_with_namespace": "acme/group/widgets", "squash_option": "never"}\n' \
+	>"$gl/api/project.json"
+glab_mr 305 'source_branch="fix/green"'
+before="$(wc -l <"$gl/merged.log")"
+out="$(glq shepherd --topic "$gltopic" 2>&1)"
+expect "a project configured against squash says so in its own words" \
+	"squash_option: never" "$out"
+count_is "and nothing is merged while it forbids it" "$(wc -l <"$gl/merged.log")" \
+	"$before" "$out"
+printf '{"id": 42, "path_with_namespace": "acme/group/widgets", "squash_option": "default_on"}\n' \
+	>"$gl/api/project.json"
+
+if [ -s "$gl/gh-calls.log" ]; then
+	fail "no code path ran \`gh\` against a GitLab merge request" \
+		"$(cat "$gl/gh-calls.log")"
+else
+	pass "no code path ran \`gh\` against a GitLab merge request"
+fi
+
+# --- 14d. the remote-host probe asks the REPOSITORY's forge, not github.com --
+#
+# The credential probe is plain shell that runs on somebody else's machine, so
+# it is run here exactly as that machine runs it, with `git` and `ssh` stubbed.
+# It used to name github.com flatly, which passes on a host that cannot reach
+# the GitLab instance the checkout actually pushes to.
+
+probe="$tmp/probe"
+mkdir -p "$probe/bin"
+python3 - "$PWD/scripts/lib/queue.py" >"$probe/probe.sh" <<'PY'
+import importlib.util
+import sys
+
+spec = importlib.util.spec_from_file_location("fleet_queue_probe", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+sys.stdout.write(mod.forge_probe("/srv/code/app"))
+PY
+cat >"$probe/bin/git" <<'SH'
+#!/bin/sh
+cat "$PROBE_ORIGIN" 2>/dev/null || exit 1
+SH
+cat >"$probe/bin/ssh" <<'SH'
+#!/bin/sh
+echo "ssh $*" >>"$PROBE_LOG"
+cat "$PROBE_BANNER" 2>/dev/null
+exit 1
+SH
+chmod +x "$probe/bin/git" "$probe/bin/ssh"
+
+probe_says() {
+	: >"$probe/ssh.log"
+	printf '%s\n' "$1" >"$probe/origin"
+	printf '%s\n' "$2" >"$probe/banner"
+	env PATH="$probe/bin:$base_path" PROBE_ORIGIN="$probe/origin" \
+		PROBE_BANNER="$probe/banner" PROBE_LOG="$probe/ssh.log" \
+		sh "$probe/probe.sh"
+}
+
+expect "the probe proves a GitLab host against GitLab's own welcome" \
+	"gitlab.example.com with an ssh key" \
+	"$(probe_says 'git@gitlab.example.com:acme/group/widgets.git' \
+		'Welcome to GitLab, @letur!')"
+expect "and it asked THAT host, not github.com" "git@gitlab.example.com" \
+	"$(cat "$probe/ssh.log")"
+expect "a self-hosted instance on a port is asked on that port" "-p 2222" \
+	"$(probe_says 'ssh://git@gitlab.example.com:2222/acme/widgets.git' \
+		'Welcome to GitLab, @letur!' >/dev/null; cat "$probe/ssh.log")"
+expect "GitHub's own banner still passes, unchanged" \
+	"github.com with an ssh key" \
+	"$(probe_says 'git@github.com:Thurbeen/fleet.git' \
+		"Hi letur! You've successfully authenticated")"
+expect "a repo whose origin cannot be read says THAT, not 'no credentials'" \
+	"has no readable" \
+	"$(probe_says '' 'Welcome to GitLab, @letur!' 2>&1)"
+
+
+# The fixer above got a real worktree; take it back off the test repo, as
+# section 13 does with its own.
+git -C "$glrepo" worktree remove --force \
+	"$tmp/queue-gitlab/.worktrees/${gltopic}__02-conflicting" 2>/dev/null
 
 # The fixer above got a real worktree; take it back off the test repo so the
 # temp directory can be removed without leaving a stale registration.

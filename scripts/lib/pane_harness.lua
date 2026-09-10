@@ -281,7 +281,9 @@ local TOPICS = {
       },
       {
         id = "03-drop-the-webui-selftest", state = "dispatched", title = "Drop the monitor's selftest and its CI job",
-        artifact = "https://github.com/Thurbeen/fleet/pull/52",
+        -- A GitLab merge request, so the pane is rendered against both
+        -- forges fleet ships an adapter for rather than only one.
+        artifact = "https://gitlab.example.com/acme/group/widgets/-/merge_requests/52",
         brief = 1, events = 2, result = 1, moved = ago(3),
         publish = { "no-mistakes", "open", ago(3) },
       },
