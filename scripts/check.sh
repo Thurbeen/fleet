@@ -151,14 +151,15 @@ check_queue() {
 # The reconciler's lifecycle, the part of it that can break silently: it runs
 # `collect`, so a second instance or a stop that does not stop costs closed
 # tasks and reaped sessions.
-# reconcile-selftest.sh proves adoption, a durable stop, and the two claims
+# reconcile-selftest.sh proves adoption, a durable stop, and the three claims
 # that are specific to it — that the four cadences are four separate clocks,
-# and that the ONLY thing it ever asks the queue to do is watch, collect,
-# shepherd and refuel. It stubs the queue command, so it needs no thurbox, no
-# `gh` and no network.
+# that the ONLY things it ever asks the queue to do are watch, collect,
+# shepherd, refuel and the read-only plan, and that the one line it sends the
+# lead goes out on a transition rather than on every pass. It stubs the queue
+# command and thurbox-cli, so it needs no thurbox, no `gh` and no network.
 check_reconcile() {
 	if ./scripts/reconcile-selftest.sh >/dev/null; then
-		ok "reconcile: adopts rather than duplicates, a stop stays stopped, and it writes nothing"
+		ok "reconcile: adopts rather than duplicates, a stop stays stopped, it writes no record, and it wakes the lead once per transition"
 	else
 		# Re-run visibly: a failing claim is the whole message.
 		./scripts/reconcile-selftest.sh

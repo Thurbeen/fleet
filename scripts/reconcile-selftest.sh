@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Prove the reconciler's claims, rather than assert them.
 #
-# `scripts/reconcile.sh` makes seven promises. Most are invisible until the day
+# `scripts/reconcile.sh` makes eight promises. Most are invisible until the day
 # they cost something — a second loop closing tasks under the first, a stop the
 # next onboarding run undoes, a reconciler that decided to dispatch. Each gets a
 # test here, against a throwaway queue, a throwaway runtime directory and a
@@ -27,21 +27,31 @@
 #   7. A PHANTOM IS NEVER "UP". A supervisor restarting a tick loop that cannot
 #      run at all is a live process and not a running reconciler — never
 #      adopted, never reported healthy.
+#   8. IT WAKES THE LEAD, ON THE TRANSITION AND NOT ON THE PASS. Ready work
+#      that nothing will dispatch reaches the lead ONCE, when the ready set
+#      becomes non-empty or grows; a lead mid-turn is not interrupted and the
+#      wake waits for it; and a fleet with no lead session at all produces no
+#      send and no error.
 #
 # Tests 2 and 5 are the ones to read first. 2 is the operator's stop actually
 # meaning stop; 5 is the rule that keeps this a reconciler and not a second
-# control plane.
+# control plane. 8 is the one that reads oddly beside 5 and does not break it:
+# telling the lead is not deciding, and `plan` is a read.
 #
 # HOW IT RUNS OFFLINE. `FLEET_RECONCILE_QUEUE_CMD` is the seam — the same shape
 # as `FLEET_QUEUE_WATCH_CMD` in queue.sh — and this replaces the real
 # `queue.sh` with a recorder that appends its own argv to a file and prints
-# what the loop expects to read. So nothing here needs thurbox, `gh`,
-# `quota-axi` or a network, and the intervals are compressed to seconds so a
-# whole day of cadence fits in a few of them.
+# what the loop expects to read. `thurbox-cli` is stubbed on PATH beside it, so
+# test 8's lead is a state the test writes to a file rather than a session on
+# this machine. Nothing here needs thurbox, `gh`, `quota-axi` or a network, and
+# the intervals are compressed to seconds so a whole day of cadence fits in a
+# few of them.
 #
 # Usage: scripts/reconcile-selftest.sh    (also: ./scripts/check.sh reconcile)
 #
-# Requires: bash. Nothing else — the queue command is a stub.
+# Requires: bash and python3 — the latter because the notifier test drives
+# `scripts/lib/notify_lead.py`, which is real code and not a stub. The queue
+# command and thurbox-cli are both stubs.
 
 set -uo pipefail
 
@@ -124,6 +134,14 @@ watch)
 collect) echo "collect: nothing new" ;;
 shepherd) echo "shepherd: 0 open pull request(s)" ;;
 refuel) echo "refuel: no task here is holding a session" ;;
+plan)
+	# The FIFTH verb, and the only read among them. $READY is the ready set
+	# the test is driving; the real `plan --json` carries `waiting` and
+	# `overlaps` beside it, and the notifier reads neither.
+	refs=""
+	[ -s "$READY" ] && refs="$(sed 's/.*/"&"/' "$READY" | paste -sd, -)"
+	printf '{"ready":[%s],"waiting":[],"overlaps":[]}\n' "$refs"
+	;;
 *)
 	echo "queue-stub: REFUSING an unexpected subcommand: $*" >&2
 	exit 3
@@ -133,8 +151,54 @@ exit 0
 STUB
 chmod +x "$tmp/queue-stub.sh"
 
+# --- thurbox-cli, stubbed on PATH -------------------------------------------
+#
+# The lead is a thurbox session, so waking it needs two answers from
+# thurbox-cli and nothing else: which session carries the lead's name and what
+# state it is in (`session list`), and then the send itself. Both are stubbed
+# here so the test drives the lead's state directly.
+#
+# $LEAD_STATE ABSENT MEANS NO LEAD. Not an error, not an empty state — the
+# session list simply does not have that row, which is the shape of a fleet
+# whose lead is not running, and of one that never had the extension
+# installed.
+tbxbin="$tmp/bin"
+mkdir -p "$tbxbin"
+cat >"$tbxbin/thurbox-cli" <<'SH'
+#!/usr/bin/env bash
+case "${1:-} ${2:-}" in
+"session list")
+	if [ -s "$LEAD_STATE" ]; then
+		printf '[{"id":"lead-uuid","name":"%s","state":"%s"}]\n' \
+			"$LEAD_NAME" "$(cat "$LEAD_STATE")"
+	else
+		printf '[]\n'
+	fi
+	;;
+"session send")
+	printf '%s\n' "$4" >>"$SENDS"
+	;;
+*) exit 0 ;;
+esac
+exit 0
+SH
+chmod +x "$tbxbin/thurbox-cli"
+PATH="$tbxbin:$PATH"
+export PATH
+
 export CALLS="$calls"
 export MOVED="$tmp/moved"
+export READY="$tmp/ready"
+export SENDS="$tmp/sends"
+export LEAD_STATE="$tmp/lead-state"
+# The lead's name is normally read out of the rendered extension.toml, which
+# belongs to the operator's own checkout and is not something a gate may write.
+# FLEET_LEAD_SESSION is the override that seam exists for.
+export LEAD_NAME="Gate Control"
+export FLEET_LEAD_SESSION="$LEAD_NAME"
+: >"$READY"
+: >"$SENDS"
+printf 'idle\n' >"$LEAD_STATE"
 export FLEET_QUEUE_DIR="$tmp/queue"
 mkdir -p "$FLEET_QUEUE_DIR"
 export FLEET_RECONCILE_DIR="$tmp/rt"
@@ -233,17 +297,145 @@ else
 fi
 echo 0 >"$MOVED"
 
+# --- 8. it wakes the lead on the transition, and only then -------------------
+#
+# The failure this exists for, measured: on 2026-09-10 a blocker cleared at
+# 01:37 and the task it freed was dispatched at 08:05, because the reconciler
+# may not dispatch and nothing told the lead there was anything to dispatch.
+# Six and a half hours of ready, unclaimed work with no actor.
+#
+# What is proved here is the shape that makes the fix survivable rather than
+# the fix itself. A loop that says "one task is ready" every twenty seconds
+# gets turned off within the day, so the assertion is that it fires on the
+# TRANSITION and is silent on every pass in between.
+
+count_sends() { grep -c . "$SENDS" 2>/dev/null || true; }
+# shellcheck disable=SC2317,SC2329  # invoked indirectly, as wait_for's predicate
+sends_atleast() { [ "$(count_sends)" -ge "$1" ]; }
+
+if [ "$(count_sends)" = "0" ]; then
+	pass "an empty ready set wakes nobody"
+else
+	fail "an empty ready set wakes nobody" "$(cat "$SENDS")"
+fi
+
+# The transition: the ready set becomes non-empty.
+printf 'alpha/01-first\n' >"$READY"
+if wait_for 20 sends_atleast 1; then
+	pass "ready work reaches the lead"
+else
+	fail "ready work reaches the lead" "sends: $(cat "$SENDS")${nl}$(cat "$FLEET_RECONCILE_DIR/reconcile.log")"
+fi
+
+woke="$(cat "$SENDS")"
+expect "the message names the task that is ready" "alpha/01-first" "$woke"
+expect "the message carries the command that sends it" "queue.sh dispatch" "$woke"
+if [ "$(wc -l <"$SENDS")" = "1" ]; then
+	pass "the wake is one line, not a report"
+else
+	fail "the wake is one line" "$woke"
+fi
+
+# AND THEN IT STOPS. Several collect intervals pass with the same task still
+# ready and still undispatched; the lead hears nothing more about it.
+sleep 5
+if [ "$(count_sends)" = "1" ]; then
+	pass "it stays quiet while the same set stays ready"
+else
+	fail "it stays quiet while the same set stays ready" "$(cat "$SENDS")"
+fi
+
+# A GROWING SET IS A NEW TRANSITION. A second task becoming ready is news, and
+# the message names the whole ready set rather than only the new arrival —
+# `dispatch` is going to send all of it.
+printf 'alpha/01-first\nbeta/02-second\n' >"$READY"
+if wait_for 20 sends_atleast 2; then
+	pass "a growing ready set is a fresh transition"
+else
+	fail "a growing ready set is a fresh transition" "$(cat "$SENDS")"
+fi
+expect "the second message names both ready tasks" "beta/02-second" "$(tail -1 "$SENDS")"
+expect "and names the one that was already ready" "alpha/01-first" "$(tail -1 "$SENDS")"
+
+# A WORKING LEAD IS NOT INTERRUPTED, and the wake is not lost either. Typing
+# into a session mid-turn is how a fix gets half-applied — `shepherd` declines
+# to touch a working session for the same reason — so the notice waits for the
+# lead to come to rest instead of being dropped or forced through.
+printf 'working\n' >"$LEAD_STATE"
+sent_before="$(count_sends)"
+printf 'alpha/01-first\nbeta/02-second\ngamma/03-third\n' >"$READY"
+sleep 5
+if [ "$(count_sends)" = "$sent_before" ]; then
+	pass "a lead mid-turn is not interrupted"
+else
+	fail "a lead mid-turn is not interrupted" "$(tail -1 "$SENDS")"
+fi
+expect "and the log says the wake is waiting rather than gone" "the wake waits" \
+	"$(cat "$FLEET_RECONCILE_DIR/reconcile.log")"
+
+printf 'idle\n' >"$LEAD_STATE"
+if wait_for 20 sends_atleast $((sent_before + 1)); then
+	pass "the held wake lands once the lead is at rest"
+else
+	fail "the held wake lands once the lead is at rest" "$(cat "$SENDS")"
+fi
+expect "and it names the task that arrived while the lead was busy" "gamma/03-third" "$(tail -1 "$SENDS")"
+
+# NO LEAD, NO ERROR STORM. A fleet whose lead session is not running is a
+# normal fleet — the operator closed it, or the extension was never installed.
+# The loop must carry on folding and say nothing it cannot act on twice.
+: >"$LEAD_STATE"
+sent_before="$(count_sends)"
+watch_before="$(count_calls watch)"
+printf 'alpha/01-first\nbeta/02-second\ngamma/03-third\ndelta/04-fourth\n' >"$READY"
+sleep 5
+if [ "$(count_sends)" = "$sent_before" ]; then
+	pass "no lead session means no send"
+else
+	fail "no lead session means no send" "$(tail -1 "$SENDS")"
+fi
+if [ "$(count_calls watch)" -gt "$watch_before" ]; then
+	pass "and the loop keeps folding regardless"
+else
+	fail "and the loop keeps folding regardless" "watch stuck at $watch_before"
+fi
+# One line about it, not one per pass: the note is deduplicated against the
+# last one, so a lead that is away for an hour costs the log a single entry.
+absent="$(grep -c "no session named" "$FLEET_RECONCILE_DIR/reconcile.log" 2>/dev/null || true)"
+if [ "${absent:-0}" -le 1 ]; then
+	pass "an absent lead is reported once, not once per pass"
+else
+	fail "an absent lead is reported once" "$absent log lines say so"
+fi
+
+printf 'idle\n' >"$LEAD_STATE"
+: >"$READY"
+
 # --- 5. it is not a writer ---------------------------------------------------
 #
 # The stub refuses any subcommand it was not taught, so a `dispatch` would have
 # failed the loop already. This states the claim positively as well: over the
 # whole run, the set of things the reconciler asked the queue to do is exactly
-# the four reconciling ones plus the `root` precondition check.
+# the four reconciling ones, plus `plan`, plus the `root` precondition check.
+#
+# WHY `plan` IS IN THIS SET AND `dispatch` NEVER CAN BE. This list is not a
+# list of harmless commands; it is the list of things the loop is allowed to
+# want. `plan` READS — it prints the ready set, the waiting set and why each
+# one waits, and it writes nothing and moves nothing. The loop asks it so that
+# test 8 above has something to tell the lead about, and telling the lead is
+# not deciding: the ready set goes to the actor that may act on it, and that
+# actor is still the lead.
+#
+# `dispatch`, `add`, `block`, `archive` and `reap` all CHANGE what runs, and a
+# loop that could call one of them would be a second control plane with no
+# operator in it. Widening this set again is a decision about power, not about
+# convenience — a read that answers a question the loop already needs may join
+# it, and nothing that acts ever may.
 verbs="$(awk '{print $1}' "$calls" | sort -u | tr '\n' ' ')"
-if [ "$verbs" = "collect refuel root shepherd watch " ]; then
-	pass "it calls only watch/collect/shepherd/refuel — never dispatch, add or reap"
+if [ "$verbs" = "collect plan refuel root shepherd watch " ]; then
+	pass "it calls watch/collect/shepherd/refuel and the read-only plan — never dispatch, add or reap"
 else
-	fail "it calls only the reconciling subcommands" "called: $verbs"
+	fail "it calls only the reconciling subcommands, plus the read-only plan" "called: $verbs"
 fi
 
 # It writes to its own runtime directory and to nothing else. The queue

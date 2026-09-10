@@ -277,11 +277,16 @@ down because the user asked.
 ./scripts/reconcile.sh status
 ```
 
-Two things to pass on, once:
+Three things to pass on, once:
 
 - It **reconciles and does not decide**. No dispatch, no cancel, no reorder,
   and it writes no record itself — `scripts/queue.sh` stays the only writer,
   which is what keeps the queue single-writer.
+- It **will occasionally type one line into Mission Control**, and only ever
+  the same one: that N tasks are ready and nothing will dispatch them. That is
+  the loop telling the actor who may act; an unprompted line there is this and
+  not a bug. It arrives once per transition and never while the lead is
+  mid-turn.
 - To switch it off for good: `./scripts/reconcile.sh stop`. To bring it back:
   `./scripts/reconcile.sh start`.
 

@@ -106,6 +106,11 @@ YAML by hand. Nothing to push — the map is gitignored.
    restarts nothing while that window is spent; see `AGENTS.md` and
    `fleet-queue` §5c.
 
+**A landing is not an ending — it is what unblocks the next task.** So `plan`
+is the last thing you run before you go quiet, not the first thing you run when
+the operator asks. `collect` prints that advice every time something lands; it
+is an instruction, and a ready set left sitting is work with no actor at all.
+
 **Steps 4, 6 and 8 do not have to wait for you to remember them.**
 `./scripts/reconcile.sh ensure` runs a supervised loop that folds the event
 stream continuously and calls `collect`, `shepherd` and `refuel` on their own
@@ -113,7 +118,9 @@ intervals — see `## What you are not`, which owns why an automation exists her
 at all. It reconciles and never decides: you still plan, still write briefs,
 still dispatch. When something is
 unexpectedly current, that is why; `./scripts/reconcile.sh status` says whether
-it is up, and `logs` says what it has been doing.
+it is up, and `logs` says what it has been doing. It is also the one thing that
+will speak to you unprompted, and only ever to say that the ready set has grown
+— read that line as `plan` already run for you, and dispatch.
 
 The operator watches all of that in the TUI queue pane rather than by asking
 you: `interface/fleet_queue.lua` draws the queue in a thurbox column, `F3`
@@ -311,6 +318,12 @@ the rule protects is still true of it —
 - **It observes; it does not decide.** It folds `watch`, and it runs `collect`,
   `shepherd` and `refuel` on their own clocks. It never dispatches, cancels or
   reorders anything. Choosing what runs is still yours.
+- **It wakes you when the ready set grows, and that is not it deciding.** A
+  task whose blocker clears has no actor — the loop may not dispatch it and you
+  are not looking — so it reads `plan` and types one line into your terminal
+  naming what is ready and the command that sends it. Once per transition, and
+  never while you are mid-turn. The decision it hands you is still yours to
+  make; what it took away was the six hours before you knew there was one.
 - **It writes no record.** Every effect goes through `./scripts/queue.sh`,
   which stays the only writer, exactly as the pane stays a pure reader.
 - **It is stoppable, and a stop stays stopped.** `orchestration/reconcile/down`

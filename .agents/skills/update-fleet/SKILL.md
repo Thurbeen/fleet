@@ -108,11 +108,12 @@ lead's standing context — so it needs both the reinstall in §3 and the
 hand-over in §8. A change to `orchestration/voice.example.conf` (or your own
 `voice.conf`) needs the same two: it moves what the rendered payload calls you.
 
-`scripts/lib/queue.py` is deliberately absent from this table. The
-reconciler's loop never sources it — every pass calls `./scripts/queue.sh` as
-a fresh subprocess, so a change there reaches the loop on its very next call,
-with no restart needed. §6 covers only `scripts/reconcile.sh` itself, which
-the running loop does hold in memory.
+`scripts/lib/queue.py` is deliberately absent from this table, and so is
+`scripts/lib/notify_lead.py`. The reconciler's loop never sources either — every
+pass shells out to `./scripts/queue.sh` and to `python3
+scripts/lib/notify_lead.py` as fresh subprocesses, so a change to either
+reaches the loop on its very next call, with no restart needed. §6 covers only
+`scripts/reconcile.sh` itself, which the running loop does hold in memory.
 
 Run §3–§6 in any order, then §7, then §8 last — §8 is the one that cannot be
 automated, and everything else should already be done when you raise it.
