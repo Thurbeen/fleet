@@ -24,7 +24,6 @@
 # Usage:
 #   scripts/preflight.sh                  # the table, grouped by tier
 #   scripts/preflight.sh --commands       # just the install lines for what is missing
-#   scripts/preflight.sh --json           # one object per dependency
 #   scripts/preflight.sh --tier required  # only that tier (repeatable)
 #
 # `--tier` is what makes "install the required ones only" a command rather than
@@ -42,7 +41,6 @@ TIERS=""
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--commands) MODE="commands" ;;
-	--json) MODE="json" ;;
 	--tier)
 		case "${2:-}" in
 		required | recommended | gate) TIERS="$TIERS ${2}" ;;
@@ -54,11 +52,11 @@ while [ $# -gt 0 ]; do
 		shift
 		;;
 	-h | --help)
-		sed -n '2,34p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+		sed -n '2,33p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 		exit 0
 		;;
 	*)
-		printf 'usage: %s [--commands|--json] [--tier required|recommended|gate]...\n' "$0" >&2
+		printf 'usage: %s [--commands] [--tier required|recommended|gate]...\n' "$0" >&2
 		exit 2
 		;;
 	esac
@@ -292,14 +290,6 @@ commands)
 		printed="$printed|$remedy|"
 		printf '%s\n' "$remedy"
 	done
-	;;
-json)
-	for row in "${ROWS[@]}"; do
-		IFS="$US" read -r tier name state detail why remedy <<<"$row"
-		wanted "$tier" || continue
-		printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$tier" "$name" "$state" "$detail" "$why" "$remedy"
-	done | jq -Rs 'split("\n") | map(select(length > 0) | split("\t") |
-		{tier: .[0], name: .[1], state: .[2], version: .[3], why: .[4], remedy: .[5]})'
 	;;
 text)
 	heading() {

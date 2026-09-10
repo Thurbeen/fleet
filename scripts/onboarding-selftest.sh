@@ -47,6 +47,20 @@ set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 2
 REPO="$PWD"
 
+# EVERY git probe below is decided by the git ENVIRONMENT before any config
+# file gets a say: GIT_CONFIG_GLOBAL replaces ~/.gitconfig outright, and
+# GIT_CONFIG_COUNT/KEY_n/VALUE_n layer on top of everything. A caller that sets
+# either — `GIT_CONFIG_GLOBAL=/tmp/nosign ./scripts/check.sh onboarding` is how
+# this repo is gated on a machine whose signing is misconfigured — would
+# otherwise decide this script's answers for it: §1f's signing case AND §2's
+# fixture ~/.gitconfig both. Cleared ONCE, here, at the boundary they share.
+# §1f sets GIT_CONFIG_GLOBAL as a per-command prefix, which this does not touch.
+unset GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM
+for ((_i = 0; _i <= ${GIT_CONFIG_COUNT:-0}; _i++)); do
+	unset "GIT_CONFIG_KEY_$_i" "GIT_CONFIG_VALUE_$_i"
+done
+unset GIT_CONFIG_COUNT _i
+
 nl=$'\n'
 failed=0
 tmp=""
@@ -233,28 +247,20 @@ ln -sf "$full"/* "$sign/" 2>/dev/null
 rm -f "$sign/git"
 ln -sf "$(command -v git)" "$sign/git"
 
-# GIT_CONFIG_COUNT/KEY/VALUE outrank GIT_CONFIG_GLOBAL, and a caller that
-# sets them — `check.sh` run with signing turned off, which is exactly how
-# this repo is gated on a machine whose signing is misconfigured — would
-# otherwise decide this test's answer for it. Unset them for these two cases
-# so the probe sees only the config the test wrote.
-unset_git_env() {
-	local i
-	unset GIT_CONFIG_SYSTEM
-	for i in $(seq 0 "${GIT_CONFIG_COUNT:-0}"); do
-		unset "GIT_CONFIG_KEY_$i" "GIT_CONFIG_VALUE_$i"
-	done
-	unset GIT_CONFIG_COUNT
-}
-
 printf '[commit]\n\tgpgsign = true\n' >"$tmp/gitconfig-nokey"
-out="$(unset_git_env; GIT_CONFIG_GLOBAL="$tmp/gitconfig-nokey" PATH="$sign" "$REPO/scripts/preflight.sh" 2>&1)"
+out="$(GIT_CONFIG_GLOBAL="$tmp/gitconfig-nokey" PATH="$sign" "$REPO/scripts/preflight.sh" 2>&1)"
 expect "1f signing on with no key is reported" "commit signing" "$out"
 expect "1f and it names what it costs" "sandbox" "$out"
 expect "1f with a remedy that is either half of the fix" "commit.gpgsign false" "$out"
 
+# The colour codes come OUT before the refute: the table writes
+# `missing\e[0m  commit signing`, so a refute against the plain words could
+# never fire and the case it names would be untested.
 printf '[commit]\n\tgpgsign = true\n[user]\n\tsigningkey = ~/.ssh/k.pub\n' >"$tmp/gitconfig-key"
-out="$(unset_git_env; GIT_CONFIG_GLOBAL="$tmp/gitconfig-key" PATH="$sign" "$REPO/scripts/preflight.sh" --tier gate 2>&1)"
+esc=$'\033'
+out="$(GIT_CONFIG_GLOBAL="$tmp/gitconfig-key" PATH="$sign" "$REPO/scripts/preflight.sh" --tier gate 2>&1 |
+	sed "s/${esc}\\[[0-9;]*m//g")"
+expect "1f the signing row is reported at all" "commit signing" "$out"
 refute "1f signing with a key is not reported as a gap" "missing  commit signing" "$out"
 
 printf '\n\033[1m§2 discover-owners — three sources, and GitLab is not one of them\033[0m\n'
@@ -265,14 +271,30 @@ home="$tmp/home"
 mkdir -p "$home"
 printf '[user]\n\temail = 4242+octo@users.noreply.github.com\n' >"$home/.gitconfig"
 
-# A clone tree with the three remote shapes that matter: an ssh host ALIAS,
-# a plain https GitHub remote, and a GitLab one.
+# A clone tree with every remote shape that matters: an ssh host ALIAS, a plain
+# https GitHub remote, a GitLab one, an ssh:// URL carrying a PORT, a fork with
+# a second remote, and two checkouts nobody works in — a vim plugin and an npm
+# package — that a home-directory scan walks straight into.
 tree="$tmp/clones"
-mkdir -p "$tree/a/.git" "$tree/b/.git" "$tree/c/.git" "$tree/d/.git"
+mkdir -p "$tree/a/.git" "$tree/b/.git" "$tree/c/.git" "$tree/d/.git" "$tree/e/.git" \
+	"$tree/f/.git" "$tree/.vim/plugged/vim-thing/.git" "$tree/g/node_modules/pkg/.git"
 printf '[remote "origin"]\n\turl = git@github-perso:aliased-owner/thing.git\n' >"$tree/a/.git/config"
 printf '[remote "origin"]\n\turl = https://github.com/plain-owner/thing.git\n' >"$tree/b/.git/config"
 printf '[remote "origin"]\n\turl = git@gitlab.example.com:group/thing.git\n' >"$tree/c/.git/config"
 printf '[remote "origin"]\n\turl = git@github-perso:aliased-owner/other.git\n' >"$tree/d/.git/config"
+# A fork: origin is the operator's, upstream is a project they have no repos
+# under. Only origin names an owner.
+printf '[remote "origin"]\n\turl = git@github.com:fork-owner/linux.git\n[remote "upstream"]\n\turl = https://github.com/upstream-owner/linux.git\n' \
+	>"$tree/e/.git/config"
+# GitHub's own SSH-over-HTTPS workaround for a firewalled network. The `:443`
+# is a PORT, and a parser that splits the host from the path on `:` makes it
+# an owner.
+printf '[remote "origin"]\n\turl = ssh://git@ssh.github.com:443/porty-owner/thing.git\n' \
+	>"$tree/f/.git/config"
+printf '[remote "origin"]\n\turl = https://github.com/plugin-author/vim-thing.git\n' \
+	>"$tree/.vim/plugged/vim-thing/.git/config"
+printf '[remote "origin"]\n\turl = https://github.com/npm-author/pkg.git\n' \
+	>"$tree/g/node_modules/pkg/.git/config"
 
 disc="$tmp/bin-disc"
 mkdir -p "$disc"
@@ -292,13 +314,20 @@ expect "2a each candidate carries its evidence" "gh account" "$out"
 expect "2b an ssh host ALIAS clone is found" "aliased-owner" "$out"
 expect "2b with its clone count" "local clones (2)" "$out"
 expect "2b a plain https remote too" "plain-owner" "$out"
+expect "2b an ssh:// URL with a port names the owner, not the port" "porty-owner" "$out"
+expect "2b a fork's origin names its owner" "fork-owner" "$out"
 expect "2d a GitLab remote is reported as evidence" "GITLAB CHECKOUTS" "$out"
 expect "2d under the host it lives on" "gitlab.example.com/group" "$out"
 
-plain="$(cd "$tmp" && HOME="$home" PATH="$disc" "$REPO/scripts/discover-owners.sh" --plain "$tree" 2>&1)"
-expect "2c --plain prints bare owner names" "octo" "$plain"
-refute "2c and nothing else" "gh account" "$plain"
-refute "2d --plain never emits a GitLab namespace into an owners list" "gitlab" "$plain"
+# The candidate table is what an operator copies into registry/owners.txt, so
+# what must NOT be in it is asserted against that section alone — the GitLab
+# evidence below it names the same strings on purpose.
+candidates="$(printf '%s\n' "$out" | sed -n '/^CANDIDATE OWNERS/,/^GITLAB CHECKOUTS/p')"
+refute "2b a port is never an owner" "443" "$candidates"
+refute "2b a fork's upstream is not an owner the operator has repos under" "upstream-owner" "$candidates"
+refute "2b a vendored vim plugin's author is not an owner" "plugin-author" "$candidates"
+refute "2b nor is an npm package's" "npm-author" "$candidates"
+refute "2d a GitLab namespace never reaches the candidate list" "group" "$candidates"
 
 # --- 2e. no gh at all: the git config still answers ---------------------------
 nogh="$tmp/bin-nogh"
@@ -368,13 +397,19 @@ fi
 expect "3c the block carries the panels.shown guard" "panels.shown(\"$slot\")" "$(cat "$lay")"
 expect "3c and the slot the pane declares" "slot = \"$slot\"" "$(cat "$lay")"
 
-# The script must not spell the slot itself: one copy, in the pane.
-if grep -q "\"$slot\"" scripts/place-pane.sh; then
-	fail "3c scripts/place-pane.sh spells the slot name itself" \
-		"it is read from interface/fleet_queue.lua so a rename cannot half-land"
-else
-	pass "3c scripts/place-pane.sh spells no slot of its own"
-fi
+# The slot has ONE spelling and it is the PANE's. Proved by renaming it in a
+# copy of the pane and placing that: a writer carrying a slot name of its own
+# would carve a column the renamed pane never fills, which is the rename that
+# half-lands and looks installed.
+renamed_pane="$tmp/renamed_queue.lua"
+sed 's/^local SLOT = ".*"$/local SLOT = "renamedqueue"/' interface/fleet_queue.lua >"$renamed_pane"
+renamed_lay="$tmp/renamed/layout.lua"
+mkdir -p "$(dirname "$renamed_lay")"
+cp "$FIXTURE" "$renamed_lay"
+out="$(PATH="$place" "$REPO/scripts/place-pane.sh" --pane "$renamed_pane" --layout "$renamed_lay" 2>&1)"
+expect_exit "3c a pane declaring another slot places exit 0" 0 $?
+expect "3c the block carries the slot the PANE declares" 'slot = "renamedqueue"' "$(cat "$renamed_lay")"
+refute "3c and never one the writer spells itself" "slot = \"$slot\"" "$(cat "$renamed_lay")"
 
 # 3d. Idempotent, byte for byte.
 before="$(cat "$lay")"
@@ -419,12 +454,44 @@ out="$(PATH="$place" "$REPO/scripts/place-pane.sh" --layout "$tmp/nope/layout.lu
 expect_exit "3h a missing layout.lua exits 2 and says thurbox writes one" 2 $?
 expect "3h with the reason" "no layout.lua" "$out"
 
+# 3j. A layout that carries the anchor but NOT the helpers the block calls.
+# Lua resolves globals at CALL time, so the edited file would parse cleanly,
+# survive the re-read, and take the whole interface down at the next launch.
+trimmed="$tmp/trimmed/layout.lua"
+mkdir -p "$(dirname "$trimmed")"
+printf 'return function(ctx)\n  local columns = {}\n  columns[#columns + 1] = { slot = "center" }\n  return { columns = columns }\nend\n' >"$trimmed"
+before="$(cat "$trimmed")"
+out="$(PATH="$place" "$REPO/scripts/place-pane.sh" --layout "$trimmed" 2>&1)"
+expect_exit "3j a layout missing the helpers the block calls is refused" 3 $?
+expect "3j and it names the one it could not find" "panels.shown()" "$out"
+if [ "$before" = "$(cat "$trimmed")" ]; then pass "3j the file was not touched"; else fail "3j the file was not touched"; fi
+
+# 3k. A block the operator COMMENTED OUT — to find out whether it is what broke
+# their interface — is not a placement. Reporting "already placed" there leaves
+# the pane invisible and calls it success, which is the outcome this exists to
+# prevent.
+commented="$tmp/commented/layout.lua"
+mkdir -p "$(dirname "$commented")"
+sed "s|^\(.*slot = \"$slot\".*\)$|-- \1|" "$lay" >"$commented"
+out="$(PATH="$place" "$REPO/scripts/place-pane.sh" --check --layout "$commented" 2>&1)"
+expect_exit "3k a commented-out block is not a placement" 1 $?
+expect "3k and --check says what that costs" "draws nothing" "$out"
+out="$(PATH="$place" "$REPO/scripts/place-pane.sh" --layout "$commented" 2>&1)"
+expect_exit "3k placing it over the comment exits 0" 0 $?
+live="$(grep -v '^[[:space:]]*--' "$commented" | grep -c "slot = \"$slot\"")"
+if [ "$live" = "1" ]; then
+	pass "3k the file now carves exactly one live column for the slot"
+else
+	fail "3k the file now carves exactly one live column for the slot" "found $live"
+fi
+
 # 3i. The result still parses as Lua — the failure this script must never cause.
 if command -v lua >/dev/null 2>&1; then
-	if lua -e "assert(loadfile('$lay'))" >/dev/null 2>&1; then
+	if LAYOUT_PATH="$lay" lua -e 'assert(loadfile(os.getenv("LAYOUT_PATH")))' >/dev/null 2>&1; then
 		pass "3i the edited layout still parses as Lua"
 	else
-		fail "3i the edited layout still parses as Lua" "$(lua -e "loadfile('$lay')" 2>&1)"
+		fail "3i the edited layout still parses as Lua" \
+			"$(LAYOUT_PATH="$lay" lua -e 'print(select(2, loadfile(os.getenv("LAYOUT_PATH"))))' 2>&1)"
 	fi
 fi
 

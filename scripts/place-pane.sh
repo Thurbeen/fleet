@@ -40,9 +40,10 @@
 #   scripts/place-pane.sh --dry-run    # print the file, the anchor and the block
 #   scripts/place-pane.sh --check      # is it placed? changes nothing
 #   scripts/place-pane.sh --layout P   # a layout.lua somewhere else
+#   scripts/place-pane.sh --pane P     # read the slot from another pane file
 #
 # Exit: 0 placed (or already placed), 1 not placed (--check), 2 usage or no
-# layout file, 3 refused — the layout has no `columns` list this recognises.
+# layout file, 3 refused — the layout is not one this block would work in.
 
 set -uo pipefail
 
@@ -64,12 +65,16 @@ while [ $# -gt 0 ]; do
 		LAYOUT="${2:-}"
 		shift
 		;;
+	--pane)
+		PANE="${2:-}"
+		shift
+		;;
 	-h | --help)
-		sed -n '2,47p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+		sed -n '2,48p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 		exit 0
 		;;
 	*)
-		printf 'usage: %s [--left|--right] [--dry-run|--check] [--layout PATH]\n' "$0" >&2
+		printf 'usage: %s [--left|--right] [--dry-run|--check] [--layout PATH] [--pane PATH]\n' "$0" >&2
 		exit 2
 		;;
 	esac
@@ -121,11 +126,14 @@ fi
 
 # --- already placed? ----------------------------------------------------------
 #
-# Any mention of the slot counts, and deliberately so: the operator may have
-# placed it differently, wider, or on the other side. Owning their arrangement
-# means not correcting it.
+# Any LIVE mention of the slot counts, and deliberately so: the operator may
+# have placed it differently, wider, or on the other side. Owning their
+# arrangement means not correcting it. A mention inside a Lua comment is not a
+# placement, though — commenting the block out to see whether it is what broke
+# the interface is exactly how an operator ends up here — so those lines are
+# dropped before the match.
 
-if grep -q "slot = \"$SLOT\"" "$LAYOUT"; then
+if grep -v '^[[:space:]]*--' "$LAYOUT" | grep -q "slot = \"$SLOT\""; then
 	if [ "$CHECK" -eq 1 ] || [ "$DRY" -eq 1 ]; then
 		printf 'placed: %s already carves a column for slot "%s"\n' "$LAYOUT" "$SLOT"
 	else
@@ -148,11 +156,24 @@ fi
 # measured against. Nothing else here parses Lua: a layout that has been
 # rearranged past recognition is one this refuses rather than rewrites.
 
+# The block calls `panels.shown` and `filled(ctx, ...)` as well as sitting
+# beside the anchor, and Lua resolves globals at CALL time — so a layout that
+# defines neither still parses after the edit and dies at the next launch with
+# `attempt to call a nil value`. Every name the block needs is therefore part
+# of what "a layout this recognises" means.
 anchor="$(grep -n 'columns\[#columns + 1\] = { slot = "center" }' "$LAYOUT" | head -1 | cut -d: -f1)"
+unrecognised=""
 if [ -z "$anchor" ]; then
-	printf 'Refusing to edit %s: it has no line placing the "center" slot in a\n' "$LAYOUT" >&2
-	printf 'columns list, which is the only shape this recognises. Your arrangement is\n' >&2
-	printf 'yours — add this block beside the other side columns yourself:\n\n' >&2
+	unrecognised="no line placing the \"center\" slot in a columns list"
+elif ! grep -q 'panels\.shown(' "$LAYOUT"; then
+	unrecognised="no call to panels.shown(), which the block's guard needs"
+elif ! grep -q 'filled(ctx,' "$LAYOUT"; then
+	unrecognised="no filled(ctx, ...) helper, which the block calls"
+fi
+if [ -n "$unrecognised" ]; then
+	printf 'Refusing to edit %s: it has %s.\n' "$LAYOUT" "$unrecognised" >&2
+	printf 'That is the only shape this recognises. Your arrangement is yours — add\n' >&2
+	printf 'this block beside the other side columns yourself:\n\n' >&2
 	block "  " >&2
 	exit 3
 fi
@@ -192,7 +213,7 @@ cat "$tmp" >"$LAYOUT"
 # would be THIS script's doing — so the result is read back before anyone lives
 # with it, and the backup goes straight back if it does not load.
 if command -v lua >/dev/null 2>&1; then
-	if ! lua -e "assert(loadfile('$LAYOUT'))" >/dev/null 2>&1; then
+	if ! LAYOUT_PATH="$LAYOUT" lua -e 'assert(loadfile(os.getenv("LAYOUT_PATH")))' >/dev/null 2>&1; then
 		cp "$backup" "$LAYOUT"
 		die "the edited layout no longer parses as Lua; restored $backup" 3
 	fi

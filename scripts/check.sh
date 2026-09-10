@@ -547,44 +547,18 @@ check_voice() {
 # again, so a regression in them is invisible to everyone who is already set up
 # and total for everyone who is not. `onboarding-selftest.sh` drives all three
 # offline, against stubs on a PATH built from scratch and a copy of a stock
-# layout, and its header argues each claim.
-#
-# What the greps here add is the seam that selftest cannot see: the pane's slot
-# has ONE spelling, in the pane, and `place-pane.sh` writes a block into the
-# operator's `layout.lua`. A copy of the slot name in the writer is a rename
-# that half-lands — the pane declaring one slot and the arrangement carving
-# another, which draws nothing and looks installed.
+# layout, and its header argues each claim — including the two seams a grep
+# here could only assert about source text: the pane's slot has ONE spelling
+# (§3c places a RENAMED pane and reads the slot back out of the block) and the
+# thurbox floor has one owner (§1c reads it from the manifest and expects it in
+# the remedy).
 check_onboarding() {
-	local miss=0 pane="interface/fleet_queue.lua" writer="scripts/place-pane.sh"
-	local slot
-	slot="$(sed -n 's/^local SLOT = "\(.*\)"$/\1/p' "$pane" | head -1)"
-
-	if [ -z "$slot" ]; then
-		fail "onboarding: could not read the slot name from $pane"
-		miss=1
-	elif grep -q "\"$slot\"" "$writer"; then
-		fail "onboarding: $writer spells the slot \"$slot\" itself; it reads it from $pane so a rename cannot half-land"
-		miss=1
-	elif ! grep -q "$pane" "$writer"; then
-		fail "onboarding: $writer no longer reads the slot from $pane"
-		miss=1
-	fi
-
-	# The floor has one owner too, and preflight is now a second reader of it.
-	if ! grep -q "min_thurbox_version" scripts/preflight.sh; then
-		fail "onboarding: scripts/preflight.sh does not read the thurbox floor from extension.toml.in"
-		miss=1
-	fi
-
 	if ./scripts/onboarding-selftest.sh >/dev/null 2>&1; then
 		ok "onboarding: scripts/onboarding-selftest.sh"
 	else
 		./scripts/onboarding-selftest.sh
 		fail "onboarding: scripts/onboarding-selftest.sh"
-		miss=1
 	fi
-
-	[ "$miss" -eq 0 ] && ok "onboarding: the pane's slot is spelled once, in $pane"
 }
 
 checks=()

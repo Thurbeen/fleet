@@ -25,7 +25,6 @@
 #
 # Usage:
 #   scripts/discover-owners.sh                 # candidates with their evidence
-#   scripts/discover-owners.sh --plain         # bare owner names, one per line
 #   scripts/discover-owners.sh ~/work ~/oss    # scan these roots instead
 #
 # Exit: 0 when at least one candidate was found, 1 when none was — which on an
@@ -36,17 +35,15 @@ set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 2
 REPO_ROOT="$PWD"
 
-PLAIN=0
 ROOTS=()
 while [ $# -gt 0 ]; do
 	case "$1" in
-	--plain) PLAIN=1 ;;
 	-h | --help)
-		sed -n '2,32p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+		sed -n '2,31p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 		exit 0
 		;;
 	-*)
-		printf 'usage: %s [--plain] [root ...]\n' "$0" >&2
+		printf 'usage: %s [root ...]\n' "$0" >&2
 		exit 2
 		;;
 	*) ROOTS+=("$1") ;;
@@ -111,10 +108,18 @@ fi
 # `gh` was never logged in: `github.user`, which several tools set, and the
 # noreply commit address, which is `12345+name@users.noreply.github.com`.
 
-cfg_user="$(git config --get github.user 2>/dev/null)"
+# ASKED FROM OUTSIDE THIS CHECKOUT, the same way preflight.sh probes signing
+# and for the same reason: a repo-local `user.email` — the ordinary way to
+# commit to one project under another identity — outranks the machine's own
+# config, and this is a question about the MACHINE. Running it here would let
+# whichever identity this clone happens to commit under answer it.
+probe_dir="$(mktemp -d)"
+cfg_user="$(git -C "$probe_dir" config --get github.user 2>/dev/null)"
+cfg_email="$(git -C "$probe_dir" config --get user.email 2>/dev/null)"
+rmdir "$probe_dir" 2>/dev/null
+
 [ -n "$cfg_user" ] && note "$cfg_user" "git config github.user"
 
-cfg_email="$(git config --get user.email 2>/dev/null)"
 case "$cfg_email" in
 *@users.noreply.github.com)
 	handle="${cfg_email%@users.noreply.github.com}"
@@ -140,18 +145,47 @@ scan_root() {
 			# with two GitHub accounts looks like, and matching on the literal
 			# `github.com` finds none of those clones — which on this very
 			# checkout was every one of them.
-			rest="${url#*://}"
-			rest="${rest#*@}"
-			host="${rest%%[:/]*}"
-			owner="${rest#*[:/]}"
+			#
+			# A URL that carries a SCHEME splits on `/` alone, because its
+			# host may carry a port: `ssh://git@ssh.github.com:443/o/r.git`
+			# is GitHub's own firewall workaround, and splitting that on
+			# `[:/]` makes `443` an owner. The `[:/]` split belongs to the
+			# scp-style form, which is the only one where `:` separates the
+			# host from the path.
+			if [ "$url" != "${url#*://}" ]; then
+				rest="${url#*://}"
+				rest="${rest#*@}"
+				case "$rest" in */*) ;; *) continue ;; esac
+				host="${rest%%/*}"
+				host="${host%%:*}"
+				owner="${rest#*/}"
+			else
+				rest="${url#*@}"
+				case "$rest" in *[:/]*) ;; *) continue ;; esac
+				host="${rest%%[:/]*}"
+				owner="${rest#*[:/]}"
+			fi
 			owner="${owner%%/*}"
 			[ -n "$owner" ] || continue
 			case "$host" in
 			*github*) CLONES["$owner"]=$((${CLONES[$owner]:-0} + 1)) ;;
 			*gitlab*) GITLAB["$host/$owner"]=$((${GITLAB[$host/$owner]:-0} + 1)) ;;
 			esac
-		done < <(sed -n 's/^[[:space:]]*url[[:space:]]*=[[:space:]]*//p' "$cfg" 2>/dev/null)
-	done < <(find "$root" -maxdepth 5 -type d -name .git -prune -print 2>/dev/null |
+			# ORIGIN's url and no other. A fork carries `upstream` too, and
+			# counting that owner would report a project the operator has no
+			# repos under — and would make "local clones (N)" a count of
+			# remotes rather than of checkouts.
+		done < <(sed -n '/^[[:space:]]*\[remote "origin"\]/,/^[[:space:]]*\[/ {
+				s/^[[:space:]]*url[[:space:]]*=[[:space:]]*//p
+			}' "$cfg" 2>/dev/null | head -1)
+		# Vendored and package-manager checkouts are not repos the operator
+		# works in: `~/.vim/plugged/<plugin>/.git` would rank a plugin author
+		# above the operator's own account. Any dot-directory, node_modules
+		# and vendor are pruned — `.git` itself is matched first, so pruning
+		# dot-directories does not prune the thing being looked for.
+	done < <(find "$root" -maxdepth 5 -type d \
+		\( -name .git -print -prune \) -o \
+		\( -name node_modules -o -name vendor -o -name '.*' \) -prune 2>/dev/null |
 		sed 's|$|/config|')
 }
 
@@ -177,20 +211,13 @@ fi
 # --- output -------------------------------------------------------------------
 
 if [ ${#ORDER[@]} -eq 0 ]; then
-	if [ "$PLAIN" -eq 0 ]; then
-		printf 'No candidate owners found.\n\n' >&2
-		[ -n "$scope_hint" ] && printf '  %s\n' "$scope_hint" >&2
-		printf '  Nothing on this machine names a GitHub owner: no gh session, no\n' >&2
-		printf '  github.user, and no clone with a github.com remote under the roots\n' >&2
-		printf '  scanned. Name a root to scan, or write registry/owners.txt by hand\n' >&2
-		printf '  from registry/owners.example.txt.\n' >&2
-	fi
+	printf 'No candidate owners found.\n\n' >&2
+	[ -n "$scope_hint" ] && printf '  %s\n' "$scope_hint" >&2
+	printf '  Nothing on this machine names a GitHub owner: no gh session, no\n' >&2
+	printf '  github.user, and no clone with a github.com remote under the roots\n' >&2
+	printf '  scanned. Name a root to scan, or write registry/owners.txt by hand\n' >&2
+	printf '  from registry/owners.example.txt.\n' >&2
 	exit 1
-fi
-
-if [ "$PLAIN" -eq 1 ]; then
-	printf '%s\n' "${ORDER[@]}"
-	exit 0
 fi
 
 # Which candidates the operator has already committed to, so a re-run says

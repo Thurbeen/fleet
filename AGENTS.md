@@ -77,8 +77,12 @@ names every path and the reason for each.
   view of the queue, drawn in a thurbox column over the same records
   `queue.sh list` reads. `scripts/install-extension.sh` installs it
   with `thurbox-cli plugin install`; the file's own header owns the view.
-  **Placing it is a guarded block in the user's `layout.lua` and nothing here
-  writes it** — a pane no arrangement places loads, lists, and draws nothing.
+  **Placing it is a guarded block in the user's `layout.lua`, and
+  `./scripts/place-pane.sh` writes that block — only ever after the operator
+  was ASKED and said yes** — because a pane no arrangement places loads, lists,
+  and draws nothing. It refuses a layout it cannot recognise, backs the file up,
+  re-reads its own edit with `lua`, and verifies with `thurbox-cli plugin
+  check`; the fleet-pane skill's §4 owns the ask.
   `./scripts/pane-selftest.sh` renders it offline — no thurbox, no queue, no
   session; `check.sh pane` runs it.
   `.agents/skills/fleet-pane/` is the driving surface for all of it: install,
