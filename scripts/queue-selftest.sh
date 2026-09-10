@@ -2422,6 +2422,99 @@ refute "and nothing from it is merged" "pr merge" "$(cat "$shep/many.log")"
 refute "and it is not reported as having zero open pull requests either" \
 	"no open pull requests" "$out"
 
+# --- 9i. thurbox is on the allowlist, on the same gates as fleet -------------
+#
+# The allowlist grew, so the claim under test is that adding a repository adds
+# a REPOSITORY and not a looser rule. Two pull requests on thurbox, both green
+# and mergeable and both on branches that are ours: the attested one merges the
+# way fleet's own do, and the one nothing vetted is still handed back.
+#
+# The third claim is the one this addition could quietly weaken. The allowlist
+# is matched HOST-QUALIFIED, so `Thurbeen/thurbox` — the way a person writes it
+# and the way the operator asked for it — is refused rather than matched
+# against the bare slug. 13e proves that for a forge that is not GitHub; this
+# proves it for the repo that was just added, where the bare slug is the
+# plausible typo.
+
+ttopic="$($QUEUE topic add thurbox-allowlist --title 'Auto-merge in thurbox' \
+	--prompt 'thurbox merges on the same gates as fleet, and only host-qualified' 2>/dev/null)"
+$QUEUE add "$ttopic" attested --title 'A thurbox PR the pipeline vetted' \
+	--repo "$srepo" --branch tbx/attested --number 01 >/dev/null
+cat >"$FLEET_QUEUE_DIR/$ttopic/01-attested/result.md" <<'EOF'
+---
+outcome: shipped
+artifact: https://github.com/Thurbeen/thurbox/pull/201
+---
+Shipped it.
+EOF
+git -C "$srepo" branch tbx/attested
+
+python3 - "$shep/gh" <<'PY'
+import json
+import sys
+
+out = sys.argv[1]
+green = {"__typename": "CheckRun", "name": "CI", "status": "COMPLETED",
+         "conclusion": "SUCCESS"}
+STEPS = [
+    {"step": s, "status": "completed"}
+    for s in ("intent", "rebase", "review", "test", "document", "lint", "push")
+] + [{"step": "pr", "status": "running"}, {"step": "ci", "status": "pending"}]
+
+
+def pr(n, branch, body):
+    sha = f"{n:040d}"
+    json.dump({
+        "number": n, "state": "OPEN", "title": f"PR {n}", "isDraft": False,
+        "url": f"https://github.com/Thurbeen/thurbox/pull/{n}",
+        "mergeable": "MERGEABLE", "reviewDecision": "", "statusCheckRollup": [green],
+        "body": body, "headRefName": branch, "baseRefName": "main",
+        "headRefOid": sha, "author": {"login": "LeTuR", "is_bot": False},
+        "headRepositoryOwner": {"login": "Thurbeen"}, "isCrossRepository": False,
+    }, open(f"{out}/{n}.json", "w"))
+
+
+payload = json.dumps({"head_sha": f"{201:040d}", "steps": STEPS})
+pr(201, "tbx/attested",
+   f"<!-- no-mistakes-pipeline-attestation:v1 {payload} -->\n\nShipped it.\n")
+# Green in every way the forge can see, and nothing vetted the head that would
+# land. No task records it either, so nothing here spawns a fixer.
+pr(202, "tbx/unvetted", "Reviewed, tested, linted, and opened through the pipeline.\n")
+PY
+
+# The artifact reaches the record through `collect`, the same way every
+# other task's does, and the shepherd derives the repository from it.
+env PATH="$shep/bin:$base_path" $QUEUE collect >/dev/null
+
+out="$(env PATH="$shep/bin:$base_path" $QUEUE shepherd --topic "$ttopic" 2>&1)"
+expect "the shepherd reaches thurbox at all" "Thurbeen/thurbox" "$out"
+if grep -qx 201 "$shep/merged" 2>/dev/null; then
+	pass "an attested, green thurbox pull request is merged unattended"
+else
+	fail "an attested, green thurbox pull request is merged unattended" \
+		"$out$nl$(cat "$shep/merged" 2>/dev/null)"
+fi
+expect "and by the same squash fleet's own are merged by" \
+	"pr merge https://github.com/Thurbeen/thurbox/pull/201 --squash --delete-branch" \
+	"$(cat "$shep/gh.log")"
+
+if grep -qx 202 "$shep/merged" 2>/dev/null; then
+	fail "joining the allowlist loosens no gate: an unattested one is not merged" \
+		"$(cat "$shep/merged")"
+else
+	pass "joining the allowlist loosens no gate: an unattested one is not merged"
+fi
+expect "and it is named for what it lacks, not passed over" \
+	"the body carries no no-mistakes attestation" "$out"
+
+# The typo the operator's own words invite: the allowlist is host-qualified,
+# and `Thurbeen/thurbox` names no forge.
+out="$(env PATH="$shep/bin:$base_path" FLEET_AUTO_MERGE_REPOS="Thurbeen/thurbox" \
+	$QUEUE shepherd --topic "$ttopic" --dry-run 2>&1)"
+expect "a bare Thurbeen/thurbox is refused, not matched against the slug" \
+	"must name its forge" "$out"
+refute "and nothing in thurbox would be merged under it" "would-merge" "$out"
+
 # --- 10. the shepherd writes down the publish state it already saw -----------
 #
 # Every fact below arrived in the ONE `gh pr list` the pass already makes, and
