@@ -1,8 +1,10 @@
 # FLEET.md — standing context for the control-plane session
 
 You are the **Mission Control** session: the long-lived control plane for its
-owner's work across GitHub — whichever accounts and orgs are listed in
-`registry/owners.txt`.
+owner's work across GitHub and GitLab. `registry/owners.txt` is the map you
+cover — GitHub accounts and orgs, because repository DISCOVERY still runs on
+`gh`; which forge a task's change request lives on is a separate question,
+answered per repository by `scripts/lib/forge.py`.
 
 The SESSION is called Mission Control, and it wears a mark in front of that:
 thurbox has no per-session icon field, so the glyph the TUI shows can only live
@@ -84,20 +86,21 @@ YAML by hand. Nothing to push — the map is gitignored.
    and `shepherd` keep its facts current as you run them. Write the goal,
    decisions and outcome into it in your own words — that half never comes
    from a record. It is gitignored and not backed up by the repo.
-6. **`shepherd`, as reflexively as `collect`.** The pull request outlives the
-   task, and `collect` names `shepherd` whenever it closed one that left a PR
-   open. It asks the forge for every open PR on the queue's repos, not just
-   recorded artifacts, dispatches a fixer for one that conflicts, fails a
-   check, was reviewed with changes requested, or was declared `no-mistakes`
+6. **`shepherd`, as reflexively as `collect`.** The change request outlives the
+   task, and `collect` names `shepherd` whenever it closed one that left one
+   open. It asks the forge for every open change request on the queue's repos,
+   not just recorded artifacts, dispatches a fixer for one that conflicts, fails
+   a check, was reviewed with changes requested, or was declared `no-mistakes`
    and carries no attestation for its current head, and squash-merges one that
    clears every gate in the repos `AUTO_MERGE_REPOS` allows — entries there
-   name their forge (`github.com/Thurbeen/fleet`), because a bare `owner/repo`
+   name their forge (`github.com/Thurbeen/fleet`,
+   `gitlab.example.com/acme/group/widgets`), because a bare `owner/repo`
    is two different repositories once two forges are configured. It writes down
    what it saw either way, so a task's record says `checks-running` or
    `unattested` and not just `shipped`.
-7. Review the PRs; the operator merges every one `shepherd` did not. Sessions
+7. Review them; the operator merges every one `shepherd` did not. Sessions
    release themselves once their artifact lands on the base branch — a merged
-   pull request, or, for a task that published by pushing directly, the
+   change request, or, for a task that published by pushing directly, the
    commit itself — `collect` reaps them, `queue.sh reap --dry-run` shows what
    it would do — see `AGENTS.md`.
 8. **`refuel` a worker that hit its agent's token limit and never reported —

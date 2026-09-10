@@ -117,9 +117,10 @@ rule to remember:
 | POSIX hosts only | `add` | a host with a non-`tmux` `multiplexer` is how `hosts.toml` spells a Windows host, and is refused by name. Every remote command fleet runs is POSIX shell |
 | session sharing must be on | `add` | `share_sessions = false` switches off the delegation that lets `session capture` see that pane, so the trust dialog could not be answered and the worker would stall unread |
 
-**Credentials are never moved.** The host needs its OWN GitHub credentials to
-clone, fetch and push; yours are not inherited and nothing sends them. Probe 2
-below asks whether the host has any and refuses the dispatch when it does not.
+**Credentials are never moved.** The host needs its OWN credentials for the forge
+that repository lives on — GitHub or GitLab — to clone, fetch and push; yours are
+not inherited and nothing sends them. The `forge` probe below asks whether the
+host has any and refuses the dispatch when it does not.
 Forwarding your SSH agent also fixes it and forwards every key that agent holds
 — your call to make on that machine, not something a dispatch makes for you.
 
@@ -316,9 +317,15 @@ the host and re-running `dispatch` sends it:
 
 ```text
     reachable   it answers ssh, and answers as a POSIX shell
-    forge       it has GitHub credentials of its own — an ssh key, or a gh login
     repo        --repo is a git checkout at that path ON THAT MACHINE
+    forge       it has credentials of its own for the forge THAT repo's `origin`
+                names — an ssh key, or a `gh` / `glab` login
 ```
+
+The repo is asked about before its forge because which forge to prove a
+credential against is a fact about that checkout's `origin`: a GitLab repository
+needs a GitLab credential, and a probe that named github.com flatly would pass a
+host that then fails at its first `git push`.
 
 The report names the probe that failed. A remote worker that starts and then
 fails at its first `git` call looks exactly like an agent bug and is not one.
@@ -474,13 +481,13 @@ Three answers, and the third is not the second:
 | it is not, or not from this branch | **leaves the task OPEN** and says so, loudly |
 | could not run | closes the task, and says the check could not run |
 
-"Could not run" is the forge CLI absent, no network, a pull request it cannot read, or a
+"Could not run" is the forge CLI absent, no network, a change request it cannot read, or a
 base branch this machine cannot see. That must never read as a pass or a fail —
 CI and an offline laptop both still have to collect. `queue.sh show <ref>`
 prints the method and the verdict, so both survive the scrollback.
 
 **The head-branch check is the one a worker cannot write for itself.** Whatever
-the body says, "this pull request comes from this task's branch" is a fact of
+the body says, "this change request comes from this task's branch" is a fact of
 the forge — which closes the hole that reading prose never could: a worker
 pasting somebody else's good pull request.
 
@@ -491,7 +498,7 @@ as it stands, `collect --allow-unverified` closes it and records that you did.
 ### 5b. `reap` — a session lives until its work lands, and not one turn longer
 
 **The gate is the merge, not the conclusion.** For the two methods that end in a
-pull request, `outcome: shipped` only means one is OPEN, and the session that
+change request, `outcome: shipped` only means one is OPEN, and the session that
 opened it is the cheap way to fix what review finds — reaping at collect time
 makes that fix cost a re-spawn: a new worktree, a cold agent, the brief read
 from nothing. A `push` task has no such gap — `collect` refuses to conclude it
@@ -504,16 +511,16 @@ So a task gets a state AFTER `done`:
 
 | state | means | its session |
 |---|---|---|
-| `done` | the worker concluded; its pull request is open, or its already-confirmed `push` commit is about to be promoted by this same `collect` run | **kept** — the cheap way to fix what review finds |
-| `landed` | the pull request merged, the pushed commit reached the base branch, or there was never an artifact | released |
-| `abandoned` | the pull request was closed unmerged | released; the work is NOT on main |
+| `done` | the worker concluded; its change request is open, or its already-confirmed `push` commit is about to be promoted by this same `collect` run | **kept** — the cheap way to fix what review finds |
+| `landed` | the change request merged, the pushed commit reached the base branch, or there was never an artifact | released |
+| `abandoned` | the change request was closed unmerged | released; the work is NOT on main |
 | `stuck` / `failed` | the worker gave up | **kept** — that session is the evidence, and you decide |
 
 `landed` comes from asking the forge, never from a worker claiming it, so it works
 long after the session is gone. **Blockers clear on `landed`**, not on `done`
 — a dependent task waits for the code to actually be on `main`, which is the
 same bug in its other form: a task collected `shipped` once released its
-dependents while its pull request sat unreviewed.
+dependents while its change request sat unreviewed.
 
 ```text
     topic/01-drop-idle-default   landed     https://…/pull/999 is merged

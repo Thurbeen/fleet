@@ -50,6 +50,11 @@ non-empty string saying why it could not be had, and no caller is allowed to
 collapse that string into a verdict. A timeout must never be able to
 manufacture a merge.
 
+WHAT SHIPS. Two adapters: GitHub through `gh`, GitLab through `glab`. Both are
+CONFIGURATION — which hosts each one owns comes from that CLI's own variable
+(`GH_HOST`, `GITLAB_HOST`), because a self-hosted instance is the normal case
+for everything that is not github.com or gitlab.com.
+
 ADDING A FORGE. Write a class with the methods below and register it: either
 in `BUILTIN` here, or — for a test, or a forge that is not fleet's business to
 ship — through `FLEET_FORGE_PLUGINS`, a colon-separated list of Python files
@@ -67,6 +72,7 @@ import re
 import shutil
 import subprocess
 import sys
+import urllib.parse
 from dataclasses import dataclass, field
 
 # --- identity ----------------------------------------------------------------
@@ -582,10 +588,548 @@ class GitHubForge(Forge):
         return True, f"{method}-merged" + (", branch deleted" if delete_branch else "")
 
 
+# --- GitLab, the second implementation ----------------------------------------
+
+
+# GitLab pages at 100 and no higher, so "every open merge request" is a loop
+# rather than one request. The cap is the same promise `GH_LIST_LIMIT` makes:
+# reaching it means the project genuinely has that many open merge requests,
+# which the caller then treats as unreadable rather than as a short list.
+GL_PAGE = 100
+GL_LIST_LIMIT = 1000
+
+# What `fleet-status.sh` reads out of a checkout. Lower than the shepherd's cap
+# because it decides nothing and one line per merge request is all it prints.
+GL_CHECKOUT_LIMIT = 50
+
+# GitLab's own state words. `locked` is a real fourth state and is NOT one of
+# fleet's three, so it falls out of this map and is reported as a sentence.
+GL_STATES = {"opened": "open", "merged": "merged", "closed": "closed"}
+
+# `head_pipeline.status`. `manual` and `scheduled` are pipelines waiting for
+# somebody, which is pending and not passing; `canceled` (GitLab spells it with
+# one `l`) is its own verdict for the reason `Check` gives.
+GL_PIPELINE_PASSED = {"success", "skipped"}
+GL_PIPELINE_FAILED = {"failed"}
+GL_PIPELINE_CANCELLED = {"canceled", "cancelling", "canceling"}
+
+# `detailed_merge_status`, of which GitLab has a long and growing list — the
+# capture this adapter was written against answered `title_regex`, which is in
+# no version of the documented set this code was checked against. So only the
+# two words that mean something definite are read, and everything else is "the
+# forge has not said", which `classify` treats as ask-again-shortly. Reading an
+# unknown word as mergeable is how fleet would merge something GitLab is still
+# thinking about.
+GL_MERGEABLE = "mergeable"
+GL_CONFLICT = "conflict"
+
+# A reviewer pressed "request changes". The one review verdict fleet acts on.
+GL_CHANGES_REQUESTED = "requested_changes"
+
+# Developer. GitLab's ladder is 0 none / 5 minimal / 10 guest / 20 reporter /
+# 30 developer / 40 maintainer / 50 owner, and developer is the first rung that
+# may push.
+GL_PUSH_ACCESS_LEVEL = 30
+
+# `squash_option: never` is the setting that forbids fleet's merge method, and
+# it is a PROJECT setting rather than a forge one — see `merge` below.
+GL_SQUASH_FORBIDDEN = "never"
+
+# A merge request URL: `https://host/group/sub/project/-/merge_requests/12`.
+# The host group keeps a `:port`, because a self-hosted instance on one is
+# ordinary and `RepoId` carries the port as part of the host.
+GL_URL_RE = re.compile(
+    r"^https?://([^/\s]+)/(.+?)/-/merge_requests/(\d+)(?:[/?#].*)?$"
+)
+# `https://host/group/proj.git`, `ssh://git@host:2222/group/proj.git`.
+GL_REMOTE_URL_RE = re.compile(
+    r"^(?:https?|ssh|git)://(?:[^@/\s]+@)?([^/\s]+)/(.+?)(?:\.git)?/?$"
+)
+# `git@host:group/proj.git` — scp syntax, which carries no port.
+GL_REMOTE_SCP_RE = re.compile(r"^(?:[^@/\s]+@)?([^:/\s]+):(.+?)(?:\.git)?/?$")
+
+# GitLab reserves these username prefixes for project and group access tokens,
+# so they are the one thing in a merge request author that says "not a person".
+GL_BOT_RE = re.compile(r"^(?:project|group)_\d+_bot")
+
+# glab prints its own errors as a decorated block on stderr. These are the
+# decoration, not the message.
+GL_NOISE = {"", "error", "warning"}
+
+
+class GitLabForge(Forge):
+    """GitLab, through the `glab` CLI. Every `glab` invocation fleet makes is here.
+
+    `glab` for the same reason the GitHub adapter uses `gh`: it already holds
+    whatever credential the operator gave this machine, and a fleet that needed
+    its own token would need one per machine a worker runs on.
+
+    WHICH HOSTS ARE GITLAB. `gitlab.com`, plus `GITLAB_HOST` — glab's own
+    variable for a self-hosted instance, the way `GH_HOST` is gh's. A
+    self-hosted instance is the normal case here, so every call names its
+    repository by FULL URL (`-R https://host/group/project`) rather than by
+    slug: that is what makes `gitlab.example.com/group/proj` reach
+    gitlab.example.com and not gitlab.com.
+
+    WHAT IT COSTS. GitLab does not put a merge request's pipeline in the list
+    endpoint, so listing open change requests is one call for the list plus one
+    per merge request. The GitHub adapter gets its whole answer in one call;
+    this one cannot, and paying the difference is better than reporting `checks`
+    empty, which every caller reads as "no check has reported yet".
+    """
+
+    name = "gitlab"
+    # GitLab's `squash` is not a merge method: it is a flag ON the merge, and
+    # the merge method (`merge` / `rebase_merge` / `ff`) is a separate project
+    # setting. So all three of fleet's words are things this forge can do, and
+    # the thing that can forbid a squash is per-PROJECT — `merge` asks.
+    merge_methods = ("squash", "merge", "rebase")
+
+    def __init__(self, hosts=None):
+        extra = [self._host(h) for h in (hosts or [])]
+        extra.append(self._host(os.environ.get("GITLAB_HOST", "")))
+        self.hosts = tuple(dict.fromkeys(
+            ["gitlab.com", "www.gitlab.com"] + [h for h in extra if h]
+        ))
+        # One answer per (repo, login), and one per repo for the squash
+        # setting: neither changes inside a run, and every open merge request
+        # would otherwise ask again.
+        self._push: dict = {}
+        self._squash: dict = {}
+
+    @staticmethod
+    def _host(text: str) -> str:
+        """`https://gitlab.example.com/` as glab accepts it, down to a bare host."""
+        text = str(text or "").strip().lower()
+        text = re.sub(r"^[a-z][a-z0-9+.-]*://", "", text)
+        return text.strip("/").split("/")[0]
+
+    # --- naming ---
+
+    def parse_change_url(self, url: str) -> ChangeRef | None:
+        m = GL_URL_RE.match((url or "").strip())
+        if not m or not self.owns_host(m.group(1)):
+            return None
+        host, path = m.group(1).lower(), m.group(2)
+        # `group/project` at the very least: GitLab has no top-level projects,
+        # so a single segment is not a project path and not ours.
+        if "/" not in path:
+            return None
+        return ChangeRef(
+            RepoId(host, path),
+            int(m.group(3)),
+            f"https://{host}/{path}/-/merge_requests/{m.group(3)}",
+        )
+
+    def repo_from_remote(self, remote_url: str) -> RepoId | None:
+        text = (remote_url or "").strip()
+        m = GL_REMOTE_URL_RE.match(text) or GL_REMOTE_SCP_RE.match(text)
+        if not m:
+            return None
+        host, path = m.group(1).lower(), m.group(2).strip("/")
+        if not self.owns_host(host) or "/" not in path:
+            return None
+        return RepoId(host, path)
+
+    # --- running glab ---
+
+    def _repo_arg(self, repo: RepoId) -> str:
+        """How glab is told WHICH host, on every single call.
+
+        `-R` takes a full URL as readily as a slug, and the URL is the only
+        form that carries the host — so this is what keeps a self-hosted
+        instance from being asked of gitlab.com. https because a GitLab
+        instance reachable only over plain http cannot be named this way; that
+        is the one shape of self-hosted install this adapter cannot address.
+        """
+        return f"https://{repo.host}/{repo.path}"
+
+    def _run(self, argv: list, cwd: str | None = None, timeout: int = 60) -> tuple:
+        """(stdout, why-not). A non-empty second value is never a verdict."""
+        if not shutil.which("glab"):
+            return None, "glab not found on PATH"
+        try:
+            out = subprocess.run(
+                ["glab"] + argv, capture_output=True, text=True, cwd=cwd, timeout=timeout
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            return None, f"glab could not be run: {exc}"
+        if out.returncode != 0:
+            return None, self._why(out.stdout, out.stderr, out.returncode)
+        return out.stdout, ""
+
+    @staticmethod
+    def _why(stdout: str, stderr: str, code: int) -> str:
+        """The sentence glab actually said, out of the two places it says it.
+
+        With `-F json` glab puts `{"error":{"message":...}}` on STDOUT and a
+        boxed, blank-line-padded `ERROR` block on stderr, so taking the first
+        line of stderr yields the box and not the reason. `glab api` puts the
+        API's own `{"message":...}` on stdout instead. Both are read before
+        stderr is fallen back to.
+        """
+        try:
+            doc = json.loads(stdout or "")
+        except ValueError:
+            doc = None
+        if isinstance(doc, dict):
+            err = doc.get("error")
+            said = err.get("message") if isinstance(err, dict) else doc.get("message")
+            if isinstance(said, str) and said.strip():
+                return said.strip()
+        for line in (stderr or "").splitlines():
+            line = re.sub(r"\x1b\[[0-9;]*m", "", line).strip()
+            if line.lower().rstrip(":") not in GL_NOISE:
+                return line
+        return f"glab exited {code}"
+
+    def _json(self, argv: list, cwd: str | None = None, timeout: int = 60) -> tuple:
+        out, why = self._run(argv, cwd=cwd, timeout=timeout)
+        if why:
+            return None, why
+        try:
+            return json.loads(out), ""
+        except ValueError:
+            return None, "glab returned output that is not JSON"
+
+    def _api(self, repo: RepoId, path: str, timeout: int = 60) -> tuple:
+        """`glab api` against ONE host, for the questions `glab mr` has no verb for."""
+        return self._json(["api", path, "--hostname", repo.host], timeout=timeout)
+
+    @staticmethod
+    def _project(repo: RepoId) -> str:
+        """`group%2Fsub%2Fproject` — how a project path goes into an API path."""
+        return urllib.parse.quote(repo.path, safe="")
+
+    def _view(self, repo: RepoId, number: int) -> tuple:
+        out, why = self._json(
+            ["mr", "view", str(number), "-R", self._repo_arg(repo), "-F", "json"],
+            timeout=30,
+        )
+        if why:
+            return None, f"glab mr view failed: {why}"
+        if not isinstance(out, dict):
+            return None, "glab mr view did not answer with an object"
+        return out, ""
+
+    # --- the questions ---
+
+    def get(self, ref: ChangeRef) -> tuple:
+        doc, why = self._view(ref.repo, ref.number)
+        if why:
+            return None, why
+        return self._change_request(doc, ref.repo, self._commits(ref)), ""
+
+    def _commits(self, ref: ChangeRef) -> list:
+        """Oldest first, which is the opposite of the order GitLab answers in.
+
+        Read for one thing — telling the pipeline's own follow-up push apart
+        from somebody pushing over it — so a call that fails answers with an
+        empty list rather than a guess, exactly as `Commit` says it must.
+        """
+        docs, _why = self._api(
+            ref.repo,
+            f"projects/{self._project(ref.repo)}/merge_requests/{ref.number}"
+            f"/commits?per_page={GL_PAGE}",
+            timeout=30,
+        )
+        if not isinstance(docs, list):
+            return []
+        out = [
+            Commit(str(c.get("id") or ""), str(c.get("title") or ""))
+            for c in docs
+            if isinstance(c, dict)
+        ]
+        out.reverse()
+        return out
+
+    def state(self, ref: ChangeRef) -> tuple:
+        out, why = self._run(
+            ["mr", "view", str(ref.number), "-R", self._repo_arg(ref.repo),
+             "-F", "json", "--jq", ".state"],
+            timeout=30,
+        )
+        if why:
+            return None, f"glab mr view could not read the state: {why}"
+        said = (out or "").strip().strip('"').lower()
+        state = GL_STATES.get(said)
+        if not state:
+            return None, f"glab answered an unrecognised merge request state: {said!r}"
+        return state, ""
+
+    def open_change_requests(self, repo: RepoId) -> tuple:
+        docs, why = self._page(repo, GL_LIST_LIMIT)
+        if why:
+            return [], why
+        return self._enriched(docs, repo)
+
+    def open_change_requests_in_checkout(self, path: str) -> tuple:
+        docs, why = self._json(
+            ["mr", "list", "-F", "json", "--per-page", str(GL_CHECKOUT_LIMIT)],
+            cwd=path,
+            timeout=20,
+        )
+        if why:
+            return [], why
+        if not isinstance(docs, list):
+            return [], "glab returned something that is not a list of merge requests"
+        docs = [d for d in docs if isinstance(d, dict)]
+        if len(docs) >= GL_CHECKOUT_LIMIT:
+            return [], self._truncated(GL_CHECKOUT_LIMIT)
+        # A checkout names no repository, so take the one every merge request
+        # already carries: its own web_url. A directory whose merge requests
+        # are on a host this adapter does not own is not ours to answer for.
+        repo = None
+        for d in docs:
+            ref = self.parse_change_url(str(d.get("web_url") or ""))
+            if ref is None:
+                return [], (
+                    "glab answered with a merge request whose web_url is on no "
+                    "host this adapter owns"
+                )
+            repo = ref.repo
+        if repo is None:
+            return [], "" if self._is_ours(path) else "not a checkout of a GitLab project"
+        return self._enriched(docs, repo)
+
+    def _is_ours(self, path: str) -> bool:
+        """Does this checkout's `origin` name a host we own? Only asked when it
+        has no open merge request to answer with, since an empty list has to be
+        "none are open" and not "this is a GitHub repository"."""
+        return self.repo_from_remote(_git_remote(path)) is not None
+
+    def _page(self, repo: RepoId, limit: int) -> tuple:
+        """Every open merge request, one page of 100 at a time."""
+        out: list = []
+        page = 1
+        while len(out) < limit:
+            docs, why = self._json(
+                ["mr", "list", "-R", self._repo_arg(repo), "-F", "json",
+                 "--per-page", str(GL_PAGE), "--page", str(page)]
+            )
+            if why:
+                return [], why
+            if not isinstance(docs, list):
+                return [], "glab returned something that is not a list of merge requests"
+            docs = [d for d in docs if isinstance(d, dict)]
+            out.extend(docs)
+            if len(docs) < GL_PAGE:
+                return out, ""
+            page += 1
+        return [], self._truncated(limit)
+
+    @staticmethod
+    def _truncated(limit: int) -> str:
+        return (
+            f"the project has at least {limit} open merge requests; glab's result "
+            "may be truncated, so treating it as unreadable rather than silently "
+            "dropping some"
+        )
+
+    def _enriched(self, docs: list, repo: RepoId) -> tuple:
+        """The list, with the pipeline GitLab leaves out of it.
+
+        One failure fails the WHOLE list. A short list reads as "these are all
+        the open merge requests", and dropping the conflicting one from it is
+        how a shepherd would decide it had nothing to report.
+        """
+        out = []
+        for d in docs:
+            number = d.get("iid")
+            if not number:
+                continue
+            full, why = self._view(repo, int(number))
+            if why:
+                return [], f"could not read merge request !{number} on {repo}: {why}"
+            out.append(self._change_request(full, repo))
+        return out, ""
+
+    def _change_request(self, d: dict, repo: RepoId, commits=None) -> ChangeRequest:
+        number = int(d.get("iid") or 0)
+        ref = self.parse_change_url(str(d.get("web_url") or "")) or ChangeRef(
+            repo, number, f"https://{repo.host}/{repo.path}/-/merge_requests/{number}"
+        )
+
+        # WHOSE BRANCH. On GitLab a fork is a project of its own, so this is
+        # two integers and not a name — and when either is missing the answer
+        # is `None`, which `classify` reads as undetermined rather than as a
+        # stranger or as one of ours.
+        source, target = d.get("source_project_id"), d.get("target_project_id")
+        if not isinstance(source, int) or not isinstance(target, int):
+            ours, where = None, ""
+        elif source == target:
+            ours, where = True, f"{ref.repo.path} itself"
+        else:
+            # The merge request says which project the branch is in by id and
+            # never by name, and resolving the id would be another call for a
+            # sentence nobody acts on.
+            ours, where = False, f"another project on {ref.repo.host} (id {source})"
+
+        said = str(d.get("detailed_merge_status") or "").lower()
+        if d.get("has_conflicts") is True or said == GL_CONFLICT:
+            mergeable = "conflicting"
+        elif said == GL_MERGEABLE:
+            mergeable = "mergeable"
+        else:
+            mergeable = ""
+
+        author = d.get("author") or {}
+        login = str(author.get("username") or "")
+        return ChangeRequest(
+            ref=ref,
+            title=str(d.get("title") or ""),
+            state=GL_STATES.get(str(d.get("state") or "").lower(), ""),
+            draft=bool(d.get("draft")),
+            body=str(d.get("description") or ""),
+            head_branch=str(d.get("source_branch") or ""),
+            base_branch=str(d.get("target_branch") or ""),
+            head_sha=str(d.get("sha") or ""),
+            author=login,
+            # The author object carries no `bot` flag, so the only thing that
+            # says "not a person" is the username shape GitLab reserves for
+            # project and group access tokens.
+            author_is_bot=bool(GL_BOT_RE.match(login)),
+            mergeable=mergeable,
+            review_decision=(
+                "changes-requested" if said == GL_CHANGES_REQUESTED else ""
+            ),
+            checks=self._checks(d),
+            commits=list(commits or []),
+            head_is_ours=ours,
+            head_location=where,
+        )
+
+    @staticmethod
+    def _checks(d: dict) -> list:
+        """The head pipeline, as one check — and NOTHING when it is not the head's.
+
+        GitLab keeps the previous commit's pipeline in `head_pipeline` until the
+        new one is created, so a pipeline whose `sha` is not the merge request's
+        is a green light for code nobody ran. An empty list is `classify`'s "no
+        check has reported yet", which is the correct answer there.
+        """
+        p = d.get("head_pipeline")
+        if not isinstance(p, dict):
+            return []
+        ran, head = str(p.get("sha") or ""), str(d.get("sha") or "")
+        if ran and head and ran.lower() != head.lower():
+            return []
+        name = str(p.get("name") or "") or f"pipeline #{p.get('id') or 'unnumbered'}"
+        said = str(p.get("status") or "").lower()
+        if said in GL_PIPELINE_FAILED:
+            return [Check(name, "failed")]
+        if said in GL_PIPELINE_PASSED:
+            return [Check(name, "passed")]
+        if said in GL_PIPELINE_CANCELLED:
+            return [Check(name, "cancelled")]
+        return [Check(name, "pending")]
+
+    def can_push(self, repo: RepoId, login: str) -> tuple:
+        """May this account push here — asked of the members list, by username.
+
+        `members/all` rather than `members`: it includes membership inherited
+        from the group, which is how almost everybody who can push to a GitLab
+        project has it.
+        """
+        key = (repo.qualified, login)
+        if key in self._push:
+            return self._push[key]
+        docs, why = self._api(
+            repo,
+            f"projects/{self._project(repo)}/members/all"
+            f"?query={urllib.parse.quote(login)}&per_page={GL_PAGE}",
+        )
+        if why or not isinstance(docs, list):
+            answer = (
+                False,
+                f"could not check whether {login} can push to {repo}: "
+                f"{why or 'unexpected output'}",
+            )
+        else:
+            level = None
+            for m in docs:
+                if not isinstance(m, dict):
+                    continue
+                if str(m.get("username") or "").lower() == login.lower():
+                    level = m.get("access_level")
+                    break
+            if not isinstance(level, int):
+                answer = (False, f"{login} is not a member of {repo}")
+            else:
+                answer = (
+                    level >= GL_PUSH_ACCESS_LEVEL,
+                    f"{login} has access level {level} on {repo}, and "
+                    f"{GL_PUSH_ACCESS_LEVEL} (developer) is the first that may push",
+                )
+        self._push[key] = answer
+        return answer
+
+    def _squash_allowed(self, repo: RepoId) -> tuple:
+        """(True / False / None, why). `None` is "the project did not say".
+
+        A project can be configured `squash_option: never`, and squash is the
+        only method fleet merges by. Asking first turns that into a refusal
+        fleet records, rather than an API error after the fact — and `None`
+        must not block, because "I could not read the setting" is not "the
+        setting forbids it".
+        """
+        if repo.qualified in self._squash:
+            return self._squash[repo.qualified]
+        doc, why = self._api(repo, f"projects/{self._project(repo)}")
+        if why or not isinstance(doc, dict):
+            answer = (None, why or "glab did not answer with a project")
+        elif str(doc.get("squash_option") or "").lower() == GL_SQUASH_FORBIDDEN:
+            answer = (False, (
+                f"{repo} is configured `squash_option: never`, and squash is the "
+                "only method fleet merges by"
+            ))
+        else:
+            answer = (True, "")
+        self._squash[repo.qualified] = answer
+        return answer
+
+    def describe_merge(self, method: str, delete_branch: bool) -> str:
+        argv = ["glab mr merge --yes --auto-merge=false"]
+        if method == "squash":
+            argv.append("--squash")
+        elif method == "rebase":
+            argv.append("--rebase")
+        if delete_branch:
+            argv.append("--remove-source-branch")
+        return " ".join(argv)
+
+    def merge(self, cr: ChangeRequest, method: str, delete_branch: bool) -> tuple:
+        if method not in self.merge_methods:
+            return False, f"gitlab cannot merge by {method}"
+        if method == "squash":
+            allowed, why = self._squash_allowed(cr.repo)
+            if allowed is False:
+                return False, why
+        argv = ["mr", "merge", str(cr.number), "-R", self._repo_arg(cr.repo),
+                "--yes", "--auto-merge=false"]
+        if method == "squash":
+            argv.append("--squash")
+        elif method == "rebase":
+            argv.append("--rebase")
+        if delete_branch:
+            argv.append("--remove-source-branch")
+        if cr.head_sha:
+            # Merge THIS commit or nothing. glab's own flag for it, and the
+            # only thing standing between "fleet checked the head" and a push
+            # that lands between the check and the merge.
+            argv += ["--sha", cr.head_sha]
+        _, why = self._run(argv, timeout=120)
+        if why:
+            return False, why
+        return True, f"{method}-merged" + (
+            ", source branch removed" if delete_branch else ""
+        )
+
+
 # --- the registry ------------------------------------------------------------
 
 
-BUILTIN = (GitHubForge,)
+BUILTIN = (GitHubForge, GitLabForge)
 
 # A colon-separated list of Python files, each exporting `forges()`. This is
 # how the selftest drives the whole queue through a forge that has no network
@@ -692,13 +1236,17 @@ def open_change_requests_in_checkout(path: str) -> tuple:
                 forge = f
                 break
     candidates = [forge] if forge else list(forges())
-    why = "no forge is configured"
+    reasons = []
     for f in candidates:
         crs, err = f.open_change_requests_in_checkout(path)
         if not err:
             return crs, ""
-        why = err
-    return [], why
+        reasons.append(err)
+    # EVERY reason, not the last one. Once two forges are configured, the
+    # commonest failure here is that neither CLI is installed, and reporting
+    # only whichever was tried second names one missing tool and hides the
+    # other — which reads as "install glab" on a machine that talks to GitHub.
+    return [], "; ".join(dict.fromkeys(reasons)) or "no forge is configured"
 
 
 def _git_remote(path: str) -> str:

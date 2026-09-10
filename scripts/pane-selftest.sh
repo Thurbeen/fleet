@@ -131,7 +131,7 @@ expect "the publish verdict is still drawn" "green" "$WIDE"
 # row reads as settled, which is the opposite of what it means, so the row says
 # the move in words instead of borrowing a colour that would claim one.
 expect "an open pull request says what to do about it" "open — review" "$WIDE"
-expect "and the second pull request is named" "#52" "$WIDE"
+expect "and a GitLab merge request is named in GitLab's own notation" "!52" "$WIDE"
 expect "a green one still says whose merge it is" "green — yours to merge" "$WIDE"
 
 # The order the ladder gives things up in, pinned: the METHOD is provenance and

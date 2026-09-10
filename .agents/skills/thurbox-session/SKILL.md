@@ -121,17 +121,22 @@ window, and the git worktrees. Only the TUI is local. Three consequences:
 - **The `BRIEF.md` trick needs the file on the remote.** `Write` puts it on your
   machine. Copy it over (`scp` / `ssh 'cat >'`) into the remote worktree, or the
   worker reads nothing.
-- **The remote needs its own GitHub credentials** to clone, fetch, and push.
-  Yours are not inherited. Forwarding your SSH agent fixes it, but forwards
-  every key the agent holds — decide that before reaching for it.
+- **The remote needs its own credentials for that repository's forge** — GitHub
+  or GitLab — to clone, fetch, and push. Yours are not inherited. Forwarding
+  your SSH agent fixes it, but forwards every key the agent holds — decide that
+  before reaching for it.
 
 Before spawning remotely, check all three, in this order:
 
 ```bash
 ssh <host> true                                   # reachable?
-ssh <host> 'ssh -T git@github.com'                # can it reach GitHub?
 ssh <host> 'ls -d <repo-path>'                    # does the repo exist there?
+ssh <host> 'ssh -T git@$(...origin's host...)'    # can it reach THAT forge?
 ```
+
+The third one asks the host named by that checkout's `origin`, not github.com:
+a GitLab repository needs a GitLab credential, and GitLab's welcome banner reads
+`Welcome to GitLab, @you!` where GitHub's says `successfully authenticated`.
 
 Until all three pass, **spawn locally**. A remote worker will start and then
 fail at its first `git` call, which looks like an agent bug and is not one.
