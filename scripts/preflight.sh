@@ -236,19 +236,22 @@ have gate prek \
 	"the pre-commit hooks in .pre-commit-config.yaml, which run the same gate" \
 	"uv tool install prek"
 
-# NOT A TOOL — a configuration, and the one that fails the gate for reasons
-# nothing in the gate's own output explains. `commit.gpgsign = true` with no
-# key makes every `git commit` fail, including the hundreds the queue selftest
-# makes in its own throwaway repos: the run reports a dozen unrelated queue
-# failures and never mentions signing.
+# NOT A TOOL — a configuration, and the one whose failures name anything but
+# themselves. `commit.gpgsign = true` with no key makes every `git commit` in a
+# repo that key does not cover fail: a throwaway sandbox, or a worktree
+# somewhere no `includeIf` names. `scripts/queue-selftest.sh` settles it for the
+# repos it builds — its own header says how, and it had to, because the run
+# reported a dozen unrelated queue failures and never mentioned signing — so
+# what is left is the machine's own gap, reported here once and by name.
 #
 # READ FROM A DIRECTORY OUTSIDE THIS CHECKOUT, which is the whole subtlety. A
 # `includeIf gitdir:` block can set the key for the operator's code tree and
 # nowhere else — so committing here works, committing in /tmp does not, and
 # asking git from inside this repo answers about the wrong place. The probe
-# directory is where the selftests actually run.
+# directory is the kind of place a sandbox repo is built in, which is the place
+# this row is about.
 sign_why="git commit signing is on with no key outside this checkout, so every"
-sign_why="$sign_why commit in a sandbox fails — which is where check.sh queue works"
+sign_why="$sign_why commit in a repo that key does not cover fails — any sandbox or worktree"
 if command -v git >/dev/null 2>&1; then
 	probe_dir="$(mktemp -d)"
 	sign_on="$(git -C "$probe_dir" config --get commit.gpgsign 2>/dev/null)"

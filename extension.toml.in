@@ -86,8 +86,9 @@
 #                     So the stance holds unchanged: nothing in THIS FILE reaches
 #                     outside the extension home. The pane is installed by a
 #                     script, through thurbox's own front door for panes, and
-#                     placing it stays the user's own edit — see
-#                     `scripts/install-extension.sh`.
+#                     placing it stays the user's own call — `scripts/place-pane.sh`
+#                     writes that block only once they have been asked and said
+#                     yes, and its header owns what keeps that safe.
 #   home / --home     Omitted, so the home defaults to
 #                     `<config>/extensions/fleet`. Do NOT "fix" the placeholder
 #                     by installing with `--home <your clone>`: that would make

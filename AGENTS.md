@@ -260,15 +260,14 @@ CI only runs on pull requests, and routine control-plane changes go straight to
 `main`. So gate locally before you push:
 
 ```bash
-./scripts/check.sh          # shellcheck, markdown, YAML, profiles, queue,
-                            # reconciler, status, skills, pane, voice,
-                            # onboarding
+./scripts/check.sh          # every check
 ./scripts/check.sh --fix    # same, applying the fixes a check can apply
 ```
 
-That one script is the whole gate. CI runs it, the prek hooks run it, and
-`.no-mistakes.yaml` points its `lint` command at it, so a green local run and a
-green pull request mean the same thing.
+That one script is the whole gate, and its header names every check it runs. CI
+runs it, the prek hooks run it, and `.no-mistakes.yaml` points its `lint`
+command at it, so a green local run and a green pull request mean the same
+thing.
 
 Changes that open a pull request land by **squash merge** — the only merge
 method the remote allows — so the pull request title becomes the commit on

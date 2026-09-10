@@ -8,7 +8,7 @@ generated registry, and agent skills. Everything below follows from that.
 One script is the whole gate:
 
 ```bash
-./scripts/check.sh          # shellcheck, markdown, YAML, profiles, queue, reconciler, status, skills, pane
+./scripts/check.sh          # every check
 ./scripts/check.sh --fix    # the same, applying the fixes a check can apply
 ./scripts/check.sh shell    # just one check
 ```
@@ -20,7 +20,8 @@ requests** while routine control-plane changes go straight to `main`, so the
 local run is the one doing the work.
 
 A missing tool fails the check rather than skipping it. The script's header
-holds the full tool list and the full usage.
+holds the full list of checks, the tools they need, and the full usage —
+it is the one place that list lives.
 
 ### Pre-commit hooks
 

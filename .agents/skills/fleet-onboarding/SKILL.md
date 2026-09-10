@@ -63,7 +63,7 @@ missing or a `thurbox-cli` is below the manifest's floor.
 |---|---|
 | required | fleet cannot run — `git`, `gh` (authenticated), `jq`, `python3` + PyYAML, `thurbox-cli` |
 | recommended | a named capability degrades — `quota-axi` for fuel and `refuel`, `glab` for GitLab |
-| gate | only `./scripts/check.sh` needs it — `lua`, `shellcheck`, `rumdl`, `prek`, and the git commit-signing configuration |
+| gate | only `./scripts/check.sh` needs it — `lua`, `shellcheck`, `rumdl`, `prek`, plus the git commit-signing configuration, which is not a tool |
 
 `gh` is required even on a fleet whose work is entirely on GitLab: it is what
 builds the repo map from `registry/owners.txt`, which is a list of GITHUB
@@ -73,11 +73,13 @@ read, and `queue.sh refuel` cannot tell a spent account window from a live one
 before it restarts a worker.
 
 The last gate row is not a tool at all: **git commit signing turned on with no
-key outside this checkout**. Nothing here needs it fixed to run a fleet, but it
-makes `./scripts/check.sh queue` fail in a dozen unrelated-looking ways, since
-that selftest commits in throwaway repos where an `includeIf gitdir:` key does
-not apply. Report it as what it is — a gate problem with a one-line fix and no
-bearing on the rest of the setup.
+key outside this checkout**. Nothing here needs it fixed to run a fleet, but
+every commit in a repo an `includeIf gitdir:` key does not cover then fails —
+a throwaway sandbox, or a worktree somewhere that block does not name.
+`scripts/queue-selftest.sh` forces signing off for the repos it builds, so the
+gate itself no longer reports it as a dozen unrelated queue failures. Report it
+as what it is — a machine-config problem with a one-line fix and no bearing on
+the rest of the setup.
 
 **ASK — installing is the operator's call.** A package manager is the one part
 of this setup that touches the machine outside the checkout, so nothing is
@@ -144,8 +146,9 @@ Three sources, each candidate printed with the evidence behind it:
 
 - **gh account and orgs** — `gh api user`, `gh api user/orgs`
 - **git config** — `github.user`, and a `@users.noreply.github.com` commit email
-- **local clones** — the remotes of every checkout under `~/code`, `~/src`,
-  this clone's own parent and the rest, counted per owner. It matches an ssh
+- **local clones** — the `origin` of every checkout under `~/code`, `~/src`,
+  this clone's own parent and the rest, counted per owner. Origin and no other
+  remote, so a fork's `upstream` never becomes an owner. It matches an ssh
   host ALIAS (`git@github-perso:owner/repo`) as well as `github.com`, so a
   machine with two GitHub accounts is not invisible to it.
 
