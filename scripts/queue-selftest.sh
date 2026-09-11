@@ -2582,11 +2582,11 @@ refute "and nothing in thurbox would be merged under it" "would-merge" "$out"
 # written there would match nothing, refuse nothing, and fail no test here.
 # So the set itself is read and every entry put through the same parse.
 
-mtopic="$($QUEUE topic add mazet-allowlist --title 'Auto-merge in mazet' \
+maztopic="$($QUEUE topic add mazet-allowlist --title 'Auto-merge in mazet' \
 	--prompt 'mazet merges on the same gates as fleet, and only host-qualified' 2>/dev/null)"
-$QUEUE add "$mtopic" attested --title 'A mazet PR the pipeline vetted' \
+$QUEUE add "$maztopic" attested --title 'A mazet PR the pipeline vetted' \
 	--repo "$srepo" --branch mzt/attested --number 01 >/dev/null
-cat >"$FLEET_QUEUE_DIR/$mtopic/01-attested/result.md" <<'EOF'
+cat >"$FLEET_QUEUE_DIR/$maztopic/01-attested/result.md" <<'EOF'
 ---
 outcome: shipped
 artifact: https://github.com/LeTuR/mazet/pull/301
@@ -2630,7 +2630,7 @@ PY
 
 env PATH="$shep/bin:$base_path" $QUEUE collect >/dev/null
 
-out="$(env PATH="$shep/bin:$base_path" $QUEUE shepherd --topic "$mtopic" 2>&1)"
+out="$(env PATH="$shep/bin:$base_path" $QUEUE shepherd --topic "$maztopic" 2>&1)"
 expect "the shepherd reaches mazet at all" "LeTuR/mazet" "$out"
 if grep -qx 301 "$shep/merged" 2>/dev/null; then
 	pass "an attested, green mazet pull request is merged unattended"
@@ -2651,7 +2651,7 @@ fi
 
 # The typo the operator's own words invite, for the new entry as for the last.
 out="$(env PATH="$shep/bin:$base_path" FLEET_AUTO_MERGE_REPOS="LeTuR/mazet" \
-	$QUEUE shepherd --topic "$mtopic" --dry-run 2>&1)"
+	$QUEUE shepherd --topic "$maztopic" --dry-run 2>&1)"
 expect "a bare LeTuR/mazet is refused, not matched against the slug" \
 	"must name its forge" "$out"
 refute "and nothing in mazet would be merged under it" "would-merge" "$out"
@@ -5406,9 +5406,13 @@ expect "shepherd lists what is open on the discovered instance" \
 	"acme/group/widgets on gitlab.example.com" "$out"
 expect "and a mergeable, attested one there is handed back, not merged" \
 	"fleet does not merge in acme/group/widgets on gitlab.example.com" "$out"
-expect "because the merge set is exactly the three repos it always was" \
-	"github.com/Thurbeen/fleet, github.com/Thurbeen/thurbox, github.com/Thurbeen/thurview" \
-	"$out"
+# What the set IS belongs to 9j, which reads it back whole; what belongs here
+# is that discovery added nothing to it, so this names the host and not the
+# entries — a fifth entry is not a failure of section 14.
+limited="$(printf '%s\n' "$out" | grep 'Merging is limited to')"
+expect "and the pass says what it limits merging to" "Merging is limited to" "$limited"
+refute "because discovering the instance put nothing of it on that set" \
+	"gitlab.example.com" "$limited"
 count_is "so nothing on a discovered host was merged" "$(wc -l <"$gl2/merged.log")" \
 	"$before" "$out"
 
