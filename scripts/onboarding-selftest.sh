@@ -67,6 +67,15 @@ for ((_i = 0; _i <= ${GIT_CONFIG_COUNT:-0}; _i++)); do
 done
 unset GIT_CONFIG_COUNT _i
 
+# The same thing one seam over: §4 and §5 stub `gh` and decide which account
+# answers by the token the stub is handed, and three variables in the caller's
+# environment override that before the stub is ever reached. `GH_TOKEN` or
+# `GITHUB_TOKEN` short-circuits `gh_accounts` — both scripts then take the
+# active-session path and the stub matches the operator's REAL token against
+# fixture names — and `GH_HOST` moves which host's logins are enumerated, so
+# the fixture list under `github.com` comes back empty. Cleared ONCE, here.
+unset GH_TOKEN GITHUB_TOKEN GH_HOST
+
 nl=$'\n'
 failed=0
 tmp=""

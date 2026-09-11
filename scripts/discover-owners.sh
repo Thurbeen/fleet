@@ -85,9 +85,10 @@ note() {
 # --- what gh already knows ----------------------------------------------------
 
 # One account's answers, folded into the candidate list. An EMPTY token means
-# the active session. The token never reaches this shell: `gh_api_as` scopes it
-# to the `gh` call itself, which is why this can run in the CURRENT shell and
-# keep what `note` collected — a subshell would throw the candidates away.
+# the active session. The token is never exported: `gh_api_as` puts it on the
+# `gh` call itself, so the assignment lives exactly as long as that one call,
+# which is why this can run in the CURRENT shell and keep what `note`
+# collected — a subshell would throw the candidates away.
 #
 # An org list that comes back empty on an account with orgs is a SCOPE problem
 # and not an answer, and the two look identical from here — so the login is
