@@ -118,11 +118,11 @@ that file lands ignored and nobody sees it.
 ### The generated registry
 
 `registry/repos.generated.yaml` is written by `./scripts/sync-registry.sh` from
-your live `gh` session. Never hand-edit it, and never commit it — it is
-gitignored, along with `registry/owners.txt`. Human judgement about a project
-goes in `registry/context/<repo>.md`, which the sync never touches and which is
-also gitignored: this repo is public and holds the machinery, not the
-operator's content.
+every `gh` login on your machine, not just the active one. Never hand-edit it,
+and never commit it — it is gitignored, along with `registry/owners.txt`. Human
+judgement about a project goes in `registry/context/<repo>.md`, which the sync
+never touches and which is also gitignored: this repo is public and holds the
+machinery, not the operator's content.
 
 ### The session profiles
 

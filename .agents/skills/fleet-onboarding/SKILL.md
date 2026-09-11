@@ -144,7 +144,12 @@ nearly all of it is already on the machine. Ask the machine first:
 
 Three sources, each candidate printed with the evidence behind it:
 
-- **gh account and orgs** — `gh api user`, `gh api user/orgs`
+- **gh account and orgs** — `gh api user`, `gh api user/orgs`, asked once per
+  `gh` login rather than only the active one. An operator with a personal
+  account and an employer's reaches two disjoint sets of orgs, and an owner
+  never offered is one that never reaches the map. Each login's token is read
+  by name, so nothing switches which account `gh` is pointing at; a login
+  whose credential has expired is named on stderr and skipped
 - **git config** — `github.user`, and a `@users.noreply.github.com` commit email
 - **local clones** — the `origin` of every checkout under `~/code`, `~/src`,
   this clone's own parent and the rest, counted per owner. Origin and no other
@@ -208,10 +213,13 @@ by inheriting the thurbox server's environment rather than by living in a file.
 ./scripts/sync-registry.sh
 ```
 
-It enumerates every repo the operator's own `gh` session can reach, keeps the
-ones under those owners, and writes `registry/repos.generated.yaml` —
-**generated**, so never hand-edit it and never hand-write it if the script
-fails.
+It enumerates every repo the operator's `gh` sessions can reach — **every
+login, not just the active one**, each asked with its own token and none of them
+switched — keeps the ones under those owners, and writes
+`registry/repos.generated.yaml` — **generated**, so never hand-edit it and never
+hand-write it if the script fails. A repo two logins both reach is one repo, and
+a login whose credential no longer works costs its own repos and not the map:
+it is named on stderr and skipped.
 
 Verify the map is not empty, and read the totals back as the evidence:
 
@@ -221,8 +229,12 @@ tail -3 registry/repos.generated.yaml   # totals: repos / owners
 
 **The trap:** a mistyped owner does not fail the sync. The script prints
 `warning: no accessible repos for owner '<x>'` on stderr and carries on, so a
-typo yields a quietly thinner map. Surface that warning — it almost always means
-a typo or an org the token cannot see, and it is fixable in seconds now.
+typo yields a quietly thinner map. Surface that warning — it means a typo or an
+org no login can see, and it is fixable in seconds now.
+
+It used to mean a third thing, which is why the multi-login read above matters:
+with only the active account asked, every owner the *other* logins reach
+produced this same warning, indistinguishable from a typo. It no longer does.
 
 ## Step 5/7 — Thurbox extension
 

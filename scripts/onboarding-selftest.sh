@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Prove what onboarding's three scripts claim, offline.
+# Prove what onboarding's scripts claim, offline.
 #
 # Onboarding is the one part of this repo whose failures are invisible to
 # everyone who already ran it. A dependency table that forgets a tool, an owner
@@ -25,6 +25,12 @@
 #   5. PLACING THE PANE IS SAFE OR IT DOES NOT HAPPEN. Idempotent, backed up,
 #      refused outright on a layout it cannot recognise, and the block it
 #      writes carries the `panels.shown` guard and the slot the PANE declares.
+#   6. EVERY `gh` ACCOUNT IS READ, in both places that ask GitHub who the
+#      operator is. A machine with several logins reaches a different set of
+#      repositories per login, so asking only the active one described half the
+#      machine — and in the map's case it did so with the same warning a
+#      MISTYPED owner produces. Nothing switches the active account, and the
+#      fallback to that one account alone stays the floor.
 #
 # HOW IT RUNS OFFLINE. Every probe is a stub on a sandboxed PATH — `gh`,
 # `thurbox-cli`, `quota-axi` — and the PATH is built from scratch so that a
@@ -60,6 +66,15 @@ for ((_i = 0; _i <= ${GIT_CONFIG_COUNT:-0}; _i++)); do
 	unset "GIT_CONFIG_KEY_$_i" "GIT_CONFIG_VALUE_$_i"
 done
 unset GIT_CONFIG_COUNT _i
+
+# The same thing one seam over: §4 and §5 stub `gh` and decide which account
+# answers by the token the stub is handed, and three variables in the caller's
+# environment override that before the stub is ever reached. `GH_TOKEN` or
+# `GITHUB_TOKEN` short-circuits `gh_accounts` — both scripts then take the
+# active-session path and the stub matches the operator's REAL token against
+# fixture names — and `GH_HOST` moves which host's logins are enumerated, so
+# the fixture list under `github.com` comes back empty. Cleared ONCE, here.
+unset GH_TOKEN GITHUB_TOKEN GH_HOST
 
 nl=$'\n'
 failed=0
@@ -494,6 +509,334 @@ if command -v lua >/dev/null 2>&1; then
 			"$(LAYOUT_PATH="$lay" lua -e 'print(select(2, loadfile(os.getenv("LAYOUT_PATH"))))' 2>&1)"
 	fi
 fi
+
+printf '\n\033[1m§4 sync-registry — the map covers every gh account, not just the active one\033[0m\n'
+
+# §4 AND §5 ARE APPENDED, not filed beside the section about the same script.
+# New sections go at the END of this file so that two people adding cases at
+# the same time do not interleave in the diff.
+#
+# A machine with more than one `gh` login reaches a DIFFERENT set of
+# repositories per login: one sees the personal org, another the employer's, a
+# third a client's. `user/repos` answers for whichever account is ACTIVE, so a
+# single pass wrote a map missing every owner the other logins reach — and its
+# only symptom was the `no accessible repos` warning that a MISTYPED owner
+# produces. The two were indistinguishable, which is why the fix has to keep
+# that warning meaning exactly one thing: §4b holds both halves of it.
+#
+# Run against a COPY of the script in a sandbox repo root. `sync-registry.sh`
+# resolves its paths from its own location and OVERWRITES
+# registry/repos.generated.yaml, so driving the real one here would rewrite
+# the operator's map with fixture data.
+sandbox="$tmp/registry-repo"
+mkdir -p "$sandbox/scripts/lib" "$sandbox/registry"
+cp scripts/sync-registry.sh "$sandbox/scripts/"
+cp scripts/lib/gh-accounts.sh "$sandbox/scripts/lib/"
+
+# `typo-owner` is in the list and no account reaches it — the typo signal,
+# which must survive a change whose whole point is that it now means only that.
+printf '%s\n' '# fixture' octo acme-org client-org employer-org typo-owner \
+	>"$sandbox/registry/owners.txt"
+
+# One repo object per line, keyed by the token the caller presents. Each
+# account reaches a disjoint set except `acme-org/shared`, which two of them
+# see — the dedup case.
+repo_json() {
+	printf '{"full_name":"%s/%s","name":"%s","html_url":"https://github.com/%s/%s",' \
+		"$1" "$2" "$2" "$1" "$2"
+	printf '"owner":{"login":"%s"},"private":false,"role_name":"admin","archived":false,' "$1"
+	printf '"fork":false,"language":"Rust","default_branch":"main","pushed_at":"2026-09-01T00:00:00Z",'
+	printf '"topics":[],"description":"fixture"}\n'
+}
+{
+	repo_json octo own-repo
+	repo_json acme-org tool
+	repo_json acme-org shared
+} >"$tmp/repos-octo.json"
+{
+	repo_json client-org client-thing
+	repo_json acme-org shared
+} >"$tmp/repos-client.json"
+repo_json employer-org work-thing >"$tmp/repos-worky.json"
+
+# The account list `gh auth status --json hosts` answers with. Five logins and
+# three shapes: three that work, one whose credential has expired, and one
+# that reports success but whose token cannot be read back.
+cat >"$tmp/hosts.json" <<'JSON'
+{"hosts":{"github.com":[
+ {"state":"success","active":true,"host":"github.com","login":"octo"},
+ {"state":"success","active":false,"host":"github.com","login":"client"},
+ {"state":"success","active":false,"host":"github.com","login":"worky"},
+ {"state":"success","active":false,"host":"github.com","login":"tokenless"},
+ {"state":"timeout","active":false,"host":"github.com","login":"expired"}
+]}}
+JSON
+
+regbin="$tmp/bin-registry"
+mkdir -p "$regbin"
+ln -sf "$BASE"/* "$regbin/" 2>/dev/null
+real_jq="$(command -v jq 2>/dev/null)" && ln -sf "$real_jq" "$regbin/jq"
+
+# `gh auth status --json hosts` is the account list, and `gh auth token --user`
+# hands over one account's token WITHOUT switching the active one — which is
+# the whole mechanism: the sync can ask every account and still leave the
+# operator's `gh` pointing exactly where it found it.
+stub "$regbin" gh 'case "$1 $2" in
+"auth status")
+  case "$*" in
+  *--json*) cat "$FIXTURES/hosts.json" ;;
+  *) echo "expired: authentication failed" >&2; exit 1 ;;
+  esac
+  ;;
+"auth token")
+  for a in "$@"; do
+    case "$a" in
+    octo | client | worky) echo "tok-$a"; exit 0 ;;
+    esac
+  done
+  exit 1
+  ;;
+"api --paginate")
+  case "${GH_TOKEN:-tok-octo}" in
+  tok-octo) cat "$FIXTURES/repos-octo.json" ;;
+  tok-client) cat "$FIXTURES/repos-client.json" ;;
+  tok-worky) cat "$FIXTURES/repos-worky.json" ;;
+  *) exit 1 ;;
+  esac
+  ;;
+*) echo "unexpected gh call: $*" >&2; exit 9 ;;
+esac'
+
+out="$(FIXTURES="$tmp" PATH="$regbin" "$sandbox/scripts/sync-registry.sh" 2>&1)"
+code=$?
+map="$sandbox/registry/repos.generated.yaml"
+expect_exit "4a a sync across five accounts exits 0" 0 "$code"
+
+# 4a. Every owner ANY account reaches is in the map — the whole point.
+for owner in octo acme-org client-org employer-org; do
+	if grep -q "^  - name: $owner\$" "$map" 2>/dev/null; then
+		pass "4a the map carries owner '$owner', reached by one of the accounts"
+	else
+		fail "4a the map carries owner '$owner', reached by one of the accounts" \
+			"sync said:${nl}$out"
+	fi
+done
+
+# 4b. The `no accessible repos` warning now means ONE thing. It is still
+# printed for an owner nothing reaches — that is the typo signal and the only
+# way a mistyped owner is ever noticed — and printed for no owner that some
+# account can see, which is what it used to do for every owner outside the
+# active login.
+expect "4b an owner no account reaches is still reported" \
+	"no accessible repos for owner 'typo-owner'" "$out"
+for owner in octo acme-org client-org employer-org; do
+	refute "4b '$owner' is not reported unreachable — some account reaches it" \
+		"no accessible repos for owner '$owner'" "$out"
+done
+
+# 4c. A repo two accounts both reach is one repo.
+shared="$(grep -c '^    - name: shared$' "$map" 2>/dev/null || true)"
+if [ "$shared" = "1" ]; then
+	pass "4c a repo two accounts both reach appears once"
+else
+	fail "4c a repo two accounts both reach appears once" "found $shared"
+fi
+
+# 4d. The totals count the merged set, not one account's slice.
+expect "4d the totals count every merged repo" "repos: 5" "$(cat "$map")"
+expect "4d across every owner that resolved" "owners: 4" "$(cat "$map")"
+
+# 4e. Asking every account must not change which one is ACTIVE — `gh` is the
+# tool the operator uses for everything else. Proved by the stub's catch-all
+# above: `auth switch` is an unexpected call, which exits 9 and takes the sync
+# down with it under `set -e`, so 4a's exit 0 is the evidence that none ran.
+#
+# 4f. A login that no longer works costs its own repos and never the map: it is
+# named — an unexplained thinner map is the failure this whole section is
+# about — and the sync carries on.
+expect "4f an expired credential is named" "expired" "$out"
+expect "4f a login whose token cannot be read is named too" "tokenless" "$out"
+expect "4f and the map was still written" "wrote $map" "$out"
+
+# 4g. A `gh` too old for `auth status --json` still syncs, from the active
+# account alone. Same for a GH_TOKEN already in the environment, which
+# overrides every stored account anyway. That fallback is what keeps the floor
+# where it was: "gh exists and is authenticated".
+oldbin="$tmp/bin-registry-old"
+mkdir -p "$oldbin"
+ln -sf "$regbin"/* "$oldbin/" 2>/dev/null
+stub "$oldbin" gh 'case "$1 $2" in
+"auth status")
+  case "$*" in
+  *--json*) echo "unknown flag: --json" >&2; exit 1 ;;
+  *) exit 0 ;;
+  esac
+  ;;
+"api --paginate") cat "$FIXTURES/repos-octo.json" ;;
+*) echo "unexpected gh call: $*" >&2; exit 9 ;;
+esac'
+out_old="$(FIXTURES="$tmp" PATH="$oldbin" "$sandbox/scripts/sync-registry.sh" 2>&1)"
+expect_exit "4g a gh without --json still writes a map" 0 $?
+expect "4g from the active account alone" "repos: 3" "$(cat "$map")"
+expect "4g and the owners it cannot reach are back to being warned about" \
+	"no accessible repos for owner 'employer-org'" "$out_old"
+
+# 4h. EVERY account failing is not a thinner map — it is no answer at all: an
+# offline laptop, an outage, an SSO session lapsed on all of them. Writing
+# `owners: []` over the operator's only index there would erase it and say
+# `wrote ... (0 repos across 0 owners)`. The sync refuses and leaves the file.
+before_dead="$(cat "$map")"
+deadbin="$tmp/bin-registry-dead"
+mkdir -p "$deadbin"
+ln -sf "$regbin"/* "$deadbin/" 2>/dev/null
+stub "$deadbin" gh 'case "$1 $2" in
+"auth status")
+  case "$*" in
+  *--json*) cat "$FIXTURES/hosts.json" ;;
+  *) exit 1 ;;
+  esac
+  ;;
+"auth token")
+  for a in "$@"; do
+    case "$a" in
+    octo | client | worky) echo "tok-$a"; exit 0 ;;
+    esac
+  done
+  exit 1
+  ;;
+"api --paginate") echo "dial tcp: network is unreachable" >&2; exit 1 ;;
+*) echo "unexpected gh call: $*" >&2; exit 9 ;;
+esac'
+out_dead="$(FIXTURES="$tmp" PATH="$deadbin" "$sandbox/scripts/sync-registry.sh" 2>&1)"
+expect_exit "4h every account failing refuses instead of publishing" 1 "$?"
+if [ "$before_dead" = "$(cat "$map")" ]; then
+	pass "4h the map that was already there survives untouched"
+else
+	fail "4h the map that was already there survives untouched" "sync said:${nl}$out_dead"
+fi
+refute "4h and nothing claims a map was written" "wrote $map" "$out_dead"
+
+printf '\n\033[1m§5 discover-owners — every login is asked, not only the active one\033[0m\n'
+
+# The same blindness one level earlier, and it costs more there. Discovery
+# prints the candidate list that is the SINGLE question onboarding asks the
+# operator, so an org only the second login can see is an owner never offered —
+# and an owner never offered never reaches the map at all.
+# §5's own account list. The three healthy logins and the expired one are
+# §4's, plus `sso`: state `success`, token readable, and `api user` refuses it —
+# an org enforcing SAML the token is not authorized for. That account must be
+# NAMED, because one silently missing from the candidate list is an owner never
+# offered, and an owner never offered never reaches the map. And `solo`, which
+# answers fully and simply belongs to no org — the case the scope advice must
+# not fire on once another login has listed orgs.
+cat >"$tmp/hosts-5.json" <<'JSON'
+{"hosts":{"github.com":[
+ {"state":"success","active":true,"host":"github.com","login":"octo"},
+ {"state":"success","active":false,"host":"github.com","login":"client"},
+ {"state":"success","active":false,"host":"github.com","login":"worky"},
+ {"state":"success","active":false,"host":"github.com","login":"sso"},
+ {"state":"success","active":false,"host":"github.com","login":"solo"},
+ {"state":"timeout","active":false,"host":"github.com","login":"expired"}
+]}}
+JSON
+
+multi="$tmp/bin-multi"
+mkdir -p "$multi"
+ln -sf "$BASE"/* "$multi/" 2>/dev/null
+ln -sf "$(command -v git)" "$multi/git"
+real_jq="$(command -v jq 2>/dev/null)" && ln -sf "$real_jq" "$multi/jq"
+# Plain `auth status` EXITS 1 here, which is what `gh` itself does when any
+# account on any host has authentication issues — and this fixture has an
+# expired login. Gating discovery on it therefore threw away every healthy
+# account; 5a is what catches that coming back.
+stub "$multi" gh 'case "$1 $2" in
+"auth status")
+  case "$*" in
+  *--json*) cat "$FIXTURES/hosts-5.json" ;;
+  *) echo "expired: authentication failed" >&2; exit 1 ;;
+  esac
+  ;;
+"auth token")
+  for a in "$@"; do
+    case "$a" in
+    octo | client | worky | sso | solo) echo "tok-$a"; exit 0 ;;
+    esac
+  done
+  exit 1
+  ;;
+"api user")
+  case "${GH_TOKEN:-tok-octo}" in
+  tok-octo) echo octo ;;
+  tok-client) echo client ;;
+  tok-worky) echo worky ;;
+  tok-solo) echo solo ;;
+  *) echo "HTTP 401: SAML enforcement" >&2; exit 1 ;;
+  esac
+  ;;
+"api user/orgs")
+  case "${GH_TOKEN:-tok-octo}" in
+  tok-octo) printf "acme-org\n" ;;
+  tok-client) printf "client-org\n" ;;
+  tok-worky) printf "employer-org\n" ;;
+  esac
+  ;;
+*) echo "unexpected gh call: $*" >&2; exit 9 ;;
+esac'
+
+mkdir -p "$tmp/noclones-5"
+out="$(cd "$tmp" && FIXTURES="$tmp" HOME="$home" PATH="$multi" \
+	"$REPO/scripts/discover-owners.sh" "$tmp/noclones-5" 2>&1)"
+code=$?
+expect_exit "5a discovery across several logins exits 0" 0 "$code"
+candidates="$(printf '%s\n' "$out" | sed -n '/^CANDIDATE OWNERS/,$p')"
+expect "5a the active account is a candidate" "octo" "$candidates"
+expect "5a so is a login that is not active" "worky" "$candidates"
+expect "5a and so is the third" "client" "$candidates"
+expect "5b the active login's orgs are there" "acme-org" "$candidates"
+expect "5b and the orgs only another login can see" "employer-org" "$candidates"
+expect "5b including the third login's" "client-org" "$candidates"
+
+# 5c. A login that no longer works is reported and skipped — never offered as
+# a candidate the operator would then put in owners.txt, and never fatal.
+refute "5c an expired login is not offered as a candidate" "expired" "$candidates"
+expect "5c but it is reported" "expired" "$out"
+
+# 5e. A login `gh` calls healthy whose token the API then refuses — SSO
+# enforcement, a revoked token, a dropped connection. Dropping it in silence is
+# the one failure this section exists to make visible, so it is named too.
+expect "5e a login that cannot say who it is is named" \
+	"gh account 'sso' could not say who it is" "$out"
+refute "5e and it is not offered as a candidate" "sso" "$candidates"
+
+# 5f. The scope note is about a machine where NO login returned an org. `solo`
+# returned none and three others did, so it must not fire — advising
+# `gh auth refresh -s read:org` over a login that legitimately belongs to no
+# org sends the operator to fix a token that is fine.
+expect "5f a login with no orgs is still a candidate" "solo" "$candidates"
+refute "5f but an otherwise complete answer carries no scope advice" \
+	"missing a scope" "$out"
+
+# 5d. The fallback, which is also every machine with one login: no account
+# list means the active session is asked, exactly as it was before.
+oldgh="$tmp/bin-oldgh"
+mkdir -p "$oldgh"
+ln -sf "$multi"/* "$oldgh/" 2>/dev/null
+stub "$oldgh" gh 'case "$1 $2" in
+"auth status")
+  case "$*" in
+  *--json*) echo "unknown flag: --json" >&2; exit 1 ;;
+  *) exit 0 ;;
+  esac
+  ;;
+"api user") echo octo ;;
+"api user/orgs") printf "acme-org\n" ;;
+*) echo "unexpected gh call: $*" >&2; exit 9 ;;
+esac'
+out="$(cd "$tmp" && HOME="$home" PATH="$oldgh" \
+	"$REPO/scripts/discover-owners.sh" "$tmp/noclones-5" 2>&1)"
+expect_exit "5d a gh without --json still discovers" 0 $?
+expect "5d from the active session alone" "octo" "$out"
+expect "5d with its orgs" "acme-org" "$out"
 
 printf '\n'
 if [ "$failed" -eq 0 ]; then

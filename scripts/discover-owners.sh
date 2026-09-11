@@ -4,14 +4,14 @@
 # list they have written down nowhere.
 #
 # registry/owners.txt is the one input the repo map genuinely needs, and every
-# part of it is already recorded somewhere: in the `gh` session, in the git
+# part of it is already recorded somewhere: in the `gh` logins, in the git
 # configuration, and in the remotes of the clones the operator has been working
 # in for years. This reads all three and prints candidates with the EVIDENCE for
 # each, because a guess an operator cannot check is one they have to verify by
 # hand anyway.
 #
-#   gh account     `gh api user` — the account the registry sync reads GitHub as
-#   gh org         `gh api user/orgs` — orgs that session can see
+#   gh account     `gh api user` — one per `gh` login, not just the active one
+#   gh org         `gh api user/orgs` — the orgs each of those logins can see
 #   git config     `github.user`, and a @users.noreply.github.com commit email
 #   local clones   the `origin` of every git checkout under the roots scanned
 #
@@ -34,6 +34,9 @@ set -uo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 2
 REPO_ROOT="$PWD"
+
+# shellcheck source=scripts/lib/gh-accounts.sh
+. "$REPO_ROOT/scripts/lib/gh-accounts.sh"
 
 ROOTS=()
 while [ $# -gt 0 ]; do
@@ -81,25 +84,88 @@ note() {
 
 # --- what gh already knows ----------------------------------------------------
 
-gh_login=""
-scope_hint=""
-if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-	gh_login="$(gh api user --jq .login 2>/dev/null)"
-	[ -n "$gh_login" ] && note "$gh_login" "gh account"
+# One account's answers, folded into the candidate list. An EMPTY token means
+# the active session. The token is never exported: `gh_api_as` puts it on the
+# `gh` call itself, so the assignment lives exactly as long as that one call,
+# which is why this can run in the CURRENT shell and keep what `note`
+# collected — a subshell would throw the candidates away.
+#
+# An org list that comes back empty on an account with orgs is a SCOPE problem
+# and not an answer, and the two look identical from here — so the login is
+# collected and the remedy printed BELOW, once every account has been asked.
+# Per-account it would be a false alarm: on a machine where two logins answer
+# with orgs and a third legitimately belongs to none, the scope advice is wrong.
+#
+# NON-ZERO when the account could not say who it is — a revoked token, an org
+# enforcing SSO the token is not authorized for, a network that dropped. The
+# caller names it, because an account silently missing from the candidate list
+# is the exact failure this whole file is about.
+ask_gh() {
+	local token="$1" login orgs org
+	login="$(gh_api_as "$token" user --jq .login 2>/dev/null)" || login=""
+	[ -n "$login" ] || return 1
+	note "$login" "gh account"
 
-	# An org list that comes back empty on an account with orgs is a SCOPE
-	# problem and not an answer, and the two look identical from here — so the
-	# remedy is printed rather than the emptiness being treated as fact.
-	orgs="$(gh api user/orgs --jq '.[].login' 2>/dev/null)"
+	orgs="$(gh_api_as "$token" user/orgs --jq '.[].login' 2>/dev/null)" || orgs=""
 	if [ -n "$orgs" ]; then
 		while IFS= read -r org; do
 			[ -n "$org" ] && note "$org" "gh org"
 		done <<<"$orgs"
+		orgs_seen=1
 	else
-		scope_hint="gh listed no orgs. If you expect some, the token is missing a scope: gh auth refresh -s read:org"
+		orgless="${orgless:+$orgless, }'$login'"
 	fi
-else
-	scope_hint="gh is not authenticated, so the account and its orgs could not be read: gh auth login"
+	return 0
+}
+
+scope_hint=""
+orgless=""
+orgs_seen=0
+answered=0
+# `command -v gh` AND NOTHING MORE. `gh auth status` exits 1 when an account on
+# ANY host has authentication issues, so gating on it threw away every healthy
+# login the moment one had lapsed — which is precisely the machine this script
+# exists for. Whether a credential works is decided per account below, where
+# one that does not costs its own orgs and nothing else.
+if command -v gh >/dev/null 2>&1; then
+	# EVERY `gh` LOGIN, not just the active one. An operator with a personal
+	# account and an employer's reaches two disjoint sets of orgs, so asking
+	# only the active session answered the ONE question onboarding asks from
+	# half the evidence — and an owner never offered never reaches the map.
+	# An empty list falls back to the active session; the seam says when that
+	# happens and why. scripts/sync-registry.sh merges the same way.
+	#
+	# GitHub, unless `GH_HOST` says otherwise — that is the variable `gh api`
+	# itself obeys, so enumerating logins for any other host would name tokens
+	# the calls below never use.
+	gh_host="${GH_HOST:-github.com}"
+	accounts=()
+	while IFS= read -r acct; do
+		[ -n "$acct" ] && accounts+=("$acct")
+	done < <(gh_accounts "$gh_host")
+
+	if [ "${#accounts[@]}" -eq 0 ]; then
+		ask_gh "" && answered=1
+	else
+		for acct in "${accounts[@]}"; do
+			tok="$(gh_account_token "$gh_host" "$acct")" || tok=""
+			if [ -z "$tok" ]; then
+				printf "warning: no usable token for gh account '%s' — its orgs are not below\n" "$acct" >&2
+				continue
+			fi
+			if ask_gh "$tok"; then
+				answered=1
+			else
+				printf "warning: gh account '%s' could not say who it is — its orgs are not below\n" "$acct" >&2
+			fi
+		done
+	fi
+fi
+
+if [ "$answered" -eq 0 ]; then
+	scope_hint="no gh account answered, so no login and no org is below: gh auth login"
+elif [ "$orgs_seen" -eq 0 ]; then
+	scope_hint="gh listed no orgs for $orgless. If you expect some, that token is missing a scope: gh auth refresh -s read:org"
 fi
 
 # --- what the git configuration remembers -------------------------------------
