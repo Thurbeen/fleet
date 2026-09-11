@@ -118,7 +118,7 @@ tmp="$(mktemp -d)"
 # never linked.
 BASE="$tmp/base"
 mkdir -p "$BASE"
-for t in bash sed grep sort head tail cut tr find cat date mktemp cp rm rmdir mv ls dirname basename wc uname; do
+for t in bash sed grep sort head tail cut tr awk find cat date mktemp cp rm rmdir mv ls dirname basename wc uname; do
 	real="$(command -v "$t" 2>/dev/null)" && ln -sf "$real" "$BASE/$t"
 done
 
@@ -837,6 +837,416 @@ out="$(cd "$tmp" && HOME="$home" PATH="$oldgh" \
 expect_exit "5d a gh without --json still discovers" 0 $?
 expect "5d from the active session alone" "octo" "$out"
 expect "5d with its orgs" "acme-org" "$out"
+
+printf '\n\033[1m§6 preflight — the glab row is per HOST, and a self-hosted instance is ordinary\033[0m\n'
+
+# `glab auth status` with no argument is ALL-OR-NOTHING across every instance
+# glab has configured: an operator authenticated to their company's GitLab and
+# not to gitlab.com — which they have never used — got a non-zero exit, and
+# preflight printed `missing glab auth` with a remedy they had already run.
+#
+# That contradicts the forge seam, where which hosts a CLI owns comes from that
+# CLI's own variable and a self-hosted instance is the ORDINARY case
+# (scripts/lib/forge.py's header). So the row is decided per host, and the
+# question it answers is "is there a credential fleet could use", not "is every
+# instance glab has ever heard of healthy".
+#
+# The stub is glab 1.117.0's own shape, verified against it: `--hostname`
+# answers for one instance, `--all` lists every configured one at column 0 and
+# exits non-zero when ANY of them fails, and a bare `auth status` answers for
+# GITLAB_HOST when that is set.
+glab_stub='case "$1 $2" in
+"auth status")
+  host=""; all=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+    --hostname) host="$2"; shift ;;
+    --all | -a) all=1 ;;
+    esac
+    shift
+  done
+  if [ "$all" = 1 ]; then
+    bad=0
+    for h in $GLAB_HOSTS; do
+      printf "%s\n" "$h"
+      case " $GLAB_OK " in
+      *" $h "*) echo "  ✓ Logged in to $h as someone" ;;
+      *) echo "  x $h: API call failed: 401"; bad=1 ;;
+      esac
+    done
+    exit "$bad"
+  fi
+  [ -n "$host" ] || host="${GITLAB_HOST:-gitlab.com}"
+  case " $GLAB_OK " in *" $host "*) exit 0 ;; esac
+  exit 1
+  ;;
+*) echo "glab 1.117.0" ;;
+esac'
+
+glabbin="$tmp/bin-glab"
+mkdir -p "$glabbin"
+ln -sf "$full"/* "$glabbin/" 2>/dev/null
+stub "$glabbin" glab "$glab_stub"
+
+# Colour codes out, so `missing  glab auth` can be refuted as one string. The
+# table writes the state and the name with an escape between them otherwise,
+# and a refute against the plain words could never fire.
+plain_preflight() {
+	PATH="$glabbin" "$REPO/scripts/preflight.sh" --tier recommended 2>&1 |
+		sed "s/${esc}\\[[0-9;]*m//g"
+}
+
+# 6a. THE CASE FROM THE FIELD. Two instances configured, a credential for the
+# self-hosted one and none for gitlab.com, and no GITLAB_HOST naming either.
+out="$(GLAB_HOSTS="gitlab.com gitlab.metyis.technology" GLAB_OK="gitlab.metyis.technology" plain_preflight)"
+refute "6a a credential on one configured host is not reported missing" \
+	"missing  glab auth" "$out"
+expect "6a and the row names the host that answered" "gitlab.metyis.technology" "$out"
+
+# 6b. GITLAB_HOST is glab's own variable for which instance to talk to, so a
+# host named there is the one that has to work — a credential for some OTHER
+# instance is not the one the forge seam would reach for.
+out="$(GITLAB_HOST=gitlab.com GLAB_HOSTS="gitlab.com gitlab.metyis.technology" \
+	GLAB_OK="gitlab.metyis.technology" plain_preflight)"
+expect "6b GITLAB_HOST naming a host with no credential is missing" \
+	"missing  glab auth" "$out"
+expect "6b and the remedy names that host, not a bare login" \
+	"glab auth login --hostname gitlab.com" "$out"
+
+# 6c. GITLAB_HOST naming the host that does work is the other half of 6b: the
+# variable decides, in both directions.
+out="$(GITLAB_HOST=gitlab.metyis.technology GLAB_HOSTS="gitlab.com gitlab.metyis.technology" \
+	GLAB_OK="gitlab.metyis.technology" plain_preflight)"
+refute "6c GITLAB_HOST naming the host that answers is not missing" \
+	"missing  glab auth" "$out"
+
+# 6d. No credential anywhere is still missing. Making the row per host must not
+# make it unfailable.
+out="$(GLAB_HOSTS="gitlab.com" GLAB_OK="" plain_preflight)"
+expect "6d no host authenticated is missing" "missing  glab auth" "$out"
+
+# 6e. glab is RECOMMENDED, so none of the above is ever fatal — a fleet whose
+# work is entirely on GitHub needs no GitLab credential at all.
+PATH="$glabbin" GLAB_HOSTS="gitlab.com" GLAB_OK="" "$REPO/scripts/preflight.sh" >/dev/null 2>&1
+expect_exit "6e a missing GitLab credential is reported, never fatal" 0 "$?"
+
+printf '\n\033[1m§7 preflight — the gh row is per ACCOUNT, and one expired token is not the answer\033[0m\n'
+
+# `gh auth status` has the same shape as glab's: it exits non-zero when an
+# account on ANY host has authentication issues. With three logins on this
+# machine, one lapsed token made preflight report `gh auth` MISSING while two
+# working accounts sat there — and `gh auth` is REQUIRED, so that is a setup
+# reported as unrunnable because one credential of three had expired.
+#
+# The per-account answer already exists: scripts/lib/gh-accounts.sh, which the
+# map and discovery both read. This row asks it the same question rather than
+# writing a second enumeration.
+cat >"$tmp/hosts-7.json" <<'JSON'
+{"hosts":{"github.com":[
+ {"state":"success","active":true,"host":"github.com","login":"octo"},
+ {"state":"success","active":false,"host":"github.com","login":"client"},
+ {"state":"success","active":false,"host":"github.com","login":"worky"},
+ {"state":"timeout","active":false,"host":"github.com","login":"expired"}
+]}}
+JSON
+
+ghbin="$tmp/bin-gh7"
+mkdir -p "$ghbin"
+ln -sf "$full"/* "$ghbin/" 2>/dev/null
+real_jq="$(command -v jq 2>/dev/null)" && ln -sf "$real_jq" "$ghbin/jq"
+# Plain `auth status` EXITS 1, which is what `gh` does when any account has
+# issues and this fixture has an expired one. A row that gated on it would
+# report every healthy login as missing, which is 7a.
+stub "$ghbin" gh 'case "$1 $2" in
+"--version ") echo "gh version 2.100.0" ;;
+"auth status")
+  case "$*" in
+  *--json*) cat "$FIXTURES/hosts-7.json" ;;
+  *) echo "expired: authentication failed" >&2; exit 1 ;;
+  esac
+  ;;
+"api user") echo octo ;;
+*) echo "unexpected gh call: $*" >&2; exit 9 ;;
+esac'
+
+out="$(FIXTURES="$tmp" PATH="$ghbin" "$REPO/scripts/preflight.sh" --tier required 2>&1 |
+	sed "s/${esc}\\[[0-9;]*m//g")"
+code_out="$(FIXTURES="$tmp" PATH="$ghbin" "$REPO/scripts/preflight.sh" >/dev/null 2>&1; echo $?)"
+expect_exit "7a one expired token among three working logins is not a failed preflight" 0 "$code_out"
+refute "7a the gh auth row is not reported missing" "missing  gh auth" "$out"
+expect "7a it says how many accounts authenticated" "3 of 4 accounts" "$out"
+expect "7a and names them" "octo" "$out"
+expect "7b the login that did not is named, so a thinner answer is never silent" \
+	"expired" "$out"
+
+# 7c. NO account working is the case the row still has to fail on: making it
+# per account must not make `gh auth` unfailable, and it is REQUIRED.
+cat >"$tmp/hosts-7-dead.json" <<'JSON'
+{"hosts":{"github.com":[
+ {"state":"timeout","active":true,"host":"github.com","login":"octo"},
+ {"state":"timeout","active":false,"host":"github.com","login":"worky"}
+]}}
+JSON
+deadgh="$tmp/bin-gh7-dead"
+mkdir -p "$deadgh"
+ln -sf "$ghbin"/* "$deadgh/" 2>/dev/null
+stub "$deadgh" gh 'case "$1 $2" in
+"--version ") echo "gh version 2.100.0" ;;
+"auth status")
+  case "$*" in
+  *--json*) cat "$FIXTURES/hosts-7-dead.json" ;;
+  *) echo "not logged in" >&2; exit 1 ;;
+  esac
+  ;;
+"api user") exit 1 ;;
+*) echo "unexpected gh call: $*" >&2; exit 9 ;;
+esac'
+out="$(FIXTURES="$tmp" PATH="$deadgh" "$REPO/scripts/preflight.sh" --tier required 2>&1 |
+	sed "s/${esc}\\[[0-9;]*m//g")"
+code_out="$(FIXTURES="$tmp" PATH="$deadgh" "$REPO/scripts/preflight.sh" >/dev/null 2>&1; echo $?)"
+expect "7c not one account authenticating is still missing" "missing  gh auth" "$out"
+expect "7c with the remedy" "gh auth login" "$out"
+expect_exit "7c and a required gap is still a non-zero exit" 1 "$code_out"
+
+# 7d. The fallback the seam documents, which is also every older `gh`: no
+# account list means the ACTIVE session is asked alone, exactly as this row
+# did before it asked more than one.
+oldghbin="$tmp/bin-gh7-old"
+mkdir -p "$oldghbin"
+ln -sf "$ghbin"/* "$oldghbin/" 2>/dev/null
+stub "$oldghbin" gh 'case "$1 $2" in
+"--version ") echo "gh version 2.20.0" ;;
+"auth status")
+  case "$*" in
+  *--json*) echo "unknown flag: --json" >&2; exit 1 ;;
+  *) exit 0 ;;
+  esac
+  ;;
+"api user") echo octo ;;
+*) echo "unexpected gh call: $*" >&2; exit 9 ;;
+esac'
+out="$(FIXTURES="$tmp" PATH="$oldghbin" "$REPO/scripts/preflight.sh" --tier required 2>&1 |
+	sed "s/${esc}\\[[0-9;]*m//g")"
+code_out="$(FIXTURES="$tmp" PATH="$oldghbin" "$REPO/scripts/preflight.sh" >/dev/null 2>&1; echo $?)"
+expect_exit "7d a gh too old for --json still passes on the active session" 0 "$code_out"
+refute "7d and is not reported missing" "missing  gh auth" "$out"
+expect "7d naming the account that answered" "octo" "$out"
+
+printf '\n\033[1m§8 add-owner — the path for what the operator gains AFTER the first run\033[0m\n'
+
+# Onboarding is a first run and converges on a re-run, but the thing that
+# actually happens later has no path at all: the operator gains an owner, a
+# repository or a whole `gh` account, and the map has to catch up. That meant
+# hand-editing registry/owners.txt and remembering which script to re-run, and
+# nothing told them what a newly authenticated account even reaches.
+#
+# Everything below runs against a COPY in a sandbox root. `add-owner.sh` writes
+# registry/owners.txt and runs `sync-registry.sh`, which OVERWRITES
+# registry/repos.generated.yaml — driving the real ones here would rewrite the
+# operator's own owners file and their map with fixture data.
+inc="$tmp/incremental"
+mkdir -p "$inc/scripts/lib" "$inc/registry"
+cp scripts/add-owner.sh scripts/sync-registry.sh "$inc/scripts/"
+cp scripts/lib/gh-accounts.sh scripts/lib/glab-hosts.sh "$inc/scripts/lib/"
+
+# The operator's file as it actually looks: a comment header that documents the
+# format for whoever edits it by hand, then entries in the order the map is
+# emitted in. Both survive every write below.
+cat >"$inc/registry/owners.txt" <<'OWNERS'
+# GitHub owners the map covers, one per line.
+# `#` starts a comment; blank lines are ignored.
+octo
+acme-org
+OWNERS
+
+{
+	repo_json octo own-repo
+	repo_json octo second-repo
+	repo_json acme-org tool
+} >"$tmp/repos-octo-8.json"
+repo_json employer-org work-thing >"$tmp/repos-worky-8.json"
+
+# Only `octo` is authenticated to begin with — the machine before the operator
+# runs `gh auth login` for the second account.
+cat >"$tmp/hosts-8-before.json" <<'JSON'
+{"hosts":{"github.com":[
+ {"state":"success","active":true,"host":"github.com","login":"octo"}
+]}}
+JSON
+# And after: `worky` is now readable, and it reaches an owner nothing in the
+# map has ever heard of. This is the case the whole section is about.
+cat >"$tmp/hosts-8-after.json" <<'JSON'
+{"hosts":{"github.com":[
+ {"state":"success","active":true,"host":"github.com","login":"octo"},
+ {"state":"success","active":false,"host":"github.com","login":"worky"}
+]}}
+JSON
+
+incbin="$tmp/bin-incremental"
+mkdir -p "$incbin"
+ln -sf "$BASE"/* "$incbin/" 2>/dev/null
+real_jq="$(command -v jq 2>/dev/null)" && ln -sf "$real_jq" "$incbin/jq"
+stub "$incbin" gh 'case "$1 $2" in
+"auth status")
+  case "$*" in
+  *--json*) cat "$FIXTURES/$HOSTS_FIXTURE" ;;
+  *) exit 0 ;;
+  esac
+  ;;
+"auth token")
+  for a in "$@"; do
+    case "$a" in
+    octo | worky) echo "tok-$a"; exit 0 ;;
+    esac
+  done
+  exit 1
+  ;;
+"api user")
+  case "${GH_TOKEN:-tok-octo}" in
+  tok-octo) echo octo ;;
+  tok-worky) echo worky ;;
+  *) exit 1 ;;
+  esac
+  ;;
+"api user/orgs")
+  case "${GH_TOKEN:-tok-octo}" in
+  tok-octo) printf "acme-org\n" ;;
+  tok-worky) printf "employer-org\n" ;;
+  esac
+  ;;
+"api --paginate")
+  case "${GH_TOKEN:-tok-octo}" in
+  tok-octo) cat "$FIXTURES/repos-octo-8.json" ;;
+  tok-worky) cat "$FIXTURES/repos-worky-8.json" ;;
+  *) exit 1 ;;
+  esac
+  ;;
+*) echo "unexpected gh call: $*" >&2; exit 9 ;;
+esac'
+# A GitLab instance that IS authenticated, which must change what is reported
+# and never what is written: registry/owners.txt is read by `gh`.
+stub "$incbin" glab 'case "$1 $2" in
+"auth status")
+  case "$*" in
+  *--all* | *-a*) echo "gitlab.example.com"; echo "  ✓ Logged in to gitlab.example.com as someone" ;;
+  *) exit 0 ;;
+  esac
+  ;;
+*) echo "glab 1.117.0" ;;
+esac'
+
+run_inc() {
+	(cd "$inc" && FIXTURES="$tmp" HOSTS_FIXTURE="${HOSTS_FIXTURE:-hosts-8-after.json}" \
+		PATH="$incbin" "$inc/scripts/add-owner.sh" "$@" 2>&1)
+}
+
+# The map as it stands before any of this — the machine that already has owners
+# and a map, which is the only machine this script is for.
+HOSTS_FIXTURE=hosts-8-before.json \
+	FIXTURES="$tmp" PATH="$incbin" "$inc/scripts/sync-registry.sh" >/dev/null 2>&1
+incmap="$inc/registry/repos.generated.yaml"
+[ -f "$incmap" ] || fail "8 the sandbox starts from a machine that already has a map" "no $incmap"
+
+# --- 8a. what is new ----------------------------------------------------------
+out="$(run_inc)"
+code=$?
+expect_exit "8a asking what is new exits 0" 0 "$code"
+expect "8a the newly authenticated account is named" "worky" "$out"
+expect "8a with the owner it reaches that the map does not cover" "employer-org" "$out"
+# A newly authenticated account's OWN login is an owner too, and one the map
+# does not cover either — `discover-owners.sh` counts a login as a candidate
+# for exactly the same reason. So the answer here is two, not one.
+expect "8a and it says how many are not in the map" "2 owners" "$out"
+expect "8a the report hands over the command that adds them" "add-owner.sh" "$out"
+
+# 8b. An owner already in the file is NOT offered again. The summary line is
+# what an operator acts on, so it is asserted against that alone — the account
+# listing above it names every owner each account reaches on purpose, marked.
+summary="$(printf '%s\n' "$out" | sed -n '/not in registry\/owners.txt/p')"
+expect "8b the summary names the new owner" "employer-org" "$summary"
+expect "8b and the new account's own namespace, which is an owner as well" "worky" "$summary"
+refute "8b an owner already in the file is not offered twice" "acme-org" "$summary"
+refute "8b nor is the operator's own account" "octo" "$summary"
+
+# 8c. GITLAB IS EVIDENCE, NEVER AN OWNER. An authenticated GitLab host changes
+# what preflight reports and what a task can target through the forge seam; a
+# namespace of it reaching owners.txt would make the `gh` map silently thinner.
+expect "8c an authenticated GitLab host is reported" "gitlab.example.com" "$out"
+refute "8c but never as something to add" "gitlab.example.com" "$summary"
+
+# --- 8d. adding it ------------------------------------------------------------
+# A repository disappears at the same time — archived, deleted, transferred.
+# The report is about what MOVED, so it has to see both directions.
+{
+	repo_json octo own-repo
+	repo_json acme-org tool
+} >"$tmp/repos-octo-8.json"
+
+out="$(run_inc --all)"
+code=$?
+expect_exit "8d adding every new owner exits 0" 0 "$code"
+expect "8d it says which owner it added" "employer-org" "$out"
+expect "8d the map's own owner count moved" "owners" "$out"
+expect "8d a repository the new account reaches is gained" "employer-org/work-thing" "$out"
+expect "8d and one that disappeared is reported lost" "octo/second-repo" "$out"
+refute "8d the whole map is not printed back" "pushed_at" "$out"
+
+# 8e. The file is the operator's: the header that documents its format for
+# whoever edits it by hand survives, and so does the ORDER, which is the order
+# the generated map is emitted in. Appending is right; reshuffling is churn.
+owners_now="$(cat "$inc/registry/owners.txt")"
+expect "8e the comment header survives the write" "# GitHub owners the map covers" "$owners_now"
+entries="$(grep -vE '^[[:space:]]*(#|$)' "$inc/registry/owners.txt" | tr '\n' ' ')"
+if [ "$entries" = "octo acme-org worky employer-org " ]; then
+	pass "8e the new owner is APPENDED, and the existing order is untouched"
+else
+	fail "8e the new owner is APPENDED, and the existing order is untouched" "got: $entries"
+fi
+expect "8e and the map now carries it" "  - name: employer-org" "$(cat "$incmap")"
+
+# --- 8f. a second run has nothing to offer ------------------------------------
+out="$(run_inc)"
+expect_exit "8f a re-run once everything is added exits 0" 0 "$?"
+expect "8f and says there is nothing new rather than offering the same list" \
+	"Nothing new" "$out"
+refute "8f no owner is proposed a second time" "not in registry/owners.txt" "$out"
+
+# --- 8g. a duplicate is refused -----------------------------------------------
+before_dup="$(cat "$inc/registry/owners.txt")"
+out="$(run_inc acme-org)"
+code=$?
+expect_exit "8g adding an owner already in the file is refused" 1 "$code"
+expect "8g and says which one" "acme-org" "$out"
+if [ "$before_dup" = "$(cat "$inc/registry/owners.txt")" ]; then
+	pass "8g the file is not touched"
+else
+	fail "8g the file is not touched" "it changed"
+fi
+
+# --- 8h. what counts as an owner is not widened -------------------------------
+# registry/owners.txt holds GITHUB owners, read by `gh`. A GitLab group path, a
+# host-qualified name or a URL is not one, and a file that accepted one would
+# produce a `no accessible repos` warning forever.
+out="$(run_inc group/subgroup)"
+code=$?
+expect_exit "8h a path is not a GitHub owner" 1 "$code"
+expect "8h and the refusal says what the file holds" "GitHub owner" "$out"
+refute "8h nothing was written" "MAP CHANGED" "$out"
+
+out="$(run_inc 'gitlab.example.com/group')"
+expect_exit "8h nor is a host-qualified name" 1 "$?"
+
+# --- 8i. the machine this script is NOT for -----------------------------------
+# A clone with no owners file has not been onboarded, and inventing one here
+# would be a first run done badly. It names the skill that owns that instead.
+noowners="$tmp/incremental-bare"
+mkdir -p "$noowners/scripts/lib" "$noowners/registry"
+cp scripts/add-owner.sh scripts/sync-registry.sh "$noowners/scripts/"
+cp scripts/lib/gh-accounts.sh scripts/lib/glab-hosts.sh "$noowners/scripts/lib/"
+out="$(cd "$noowners" && FIXTURES="$tmp" HOSTS_FIXTURE=hosts-8-after.json \
+	PATH="$incbin" "$noowners/scripts/add-owner.sh" 2>&1)"
+expect_exit "8i a clone with no owners file is refused, not onboarded from here" 1 "$?"
+expect "8i and it points at what does own a first run" "discover-owners.sh" "$out"
 
 printf '\n'
 if [ "$failed" -eq 0 ]; then

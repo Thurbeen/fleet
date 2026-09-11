@@ -85,6 +85,16 @@ fleet — it is what builds the repo map.
 
 That done, open the Mission Control session in thurbox and give it a goal.
 
+Afterwards, when you gain an owner, a repository or a whole `gh` account, one
+command says what your map does not cover yet and catches it up:
+
+```bash
+./scripts/add-owner.sh        # what is new, grouped by the account that reaches it
+./scripts/add-owner.sh --all  # add them, then sync and say what moved in the map
+```
+
+It logs nobody in and writes nothing until you ask it to.
+
 ## Watching it
 
 **The queue pane** is the live view: the queue in a thurbox column, so you do

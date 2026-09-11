@@ -36,6 +36,14 @@ set -uo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 2
 
+# The two authentication rows are PER ACCOUNT and PER HOST, and both seams are
+# shared with the scripts that do the real reading rather than reimplemented
+# here. See each row below for what its CLI's bare status command gets wrong.
+# shellcheck source=scripts/lib/gh-accounts.sh
+. scripts/lib/gh-accounts.sh
+# shellcheck source=scripts/lib/glab-hosts.sh
+. scripts/lib/glab-hosts.sh
+
 MODE="text"
 TIERS=""
 while [ $# -gt 0 ]; do
@@ -148,13 +156,51 @@ if have required gh \
 	# Authentication is a second, separate fact about the same tool: an
 	# installed `gh` that cannot answer `user/repos` fails the registry sync
 	# with an error that reads like a network problem.
-	if gh auth status >/dev/null 2>&1; then
-		record required "gh auth" ok "$(gh api user --jq .login 2>/dev/null)" \
-			"the registry sync reads GitHub as you, with no PAT and no CI secret" ""
+	#
+	# ASKED PER ACCOUNT, because `gh auth status` is all-or-nothing across
+	# every login on every host: one lapsed token among three made this row
+	# report `missing` while two working accounts sat there — and `gh auth`
+	# is REQUIRED, so that is a whole setup called unrunnable because one
+	# credential of three had expired. The per-account answer already exists
+	# and the map and discovery both read it; this asks that same seam rather
+	# than writing a second enumeration.
+	gh_why="the registry sync reads GitHub as you — EVERY account, no PAT, no CI secret"
+	gh_warn="$(mktemp)"
+	gh_logins=()
+	while IFS= read -r acct; do
+		[ -n "$acct" ] && gh_logins+=("$acct")
+	done < <(gh_accounts "${GH_HOST:-github.com}" 2>"$gh_warn")
+
+	# The seam's own words about a login it skipped, passed through verbatim.
+	# Counting them here and swallowing the lines would report how many
+	# accounts are broken without naming WHICH, and an account that goes
+	# missing in silence is the failure that whole file is about.
+	gh_skipped=0
+	if [ -s "$gh_warn" ]; then
+		gh_skipped="$(grep -c '' "$gh_warn")"
+		cat "$gh_warn" >&2
+	fi
+	rm -f "$gh_warn"
+
+	if [ "${#gh_logins[@]}" -gt 0 ]; then
+		gh_detail=""
+		for login in "${gh_logins[@]}"; do
+			gh_detail="${gh_detail:+$gh_detail, }$login"
+		done
+		gh_total=$((${#gh_logins[@]} + gh_skipped))
+		if [ "$gh_total" -gt 1 ]; then
+			gh_detail="${#gh_logins[@]} of $gh_total accounts — $gh_detail"
+		fi
+		record required "gh auth" ok "$gh_detail" "$gh_why" ""
+	elif gh auth status >/dev/null 2>&1; then
+		# The fallback the seam documents, which is also every machine with
+		# one login: no account list — an older `gh`, or a `GH_TOKEN` in the
+		# environment that overrides the stored ones anyway — means the ACTIVE
+		# session is asked alone, exactly as this row did before it asked more
+		# than one. That keeps the floor where it was.
+		record required "gh auth" ok "$(gh api user --jq .login 2>/dev/null)" "$gh_why" ""
 	else
-		record required "gh auth" missing "" \
-			"the registry sync reads GitHub as you, with no PAT and no CI secret" \
-			"gh auth login"
+		record required "gh auth" missing "" "$gh_why" "gh auth login"
 	fi
 fi
 
@@ -206,13 +252,48 @@ glab_install="$(pkg_cmd glab glab glab glab)"
 if have recommended glab \
 	"fleet's GitLab forge adapter; nothing needs it until a task's repo lives on GitLab" \
 	"${glab_install:-see https://gitlab.com/gitlab-org/cli}"; then
-	if glab auth status >/dev/null 2>&1; then
-		record recommended "glab auth" ok "" \
-			"reading a merge request needs a credential for the host it lives on" ""
+	# ASKED PER HOST, for the reason scripts/lib/glab-hosts.sh argues at
+	# length: `glab auth status` is all-or-nothing across every instance glab
+	# has configured, so an operator authenticated to their company's GitLab
+	# — where their repositories actually live — and not to gitlab.com, which
+	# they have never used, read `missing` beside a remedy they had already
+	# run. A self-hosted instance is the ORDINARY case for this row, not a
+	# footnote on the end of it.
+	glab_why="a merge request is read with a credential for ITS host, not for every host glab knows"
+	if [ -n "${GITLAB_HOST:-}" ]; then
+		# `GITLAB_HOST` is glab's own variable for which instance to talk to,
+		# so a host named there is the one that must work: it is where every
+		# glab call fleet makes would go, and a credential for some other
+		# instance is not one the forge seam would ever reach for.
+		if glab_host_ok "$GITLAB_HOST"; then
+			record recommended "glab auth" ok "$GITLAB_HOST" "$glab_why" ""
+		else
+			record recommended "glab auth" missing "" "$glab_why" \
+				"glab auth login --hostname $GITLAB_HOST"
+		fi
 	else
-		record recommended "glab auth" missing "" \
-			"reading a merge request needs a credential for the host it lives on" \
-			"glab auth login   # GITLAB_HOST=... for a self-hosted instance"
+		glab_seen=0
+		glab_ok=""
+		while IFS= read -r host; do
+			[ -n "$host" ] || continue
+			glab_seen=1
+			glab_host_ok "$host" && glab_ok="${glab_ok:+$glab_ok, }$host"
+		done < <(glab_hosts)
+
+		if [ -n "$glab_ok" ]; then
+			# One working credential is the whole question — fleet reaches a
+			# GitLab repository by HOST plus path, so an instance it will
+			# never be pointed at cannot make the ones it will unusable.
+			record recommended "glab auth" ok "$glab_ok" "$glab_why" ""
+		elif [ "$glab_seen" -eq 0 ] && glab auth status >/dev/null 2>&1; then
+			# The same fallback the gh row has, and for the same reason: an
+			# older `glab` with no `--all` enumerates nothing, and the bare
+			# status command is then the only answer there is.
+			record recommended "glab auth" ok "" "$glab_why" ""
+		else
+			record recommended "glab auth" missing "" "$glab_why" \
+				"glab auth login   # it asks which instance"
+		fi
 	fi
 fi
 

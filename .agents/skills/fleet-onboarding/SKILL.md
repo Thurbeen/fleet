@@ -65,6 +65,15 @@ missing or a `thurbox-cli` is below the manifest's floor.
 | recommended | a named capability degrades — `quota-axi` for fuel and `refuel`, `glab` for GitLab |
 | gate | only `./scripts/check.sh` needs it — `lua`, `shellcheck`, `rumdl`, `prek`, plus the git commit-signing configuration, which is not a tool |
 
+The two authentication rows are the ones worth reading rather than skimming,
+because neither CLI's own status command answers the question fleet has.
+`gh auth` is decided **per account**, so one expired token among three reads
+`3 of 4 accounts` and the broken login is named on stderr — not `missing`.
+`glab auth` is decided **per host** and names the instance that answered:
+`GITLAB_HOST` decides when it is set, and otherwise one working credential is
+enough. An operator authenticated to their company's GitLab and not to
+gitlab.com has a working setup, and this row says so.
+
 `gh` is required even on a fleet whose work is entirely on GitLab: it is what
 builds the repo map from `registry/owners.txt`, which is a list of GITHUB
 owners. `quota-axi` is the one most often missed, and it is not decorative —
@@ -463,6 +472,59 @@ So do not refuse on an already-configured clone. Detect it —
 `registry/owners.txt` with active entries, the generated map there, the
 extension healthy, `plugin check` green — say which parts are already in place,
 and offer to refresh the map rather than redoing everything.
+
+### What the operator gains afterwards
+
+The thing that actually happens after a first run is not a re-run: the operator
+gains an owner, a repository, or a whole `gh` or `glab` account, and the map and
+the checks have to catch up. That is **one command**, and offering it is the
+narrow thing this section exists for — not the seven steps again:
+
+```bash
+./scripts/add-owner.sh                       # what is new; writes nothing
+./scripts/add-owner.sh --all                 # add every new owner, then sync
+./scripts/add-owner.sh <owner> [<owner>...]  # add the ones they picked
+```
+
+The report groups owners **by the account that reaches them**, because after a
+`gh auth login` that is the shape of the question: this account is now readable,
+it reaches these owners, N of them are not in your map. `*` marks an owner
+already in `registry/owners.txt`, `+` one that is not, and an owner already
+there is never offered twice. A login's own namespace is an owner as well as its
+orgs — a new account usually brings at least two.
+
+**ASK before you add.** Same rule as step 3 and the same reason: which owners
+the map covers is the operator's call, not a consequence of which tokens happen
+to be on the machine.
+
+- **Add all of them** — every owner marked `+`
+- **A subset I name** — they pick from the `+` rows
+- **None** — the report was the answer
+
+Both add forms append, keep the file's comment header and its order, refuse a
+duplicate, and then sync and report **what moved** — owners added, repositories
+gained or lost, the totals before and after — rather than printing the map back.
+`--no-sync` writes the file and leaves the sync for later.
+
+Three things it does not do, each deliberate:
+
+- **It logs nobody in.** `gh auth login` and
+  `glab auth login --hostname <host>` are interactive and the operator's. Hand
+  the command over and let them run it; then run the report again.
+- **A GitLab host never becomes an owner.** `registry/owners.txt` is read by
+  `gh`. Authenticating one changes two other things and the report says so: the
+  `glab auth` row in `preflight.sh` starts naming that host, and a task can
+  target a repository there through the forge seam in `scripts/lib/forge.py`.
+- **It does not onboard a fresh clone.** With no `registry/owners.txt` it
+  refuses and points back at step 3, where the candidates come from three
+  sources rather than one.
+
+Two preflight rows answer the same incremental question, so re-read them rather
+than the exit code alone when an operator says a credential is fine and fleet
+disagrees. `gh auth` is decided **per account** — one expired token among three
+is `3 of 4 accounts`, not a failed setup — and `glab auth` **per host**, naming
+the instance that answered, because a self-hosted GitLab is the ordinary case
+and gitlab.com is often one the operator has never used.
 
 The one thing a re-run does **not** fix is a **rename**. thurbox names a session
 when it SPAWNS it and has no verb that renames one, and `ensure_extension`
