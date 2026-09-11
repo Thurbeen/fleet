@@ -202,6 +202,31 @@ export FLEET_QUEUE_DIR="$tmp/queue"
 # of this file would scaffold logs into the operator's own orchestration/runs/.
 export FLEET_RUNS_DIR="$tmp/runs"
 
+# --- `glab`, a STAND-IN on PATH for the whole run ----------------------------
+#
+# The GitLab adapter asks `glab auth status` which instances this machine
+# holds, and it asks the moment the forge registry is built — which is to say
+# in nearly every section below, whether or not that section is about GitLab.
+# On the operator's own laptop the REAL `glab` would answer, so the verdicts
+# below would depend on who ran the file and on a network being there. This
+# stub is a hermetic stand-in for a machine with no GitLab configuration at
+# all, which is exactly the machine every section except 14 is written for.
+#
+# It is NOT a tripwire, and cannot be one: unlike `gh`, `glab` is now something
+# the adapter legitimately invokes in every section. It goes in front of
+# `base_path`, so every section that builds its own PATH out of it inherits it
+# — section 13 included, where reaching a real `glab` would be the same defect
+# as reaching a real `gh`. Section 14 puts a `glab` of its own in front of it.
+noglab="$tmp/no-glab"
+mkdir -p "$noglab"
+cat >"$noglab/glab" <<'SH'
+#!/bin/sh
+echo "glab: no GitLab instance is configured on this machine" >&2
+exit 1
+SH
+chmod +x "$noglab/glab"
+export PATH="$noglab:$PATH"
+
 # Captured here, before test 7's subshell exports its own PATH: reading $PATH
 # after that point is what SC2031 is about, and the stubbed sections below
 # want the PATH this script started with, not whatever a subshell left.
@@ -4584,12 +4609,12 @@ fi
 # answers what GitLab decided to answer, in GitLab's own words and shapes.
 #
 # So the fixtures matter more than the code here. `scripts/fixtures/glab/` is
-# real `glab` 1.117.0 output recorded from gitlab.com — its README says which
-# command produced each file and which two answers are behind authentication
-# and therefore CONSTRUCTED below rather than recorded. A fake `glab` on PATH
-# replays them; nothing in this section reaches a network, and `gh` is a
-# tripwire again, because a GitLab merge request is the one thing that must
-# never be asked about with `gh`.
+# real `glab` 1.117.0 output — its README says which command produced each
+# file, where it was recorded and what was edited out of it, and which two
+# answers are behind authentication and therefore CONSTRUCTED below rather
+# than recorded. A fake `glab` on PATH replays them; nothing in this section
+# reaches a network, and `gh` is a tripwire again, because a GitLab merge
+# request is the one thing that must never be asked about with `gh`.
 #
 # What it proves:
 #
@@ -4602,6 +4627,8 @@ fi
 #   `squash_option: never` is a refusal fleet RECORDS, not a crash and not a
 #     merge by some other method
 #   the remote-host credential probe asks the repository's own forge
+#   WHICH hosts are GitLab is read off the machine rather than waited for,
+#     and the whole loop runs on an instance discovered that way
 
 gl="$tmp/gitlab"
 mkdir -p "$gl/mrs" "$gl/api" "$gl/bin"
@@ -4693,6 +4720,18 @@ if argv[:2] == ["mr", "merge"]:
     sys.stdout.write("Merged!\n")
     raise SystemExit(0)
 
+if argv[:2] == ["auth", "status"]:
+    # Where the host list comes from. The recording is replayed only when this
+    # section has put one in the store, so 14a keeps asking the adapter what a
+    # machine with NO GitLab configuration owns — and the refusal below is
+    # what that machine looks like. The exit code is 1 either way, which is
+    # what `glab` does whenever any one instance has no token.
+    served = os.path.join(D, "auth-status.stderr")
+    if not os.path.exists(served):
+        refuse("no GitLab instance is configured")
+    sys.stderr.write(open(served).read())
+    raise SystemExit(1)
+
 if argv[:1] == ["api"]:
     path = argv[1].split("?")[0]
     if path.endswith("/commits"):
@@ -4740,8 +4779,10 @@ printf '[{"id": 7, "username": "letur", "access_level": 40}]\n' >"$gl/api/member
 # Every merge request below is DERIVED FROM THE RECORDED ONE: the recorded
 # object is loaded and named fields are overwritten, so each fixture keeps the
 # real shape and only the facts under test are this test's invention.
+# `GLAB_MR_DIR` aims it at a second store, which 14e wants so that its queue
+# sees its own merge requests and none of this section's.
 glab_mr() {
-	python3 - "$fixtures/mr-view.json" "$gl/mrs" "$@" <<'PY'
+	python3 - "$fixtures/mr-view.json" "${GLAB_MR_DIR:-$gl/mrs}" "$@" <<'PY'
 import json
 import sys
 
@@ -5066,6 +5107,219 @@ expect "GitHub's own banner still passes, unchanged" \
 expect "a repo whose origin cannot be read says THAT, not 'no credentials'" \
 	"has no readable" \
 	"$(probe_says '' 'Welcome to GitLab, @letur!' 2>&1)"
+
+
+# --- 14e. which hosts are GitLab: DISCOVERED, not waited for -----------------
+#
+# Everything above this line sets `GITLAB_HOST`, and that is what hid the
+# defect this section is about: nothing on a real machine exports it. With it
+# unset, a merge request on a self-hosted instance was on no configured forge,
+# so `shepherd` never listed it, `collect` could not verify a publish there,
+# and `reap` could never move the task to `landed` — which means its session
+# and its worktree were never released, once per task, with no upper bound.
+#
+# The answer was already on the machine: `glab auth status` prints every
+# instance the operator logged their CLI in to. `forge.configured_hosts` reads
+# it, and `scripts/fixtures/glab/auth-status.stderr` is that report, recorded
+# and then stripped of the operator's own names — its README says so.
+#
+# What this proves, all of it offline, with `gh` still a tripwire:
+#
+#   a self-hosted instance glab holds is OURS with no GITLAB_HOST set, and the
+#     whole loop reaches it — collect verifies a publish, reap lands the task,
+#     shepherd lists what is still open
+#   `GITLAB_HOST` still DECIDES when it is set: it is the answer, and an
+#     instance glab holds is not ours while it names another
+#   no glab, and a configuration or a report it cannot read, each leave the
+#     adapter exactly where it was — gitlab.com and nothing else
+#   a glab too old for `--all` is asked again without the flag, so an older
+#     CLI still discovers the instances it holds
+#   AUTO_MERGE_REPOS is untouched by discovery: a green, attested, mergeable
+#     merge request on a discovered host is REPORTED and never merged
+
+gl2="$tmp/gitlab-discovered"
+mkdir -p "$gl2/mrs" "$gl2/api"
+cp "$gl/api/project.json" "$gl/api/members.json" "$gl2/api/"
+cp "$fixtures/auth-status.stderr" "$gl2/auth-status.stderr"
+: >"$gl2/calls.log"
+: >"$gl2/merged.log"
+: >"$gl2/gh-calls.log"
+
+env PATH="$GLPATH" FAKE_GLAB_DIR="$gl2" python3 - "$PWD/scripts/lib" "$gl2" \
+	>"$tmp/gl-hosts.tsv" <<'PYHOSTS'
+import os
+import sys
+
+sys.path.insert(0, sys.argv[1])
+store = sys.argv[2]
+import forge  # noqa: E402
+
+rows = []
+
+
+def claim(name, got, want):
+    rows.append(("PASS", name, "") if got == want
+                else ("FAIL", name, "wanted %r, got %r" % (want, got)))
+
+
+real_path = os.environ["PATH"]
+
+
+def adapter(gitlab_host=None, path=None):
+    """A fresh adapter on a machine described by `gitlab_host` and `path`.
+
+    Every case below is a different machine answering a different way, inside
+    one process: discovery is not cached, so each adapter asks the `glab` its
+    own PATH holds and gets that machine's answer.
+    """
+    forge.reset()
+    os.environ.pop("GITLAB_HOST", None)
+    if gitlab_host:
+        os.environ["GITLAB_HOST"] = gitlab_host
+    os.environ["PATH"] = real_path if path is None else path
+    return forge.GitLabForge()
+
+
+def cli_dir(name, script):
+    """A PATH holding one `glab` that behaves as `script` says — or none.
+
+    `/usr/bin` and `/bin` come after it so the stub has the ordinary tools,
+    and NOT the rest of this file's PATH, which carries two other `glab`s.
+    """
+    path = os.path.join(store, name)
+    os.makedirs(path, exist_ok=True)
+    glab = os.path.join(path, "glab")
+    if not script:
+        if os.path.exists(glab):
+            os.remove(glab)
+        return path
+    with open(glab, "w") as fh:
+        fh.write(script)
+    os.chmod(glab, 0o755)
+    return os.pathsep.join([path, "/usr/bin", "/bin"])
+
+
+# --- the recording, read the way a machine's own `glab` would be read ---
+found = adapter()
+claim("both instances in the recording are read out of it",
+      forge.configured_hosts("glab"), ["gitlab.com", "gitlab.example.com"])
+claim("so a self-hosted instance is ours with no GITLAB_HOST set",
+      found.owns_host("gitlab.example.com"), True)
+claim("and its merge request is a change request fleet can be asked about",
+      found.parse_change_url(
+          "https://gitlab.example.com/acme/group/widgets/-/merge_requests/301"
+      ) is not None, True)
+claim("an instance nothing on this machine holds is still not ours",
+      found.owns_host("gitlab.nowhere.example"), False)
+
+# --- GITLAB_HOST still decides ---
+named = adapter(gitlab_host="https://gitlab.other.example/")
+claim("GITLAB_HOST set is still the answer, scheme and all",
+      named.owns_host("gitlab.other.example"), True)
+claim("and it DECIDES: an instance glab holds is not ours while it is set",
+      named.owns_host("gitlab.example.com"), False)
+
+# --- and discovery is never a requirement ---
+claim("a machine with no glab at all is exactly where it was",
+      adapter(path=cli_dir("no-cli", "")).hosts, ("gitlab.com", "www.gitlab.com"))
+claim("nor does a configuration glab cannot read move it", adapter(path=cli_dir(
+    "unreadable",
+    "#!/bin/sh\n"
+    "echo 'failed to parse config.yml: yaml: line 3: could not find expected key' >&2\n"
+    "exit 1\n",
+)).hosts, ("gitlab.com", "www.gitlab.com"))
+claim("nor a glab that answers something that is not a host list", adapter(path=cli_dir(
+    "garbled",
+    "#!/bin/sh\nprintf 'Logged in somewhere, probably\\n'\nexit 0\n",
+)).hosts, ("gitlab.com", "www.gitlab.com"))
+
+# A `glab` too old for `--all` refuses the whole command, so the bare form is
+# what has to answer — and on a machine with no git context it answers the
+# same thing. Without that second try an older CLI discovers nothing.
+claim("a glab too old for --all is asked again without it", adapter(path=cli_dir(
+    "old",
+    "#!/bin/sh\n"
+    'case "$*" in *--all*) echo "unknown flag: --all" >&2; exit 1 ;; esac\n'
+    'cat "$FAKE_GLAB_DIR/auth-status.stderr" >&2\nexit 1\n',
+)).owns_host("gitlab.example.com"), True)
+
+for verdict, name, detail in rows:
+    print("%s\t%s\t%s" % (verdict, name, detail))
+PYHOSTS
+
+while IFS=$'\t' read -r verdict claim detail; do
+	if [ "$verdict" = PASS ]; then pass "$claim"; else fail "$claim" "$detail"; fi
+done <"$tmp/gl-hosts.tsv"
+
+# --- the whole loop, on a discovered host, with no GITLAB_HOST anywhere ------
+
+gdq() {
+	env -u GITLAB_HOST PATH="$gl/bin:$tbxbin:$sshbin:$base_path" \
+		FAKE_GLAB_DIR="$gl2" FLEET_QUEUE_DIR="$tmp/queue-discovered" \
+		"$QUEUE" "$@"
+}
+
+gdtopic="$(gdq topic add discovered --title 'Work on an instance glab already holds' \
+	--prompt 'no GITLAB_HOST is exported anywhere')"
+gdq add "$gdtopic" shipped --title 'A change already shipped' --repo "$glrepo" \
+	--branch fix/discovered --number 01 >/dev/null
+cat >"$tmp/queue-discovered/$gdtopic/01-shipped/result.md" <<'EOF'
+---
+outcome: shipped
+artifact: https://gitlab.example.com/acme/group/widgets/-/merge_requests/306
+---
+Shipped it.
+EOF
+
+GLAB_MR_DIR="$gl2/mrs" glab_mr 306 'source_branch="fix/discovered"'
+
+session_is cccccccc-0000-0000-0000-000000000001 idle
+gdq attach "$gdtopic/01-shipped" cccccccc-0000-0000-0000-000000000001 >/dev/null
+
+# `publish verified` is printed only when the publish check PASSED, which
+# needs a forge that owns the host. Undiscovered, the task is still concluded
+# and its URL still printed — it is the verdict that degrades to
+# `publish unchecked: ... no configured forge owns gitlab.example.com`, which
+# is the pre-fix symptom itself. So the marker is what this asserts.
+out="$(gdq collect 2>&1)"
+expect "collect verifies a publish on an instance only glab knew about" \
+	"publish verified" "$out"
+refute "and does not report it as on no configured forge" \
+	"publish unchecked" "$out"
+refute "which is not the same as landing it" "reaped" "$out"
+
+# The merge set is host-qualified and discovery adds nothing to it. 306 is
+# green, attested, mergeable and opened by someone who can push — every gate
+# the shepherd has — and on a discovered host it is still only REPORTED.
+before="$(wc -l <"$gl2/merged.log")"
+out="$(gdq shepherd 2>&1)"
+expect "shepherd lists what is open on the discovered instance" \
+	"acme/group/widgets on gitlab.example.com" "$out"
+expect "and a mergeable, attested one there is handed back, not merged" \
+	"fleet does not merge in acme/group/widgets on gitlab.example.com" "$out"
+expect "because the merge set is exactly the three repos it always was" \
+	"github.com/Thurbeen/fleet, github.com/Thurbeen/thurbox, github.com/Thurbeen/thurview" \
+	"$out"
+count_is "so nothing on a discovered host was merged" "$(wc -l <"$gl2/merged.log")" \
+	"$before" "$out"
+
+python3 - "$gl2/mrs/306.json" <<'PYMERGED'
+import json
+import sys
+doc = json.load(open(sys.argv[1]))
+doc["state"] = "merged"
+json.dump(doc, open(sys.argv[1], "w"))
+PYMERGED
+out="$(gdq reap 2>&1)"
+expect "reap lands a task on a discovered host" "landed" "$out"
+expect "and releases the session that used to leak with it" "reaped" "$out"
+
+if [ -s "$gl2/gh-calls.log" ]; then
+	fail "no code path ran \`gh\` while the host came from glab" \
+		"$(cat "$gl2/gh-calls.log")"
+else
+	pass "no code path ran \`gh\` while the host came from glab"
+fi
 
 
 # --- 20. a title `dispatch` cannot spawn, and a spawn failure that says why --

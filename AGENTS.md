@@ -51,11 +51,17 @@ names every path and the reason for each.
   change request — a pull request on GitHub, a merge request on GitLab — it
   asks this module for; `scripts/lib/queue.py` runs no forge CLI itself and
   builds no forge URL. TWO implementations ship — GitHub through `gh`, GitLab
-  through `glab` — and each is a CONFIGURATION and not an assumption: which
-  hosts one owns comes from that CLI's own variable (`GH_HOST`, `GITLAB_HOST`),
-  so a self-hosted instance is the ordinary case and not a special one. The
-  file's own header owns the interface and how to add a third. Two things
-  follow: a repository is identified by HOST plus path
+  through `glab` — and each is a CONFIGURATION and not an assumption, so a
+  self-hosted instance is the ordinary case and not a special one. **Which
+  hosts the GitLab adapter owns is READ OFF THE MACHINE**: `forge.py`'s
+  `configured_hosts` takes every instance `glab auth status` reports, because
+  that is where the operator's answer already lives and `GITLAB_HOST` is a
+  variable nothing exports. `GITLAB_HOST` still decides when it IS set, the
+  GitHub adapter still takes `GH_HOST` alone, and discovery never becomes a
+  requirement — `configured_hosts`' own docstring owns those three and why.
+  `python3 scripts/lib/forge.py hosts <cli>` prints the list for a shell
+  caller. The file's own header owns the interface and how to add a third. Two
+  things follow: a repository is identified by HOST plus path
   (`github.com/Thurbeen/fleet`), because a bare `owner/repo` names two
   different repositories once two forges exist; and `queue-selftest.sh` drives
   `collect`, the landing check and `shepherd` through a second forge with no
