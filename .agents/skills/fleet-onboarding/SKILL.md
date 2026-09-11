@@ -302,13 +302,14 @@ On yes, run the script that does it:
 ./scripts/place-pane.sh              # right of the terminal (--left for the other side)
 ```
 
-It refuses rather than guesses. A layout with no `columns` list it recognises
-is left untouched and the block printed instead; the file is backed up to
-`layout.lua.bak-<timestamp>` before any edit; the result is re-read with `lua`
-and the backup restored if it no longer parses; and it finishes by running
-`thurbox-cli plugin check`, which is the verification. A layout that already
-carves the slot is left exactly as it is — including one the operator arranged
-differently, which is theirs and not yours to correct.
+It refuses rather than guesses. A layout it does not recognise — no `columns`
+list it knows, or none of the helpers the block calls — is left untouched and
+the block printed instead, naming the part it could not find; the file is
+backed up to `layout.lua.bak-<timestamp>` before any edit; the result is
+re-read with `lua` and the backup restored if it no longer parses; and it
+finishes by running `thurbox-cli plugin check`, which is the verification. A
+layout that already carves the slot is left exactly as it is — including one
+the operator arranged differently, which is theirs and not yours to correct.
 
 If they chose to add it themselves, print this and say plainly that you stopped
 there on purpose:

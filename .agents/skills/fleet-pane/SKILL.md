@@ -208,13 +208,14 @@ On yes:
 ```
 
 What makes that safe enough to run at all, and what its header argues in full:
-it refuses a layout with no `columns` list it recognises rather than guessing,
-it is idempotent — a layout already carving the slot is left exactly as the
-operator arranged it — it backs the file up to `layout.lua.bak-<timestamp>`
-first, it re-reads its own edit with `lua` and puts the backup back if the
-result no longer parses, and it finishes with `thurbox-cli plugin check`. The
-slot it writes is read from `interface/fleet_queue.lua`, never spelled in the
-script, so a rename cannot half-land.
+it refuses a layout it does not recognise rather than guessing and says which
+part it could not find, it is idempotent — a layout already carving the slot is
+left exactly as the operator arranged it — it backs the file up to
+`layout.lua.bak-<timestamp>` first, it re-reads its own edit with `lua` and
+puts the backup back if the result no longer parses, and it finishes with
+`thurbox-cli plugin check`. The slot it writes is read from
+`interface/fleet_queue.lua`, never spelled in the script, so a rename cannot
+half-land.
 
 If they would rather do it themselves, print the block, name the file, and stop
 there on purpose. Find it rather than assuming `~/.config/thurbox/ui` — a dev

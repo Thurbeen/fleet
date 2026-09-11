@@ -15,10 +15,10 @@
 #
 # WHAT KEEPS IT SAFE, in the order it matters:
 #
-#   1. It refuses what it cannot read. No `columns` list it recognises, no
-#      edit — it prints the block and exits non-zero.
-#   2. It is idempotent. A layout that already names the slot is left exactly
-#      as it is, whatever else the operator has done to it.
+#   1. It refuses what it cannot read: no `columns` list it recognises, or
+#      none of the helpers the block calls — it prints the block and stops.
+#   2. It is idempotent. A layout that already carves the slot in a LIVE line
+#      is left exactly as it is, whatever else the operator has done to it.
 #   3. It backs up first, to layout.lua.bak-<timestamp> beside the original.
 #   4. It re-reads the result with `lua` and RESTORES the backup if the file
 #      no longer parses, so a bad edit cannot survive this script.
