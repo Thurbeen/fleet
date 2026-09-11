@@ -4330,7 +4330,20 @@ FIXABLE = ("conflicting", "checks-failed", "changes-requested", "policy")
 # the whole of what the test asks. Nothing was relaxed for it — thurbox pull
 # requests clear the same five gates fleet's own do, and
 # `queue-selftest.sh`'s 9i is where that is checked.
+#
+# `LeTuR/mazet` was added on the same instruction and is the first entry under
+# an owner no other entry shares — which changes nothing about the test, and
+# it passes it: its own `.no-mistakes.yaml` names a lint, a format and a test
+# command, and its CI is three workflows. What DID hold it back was the
+# remote. It allowed rebase only until 2026-09-11, and `MERGE_METHOD` below is
+# squash, so every pass would have produced the refusal rather than a merge.
+# It now allows squash and nothing else, with the pull request title as the
+# commit subject — the same shape as fleet's own remotes. `queue-selftest.sh`'s
+# 9j is where this one is checked, and 9j also reads the whole set back and
+# puts every entry through `forge.RepoId.parse`: a bare slug written HERE is
+# never parsed at runtime, so it would match nothing and refuse nothing.
 AUTO_MERGE_REPOS = {
+    "github.com/LeTuR/mazet",
     "github.com/Thurbeen/fleet",
     "github.com/Thurbeen/thurbox",
     "github.com/Thurbeen/thurview",
