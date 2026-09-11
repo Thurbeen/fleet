@@ -74,11 +74,14 @@ column, as a reader: it opens these four files and adds nothing to them.
 
 ## Three rules worth knowing before you edit anything
 
-**Only `blocked_by` makes a task wait.** It records a kind from a closed set
-(`semantic-dependency`, `shared-external-state`, `incompatible-migration`,
-`other`) and a reason, and `queue.sh block` refuses one without both. Files two
-tasks both expect to change go under `touches`, where `plan` reports them as a
-risk beside the ready set and holds nothing up.
+**Only `blocked_by` makes a task wait**, and every entry there names EITHER a
+`task:` — the wait that ends when that task lands — OR a `condition:` outside
+the queue, which nothing clears but `block --clear` naming it back. Never both:
+`queue.sh check` reports an entry that carries the two. Each form takes a kind
+from its own closed set plus a reason, and `queue.sh block` refuses one without
+both; `block --help` lists the kinds of each. Files two tasks both expect to
+change go under `touches`, where `plan` reports them as a risk beside the ready
+set and holds nothing up.
 
 **`queue.sh watch` closes nothing.** It folds thurbox's event stream into
 `progress.jsonl`. A transition says a turn ended, which is not the claim that a

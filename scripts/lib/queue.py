@@ -131,6 +131,50 @@ BLOCKER_KINDS = {
     "other": "another concrete condition that makes independent progress unsafe",
 }
 
+# THE SECOND FORM OF BLOCKER: a task held by something that is not a task.
+#
+# WHY IT EXISTS, measured. On 2026-09-11
+# `vending-machine-egress-resume/01-vm-identity-reconciliation` was ready by
+# every record fleet keeps and unrunnable in fact — its brief's first
+# instruction reads Azure and `az` was not authenticated. `block` took only
+# `--on <ref>`, so there was nothing to write down: `plan` listed the task as
+# ready and `notify_lead.py` correctly woke the lead to dispatch it. The only
+# honest answer was to refuse in conversation and leave the record silent,
+# which is the one thing this queue exists not to do.
+#
+# A condition is a durable, nameable reason a task is not ready that no task
+# will ever satisfy: a credential, an approval, a window, a machine somebody
+# has to fix, a decision nobody has made. Its kinds are their own closed set
+# rather than a reuse of the four above, because those four all describe a
+# relationship BETWEEN TASKS — every condition would land on `other` and the
+# set would stop saying anything.
+#
+# AND NOTHING CLEARS ONE BUT A HAND. A task blocker clears when the task it
+# names LANDS, which is an event the forge reports. A condition has nothing to
+# observe, so `blocker_cleared` answers False for it forever and `block
+# <ref> --clear --condition ...` is the only way out. A condition that expired
+# on a timer, or on a later dispatch appearing to work, would put back exactly
+# the silence it was recorded to break.
+CONDITION_KINDS = {
+    "missing-credential": "a login, secret or session the work needs is not present",
+    "awaiting-approval": "a person or a process has to say yes before this can run",
+    "closed-window": "it may only run inside a window that is not open",
+    "broken-dependency": "something outside the queue is broken and has to be fixed",
+    "undecided": "the operator has not made a decision this task turns on",
+    "other": "another durable thing outside the queue — name it in --why",
+}
+
+
+def blocker_condition(blocker: dict) -> str:
+    """The condition an entry names, or "" when it names a task instead.
+
+    The ONE test for which form a `blocked_by` entry is, so the eight readers
+    of that list cannot come to eight opinions about it. An entry carries
+    `task:` or `condition:` and never both — `cmd_block` writes exactly one.
+    """
+    return str(blocker.get("condition") or "").strip()
+
+
 # `stuck` and `failed` are the worker's own verdicts, not an observation of its
 # session. Nothing here derives a state from a transition.
 #
@@ -820,8 +864,10 @@ TASK_HEADER = """\
 # which is yours; this is the index entry.
 #
 # blocked_by is the ONLY thing that makes this task wait, and every entry names
-# a kind from a closed set plus a reason. Overlapping files are recorded under
-# `touches` instead, where they are reported as a risk and hold nothing up.
+# a kind from a closed set plus a reason. An entry names EITHER a `task:`,
+# which clears when that task lands, OR a `condition:` outside the queue, which
+# clears only when somebody runs `block --clear`. Overlapping files are recorded
+# under `touches` instead, where they are reported as a risk and hold nothing up.
 """
 
 TOPIC_HEADER = """\
@@ -993,6 +1039,13 @@ class Queue:
         return all(self.blocker_cleared(b) for b in task.blockers)
 
     def blocker_cleared(self, blocker: dict) -> bool:
+        # A CONDITION NEVER CLEARS ITSELF. There is no upstream to observe, so
+        # there is no event this could read, and inventing one — a timer, a
+        # later dispatch that happened to work — would release a task on a
+        # guess. `block --clear` is the only release, and it is a person
+        # saying the thing is no longer true.
+        if blocker_condition(blocker):
+            return False
         try:
             return self.get(blocker["task"]).state == "landed"
         except QueueError:
@@ -1042,18 +1095,24 @@ def blocker_view(q: Queue, task: Task, blocker: dict) -> dict:
         unclearable  the upstream can never land, so there is no release path
         unknown      the upstream is not in this queue at all
         holding      the ordinary case — a merge that can still come
+        outside      a CONDITION, which no event releases — only `block --clear`
 
     `cleared` is kept as a field of its own because `is_ready` asks exactly
-    that question and nothing else.
+    that question and nothing else. `outside` is the one status that is never
+    `cleared`: the record exists for exactly as long as the condition is true,
+    and removing it is how it stops being true.
     """
-    ref = blocker.get("task")
+    condition = blocker_condition(blocker)
+    ref = None if condition else blocker.get("task")
     try:
-        upstream = q.get(ref).state
+        upstream = None if condition else q.get(ref).state
     except QueueError:
         upstream = None
 
     if task.state in CONCLUDED_STATES:
         status = "moot"
+    elif condition:
+        status = "outside"
     elif upstream is None:
         status = "unknown"
     elif upstream == "landed":
@@ -1065,6 +1124,7 @@ def blocker_view(q: Queue, task: Task, blocker: dict) -> dict:
 
     view = {
         "task": ref,
+        "condition": condition or None,
         "kind": blocker.get("kind"),
         "why": blocker.get("why"),
         "upstream_state": upstream,
@@ -1082,9 +1142,24 @@ def blocker_line(view: dict) -> str:
     X" and "held by X, which is abandoned" are the difference between a wait
     and a dead end, and only the second one tells the reader to go and do
     something about it.
+
+    A CONDITION'S LINE SAYS WHO RELEASES IT, for the same reason. There is no
+    upstream state to carry and no merge coming, so the fact a reader needs in
+    its place is that nothing here is going to change on its own.
     """
-    what = f"{view['kind']} on {view['task']}"
     why = view["why"] or "no reason recorded"
+    condition = view.get("condition")
+    if condition:
+        if view["status"] == "moot":
+            return (
+                f"was held by {view['kind']} outside the queue ({condition}); "
+                "this task concluded, so it holds nothing"
+            )
+        return (
+            f"held by {view['kind']} outside the queue ({condition}) — only "
+            f"`block --clear` releases it: {why}"
+        )
+    what = f"{view['kind']} on {view['task']}"
     if view["status"] == "moot":
         return f"was held by {what}; this task concluded, so it holds nothing"
     if view["status"] == "cleared":
@@ -1623,46 +1698,80 @@ and not a message, is what does it.
 {result_note}"""
 
 
-def blocker_kind_refusal() -> str:
+def blocker_kind_refusal(condition: bool = False) -> str:
     """The paragraph a missed `--kind` or `--why` gets, in one place.
 
     The half that matters is the last sentence: overlapping files are the
     commonest thing someone reaches for `block` to express, and they are not a
     blocker. `--touches` records them and `plan` reports them as a risk beside
     the ready set, holding nothing up.
+
+    The two forms get the two closed sets, not the union. A `--condition` that
+    was answered with the four task kinds would be answered with four
+    relationships between tasks, none of which it can be.
     """
     kinds = "\n".join(f"    {k:<24} {v}" for k, v in BLOCKER_KINDS.items())
-    return (
+    conditions = "\n".join(f"    {k:<24} {v}" for k, v in CONDITION_KINDS.items())
+    head = (
         "a blocker needs --kind and --why, because it is the one thing that\n"
         "makes work wait and it has to survive the next planning pass.\n"
-        f"--kind is one of:\n{kinds}\n"
+    )
+    if condition:
+        return (
+            head
+            + f"--kind, for a --condition, is one of:\n{conditions}\n"
+            "A condition is something OUTSIDE the queue — a credential, an approval,\n"
+            "a window, a machine somebody has to fix. Nothing clears one but\n"
+            "`block <ref> --clear --condition ...`."
+        )
+    return (
+        head
+        + f"--kind is one of:\n{kinds}\n"
         "Overlapping files are not on that list. Record them with `add --touches`;\n"
-        "they are reported as a risk beside the ready set and hold nothing up."
+        "they are reported as a risk beside the ready set and hold nothing up.\n"
+        f"Waiting on something that is not a task at all? `--condition` instead\n"
+        "of `--on`, with one of:\n" + conditions
     )
 
 
 def blocker_kind(value: str) -> str:
     """`--kind`'s validator, so a wrong one still gets the whole paragraph.
 
-    `choices` beside it is what puts the four values in `--help` — they used to
+    `choices` beside it is what puts the values in `--help` — they used to
     appear only in the refusal you got after guessing wrong, and the lead
     guessed twice in one session. `choices` alone would then answer `invalid
     choice` and lose the sentence about `--touches`, so the message stays here
     and argparse never reaches its own.
+
+    It accepts the UNION of the two sets, because which set applies depends on
+    whether `--on` or `--condition` came with it and argparse has neither yet.
+    `cmd_block` is what refuses a kind from the wrong set, where it can say so.
     """
-    if value in BLOCKER_KINDS:
+    if value in BLOCKER_KINDS or value in CONDITION_KINDS:
         return value
     raise argparse.ArgumentTypeError("\n" + blocker_kind_refusal())
 
 
 def cmd_block(args) -> int:
+    """Record — or remove — one of the two things that make a task wait.
+
+    ONE ENTRY NAMES A TASK OR A CONDITION, NEVER BOTH. `--on` and `--condition`
+    are mutually exclusive in the parser above, and everything downstream tests
+    which by asking `blocker_condition`.
+    """
     q = Queue(queue_root())
     task = q.get(args.ref)
+
+    if args.condition is not None:
+        return block_on_condition(q, task, args.condition.strip(), args)
+
     target = q.get(args.on)
 
     if args.clear:
         before = len(task.blockers)
-        task.doc["blocked_by"] = [b for b in task.blockers if b["task"] != target.ref]
+        task.doc["blocked_by"] = [
+            b for b in task.blockers if b.get("task") != target.ref
+        ]
         task.save()
         print(f"{task.ref}: {before - len(task.doc['blocked_by'])} blocker(s) cleared")
         return 0
@@ -1673,7 +1782,7 @@ def cmd_block(args) -> int:
         raise QueueError(f"{task.ref} cannot block itself")
 
     task.doc.setdefault("blocked_by", [])
-    task.doc["blocked_by"] = [b for b in task.blockers if b["task"] != target.ref]
+    task.doc["blocked_by"] = [b for b in task.blockers if b.get("task") != target.ref]
     task.doc["blocked_by"].append(
         {"task": target.ref, "kind": args.kind, "why": args.why.strip(), "recorded": now()}
     )
@@ -1681,11 +1790,68 @@ def cmd_block(args) -> int:
 
     cycle = find_cycle(Queue(queue_root()))
     if cycle:
-        task.doc["blocked_by"] = [b for b in task.blockers if b["task"] != target.ref]
+        task.doc["blocked_by"] = [b for b in task.blockers if b.get("task") != target.ref]
         task.save()
         raise QueueError("that blocker closes a cycle: " + " -> ".join(cycle))
 
     print(f"{task.ref} waits on {target.ref} ({args.kind})")
+    return 0
+
+
+def block_on_condition(q: Queue, task: Task, condition: str, args) -> int:
+    """The condition form: a wait on something the queue cannot observe.
+
+    NO CYCLE CHECK, because a condition is not an edge — `find_cycle` walks
+    `task:` entries and this adds none. And no landing to wait for: the record
+    stands until `--clear` names the same condition back.
+    """
+    if not condition:
+        raise QueueError(
+            "--condition is the wait itself, in words: --condition 'az is\n"
+            "authenticated for the mazet tenant'. Nothing removes one but\n"
+            "`block --clear --condition` naming it back, so a blank one is a\n"
+            "wait nobody could name and nobody could release."
+        )
+
+    if args.clear:
+        before = len(task.blockers)
+        task.doc["blocked_by"] = [
+            b for b in task.blockers if blocker_condition(b) != condition
+        ]
+        task.save()
+        gone = before - len(task.doc["blocked_by"])
+        if not gone:
+            held = [blocker_condition(b) for b in task.blockers if blocker_condition(b)]
+            raise QueueError(
+                f"{task.ref} records no condition {condition!r}. It holds: "
+                + (", ".join(repr(h) for h in held) if held else "no condition at all")
+            )
+        print(f"{task.ref}: {gone} blocker(s) cleared")
+        return 0
+
+    if args.kind not in CONDITION_KINDS or not (args.why or "").strip():
+        raise QueueError(blocker_kind_refusal(condition=True))
+
+    task.doc.setdefault("blocked_by", [])
+    task.doc["blocked_by"] = [
+        b for b in task.blockers if blocker_condition(b) != condition
+    ]
+    task.doc["blocked_by"].append(
+        {
+            "condition": condition,
+            "kind": args.kind,
+            "why": args.why.strip(),
+            "recorded": now(),
+        }
+    )
+    task.save()
+
+    print(
+        f"{task.ref} waits on a condition outside the queue ({args.kind}): "
+        f"{condition}\n"
+        f"    Nothing clears this but you: ./scripts/queue.sh block {task.ref} "
+        f"--clear --condition {shlex.quote(condition)}"
+    )
     return 0
 
 
@@ -1697,8 +1863,10 @@ def find_cycle(q: Queue) -> list | None:
         colour[ref] = 1
         stack.append(ref)
         for b in q.tasks[ref].blockers:
-            nxt = b["task"]
-            if nxt not in q.tasks:
+            # A condition names no task, so it is not an edge in this graph and
+            # cannot be part of a cycle.
+            nxt = b.get("task")
+            if nxt is None or nxt not in q.tasks:
                 continue
             if colour.get(nxt) == 1:
                 return stack[stack.index(nxt):] + [nxt]
@@ -5269,15 +5437,23 @@ def run_facts(q: Queue, slug: str) -> str:
                 f"| `{t.id}` — {cell(d.get('title'))} | `{cell(where_it_runs(t))}` "
                 f"| `{cell(d.get('branch'))}` | {state} | {cell(d.get('artifact'))} |"
             )
-        held = sorted({(t.id, bl["task"], bl["kind"], bl["why"])
+        held = sorted({(t.id, blocker_condition(bl) or bl.get("task") or "",
+                        bool(blocker_condition(bl)), bl["kind"], bl["why"])
                        for t in tasks for bl in t.blockers})
         # The two things about ordering worth having in a run log, and the
         # reason the last one was typed by hand: what waited and on what
         # condition, and what went out together anyway despite touching one
         # file. The second is the queue's whole doctrine, so it is recorded
         # here rather than left to a lead remembering to mention it.
-        for tid, on, kind, why in held:
-            lines += ["", f"- **`{tid}` waits on `{on}`** — {kind}: {why}"]
+        #
+        # A CONDITION IS NAMED AS ONE, in words rather than as a ref in
+        # backticks: a reader of this log who cannot tell "waited for 01" from
+        # "waited for somebody to log into Azure" has lost the fact that makes
+        # the second one worth writing down.
+        for tid, on, is_condition, kind, why in held:
+            what = (f"a condition outside the queue — {on}" if is_condition
+                    else f"`{on}`")
+            lines += ["", f"- **`{tid}` waits on {what}** — {kind}: {why}"]
         for o in q.overlaps(tasks):
             refs = ", ".join(f"`{r.split('/')[-1]}`" for r in o["tasks"])
             lines += ["", f"- **Overlap on `{o['touches']}`** — {refs}. A risk that "
@@ -5837,11 +6013,22 @@ def cmd_check(args) -> int:
         if d.get("id") != t.id:
             problems.append(f"{ref}: id {d.get('id')!r} disagrees with its directory")
         for b in t.blockers:
-            if b.get("kind") not in BLOCKER_KINDS:
+            # The two forms are validated against their own closed sets, and a
+            # condition is checked for none of the three things that are only
+            # true of a task: there is no upstream record to find.
+            cond = blocker_condition(b)
+            kinds = CONDITION_KINDS if cond else BLOCKER_KINDS
+            if b.get("kind") not in kinds:
                 problems.append(f"{ref}: blocker kind {b.get('kind')!r} is not a real one")
             if not (b.get("why") or "").strip():
-                problems.append(f"{ref}: blocker on {b.get('task')} has no reason")
-            if b.get("task") not in q.tasks:
+                problems.append(
+                    f"{ref}: blocker on {cond or b.get('task')} has no reason"
+                )
+            if cond and b.get("task"):
+                problems.append(
+                    f"{ref}: blocker names both a task and a condition; it is one or the other"
+                )
+            if not cond and b.get("task") not in q.tasks:
                 problems.append(f"{ref}: blocker names {b.get('task')}, which does not exist")
         if not os.path.exists(t.file("BRIEF.md")):
             problems.append(f"{ref}: no BRIEF.md")
@@ -5945,24 +6132,48 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--number", help="two-digit ordinal; the next free one by default")
     a.set_defaults(func=cmd_add, creates=True)
 
-    b = sub.add_parser("block", help="record why one task must wait for another")
+    b = sub.add_parser(
+        "block",
+        help="record why a task must wait — for another task, or for a "
+        "condition outside the queue",
+    )
     b.add_argument("ref")
-    b.add_argument("--on", required=True, help="the task this one waits for")
-    # `choices` lists the four in --help; `type` is what answers a wrong one,
-    # so the explanation survives instead of argparse's bare "invalid choice".
+    # EXACTLY ONE OF THE TWO, enforced here rather than in cmd_block, so the
+    # refusal for "both" and for "neither" is argparse's and reads the same as
+    # every other missing argument.
+    what = b.add_mutually_exclusive_group(required=True)
+    what.add_argument("--on", help="the task this one waits for")
+    what.add_argument(
+        "--condition",
+        help="what outside the queue holds this task — a credential, an "
+        "approval, a window, a machine. Nothing clears one but `--clear` "
+        "naming it back",
+    )
+    # `choices` lists them in --help; `type` is what answers a wrong one, so
+    # the explanation survives instead of argparse's bare "invalid choice".
+    # The list is the UNION because argparse has not read `--on` or
+    # `--condition` yet; `cmd_block` refuses one from the wrong set.
     b.add_argument(
         "--kind",
         type=blocker_kind,
-        choices=sorted(BLOCKER_KINDS),
-        help="the kind of condition that makes this task wait. Overlapping "
-        "files are not one of them — record those with `add --touches`",
+        choices=sorted(set(BLOCKER_KINDS) | set(CONDITION_KINDS)),
+        # `choices` is the union and cannot say which form each belongs to, so
+        # the help text does. A lead reading nine values with no split would
+        # have to guess the same way the one flat list of four used to make
+        # them guess.
+        help="the kind of condition that makes this task wait. With --on: "
+        + ", ".join(BLOCKER_KINDS)
+        + ". With --condition: "
+        + ", ".join(CONDITION_KINDS)
+        + ". Overlapping files are on neither list — record those with "
+        "`add --touches`",
     )
     b.add_argument("--why", help="the concrete reason, in your own words")
     b.add_argument(
         "--clear",
         action="store_true",
-        help="remove the blocker naming --on. A task can carry more than one, "
-        "so clearing still has to say which",
+        help="remove the blocker naming --on, or the one naming --condition. "
+        "A task can carry more than one, so clearing still has to say which",
     )
     b.set_defaults(func=cmd_block)
 

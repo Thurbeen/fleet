@@ -38,6 +38,17 @@ than silence:
       no send, no error and, because the note is deduplicated, one log line
       rather than one per pass.
 
+WHAT "READY" MEANS HERE IS THE QUEUE'S ANSWER, NOT A SECOND ONE. This reads
+`plan --json`'s ready set and derives nothing, which is what kept it honest
+through the defect of 2026-09-11: a task whose brief began by reading Azure was
+ready by every record fleet kept, because `block` had no way to record a wait on
+an unauthenticated `az`, and the line below was correctly typed about work
+nobody could do. The fix is `queue.py`'s second form of blocker — a CONDITION,
+which `is_ready` never clears — and it reaches this file for free, through the
+one reading it takes. A rule about conditions written HERE as well would be the
+second opinion the single reading exists to prevent; `queue-selftest.sh` §20a
+asserts the outcome instead, as the case it came from.
+
 WHERE THE STATE LIVES. In the reconciler's own runtime directory, beside its
 pid, heartbeat and flags — never on the task. "The lead has been told" is a
 fact about one machine's loop and one conversation; it is not part of what a

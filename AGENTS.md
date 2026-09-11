@@ -142,7 +142,15 @@ The loop, driven by `./scripts/queue.sh`:
    incompatible concurrent migration, or another concrete condition that makes
    independent progress unsafe — and record it with `queue.sh block`, which
    refuses one that names no kind and no reason. A queue that runs one task at
-   a time is slower than no queue at all.
+   a time is slower than no queue at all. **A blocker names a task or a
+   CONDITION**, and the second form is what a task held by something the queue
+   cannot observe gets written down as — a credential, an approval, a window, a
+   machine somebody has to fix, a decision nobody has made. `--on <ref>` clears
+   when that task LANDS; `--condition '<what>'` clears only when somebody runs
+   `block --clear` naming it back, so nothing — no timer, no `collect`, no
+   `reap` — can release a task on a guess. Before it existed, a task whose brief
+   began by reading an Azure nobody was logged into read as ready and the
+   reconciler woke the lead to dispatch it.
 4. Each worker targets a real repo and its own git worktree — the control plane
    holds the plan and the log, never the workers' branches. `dispatch` gets each
    new session past its agent's trust dialog before it sends the brief
@@ -232,7 +240,11 @@ and is the full usage. Four things about it are load-bearing:
   ready and the command that sends it. Once per transition, never into a lead
   mid-turn, and silent when no lead session is running.
   `scripts/lib/notify_lead.py` owns those three rules. Notifying is not
-  deciding: nothing moves, and the choice is still the lead's.
+  deciding: nothing moves, and the choice is still the lead's. **It says
+  exactly what `plan` says is ready and derives nothing**, which is how a
+  condition-held task stays out of the line: `is_ready` never clears a
+  condition, so the one reading carries the answer and there is no second
+  opinion here to keep in step.
 - **`nudge` is the accelerator and never the guarantee.** A worker's Claude
   Code `Stop` hook can call `./scripts/reconcile.sh nudge` to bring the
   periodic pass forward; a worker that died on a token limit fires no hook at
