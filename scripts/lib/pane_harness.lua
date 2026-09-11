@@ -218,7 +218,9 @@ _G.thurbox = { taken_at_ms = NOW * 1000, sessions = {}, runs = {} }
 -- The queue this renders. It is the shape of the screen the report was about:
 -- a RUNNING topic that also holds a task the forge already merged, a chain of
 -- blockers of which one is long since cleared, tasks nothing has emitted an
--- event for, and one settled topic underneath.
+-- event for, and one settled topic underneath. It also holds a task waiting on
+-- a CONDITION outside the queue, which is the blocker nothing will ever clear
+-- on its own.
 --
 -- It also holds the publish state EVERY task passes through and no fixture used
 -- to reach: `open`, on a task `shepherd` linked by head branch before `collect`
@@ -276,7 +278,11 @@ local TOPICS = {
         publish = { "no-mistakes", "green", ago(9) },
       },
       {
+        -- Held by a CONDITION rather than by a task: the second form of
+        -- blocker, which no event releases. It is here because the pane is
+        -- where the operator sees that the wait has no actor but them.
         id = "02-point-the-docs-at-the-pane", state = "queued", title = "Point every document at the pane",
+        blockers = "!az login for the tenant|missing-credential",
         brief = 0, events = 0, moved = ago(48),
       },
       {

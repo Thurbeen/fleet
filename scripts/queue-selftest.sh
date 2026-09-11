@@ -91,6 +91,16 @@
 #      one; the loop's own commands refresh the facts inside a fenced block
 #      and rewrite it rather than appending to it; and prose the lead wrote
 #      outside that block survives every later pass.
+#  20. A TASK HELD BY SOMETHING OUTSIDE THE QUEUE HAS A STATE IT CAN BE
+#      RECORDED IN. A blocker may name a CONDITION instead of a task — a
+#      credential, an approval, a window, a machine somebody has to fix — with
+#      its own closed set of kinds and the same required reason. It puts the
+#      task in `waiting` and never in `ready`, it reaches `list`, `show` and
+#      `fleet-status.sh`, and the line the reconciler types into the lead's
+#      terminal does not count it. Nothing clears one but `block --clear`
+#      naming it back: not `collect`, not `reap`, not another task landing.
+#      The task-to-task form keeps its `landed` gate and its `UNCLEARABLE`,
+#      asserted in that same queue because the two share the code.
 #
 # Test 4 is also the wake proof. The event source is `thurbox-cli watch`, which
 # this script replaces with a recorded stream through `FLEET_QUEUE_WATCH_CMD` —
@@ -5062,6 +5072,238 @@ git -C "$glrepo" worktree remove --force \
 # temp directory can be removed without leaving a stale registration.
 git -C "$frepo" worktree remove --force \
 	"$tmp/queue-fake/.worktrees/${ftopic}__02-conflicting" 2>/dev/null
+
+# --- 20. a wait on a CONDITION: recordable, visible, and cleared only by hand -
+#
+# The defect this proves gone, measured. On 2026-09-11
+# `vending-machine-egress-resume/01-vm-identity-reconciliation` was ready by
+# every record fleet keeps and unrunnable in fact: its brief's first
+# instruction reads Azure and `az` was not authenticated. `block` took only
+# `--on <ref>` — "the task this one waits for" — so there was nothing to write
+# down. `plan` listed the task as ready and `notify_lead.py` correctly typed
+# the loop's one line into the lead's terminal telling it to dispatch. The only
+# honest answer left was to refuse in conversation and leave the record saying
+# nothing.
+#
+# Four claims, and the last one is the incident:
+#
+#   A condition can be RECORDED, and it still needs a kind from a closed set
+#     and a reason, so "these edit the same file" gains no new spelling.
+#   It shows up EVERYWHERE work in flight is reported — `plan`'s waiting block,
+#     `list`, `show`, `fleet-status.sh` — and never in `ready`.
+#   NOTHING CLEARS IT BUT A HAND. Not a timer, not `collect`, not `reap`.
+#   `notify_lead.py` DOES NOT COUNT IT toward the ready set it wakes the lead
+#     about, which is the line that was typed on 2026-09-11.
+#
+# And the form that already existed is asserted here too rather than assumed,
+# because it shares every line of code this section changed: the `landed` gate
+# and `UNCLEARABLE` both have to still be true in the same queue.
+
+export FLEET_QUEUE_DIR="$tmp/queue-conditions"
+mkdir -p "$tmp/repo-conditions"
+
+xtopic="$($QUEUE topic add vending-machine-egress \
+	--title 'Resume the vending machine egress' \
+	--prompt 'reconcile the VM identities and resume egress')"
+
+for spec in \
+	"01:vm-identity:Reconcile the VM identities against Azure" \
+	"02:document-the-tables:Write the identity tables down" \
+	"03:terraform-the-vms:Terraform the three VMs" \
+	"04:after-a-dead-end:A task waiting on one that never lands" \
+	"05:the-dead-end:The task that gets abandoned"; do
+	IFS=: read -r n slug title <<<"$spec"
+	if ! out="$($QUEUE add "$xtopic" "$slug" --title "$title" \
+		--repo "$tmp/repo-conditions" --branch "fix/$slug" --number "$n" 2>&1)"; then
+		fail "add $slug" "$out"
+	fi
+done
+
+# --- the refusals come first: a new form is a new way to spell the old lie ---
+
+if out="$($QUEUE block "$xtopic/01-vm-identity" \
+	--condition 'az is authenticated for the mazet tenant' 2>&1)"; then
+	fail "a condition with no kind and no reason is refused" "$out"
+else
+	expect "a condition with no kind and no reason is refused" "--kind" "$out"
+	expect "and the refusal lists the condition kinds, not the task ones" \
+		"missing-credential" "$out"
+	expect "and says what the only release is" "--clear" "$out"
+fi
+
+if out="$($QUEUE block "$xtopic/01-vm-identity" --condition 'az is authenticated' \
+	--kind file-overlap --why 'both edit main.tf' 2>&1)"; then
+	fail "file overlap is not a condition kind either" "$out"
+else
+	expect "file overlap is not a condition kind either" "--kind" "$out"
+	expect "and the refusal still points at --touches" "--touches" "$out"
+fi
+
+# The two closed sets stay two. A kind that describes a relationship BETWEEN
+# TASKS says nothing about a credential, and taking it would have made the set
+# decorative.
+if out="$($QUEUE block "$xtopic/01-vm-identity" --condition 'az is authenticated' \
+	--kind semantic-dependency --why 'reads Azure' 2>&1)"; then
+	fail "a task kind is refused on a condition" "$out"
+else
+	expect "a task kind is refused on a condition" "missing-credential" "$out"
+fi
+
+if out="$($QUEUE block "$xtopic/03-terraform-the-vms" --on "$xtopic/01-vm-identity" \
+	--kind missing-credential --why 'az is not authenticated' 2>&1)"; then
+	fail "and a condition kind is refused on --on" "$out"
+else
+	expect "and a condition kind is refused on --on" "semantic-dependency" "$out"
+fi
+
+if out="$($QUEUE block "$xtopic/01-vm-identity" --on "$xtopic/02-document-the-tables" \
+	--condition 'az is authenticated' --kind other --why 'both' 2>&1)"; then
+	fail "a blocker names a task or a condition, never both" "$out"
+else
+	expect "a blocker names a task or a condition, never both" \
+		"not allowed with argument" "$out"
+fi
+
+# --- recording one, and where it then shows up -------------------------------
+
+AZ='az is authenticated for the mazet tenant'
+if ! out="$($QUEUE block "$xtopic/01-vm-identity" --condition "$AZ" \
+	--kind missing-credential \
+	--why "the brief's first instruction reads Azure and az account show fails" 2>&1)"; then
+	fail "record a condition" "$out"
+fi
+expect "recording one says who releases it, since nothing else will" \
+	"--clear" "$out"
+
+# The other form, in the same queue, so the `landed` gate below is proved
+# against the same code path this section changed.
+$QUEUE block "$xtopic/03-terraform-the-vms" --on "$xtopic/02-document-the-tables" \
+	--kind semantic-dependency --why 'terraforms the identities 02 writes down' >/dev/null
+$QUEUE block "$xtopic/04-after-a-dead-end" --on "$xtopic/05-the-dead-end" \
+	--kind semantic-dependency --why 'consumes what 05 was going to add' >/dev/null
+set_field "$xtopic/05-the-dead-end" state abandoned
+
+plan="$($QUEUE plan 2>&1)"
+expect "the condition-held task waits" "01-vm-identity" "$plan"
+expect "and it is in the waiting block, not the ready one" "waiting: 3" "$plan"
+expect "the ready set is what is left" "ready: 1" "$plan"
+expect "the plan names the condition itself" "$AZ" "$plan"
+expect "and the reason somebody recorded for it" "az account show fails" "$plan"
+expect "and says the release is a hand, not an event" "only \`block --clear\`" "$plan"
+refute "a condition is never called a wait on a task" "on $AZ" "$plan"
+
+ready="$($QUEUE plan --json 2>&1 |
+	python3 -c 'import json,sys; print(",".join(json.load(sys.stdin)["ready"]))')"
+if [ "$ready" = "$xtopic/02-document-the-tables" ]; then
+	pass "plan --json agrees: the condition-held task is not ready"
+else
+	fail "plan --json ready set" "got $ready"
+fi
+
+out="$($QUEUE list 2>&1)"
+expect "list shows the task as waiting" "01-vm-identity                     waiting" "$out"
+expect "and carries the condition under it" "$AZ" "$out"
+
+out="$($QUEUE show "$xtopic/01-vm-identity" 2>&1)"
+expect "show carries it too" "$AZ" "$out"
+expect "and names its kind" "missing-credential" "$out"
+
+out="$(./scripts/fleet-status.sh 2>&1)"
+expect "fleet-status reports it as well" "$AZ" "$out"
+
+view="$(./scripts/fleet-status.sh --json 2>&1)"
+expect "and the machine-readable reading calls it a wait on something outside" \
+	'"status": "outside"' "$view"
+expect "which is never cleared" '"cleared": false' "$view"
+
+out="$($QUEUE check 2>&1)"
+expect "a recorded condition is a valid record" "ok" "$out"
+
+# --- the existing form, unchanged, in the same queue -------------------------
+
+expect "a blocker on a task that can never land still says so" "UNCLEARABLE" "$plan"
+expect "and still carries that upstream's state" "which is abandoned" "$plan"
+
+# --- and nothing else clears the condition -----------------------------------
+#
+# `collect` and `reap` are the two commands that move tasks without being told
+# which, and they run over this queue with the condition standing. A condition
+# that expired because some other task landed would put back exactly the
+# silence this section is about.
+
+session_is 44444444-4444-4444-4444-444444444444 idle
+$QUEUE attach "$xtopic/02-document-the-tables" \
+	44444444-4444-4444-4444-444444444444 >/dev/null
+pipeline_pr 777 fix/document-the-tables
+cat >"$FLEET_QUEUE_DIR/$xtopic/02-document-the-tables/result.md" <<'EOF'
+---
+outcome: shipped
+artifact: https://github.com/Thurbeen/fleet/pull/777
+---
+Wrote the identity tables down.
+EOF
+
+out="$($QUEUE collect 2>&1)"
+expect "collect closes the task that finished" "shipped" "$out"
+echo MERGED >"$states/777.state"
+out="$($QUEUE reap 2>&1)"
+expect "and reap lands it once the forge says merged" "landed" "$out"
+
+plan="$($QUEUE plan 2>&1)"
+expect "the task blocker cleared on the LAND, exactly as before" \
+	"03-terraform-the-vms" "$plan"
+expect "and the condition did not: it is still holding 01" "$AZ" "$plan"
+expect "so the ready set grew by one and not by two" "ready: 1" "$plan"
+refute "01 is still out of the ready set after a collect and a reap" \
+	"    $xtopic/01-vm-identity  " "$plan"
+
+# --- 20a. the line the reconciler types, which is where this went wrong ------
+#
+# THE ASSERTION THAT REPRESENTS THE INCIDENT, written as the case it came from:
+# one task ready, one held by a condition, and the loop says ONE. `notify_lead`
+# reads `plan --json`'s ready set and nothing else, which is why the fix lives
+# in `is_ready` — but "the loop no longer names this task" is the claim that
+# was false on 2026-09-11, so it is asserted here rather than inferred from the
+# reading it is built on.
+
+notify="$tmp/notify-conditions"
+mkdir -p "$notify"
+printf '{"id":"lead-1","name":"Gate Control","state":"idle"}\n' \
+	>"$sessions/lead-1.json"
+: >"$sends"
+
+log="$($QUEUE plan --json | FLEET_LEAD_SESSION="Gate Control" \
+	python3 scripts/lib/notify_lead.py --state-dir "$notify" 2>&1)"
+woke="$(cat "$sends")"
+expect "the loop woke the lead about the ready work" "1 task(s) ready" "$log"
+expect "and the line it typed names the task nothing is holding" \
+	"03-terraform-the-vms" "$woke"
+expect "it says ONE task is ready, not two" \
+	"1 task(s) ready and nothing will dispatch" "$woke"
+refute "the condition-held task is not in the line the lead was sent" \
+	"01-vm-identity" "$woke"
+
+rm -f "$sessions/lead-1.json"
+: >"$sends"
+
+# --- 20b. and a hand is what releases it -------------------------------------
+
+if out="$($QUEUE block "$xtopic/01-vm-identity" --clear \
+	--condition 'some other condition' 2>&1)"; then
+	fail "clearing a condition this task does not hold is refused" "$out"
+else
+	expect "clearing a condition this task does not hold is refused" \
+		"records no condition" "$out"
+	expect "and the refusal says what it does hold" "$AZ" "$out"
+fi
+
+out="$($QUEUE block "$xtopic/01-vm-identity" --clear --condition "$AZ" 2>&1)"
+expect "clearing it by name removes it" "1 blocker(s) cleared" "$out"
+
+plan="$($QUEUE plan 2>&1)"
+expect "and the task returns to the ready set" "01-vm-identity" "$plan"
+expect "which is now two" "ready: 2" "$plan"
+refute "with nothing left holding it" "$AZ" "$plan"
 
 echo
 if [ "$failed" -eq 0 ]; then

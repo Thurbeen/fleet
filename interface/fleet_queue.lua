@@ -339,6 +339,12 @@ local SCROLL_STEP = 3
 --- have recorded, and a tree that showed only refs would be hiding the answer to
 --- the only question a reader has about it.
 ---
+--- A CONDITION — `queue.py`'s second form of blocker, a wait on something
+--- outside the queue — rides in the same field with `!` in front of it, since
+--- a task ref can never begin with one. Its text is free prose a person typed,
+--- so the probe flattens the two characters this encoding owns (`,` and `|`)
+--- to spaces: the pane is the glance and `queue.sh show` is the record.
+---
 --- The three `publish-*` fields come out of ONE NESTED BLOCK, parsed the way
 --- `- task:` / `  kind:` already is: a flag set on `publish:` and cleared by the
 --- next top-level key, with the two-space keys read while it is set. The flag is
@@ -404,6 +410,10 @@ for topic in */; do
       pub && /^  method: / { pm = substr($0, 11) }
       pub && /^  state: / { ps = substr($0, 10) }
       /^- task: / { n = n + 1; refs[n] = substr($0, 9) }
+      # The condition form, marked with a `!` no task ref can start with, and
+      # flattened of the two characters this field is built out of.
+      /^- condition: / { n = n + 1; c = substr($0, 14); gsub(/[,|]/, " ", c)
+                         refs[n] = "!" c }
       /^  kind: / { kinds[n] = substr($0, 9) }
       END {
         for (i = 1; i <= n; i++) bl = bl (i > 1 ? "," : "") refs[i] "|" kinds[i]
@@ -467,11 +477,22 @@ end
 --- reader cannot reconstruct from anywhere else: `touches` overlap is reported
 --- and holds nothing up, so an edge here means somebody wrote down a concrete
 --- reason that independent progress was unsafe.
+---
+--- A `!` LEADER IS THE OTHER FORM: `queue.py`'s CONDITION, a wait on something
+--- outside the queue. It is kept as a flag rather than as a prefix left on the
+--- text, because every reader below asks one question of it — this one does
+--- not clear on its own — and none of them wants the punctuation.
 local function edges(field)
   local out = {}
   for pair in field:gmatch("[^,]+") do
     local ref, kind = pair:match("^(.-)|(.*)$")
-    out[#out + 1] = { ref = ref or pair, kind = kind or "" }
+    ref = ref or pair
+    local condition = ref:sub(1, 1) == "!"
+    out[#out + 1] = {
+      ref = condition and ref:sub(2) or ref,
+      kind = kind or "",
+      condition = condition,
+    }
   end
   return out
 end
@@ -492,7 +513,11 @@ local function resolve_states(model)
         -- answer that the code is on `main`, not a worker's claim that it
         -- opened a pull request. That rule is `queue.py`'s `blocker_cleared`;
         -- this is the same rule and not a second opinion about it.
-        edge.cleared = model.state_of[edge.ref] == "landed"
+        --
+        -- AND A CONDITION NEVER CLEARS. There is no upstream to look up, and
+        -- nothing but `queue.sh block --clear` releases one — same rule,
+        -- same place in `queue.py`.
+        edge.cleared = not edge.condition and model.state_of[edge.ref] == "landed"
         if not edge.cleared then
           held = held or edge.ref
         end
@@ -851,13 +876,19 @@ end
 
 --- The classification vocabulary, in its own order. In one column a group
 --- cannot be a colour and a position alone, so the group says its own name.
---- The four blocker kinds `queue.sh block` accepts, in words that fit a column.
---- The set is closed on purpose — queue.py's BLOCKER_KINDS — so an unknown one
---- is shown verbatim rather than mapped to something plausible.
+--- The blocker kinds `queue.sh block` accepts, in words that fit a column. Both
+--- closed sets — queue.py's BLOCKER_KINDS for a wait on a task, CONDITION_KINDS
+--- for a wait on something outside the queue — so an unknown one is shown
+--- verbatim rather than mapped to something plausible.
 local BLOCKER_KIND = {
   ["semantic-dependency"] = "consumes",
   ["shared-external-state"] = "shared state",
   ["incompatible-migration"] = "migration",
+  ["missing-credential"] = "credential",
+  ["awaiting-approval"] = "approval",
+  ["closed-window"] = "window",
+  ["broken-dependency"] = "broken",
+  undecided = "undecided",
   other = "other",
 }
 
@@ -1512,14 +1543,20 @@ local function draw(entry, width, spinner)
     local edge = entry.edge
     local ref = edge.ref
     local sibling = task.topic .. "/"
-    if ref:sub(1, #sibling) == sibling then
+    if not edge.condition and ref:sub(1, #sibling) == sibling then
       ref = ref:sub(#sibling + 1)
     end
     local kind = BLOCKER_KIND[edge.kind] or edge.kind
     -- The prefix is budgeted like everything else: below about a dozen columns
     -- the indent and the arrow cost more than the ref they are annotating, so
     -- they go and the ref stays.
-    local lead = "   ↳ "
+    --
+    -- `⊘` RATHER THAN `↳` IS THE WHOLE DISTINCTION A GLANCE NEEDS. `↳ 02-foo`
+    -- is a wait with an end: 02 lands and this moves. A condition has no such
+    -- event — only `queue.sh block --clear` releases one — so the operator
+    -- reading this row is the actor, and a row that looked like the other kind
+    -- would be telling them to wait for nobody.
+    local lead = edge.condition and "   ⊘ " or "   ↳ "
     if widgets.len(lead) + 1 > width then
       lead = ""
     end

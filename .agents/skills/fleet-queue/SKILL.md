@@ -229,10 +229,14 @@ ready: 3 task(s) — every one of them goes out now, there is no concurrency cap
           Overlap is a risk signal, not a reason to wait — dispatch
           them together and let the delivery path reconcile a rebase.
 
-waiting: 1 task(s) — each held by a durable, recorded blocker
+waiting: 2 task(s) — each held by a durable, recorded blocker
     report-status-honestly/03-render-detected-agent
         held by semantic-dependency on .../01-drop-idle-default (queued):
         reads the detected_agent field 01 introduces
+    report-status-honestly/05-read-the-tenant
+        held by missing-credential outside the queue (az is authenticated for
+        the mazet tenant) — only `block --clear` releases it: the brief's first
+        instruction reads Azure and `az account show` fails
 ```
 
 The upstream's own state rides along in that line — `(queued)` here — because a
@@ -272,6 +276,59 @@ because a task can carry several, and clearing has to say which.
 A blocker clears only when the task it names has **landed** — concluded AND its
 artifact merged (§5b). A session that stopped does not clear it, `done` with an
 open pull request does not, and neither does an abandoned task.
+
+### When the thing holding a task is not a task — `--condition`
+
+Sometimes a task is ready by every record and unrunnable in fact. On 2026-09-11
+`vending-machine-egress-resume/01-vm-identity-reconciliation` was exactly that:
+its brief's first instruction reads Azure and `az` was not authenticated. There
+was nothing to write down, so `plan` called it ready, the reconciler woke the
+lead to dispatch it, and the only honest answer was to refuse in conversation
+and leave the record saying nothing.
+
+**That is what the second form of blocker is for.** It names a CONDITION rather
+than a task:
+
+```bash
+./scripts/queue.sh block vending-machine-egress-resume/01-vm-identity-reconciliation \
+  --condition 'az is authenticated for the mazet tenant' \
+  --kind missing-credential \
+  --why 'the first instruction in the brief reads Azure, and az account show fails'
+```
+
+Its kinds are their own closed set, for the same reason the four above are one —
+and a separate set because those four all describe a relationship *between
+tasks*, which no condition is:
+
+| kind | when |
+|---|---|
+| `missing-credential` | a login, secret or session the work needs is not present |
+| `awaiting-approval` | a person or a process has to say yes before this can run |
+| `closed-window` | it may only run inside a window that is not open |
+| `broken-dependency` | something outside the queue is broken and has to be fixed |
+| `undecided` | the operator has not made a decision this task turns on |
+| `other` | another durable thing outside the queue — name it in `--why` |
+
+**Reach for it when the reason is durable and nameable, and not otherwise.**
+"I have not authorized this yet" is a fact about this moment, not a property of
+the task — leave that one out of the dispatch by naming refs (§4), which records
+nothing. "They edit the same file" is still not a blocker of any kind, and
+`--condition` is not a way to spell it: use `add --touches`.
+
+**Nothing clears a condition but you.** A task blocker clears when the task it
+names lands, which is an event the forge reports. A condition has nothing to
+observe, so no timer, no `collect`, no `reap` and no later dispatch appearing to
+work will release it:
+
+```bash
+./scripts/queue.sh block <ref> --clear --condition 'az is authenticated for the mazet tenant'
+```
+
+That is deliberate. A condition that expired on its own would put back exactly
+the silence it was recorded to break. The cost is that a stale one holds a task
+forever, which is why `--why` is required and why `plan`, `list`, `show`,
+`fleet-status.sh` and the TUI pane all carry it in front of you — the pane draws
+it as `⊘` rather than `↳`, because the wait it marks has no actor but you.
 
 ## 4. Dispatch — the whole ready set, in one go
 

@@ -27,6 +27,15 @@
 #   a kind and a reason, so it survives the next planning pass instead of
 #   being re-derived. `block` refuses one that does not.
 #
+#   A BLOCKER NAMES A TASK OR A CONDITION. `--on <ref>` is the wait with an
+#   end: it clears when that task LANDS. `--condition '<what>'` is the wait on
+#   something the queue cannot observe — a credential, an approval, a window,
+#   a machine somebody has to fix, a decision nobody has made. Nothing clears
+#   one but `block --clear` naming it back: no timer, no `collect`, no `reap`,
+#   and no inference from a later dispatch working. Before it existed, a task
+#   held by an unauthenticated `az` had nowhere to be written down, so `plan`
+#   called it ready and the reconciler woke the lead to dispatch it.
+#
 # A queue that runs one task at a time is slower than no queue at all.
 #
 # `dispatch` takes refs for the one case that is neither ready nor blocked —
@@ -163,6 +172,11 @@
 #   scripts/queue.sh block <ref> --on <ref> --kind KIND --why 'reason'   # or --clear,
 #                        which names the blocker to remove, since a task can
 #                        carry several; `block --help` lists the valid kinds
+#   scripts/queue.sh block <ref> --condition 'what holds it' --kind KIND --why 'reason'
+#                        # the second form: a wait on something OUTSIDE the
+#                        # queue, which clears only when you run
+#                        # `block <ref> --clear --condition 'what holds it'`.
+#                        # Its kinds are their own closed set, also in --help
 #   scripts/queue.sh plan [--json]        # what goes out now, what waits, and why
 #   scripts/queue.sh dispatch [<ref>...] [--dry-run]  # the whole ready set at
 #                        once with no ref, which is the norm; refs launch

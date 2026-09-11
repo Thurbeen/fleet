@@ -24,6 +24,10 @@
 #   4. THE TWO TALLIES AGREE. The counter row counts TASKS by state; a section
 #      heading covers TOPICS. They were both drawn as bare numbers, and
 #      `4 running` above `RUNNING 5` is the pane contradicting itself.
+#   5b. THE TWO KINDS OF WAIT DO NOT LOOK ALIKE. A blocker naming a task ends
+#      when that task lands; a blocker naming a CONDITION outside the queue
+#      ends only when somebody runs `block --clear`. Drawn identically, the
+#      second reads as "wait", and the operator who is the only actor waits.
 #   5. THE PUBLISH ROW SAYS THE NEXT MOVE, AT BOTH WIDTHS. A state word is a
 #      fact about the pull request; what the operator does about it is a
 #      second thing, and the row's `note` is where it lives. The note was the
@@ -118,6 +122,15 @@ refute "no outcome the state already says" "shipped" "$WIDE"
 # --- what still has to be there ---------------------------------------------
 
 expect "a blocker that still holds is loud" "↳ 02-shepherd-records-publish" "$WIDE"
+
+# THE CONDITION FORM, which is a different wait and has to look like one. `↳`
+# is a wait with an end — the named task lands and this moves. `⊘` has no such
+# event: only `queue.sh block --clear` releases it, so the operator reading the
+# row is the actor. A pane that drew the two the same would be telling them to
+# wait for nobody.
+expect "a condition outside the queue is drawn" "⊘ az login for the tenant" "$WIDE"
+expect "and its kind says which sort of condition" "credential" "$WIDE"
+refute "a condition is not drawn as a wait on a task" "↳ az login" "$WIDE"
 expect "a missing brief is still said out loud" "no brief" "$WIDE"
 expect "a result nothing has collected is still said" "uncollected" "$WIDE"
 expect "the pull request is still named" "#47" "$WIDE"
@@ -184,6 +197,7 @@ fi
 
 expect "the running work is still named at 30" "Cut the pane back" "$NARROW"
 expect "the blocker that holds is still there at 30" "↳ 02-shepherd" "$NARROW"
+expect "and so is the condition, with its own mark" "⊘ az login" "$NARROW"
 refute "and still no cleared blocker" "✓ 01-declare" "$NARROW"
 # The width the pane routinely gets, which is the whole reason the note moved
 # up the ladder: a next move drawn only at 44 is a next move nobody reads.
