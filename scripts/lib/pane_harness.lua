@@ -281,8 +281,13 @@ local TOPICS = {
         -- Held by a CONDITION rather than by a task: the second form of
         -- blocker, which no event releases. It is here because the pane is
         -- where the operator sees that the wait has no actor but them.
+        --
+        -- Quoted, because the probe hands the condition over as the raw YAML
+        -- scalar and free prose holding `: ` is written quoted on disk. The
+        -- quotes are the writer's, not the operator's, and the pane draws
+        -- neither of them.
         id = "02-point-the-docs-at-the-pane", state = "queued", title = "Point every document at the pane",
-        blockers = "!az login for the tenant|missing-credential",
+        blockers = "!'az login: for the tenant'|missing-credential",
         brief = 0, events = 0, moved = ago(48),
       },
       {

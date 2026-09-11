@@ -482,6 +482,11 @@ end
 --- outside the queue. It is kept as a flag rather than as a prefix left on the
 --- text, because every reader below asks one question of it — this one does
 --- not clear on its own — and none of them wants the punctuation.
+---
+--- A condition is free prose, so it is the one field here the writer routinely
+--- QUOTES: any text holding `: ` comes back from the probe as a quoted YAML
+--- scalar. It gets `scalar()` for that reason, exactly as every other field
+--- off the probe does; a task ref never needs it.
 local function edges(field)
   local out = {}
   for pair in field:gmatch("[^,]+") do
@@ -489,7 +494,7 @@ local function edges(field)
     ref = ref or pair
     local condition = ref:sub(1, 1) == "!"
     out[#out + 1] = {
-      ref = condition and ref:sub(2) or ref,
+      ref = condition and scalar(ref:sub(2)) or ref,
       kind = kind or "",
       condition = condition,
     }

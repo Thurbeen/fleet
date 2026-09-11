@@ -1761,10 +1761,9 @@ def cmd_block(args) -> int:
     """
     q = Queue(queue_root())
     task = q.get(args.ref)
-    condition = (args.condition or "").strip()
 
-    if condition:
-        return block_on_condition(q, task, condition, args)
+    if args.condition is not None:
+        return block_on_condition(q, task, args.condition.strip(), args)
 
     target = q.get(args.on)
 
@@ -1806,6 +1805,14 @@ def block_on_condition(q: Queue, task: Task, condition: str, args) -> int:
     `task:` entries and this adds none. And no landing to wait for: the record
     stands until `--clear` names the same condition back.
     """
+    if not condition:
+        raise QueueError(
+            "--condition is the wait itself, in words: --condition 'az is\n"
+            "authenticated for the mazet tenant'. Nothing removes one but\n"
+            "`block --clear --condition` naming it back, so a blank one is a\n"
+            "wait nobody could name and nobody could release."
+        )
+
     if args.clear:
         before = len(task.blockers)
         task.doc["blocked_by"] = [

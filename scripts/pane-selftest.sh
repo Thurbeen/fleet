@@ -128,9 +128,13 @@ expect "a blocker that still holds is loud" "↳ 02-shepherd-records-publish" "$
 # event: only `queue.sh block --clear` releases it, so the operator reading the
 # row is the actor. A pane that drew the two the same would be telling them to
 # wait for nobody.
-expect "a condition outside the queue is drawn" "⊘ az login for the tenant" "$WIDE"
+expect "a condition outside the queue is drawn" "⊘ az login: for the tenant" "$WIDE"
 expect "and its kind says which sort of condition" "credential" "$WIDE"
 refute "a condition is not drawn as a wait on a task" "↳ az login" "$WIDE"
+# The condition arrives as the raw YAML scalar, and free prose is routinely
+# quoted on disk. Those quotes belong to the writer; drawing them puts
+# punctuation the operator never typed into the one row they have to act on.
+refute "the writer's YAML quoting is not drawn" "⊘ 'az login" "$WIDE"
 expect "a missing brief is still said out loud" "no brief" "$WIDE"
 expect "a result nothing has collected is still said" "uncollected" "$WIDE"
 expect "the pull request is still named" "#47" "$WIDE"

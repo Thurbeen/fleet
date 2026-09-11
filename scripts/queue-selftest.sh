@@ -5131,6 +5131,26 @@ else
 	expect "and says what the only release is" "--clear" "$out"
 fi
 
+# An unset shell variable is the ordinary way this arrives — `--condition
+# "$COND"` with nothing in `$COND`. argparse is satisfied, because the flag was
+# given; a blank condition is still a wait nobody named, and `--clear` could
+# never name it back.
+for blank in '' '   '; do
+	if out="$($QUEUE block "$xtopic/01-vm-identity" --condition "$blank" \
+		--kind missing-credential --why 'az is not authenticated' 2>&1)"; then
+		fail "a blank condition is refused" "$out"
+	else
+		expect "a blank condition is refused" "--condition" "$out"
+		refute "and refused, not crashed" "Traceback" "$out"
+	fi
+	if out="$($QUEUE block "$xtopic/01-vm-identity" --clear \
+		--condition "$blank" 2>&1)"; then
+		fail "and clearing a blank condition is refused too" "$out"
+	else
+		refute "and clearing a blank condition is refused too" "Traceback" "$out"
+	fi
+done
+
 if out="$($QUEUE block "$xtopic/01-vm-identity" --condition 'az is authenticated' \
 	--kind file-overlap --why 'both edit main.tf' 2>&1)"; then
 	fail "file overlap is not a condition kind either" "$out"
