@@ -77,8 +77,12 @@ names every path and the reason for each.
   view of the queue, drawn in a thurbox column over the same records
   `queue.sh list` reads. `scripts/install-extension.sh` installs it
   with `thurbox-cli plugin install`; the file's own header owns the view.
-  **Placing it is a guarded block in the user's `layout.lua` and nothing here
-  writes it** — a pane no arrangement places loads, lists, and draws nothing.
+  **Placing it is a guarded block in the user's `layout.lua`, and
+  `./scripts/place-pane.sh` writes that block — only ever after the operator
+  was ASKED and said yes** — because a pane no arrangement places loads, lists,
+  and draws nothing. It refuses a layout it cannot recognise, backs the file up,
+  re-reads its own edit with `lua`, and verifies with `thurbox-cli plugin
+  check`; the fleet-pane skill's §4 owns the ask.
   `./scripts/pane-selftest.sh` renders it offline — no thurbox, no queue, no
   session; `check.sh pane` runs it.
   `.agents/skills/fleet-pane/` is the driving surface for all of it: install,
@@ -91,6 +95,13 @@ names every path and the reason for each.
   Everything outside that fence is the lead's judgement and nothing ever
   overwrites it. Gitignored, like everything a run produces; the template is
   the one tracked file there.
+- `scripts/preflight.sh` — every dependency fleet needs, in one pass, in three
+  tiers (required / recommended / gate), each row carrying what breaks without
+  it and the command that installs it. It probes and prints; installing is the
+  operator's, which is what `--commands` is for. `scripts/discover-owners.sh`
+  is its counterpart for the one input the map needs: it reads the `gh`
+  session, the git config and the remotes of the clones already on the disk,
+  and prints owner candidates with the evidence for each. Both write nothing.
 - `.agents/skills/<name>/SKILL.md` — agent skills, in one agent-agnostic tree.
   `.claude/skills` is a **symlink** to it, so Claude Code and opencode (which
   auto-discovers `.claude/skills`) both load the same copy. Never add a second
@@ -98,7 +109,8 @@ names every path and the reason for each.
   registers the same skill twice. Five skills live there: `fleet-queue` (the
   queue: intake, ordering, dispatch, and the two halves of completion),
   `thurbox-session` (driving one worker session), `fleet-onboarding` (a fresh
-  clone to a working control plane),
+  clone to a working control plane: dependencies, owners, registry, extension,
+  the pane on screen, the loop up),
   `fleet-pane` (getting the TUI queue pane onto a screen, and diagnosing one
   that is installed and drawing nothing), and `update-fleet` (a working control
   plane that is BEHIND origin, and the consequences of the sync that
@@ -248,14 +260,14 @@ CI only runs on pull requests, and routine control-plane changes go straight to
 `main`. So gate locally before you push:
 
 ```bash
-./scripts/check.sh          # shellcheck, markdown, YAML, profiles, queue,
-                            # reconciler, status, skills, pane
+./scripts/check.sh          # every check
 ./scripts/check.sh --fix    # same, applying the fixes a check can apply
 ```
 
-That one script is the whole gate. CI runs it, the prek hooks run it, and
-`.no-mistakes.yaml` points its `lint` command at it, so a green local run and a
-green pull request mean the same thing.
+That one script is the whole gate, and its header names every check it runs. CI
+runs it, the prek hooks run it, and `.no-mistakes.yaml` points its `lint`
+command at it, so a green local run and a green pull request mean the same
+thing.
 
 Changes that open a pull request land by **squash merge** — the only merge
 method the remote allows — so the pull request title becomes the commit on

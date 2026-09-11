@@ -66,8 +66,10 @@
 # What this script will NOT do is place it. A pane names a slot and the
 # arrangement decides where that slot goes, so a pane nothing places loads,
 # appears in `plugin list`, and draws nothing. That edit is a guarded block in
-# the user's own `layout.lua` — a file every pane on their screen shares — so
-# this prints the block and where it goes rather than writing it for them.
+# the user's own `layout.lua` — a file every pane on their screen shares — and
+# `scripts/place-pane.sh` is what writes it, on the user's word and never as a
+# side effect of an install. So this closes by naming that command and printing
+# the block, for whichever of the two they want.
 #
 # TAKING THE PANE BACK is `plugin remove`, and its argument is the DESTINATION
 # PATH below, not the file's basename:
@@ -339,8 +341,15 @@ else
 		cat <<-EOF
 
 			The fleet queue pane is installed but NOT PLACED, so it will draw
-			nothing yet. Nothing here will edit your arrangement for you — every
-			pane on your screen shares that file. Add this block to:
+			nothing yet. One command puts it to the right of the terminal, and
+			it is not run for you — every pane on your screen shares that file:
+
+			  ./scripts/place-pane.sh --dry-run   # what it would write, where
+			  ./scripts/place-pane.sh             # place it (--left for the other side)
+
+			It backs the file up first, refuses an arrangement it cannot read,
+			and re-reads its own edit. To do it by hand instead, add this block
+			to:
 
 			  ${ui_dir:-<thurbox-cli plugin dir>}/layout.lua
 

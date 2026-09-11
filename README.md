@@ -57,16 +57,30 @@ Then open the clone in your agent CLI and run:
 ```
 
 The [onboarding skill](.agents/skills/fleet-onboarding/SKILL.md) does the setup
-rather than instructing you through it — prerequisites, your GitHub owners, the
-repo map, the thurbox extension, the queue pane and the reconciler —
-verifying each step and naming anything missing with its remedy
-before it writes a thing.
-Run it twice and it converges. It hands you a guarded block to add yourself:
-the pane's slot in your thurbox `layout.lua`.
+rather than instructing you through it — seven steps: dependencies, this
+checkout, your GitHub owners, the repo map, the thurbox extension, the queue
+pane on screen, and the reconciler. It verifies each one and names anything
+missing with its remedy before it writes a thing. Run it twice and it
+converges.
 
-Requires `jq` and `thurbox-cli` **2.19.0 or newer**, plus the CLI for each forge
-you work on: `gh` for GitHub, `glab` for GitLab, each authenticated. `gh` is not
-optional even on a GitLab-only fleet — it is what builds the repo map.
+Four of those steps ask you something, and only four. Whether to install the
+dependencies that are missing; which of the owners it found on your machine the
+map should cover; where the queue pane goes (a column on the right, by
+default); and whether to bring the reconciler up. It reads your `gh` session,
+your git config and the remotes of the clones you already have, so the owners
+step is a list to confirm rather than one to type.
+
+What it needs, and what it will tell you itself:
+
+```bash
+./scripts/preflight.sh            # every dependency, in three tiers, with why
+./scripts/preflight.sh --commands # exactly what to run for the ones missing
+```
+
+`git`, `gh` (authenticated), `jq`, `python3` with PyYAML and `thurbox-cli`
+**2.19.0 or newer** are required; `quota-axi` and `glab` are recommended, and
+each names what degrades without it. `gh` is not optional even on a GitLab-only
+fleet — it is what builds the repo map.
 
 That done, open the Mission Control session in thurbox and give it a goal.
 

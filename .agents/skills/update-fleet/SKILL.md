@@ -144,9 +144,9 @@ than inferring the pane from the exit code** — §4.
 ## 4. Pane — the installed plugin is stale
 
 `.agents/skills/fleet-pane/` owns the pane end to end: the install, the one
-command that verifies it, the `layout.lua` block that places it and that nothing
-here writes, the F-key, removal, and the symptom table for a pane that is
-installed and drawing nothing. **Use that skill; do not restate its procedure
+command that verifies it, the `layout.lua` block that places it and the script
+that writes that block once the operator says so, the F-key, removal, and the
+symptom table for a pane that is installed and drawing nothing. **Use that skill; do not restate its procedure
 here.** §3 already re-ran the install, so what is left is its verification step
 and, if that comes back unplaced, its placement section.
 

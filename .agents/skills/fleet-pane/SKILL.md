@@ -1,6 +1,6 @@
 ---
 name: fleet-pane
-description: Put the fleet queue pane on the operator's thurbox screen and diagnose it when it is installed and drawing nothing, or drawing the wrong thing. Covers the install (a side effect of scripts/install-extension.sh), what verifies it, the layout.lua block that places it and that nothing here writes, the F-key that hides it, and removal. Use when asked to install, place, hide, remove or debug the TUI queue pane, when the pane is there and empty, or when it draws too much to read.
+description: Put the fleet queue pane on the operator's thurbox screen and diagnose it when it is installed and drawing nothing, or drawing the wrong thing. Covers the install (a side effect of scripts/install-extension.sh), what verifies it, the layout.lua block that places it and the script that writes that block on the operator's word, the F-key that hides it, and removal. Use when asked to install, place, hide, remove or debug the TUI queue pane, when the pane is there and empty, or when it draws too much to read.
 user-invocable: true
 allowed-tools: Read, Bash, Glob, Grep
 ---
@@ -11,14 +11,19 @@ allowed-tools: Read, Bash, Glob, Grep
 the view is and why it is built the way it is; this skill owns getting it onto a
 screen and finding out why it is not on one.
 
-> **Installing the pane and seeing the pane are two different things, and only
-> one of them is fleet's.** `thurbox-cli plugin install` succeeding and
-> `thurbox-cli plugin list` showing the pane are both true of a pane the
-> operator cannot see. A thurbox pane names a *slot*; the ARRANGEMENT decides
-> where that slot goes, and the arrangement is `layout.lua` — a file every pane
-> on their screen shares, so **nothing in this repo writes it and neither do
-> you**. A pane no arrangement places loads cleanly, declares its keys, appears
-> in `plugin list`, and draws nothing.
+> **Installing the pane and seeing the pane are two different things.**
+> `thurbox-cli plugin install` succeeding and `thurbox-cli plugin list` showing
+> the pane are both true of a pane the operator cannot see. A thurbox pane
+> names a *slot*; the ARRANGEMENT decides where that slot goes, and the
+> arrangement is `layout.lua` — a file every pane on their screen shares. A
+> pane no arrangement places loads cleanly, declares its keys, appears in
+> `plugin list`, and draws nothing.
+>
+> **`./scripts/place-pane.sh` writes that block, and only ever because the
+> operator said to.** It is never a step that happens on the way to something
+> else: ask, then run it. It refuses a layout it cannot recognise, backs the
+> file up, re-reads its own edit with `lua`, and verifies with `plugin check`.
+> §4 is the whole of it.
 
 That is the failure with no symptom, and every message the operator has says it
 should be working. Reach for §4 before anything else when a pane is "installed
@@ -175,7 +180,7 @@ whether anything draws it. `--json` adds `installed_from`, which is the useful
 part: it names the checkout the pane was installed from, so a stale path here
 and a moved clone are the same bug.
 
-## 4. Placing it — the operator's edit, not yours
+## 4. Placing it — the operator's call, and then the script's job
 
 The block goes **inside the `columns` list** of `layout.lua`, beside the other
 side columns:
@@ -186,18 +191,39 @@ if panels.shown("fleetqueue") and filled(ctx, "fleetqueue") then
 end
 ```
 
-Find the file rather than assuming `~/.config/thurbox/ui` — a dev build's
-interface directory is elsewhere:
+**Ask first — always.** A mistake in `layout.lua` takes the whole interface
+down, not one column, and it is the operator's file: the bundled panes, their
+arrangement and every other plugin they have all live in it. So the choice is
+theirs, and it is a real one — right of the terminal (the recommended place: a
+narrow readout beside the agent, session list still on the left), left of it,
+or the block printed for them to add by hand.
+
+On yes:
+
+```bash
+./scripts/place-pane.sh --dry-run    # the file, the anchor and the exact block
+./scripts/place-pane.sh              # right of the terminal
+./scripts/place-pane.sh --left       # between the session list and the terminal
+./scripts/place-pane.sh --check      # is it placed? changes nothing
+```
+
+What makes that safe enough to run at all, and what its header argues in full:
+it refuses a layout it does not recognise rather than guessing and says which
+part it could not find, it is idempotent — a layout already carving the slot is
+left exactly as the operator arranged it — it backs the file up to
+`layout.lua.bak-<timestamp>` first, it re-reads its own edit with `lua` and
+puts the backup back if the result no longer parses, and it finishes with
+`thurbox-cli plugin check`. The slot it writes is read from
+`interface/fleet_queue.lua`, never spelled in the script, so a rename cannot
+half-land.
+
+If they would rather do it themselves, print the block, name the file, and stop
+there on purpose. Find it rather than assuming `~/.config/thurbox/ui` — a dev
+build's interface directory is elsewhere:
 
 ```bash
 thurbox-cli plugin dir --text | head -1
 ```
-
-**Print the block, say where it goes, and stop there on purpose.** A mistake in
-`layout.lua` takes the whole interface down, not one column, and it is the
-operator's file — the bundled panes, their arrangement and any other plugin they
-have all live in it. This skill does not carry write tools for that reason. Say
-plainly that you stopped, rather than offering to do it.
 
 **Give the guard, not just the slot.** `plugin check` suggests a bare
 `{ slot = "fleetqueue" }`, and that is enough to make the pane DRAW — which is
@@ -237,9 +263,11 @@ removes nothing. That one command takes back the file, its `plugins.toml` entry
 and the lock together; `plugin list` names the path to pass while it is still
 installed, and `scripts/install-extension.sh`'s header owns this.
 
-Removing the pane leaves the `layout.lua` block behind. It is guarded by
-`filled(ctx, "fleetqueue")`, so an orphaned block carves nothing and is
-harmless — but it is the operator's line to delete, on the same terms as §4.
+Removing the pane leaves the `layout.lua` block behind, and `place-pane.sh`
+has no verb that takes it back out — a block it did not necessarily write is
+not one it should delete. It is guarded by `filled(ctx, "fleetqueue")`, so an
+orphaned block carves nothing and is harmless; deleting it is the operator's
+line, on the same terms as §4.
 
 Taking back the whole extension is a different verb —
 `thurbox-cli extension deactivate` / `uninstall`, which the installer's closing
@@ -260,8 +288,8 @@ spells out in the column itself, so:
 
 | What you see | What it means | What to do |
 |---|---|---|
-| no column; `plugin check` exits non-zero | installed, placed by nothing | §4 — print the block |
-| column opens and never closes | placement block is missing `panels.shown` | §4 — add the guard |
+| no column; `plugin check` exits non-zero | installed, placed by nothing | §4 — ask, then `./scripts/place-pane.sh` |
+| column opens and never closes | placement block is missing `panels.shown` | §4 — the guard is missing from a hand-added block |
 | `F3` opens Help, Theme or Settings | the chord collides with a kernel one | rebind in thurbox settings; `check.sh pane` refuses a kernel chord in the repo |
 | `not trusted yet` | the `run` capability is declared, not granted | the operator grants it: settings (`Ctrl+,`) → `]` → `t`. You cannot do it for them |
 | `no '<lead>' session` | no session by the name the pane probes | the extension has not been installed, or the lead was renamed — §2, and `extension.toml.in`'s RENAMING header |
@@ -299,7 +327,11 @@ the harness to reproduce a shape you are chasing.
 ## 8. The gate
 
 `./scripts/check.sh pane` is what keeps this skill and the installer from
-drifting apart from the pane. It holds one spelling of the slot name, the
+drifting apart from the pane, and `./scripts/check.sh onboarding` covers the
+writer: `scripts/onboarding-selftest.sh` §3 drives `place-pane.sh` against a
+copy of a stock layout — placed right by default, left on `--left`, idempotent,
+backed up, refused on an arrangement it cannot read, and still parsing as Lua
+afterwards. It holds one spelling of the slot name, the
 placement guard, the `plugin remove` path and the F-key across the pane, the
 installer and the documents that print the block — this file among them — and it
 refuses a binding on a chord the kernel owns. Read `check_pane` in

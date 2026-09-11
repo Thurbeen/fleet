@@ -13,8 +13,8 @@
 #   scripts/check.sh --fix markdown      # apply the fixes a check can apply
 #
 # Checks: shell, markdown, yaml, profiles, queue, reconcile, status, skills,
-# pane, voice. Only `markdown` has a fixer; `--fix` is a no-op for the rest, so
-# `scripts/check.sh --fix` is always safe to run.
+# pane, voice, onboarding. Only `markdown` has a fixer; `--fix` is a no-op for
+# the rest, so `scripts/check.sh --fix` is always safe to run.
 #
 # Requires: shellcheck, rumdl, python3 (with PyYAML), lua. A missing tool
 # fails the check rather than skipping it — a gate that silently passes when
@@ -542,6 +542,25 @@ check_voice() {
 	[ "$miss" -eq 0 ] && ok "voice: $conf renders into FLEET.md's placeholders"
 }
 
+# THE SETUP NOBODY RE-RUNS. Onboarding's three scripts — preflight,
+# discover-owners, place-pane — are the ones every operator runs once and never
+# again, so a regression in them is invisible to everyone who is already set up
+# and total for everyone who is not. `onboarding-selftest.sh` drives all three
+# offline, against stubs on a PATH built from scratch and a copy of a stock
+# layout, and its header argues each claim — including the two seams a grep
+# here could only assert about source text: the pane's slot has ONE spelling
+# (§3c places a RENAMED pane and reads the slot back out of the block) and the
+# thurbox floor has one owner (§1c reads it from the manifest and expects it in
+# the remedy).
+check_onboarding() {
+	if ./scripts/onboarding-selftest.sh >/dev/null 2>&1; then
+		ok "onboarding: scripts/onboarding-selftest.sh"
+	else
+		./scripts/onboarding-selftest.sh
+		fail "onboarding: scripts/onboarding-selftest.sh"
+	fi
+}
+
 checks=()
 for arg in "$@"; do
 	case "$arg" in
@@ -551,7 +570,7 @@ for arg in "$@"; do
 done
 
 if [ ${#checks[@]} -eq 0 ]; then
-	checks=(shell markdown yaml profiles queue reconcile status skills pane voice)
+	checks=(shell markdown yaml profiles queue reconcile status skills pane voice onboarding)
 fi
 
 for c in "${checks[@]}"; do
@@ -566,8 +585,9 @@ for c in "${checks[@]}"; do
 	skills) check_skills ;;
 	pane) check_pane ;;
 	voice) check_voice ;;
+	onboarding) check_onboarding ;;
 	*)
-		printf 'error: unknown check %q (want: shell markdown yaml profiles queue reconcile status skills pane voice)\n' "$c" >&2
+		printf 'error: unknown check %q (want: shell markdown yaml profiles queue reconcile status skills pane voice onboarding)\n' "$c" >&2
 		exit 2
 		;;
 	esac

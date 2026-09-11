@@ -122,6 +122,17 @@ set -uo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 2
 
+# Every repo the tests below build is a throwaway in $tmp, and the operator's
+# own commit signing must not reach it: `commit.gpgsign = true` with the key
+# scoped by an `includeIf gitdir:` block makes every commit here fail with
+# `either user.signingkey or gpg.ssh.defaultKeyCommand needs to be configured`
+# and surfaces as a dozen unrelated-looking queue failures. The
+# GIT_CONFIG_COUNT triple outranks every config file, including a
+# GIT_CONFIG_GLOBAL the caller set, so this settles it for the whole run.
+export GIT_CONFIG_COUNT=1
+export GIT_CONFIG_KEY_0=commit.gpgsign
+export GIT_CONFIG_VALUE_0=false
+
 QUEUE="./scripts/queue.sh"
 nl=$'\n'
 failed=0
