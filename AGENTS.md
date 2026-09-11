@@ -99,9 +99,15 @@ names every path and the reason for each.
   tiers (required / recommended / gate), each row carrying what breaks without
   it and the command that installs it. It probes and prints; installing is the
   operator's, which is what `--commands` is for. `scripts/discover-owners.sh`
-  is its counterpart for the one input the map needs: it reads the `gh`
-  session, the git config and the remotes of the clones already on the disk,
+  is its counterpart for the one input the map needs: it reads every `gh`
+  account, the git config and the remotes of the clones already on the disk,
   and prints owner candidates with the evidence for each. Both write nothing.
+  EVERY `gh` ACCOUNT, not just the active one, there and in
+  `scripts/sync-registry.sh` — a machine with several logins reaches a
+  different set of repositories per login. `scripts/lib/gh-accounts.sh` is the
+  seam both go through and its header owns the mechanism; the one thing to
+  know here is that it reads each login's token BY NAME and never switches the
+  account the operator's `gh` is pointing at.
 - `.agents/skills/<name>/SKILL.md` — agent skills, in one agent-agnostic tree.
   `.claude/skills` is a **symlink** to it, so Claude Code and opencode (which
   auto-discovers `.claude/skills`) both load the same copy. Never add a second

@@ -42,9 +42,13 @@ need() {
 	return 1
 }
 
+# `-x` because scripts/lib/*.sh holds sourced libraries rather than commands:
+# without it every `.` of one is an SC1091 "not following", and with it the
+# library is checked in the context of the script that sources it as well as
+# on its own.
 check_shell() {
 	need shellcheck shell || return
-	if shellcheck scripts/*.sh; then
+	if shellcheck -x scripts/*.sh scripts/lib/*.sh; then
 		ok "shell: shellcheck clean"
 	else
 		fail "shell: shellcheck"
