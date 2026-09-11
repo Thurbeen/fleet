@@ -13,7 +13,7 @@
 #   scripts/check.sh --fix markdown      # apply the fixes a check can apply
 #
 # Checks: shell, markdown, yaml, profiles, queue, reconcile, status, skills,
-# pane, voice, onboarding. Only `markdown` has a fixer; `--fix` is a no-op for
+# pane, voice, onboarding, sync. Only `markdown` has a fixer; `--fix` is a no-op for
 # the rest, so `scripts/check.sh --fix` is always safe to run.
 #
 # Requires: shellcheck, rumdl, python3 (with PyYAML), lua. A missing tool
@@ -168,6 +168,30 @@ check_reconcile() {
 		# Re-run visibly: a failing claim is the whole message.
 		./scripts/reconcile-selftest.sh
 		fail "reconcile: scripts/reconcile-selftest.sh"
+	fi
+}
+
+# The SessionStart hook, and the one script whose output is its only evidence.
+# It runs before anyone is watching, so a refusal it reports that did not
+# actually happen is believed: "offline" reads as a network blip, nobody looks,
+# and every session inherits the stale `main` the script exists to prevent.
+# That is how `timeout 15 git fetch` shipped — `timeout` is GNU coreutils and is
+# absent on a stock macOS, so it exited 127 and every Mac session reported an
+# unreachable origin while the network was fine. The selftest builds a PATH
+# holding only the tools the script may use, which reproduces that condition on
+# any platform, and holds the rest of the contract around it: a refusal changes
+# no tracked state, a real outage is still reported, and a fast-forward that
+# brings instructions raises restart-lead.
+check_sync() {
+	need git sync || return
+	need jq sync || return
+
+	if ./scripts/sync-selftest.sh >/dev/null; then
+		ok "sync: bounds the fetch without coreutils, refuses without touching the tree, and raises the hand-over"
+	else
+		# Re-run visibly: a failing claim is the whole message.
+		./scripts/sync-selftest.sh
+		fail "sync: scripts/sync-selftest.sh"
 	fi
 }
 
@@ -576,7 +600,7 @@ for arg in "$@"; do
 done
 
 if [ ${#checks[@]} -eq 0 ]; then
-	checks=(shell markdown yaml profiles queue reconcile status skills pane voice onboarding)
+	checks=(shell markdown yaml profiles queue reconcile status skills pane voice onboarding sync)
 fi
 
 for c in "${checks[@]}"; do
@@ -588,12 +612,13 @@ for c in "${checks[@]}"; do
 	queue) check_queue ;;
 	reconcile) check_reconcile ;;
 	status) check_status ;;
+	sync) check_sync ;;
 	skills) check_skills ;;
 	pane) check_pane ;;
 	voice) check_voice ;;
 	onboarding) check_onboarding ;;
 	*)
-		printf 'error: unknown check %q (want: shell markdown yaml profiles queue reconcile status skills pane voice onboarding)\n' "$c" >&2
+		printf 'error: unknown check %q (want: shell markdown yaml profiles queue reconcile status skills pane voice onboarding sync)\n' "$c" >&2
 		exit 2
 		;;
 	esac

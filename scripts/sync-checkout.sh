@@ -29,6 +29,10 @@
 
 set -uo pipefail
 
+# How long the fetch below may take before the hook gives up and works from the
+# local checkout. A session start is the wrong place to wait on a network.
+FETCH_TIMEOUT_SECS=15
+
 # Changing one of these means the running Mission Control session is holding
 # stale instructions; changing one of the wiring paths means the installed
 # thurbox extension no longer matches the manifest it was rendered from. Neither
@@ -71,7 +75,46 @@ repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
 cd "$repo_root" || exit 0
 
 # Network call: bounded, never hangs a session start.
-if ! timeout 15 git fetch --quiet origin 2>/dev/null; then
+#
+# THE BOUND CANNOT COME FROM `timeout`, which is GNU coreutils and is not on a
+# stock macOS. Calling it there exits 127 — "command not found" — which is
+# indistinguishable from a failed fetch to the guard below, so every session on
+# a Mac reported "could not reach origin (offline?)" while the network was fine,
+# and then silently worked from a stale `main`. That is the exact outcome this
+# script exists to prevent, and it is invisible: an "offline" line reads as a
+# blip, so nobody looks. Homebrew's coreutils installs the same tool as
+# `gtimeout`; with neither present we bound the fetch ourselves, because an
+# unbounded fetch in a SessionStart hook would hang the session open.
+fetch_bounded() {
+	if command -v timeout >/dev/null 2>&1; then
+		timeout "$FETCH_TIMEOUT_SECS" git fetch --quiet origin 2>/dev/null
+		return $?
+	fi
+	if command -v gtimeout >/dev/null 2>&1; then
+		gtimeout "$FETCH_TIMEOUT_SECS" git fetch --quiet origin 2>/dev/null
+		return $?
+	fi
+
+	# The portable watchdog. Poll rather than rely on `wait -n` or SIGALRM:
+	# this runs under whatever bash the machine has, and macOS ships 3.2.
+	git fetch --quiet origin 2>/dev/null &
+	local pid=$!
+	local waited=0
+	while kill -0 "$pid" 2>/dev/null; do
+		[ "$waited" -ge $((FETCH_TIMEOUT_SECS * 10)) ] && break
+		sleep 0.1
+		waited=$((waited + 1))
+	done
+
+	if kill -0 "$pid" 2>/dev/null; then
+		kill "$pid" 2>/dev/null
+		wait "$pid" 2>/dev/null
+		return 124 # what `timeout` returns when it fires, for the same reason
+	fi
+	wait "$pid"
+}
+
+if ! fetch_bounded; then
 	emit "control-plane sync: could not reach origin (offline?). Working from the local checkout."
 fi
 
