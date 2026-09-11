@@ -168,7 +168,11 @@
 #                        # headings all goes into `What to do`. A file that
 #                        # leaves any section unwritten is refused HERE, naming
 #                        # them, and nothing is created — as is a --branch no
-#                        # worktree could be cut for, which includes --base
+#                        # worktree could be cut for, which includes --base,
+#                        # and a --title thurbox could not make a session name
+#                        # of: that name is the title wearing the worker's mark
+#                        # and cut to thurbox's byte cap, and it carries no
+#                        # `/`, no `\`, no `..` and no leading `.`
 #   scripts/queue.sh block <ref> --on <ref> --kind KIND --why 'reason'   # or --clear,
 #                        which names the blocker to remove, since a task can
 #                        carry several; `block --help` lists the valid kinds

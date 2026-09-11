@@ -102,6 +102,11 @@
 #      The task-to-task form keeps its `landed` gate and its `UNCLEARABLE`,
 #      asserted in that same queue because the two share the code.
 #
+#  20. A TITLE IS A SESSION NAME, so `add` refuses one thurbox could not spawn
+#      — judged on the RENDERED name, mirroring thurbox's own rule and
+#      widening it by nothing — and a spawn that fails anyway reports what
+#      thurbox said rather than its exit status.
+#
 # Test 4 is also the wake proof. The event source is `thurbox-cli watch`, which
 # this script replaces with a recorded stream through `FLEET_QUEUE_WATCH_CMD` —
 # the same override a different transport would use. What matters is the shape:
@@ -5061,6 +5066,219 @@ expect "GitHub's own banner still passes, unchanged" \
 expect "a repo whose origin cannot be read says THAT, not 'no credentials'" \
 	"has no readable" \
 	"$(probe_says '' 'Welcome to GitLab, @letur!' 2>&1)"
+
+
+# --- 20. a title `dispatch` cannot spawn, and a spawn failure that says why --
+#
+# Both halves of one run on 2026-09-11. `add` took the title `Rust crate,
+# CI/CD and the profile model`; `dispatch` then died with nothing but
+# thurbox's exit status echoed back, and the cause — thurbox refuses a session
+# name containing `/` — was found by running the printed `session create` by
+# hand. The repair was a hand-edit of `title` in task.yaml, because there is
+# no retitle verb.
+#
+#   (a) `add` refuses a title that cannot become a session name, names the
+#       character, and creates nothing — the same bargain as the `--branch`
+#       refusal in 16d(f).
+#   (b) The check is on the name thurbox is actually SENT, not on the raw
+#       title: the glyph goes in front and the title is cut to the byte cap,
+#       so a title that is only made long by the rendering is still fine, and
+#       a leading `.` is unsafe exactly when no glyph precedes it.
+#   (c) It mirrors thurbox's rule rather than inventing a stricter one. The
+#       four cases in thurbox's own `unsafe_names_are_rejected` are refused,
+#       and every character it accepts is still accepted here — a title is
+#       human-facing text and narrowing it further is its own defect.
+#   (d) A failing spawn carries thurbox's own words, from whichever stream it
+#       used, and the three things that were already right stay right: the
+#       task is left `queued`, the rest of the set still goes out, and a
+#       re-run does not spawn what already went.
+
+export FLEET_QUEUE_DIR="$tmp/queue-titles"
+ntopic="$($QUEUE topic add unspawnable-titles --title 'A title becomes a session name' \
+	--prompt 'add accepted a title dispatch could not spawn' 2>/dev/null)"
+
+# (a) The title from the run, verbatim.
+if out="$($QUEUE add "$ntopic" ci-cd --title 'Rust crate, CI/CD and the profile model' \
+	--repo /tmp/repo-a --branch feat/ci-cd --number 01 2>&1)"; then
+	fail "a title that cannot become a session name is refused at add" "$out"
+else
+	pass "a title that cannot become a session name is refused at add"
+	expect "and the refusal names the offending character" "'/'" "$out"
+	expect "and says it is the SESSION NAME that cannot carry it" \
+		"session name" "$out"
+	expect "and quotes the name thurbox would have been asked to create" \
+		"Rust crate, CI" "$out"
+fi
+if [ -e "$FLEET_QUEUE_DIR/$ntopic/01-ci-cd" ]; then
+	fail "and creates nothing, so the repair is one re-run and not an edit" \
+		"$(ls "$FLEET_QUEUE_DIR/$ntopic/01-ci-cd")"
+else
+	pass "and creates nothing, so the repair is one re-run and not an edit"
+fi
+
+# (b) The RENDERED name, and only that. A 61-character title wearing a 5-byte
+#     glyph is 66 bytes and would fail a check against the raw string, but
+#     `session_name` cuts it to the cap before thurbox ever sees it.
+long="Codify the out-of-band identity and patch settings on the box"
+if out="$($QUEUE add "$ntopic" long-title --title "$long" \
+	--repo /tmp/repo-a --branch feat/long-title --number 02 2>&1)"; then
+	pass "a title only made over-long by the glyph and the cut is still accepted"
+else
+	fail "a title only made over-long by the glyph and the cut is still accepted" "$out"
+fi
+expect "and it really was the rendering that made it long: 66 bytes, cut to 64" \
+	"66 64" "$(python3 -c '
+import sys
+sys.path.insert(0, "scripts/lib")
+import queue as q
+title = sys.argv[1]
+print(len(("\N{ROCKET} " + title).encode()), len(q.session_name(title, "\N{ROCKET}").encode()))
+' "$long")"
+
+# The other direction: a leading `.` is unsafe exactly when nothing precedes
+# it, so the same title is fine with the mark on and refused with it off.
+nglyph="$(mktemp -d)"
+mkdir -p "$nglyph/orchestration"
+printf 'GLYPHS=on\nLEAD_GLYPH_ON=📡\nLEAD_GLYPH_OFF=⌖\nWORKER_GLYPH_ON=🚀\n' \
+	>"$nglyph/orchestration/session-glyphs.conf"
+if out="$(FLEET_GLYPH_ROOT="$nglyph" $QUEUE add "$ntopic" dot-with-mark \
+	--title '.hidden agenda' --repo /tmp/repo-a --branch feat/dot-mark \
+	--number 03 2>&1)"; then
+	pass "a title starting '.' is accepted while a mark goes in front of it"
+else
+	fail "a title starting '.' is accepted while a mark goes in front of it" "$out"
+fi
+printf 'GLYPHS=off\nLEAD_GLYPH_ON=📡\nLEAD_GLYPH_OFF=⌖\nWORKER_GLYPH_ON=🚀\n' \
+	>"$nglyph/orchestration/session-glyphs.conf"
+if out="$(FLEET_GLYPH_ROOT="$nglyph" $QUEUE add "$ntopic" dot-no-mark \
+	--title '.hidden agenda' --repo /tmp/repo-a --branch feat/dot-no-mark \
+	--number 04 2>&1)"; then
+	fail "and refused with the mark off, where the name really does start '.'" "$out"
+else
+	pass "and refused with the mark off, where the name really does start '.'"
+	expect "naming the rule it broke and not merely the character" \
+		"beginning with '.'" "$out"
+fi
+rm -rf "$nglyph"
+
+# (c) thurbox's rule, not a stricter one. The four unsafe names are the case
+#     list from its own `unsafe_names_are_rejected`; the accepted ones are
+#     ordinary titles, every character of which thurbox takes.
+out="$(python3 -c '
+import sys
+sys.path.insert(0, "scripts/lib")
+import queue as q
+unsafe = [".hidden", "foo/bar", "foo..bar", "foo\\bar"]
+safe = [
+    "Rust crate, CI-CD and the profile model",
+    "Fix the parser (again!)",
+    "Ship v2.1: metrics & alerts @ 99% — done?",
+    "Réécrire le lecteur ~ étape 1",
+    "a.b.c and #42 + [brackets] {braces} <angles>",
+    "trailing dot.",
+]
+for name in unsafe:
+    print("REFUSED" if q.session_name_refusal(name, "") else "ACCEPTED", name, sep="\t")
+for name in safe:
+    print("REFUSED" if q.session_name_refusal(name, "") else "ACCEPTED", name, sep="\t")
+' 2>&1)"
+if [ "$(printf '%s\n' "$out" | grep -c '^REFUSED')" = 4 ]; then
+	pass "every name thurbox's own unsafe_names_are_rejected lists is refused"
+else
+	fail "every name thurbox's own unsafe_names_are_rejected lists is refused" "$out"
+fi
+refute "and nothing thurbox accepts is refused alongside them" \
+	"$(printf 'REFUSED\tRust')" "$out"
+if [ "$(printf '%s\n' "$out" | grep -c '^ACCEPTED')" = 6 ]; then
+	pass "a title is human-facing text, so no character is narrowed beyond that"
+else
+	fail "a title is human-facing text, so no character is narrowed beyond that" "$out"
+fi
+
+# (d) The spawn failure. A `thurbox-cli` in front of the run's own stub fails
+#     one named branch with a known string, on whichever stream the test
+#     chooses, and delegates everything else — so the tasks that can be
+#     spawned are spawned by the same stub as every other section.
+boombin="$tmp/boom-bin"
+mkdir -p "$boombin"
+cat >"$boombin/thurbox-cli" <<'SH'
+#!/bin/sh
+if [ "$1 $2" = "session create" ]; then
+	case "$*" in
+	*"$BOOM_MATCH"*)
+		if [ "${BOOM_STREAM:-stderr}" = stdout ]; then
+			printf '%s\n' "$BOOM_MESSAGE"
+		else
+			printf '%s\n' "$BOOM_MESSAGE" >&2
+		fi
+		exit 1
+		;;
+	esac
+fi
+exec "$TBX_REAL" "$@"
+SH
+chmod +x "$boombin/thurbox-cli"
+
+for spec in \
+	"10:goes-out:Goes out anyway" \
+	"11:boom:Spawn fails on stderr" \
+	"12:stdout-boom:Spawn fails on stdout"; do
+	IFS=: read -r n slug title <<<"$spec"
+	$QUEUE add "$ntopic" "$slug" --title "$title" --repo /tmp/repo-a \
+		--branch "feat/$slug" --number "$n" >/dev/null
+	printf '# %s\n\nA brief with real content in it.\n' "$title" \
+		>"$FLEET_QUEUE_DIR/$ntopic/$n-$slug/BRIEF.md"
+done
+# The two above that were accepted carry a scaffolded brief, and `dispatch`
+# refuses the whole wave over one of those. Hold them out of the ready set.
+for held in 02-long-title 03-dot-with-mark; do
+	$QUEUE block "$ntopic/$held" --on "$ntopic/10-goes-out" \
+		--kind other --why 'held out of the spawn test below' >/dev/null
+done
+
+nsession=dddddddd-dddd-dddd-dddd-dddddddddddd
+printf '{"id":"%s","created":true}\n' "$nsession" >"$tmp/next-session.json"
+session_is "$nsession" idle
+
+# The stubs are named rather than taken off $PATH: test 7's subshell exported
+# its own, which is what SC2031 is about, and this section wants the one the
+# run set up.
+boom() {
+	env PATH="$boombin:$ghbin:$tbxbin:$sshbin:$quotabin:$base_path" \
+		TBX_REAL="$tbxbin/thurbox-cli" "$@"
+}
+
+out="$(boom BOOM_MATCH=feat/boom \
+	BOOM_MESSAGE='Name contains invalid characters' \
+	$QUEUE dispatch "$ntopic/10-goes-out" "$ntopic/11-boom" 2>&1)"
+expect "a failing spawn reports what thurbox said" \
+	"Name contains invalid characters" "$out"
+refute "and not only the exit status the code used to echo back" \
+	"returned non-zero exit status" "$out"
+expect "the task that could be spawned still went out" "10-goes-out" "$out"
+expect "and it really got its session" "$nsession" "$out"
+expect "the failed one is left queued, so fixing it and re-running sends it" \
+	"queued" "$($QUEUE show "$ntopic/11-boom" | grep -F 'state:')"
+
+# thurbox prints its structured failure on STDOUT, not stderr — that is why
+# reading only stderr left the operator with an exit status and nothing else.
+out="$(boom BOOM_MATCH=feat/stdout-boom BOOM_STREAM=stdout \
+	BOOM_MESSAGE='{"error":"Name contains invalid characters","suggestion":"the command ran and failed"}' \
+	$QUEUE dispatch "$ntopic/12-stdout-boom" 2>&1)"
+expect "a refusal thurbox printed on stdout is read too" \
+	"Name contains invalid characters" "$out"
+refute "and its JSON wrapping is unwrapped rather than echoed" \
+	"suggestion" "$out"
+
+# A re-run sends the ones that failed and does not touch the one that went.
+resent=eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee
+printf '{"id":"%s","created":true}\n' "$resent" >"$tmp/next-session.json"
+session_is "$resent" idle
+out="$(boom BOOM_MATCH=no-such-branch $QUEUE dispatch 2>&1)"
+expect "a re-run spawns the one that failed" "11-boom" "$out"
+refute "and does not spawn the one already sent" "10-goes-out" "$out"
+expect "whose session is still the first one" "$nsession" \
+	"$($QUEUE show "$ntopic/10-goes-out")"
 
 
 # The fixer above got a real worktree; take it back off the test repo, as

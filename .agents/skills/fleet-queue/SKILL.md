@@ -89,6 +89,15 @@ thurbox's own exit status, a task left `queued`, and a hand-edited `task.yaml`.
 A repo this machine cannot read is not asked, so a `--host` task still finds
 out at dispatch.
 
+**`--title` becomes the worker's session NAME.** thurbox makes a path segment
+of that name, so it refuses one carrying `/`, `\` or `..`, one starting `.`,
+and one over its 64-byte cap — `Rust crate, CI/CD and the profile model` is a
+title `add` used to take and `dispatch` could never spawn. `add` refuses it
+here for the same reason as `--branch`: the repair afterwards is a hand-edit of
+`title` in `task.yaml` and the brief's H1, because nothing retitles a task.
+Every character thurbox accepts is still accepted — a title is human-facing
+text — and the check is on the rendered name, glyph and cut included.
+
 ### `--host` — running a task on another machine
 
 `add --host <name>` takes a name from thurbox's `hosts.toml` and moves the

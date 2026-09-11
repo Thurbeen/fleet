@@ -98,9 +98,9 @@ follow from how the name is used:
   against thurbox 2.19.5, a 61-character name wearing a 5-byte `🚀 ` is
   accepted at 64 bytes and refused at 65. So a name that fits in characters can
   still fail at spawn the moment it carries anything non-ASCII, and a spawn that
-  fails takes its whole dispatch with it. `scripts/lib/queue.py`'s
-  `session_name()` cuts by byte, on a codepoint boundary, for exactly that
-  reason.
+  fails leaves that task `queued` while the rest of the set still goes out.
+  `scripts/lib/queue.py`'s `session_name()` cuts by byte, on a codepoint
+  boundary, for exactly that reason.
 - **fleet's own workers wear a mark.** `queue.sh dispatch` puts `🚀 ` in front
   of the name it builds from the task title, under the one setting in
   `orchestration/session-glyphs.example.conf` that also decides the lead's. The
