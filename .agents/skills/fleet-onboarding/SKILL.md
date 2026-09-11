@@ -504,7 +504,6 @@ to be on the machine.
 Both add forms append, keep the file's comment header and its order, refuse a
 duplicate, and then sync and report **what moved** — owners added, repositories
 gained or lost, the totals before and after — rather than printing the map back.
-`--no-sync` writes the file and leaves the sync for later.
 
 Three things it does not do, each deliberate:
 

@@ -73,8 +73,11 @@ unset GIT_CONFIG_COUNT _i
 # `GITHUB_TOKEN` short-circuits `gh_accounts` — both scripts then take the
 # active-session path and the stub matches the operator's REAL token against
 # fixture names — and `GH_HOST` moves which host's logins are enumerated, so
-# the fixture list under `github.com` comes back empty. Cleared ONCE, here.
-unset GH_TOKEN GITHUB_TOKEN GH_HOST
+# the fixture list under `github.com` comes back empty. `GITLAB_HOST` is the
+# same kind of decider one forge over: §6's rows branch on it, so an operator
+# who exports it would answer §6a and §6d for them. Cleared ONCE, here.
+# §6b and §6c set GITLAB_HOST as a per-command prefix, which this does not touch.
+unset GH_TOKEN GITHUB_TOKEN GH_HOST GITLAB_HOST
 
 nl=$'\n'
 failed=0
@@ -1108,17 +1111,21 @@ stub "$incbin" gh 'case "$1 $2" in
   *) exit 1 ;;
   esac
   ;;
-"api user/orgs")
-  case "${GH_TOKEN:-tok-octo}" in
-  tok-octo) printf "acme-org\n" ;;
-  tok-worky) printf "employer-org\n" ;;
-  esac
-  ;;
 "api --paginate")
-  case "${GH_TOKEN:-tok-octo}" in
-  tok-octo) cat "$FIXTURES/repos-octo-8.json" ;;
-  tok-worky) cat "$FIXTURES/repos-worky-8.json" ;;
-  *) exit 1 ;;
+  case "$3" in
+  user/orgs)
+    case "${GH_TOKEN:-tok-octo}" in
+    tok-octo) printf "acme-org\n" ;;
+    tok-worky) printf "employer-org\n" ;;
+    esac
+    ;;
+  *)
+    case "${GH_TOKEN:-tok-octo}" in
+    tok-octo) cat "$FIXTURES/repos-octo-8.json" ;;
+    tok-worky) cat "$FIXTURES/repos-worky-8.json" ;;
+    *) exit 1 ;;
+    esac
+    ;;
   esac
   ;;
 *) echo "unexpected gh call: $*" >&2; exit 9 ;;
@@ -1186,7 +1193,8 @@ out="$(run_inc --all)"
 code=$?
 expect_exit "8d adding every new owner exits 0" 0 "$code"
 expect "8d it says which owner it added" "employer-org" "$out"
-expect "8d the map's own owner count moved" "owners" "$out"
+expect "8d the map's own owner count moved" \
+	"across 3 owners (was 3 repos across 2 owners)" "$out"
 expect "8d a repository the new account reaches is gained" "employer-org/work-thing" "$out"
 expect "8d and one that disappeared is reported lost" "octo/second-repo" "$out"
 refute "8d the whole map is not printed back" "pushed_at" "$out"
@@ -1247,6 +1255,34 @@ out="$(cd "$noowners" && FIXTURES="$tmp" HOSTS_FIXTURE=hosts-8-after.json \
 	PATH="$incbin" "$noowners/scripts/add-owner.sh" 2>&1)"
 expect_exit "8i a clone with no owners file is refused, not onboarded from here" 1 "$?"
 expect "8i and it points at what does own a first run" "discover-owners.sh" "$out"
+# --- 8j. --all when not one account answered ----------------------------------
+# gh is installed and every credential is expired or logged out — exactly the
+# machine this whole change is about. Nothing was compared against anything, so
+# `--all` may not report the map complete: an empty answer is not agreement.
+deadinc="$tmp/bin-incremental-dead"
+mkdir -p "$deadinc"
+ln -sf "$incbin"/* "$deadinc/" 2>/dev/null
+stub "$deadinc" gh 'case "$1 $2" in
+"auth status")
+  case "$*" in
+  *--json*) echo "{\"hosts\":{\"github.com\":[]}}" ;;
+  *) echo "not logged in" >&2; exit 1 ;;
+  esac
+  ;;
+"api user") exit 1 ;;
+*) echo "unexpected gh call: $*" >&2; exit 9 ;;
+esac'
+before_dead="$(cat "$inc/registry/owners.txt")"
+out="$(cd "$inc" && FIXTURES="$tmp" PATH="$deadinc" "$inc/scripts/add-owner.sh" --all 2>&1)"
+code=$?
+expect_exit "8j --all with no account that answered is refused" 1 "$code"
+expect "8j and says so rather than calling the map complete" "No gh account answered" "$out"
+refute "8j it does not claim every owner is already covered" "Nothing new" "$out"
+if [ "$before_dead" = "$(cat "$inc/registry/owners.txt")" ]; then
+	pass "8j the file is not touched"
+else
+	fail "8j the file is not touched" "it changed"
+fi
 
 printf '\n'
 if [ "$failed" -eq 0 ]; then

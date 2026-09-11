@@ -35,11 +35,10 @@
 #
 # Options:
 #   --all         add every owner the report marks new
-#   --no-sync     write registry/owners.txt and stop, leaving the sync for later
 #
 # Exit: 0 when the report was printed or the owners were added, 1 when there was
-# nothing this script could do — no owners file, a duplicate, a name that is not
-# a GitHub owner — and 2 on a usage error.
+# nothing this script could do — no owners file, no account that could be read,
+# a duplicate, a name that is not a GitHub owner — and 2 on a usage error.
 
 set -uo pipefail
 
@@ -57,18 +56,16 @@ MAP="$REPO_ROOT/registry/repos.generated.yaml"
 . "$REPO_ROOT/scripts/lib/glab-hosts.sh"
 
 ADD_ALL=0
-DO_SYNC=1
 WANTED=()
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--all) ADD_ALL=1 ;;
-	--no-sync) DO_SYNC=0 ;;
 	-h | --help)
-		sed -n '2,42p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+		sed -n '2,41p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 		exit 0
 		;;
 	-*)
-		printf 'usage: %s [--all] [--no-sync] [owner ...]\n' "$0" >&2
+		printf 'usage: %s [--all] [owner ...]\n' "$0" >&2
 		exit 2
 		;;
 	*) WANTED+=("$1") ;;
@@ -119,7 +116,7 @@ ask_account() {
 	login="$(gh_api_as "$token" user --jq .login 2>/dev/null)" || login=""
 	[ -n "$login" ] || return 1
 	owners="$login"
-	orgs="$(gh_api_as "$token" user/orgs --jq '.[].login' 2>/dev/null)" || orgs=""
+	orgs="$(gh_api_as "$token" --paginate user/orgs --jq '.[].login' 2>/dev/null)" || orgs=""
 	if [ -n "$orgs" ]; then
 		while IFS= read -r org; do
 			[ -n "$org" ] && owners="$owners $org"
@@ -202,15 +199,22 @@ list_some() {
 	printf '%s' "$out"
 }
 
+# Not one account could be read, so nothing below was compared against anything.
+# Both moods say so, because the alternative is `--all` reporting a complete map
+# on the strength of an empty answer.
+no_accounts() {
+	printf 'No gh account answered, so there is nothing to compare your map against.\n\n'
+	printf '  gh auth login          then run this again\n'
+	printf '  ./scripts/preflight.sh reads the same accounts and says which are broken\n'
+}
+
 # --- report mode --------------------------------------------------------------
 
 report() {
 	local login owners owner mark new_here line
 
 	if [ "${#ACCOUNT_ORDER[@]}" -eq 0 ]; then
-		printf 'No gh account answered, so there is nothing to compare your map against.\n\n'
-		printf '  gh auth login          then run this again\n'
-		printf '  ./scripts/preflight.sh reads the same accounts and says which are broken\n'
+		no_accounts
 		return
 	fi
 
@@ -281,6 +285,10 @@ fi
 # --- add mode -----------------------------------------------------------------
 
 if [ "$ADD_ALL" -eq 1 ]; then
+	if [ "${#ACCOUNT_ORDER[@]}" -eq 0 ]; then
+		no_accounts >&2
+		exit 1
+	fi
 	if [ "${#NEW_ORDER[@]}" -eq 0 ]; then
 		printf 'Nothing new: every owner these accounts reach is already in registry/owners.txt.\n'
 		exit 0
@@ -304,10 +312,6 @@ for owner in "${WANTED[@]}"; do
 	# would produce `no accessible repos for owner '<x>'` on every sync
 	# forever — the warning that means a typo, made to mean two things again.
 	case "$owner" in
-	[A-Za-z0-9]*) ;;
-	*) die "'$owner' is not a GitHub owner. This file holds GitHub usernames and orgs." ;;
-	esac
-	case "$owner" in
 	*[!A-Za-z0-9-]*)
 		die "'$owner' is not a GitHub owner — it holds usernames and orgs, one per line.
        A GitLab group is not one: a task targets a GitLab repository by host
@@ -325,11 +329,6 @@ done
 [ -s "$OWNERS_FILE" ] && [ -n "$(tail -c 1 "$OWNERS_FILE")" ] && printf '\n' >>"$OWNERS_FILE"
 printf '%s\n' "${WANTED[@]}" >>"$OWNERS_FILE"
 printf 'added to registry/owners.txt: %s\n' "$(printf '%s\n' "${WANTED[@]}" | list_some)"
-
-if [ "$DO_SYNC" -eq 0 ]; then
-	printf '\nNot synced, as asked. The map is stale until:\n\n  ./scripts/sync-registry.sh\n'
-	exit 0
-fi
 
 # --- sync, and report what MOVED ----------------------------------------------
 
