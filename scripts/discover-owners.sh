@@ -4,7 +4,7 @@
 # list they have written down nowhere.
 #
 # registry/owners.txt is the one input the repo map genuinely needs, and every
-# part of it is already recorded somewhere: in the `gh` session, in the git
+# part of it is already recorded somewhere: in the `gh` logins, in the git
 # configuration, and in the remotes of the clones the operator has been working
 # in for years. This reads all three and prints candidates with the EVIDENCE for
 # each, because a guess an operator cannot check is one they have to verify by

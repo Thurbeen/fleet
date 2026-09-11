@@ -66,9 +66,10 @@ converges.
 Four of those steps ask you something, and only four. Whether to install the
 dependencies that are missing; which of the owners it found on your machine the
 map should cover; where the queue pane goes (a column on the right, by
-default); and whether to bring the reconciler up. It reads your `gh` session,
-your git config and the remotes of the clones you already have, so the owners
-step is a list to confirm rather than one to type.
+default); and whether to bring the reconciler up. It reads every `gh` account
+on the machine — not just the active one — your git config and the remotes of
+the clones you already have, so the owners step is a list to confirm rather
+than one to type.
 
 What it needs, and what it will tell you itself:
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Prove what onboarding's three scripts claim, offline.
+# Prove what onboarding's scripts claim, offline.
 #
 # Onboarding is the one part of this repo whose failures are invisible to
 # everyone who already ran it. A dependency table that forgets a tool, an owner
