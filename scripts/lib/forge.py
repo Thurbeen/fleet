@@ -275,11 +275,11 @@ def configured_hosts(cli: str, timeout: int = 10) -> list:
     BOTH STREAMS ARE READ, because they disagree: `glab` writes the whole
     report to stderr and `gh` writes it to stdout.
 
-    IT NEVER FAILS. No CLI, no config, a report it cannot parse, or a CLI too
-    old for `--all` each answer with an empty list, which leaves every caller
-    exactly where it was before discovery existed. Discovery is an improvement
-    on a default, never a dependency: `collect` has to keep working with the
-    network down and on a machine that has neither CLI.
+    IT NEVER FAILS. No CLI, no config, or a report it cannot parse each answer
+    with an empty list, which leaves every caller exactly where it was before
+    discovery existed. Discovery is an improvement on a default, never a
+    dependency: `collect` has to keep working with the network down and on a
+    machine that has neither CLI.
 
     WHY THE GITHUB ADAPTER DOES NOT USE THIS, though `gh auth status` prints
     the same shape and GitHub Enterprise is the same problem. §13 of
