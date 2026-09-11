@@ -25,12 +25,22 @@
 #   5. PLACING THE PANE IS SAFE OR IT DOES NOT HAPPEN. Idempotent, backed up,
 #      refused outright on a layout it cannot recognise, and the block it
 #      writes carries the `panels.shown` guard and the slot the PANE declares.
-#   6. EVERY `gh` ACCOUNT IS READ, in both places that ask GitHub who the
-#      operator is. A machine with several logins reaches a different set of
+#   6. EVERY `gh` ACCOUNT IS READ, everywhere that asks GitHub who the operator
+#      is. A machine with several logins reaches a different set of
 #      repositories per login, so asking only the active one described half the
 #      machine — and in the map's case it did so with the same warning a
 #      MISTYPED owner produces. Nothing switches the active account, and the
 #      fallback to that one account alone stays the floor.
+#   7. NEITHER AUTHENTICATION ROW IS AN EXIT CODE. `gh auth status` and
+#      `glab auth status` are all-or-nothing, so one lapsed login among three,
+#      and a gitlab.com the operator has never used, each reported a working
+#      setup as broken. The `gh auth` row is decided per ACCOUNT and the
+#      `glab auth` row per HOST, each naming what answered and each keeping the
+#      bare status command as the fallback its seam documents.
+#   8. THE MAP CATCHES UP AFTER THE FIRST RUN. `add-owner.sh` names what the
+#      current accounts reach that the map does not, appends only what was
+#      asked for — the file's comment header and its ORDER kept, a duplicate
+#      refused — and then reports what MOVED rather than the whole map.
 #
 # HOW IT RUNS OFFLINE. Every probe is a stub on a sandboxed PATH — `gh`,
 # `thurbox-cli`, `quota-axi` — and the PATH is built from scratch so that a

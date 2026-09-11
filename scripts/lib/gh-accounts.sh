@@ -1,12 +1,14 @@
 # shellcheck shell=bash
 # Every `gh` login this machine holds, not just the active one.
 #
-# SOURCED, never executed. Two callers share it and want the same three
+# SOURCED, never executed. Four callers share it and want the same three
 # things — the account list, one account's token, one `gh api` call as that
-# account — because both of them ask GitHub who the operator is:
+# account — because each of them asks GitHub who the operator is:
 #
 #   scripts/sync-registry.sh    what the repo map is built from
 #   scripts/discover-owners.sh  the one question onboarding asks the operator
+#   scripts/add-owner.sh        what a newly authenticated login reaches
+#   scripts/preflight.sh        the `gh auth` row, which is decided per ACCOUNT
 #
 # WHY THIS EXISTS. `gh api user/repos` and `gh api user/orgs` answer for
 # whichever account is ACTIVE. A machine with a personal login and an

@@ -198,9 +198,11 @@ so start from the tracked example rather than from memory:
   edits it later by hand.
 - Replace the two `# your-github-username` / `# your-org` placeholder lines with
   the confirmed owners, one per line, username first.
-- On a **re-run** there are no placeholders left. Add only owners not already
-  present, and leave the existing order alone — the sync emits owners in this
-  file's order, so reshuffling it churns the generated map for nothing.
+- On a **re-run** there are no placeholders left, and appending by hand is no
+  longer the way to do it: `./scripts/add-owner.sh <owner>...` appends, leaves
+  the existing order alone — the sync emits owners in this file's order, so
+  reshuffling it churns the generated map for nothing — and refuses a
+  duplicate. **What the operator gains afterwards**, below, is the fuller path.
 
 Verify before moving on; the sync refuses a file with no active entries, and it
 is better to catch that here:

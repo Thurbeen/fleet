@@ -105,9 +105,9 @@ names every path and the reason for each.
   EVERY `gh` ACCOUNT, not just the active one, there and in
   `scripts/sync-registry.sh` — a machine with several logins reaches a
   different set of repositories per login. `scripts/lib/gh-accounts.sh` is the
-  seam both go through and its header owns the mechanism; the one thing to
-  know here is that it reads each login's token BY NAME and never switches the
-  account the operator's `gh` is pointing at. **Neither CLI's own status
+  seam every reader goes through and its header owns the mechanism; the one
+  thing to know here is that it reads each login's token BY NAME and never
+  switches the account the operator's `gh` is pointing at. **Neither CLI's own status
   command answers the question preflight has**, so both authentication rows go
   through a seam instead: `gh auth` is decided per ACCOUNT, and `glab auth` per
   HOST through `scripts/lib/glab-hosts.sh` — a bare `glab auth status` is
