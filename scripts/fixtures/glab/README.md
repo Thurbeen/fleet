@@ -76,7 +76,12 @@ presented as recorded:
 
 ## Refreshing
 
-Re-run the commands above. `3877` and `3875` are ordinary merge requests on a
-public project and will eventually be closed; when they are, pick any open
-merge request with a fork source and any with several commits, and update the
-numbers in this table.
+Re-run the `mr-*` commands above. `3877` and `3875` are ordinary merge
+requests on a public project and will eventually be closed; when they are,
+pick any open merge request with a fork source and any with several commits,
+and update the numbers in this table.
+
+`auth-status.stderr` is not refreshed that way: re-running `glab auth status
+--all` prints the hostnames, account and home directory of whoever ran it, and
+this repository is public. Replace them again, as the bullet above says, or
+leave the file alone — it is a shape, not a live answer.

@@ -4609,12 +4609,12 @@ fi
 # answers what GitLab decided to answer, in GitLab's own words and shapes.
 #
 # So the fixtures matter more than the code here. `scripts/fixtures/glab/` is
-# real `glab` 1.117.0 output recorded from gitlab.com — its README says which
-# command produced each file and which two answers are behind authentication
-# and therefore CONSTRUCTED below rather than recorded. A fake `glab` on PATH
-# replays them; nothing in this section reaches a network, and `gh` is a
-# tripwire again, because a GitLab merge request is the one thing that must
-# never be asked about with `gh`.
+# real `glab` 1.117.0 output — its README says which command produced each
+# file, where it was recorded and what was edited out of it, and which two
+# answers are behind authentication and therefore CONSTRUCTED below rather
+# than recorded. A fake `glab` on PATH replays them; nothing in this section
+# reaches a network, and `gh` is a tripwire again, because a GitLab merge
+# request is the one thing that must never be asked about with `gh`.
 #
 # What it proves:
 #
@@ -4627,6 +4627,8 @@ fi
 #   `squash_option: never` is a refusal fleet RECORDS, not a crash and not a
 #     merge by some other method
 #   the remote-host credential probe asks the repository's own forge
+#   WHICH hosts are GitLab is read off the machine rather than waited for,
+#     and the whole loop runs on an instance discovered that way
 
 gl="$tmp/gitlab"
 mkdir -p "$gl/mrs" "$gl/api" "$gl/bin"
@@ -5128,8 +5130,10 @@ expect "a repo whose origin cannot be read says THAT, not 'no credentials'" \
 #     shepherd lists what is still open
 #   `GITLAB_HOST` still DECIDES when it is set: it is the answer, and an
 #     instance glab holds is not ours while it names another
-#   no glab, a configuration it cannot read, and a glab too old for `--all`
-#     each leave the adapter exactly where it was — gitlab.com and nothing else
+#   no glab, and a configuration or a report it cannot read, each leave the
+#     adapter exactly where it was — gitlab.com and nothing else
+#   a glab too old for `--all` is asked again without the flag, so an older
+#     CLI still discovers the instances it holds
 #   AUTO_MERGE_REPOS is untouched by discovery: a green, attested, mergeable
 #     merge request on a discovered host is REPORTED and never merged
 

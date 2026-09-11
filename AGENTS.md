@@ -56,14 +56,11 @@ names every path and the reason for each.
   hosts the GitLab adapter owns is READ OFF THE MACHINE**: `forge.py`'s
   `configured_hosts` takes every instance `glab auth status` reports, because
   that is where the operator's answer already lives and `GITLAB_HOST` is a
-  variable nothing exports — until this was so, a merge request on a
-  self-hosted instance was on no configured forge, and `reap` could never land
-  its task or release its session. `GITLAB_HOST` still decides when it IS set,
-  and the GitHub adapter still takes `GH_HOST` alone (`configured_hosts` says
-  why it is not asked the same question). `python3 scripts/lib/forge.py hosts
-  <cli>` prints the list for a shell caller. Discovery is never a requirement:
-  no CLI, no config, or a report it cannot read each leave the adapter where
-  it was. The file's own header owns the interface and how to add a third. Two
+  variable nothing exports. `GITLAB_HOST` still decides when it IS set, the
+  GitHub adapter still takes `GH_HOST` alone, and discovery never becomes a
+  requirement — `configured_hosts`' own docstring owns those three and why.
+  `python3 scripts/lib/forge.py hosts <cli>` prints the list for a shell
+  caller. The file's own header owns the interface and how to add a third. Two
   things follow: a repository is identified by HOST plus path
   (`github.com/Thurbeen/fleet`), because a bare `owner/repo` names two
   different repositories once two forges exist; and `queue-selftest.sh` drives
