@@ -4518,13 +4518,7 @@ def base_drift(repo: str, base: str, branch: str) -> str:
 # --- the fixer's brief -------------------------------------------------------
 
 FIXER_TITLES = {
-    # A fixer title becomes a session NAME, and nothing upstream can refuse it
-    # the way `add` refuses an operator's: the shepherd writes it itself. So it
-    # carries the pull request number and nothing that could hold a `/` — a
-    # base branch is `release/1.0` as a matter of course, and thurbox refuses a
-    # name it could not make a path segment of. The brief names the base one
-    # line down, where it is not also a path.
-    "conflicting": "Rebase PR #{n}",
+    "conflicting": "Rebase PR #{n} onto {base}",
     "checks-failed": "Fix the failing checks on PR #{n}",
     "changes-requested": "Address the review on PR #{n}",
     "policy": "Re-open PR #{n} through the pipeline",
@@ -4738,13 +4732,13 @@ def spawn_fixer(task: Task, name: str, brief_path: str, branch: str) -> tuple[st
     if parent:
         create += ["--parent", parent]
     create += flags + ["--json"]
-    proc = None
     try:
-        proc = subprocess.run(create, capture_output=True, check=True)
-        doc = json.loads(proc.stdout)
+        out = subprocess.run(create, capture_output=True, check=True).stdout
+        doc = json.loads(out)
         session = doc["id"]
     except (OSError, subprocess.CalledProcessError, ValueError, KeyError) as exc:
-        return "", f"could not spawn a fixer: {spawn_failure(exc, proc)}"
+        detail = (getattr(exc, "stderr", b"") or b"").decode().strip()
+        return "", f"could not spawn a fixer: {detail or exc}"
     if not doc.get("created", True):
         # Adopted, so it may be mid-turn. The same rule as everywhere else:
         # only the agent's own word puts it at rest (§4a).

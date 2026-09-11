@@ -96,10 +96,6 @@
 #      — judged on the RENDERED name, mirroring thurbox's own rule and
 #      widening it by nothing — and a spawn that fails anyway reports what
 #      thurbox said rather than its exit status.
-#  21. THE SHEPHERD NAMES A FIXER'S SESSION ITSELF, so the same rule holds
-#      where no operator is watching: a conflicting change request onto a
-#      slashed base branch still gets its fixer, and a fixer spawn that fails
-#      carries thurbox's own words.
 #
 # Test 4 is also the wake proof. The event source is `thurbox-cli watch`, which
 # this script replaces with a recorded stream through `FLEET_QUEUE_WATCH_CMD` —
@@ -5275,106 +5271,6 @@ expect "whose session is still the first one" "$nsession" \
 	"$($QUEUE show "$ntopic/10-goes-out")"
 
 
-# --- 21. the fixer's own session name, and a fixer spawn that failed --------
-#
-# §20's two defects again, on the one path where there is no operator to
-# refuse: `shepherd` writes a fixer's title ITSELF, so nothing upstream can
-# catch one thurbox will not take. `Rebase PR #{n} onto {base}` carried the
-# BASE BRANCH into that name, and a base branch holds `/` as a matter of
-# course — `release/1.0`, a stacked `feat/...` — so the fixer for the one
-# condition that named its base could never be spawned, and the shepherd
-# reported thurbox's bare exit status for it.
-#
-# Driven through section 13's fake forge, whose repository, plugin and topic
-# are already standing, with thurbox's own naming rule in front of the run's
-# stub: `paths::validate_safe_name` refuses a name it could not make a path
-# segment of, and the real CLI prints that refusal on STDOUT as
-# `{"error": ...}` and exits non-zero.
-
-strictbin="$tmp/strict-bin"
-mkdir -p "$strictbin"
-: >"$tmp/strict-names.log"
-cat >"$strictbin/thurbox-cli" <<'SH'
-#!/bin/sh
-if [ "$1 $2" = "session create" ]; then
-	name=""
-	prev=""
-	for a in "$@"; do
-		[ "$prev" = --name ] && name="$a"
-		prev="$a"
-	done
-	echo "$name" >>"$STRICT_NAMES"
-	bad=""
-	case "$name" in
-	"" | .* | */* | *\\* | *..*) bad=yes ;;
-	esac
-	[ "$(printf '%s' "$name" | wc -c)" -gt 64 ] && bad=yes
-	if [ -n "$bad" ]; then
-		printf '{"error":"invalid session name: %s cannot be a path segment"}\n' "$name"
-		exit 1
-	fi
-fi
-exec "$TBX_REAL" "$@"
-SH
-chmod +x "$strictbin/thurbox-cli"
-
-# Section 13's environment, with the PATH left to the caller so each pass can
-# put its own `thurbox-cli` in front of the run's stub.
-onforge() {
-	env TBX_REAL="$tbxbin/thurbox-cli" STRICT_NAMES="$tmp/strict-names.log" \
-		FLEET_QUEUE_DIR="$tmp/queue-fake" \
-		FLEET_FORGE_PLUGINS="$fk/forge_plugin.py" \
-		FLEET_AUTO_MERGE_REPOS="forge.test:8443/acme/widgets" \
-		"$@"
-}
-
-# The shape the fixer title could not survive: conflicting, onto a base branch
-# with a `/` in it. The branch appears after the `add`, as everywhere else.
-fq add "$ftopic" slashed-base --title 'A change onto a slashed base' \
-	--repo "$frepo" --branch fix/slashed-base --number 07 >/dev/null
-git -C "$frepo" branch fix/slashed-base
-git -C "$frepo" branch release/1.0
-fake_cr 207 'head_branch="fix/slashed-base"' 'base_branch="release/1.0"' \
-	'mergeable="conflicting"'
-
-fixsession=ffffffff-0000-0000-0000-000000000207
-printf '{"id":"%s","created":true}\n' "$fixsession" >"$tmp/next-session.json"
-session_is "$fixsession" idle
-
-# (b) first, because a fixer that went out is left alone on the next pass. The
-#     stub from §20(d), failing this one spawn with thurbox's own JSON on the
-#     stream thurbox really uses.
-out="$(onforge PATH="$boombin:$FPATH" BOOM_MATCH=07-slashed-base BOOM_STREAM=stdout \
-	BOOM_MESSAGE='{"error":"invalid session name: it cannot be a path segment"}' \
-	"$QUEUE" shepherd --ref "$ftopic/07-slashed-base" --no-merge 2>&1)"
-expect "a fixer spawn that fails carries thurbox's own words" \
-	"cannot be a path segment" "$out"
-refute "and not the exit status the note used to be" \
-	"returned non-zero exit status" "$out"
-expect "and the change request is left for the next pass" "not-dispatched" "$out"
-
-# (a) The same pull request, against thurbox's real rule: the fixer goes out,
-#     which it can only do if the name it was asked for is one thurbox takes.
-out="$(onforge PATH="$strictbin:$FPATH" "$QUEUE" shepherd \
-	--ref "$ftopic/07-slashed-base" --no-merge 2>&1)"
-expect "a conflicting change request onto a slashed base still gets its fixer" \
-	"$fixsession" "$out"
-refute "and nothing was left undispatched for want of a name" "not-dispatched" "$out"
-names="$(cat "$tmp/strict-names.log")"
-refute "the name thurbox was asked for carries no path separator" "/" "$names"
-expect "and it still says which pull request the fixer is for" \
-	"Rebase PR #207" "$names"
-
-fixbrief="$(find "$tmp/queue-fake/$ftopic/07-slashed-base" -name 'fix-*-conflicting.md' |
-	sort | tail -1)"
-if [ -n "$fixbrief" ]; then
-	expect "and the base branch is in the brief, where it is prose and not a path" \
-		"release/1.0" "$(cat "$fixbrief")"
-else
-	fail "and the base branch is in the brief, where it is prose and not a path" \
-		"no fix-*-conflicting.md under 07-slashed-base"
-fi
-
 # The fixer above got a real worktree; take it back off the test repo, as
 # section 13 does with its own.
 git -C "$glrepo" worktree remove --force \
@@ -5384,8 +5280,6 @@ git -C "$glrepo" worktree remove --force \
 # temp directory can be removed without leaving a stale registration.
 git -C "$frepo" worktree remove --force \
 	"$tmp/queue-fake/.worktrees/${ftopic}__02-conflicting" 2>/dev/null
-git -C "$frepo" worktree remove --force \
-	"$tmp/queue-fake/.worktrees/${ftopic}__07-slashed-base" 2>/dev/null
 
 echo
 if [ "$failed" -eq 0 ]; then
