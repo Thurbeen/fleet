@@ -5,9 +5,12 @@ the adapter's parsing is tested against **what `glab` actually prints** rather
 than against what this repo assumed it prints. Nothing here reaches the
 network when the selftest runs; a fake `glab` on `PATH` replays these files.
 
-Every file below was recorded on **2026-09-10** with **`glab` 1.117.0
+Every `mr-*` file below was recorded on **2026-09-10** with **`glab` 1.117.0
 (44790937b)** against **gitlab.com**, unauthenticated, from the public project
-`gitlab-org/cli`. The commands are exact and repeatable.
+`gitlab-org/cli`; those commands are exact and repeatable. `auth-status.stderr`
+is the one exception on every count — it prints whatever the running machine is
+configured for, and it was recorded elsewhere and edited afterwards. Its own
+bullet below owns its provenance.
 
 | File | Command |
 | --- | --- |

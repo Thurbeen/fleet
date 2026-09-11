@@ -250,8 +250,6 @@ def change_url(url) -> str:
 # line, and it is the shape every host fleet can be handed as part of a URL.
 AUTH_HOST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.-]*\.[A-Za-z0-9-]+(?::\d+)?$")
 
-_CONFIGURED: dict = {}
-
 
 def configured_hosts(cli: str, timeout: int = 10) -> list:
     """Every instance `cli` is authenticated or configured for, asked of `cli`.
@@ -283,9 +281,6 @@ def configured_hosts(cli: str, timeout: int = 10) -> list:
     on a default, never a dependency: `collect` has to keep working with the
     network down and on a machine that has neither CLI.
 
-    Cached for the process. The answer does not change inside a run, and the
-    registry would otherwise ask again for every adapter built.
-
     WHY THE GITHUB ADAPTER DOES NOT USE THIS, though `gh auth status` prints
     the same shape and GitHub Enterprise is the same problem. §13 of
     `queue-selftest.sh` drives the whole queue through a forge that is not
@@ -300,8 +295,6 @@ def configured_hosts(cli: str, timeout: int = 10) -> list:
     configuration read from a change-request call, the adapter needs one line.
     """
     cli = str(cli or "").strip()
-    if cli in _CONFIGURED:
-        return list(_CONFIGURED[cli])
     hosts: list = []
     if cli and shutil.which(cli):
         # `--all` is the documented way to ask about every instance rather than
@@ -319,8 +312,7 @@ def configured_hosts(cli: str, timeout: int = 10) -> list:
             if said:
                 hosts = said
                 break
-    _CONFIGURED[cli] = hosts
-    return list(hosts)
+    return hosts
 
 
 def _auth_status_hosts(argv: list, timeout: int):
@@ -1273,15 +1265,9 @@ def forges() -> list:
 
 
 def reset() -> None:
-    """Forget the cached registry and the discovered host lists.
-
-    For tests inside one process — and the host cache goes with the registry
-    because the adapters were built FROM it, so a test that changes what a CLI
-    would answer and then rebuilds the registry must get the new answer.
-    """
+    """Forget the cached registry. For tests inside one process."""
     global _REGISTRY
     _REGISTRY = None
-    _CONFIGURED.clear()
 
 
 def _load_plugin(path: str) -> list:

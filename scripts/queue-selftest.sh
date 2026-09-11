@@ -202,31 +202,29 @@ export FLEET_QUEUE_DIR="$tmp/queue"
 # of this file would scaffold logs into the operator's own orchestration/runs/.
 export FLEET_RUNS_DIR="$tmp/runs"
 
-# --- `glab`, a TRIPWIRE on PATH for the whole run ----------------------------
+# --- `glab`, a STAND-IN on PATH for the whole run ----------------------------
 #
 # The GitLab adapter asks `glab auth status` which instances this machine
 # holds, and it asks the moment the forge registry is built — which is to say
 # in nearly every section below, whether or not that section is about GitLab.
 # On the operator's own laptop the REAL `glab` would answer, so the verdicts
 # below would depend on who ran the file and on a network being there. This
-# stub fails the way a machine with no GitLab configuration fails, which is
-# exactly the machine every section except 14 is written for.
+# stub is a hermetic stand-in for a machine with no GitLab configuration at
+# all, which is exactly the machine every section except 14 is written for.
 #
-# It goes in front of `base_path`, so every section that builds its own PATH
-# out of it inherits the tripwire — section 13 included, where reaching a real
-# `glab` would be the same defect as reaching a real `gh`. Section 14 puts a
-# `glab` of its own in front of this one.
+# It is NOT a tripwire, and cannot be one: unlike `gh`, `glab` is now something
+# the adapter legitimately invokes in every section. It goes in front of
+# `base_path`, so every section that builds its own PATH out of it inherits it
+# — section 13 included, where reaching a real `glab` would be the same defect
+# as reaching a real `gh`. Section 14 puts a `glab` of its own in front of it.
 noglab="$tmp/no-glab"
 mkdir -p "$noglab"
 cat >"$noglab/glab" <<'SH'
 #!/bin/sh
-echo "glab $*" >>"$NOGLAB_LOG"
 echo "glab: no GitLab instance is configured on this machine" >&2
 exit 1
 SH
 chmod +x "$noglab/glab"
-export NOGLAB_LOG="$tmp/noglab-calls.log"
-: >"$NOGLAB_LOG"
 export PATH="$noglab:$PATH"
 
 # Captured here, before test 7's subshell exports its own PATH: reading $PATH
@@ -5166,9 +5164,9 @@ real_path = os.environ["PATH"]
 def adapter(gitlab_host=None, path=None):
     """A fresh adapter on a machine described by `gitlab_host` and `path`.
 
-    `forge.reset()` forgets the discovered host list along with the registry,
-    which is the whole reason it has to: every case below is a different
-    machine answering a different way, inside one process.
+    Every case below is a different machine answering a different way, inside
+    one process: discovery is not cached, so each adapter asks the `glab` its
+    own PATH holds and gets that machine's answer.
     """
     forge.reset()
     os.environ.pop("GITLAB_HOST", None)
@@ -5274,11 +5272,16 @@ GLAB_MR_DIR="$gl2/mrs" glab_mr 306 'source_branch="fix/discovered"'
 session_is cccccccc-0000-0000-0000-000000000001 idle
 gdq attach "$gdtopic/01-shipped" cccccccc-0000-0000-0000-000000000001 >/dev/null
 
+# `publish verified` is printed only when the publish check PASSED, which
+# needs a forge that owns the host. Undiscovered, the task is still concluded
+# and its URL still printed — it is the verdict that degrades to
+# `publish unchecked: ... no configured forge owns gitlab.example.com`, which
+# is the pre-fix symptom itself. So the marker is what this asserts.
 out="$(gdq collect 2>&1)"
 expect "collect verifies a publish on an instance only glab knew about" \
-	"01-shipped" "$out"
-expect "and it read the merge request URL as a change request" \
-	"merge_requests/306" "$out"
+	"publish verified" "$out"
+refute "and does not report it as on no configured forge" \
+	"publish unchecked" "$out"
 refute "which is not the same as landing it" "reaped" "$out"
 
 # The merge set is host-qualified and discovery adds nothing to it. 306 is
