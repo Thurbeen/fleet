@@ -15,6 +15,7 @@ Every file below was recorded on **2026-09-10** with **`glab` 1.117.0
 | `mr-commits.json` | `glab api "projects/gitlab-org%2Fcli/merge_requests/3875/commits?per_page=100" --hostname gitlab.com` |
 | `mr-view-missing.json` | `glab mr view 999999 -R https://gitlab.com/gitlab-org/cli -F json` — stdout |
 | `mr-view-missing.stderr` | the same call's stderr |
+| `auth-status.stderr` | `glab auth status --all` — stderr, **with the hostnames and account renamed**, see below |
 
 `glab mr list -F json` answers with the same objects minus `head_pipeline`, so
 it is not recorded separately — the adapter reads only `iid` out of a listing
@@ -37,6 +38,26 @@ its bytes in a control-plane repo:
   reason is the JSON on *stdout*, while stderr carries a blank-line-padded
   `ERROR` box whose first line is decoration. An adapter that read stderr
   first would report the box.
+- **`auth-status.stderr` is where the GitLab host list comes from**, and it
+  is the one file here that was **edited after recording**. It was recorded on
+  **2026-09-11** with the same `glab`, from a machine logged in to one
+  self-hosted instance and not to gitlab.com; that instance's hostname, the
+  account name and the home directory were then replaced with
+  `gitlab.example.com`, `some-account` and `/home/user`, because this
+  repository is public. Nothing else was touched, so the shape is real —
+  which is the whole point, since `forge.configured_hosts` reads it by shape:
+
+  - the report goes to **stderr**, not stdout, which is the opposite of `gh`;
+  - each instance is a **bare hostname, alone on an unindented line**, with
+    everything said about it indented underneath;
+  - the trailing `ERROR` box — its blank-padded lines, and the line of spaces
+    inside it — is decoration that must not read as a host, and it is here
+    verbatim, trailing whitespace and all, so that it is tested rather than
+    imagined;
+  - `glab` **exits non-zero** because one of the two instances has no token,
+    which is the ordinary state of a machine logged in to one and not the
+    other. An adapter that read the exit code would discover nothing on
+    exactly the machines this exists for.
 
 ## What is NOT here
 

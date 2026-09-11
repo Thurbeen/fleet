@@ -51,9 +51,13 @@ collapse that string into a verdict. A timeout must never be able to
 manufacture a merge.
 
 WHAT SHIPS. Two adapters: GitHub through `gh`, GitLab through `glab`. Both are
-CONFIGURATION — which hosts each one owns comes from that CLI's own variable
-(`GH_HOST`, `GITLAB_HOST`), because a self-hosted instance is the normal case
-for everything that is not github.com or gitlab.com.
+CONFIGURATION — a self-hosted instance is the normal case for everything that
+is not github.com or gitlab.com, so which hosts an adapter owns is read off the
+machine rather than assumed. For GitLab that is `configured_hosts` below: the
+instances `glab auth status` reports, which is where the operator's answer
+already lives. `GITLAB_HOST` still decides when it is set, and the GitHub
+adapter still takes `GH_HOST` alone — see `configured_hosts` for why the same
+discovery is not done for `gh`.
 
 ADDING A FORGE. Write a class with the methods below and register it: either
 in `BUILTIN` here, or — for a test, or a forge that is not fleet's business to
@@ -232,6 +236,107 @@ def change_url(url) -> str:
     """
     m = CHANGE_URL_RE.match((url or "").strip())
     return m.group(1) if m else ""
+
+
+# --- which hosts a CLI is configured for -------------------------------------
+
+
+# How both `gh auth status` and `glab auth status` head each instance they are
+# configured for: the bare hostname, alone on an unindented line, with
+# everything they have to say about it indented underneath. A `:port` is
+# allowed because a self-hosted instance on one is ordinary and `RepoId`
+# carries the port as part of the host. A dot is REQUIRED, for the same reason
+# `RepoId.parse` requires one: it is what tells a hostname from a decoration
+# line, and it is the shape every host fleet can be handed as part of a URL.
+AUTH_HOST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.-]*\.[A-Za-z0-9-]+(?::\d+)?$")
+
+_CONFIGURED: dict = {}
+
+
+def configured_hosts(cli: str, timeout: int = 10) -> list:
+    """Every instance `cli` is authenticated or configured for, asked of `cli`.
+
+    WHY THIS EXISTS. `GH_HOST` and `GITLAB_HOST` are the documented way to tell
+    fleet about a self-hosted instance, and in practice nothing exports them:
+    an operator logs their CLI in once and never thinks about it again. The
+    result was that a whole forge was invisible — `shepherd` never saw a merge
+    request on a self-hosted instance, `collect` could not verify a publish
+    there, and `reap` could never land the task, so its session and worktree
+    leaked with no upper bound. The operator's answer was already on the
+    machine; nothing was reading it.
+
+    IT NEEDS NO NETWORK. `auth status` prints one heading per configured
+    instance out of the CLI's own config and then decorates each with an API
+    call, so the headings are there whether or not the call succeeds — measured
+    on 2026-09-11 against `glab` 1.117.0 with every request refused, which
+    printed both instances in 0.2s. The exit code is ignored for the same
+    reason: `glab` exits non-zero when ANY one instance fails to authenticate,
+    which is the ordinary state of a machine logged in to one instance and not
+    the other.
+
+    BOTH STREAMS ARE READ, because they disagree: `glab` writes the whole
+    report to stderr and `gh` writes it to stdout.
+
+    IT NEVER FAILS. No CLI, no config, a report it cannot parse, or a CLI too
+    old for `--all` each answer with an empty list, which leaves every caller
+    exactly where it was before discovery existed. Discovery is an improvement
+    on a default, never a dependency: `collect` has to keep working with the
+    network down and on a machine that has neither CLI.
+
+    Cached for the process. The answer does not change inside a run, and the
+    registry would otherwise ask again for every adapter built.
+
+    WHY THE GITHUB ADAPTER DOES NOT USE THIS, though `gh auth status` prints
+    the same shape and GitHub Enterprise is the same problem. §13 of
+    `queue-selftest.sh` drives the whole queue through a forge that is not
+    GitHub with `gh` on PATH as a TRIPWIRE — it fails on any invocation at all,
+    so code reaching around this seam shows up there by name. Building the
+    GitHub adapter would run `gh auth status` and trip it, and the honest
+    choice between "discover GitHub Enterprise" and "keep the regression test
+    that keeps this seam honest" is the second one: `GH_HOST` was never the
+    half that was broken. This function takes the CLI by name so that
+    everything else — `scripts/preflight.sh` reporting auth per host, say —
+    can ask it about `gh` too, and so that the day that tripwire can tell a
+    configuration read from a change-request call, the adapter needs one line.
+    """
+    cli = str(cli or "").strip()
+    if cli in _CONFIGURED:
+        return list(_CONFIGURED[cli])
+    hosts: list = []
+    if cli and shutil.which(cli):
+        # `--all` is the documented way to ask about every instance rather than
+        # the one the current directory implies. A CLI too old to know the flag
+        # refuses the whole command, so the bare form is tried after it — which
+        # on a machine with no git context answers the same thing. A call that
+        # never answered at all stops the sequence rather than being retried:
+        # the second ask would hang exactly as long as the first, and paying
+        # the timeout twice is how discovery would start costing `collect`
+        # real time on the flaky network it is supposed to survive.
+        for argv in ([cli, "auth", "status", "--all"], [cli, "auth", "status"]):
+            said = _auth_status_hosts(argv, timeout)
+            if said is None:
+                break
+            if said:
+                hosts = said
+                break
+    _CONFIGURED[cli] = hosts
+    return list(hosts)
+
+
+def _auth_status_hosts(argv: list, timeout: int):
+    """The hostnames `argv` printed, or None if it never answered at all."""
+    try:
+        out = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    seen: dict = {}
+    for line in ((out.stdout or "") + "\n" + (out.stderr or "")).splitlines():
+        if not line[:1].strip():  # every heading is unindented; the rest is not
+            continue
+        host = line.strip().lower()
+        if AUTH_HOST_RE.match(host):
+            seen[host] = True
+    return list(seen)
 
 
 # --- the interface -----------------------------------------------------------
@@ -664,11 +769,13 @@ class GitLabForge(Forge):
     whatever credential the operator gave this machine, and a fleet that needed
     its own token would need one per machine a worker runs on.
 
-    WHICH HOSTS ARE GITLAB. `gitlab.com`, plus `GITLAB_HOST` — glab's own
-    variable for a self-hosted instance, the way `GH_HOST` is gh's. A
-    self-hosted instance is the normal case here, so every call names its
-    repository by FULL URL (`-R https://host/group/project`) rather than by
-    slug: that is what makes `gitlab.example.com/group/proj` reach
+    WHICH HOSTS ARE GITLAB. `gitlab.com`, plus whichever instances this
+    machine's `glab` is configured for — `configured_hosts` above reads them
+    out of `glab auth status`. `GITLAB_HOST`, glab's own variable for one
+    chosen instance, overrides that entirely when it is set, the way `GH_HOST`
+    does for gh. A self-hosted instance is the normal case here, so every call
+    names its repository by FULL URL (`-R https://host/group/project`) rather
+    than by slug: that is what makes `gitlab.example.com/group/proj` reach
     gitlab.example.com and not gitlab.com.
 
     WHAT IT COSTS. GitLab does not put a merge request's pipeline in the list
@@ -687,7 +794,15 @@ class GitLabForge(Forge):
 
     def __init__(self, hosts=None):
         extra = [self._host(h) for h in (hosts or [])]
-        extra.append(self._host(os.environ.get("GITLAB_HOST", "")))
+        override = self._host(os.environ.get("GITLAB_HOST", ""))
+        # `GITLAB_HOST` DECIDES when it is set, and discovery does not run at
+        # all then: it is glab's own variable, an operator who exported it
+        # pointed fleet at that instance deliberately, and glab itself obeys it
+        # over its config. Unset, this used to mean "gitlab.com and nothing
+        # else", which made a self-hosted instance invisible on the very
+        # machines whose `glab` was logged in to one — so ask glab which
+        # instances it holds instead of waiting for a variable nothing sets.
+        extra.extend([override] if override else configured_hosts("glab"))
         self.hosts = tuple(dict.fromkeys(
             ["gitlab.com", "www.gitlab.com"] + [h for h in extra if h]
         ))
@@ -1158,9 +1273,15 @@ def forges() -> list:
 
 
 def reset() -> None:
-    """Forget the cached registry. For tests inside one process."""
+    """Forget the cached registry and the discovered host lists.
+
+    For tests inside one process — and the host cache goes with the registry
+    because the adapters were built FROM it, so a test that changes what a CLI
+    would answer and then rebuilds the registry must get the new answer.
+    """
     global _REGISTRY
     _REGISTRY = None
+    _CONFIGURED.clear()
 
 
 def _load_plugin(path: str) -> list:
@@ -1260,3 +1381,21 @@ def _git_remote(path: str) -> str:
     except (OSError, subprocess.SubprocessError):
         return ""
     return out.stdout.strip() if out.returncode == 0 else ""
+
+
+# --- asking from a shell -----------------------------------------------------
+
+
+if __name__ == "__main__":
+    # `python3 scripts/lib/forge.py hosts glab` — the one thing in this module
+    # a shell script needs, since `configured_hosts` answers a question
+    # (`scripts/preflight.sh`'s "which instances should I report auth for")
+    # that is not itself about a change request. One host per line, nothing on
+    # a machine that has no such CLI, and always exit 0: a CLI that is not
+    # installed is an answer, not an error.
+    if len(sys.argv) == 3 and sys.argv[1] == "hosts":
+        for _host in configured_hosts(sys.argv[2]):
+            print(_host)
+    else:
+        print("usage: forge.py hosts <gh|glab>", file=sys.stderr)
+        sys.exit(2)
