@@ -2566,6 +2566,115 @@ expect "a bare Thurbeen/thurbox is refused, not matched against the slug" \
 	"must name its forge" "$out"
 refute "and nothing in thurbox would be merged under it" "would-merge" "$out"
 
+# --- 9j. mazet is on the allowlist, and the whole set names its forge --------
+#
+# The allowlist grew a second time, and this entry is the first under an owner
+# no other entry shares. The two claims 9i makes about thurbox are made again
+# here about `github.com/LeTuR/mazet`, because they are claims about an ENTRY
+# and not about the code once and for all: the gates travel with it — an
+# attested one merges, an unvetted one is still handed back — and it is matched
+# HOST-QUALIFIED, so `LeTuR/mazet` is refused rather than matched against the
+# bare slug.
+#
+# The third claim is the one only the whole set can make, and it is the one
+# nothing above would catch. `auto_merge_repos()` parses what the ENVIRONMENT
+# overrides it with; the literal in `queue.py` is never parsed, so a bare slug
+# written there would match nothing, refuse nothing, and fail no test here.
+# So the set itself is read and every entry put through the same parse.
+
+maztopic="$($QUEUE topic add mazet-allowlist --title 'Auto-merge in mazet' \
+	--prompt 'mazet merges on the same gates as fleet, and only host-qualified' 2>/dev/null)"
+$QUEUE add "$maztopic" attested --title 'A mazet PR the pipeline vetted' \
+	--repo "$srepo" --branch mzt/attested --number 01 >/dev/null
+cat >"$FLEET_QUEUE_DIR/$maztopic/01-attested/result.md" <<'EOF'
+---
+outcome: shipped
+artifact: https://github.com/LeTuR/mazet/pull/301
+---
+Shipped it.
+EOF
+git -C "$srepo" branch mzt/attested
+
+python3 - "$shep/gh" <<'PY'
+import json
+import sys
+
+out = sys.argv[1]
+green = {"__typename": "CheckRun", "name": "CI", "status": "COMPLETED",
+         "conclusion": "SUCCESS"}
+STEPS = [
+    {"step": s, "status": "completed"}
+    for s in ("intent", "rebase", "review", "test", "document", "lint", "push")
+] + [{"step": "pr", "status": "running"}, {"step": "ci", "status": "pending"}]
+
+
+def pr(n, branch, body):
+    sha = f"{n:040d}"
+    json.dump({
+        "number": n, "state": "OPEN", "title": f"PR {n}", "isDraft": False,
+        "url": f"https://github.com/LeTuR/mazet/pull/{n}",
+        "mergeable": "MERGEABLE", "reviewDecision": "", "statusCheckRollup": [green],
+        "body": body, "headRefName": branch, "baseRefName": "main",
+        "headRefOid": sha, "author": {"login": "LeTuR", "is_bot": False},
+        "headRepositoryOwner": {"login": "LeTuR"}, "isCrossRepository": False,
+    }, open(f"{out}/{n}.json", "w"))
+
+
+payload = json.dumps({"head_sha": f"{301:040d}", "steps": STEPS})
+pr(301, "mzt/attested",
+   f"<!-- no-mistakes-pipeline-attestation:v1 {payload} -->\n\nShipped it.\n")
+# Green in every way the forge can see, and nothing vetted the head that would
+# land. No task records it either, so nothing here spawns a fixer.
+pr(302, "mzt/unvetted", "Reviewed, tested, linted, and opened through the pipeline.\n")
+PY
+
+env PATH="$shep/bin:$base_path" $QUEUE collect >/dev/null
+
+out="$(env PATH="$shep/bin:$base_path" $QUEUE shepherd --topic "$maztopic" 2>&1)"
+expect "the shepherd reaches mazet at all" "LeTuR/mazet" "$out"
+if grep -qx 301 "$shep/merged" 2>/dev/null; then
+	pass "an attested, green mazet pull request is merged unattended"
+else
+	fail "an attested, green mazet pull request is merged unattended" \
+		"$out$nl$(cat "$shep/merged" 2>/dev/null)"
+fi
+expect "and by the same squash fleet's own are merged by" \
+	"pr merge https://github.com/LeTuR/mazet/pull/301 --squash --delete-branch" \
+	"$(cat "$shep/gh.log")"
+
+if grep -qx 302 "$shep/merged" 2>/dev/null; then
+	fail "the second addition loosens no gate either: an unattested one is not merged" \
+		"$(cat "$shep/merged")"
+else
+	pass "the second addition loosens no gate either: an unattested one is not merged"
+fi
+
+# The typo the operator's own words invite, for the new entry as for the last.
+out="$(env PATH="$shep/bin:$base_path" FLEET_AUTO_MERGE_REPOS="LeTuR/mazet" \
+	$QUEUE shepherd --topic "$maztopic" --dry-run 2>&1)"
+expect "a bare LeTuR/mazet is refused, not matched against the slug" \
+	"must name its forge" "$out"
+refute "and nothing in mazet would be merged under it" "would-merge" "$out"
+
+# The set itself: four repositories, every one of them host-qualified.
+allowlist="$(python3 - <<'PY'
+import sys
+
+sys.path.insert(0, "scripts/lib")
+import forge
+import queue as q
+
+repos = sorted(q.auto_merge_repos())
+print("entries=" + " ".join(repos))
+print("unqualified=" + (" ".join(r for r in repos if forge.RepoId.parse(r) is None) or "none"))
+PY
+)"
+expect "the allowlist is the four repositories fleet may merge in" \
+	"entries=github.com/LeTuR/mazet github.com/Thurbeen/fleet github.com/Thurbeen/thurbox github.com/Thurbeen/thurview" \
+	"$allowlist"
+expect "and every entry in it names its forge, so none can match a bare slug" \
+	"unqualified=none" "$allowlist"
+
 # --- 10. the shepherd writes down the publish state it already saw -----------
 #
 # Every fact below arrived in the ONE `gh pr list` the pass already makes, and
@@ -5297,9 +5406,13 @@ expect "shepherd lists what is open on the discovered instance" \
 	"acme/group/widgets on gitlab.example.com" "$out"
 expect "and a mergeable, attested one there is handed back, not merged" \
 	"fleet does not merge in acme/group/widgets on gitlab.example.com" "$out"
-expect "because the merge set is exactly the three repos it always was" \
-	"github.com/Thurbeen/fleet, github.com/Thurbeen/thurbox, github.com/Thurbeen/thurview" \
-	"$out"
+# What the set IS belongs to 9j, which reads it back whole; what belongs here
+# is that discovery added nothing to it, so this names the host and not the
+# entries — a fifth entry is not a failure of section 14.
+limited="$(printf '%s\n' "$out" | grep 'Merging is limited to')"
+expect "and the pass says what it limits merging to" "Merging is limited to" "$limited"
+refute "because discovering the instance put nothing of it on that set" \
+	"gitlab.example.com" "$limited"
 count_is "so nothing on a discovered host was merged" "$(wc -l <"$gl2/merged.log")" \
 	"$before" "$out"
 
