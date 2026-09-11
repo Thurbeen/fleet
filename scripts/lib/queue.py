@@ -497,6 +497,47 @@ def session_name(title: str, glyph: str) -> str:
     return encoded[:SESSION_NAME_BYTES].decode(errors="ignore")
 
 
+def session_name_refusal(title: str, glyph: str) -> str:
+    """Why `session create` would refuse this title, asked at `add` time.
+
+    thurbox's rule MIRRORED, never re-invented and never tightened: a session
+    name becomes a path segment there, so `paths::validate_safe_name` refuses
+    an empty name, one over the byte cap, one starting `.`, and one holding
+    `/`, `\\` or `..` — the four shapes its own `unsafe_names_are_rejected`
+    enumerates. Everything else it accepts, and so does this: a title is
+    human-facing text and narrowing it further would be a defect of its own.
+
+    Asked about the RENDERED name and not the raw title, because the rendered
+    name is what `dispatch` hands to `session create`: the glyph goes in front,
+    so a title starting `.` is unsafe exactly when no mark precedes it, and the
+    title is cut to the cap, so one that is merely long never reaches thurbox
+    long. `add` took `Rust crate, CI/CD and the profile model`; `dispatch` died
+    on it with thurbox's bare exit status, and the repair was a hand-edit of
+    `title` in task.yaml, because there is no retitle verb.
+    """
+    name = session_name(title, glyph)
+    if not name:
+        why = "and an empty name is not one it accepts"
+    elif name.startswith("."):
+        why = "and a name beginning with '.' is not one it accepts"
+    else:
+        why = ""
+        for bad in ("/", "\\", ".."):
+            if bad in name:
+                why = f"and it contains {bad!r}, which thurbox refuses"
+                break
+    if not why:
+        return ""
+    return (
+        f"--title {title!r} cannot become a session name:\n"
+        f"thurbox is asked to create {name!r}, {why}.\n"
+        "That name becomes a path there, so it carries no '/', no '\\', no "
+        "'..' and no\nleading '.'. The spawn fails with thurbox's own refusal "
+        "and the task stays\nqueued.\n"
+        "Retitle the task; nothing else about it has to change."
+    )
+
+
 def queue_root() -> str:
     """Where the queue lives, as an absolute path.
 
@@ -1414,6 +1455,16 @@ def cmd_add(args) -> int:
     if refusal:
         raise QueueError(refusal)
 
+    # And one layer down again: the title becomes the worker's session NAME,
+    # and thurbox refuses a name it could not make a path segment of. Asked
+    # here for the branch's own reason, only harder — a title that gets past
+    # `add` is repaired by hand-editing task.yaml and the brief's H1, because
+    # nothing here retitles a task.
+    title = args.title or args.slug.replace("-", " ")
+    refusal = session_name_refusal(title, worker_glyph())
+    if refusal:
+        raise QueueError(refusal)
+
     # Resolution, first hit wins and per FIELD. A stated method with no stated
     # tool drops the operator's global one rather than inheriting it: "run
     # `/no-mistakes --yes`" is the wrong sentence to hand a `push` task. A
@@ -1428,7 +1479,7 @@ def cmd_add(args) -> int:
     doc = {
         "id": tid,
         "topic": args.topic,
-        "title": args.title or args.slug.replace("-", " "),
+        "title": title,
         "state": "queued",
         "repo": args.repo,
         # None is a local task, and every path below treats it as today's
@@ -2281,6 +2332,39 @@ def spawn_commands(task: Task) -> tuple[list, str]:
     return create, send
 
 
+def spawn_failure(exc, proc=None) -> str:
+    """What thurbox actually said when `session create` failed.
+
+    NOT just stderr. `thurbox-cli` prints its structured failure on STDOUT —
+    `{"error": ...}` under `--json` — and exits non-zero, so a dispatch reading
+    only stderr reported `returned non-zero exit status 1` about a session name
+    thurbox had already named the fault in. That cost an operator a hand-run of
+    the printed `session create` to find out what it meant. Read both streams,
+    unwrap thurbox's own `error` field, and fall back to the exception only
+    when neither stream said anything — a spawn that failed for a reason
+    nobody here anticipated is exactly the case this is for.
+
+    `proc` carries the streams for the failures that are not a non-zero exit:
+    a success whose JSON does not parse, or carries no `id`, is thurbox saying
+    something unexpected on stdout, and that something is the whole answer.
+    """
+    source = exc if isinstance(exc, subprocess.CalledProcessError) else proc
+    said = []
+    for raw in (getattr(source, "stdout", None), getattr(source, "stderr", None)):
+        text = raw.decode(errors="replace") if isinstance(raw, bytes) else (raw or "")
+        text = text.strip()
+        if not text:
+            continue
+        try:
+            loaded = json.loads(text)
+        except ValueError:
+            loaded = None
+        if isinstance(loaded, dict) and loaded.get("error"):
+            text = str(loaded["error"])
+        said.append(text)
+    return "; ".join(said) or str(exc)
+
+
 def shell_quote(argv: list) -> str:
     return " ".join(shlex.quote(a) for a in argv)
 
@@ -2423,12 +2507,12 @@ def cmd_dispatch(args) -> int:
                 continue
 
         create, _send = spawn_commands(t)
+        proc = None
         try:
-            out = subprocess.run(create, capture_output=True, check=True).stdout
-            session = json.loads(out)["id"]
+            proc = subprocess.run(create, capture_output=True, check=True)
+            session = json.loads(proc.stdout)["id"]
         except (OSError, subprocess.CalledProcessError, ValueError, KeyError) as exc:
-            detail = getattr(exc, "stderr", b"") or b""
-            print(f"    {t.ref}: spawn failed: {detail.decode().strip() or exc}", file=sys.stderr)
+            print(f"    {t.ref}: spawn failed: {spawn_failure(exc, proc)}", file=sys.stderr)
             continue
         attach(t, session)
 
