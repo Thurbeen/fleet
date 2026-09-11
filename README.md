@@ -123,6 +123,14 @@ your working copy and are gitignored — this repo is public, and none of that i
 something to publish, so back that copy up yourself if it matters beyond this
 machine. `.gitignore`'s header names every path and the reason for each.
 
+Your settings are yours the same way, and each has a tracked `.example` beside
+it documenting the format: `registry/owners.txt` (the owners the map covers),
+`orchestration/voice.conf` (what the lead calls you), `session-glyphs.conf`
+(the mark fleet's sessions wear) and `orchestration/auto-merge.conf` — **the
+repositories fleet may merge in unattended, which the tracked copy deliberately
+leaves empty.** Clone this and fleet merges nowhere until you say otherwise; no
+operator inherits another's merge rights.
+
 ## More
 
 - [`AGENTS.md`](AGENTS.md) — how an agent should operate inside this repo, and

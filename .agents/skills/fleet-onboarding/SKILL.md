@@ -437,6 +437,20 @@ The one thing outside the repo that did change is the operator's own
 `layout.lua`, if they said yes in step 6 — with a `.bak-<timestamp>` beside it.
 Say that too.
 
+**And one thing is deliberately NOT set up: where fleet may merge.** A fresh
+clone has no `orchestration/auto-merge.conf`, and the tracked
+`auto-merge.example.conf` beside it names no repository, so `queue.sh shepherd`
+reviews every pull request and merges none of them — it says so by name rather
+than reporting the same silence a repo nobody listed would produce. That is
+correct: this repo is public and agnostic, and nobody should inherit another
+operator's merge rights by cloning it. Offer the file rather than writing it,
+and say what naming a repository in it actually authorises — the example's own
+header owns the format and the five gates a merge still has to clear:
+
+```bash
+cp -n orchestration/auto-merge.example.conf orchestration/auto-merge.conf
+```
+
 Gate anyway; the `yaml` check is the one that asserts the generated map's shape:
 
 ```bash

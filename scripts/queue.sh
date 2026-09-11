@@ -154,9 +154,10 @@
 #                determine and carries on. A change request it could not read
 #                is never called broken, and never called ready.
 #   NEVER TOUCH  only artifacts recorded on this queue's own tasks, and it
-#   A STRANGER   merges only in the repos AUTO_MERGE_REPOS names, each of
-#                which names its forge (`github.com/owner/repo`,
-#                `gitlab.example.com/group/project`).
+#   A STRANGER   merges only in the repos the operator's own, gitignored
+#                orchestration/auto-merge.conf names — nowhere at all until
+#                that file exists — each of which names its forge
+#                (`github.com/owner/repo`, `gitlab.example.com/group/project`).
 #
 # Usage:
 #   scripts/queue.sh topic add <slug> --title T --prompt 'the ask'   # or --prompt-file F|-

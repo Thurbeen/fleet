@@ -92,8 +92,9 @@ YAML by hand. Nothing to push — the map is gitignored.
    not just recorded artifacts, dispatches a fixer for one that conflicts, fails
    a check, was reviewed with changes requested, or was declared `no-mistakes`
    and carries no attestation for its current head, and squash-merges one that
-   clears every gate in the repos `AUTO_MERGE_REPOS` allows — entries there
-   name their forge (`github.com/Thurbeen/fleet`,
+   clears every gate in the repos `orchestration/auto-merge.conf` names — your
+   own file, gitignored, empty until you write it, so fleet merges nowhere
+   until then. Entries there name their forge (`github.com/owner/repo`,
    `gitlab.example.com/acme/group/widgets`), because a bare `owner/repo`
    is two different repositories once two forges are configured. It writes down
    what it saw either way, so a task's record says `checks-running` or

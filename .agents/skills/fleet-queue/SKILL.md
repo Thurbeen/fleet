@@ -244,7 +244,7 @@ waiting: 2 task(s) — each held by a durable, recorded blocker
         reads the detected_agent field 01 introduces
     report-status-honestly/05-read-the-tenant
         held by missing-credential outside the queue (az is authenticated for
-        the mazet tenant) — only `block --clear` releases it: the brief's first
+        the billing tenant) — only `block --clear` releases it: the brief's first
         instruction reads Azure and `az account show` fails
 ```
 
@@ -300,7 +300,7 @@ than a task:
 
 ```bash
 ./scripts/queue.sh block vending-machine-egress-resume/01-vm-identity-reconciliation \
-  --condition 'az is authenticated for the mazet tenant' \
+  --condition 'az is authenticated for the billing tenant' \
   --kind missing-credential \
   --why 'the first instruction in the brief reads Azure, and az account show fails'
 ```
@@ -330,7 +330,7 @@ observe, so no timer, no `collect`, no `reap` and no later dispatch appearing to
 work will release it:
 
 ```bash
-./scripts/queue.sh block <ref> --clear --condition 'az is authenticated for the mazet tenant'
+./scripts/queue.sh block <ref> --clear --condition 'az is authenticated for the billing tenant'
 ```
 
 That is deliberate. A condition that expired on its own would put back exactly
@@ -819,15 +819,18 @@ Three things it will not do, and they are what make it safe to run:
   could not determine and carries on. A PR it could not read is never called broken
   and never called ready.
 
-**On merging, which is the part that runs unattended.** `Thurbeen/fleet` is
-public and has a fork, so "merge every open PR on a timer" has to survive a
-stranger opening one. Fleet merges only in the repos on `AUTO_MERGE_REPOS` in
-`scripts/lib/queue.py` — `github.com/LeTuR/mazet`,
-`github.com/Thurbeen/fleet`, `github.com/Thurbeen/thurbox` and
-`github.com/Thurbeen/thurview` — and only when **all** of these hold. Entries
-there are HOST-QUALIFIED and one that names no forge is refused rather than
+**On merging, which is the part that runs unattended.** A repo can be public
+and have forks, so "merge every open PR on a timer" has to survive a stranger
+opening one. Fleet merges only in the repositories **the operator named in
+`orchestration/auto-merge.conf`** — their own file, gitignored, absent by
+default, and read on every pass — and only when **all** of these hold. This
+repo ships `orchestration/auto-merge.example.conf`, which names NOTHING, so a
+fresh clone merges nowhere until somebody writes that file; `shepherd` says so
+by name rather than reporting the same silence a repo nobody listed produces.
+Entries are HOST-QUALIFIED and one that names no forge is refused rather than
 matched: `Thurbeen/fleet` on github.com and `Thurbeen/fleet` on a self-hosted
-instance are not the same repository.
+instance are not the same repository. `FLEET_AUTO_MERGE_REPOS` in the
+environment REPLACES the file rather than adding to it.
 
 - **The head branch is in that repository**, not a fork. A stranger cannot
   create a branch here, so this is the one claim about a pull request that

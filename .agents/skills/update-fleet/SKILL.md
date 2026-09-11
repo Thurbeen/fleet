@@ -99,6 +99,7 @@ do. Otherwise map the list:
 | `extension.toml.in`, `FLEET.md`, `orchestration/voice.example.conf` — or a `reinstall-extension:` line | §3 | the installed extension no longer matches what it was rendered from |
 | `interface/fleet_queue.lua` | §4 | the installed plugin is a stale copy of that file |
 | `registry/owners.txt` | §5 | the generated map covers the wrong owners |
+| `orchestration/auto-merge.example.conf`, or `scripts/lib/queue.py`'s allowlist | §5b | `shepherd` may now merge in a different set of repos, or in none |
 | `scripts/reconcile.sh` | §6 | the running reconciler loop is executing old code |
 | `FLEET.md`, `AGENTS.md`, `CLAUDE.md`, `.agents/skills`, `.claude/skills`, `.claude/settings.json` — or a `restart-lead:` line | §8 | the lead is holding instructions it froze at launch |
 
@@ -107,6 +108,37 @@ do. Otherwise map the list:
 lead's standing context — so it needs both the reinstall in §3 and the
 hand-over in §8. A change to `orchestration/voice.example.conf` (or your own
 `voice.conf`) needs the same two: it moves what the rendered payload calls you.
+
+### §5b — where fleet may merge, which a sync can silently empty
+
+**One update in fleet's history moves this on its own: the one that took the
+auto-merge allowlist out of `scripts/lib/queue.py` and put it in
+`orchestration/auto-merge.conf`.** Before it, the repositories fleet merged in
+were a literal in tracked code, so every clone carried one operator's merge
+rights. After it they are the operator's own gitignored file, and the tracked
+copy beside it names nothing — so an operator who syncs across that change and
+writes no file finds `shepherd` merging **nowhere** and saying so on every pass.
+That is the intended default and not a regression, but it is silent unless
+somebody looks.
+
+So after a sync that touched either path, ask:
+
+```bash
+./scripts/queue.sh shepherd --dry-run | tail -6
+```
+
+A pass that prints `Fleet merges NOTHING` is telling you the file does not
+exist. If the operator wants unattended merges back, copy the tracked form and
+name their own repositories in it — host-qualified, and only repositories where
+the gates mean something:
+
+```bash
+cp -n orchestration/auto-merge.example.conf orchestration/auto-merge.conf
+$EDITOR orchestration/auto-merge.conf
+```
+
+It is read on every pass, so nothing needs a reinstall or a restart. Both files
+are gitignored below the tracked one, so there is nothing to commit.
 
 `scripts/lib/queue.py` is deliberately absent from this table, and so is
 `scripts/lib/notify_lead.py`. The reconciler's loop never sources either — every

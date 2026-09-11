@@ -1859,7 +1859,7 @@ def block_on_condition(q: Queue, task: Task, condition: str, args) -> int:
     if not condition:
         raise QueueError(
             "--condition is the wait itself, in words: --condition 'az is\n"
-            "authenticated for the mazet tenant'. Nothing removes one but\n"
+            "authenticated for the billing tenant'. Nothing removes one but\n"
             "`block --clear --condition` naming it back, so a blank one is a\n"
             "wait nobody could name and nobody could release."
         )
@@ -4298,63 +4298,47 @@ FIXABLE = ("conflicting", "checks-failed", "changes-requested", "policy")
 
 # WHERE FLEET IS ALLOWED TO MERGE. An explicit allowlist and not a flag,
 # because the blast radius of getting this wrong is somebody else's repository.
-# A repo that is not named here is reported `ready to merge` and left for a
-# human, which is what every repo did before this list existed.
+# A repo that is not named is reported `ready to merge` and left for a human,
+# which is what every repo did before this list existed.
 #
-# The gates below are the operator's, and all must hold: the head branch lives
-# in this repository (`classify`'s `foreign` check — a fork is never merged),
-# the body carries a `no-mistakes` attestation naming the pull request's
-# CURRENT head commit (so a stale attestation from an earlier push can never
-# authorise the push that replaced it), every check has CONCLUDED and passed,
-# the forge itself calls it mergeable, and whoever opened it can push to this
-# repo (`author_can_push` — the last thing checked, because it is the one claim
-# the pull request body cannot make for itself).
+# THE LIST IS NOT HERE, AND THAT IS THE POINT. It lives in
+# `orchestration/auto-merge.conf` — the operator's, gitignored, read on every
+# pass — with `orchestration/auto-merge.example.conf` as the tracked copy that
+# documents the format and names NOTHING. `Thurbeen/fleet` is public and
+# agnostic, so a repository literal in this file is one operator's merge rights
+# published in somebody else's machinery: a fresh clone would inherit them, and
+# every change to them would be a commit here naming that operator's projects.
+# Four such commits is what it took to notice. The file's own header owns the
+# format and the test for adding an entry; the gates below are unchanged and
+# are what putting a repository there actually means.
+#
+# The gates are the operator's, and all must hold: the head branch lives in
+# this repository (`classify`'s `foreign` check — a fork is never merged), the
+# body carries a `no-mistakes` attestation naming the pull request's CURRENT
+# head commit (so a stale attestation from an earlier push can never authorise
+# the push that replaced it), every check has CONCLUDED and passed, the forge
+# itself calls it mergeable, and whoever opened it can push to this repo
+# (`author_can_push` — the last thing checked, because it is the one claim the
+# pull request body cannot make for itself).
 #
 # HOST-QUALIFIED, and an entry that names no host is refused rather than
 # guessed at (`forge.RepoId.parse`). `Thurbeen/fleet` is a different repository
 # on github.com and on a self-hosted instance, and this is the one list where
-# matching the wrong one means acting on somebody else's code.
+# matching the wrong one means acting on somebody else's code. EVERY source is
+# parsed the same way — the conf file as well as the environment — which is the
+# bug the literal carried: a literal was never parsed, so a bare slug written
+# into it would have matched nothing, refused nothing, and failed no test.
 #
-# `Thurbeen/thurview` was added on the operator's standing instruction, "merge
-# everything when ready". It qualifies on the same terms rather than looser
-# ones: it carries its own `.no-mistakes.yaml` and CI, so the attestation and
-# checks gates above mean there exactly what they mean here. A repo WITHOUT
-# those would be a repo where every gate but `author_can_push` is vacuous —
-# that is the test for adding the next one, not whether the fleet happens to
-# have work there.
-#
-# `Thurbeen/thurbox` was added on the same instruction and passes the same
-# test: its own `.no-mistakes.yaml` runs `just lint` and a rustdoc build with
-# warnings denied, and its CI is four workflows. So the attestation gate has a
-# pipeline behind it there and the checks gate has checks behind it, which is
-# the whole of what the test asks. Nothing was relaxed for it — thurbox pull
-# requests clear the same five gates fleet's own do, and
-# `queue-selftest.sh`'s 9i is where that is checked.
-#
-# `LeTuR/mazet` was added on the same instruction and is the first entry under
-# an owner no other entry shares — which changes nothing about the test, and
-# it passes it: its own `.no-mistakes.yaml` names a lint, a format and a test
-# command, and its CI is three workflows. What DID hold it back was the
-# remote. It allowed rebase only until 2026-09-11, and `MERGE_METHOD` below is
-# squash, so every pass would have produced the refusal rather than a merge.
-# It now allows squash and nothing else, with the pull request title as the
-# commit subject — the same shape as fleet's own remotes. `queue-selftest.sh`'s
-# 9j is where this one is checked, and 9j also reads the whole set back and
-# puts every entry through `forge.RepoId.parse`: a bare slug written HERE is
-# never parsed at runtime, so it would match nothing and refuse nothing.
-AUTO_MERGE_REPOS = {
-    "github.com/LeTuR/mazet",
-    "github.com/Thurbeen/fleet",
-    "github.com/Thurbeen/thurbox",
-    "github.com/Thurbeen/thurview",
-}
+# AN EMPTY SET IS A VALID ANSWER and the default one. A fleet nobody has told
+# where it may merge merges nowhere and says so; it does not guess.
 
-# The one way to say it somewhere other than here, and it REPLACES the set
-# rather than adding to it: a fleet driving somebody else's repositories is a
-# different fleet, not this one plus an extra. Every entry is parsed, and one
-# that names no host is dropped with a line on stderr rather than matched
-# against a bare slug — which is the mistake this whole seam exists to make
-# impossible. `queue-selftest.sh` is the second fleet it was written for.
+AUTO_MERGE_CONF = "orchestration/auto-merge.conf"
+AUTO_MERGE_CONF_DEFAULTS = "orchestration/auto-merge.example.conf"
+
+# The one way to say it somewhere other than the conf file, and it REPLACES the
+# set rather than adding to it: a fleet driving somebody else's repositories is
+# a different fleet, not this one plus an extra. `queue-selftest.sh` is the
+# second fleet it was written for.
 AUTO_MERGE_ENV = "FLEET_AUTO_MERGE_REPOS"
 
 # Squash because it is the only method fleet's own remotes allow, so the pull
@@ -4365,25 +4349,63 @@ MERGE_METHOD = "squash"
 DELETE_MERGED_BRANCH = True
 
 
-def auto_merge_repos() -> set:
-    """The repositories fleet may merge in, host-qualified, every time."""
-    raw = os.environ.get(AUTO_MERGE_ENV, "").strip()
-    if not raw:
-        return AUTO_MERGE_REPOS
+def parse_auto_merge(entries, source: str) -> set:
+    """Host-qualified repositories out of raw entries, refusing the rest.
+
+    One parser for both sources, so the conf file can no more carry a bare
+    slug than the environment can. A refusal is LOUD — a line on stderr naming
+    the entry — because silence here reads exactly like a repository fleet
+    declined to merge in for one of the five good reasons.
+    """
     out = set()
-    for entry in re.split(r"[,\s]+", raw):
+    for entry in entries:
+        entry = entry.strip()
         if not entry:
             continue
         repo = forge.RepoId.parse(entry)
         if repo is None:
             print(
-                f"{AUTO_MERGE_ENV}: ignoring {entry!r} — an auto-merge entry must "
+                f"{source}: ignoring {entry!r} — an auto-merge entry must "
                 "name its forge, as in github.com/owner/repo",
                 file=sys.stderr,
             )
             continue
         out.add(repo.qualified)
     return out
+
+
+def auto_merge_conf_path(root: str | None = None) -> str:
+    """The auto-merge list in force: the operator's copy, or the tracked one.
+
+    `FLEET_AUTO_MERGE_ROOT` overrides where it is read from, the same way
+    `FLEET_GLYPH_ROOT` relocates the glyph setting — so a selftest can exercise
+    the file itself without inheriting whatever the developer's own gitignored
+    auto-merge.conf says.
+    """
+    root = root or os.environ.get("FLEET_AUTO_MERGE_ROOT") or checkout_root()
+    path = os.path.join(root, AUTO_MERGE_CONF)
+    if not os.path.exists(path):
+        path = os.path.join(root, AUTO_MERGE_CONF_DEFAULTS)
+    return path
+
+
+def auto_merge_repos(root: str | None = None) -> set:
+    """The repositories fleet may merge in, host-qualified, every time.
+
+    Read as DATA — one repository per line, `#` starts a comment — and never
+    executed. The environment REPLACES the file rather than adding to it, and
+    a missing file is an empty set: a fleet nobody told merges nowhere.
+    """
+    raw = os.environ.get(AUTO_MERGE_ENV, "").strip()
+    if raw:
+        return parse_auto_merge(re.split(r"[,\s]+", raw), AUTO_MERGE_ENV)
+    path = auto_merge_conf_path(root)
+    try:
+        with open(path) as fh:
+            lines = [line.partition("#")[0] for line in fh]
+    except OSError:
+        return set()
+    return parse_auto_merge(lines, path)
 
 
 def pr_ref(artifact: str) -> forge.ChangeRef | None:
@@ -5241,7 +5263,7 @@ def shepherd_targets(tasks: list) -> dict:
     The queue's tasks name their repositories: an artifact URL gives the
     repository — host and path — outright, and a task that has not reported one
     yet inherits the repository of the other tasks sharing its local checkout.
-    Merging stays limited to AUTO_MERGE_REPOS whatever comes out of here:
+    Merging stays limited to `auto_merge_repos()` whatever comes out of here:
     knowing about a repository and being allowed to merge in it are different
     questions.
     """
@@ -5367,14 +5389,30 @@ def cmd_shepherd(args) -> int:
         )
     if not args.dry_run and any(r["action"] == "dispatched" for r in rows):
         print("          Fixers are working in place on the existing branches; nothing forked.")
-    print(
-        "          Merging is limited to " + ", ".join(sorted(auto_merge_repos()))
-        + ", and only for a pull request whose\n"
-        "          head branch is in that repo, that someone who can push there "
-        "opened, that\n"
-        "          carries a no-mistakes attestation for its CURRENT head, whose "
-        "checks passed,\n          and that the forge itself calls mergeable."
-    )
+    # An empty allowlist is the default a fresh clone has, so it gets a
+    # sentence rather than a dangling "limited to , and only for" — and that
+    # sentence names the file, because "fleet merged nothing" and "nobody has
+    # told fleet where it may merge" are the same output otherwise.
+    allowed = sorted(auto_merge_repos())
+    if allowed:
+        print(
+            "          Merging is limited to " + ", ".join(allowed)
+            + ", and only for a pull request whose\n"
+            "          head branch is in that repo, that someone who can push there "
+            "opened, that\n"
+            "          carries a no-mistakes attestation for its CURRENT head, whose "
+            "checks passed,\n          and that the forge itself calls mergeable."
+        )
+    else:
+        print(
+            "          Fleet merges NOTHING: no repository is named in "
+            f"{auto_merge_conf_path()}\n"
+            f"          (nor in ${AUTO_MERGE_ENV}). Every pull request above is "
+            "yours to merge. Copy\n"
+            f"          {AUTO_MERGE_CONF_DEFAULTS} to {AUTO_MERGE_CONF} and name "
+            "your own; its\n          header owns the format and the five gates a "
+            "merge still has to clear."
+        )
     if not args.dry_run:
         refresh_run_logs(q)
     return 0

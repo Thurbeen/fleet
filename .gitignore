@@ -41,6 +41,15 @@
 # when you want something other than SLAYER and VEGA.
 /orchestration/voice.conf
 
+# WORKING STATE. The repositories fleet may MERGE in unattended. This is the
+# one list where being wrong means acting on somebody else's code, and which
+# repositories those are is a property of the operator and never of this public,
+# agnostic repo — so it is ignored for the same reason owners.txt is, and
+# orchestration/auto-merge.example.conf is the tracked copy that documents the
+# format and deliberately names NONE. The reader falls back to it, so a fresh
+# clone merges nothing until this file says otherwise.
+/orchestration/auto-merge.conf
+
 # MACHINE. Whether this terminal's font draws a two-cell emoji at two cells is
 # true of one machine, so the glyph setting is one machine's answer.
 # orchestration/session-glyphs.example.conf is the tracked copy that carries the

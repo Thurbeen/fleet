@@ -107,10 +107,10 @@ The default for every task here is the frontmatter at the top of this file.
   A repo that forbids squash — a GitLab project can, with
   `squash_option: never` — is one fleet reports and leaves for you.
 - **You do not merge.** Opening it is where your work ends. `queue.sh
-  shepherd` may later merge it for you in the repos its `AUTO_MERGE_REPOS`
-  allowlist names (host-qualified, as in `github.com/owner/repo` or
-  `gitlab.example.com/group/project`), but only once it clears its gates —
-  never merge it yourself in the meantime.
+  shepherd` may later merge it for you in the repos the operator's own
+  `orchestration/auto-merge.conf` names (host-qualified, as in
+  `github.com/owner/repo` or `gitlab.example.com/group/project`), but only once
+  it clears its gates — never merge it yourself in the meantime.
 
 ## Reporting back — write a file, do not send mail
 

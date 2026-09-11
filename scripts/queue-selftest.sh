@@ -202,6 +202,28 @@ export FLEET_QUEUE_DIR="$tmp/queue"
 # of this file would scaffold logs into the operator's own orchestration/runs/.
 export FLEET_RUNS_DIR="$tmp/runs"
 
+# --- the auto-merge allowlist, which is a FILE and not a literal -------------
+#
+# `orchestration/auto-merge.conf` is the operator's, gitignored, and absent on
+# most machines; `orchestration/auto-merge.example.conf` is the tracked
+# fallback and names NOTHING. Neither is what the fixtures below want: reading
+# the operator's would make the verdicts depend on whose laptop this ran on,
+# and reading the tracked one would leave every merge test asserting that fleet
+# merges nowhere.
+#
+# So the whole run reads a throwaway list naming exactly the two repositories
+# the fixtures open pull requests in. `FLEET_AUTO_MERGE_ROOT` is the same kind
+# of override as `FLEET_GLYPH_ROOT`. Sections that want a different answer set
+# `FLEET_AUTO_MERGE_REPOS`, which REPLACES this, or point the root somewhere
+# else — 9i does both.
+export FLEET_AUTO_MERGE_ROOT="$tmp/automerge"
+mkdir -p "$FLEET_AUTO_MERGE_ROOT/orchestration"
+cat >"$FLEET_AUTO_MERGE_ROOT/orchestration/auto-merge.conf" <<'EOF'
+# The repositories this selftest's fixtures open pull requests in.
+github.com/Thurbeen/fleet
+github.com/Thurbeen/thurbox
+EOF
+
 # --- `glab`, a STAND-IN on PATH for the whole run ----------------------------
 #
 # The GitLab adapter asks `glab auth status` which instances this machine
@@ -2051,7 +2073,7 @@ git -C "$srepo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m base
 # owner is an organisation and the author is a person inside it. `stranger` has
 # no file here, so the stub answers `none` for them.
 mkdir -p "$shep/perms"
-echo admin >"$shep/perms/LeTuR"
+echo admin >"$shep/perms/maintainer"
 
 stopic="$($QUEUE topic add shepherd-cases --title 'The PRs, after the work' \
 	--prompt 'watch every open PR and dispatch a fixer when one goes bad' 2>/dev/null)"
@@ -2111,7 +2133,7 @@ def pr(n, owner="Thurbeen/fleet", sha=None, body=None, **kw):
         "mergeable": "MERGEABLE", "reviewDecision": "", "statusCheckRollup": [green],
         "body": attested(sha) if body is None else body,
         "headRefName": "fix/x", "baseRefName": "main", "headRefOid": sha,
-        "author": {"login": "LeTuR", "is_bot": False},
+        "author": {"login": "maintainer", "is_bot": False},
         "headRepositoryOwner": {"login": owner.split("/")[0]},
         "isCrossRepository": False,
     }
@@ -2473,23 +2495,39 @@ refute "and nothing from it is merged" "pr merge" "$(cat "$shep/many.log")"
 refute "and it is not reported as having zero open pull requests either" \
 	"no open pull requests" "$out"
 
-# --- 9i. thurbox is on the allowlist, on the same gates as fleet -------------
+# --- 9i. the allowlist is a FILE the operator owns, and the tracked one is empty
 #
-# The allowlist grew, so the claim under test is that adding a repository adds
-# a REPOSITORY and not a looser rule. Two pull requests on thurbox, both green
-# and mergeable and both on branches that are ours: the attested one merges the
-# way fleet's own do, and the one nothing vetted is still handed back.
+# Where fleet may merge used to be a literal in `scripts/lib/queue.py`, so the
+# only way an operator could name a repository was a commit in this public repo
+# naming their projects — and every clone inherited whatever the last operator
+# had named. The list is now `orchestration/auto-merge.conf`: the operator's,
+# gitignored, and absent by default.
 #
-# The third claim is the one this addition could quietly weaken. The allowlist
-# is matched HOST-QUALIFIED, so `Thurbeen/thurbox` — the way a person writes it
-# and the way the operator asked for it — is refused rather than matched
-# against the bare slug. 13e proves that for a forge that is not GitHub; this
-# proves it for the repo that was just added, where the bare slug is the
-# plausible typo.
+# Five claims, and the first two are the ones the literal used to carry:
+#
+#   a repository NAMED in the file merges on exactly the gates fleet's own
+#     pull requests clear — an attested, green one goes, an unvetted one is
+#     still handed back, so naming a repository adds a REPOSITORY and not a
+#     looser rule;
+#   a repository the file does not name is reported and left alone;
+#   the file is matched HOST-QUALIFIED, so a bare `owner/repo` written INTO IT
+#     is refused rather than matched against the slug. This is the claim the
+#     literal could not make: nothing parsed it, so a bare slug there would
+#     have matched nothing, refused nothing and failed no test;
+#   with no file at all the set is EMPTY and the pass says so by naming the
+#     file, because "fleet merged nothing" and "nobody told fleet where it may
+#     merge" are otherwise the same output;
+#   the TRACKED copy names no repository, so a fresh clone of a public repo
+#     merges nowhere until its own operator says otherwise. That last one is
+#     the whole reason this section exists.
+#
+# `Thurbeen/thurbox` is the fixture repository throughout, named by the
+# throwaway conf at the top of this file. Which repositories a real fleet
+# merges in is not this repo's business and so is not asserted anywhere.
 
-ttopic="$($QUEUE topic add thurbox-allowlist --title 'Auto-merge in thurbox' \
-	--prompt 'thurbox merges on the same gates as fleet, and only host-qualified' 2>/dev/null)"
-$QUEUE add "$ttopic" attested --title 'A thurbox PR the pipeline vetted' \
+ttopic="$($QUEUE topic add thurbox-allowlist --title 'Auto-merge from the conf file' \
+	--prompt 'a named repo merges on fleet own gates, and only host-qualified' 2>/dev/null)"
+$QUEUE add "$ttopic" attested --title 'A PR the pipeline vetted' \
 	--repo "$srepo" --branch tbx/attested --number 01 >/dev/null
 cat >"$FLEET_QUEUE_DIR/$ttopic/01-attested/result.md" <<'EOF'
 ---
@@ -2520,7 +2558,7 @@ def pr(n, branch, body):
         "url": f"https://github.com/Thurbeen/thurbox/pull/{n}",
         "mergeable": "MERGEABLE", "reviewDecision": "", "statusCheckRollup": [green],
         "body": body, "headRefName": branch, "baseRefName": "main",
-        "headRefOid": sha, "author": {"login": "LeTuR", "is_bot": False},
+        "headRefOid": sha, "author": {"login": "maintainer", "is_bot": False},
         "headRepositoryOwner": {"login": "Thurbeen"}, "isCrossRepository": False,
     }, open(f"{out}/{n}.json", "w"))
 
@@ -2538,11 +2576,11 @@ PY
 env PATH="$shep/bin:$base_path" $QUEUE collect >/dev/null
 
 out="$(env PATH="$shep/bin:$base_path" $QUEUE shepherd --topic "$ttopic" 2>&1)"
-expect "the shepherd reaches thurbox at all" "Thurbeen/thurbox" "$out"
+expect "the shepherd reaches a repository the conf file names" "Thurbeen/thurbox" "$out"
 if grep -qx 201 "$shep/merged" 2>/dev/null; then
-	pass "an attested, green thurbox pull request is merged unattended"
+	pass "an attested, green pull request there is merged unattended"
 else
-	fail "an attested, green thurbox pull request is merged unattended" \
+	fail "an attested, green pull request there is merged unattended" \
 		"$out$nl$(cat "$shep/merged" 2>/dev/null)"
 fi
 expect "and by the same squash fleet's own are merged by" \
@@ -2550,130 +2588,80 @@ expect "and by the same squash fleet's own are merged by" \
 	"$(cat "$shep/gh.log")"
 
 if grep -qx 202 "$shep/merged" 2>/dev/null; then
-	fail "joining the allowlist loosens no gate: an unattested one is not merged" \
+	fail "naming a repository loosens no gate: an unattested one is not merged" \
 		"$(cat "$shep/merged")"
 else
-	pass "joining the allowlist loosens no gate: an unattested one is not merged"
+	pass "naming a repository loosens no gate: an unattested one is not merged"
 fi
 expect "and it is named for what it lacks, not passed over" \
 	"the body carries no no-mistakes attestation" "$out"
 
-# The typo the operator's own words invite: the allowlist is host-qualified,
-# and `Thurbeen/thurbox` names no forge.
+# The typo the operator's own words invite, made IN THE FILE this time: the
+# list is host-qualified wherever it is written, and a bare slug names no forge.
+bareroot="$tmp/automerge-bare"
+mkdir -p "$bareroot/orchestration"
+printf '# a slug, which names no forge\nThurbeen/thurbox\n' \
+	>"$bareroot/orchestration/auto-merge.conf"
+out="$(env PATH="$shep/bin:$base_path" FLEET_AUTO_MERGE_ROOT="$bareroot" \
+	$QUEUE shepherd --topic "$ttopic" --dry-run 2>&1)"
+expect "a bare slug in the conf file is refused, not matched against it" \
+	"must name its forge" "$out"
+refute "and nothing in that repo would be merged under it" "would-merge" "$out"
+
+# The same typo in the environment, which REPLACES the file rather than adding
+# to it — so this also proves the file did not leak past the override.
 out="$(env PATH="$shep/bin:$base_path" FLEET_AUTO_MERGE_REPOS="Thurbeen/thurbox" \
 	$QUEUE shepherd --topic "$ttopic" --dry-run 2>&1)"
-expect "a bare Thurbeen/thurbox is refused, not matched against the slug" \
+expect "a bare slug in the environment is refused the same way" \
 	"must name its forge" "$out"
-refute "and nothing in thurbox would be merged under it" "would-merge" "$out"
+refute "and the conf file does not leak past an override that replaces it" \
+	"would-merge" "$out"
 
-# --- 9j. mazet is on the allowlist, and the whole set names its forge --------
-#
-# The allowlist grew a second time, and this entry is the first under an owner
-# no other entry shares. The two claims 9i makes about thurbox are made again
-# here about `github.com/LeTuR/mazet`, because they are claims about an ENTRY
-# and not about the code once and for all: the gates travel with it — an
-# attested one merges, an unvetted one is still handed back — and it is matched
-# HOST-QUALIFIED, so `LeTuR/mazet` is refused rather than matched against the
-# bare slug.
-#
-# The third claim is the one only the whole set can make, and it is the one
-# nothing above would catch. `auto_merge_repos()` parses what the ENVIRONMENT
-# overrides it with; the literal in `queue.py` is never parsed, so a bare slug
-# written there would match nothing, refuse nothing, and fail no test here.
-# So the set itself is read and every entry put through the same parse.
+# NO FILE AT ALL, which is what a fresh clone that never wrote one has. The
+# set is empty, nothing is merged, and the pass names the file rather than
+# reporting the same silence a repo nobody listed would produce.
+emptyroot="$tmp/automerge-none"
+mkdir -p "$emptyroot/orchestration"
+out="$(env PATH="$shep/bin:$base_path" FLEET_AUTO_MERGE_ROOT="$emptyroot" \
+	$QUEUE shepherd --topic "$ttopic" --dry-run 2>&1)"
+expect "with no list at all, fleet merges nothing" "Fleet merges NOTHING" "$out"
+expect "and says which file would name one" "orchestration/auto-merge.conf" "$out"
+refute "and nothing at all would be merged" "would-merge" "$out"
 
-maztopic="$($QUEUE topic add mazet-allowlist --title 'Auto-merge in mazet' \
-	--prompt 'mazet merges on the same gates as fleet, and only host-qualified' 2>/dev/null)"
-$QUEUE add "$maztopic" attested --title 'A mazet PR the pipeline vetted' \
-	--repo "$srepo" --branch mzt/attested --number 01 >/dev/null
-cat >"$FLEET_QUEUE_DIR/$maztopic/01-attested/result.md" <<'EOF'
----
-outcome: shipped
-artifact: https://github.com/LeTuR/mazet/pull/301
----
-Shipped it.
-EOF
-git -C "$srepo" branch mzt/attested
-
-python3 - "$shep/gh" <<'PY'
-import json
-import sys
-
-out = sys.argv[1]
-green = {"__typename": "CheckRun", "name": "CI", "status": "COMPLETED",
-         "conclusion": "SUCCESS"}
-STEPS = [
-    {"step": s, "status": "completed"}
-    for s in ("intent", "rebase", "review", "test", "document", "lint", "push")
-] + [{"step": "pr", "status": "running"}, {"step": "ci", "status": "pending"}]
-
-
-def pr(n, branch, body):
-    sha = f"{n:040d}"
-    json.dump({
-        "number": n, "state": "OPEN", "title": f"PR {n}", "isDraft": False,
-        "url": f"https://github.com/LeTuR/mazet/pull/{n}",
-        "mergeable": "MERGEABLE", "reviewDecision": "", "statusCheckRollup": [green],
-        "body": body, "headRefName": branch, "baseRefName": "main",
-        "headRefOid": sha, "author": {"login": "LeTuR", "is_bot": False},
-        "headRepositoryOwner": {"login": "LeTuR"}, "isCrossRepository": False,
-    }, open(f"{out}/{n}.json", "w"))
-
-
-payload = json.dumps({"head_sha": f"{301:040d}", "steps": STEPS})
-pr(301, "mzt/attested",
-   f"<!-- no-mistakes-pipeline-attestation:v1 {payload} -->\n\nShipped it.\n")
-# Green in every way the forge can see, and nothing vetted the head that would
-# land. No task records it either, so nothing here spawns a fixer.
-pr(302, "mzt/unvetted", "Reviewed, tested, linted, and opened through the pipeline.\n")
-PY
-
-env PATH="$shep/bin:$base_path" $QUEUE collect >/dev/null
-
-out="$(env PATH="$shep/bin:$base_path" $QUEUE shepherd --topic "$maztopic" 2>&1)"
-expect "the shepherd reaches mazet at all" "LeTuR/mazet" "$out"
-if grep -qx 301 "$shep/merged" 2>/dev/null; then
-	pass "an attested, green mazet pull request is merged unattended"
-else
-	fail "an attested, green mazet pull request is merged unattended" \
-		"$out$nl$(cat "$shep/merged" 2>/dev/null)"
-fi
-expect "and by the same squash fleet's own are merged by" \
-	"pr merge https://github.com/LeTuR/mazet/pull/301 --squash --delete-branch" \
-	"$(cat "$shep/gh.log")"
-
-if grep -qx 302 "$shep/merged" 2>/dev/null; then
-	fail "the second addition loosens no gate either: an unattested one is not merged" \
-		"$(cat "$shep/merged")"
-else
-	pass "the second addition loosens no gate either: an unattested one is not merged"
-fi
-
-# The typo the operator's own words invite, for the new entry as for the last.
-out="$(env PATH="$shep/bin:$base_path" FLEET_AUTO_MERGE_REPOS="LeTuR/mazet" \
-	$QUEUE shepherd --topic "$maztopic" --dry-run 2>&1)"
-expect "a bare LeTuR/mazet is refused, not matched against the slug" \
-	"must name its forge" "$out"
-refute "and nothing in mazet would be merged under it" "would-merge" "$out"
-
-# The set itself: four repositories, every one of them host-qualified.
-allowlist="$(python3 - <<'PY'
+# THE TRACKED COPY, read out of this checkout rather than out of $tmp. This is
+# the claim the whole change exists for: a public, agnostic repo hands a fresh
+# clone no merge rights over anybody's repositories.
+shipped="$(python3 - <<'PY'
 import sys
 
 sys.path.insert(0, "scripts/lib")
 import forge
 import queue as q
 
-repos = sorted(q.auto_merge_repos())
-print("entries=" + " ".join(repos))
+root = q.checkout_root()
+path = q.auto_merge_conf_path(root)
+repos = sorted(q.auto_merge_repos(root))
+print("tracked=" + q.AUTO_MERGE_CONF_DEFAULTS)
+print("entries=" + (" ".join(repos) or "none"))
 print("unqualified=" + (" ".join(r for r in repos if forge.RepoId.parse(r) is None) or "none"))
+print("reading=" + ("operator" if path.endswith(q.AUTO_MERGE_CONF) else "tracked"))
 PY
 )"
-expect "the allowlist is the four repositories fleet may merge in" \
-	"entries=github.com/LeTuR/mazet github.com/Thurbeen/fleet github.com/Thurbeen/thurbox github.com/Thurbeen/thurview" \
-	"$allowlist"
-expect "and every entry in it names its forge, so none can match a bare slug" \
-	"unqualified=none" "$allowlist"
+if printf '%s' "$shipped" | grep -q '^reading=tracked$'; then
+	expect "the copy this repo SHIPS names no repository at all" \
+		"entries=none" "$shipped"
+else
+	# The developer running this has their own auto-merge.conf, which is the
+	# point of the file. Read the tracked one directly instead of skipping.
+	tracked="$(sed 's/#.*//' orchestration/auto-merge.example.conf | tr -d '[:space:]')"
+	if [ -z "$tracked" ]; then
+		pass "the copy this repo SHIPS names no repository at all"
+	else
+		fail "the copy this repo SHIPS names no repository at all" "$tracked"
+	fi
+fi
+expect "and whatever is in force names its forge, so none can match a bare slug" \
+	"unqualified=none" "$shipped"
 
 # --- 10. the shepherd writes down the publish state it already saw -----------
 #
@@ -5406,9 +5394,9 @@ expect "shepherd lists what is open on the discovered instance" \
 	"acme/group/widgets on gitlab.example.com" "$out"
 expect "and a mergeable, attested one there is handed back, not merged" \
 	"fleet does not merge in acme/group/widgets on gitlab.example.com" "$out"
-# What the set IS belongs to 9j, which reads it back whole; what belongs here
-# is that discovery added nothing to it, so this names the host and not the
-# entries — a fifth entry is not a failure of section 14.
+# What the set IS belongs to 9i, which reads it out of the file; what belongs
+# here is that discovery added nothing to it, so this names the host and not
+# the entries — another entry is not a failure of section 14.
 limited="$(printf '%s\n' "$out" | grep 'Merging is limited to')"
 expect "and the pass says what it limits merging to" "Merging is limited to" "$limited"
 refute "because discovering the instance put nothing of it on that set" \
@@ -5707,7 +5695,7 @@ done
 # --- the refusals come first: a new form is a new way to spell the old lie ---
 
 if out="$($QUEUE block "$xtopic/01-vm-identity" \
-	--condition 'az is authenticated for the mazet tenant' 2>&1)"; then
+	--condition 'az is authenticated for the billing tenant' 2>&1)"; then
 	fail "a condition with no kind and no reason is refused" "$out"
 else
 	expect "a condition with no kind and no reason is refused" "--kind" "$out"
@@ -5771,7 +5759,7 @@ fi
 
 # --- recording one, and where it then shows up -------------------------------
 
-AZ='az is authenticated for the mazet tenant'
+AZ='az is authenticated for the billing tenant'
 if ! out="$($QUEUE block "$xtopic/01-vm-identity" --condition "$AZ" \
 	--kind missing-credential \
 	--why "the brief's first instruction reads Azure and az account show fails" 2>&1)"; then

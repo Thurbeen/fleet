@@ -13,7 +13,7 @@
 #   scripts/check.sh --fix markdown      # apply the fixes a check can apply
 #
 # Checks: shell, markdown, yaml, profiles, queue, reconcile, status, skills,
-# pane, voice, onboarding, sync. Only `markdown` has a fixer; `--fix` is a no-op for
+# pane, voice, automerge, onboarding, sync. Only `markdown` has a fixer; `--fix` is a no-op for
 # the rest, so `scripts/check.sh --fix` is always safe to run.
 #
 # Requires: shellcheck, rumdl, python3 (with PyYAML), lua. A missing tool
@@ -570,6 +570,57 @@ check_voice() {
 	[ "$miss" -eq 0 ] && ok "voice: $conf renders into FLEET.md's placeholders"
 }
 
+# WHERE FLEET MAY MERGE, WHICH IS THE OPERATOR'S AND NOT THIS REPO'S. The
+# allowlist used to be a literal in scripts/lib/queue.py, so naming a
+# repository meant committing it to a PUBLIC repo, and every clone inherited
+# the last operator's merge rights. It is orchestration/auto-merge.conf now —
+# the operator's, gitignored — and this gate is what keeps it from drifting
+# back: the tracked copy must name NOTHING, and the set a fresh clone would
+# read must come out empty. Textual, because the failure mode is: somebody adds
+# "just one" entry to the shipped file and it ships to everybody.
+check_automerge() {
+	need python3 automerge || return
+
+	local example="orchestration/auto-merge.example.conf" miss=0
+	if [ ! -f "$example" ]; then
+		fail "automerge: $example is missing; a fresh clone would document no format"
+		return
+	fi
+
+	# Every line with its comment cut off. Anything left is an entry, and an
+	# entry here is one operator's repository published in everybody's copy.
+	local live
+	live="$(sed 's/#.*//' "$example" | grep -E '[^[:space:]]')"
+	if [ -n "$live" ]; then
+		fail "automerge: $example names a repository; the tracked copy must name none"
+		printf '%s\n' "$live" | sed 's/^/          /' >&2
+		miss=1
+	fi
+
+	# And the set itself, read the way `shepherd` reads it. A checkout with an
+	# operator's own auto-merge.conf in it answers about that file instead, so
+	# the gate reads the tracked one directly there rather than passing on a
+	# result about somebody's private list.
+	local shipped
+	if [ -f orchestration/auto-merge.conf ]; then
+		shipped="skip"
+	else
+		shipped="$(FLEET_AUTO_MERGE_REPOS='' python3 -c '
+import sys
+sys.path.insert(0, "scripts/lib")
+import queue as q
+print("entries=" + (" ".join(sorted(q.auto_merge_repos(q.checkout_root()))) or "none"))
+' 2>&1)"
+		if [ "$shipped" != "entries=none" ]; then
+			fail "automerge: a fresh clone would inherit a merge allowlist: $shipped"
+			miss=1
+		fi
+	fi
+
+	[ "$miss" -eq 0 ] &&
+		ok "automerge: $example names no repository; a fresh clone merges nowhere"
+}
+
 # THE SETUP NOBODY RE-RUNS. Onboarding's scripts — preflight, discover-owners,
 # place-pane — are the ones every operator runs once and never again, so a
 # regression in them is invisible to everyone who is already set up and total
@@ -601,7 +652,7 @@ for arg in "$@"; do
 done
 
 if [ ${#checks[@]} -eq 0 ]; then
-	checks=(shell markdown yaml profiles queue reconcile status skills pane voice onboarding sync)
+	checks=(shell markdown yaml profiles queue reconcile status skills pane voice automerge onboarding sync)
 fi
 
 for c in "${checks[@]}"; do
@@ -617,9 +668,10 @@ for c in "${checks[@]}"; do
 	skills) check_skills ;;
 	pane) check_pane ;;
 	voice) check_voice ;;
+	automerge) check_automerge ;;
 	onboarding) check_onboarding ;;
 	*)
-		printf 'error: unknown check %q (want: shell markdown yaml profiles queue reconcile status skills pane voice onboarding sync)\n' "$c" >&2
+		printf 'error: unknown check %q (want: shell markdown yaml profiles queue reconcile status skills pane voice automerge onboarding sync)\n' "$c" >&2
 		exit 2
 		;;
 	esac

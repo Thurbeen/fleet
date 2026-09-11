@@ -210,8 +210,11 @@ The loop, driven by `./scripts/queue.sh`:
    on the repos the queue's tasks name, not the tasks' recorded artifacts. One
    is linked back by artifact or head branch; an unlinked one is
    still classified and merged, it just has no session to fix it. It merges
-   only in the repos `AUTO_MERGE_REPOS` names in `scripts/lib/queue.py` — each
-   entry host-qualified, and one that names no forge refused rather than
+   only in the repos the operator named in `orchestration/auto-merge.conf` —
+   their own file, gitignored, read every pass, with the tracked
+   `auto-merge.example.conf` beside it naming NONE, so a fresh clone of this
+   public repo merges nowhere until its operator says otherwise; each entry
+   host-qualified, and one that names no forge refused rather than
    matched — and only for one whose head branch is in that repo, opened by
    someone who can
    push there, carrying a `no-mistakes` attestation for its **current** head.
