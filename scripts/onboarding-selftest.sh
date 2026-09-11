@@ -576,7 +576,7 @@ stub "$regbin" gh 'case "$1 $2" in
 "auth status")
   case "$*" in
   *--json*) cat "$FIXTURES/hosts.json" ;;
-  *) exit 0 ;;
+  *) echo "expired: authentication failed" >&2; exit 1 ;;
   esac
   ;;
 "auth token")
@@ -637,12 +637,11 @@ fi
 expect "4d the totals count every merged repo" "repos: 5" "$(cat "$map")"
 expect "4d across every owner that resolved" "owners: 4" "$(cat "$map")"
 
-# 4e. Asking every account must not change which one is ACTIVE. `gh` is the
-# tool the operator uses for everything else, so the read is by NAME and
-# `auth switch` appears in neither script nor in the seam they share.
-refute "4e the sync never switches the operator's active account" "auth switch" \
-	"$(cat scripts/sync-registry.sh scripts/discover-owners.sh scripts/lib/gh-accounts.sh)"
-
+# 4e. Asking every account must not change which one is ACTIVE — `gh` is the
+# tool the operator uses for everything else. Proved by the stub's catch-all
+# above: `auth switch` is an unexpected call, which exits 9 and takes the sync
+# down with it under `set -e`, so 4a's exit 0 is the evidence that none ran.
+#
 # 4f. A login that no longer works costs its own repos and never the map: it is
 # named — an unexplained thinner map is the failure this whole section is
 # about — and the sync carries on.
@@ -673,22 +672,19 @@ expect "4g from the active account alone" "repos: 3" "$(cat "$map")"
 expect "4g and the owners it cannot reach are back to being warned about" \
 	"no accessible repos for owner 'employer-org'" "$out_old"
 
-printf '\n\033[1m§5 discover-owners — every login is asked, not only the active one\033[0m\n'
-
-# The same blindness one level earlier, and it costs more there. Discovery
-# prints the candidate list that is the SINGLE question onboarding asks the
-# operator, so an org only the second login can see is an owner never offered —
-# and an owner never offered never reaches the map at all.
-multi="$tmp/bin-multi"
-mkdir -p "$multi"
-ln -sf "$BASE"/* "$multi/" 2>/dev/null
-ln -sf "$(command -v git)" "$multi/git"
-real_jq="$(command -v jq 2>/dev/null)" && ln -sf "$real_jq" "$multi/jq"
-stub "$multi" gh 'case "$1 $2" in
+# 4h. EVERY account failing is not a thinner map — it is no answer at all: an
+# offline laptop, an outage, an SSO session lapsed on all of them. Writing
+# `owners: []` over the operator's only index there would erase it and say
+# `wrote ... (0 repos across 0 owners)`. The sync refuses and leaves the file.
+before_dead="$(cat "$map")"
+deadbin="$tmp/bin-registry-dead"
+mkdir -p "$deadbin"
+ln -sf "$regbin"/* "$deadbin/" 2>/dev/null
+stub "$deadbin" gh 'case "$1 $2" in
 "auth status")
   case "$*" in
   *--json*) cat "$FIXTURES/hosts.json" ;;
-  *) exit 0 ;;
+  *) exit 1 ;;
   esac
   ;;
 "auth token")
@@ -699,11 +695,73 @@ stub "$multi" gh 'case "$1 $2" in
   done
   exit 1
   ;;
+"api --paginate") echo "dial tcp: network is unreachable" >&2; exit 1 ;;
+*) echo "unexpected gh call: $*" >&2; exit 9 ;;
+esac'
+out_dead="$(FIXTURES="$tmp" PATH="$deadbin" "$sandbox/scripts/sync-registry.sh" 2>&1)"
+expect_exit "4h every account failing refuses instead of publishing" 1 "$?"
+if [ "$before_dead" = "$(cat "$map")" ]; then
+	pass "4h the map that was already there survives untouched"
+else
+	fail "4h the map that was already there survives untouched" "sync said:${nl}$out_dead"
+fi
+refute "4h and nothing claims a map was written" "wrote $map" "$out_dead"
+
+printf '\n\033[1m§5 discover-owners — every login is asked, not only the active one\033[0m\n'
+
+# The same blindness one level earlier, and it costs more there. Discovery
+# prints the candidate list that is the SINGLE question onboarding asks the
+# operator, so an org only the second login can see is an owner never offered —
+# and an owner never offered never reaches the map at all.
+# §5's own account list. The three healthy logins and the expired one are
+# §4's, plus `sso`: state `success`, token readable, and `api user` refuses it —
+# an org enforcing SAML the token is not authorized for. That account must be
+# NAMED, because one silently missing from the candidate list is an owner never
+# offered, and an owner never offered never reaches the map. And `solo`, which
+# answers fully and simply belongs to no org — the case the scope advice must
+# not fire on once another login has listed orgs.
+cat >"$tmp/hosts-5.json" <<'JSON'
+{"hosts":{"github.com":[
+ {"state":"success","active":true,"host":"github.com","login":"octo"},
+ {"state":"success","active":false,"host":"github.com","login":"client"},
+ {"state":"success","active":false,"host":"github.com","login":"worky"},
+ {"state":"success","active":false,"host":"github.com","login":"sso"},
+ {"state":"success","active":false,"host":"github.com","login":"solo"},
+ {"state":"timeout","active":false,"host":"github.com","login":"expired"}
+]}}
+JSON
+
+multi="$tmp/bin-multi"
+mkdir -p "$multi"
+ln -sf "$BASE"/* "$multi/" 2>/dev/null
+ln -sf "$(command -v git)" "$multi/git"
+real_jq="$(command -v jq 2>/dev/null)" && ln -sf "$real_jq" "$multi/jq"
+# Plain `auth status` EXITS 1 here, which is what `gh` itself does when any
+# account on any host has authentication issues — and this fixture has an
+# expired login. Gating discovery on it therefore threw away every healthy
+# account; 5a is what catches that coming back.
+stub "$multi" gh 'case "$1 $2" in
+"auth status")
+  case "$*" in
+  *--json*) cat "$FIXTURES/hosts-5.json" ;;
+  *) echo "expired: authentication failed" >&2; exit 1 ;;
+  esac
+  ;;
+"auth token")
+  for a in "$@"; do
+    case "$a" in
+    octo | client | worky | sso | solo) echo "tok-$a"; exit 0 ;;
+    esac
+  done
+  exit 1
+  ;;
 "api user")
   case "${GH_TOKEN:-tok-octo}" in
   tok-octo) echo octo ;;
   tok-client) echo client ;;
   tok-worky) echo worky ;;
+  tok-solo) echo solo ;;
+  *) echo "HTTP 401: SAML enforcement" >&2; exit 1 ;;
   esac
   ;;
 "api user/orgs")
@@ -733,6 +791,21 @@ expect "5b including the third login's" "client-org" "$candidates"
 # a candidate the operator would then put in owners.txt, and never fatal.
 refute "5c an expired login is not offered as a candidate" "expired" "$candidates"
 expect "5c but it is reported" "expired" "$out"
+
+# 5e. A login `gh` calls healthy whose token the API then refuses — SSO
+# enforcement, a revoked token, a dropped connection. Dropping it in silence is
+# the one failure this section exists to make visible, so it is named too.
+expect "5e a login that cannot say who it is is named" \
+	"gh account 'sso' could not say who it is" "$out"
+refute "5e and it is not offered as a candidate" "sso" "$candidates"
+
+# 5f. The scope note is about a machine where NO login returned an org. `solo`
+# returned none and three others did, so it must not fire — advising
+# `gh auth refresh -s read:org` over a login that legitimately belongs to no
+# org sends the operator to fix a token that is fine.
+expect "5f a login with no orgs is still a candidate" "solo" "$candidates"
+refute "5f but an otherwise complete answer carries no scope advice" \
+	"missing a scope" "$out"
 
 # 5d. The fallback, which is also every machine with one login: no account
 # list means the active session is asked, exactly as it was before.

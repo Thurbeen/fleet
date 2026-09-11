@@ -65,6 +65,7 @@ fi
 # enumerating accounts for any other host would name logins whose tokens the
 # listing below never uses.
 MAP_HOST="${GH_HOST:-github.com}"
+nl=$'\n'
 ENDPOINT='user/repos?per_page=100&affiliation=owner,collaborator,organization_member'
 
 # Every account `gh` holds for that host. An empty list is the documented
@@ -75,31 +76,40 @@ while IFS= read -r acct; do
 	[ -n "$acct" ] && accounts+=("$acct")
 done < <(gh_accounts "$MAP_HOST")
 
-if [ "${#accounts[@]}" -gt 1 ]; then
-	echo "fetching every accessible repository, across ${#accounts[@]} gh accounts ..." >&2
-else
-	echo "fetching every accessible repository ..." >&2
-fi
+echo "fetching every accessible repository ..." >&2
 
 # One listing per account, concatenated. An account whose token cannot be read
 # or whose listing fails is NAMED and skipped — one expired login must cost its
 # own repos and never the whole map, and a map that got thinner without saying
 # why is the failure this whole file is about.
-raw="$(
-	if [ "${#accounts[@]}" -eq 0 ]; then
-		gh_api_as "" --paginate "$ENDPOINT" --jq '.[]'
-	else
-		for acct in "${accounts[@]}"; do
-			tok="$(gh_account_token "$MAP_HOST" "$acct")" || tok=""
-			if [ -z "$tok" ]; then
-				echo "warning: no usable token for gh account '$acct' — its repositories are not in this map" >&2
-				continue
-			fi
-			gh_api_as "$tok" --paginate "$ENDPOINT" --jq '.[]' ||
-				echo "warning: could not list repositories for gh account '$acct' — its repositories are not in this map" >&2
-		done
-	fi
-)"
+#
+# EVERY account failing is a different thing, and it is not a thin map — it is
+# no answer at all: an offline laptop, an outage, an SSO session that lapsed on
+# all of them. Publishing that would write `owners: []` over the operator's
+# only index. The single pass this replaced aborted there under `set -e`; the
+# refusal below is that same floor, kept now that each listing is survivable.
+raw=""
+if [ "${#accounts[@]}" -eq 0 ]; then
+	raw="$(gh_api_as "" --paginate "$ENDPOINT" --jq '.[]')"
+else
+	listed=0
+	for acct in "${accounts[@]}"; do
+		tok="$(gh_account_token "$MAP_HOST" "$acct")" || tok=""
+		if [ -z "$tok" ]; then
+			echo "warning: no usable token for gh account '$acct' — its repositories are not in this map" >&2
+			continue
+		fi
+		if one="$(gh_api_as "$tok" --paginate "$ENDPOINT" --jq '.[]')"; then
+			listed=$((listed + 1))
+			raw="$raw$one$nl"
+		else
+			echo "warning: could not list repositories for gh account '$acct' — its repositories are not in this map" >&2
+		fi
+	done
+	[ "$listed" -gt 0 ] || die "not one of the ${#accounts[@]} gh accounts above could be listed.
+       $OUT is left exactly as it was rather than
+       overwritten with an empty map."
+fi
 
 # One combined, de-duplicated array of all accessible repos, newest push first.
 # A repository two accounts both reach is ONE repository: `full_name` is the

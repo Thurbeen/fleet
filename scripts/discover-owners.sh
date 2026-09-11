@@ -90,12 +90,19 @@ note() {
 # keep what `note` collected — a subshell would throw the candidates away.
 #
 # An org list that comes back empty on an account with orgs is a SCOPE problem
-# and not an answer, and the two look identical from here — so the remedy is
-# printed rather than the emptiness being treated as fact.
+# and not an answer, and the two look identical from here — so the login is
+# collected and the remedy printed BELOW, once every account has been asked.
+# Per-account it would be a false alarm: on a machine where two logins answer
+# with orgs and a third legitimately belongs to none, the scope advice is wrong.
+#
+# NON-ZERO when the account could not say who it is — a revoked token, an org
+# enforcing SSO the token is not authorized for, a network that dropped. The
+# caller names it, because an account silently missing from the candidate list
+# is the exact failure this whole file is about.
 ask_gh() {
 	local token="$1" login orgs org
 	login="$(gh_api_as "$token" user --jq .login 2>/dev/null)" || login=""
-	[ -n "$login" ] || return 0
+	[ -n "$login" ] || return 1
 	note "$login" "gh account"
 
 	orgs="$(gh_api_as "$token" user/orgs --jq '.[].login' 2>/dev/null)" || orgs=""
@@ -103,13 +110,23 @@ ask_gh() {
 		while IFS= read -r org; do
 			[ -n "$org" ] && note "$org" "gh org"
 		done <<<"$orgs"
+		orgs_seen=1
 	else
-		scope_hint="gh listed no orgs for '$login'. If you expect some, that token is missing a scope: gh auth refresh -s read:org"
+		orgless="${orgless:+$orgless, }'$login'"
 	fi
+	return 0
 }
 
 scope_hint=""
-if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+orgless=""
+orgs_seen=0
+answered=0
+# `command -v gh` AND NOTHING MORE. `gh auth status` exits 1 when an account on
+# ANY host has authentication issues, so gating on it threw away every healthy
+# login the moment one had lapsed — which is precisely the machine this script
+# exists for. Whether a credential works is decided per account below, where
+# one that does not costs its own orgs and nothing else.
+if command -v gh >/dev/null 2>&1; then
 	# EVERY `gh` LOGIN, not just the active one. An operator with a personal
 	# account and an employer's reaches two disjoint sets of orgs, so asking
 	# only the active session answered the ONE question onboarding asks from
@@ -127,7 +144,7 @@ if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
 	done < <(gh_accounts "$gh_host")
 
 	if [ "${#accounts[@]}" -eq 0 ]; then
-		ask_gh ""
+		ask_gh "" && answered=1
 	else
 		for acct in "${accounts[@]}"; do
 			tok="$(gh_account_token "$gh_host" "$acct")" || tok=""
@@ -135,11 +152,19 @@ if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
 				printf "warning: no usable token for gh account '%s' — its orgs are not below\n" "$acct" >&2
 				continue
 			fi
-			ask_gh "$tok"
+			if ask_gh "$tok"; then
+				answered=1
+			else
+				printf "warning: gh account '%s' could not say who it is — its orgs are not below\n" "$acct" >&2
+			fi
 		done
 	fi
-else
-	scope_hint="gh is not authenticated, so the account and its orgs could not be read: gh auth login"
+fi
+
+if [ "$answered" -eq 0 ]; then
+	scope_hint="no gh account answered, so no login and no org is below: gh auth login"
+elif [ "$orgs_seen" -eq 0 ]; then
+	scope_hint="gh listed no orgs for $orgless. If you expect some, that token is missing a scope: gh auth refresh -s read:org"
 fi
 
 # --- what the git configuration remembers -------------------------------------
