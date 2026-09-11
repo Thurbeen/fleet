@@ -105,9 +105,22 @@ names every path and the reason for each.
   EVERY `gh` ACCOUNT, not just the active one, there and in
   `scripts/sync-registry.sh` — a machine with several logins reaches a
   different set of repositories per login. `scripts/lib/gh-accounts.sh` is the
-  seam both go through and its header owns the mechanism; the one thing to
-  know here is that it reads each login's token BY NAME and never switches the
-  account the operator's `gh` is pointing at.
+  seam every reader goes through and its header owns the mechanism; the one
+  thing to know here is that it reads each login's token BY NAME and never
+  switches the account the operator's `gh` is pointing at. **Neither CLI's own status
+  command answers the question preflight has**, so both authentication rows go
+  through a seam instead: `gh auth` is decided per ACCOUNT, and `glab auth` per
+  HOST through `scripts/lib/glab-hosts.sh` — a bare `glab auth status` is
+  all-or-nothing across every instance glab has configured, so it called a
+  self-hosted-only setup broken, which the forge seam says is the ordinary one.
+- `scripts/add-owner.sh` — the incremental half, for what the operator gains
+  AFTER a first run: an owner, a repo, or a whole account. It names the owners
+  the current `gh` accounts reach that `registry/owners.txt` does not list,
+  grouped by the account that reaches them; with `--all` or a named list it
+  APPENDS them — header and order kept, a duplicate refused — then syncs and
+  reports what moved rather than the whole map. It logs nobody in, and a GitLab
+  host is reported as evidence and never as an owner. The fleet-onboarding
+  skill's **Re-running** section owns the ask that goes with it.
 - `.agents/skills/<name>/SKILL.md` — agent skills, in one agent-agnostic tree.
   `.claude/skills` is a **symlink** to it, so Claude Code and opencode (which
   auto-discovers `.claude/skills`) both load the same copy. Never add a second

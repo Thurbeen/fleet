@@ -574,11 +574,12 @@ check_voice() {
 # place-pane — are the ones every operator runs once and never again, so a
 # regression in them is invisible to everyone who is already set up and total
 # for everyone who is not. `onboarding-selftest.sh` drives those three offline,
-# and sync-registry.sh with them: that one is re-run often, but its read across
-# every `gh` account needs a second login to exercise and so is unreachable on
-# a machine with one. All of it runs against stubs on a PATH built from scratch
-# and a copy of a stock layout, and its header argues each claim — including
-# the two seams a grep here could only assert about source text: the pane's
+# and sync-registry.sh and add-owner.sh with them: those two are re-run rather
+# than run once, but each reads across every `gh` account, which needs a second
+# login to exercise and so is unreachable on a machine with one. All of it runs
+# against stubs on a PATH built from scratch and a copy of a stock layout, and
+# its header argues each claim — including the two seams a grep here could
+# only assert about source text: the pane's
 # slot has ONE spelling (§3c places a RENAMED pane and reads the slot back out
 # of the block) and the thurbox floor has one owner (§1c reads it from the
 # manifest and expects it in the remedy).
