@@ -24,6 +24,18 @@ names every path and the reason for each.
   as opposed to where its work goes. `./scripts/session-flags.sh <profile>`
   renders one into `session create` flags. One file, one layer — edit it
   directly. The file's own header owns the rules that keep a profile safe.
+- `orchestration/publish.example.conf` and `agent.example.conf` — the two
+  settings that keep fleet agnostic about YOUR tools. The first holds the
+  default publish method and the free-text command that produces it, plus the
+  attestation marker your pipeline emits; `scripts/lib/queue.py` models three
+  ARTIFACT SHAPES (`attested`, `pr`, `push`) and no tool names, so a publisher
+  fleet has never heard of still works. The second holds which agent your
+  workers run, which provider `refuel` gates on, and how that agent says it hit
+  a limit. **Both tracked copies name nothing** — `./scripts/check.sh automerge`
+  fails one that does — so a fresh clone inherits no operator's pipeline,
+  vendor or agent. Copy either to a gitignored `*.conf` beside it to set
+  anything. `no-mistakes` is still accepted wherever a method is read and means
+  `attested`.
 - `orchestration/session-glyphs.example.conf` — the mark fleet's sessions wear
   in the thurbox session list: `📡` on the lead, `🚀` on every worker, under ONE
   `GLYPHS=on|off` setting whose `off` is the one-cell `⌖` and no worker prefix.
@@ -53,23 +65,15 @@ names every path and the reason for each.
   builds no forge URL. TWO implementations ship — GitHub through `gh`, GitLab
   through `glab` — and each is a CONFIGURATION and not an assumption, so a
   self-hosted instance is the ordinary case and not a special one. **Which
-  hosts the GitLab adapter owns is READ OFF THE MACHINE**: `forge.py`'s
-  `configured_hosts` takes every instance `glab auth status` reports, because
-  that is where the operator's answer already lives and `GITLAB_HOST` is a
-  variable nothing exports. `GITLAB_HOST` still decides when it IS set, the
-  GitHub adapter still takes `GH_HOST` alone, and discovery never becomes a
-  requirement — `configured_hosts`' own docstring owns those three and why.
-  `python3 scripts/lib/forge.py hosts <cli>` prints the list for a shell
-  caller. The file's own header owns the interface and how to add a third. Two
-  things follow: a repository is identified by HOST plus path
+  hosts the GitLab adapter owns is READ OFF THE MACHINE**, from `glab auth
+  status`; `configured_hosts`' own docstring owns that rule and its two
+  overrides, and the file's header owns the interface and how to add a third.
+  Two things follow: a repository is identified by HOST plus path
   (`github.com/Thurbeen/fleet`), because a bare `owner/repo` names two
-  different repositories once two forges exist; and `queue-selftest.sh` drives
-  `collect`, the landing check and `shepherd` through a second forge with no
-  network behind it — §13 through a fake one, §14 through the real GitLab
-  adapter over recorded `glab` output in `scripts/fixtures/glab/` (whose README
-  says which files are recorded and which are constructed). `gh` on those
-  sections' PATH is a tripwire, which is what keeps the seam honest rather than
-  merely asserted.
+  different repositories once two forges exist; and **the seam is driven, not
+  asserted** — `queue-selftest.sh` §13 and §14 run `collect`, the landing check
+  and `shepherd` through a second forge with `gh` on PATH as a tripwire. That
+  is the bar every other seam here is judged against.
 - `orchestration/reconcile/` — the reconciler's runtime state: its supervisor's
   pid, the heartbeat proving its loop is ticking, its log, the advisory `nudge`
   flag, the `down` flag, and `notified.json` — which ready tasks the lead has
@@ -147,7 +151,9 @@ This repo drives [thurbox](https://github.com/Thurbeen/thurbox) **directly**. Do
 not invoke an external `orchestrate` skill or any other outside orchestration
 workflow — the control plane is self-contained.
 
-The loop, driven by `./scripts/queue.sh`:
+The loop, driven by `./scripts/queue.sh`, whose header is its full usage and
+whose rules `.agents/skills/fleet-queue/` owns. What follows is the index, not
+a second copy — read the skill before you run any of it:
 
 1. **Intake.** A prompt becomes a topic, kept verbatim, decomposed into tasks —
    one repo, one branch, one thing a single worker can finish and validate.
@@ -156,83 +162,45 @@ The loop, driven by `./scripts/queue.sh`:
    looks like, from scratch. `dispatch` refuses a brief that is still the
    scaffold's placeholder.
 3. **Order, then dispatch the whole ready set at once.** File or subsystem
-   overlap is a RISK SIGNAL that gets reported rather than held back. Serialize
-   only for a true semantic dependency, shared mutable external state, an
-   incompatible concurrent migration, or another concrete condition that makes
-   independent progress unsafe — and record it with `queue.sh block`, which
-   refuses one that names no kind and no reason. A queue that runs one task at
-   a time is slower than no queue at all. **A blocker names a task or a
-   CONDITION**, and the second form is what a task held by something the queue
-   cannot observe gets written down as — a credential, an approval, a window, a
-   machine somebody has to fix, a decision nobody has made. `--on <ref>` clears
-   when that task LANDS; `--condition '<what>'` clears only when somebody runs
-   `block --clear` naming it back, so nothing — no timer, no `collect`, no
-   `reap` — can release a task on a guess. Before it existed, a task whose brief
-   began by reading an Azure nobody was logged into read as ready and the
-   reconciler woke the lead to dispatch it.
+   overlap is a RISK SIGNAL that gets reported rather than held back; serialize
+   only for a concrete condition that makes independent progress unsafe, and
+   record it with `queue.sh block`. **A blocker names a task or a CONDITION**,
+   and only a person clears the second kind — nothing releases a task on a
+   guess. A queue that runs one task at a time is slower than no queue at all.
 4. Each worker targets a real repo and its own git worktree — the control plane
    holds the plan and the log, never the workers' branches. `dispatch` gets each
    new session past its agent's trust dialog before it sends the brief
    (`./scripts/session-trust.sh`), because sending one into that dialog is how
-   every fleet-spawned worker used to break. A task may name a `--host` from
-   thurbox's `hosts.toml` and run on that machine instead; `--repo` is then a
-   path THERE, three probes run before anything is spawned — reachable, the
-   repo is there, and it has its own credentials for the forge THAT repo's
-   `origin` names, which is why a GitLab checkout is not probed against
-   github.com — and the brief and the result travel by ssh so that completion
-   stays one model. No host means no change.
+   every fleet-spawned worker used to break. A task may name a `--host` and run
+   on that machine instead, probed first and carried by ssh, so that completion
+   stays one model.
 5. **Completion is two things you read, never something that interrupts you.**
-   `queue.sh watch` folds `thurbox-cli watch`'s event stream into each task's
-   record and closes nothing; `queue.sh collect` reads the `result.md` the
-   worker wrote and only that closes a task. A turn ending is not a task
-   finishing. The run log records itself as this happens — `topic add` opened
-   it and each of these commands refreshes its facts — so what is left for you
-   is the half no record can hold: the goal in your words, the decisions, what
-   went wrong, the outcome. Write those into it while you still know them.
-6. **Release is a third thing, and it is not manual.** `outcome: shipped`
-   means a change request is OPEN, or, for a task whose declared publish method
-   is `push`, a commit already on the base branch — and that session is kept as
-   the cheap way to fix what review finds. A task moves to `landed` only when
-   the FORGE says its artifact merged (immediately, for `push`, since there is
-   nothing open to wait on), and `queue.sh reap` — which `collect` runs itself —
-   deletes the session and its worktree then. It never touches one thurbox says
-   is working or blocked, nor one a worker gave up in: that session is the
-   evidence. `reap --dry-run` says what it would do. Blockers clear on `landed`
-   too, so a dependent task waits for the code to actually be on `main`. The
-   same sweep ARCHIVES a topic whose every task reached `landed` or `abandoned`
-   — a flag on `topic.yaml` that drops it from all four default views, each of
-   which still prints how many it is hiding. `stuck` and `failed` are not
-   terminal for that, `list --archived` and `show <ref>` still reach it, and
-   `add` un-archives.
+   `queue.sh watch` folds thurbox's event stream into each task's record and
+   closes nothing; `queue.sh collect` reads the `result.md` the worker wrote,
+   and only that closes a task. A turn ending is not a task finishing. The run
+   log refreshes its own facts as this happens, which leaves you the half no
+   record can hold: the goal in your words, the decisions, what went wrong.
+   Write those in while you still know them.
+6. **Release is a third thing, and it is not manual.** `shipped` means the
+   artifact exists and the session is kept, because it is the cheap way to fix
+   what review finds. Only the FORGE saying it merged moves a task to `landed`,
+   and `queue.sh reap` — which `collect` runs itself — deletes the session
+   then. It never touches one that is working, blocked, or was given up in:
+   that session is the evidence. Blockers clear on `landed`, and a topic whose
+   every task is terminal archives itself.
 7. **The change request outlives the task, so `queue.sh shepherd` is a fourth
-   thing, run as reflexively as `collect`** — which names it whenever it closed
-   a task that left one open. It asks the FORGE for every open change request
-   on the repos the queue's tasks name, not the tasks' recorded artifacts. One
-   is linked back by artifact or head branch; an unlinked one is
-   still classified and merged, it just has no session to fix it. It merges
-   only in the repos `AUTO_MERGE_REPOS` names in `scripts/lib/queue.py` — each
-   entry host-qualified, and one that names no forge refused rather than
-   matched — and only for one whose head branch is in that repo, opened by
-   someone who can
-   push there, carrying a `no-mistakes` attestation for its **current** head.
-   Squash is the only method fleet merges by, and a forge or a project that
-   forbids squash — a GitLab project can — is a refusal fleet RECORDS rather
-   than a merge by some other method.
-   That attestation gate is the one thing the declared publish
-   method moves: a task that was declared `no-mistakes` and carries none gets a
-   fixer, one that was never asked for one is recorded `green` and handed back
-   unmerged. Every pass writes what it saw onto the task's `publish` block.
-   `--dry-run` first; the fleet-queue skill owns the rest.
+   thing, run as reflexively as `collect`.** It asks the FORGE for every open
+   change request on the repos the queue names, not the tasks' recorded
+   artifacts, and merges only where the operator's own
+   `orchestration/auto-merge.conf` says it may — the tracked example names
+   NONE, so a fresh clone of this public repo merges nowhere. Squash is the
+   only method it merges by. `--dry-run` first.
 8. **A worker that hits its agent's token limit does not fail — it sits, and
-   nothing above ever notices.** `queue.sh refuel` is a fifth thing: it asks the
-   account's shared quota window first, via `quota-axi`, and restarts nothing
-   while that window is spent — a resumed worker would only hit the same wall
-   and burn the reset. With fuel in the account it restarts a session only when
-   a stale `working` state is paired with the agent's own limit signal, caps
-   restarts at three per task, and writes neither `state` nor `outcome` —
-   `collect` alone still closes the task.
-9. Review the PRs; the operator merges every one `shepherd` did not, and
-   everything after that is `reap`'s.
+   nothing above ever notices.** `queue.sh refuel` is a fifth thing: the
+   account's shared quota window first, and a restart only when a stale
+   `working` is paired with the agent's own limit signal.
+9. Review the change requests; the operator merges every one `shepherd` did
+   not, and everything after that is `reap`'s.
 
 **Nothing above happens because somebody remembered to run it.**
 `./scripts/reconcile.sh` is a supervised loop — `ensure` / `start` / `stop` /
@@ -328,9 +296,11 @@ know before you debug the extension:
   extension's real update command.
 - **The lead SESSION is Mission Control; the EXTENSION is still `fleet`**,
   which is why every command above still takes `fleet`. The extension registers
-  **no agent of its own**: the lead binds to thurbox's stock `claude`, so it
-  inherits the hook settings that let it report state and whatever model
-  `claude` defaults to. `extension.toml.in`'s no-`[[agents]]` note owns why. A
+  **no agent of its own**: the lead binds to a stock thurbox agent — `AGENT` in
+  `orchestration/agent.conf`, rendered into the manifest, else thurbox's own
+  `claude` — so it inherits the hook settings that let it report state and
+  whatever model that agent defaults to.
+  `extension.toml.in`'s no-`[[agents]]` note owns why. A
   glyph is part of the session name because thurbox has no per-session icon
   field, and WHICH glyph is a setting (see the glyph bullet above), so the
   mailbox address must be **pasted** out of `thurbox-cli session list`, not

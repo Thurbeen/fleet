@@ -32,7 +32,7 @@
 #      fact about the pull request; what the operator does about it is a
 #      second thing, and the row's `note` is where it lives. The note was the
 #      FIRST thing the width ladder dropped, so it reached neither width this
-#      file renders while `no-mistakes` — one word under every task in the
+#      file renders while `attested` — one word under every task in the
 #      queue — reached both. These assert the order that fixes it.
 #
 # And the rule none of that may cost: it still degrades. The pane routinely
@@ -153,9 +153,9 @@ expect "a green one still says whose merge it is" "green — yours to merge" "$W
 
 # The order the ladder gives things up in, pinned: the METHOD is provenance and
 # the NOTE is the action, so a row too narrow for both keeps the action. Before
-# this, `no-mistakes · #47 · green` is what 44 columns drew and the note was
+# this, `attested · #47 · green` is what 44 columns drew and the note was
 # drawn at no width at all.
-refute "the method gives way to the note, not the reverse" "no-mistakes · #47" "$WIDE"
+refute "the method gives way to the note, not the reverse" "attested · #47" "$WIDE"
 
 # A blocker recorded against a task that is NOT waiting holds nothing —
 # `queue.py` clears a `queued` task and no other — so drawing it would explain

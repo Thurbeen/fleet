@@ -240,7 +240,7 @@ local TOPICS = {
         id = "01-declare-publish-method", state = "landed", title = "Declare the publish method on the task",
         outcome = "shipped", artifact = "https://github.com/Thurbeen/fleet/pull/43",
         brief = 1, events = 14, result = 1, moved = ago(24),
-        publish = { "no-mistakes", "merged", ago(20) },
+        publish = { "attested", "merged", ago(20) },
       },
       {
         id = "02-shepherd-records-publish", state = "dispatched",
@@ -275,7 +275,7 @@ local TOPICS = {
         id = "01-remove-the-monitor", state = "done", title = "Remove the web monitor and everything that starts it",
         outcome = "shipped", artifact = "https://github.com/Thurbeen/fleet/pull/47",
         brief = 1, events = 9, result = 1, moved = ago(48),
-        publish = { "no-mistakes", "green", ago(9) },
+        publish = { "attested", "green", ago(9) },
       },
       {
         -- Held by a CONDITION rather than by a task: the second form of
@@ -296,7 +296,7 @@ local TOPICS = {
         -- forges fleet ships an adapter for rather than only one.
         artifact = "https://gitlab.example.com/acme/group/widgets/-/merge_requests/52",
         brief = 1, events = 2, result = 1, moved = ago(3),
-        publish = { "no-mistakes", "open", ago(3) },
+        publish = { "attested", "open", ago(3) },
       },
     },
   },
@@ -308,7 +308,7 @@ local TOPICS = {
         id = "01-probe-the-host", state = "landed", title = "Probe the host before spawning anything",
         outcome = "shipped", artifact = "https://github.com/Thurbeen/fleet/pull/31",
         brief = 1, events = 11, result = 1, moved = ago(2880),
-        publish = { "no-mistakes", "merged", ago(2870) },
+        publish = { "attested", "merged", ago(2870) },
       },
     },
   },

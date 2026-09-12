@@ -89,9 +89,9 @@ task finished — only the worker's own `result.md`, read by `queue.sh collect`,
 closes anything.
 
 **`collect` checks the artifact it is handed.** Each task declares a publish
-METHOD — `no-mistakes`, `pr` or `push` — naming what it must produce, and
+METHOD — `attested`, `pr` or `push` — naming what it must produce, and
 `collect` goes and looks: the forge for a change request from that task's own
-branch (carrying a `no-mistakes` attestation for its head, for that method),
+branch (carrying an attestation for its head, for that method),
 git for a commit that reached the base branch. A task whose artifact is not
 there is reported and left OPEN, because "use the pipeline" is an instruction
 about a method and a method leaves no trace anyone can read. A check that could

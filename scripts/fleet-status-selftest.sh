@@ -307,6 +307,13 @@ expect "and the floor is named as the thing it is under" "under the 20% reserve"
 stale="$(sandbox "$tmp/bin-stale" "${BASE_TOOLS[@]}")"
 cat >"$stale/quota-axi" <<'STUB'
 #!/bin/sh
+if [ "$1" = auth ]; then
+	cat <<'JSON'
+{"generatedAt":"2026-09-08T21:29:21.000Z","schemaVersion":1,"auth":[
+ {"provider":"claude","sources":[{"source":"oauth-file","status":"available"}]}]}
+JSON
+	exit 0
+fi
 cat <<'JSON'
 {"generatedAt":"2026-09-08T21:29:21.000Z","schemaVersion":5,"providers":[
  {"provider":"claude","plan":"max","source":"cache",
@@ -341,6 +348,13 @@ expect "and why it could not be refreshed" "rate limited" "$cached"
 mute="$(sandbox "$tmp/bin-mute" "${BASE_TOOLS[@]}")"
 cat >"$mute/quota-axi" <<'STUB'
 #!/bin/sh
+if [ "$1" = auth ]; then
+	cat <<'JSON'
+{"generatedAt":"2026-03-15T16:42:00.000Z","schemaVersion":1,"auth":[
+ {"provider":"claude","sources":[{"source":"oauth-file","status":"available"}]}]}
+JSON
+	exit 0
+fi
 cat <<'JSON'
 {"generatedAt":"2026-03-15T16:42:00.000Z","schemaVersion":5,"providers":[
  {"provider":"claude","windows":[],
@@ -414,8 +428,11 @@ PY
 expect "read_at is epoch seconds a pane can subtract" "epoch" "$age"
 
 # The unavailable case is the one a pane gets wrong: it must be a REASON, never
-# a zero and never an empty record that reads as 0% left.
-mutrec="$(PATH="$mute" "$STATUS" --fuel 2>&1)"
+# a zero and never an empty record that reads as 0% left. The provider is NAMED
+# here because this stub's `auth` read discovers none, and with nothing
+# discovered and nothing configured the honest answer is that there is nothing
+# to read — see 6c, which is where that seam is proved.
+mutrec="$(PATH="$mute" FLEET_FUEL_PROVIDER=claude "$STATUS" --fuel 2>&1)"
 expect "an unreadable reading is a reason, in quota-axi's words" \
 	"unavailable	auth_required; Claude sign-in required" "$mutrec"
 refute "and carries no invented number" "remaining	" "$mutrec"
@@ -545,6 +562,114 @@ if [ "$(grep -cv '^auth' "$tmp/quota-calls")" -eq 1 ]; then
 else
 	fail "--fuel is one fetch" "$(cat "$tmp/quota-calls")"
 fi
+
+# --- 6d. WHICH provider is the operator's setting, never a name in the code ---
+#
+# `scripts/lib/forge.py` sets the bar this section is written to: a seam is
+# worth what a second implementation driven through it is worth, and an
+# assertion that one exists is worth nothing. So the same stub is read three
+# times over three different answers to "which provider", and the reading has
+# to follow the setting each time.
+#
+# The FIRST answer is `orchestration/agent.conf`, which is the operator's file
+# and the same one `queue.py` reads for `refuel` — relocated with
+# FLEET_AGENT_ROOT so this run never sees, and never writes, the real one.
+# `AGENT` alone is enough: with no `FUEL_PROVIDER`, the agent's own name is its
+# provider name, which is the identity map `agent_providers()` ships.
+#
+# The THIRD is nothing at all — a fresh clone, which is what the tracked
+# `agent.example.conf` leaves behind. The screen must still read, so it reads
+# whichever provider holds a credential. THAT is the claim a literal used to
+# hide: with `or "claude"` in the code, this case read Claude on a machine that
+# had never signed in to it.
+
+seam="$(sandbox "$tmp/bin-seam" "${BASE_TOOLS[@]}")"
+cat >"$seam/quota-axi" <<'STUB'
+#!/bin/sh
+if [ "$1" = auth ]; then
+	cat <<'JSON'
+{"generatedAt":"2026-03-15T16:42:00.000Z","schemaVersion":1,"auth":[
+ {"provider":"zai","sources":[{"source":"opencode:auth.json","status":"available"}]},
+ {"provider":"nova","sources":[{"source":"auth-json","status":"available"}]}]}
+JSON
+	exit 0
+fi
+cat <<'JSON'
+{"generatedAt":"2026-03-15T16:42:00.000Z","schemaVersion":5,"providers":[
+ {"provider":"zai","plan":"pro","source":"oauth",
+  "windows":[{"id":"five_hour","label":"5h","percentRemaining":61,
+              "resetsAt":"2026-03-15T21:00:00.000Z"}],
+  "state":{"status":"ok","stale":false}},
+ {"provider":"nova","plan":"team","source":"oauth",
+  "windows":[{"id":"five_hour","label":"5h","percentRemaining":12,
+              "resetsAt":"2026-03-15T22:00:00.000Z"}],
+  "state":{"status":"ok","stale":false}}]}
+JSON
+STUB
+chmod +x "$seam/quota-axi"
+
+first_record() { printf '%s\n' "$1" | sed -n 's/^provider	//p' | head -1; }
+
+conf="$tmp/agentconf"
+mkdir -p "$conf/orchestration"
+printf 'AGENT=nova\n' >"$conf/orchestration/agent.conf"
+byconf="$(PATH="$seam" FLEET_AGENT_ROOT="$conf" "$STATUS" --fuel 2>&1)"
+expect "the agent the operator named is the reading fleet leads with" \
+	"nova" "$(first_record "$byconf")"
+expect "and the other subscription is still read, just not first" \
+	"provider	zai" "$byconf"
+
+printf 'AGENT=nova\nFUEL_PROVIDER=zai\n' >"$conf/orchestration/agent.conf"
+bypin="$(PATH="$seam" FLEET_AGENT_ROOT="$conf" "$STATUS" --fuel 2>&1)"
+expect "FUEL_PROVIDER outranks the agent, for a fleet whose names differ" \
+	"zai" "$(first_record "$bypin")"
+
+# The gate's own entry point, which is what `queue.sh refuel` calls: ONE
+# provider, and with none passed it is the operator's — never an average and
+# never a name from this file.
+gate="$(PATH="$seam" FLEET_AGENT_ROOT="$conf" python3 - <<'PY' 2>&1
+import importlib.util
+spec = importlib.util.spec_from_file_location("fs", "scripts/lib/fleet_status.py")
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+print("gate=" + str(mod.probe_fuel()["provider"]))
+PY
+)"
+expect "the gate reads the one provider the operator named" "gate=zai" "$gate"
+
+rm -f "$conf/orchestration/agent.conf"
+bare_conf="$(PATH="$seam" FLEET_AGENT_ROOT="$conf" "$STATUS" --fuel 2>&1)"
+expect "an unconfigured clone still reads the subscriptions it has" \
+	"provider	nova" "$bare_conf"
+refute "and names no vendor this repo chose" "claude" "$bare_conf"
+
+# The tripwire: an unconfigured clone whose ONLY credentialed provider
+# happens to be named `claude` must still read it by discovery, not because
+# the module special-cases that name. A fallback literal would behave
+# identically to a real discovery path on THIS machine, so the seam swaps in
+# a credential the module has never heard the name of and the reading has to
+# follow.
+cat >"$seam/quota-axi" <<'STUB'
+#!/bin/sh
+if [ "$1" = auth ]; then
+	cat <<'JSON'
+{"generatedAt":"2026-03-15T16:42:00.000Z","schemaVersion":1,"auth":[
+ {"provider":"glorbnak","sources":[{"source":"opencode:auth.json","status":"available"}]}]}
+JSON
+	exit 0
+fi
+cat <<'JSON'
+{"generatedAt":"2026-03-15T16:42:00.000Z","schemaVersion":5,"providers":[
+ {"provider":"glorbnak","plan":"pro","source":"oauth",
+  "windows":[{"id":"five_hour","label":"5h","percentRemaining":48,
+              "resetsAt":"2026-03-15T21:00:00.000Z"}],
+  "state":{"status":"ok","stale":false}}]}
+JSON
+STUB
+chmod +x "$seam/quota-axi"
+sole_credential="$(PATH="$seam" FLEET_AGENT_ROOT="$conf" "$STATUS" --fuel 2>&1)"
+expect "the sole credentialed provider is read by discovery, name notwithstanding" \
+	"provider	glorbnak" "$sole_credential"
 
 # --- 7. it reads, and only reads ---------------------------------------------
 

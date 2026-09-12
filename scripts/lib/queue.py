@@ -357,8 +357,8 @@ def brief_shortfall(path: str) -> str:
 # the worker's instructions, `publish_verdict` goes and looks for `artifact`,
 # and `report_unverified` and `cmd_show` quote `proof` when it does not hold.
 #
-# WHY A CHECK AT ALL. "Open the pull request by running `/no-mistakes --yes`"
-# is an instruction about a METHOD, and a method leaves no trace: a worker that
+# WHY A CHECK AT ALL. "Open the pull request by running the pipeline" is an
+# instruction about a METHOD, and a method leaves no trace: a worker that
 # produced a good-looking PR with a bare `gh pr create` satisfied every visible
 # requirement. Two tasks were once collected `shipped` that way and nothing
 # noticed until the operator read the bodies himself. Naming the ARTIFACT is
@@ -371,19 +371,41 @@ def brief_shortfall(path: str) -> str:
 # the record as `publish.how`: free text, rendered into the brief, never
 # parsed. That is the whole of fleet's agnosticism, and it lasts exactly as
 # long as nothing branches on it.
+#
+# IT DID NOT LAST. The third shape was called `no-mistakes` — one operator's
+# pipeline — for as long as this table has existed, so the code branched on a
+# tool name, this repo shipped that tool as its tracked default, and every
+# clone inherited a pipeline most of them do not run. It is `attested` now: a
+# pull request whose body carries an attestation for the commit that would
+# merge. WHAT an attestation looks like is `ATTESTATION_MARKER` in
+# `orchestration/publish.conf`, so fleet reads the operator's format rather
+# than asking them to emit fleet's.
 PUBLISH_DEFAULT = "pr"
 
+# Accepted wherever a method is read, so a record written before the rename
+# still loads and `--publish no-mistakes` still works. New records say
+# `attested`; nothing writes the old word.
+PUBLISH_ALIASES = {"no-mistakes": "attested"}
+
+
+def publish_method(word: str | None) -> str | None:
+    """One method word, with the retired spelling folded into its shape."""
+    if not word:
+        return word
+    return PUBLISH_ALIASES.get(word, word)
+
+
 PUBLISH_METHODS = {
-    "no-mistakes": {
+    "attested": {
         "brief": (
-            "open a pull request through the `no-mistakes` pipeline, which is "
-            "the review, the tests, the lint, the push and the pull request in "
-            "one pass"
+            "open a pull request from this task's branch whose body carries an "
+            "attestation for the commit that would merge — the Publish line "
+            "below names the command that produces one"
         ),
         "artifact": "that pull request's URL",
         "proof": (
-            "the pull request is from this task's branch and its body carries a "
-            "`no-mistakes` attestation for the commit that would merge"
+            "the pull request is from this task's branch and its body carries "
+            "an attestation for the commit that would merge"
         ),
     },
     "pr": {
@@ -498,9 +520,30 @@ def glyph_conf(root: str | None = None) -> dict[str, str]:
     session-glyphs.conf says.
     """
     root = root or os.environ.get("FLEET_GLYPH_ROOT") or checkout_root()
-    path = os.path.join(root, GLYPH_CONF)
-    if not os.path.exists(path):
-        path = os.path.join(root, GLYPH_CONF_DEFAULTS)
+    return read_kv_conf(conf_path(GLYPH_CONF, GLYPH_CONF_DEFAULTS, root))
+
+
+# --- the operator's settings files, which are all read the same way ----------
+#
+# One parse for every `orchestration/*.conf`: the operator's copy when it is
+# there, the tracked `*.example.conf` beside it when it is not. Read as DATA —
+# `KEY=value`, no quoting, no continuation — and never executed. A setting that
+# can run is a different kind of file.
+#
+# The tracked copy is where the DEFAULT lives, so every one of these ships a
+# working answer and a fresh clone needs no configuration at all. What none of
+# them ships is a name: an owner, a repository, a tool or an agent written into
+# a tracked file is one operator's setup published in everybody's machinery.
+
+
+def conf_path(name: str, defaults: str, root: str) -> str:
+    """The operator's copy of one conf, or the tracked example beside it."""
+    path = os.path.join(root, name)
+    return path if os.path.exists(path) else os.path.join(root, defaults)
+
+
+def read_kv_conf(path: str) -> dict[str, str]:
+    """`KEY=value` lines, as data. An unreadable file is no settings at all."""
     conf: dict[str, str] = {}
     try:
         with open(path) as fh:
@@ -513,6 +556,34 @@ def glyph_conf(root: str | None = None) -> dict[str, str]:
     except OSError:
         return {}
     return conf
+
+
+PUBLISH_CONF = "orchestration/publish.conf"
+PUBLISH_CONF_DEFAULTS = "orchestration/publish.example.conf"
+AGENT_CONF = "orchestration/agent.conf"
+AGENT_CONF_DEFAULTS = "orchestration/agent.example.conf"
+
+
+def publish_conf(root: str | None = None) -> dict[str, str]:
+    """The publish settings in force. `FLEET_PUBLISH_ROOT` relocates them."""
+    root = root or os.environ.get("FLEET_PUBLISH_ROOT") or checkout_root()
+    return read_kv_conf(conf_path(PUBLISH_CONF, PUBLISH_CONF_DEFAULTS, root))
+
+
+def agent_conf(root: str | None = None) -> dict[str, str]:
+    """The agent settings in force. `FLEET_AGENT_ROOT` relocates them."""
+    root = root or os.environ.get("FLEET_AGENT_ROOT") or checkout_root()
+    return read_kv_conf(conf_path(AGENT_CONF, AGENT_CONF_DEFAULTS, root))
+
+
+def configured_agent() -> str | None:
+    """The agent every spawn names, or None to leave thurbox its own default.
+
+    Empty is the shipped answer and is not a gap: `agents.toml` already records
+    which agent the operator runs and `session create` already honours it, so a
+    name here would be a second copy of that answer.
+    """
+    return agent_conf().get("AGENT", "").strip() or None
 
 
 def worker_glyph(root: str | None = None) -> str:
@@ -604,57 +675,86 @@ def policy_path() -> str:
     return os.path.join(checkout_root(), POLICY_FILE)
 
 
-def policy_publish_default() -> tuple[str, str | None]:
-    """The operator's own publish default, from POLICY.md's YAML frontmatter.
+_POLICY_PUBLISH_WARNED = False
 
-        ---
-        publish:
-          method: no-mistakes
-          how: run `/no-mistakes --yes`
-        ---
 
-    Here, and deliberately not in OPERATOR.md, whose own example file says in
-    bold that it is prose and that nothing parses it. POLICY.md is fleet's
-    standing policy, it is tracked, it is already the file that says how a
-    worker publishes, and every brief already points at it — so a change to
-    this default is reviewable in a diff rather than a surprise in a record.
+def policy_publish_block() -> dict | None:
+    """POLICY.md's retired `publish:` frontmatter, or None when it has none.
 
-    It exists because the alternative is the lead retyping `--publish` on every
-    task, and a forgotten flag would silently downgrade that task's
-    verification, which is the failure this whole subsystem exists to prevent.
-
-    No frontmatter is the SHIPPED state and answers `pr` with no `how`: a fresh
-    clone needs no configuration at all. A word that is not a method is refused
-    rather than ignored, for the same reason — ignoring it would downgrade
-    quietly.
+    Tracked file, so a block here is one operator's tool in everybody's copy —
+    `publish.conf` is where it belongs. Honoured while it exists because
+    dropping it would downgrade a live fleet's verification in silence, and
+    said out loud once per process so the move is noticed.
     """
+    global _POLICY_PUBLISH_WARNED
     try:
         with open(policy_path()) as fh:
             text = fh.read()
     except OSError:
-        return PUBLISH_DEFAULT, None
+        return None
+    if not text.startswith("---"):
+        return None
+    parts = text.split("---", 2)
+    if len(parts) != 3:
+        return None
+    try:
+        doc = yaml.safe_load(parts[1])
+    except yaml.YAMLError as exc:
+        raise QueueError(f"{policy_path()}: its frontmatter is not YAML: {exc}")
+    if not isinstance(doc, dict) or "publish" not in doc:
+        return None
+    pub = doc["publish"]
+    if not isinstance(pub, dict):
+        raise QueueError(
+            f"{policy_path()}: publish is {pub!r}, and must be a mapping with "
+            "method/how, not a bare value"
+        )
+    if not _POLICY_PUBLISH_WARNED:
+        _POLICY_PUBLISH_WARNED = True
+        print(
+            f"{POLICY_FILE}: its `publish:` frontmatter still decides the default. "
+            f"That file is TRACKED, so it ships your tool to every clone — move "
+            f"the two values to {PUBLISH_CONF} (see {PUBLISH_CONF_DEFAULTS}) and "
+            "delete the block.",
+            file=sys.stderr,
+        )
+    return pub
 
-    block: dict = {}
-    if text.startswith("---"):
-        parts = text.split("---", 2)
-        if len(parts) == 3:
-            try:
-                doc = yaml.safe_load(parts[1])
-            except yaml.YAMLError as exc:
-                raise QueueError(f"{policy_path()}: its frontmatter is not YAML: {exc}")
-            if isinstance(doc, dict) and "publish" in doc:
-                pub = doc["publish"]
-                if not isinstance(pub, dict):
-                    raise QueueError(
-                        f"{policy_path()}: publish is {pub!r}, and must be a "
-                        "mapping with method/how, not a bare value"
-                    )
-                block = pub
 
-    method = str(block.get("method") or "").strip() or PUBLISH_DEFAULT
+def policy_publish_default() -> tuple[str, str | None]:
+    """The operator's own publish default, from `orchestration/publish.conf`.
+
+        METHOD=attested
+        HOW=run `/your-pipeline --yes`
+
+    IT MOVED OUT OF POLICY.md, which is TRACKED. Putting it there made the
+    default reviewable in a diff, which was the argument for it — and made this
+    repo ship one operator's pipeline as every clone's default, which is the
+    argument against and the larger one. `publish.example.conf` is the tracked
+    half now: it documents the three artifact shapes, ships `pr`, and names no
+    tool. POLICY.md still SAYS how a worker publishes, because every brief
+    points at it; it no longer decides for somebody else's fleet.
+
+    A `publish:` block still in POLICY.md's frontmatter is honoured and warned
+    about once, so an operator who syncs across the move keeps working while
+    they are told where it went. Ignoring it would silently downgrade every
+    task's verification, which is the failure this whole subsystem prevents.
+
+    The shipped answer is `pr` with no `how`: a fresh clone needs no
+    configuration at all. A word that is not a method is refused rather than
+    ignored, for the same reason.
+    """
+    block = policy_publish_block()
+    where = policy_path()
+    if block is None:
+        conf = publish_conf()
+        block = {"method": conf.get("METHOD", ""), "how": conf.get("HOW", "")}
+        where = PUBLISH_CONF
+
+    method = publish_method(str(block.get("method") or "").strip()) or PUBLISH_DEFAULT
     if method not in PUBLISH_METHODS:
         raise QueueError(
-            f"{policy_path()}: publish.method is {method!r}, and the methods are "
+            f"{where}: publish method is {method!r}, and the methods are "
             + ", ".join(sorted(PUBLISH_METHODS))
         )
     how = str(block.get("how") or "").strip()
@@ -1542,7 +1642,7 @@ def cmd_add(args) -> int:
 
     # Resolution, first hit wins and per FIELD. A stated method with no stated
     # tool drops the operator's global one rather than inheriting it: "run
-    # `/no-mistakes --yes`" is the wrong sentence to hand a `push` task. A
+    # attesting pipeline" is the wrong sentence to hand a `push` task. A
     # stated `how` alone keeps the operator's method, because a lead adding a
     # note about the tool must not be able to downgrade the check by accident.
     method, how = policy_publish_default()
@@ -1859,7 +1959,7 @@ def block_on_condition(q: Queue, task: Task, condition: str, args) -> int:
     if not condition:
         raise QueueError(
             "--condition is the wait itself, in words: --condition 'az is\n"
-            "authenticated for the mazet tenant'. Nothing removes one but\n"
+            "authenticated for the billing tenant'. Nothing removes one but\n"
             "`block --clear --condition` naming it back, so a blank one is a\n"
             "wait nobody could name and nobody could release."
         )
@@ -2491,7 +2591,9 @@ def spawn_commands(task: Task) -> tuple[list, str]:
     flags = profile_flags(d.get("profile") or "default")
     # A profile carrying `command` replaces `--agent`; thurbox refuses both.
     if "--command" not in flags:
-        create += ["--agent", d.get("agent") or "claude"]
+        agent = d.get("agent") or configured_agent()
+        if agent:
+            create += ["--agent", agent]
     parent = os.environ.get("THURBOX_SESSION")
     if parent:
         create += ["--parent", parent]
@@ -3039,7 +3141,7 @@ def task_publish(task: Task) -> tuple[str, str | None]:
     A record written before this field existed has no `publish` block, and it
     must keep being verified exactly as it was dispatched. So the fallback is
     the OPERATOR's default from POLICY.md and never the bare `pr` that ships as
-    fleet's: this repo's frontmatter says `no-mistakes`, so every task already
+    fleet's: an operator whose default is `attested`, so every task already
     in its queue keeps the check it was opened under.
 
     A record that DOES declare a method declares its `how` with it, absent
@@ -3094,7 +3196,7 @@ def pull_request_verdict(task: Task, method: str, outcome, url) -> tuple[str, st
     request is from this task's branch" is the one claim about it that a worker
     cannot write into its own result.md.
 
-    `no-mistakes` then asks for the attestation rather than for headings in the
+    `attested` then asks for the attestation rather than for headings in the
     prose. Same class of evidence — the tool's own trace in the body — and
     strictly stronger, because it names the head commit the pipeline ran on and
     a stale one is refused. It is also the check the shepherd already makes, so
@@ -3124,7 +3226,7 @@ def pull_request_verdict(task: Task, method: str, outcome, url) -> tuple[str, st
             f"is {branch}"
         )
 
-    if method == "no-mistakes":
+    if method == "attested":
         attested, why = attestation_verdict(cr.body, cr.head_sha)
         if not attested:
             why += pipeline_moved_the_head(cr)
@@ -3137,17 +3239,28 @@ def pull_request_verdict(task: Task, method: str, outcome, url) -> tuple[str, st
     return "passed", f"the pull request is {cr.state} and is from {branch}"
 
 
-# The pipeline's own commits, which are the ONE way a `no-mistakes` branch
-# grows a new head without anybody having touched it. The attestation is
-# written during the `pr` step and CI fixes are pushed on top of it, so the
-# body ends up attesting a commit that is now an ancestor of the head.
+# The pipeline's own commits, which are the ONE way an `attested` branch grows
+# a new head without anybody having touched it. The attestation is written
+# during the `pr` step and CI fixes are pushed on top of it, so the body ends up
+# attesting a commit that is now an ancestor of the head.
 #
 # Refusing that is right and stays right — an attestation for an ancestor
 # describes code that is not what would merge. But "somebody pushed over the
 # pipeline" and "the pipeline did this to itself" are the same refusal with
 # different remedies, and only the second is answered by running the tool
 # again. Reading #48 today, a lead cannot tell which one it is looking at.
-PIPELINE_COMMIT_RE = re.compile(r"^(?:chore:\s*)?no-mistakes[:\s]", re.I)
+#
+# NONE IS THE SHIPPED ANSWER, because the subject a pipeline writes is that
+# pipeline's convention. With `PIPELINE_COMMIT_PREFIX` unset fleet never claims
+# to know which of the two it is looking at, which is honest rather than thin.
+
+
+def pipeline_commit_re() -> "re.Pattern | None":
+    """The subject this fleet's pipeline writes, or None when none is set."""
+    prefix = publish_conf().get("PIPELINE_COMMIT_PREFIX", "").strip()
+    if not prefix:
+        return None
+    return re.compile(r"^(?:chore:\s*)?" + re.escape(prefix) + r"[:\s]", re.I)
 
 
 def pipeline_moved_the_head(cr: forge.ChangeRequest) -> str:
@@ -3162,7 +3275,7 @@ def pipeline_moved_the_head(cr: forge.ChangeRequest) -> str:
     absent list is silence, and silence must not become a claim about who
     pushed what.
     """
-    m = ATTESTATION_RE.search(cr.body or "")
+    m = attestation_re().search(cr.body or "")
     if not m:
         return ""
     try:
@@ -3170,22 +3283,23 @@ def pipeline_moved_the_head(cr: forge.ChangeRequest) -> str:
     except ValueError:
         return ""
     attested = str(doc.get("head_sha") or "").lower() if isinstance(doc, dict) else ""
+    own = pipeline_commit_re()
     head = (cr.head_sha or "").lower()
     commits = cr.commits
-    if not attested or not head or not commits:
+    if own is None or not attested or not head or not commits:
         return ""
     oids = [c.sha.lower() for c in commits]
     if oids[-1] != head or attested not in oids:
         return ""
 
     after = commits[oids.index(attested) + 1:]
-    if not after or not all(PIPELINE_COMMIT_RE.match(c.headline) for c in after):
+    if not after or not all(own.match(c.headline) for c in after):
         return ""
     named = ", ".join(f"{c.sha[:8]} “{c.headline}”" for c in after[:2])
     return (
         f"; the pipeline pushed that head itself ({named}) after it attested, so "
-        "nothing else has moved this branch — re-run `/no-mistakes --yes` and it "
-        "will attest the commit that would merge"
+        "nothing else has moved this branch — run this task's publish command "
+        "again and it will attest the commit that would merge"
     )
 
 
@@ -3798,16 +3912,57 @@ STALE_WORKING_SECS = 30 * 60
 # recovery.
 REFUEL_CAP = 3
 
-# The agent's own limit line, as observed on 2026-09-08 in this machine's
-# transcripts and on the pane that renders them:
+# HOW EACH AGENT SAYS IT RAN OUT, one entry per agent fleet has actually
+# WATCHED do it — the same shape as `scripts/session-trust.sh`'s per-agent
+# table, and for the same reason: fleet drives several agents, so knowing one
+# of them is a fact about that agent and not a assumption about all of them.
 #
-#     You've hit your session limit · resets 11:30pm (Europe/Paris)
+# `banner` is the sentence on the pane. `transcript` is the directory of
+# per-session records, with `home_env` the agent's own knob for moving it; a
+# transcript is read only if `jsonl` says its records are one JSON object per
+# line with a `rate_limit` error on the rejected turn.
 #
-# Matched on the sentence and not the whole line, so the window's name and the
-# reset time can vary. Nothing is matched that was not observed: an agent whose
-# banner reads differently answers `quiet` here and is reported as such rather
-# than guessed at.
-LIMIT_BANNER_RE = re.compile(r"you'?ve hit your \w+ limit", re.I)
+# AN AGENT THAT IS NOT HERE IS NOT GUESSED AT. It answers `undetermined`, which
+# restarts nothing, and `refuel` says which setting would teach fleet its
+# signal. Inventing a pattern for an agent nobody has watched hit its limit is
+# how a live worker gets restarted mid-turn, so nothing is matched here that
+# was not observed.
+AGENT_LIMIT_SIGNALS = {
+    # Observed 2026-09-08, on the pane and in the transcripts:
+    #     You've hit your session limit · resets 11:30pm (Europe/Paris)
+    # Matched on the sentence, so the window's name and reset time can vary.
+    "claude": {
+        "banner": r"you'?ve hit your \w+ limit",
+        "home_env": "CLAUDE_CONFIG_DIR",
+        "home": "~/.claude",
+        "transcript": "projects",
+        "jsonl": True,
+    },
+}
+
+
+def limit_signal(agent: str | None) -> dict:
+    """How this agent reports exhaustion — the operator's answer outranks ours.
+
+    `LIMIT_BANNER` and `TRANSCRIPT_DIR` in `orchestration/agent.conf` teach
+    fleet an agent it has never watched, without a code change and without
+    fleet claiming to know a sentence nobody observed.
+    """
+    sig = dict(AGENT_LIMIT_SIGNALS.get((agent or "").strip(), {}))
+    conf = agent_conf()
+    banner = conf.get("LIMIT_BANNER", "").strip()
+    tdir = conf.get("TRANSCRIPT_DIR", "").strip()
+    if banner:
+        sig["banner"] = banner
+    if tdir:
+        sig.update({"home": tdir, "home_env": "", "transcript": "", "jsonl": True})
+    return sig
+
+
+def limit_banner_re(agent: str | None) -> "re.Pattern | None":
+    """The sentence that agent prints at its limit, or None to not guess."""
+    pattern = limit_signal(agent).get("banner")
+    return re.compile(pattern, re.I) if pattern else None
 
 # How much pane to ask for, and how much of it the banner has to be in. The
 # banner sits in the scrollback of a session that already recovered from an
@@ -3822,10 +3977,11 @@ TRANSCRIPT_TAIL_BYTES = 512 * 1024
 # restart is worth making. It is read through `fleet_status.probe_fuel()` —
 # `refuel/02-fuel-gauge` put that there for the lead's screen — rather than
 # parsed a second time here: one reader means quota-axi's schema moving costs
-# one edit. `probe_fuel()` stays single-provider (`claude` alone) on purpose,
-# so the lead's screen, which reads every authenticated provider through
-# `probe_fuel_all()`, can legitimately show a different picture than this
-# command does.
+# one edit. `probe_fuel()` takes ONE provider and this command names which,
+# because the screen reads every authenticated provider through
+# `probe_fuel_all()` and the two may legitimately show different pictures: a
+# spent window on a provider the fleet never dispatches through is not a reason
+# to leave a worker sitting at its limit.
 #
 # Loaded by path and LAZILY, because fleet_status.py imports this file: at
 # import time that is a cycle, and inside the one function that needs it, it is
@@ -3835,7 +3991,79 @@ QUOTA_CMD = "quota-axi"
 # The provider that gauge reads, and so the only agent whose account this can
 # speak for. A task running something else is not refused — its account window
 # is undetermined, and undetermined restarts nothing.
-FUEL_AGENT = "claude"
+#
+# NO NAME IS WRITTEN HERE. A literal would gate every operator's fleet on one
+# operator's vendor, and reading the WRONG provider is worse than reading none:
+# a spent window somewhere the fleet never dispatches would strand a worker at
+# its limit. `FUEL_PROVIDER` in `orchestration/agent.conf` sets it outright;
+# with that empty this reads the provider off the tasks in hand, and answers
+# None when they do not agree — which reaches every caller as `undetermined`,
+# which restarts nothing.
+
+
+def agent_providers() -> dict[str, str]:
+    """`agent=provider` pairs from agent.conf, for a fleet whose names differ.
+
+    Empty is the shipped answer and means IDENTITY: quota-axi names most
+    providers after the agent that draws on them, so a map is only needed where
+    they come apart. Nothing here lists the providers quota-axi supports —
+    `fleet_status.authenticated_providers()` asks it, so the set grows with the
+    tool and never with a table in this file.
+    """
+    raw = agent_conf().get("AGENT_PROVIDERS", "").strip()
+    out: dict[str, str] = {}
+    for pair in re.split(r"[,\s]+", raw):
+        agent, _, provider = pair.partition("=")
+        if agent.strip() and provider.strip():
+            out[agent.strip()] = provider.strip()
+    return out
+
+
+def fuel_agent(tasks=()) -> str | None:
+    """The provider `refuel` may speak for on this pass, or None to not guess.
+
+    `FUEL_PROVIDER` pins one outright. Otherwise the agent in hand is mapped
+    through `AGENT_PROVIDERS` and, failing that, used as its own provider name.
+    Tasks that do not agree on one agent answer None, which reaches the caller
+    as `undetermined` and restarts nothing.
+    """
+    pinned = agent_conf().get("FUEL_PROVIDER", "").strip()
+    if pinned:
+        return pinned
+    agents = {(t.doc.get("agent") or "").strip() for t in tasks}
+    agents.discard("")
+    if not agents:
+        agent = configured_agent()
+    elif len(agents) == 1:
+        agent = agents.pop()
+    else:
+        return None
+    if not agent:
+        return None
+    return agent_providers().get(agent, agent)
+
+
+def provider_is_known(provider: str) -> tuple[bool, str]:
+    """Does quota-axi hold a credential for this provider?
+
+    Asked rather than assumed, because quota-axi supports many providers and a
+    list in this file would be stale the day it gained another. A provider it
+    does not name is reported, never guessed past: reading the WRONG window is
+    worse than reading none.
+    """
+    try:
+        names, why = fuel_gauge().authenticated_providers()
+    except (OSError, ImportError, AttributeError, SyntaxError) as exc:
+        return True, f"the provider list could not be read ({exc})"
+    if why:
+        return True, ""
+    if provider in names:
+        return True, ""
+    return False, (
+        f"{QUOTA_CMD} holds no credential for `{provider}` — it names "
+        + (", ".join(names) if names else "none")
+        + f". Map the agent to its provider with AGENT_PROVIDERS in {AGENT_CONF}"
+    )
 
 
 def fuel_gauge():
@@ -3847,7 +4075,7 @@ def fuel_gauge():
     return module
 
 
-def account_fuel() -> tuple[str, str]:
+def account_fuel(provider: str) -> tuple[str, str]:
     """('fuel' | 'spent' | 'unknown', detail) for the account every session spends.
 
     `effectivePercentRemaining` is the subscription window the lead and every
@@ -3857,7 +4085,7 @@ def account_fuel() -> tuple[str, str]:
     no token, usage, cost or limit field at all.
     """
     try:
-        sec = fuel_gauge().probe_fuel()
+        sec = fuel_gauge().probe_fuel(provider)
     except (OSError, ImportError, AttributeError, SyntaxError) as exc:
         return "unknown", f"the fuel gauge could not be loaded: {exc}"
     if sec.get("unavailable"):
@@ -3875,23 +4103,34 @@ def account_fuel() -> tuple[str, str]:
     return ("spent" if remaining <= 0 else "fuel"), detail
 
 
-def transcript_root() -> str:
-    """Where Claude Code keeps its transcripts. `CLAUDE_CONFIG_DIR` is its own
-    knob for moving them, so this reads that rather than assuming a home."""
-    home = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
-    return os.path.join(home, "projects")
+def transcript_root(agent: str | None = None) -> str:
+    """Where this agent keeps its transcripts, or "" when fleet does not know.
+
+    Each agent's own env knob is read rather than a home being assumed, and an
+    agent with no entry and no `TRANSCRIPT_DIR` returns "" so every caller
+    degrades to `undetermined` instead of globbing somebody else's directory.
+    """
+    sig = limit_signal(agent)
+    home = sig.get("home")
+    if not home:
+        return ""
+    env = sig.get("home_env")
+    home = (env and os.environ.get(env)) or os.path.expanduser(home)
+    return os.path.join(home, sig["transcript"]) if sig.get("transcript") else home
 
 
-def transcript_file(agent_sid: str) -> str:
+def transcript_file(agent_sid: str, agent: str | None = None) -> str:
     """The agent's own transcript, named by the session id thurbox records."""
-    root = transcript_root()
+    root = transcript_root(agent)
+    if not root:
+        return ""
     hits = glob.glob(os.path.join(root, "*", f"{agent_sid}.jsonl"))
     if not hits:
         hits = glob.glob(os.path.join(root, "**", f"{agent_sid}.jsonl"), recursive=True)
     return hits[0] if hits else ""
 
 
-def transcript_exhaustion(agent_sid: str) -> tuple[str, str]:
+def transcript_exhaustion(agent_sid: str, agent: str | None = None) -> tuple[str, str]:
     """Did the agent's LAST turn end on the quota rejecting it?
 
     The precise source, and the one this section derives its number from: the
@@ -3905,9 +4144,16 @@ def transcript_exhaustion(agent_sid: str) -> tuple[str, str]:
     """
     if not agent_sid:
         return "unknown", "the session records no agent_session_id"
-    path = transcript_file(agent_sid)
+    root = transcript_root(agent)
+    if not root:
+        return "unknown", (
+            f"fleet has not watched `{agent or 'this agent'}` hit a limit, so it "
+            f"has no transcript to read — name one with TRANSCRIPT_DIR in "
+            f"{AGENT_CONF}"
+        )
+    path = transcript_file(agent_sid, agent)
     if not path:
-        return "unknown", f"no transcript for {agent_sid} under {transcript_root()}"
+        return "unknown", f"no transcript for {agent_sid} under {root}"
     try:
         with open(path, "rb") as fh:
             fh.seek(0, os.SEEK_END)
@@ -3945,7 +4191,7 @@ def transcript_exhaustion(agent_sid: str) -> tuple[str, str]:
     )
 
 
-def pane_exhaustion(sid: str) -> tuple[str, str]:
+def pane_exhaustion(sid: str, agent: str | None = None) -> tuple[str, str]:
     """Does the agent's own limit banner stand at the bottom of its pane?
 
     The tail only. The banner stays in the scrollback of a session that already
@@ -3967,9 +4213,16 @@ def pane_exhaustion(sid: str) -> tuple[str, str]:
         doc = json.loads(proc.stdout)
     except ValueError:
         return "unknown", "session capture did not answer JSON"
+    banner = limit_banner_re(agent)
+    if banner is None:
+        return "unknown", (
+            f"fleet has not watched `{agent or 'this agent'}` hit a limit, so it "
+            f"does not know its banner — set LIMIT_BANNER in {AGENT_CONF} to "
+            "teach it one"
+        )
     lines = [ln.strip() for ln in str(doc.get("output") or "").splitlines() if ln.strip()]
     for line in lines[-PANE_TAIL_LINES:]:
-        if LIMIT_BANNER_RE.search(line):
+        if banner.search(line):
             return "exhausted", f"the pane ends on the agent's own banner: {line}"
     return "quiet", f"no limit banner in the pane's last {PANE_TAIL_LINES} lines"
 
@@ -3981,10 +4234,11 @@ def exhaustion(doc: dict) -> tuple[str, str]:
     event, recorded rather than rendered, and it says which window rejected the
     turn. The pane is what answers for an agent that keeps no transcript here.
     """
-    seen, detail = transcript_exhaustion(doc.get("agent_session_id") or "")
+    agent = doc.get("detected_agent") or doc.get("reports_as") or doc.get("agent")
+    seen, detail = transcript_exhaustion(doc.get("agent_session_id") or "", agent)
     if seen != "unknown":
         return seen, detail
-    pane, pane_detail = pane_exhaustion(str(doc.get("id") or ""))
+    pane, pane_detail = pane_exhaustion(str(doc.get("id") or ""), agent)
     if pane != "unknown":
         return pane, pane_detail
     return "undetermined", f"{detail}; {pane_detail}"
@@ -4073,9 +4327,25 @@ def refuel(q: Queue, ref: str | None = None, dry: bool = False) -> int:
         f"refuel: {len(holders)} recorded session(s); the cap is {REFUEL_CAP} "
         "restart(s) per task"
     )
-    verdict, detail = account_fuel()
-    print(f"    account {FUEL_AGENT:<10} "
-          f"{'undetermined' if verdict == 'unknown' else verdict:<12} {detail}")
+    provider = fuel_agent(holders)
+    if provider is None:
+        print(
+            "    account ?          undetermined  no provider to read: "
+            f"{AGENT_CONF} names none and these\n"
+            "      tasks do not agree on one agent. Undetermined restarts "
+            "nothing — name a\n"
+            f"      FUEL_PROVIDER there (see {AGENT_CONF_DEFAULTS}) to gate on "
+            "one window."
+        )
+        verdict, detail = "unknown", "no provider named"
+    else:
+        known, why = provider_is_known(provider)
+        if not known:
+            verdict, detail = "unknown", why
+        else:
+            verdict, detail = account_fuel(provider)
+        print(f"    account {provider:<10} "
+              f"{'undetermined' if verdict == 'unknown' else verdict:<12} {detail}")
     if verdict == "spent":
         print(
             "      The account window is SPENT, and it is the operator's own "
@@ -4112,10 +4382,11 @@ def refuel(q: Queue, ref: str | None = None, dry: bool = False) -> int:
                   "worker still in flight is refuelled")
             kept += 1
             continue
-        agent = task.doc.get("agent") or FUEL_AGENT
-        if agent != FUEL_AGENT:
+        agent = task.doc.get("agent") or provider
+        if provider is None or agent != provider:
+            runs = agent or "thurbox's own default"
             print(f"    {task.ref:<46} undetermined  the fuel gauge reads the "
-                  f"{FUEL_AGENT} account and this task runs `{agent}`")
+                  f"{provider or 'unnamed'} account and this task runs `{runs}`")
             kept += 1
             continue
         if verdict != "fuel":
@@ -4123,7 +4394,7 @@ def refuel(q: Queue, ref: str | None = None, dry: bool = False) -> int:
             # hundred characters of it per task buries the one thing a reader
             # is looking for, which is which tasks it applies to.
             word = "kept" if verdict == "spent" else "undetermined"
-            print(f"    {task.ref:<46} {word:<13} the {FUEL_AGENT} account window is "
+            print(f"    {task.ref:<46} {word:<13} the {provider} account window is "
                   f"{'spent' if verdict == 'spent' else 'unreadable'} — see above")
             kept += 1
             continue
@@ -4298,63 +4569,47 @@ FIXABLE = ("conflicting", "checks-failed", "changes-requested", "policy")
 
 # WHERE FLEET IS ALLOWED TO MERGE. An explicit allowlist and not a flag,
 # because the blast radius of getting this wrong is somebody else's repository.
-# A repo that is not named here is reported `ready to merge` and left for a
-# human, which is what every repo did before this list existed.
+# A repo that is not named is reported `ready to merge` and left for a human,
+# which is what every repo did before this list existed.
 #
-# The gates below are the operator's, and all must hold: the head branch lives
-# in this repository (`classify`'s `foreign` check — a fork is never merged),
-# the body carries a `no-mistakes` attestation naming the pull request's
-# CURRENT head commit (so a stale attestation from an earlier push can never
-# authorise the push that replaced it), every check has CONCLUDED and passed,
-# the forge itself calls it mergeable, and whoever opened it can push to this
-# repo (`author_can_push` — the last thing checked, because it is the one claim
-# the pull request body cannot make for itself).
+# THE LIST IS NOT HERE, AND THAT IS THE POINT. It lives in
+# `orchestration/auto-merge.conf` — the operator's, gitignored, read on every
+# pass — with `orchestration/auto-merge.example.conf` as the tracked copy that
+# documents the format and names NOTHING. `Thurbeen/fleet` is public and
+# agnostic, so a repository literal in this file is one operator's merge rights
+# published in somebody else's machinery: a fresh clone would inherit them, and
+# every change to them would be a commit here naming that operator's projects.
+# Four such commits is what it took to notice. The file's own header owns the
+# format and the test for adding an entry; the gates below are unchanged and
+# are what putting a repository there actually means.
+#
+# The gates are the operator's, and all must hold: the head branch lives in
+# this repository (`classify`'s `foreign` check — a fork is never merged), the
+# body carries an attestation naming the pull request's CURRENT
+# head commit (so a stale attestation from an earlier push can never authorise
+# the push that replaced it), every check has CONCLUDED and passed, the forge
+# itself calls it mergeable, and whoever opened it can push to this repo
+# (`author_can_push` — the last thing checked, because it is the one claim the
+# pull request body cannot make for itself).
 #
 # HOST-QUALIFIED, and an entry that names no host is refused rather than
 # guessed at (`forge.RepoId.parse`). `Thurbeen/fleet` is a different repository
 # on github.com and on a self-hosted instance, and this is the one list where
-# matching the wrong one means acting on somebody else's code.
+# matching the wrong one means acting on somebody else's code. EVERY source is
+# parsed the same way — the conf file as well as the environment — which is the
+# bug the literal carried: a literal was never parsed, so a bare slug written
+# into it would have matched nothing, refused nothing, and failed no test.
 #
-# `Thurbeen/thurview` was added on the operator's standing instruction, "merge
-# everything when ready". It qualifies on the same terms rather than looser
-# ones: it carries its own `.no-mistakes.yaml` and CI, so the attestation and
-# checks gates above mean there exactly what they mean here. A repo WITHOUT
-# those would be a repo where every gate but `author_can_push` is vacuous —
-# that is the test for adding the next one, not whether the fleet happens to
-# have work there.
-#
-# `Thurbeen/thurbox` was added on the same instruction and passes the same
-# test: its own `.no-mistakes.yaml` runs `just lint` and a rustdoc build with
-# warnings denied, and its CI is four workflows. So the attestation gate has a
-# pipeline behind it there and the checks gate has checks behind it, which is
-# the whole of what the test asks. Nothing was relaxed for it — thurbox pull
-# requests clear the same five gates fleet's own do, and
-# `queue-selftest.sh`'s 9i is where that is checked.
-#
-# `LeTuR/mazet` was added on the same instruction and is the first entry under
-# an owner no other entry shares — which changes nothing about the test, and
-# it passes it: its own `.no-mistakes.yaml` names a lint, a format and a test
-# command, and its CI is three workflows. What DID hold it back was the
-# remote. It allowed rebase only until 2026-09-11, and `MERGE_METHOD` below is
-# squash, so every pass would have produced the refusal rather than a merge.
-# It now allows squash and nothing else, with the pull request title as the
-# commit subject — the same shape as fleet's own remotes. `queue-selftest.sh`'s
-# 9j is where this one is checked, and 9j also reads the whole set back and
-# puts every entry through `forge.RepoId.parse`: a bare slug written HERE is
-# never parsed at runtime, so it would match nothing and refuse nothing.
-AUTO_MERGE_REPOS = {
-    "github.com/LeTuR/mazet",
-    "github.com/Thurbeen/fleet",
-    "github.com/Thurbeen/thurbox",
-    "github.com/Thurbeen/thurview",
-}
+# AN EMPTY SET IS A VALID ANSWER and the default one. A fleet nobody has told
+# where it may merge merges nowhere and says so; it does not guess.
 
-# The one way to say it somewhere other than here, and it REPLACES the set
-# rather than adding to it: a fleet driving somebody else's repositories is a
-# different fleet, not this one plus an extra. Every entry is parsed, and one
-# that names no host is dropped with a line on stderr rather than matched
-# against a bare slug — which is the mistake this whole seam exists to make
-# impossible. `queue-selftest.sh` is the second fleet it was written for.
+AUTO_MERGE_CONF = "orchestration/auto-merge.conf"
+AUTO_MERGE_CONF_DEFAULTS = "orchestration/auto-merge.example.conf"
+
+# The one way to say it somewhere other than the conf file, and it REPLACES the
+# set rather than adding to it: a fleet driving somebody else's repositories is
+# a different fleet, not this one plus an extra. `queue-selftest.sh` is the
+# second fleet it was written for.
 AUTO_MERGE_ENV = "FLEET_AUTO_MERGE_REPOS"
 
 # Squash because it is the only method fleet's own remotes allow, so the pull
@@ -4365,25 +4620,63 @@ MERGE_METHOD = "squash"
 DELETE_MERGED_BRANCH = True
 
 
-def auto_merge_repos() -> set:
-    """The repositories fleet may merge in, host-qualified, every time."""
-    raw = os.environ.get(AUTO_MERGE_ENV, "").strip()
-    if not raw:
-        return AUTO_MERGE_REPOS
+def parse_auto_merge(entries, source: str) -> set:
+    """Host-qualified repositories out of raw entries, refusing the rest.
+
+    One parser for both sources, so the conf file can no more carry a bare
+    slug than the environment can. A refusal is LOUD — a line on stderr naming
+    the entry — because silence here reads exactly like a repository fleet
+    declined to merge in for one of the five good reasons.
+    """
     out = set()
-    for entry in re.split(r"[,\s]+", raw):
+    for entry in entries:
+        entry = entry.strip()
         if not entry:
             continue
         repo = forge.RepoId.parse(entry)
         if repo is None:
             print(
-                f"{AUTO_MERGE_ENV}: ignoring {entry!r} — an auto-merge entry must "
+                f"{source}: ignoring {entry!r} — an auto-merge entry must "
                 "name its forge, as in github.com/owner/repo",
                 file=sys.stderr,
             )
             continue
         out.add(repo.qualified)
     return out
+
+
+def auto_merge_conf_path(root: str | None = None) -> str:
+    """The auto-merge list in force: the operator's copy, or the tracked one.
+
+    `FLEET_AUTO_MERGE_ROOT` overrides where it is read from, the same way
+    `FLEET_GLYPH_ROOT` relocates the glyph setting — so a selftest can exercise
+    the file itself without inheriting whatever the developer's own gitignored
+    auto-merge.conf says.
+    """
+    root = root or os.environ.get("FLEET_AUTO_MERGE_ROOT") or checkout_root()
+    path = os.path.join(root, AUTO_MERGE_CONF)
+    if not os.path.exists(path):
+        path = os.path.join(root, AUTO_MERGE_CONF_DEFAULTS)
+    return path
+
+
+def auto_merge_repos(root: str | None = None) -> set:
+    """The repositories fleet may merge in, host-qualified, every time.
+
+    Read as DATA — one repository per line, `#` starts a comment — and never
+    executed. The environment REPLACES the file rather than adding to it, and
+    a missing file is an empty set: a fleet nobody told merges nowhere.
+    """
+    raw = os.environ.get(AUTO_MERGE_ENV, "").strip()
+    if raw:
+        return parse_auto_merge(re.split(r"[,\s]+", raw), AUTO_MERGE_ENV)
+    path = auto_merge_conf_path(root)
+    try:
+        with open(path) as fh:
+            lines = [line.partition("#")[0] for line in fh]
+    except OSError:
+        return set()
+    return parse_auto_merge(lines, path)
 
 
 def pr_ref(artifact: str) -> forge.ChangeRef | None:
@@ -4435,13 +4728,25 @@ def check_verdicts(cr: forge.ChangeRequest) -> tuple[list, list]:
 # is public and has a fork, and this command merges unattended on a timer. The
 # five headings are text, and text in a pull request body is written by whoever
 # opened the pull request — so a check that counts them lets a body authorise
-# its own merge. `no-mistakes` leaves something a body cannot fake as easily:
-# an attestation naming the exact commit the pipeline ran on. A stale one from
-# an earlier push is refused for the same reason, because the pipeline's
-# verdict is about the code it saw and not about the branch's name.
-ATTESTATION_RE = re.compile(
-    r"<!--\s*no-mistakes-pipeline-attestation:v1\s+(\{.*?\})\s*-->", re.S
-)
+# its own merge. An attestation naming the exact commit the pipeline ran on is
+# something a body cannot fake as easily. A stale one from an earlier push is
+# refused for the same reason: the verdict is about the code it saw and not
+# about the branch's name.
+#
+# WHICH MARKER is the operator's, because their pipeline already emits one and
+# asking them to emit fleet's instead would be fleet dictating a format to a
+# tool it has never heard of. `orchestration/publish.example.conf` owns the
+# shape; this only compiles whatever it names.
+
+
+def attestation_re(marker: str | None = None) -> "re.Pattern":
+    """The HTML comment this fleet's pipeline leaves, per publish.conf."""
+    marker = marker or publish_conf().get("ATTESTATION_MARKER", "").strip()
+    if not marker:
+        marker = "fleet-attestation"
+    return re.compile(
+        r"<!--\s*" + re.escape(marker) + r":v1\s+(\{.*?\})\s*-->", re.S
+    )
 
 # The attestation is written DURING the pipeline's `pr` step, so in every body
 # that carries one `pr` reads `running` and `ci` reads `pending`. Demanding
@@ -4459,37 +4764,37 @@ def attestation_verdict(body: str, head_sha: str) -> tuple[bool, str]:
     False is never "probably fine": every way of failing to read the
     attestation is a way of not being merged.
     """
-    m = ATTESTATION_RE.search(body or "")
+    m = attestation_re().search(body or "")
     if not m:
         return False, (
-            "the body carries no no-mistakes attestation, so nothing but its own "
+            "the body carries no attestation, so nothing but its own "
             "prose says the pipeline ever ran"
         )
     try:
         doc = json.loads(m.group(1))
     except ValueError:
-        return False, "the no-mistakes attestation is not valid JSON"
+        return False, "the attestation is not valid JSON"
     if not isinstance(doc, dict):
-        return False, "the no-mistakes attestation is not an object"
+        return False, "the attestation is not an object"
 
     attested = str(doc.get("head_sha") or "")
     if not attested:
-        return False, "the no-mistakes attestation names no head_sha"
+        return False, "the attestation names no head_sha"
     if not head_sha:
         return False, "GitHub did not say which commit this pull request's head is"
     if attested.lower() != head_sha.lower():
         return False, (
-            f"the no-mistakes attestation is for {attested[:8]}, and the head is "
+            f"the attestation is for {attested[:8]}, and the head is "
             f"{head_sha[:8]} — it attests a push that is no longer what would merge"
         )
 
     steps = doc.get("steps")
     if not isinstance(steps, list) or not steps:
-        return False, "the no-mistakes attestation lists no steps"
+        return False, "the attestation lists no steps"
     unfinished = []
     for st in steps:
         if not isinstance(st, dict):
-            return False, "the no-mistakes attestation's steps are malformed"
+            return False, "the attestation's steps are malformed"
         name = str(st.get("step") or "an unnamed step")
         status = str(st.get("status") or "").lower()
         allowed = (
@@ -4516,7 +4821,7 @@ def classify(cr: forge.ChangeRequest, method: str | None) -> tuple[str, str]:
     `method` is the publish method of the task this pull request belongs to,
     or None when no task records it. It gates exactly ONE condition: `policy`,
     "there is no attestation", is a fault only for a task that was declared
-    `no-mistakes`. A `pr`-method pull request was never supposed to carry one,
+    `attested`. A `pr`-method pull request was never supposed to carry one,
     and the fixer sent at it would tell its worker to go and run a tool the
     operator may not have installed. None keeps the old reading, because an
     unlinked pull request is one fleet knows nothing about and the attestation
@@ -4562,7 +4867,7 @@ def classify(cr: forge.ChangeRequest, method: str | None) -> tuple[str, str]:
             cr.review_decision == "changes-requested",
             "a reviewer requested changes",
         ),
-        "policy": (not attested and method in (None, "no-mistakes"), attest_why),
+        "policy": (not attested and method in (None, "attested"), attest_why),
     }
     for condition in FIXABLE:
         hit, why = fixable[condition]
@@ -4611,7 +4916,7 @@ def publish_word(cr: forge.ChangeRequest, condition: str, method: str | None) ->
         ready   the pipeline vetted the exact head that would merge. Review,
                 tests and lint ran on THIS commit and said so in a form the
                 body cannot fake (`attestation_verdict`, and see the comment
-                above `ATTESTATION_RE` for why the prose above it could).
+                above `attestation_re` for why the prose above it could).
                 This is what fleet merges unattended.
         green   the forge is happy and NOBODY vetted anything. The checks that
                 passed are whatever checks that repo happens to have, which
@@ -4619,7 +4924,7 @@ def publish_word(cr: forge.ChangeRequest, condition: str, method: str | None) ->
                 reports it and leaves it; the operator merges it, having
                 looked.
 
-    For two months every pull request in this queue was a no-mistakes pull
+    For two months every pull request in this queue was an attested pull
     request, so "the forge is happy" and "the pipeline vetted it" were the same
     fact, and both the operator and this code learned to read one as the other.
     The moment a `pr`-method task exists they come apart, and the only things
@@ -4722,17 +5027,15 @@ Push to the same branch so the existing pull request re-runs them.""",
 Address the review that requested changes, then push to the same branch. Reply
 to the review only if something in it was mistaken; otherwise let the diff be
 the answer.""",
+    # `{how}` is the task's OWN recorded publish command, free text the operator
+    # wrote — fleet never spells a tool here, because the tool is theirs.
     "policy": """\
 Nothing on this pull request shows the required pipeline ran on the commit it
-would merge. `no-mistakes` leaves an attestation in the body naming the exact
-head commit it ran against, and this one either has none or has one for an
-earlier push. Re-run it:
-
-    /no-mistakes --yes
-
-on this branch. That rewrites the body — attestation and all five sections —
-and actually runs the checks, against what is on the branch now. Do not open a
-second pull request; the pipeline updates the one that is already there, and
+would merge. It must carry an attestation in its body naming the exact head
+commit the pipeline ran against, and this one either has none or has one for an
+earlier push. Publish it again, on this branch — {how} — so the body is
+rewritten, attestation and all, against what is on the branch now. Do not open
+a second pull request; the pipeline updates the one that is already there, and
 do not hand-edit the body, because an attestation you typed attests nothing.""",
 }
 
@@ -4741,7 +5044,12 @@ def fixer_brief(task: Task, cr: forge.ChangeRequest, condition: str,
                 detail: str, drift: str) -> str:
     n = cr.number
     base = cr.base_branch or task.doc.get("base") or "main"
-    work = FIXER_WORK[condition].format(base=base)
+    # A task that recorded no publish command gets a sentence that says so
+    # rather than an empty gap where a command should be.
+    how = (task.doc.get("publish") or {}).get("how") or (
+        "run this repository's publishing pipeline"
+    )
+    work = FIXER_WORK[condition].format(base=base, how=how)
     parts = [
         f"# {FIXER_TITLES[condition].format(n=n, base=base)}",
         "",
@@ -4908,7 +5216,9 @@ def spawn_fixer(task: Task, name: str, brief_path: str, branch: str) -> tuple[st
     ]
     flags = profile_flags(task.doc.get("profile") or "default")
     if "--command" not in flags:
-        create += ["--agent", task.doc.get("agent") or "claude"]
+        agent = task.doc.get("agent") or configured_agent()
+        if agent:
+            create += ["--agent", agent]
     parent = os.environ.get("THURBOX_SESSION")
     if parent:
         create += ["--parent", parent]
@@ -5241,7 +5551,7 @@ def shepherd_targets(tasks: list) -> dict:
     The queue's tasks name their repositories: an artifact URL gives the
     repository — host and path — outright, and a task that has not reported one
     yet inherits the repository of the other tasks sharing its local checkout.
-    Merging stays limited to AUTO_MERGE_REPOS whatever comes out of here:
+    Merging stays limited to `auto_merge_repos()` whatever comes out of here:
     knowing about a repository and being allowed to merge in it are different
     questions.
     """
@@ -5367,14 +5677,30 @@ def cmd_shepherd(args) -> int:
         )
     if not args.dry_run and any(r["action"] == "dispatched" for r in rows):
         print("          Fixers are working in place on the existing branches; nothing forked.")
-    print(
-        "          Merging is limited to " + ", ".join(sorted(auto_merge_repos()))
-        + ", and only for a pull request whose\n"
-        "          head branch is in that repo, that someone who can push there "
-        "opened, that\n"
-        "          carries a no-mistakes attestation for its CURRENT head, whose "
-        "checks passed,\n          and that the forge itself calls mergeable."
-    )
+    # An empty allowlist is the default a fresh clone has, so it gets a
+    # sentence rather than a dangling "limited to , and only for" — and that
+    # sentence names the file, because "fleet merged nothing" and "nobody has
+    # told fleet where it may merge" are the same output otherwise.
+    allowed = sorted(auto_merge_repos())
+    if allowed:
+        print(
+            "          Merging is limited to " + ", ".join(allowed)
+            + ", and only for a pull request whose\n"
+            "          head branch is in that repo, that someone who can push there "
+            "opened, that\n"
+            "          carries an attestation for its CURRENT head, whose "
+            "checks passed,\n          and that the forge itself calls mergeable."
+        )
+    else:
+        print(
+            "          Fleet merges NOTHING: no repository is named in "
+            f"{auto_merge_conf_path()}\n"
+            f"          (nor in ${AUTO_MERGE_ENV}). Every pull request above is "
+            "yours to merge. Copy\n"
+            f"          {AUTO_MERGE_CONF_DEFAULTS} to {AUTO_MERGE_CONF} and name "
+            "your own; its\n          header owns the format and the five gates a "
+            "merge still has to clear."
+        )
     if not args.dry_run:
         refresh_run_logs(q)
     return 0
@@ -6210,7 +6536,10 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--branch", required=True)
     a.add_argument("--base", default="main")
     a.add_argument("--profile", default="default")
-    a.add_argument("--agent", default="claude", help="the agent to launch (default claude)")
+    a.add_argument(
+        "--agent",
+        help="the agent to launch (default: orchestration/agent.conf, else thurbox's own)",
+    )
     a.add_argument(
         "--publish",
         choices=sorted(PUBLISH_METHODS),

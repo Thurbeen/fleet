@@ -36,7 +36,7 @@
 #      cannot read is left exactly as it is. What it saw is WRITTEN DOWN on the
 #      task, and the gate is method-aware: a pull request the forge is happy
 #      with but nobody attested is recorded `green`, handed back and never
-#      merged, while a `no-mistakes` task with no attestation is recorded
+#      merged, while an `attested` task with no attestation is recorded
 #      `unattested` and still gets its fixer.
 #  11. A task can name a HOST and run there, and a task that names none takes
 #      exactly the path it took before the flag existed. Nothing is spawned on
@@ -202,6 +202,49 @@ export FLEET_QUEUE_DIR="$tmp/queue"
 # of this file would scaffold logs into the operator's own orchestration/runs/.
 export FLEET_RUNS_DIR="$tmp/runs"
 
+# --- the auto-merge allowlist, which is a FILE and not a literal -------------
+#
+# `orchestration/auto-merge.conf` is the operator's, gitignored, and absent on
+# most machines; `orchestration/auto-merge.example.conf` is the tracked
+# fallback and names NOTHING. Neither is what the fixtures below want: reading
+# the operator's would make the verdicts depend on whose laptop this ran on,
+# and reading the tracked one would leave every merge test asserting that fleet
+# merges nowhere.
+#
+# So the whole run reads a throwaway list naming exactly the two repositories
+# the fixtures open pull requests in. `FLEET_AUTO_MERGE_ROOT` is the same kind
+# of override as `FLEET_GLYPH_ROOT`. Sections that want a different answer set
+# `FLEET_AUTO_MERGE_REPOS`, which REPLACES this, or point the root somewhere
+# else — 9i does both.
+export FLEET_AUTO_MERGE_ROOT="$tmp/automerge"
+mkdir -p "$FLEET_AUTO_MERGE_ROOT/orchestration"
+cat >"$FLEET_AUTO_MERGE_ROOT/orchestration/auto-merge.conf" <<'EOF'
+# The repositories this selftest's fixtures open pull requests in.
+github.com/Thurbeen/fleet
+github.com/Thurbeen/thurbox
+EOF
+
+# --- the publish and agent settings, which are FILES and not literals --------
+#
+# Same hazard as the allowlist above: read the operator's own `publish.conf`
+# and these verdicts depend on whose laptop ran them. The run gets its own,
+# carrying exactly the shipped defaults plus the one thing the fixtures need —
+# a `how` sentence naming a tool that does not exist, which is the point: fleet
+# renders it and never parses it.
+export FLEET_PUBLISH_ROOT="$tmp/publish"
+export FLEET_AGENT_ROOT="$tmp/publish"
+mkdir -p "$FLEET_PUBLISH_ROOT/orchestration"
+cat >"$FLEET_PUBLISH_ROOT/orchestration/publish.conf" <<'EOF'
+METHOD=attested
+HOW=run `/publish --yes`
+ATTESTATION_MARKER=fleet-attestation
+PIPELINE_COMMIT_PREFIX=publish
+EOF
+cat >"$FLEET_AGENT_ROOT/orchestration/agent.conf" <<'EOF'
+AGENT=claude
+FUEL_PROVIDER=claude
+EOF
+
 # --- `glab`, a STAND-IN on PATH for the whole run ----------------------------
 #
 # The GitLab adapter asks `glab auth status` which instances this machine
@@ -315,7 +358,7 @@ esac
 SH
 chmod +x "$ghbin/gh"
 
-# The body a `no-mistakes` pull request carries: an attestation naming the
+# The body a `attested` pull request carries: an attestation naming the
 # commit the pipeline ran on. It is written DURING the `pr` step, so `pr` reads
 # `running` and `ci` `pending` in every real one.
 cat >"$tmp/attest.py" <<'PY'
@@ -327,7 +370,7 @@ steps = [
     for s in ("intent", "rebase", "review", "test", "document", "lint", "push")
 ] + [{"step": "pr", "status": "running"}, {"step": "ci", "status": "pending"}]
 payload = json.dumps({"head_sha": sys.argv[1], "steps": steps})
-print(f"<!-- no-mistakes-pipeline-attestation:v1 {payload} -->")
+print(f"<!-- fleet-attestation:v1 {payload} -->")
 print()
 print("Shipped it.")
 PY
@@ -439,9 +482,13 @@ chmod +x "$tbxbin/thurbox-cli"
 # `session_is <id> <state> [hook_state_age_secs]`. The hook fields come with
 # it because `refuel` reads them: a session that ran dry reads `working` with an
 # age that keeps growing, and nothing else in `get --json` says so.
+# WHICH agent the stub reports is a variable and not a literal, because the
+# agent seam is only worth what a second agent driven through it proves —
+# §12b sets it to one fleet has no built-in signal for.
+STUB_AGENT=claude
 session_is() {
-	printf '{"id":"%s","name":"%s","state":"%s","agent":"claude","hook_reported":true,' \
-		"$1" "worker $1" "$2" >"$sessions/$1.json"
+	printf '{"id":"%s","name":"%s","state":"%s","agent":"%s","hook_reported":true,' \
+		"$1" "worker $1" "$2" "${4:-$STUB_AGENT}" >"$sessions/$1.json"
 	printf '"hook_state":"%s","hook_state_age_secs":%s,"agent_session_id":"agent-%s"}\n' \
 		"$2" "${3:-5}" "$1" >>"$sessions/$1.json"
 }
@@ -555,12 +602,14 @@ cat "$quota"
 SH
 chmod +x "$quotabin/quota-axi"
 
-# `quota_is <percent remaining> <resets at>` for the five-hour window, which is
-# the one a session runs dry against.
+# `quota_is <percent remaining> <resets at> [provider]` for the five-hour
+# window, which is the one a session runs dry against. The provider is a
+# parameter for the same reason the stub agent is: §12b reads a different one.
+QUOTA_PROVIDER=claude
 quota_is() {
 	cat >"$quota" <<EOF
 {"generatedAt": "2026-09-08T21:18:52.142Z", "schemaVersion": 5,
- "providers": [{"provider": "claude", "plan": "max",
+ "providers": [{"provider": "${3:-$QUOTA_PROVIDER}", "plan": "max",
   "windows": [
    {"id": "five_hour", "label": "session", "kind": "session",
     "resetsAt": "$2", "percentRemaining": $1},
@@ -1061,7 +1110,7 @@ expect "check validates every record" "ok" "$out"
 # --- 8. collect verifies the artifact instead of trusting the worker ---------
 #
 # The bug this proves gone: a brief said "open the PR by running
-# `/no-mistakes --yes`", which is an instruction about a METHOD, and a method
+# `/publish --yes`", which is an instruction about a METHOD, and a method
 # leaves no trace a checker can read. Two tasks were collected `shipped` with
 # hand-made `gh pr create` PRs and nothing noticed until an operator read the
 # bodies himself. So a task declares what its publish must LEAVE BEHIND, and
@@ -1069,7 +1118,7 @@ expect "check validates every record" "ok" "$out"
 # for a commit on the base branch.
 #
 # These four tasks take the operator's own default from POLICY.md's
-# frontmatter, which is `no-mistakes`: a pull request from the task's own
+# frontmatter, which is `attested`: a pull request from the task's own
 # branch whose body attests the commit that would merge. 8b below covers the
 # other two methods and the declaration that chooses between them.
 #
@@ -1110,12 +1159,12 @@ out="$($QUEUE collect 2>&1)"
 expect "an attested PR from the task's own branch collects clean" \
 	"02-document-the-states" "$out"
 expect "and collect says which method it verified" \
-	"[publish verified: no-mistakes]" "$out"
+	"[publish verified: attested]" "$out"
 
 expect "a PR that skipped the pipeline is caught" "03-render-detected-agent" "$out"
 expect "the refusal says what the body does not carry" "attestation" "$out"
 expect "the refusal says the task was not closed" "NOT CLOSED" "$out"
-expect "and states what would have proved it" "no-mistakes" "$out"
+expect "and states what would have proved it" "attested" "$out"
 expect "and quotes the tool the brief named, in the operator's own words" \
 	"Its brief said:" "$out"
 
@@ -1168,7 +1217,7 @@ expect "and the record says missing, not skipped" "missing" "$state"
 #
 # Fleet used to know exactly one way of publishing and hard-coded the proof of
 # it. That is the same non-agnosticism whichever tool is hard-coded, so a task
-# now declares an ARTIFACT SHAPE — `no-mistakes`, `pr` or `push` — and the tool
+# now declares an ARTIFACT SHAPE — `attested`, `pr` or `push` — and the tool
 # rides beside it as `--how`, free text that is rendered into the brief and
 # never parsed. That last part is the whole property: an operator's own
 # `/publish` skill, or a repo's `make release`, works because fleet does not
@@ -1211,15 +1260,15 @@ $QUEUE add "$ptopic" push-task --title 'Publish straight onto the base branch' \
 
 b="$(brief_text "$FLEET_QUEUE_DIR/$ptopic/01-pipeline-task/BRIEF.md")"
 expect "a task with no --publish takes POLICY.md's own default" \
-	"**Publish.** \`no-mistakes\`" "$b"
+	"**Publish.** \`attested\`" "$b"
 expect "and the brief names the tool in the operator's own words" \
-	"Here that means: run \`/no-mistakes --yes\`." "$b"
+	"Here that means: run \`/publish --yes\`." "$b"
 
 b="$(brief_text "$FLEET_QUEUE_DIR/$ptopic/02-pr-task/BRIEF.md")"
 expect "a --publish pr task says so" "**Publish.** \`pr\`" "$b"
 expect "and carries the --how it was given" "operator xyz skill" "$b"
 refute "and not the operator's default tool, which belongs to another method" \
-	"\`no-mistakes\`" "$b"
+	"\`attested\`" "$b"
 
 b="$(brief_text "$FLEET_QUEUE_DIR/$ptopic/03-push-task/BRIEF.md")"
 expect "a --publish push task says so" "**Publish.** \`push\`" "$b"
@@ -1361,7 +1410,7 @@ done
 # (f) A record written before any of this existed. It carries no `publish`
 #     block at all, and it must keep the verification it was dispatched under —
 #     which is the operator's POLICY.md default and NOT the `pr` fleet ships.
-#     A `pr` reading would pass this pull request; a `no-mistakes` one holds it.
+#     A `pr` reading would pass this pull request; a `attested` one holds it.
 
 $QUEUE add "$ptopic" legacy-record --title 'A task from before the field existed' \
 	--repo /tmp/repo-a --branch fix/legacy-record --number 09 >/dev/null
@@ -1391,7 +1440,7 @@ expect "and against the operator's default, not the one fleet ships" \
 state="$($QUEUE show "$ptopic/09-legacy-record" 2>&1)"
 refute "so it is held open, exactly as it would have been before" \
 	"state:       done" "$state"
-expect "and show reports the method it was read as" "publish:     no-mistakes" "$state"
+expect "and show reports the method it was read as" "publish:     attested" "$state"
 
 out="$($QUEUE check 2>&1)"
 expect "and check is happy with a record that declares nothing" "ok" "$out"
@@ -1423,8 +1472,11 @@ expect "and the task still closes — an offline machine must still collect" \
 	"state:       done" "$state"
 expect "and the record says gh was never there to ask" "gh not found" "$state"
 
-# (h) A POLICY.md with no frontmatter — the state this repo shipped in, and the
-#     state a fresh clone is in. It answers `pr`, and nothing errors.
+# (h) A clone nobody has configured: no `publish:` frontmatter in POLICY.md
+#     AND no `orchestration/publish.conf`, which is what a fresh clone of a
+#     public repo is. The tracked `publish.example.conf` answers, it says `pr`,
+#     and no tool is named anywhere in the brief — because naming one would
+#     mean this repo shipped somebody else's pipeline.
 
 bare="$tmp/bare-clone"
 mkdir -p "$bare/scripts/lib" "$bare/orchestration/queue"
@@ -1437,7 +1489,13 @@ cat >"$bare/orchestration/queue/POLICY.md" <<'EOF'
 
 No frontmatter here, which is what every clone starts with.
 EOF
-bq() { env FLEET_QUEUE_DIR="$tmp/bare-queue" "$bare/scripts/queue.sh" "$@"; }
+# Its own conf root, with nothing in it, so the tracked example is what is read.
+mkdir -p "$bare/orchestration"
+cp orchestration/publish.example.conf "$bare/orchestration/publish.example.conf"
+bq() {
+	env FLEET_QUEUE_DIR="$tmp/bare-queue" FLEET_PUBLISH_ROOT="$bare" \
+		FLEET_AGENT_ROOT="$bare" "$bare/scripts/queue.sh" "$@"
+}
 
 if out="$(bq topic add unconfigured --prompt 'a clone nobody has configured' 2>&1)"; then
 	pass "a clone whose POLICY.md has no frontmatter opens a topic"
@@ -1451,8 +1509,46 @@ expect "and its task defaults to pr, which needs no setup at all" \
 	"**Publish.** \`pr\`" "$b"
 refute "with no tool named, because nobody named one" "Here that means" "$b"
 
+# THE CLAIM THE WHOLE AGNOSTICISM RESTS ON: the copy this repo SHIPS names no
+# tool. A method that was a tool name, or a `HOW` with a command in it, would
+# hand every clone one operator's pipeline — the same mistake the auto-merge
+# allowlist made.
+shipped_publish="$(python3 - <<'PY'
+import sys
+
+sys.path.insert(0, "scripts/lib")
+import queue as q
+
+conf = q.read_kv_conf("orchestration/publish.example.conf")
+print("method=" + (conf.get("METHOD") or "none"))
+print("how=" + (conf.get("HOW") or "none"))
+print("methods=" + " ".join(sorted(q.PUBLISH_METHODS)))
+PY
+)"
+expect "the tracked publish default is pr, which needs no tool" \
+	"method=pr" "$shipped_publish"
+expect "and it names no command at all" "how=none" "$shipped_publish"
+expect "and the three methods are artifact shapes, none of them a tool name" \
+	"methods=attested pr push" "$shipped_publish"
+
+# The retired spelling still loads, so a record written before the rename is
+# not a record that has to be hand-edited.
+alias_reads="$(python3 - <<'PY'
+import sys
+
+sys.path.insert(0, "scripts/lib")
+import queue as q
+
+print("alias=" + str(q.publish_method("no-mistakes")))
+print("kept=" + str(q.publish_method("pr")))
+PY
+)"
+expect "a task recorded under the old tool name still reads as its shape" \
+	"alias=attested" "$alias_reads"
+expect "and every other method is untouched by that" "kept=pr" "$alias_reads"
+
 # (i) The stale attestation the pipeline caused ITSELF, told apart from every
-#     other one. `no-mistakes` writes the attestation while it opens the pull
+#     other one. `attested` writes the attestation while it opens the pull
 #     request and can then push its own CI fixes on top, which leaves the body
 #     naming an ancestor of the head — the shape of #38, #40 and #48, three
 #     pull requests that could never auto-merge and that read, at collect
@@ -1468,8 +1564,8 @@ $QUEUE add "$ptopic" pipeline-pushed-after \
 attested_sha="$(printf 'a%.0s' $(seq 40))"
 pipeline_pr 1014 fix/pipeline-pushed-after "$attested_sha"
 pr_history 1014 \
-	"$attested_sha chore: no-mistakes document - Sync the docs" \
-	"$(printf '%040d' 1014) no-mistakes: apply CI fixes"
+	"$attested_sha chore: publish document - Sync the docs" \
+	"$(printf '%040d' 1014) publish: apply CI fixes"
 cat >"$FLEET_QUEUE_DIR/$ptopic/10-pipeline-pushed-after/result.md" <<'EOF'
 ---
 outcome: shipped
@@ -1483,7 +1579,7 @@ $QUEUE add "$ptopic" pushed-over-pipeline \
 	--repo /tmp/repo-a --branch fix/pushed-over-pipeline --number 11 >/dev/null
 pipeline_pr 1015 fix/pushed-over-pipeline "$attested_sha"
 pr_history 1015 \
-	"$attested_sha chore: no-mistakes document - Sync the docs" \
+	"$attested_sha chore: publish document - Sync the docs" \
 	"$(printf '%040d' 1015) fix: one more thing I thought of"
 cat >"$FLEET_QUEUE_DIR/$ptopic/11-pushed-over-pipeline/result.md" <<'EOF'
 ---
@@ -1499,8 +1595,8 @@ expect "an attestation the pipeline outran is still not proof" \
 expect "and the refusal names what moved the head" \
 	"the pipeline pushed that head itself" "$out"
 expect "and the commit that did it, so a lead need not go and look" \
-	"no-mistakes: apply CI fixes" "$out"
-expect "and the one thing that fixes it" "re-run \`/no-mistakes --yes\`" "$out"
+	"publish: apply CI fixes" "$out"
+expect "and the one thing that fixes it" "publish command again" "$out"
 
 state="$($QUEUE show "$ptopic/10-pipeline-pushed-after" 2>&1)"
 refute "the gate is exactly as strict as it was — nothing here closes a task" \
@@ -1660,8 +1756,8 @@ copied = [m for m, spec in q.PUBLISH_METHODS.items() if spec["proof"] in text]
 print(f"default={method} how={bool(how)} copied={copied}")
 PY
 )"
-expect "the operator's default is read out of POLICY.md, not typed into the code" \
-	"default=no-mistakes how=True" "$policy_vs_code"
+expect "the operator's default is read out of publish.conf, not typed into the code" \
+	"default=attested how=True" "$policy_vs_code"
 expect "and the policy restates no proof sentence, so none of them can drift" \
 	"copied=[]" "$policy_vs_code"
 
@@ -2051,7 +2147,7 @@ git -C "$srepo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m base
 # owner is an organisation and the author is a person inside it. `stranger` has
 # no file here, so the stub answers `none` for them.
 mkdir -p "$shep/perms"
-echo admin >"$shep/perms/LeTuR"
+echo admin >"$shep/perms/maintainer"
 
 stopic="$($QUEUE topic add shepherd-cases --title 'The PRs, after the work' \
 	--prompt 'watch every open PR and dispatch a fixer when one goes bad' 2>/dev/null)"
@@ -2089,7 +2185,7 @@ import sys
 out = sys.argv[1]
 green = {"__typename": "CheckRun", "name": "CI", "status": "COMPLETED", "conclusion": "SUCCESS"}
 
-# Copied from a real no-mistakes body. The attestation is written DURING the
+# Copied from a real attested body. The attestation is written DURING the
 # `pr` step, so `pr` reads `running` and `ci` `pending` in every body that
 # carries one; everything up to and including the push is `completed`.
 STEPS = [
@@ -2100,7 +2196,7 @@ STEPS = [
 
 def attested(sha, steps=None):
     payload = json.dumps({"head_sha": sha, "steps": steps or STEPS})
-    return f"<!-- no-mistakes-pipeline-attestation:v1 {payload} -->\n\nShipped it.\n"
+    return f"<!-- fleet-attestation:v1 {payload} -->\n\nShipped it.\n"
 
 
 def pr(n, owner="Thurbeen/fleet", sha=None, body=None, **kw):
@@ -2111,7 +2207,7 @@ def pr(n, owner="Thurbeen/fleet", sha=None, body=None, **kw):
         "mergeable": "MERGEABLE", "reviewDecision": "", "statusCheckRollup": [green],
         "body": attested(sha) if body is None else body,
         "headRefName": "fix/x", "baseRefName": "main", "headRefOid": sha,
-        "author": {"login": "LeTuR", "is_bot": False},
+        "author": {"login": "maintainer", "is_bot": False},
         "headRepositoryOwner": {"login": owner.split("/")[0]},
         "isCrossRepository": False,
     }
@@ -2473,23 +2569,39 @@ refute "and nothing from it is merged" "pr merge" "$(cat "$shep/many.log")"
 refute "and it is not reported as having zero open pull requests either" \
 	"no open pull requests" "$out"
 
-# --- 9i. thurbox is on the allowlist, on the same gates as fleet -------------
+# --- 9i. the allowlist is a FILE the operator owns, and the tracked one is empty
 #
-# The allowlist grew, so the claim under test is that adding a repository adds
-# a REPOSITORY and not a looser rule. Two pull requests on thurbox, both green
-# and mergeable and both on branches that are ours: the attested one merges the
-# way fleet's own do, and the one nothing vetted is still handed back.
+# Where fleet may merge used to be a literal in `scripts/lib/queue.py`, so the
+# only way an operator could name a repository was a commit in this public repo
+# naming their projects — and every clone inherited whatever the last operator
+# had named. The list is now `orchestration/auto-merge.conf`: the operator's,
+# gitignored, and absent by default.
 #
-# The third claim is the one this addition could quietly weaken. The allowlist
-# is matched HOST-QUALIFIED, so `Thurbeen/thurbox` — the way a person writes it
-# and the way the operator asked for it — is refused rather than matched
-# against the bare slug. 13e proves that for a forge that is not GitHub; this
-# proves it for the repo that was just added, where the bare slug is the
-# plausible typo.
+# Five claims, and the first two are the ones the literal used to carry:
+#
+#   a repository NAMED in the file merges on exactly the gates fleet's own
+#     pull requests clear — an attested, green one goes, an unvetted one is
+#     still handed back, so naming a repository adds a REPOSITORY and not a
+#     looser rule;
+#   a repository the file does not name is reported and left alone;
+#   the file is matched HOST-QUALIFIED, so a bare `owner/repo` written INTO IT
+#     is refused rather than matched against the slug. This is the claim the
+#     literal could not make: nothing parsed it, so a bare slug there would
+#     have matched nothing, refused nothing and failed no test;
+#   with no file at all the set is EMPTY and the pass says so by naming the
+#     file, because "fleet merged nothing" and "nobody told fleet where it may
+#     merge" are otherwise the same output;
+#   the TRACKED copy names no repository, so a fresh clone of a public repo
+#     merges nowhere until its own operator says otherwise. That last one is
+#     the whole reason this section exists.
+#
+# `Thurbeen/thurbox` is the fixture repository throughout, named by the
+# throwaway conf at the top of this file. Which repositories a real fleet
+# merges in is not this repo's business and so is not asserted anywhere.
 
-ttopic="$($QUEUE topic add thurbox-allowlist --title 'Auto-merge in thurbox' \
-	--prompt 'thurbox merges on the same gates as fleet, and only host-qualified' 2>/dev/null)"
-$QUEUE add "$ttopic" attested --title 'A thurbox PR the pipeline vetted' \
+ttopic="$($QUEUE topic add thurbox-allowlist --title 'Auto-merge from the conf file' \
+	--prompt 'a named repo merges on fleet own gates, and only host-qualified' 2>/dev/null)"
+$QUEUE add "$ttopic" attested --title 'A PR the pipeline vetted' \
 	--repo "$srepo" --branch tbx/attested --number 01 >/dev/null
 cat >"$FLEET_QUEUE_DIR/$ttopic/01-attested/result.md" <<'EOF'
 ---
@@ -2520,14 +2632,14 @@ def pr(n, branch, body):
         "url": f"https://github.com/Thurbeen/thurbox/pull/{n}",
         "mergeable": "MERGEABLE", "reviewDecision": "", "statusCheckRollup": [green],
         "body": body, "headRefName": branch, "baseRefName": "main",
-        "headRefOid": sha, "author": {"login": "LeTuR", "is_bot": False},
+        "headRefOid": sha, "author": {"login": "maintainer", "is_bot": False},
         "headRepositoryOwner": {"login": "Thurbeen"}, "isCrossRepository": False,
     }, open(f"{out}/{n}.json", "w"))
 
 
 payload = json.dumps({"head_sha": f"{201:040d}", "steps": STEPS})
 pr(201, "tbx/attested",
-   f"<!-- no-mistakes-pipeline-attestation:v1 {payload} -->\n\nShipped it.\n")
+   f"<!-- fleet-attestation:v1 {payload} -->\n\nShipped it.\n")
 # Green in every way the forge can see, and nothing vetted the head that would
 # land. No task records it either, so nothing here spawns a fixer.
 pr(202, "tbx/unvetted", "Reviewed, tested, linted, and opened through the pipeline.\n")
@@ -2538,11 +2650,11 @@ PY
 env PATH="$shep/bin:$base_path" $QUEUE collect >/dev/null
 
 out="$(env PATH="$shep/bin:$base_path" $QUEUE shepherd --topic "$ttopic" 2>&1)"
-expect "the shepherd reaches thurbox at all" "Thurbeen/thurbox" "$out"
+expect "the shepherd reaches a repository the conf file names" "Thurbeen/thurbox" "$out"
 if grep -qx 201 "$shep/merged" 2>/dev/null; then
-	pass "an attested, green thurbox pull request is merged unattended"
+	pass "an attested, green pull request there is merged unattended"
 else
-	fail "an attested, green thurbox pull request is merged unattended" \
+	fail "an attested, green pull request there is merged unattended" \
 		"$out$nl$(cat "$shep/merged" 2>/dev/null)"
 fi
 expect "and by the same squash fleet's own are merged by" \
@@ -2550,130 +2662,80 @@ expect "and by the same squash fleet's own are merged by" \
 	"$(cat "$shep/gh.log")"
 
 if grep -qx 202 "$shep/merged" 2>/dev/null; then
-	fail "joining the allowlist loosens no gate: an unattested one is not merged" \
+	fail "naming a repository loosens no gate: an unattested one is not merged" \
 		"$(cat "$shep/merged")"
 else
-	pass "joining the allowlist loosens no gate: an unattested one is not merged"
+	pass "naming a repository loosens no gate: an unattested one is not merged"
 fi
 expect "and it is named for what it lacks, not passed over" \
-	"the body carries no no-mistakes attestation" "$out"
+	"the body carries no attestation" "$out"
 
-# The typo the operator's own words invite: the allowlist is host-qualified,
-# and `Thurbeen/thurbox` names no forge.
+# The typo the operator's own words invite, made IN THE FILE this time: the
+# list is host-qualified wherever it is written, and a bare slug names no forge.
+bareroot="$tmp/automerge-bare"
+mkdir -p "$bareroot/orchestration"
+printf '# a slug, which names no forge\nThurbeen/thurbox\n' \
+	>"$bareroot/orchestration/auto-merge.conf"
+out="$(env PATH="$shep/bin:$base_path" FLEET_AUTO_MERGE_ROOT="$bareroot" \
+	$QUEUE shepherd --topic "$ttopic" --dry-run 2>&1)"
+expect "a bare slug in the conf file is refused, not matched against it" \
+	"must name its forge" "$out"
+refute "and nothing in that repo would be merged under it" "would-merge" "$out"
+
+# The same typo in the environment, which REPLACES the file rather than adding
+# to it — so this also proves the file did not leak past the override.
 out="$(env PATH="$shep/bin:$base_path" FLEET_AUTO_MERGE_REPOS="Thurbeen/thurbox" \
 	$QUEUE shepherd --topic "$ttopic" --dry-run 2>&1)"
-expect "a bare Thurbeen/thurbox is refused, not matched against the slug" \
+expect "a bare slug in the environment is refused the same way" \
 	"must name its forge" "$out"
-refute "and nothing in thurbox would be merged under it" "would-merge" "$out"
+refute "and the conf file does not leak past an override that replaces it" \
+	"would-merge" "$out"
 
-# --- 9j. mazet is on the allowlist, and the whole set names its forge --------
-#
-# The allowlist grew a second time, and this entry is the first under an owner
-# no other entry shares. The two claims 9i makes about thurbox are made again
-# here about `github.com/LeTuR/mazet`, because they are claims about an ENTRY
-# and not about the code once and for all: the gates travel with it — an
-# attested one merges, an unvetted one is still handed back — and it is matched
-# HOST-QUALIFIED, so `LeTuR/mazet` is refused rather than matched against the
-# bare slug.
-#
-# The third claim is the one only the whole set can make, and it is the one
-# nothing above would catch. `auto_merge_repos()` parses what the ENVIRONMENT
-# overrides it with; the literal in `queue.py` is never parsed, so a bare slug
-# written there would match nothing, refuse nothing, and fail no test here.
-# So the set itself is read and every entry put through the same parse.
+# NO FILE AT ALL, which is what a fresh clone that never wrote one has. The
+# set is empty, nothing is merged, and the pass names the file rather than
+# reporting the same silence a repo nobody listed would produce.
+emptyroot="$tmp/automerge-none"
+mkdir -p "$emptyroot/orchestration"
+out="$(env PATH="$shep/bin:$base_path" FLEET_AUTO_MERGE_ROOT="$emptyroot" \
+	$QUEUE shepherd --topic "$ttopic" --dry-run 2>&1)"
+expect "with no list at all, fleet merges nothing" "Fleet merges NOTHING" "$out"
+expect "and says which file would name one" "orchestration/auto-merge.conf" "$out"
+refute "and nothing at all would be merged" "would-merge" "$out"
 
-maztopic="$($QUEUE topic add mazet-allowlist --title 'Auto-merge in mazet' \
-	--prompt 'mazet merges on the same gates as fleet, and only host-qualified' 2>/dev/null)"
-$QUEUE add "$maztopic" attested --title 'A mazet PR the pipeline vetted' \
-	--repo "$srepo" --branch mzt/attested --number 01 >/dev/null
-cat >"$FLEET_QUEUE_DIR/$maztopic/01-attested/result.md" <<'EOF'
----
-outcome: shipped
-artifact: https://github.com/LeTuR/mazet/pull/301
----
-Shipped it.
-EOF
-git -C "$srepo" branch mzt/attested
-
-python3 - "$shep/gh" <<'PY'
-import json
-import sys
-
-out = sys.argv[1]
-green = {"__typename": "CheckRun", "name": "CI", "status": "COMPLETED",
-         "conclusion": "SUCCESS"}
-STEPS = [
-    {"step": s, "status": "completed"}
-    for s in ("intent", "rebase", "review", "test", "document", "lint", "push")
-] + [{"step": "pr", "status": "running"}, {"step": "ci", "status": "pending"}]
-
-
-def pr(n, branch, body):
-    sha = f"{n:040d}"
-    json.dump({
-        "number": n, "state": "OPEN", "title": f"PR {n}", "isDraft": False,
-        "url": f"https://github.com/LeTuR/mazet/pull/{n}",
-        "mergeable": "MERGEABLE", "reviewDecision": "", "statusCheckRollup": [green],
-        "body": body, "headRefName": branch, "baseRefName": "main",
-        "headRefOid": sha, "author": {"login": "LeTuR", "is_bot": False},
-        "headRepositoryOwner": {"login": "LeTuR"}, "isCrossRepository": False,
-    }, open(f"{out}/{n}.json", "w"))
-
-
-payload = json.dumps({"head_sha": f"{301:040d}", "steps": STEPS})
-pr(301, "mzt/attested",
-   f"<!-- no-mistakes-pipeline-attestation:v1 {payload} -->\n\nShipped it.\n")
-# Green in every way the forge can see, and nothing vetted the head that would
-# land. No task records it either, so nothing here spawns a fixer.
-pr(302, "mzt/unvetted", "Reviewed, tested, linted, and opened through the pipeline.\n")
-PY
-
-env PATH="$shep/bin:$base_path" $QUEUE collect >/dev/null
-
-out="$(env PATH="$shep/bin:$base_path" $QUEUE shepherd --topic "$maztopic" 2>&1)"
-expect "the shepherd reaches mazet at all" "LeTuR/mazet" "$out"
-if grep -qx 301 "$shep/merged" 2>/dev/null; then
-	pass "an attested, green mazet pull request is merged unattended"
-else
-	fail "an attested, green mazet pull request is merged unattended" \
-		"$out$nl$(cat "$shep/merged" 2>/dev/null)"
-fi
-expect "and by the same squash fleet's own are merged by" \
-	"pr merge https://github.com/LeTuR/mazet/pull/301 --squash --delete-branch" \
-	"$(cat "$shep/gh.log")"
-
-if grep -qx 302 "$shep/merged" 2>/dev/null; then
-	fail "the second addition loosens no gate either: an unattested one is not merged" \
-		"$(cat "$shep/merged")"
-else
-	pass "the second addition loosens no gate either: an unattested one is not merged"
-fi
-
-# The typo the operator's own words invite, for the new entry as for the last.
-out="$(env PATH="$shep/bin:$base_path" FLEET_AUTO_MERGE_REPOS="LeTuR/mazet" \
-	$QUEUE shepherd --topic "$maztopic" --dry-run 2>&1)"
-expect "a bare LeTuR/mazet is refused, not matched against the slug" \
-	"must name its forge" "$out"
-refute "and nothing in mazet would be merged under it" "would-merge" "$out"
-
-# The set itself: four repositories, every one of them host-qualified.
-allowlist="$(python3 - <<'PY'
+# THE TRACKED COPY, read out of this checkout rather than out of $tmp. This is
+# the claim the whole change exists for: a public, agnostic repo hands a fresh
+# clone no merge rights over anybody's repositories.
+shipped="$(python3 - <<'PY'
 import sys
 
 sys.path.insert(0, "scripts/lib")
 import forge
 import queue as q
 
-repos = sorted(q.auto_merge_repos())
-print("entries=" + " ".join(repos))
+root = q.checkout_root()
+path = q.auto_merge_conf_path(root)
+repos = sorted(q.auto_merge_repos(root))
+print("tracked=" + q.AUTO_MERGE_CONF_DEFAULTS)
+print("entries=" + (" ".join(repos) or "none"))
 print("unqualified=" + (" ".join(r for r in repos if forge.RepoId.parse(r) is None) or "none"))
+print("reading=" + ("operator" if path.endswith(q.AUTO_MERGE_CONF) else "tracked"))
 PY
 )"
-expect "the allowlist is the four repositories fleet may merge in" \
-	"entries=github.com/LeTuR/mazet github.com/Thurbeen/fleet github.com/Thurbeen/thurbox github.com/Thurbeen/thurview" \
-	"$allowlist"
-expect "and every entry in it names its forge, so none can match a bare slug" \
-	"unqualified=none" "$allowlist"
+if printf '%s' "$shipped" | grep -q '^reading=tracked$'; then
+	expect "the copy this repo SHIPS names no repository at all" \
+		"entries=none" "$shipped"
+else
+	# The developer running this has their own auto-merge.conf, which is the
+	# point of the file. Read the tracked one directly instead of skipping.
+	tracked="$(sed 's/#.*//' orchestration/auto-merge.example.conf | tr -d '[:space:]')"
+	if [ -z "$tracked" ]; then
+		pass "the copy this repo SHIPS names no repository at all"
+	else
+		fail "the copy this repo SHIPS names no repository at all" "$tracked"
+	fi
+fi
+expect "and whatever is in force names its forge, so none can match a bare slug" \
+	"unqualified=none" "$shipped"
 
 # --- 10. the shepherd writes down the publish state it already saw -----------
 #
@@ -2688,7 +2750,7 @@ expect "and every entry in it names its forge, so none can match a bare slug" \
 #   a `pr` task whose PR is green, mergeable and ours is recorded `green`,
 #     gets no fixer, and is NOT merged — the forge is happy and NOTHING
 #     vetted the head that would land, which is a different sentence
-#   a `no-mistakes` task whose PR carries no attestation is still recorded
+#   a `attested` task whose PR carries no attestation is still recorded
 #     `unattested` and still gets the `policy` fixer
 #   a dry run writes none of it
 #   the landing sweep says merged/closed in that same block
@@ -2747,11 +2809,11 @@ count_is "and no fixer goes out for it, on a branch a fixer could have had" \
 	"$(grep -c 'session create .*__09-plain-pr' "$shep/tbx.log")" 0 \
 	"$out$nl$(cat "$shep/tbx.log")"
 
-# (c) The `no-mistakes` half of the same gate, unchanged: 03-skipped declared
+# (c) The `attested` half of the same gate, unchanged: 03-skipped declared
 #     the pipeline and opened its pull request by hand.
 
 state="$($QUEUE show "$stopic/03-skipped" 2>&1)"
-expect "a no-mistakes PR with no attestation is recorded unattested" \
+expect "a attested PR with no attestation is recorded unattested" \
 	"published:   unattested" "$state"
 if grep -q 'session create .*__03-skipped' "$shep/tbx.log"; then
 	pass "and still gets the policy fixer it always got"
@@ -2981,7 +3043,7 @@ expect "collect fetches a remote worker's result over ssh" \
 	"result fetched from me@devbox" "$out"
 expect "and closes the task on it, exactly as it would locally" "shipped" "$out"
 expect "and the publish check ran on it like any other" \
-	"[publish verified: no-mistakes]" "$out"
+	"[publish verified: attested]" "$out"
 if [ -f "$FLEET_QUEUE_DIR/$rtopic/22-build-on-devbox/result.md" ]; then
 	pass "the fetched result lands in the queue, where it outlives the host"
 else
@@ -3234,6 +3296,143 @@ expect "a quota reading that cannot be taken is undetermined" "undetermined" "$o
 refute "and undetermined restarts nothing" "restarted" "$out"
 
 unset CLAUDE_CONFIG_DIR
+
+# --- 12b. the AGENT seam, driven by a second agent ---------------------------
+#
+# §12 above is one agent all the way down: its banner, its transcript layout,
+# its provider name. That proves the path works; it does not prove there is a
+# seam, and `scripts/lib/forge.py` is this repo's standard for the difference —
+# an interface is worth what a SECOND implementation driven through it is
+# worth. So the whole of §12 runs again here for `nova`, an agent fleet has
+# never watched hit a limit and has no entry for in `AGENT_LIMIT_SIGNALS`.
+#
+# Everything fleet needs comes from `orchestration/agent.conf`, which is the
+# operator's file: `LIMIT_BANNER` is the sentence, `TRANSCRIPT_DIR` is where
+# the records are, `FUEL_PROVIDER` is the window to gate on. A code change
+# teaches fleet nothing here that the file did not.
+#
+# THE TRIPWIRE IS THE POINT. `CLAUDE_CONFIG_DIR` is gone, no pane carries the
+# banner §12 matched, and the quota document names a provider that is not the
+# one §12 read. A built-in `claude` reached for anywhere on this path answers
+# with the wrong window or no window, and the last assertion then fails.
+#
+# `TRUST_SIGNATURE` and `TRUST_KEYS` are here because the handoff needs them:
+# `session-trust.sh` refuses an agent whose dialog it has not watched and sends
+# nothing, so a restart of an untaught agent would restart a session and never
+# type the brief into it. That was found BY this section.
+
+export FLEET_QUEUE_DIR="$tmp/queue-refuel-nova"
+: >"$restarts"
+: >"$sends"
+STUB_AGENT=nova
+
+novaconf="$tmp/nova-conf"
+mkdir -p "$novaconf/orchestration" "$tmp/nova-transcripts"
+cat >"$novaconf/orchestration/agent.conf" <<'EOF'
+AGENT=nova
+FUEL_PROVIDER=nova
+LIMIT_BANNER=quota exhausted for this workspace
+TRANSCRIPT_DIR=__TDIR__
+TRUST_SIGNATURE=do you trust the contents of this workspace
+TRUST_KEYS=enter
+EOF
+sed -i "s|__TDIR__|$tmp/nova-transcripts|" "$novaconf/orchestration/agent.conf"
+export FLEET_AGENT_ROOT="$novaconf"
+
+ntopic="$($QUEUE topic add nova-dry --title 'A second agent runs dry' \
+	--prompt 'the same sweep, for an agent fleet has no built-in signal for')"
+$QUEUE add "$ntopic" ran-dry --title 'Task ran-dry' --repo /tmp/repo-a \
+	--branch fix/nova --number 01 >/dev/null
+$QUEUE attach "$ntopic/01-ran-dry" bbbbbbb1-0000-0000-0000-000000000001 >/dev/null
+$QUEUE add "$ntopic" just-slow --title 'Task just-slow' --repo /tmp/repo-a \
+	--branch fix/nova-slow --number 02 >/dev/null
+$QUEUE attach "$ntopic/02-just-slow" bbbbbbb2-0000-0000-0000-000000000002 >/dev/null
+
+# The operator's sentence, not one this repo wrote down.
+cat >"$panes/bbbbbbb1-0000-0000-0000-000000000001.txt" <<'EOF'
+> running the gate
+
+quota exhausted for this workspace — try again after 02:00
+EOF
+session_is bbbbbbb1-0000-0000-0000-000000000001 working 7200
+session_is bbbbbbb2-0000-0000-0000-000000000002 working 7200
+
+# The gate first: a spent window on the provider the operator NAMED stops the
+# sweep, and the provider is `nova` because they said so.
+quota_is 0 "2026-09-09T04:00:00+00:00" nova
+out="$($QUEUE refuel 2>&1)"
+expect "the account window read is the one the operator's agent draws on" \
+	"nova" "$out"
+expect "and a spent one stops the sweep for a second agent too" \
+	"waiting on the window" "$out"
+refute "so nothing is restarted while that window is gone" \
+	"bbbbbbb1" "$(cat "$restarts")"
+
+# A document that names ONLY the first agent's provider is not a reading of
+# this one: undetermined, which restarts nothing, rather than a wrong window.
+quota_is 62 "2026-09-09T04:00:00+00:00" claude
+out="$($QUEUE refuel 2>&1)"
+expect "another provider's window is not this agent's reading" \
+	"undetermined" "$out"
+refute "and undetermined restarts nothing" "bbbbbbb1" "$(cat "$restarts")"
+
+quota_is 62 "2026-09-09T04:00:00+00:00" nova
+out="$($QUEUE refuel 2>&1)"
+expect "the banner the operator configured is what marks a dry session" \
+	"restarted" "$out"
+expect "and it is the session that carries it" \
+	"bbbbbbb1-0000-0000-0000-000000000001" "$(cat "$restarts")"
+expect "a stale working state is still only a slow worker" "02-just-slow" "$out"
+refute "so the second session is left alone" "bbbbbbb2" "$(cat "$restarts")"
+expect "and the restarted worker is pointed back at its own brief" \
+	"$FLEET_QUEUE_DIR/$ntopic/01-ran-dry/BRIEF.md" "$(cat "$sends")"
+
+# The transcript, at the directory the operator named and in no layout fleet
+# assumed: `TRANSCRIPT_DIR` is read as the directory itself, so the records sit
+# directly in it rather than under a per-project subdirectory.
+: >"$restarts"
+rm -f "$panes/bbbbbbb1-0000-0000-0000-000000000001.txt"
+$QUEUE add "$ntopic" from-transcript --title 'Task from-transcript' \
+	--repo /tmp/repo-a --branch fix/nova-tr --number 03 >/dev/null
+$QUEUE attach "$ntopic/03-from-transcript" bbbbbbb3-0000-0000-0000-000000000003 >/dev/null
+session_is bbbbbbb3-0000-0000-0000-000000000003 working 7200
+python3 - "$tmp/nova-transcripts/agent-bbbbbbb3-0000-0000-0000-000000000003.jsonl" <<'PY'
+import json
+import sys
+
+rows = [
+    {"type": "user", "timestamp": "2026-09-08T18:00:00.000Z",
+     "message": {"role": "user", "content": "Read /brief and do what it says."}},
+    {"type": "assistant", "timestamp": "2026-09-08T19:56:38.987Z",
+     "isApiErrorMessage": True, "error": "rate_limit", "apiErrorStatus": 429,
+     "quotaLimits": {"status": "rejected", "resetsAt": 1788999000,
+                     "rateLimitType": "workspace_day"},
+     "message": {"role": "assistant", "model": "<synthetic>", "content": [
+         {"type": "text",
+          "text": "quota exhausted for this workspace — try again after 02:00"}]}},
+]
+with open(sys.argv[1], "w") as fh:
+    for row in rows:
+        fh.write(json.dumps(row) + "\n")
+PY
+out="$($QUEUE refuel "$ntopic/03-from-transcript" --dry-run 2>&1)"
+expect "the transcript is read where the operator said it is" "transcript" "$out"
+expect "and names the window that rejected the turn" "workspace_day" "$out"
+expect "so that session would be restarted on the record, not on a pane" \
+	"would restart" "$out"
+
+# An agent with NO entry and NO settings is the honest failure: fleet says it
+# does not know rather than matching a sentence nobody has watched it print.
+cat >"$novaconf/orchestration/agent.conf" <<'EOF'
+AGENT=unheard
+EOF
+out="$($QUEUE refuel "$ntopic/03-from-transcript" --dry-run 2>&1)"
+expect "an agent fleet has never watched is not guessed at" "undetermined" "$out"
+refute "and nothing is restarted on a guess" "would restart" "$out"
+
+unset FLEET_AGENT_ROOT
+STUB_AGENT=claude
+QUOTA_PROVIDER=claude
 
 # --- 13. the display never contradicts itself --------------------------------
 #
@@ -4535,7 +4734,7 @@ steps = [{"step": s, "status": "completed"} for s in
          ("intent", "rebase", "review", "test", "document", "lint", "push")]
 steps += [{"step": "pr", "status": "running"}, {"step": "ci", "status": "pending"}]
 payload = json.dumps({"head_sha": sha, "steps": steps})
-body = f"<!-- no-mistakes-pipeline-attestation:v1 {payload} -->\n\n" + "\n".join(
+body = f"<!-- fleet-attestation:v1 {payload} -->\n\n" + "\n".join(
     f"## {h}\nx\n" for h in
     ("Intent", "What Changed", "Risk Assessment", "Testing", "Pipeline")
 )
@@ -4918,7 +5117,7 @@ doc.update({
     "has_conflicts": False,
     "detailed_merge_status": "mergeable",
     "author": {"id": 7, "username": "letur", "name": "letur", "state": "active"},
-    "description": "<!-- no-mistakes-pipeline-attestation:v1 %s -->\n\n" % payload
+    "description": "<!-- fleet-attestation:v1 %s -->\n\n" % payload
                    + "\n".join("## %s\nx\n" % h for h in
                                ("Intent", "What Changed", "Risk Assessment",
                                 "Testing", "Pipeline")),
@@ -5406,9 +5605,9 @@ expect "shepherd lists what is open on the discovered instance" \
 	"acme/group/widgets on gitlab.example.com" "$out"
 expect "and a mergeable, attested one there is handed back, not merged" \
 	"fleet does not merge in acme/group/widgets on gitlab.example.com" "$out"
-# What the set IS belongs to 9j, which reads it back whole; what belongs here
-# is that discovery added nothing to it, so this names the host and not the
-# entries — a fifth entry is not a failure of section 14.
+# What the set IS belongs to 9i, which reads it out of the file; what belongs
+# here is that discovery added nothing to it, so this names the host and not
+# the entries — another entry is not a failure of section 14.
 limited="$(printf '%s\n' "$out" | grep 'Merging is limited to')"
 expect "and the pass says what it limits merging to" "Merging is limited to" "$limited"
 refute "because discovering the instance put nothing of it on that set" \
@@ -5707,7 +5906,7 @@ done
 # --- the refusals come first: a new form is a new way to spell the old lie ---
 
 if out="$($QUEUE block "$xtopic/01-vm-identity" \
-	--condition 'az is authenticated for the mazet tenant' 2>&1)"; then
+	--condition 'az is authenticated for the billing tenant' 2>&1)"; then
 	fail "a condition with no kind and no reason is refused" "$out"
 else
 	expect "a condition with no kind and no reason is refused" "--kind" "$out"
@@ -5771,7 +5970,7 @@ fi
 
 # --- recording one, and where it then shows up -------------------------------
 
-AZ='az is authenticated for the mazet tenant'
+AZ='az is authenticated for the billing tenant'
 if ! out="$($QUEUE block "$xtopic/01-vm-identity" --condition "$AZ" \
 	--kind missing-credential \
 	--why "the brief's first instruction reads Azure and az account show fails" 2>&1)"; then

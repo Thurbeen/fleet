@@ -366,7 +366,64 @@ def probe_checkout() -> dict:
 
 # --- fuel --------------------------------------------------------------------
 
-FUEL_PROVIDER = "claude"
+# The provider the SCREEN leads with, and the fallback when quota-axi names
+# none. Not a gate: `probe_fuel_all()` reads every authenticated provider, and
+# `scripts/lib/queue.py`'s `refuel` asks for its provider by name rather than
+# inheriting this.
+#
+# NO NAME IS WRITTEN HERE, for the same reason `queue.py`'s `fuel_agent()`
+# writes none: a literal would make one operator's vendor this repo's answer,
+# and this file is tracked. The operator's own `orchestration/agent.conf` is
+# where that answer already lives — `FUEL_PROVIDER` outright, else `AGENT`
+# read as its own provider name, which is the identity `agent_providers()`
+# ships. With neither set the screen has no preference and simply draws
+# quota-axi's own order; `FLEET_FUEL_PROVIDER` overrides both for one run.
+AGENT_CONF = "orchestration/agent.conf"
+AGENT_CONF_DEFAULTS = "orchestration/agent.example.conf"
+
+
+def agent_conf() -> dict:
+    """`KEY=value` lines from the agent settings in force, read as data.
+
+    The operator's copy when it exists, the tracked example beside it when it
+    does not — the same two-file rule `queue.py` applies to every
+    `orchestration/*.conf`, restated here only because this module is loaded
+    from `queue.py` and cannot import it back.
+    """
+    root = os.environ.get("FLEET_AGENT_ROOT") or REPO_ROOT
+    path = os.path.join(root, AGENT_CONF)
+    if not os.path.exists(path):
+        path = os.path.join(root, AGENT_CONF_DEFAULTS)
+    conf = {}
+    try:
+        with open(path) as fh:
+            for raw in fh:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                conf[key.strip()] = value.strip()
+    except OSError:
+        return {}
+    return conf
+
+
+def fuel_provider() -> str:
+    """The provider this screen leads with, or "" for no preference.
+
+    `FLEET_FUEL_PROVIDER` for one run, else the operator's `FUEL_PROVIDER`,
+    else their `AGENT` read as its own provider name — the identity map
+    `queue.py`'s `agent_providers()` ships. "" is a real answer and means the
+    operator has named none; `probe_fuel()` then reads whichever provider holds
+    a credential rather than this file naming a vendor.
+    """
+    pinned = os.environ.get("FLEET_FUEL_PROVIDER", "").strip()
+    if pinned:
+        return pinned
+    conf = agent_conf()
+    return conf.get("FUEL_PROVIDER", "").strip() or conf.get("AGENT", "").strip()
+
+
 # The floor the lead does not dispatch past, in percent remaining. FLEET.md's
 # `## Fuel` section owns the rule; this is the same number so the screen can
 # print it beside the reading.
@@ -394,11 +451,11 @@ def fuel_reason(state: dict) -> str:
 def fuel_windows(provider: dict) -> list:
     """The provider's windows that carry a number, in declaration order.
 
-    Claude has three and they reset independently — `five_hour`, `seven_day`
-    and a `model:<name>` week — so there is no one reset to report and
-    quota-axi deliberately does not invent one. A window with no `resetsAt` has
-    not been triggered yet rather than being a gap, so it is kept and its reset
-    is simply absent.
+    A provider can have several that reset independently — a session window, a
+    week, a per-model week — so there is no one reset to report and quota-axi
+    deliberately does not invent one. A window with no `resetsAt` has not been
+    triggered yet rather than being a gap, so it is kept and its reset is
+    simply absent.
     """
     out = []
     for w in provider.get("windows") or []:
@@ -431,14 +488,19 @@ def authenticated_providers() -> tuple[list, str | None]:
     this read into a write.
 
     FLEET'S OWN PROVIDER LEADS and the rest follow in quota-axi's order, so the
-    reading fleet's workers actually spend is the first one drawn. And when
-    `auth` cannot be read at all, that provider ALONE is the answer: a status
-    screen reporting no fuel because a discovery call failed is worse than one
-    reporting the single reading the fleet runs on.
+    reading fleet's workers actually spend is the first one drawn. Which one
+    that is comes from `fuel_provider()` — the operator's setting — and when
+    they have named none there is no preference to apply and quota-axi's own
+    order stands. When `auth` cannot be read at all, that named provider ALONE
+    is the answer, because a status screen reporting no fuel because a
+    discovery call failed is worse than one reporting the single reading the
+    fleet runs on; with none named there is nothing to fall back to and the
+    section says so rather than guessing a vendor.
     """
+    lead = fuel_provider()
     doc, why = run_json(["quota-axi", "auth", "--json"], timeout=15)
     if why:
-        return [FUEL_PROVIDER], why
+        return ([lead] if lead else []), why
     names = []
     for entry in (doc or {}).get("auth") or []:
         if not isinstance(entry, dict):
@@ -449,9 +511,13 @@ def authenticated_providers() -> tuple[list, str | None]:
             if name:
                 names.append(name)
     if not names:
-        return [FUEL_PROVIDER], "quota-axi auth named no provider with a credential"
+        return (
+            [lead] if lead else [],
+            "quota-axi auth named no provider with a credential",
+        )
     # Stable, so the rest keep quota-axi's own order behind the one fleet runs.
-    names.sort(key=lambda n: n != FUEL_PROVIDER)
+    if lead:
+        names.sort(key=lambda n: n != lead)
     return names, None
 
 
@@ -561,7 +627,7 @@ def fuel_record(doc, provider: str, read_at: int) -> dict:
     return sec
 
 
-def probe_fuel(provider: str = FUEL_PROVIDER) -> dict:
+def probe_fuel(provider: str | None = None) -> dict:
     """ONE provider's remaining windows, per quota-axi. Fleet's own by default.
 
     THE ONLY SOURCE. `thurbox-cli session get --json` carries no token, usage,
@@ -577,13 +643,28 @@ def probe_fuel(provider: str = FUEL_PROVIDER) -> dict:
 
     THIS IS THE GATE'S ENTRY POINT, and that is why it takes one provider.
     `scripts/lib/queue.py`'s `account_fuel()` calls it to decide whether
-    `queue.sh refuel` restarts anything, and the fleet runs `claude` agents —
-    so it must gate on the `claude` window and never on an average or on
-    whichever provider happens to be lowest. A spent `zai` window is not a
-    reason to leave a `claude` worker sitting at its limit. The SCREEN reads
-    every authenticated provider instead, through `probe_fuel_all()`.
+    `queue.sh refuel` restarts anything, and it passes the provider IT derived
+    from the agent the tasks in hand are running. The gate must read that one
+    window and never an average or whichever provider happens to be lowest: a
+    spent window on a provider the fleet never dispatches is no reason to leave
+    a worker sitting at its limit, and reading the wrong window is worse than
+    reading none. The SCREEN reads every authenticated provider instead,
+    through `probe_fuel_all()`. With no argument this falls back to
+    `fuel_provider()`, which is the operator's setting and not a name this file
+    chose.
     """
     read_at = int(time.time())
+    provider = provider or fuel_provider()
+    if not provider:
+        # The operator has named none, so the one to read is whichever they are
+        # actually signed in to. Asked rather than guessed: a vendor written
+        # here would be this repo answering a question that is theirs.
+        names, why = authenticated_providers()
+        provider = names[0] if names else ""
+        if not provider:
+            sec = fuel_blank(provider, read_at)
+            sec["unavailable"] = why or "no provider has a credential to read"
+            return sec
     doc, why = fuel_read([provider])
     if why:
         sec = fuel_blank(provider, read_at)
@@ -596,8 +677,8 @@ def probe_fuel_all() -> dict:
     """Every authenticated provider's reading, in one quota-axi call.
 
     ONE READING PER SUBSCRIPTION THE OPERATOR ACTUALLY HAS. The account may
-    hold several — `claude`, `codex`, `zai` — and a screen that reported only
-    the first would be silent about the windows the operator is also spending.
+    hold several, and a screen that reported only the first would be silent
+    about the windows the operator is also spending.
     Which ones exist is `authenticated_providers()`'s question, asked of
     credentials on disk; a provider with none is never probed, because that
     round trip only ever ends in what `auth` already said.
@@ -809,8 +890,9 @@ def render_fuel(sec: dict) -> list:
         "every session spends them at once",
     )]
     if sec.get("discovery"):
+        read = ", ".join(r.get("provider") or "?" for r in sec["providers"])
         lines.append(cont(f"providers not discovered ({sec['discovery']}) — "
-                          f"read {FUEL_PROVIDER} alone"))
+                          f"read {read} alone"))
     for rec in sec["providers"]:
         lines += fuel_provider_lines(rec)
     return lines

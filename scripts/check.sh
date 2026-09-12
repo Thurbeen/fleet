@@ -13,7 +13,7 @@
 #   scripts/check.sh --fix markdown      # apply the fixes a check can apply
 #
 # Checks: shell, markdown, yaml, profiles, queue, reconcile, status, skills,
-# pane, voice, onboarding, sync. Only `markdown` has a fixer; `--fix` is a no-op for
+# pane, voice, automerge, onboarding, sync. Only `markdown` has a fixer; `--fix` is a no-op for
 # the rest, so `scripts/check.sh --fix` is always safe to run.
 #
 # Requires: shellcheck, rumdl, python3 (with PyYAML), lua. A missing tool
@@ -570,6 +570,104 @@ check_voice() {
 	[ "$miss" -eq 0 ] && ok "voice: $conf renders into FLEET.md's placeholders"
 }
 
+# WHERE FLEET MAY MERGE, WHICH IS THE OPERATOR'S AND NOT THIS REPO'S. The
+# allowlist used to be a literal in scripts/lib/queue.py, so naming a
+# repository meant committing it to a PUBLIC repo, and every clone inherited
+# the last operator's merge rights. It is orchestration/auto-merge.conf now —
+# the operator's, gitignored — and this gate is what keeps it from drifting
+# back: the tracked copy must name NOTHING, and the set a fresh clone would
+# read must come out empty. Textual, because the failure mode is: somebody adds
+# "just one" entry to the shipped file and it ships to everybody.
+check_automerge() {
+	need python3 automerge || return
+
+	local example="orchestration/auto-merge.example.conf" miss=0
+	if [ ! -f "$example" ]; then
+		fail "automerge: $example is missing; a fresh clone would document no format"
+		return
+	fi
+
+	# Every line with its comment cut off. Anything left is an entry, and an
+	# entry here is one operator's repository published in everybody's copy.
+	local live
+	live="$(sed 's/#.*//' "$example" | grep -E '[^[:space:]]')"
+	if [ -n "$live" ]; then
+		fail "automerge: $example names a repository; the tracked copy must name none"
+		printf '%s\n' "$live" | sed 's/^/          /' >&2
+		miss=1
+	fi
+
+	# And the set itself, read the way `shepherd` reads it. A checkout with an
+	# operator's own auto-merge.conf in it answers about that file instead, so
+	# the gate reads the tracked one directly there rather than passing on a
+	# result about somebody's private list.
+	local shipped
+	if [ -f orchestration/auto-merge.conf ]; then
+		shipped="skip"
+	else
+		shipped="$(FLEET_AUTO_MERGE_REPOS='' python3 -c '
+import sys
+sys.path.insert(0, "scripts/lib")
+import queue as q
+print("entries=" + (" ".join(sorted(q.auto_merge_repos(q.checkout_root()))) or "none"))
+' 2>&1)"
+		if [ "$shipped" != "entries=none" ]; then
+			fail "automerge: a fresh clone would inherit a merge allowlist: $shipped"
+			miss=1
+		fi
+	fi
+
+	# THE SAME RULE FOR EVERY TRACKED SETTING. An owner, a repository, a
+	# publishing tool or an agent written into a file this repo SHIPS is one
+	# operator's setup handed to every clone. The example files carry defaults;
+	# none of them may carry a name.
+	local pub="orchestration/publish.example.conf"
+	local ag="orchestration/agent.example.conf"
+	local f val
+	for f in "$pub" "$ag"; do
+		if [ ! -f "$f" ]; then
+			fail "automerge: $f is missing; a fresh clone would document no format"
+			miss=1
+		fi
+	done
+	# A tool name reaches a worker only through HOW, which nothing parses. The
+	# tracked copy must leave it empty, and the method must be the one shape
+	# that needs no tool at all.
+	# EVERY occurrence, not the first: a leak appended below a correct line is
+	# exactly the edit a first-match read would wave through.
+	if [ -f "$pub" ]; then
+		val="$(sed -n 's/^METHOD=//p' "$pub" | tr -d '[:space:]')"
+		[ "$val" = pr ] ||
+			{ fail "automerge: $pub ships METHOD=$val; the tracked default must be pr"; miss=1; }
+		val="$(sed -n 's/^HOW=//p' "$pub" | tr -d '[:space:]')"
+		[ -z "$val" ] ||
+			{ fail "automerge: $pub names a tool in HOW ($val); that is the operator's"; miss=1; }
+	fi
+	# An agent or a provider here would gate every operator's fleet on one
+	# operator's vendor. Empty means "thurbox's own" and "derive it".
+	if [ -f "$ag" ]; then
+		for key in AGENT FUEL_PROVIDER LIMIT_BANNER TRANSCRIPT_DIR \
+			AGENT_PROVIDERS TRUST_SIGNATURE TRUST_KEYS; do
+			val="$(sed -n "s/^$key=//p" "$ag" | tr -d '[:space:]')"
+			[ -z "$val" ] ||
+				{ fail "automerge: $ag ships $key=$val; that is the operator's"; miss=1; }
+		done
+	fi
+	# And no method may be a tool name again: the three are artifact shapes.
+	local shapes
+	shapes="$(python3 -c '
+import sys
+sys.path.insert(0, "scripts/lib")
+import queue as q
+print(" ".join(sorted(q.PUBLISH_METHODS)))
+' 2>&1)"
+	[ "$shapes" = "attested pr push" ] ||
+		{ fail "automerge: the publish methods are '''$shapes''', and must be artifact shapes"; miss=1; }
+
+	[ "$miss" -eq 0 ] &&
+		ok "automerge: no tracked setting names a repository, a tool or an agent"
+}
+
 # THE SETUP NOBODY RE-RUNS. Onboarding's scripts — preflight, discover-owners,
 # place-pane — are the ones every operator runs once and never again, so a
 # regression in them is invisible to everyone who is already set up and total
@@ -601,7 +699,7 @@ for arg in "$@"; do
 done
 
 if [ ${#checks[@]} -eq 0 ]; then
-	checks=(shell markdown yaml profiles queue reconcile status skills pane voice onboarding sync)
+	checks=(shell markdown yaml profiles queue reconcile status skills pane voice automerge onboarding sync)
 fi
 
 for c in "${checks[@]}"; do
@@ -617,9 +715,10 @@ for c in "${checks[@]}"; do
 	skills) check_skills ;;
 	pane) check_pane ;;
 	voice) check_voice ;;
+	automerge) check_automerge ;;
 	onboarding) check_onboarding ;;
 	*)
-		printf 'error: unknown check %q (want: shell markdown yaml profiles queue reconcile status skills pane voice onboarding sync)\n' "$c" >&2
+		printf 'error: unknown check %q (want: shell markdown yaml profiles queue reconcile status skills pane voice automerge onboarding sync)\n' "$c" >&2
 		exit 2
 		;;
 	esac

@@ -59,6 +59,12 @@
 #                   This script refuses them and says where the flag goes:
 #                   a profile in orchestration/session-profiles.yaml.
 #
+# AN AGENT THAT IS NOT IN THE TABLE is the operator's to teach, not fleet's to
+# guess: `TRUST_SIGNATURE` and `TRUST_KEYS` in orchestration/agent.conf, with
+# `TRUST_KEYS=none` for an agent that shows no dialog at all. With neither set
+# this refuses and sends nothing, because the `claude` row above is why —
+# guessing a keystroke there exits the agent.
+#
 # Usage:
 #   scripts/session-trust.sh <session-uuid-or-name> [--timeout SECS] [--json]
 #
@@ -191,9 +197,34 @@ cursor | muse)
 	exit 3
 	;;
 *)
-	say "no trust gate is known for '$agent'; sending nothing. If it stops at
-             startup, add it to the table in $here/session-trust.sh" unknown-agent
-	exit 3
+	# NOT IN THE TABLE IS NOT THE END. The table is what fleet has WATCHED,
+	# and the operator has watched their own agent — so `TRUST_SIGNATURE` and
+	# `TRUST_KEYS` in `orchestration/agent.conf` teach it one, the same way
+	# `LIMIT_BANNER` and `TRANSCRIPT_DIR` there teach `refuel` one. Without
+	# them this still refuses rather than guessing a keystroke: a bare Enter
+	# into Claude Code's dialog exits the agent, and an invented answer would
+	# do that to somebody's.
+	agent_root="${FLEET_AGENT_ROOT:-$(dirname "$here")}"
+	agent_conf="$agent_root/orchestration/agent.conf"
+	[ -f "$agent_conf" ] || agent_conf="$agent_root/orchestration/agent.example.conf"
+	if [ -f "$agent_conf" ]; then
+		signature="$(sed -n 's/^TRUST_SIGNATURE=//p' "$agent_conf" | head -1)"
+		keys="$(sed -n 's/^TRUST_KEYS=//p' "$agent_conf" | head -1)"
+	fi
+	if [ "$keys" = none ]; then
+		# The operator says this agent shows no dialog. Nothing to answer;
+		# it is still confirmed as up below.
+		signature=""
+		keys=""
+	elif [ -z "$signature" ]; then
+		say "no trust gate is known for '$agent'; sending nothing. Teach fleet
+             one with TRUST_SIGNATURE and TRUST_KEYS in
+             orchestration/agent.conf, or add it to the table in
+             $here/session-trust.sh" unknown-agent
+		exit 3
+	else
+		keys="${keys:-enter}"
+	fi
 	;;
 esac
 

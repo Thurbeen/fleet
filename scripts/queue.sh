@@ -51,12 +51,12 @@
 #   `collect`  reads the result.md a worker wrote when it knew what it had
 #              concluded, and only that closes a task. It also CHECKS that
 #              task's artifact against the PUBLISH METHOD the task declares —
-#              `no-mistakes`, `pr` or `push`, which name what the work must
+#              `attested`, `pr` or `push`, which name what the work must
 #              LEAVE BEHIND rather than which tool made it. So "publish the way
 #              your brief says" stops being an unverifiable instruction about a
 #              method: collect asks the forge for a change request — a pull
 #              request on GitHub, a merge request on GitLab — from this task's
-#              own branch (and, for `no-mistakes`, an attestation for the
+#              own branch (and, for `attested`, an attestation for the
 #              commit that would merge), or asks git whether a `push` task's
 #              commit reached the base branch. An artifact that is not there is
 #              reported and the task is left OPEN; a check that could not run
@@ -107,7 +107,7 @@
 #   `shepherd` asks the FORGE for every open change request on the repos this
 #              queue's tasks name, DISPATCHES A FIXER for one that conflicts,
 #              fails a check, has a review asking for changes, or was declared
-#              `no-mistakes` and carries no attestation — and squash-merges
+#              `attested` and carries no attestation — and squash-merges
 #              one that clears every gate. It is a fourth thing, after both
 #              halves of completion.
 #
@@ -154,15 +154,16 @@
 #                determine and carries on. A change request it could not read
 #                is never called broken, and never called ready.
 #   NEVER TOUCH  only artifacts recorded on this queue's own tasks, and it
-#   A STRANGER   merges only in the repos AUTO_MERGE_REPOS names, each of
-#                which names its forge (`github.com/owner/repo`,
-#                `gitlab.example.com/group/project`).
+#   A STRANGER   merges only in the repos the operator's own, gitignored
+#                orchestration/auto-merge.conf names — nowhere at all until
+#                that file exists — each of which names its forge
+#                (`github.com/owner/repo`, `gitlab.example.com/group/project`).
 #
 # Usage:
 #   scripts/queue.sh topic add <slug> --title T --prompt 'the ask'   # or --prompt-file F|-
 #   scripts/queue.sh add <topic> <slug> --title T --repo P --branch B [--base main]
 #                        [--host H] [--profile default] [--touches a,b] [--brief-file F]
-#                        [--publish no-mistakes|pr|push] [--how 'run `/publish`']
+#                        [--publish attested|pr|push] [--how 'run `/publish`']
 #                        # --brief-file fills whichever of the brief's four
 #                        # sections its own `## ` headings name; a body with no
 #                        # headings all goes into `What to do`. A file that

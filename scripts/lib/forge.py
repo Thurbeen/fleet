@@ -22,7 +22,7 @@ it:
     repo_from_remote        which repository is this checkout's `origin`
     get                     one change request in full: what `collect` needs to
                             check a publish claim — the body carrying the
-                            no-mistakes attestation, the head commit it must
+                            publish attestation, the head commit it must
                             name, the branch it is open from, and the commits
                             that grew the head since
     state                   open / merged / closed, for the landing check. A

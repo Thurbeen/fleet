@@ -196,6 +196,12 @@ The per-agent differences, one of which is a trap:
 | `grok`, `kimi` | no dialog inside a git repo, which a worktree always is. |
 | `cursor`, `muse` | **not a keystroke** — a launch flag (`--trust`, `--yolo`). Use the `cursor-trusted` / `muse-trusted` profiles in `orchestration/session-profiles.yaml` (§1d). |
 
+**An agent not in this table is refused, not guessed at** — a wrong keystroke
+can exit the agent instead of dismissing a dialog. Teach it one with
+`TRUST_SIGNATURE` and `TRUST_KEYS` in `orchestration/agent.conf`
+(`TRUST_KEYS=none` for an agent with no dialog at all); `session-trust.sh`'s
+header owns the mechanics.
+
 **Which path the trust is recorded against** (observed 2026-09-07, Claude Code):
 answering inside a worktree records it against the **repository's main worktree
 path**, not the worktree's own. So the first worker in a repo meets the dialog
@@ -353,11 +359,8 @@ thurbox-cli session create --name 'Add a license header to every source file' \
 the agent in a per-session **symlink workspace**
 (`~/.local/share/thurbox/workspaces/<agent_session_id>/`) holding one symlink
 per repo, with the agent's cwd set there, so every repo appears as a
-subdirectory. It is agent-neutral — thurbox passes no `--add-dir`-style flags to
-Claude itself — symlinks only, rebuilt idempotently on each launch, and removed
-on delete without touching the repos.
-
-The consequences:
+subdirectory. Symlinks only, rebuilt on each launch, removed on delete without
+touching the repos. The consequences:
 
 - The session's `cwd` field still points at the **primary** repo (display,
   editor, git context). The workspace is a spawn-time process-cwd detail, never
@@ -425,16 +428,15 @@ the WHEN   thurbox-cli watch --json [--since <seq>]
 the WHAT   a result file the worker wrote when it knew what it had concluded.
 ```
 
-**Both halves are needed, and the stream alone is not enough.** A transition
-says a turn ended. That is not the claim that the task finished — an agent
-reports `done` at the end of every turn, including the one where it gave up.
-A lead that treats "turn ended" as "task done" closes tasks that failed.
+**The stream alone is not enough.** A transition says a turn ended, and an
+agent reports `done` at the end of every turn — including the one where it gave
+up. A lead that treats "turn ended" as "task done" closes tasks that failed.
 
-`./scripts/queue.sh` implements exactly this pair and is how the control plane
-should run any real work: `watch` folds transitions into each task's record and
-closes nothing; `collect` reads the worker's own result file and only then does
-a task close. See `.agents/skills/fleet-queue/SKILL.md`. Put the result
-contract at the end of every brief:
+`./scripts/queue.sh` implements exactly this pair: `watch` folds transitions
+into each task's record and closes nothing; `collect` reads the worker's own
+result file and only then does a task close. See
+`.agents/skills/fleet-queue/SKILL.md`. Put the result contract at the end of
+every brief:
 
 ```markdown
 Write <absolute path>/result.md when you finish or conclude you cannot:
@@ -539,12 +541,10 @@ thurbox-cli session get <uuid> --json | jq '{agent,detected_agent,state,state_so
 `uncovered` from `list` and `running` from `get`, for the same session at the
 same moment, and both are true.
 
-**None of this is a completion signal.** `done` means *a turn* finished, not
-that the work is finished — an agent reports `done` at the end of every turn it
-takes. Use state to supervise: to spot a `blocked` worker waiting on an approval
-nobody is going to give, or a `working` one whose report has aged past anything
-plausible. Completion still arrives as the result file of §4, because only the
-worker knows whether it is done.
+**None of this is a completion signal.** Use state to SUPERVISE — to spot a
+`blocked` worker waiting on an approval nobody will give, or a `working` one
+whose report has aged past anything plausible. Completion arrives as §4's result
+file, because only the worker knows whether it is done.
 
 ### 4b. A `working` that never ends — the session that ran out of fuel
 
@@ -556,13 +556,21 @@ readings tell it apart from a genuinely slow turn:
 
 | where | what it says |
 |---|---|
-| `session capture <uuid> --lines 200 --json` | the agent's own banner, as rendered: `You've hit your session limit · resets 11:30pm (Europe/Paris)` |
-| `~/.claude/projects/**/<agent_session_id>.jsonl` | the same event recorded, and more precisely: `"error": "rate_limit"`, `"apiErrorStatus": 429`, and the `quotaLimits` window that rejected the turn — `rateLimitType` and `resetsAt` |
+| `session capture <uuid> --lines 200 --json` | the agent's own banner, as rendered — `claude`'s reads `You've hit your session limit · resets 11:30pm (Europe/Paris)` |
+| that agent's transcript (`claude`: `~/.claude/projects/**/<agent_session_id>.jsonl`) | the same event recorded, and more precisely: `"error": "rate_limit"`, `"apiErrorStatus": 429`, and the `quotaLimits` window that rejected the turn — `rateLimitType` and `resetsAt` |
 
 `agent_session_id` from `session get --json` is what names that transcript, and
 the record has to be the LAST conversational entry: what follows a rejection in
 a wedged session is bookkeeping, and a session that came back has an ordinary
 turn after it.
+
+**Neither reading is hardcoded to one agent.** `scripts/lib/queue.py` keeps one
+entry per agent fleet has actually WATCHED hit a limit — `claude` today — the
+same way §1b's table keeps one per trust dialog. An agent with no entry is
+reported `undetermined`, which restarts nothing, and `LIMIT_BANNER` /
+`TRANSCRIPT_DIR` in `orchestration/agent.conf` teach it one without a code
+change. Nothing is matched that nobody observed: a guessed pattern restarts a
+live worker mid-turn.
 
 **Ask the account before you restart anything.** The limit is not the session's,
 it is the operator's subscription window, shared by every session on this

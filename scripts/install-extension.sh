@@ -19,6 +19,12 @@
 # spawns. Nothing else in the repo spells the glyph: the pane matches the lead
 # without it, and prose calls the lead Mission Control.
 #
+# `__LEAD_AGENT__` is the third, and it is here because WHICH agent runs the
+# lead is the operator's answer and this repo is public. `AGENT` in
+# `orchestration/agent.conf` — the same setting every worker spawn reads — is
+# where it lives, and with none set this renders thurbox's stock `claude`,
+# which is a name thurbox must be given rather than a coupling to one vendor.
+#
 # IT ALSO RENDERS THE PAYLOAD, for the same reason and out of a second setting.
 # `FLEET.md` is the lead's standing context, and the two names it is written
 # around — what the lead calls the operator, and what it answers to — are the
@@ -170,6 +176,28 @@ case "$LEAD_GLYPH" in
 	;;
 esac
 
+# The agent the LEAD session binds to, read the same way and from the same pair
+# the worker spawns read: `AGENT` in the operator's `orchestration/agent.conf`,
+# else the tracked example, which names none. thurbox needs a name here, so an
+# unset setting falls back to its own stock `claude` — the agent it ships and
+# the one this manifest was written against. FLEET_AGENT_ROOT relocates the
+# pair so the gate can render an operator's answer without having one.
+AGENT_ROOT="${FLEET_AGENT_ROOT:-$REPO_ROOT}"
+AGENT_CONF="$AGENT_ROOT/orchestration/agent.conf"
+[ -f "$AGENT_CONF" ] || AGENT_CONF="$AGENT_ROOT/orchestration/agent.example.conf"
+LEAD_AGENT=""
+[ -f "$AGENT_CONF" ] && LEAD_AGENT="$(sed -n 's/^AGENT=//p' "$AGENT_CONF" | head -1)"
+[ -n "$LEAD_AGENT" ] || LEAD_AGENT="claude"
+
+# A thurbox agent name is a bare identifier; anything else would either break
+# the substitution below or register a session against an agent that cannot
+# exist.
+case "$LEAD_AGENT" in
+*[!A-Za-z0-9_-]*)
+	die "AGENT in $AGENT_CONF is not a bare agent name: $LEAD_AGENT"
+	;;
+esac
+
 # The voice setting, read the same way and from the same kind of pair: the
 # operator's own copy when there is one, the tracked defaults when there is not.
 # FLEET_VOICE_CONF is the seam `scripts/check.sh voice` renders through, so the
@@ -207,19 +235,22 @@ done
 tmp="$(mktemp)"
 trap 'rm -f "$tmp"' EXIT
 
-sed -e "s|__REPO_PATH__|$REPO_ROOT|g" -e "s|__LEAD_GLYPH__|$LEAD_GLYPH|g" "$IN" >"$tmp"
+sed -e "s|__REPO_PATH__|$REPO_ROOT|g" -e "s|__LEAD_GLYPH__|$LEAD_GLYPH|g" \
+	-e "s|__LEAD_AGENT__|$LEAD_AGENT|g" "$IN" >"$tmp"
 
 # Refuse to install a half-rendered manifest: an unsubstituted placeholder would
-# register a session pointing at a directory literally named __REPO_PATH__, or
-# a lead whose name begins with the word __LEAD_GLYPH__.
-if grep -q '__REPO_PATH__\|__LEAD_GLYPH__' "$tmp"; then
+# register a session pointing at a directory literally named __REPO_PATH__, a
+# lead whose name begins with the word __LEAD_GLYPH__, or one bound to an agent
+# thurbox has never heard of.
+if grep -q '__REPO_PATH__\|__LEAD_GLYPH__\|__LEAD_AGENT__' "$tmp"; then
 	die "placeholder survived substitution; $OUT not written"
 fi
 [ -s "$tmp" ] || die "rendered manifest is empty; $OUT not written"
 
 mv "$tmp" "$OUT"
 trap - EXIT
-printf 'rendered %s (repo_path = %s, lead glyph = %s)\n' "$OUT" "$REPO_ROOT" "$LEAD_GLYPH"
+printf 'rendered %s (repo_path = %s, lead glyph = %s, agent = %s)\n' \
+	"$OUT" "$REPO_ROOT" "$LEAD_GLYPH" "$LEAD_AGENT"
 
 # The payload, from the same tracked source and under the same refusal: a
 # surviving placeholder would ship the lead a context file telling it to address

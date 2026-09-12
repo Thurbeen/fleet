@@ -1,16 +1,3 @@
----
-# The publish method every task under this policy gets unless `queue.sh add`
-# says otherwise, and the words the brief uses to name the tool. `method` is
-# one of `no-mistakes`, `pr` or `push` — what a task must PRODUCE — and `how`
-# is free text that fleet renders into the brief and never parses.
-#
-# Delete this block and tasks default to `pr`, which needs no setup: a pull
-# request from the task's branch is the whole proof.
-publish:
-  method: no-mistakes
-  how: run `/no-mistakes --yes`
----
-
 # Standing policy for fleet workers
 
 This is the policy every task in every repo runs under. `queue.sh add`'s brief
@@ -59,7 +46,7 @@ that tool. Do not switch methods.
 request — a pull request on GitHub, a merge request on GitLab — git for a commit
 on the base branch. A task whose artifact is not there, or is not from your
 branch, **is not closed** — the lead sees it at collect time and sends you back.
-So verify your own artifact before you report done. For a `no-mistakes` task
+So verify your own artifact before you report done. For an `attested` task
 that is one command, in the CLI your forge has.
 
 On GitHub:
@@ -89,15 +76,19 @@ code the pipeline saw, so one naming any other commit proves nothing about
 what would merge, and `collect` holds your task open exactly as it does for a
 body with no attestation at all.
 
-They come apart on their own. The pipeline writes the attestation while it
-opens the change request and can then push its own `no-mistakes: apply CI fixes`
-commit on top, which leaves the head one commit ahead of what was attested —
-this is what happened to #38, #40 and #48. **Run `/no-mistakes --yes` again**
-and it re-attests the new head; then run the command above once more before
-you write `result.md`. Never hand-edit the body to name the head: an
-attestation you typed attests nothing.
+They come apart on their own. A pipeline writes the attestation while it opens
+the change request and can then push its own CI-fix commit on top, which leaves
+the head one commit ahead of what was attested — this is what happened to pull
+requests #38, #40 and #48. **Run your Publish line's command again** and it
+re-attests the new head; then run the command above once more before you write
+`result.md`.
+Never hand-edit the body to name the head: an attestation you typed attests
+nothing.
 
-The default for every task here is the frontmatter at the top of this file.
+Your brief's Publish line is the authority on the method and the tool. The
+default behind it is the operator's, in `orchestration/publish.conf`, and this
+file no longer carries one — it is tracked, and a tool name here would be one
+operator's pipeline shipped to every clone.
 
 ## Do not merge
 
@@ -107,10 +98,10 @@ The default for every task here is the frontmatter at the top of this file.
   A repo that forbids squash — a GitLab project can, with
   `squash_option: never` — is one fleet reports and leaves for you.
 - **You do not merge.** Opening it is where your work ends. `queue.sh
-  shepherd` may later merge it for you in the repos its `AUTO_MERGE_REPOS`
-  allowlist names (host-qualified, as in `github.com/owner/repo` or
-  `gitlab.example.com/group/project`), but only once it clears its gates —
-  never merge it yourself in the meantime.
+  shepherd` may later merge it for you in the repos the operator's own
+  `orchestration/auto-merge.conf` names (host-qualified, as in
+  `github.com/owner/repo` or `gitlab.example.com/group/project`), but only once
+  it clears its gates — never merge it yourself in the meantime.
 
 ## Reporting back — write a file, do not send mail
 

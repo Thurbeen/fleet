@@ -318,24 +318,16 @@ the question:
 - **Skip** — the pane stays installed and invisible; `./scripts/place-pane.sh`
   places it whenever they want it
 
-On yes, run the script that does it:
+On yes:
 
 ```bash
 ./scripts/place-pane.sh --dry-run    # the file, the anchor, the exact block
 ./scripts/place-pane.sh              # right of the terminal (--left for the other side)
 ```
 
-It refuses rather than guesses. A layout it does not recognise — no `columns`
-list it knows, or none of the helpers the block calls — is left untouched and
-the block printed instead, naming the part it could not find; the file is
-backed up to `layout.lua.bak-<timestamp>` before any edit; the result is
-re-read with `lua` and the backup restored if it no longer parses; and it
-finishes by running `thurbox-cli plugin check`, which is the verification. A
-layout that already carves the slot is left exactly as it is — including one
-the operator arranged differently, which is theirs and not yours to correct.
-
-If they chose to add it themselves, print this and say plainly that you stopped
-there on purpose:
+If they chose to add it themselves, print this block — with its guard, since a
+bare `{ slot = "fleetqueue" }` draws but leaves `F3` opening a pane that never
+closes — and say plainly that you stopped there on purpose:
 
 ```lua
 if panels.shown("fleetqueue") and filled(ctx, "fleetqueue") then
@@ -343,21 +335,11 @@ if panels.shown("fleetqueue") and filled(ctx, "fleetqueue") then
 end
 ```
 
-It goes inside the `columns` list of `layout.lua`, beside the other side
-columns — after the `center` line for the right-hand column. Read the interface
-directory back rather than assuming `~/.config/thurbox/ui`; a dev build's is
-elsewhere, and this says which rule chose it:
-
-```bash
-thurbox-cli plugin dir --text | head -1
-```
-
-**Give them the guard, not just the slot.** `plugin check` suggests a bare
-`{ slot = "fleetqueue" }`, and that is enough to make the pane DRAW — which is
-all `check` knows about. It is not enough to make `F3` work: an unguarded slot
-is carved on every frame, so the key flips a panel state nothing reads and the
-pane opens and never closes. `panels` and `filled` already exist in the stock
-`layout.lua`, guarding the session list the same way.
+**`.agents/skills/fleet-pane/` §4 owns the rest and this step does not restate
+it**: where the block goes, what `place-pane.sh` refuses and backs up, and
+`thurbox-cli plugin dir --text | head -1` for the interface directory (a dev
+build's is not `~/.config/thurbox/ui`). Its §7 is the symptom table if the pane
+comes back placed and empty.
 
 **One last thing that is theirs and not yours.** The pane finds the queue by
 running `./scripts/queue.sh root` in the Mission Control session's checkout,
@@ -436,6 +418,35 @@ explicitly; an operator who set up a control plane and sees an empty
 The one thing outside the repo that did change is the operator's own
 `layout.lua`, if they said yes in step 6 — with a `.bak-<timestamp>` beside it.
 Say that too.
+
+**Two things are NOT set up, by design.**
+
+*How tasks publish, and which agent they run.* `orchestration/publish.conf` and
+`agent.conf` are the operator's, gitignored, and the tracked examples beside
+them name no tool, no vendor and no agent — so a fresh clone publishes by the
+one shape that needs no setup (`pr`: a pull request from the task's branch) and
+leaves `session create` thurbox's own default agent. Offer them, and say what
+each buys: a default publish command so the lead never retypes `--publish`, an
+`ATTESTATION_MARKER` if their pipeline attests, and `FUEL_PROVIDER` so `refuel`
+knows whose quota window to gate on. Without that last one `refuel` derives it
+from the tasks and reports `undetermined` when they disagree, which restarts
+nothing.
+
+```bash
+cp -n orchestration/publish.example.conf orchestration/publish.conf
+cp -n orchestration/agent.example.conf orchestration/agent.conf
+```
+
+*Where fleet may merge.* A fresh clone
+has no `orchestration/auto-merge.conf` and the tracked example names no
+repository, so `queue.sh shepherd` reviews every pull request and merges none —
+saying so by name. Nobody inherits another operator's merge rights by cloning a
+public repo. Offer the file, never write it; the example's header owns the
+format and the gates a merge still clears:
+
+```bash
+cp -n orchestration/auto-merge.example.conf orchestration/auto-merge.conf
+```
 
 Gate anyway; the `yaml` check is the one that asserts the generated map's shape:
 
