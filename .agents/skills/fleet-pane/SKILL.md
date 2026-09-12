@@ -32,92 +32,55 @@ but not there".
 ## 1. What it is, and what it is not
 
 A **readout, not a place you go**. `focusable = false`, so the focus ring walks
-past it, `ctrl+h`/`ctrl+l` never land on it, and there is no key on it that
-dispatches, collects or merges anything — `scripts/queue.sh` stays the only
-thing that writes to the queue. The wheel scrolls it. Its one action is the
-F-key in §5.
+past it, `ctrl+h`/`ctrl+l` never land on it, and no key on it dispatches,
+collects or merges anything — `scripts/queue.sh` stays the only thing that
+writes to the queue. The wheel scrolls it. Its one action is the F-key in §5.
 
 It is the fleet's only live view of the queue, over the same records
-`./scripts/queue.sh list` reads. `queue.sh show` is still the place to read a
-task in full; the pane is for not asking, to notice a task changed state.
+`./scripts/queue.sh list` reads. `queue.sh show` is still where you read a task
+in full; the pane is for noticing a task changed state without asking.
 
-**The top rows are the fuel, not a task.** The account's remaining provider
-windows are the constraint every row under them competes for, so they sit above
-the counters: a head row carrying the reserve and how old the reading is, then
-**one row per subscription** — the provider's name, a bar, and its percentage.
-The bar is a second encoding of the number and never a replacement, it is
-coloured by the same reserve the head row names, and it marks where that floor
-falls across it. The pane does not read `quota-axi` — it asks
-`./scripts/fleet-status.sh --fuel`, the same reading the status screen prints,
-on a five-minute TTL of its own because that reading costs a network call.
-FLEET.md's `## Fuel` section owns the reserve, which arrives on the record so
-the pane never spells the number itself.
+**`interface/fleet_queue.lua`'s header owns what it draws and why** — the fuel
+rows above the counters, the `⇡` artifact row under a task (its declared
+`publish.method` — `no-mistakes`, `pr` or `push` — what that turned out to be,
+and what fleet last saw), and what a narrow column drops first (`PUBLISH_WORD`,
+`PUBLISH_LADDER`).
 
-**A provider that could not be read is not drawn at all** — no bar, no number,
-no row. The exception is nothing reading at all: then the head row itself says
-`unavailable` with the reason under it, because a fuel block that quietly
-disappeared would read as "nothing to report" when it means "nobody could
-tell". Either way `./scripts/fleet-status.sh` names every provider and the
-reason its fetch failed.
+**It calls nothing itself.** Fuel comes from `./scripts/fleet-status.sh --fuel`
+on a five-minute TTL, never from `quota-axi` directly; FLEET.md's `## Fuel`
+section owns the reserve. Every word of the `⇡` row comes off `task.yaml`'s
+`publish` block, written by `collect`, `shepherd` and `reap` — so the pane runs
+no `gh` and says nothing `queue.sh show` would not print in the same word.
 
-**Two readings are not bars**, and each looks different: a probe that has not
-answered is a spinner, and a stale reading is hatched and flagged, because a
-number that is remembered rather than observed must not look identical to one
-that was just measured.
+Four consequences are worth knowing here because they turn into questions:
 
-**The ⛽ on the head row has an off switch, and it is `FUEL_GLYPH` at the top of
-`interface/fleet_queue.lua`.** Set it to nil and the block draws exactly what it
-drew before the glyph existed. It is a switch because U+26FD is
-East_Asian_Width WIDE — two terminal cells, not one. The pane's own budgets
-measure it correctly (`widgets.len` is the kernel's `unicode-width`, the table
-the painter lays out with), but a font that draws it narrow, or a multiplexer
-that disagrees about its width, shears every row below it. **If the column looks
-sheared by one cell, turn the glyph off before looking anywhere else** — and no
-variation selector is used, so the terminal draws whatever presentation it
-already has.
-
-**What a narrow column drops**, and this one is routinely thirty cells wide: the
-reserve on the head row first, then the bar (under five cells it is a
-decoration). The number never goes. The detail row under a reading — the binding window and when it
-comes back — is drawn only when exactly one provider carries a number; several
-readings at two rows each would push the queue itself off the column, and
-`./scripts/fleet-status.sh` is where every window is printed in full.
-
-**The `⇡` row under a task is its ARTIFACT's state, and it IS the artifact
-row** — it replaces it rather than sitting above it. It says what the task was
-told to produce (`publish.method` — `no-mistakes`, `pr` or `push`), which pull
-request or commit that turned out to be, what fleet last saw when it looked at
-it, and how long ago it looked. The whole row is the link: Ctrl+Click it and the
-terminal opens the change request. Every word on it comes off `task.yaml`'s
-`publish` block, written by `collect`, `shepherd` and `reap` — the commands that
-do the looking — so the pane calls no `gh` and says nothing `queue.sh show`
-would not print in the same word. Colour carries the verdict, and **`green` is
-not the ok colour**: it means every gate the forge knows about holds and nobody
-vetted it, which is a different claim from `ready` and is why fleet will not
-merge it for you. The note beside a state is its next move, not its colour —
-`— yours to merge` on green, `— review` on `open`, since `open` is a fact
-`collect` proved, not a verdict, and gets no colour that would claim one. A
-narrow column drops the parts in a fixed order — the method first, then the
-note, then the age, then the `#44` — and the link survives losing its label.
-`interface/fleet_queue.lua` (`PUBLISH_WORD`, `PUBLISH_LADDER`) is the owner of
-that order and argues it in place.
-
-**No row is drawn for a task with nothing to report about its publish**: a
-record from before `publish` existed, or a task whose publish has not started.
-The absence is what "nothing yet" looks like here, as it is for the documents
-row, which no longer draws `0 events`.
+- **An absent row means "nothing to report", never a fault.** A provider that
+  could not be read is not drawn; a task whose publish has not started has no
+  `⇡` row. Only nothing reading at all draws a head row saying `unavailable`,
+  with the reason under it. `./scripts/fleet-status.sh` names every provider
+  and why its fetch failed.
+- **A remembered reading never looks measured.** A probe that has not answered
+  is a spinner and a stale one is hatched and flagged.
+- **`green` is not the ok colour.** It means every gate the forge knows about
+  holds and *nobody vetted it* — a different claim from `ready`, and why fleet
+  will not merge it for you. The note beside a state is its next move, not its
+  colour: `— yours to merge` on green, `— review` on `open`.
+- **If the column looks sheared by one cell, turn `FUEL_GLYPH` off before
+  looking anywhere else.** It is at the top of `interface/fleet_queue.lua`; set
+  it to nil and the block draws what it drew before the glyph existed. U+26FD is
+  East_Asian_Width WIDE — two cells — and the pane measures it correctly, but a
+  font that draws it narrow shears every row below it.
 
 It runs inside the thurbox interface, which knows nothing about fleet, so it
 finds the control plane by **probing the lead session by NAME** and running
 `./scripts/queue.sh root` in it. Two consequences that explain most of §7: the
-lead session must exist under the name the pane expects, and the pane needs
-thurbox's `run` capability to ask it anything. The name lives in the
-`CONTROL_PLANE` constant at the top of `interface/fleet_queue.lua` and in
-`extension.toml.in`, which owns renaming it — read it there rather than
-remembering it.
+lead must exist under the name the pane expects, and the pane needs thurbox's
+`run` capability to ask it anything. The name lives in the `CONTROL_PLANE`
+constant at the top of `interface/fleet_queue.lua` and in `extension.toml.in`,
+which owns renaming it.
 
-The constant holds the name **without the glyph**, and matches the lead behind
-any single mark in front of it: which glyph the lead wears is a setting
+That constant holds the name **without the glyph**, matching the lead behind any
+single mark: which glyph the lead wears is a setting
 (`orchestration/session-glyphs.example.conf`) that
 `scripts/install-extension.sh` renders into the manifest, and a pane spelling
 one of its values would say "no session" the day the operator flipped it.
@@ -145,10 +108,10 @@ Two things to get right before running it:
   that session's conversation history. That is the operator's call to make, not
   yours — surface it, do not run it.
 
-The pane install is deliberately not fatal to the extension install: a control
-plane with no pane still works, so a `plugin install` that failed prints a
-warning and the script still exits 0. Read the output; do not infer the pane
-from the exit code.
+The pane install is not fatal to the extension install — a control plane with
+no pane still works — so a failed `plugin install` prints a warning and the
+script still exits 0. Read the output; do not infer the pane from the exit
+code.
 
 ## 3. Verifying
 
@@ -207,15 +170,12 @@ On yes:
 ./scripts/place-pane.sh --check      # is it placed? changes nothing
 ```
 
-What makes that safe enough to run at all, and what its header argues in full:
-it refuses a layout it does not recognise rather than guessing and says which
-part it could not find, it is idempotent — a layout already carving the slot is
-left exactly as the operator arranged it — it backs the file up to
-`layout.lua.bak-<timestamp>` first, it re-reads its own edit with `lua` and
-puts the backup back if the result no longer parses, and it finishes with
-`thurbox-cli plugin check`. The slot it writes is read from
-`interface/fleet_queue.lua`, never spelled in the script, so a rename cannot
-half-land.
+What makes it safe enough to run, argued in full in its header: it refuses a
+layout it does not recognise and names the part it could not find, it is
+idempotent, it backs the file up to `layout.lua.bak-<timestamp>`, it re-reads
+its own edit with `lua` and restores the backup if the result no longer parses,
+and it finishes with `thurbox-cli plugin check`. The slot it writes is read from
+`interface/fleet_queue.lua`, so a rename cannot half-land.
 
 If they would rather do it themselves, print the block, name the file, and stop
 there on purpose. Find it rather than assuming `~/.config/thurbox/ui` — a dev
@@ -326,25 +286,20 @@ the harness to reproduce a shape you are chasing.
 
 ## 8. The gate
 
-`./scripts/check.sh pane` is what keeps this skill and the installer from
-drifting apart from the pane, and `./scripts/check.sh onboarding` covers the
+`./scripts/check.sh pane` keeps this skill, the installer and the pane from
+drifting apart: it holds ONE spelling of the slot name, the placement guard, the
+`plugin remove` path and the F-key across all three — this file among them — and
+refuses a binding on a chord the kernel owns. `check_pane` in `scripts/check.sh`
+is what it asserts; what matters here is that an edit to any of those strings
+must go green in `./scripts/check.sh` before it ships.
+
+It also runs `./scripts/pane-selftest.sh` (needs `lua`), which renders the pane
+offline and asserts the DESIGN rather than the wiring — one row per task, no row
+carrying no information, finished work weighing less than running work, and all
+of it still fitting thirty columns. `./scripts/check.sh onboarding` covers the
 writer: `scripts/onboarding-selftest.sh` §3 drives `place-pane.sh` against a
-copy of a stock layout — placed right by default, left on `--left`, idempotent,
-backed up, refused on an arrangement it cannot read, and still parsing as Lua
-afterwards. It holds one spelling of the slot name, the
-placement guard, the `plugin remove` path and the F-key across the pane, the
-installer and the documents that print the block — this file among them — and it
-refuses a binding on a chord the kernel owns. Read `check_pane` in
-`scripts/check.sh` for what exactly it asserts; the point here is that it does,
-so an edit to any of those strings must go green in `./scripts/check.sh` before
-it ships.
+stock layout — placed right by default, left on `--left`, idempotent, backed up,
+refused on an arrangement it cannot read, still parsing as Lua afterwards.
 
-It also runs `./scripts/pane-selftest.sh`, which is the half the greps cannot
-reach: it renders the pane offline and asserts the design rather than the
-wiring — one row per task, no row that carries no information, finished work
-weighing less than running work, the counter row and the section headings not
-contradicting each other, and all of it still fitting thirty columns. It needs
-`lua`.
-
-Neither half is a Lua linter. The pane's own gate is `thurbox-cli plugin
-check`, which needs a thurbox install, so it belongs at install time — §3.
+Neither is a Lua linter. The pane's own gate is `thurbox-cli plugin check`,
+which needs a thurbox install, so it belongs at install time — §3.

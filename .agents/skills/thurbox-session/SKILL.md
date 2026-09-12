@@ -353,11 +353,8 @@ thurbox-cli session create --name 'Add a license header to every source file' \
 the agent in a per-session **symlink workspace**
 (`~/.local/share/thurbox/workspaces/<agent_session_id>/`) holding one symlink
 per repo, with the agent's cwd set there, so every repo appears as a
-subdirectory. It is agent-neutral — thurbox passes no `--add-dir`-style flags to
-Claude itself — symlinks only, rebuilt idempotently on each launch, and removed
-on delete without touching the repos.
-
-The consequences:
+subdirectory. Symlinks only, rebuilt on each launch, removed on delete without
+touching the repos. The consequences:
 
 - The session's `cwd` field still points at the **primary** repo (display,
   editor, git context). The workspace is a spawn-time process-cwd detail, never
@@ -425,16 +422,15 @@ the WHEN   thurbox-cli watch --json [--since <seq>]
 the WHAT   a result file the worker wrote when it knew what it had concluded.
 ```
 
-**Both halves are needed, and the stream alone is not enough.** A transition
-says a turn ended. That is not the claim that the task finished — an agent
-reports `done` at the end of every turn, including the one where it gave up.
-A lead that treats "turn ended" as "task done" closes tasks that failed.
+**The stream alone is not enough.** A transition says a turn ended, and an
+agent reports `done` at the end of every turn — including the one where it gave
+up. A lead that treats "turn ended" as "task done" closes tasks that failed.
 
-`./scripts/queue.sh` implements exactly this pair and is how the control plane
-should run any real work: `watch` folds transitions into each task's record and
-closes nothing; `collect` reads the worker's own result file and only then does
-a task close. See `.agents/skills/fleet-queue/SKILL.md`. Put the result
-contract at the end of every brief:
+`./scripts/queue.sh` implements exactly this pair: `watch` folds transitions
+into each task's record and closes nothing; `collect` reads the worker's own
+result file and only then does a task close. See
+`.agents/skills/fleet-queue/SKILL.md`. Put the result contract at the end of
+every brief:
 
 ```markdown
 Write <absolute path>/result.md when you finish or conclude you cannot:
@@ -539,12 +535,10 @@ thurbox-cli session get <uuid> --json | jq '{agent,detected_agent,state,state_so
 `uncovered` from `list` and `running` from `get`, for the same session at the
 same moment, and both are true.
 
-**None of this is a completion signal.** `done` means *a turn* finished, not
-that the work is finished — an agent reports `done` at the end of every turn it
-takes. Use state to supervise: to spot a `blocked` worker waiting on an approval
-nobody is going to give, or a `working` one whose report has aged past anything
-plausible. Completion still arrives as the result file of §4, because only the
-worker knows whether it is done.
+**None of this is a completion signal.** Use state to SUPERVISE — to spot a
+`blocked` worker waiting on an approval nobody will give, or a `working` one
+whose report has aged past anything plausible. Completion arrives as §4's result
+file, because only the worker knows whether it is done.
 
 ### 4b. A `working` that never ends — the session that ran out of fuel
 

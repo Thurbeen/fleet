@@ -9,12 +9,10 @@ allowed-tools: Read, Bash, Glob, Grep
 
 **`fleet-onboarding` is "this clone is not yet a working fleet"; this skill is
 "this working fleet is behind origin"** — it fast-forwards the checkout and then
-re-applies only what that sync actually touched, and where the two skills meet
-the same step, this one points at that one rather than repeating it.
+re-applies only what that sync actually touched.
 
 Scope is the **control plane only**. thurbox, Claude Code and the agent tooling
-have their own update paths, and folding them in here would make the skill
-unpredictable about what it just changed. Say so if asked to do more.
+have their own update paths. Say so if asked to do more.
 
 > **This skill changes no tracked state on its own initiative.** No commits, no
 > pushes, no reverts, no `git checkout -- .`, no rebase, no reset. It runs
@@ -103,49 +101,36 @@ do. Otherwise map the list:
 | `scripts/reconcile.sh` | §6 | the running reconciler loop is executing old code |
 | `FLEET.md`, `AGENTS.md`, `CLAUDE.md`, `.agents/skills`, `.claude/skills`, `.claude/settings.json` — or a `restart-lead:` line | §8 | the lead is holding instructions it froze at launch |
 
-`FLEET.md` is deliberately in two rows: the extension's `[[files]]` payload is
-`FLEET.rendered.md`, which the installer renders FROM it, *and* it is the
-lead's standing context — so it needs both the reinstall in §3 and the
-hand-over in §8. A change to `orchestration/voice.example.conf` (or your own
-`voice.conf`) needs the same two: it moves what the rendered payload calls you.
+`FLEET.md` is in two rows: the extension's `[[files]]` payload is
+`FLEET.rendered.md`, rendered FROM it, *and* it is the lead's standing context
+— so it needs the reinstall in §3 and the hand-over in §8. So does a change to
+`orchestration/voice.example.conf` (or your own `voice.conf`): it moves what the
+rendered payload calls you.
 
 ### §5b — where fleet may merge, which a sync can silently empty
 
-**One update in fleet's history moves this on its own: the one that took the
-auto-merge allowlist out of `scripts/lib/queue.py` and put it in
-`orchestration/auto-merge.conf`.** Before it, the repositories fleet merged in
-were a literal in tracked code, so every clone carried one operator's merge
-rights. After it they are the operator's own gitignored file, and the tracked
-copy beside it names nothing — so an operator who syncs across that change and
-writes no file finds `shepherd` merging **nowhere** and saying so on every pass.
-That is the intended default and not a regression, but it is silent unless
-somebody looks.
-
-So after a sync that touched either path, ask:
+The auto-merge allowlist moved out of `scripts/lib/queue.py` into the
+operator's gitignored `orchestration/auto-merge.conf`. The tracked copy beside
+it names nothing, so an operator who syncs across that change and writes no
+file finds `shepherd` merging nowhere. Intended, and silent unless somebody
+looks:
 
 ```bash
 ./scripts/queue.sh shepherd --dry-run | tail -6
-```
-
-A pass that prints `Fleet merges NOTHING` is telling you the file does not
-exist. If the operator wants unattended merges back, copy the tracked form and
-name their own repositories in it — host-qualified, and only repositories where
-the gates mean something:
-
-```bash
 cp -n orchestration/auto-merge.example.conf orchestration/auto-merge.conf
 $EDITOR orchestration/auto-merge.conf
 ```
 
-It is read on every pass, so nothing needs a reinstall or a restart. Both files
-are gitignored below the tracked one, so there is nothing to commit.
+`Fleet merges NOTHING` in that output means the file does not exist. Entries
+are host-qualified; the example's header owns the format and the gates.
+Read every pass, so no reinstall and no restart, and both files are gitignored.
 
-`scripts/lib/queue.py` is deliberately absent from this table, and so is
-`scripts/lib/notify_lead.py`. The reconciler's loop never sources either — every
-pass shells out to `./scripts/queue.sh` and to `python3
-scripts/lib/notify_lead.py` as fresh subprocesses, so a change to either
-reaches the loop on its very next call, with no restart needed. §6 covers only
-`scripts/reconcile.sh` itself, which the running loop does hold in memory.
+`scripts/lib/queue.py` and `scripts/lib/notify_lead.py` are absent from this
+table: the reconciler's loop sources neither — every pass shells out to
+`./scripts/queue.sh` and `python3 scripts/lib/notify_lead.py` as fresh
+subprocesses, so a change reaches the loop on its next call with no restart. §6
+covers `scripts/reconcile.sh` itself, which the running loop does hold in
+memory.
 
 Run §3–§6 in any order, then §7, then §8 last — §8 is the one that cannot be
 automated, and everything else should already be done when you raise it.
@@ -178,9 +163,10 @@ than inferring the pane from the exit code** — §4.
 `.agents/skills/fleet-pane/` owns the pane end to end: the install, the one
 command that verifies it, the `layout.lua` block that places it and the script
 that writes that block once the operator says so, the F-key, removal, and the
-symptom table for a pane that is installed and drawing nothing. **Use that skill; do not restate its procedure
-here.** §3 already re-ran the install, so what is left is its verification step
-and, if that comes back unplaced, its placement section.
+symptom table for a pane that is installed and drawing nothing. **Use that
+skill; do not restate its procedure here.** §3 already re-ran the install, so
+what is left is its verification step and, if that comes back unplaced, its
+placement section.
 
 ## 5. Registry — only when the owners changed
 
@@ -272,20 +258,19 @@ own `restart-lead:` message:
   the quotes. `extension.toml.in`'s RENAMING header owns why the glyph is part
   of the name.
 
-**This is not the fork sequence.** `extension.toml.in`'s RENAMING header
-documents a conversation-preserving fork, and that sequence exists to move a
-name to a *new* one. Here the name must not move, so it does not apply — and
-its second step would be asking thurbox to spawn a session under a name the live
-lead still holds. `restart` needs none of it.
+**Not the fork sequence.** `extension.toml.in`'s RENAMING header documents a
+conversation-preserving fork, which moves a name to a *new* one; its second step
+would ask thurbox to spawn under a name the live lead still holds. Here the name
+must not move.
 
 Two costs to state before the operator runs it:
 
 - **A turn in flight dies with the window.** Check the lead is at rest first
-  (`thurbox-cli session get '<the lead>'`), and read the state word the
-  way `.agents/skills/thurbox-session/` §4a says to — `idle` is not the only
-  word that is not `working`.
-- **The old instructions are still in the resumed history.** That is the
-  trade-off `restart` makes, and for most updates it is the right one.
+  (`thurbox-cli session get '<the lead>'`), reading the state word the way
+  `.agents/skills/thurbox-session/` §4a says to — `idle` is not the only word
+  that is not `working`.
+- **The old instructions are still in the resumed history**, which is the cost
+  `restart` trades for the conversation, and what the next section is for.
 
 ### When the new instructions have to win
 
