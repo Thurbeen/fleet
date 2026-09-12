@@ -777,13 +777,14 @@ worse than useless — each resumes, hits the same wall within seconds, and burn
 the reset it was waiting for. Three concurrent pipeline runs did that on
 2026-08-29 and lost every step in flight.
 
-It reads the `claude` account alone, through `fleet_status.probe_fuel`, because
-the fleet dispatches `claude` agents and a spent window on a provider it never
-uses must not strand one. `fleet-status.sh`'s `FUEL` section reads every
-authenticated provider (`fleet_status.probe_fuel_all`), **so the two can
-legitimately disagree** — the screen may show a provider fine while `refuel`
-reports `claude` spent. A task running another agent is reported undetermined
-rather than guessed at.
+It reads ONE account, through `fleet_status.probe_fuel`: the provider the
+tasks in hand draw on, derived from their agent or pinned by `FUEL_PROVIDER` in
+`orchestration/agent.conf`. A spent window on a provider the fleet never
+dispatches must not strand a worker, and tasks that disagree on an agent are
+`undetermined` rather than guessed at. `fleet-status.sh`'s `FUEL` section reads
+every authenticated provider (`probe_fuel_all`), **so the two can legitimately
+disagree** — the screen may show one provider fine while `refuel` reports the
+fleet's own spent.
 
 ```text
     account claude     spent        0% remaining — five_hour resets 2026-09-09T02:10:00+00:00

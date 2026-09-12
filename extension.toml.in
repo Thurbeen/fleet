@@ -285,7 +285,7 @@ version = "1.3.0"                # this extension's own version; bump on changes
 min_thurbox_version = "2.19.0"
 # No `home`: defaults to `<config>/extensions/fleet` (override with --home).
 
-# --- no [[agents]] block: the lead runs the stock `claude` agent ---------------
+# --- no [[agents]] block: the lead runs a STOCK thurbox agent ------------------
 #
 # There used to be one here, named `fleet`, and it existed only to pin a model:
 # `args = ["--model", "claude-opus-4-8"]`. Everything else in it —
@@ -305,10 +305,19 @@ min_thurbox_version = "2.19.0"
 # still runs `agent = "claude"` with `hook_coverage: full`. The bug was latent,
 # waiting for the next `extension deactivate` + install to recreate the session.
 #
-# So: no agent is registered, the session binds to `claude` below, and the model
-# is whatever `claude` defaults to. To pin one anyway, add the block back with
-# BOTH flags — the settings path and the model — or set the model in
-# `~/.claude/settings.json`, which needs no block at all.
+# So: no agent is registered, the session binds to `__LEAD_AGENT__` below, and
+# the model is whatever that agent defaults to. To pin one anyway, add the block
+# back with BOTH flags — the settings path and the model — or set the model in
+# that agent's own settings, which needs no block at all.
+#
+# WHICH stock agent is the operator's setting and not this repo's. `AGENT` in
+# `orchestration/agent.conf` names it — the same setting every worker spawn
+# reads — and `scripts/install-extension.sh` substitutes it here the way it
+# substitutes `__REPO_PATH__`. With it unset the placeholder renders `claude`,
+# which is the agent thurbox ships and the one this manifest was written
+# against: a fallback for a name thurbox must be given, not a claim that fleet
+# needs Claude. A change takes effect on the next install and, like a rename,
+# reaches only a session that is recreated.
 
 # --- payload files laid down under home ---------------------------------------
 #
@@ -356,7 +365,7 @@ target = "FLEET.rendered.md"
 
 [[sessions]]
 name = "__LEAD_GLYPH__ Mission Control"
-agent = "claude"
+agent = "__LEAD_AGENT__"
 # The session opens your checkout, not the extension home: it needs registry/
 # and orchestration/ in hand, and the repo's SessionStart hook
 # (.claude/settings.json) fast-forwards main before any work starts.

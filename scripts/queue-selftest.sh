@@ -482,9 +482,13 @@ chmod +x "$tbxbin/thurbox-cli"
 # `session_is <id> <state> [hook_state_age_secs]`. The hook fields come with
 # it because `refuel` reads them: a session that ran dry reads `working` with an
 # age that keeps growing, and nothing else in `get --json` says so.
+# WHICH agent the stub reports is a variable and not a literal, because the
+# agent seam is only worth what a second agent driven through it proves —
+# §12b sets it to one fleet has no built-in signal for.
+STUB_AGENT=claude
 session_is() {
-	printf '{"id":"%s","name":"%s","state":"%s","agent":"claude","hook_reported":true,' \
-		"$1" "worker $1" "$2" >"$sessions/$1.json"
+	printf '{"id":"%s","name":"%s","state":"%s","agent":"%s","hook_reported":true,' \
+		"$1" "worker $1" "$2" "${4:-$STUB_AGENT}" >"$sessions/$1.json"
 	printf '"hook_state":"%s","hook_state_age_secs":%s,"agent_session_id":"agent-%s"}\n' \
 		"$2" "${3:-5}" "$1" >>"$sessions/$1.json"
 }
@@ -598,12 +602,14 @@ cat "$quota"
 SH
 chmod +x "$quotabin/quota-axi"
 
-# `quota_is <percent remaining> <resets at>` for the five-hour window, which is
-# the one a session runs dry against.
+# `quota_is <percent remaining> <resets at> [provider]` for the five-hour
+# window, which is the one a session runs dry against. The provider is a
+# parameter for the same reason the stub agent is: §12b reads a different one.
+QUOTA_PROVIDER=claude
 quota_is() {
 	cat >"$quota" <<EOF
 {"generatedAt": "2026-09-08T21:18:52.142Z", "schemaVersion": 5,
- "providers": [{"provider": "claude", "plan": "max",
+ "providers": [{"provider": "${3:-$QUOTA_PROVIDER}", "plan": "max",
   "windows": [
    {"id": "five_hour", "label": "session", "kind": "session",
     "resetsAt": "$2", "percentRemaining": $1},
@@ -3290,6 +3296,143 @@ expect "a quota reading that cannot be taken is undetermined" "undetermined" "$o
 refute "and undetermined restarts nothing" "restarted" "$out"
 
 unset CLAUDE_CONFIG_DIR
+
+# --- 12b. the AGENT seam, driven by a second agent ---------------------------
+#
+# §12 above is one agent all the way down: its banner, its transcript layout,
+# its provider name. That proves the path works; it does not prove there is a
+# seam, and `scripts/lib/forge.py` is this repo's standard for the difference —
+# an interface is worth what a SECOND implementation driven through it is
+# worth. So the whole of §12 runs again here for `nova`, an agent fleet has
+# never watched hit a limit and has no entry for in `AGENT_LIMIT_SIGNALS`.
+#
+# Everything fleet needs comes from `orchestration/agent.conf`, which is the
+# operator's file: `LIMIT_BANNER` is the sentence, `TRANSCRIPT_DIR` is where
+# the records are, `FUEL_PROVIDER` is the window to gate on. A code change
+# teaches fleet nothing here that the file did not.
+#
+# THE TRIPWIRE IS THE POINT. `CLAUDE_CONFIG_DIR` is gone, no pane carries the
+# banner §12 matched, and the quota document names a provider that is not the
+# one §12 read. A built-in `claude` reached for anywhere on this path answers
+# with the wrong window or no window, and the last assertion then fails.
+#
+# `TRUST_SIGNATURE` and `TRUST_KEYS` are here because the handoff needs them:
+# `session-trust.sh` refuses an agent whose dialog it has not watched and sends
+# nothing, so a restart of an untaught agent would restart a session and never
+# type the brief into it. That was found BY this section.
+
+export FLEET_QUEUE_DIR="$tmp/queue-refuel-nova"
+: >"$restarts"
+: >"$sends"
+STUB_AGENT=nova
+
+novaconf="$tmp/nova-conf"
+mkdir -p "$novaconf/orchestration" "$tmp/nova-transcripts"
+cat >"$novaconf/orchestration/agent.conf" <<'EOF'
+AGENT=nova
+FUEL_PROVIDER=nova
+LIMIT_BANNER=quota exhausted for this workspace
+TRANSCRIPT_DIR=__TDIR__
+TRUST_SIGNATURE=do you trust the contents of this workspace
+TRUST_KEYS=enter
+EOF
+sed -i "s|__TDIR__|$tmp/nova-transcripts|" "$novaconf/orchestration/agent.conf"
+export FLEET_AGENT_ROOT="$novaconf"
+
+ntopic="$($QUEUE topic add nova-dry --title 'A second agent runs dry' \
+	--prompt 'the same sweep, for an agent fleet has no built-in signal for')"
+$QUEUE add "$ntopic" ran-dry --title 'Task ran-dry' --repo /tmp/repo-a \
+	--branch fix/nova --number 01 >/dev/null
+$QUEUE attach "$ntopic/01-ran-dry" bbbbbbb1-0000-0000-0000-000000000001 >/dev/null
+$QUEUE add "$ntopic" just-slow --title 'Task just-slow' --repo /tmp/repo-a \
+	--branch fix/nova-slow --number 02 >/dev/null
+$QUEUE attach "$ntopic/02-just-slow" bbbbbbb2-0000-0000-0000-000000000002 >/dev/null
+
+# The operator's sentence, not one this repo wrote down.
+cat >"$panes/bbbbbbb1-0000-0000-0000-000000000001.txt" <<'EOF'
+> running the gate
+
+quota exhausted for this workspace — try again after 02:00
+EOF
+session_is bbbbbbb1-0000-0000-0000-000000000001 working 7200
+session_is bbbbbbb2-0000-0000-0000-000000000002 working 7200
+
+# The gate first: a spent window on the provider the operator NAMED stops the
+# sweep, and the provider is `nova` because they said so.
+quota_is 0 "2026-09-09T04:00:00+00:00" nova
+out="$($QUEUE refuel 2>&1)"
+expect "the account window read is the one the operator's agent draws on" \
+	"nova" "$out"
+expect "and a spent one stops the sweep for a second agent too" \
+	"waiting on the window" "$out"
+refute "so nothing is restarted while that window is gone" \
+	"bbbbbbb1" "$(cat "$restarts")"
+
+# A document that names ONLY the first agent's provider is not a reading of
+# this one: undetermined, which restarts nothing, rather than a wrong window.
+quota_is 62 "2026-09-09T04:00:00+00:00" claude
+out="$($QUEUE refuel 2>&1)"
+expect "another provider's window is not this agent's reading" \
+	"undetermined" "$out"
+refute "and undetermined restarts nothing" "bbbbbbb1" "$(cat "$restarts")"
+
+quota_is 62 "2026-09-09T04:00:00+00:00" nova
+out="$($QUEUE refuel 2>&1)"
+expect "the banner the operator configured is what marks a dry session" \
+	"restarted" "$out"
+expect "and it is the session that carries it" \
+	"bbbbbbb1-0000-0000-0000-000000000001" "$(cat "$restarts")"
+expect "a stale working state is still only a slow worker" "02-just-slow" "$out"
+refute "so the second session is left alone" "bbbbbbb2" "$(cat "$restarts")"
+expect "and the restarted worker is pointed back at its own brief" \
+	"$FLEET_QUEUE_DIR/$ntopic/01-ran-dry/BRIEF.md" "$(cat "$sends")"
+
+# The transcript, at the directory the operator named and in no layout fleet
+# assumed: `TRANSCRIPT_DIR` is read as the directory itself, so the records sit
+# directly in it rather than under a per-project subdirectory.
+: >"$restarts"
+rm -f "$panes/bbbbbbb1-0000-0000-0000-000000000001.txt"
+$QUEUE add "$ntopic" from-transcript --title 'Task from-transcript' \
+	--repo /tmp/repo-a --branch fix/nova-tr --number 03 >/dev/null
+$QUEUE attach "$ntopic/03-from-transcript" bbbbbbb3-0000-0000-0000-000000000003 >/dev/null
+session_is bbbbbbb3-0000-0000-0000-000000000003 working 7200
+python3 - "$tmp/nova-transcripts/agent-bbbbbbb3-0000-0000-0000-000000000003.jsonl" <<'PY'
+import json
+import sys
+
+rows = [
+    {"type": "user", "timestamp": "2026-09-08T18:00:00.000Z",
+     "message": {"role": "user", "content": "Read /brief and do what it says."}},
+    {"type": "assistant", "timestamp": "2026-09-08T19:56:38.987Z",
+     "isApiErrorMessage": True, "error": "rate_limit", "apiErrorStatus": 429,
+     "quotaLimits": {"status": "rejected", "resetsAt": 1788999000,
+                     "rateLimitType": "workspace_day"},
+     "message": {"role": "assistant", "model": "<synthetic>", "content": [
+         {"type": "text",
+          "text": "quota exhausted for this workspace — try again after 02:00"}]}},
+]
+with open(sys.argv[1], "w") as fh:
+    for row in rows:
+        fh.write(json.dumps(row) + "\n")
+PY
+out="$($QUEUE refuel "$ntopic/03-from-transcript" --dry-run 2>&1)"
+expect "the transcript is read where the operator said it is" "transcript" "$out"
+expect "and names the window that rejected the turn" "workspace_day" "$out"
+expect "so that session would be restarted on the record, not on a pane" \
+	"would restart" "$out"
+
+# An agent with NO entry and NO settings is the honest failure: fleet says it
+# does not know rather than matching a sentence nobody has watched it print.
+cat >"$novaconf/orchestration/agent.conf" <<'EOF'
+AGENT=unheard
+EOF
+out="$($QUEUE refuel "$ntopic/03-from-transcript" --dry-run 2>&1)"
+expect "an agent fleet has never watched is not guessed at" "undetermined" "$out"
+refute "and nothing is restarted on a guess" "would restart" "$out"
+
+unset FLEET_AGENT_ROOT
+STUB_AGENT=claude
+QUOTA_PROVIDER=claude
 
 # --- 13. the display never contradicts itself --------------------------------
 #

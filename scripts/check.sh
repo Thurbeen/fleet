@@ -646,7 +646,8 @@ print("entries=" + (" ".join(sorted(q.auto_merge_repos(q.checkout_root()))) or "
 	# An agent or a provider here would gate every operator's fleet on one
 	# operator's vendor. Empty means "thurbox's own" and "derive it".
 	if [ -f "$ag" ]; then
-		for key in AGENT FUEL_PROVIDER LIMIT_BANNER TRANSCRIPT_DIR AGENT_PROVIDERS; do
+		for key in AGENT FUEL_PROVIDER LIMIT_BANNER TRANSCRIPT_DIR \
+			AGENT_PROVIDERS TRUST_SIGNATURE TRUST_KEYS; do
 			val="$(sed -n "s/^$key=//p" "$ag" | tr -d '[:space:]')"
 			[ -z "$val" ] ||
 				{ fail "automerge: $ag ships $key=$val; that is the operator's"; miss=1; }

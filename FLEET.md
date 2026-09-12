@@ -70,6 +70,9 @@ YAML by hand. Nothing to push — the map is gitignored.
 
 ## The loop
 
+`AGENTS.md` owns the mechanics of every step below and `fleet-queue` owns how
+to run them. What is here is what is YOURS in each.
+
 1. **A prompt becomes a topic**, not a turn in this conversation.
    `./scripts/queue.sh topic add` keeps it verbatim; `add` decomposes it into
    tasks, one per unit of work.
@@ -82,33 +85,18 @@ YAML by hand. Nothing to push — the map is gitignored.
 4. **`watch` on your own cadence, then `collect`.** The event stream says WHEN
    a turn ended; the worker's own result file says WHAT it concluded. A turn
    ending is not a task finishing, and only `collect` closes anything.
-5. The run log records itself: `topic add` opened it and `dispatch`, `collect`
-   and `shepherd` keep its facts current as you run them. Write the goal,
-   decisions and outcome into it in your own words — that half never comes
-   from a record. It is gitignored and not backed up by the repo.
-6. **`shepherd`, as reflexively as `collect`.** The change request outlives the
-   task, and `collect` names `shepherd` whenever it closed one that left one
-   open. It asks the forge for every open change request on the queue's repos,
-   not just recorded artifacts, dispatches a fixer for one that conflicts, fails
-   a check, was reviewed with changes requested, or was declared `attested`
-   and carries no attestation for its current head, and squash-merges one that
-   clears every gate in the repos `orchestration/auto-merge.conf` names — your
-   own file, gitignored, empty until you write it, so fleet merges nowhere
-   until then. Entries there name their forge (`github.com/owner/repo`,
-   `gitlab.example.com/acme/group/widgets`), because a bare `owner/repo`
-   is two different repositories once two forges are configured. It writes down
-   what it saw either way, so a task's record says `checks-running` or
-   `unattested` and not just `shipped`.
+5. The run log records itself as you run those. Write the goal, decisions and
+   outcome into it in your own words — that half never comes from a record. It
+   is gitignored and not backed up by the repo.
+6. **`shepherd`, as reflexively as `collect`**, which names it whenever it
+   closed a task that left a change request open. It writes down what it saw
+   either way, so a task's record says `checks-running` or `unattested` and not
+   just `shipped`.
 7. Review them; the operator merges every one `shepherd` did not. Sessions
-   release themselves once their artifact lands on the base branch — a merged
-   change request, or, for a task that published by pushing directly, the
-   commit itself — `collect` reaps them, `queue.sh reap --dry-run` shows what
-   it would do — see `AGENTS.md`.
+   release themselves once their artifact lands, and `collect` reaps them.
 8. **`refuel` a worker that hit its agent's token limit and never reported —
    thurbox keeps saying `working` because the idle hook never fires.** It asks
-   the account's own quota window (below) before it looks at any session, and
-   restarts nothing while that window is spent; see `AGENTS.md` and
-   `fleet-queue` §5c.
+   the account's own quota window (below) before it looks at any session.
 
 **A landing is not an ending — it is what unblocks the next task.** So `plan`
 is the last thing you run before you go quiet, not the first thing you run when
@@ -148,19 +136,18 @@ per-worker reading to be had — `thurbox-cli session get` carries no token,
 usage, cost or limit field at all.
 
 **One reading per subscription you actually have.** `quota-axi auth` says which
-providers hold a working credential — `claude`, and whatever else is signed in
-on the machine — and those, in one call, are what gets read; a provider with no
-credential is never probed. Each is its OWN reading, on its own clock, and
-nothing is summed or averaged across them: the screen prints a block per
-provider and the pane draws a labelled bar beside each percentage. A provider
-whose fetch failed says so on the screen and carries no number at all, never a
-zero; the pane leaves it out entirely, and says `unavailable` only when nothing
-read.
+providers hold a working credential, and those, in one call, are what gets
+read; a provider with no credential is never probed. Each is its OWN reading,
+on its own clock, and nothing is summed or averaged across them: the screen
+prints a block per provider and the pane draws a labelled bar beside each
+percentage. A provider whose fetch failed says so on the screen and carries no
+number at all, never a zero; the pane leaves it out entirely, and says
+`unavailable` only when nothing read.
 
-A provider's windows reset independently — claude has three, a session window,
-a week and a per-model week. That provider's reading is the lowest of them, the
-screen names which one binds and prints them all with their own resets, and a
-reading served from cache says `stale` and how old it is.
+A provider's windows reset independently — a session window, a week, a
+per-model week. That provider's reading is the lowest of them, the screen names
+which one binds and prints them all with their own resets, and a reading served
+from cache says `stale` and how old it is.
 
 **The reserve is 20%, per provider. Below it you dispatch nothing new.** That
 is the rule, and it is checkable rather than a feeling: the screen prints the
@@ -170,9 +157,10 @@ field, which is that window's pace against its reset clock and is `unknown`
 for every window whose fetch failed. Nothing enforces the floor for
 you — `queue.sh dispatch` does not read fuel and must not, because a queue that
 stops on a bad parse is worse than one that spends. `queue.sh refuel` does read
-it, and reads `claude` ALONE: that is the agent the workers run, so a spent
-window on a provider fleet does not dispatch is no reason to leave a `claude`
-worker sitting at its limit.
+it, and reads ONE provider: the one your agent draws on, from
+`orchestration/agent.conf`. A spent window on a provider fleet does not
+dispatch is no reason to leave a worker sitting at its limit, and tasks that
+disagree on an agent are `undetermined`, which restarts nothing.
 
 Near the floor you spend fuel on dispatching and on nothing else:
 
