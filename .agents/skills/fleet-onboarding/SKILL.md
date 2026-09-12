@@ -332,7 +332,10 @@ there is nothing to ask. On `ask`, ask, then record the answer:
 
 If they chose to add it themselves, print this block — with its guard, since a
 bare `{ slot = "fleetqueue" }` draws but leaves `F3` opening a pane that never
-closes — and say plainly that you stopped there on purpose:
+closes — say plainly that you stopped there on purpose, and still run
+`./scripts/pane-ask.sh no` to record that choice, exactly as you would for
+skip: without it, Mission Control's own first-run ask has no record and asks
+again.
 
 ```lua
 if panels.shown("fleetqueue") and filled(ctx, "fleetqueue") then
