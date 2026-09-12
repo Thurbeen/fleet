@@ -50,6 +50,19 @@
 # clone merges nothing until this file says otherwise.
 /orchestration/auto-merge.conf
 
+# WORKING STATE. How your tasks publish and what fleet looks for afterwards:
+# your default method, the sentence naming YOUR publishing tool, and the
+# attestation marker your pipeline emits. orchestration/publish.example.conf is
+# the tracked copy; it models artifact SHAPES and names no tool, because a tool
+# name in tracked code is one operator's pipeline in everybody's machinery.
+/orchestration/publish.conf
+
+# WORKING STATE. Which agent your workers run, and whose quota window `refuel`
+# gates on. orchestration/agent.example.conf is the tracked copy and leaves both
+# empty — thurbox's own agents.toml already holds the first, and fleet reads the
+# second off the tasks rather than guessing.
+/orchestration/agent.conf
+
 # MACHINE. Whether this terminal's font draws a two-cell emoji at two cells is
 # true of one machine, so the glyph setting is one machine's answer.
 # orchestration/session-glyphs.example.conf is the tracked copy that carries the

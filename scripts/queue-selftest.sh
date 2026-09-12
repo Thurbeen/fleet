@@ -36,7 +36,7 @@
 #      cannot read is left exactly as it is. What it saw is WRITTEN DOWN on the
 #      task, and the gate is method-aware: a pull request the forge is happy
 #      with but nobody attested is recorded `green`, handed back and never
-#      merged, while a `no-mistakes` task with no attestation is recorded
+#      merged, while an `attested` task with no attestation is recorded
 #      `unattested` and still gets its fixer.
 #  11. A task can name a HOST and run there, and a task that names none takes
 #      exactly the path it took before the flag existed. Nothing is spawned on
@@ -224,6 +224,27 @@ github.com/Thurbeen/fleet
 github.com/Thurbeen/thurbox
 EOF
 
+# --- the publish and agent settings, which are FILES and not literals --------
+#
+# Same hazard as the allowlist above: read the operator's own `publish.conf`
+# and these verdicts depend on whose laptop ran them. The run gets its own,
+# carrying exactly the shipped defaults plus the one thing the fixtures need —
+# a `how` sentence naming a tool that does not exist, which is the point: fleet
+# renders it and never parses it.
+export FLEET_PUBLISH_ROOT="$tmp/publish"
+export FLEET_AGENT_ROOT="$tmp/publish"
+mkdir -p "$FLEET_PUBLISH_ROOT/orchestration"
+cat >"$FLEET_PUBLISH_ROOT/orchestration/publish.conf" <<'EOF'
+METHOD=attested
+HOW=run `/publish --yes`
+ATTESTATION_MARKER=fleet-attestation
+PIPELINE_COMMIT_PREFIX=publish
+EOF
+cat >"$FLEET_AGENT_ROOT/orchestration/agent.conf" <<'EOF'
+AGENT=claude
+FUEL_PROVIDER=claude
+EOF
+
 # --- `glab`, a STAND-IN on PATH for the whole run ----------------------------
 #
 # The GitLab adapter asks `glab auth status` which instances this machine
@@ -337,7 +358,7 @@ esac
 SH
 chmod +x "$ghbin/gh"
 
-# The body a `no-mistakes` pull request carries: an attestation naming the
+# The body a `attested` pull request carries: an attestation naming the
 # commit the pipeline ran on. It is written DURING the `pr` step, so `pr` reads
 # `running` and `ci` `pending` in every real one.
 cat >"$tmp/attest.py" <<'PY'
@@ -349,7 +370,7 @@ steps = [
     for s in ("intent", "rebase", "review", "test", "document", "lint", "push")
 ] + [{"step": "pr", "status": "running"}, {"step": "ci", "status": "pending"}]
 payload = json.dumps({"head_sha": sys.argv[1], "steps": steps})
-print(f"<!-- no-mistakes-pipeline-attestation:v1 {payload} -->")
+print(f"<!-- fleet-attestation:v1 {payload} -->")
 print()
 print("Shipped it.")
 PY
@@ -1083,7 +1104,7 @@ expect "check validates every record" "ok" "$out"
 # --- 8. collect verifies the artifact instead of trusting the worker ---------
 #
 # The bug this proves gone: a brief said "open the PR by running
-# `/no-mistakes --yes`", which is an instruction about a METHOD, and a method
+# `/publish --yes`", which is an instruction about a METHOD, and a method
 # leaves no trace a checker can read. Two tasks were collected `shipped` with
 # hand-made `gh pr create` PRs and nothing noticed until an operator read the
 # bodies himself. So a task declares what its publish must LEAVE BEHIND, and
@@ -1091,7 +1112,7 @@ expect "check validates every record" "ok" "$out"
 # for a commit on the base branch.
 #
 # These four tasks take the operator's own default from POLICY.md's
-# frontmatter, which is `no-mistakes`: a pull request from the task's own
+# frontmatter, which is `attested`: a pull request from the task's own
 # branch whose body attests the commit that would merge. 8b below covers the
 # other two methods and the declaration that chooses between them.
 #
@@ -1132,12 +1153,12 @@ out="$($QUEUE collect 2>&1)"
 expect "an attested PR from the task's own branch collects clean" \
 	"02-document-the-states" "$out"
 expect "and collect says which method it verified" \
-	"[publish verified: no-mistakes]" "$out"
+	"[publish verified: attested]" "$out"
 
 expect "a PR that skipped the pipeline is caught" "03-render-detected-agent" "$out"
 expect "the refusal says what the body does not carry" "attestation" "$out"
 expect "the refusal says the task was not closed" "NOT CLOSED" "$out"
-expect "and states what would have proved it" "no-mistakes" "$out"
+expect "and states what would have proved it" "attested" "$out"
 expect "and quotes the tool the brief named, in the operator's own words" \
 	"Its brief said:" "$out"
 
@@ -1190,7 +1211,7 @@ expect "and the record says missing, not skipped" "missing" "$state"
 #
 # Fleet used to know exactly one way of publishing and hard-coded the proof of
 # it. That is the same non-agnosticism whichever tool is hard-coded, so a task
-# now declares an ARTIFACT SHAPE — `no-mistakes`, `pr` or `push` — and the tool
+# now declares an ARTIFACT SHAPE — `attested`, `pr` or `push` — and the tool
 # rides beside it as `--how`, free text that is rendered into the brief and
 # never parsed. That last part is the whole property: an operator's own
 # `/publish` skill, or a repo's `make release`, works because fleet does not
@@ -1233,15 +1254,15 @@ $QUEUE add "$ptopic" push-task --title 'Publish straight onto the base branch' \
 
 b="$(brief_text "$FLEET_QUEUE_DIR/$ptopic/01-pipeline-task/BRIEF.md")"
 expect "a task with no --publish takes POLICY.md's own default" \
-	"**Publish.** \`no-mistakes\`" "$b"
+	"**Publish.** \`attested\`" "$b"
 expect "and the brief names the tool in the operator's own words" \
-	"Here that means: run \`/no-mistakes --yes\`." "$b"
+	"Here that means: run \`/publish --yes\`." "$b"
 
 b="$(brief_text "$FLEET_QUEUE_DIR/$ptopic/02-pr-task/BRIEF.md")"
 expect "a --publish pr task says so" "**Publish.** \`pr\`" "$b"
 expect "and carries the --how it was given" "operator xyz skill" "$b"
 refute "and not the operator's default tool, which belongs to another method" \
-	"\`no-mistakes\`" "$b"
+	"\`attested\`" "$b"
 
 b="$(brief_text "$FLEET_QUEUE_DIR/$ptopic/03-push-task/BRIEF.md")"
 expect "a --publish push task says so" "**Publish.** \`push\`" "$b"
@@ -1383,7 +1404,7 @@ done
 # (f) A record written before any of this existed. It carries no `publish`
 #     block at all, and it must keep the verification it was dispatched under —
 #     which is the operator's POLICY.md default and NOT the `pr` fleet ships.
-#     A `pr` reading would pass this pull request; a `no-mistakes` one holds it.
+#     A `pr` reading would pass this pull request; a `attested` one holds it.
 
 $QUEUE add "$ptopic" legacy-record --title 'A task from before the field existed' \
 	--repo /tmp/repo-a --branch fix/legacy-record --number 09 >/dev/null
@@ -1413,7 +1434,7 @@ expect "and against the operator's default, not the one fleet ships" \
 state="$($QUEUE show "$ptopic/09-legacy-record" 2>&1)"
 refute "so it is held open, exactly as it would have been before" \
 	"state:       done" "$state"
-expect "and show reports the method it was read as" "publish:     no-mistakes" "$state"
+expect "and show reports the method it was read as" "publish:     attested" "$state"
 
 out="$($QUEUE check 2>&1)"
 expect "and check is happy with a record that declares nothing" "ok" "$out"
@@ -1445,8 +1466,11 @@ expect "and the task still closes — an offline machine must still collect" \
 	"state:       done" "$state"
 expect "and the record says gh was never there to ask" "gh not found" "$state"
 
-# (h) A POLICY.md with no frontmatter — the state this repo shipped in, and the
-#     state a fresh clone is in. It answers `pr`, and nothing errors.
+# (h) A clone nobody has configured: no `publish:` frontmatter in POLICY.md
+#     AND no `orchestration/publish.conf`, which is what a fresh clone of a
+#     public repo is. The tracked `publish.example.conf` answers, it says `pr`,
+#     and no tool is named anywhere in the brief — because naming one would
+#     mean this repo shipped somebody else's pipeline.
 
 bare="$tmp/bare-clone"
 mkdir -p "$bare/scripts/lib" "$bare/orchestration/queue"
@@ -1459,7 +1483,13 @@ cat >"$bare/orchestration/queue/POLICY.md" <<'EOF'
 
 No frontmatter here, which is what every clone starts with.
 EOF
-bq() { env FLEET_QUEUE_DIR="$tmp/bare-queue" "$bare/scripts/queue.sh" "$@"; }
+# Its own conf root, with nothing in it, so the tracked example is what is read.
+mkdir -p "$bare/orchestration"
+cp orchestration/publish.example.conf "$bare/orchestration/publish.example.conf"
+bq() {
+	env FLEET_QUEUE_DIR="$tmp/bare-queue" FLEET_PUBLISH_ROOT="$bare" \
+		FLEET_AGENT_ROOT="$bare" "$bare/scripts/queue.sh" "$@"
+}
 
 if out="$(bq topic add unconfigured --prompt 'a clone nobody has configured' 2>&1)"; then
 	pass "a clone whose POLICY.md has no frontmatter opens a topic"
@@ -1473,8 +1503,46 @@ expect "and its task defaults to pr, which needs no setup at all" \
 	"**Publish.** \`pr\`" "$b"
 refute "with no tool named, because nobody named one" "Here that means" "$b"
 
+# THE CLAIM THE WHOLE AGNOSTICISM RESTS ON: the copy this repo SHIPS names no
+# tool. A method that was a tool name, or a `HOW` with a command in it, would
+# hand every clone one operator's pipeline — the same mistake the auto-merge
+# allowlist made.
+shipped_publish="$(python3 - <<'PY'
+import sys
+
+sys.path.insert(0, "scripts/lib")
+import queue as q
+
+conf = q.read_kv_conf("orchestration/publish.example.conf")
+print("method=" + (conf.get("METHOD") or "none"))
+print("how=" + (conf.get("HOW") or "none"))
+print("methods=" + " ".join(sorted(q.PUBLISH_METHODS)))
+PY
+)"
+expect "the tracked publish default is pr, which needs no tool" \
+	"method=pr" "$shipped_publish"
+expect "and it names no command at all" "how=none" "$shipped_publish"
+expect "and the three methods are artifact shapes, none of them a tool name" \
+	"methods=attested pr push" "$shipped_publish"
+
+# The retired spelling still loads, so a record written before the rename is
+# not a record that has to be hand-edited.
+alias_reads="$(python3 - <<'PY'
+import sys
+
+sys.path.insert(0, "scripts/lib")
+import queue as q
+
+print("alias=" + str(q.publish_method("no-mistakes")))
+print("kept=" + str(q.publish_method("pr")))
+PY
+)"
+expect "a task recorded under the old tool name still reads as its shape" \
+	"alias=attested" "$alias_reads"
+expect "and every other method is untouched by that" "kept=pr" "$alias_reads"
+
 # (i) The stale attestation the pipeline caused ITSELF, told apart from every
-#     other one. `no-mistakes` writes the attestation while it opens the pull
+#     other one. `attested` writes the attestation while it opens the pull
 #     request and can then push its own CI fixes on top, which leaves the body
 #     naming an ancestor of the head — the shape of #38, #40 and #48, three
 #     pull requests that could never auto-merge and that read, at collect
@@ -1490,8 +1558,8 @@ $QUEUE add "$ptopic" pipeline-pushed-after \
 attested_sha="$(printf 'a%.0s' $(seq 40))"
 pipeline_pr 1014 fix/pipeline-pushed-after "$attested_sha"
 pr_history 1014 \
-	"$attested_sha chore: no-mistakes document - Sync the docs" \
-	"$(printf '%040d' 1014) no-mistakes: apply CI fixes"
+	"$attested_sha chore: publish document - Sync the docs" \
+	"$(printf '%040d' 1014) publish: apply CI fixes"
 cat >"$FLEET_QUEUE_DIR/$ptopic/10-pipeline-pushed-after/result.md" <<'EOF'
 ---
 outcome: shipped
@@ -1505,7 +1573,7 @@ $QUEUE add "$ptopic" pushed-over-pipeline \
 	--repo /tmp/repo-a --branch fix/pushed-over-pipeline --number 11 >/dev/null
 pipeline_pr 1015 fix/pushed-over-pipeline "$attested_sha"
 pr_history 1015 \
-	"$attested_sha chore: no-mistakes document - Sync the docs" \
+	"$attested_sha chore: publish document - Sync the docs" \
 	"$(printf '%040d' 1015) fix: one more thing I thought of"
 cat >"$FLEET_QUEUE_DIR/$ptopic/11-pushed-over-pipeline/result.md" <<'EOF'
 ---
@@ -1521,8 +1589,8 @@ expect "an attestation the pipeline outran is still not proof" \
 expect "and the refusal names what moved the head" \
 	"the pipeline pushed that head itself" "$out"
 expect "and the commit that did it, so a lead need not go and look" \
-	"no-mistakes: apply CI fixes" "$out"
-expect "and the one thing that fixes it" "re-run \`/no-mistakes --yes\`" "$out"
+	"publish: apply CI fixes" "$out"
+expect "and the one thing that fixes it" "publish command again" "$out"
 
 state="$($QUEUE show "$ptopic/10-pipeline-pushed-after" 2>&1)"
 refute "the gate is exactly as strict as it was — nothing here closes a task" \
@@ -1682,8 +1750,8 @@ copied = [m for m, spec in q.PUBLISH_METHODS.items() if spec["proof"] in text]
 print(f"default={method} how={bool(how)} copied={copied}")
 PY
 )"
-expect "the operator's default is read out of POLICY.md, not typed into the code" \
-	"default=no-mistakes how=True" "$policy_vs_code"
+expect "the operator's default is read out of publish.conf, not typed into the code" \
+	"default=attested how=True" "$policy_vs_code"
 expect "and the policy restates no proof sentence, so none of them can drift" \
 	"copied=[]" "$policy_vs_code"
 
@@ -2111,7 +2179,7 @@ import sys
 out = sys.argv[1]
 green = {"__typename": "CheckRun", "name": "CI", "status": "COMPLETED", "conclusion": "SUCCESS"}
 
-# Copied from a real no-mistakes body. The attestation is written DURING the
+# Copied from a real attested body. The attestation is written DURING the
 # `pr` step, so `pr` reads `running` and `ci` `pending` in every body that
 # carries one; everything up to and including the push is `completed`.
 STEPS = [
@@ -2122,7 +2190,7 @@ STEPS = [
 
 def attested(sha, steps=None):
     payload = json.dumps({"head_sha": sha, "steps": steps or STEPS})
-    return f"<!-- no-mistakes-pipeline-attestation:v1 {payload} -->\n\nShipped it.\n"
+    return f"<!-- fleet-attestation:v1 {payload} -->\n\nShipped it.\n"
 
 
 def pr(n, owner="Thurbeen/fleet", sha=None, body=None, **kw):
@@ -2565,7 +2633,7 @@ def pr(n, branch, body):
 
 payload = json.dumps({"head_sha": f"{201:040d}", "steps": STEPS})
 pr(201, "tbx/attested",
-   f"<!-- no-mistakes-pipeline-attestation:v1 {payload} -->\n\nShipped it.\n")
+   f"<!-- fleet-attestation:v1 {payload} -->\n\nShipped it.\n")
 # Green in every way the forge can see, and nothing vetted the head that would
 # land. No task records it either, so nothing here spawns a fixer.
 pr(202, "tbx/unvetted", "Reviewed, tested, linted, and opened through the pipeline.\n")
@@ -2594,7 +2662,7 @@ else
 	pass "naming a repository loosens no gate: an unattested one is not merged"
 fi
 expect "and it is named for what it lacks, not passed over" \
-	"the body carries no no-mistakes attestation" "$out"
+	"the body carries no attestation" "$out"
 
 # The typo the operator's own words invite, made IN THE FILE this time: the
 # list is host-qualified wherever it is written, and a bare slug names no forge.
@@ -2676,7 +2744,7 @@ expect "and whatever is in force names its forge, so none can match a bare slug"
 #   a `pr` task whose PR is green, mergeable and ours is recorded `green`,
 #     gets no fixer, and is NOT merged — the forge is happy and NOTHING
 #     vetted the head that would land, which is a different sentence
-#   a `no-mistakes` task whose PR carries no attestation is still recorded
+#   a `attested` task whose PR carries no attestation is still recorded
 #     `unattested` and still gets the `policy` fixer
 #   a dry run writes none of it
 #   the landing sweep says merged/closed in that same block
@@ -2735,11 +2803,11 @@ count_is "and no fixer goes out for it, on a branch a fixer could have had" \
 	"$(grep -c 'session create .*__09-plain-pr' "$shep/tbx.log")" 0 \
 	"$out$nl$(cat "$shep/tbx.log")"
 
-# (c) The `no-mistakes` half of the same gate, unchanged: 03-skipped declared
+# (c) The `attested` half of the same gate, unchanged: 03-skipped declared
 #     the pipeline and opened its pull request by hand.
 
 state="$($QUEUE show "$stopic/03-skipped" 2>&1)"
-expect "a no-mistakes PR with no attestation is recorded unattested" \
+expect "a attested PR with no attestation is recorded unattested" \
 	"published:   unattested" "$state"
 if grep -q 'session create .*__03-skipped' "$shep/tbx.log"; then
 	pass "and still gets the policy fixer it always got"
@@ -2969,7 +3037,7 @@ expect "collect fetches a remote worker's result over ssh" \
 	"result fetched from me@devbox" "$out"
 expect "and closes the task on it, exactly as it would locally" "shipped" "$out"
 expect "and the publish check ran on it like any other" \
-	"[publish verified: no-mistakes]" "$out"
+	"[publish verified: attested]" "$out"
 if [ -f "$FLEET_QUEUE_DIR/$rtopic/22-build-on-devbox/result.md" ]; then
 	pass "the fetched result lands in the queue, where it outlives the host"
 else
@@ -4523,7 +4591,7 @@ steps = [{"step": s, "status": "completed"} for s in
          ("intent", "rebase", "review", "test", "document", "lint", "push")]
 steps += [{"step": "pr", "status": "running"}, {"step": "ci", "status": "pending"}]
 payload = json.dumps({"head_sha": sha, "steps": steps})
-body = f"<!-- no-mistakes-pipeline-attestation:v1 {payload} -->\n\n" + "\n".join(
+body = f"<!-- fleet-attestation:v1 {payload} -->\n\n" + "\n".join(
     f"## {h}\nx\n" for h in
     ("Intent", "What Changed", "Risk Assessment", "Testing", "Pipeline")
 )
@@ -4906,7 +4974,7 @@ doc.update({
     "has_conflicts": False,
     "detailed_merge_status": "mergeable",
     "author": {"id": 7, "username": "letur", "name": "letur", "state": "active"},
-    "description": "<!-- no-mistakes-pipeline-attestation:v1 %s -->\n\n" % payload
+    "description": "<!-- fleet-attestation:v1 %s -->\n\n" % payload
                    + "\n".join("## %s\nx\n" % h for h in
                                ("Intent", "What Changed", "Risk Assessment",
                                 "Testing", "Pipeline")),

@@ -550,13 +550,21 @@ readings tell it apart from a genuinely slow turn:
 
 | where | what it says |
 |---|---|
-| `session capture <uuid> --lines 200 --json` | the agent's own banner, as rendered: `You've hit your session limit · resets 11:30pm (Europe/Paris)` |
-| `~/.claude/projects/**/<agent_session_id>.jsonl` | the same event recorded, and more precisely: `"error": "rate_limit"`, `"apiErrorStatus": 429`, and the `quotaLimits` window that rejected the turn — `rateLimitType` and `resetsAt` |
+| `session capture <uuid> --lines 200 --json` | the agent's own banner, as rendered — `claude`'s reads `You've hit your session limit · resets 11:30pm (Europe/Paris)` |
+| that agent's transcript (`claude`: `~/.claude/projects/**/<agent_session_id>.jsonl`) | the same event recorded, and more precisely: `"error": "rate_limit"`, `"apiErrorStatus": 429`, and the `quotaLimits` window that rejected the turn — `rateLimitType` and `resetsAt` |
 
 `agent_session_id` from `session get --json` is what names that transcript, and
 the record has to be the LAST conversational entry: what follows a rejection in
 a wedged session is bookkeeping, and a session that came back has an ordinary
 turn after it.
+
+**Neither reading is hardcoded to one agent.** `scripts/lib/queue.py` keeps one
+entry per agent fleet has actually WATCHED hit a limit — `claude` today — the
+same way §1b's table keeps one per trust dialog. An agent with no entry is
+reported `undetermined`, which restarts nothing, and `LIMIT_BANNER` /
+`TRANSCRIPT_DIR` in `orchestration/agent.conf` teach it one without a code
+change. Nothing is matched that nobody observed: a guessed pattern restarts a
+live worker mid-turn.
 
 **Ask the account before you restart anything.** The limit is not the session's,
 it is the operator's subscription window, shared by every session on this

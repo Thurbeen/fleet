@@ -24,6 +24,18 @@ names every path and the reason for each.
   as opposed to where its work goes. `./scripts/session-flags.sh <profile>`
   renders one into `session create` flags. One file, one layer — edit it
   directly. The file's own header owns the rules that keep a profile safe.
+- `orchestration/publish.example.conf` and `agent.example.conf` — the two
+  settings that keep fleet agnostic about YOUR tools. The first holds the
+  default publish method and the free-text command that produces it, plus the
+  attestation marker your pipeline emits; `scripts/lib/queue.py` models three
+  ARTIFACT SHAPES (`attested`, `pr`, `push`) and no tool names, so a publisher
+  fleet has never heard of still works. The second holds which agent your
+  workers run, which provider `refuel` gates on, and how that agent says it hit
+  a limit. **Both tracked copies name nothing** — `./scripts/check.sh automerge`
+  fails one that does — so a fresh clone inherits no operator's pipeline,
+  vendor or agent. Copy either to a gitignored `*.conf` beside it to set
+  anything. `no-mistakes` is still accepted wherever a method is read and means
+  `attested`.
 - `orchestration/session-glyphs.example.conf` — the mark fleet's sessions wear
   in the thurbox session list: `📡` on the lead, `🚀` on every worker, under ONE
   `GLYPHS=on|off` setting whose `off` is the one-cell `⌖` and no worker prefix.
@@ -217,12 +229,12 @@ The loop, driven by `./scripts/queue.sh`:
    host-qualified, and one that names no forge refused rather than
    matched — and only for one whose head branch is in that repo, opened by
    someone who can
-   push there, carrying a `no-mistakes` attestation for its **current** head.
+   push there, carrying an attestation for its **current** head.
    Squash is the only method fleet merges by, and a forge or a project that
    forbids squash — a GitLab project can — is a refusal fleet RECORDS rather
    than a merge by some other method.
    That attestation gate is the one thing the declared publish
-   method moves: a task that was declared `no-mistakes` and carries none gets a
+   method moves: a task that was declared `attested` and carries none gets a
    fixer, one that was never asked for one is recorded `green` and handed back
    unmerged. Every pass writes what it saw onto the task's `publish` block.
    `--dry-run` first; the fleet-queue skill owns the rest.

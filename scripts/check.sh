@@ -617,8 +617,54 @@ print("entries=" + (" ".join(sorted(q.auto_merge_repos(q.checkout_root()))) or "
 		fi
 	fi
 
+	# THE SAME RULE FOR EVERY TRACKED SETTING. An owner, a repository, a
+	# publishing tool or an agent written into a file this repo SHIPS is one
+	# operator's setup handed to every clone. The example files carry defaults;
+	# none of them may carry a name.
+	local pub="orchestration/publish.example.conf"
+	local ag="orchestration/agent.example.conf"
+	local f val
+	for f in "$pub" "$ag"; do
+		if [ ! -f "$f" ]; then
+			fail "automerge: $f is missing; a fresh clone would document no format"
+			miss=1
+		fi
+	done
+	# A tool name reaches a worker only through HOW, which nothing parses. The
+	# tracked copy must leave it empty, and the method must be the one shape
+	# that needs no tool at all.
+	# EVERY occurrence, not the first: a leak appended below a correct line is
+	# exactly the edit a first-match read would wave through.
+	if [ -f "$pub" ]; then
+		val="$(sed -n 's/^METHOD=//p' "$pub" | tr -d '[:space:]')"
+		[ "$val" = pr ] ||
+			{ fail "automerge: $pub ships METHOD=$val; the tracked default must be pr"; miss=1; }
+		val="$(sed -n 's/^HOW=//p' "$pub" | tr -d '[:space:]')"
+		[ -z "$val" ] ||
+			{ fail "automerge: $pub names a tool in HOW ($val); that is the operator's"; miss=1; }
+	fi
+	# An agent or a provider here would gate every operator's fleet on one
+	# operator's vendor. Empty means "thurbox's own" and "derive it".
+	if [ -f "$ag" ]; then
+		for key in AGENT FUEL_PROVIDER LIMIT_BANNER TRANSCRIPT_DIR AGENT_PROVIDERS; do
+			val="$(sed -n "s/^$key=//p" "$ag" | tr -d '[:space:]')"
+			[ -z "$val" ] ||
+				{ fail "automerge: $ag ships $key=$val; that is the operator's"; miss=1; }
+		done
+	fi
+	# And no method may be a tool name again: the three are artifact shapes.
+	local shapes
+	shapes="$(python3 -c '
+import sys
+sys.path.insert(0, "scripts/lib")
+import queue as q
+print(" ".join(sorted(q.PUBLISH_METHODS)))
+' 2>&1)"
+	[ "$shapes" = "attested pr push" ] ||
+		{ fail "automerge: the publish methods are '''$shapes''', and must be artifact shapes"; miss=1; }
+
 	[ "$miss" -eq 0 ] &&
-		ok "automerge: $example names no repository; a fresh clone merges nowhere"
+		ok "automerge: no tracked setting names a repository, a tool or an agent"
 }
 
 # THE SETUP NOBODY RE-RUNS. Onboarding's scripts — preflight, discover-owners,

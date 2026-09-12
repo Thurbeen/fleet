@@ -419,7 +419,25 @@ The one thing outside the repo that did change is the operator's own
 `layout.lua`, if they said yes in step 6 — with a `.bak-<timestamp>` beside it.
 Say that too.
 
-**One thing is NOT set up, by design: where fleet may merge.** A fresh clone
+**Two things are NOT set up, by design.**
+
+*How tasks publish, and which agent they run.* `orchestration/publish.conf` and
+`agent.conf` are the operator's, gitignored, and the tracked examples beside
+them name no tool, no vendor and no agent — so a fresh clone publishes by the
+one shape that needs no setup (`pr`: a pull request from the task's branch) and
+leaves `session create` thurbox's own default agent. Offer them, and say what
+each buys: a default publish command so the lead never retypes `--publish`, an
+`ATTESTATION_MARKER` if their pipeline attests, and `FUEL_PROVIDER` so `refuel`
+knows whose quota window to gate on. Without that last one `refuel` derives it
+from the tasks and reports `undetermined` when they disagree, which restarts
+nothing.
+
+```bash
+cp -n orchestration/publish.example.conf orchestration/publish.conf
+cp -n orchestration/agent.example.conf orchestration/agent.conf
+```
+
+*Where fleet may merge.* A fresh clone
 has no `orchestration/auto-merge.conf` and the tracked example names no
 repository, so `queue.sh shepherd` reviews every pull request and merges none —
 saying so by name. Nobody inherits another operator's merge rights by cloning a

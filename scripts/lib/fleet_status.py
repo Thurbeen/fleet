@@ -366,7 +366,11 @@ def probe_checkout() -> dict:
 
 # --- fuel --------------------------------------------------------------------
 
-FUEL_PROVIDER = "claude"
+# The provider the SCREEN leads with, and the fallback when quota-axi names
+# none. Not a gate: `probe_fuel_all()` reads every authenticated provider, and
+# `scripts/lib/queue.py`'s `refuel` asks for its provider by name rather than
+# inheriting this. A literal here only decides which row sorts first.
+FUEL_PROVIDER = os.environ.get("FLEET_FUEL_PROVIDER", "").strip() or "claude"
 # The floor the lead does not dispatch past, in percent remaining. FLEET.md's
 # `## Fuel` section owns the rule; this is the same number so the screen can
 # print it beside the reading.

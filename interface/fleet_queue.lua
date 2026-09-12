@@ -28,7 +28,7 @@
 --    ● Declare the publish method on the ta…
 --      01-declare-publish-method  landed 24m
 --      brief · 14 events · shipped
---      ⇡ no-mistakes · #43 · merged      20m
+--      ⇡ attested · #43 · merged          20m
 --    ◐ Record the publish state the shepher…
 --      02-shepherd-records-…  dispatched 15m
 --      ↳ ✓ 01-declare-publish-met…  consumes
@@ -980,7 +980,7 @@ local PUBLISH_GLYPH = "⇡"
 --- at 44 and far over it at 30 — the two widths `scripts/pane-selftest.sh`
 --- renders, and 30 is what this pane routinely gets. So the one segment that
 --- answers "what do I do about this" was drawn at no width an operator has,
---- while `no-mistakes` — the same word under every task in a fleet with one
+--- while `attested` — the same word under every task in a fleet with one
 --- publish method — was drawn at both. The note is the row's ACTION and the
 --- method is its provenance; provenance is what a column this narrow can afford
 --- to lose.

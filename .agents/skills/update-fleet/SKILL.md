@@ -98,6 +98,7 @@ do. Otherwise map the list:
 | `interface/fleet_queue.lua` | §4 | the installed plugin is a stale copy of that file |
 | `registry/owners.txt` | §5 | the generated map covers the wrong owners |
 | `orchestration/auto-merge.example.conf`, or `scripts/lib/queue.py`'s allowlist | §5b | `shepherd` may now merge in a different set of repos, or in none |
+| `orchestration/publish.example.conf`, `agent.example.conf`, or POLICY.md's frontmatter | §5c | tasks may publish a different way, or `refuel` may gate on a different account |
 | `scripts/reconcile.sh` | §6 | the running reconciler loop is executing old code |
 | `FLEET.md`, `AGENTS.md`, `CLAUDE.md`, `.agents/skills`, `.claude/skills`, `.claude/settings.json` — or a `restart-lead:` line | §8 | the lead is holding instructions it froze at launch |
 
@@ -124,6 +125,32 @@ $EDITOR orchestration/auto-merge.conf
 `Fleet merges NOTHING` in that output means the file does not exist. Entries
 are host-qualified; the example's header owns the format and the gates.
 Read every pass, so no reinstall and no restart, and both files are gitignored.
+
+### §5c — the publish default and the agent, which moved out of tracked files
+
+Two settings left tracked files for the same reason the allowlist did: a tool
+name or a vendor name in a file this public repo ships is one operator's setup
+handed to every clone.
+
+- **The publish default left `orchestration/queue/POLICY.md`'s frontmatter** for
+  `orchestration/publish.conf`. A block still in POLICY.md is honoured and
+  warns once on stderr, so nothing breaks while you move it — but that file is
+  tracked, so leaving it there ships your pipeline to everyone.
+- **The third method is `attested`, not `no-mistakes`.** The old word still
+  reads as that shape, so existing records load; what an attestation looks like
+  is now `ATTESTATION_MARKER` in the same file.
+- **`refuel` no longer assumes `claude`.** It derives the provider from the
+  agent in hand, or takes `FUEL_PROVIDER` from `orchestration/agent.conf`, and
+  reports `undetermined` — restarting nothing — rather than gating on a window
+  it guessed.
+
+```bash
+cp -n orchestration/publish.example.conf orchestration/publish.conf
+cp -n orchestration/agent.example.conf orchestration/agent.conf
+./scripts/queue.sh add --help | grep -A2 publish     # the three shapes
+```
+
+Read on every pass, so no reinstall and no restart.
 
 `scripts/lib/queue.py` and `scripts/lib/notify_lead.py` are absent from this
 table: the reconciler's loop sources neither — every pass shells out to

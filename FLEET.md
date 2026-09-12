@@ -90,7 +90,7 @@ YAML by hand. Nothing to push — the map is gitignored.
    task, and `collect` names `shepherd` whenever it closed one that left one
    open. It asks the forge for every open change request on the queue's repos,
    not just recorded artifacts, dispatches a fixer for one that conflicts, fails
-   a check, was reviewed with changes requested, or was declared `no-mistakes`
+   a check, was reviewed with changes requested, or was declared `attested`
    and carries no attestation for its current head, and squash-merges one that
    clears every gate in the repos `orchestration/auto-merge.conf` names — your
    own file, gitignored, empty until you write it, so fleet merges nowhere

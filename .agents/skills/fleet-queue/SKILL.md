@@ -511,23 +511,31 @@ LEAVE BEHIND, and `collect` goes and looks for that:
 
 | `--publish` | the worker produces | what collect asks |
 |---|---|---|
-| `no-mistakes` | a PR through the pipeline | the forge: a PR from this task's branch, its body carrying a `no-mistakes` attestation for the commit that would merge |
+| `attested` | a PR carrying an attestation | the forge: a PR from this task's branch, its body carrying an attestation for the commit that would merge |
 | `pr` | a PR by any means at all | the forge: a PR from this task's branch, open or merged |
 | `push` | a commit on the base branch | git: that commit is an ancestor of `origin/<base>` |
 
-`--how` is the other half and it is FREE TEXT — "run `/no-mistakes --yes`", "run
-`/publish`", "use `make release`". It is rendered into the brief's Publish line
-and **nothing ever parses it**, which is exactly what lets a task name a
-publisher fleet has never heard of. Fleet knows the artifact's shape; your words
-tell the worker how to make one.
+**Those three words are SHAPES and none of them is a tool.** A pipeline, an
+in-house script, `make release`, a slash command — every one of them ends in a
+pull request or a commit on the base branch. `--how` is the other half and it is
+FREE TEXT — "run `/publish`", "use `make release`". It is rendered into the
+brief's Publish line and **nothing ever parses it**, which is what lets a task
+name a publisher fleet has never heard of. Fleet knows the artifact's shape;
+your words tell the worker how to make one.
 
-You rarely type either. `orchestration/queue/POLICY.md`'s YAML frontmatter holds
-this operator's default (`no-mistakes`, `run /no-mistakes --yes`), and every
-task takes it unless `add` says otherwise — because a `--publish` forgotten on
-one task would downgrade that task's verification in silence.
+`no-mistakes` was a fourth method until it was recognised as one operator's tool
+name in tracked code. It still means `attested` wherever a method is read, so old
+records load; new ones say `attested`.
+
+You rarely type either. `orchestration/publish.conf` holds the operator's
+default — gitignored, with a tracked `publish.example.conf` that ships `pr` and
+names no tool — and every task takes it unless `add` says otherwise, because a
+`--publish` forgotten on one task would downgrade that task's verification in
+silence. **What an attestation LOOKS like is theirs too**: `ATTESTATION_MARKER`
+in that file, so fleet reads their pipeline's format rather than dictating one.
 
 ```text
-    topic/02-document-the-states  shipped  https://…/pull/1001  [publish verified: no-mistakes]
+    topic/02-document-the-states  shipped  https://…/pull/1001  [publish verified: attested]
     topic/03-render-detected-agent: NOT CLOSED — nothing proves this task published
 ```
 
@@ -580,7 +588,7 @@ name, and each open pull request gets exactly one of these:
 | `mergeable: CONFLICTING` | a fixer is dispatched to rebase |
 | a check failed | a fixer is dispatched to fix it |
 | `reviewDecision: CHANGES_REQUESTED` | a fixer is dispatched to address it |
-| a `no-mistakes` task's PR with no attestation for this head commit | a fixer is dispatched to re-run `/no-mistakes --yes` |
+| an `attested` task's PR with no attestation for this head commit | a fixer is dispatched to publish it again, naming that task's own command |
 | attested, checks green, `MERGEABLE`, ours | **squash-merged**, in the allowlisted repos only |
 | checks green, `MERGEABLE`, ours, and nothing attested it | recorded `green` and reported `ready to merge — not attested; yours`, **never merged by fleet** |
 | anything it could not read | reported, and otherwise left alone |
@@ -640,20 +648,20 @@ environment REPLACES the file rather than adding to it.
 - **Whoever opened it can push there.** Anyone with read access can open a
   pull request between two branches that already exist, and the body would
   then be theirs to write.
-- **A `no-mistakes` attestation naming its CURRENT head commit.** Not the five
-  `## ` headings — those are text anyone can paste, so counting them let a
+- **An attestation naming its CURRENT head commit.** Not the `## ` headings a
+  pipeline prints — those are text anyone can paste, so counting them let a
   body authorise its own merge. The attestation is an HTML comment carrying
-  the commit the pipeline ran on and a status per step; one from an earlier
-  push is refused, because a verdict is about the code it saw. A PR whose task
-  declared another method carries none, is recorded `green` rather than
-  `ready`, and is handed back: the checks it passed are whatever checks that
-  repo happens to have, and nothing says review, tests and lint ran on the
-  head that would land.
+  the commit the pipeline ran on and a status per step, and its marker is the
+  operator's (`ATTESTATION_MARKER`); one from an earlier push is refused,
+  because a verdict is about the code it saw. A PR whose task declared another
+  method carries none, is recorded `green` rather than `ready`, and is handed
+  back: the checks it passed are whatever checks that repo happens to have, and
+  nothing says review, tests and lint ran on the head that would land.
 - **Every check concluded and passed, and GitHub says `MERGEABLE`.**
 
 A PR failing any of them is not merged, and one that is not ours is not given
 an agent either. Only the attestation gate is method-aware, and only in the one
-direction: a task that was declared `no-mistakes` and carries no attestation
+direction: a task that was declared `attested` and carries none
 gets the fixer it always got, and a task that was never asked for one gets
 neither the fixer nor the merge. Everywhere outside the allowlist it reports
 `ready to merge` and stops, which is what every repo did before that list
