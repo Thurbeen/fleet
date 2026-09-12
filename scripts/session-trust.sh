@@ -241,10 +241,18 @@ fi
 # `--json` and `.output`, not the plain capture: the human format wraps the
 # pane in metadata lines, and a signature could in principle match one of
 # those instead of the pane itself.
+#
+# WHITESPACE IS NOT PART OF THE MATCH, on either side. psmux 3.3.6 — the
+# multiplexer of a Windows host — captures Claude Code's dialog with every
+# space gone (`❯1.Yes,Itrustthisfolder`, observed on windows-hp 2026-09-12),
+# so a signature spelled with spaces never matched there and the worker sat on
+# its dialog unprompted. Stripping both sides changes nothing a tmux pane
+# matched, and it also survives a dialog wrapped at the pane's width.
 pane_matches() {
 	[ -n "$signature" ] || return 1
 	thurbox-cli session capture "$uuid" --lines 60 --json 2>/dev/null |
-		jq -r '.output // ""' | grep -qiE -- "$signature"
+		jq -r '.output // ""' | tr -d '[:space:]' |
+		grep -qiE -- "$(printf %s "$signature" | tr -d '[:space:]')"
 }
 
 # An agent whose hooks have fired is running its own loop, which is proof there
@@ -280,6 +288,23 @@ if [ "$saw_dialog" -eq 0 ]; then
 fi
 
 # --- answer it ---------------------------------------------------------------
+
+# WHERE THE SELECTOR ALREADY IS, for claude, and it outranks the table. The
+# dialog above defaults to "No, exit"; the one Claude Code 2.1.247 draws on
+# windows-hp (2026-09-12) is numbered and defaults to the other option:
+#
+#     ❯ 1. Yes, I trust this folder
+#       2. No, exit
+#
+# `down enter` there selects "No, exit" and the agent exits — observed, not
+# supposed. So when the selector is already on the accepting option, Enter
+# alone accepts, whichever layout drew it.
+if [ "$agent" = claude ] &&
+	thurbox-cli session capture "$uuid" --lines 60 --json 2>/dev/null |
+	jq -r '.output // ""' | tr -d '[:space:]' |
+		grep -qiE -- '❯([0-9]+\.)?yes,itrustthisfolder'; then
+	keys="enter"
+fi
 
 for k in $keys; do
 	if ! thurbox-cli session key "$uuid" "$k" >/dev/null 2>&1; then

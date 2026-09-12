@@ -142,10 +142,15 @@ Until all three pass, **spawn locally**. A remote worker will start and then
 fail at its first `git` call, which looks like an agent bug and is not one.
 
 A Windows/PowerShell host is not a POSIX shell: probes like `command -v` and
-`2>/dev/null` misfire there; use `Get-Command`. `hosts.toml` spells such a host
-by giving it a non-`tmux` `multiplexer` (`psmux`), and that also turns off its
+`2>/dev/null` misfire there; use `Get-Command`, and send a script as
+`powershell -NoProfile -EncodedCommand <UTF-16LE base64>` rather than
+`-Command "..."`, whose quoting the host's own default shell rewrites.
+`hosts.toml` spells such a host by giving it the `psmux` `multiplexer`, which
+is what fleet reads to speak PowerShell to it, and that also turns off its
 remote hook status — a Windows worker never reports `working`/`done` on its
-own, so its `state` sits at `unreported` and you read the pane instead.
+own, so its `state` sits at `unreported` and you read the pane instead. psmux
+also captures a pane with its spaces gone (`Yes,Itrustthisfolder`), so match a
+pane with whitespace stripped.
 
 **The pane IS reachable on a remote host.** `session get`, `session capture`,
 `session key` and `session send` each delegate the whole verb to the

@@ -77,6 +77,7 @@ A task with no host is untouched by any of it.
 from __future__ import annotations
 
 import argparse
+import base64
 import glob
 import importlib.util
 import json
@@ -2111,12 +2112,19 @@ def cmd_plan(args) -> int:
 # a task, its result.md is a local file that says nothing about where it came
 # from.
 #
-# POSIX HOSTS ONLY, and it is checked rather than assumed. Every remote command
-# here is POSIX shell — `printf`, `test`, `cat >`. A Windows host answering ssh
-# with PowerShell runs none of them the way they read, and the operator's own
-# hosts.toml has one such host in it. So probe 1 asks the host to print a
-# sentinel and a shell that cannot is refused BY NAME, before any session
-# exists, instead of producing a worker that fails at its first command.
+# TWO SHELLS, ONE LINE PROTOCOL. Every remote command here is written twice:
+# once for a POSIX shell and once for Windows PowerShell 5, which is what sshd
+# on a native-Windows host hands a command to. hosts.toml has no "platform"
+# field, so the multiplexer is the proxy for it, exactly as it is in thurbox
+# (`HostDef::is_windows`): `psmux` is a native-Windows host, and anything that
+# is neither `tmux` nor `psmux` is refused by name. `HostShell` below is the
+# seam, and each pair of scripts prints the same words, so every caller reads
+# one answer and never learns which machine gave it.
+#
+# Probe 1 still asks the host to print its shell's sentinel, and a host that
+# does not is refused BY NAME, before any session exists — a hosts.toml entry
+# that says `tmux` about a Windows box is caught there, not at a worker's first
+# command.
 #
 # CREDENTIALS ARE NEVER MOVED. The host needs its OWN forge credentials to
 # clone, fetch and push; ours are not inherited and nothing here sends them.
@@ -2126,9 +2134,12 @@ def cmd_plan(args) -> int:
 # operator's call to make on their own machine, not something a dispatch makes
 # for them.
 
-# What probe 1 asks the host to print. A POSIX shell echoes it; a PowerShell
-# host has no `printf` and answers with an error, which is the distinction.
+# What probe 1 asks the host to print, one per shell. A POSIX shell echoes its
+# own; a PowerShell host has no `printf` and answers that one with an error, and
+# a POSIX host handed `-EncodedCommand` has no `powershell` — so each shell can
+# only ever print the sentinel of the shell it really is.
 POSIX_SENTINEL = "fleet-posix-ok"
+POWERSHELL_SENTINEL = "fleet-powershell-ok"
 
 # ssh's own reserved exit code: the connection itself failed, as opposed to the
 # remote command running and exiting non-zero. It is what tells "unreachable"
@@ -2171,9 +2182,40 @@ def login_wrap(script: str) -> str:
     return f"{LOGIN_SHELL} -lc {shlex.quote(script)}"
 
 
+def reportable(stream: str) -> str:
+    """A stream as a person would read it, the way thurbox's
+    `reportable_stderr` cleans one. Three layers nobody here owns can put their
+    own lines where the one worth reporting should be:
+
+    - OpenSSH 10's post-quantum advisory, which is informational and on stderr
+      for every connection to an older server — a POSIX host's as much as a
+      Windows one's — so a failure used to report the advisory instead;
+    - PowerShell's CLIXML envelope (`#< CLIXML`, then `<Objs …>`), which is how
+      it writes an error when stderr is not a console, with the message inside;
+    - PowerShell's plain error trailer (`At line:`, `+ CategoryInfo`, `+
+      FullyQualifiedErrorId`), which puts the error's position after its text.
+    """
+    text = stream or ""
+    if "#< CLIXML" in text:
+        text = "".join(re.findall(r'<S S="Error">(.*?)</S>', text, re.S))
+        text = re.sub(r"_x([0-9A-Fa-f]{4})_", lambda m: chr(int(m.group(1), 16)), text)
+        for entity, char in (("&lt;", "<"), ("&gt;", ">"), ("&quot;", '"'),
+                             ("&apos;", "'"), ("&amp;", "&")):
+            text = text.replace(entity, char)
+    lines = [ln for ln in text.splitlines()
+             if not re.match(r"\s*\*\* .*(post-quantum|store now, decrypt later|openssh\.com/pq)", ln)]
+    if "FullyQualifiedErrorId" in text:
+        # What is left is one message, wrapped at the console's width, so its
+        # last line alone is a fragment of a path. Rejoin it.
+        kept = [ln.strip() for ln in lines
+                if ln.strip() and not re.match(r"\s*(At line:|At char:|\+|~)", ln)]
+        lines = [" ".join(kept)]
+    return "\n".join(lines)
+
+
 def first_line(proc) -> str:
     """The one line of an ssh failure worth reporting, stderr before stdout."""
-    for stream in (proc.stderr, proc.stdout):
+    for stream in (reportable(proc.stderr), proc.stdout):
         lines = [ln.strip() for ln in (stream or "").splitlines() if ln.strip()]
         if lines:
             return lines[-1]
@@ -2187,7 +2229,11 @@ def last_out(proc) -> str:
     profile before it runs anything, and a profile that prints a banner would
     otherwise be glued to the front of the one line a probe meant to say.
     """
-    lines = [ln.strip() for ln in (proc.stdout or "").splitlines() if ln.strip()]
+    return last_out_of(proc.stdout)
+
+
+def last_out_of(text: str) -> str:
+    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
     return lines[-1] if lines else ""
 
 
@@ -2241,16 +2287,16 @@ def host_entry(name: str) -> tuple[dict | None, str]:
     if not entry.get("destination"):
         return None, f"host {name!r} in {path} has no `destination` to ssh to"
 
-    # hosts.toml spells a Windows host by giving it a non-tmux multiplexer.
-    # Refused by name here rather than discovered by a worker that cannot run
-    # its first command — see this section's header.
+    # The multiplexer is how hosts.toml says which shell a host speaks — see
+    # this section's header. One fleet has no shell for is refused by name here
+    # rather than discovered by a worker that cannot run its first command.
     mux = str(entry.get("multiplexer") or "tmux")
-    if mux != "tmux":
+    if mux not in MULTIPLEXER_SHELLS:
         return None, (
-            f"host {name!r} runs the {mux!r} multiplexer, which is how hosts.toml "
-            "spells a non-POSIX host. Fleet dispatches to POSIX hosts only: its "
-            "probes, its brief copy and its result fetch are all POSIX shell. "
-            "Run this task locally, or name a POSIX host."
+            f"host {name!r} runs the {mux!r} multiplexer, which fleet has no shell "
+            "for: it speaks POSIX shell to a `tmux` host and PowerShell to a `psmux` "
+            "one, and the multiplexer is the only thing in hosts.toml that says "
+            "which a host is. Run this task locally, or name a host fleet can speak to."
         )
 
     # THE TRUST DIALOG, decided here. `session capture`, `key` and `send` all
@@ -2277,21 +2323,244 @@ def ssh_argv(entry: dict) -> list:
     return ["ssh", *opts, *SSH_GUARD_OPTS, str(entry["destination"])]
 
 
-def ssh_run(entry: dict, script: str, stdin: str | None = None, login: bool = True):
-    """One POSIX shell command on the host. Never raises; the caller reads it.
+# --- the host's shell: the seam every remote command goes through -----------
+#
+# THE WHOLE INTERFACE, and each method is something a caller above actually
+# asks a host:
+#
+#     command(script, login)  the one string ssh is handed
+#     reach()                 prints this shell's sentinel
+#     repo_check(repo)        prints `ok`, `no-dir` or `no-git`
+#     forge_probe(repo)       prints `<host> with <credential>`, or
+#                             `no forge: <why>`, or `<host>|<tools found>`
+#     write(dest, text)       (script, stdin) that puts `text` at `dest`
+#     read(src) / decode(out) prints a file, and turns that back into its text
+#     join(worktree, name)    a path beside another, in the host's own spelling
+#
+# Every exit status means only zero or not: Windows' outer shell folds a
+# PowerShell script's `exit 3` into 1, so nothing here reads a code beyond
+# ssh's own 255, and every answer that matters is a WORD on stdout.
 
-    A LOGIN SHELL BY DEFAULT (see LOGIN_SHELL), because what almost every caller
-    asks is "what does this host have", and only the profile's `PATH` can
-    answer it. The exception is the two calls that MOVE BYTES — the brief push
-    and the result fetch — which need no binary beyond `cat` and which a
-    profile that prints would corrupt in the middle of. They pass
-    `login=False`, and that is the whole rule: a login shell to FIND something,
-    a bare one to CARRY something.
+
+class PosixShell:
+    """A POSIX host — every remote command exactly as it was first written."""
+
+    name = "posix shell"
+    label = "POSIX shell"
+    sentinel = POSIX_SENTINEL
+
+    def command(self, script: str, login: bool) -> str:
+        return login_wrap(script) if login else script
+
+    def reach(self) -> str:
+        return f"printf %s {POSIX_SENTINEL}"
+
+    def repo_check(self, repo: str) -> str:
+        quoted = shlex.quote(repo)
+        return (
+            f"if [ ! -d {quoted} ]; then printf no-dir; exit 1; fi\n"
+            f"if [ ! -e {quoted}/.git ]; then printf no-git; exit 1; fi\n"
+            "printf ok\n"
+        )
+
+    def forge_probe(self, repo: str) -> str:
+        return forge_probe(repo)
+
+    def write(self, dest: str, text: str) -> tuple[str, str]:
+        return f"cat > {shlex.quote(dest)}", text
+
+    def read(self, src: str) -> str:
+        return f"cat {shlex.quote(src)}"
+
+    def decode(self, stdout: str) -> str | None:
+        return stdout
+
+    def join(self, worktree: str, name: str) -> str:
+        return f"{worktree.rstrip('/')}/{name}"
+
+
+def ps_quote(s: str) -> str:
+    """A PowerShell single-quoted literal. Only `'` is special in one, doubled;
+    `\\`, `$` and the backtick are literal, which is what a Windows path needs."""
+    return "'" + str(s).replace("'", "''") + "'"
+
+
+# THE POWERSHELL CREDENTIAL PROBE: FORGE_PROBE_TEMPLATE's questions, in the same
+# order and printing the same words, so `probe_host` reads one protocol. The
+# backticks are inside single quotes, where PowerShell takes them literally.
+#
+# THE KEY CHECK IS `Start-Process`, not `& ssh`, and bounded. ssh.exe run inline
+# inside an ssh session on Windows never returned: measured on windows-hp,
+# `& ssh -T git@github.com`, the same with `-n`, and `cmd /c "... <NUL"` each
+# hung past 45s, and the whole probe past SSH_TIMEOUT. Started as its own
+# process with its stdio on files it answered in 1.6s. The 20s bound is so a
+# host where it does hang reads as "no key" and goes on to ask `gh` and `glab`.
+POWERSHELL_FORGE_PROBE_TEMPLATE = r"""$repo = __REPO__
+$url = ''
+if (Get-Command git -ErrorAction SilentlyContinue) {
+    $url = "$(& git -C $repo remote get-url origin 2>$null)".Trim()
+}
+$hostport = ''
+if ($url -match '^[^:/]+://([^/]*)') {
+    $hostport = $Matches[1] -replace '^.*@', ''
+} elseif ($url -match '^[^@/]+@([^:/]+):') {
+    $hostport = $Matches[1]
+}
+$h = ($hostport -split ':')[0]
+$port = ''
+if ($hostport.Contains(':')) { $port = $hostport.Substring($hostport.IndexOf(':') + 1) }
+if (-not $h) {
+    Write-Output ('no forge: ' + $repo + ' has no readable `origin`, so there is no host to prove a credential against')
+    exit 1
+}
+$banner = ''
+if (Get-Command ssh -ErrorAction SilentlyContinue) {
+    $sshArgs = @('-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10')
+    if ($port) { $sshArgs += @('-p', $port) }
+    $sshArgs += @('-T', ('git@' + $h))
+    $in = [IO.Path]::GetTempFileName()
+    $out = [IO.Path]::GetTempFileName()
+    $err = [IO.Path]::GetTempFileName()
+    try {
+        $p = Start-Process -FilePath 'ssh' -ArgumentList $sshArgs -NoNewWindow -PassThru `
+            -RedirectStandardInput $in -RedirectStandardOutput $out -RedirectStandardError $err
+        if (-not $p.WaitForExit(20000)) { $p.Kill() }
+        $banner = (Get-Content -LiteralPath $out, $err -Raw) -join ' '
+    } finally {
+        Remove-Item -LiteralPath $in, $out, $err -ErrorAction SilentlyContinue
+    }
+}
+if ($banner -like '*successfully authenticated*' -or $banner -like '*Welcome to GitLab*') {
+    Write-Output ($h + ' with an ssh key')
+    exit 0
+}
+$tools = ''
+if (Get-Command gh -ErrorAction SilentlyContinue) {
+    & gh auth status --hostname $h *> $null
+    if ($LASTEXITCODE -eq 0) { Write-Output ($h + ' with a gh token'); exit 0 }
+    $tools = '`gh`'
+}
+if (Get-Command glab -ErrorAction SilentlyContinue) {
+    & glab auth status --hostname $h *> $null
+    if ($LASTEXITCODE -eq 0) { Write-Output ($h + ' with a glab token'); exit 0 }
+    if ($tools) { $tools += ' and ' }
+    $tools += '`glab`'
+}
+Write-Output ($h + '|' + $tools)
+exit 1
+"""
+
+
+class PowerShell:
+    """A native-Windows host, whose sshd hands every command to PowerShell 5.
+
+    `-EncodedCommand`, and never `-Command "..."`, for thurbox's reason
+    (`host_powershell_c`): the string crosses the host's default shell first,
+    which is PowerShell itself and expands `$…` inside it. Base64 is
+    `[A-Za-z0-9+/=]`, so nothing on the way finds anything to interpret.
+
+    NO LOGIN SHELL, because Windows has no such thing to miss: an ssh session
+    gets the account's `PATH` from the registry, which is how `claude.exe` in
+    `~\\.local\\bin` resolved on windows-hp with nothing sourced.
+
+    BYTES TRAVEL AS BASE64 IN BOTH DIRECTIONS. PowerShell 5 decodes stdin and
+    encodes stdout through the console code page (`ibm850` on windows-hp), so a
+    brief with one non-ASCII character in it would not arrive as written, and
+    `>` would write it as UTF-16. ASCII survives every code page.
+    """
+
+    name = "powershell"
+    label = "PowerShell"
+    sentinel = POWERSHELL_SENTINEL
+
+    # Progress records otherwise reach stderr as CLIXML ("Preparing modules for
+    # first use") on a command that succeeded.
+    PREAMBLE = "$ProgressPreference = 'SilentlyContinue'\n"
+
+    def command(self, script: str, login: bool) -> str:
+        encoded = base64.b64encode((self.PREAMBLE + script).encode("utf-16-le"))
+        return "powershell -NoProfile -NonInteractive -EncodedCommand " + encoded.decode("ascii")
+
+    def reach(self) -> str:
+        return f"Write-Output '{POWERSHELL_SENTINEL}'"
+
+    def repo_check(self, repo: str) -> str:
+        quoted = ps_quote(repo)
+        return (
+            f"if (-not (Test-Path -LiteralPath {quoted} -PathType Container)) "
+            "{ Write-Output 'no-dir'; exit 1 }\n"
+            f"if (-not (Test-Path -LiteralPath (Join-Path {quoted} '.git'))) "
+            "{ Write-Output 'no-git'; exit 1 }\n"
+            "Write-Output 'ok'\n"
+        )
+
+    def forge_probe(self, repo: str) -> str:
+        return POWERSHELL_FORGE_PROBE_TEMPLATE.replace("__REPO__", ps_quote(repo))
+
+    def write(self, dest: str, text: str) -> tuple[str, str]:
+        script = (
+            "$ErrorActionPreference = 'Stop'\n"
+            "$bytes = [Convert]::FromBase64String([Console]::In.ReadToEnd().Trim())\n"
+            f"[IO.File]::WriteAllBytes({ps_quote(dest)}, $bytes)\n"
+            "Write-Output 'fleet-wrote'\n"
+        )
+        return script, base64.b64encode(text.encode("utf-8")).decode("ascii")
+
+    def read(self, src: str) -> str:
+        quoted = ps_quote(src)
+        return (
+            "$ErrorActionPreference = 'Stop'\n"
+            f"if (-not (Test-Path -LiteralPath {quoted} -PathType Leaf)) "
+            "{ Write-Output 'fleet-no-file'; exit 1 }\n"
+            f"[Convert]::ToBase64String([IO.File]::ReadAllBytes({quoted}))\n"
+        )
+
+    def decode(self, stdout: str) -> str | None:
+        try:
+            return base64.b64decode(last_out_of(stdout), validate=True).decode("utf-8")
+        except ValueError:
+            return None
+
+    def join(self, worktree: str, name: str) -> str:
+        return f"{worktree.rstrip(chr(92) + '/')}\\{name}"
+
+
+POSIX = PosixShell()
+POWERSHELL = PowerShell()
+
+# Which shell a multiplexer means. A name not in here is refused by
+# `host_entry` rather than guessed at.
+MULTIPLEXER_SHELLS = {"tmux": POSIX, "psmux": POWERSHELL}
+
+
+def host_shell(entry: dict):
+    return MULTIPLEXER_SHELLS.get(str(entry.get("multiplexer") or "tmux"), POSIX)
+
+
+def ssh_run(entry: dict, script: str, stdin: str | None = None, login: bool = True):
+    """One command on the host, in the shell it speaks. Never raises; the
+    caller reads it.
+
+    A LOGIN SHELL BY DEFAULT on a POSIX host (see LOGIN_SHELL), because what
+    almost every caller asks is "what does this host have", and only the
+    profile's `PATH` can answer it. The exception is the two calls that MOVE
+    BYTES — the brief push and the result fetch — which need no binary beyond
+    `cat` and which a profile that prints would corrupt in the middle of. They
+    pass `login=False`, and that is the whole rule: a login shell to FIND
+    something, a bare one to CARRY something. A PowerShell host has no login
+    shell and ignores it.
     """
     try:
         return subprocess.run(
-            ssh_argv(entry) + [login_wrap(script) if login else script],
+            ssh_argv(entry) + [host_shell(entry).command(script, login)],
             input=stdin, capture_output=True, text=True, timeout=SSH_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        # Not `str(exc)`: that is the whole argv, and a PowerShell command's
+        # argv is kilobytes of base64 that say nothing about what went wrong.
+        return subprocess.CompletedProcess(
+            args=[], returncode=SSH_CONNECTION_FAILED, stdout="",
+            stderr=f"ssh to {entry.get('destination')} gave no answer in {SSH_TIMEOUT}s",
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return subprocess.CompletedProcess(
@@ -2404,27 +2673,23 @@ def probe_host(entry: dict, repo: str) -> list:
     lead pays for the difference in reading a pane on another machine.
     """
     out: list = []
+    shell = host_shell(entry)
 
-    reach = ssh_run(entry, f"printf %s {POSIX_SENTINEL}")
-    if reach.returncode == SSH_CONNECTION_FAILED and POSIX_SENTINEL not in reach.stdout:
+    reach = ssh_run(entry, shell.reach())
+    if reach.returncode == SSH_CONNECTION_FAILED and shell.sentinel not in reach.stdout:
         out.append({"check": "reachable", "ok": False,
                     "detail": first_line(reach) or "ssh could not connect"})
         return out
-    if POSIX_SENTINEL not in reach.stdout:
-        out.append({"check": "posix shell", "ok": False, "detail": (
-            "the host answered ssh but did not print the POSIX sentinel "
-            f"({first_line(reach) or 'no output'}). Fleet dispatches to POSIX "
-            "hosts only.")})
+    if shell.sentinel not in reach.stdout:
+        out.append({"check": shell.name, "ok": False, "detail": (
+            f"the host answered ssh but did not print the {shell.label} sentinel "
+            f"({first_line(reach) or 'no output'}). hosts.toml gives it the "
+            f"`{entry.get('multiplexer') or 'tmux'}` multiplexer, so fleet spoke "
+            f"{shell.label} to it; if its sshd runs another shell, that entry is wrong.")})
         return out
-    out.append({"check": "reachable", "ok": True, "detail": "answers ssh, POSIX shell"})
+    out.append({"check": "reachable", "ok": True, "detail": f"answers ssh, {shell.label}"})
 
-    quoted = shlex.quote(repo)
-    check = (
-        f"if [ ! -d {quoted} ]; then printf no-dir; exit 1; fi\n"
-        f"if [ ! -e {quoted}/.git ]; then printf no-git; exit 1; fi\n"
-        "printf ok\n"
-    )
-    seen = ssh_run(entry, check)
+    seen = ssh_run(entry, shell.repo_check(repo))
     if went_away(seen, out):
         return out
     if seen.returncode != 0:
@@ -2438,7 +2703,7 @@ def probe_host(entry: dict, repo: str) -> list:
         return out
     out.append({"check": "repo", "ok": True, "detail": f"{repo} is a git checkout there"})
 
-    creds = ssh_run(entry, forge_probe(repo))
+    creds = ssh_run(entry, shell.forge_probe(repo))
     if went_away(creds, out):
         return out
     if creds.returncode != 0:
@@ -2458,7 +2723,8 @@ def probe_host(entry: dict, repo: str) -> list:
             tried = tried or "its forge"
             found = (
                 f"{tools} is installed there and not logged in to it" if tools
-                else "neither `gh` nor `glab` is on its login shell's PATH"
+                else "neither `gh` nor `glab` is on its "
+                + ("login shell's " if shell is POSIX else "") + "PATH"
             )
             detail = (
                 f"the host ANSWERED, and it has no credentials of its own for "
@@ -2488,14 +2754,11 @@ def host_reachable(name: str) -> tuple[bool, str]:
     entry, why = host_entry(name)
     if not entry:
         return False, why
-    probe = ssh_run(entry, f"printf %s {POSIX_SENTINEL}")
-    if POSIX_SENTINEL in probe.stdout:
+    shell = host_shell(entry)
+    probe = ssh_run(entry, shell.reach())
+    if shell.sentinel in probe.stdout:
         return True, ""
     return False, first_line(probe) or "ssh could not connect"
-
-
-def remote_path(worktree: str, name: str) -> str:
-    return f"{worktree.rstrip('/')}/{name}"
 
 
 def session_worktree(sid: str) -> tuple[str, str]:
@@ -2531,7 +2794,8 @@ def push_brief(entry: dict, dest: str, text: str) -> str:
     unwritten. What lands on the host is a copy, made after that refusal has
     already had its say.
     """
-    proc = ssh_run(entry, f"cat > {shlex.quote(dest)}", stdin=text, login=False)
+    script, payload = host_shell(entry).write(dest, text)
+    proc = ssh_run(entry, script, stdin=payload, login=False)
     if proc.returncode != 0:
         return first_line(proc) or f"could not write {dest} on the host"
     return ""
@@ -2545,10 +2809,14 @@ def fetch_result(entry: dict, src: str) -> tuple[str | None, str]:
     result that cannot be fetched must never be able to look like a task that
     concluded, for the same reason a timeout cannot manufacture a merge.
     """
-    proc = ssh_run(entry, f"cat {shlex.quote(src)}", login=False)
+    shell = host_shell(entry)
+    proc = ssh_run(entry, shell.read(src), login=False)
     if proc.returncode != 0:
         return None, first_line(proc) or "no result.md on the host yet"
-    return proc.stdout, ""
+    text = shell.decode(proc.stdout)
+    if text is None:
+        return None, "the host answered, but not with the file's bytes"
+    return text, ""
 
 
 def settle_remote(task: Task, entry: dict) -> tuple[bool, str]:
@@ -2565,7 +2833,8 @@ def settle_remote(task: Task, entry: dict) -> tuple[bool, str]:
     wt, why = session_worktree(task.doc["session"])
     if not wt:
         return False, why
-    brief = remote_path(wt, "BRIEF.md")
+    shell = host_shell(entry)
+    brief = shell.join(wt, "BRIEF.md")
     why = push_brief(entry, brief, read_text(task.file("BRIEF.md")))
     if why:
         return False, f"could not copy the brief to {entry['destination']}: {why}"
@@ -2576,7 +2845,7 @@ def settle_remote(task: Task, entry: dict) -> tuple[bool, str]:
     if operator_instructions():
         companions.append(("OPERATOR.md", operator_path()))
     for name, src in companions:
-        why = push_brief(entry, remote_path(wt, name), read_text(src))
+        why = push_brief(entry, shell.join(wt, name), read_text(src))
         if why:
             return False, f"could not copy {name} to {entry['destination']}: {why}"
     task.doc["remote"] = {
@@ -2584,7 +2853,7 @@ def settle_remote(task: Task, entry: dict) -> tuple[bool, str]:
         "destination": str(entry["destination"]),
         "worktree": wt,
         "brief": brief,
-        "result": remote_path(wt, "result.md"),
+        "result": shell.join(wt, "result.md"),
         "at": now(),
     }
     task.save()
@@ -2833,15 +3102,19 @@ def cmd_dispatch(args) -> int:
         for t in ready:
             create, send = spawn_commands(t)
             print(f"    {t.ref}")
-            if t.doc.get("host"):
+            shell = host_shell(host_entry(t.doc["host"])[0] or {}) if t.doc.get("host") else None
+            if shell:
                 print(f"      on host {t.doc['host']} — probed first, and not spawned"
                       " until all three pass:")
-                print("        reachable and a POSIX shell / the repo is there"
+                print(f"        reachable and speaking {shell.label} / the repo is there"
                       " / it has its own credentials for that repo's forge")
             print(f"      {shell_quote(create)}")
-            if t.doc.get("host"):
+            if shell is POSIX:
                 print("      ssh <host> 'cat > <worktree>/BRIEF.md'   # the worker's"
                       " filesystem is not this one")
+            elif shell:
+                print("      ssh <host> powershell -EncodedCommand <BRIEF.md, as base64,"
+                      " into <worktree>\\BRIEF.md>   # the worker's filesystem is not this one")
             print("      ./scripts/session-trust.sh <uuid>   # answer the trust dialog first")
             print(f"      thurbox-cli session send <uuid> {shell_quote([send])}")
         return 0
