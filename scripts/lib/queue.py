@@ -3249,8 +3249,9 @@ def task_publish(task: Task) -> tuple[str, str | None]:
     """
     method, how = policy_publish_default()
     block = task.doc.get("publish") or {}
-    if block.get("method") in PUBLISH_METHODS:
-        method, how = block["method"], block.get("how")
+    declared = publish_method(block.get("method"))
+    if declared in PUBLISH_METHODS:
+        method, how = declared, block.get("how")
     text = str(how).strip() if how else ""
     return method, text or None
 
@@ -6520,7 +6521,10 @@ def cmd_check(args) -> int:
             if not d.get(key):
                 problems.append(f"{ref}: missing {key}")
         pub = d.get("publish") or {}
-        if "method" in pub and pub["method"] not in PUBLISH_METHODS:
+        # Through publish_method(), like every other reader: a record older
+        # than the rename is never rewritten, so refusing its word here would
+        # fail this check for good.
+        if "method" in pub and publish_method(pub["method"]) not in PUBLISH_METHODS:
             problems.append(
                 f"{ref}: publish method {pub['method']!r} is not one of "
                 + ", ".join(sorted(PUBLISH_METHODS))
@@ -6641,6 +6645,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     a.add_argument(
         "--publish",
+        # argparse applies `type` before `choices`, so the retired word is
+        # folded into its shape first and never reaches the record.
+        type=publish_method,
         choices=sorted(PUBLISH_METHODS),
         help="what this task must PRODUCE. Defaults to the publish block in "
         "POLICY.md's frontmatter, and to `pr` when there is none",
