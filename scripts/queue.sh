@@ -240,6 +240,16 @@
 # host (hosts.toml spells one with a non-tmux `multiplexer`) is refused by
 # name.
 #
+# TWO THINGS ABOUT A REMOTE SPAWN THAT ARE NOT OPTIONS. It gets no `--parent`:
+# thurbox refuses a parent that lives on another host and the lead is local, so
+# the link a local worker gets is one a remote worker cannot legally have.
+# And every command fleet runs on a host goes through a LOGIN shell, because
+# `ssh host 'cmd'` sources no profile and the binaries these probes ask about
+# live in `~/.local/bin` — a bare shell answers "not installed" about a host
+# where it is installed, which is exactly how a working host got written off.
+# The two calls that only move bytes (the brief out, the result back) stay
+# bare, so a profile that prints cannot land its banner inside them.
+#
 # THE RUN LOG IS PRODUCED, NOT REMEMBERED. `AGENTS.md` step 5 used to say
 # "record the run in orchestration/runs/ as it happens", and two consecutive
 # runs did not: one file existed only because its lead session was being

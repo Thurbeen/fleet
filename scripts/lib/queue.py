@@ -2148,6 +2148,29 @@ SSH_TIMEOUT = 60
 HOSTS_TOML_FALLBACK = os.path.expanduser("~/.config/thurbox/hosts.toml")
 
 
+# THE SHELL EVERY REMOTE COMMAND RUNS IN, and the reason it is not the default
+# one. `ssh host 'cmd'` gets a shell that is neither a login shell nor an
+# interactive one: none of the account's profile has run, so `PATH` is the bare
+# system default. Agent and thurbox binaries live in `~/.local/bin`, which is
+# exactly what a profile puts on `PATH` — so `command -v thurbox-cli` answered
+# "not found" on debian-hp, where thurbox-cli 2.20.0 is installed, and the lead
+# read that as an unprovisioned host.
+#
+# This is thurbox pull request #1100's bug in fleet's own code, and `/bin/sh
+# -lc` is thurbox's own remedy for it (`login_wrap_for_remote`). The host's
+# login shell is the host's business and nothing here may hard-code one:
+# measured on debian-hp, whose login shell IS zsh, `/bin/sh -lc` finds the
+# binary through `~/.profile` while `zsh -lc` does not, because a
+# non-interactive zsh reads no `~/.zshrc`. So the POSIX login shell is both the
+# simpler answer and the better one.
+LOGIN_SHELL = "/bin/sh"
+
+
+def login_wrap(script: str) -> str:
+    """One command, run by the host's POSIX login shell."""
+    return f"{LOGIN_SHELL} -lc {shlex.quote(script)}"
+
+
 def first_line(proc) -> str:
     """The one line of an ssh failure worth reporting, stderr before stdout."""
     for stream in (proc.stderr, proc.stdout):
@@ -2155,6 +2178,17 @@ def first_line(proc) -> str:
         if lines:
             return lines[-1]
     return ""
+
+
+def last_out(proc) -> str:
+    """The last non-empty line the host printed on stdout.
+
+    THE LAST, and not the whole stream: a login shell sources the account's
+    profile before it runs anything, and a profile that prints a banner would
+    otherwise be glued to the front of the one line a probe meant to say.
+    """
+    lines = [ln.strip() for ln in (proc.stdout or "").splitlines() if ln.strip()]
+    return lines[-1] if lines else ""
 
 
 def thurbox_config() -> dict:
@@ -2243,11 +2277,20 @@ def ssh_argv(entry: dict) -> list:
     return ["ssh", *opts, *SSH_GUARD_OPTS, str(entry["destination"])]
 
 
-def ssh_run(entry: dict, script: str, stdin: str | None = None):
-    """One POSIX shell command on the host. Never raises; the caller reads it."""
+def ssh_run(entry: dict, script: str, stdin: str | None = None, login: bool = True):
+    """One POSIX shell command on the host. Never raises; the caller reads it.
+
+    A LOGIN SHELL BY DEFAULT (see LOGIN_SHELL), because what almost every caller
+    asks is "what does this host have", and only the profile's `PATH` can
+    answer it. The exception is the two calls that MOVE BYTES — the brief push
+    and the result fetch — which need no binary beyond `cat` and which a
+    profile that prints would corrupt in the middle of. They pass
+    `login=False`, and that is the whole rule: a login shell to FIND something,
+    a bare one to CARRY something.
+    """
     try:
         return subprocess.run(
-            ssh_argv(entry) + [script],
+            ssh_argv(entry) + [login_wrap(script) if login else script],
             input=stdin, capture_output=True, text=True, timeout=SSH_TIMEOUT,
         )
     except (OSError, subprocess.SubprocessError) as exc:
@@ -2273,6 +2316,11 @@ def ssh_run(entry: dict, script: str, stdin: str | None = None):
 # found. The banners are GitHub's and GitLab's own — the two forges fleet
 # ships adapters for — because `ssh -T` exits non-zero on a successful GitHub
 # authentication, so the exit status cannot be the test.
+#
+# ITS FAILURE SAYS WHICH FORGE CLIs IT FOUND, after the `host|tools` separator,
+# because "installed and not logged in" and "not installed at all" are
+# different problems with different remedies — and because the second is what a
+# non-login `PATH` used to manufacture about a host that had both.
 FORGE_PROBE_TEMPLATE = """\
 url=$(git -C __REPO__ remote get-url origin 2>/dev/null || printf '')
 case "$url" in
@@ -2298,15 +2346,22 @@ case "$banner" in
 	exit 0
 	;;
 esac
-if command -v gh >/dev/null 2>&1 && gh auth status --hostname "$host" >/dev/null 2>&1; then
-	printf '%s with a gh token' "$host"
-	exit 0
+tools=''
+if command -v gh >/dev/null 2>&1; then
+	if gh auth status --hostname "$host" >/dev/null 2>&1; then
+		printf '%s with a gh token' "$host"
+		exit 0
+	fi
+	tools='`gh`'
 fi
-if command -v glab >/dev/null 2>&1 && glab auth status --hostname "$host" >/dev/null 2>&1; then
-	printf '%s with a glab token' "$host"
-	exit 0
+if command -v glab >/dev/null 2>&1; then
+	if glab auth status --hostname "$host" >/dev/null 2>&1; then
+		printf '%s with a glab token' "$host"
+		exit 0
+	fi
+	tools="${tools:+$tools and }\\`glab\\`"
 fi
-printf '%s' "$host"
+printf '%s|%s' "$host" "$tools"
 exit 1
 """
 
@@ -2314,6 +2369,24 @@ exit 1
 def forge_probe(repo: str) -> str:
     """The credential probe, for one repository path on the host."""
     return FORGE_PROBE_TEMPLATE.replace("__REPO__", shlex.quote(repo))
+
+
+def went_away(proc, out: list) -> bool:
+    """Did ssh itself fail on a probe after the first? Records it if so.
+
+    A PROBE'S ANSWER AND A LOST CONNECTION ARE DIFFERENT SENTENCES, and reading
+    the second as the first is how a reachable host gets written off. Every
+    probe below the first can fail because the machine went away mid-sweep, and
+    ssh's own reserved 255 is the only thing that tells that apart from the
+    question actually being answered `no`.
+    """
+    if proc.returncode != SSH_CONNECTION_FAILED:
+        return False
+    out.append({"check": "reachable", "ok": False, "detail": (
+        "the host answered the first probe and then stopped answering ssh "
+        f"({first_line(proc) or 'ssh could not connect'}). Nothing was learned "
+        "about the repo or its credentials; this is the CONNECTION, not an answer.")})
+    return True
 
 
 def probe_host(entry: dict, repo: str) -> list:
@@ -2352,11 +2425,13 @@ def probe_host(entry: dict, repo: str) -> list:
         "printf ok\n"
     )
     seen = ssh_run(entry, check)
+    if went_away(seen, out):
+        return out
     if seen.returncode != 0:
         why = {
             "no-dir": f"{repo} does not exist on that host",
             "no-git": f"{repo} exists on that host but is not a git checkout",
-        }.get(seen.stdout.strip(), first_line(seen) or "could not be checked")
+        }.get(last_out(seen), first_line(seen) or "could not be checked")
         out.append({"check": "repo", "ok": False, "detail": (
             f"{why}. `--repo` is a path on the HOST for a remote task, and "
             "nothing local validates it.")})
@@ -2364,22 +2439,36 @@ def probe_host(entry: dict, repo: str) -> list:
     out.append({"check": "repo", "ok": True, "detail": f"{repo} is a git checkout there"})
 
     creds = ssh_run(entry, forge_probe(repo))
+    if went_away(creds, out):
+        return out
     if creds.returncode != 0:
         # The probe names the host it tried, so a machine with a key for one
         # forge and none for the other says WHICH — which is the whole reason
-        # this asks the repository rather than a constant.
-        tried = creds.stdout.strip() or "its forge"
-        detail = (
-            f"the host has no credentials of its own for {tried} — neither an ssh "
-            "key nor a `gh` or `glab` login. It cannot clone, fetch or push. Give "
-            "that MACHINE its own credentials; nothing here sends yours."
-        )
-        if tried.startswith("no forge: "):
-            detail = tried[len("no forge: "):]
+        # this asks the repository rather than a constant. It also names which
+        # forge CLIs it FOUND, so "installed and not logged in" reads
+        # differently from "not installed at all" — the second is what a
+        # non-login `PATH` used to manufacture, and both are answers from a
+        # host that is up, which is the sentence the lead needed and did not
+        # have.
+        said = last_out(creds)
+        if said.startswith("no forge: "):
+            detail = said[len("no forge: "):]
+        else:
+            tried, _, tools = said.partition("|")
+            tried = tried or "its forge"
+            found = (
+                f"{tools} is installed there and not logged in to it" if tools
+                else "neither `gh` nor `glab` is on its login shell's PATH"
+            )
+            detail = (
+                f"the host ANSWERED, and it has no credentials of its own for "
+                f"{tried}: no ssh key, and {found}. It cannot clone, fetch or push. "
+                "Give that MACHINE its own credentials; nothing here sends yours."
+            )
         out.append({"check": "forge", "ok": False, "detail": detail})
         return out
     out.append({"check": "forge", "ok": True,
-                "detail": f"reaches {creds.stdout.strip() or 'its forge with a credential'}"})
+                "detail": f"reaches {last_out(creds) or 'its forge with a credential'}"})
     return out
 
 
@@ -2442,7 +2531,7 @@ def push_brief(entry: dict, dest: str, text: str) -> str:
     unwritten. What lands on the host is a copy, made after that refusal has
     already had its say.
     """
-    proc = ssh_run(entry, f"cat > {shlex.quote(dest)}", stdin=text)
+    proc = ssh_run(entry, f"cat > {shlex.quote(dest)}", stdin=text, login=False)
     if proc.returncode != 0:
         return first_line(proc) or f"could not write {dest} on the host"
     return ""
@@ -2456,7 +2545,7 @@ def fetch_result(entry: dict, src: str) -> tuple[str | None, str]:
     result that cannot be fetched must never be able to look like a task that
     concluded, for the same reason a timeout cannot manufacture a merge.
     """
-    proc = ssh_run(entry, f"cat {shlex.quote(src)}")
+    proc = ssh_run(entry, f"cat {shlex.quote(src)}", login=False)
     if proc.returncode != 0:
         return None, first_line(proc) or "no result.md on the host yet"
     return proc.stdout, ""
@@ -2594,8 +2683,18 @@ def spawn_commands(task: Task) -> tuple[list, str]:
         agent = d.get("agent") or configured_agent()
         if agent:
             create += ["--agent", agent]
+    # NOT ON A REMOTE SPAWN, and there is no way to ask for it there. thurbox
+    # validates a parent against the HOST's own backend and refuses one that
+    # lives anywhere else ("a session's parent must be on the same host",
+    # `spawn_delegated` in thurbox's `src/session_ops/spawn.rs`); the lead is
+    # local by construction, so passing it made every `--host` dispatch
+    # impossible — the three probes ran, passed, and the spawn then died on a
+    # flag that had nothing to do with them. The link is a nicety in the
+    # session list and the task record is what actually ties a worker to its
+    # lead, so a remote worker simply does not ask for a parent it could not
+    # legally have.
     parent = os.environ.get("THURBOX_SESSION")
-    if parent:
+    if parent and not d.get("host"):
         create += ["--parent", parent]
     create += flags + ["--json"]
     send = f"Read {brief_target(task)} and do what it says."

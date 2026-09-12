@@ -341,7 +341,10 @@ because the wait it marks has no actor but you.
 
 One invocation spawns every ready task. It passes `--on-existing fail` (a twin
 would break by-name addressing for both, permanently), `--parent
-$THURBOX_SESSION` so `session list --parent` enumerates your workers, and the
+$THURBOX_SESSION` so `session list --parent` enumerates your workers — **except
+on a task that names a `--host`**, where thurbox refuses a parent living on
+another machine and there is no way to spell one, so a remote worker has no
+parent and is enumerated by its task record instead — and the
 task's session profile from `./scripts/session-flags.sh`. Each worker is sent
 one line pointing at the absolute path of its own brief — nothing is copied into
 its worktree, so nothing can land in its PR.
