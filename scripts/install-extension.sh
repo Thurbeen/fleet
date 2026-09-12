@@ -75,7 +75,8 @@
 # the user's own `layout.lua` — a file every pane on their screen shares — and
 # `scripts/place-pane.sh` is what writes it, on the user's word and never as a
 # side effect of an install. So this closes by naming that command and printing
-# the block, for whichever of the two they want.
+# the block, for whichever of the two they want — and the first Mission Control
+# session asks the same question once, through `scripts/pane-ask.sh`.
 #
 # TAKING THE PANE BACK is `plugin remove`, and its argument is the DESTINATION
 # PATH below, not the file's basename:
@@ -372,8 +373,10 @@ else
 		cat <<-EOF
 
 			The fleet queue pane is installed but NOT PLACED, so it will draw
-			nothing yet. One command puts it to the right of the terminal, and
-			it is not run for you — every pane on your screen shares that file:
+			nothing yet. Mission Control asks you once, on its first session,
+			whether to put it on screen. To do it now instead, one command puts
+			it to the right of the terminal, and it is not run for you — every
+			pane on your screen shares that file:
 
 			  ./scripts/place-pane.sh --dry-run   # what it would write, where
 			  ./scripts/place-pane.sh             # place it (--left for the other side)

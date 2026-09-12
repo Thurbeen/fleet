@@ -170,6 +170,14 @@ On yes:
 ./scripts/place-pane.sh --check      # is it placed? changes nothing
 ```
 
+**The first-run ask goes through `./scripts/pane-ask.sh`**, which FLEET.md
+has the lead run at the start of every session: it says `ask` only while the
+pane is unplaced and nobody has answered, `yes [--left]` runs `place-pane.sh`,
+and either answer is kept in the gitignored `orchestration/first-run/pane` so
+the question is asked once per checkout, ever. A layout that already places the
+pane is never asked about. Answering here by hand with `place-pane.sh` is fine
+too — the next `pane-ask.sh` finds it placed and records that.
+
 What makes it safe enough to run, argued in full in its header: it refuses a
 layout it does not recognise and names the part it could not find, it is
 idempotent, it backs the file up to `layout.lua.bak-<timestamp>`, it re-reads

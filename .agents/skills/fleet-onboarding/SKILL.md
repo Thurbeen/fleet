@@ -318,11 +318,16 @@ the question:
 - **Skip** — the pane stays installed and invisible; `./scripts/place-pane.sh`
   places it whenever they want it
 
-On yes:
+**Ask it through `./scripts/pane-ask.sh`, the one record of the answer.**
+Mission Control asks this same question on its first session, so an answer
+given here and not recorded is a question asked twice. Run it bare first:
+`skip` means it was already answered or the layout already places the pane, and
+there is nothing to ask. On `ask`, ask, then record the answer:
 
 ```bash
 ./scripts/place-pane.sh --dry-run    # the file, the anchor, the exact block
-./scripts/place-pane.sh              # right of the terminal (--left for the other side)
+./scripts/pane-ask.sh yes            # right of the terminal (yes --left for the other side)
+./scripts/pane-ask.sh no             # skip, or "I will add it myself" — remembered
 ```
 
 If they chose to add it themselves, print this block — with its guard, since a

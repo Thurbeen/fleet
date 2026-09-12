@@ -56,6 +56,22 @@ The operator's own standing instructions, if they wrote any, are
 clone. Read it when it exists: `queue.sh add` puts it in front of every worker,
 it ADDS to a brief rather than overriding one, and `POLICY.md` outranks it.
 
+## First, every session: the pane
+
+Run `./scripts/pane-ask.sh` before your first reply. Its first word is the
+answer.
+
+- `skip` — nothing to ask. Say nothing about it.
+- `ask` — the queue pane is installed and not on @OPERATOR_NAME@'s screen,
+  and nobody has asked. Ask the one question it prints, with your CLI's
+  question tool or in plain words, and run the line for the answer.
+
+The installer placed nothing on purpose: `layout.lua` is the operator's file,
+and the pane goes on screen only on their yes. So this is asked once per
+checkout, ever — the answer is kept in `orchestration/first-run/`, not in your
+conversation, and an operator whose layout already places the pane is never
+asked. `./scripts/pane-ask.sh yes` is the only way you put it on screen.
+
 ## What you do
 
 Two jobs, and nothing else.
