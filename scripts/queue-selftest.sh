@@ -1497,6 +1497,45 @@ expect "and show reports the method it was read as" "publish:     attested" "$st
 out="$($QUEUE check 2>&1)"
 expect "and check is happy with a record that declares nothing" "ok" "$out"
 
+# (f2) A record written before `no-mistakes` was renamed `attested`. Every
+#      reader folds the old word into the new one, so the validator must too:
+#      records are never rewritten once archived, and a check that refused
+#      them turned the control plane's own gate red for good. Its own queue,
+#      because the second record here is invalid on purpose.
+
+aliasq="$tmp/alias-queue"
+aq() { FLEET_QUEUE_DIR="$aliasq" $QUEUE "$@"; }
+retag() {
+	python3 - "$1" "$2" <<'PY'
+import sys
+
+import yaml
+
+path, method = sys.argv[1], sys.argv[2]
+doc = yaml.safe_load(open(path))
+doc["publish"]["method"] = method
+open(path, "w").write(yaml.safe_dump(doc, sort_keys=False))
+PY
+}
+
+aq topic add renamed --prompt 'records from before the method was renamed' >/dev/null
+aq add renamed legacy-word --title 'Dispatched when the method was no-mistakes' \
+	--repo /tmp/repo-a --branch fix/legacy-word --publish attested >/dev/null
+retag "$aliasq/renamed/01-legacy-word/task.yaml" no-mistakes
+
+out="$(aq check 2>&1 || true)"
+expect "check accepts the retired no-mistakes spelling" "queue check: ok" "$out"
+refute "and does not call it an unknown method" "is not one of" "$out"
+
+aq add renamed bogus-word --title 'A method nothing defines' \
+	--repo /tmp/repo-a --branch fix/bogus-word --publish attested >/dev/null
+retag "$aliasq/renamed/02-bogus-word/task.yaml" carrier-pigeon
+
+out="$(aq check 2>&1 || true)"
+expect "check still rejects a method that is no method and no alias" \
+	"publish method 'carrier-pigeon' is not one of" "$out"
+refute "and does not reject the alias alongside it" "'no-mistakes'" "$out"
+
 # (g) No `gh` on PATH at all. Its own queue and its own PATH, so the answer
 #     cannot depend on anything else that happens to be pending.
 
@@ -1598,6 +1637,24 @@ PY
 expect "a task recorded under the old tool name still reads as its shape" \
 	"alias=attested" "$alias_reads"
 expect "and every other method is untouched by that" "kept=pr" "$alias_reads"
+
+# The helper is not the claim; the READERS are. This clone's default is `pr`,
+# so a reader that skips the alias falls back to it and downgrades the check,
+# where the operator's `attested` elsewhere in this file would hide that.
+if out="$(bq add unconfigured said-old-word --title 'Added with the retired word' \
+	--repo /tmp/repo-a --branch fix/said-old-word --publish no-mistakes --number 02 2>&1)"; then
+	pass "add --publish no-mistakes is still accepted"
+else
+	fail "add --publish no-mistakes is still accepted" "$out"
+fi
+refute "and nothing writes the old word into the record" "no-mistakes" \
+	"$(cat "$tmp/bare-queue/unconfigured/02-said-old-word/task.yaml" 2>&1)"
+
+bq add unconfigured recorded-old-word --title 'Recorded before the rename' \
+	--repo /tmp/repo-a --branch fix/recorded-old-word --publish attested --number 03 >/dev/null
+retag "$tmp/bare-queue/unconfigured/03-recorded-old-word/task.yaml" no-mistakes
+expect "a record saying no-mistakes is verified as attested, not the clone's pr" \
+	"publish:     attested" "$(bq show unconfigured/03-recorded-old-word 2>&1)"
 
 # (i) The stale attestation the pipeline caused ITSELF, told apart from every
 #     other one. `attested` writes the attestation while it opens the pull
