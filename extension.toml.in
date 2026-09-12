@@ -225,8 +225,10 @@
 # RENAMING THE EXTENSION is a different, heavier operation that none of the
 # above needs: change the top-level `name`, then `thurbox-cli extension
 # uninstall fleet` BEFORE installing. `[[sessions]] agent` is not part of it —
-# it names the stock `claude` agent, which is thurbox's and not this
-# extension's to rename. Skip that uninstall and you get two registered
+# it names whichever stock agent `__LEAD_AGENT__` renders to (the operator's
+# `AGENT` in `orchestration/agent.conf`, else thurbox's own `claude`), and
+# that agent is thurbox's to rename, not this extension's. Skip that uninstall
+# and you get two registered
 # extensions and two self-healing sessions, each recreating itself, plus an
 # orphaned `~/.config/thurbox/extensions/fleet/`.
 #

@@ -196,6 +196,12 @@ The per-agent differences, one of which is a trap:
 | `grok`, `kimi` | no dialog inside a git repo, which a worktree always is. |
 | `cursor`, `muse` | **not a keystroke** — a launch flag (`--trust`, `--yolo`). Use the `cursor-trusted` / `muse-trusted` profiles in `orchestration/session-profiles.yaml` (§1d). |
 
+**An agent not in this table is refused, not guessed at** — a wrong keystroke
+can exit the agent instead of dismissing a dialog. Teach it one with
+`TRUST_SIGNATURE` and `TRUST_KEYS` in `orchestration/agent.conf`
+(`TRUST_KEYS=none` for an agent with no dialog at all); `session-trust.sh`'s
+header owns the mechanics.
+
 **Which path the trust is recorded against** (observed 2026-09-07, Claude Code):
 answering inside a worktree records it against the **repository's main worktree
 path**, not the worktree's own. So the first worker in a repo meets the dialog
