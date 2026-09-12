@@ -73,6 +73,12 @@
 #   — honest, but it sat beside a fuel bar reading 53% and read as the pane
 #   contradicting itself, in the very demo the fuel block exists for.
 #
+# THIS TAKE STEPS ONCE, and that is what those two rules produced against a live
+# list — not a return to the flat one. Four workers were in flight: two `idle`,
+# one `done`, and one that `thurbox-cli session list` called `working`, which
+# happened to be the lead's first child. One step is what reaches it. Recount
+# against your own list rather than inheriting this number.
+#
 # NOTHING IS TYPED INTO THE CENTRE once the agent tab is selected. The shell
 # take cleared its pane with a `clear`; the same two lines here would deliver
 # `clear` to a live agent as a PROMPT. Keep the centre read-only.
@@ -81,11 +87,28 @@
 # are the operator's own work. Read what is actually in the centre pane before
 # committing the result, not just the session list.
 #
+# THE PALETTE IS THURBOX'S OWN `doom` THEME, and only half of it is the tape's
+# to set. The TUI paints itself from whichever theme the operator has ACTIVE —
+# `active_theme` in thurbox's own state, chosen with F4 — and neither vhs nor
+# this file can reach that, for the same reason the block above drives through
+# the palette: the picker is an F-key. So a take carries this register only on a
+# machine whose thurbox is already on `doom`. The theme name sits in the frame's
+# top-right corner; read it there before keeping a take.
+#
+# WHAT THE `Set Theme` BELOW IS FOR is the half that IS the tape's: the terminal
+# around the TUI. vhs defaults to a neutral `#171717`, which ringed a warm
+# near-black interface in ten pixels of grey padding. `background` and
+# `foreground` here are doom's own two values, so the padding disappears into
+# the pane instead of framing it. The sixteen ANSI slots are a dark, red-accented
+# set for the shell that runs before `thurbox` takes the screen; the TUI itself
+# reaches none of them, because it addresses truecolour directly.
+#
 # DRIVEN THROUGH Ctrl+P because vhs has no F-key command and its Type sends
 # escape sequences literally. The pane declares a `commands` entry, so the
 # palette is a real user path; F3 is the chord a person presses.
 Output media/fleet-queue-pane.gif
 Set Shell bash
+Set Theme { "name": "fleet doom", "background": "#180709", "foreground": "#d3cbcc", "selection": "#2e1114", "cursor": "#fc5a52", "cursorAccent": "#180709", "black": "#180709", "red": "#fc5a52", "green": "#6bbe61", "yellow": "#d99a4e", "blue": "#4ba9c0", "magenta": "#dc6761", "cyan": "#7fc7d4", "white": "#d3cbcc", "brightBlack": "#756c6d", "brightRed": "#ff8078", "brightGreen": "#8fd97f", "brightYellow": "#e5bb72", "brightBlue": "#6fc0d6", "brightMagenta": "#f08078", "brightCyan": "#9fdce6", "brightWhite": "#e5dddf" }
 Set FontSize 16
 Set Width 1120
 Set Height 760
@@ -98,24 +121,6 @@ Sleep 500ms
 Type "thurbox"
 Enter
 Sleep 10s
-Ctrl+P
-Sleep 800ms
-Type "next session"
-Sleep 800ms
-Enter
-Sleep 600ms
-Ctrl+P
-Sleep 800ms
-Type "next session"
-Sleep 800ms
-Enter
-Sleep 600ms
-Ctrl+P
-Sleep 800ms
-Type "next session"
-Sleep 800ms
-Enter
-Sleep 600ms
 Ctrl+P
 Sleep 800ms
 Type "next session"
