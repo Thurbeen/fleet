@@ -43,7 +43,13 @@
 #      a host until three probes pass; the brief really lands on that host's
 #      filesystem and the result really comes back off it; and a session whose
 #      host cannot be reached is kept, not reaped — thurbox's CLI still calls
-#      it `idle`, which is the trap.
+#      it `idle`, which is the trap. A remote spawn asks for NO `--parent`,
+#      which thurbox refuses across hosts and which made every remote dispatch
+#      impossible, while a local one still gets one. And every command fleet
+#      runs on a host goes through a LOGIN shell, so a binary that only the
+#      account's profile puts on `PATH` is found — while the two calls that
+#      merely move bytes do not, so a profile that prints cannot end up inside
+#      a fetched result.
 #  12. `refuel` asks the ACCOUNT's quota window first and restarts nothing
 #      while it is spent — that window is the operator's subscription, shared
 #      by the lead and every worker, so a restart there burns the reset it was
@@ -416,11 +422,13 @@ deletions="$tmp/deletions.log"
 panes="$tmp/panes"
 restarts="$tmp/restarts.log"
 sends="$tmp/sends.log"
+creates="$tmp/creates.log"
 tbxbin="$tmp/tbx-bin"
 mkdir -p "$sessions" "$tbxbin" "$panes"
 : >"$deletions"
 : >"$restarts"
 : >"$sends"
+: >"$creates"
 
 cat >"$tbxbin/thurbox-cli" <<SH
 #!/bin/sh
@@ -434,6 +442,10 @@ case "\$1 \$2" in
 	printf '{"paths":{"hosts_toml":"%s"}}\n' "$tmp/hosts.toml"
 	;;
 "session create")
+	# Every create is LOGGED, argv and all, so a test can assert on the flags
+	# fleet actually asked thurbox for — \`--host\`, \`--parent\`, the agent —
+	# rather than on the fact that something was spawned.
+	echo "\$*" >>"$creates"
 	# The id the next create hands back, so a test can name its own session
 	# and then say what that session is doing.
 	cat "$tmp/next-session.json" 2>/dev/null || echo '{"id":"stub","created":true}'
@@ -505,6 +517,13 @@ session_is() {
 # A host is made to fail by touching a flag file: `<dest>.down` for an
 # unreachable one, `.nonposix` for a Windows-shaped shell, `.noforge` for one
 # with no GitHub credentials, `.norepo` for one where the repo is not there.
+#
+# `.realshell` is the opposite of all of those: instead of pattern-matching the
+# script, the stub RUNS it, with `$HOME` pointed at `<dest>.home`. That is what
+# makes the login-shell question answerable without a second machine — the
+# profile in that fake home is a real file that a real shell really sources, so
+# a `PATH` only a login shell reaches is a real `PATH` only a login shell
+# reaches. Everything else about the fake host stays a fixture.
 
 remotes="$tmp/remotes"
 sshstate="$tmp/ssh-state"
@@ -525,6 +544,15 @@ script="\$prev"
 [ -f "$sshstate/\$dest.down" ] && {
 	echo "ssh: connect to host \$dest port 22: No route to host" >&2
 	exit 255
+}
+
+# A real shell on a fake host. sshd runs the account's login shell as
+# \`<shell> -c <script>\` — NOT as a login shell and not interactively, which is
+# the whole of defect 2 — so that is exactly what this does.
+[ -f "$sshstate/\$dest.realshell" ] && {
+	HOME="$sshstate/\$dest.home"
+	export HOME
+	exec /bin/sh -c "\$script"
 }
 
 case "\$script" in
@@ -564,12 +592,18 @@ SH
 chmod +x "$sshbin/ssh"
 
 # The hosts thurbox is told about, in hosts.toml's own shape. `devbox` is the
-# ordinary POSIX host; the other two are the shapes fleet refuses outright,
-# and both refusals happen at `add` time without any host being contacted.
+# ordinary POSIX host; `profilebox` is the same shape with a real shell behind
+# it (`.realshell` above), for the login-`PATH` question; the last two are the
+# shapes fleet refuses outright, and both refusals happen at `add` time without
+# any host being contacted.
 cat >"$tmp/hosts.toml" <<'EOF'
 [[hosts]]
 name = "devbox"
 destination = "me@devbox"
+
+[[hosts]]
+name = "profilebox"
+destination = "me@profilebox"
 
 [[hosts]]
 name = "winbox"
@@ -581,6 +615,24 @@ name = "lonebox"
 destination = "me@lonebox"
 share_sessions = false
 EOF
+
+# `profilebox`'s account, as an account really is: a `~/.local/bin` that only
+# the profile puts on `PATH`, a binary in it, and a profile that PRINTS —
+# because plenty do, and a banner glued to the front of a fetched `result.md`
+# would be a worse bug than the one being fixed.
+profilehome="$sshstate/me@profilebox.home"
+mkdir -p "$profilehome/.local/bin"
+cat >"$profilehome/.profile" <<EOF
+echo 'Welcome to profilebox.'
+PATH="$profilehome/.local/bin:\$PATH"
+export PATH
+EOF
+cat >"$profilehome/.local/bin/fleet-fake-agent" <<'EOF'
+#!/bin/sh
+echo fleet-fake-agent 1.2.3
+EOF
+chmod +x "$profilehome/.local/bin/fleet-fake-agent"
+: >"$sshstate/me@profilebox.realshell"
 
 # --- `quota-axi`, stubbed on PATH for the whole run --------------------------
 #
@@ -2919,6 +2971,16 @@ refute "and its dispatch plan mentions no ssh at all" "ssh <host>" "$out"
 expect "and it is pointed at its brief here, by absolute path" \
 	"$FLEET_QUEUE_DIR/$rtopic/20-stay-local/BRIEF.md" "$out"
 
+# The parent link, and the half of it that must not change. A LOCAL worker is
+# created as a child of the lead's own session; (e2) below is the other half,
+# where a remote one cannot be and must not ask to be. Set explicitly and not
+# inherited, so this answers the same run from inside a thurbox session and out
+# of one.
+lead=cccccccc-cccc-cccc-cccc-cccccccccccc
+THURBOX_SESSION="$lead" $QUEUE dispatch >/dev/null 2>&1
+expect "a local worker is spawned as a child of the lead's session" \
+	"--parent $lead" "$(grep -F -- '--repo-path /tmp/repo-a' "$creates" | tail -1)"
+
 # (c) A remote task's brief is the same document, but every control-plane path
 #     it would otherwise name — the result, the prompt, the standing policy —
 #     is not on that filesystem, so each is stated relative to the brief itself,
@@ -2989,9 +3051,20 @@ cat >"$sessions/$rsession.json" <<EOF
                "branch":"fix/build-on-devbox"}]}
 EOF
 
-out="$($QUEUE dispatch 2>&1)"
+out="$(THURBOX_SESSION="$lead" $QUEUE dispatch 2>&1)"
 expect "every probe passing is reported, not just the failures" "probe ok" "$out"
 expect "and the brief is copied to the host" "brief copied to me@devbox" "$out"
+
+# (e2) The flag that made every remote dispatch impossible. thurbox validates a
+#      parent against the host's own backend and refuses one that lives
+#      anywhere else, and the lead is local by construction — so a `--parent`
+#      on a remote spawn is a spawn that can only fail, after all three probes
+#      have already passed. There is no way to say "child of a session on
+#      another machine", so the link is not asked for.
+remote_create="$(grep -F -- '--host devbox' "$creates" | tail -1)"
+expect "a remote worker is created on its host" "--host devbox" "$remote_create"
+refute "and carries no --parent, which thurbox would refuse across hosts" \
+	"--parent" "$remote_create"
 
 if [ -f "$remotes/me@devbox$worktree/BRIEF.md" ]; then
 	pass "the brief really is on the host's filesystem, not only claimed to be"
@@ -3068,6 +3141,63 @@ out="$($QUEUE reap 2>&1)"
 expect "and once the host answers again, the merged task's session is released" \
 	"reaped" "$out"
 expect "with --force, on the host thurbox owns" "$rsession" "$(cat "$deletions")"
+
+# (h) THE SHELL EVERY REMOTE COMMAND RUNS IN. `ssh host 'cmd'` gets a shell
+#     that is neither a login shell nor an interactive one, so the account's
+#     profile has not run and `PATH` is the bare system default — while agent
+#     and thurbox binaries live in `~/.local/bin`, which is precisely what the
+#     profile puts there. A probe asking "is X installed" then answers no about
+#     a host where it is installed, and that wrong answer is indistinguishable
+#     from an unprovisioned machine.
+#
+#     `profilebox` is that account, with a real shell behind it: the binary is
+#     reachable only through the profile, and the profile also PRINTS, because
+#     plenty do.
+loginpath="$(python3 - <<'PY'
+import sys
+
+sys.path.insert(0, "scripts/lib")
+import queue as q
+
+entry, why = q.host_entry("profilebox")
+if not entry:
+    print("host=" + why)
+    raise SystemExit(0)
+proc = q.ssh_run(entry, "command -v fleet-fake-agent")
+print("rc=%d" % proc.returncode)
+print("found=" + " ".join(proc.stdout.split()))
+PY
+)"
+expect "a command over ssh resolves a binary only the login profile puts on PATH" \
+	"/.local/bin/fleet-fake-agent" "$loginpath"
+expect "and it is the command's own answer, not a shell that failed to find it" \
+	"rc=0" "$loginpath"
+
+#     And the other half of the same decision: the two calls that MOVE BYTES
+#     are NOT login-wrapped, because they need no binary beyond `cat` and a
+#     profile that prints would land its banner in the middle of them. A
+#     `result.md` fetched off that host is the bytes the worker wrote and
+#     nothing else.
+bytes_moved="$(python3 - "$tmp/profilebox-result.md" <<'PY'
+import sys
+
+sys.path.insert(0, "scripts/lib")
+import queue as q
+
+dest = sys.argv[1]
+entry, why = q.host_entry("profilebox")
+body = "---\noutcome: shipped\n---\nDone on profilebox.\n"
+print("push=" + (q.push_brief(entry, dest, body) or "ok"))
+text, why = q.fetch_result(entry, dest)
+print("fetch=" + (why or "ok"))
+print("same=" + str(text == body))
+PY
+)"
+expect "a brief pushed to a chatty host is written there" "push=ok" "$bytes_moved"
+expect "and the result fetched back is byte-for-byte what was written" \
+	"same=True" "$bytes_moved"
+refute "with none of the profile's own greeting in it" \
+	"Welcome to profilebox" "$bytes_moved"
 
 # --- 12. refuel: the account window first, then the session that ran dry -----
 #

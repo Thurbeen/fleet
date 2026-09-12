@@ -53,7 +53,7 @@ thurbox-cli session create --name 'Run exec automations off the TUI thread' \
 | `--worktree-branch` | create a git worktree on this branch |
 | `--base-branch` | base for the worktree (default `main`) |
 | `--agent` | `claude`, `codex`, … (default from `agents.toml`) |
-| `--parent` | lead session UUID, for lead/worker trees |
+| `--parent` | lead session UUID, for lead/worker trees — **same host only**: thurbox refuses a parent on another machine, so leave it off whenever you pass `--host` |
 | `--host` | remote host from `hosts.toml`; worktree + tmux live there |
 | `--on-existing` | what a name collision means — never leave it defaulted, see §1c |
 | `--env` / `--command` / `--arg` / `--reports-as` | how the agent starts; render them from a profile, see §1d |
