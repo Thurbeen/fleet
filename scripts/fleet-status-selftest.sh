@@ -643,16 +643,33 @@ expect "an unconfigured clone still reads the subscriptions it has" \
 	"provider	nova" "$bare_conf"
 refute "and names no vendor this repo chose" "claude" "$bare_conf"
 
-# The tripwire, and the reason this section is not prose: the module that
-# decides which provider to read must not carry an agent's name at all. A
-# fallback literal would pass every assertion above on a machine that happens
-# to be signed in to it.
-if grep -qiE 'claude|anthropic' scripts/lib/fleet_status.py; then
-	fail "the fuel reader names no vendor" \
-		"$(grep -inE 'claude|anthropic' scripts/lib/fleet_status.py)"
-else
-	pass "the fuel reader names no vendor, so there is nothing to fall back to"
+# The tripwire: an unconfigured clone whose ONLY credentialed provider
+# happens to be named `claude` must still read it by discovery, not because
+# the module special-cases that name. A fallback literal would behave
+# identically to a real discovery path on THIS machine, so the seam swaps in
+# a credential the module has never heard the name of and the reading has to
+# follow.
+cat >"$seam/quota-axi" <<'STUB'
+#!/bin/sh
+if [ "$1" = auth ]; then
+	cat <<'JSON'
+{"generatedAt":"2026-03-15T16:42:00.000Z","schemaVersion":1,"auth":[
+ {"provider":"glorbnak","sources":[{"source":"opencode:auth.json","status":"available"}]}]}
+JSON
+	exit 0
 fi
+cat <<'JSON'
+{"generatedAt":"2026-03-15T16:42:00.000Z","schemaVersion":5,"providers":[
+ {"provider":"glorbnak","plan":"pro","source":"oauth",
+  "windows":[{"id":"five_hour","label":"5h","percentRemaining":48,
+              "resetsAt":"2026-03-15T21:00:00.000Z"}],
+  "state":{"status":"ok","stale":false}}]}
+JSON
+STUB
+chmod +x "$seam/quota-axi"
+sole_credential="$(PATH="$seam" FLEET_AGENT_ROOT="$conf" "$STATUS" --fuel 2>&1)"
+expect "the sole credentialed provider is read by discovery, name notwithstanding" \
+	"provider	glorbnak" "$sole_credential"
 
 # --- 7. it reads, and only reads ---------------------------------------------
 
