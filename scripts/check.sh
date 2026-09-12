@@ -13,7 +13,7 @@
 #   scripts/check.sh --fix markdown      # apply the fixes a check can apply
 #
 # Checks: shell, markdown, yaml, profiles, queue, reconcile, status, skills,
-# pane, voice, automerge, onboarding, sync. Only `markdown` has a fixer; `--fix` is a no-op for
+# pane, voice, automerge, onboarding, install, sync. Only `markdown` has a fixer; `--fix` is a no-op for
 # the rest, so `scripts/check.sh --fix` is always safe to run.
 #
 # Requires: shellcheck, rumdl, python3 (with PyYAML), lua. A missing tool
@@ -48,7 +48,7 @@ need() {
 # on its own.
 check_shell() {
 	need shellcheck shell || return
-	if shellcheck -x scripts/*.sh scripts/lib/*.sh; then
+	if shellcheck -x install.sh scripts/*.sh scripts/lib/*.sh; then
 		ok "shell: shellcheck clean"
 	else
 		fail "shell: shellcheck"
@@ -690,6 +690,24 @@ check_onboarding() {
 	fi
 }
 
+# THE ONE-LINER AND THE FIRST-RUN ASK, driven as an operator meets them.
+# `install-selftest.sh` pipes install.sh into `sh` in a throwaway HOME against
+# a copy of this tree: prerequisites before the extension, the pane installed
+# and not placed, a second run that changes nothing, and a checkout that is
+# fast-forwarded or refused but never overwritten. Then `pane-ask.sh`: asked
+# once, both answers remembered, a placed pane never asked about.
+check_install() {
+	need git install || return
+	need jq install || return
+
+	if ./scripts/install-selftest.sh >/dev/null 2>&1; then
+		ok "install: install.sh converges and places no pane; pane-ask.sh asks once"
+	else
+		./scripts/install-selftest.sh
+		fail "install: scripts/install-selftest.sh"
+	fi
+}
+
 checks=()
 for arg in "$@"; do
 	case "$arg" in
@@ -699,7 +717,7 @@ for arg in "$@"; do
 done
 
 if [ ${#checks[@]} -eq 0 ]; then
-	checks=(shell markdown yaml profiles queue reconcile status skills pane voice automerge onboarding sync)
+	checks=(shell markdown yaml profiles queue reconcile status skills pane voice automerge onboarding install sync)
 fi
 
 for c in "${checks[@]}"; do
@@ -717,8 +735,9 @@ for c in "${checks[@]}"; do
 	voice) check_voice ;;
 	automerge) check_automerge ;;
 	onboarding) check_onboarding ;;
+	install) check_install ;;
 	*)
-		printf 'error: unknown check %q (want: shell markdown yaml profiles queue reconcile status skills pane voice automerge onboarding sync)\n' "$c" >&2
+		printf 'error: unknown check %q (want: shell markdown yaml profiles queue reconcile status skills pane voice automerge onboarding install sync)\n' "$c" >&2
 		exit 2
 		;;
 	esac

@@ -45,28 +45,50 @@ you. You watch it happen in the queue pane.
 
 ## Setup
 
+One line clones fleet, checks what it needs, and installs its thurbox
+extension:
+
 ```bash
-git clone https://github.com/Thurbeen/fleet.git
-cd fleet
+curl -fsSL https://raw.githubusercontent.com/Thurbeen/fleet/main/install.sh | sh
 ```
 
-Then open the clone in your agent CLI and run:
+Or read it before you run it:
+
+```bash
+curl -fsSLo install.sh https://raw.githubusercontent.com/Thurbeen/fleet/main/install.sh
+less install.sh
+sh install.sh
+```
+
+It clones into `~/fleet`; `FLEET_DIR=<dir>` or `--dir <dir>` puts it elsewhere,
+and a machine whose Mission Control session already opens a checkout reuses
+that one. **Pick the place you will keep:** the extension bakes the path in,
+and moving the clone later costs the lead session its conversation. Run it again
+and it converges — an existing clone is fast-forwarded, and one that has
+diverged, or has uncommitted changes in the way, is refused rather than reset.
+
+It installs no dependency: when a required one is missing it stops before the
+extension and prints the lines to run. Nor does it put the queue pane on your
+screen — the first Mission Control session asks you that, once.
+
+Then open thurbox, start the Mission Control session, and run:
 
 ```text
 /fleet-onboarding
 ```
 
-The [onboarding skill](.agents/skills/fleet-onboarding/SKILL.md) does the setup
+The [onboarding skill](.agents/skills/fleet-onboarding/SKILL.md) does the rest
 rather than instructing you through it — seven steps: dependencies, this
 checkout, your GitHub owners, the repo map, the thurbox extension, the queue
-pane on screen, and the reconciler. It verifies each one and names anything
-missing with its remedy before it writes a thing. Run it twice and it
-converges.
+pane on screen, and the reconciler. The one-liner already did three of them, so
+those come back as checks. It verifies each one and names anything missing with
+its remedy before it writes a thing. Run it twice and it converges.
 
 Four of those steps ask you something, and only four. Whether to install the
 dependencies that are missing; which of the owners it found on your machine the
 map should cover; where the queue pane goes (a column on the right, by
-default); and whether to bring the reconciler up. It reads every `gh` account
+default), unless you already answered that; and whether to bring the reconciler
+up. It reads every `gh` account
 on the machine — not just the active one — your git config and the remotes of
 the clones you already have, so the owners step is a list to confirm rather
 than one to type.

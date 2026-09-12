@@ -118,3 +118,9 @@ __pycache__/
 # CODE is tracked (scripts/reconcile.sh); everything it writes at runtime is
 # not, for the same reason the queue's own records are not.
 /orchestration/reconcile/
+
+# MACHINE. The operator's answer to the one first-run question — whether the
+# queue pane goes on screen — written by scripts/pane-ask.sh so the lead asks it
+# once per checkout and never again. The layout.lua that answer is about is one
+# machine's, and the lead's conversation is disposable, so it lives here.
+/orchestration/first-run/

@@ -210,7 +210,8 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends lua5.4
           sudo ln -sf /usr/bin/lua5.4 /usr/local/bin/lua
-      - run: ./scripts/check.sh onboarding
+      # install.sh and pane-ask.sh, driven end to end; same stubs, same job.
+      - run: ./scripts/check.sh onboarding install
 
   # Single required status check. Every job feeds this gate; a branch ruleset
   # requires only "All Checks", so adding or removing jobs never needs a

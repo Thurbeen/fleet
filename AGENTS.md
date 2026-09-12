@@ -92,7 +92,11 @@ names every path and the reason for each.
   was ASKED and said yes** — because a pane no arrangement places loads, lists,
   and draws nothing. It refuses a layout it cannot recognise, backs the file up,
   re-reads its own edit with `lua`, and verifies with `thurbox-cli plugin
-  check`; the fleet-pane skill's §4 owns the ask.
+  check`; the fleet-pane skill's §4 owns the ask. **The first Mission Control
+  session asks it, once per checkout, ever**: FLEET.md has the lead run
+  `./scripts/pane-ask.sh`, which keeps the answer in the gitignored
+  `orchestration/first-run/` and never asks where the pane is already placed —
+  a script and not a hook, because a hook would be one agent's.
   `./scripts/pane-selftest.sh` renders it offline — no thurbox, no queue, no
   session; `check.sh pane` runs it.
   `.agents/skills/fleet-pane/` is the driving surface for all of it: install,
@@ -105,6 +109,12 @@ names every path and the reason for each.
   Everything outside that fence is the lead's judgement and nothing ever
   overwrites it. Gitignored, like everything a run produces; the template is
   the one tracked file there.
+- `install.sh` — the one-liner (`curl … | sh`), in POSIX sh: clone or
+  fast-forward the checkout, `preflight.sh`, `install-extension.sh`, and
+  nothing else. It installs no dependency, places no pane, and refuses rather
+  than overwrites an existing checkout; its header owns where the clone goes and
+  why that choice is sticky. `./scripts/install-selftest.sh` drives it and
+  `pane-ask.sh` end to end; `check.sh install` runs it.
 - `scripts/preflight.sh` — every dependency fleet needs, in one pass, in three
   tiers (required / recommended / gate), each row carrying what breaks without
   it and the command that installs it. It probes and prints; installing is the
