@@ -2512,7 +2512,7 @@ class PowerShell:
             "$ErrorActionPreference = 'Stop'\n"
             f"if (-not (Test-Path -LiteralPath {quoted} -PathType Leaf)) "
             "{ Write-Output 'fleet-no-file'; exit 1 }\n"
-            f"[Convert]::ToBase64String([IO.File]::ReadAllBytes({quoted}))\n"
+            f"[Console]::Out.Write([Convert]::ToBase64String([IO.File]::ReadAllBytes({quoted})))\n"
         )
 
     def decode(self, stdout: str) -> str | None:
