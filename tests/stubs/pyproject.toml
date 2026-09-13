@@ -1,0 +1,22 @@
+# Stand-ins for the tools fleet shells out to, installed by tests/conftest.py
+# into a throwaway venv whose executables directory goes first on PATH. Each is
+# a console script so the installer writes a real executable for it on every
+# platform. Never installed anywhere else, and never published.
+[project]
+name = "fleet-stubs"
+version = "0.0.0"
+requires-python = ">=3.11"
+
+[project.scripts]
+gh = "fleet_stubs.gh:main"
+thurbox-cli = "fleet_stubs.thurbox:main"
+ssh = "fleet_stubs.ssh:main"
+glab = "fleet_stubs.glab:main"
+quota-axi = "fleet_stubs.quota:main"
+
+[tool.uv.build-backend]
+module-name = "fleet_stubs"
+
+[build-system]
+requires = ["uv_build>=0.12.13,<0.13"]
+build-backend = "uv_build"
