@@ -1267,7 +1267,7 @@ end
 ---
 --- COLOUR CARRIES THE VERDICT, which is the whole reason the row is worth a
 --- line: ok for the states that mean the artifact arrived (`ready`, `pushed`,
---- `merged`), warn for the ones still in motion or still owed a human
+--- `posted`, `merged`), warn for the ones still in motion or still owed a human
 --- (`checks ⟳`, `draft`, `green`), bad for the ones an operator has to do
 --- something about, and muted for a fact with no verdict attached. The table
 --- above owns which is which, and owns the argument for `green`.
