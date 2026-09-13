@@ -2953,6 +2953,78 @@ fi
 expect "and whatever is in force names its forge, so none can match a bare slug" \
 	"unqualified=none" "$shipped"
 
+# --- 9j. a check is judged by its latest run, not by every run it ever had ---
+#
+# GitHub's statusCheckRollup keeps superseded runs. Editing a pull request's
+# title re-runs `PR Title`, so Thurbeen/thurbox #1124 held a FAILURE and two
+# later SUCCESSes of the one check, `gh pr checks` showed it green, and the
+# shepherd read the stale FAILURE and sent fixers at two healthy pull requests.
+#
+#   an older FAILURE under a newer SUCCESS is a pass, for a CheckRun and a
+#     StatusContext alike
+#   an older SUCCESS under a newer FAILURE is still a failure
+#   a newer run still in progress is pending, never the older run's verdict
+
+python3 - "$shep/gh" <<'PY'
+import json
+import sys
+
+out = sys.argv[1]
+STEPS = [
+    {"step": s, "status": "completed"}
+    for s in ("intent", "rebase", "review", "test", "document", "lint", "push")
+] + [{"step": "pr", "status": "running"}, {"step": "ci", "status": "pending"}]
+
+
+def run(conclusion, at, name="PR Title"):
+    if conclusion is None:
+        return {"__typename": "CheckRun", "name": name, "status": "IN_PROGRESS",
+                "conclusion": "", "startedAt": at, "completedAt": None}
+    return {"__typename": "CheckRun", "name": name, "status": "COMPLETED",
+            "conclusion": conclusion, "startedAt": at, "completedAt": at}
+
+
+def pr(n, rollup):
+    sha = f"{n:040d}"
+    payload = json.dumps({"head_sha": sha, "steps": STEPS})
+    json.dump({
+        "number": n, "state": "OPEN", "title": f"PR {n}", "isDraft": False,
+        "url": f"https://github.com/Thurbeen/thurbox/pull/{n}",
+        "mergeable": "MERGEABLE", "reviewDecision": "", "statusCheckRollup": rollup,
+        "body": f"<!-- fleet-attestation:v1 {payload} -->\n\nShipped it.\n",
+        "headRefName": f"tbx/reruns-{n}", "baseRefName": "main", "headRefOid": sha,
+        "author": {"login": "maintainer", "is_bot": False},
+        "headRepositoryOwner": {"login": "Thurbeen"}, "isCrossRepository": False,
+    }, open(f"{out}/{n}.json", "w"))
+
+
+# #1124's own rollup, out of order the way nothing promises it is not.
+pr(203, [
+    run("SUCCESS", "2026-09-13T06:32:55Z"),
+    run("FAILURE", "2026-09-13T06:06:55Z"),
+    run("SUCCESS", "2026-09-13T06:22:30Z"),
+    {"__typename": "StatusContext", "context": "ci/legacy", "state": "ERROR",
+     "createdAt": "2026-09-13T06:00:00Z"},
+    {"__typename": "StatusContext", "context": "ci/legacy", "state": "SUCCESS",
+     "createdAt": "2026-09-13T06:10:00Z"},
+])
+pr(204, [run("FAILURE", "2026-09-13T06:22:30Z"), run("SUCCESS", "2026-09-13T06:06:55Z")])
+pr(205, [run("SUCCESS", "2026-09-13T06:06:55Z"), run(None, "2026-09-13T06:22:30Z")])
+PY
+
+out="$(env PATH="$shep/bin:$base_path" $QUEUE shepherd --topic "$ttopic" --dry-run 2>&1)"
+line_203="$(printf '%s\n' "$out" | grep -A1 'pull/203')"
+line_204="$(printf '%s\n' "$out" | grep -A1 'pull/204')"
+line_205="$(printf '%s\n' "$out" | grep -A1 'pull/205')"
+refute "a check that failed and then passed is not a failed check" \
+	"checks-failed" "$line_203"
+expect "it is green, and ready like any other" "ready: " "$line_203"
+expect "a check that passed and then failed is still a failed check" \
+	"checks-failed" "$line_204"
+expect "a newer run still in progress is pending, not the old run's pass" \
+	"checks still running" "$line_205"
+refute "and it is not ready on the older run's word" "ready: " "$line_205"
+
 # --- 10. the shepherd writes down the publish state it already saw -----------
 #
 # Every fact below arrived in the ONE `gh pr list` the pass already makes, and

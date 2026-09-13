@@ -619,11 +619,30 @@ class GitHubForge(Forge):
         )
 
     @staticmethod
-    def _checks(rollup) -> list:
-        out = []
+    def _latest_runs(rollup) -> list:
+        """One entry per check: its most recent run, in first-seen order.
+
+        The rollup keeps superseded runs — editing a title re-runs `PR Title`,
+        and Thurbeen/thurbox #1124 held a FAILURE under two later SUCCESSes —
+        so judging every entry fails a check that has since passed. A run is
+        placed by when it STARTED, so a newer run still in progress replaces
+        an older finished one and reads as pending. ISO-8601 UTC stamps sort
+        as strings; with none, the later entry in the list wins.
+        """
+        latest = {}
         for c in rollup or []:
             if not isinstance(c, dict):
                 continue
+            key = (c.get("workflowName") or "", c.get("name") or c.get("context") or "")
+            at = str(c.get("startedAt") or c.get("createdAt") or c.get("completedAt") or "")
+            if key not in latest or at >= latest[key][0]:
+                latest[key] = (at, c)
+        return [c for _at, c in latest.values()]
+
+    @staticmethod
+    def _checks(rollup) -> list:
+        out = []
+        for c in GitHubForge._latest_runs(rollup):
             name = c.get("name") or c.get("context") or "a required check"
             if "state" in c and "conclusion" not in c:
                 # A StatusContext: one word, and PENDING is not a failure.
