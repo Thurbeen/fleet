@@ -261,6 +261,7 @@ spells out in the column itself, so:
 | `F3` opens Help, Theme or Settings | the chord collides with a kernel one | rebind in thurbox settings; `check.sh pane` refuses a kernel chord in the repo |
 | `not trusted yet` | the `run` capability is declared, not granted | the operator grants it: settings (`Ctrl+,`) → `]` → `t`. You cannot do it for them |
 | `no '<lead>' session` | no session by the name the pane probes | the extension has not been installed, or the lead was renamed — §2, and `extension.toml.in`'s RENAMING header |
+| `<n> <lead> sessions here`, then a cwd per row | more than one lead on THIS machine, in different checkouts, so the pane will not pick a queue | remove the lead that is not your fleet (`thurbox-cli session list`). A lead mirrored from another host beside one local lead is normal: the pane binds the local one and says nothing |
 | `the <lead> session is unreachable` | thurbox has the session but cannot reach it | a thurbox-side problem, not a pane one |
 | `the queue probe did not run` | the probe could not be executed in that session | usually the capability or a wedged session; the cwd it names is where it tried |
 | `not the control-plane checkout` | the lead session opens a directory with no `./scripts/queue.sh` | the manifest points at the wrong clone — moved-clone case in §2 |

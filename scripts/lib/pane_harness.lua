@@ -342,6 +342,30 @@ _G.thurbox.runs = {
   ["fleetfuel:s1"] = { state = "ok", stdout = FUEL .. "\n" },
 }
 
+-- `--leads remote-first`: a lead MIRRORED from another machine, listed before
+-- the local one, whose queue is empty — thurbox sets `host` on a session it
+-- reaches over ssh or wsl and leaves it nil on this machine's. One remote lead
+-- beside one local one is an ordinary setup, so the pane has to draw the local
+-- queue and say nothing about the other.
+--
+-- `--leads two-local`: two leads on THIS machine in different checkouts, which
+-- is a choice the pane cannot make for the operator.
+local LEADS
+for i, a in ipairs(arg) do
+  if a == "--leads" then
+    LEADS = arg[i + 1]
+  end
+end
+if LEADS == "remote-first" then
+  local remote = { id = "r1", name = "⌖ Mission Control", cwd = "/home/lab/fleet", status = "ok", host = "labhost" }
+  _G.thurbox.sessions = { remote, LEAD }
+  _G.thurbox.runs["fleetqueue:r1"] = { state = "ok", stdout = "R\t/home/lab/fleet/orchestration/queue\n" }
+  _G.thurbox.runs["fleetfuel:r1"] = { state = "ok", stdout = FUEL .. "\n" }
+elseif LEADS == "two-local" then
+  local other = { id = "s2", name = "⌖ Mission Control", cwd = "/home/operator/fleet-copy", status = "ok" }
+  _G.thurbox.sessions = { LEAD, other }
+end
+
 local here = (arg[0]:match("^(.*)/scripts/lib/") or ".")
 local pane = assert(loadfile(here .. "/interface/fleet_queue.lua"))()
 

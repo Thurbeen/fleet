@@ -2035,13 +2035,34 @@ return {
     -- The control-plane checkout, named by the session fleet's own extension
     -- installs. Its cwd is the identity — never `session.repo`, which is a
     -- basename several different checkouts share.
+    --
+    -- THIS MACHINE'S LEAD FIRST. thurbox sets `host` on a session it reaches
+    -- over ssh or wsl, and a lead mirrored from another host is an ordinary
+    -- neighbour of the local one — often listed ahead of it. Binding to the
+    -- first by name probed that host and drew its empty queue over live work
+    -- here. So a local lead wins silently, and only when there is none does
+    -- the first lead by name stand in. Two local leads in different checkouts
+    -- are two queues, and which is the fleet is not the pane's guess to make.
     local lead
+    local locals, local_cwds = {}, {}
     for _, session in ipairs(thurbox.sessions or {}) do
       if session.cwd and is_control_plane(session.name or "") then
-        lead = session
-        break
+        lead = lead or session
+        if not session.host and not local_cwds[session.cwd] then
+          local_cwds[session.cwd] = true
+          locals[#locals + 1] = session
+        end
       end
     end
+    if #locals > 1 then
+      local lines = { #locals .. " " .. CONTROL_PLANE .. " sessions here" }
+      for _, session in ipairs(locals) do
+        lines[#lines + 1] = session.cwd
+      end
+      lines[#lines + 1] = "remove the one that is not your fleet"
+      return saying(lines, width)
+    end
+    lead = locals[1] or lead
     if not lead then
       return saying({
         "no " .. CONTROL_PLANE .. " session",

@@ -207,4 +207,25 @@ refute "and still no cleared blocker" "✓ 01-declare" "$NARROW"
 # up the ladder: a next move drawn only at 44 is a next move nobody reads.
 expect "the next move survives 30 columns" "open — review" "$NARROW"
 
+# --- 6. the lead it probes is this machine's --------------------------------
+
+# A lead mirrored from another host is listed FIRST and holds an empty queue.
+# Binding to it drew "the queue is empty" over a queue with live work in it.
+# One remote lead beside one local one is the normal setup, so the pane binds
+# to the local one and says nothing about the other.
+echo "pane: a remote lead listed before the local one"
+
+REMOTE_FIRST="$(render 44 --leads remote-first)"
+expect "the local queue is drawn" "Cut the pane back" "$REMOTE_FIRST"
+refute "the remote lead's empty queue is not" "the queue is empty" "$REMOTE_FIRST"
+refute "and no warning is drawn about the remote lead" "Mission Control" "$REMOTE_FIRST"
+
+# Two leads on this machine are two checkouts, and which queue is the real one
+# is the operator's to say — picking the first would be the same silent guess.
+echo "pane: two local leads"
+
+TWO_LOCAL="$(render 44 --leads two-local)"
+expect "two local leads are named as a problem" "2 Mission Control sessions here" "$TWO_LOCAL"
+refute "and neither queue is drawn as if it were the one" "Cut the pane back" "$TWO_LOCAL"
+
 exit "$failed"
