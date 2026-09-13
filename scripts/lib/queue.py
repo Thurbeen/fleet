@@ -2262,14 +2262,14 @@ HOSTS_TOML_FALLBACK = os.path.expanduser("~/.config/thurbox/hosts.toml")
 # interactive one: none of the account's profile has run, so `PATH` is the bare
 # system default. Agent and thurbox binaries live in `~/.local/bin`, which is
 # exactly what a profile puts on `PATH` — so `command -v thurbox-cli` answered
-# "not found" on debian-hp, where thurbox-cli 2.20.0 is installed, and the lead
-# read that as an unprovisioned host.
+# "not found" on a Debian test host where thurbox-cli 2.20.0 is installed, and
+# the lead read that as an unprovisioned host.
 #
 # This is thurbox pull request #1100's bug in fleet's own code, and `/bin/sh
 # -lc` is thurbox's own remedy for it (`login_wrap_for_remote`). The host's
 # login shell is the host's business and nothing here may hard-code one:
-# measured on debian-hp, whose login shell IS zsh, `/bin/sh -lc` finds the
-# binary through `~/.profile` while `zsh -lc` does not, because a
+# measured on a Debian test host whose login shell IS zsh, `/bin/sh -lc` finds
+# the binary through `~/.profile` while `zsh -lc` does not, because a
 # non-interactive zsh reads no `~/.zshrc`. So the POSIX login shell is both the
 # simpler answer and the better one.
 LOGIN_SHELL = "/bin/sh"
@@ -2488,9 +2488,9 @@ def ps_quote(s: str) -> str:
 # backticks are inside single quotes, where PowerShell takes them literally.
 #
 # THE KEY CHECK IS `Start-Process`, not `& ssh`, and bounded. ssh.exe run inline
-# inside an ssh session on Windows never returned: measured on windows-hp,
-# `& ssh -T git@github.com`, the same with `-n`, and `cmd /c "... <NUL"` each
-# hung past 45s, and the whole probe past SSH_TIMEOUT. Started as its own
+# inside an ssh session on Windows never returned: measured on a Windows 11
+# host, `& ssh -T git@github.com`, the same with `-n`, and `cmd /c "... <NUL"`
+# each hung past 45s, and the whole probe past SSH_TIMEOUT. Started as its own
 # process with its stdio on files it answered in 1.6s. The 20s bound is so a
 # host where it does hang reads as "no key" and goes on to ask `gh` and `glab`.
 POWERSHELL_FORGE_PROBE_TEMPLATE = r"""$repo = __REPO__
@@ -2559,12 +2559,12 @@ class PowerShell:
 
     NO LOGIN SHELL, because Windows has no such thing to miss: an ssh session
     gets the account's `PATH` from the registry, which is how `claude.exe` in
-    `~\\.local\\bin` resolved on windows-hp with nothing sourced.
+    `~\\.local\\bin` resolved on a Windows 11 host with nothing sourced.
 
     BYTES TRAVEL AS BASE64 IN BOTH DIRECTIONS. PowerShell 5 decodes stdin and
-    encodes stdout through the console code page (`ibm850` on windows-hp), so a
-    brief with one non-ASCII character in it would not arrive as written, and
-    `>` would write it as UTF-16. ASCII survives every code page.
+    encodes stdout through the console code page (`ibm850` on a Windows 11
+    host), so a brief with one non-ASCII character in it would not arrive as
+    written, and `>` would write it as UTF-16. ASCII survives every code page.
     """
 
     name = "powershell"
