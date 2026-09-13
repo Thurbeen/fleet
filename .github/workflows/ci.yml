@@ -66,6 +66,7 @@ jobs:
               - 'scripts/queue.sh'
               - 'scripts/queue-selftest.sh'
               - 'scripts/lib/queue.py'
+              - 'scripts/lib/fleet_platform.py'
               # The `fleet` command both forwarders run, and its test.
               - 'scripts/fleet-status.sh'
               - 'fleet/**'
@@ -82,6 +83,7 @@ jobs:
               # reconcile file.
               - 'scripts/queue.sh'
               - 'scripts/lib/queue.py'
+              - 'scripts/lib/fleet_platform.py'
               - 'scripts/check.sh'
               - '.github/workflows/ci.yml'
 

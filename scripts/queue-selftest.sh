@@ -1670,7 +1670,7 @@ expect "and the record says gh was never there to ask" "gh not found" "$state"
 bare="$tmp/bare-clone"
 mkdir -p "$bare/scripts/lib" "$bare/orchestration/queue"
 cp scripts/queue.sh "$bare/scripts/queue.sh"
-for lib in queue.py forge.py; do
+for lib in queue.py forge.py fleet_platform.py; do
 	ln -s "$PWD/scripts/lib/$lib" "$bare/scripts/lib/$lib"
 done
 # The project queue.sh forwards to, so `uv run fleet` finds this clone's.
@@ -2032,7 +2032,7 @@ clonetmp="$(mktemp -d)"
 fake="$clonetmp/second-clone"
 mkdir -p "$fake/scripts/lib" "$fake/deep/sub/dir"
 cp scripts/queue.sh "$fake/scripts/queue.sh"
-for lib in queue.py forge.py; do
+for lib in queue.py forge.py fleet_platform.py; do
 	ln -s "$PWD/scripts/lib/$lib" "$fake/scripts/lib/$lib"
 done
 # And the project queue.sh forwards to, anchored the same way.
