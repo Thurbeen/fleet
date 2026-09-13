@@ -1,110 +1,121 @@
-"""The queue's records and directories, through the platform seam, on this OS."""
+"""The queue's records and directories, through the platform seam, on this OS.
+
+    uv run python -m unittest discover -s tests
+"""
 
 from __future__ import annotations
 
 import os
 import subprocess
 import sys
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
 
-import pytest
+from fleet.cli import LIB, load
 
-from conftest import LIB
-
+queue = load("queue.py")
+QUEUE = os.path.join(LIB, "queue.py")
 WINDOWS = os.name == "nt"
 
 
-def _queue(tmp_path, *args):
-    env = {
-        k: v for k, v in os.environ.items()
-        if not k.startswith(("FLEET_", "THURBOX_"))
-    }
-    settings = tmp_path / "settings"
-    settings.mkdir(exist_ok=True)
-    env.update(
-        FLEET_QUEUE_DIR=str(tmp_path / "queue"),
-        FLEET_RUNS_DIR=str(tmp_path / "runs"),
-        FLEET_PUBLISH_ROOT=str(settings),
-        FLEET_AGENT_ROOT=str(settings),
-        FLEET_GLYPH_ROOT=str(settings),
-        PYTHONUTF8="1",
-    )
-    return subprocess.run(
-        [sys.executable, str(LIB / "queue.py"), *args],
-        capture_output=True, text=True, env=env, timeout=120, cwd=tmp_path,
-    )
+class QueueRecords(unittest.TestCase):
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(tmp.cleanup)
+        self.tmp = Path(tmp.name)
+        settings = self.tmp / "settings"
+        settings.mkdir()
+        self.env = {
+            k: v for k, v in os.environ.items() if not k.startswith(("FLEET_", "THURBOX_"))
+        }
+        self.env.update(
+            FLEET_QUEUE_DIR=str(self.tmp / "queue"),
+            FLEET_RUNS_DIR=str(self.tmp / "runs"),
+            FLEET_PUBLISH_ROOT=str(settings),
+            FLEET_AGENT_ROOT=str(settings),
+            FLEET_GLYPH_ROOT=str(settings),
+            PYTHONUTF8="1",
+        )
+
+    def queue(self, *args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [sys.executable, QUEUE, *args],
+            capture_output=True, text=True, env=self.env, timeout=120, cwd=self.tmp,
+        )
+
+    def topic_with_a_task(self) -> str:
+        out = self.queue("topic", "add", "line-endings", "--title", "Line endings",
+                         "--prompt", "first line\nsecond line")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        out = self.queue("add", out.stdout.strip(), "lf-on-disk", "--title", "LF on disk",
+                         "--repo", str(self.tmp / "repo"), "--branch", "fix/lf-on-disk")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return out.stdout.strip()
+
+    def written(self) -> list[Path]:
+        return [p for d in ("queue", "runs") for p in (self.tmp / d).rglob("*") if p.is_file()]
+
+    def test_records_are_written_with_lf(self):
+        self.topic_with_a_task()
+        names = {p.name for p in self.written()}
+        self.assertLessEqual({"topic.yaml", "PROMPT.md", "task.yaml", "BRIEF.md"}, names)
+        crlf = [str(p.relative_to(self.tmp)) for p in self.written() if b"\r\n" in p.read_bytes()]
+        self.assertEqual(crlf, [])
+
+    def test_records_written_with_crlf_still_read(self):
+        ref = self.topic_with_a_task()
+        for path in self.written():
+            data = path.read_bytes().replace(b"\r\n", b"\n")
+            path.write_bytes(data.replace(b"\n", b"\r\n"))
+
+        for verb in (["list"], ["show", ref], ["check"]):
+            out = self.queue(*verb)
+            self.assertEqual(out.returncode, 0, f"{verb}: {out.stderr}")
+        self.assertIn("LF on disk", self.queue("show", ref).stdout)
+
+    def test_a_crlf_result_parses(self):
+        meta, body = queue.parse_result(
+            "---\r\noutcome: shipped\r\nartifact: https://example.com/pr/1\r\n---\r\nDone.\r\n"
+        )
+        self.assertEqual(meta, {"outcome": "shipped", "artifact": "https://example.com/pr/1"})
+        self.assertEqual(body, "Done.")
 
 
-def _topic_with_a_task(tmp_path) -> str:
-    out = _queue(
-        tmp_path, "topic", "add", "line-endings", "--title", "Line endings",
-        "--prompt", "first line\nsecond line",
-    )
-    assert out.returncode == 0, out.stderr
-    topic = out.stdout.strip()
-    out = _queue(
-        tmp_path, "add", topic, "lf-on-disk", "--title", "LF on disk",
-        "--repo", str(tmp_path / "repo"), "--branch", "fix/lf-on-disk",
-    )
-    assert out.returncode == 0, out.stderr
-    return out.stdout.strip()
+class QueueDirectories(unittest.TestCase):
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(tmp.cleanup)
+        self.tmp = tmp.name
+        patches = [
+            mock.patch.dict(os.environ),
+            mock.patch.object(queue, "thurbox_config", return_value={}),
+        ]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+        for name in ("THURBOX_CONFIG_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME"):
+            os.environ.pop(name, None)
+
+    def test_hosts_toml_fallback_follows_thurbox_config_dir(self):
+        os.environ["XDG_CONFIG_HOME"] = self.tmp
+        self.assertEqual(queue.hosts_file(), os.path.join(self.tmp, "thurbox", "hosts.toml"))
+
+    @unittest.skipUnless(WINDOWS, "the %APPDATA% branch")
+    def test_hosts_toml_fallback_is_under_appdata_on_windows(self):
+        os.environ["APPDATA"] = self.tmp
+        self.assertEqual(queue.hosts_file(), os.path.join(self.tmp, "thurbox", "hosts.toml"))
+
+    def test_fixer_worktrees_live_in_fleet_data_dir(self):
+        if WINDOWS:
+            os.environ["LOCALAPPDATA"] = self.tmp
+            expected = os.path.join(self.tmp, "fleet", "worktrees")
+        else:
+            os.environ["HOME"] = self.tmp
+            expected = os.path.join(self.tmp, ".local", "share", "fleet", "worktrees")
+        self.assertEqual(queue.fixer_worktrees_root(), expected)
 
 
-def _written(tmp_path):
-    return [
-        p for d in ("queue", "runs") for p in (tmp_path / d).rglob("*") if p.is_file()
-    ]
-
-
-def test_records_are_written_with_lf(tmp_path):
-    _topic_with_a_task(tmp_path)
-    names = {p.name for p in _written(tmp_path)}
-    assert {"topic.yaml", "PROMPT.md", "task.yaml", "BRIEF.md"} <= names
-    crlf = [str(p.relative_to(tmp_path)) for p in _written(tmp_path) if b"\r\n" in p.read_bytes()]
-    assert crlf == []
-
-
-def test_records_written_with_crlf_still_read(tmp_path):
-    ref = _topic_with_a_task(tmp_path)
-    for path in _written(tmp_path):
-        data = path.read_bytes().replace(b"\r\n", b"\n")
-        path.write_bytes(data.replace(b"\n", b"\r\n"))
-
-    for verb in (["list"], ["show", ref], ["check"]):
-        out = _queue(tmp_path, *verb)
-        assert out.returncode == 0, f"{verb}: {out.stderr}"
-    assert "LF on disk" in _queue(tmp_path, "show", ref).stdout
-
-
-def test_a_crlf_result_parses(queue_mod):
-    meta, body = queue_mod.parse_result(
-        "---\r\noutcome: shipped\r\nartifact: https://example.com/pr/1\r\n---\r\nDone.\r\n"
-    )
-    assert meta == {"outcome": "shipped", "artifact": "https://example.com/pr/1"}
-    assert body == "Done."
-
-
-def test_hosts_toml_fallback_follows_thurbox_config_dir(queue_mod, monkeypatch, tmp_path):
-    monkeypatch.setattr(queue_mod, "thurbox_config", lambda: {})
-    monkeypatch.delenv("THURBOX_CONFIG_DIR", raising=False)
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    assert queue_mod.hosts_file() == os.path.join(str(tmp_path), "thurbox", "hosts.toml")
-
-
-@pytest.mark.skipif(not WINDOWS, reason="the %APPDATA% branch")
-def test_hosts_toml_fallback_is_under_appdata_on_windows(queue_mod, monkeypatch, tmp_path):
-    monkeypatch.setattr(queue_mod, "thurbox_config", lambda: {})
-    monkeypatch.delenv("THURBOX_CONFIG_DIR", raising=False)
-    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
-    monkeypatch.setenv("APPDATA", str(tmp_path))
-    assert queue_mod.hosts_file() == os.path.join(str(tmp_path), "thurbox", "hosts.toml")
-
-
-def test_fixer_worktrees_live_in_fleet_data_dir(queue_mod, monkeypatch, tmp_path):
-    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
-    if WINDOWS:
-        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
-        expected = os.path.join(str(tmp_path), "fleet", "worktrees")
-    else:
-        monkeypatch.setenv("HOME", str(tmp_path))
-        expected = os.path.join(str(tmp_path), ".local", "share", "fleet", "worktrees")
-    assert queue_mod.fixer_worktrees_root() == expected
+if __name__ == "__main__":
+    unittest.main()
