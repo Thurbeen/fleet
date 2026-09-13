@@ -7304,6 +7304,89 @@ else
 	pass "nothing about github.com was asked through glab"
 fi
 
+# --- 23. a stuck task whose worker later shipped is read again ----------------
+#
+# Seen on 2026-09-13: a worker wrote `outcome: stuck` when its shell died
+# mid-pipeline, and `collect` recorded it. The pull request had in fact merged,
+# attested for its head, and the worker later rewrote result.md as `shipped`.
+# `collect` skipped every concluded task, so it never read that file again, and
+# `reap` kept the session forever. The only way out was editing task.yaml by
+# hand.
+#
+# A worker's `stuck` or `failed` is its own verdict, so the evidence that
+# overturns it is the same worker's file saying something else. Only a CHANGED
+# outcome is read — the same `stuck` rewritten is nothing new — and a `shipped`
+# still has to pass the publish check, so nothing closes on the word alone.
+
+stopic="$(aq2 topic add stuck-then-shipped --prompt 'a stuck task whose PR later merged can never close')"
+python3 - "$auto" <<'PY'
+import json
+import os
+import sys
+
+head = "1126" * 10
+body = "<!-- fleet-attestation:v1 %s -->\n\nFixes #1119." % json.dumps(
+    {"head_sha": head, "steps": [{"step": "push", "status": "completed"}]})
+doc = {"state": "MERGED", "headRefName": "fix/1119", "headRefOid": head, "body": body, "commits": []}
+json.dump(doc, open(os.path.join(sys.argv[1], "prs", "Thurbeen_thurbox_1126.json"), "w"))
+PY
+
+verdict_is() {
+	cat >"$aqdir/$stopic/$1/result.md" <<EOF
+---
+outcome: $2
+${3:+artifact: $3}
+---
+$4
+EOF
+}
+
+aq2 add "$stopic" fix-1119 --repo /tmp/repo-records --branch fix/1119 --number 01 \
+	--publish attested >/dev/null
+aq2 add "$stopic" still-unproven --repo /tmp/repo-records --branch feat/stale-open --number 02 \
+	--publish attested >/dev/null
+aq2 add "$stopic" failed-then-moot --repo /tmp/repo-records --branch fix/moot --number 03 \
+	--publish attested >/dev/null
+for t in 01-fix-1119 02-still-unproven 03-failed-then-moot; do
+	sid="23232323-0000-0000-0000-0000000000${t%%-*}"
+	aq2 attach "$stopic/$t" "$sid" >/dev/null
+	session_is "$sid" idle
+done
+: >"$deletions"
+
+verdict_is 01-fix-1119 stuck "" "My shell died mid-pipeline."
+verdict_is 02-still-unproven stuck "" "Could not get the pipeline green."
+verdict_is 03-failed-then-moot failed "" "The reproduction would not build."
+aq2 collect >/dev/null 2>&1
+expect "a worker's stuck is recorded as stuck" "state:       stuck" "$(aq2 show "$stopic/01-fix-1119" 2>&1)"
+refute "and its session is kept as the evidence" "23232323" "$(cat "$deletions")"
+
+# The same verdict, written again, is nothing new: no second conclusion.
+verdict_is 01-fix-1119 stuck "" "Still stuck, and saying so twice."
+out="$(aq2 collect 2>&1)"
+refute "a stuck result rewritten as stuck is not concluded again" "$stopic/01-fix-1119  stuck" "$out"
+
+# The worker recovers and says what really happened.
+verdict_is 01-fix-1119 shipped https://github.com/Thurbeen/thurbox/pull/1126 "It had merged after all."
+verdict_is 02-still-unproven shipped https://github.com/Thurbeen/fleet/pull/60 "Shipped, I think."
+verdict_is 03-failed-then-moot not-applicable "" "Upstream already fixed it."
+out="$(aq2 collect 2>&1)"
+
+s="$(aq2 show "$stopic/01-fix-1119" 2>&1)"
+expect "a stuck task whose worker later shipped a merged, attested PR is read again" \
+	"[publish verified: attested]" "$out"
+expect "and it lands, like any other shipped task" "state:       landed" "$s"
+expect "and reap releases the session it used to keep forever" \
+	"session delete 23232323-0000-0000-0000-000000000001 --force" "$(cat "$deletions")"
+
+s="$(aq2 show "$stopic/02-still-unproven" 2>&1)"
+expect "a stuck task rewritten as shipped with nothing proving it stays stuck" "state:       stuck" "$s"
+expect "and the lead is told the claim is unproven" "published:   unverified" "$s"
+refute "and its session is still the evidence" "23232323-0000-0000-0000-000000000002" "$(cat "$deletions")"
+
+expect "a failed task its worker later called not-applicable is read again, and lands" \
+	"state:       landed" "$(aq2 show "$stopic/03-failed-then-moot" 2>&1)"
+
 echo
 if [ "$failed" -eq 0 ]; then
 	printf '\033[32mqueue-selftest: every claim holds\033[0m\n'

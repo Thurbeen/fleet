@@ -197,9 +197,19 @@ OUTCOMES = {
 CONCLUDED_STATES = ("done", "landed", "stuck", "failed", "abandoned")
 
 # Concluded AND not on main. `sweep_landings` promotes a `done` task and only a
-# `done` task, so `landed` is unreachable from any of these: a blocker naming
-# one can never clear, and calling it "held by" describes a wait with no end.
+# `done` task, so `landed` is unreachable from any of these as they stand: a
+# blocker naming one does not clear, and calling it "held by" describes a wait
+# with no end.
 UNLANDABLE_STATES = ("stuck", "failed", "abandoned")
+
+# The two a WORKER's own verdict put there, so the same worker's file can take
+# them back. `collect` keeps reading their result.md and acts only when the
+# outcome in it CHANGED: a worker whose shell died wrote `stuck`, recovered,
+# and rewrote it `shipped` with a pull request that had merged all along. That
+# rewrite is new evidence, and a `shipped` still has to pass the publish check,
+# so the task stays where a human decides until something proves otherwise.
+# `abandoned` is not here: the forge said that, not a worker.
+REREAD_STATES = ("stuck", "failed")
 
 # Where each outcome a worker may write says the task should stand once the
 # forge has answered. `landed` is the merge; `abandoned` is the other answer to
@@ -3988,7 +3998,7 @@ def cmd_collect(args) -> int:
     artifacts = 0
     for task in sorted(q.tasks.values(), key=lambda t: t.ref):
         path = task.file("result.md")
-        if task.state in ("done", "landed", "stuck", "failed", "abandoned"):
+        if task.state in CONCLUDED_STATES and task.state not in REREAD_STATES:
             continue
 
         # The remote transport, and the whole of it. A worker on another machine
@@ -3997,7 +4007,7 @@ def cmd_collect(args) -> int:
         # and neither knows nor cares which machine wrote it. Nothing is closed
         # here: a result that could not be fetched leaves the task exactly as a
         # missing local one does.
-        if task.doc.get("host") and task.state == "dispatched":
+        if task.doc.get("host") and task.state in ("dispatched", *REREAD_STATES):
             note = pull_remote_result(task)
             if note:
                 print(f"    {task.ref}  {note}")
@@ -4006,6 +4016,8 @@ def cmd_collect(args) -> int:
             continue
         meta, body = parse_result(open(path).read())
         outcome = str(meta.get("outcome", "")).strip()
+        if task.state in REREAD_STATES and outcome == task.doc.get("outcome"):
+            continue  # the verdict it concluded on; nothing new to read
         if outcome not in OUTCOMES:
             print(
                 f"    {task.ref}: result.md has outcome {outcome!r}; expected one of "

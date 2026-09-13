@@ -580,6 +580,14 @@ merged it answered that; the stale one is kept on the record's publish block as
 `attestation`, a note and never a hold. Nothing about it loosens the shepherd's
 merge gate, which still merges no unattested pull request.
 
+**A worker's `stuck` or `failed` is not the last word the worker gets.**
+`collect` keeps reading those tasks' `result.md` and acts only when the outcome
+in it has CHANGED — a worker whose shell died mid-pipeline wrote `stuck`,
+recovered, and rewrote it `shipped` with a pull request that had merged all
+along. That rewrite is read like any first result: a `shipped` that the check
+proves closes, lands and is reaped; one it does not is held, still `stuck`, and
+you decide. The same verdict written again is nothing new and moves nothing.
+
 When a task is held open: read the artifact, then send that worker back to
 publish again and collect again. If you have read it yourself and judged it good
 as it stands, `collect --allow-unverified` closes it and records that you did.
@@ -719,7 +727,7 @@ So a task gets a state AFTER `done`:
 | `done` | the worker concluded; its change request is open, or its already-confirmed `push` commit is about to be promoted by this same `collect` run | **kept** — the cheap way to fix what review finds |
 | `landed` | the change request merged, the pushed commit reached the base branch, or there was never an artifact | released |
 | `abandoned` | the change request was closed unmerged | released; the work is NOT on main |
-| `stuck` / `failed` | the worker gave up | **kept** — that session is the evidence, and you decide |
+| `stuck` / `failed` | the worker gave up | **kept** — that session is the evidence, and you decide, unless the worker rewrites its `result.md` with an outcome that `collect` then proves (§5) |
 
 `landed` comes from asking the forge, never from a worker claiming it, so it works
 long after the session is gone. **Blockers clear on `landed`**, not on `done`
