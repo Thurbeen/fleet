@@ -12,7 +12,7 @@
 #   scripts/check.sh shell yaml          # only the named ones
 #   scripts/check.sh --fix markdown      # apply the fixes a check can apply
 #
-# Checks: shell, markdown, yaml, profiles, queue, reconcile, status, skills,
+# Checks: shell, markdown, yaml, profiles, queue, cli, reconcile, status, skills,
 # pane, voice, automerge, onboarding, install, sync, isolation. Only `markdown`
 # has a fixer; `--fix` is a no-op for the rest, so `scripts/check.sh --fix` is
 # always safe to run.
@@ -28,7 +28,7 @@
 # its own. `isolation` holds the line, by re-running the
 # checks that could leak in a poisoned copy of the tree under a hostile host.
 #
-# Requires: shellcheck, rumdl, python3 (with PyYAML), lua. A missing tool
+# Requires: shellcheck, rumdl, uv, python3 (with PyYAML), lua. A missing tool
 # fails the check rather than skipping it — a gate that silently passes when
 # its linter is absent is worse than no gate.
 
@@ -150,6 +150,7 @@ check_profiles() {
 # `fleet-status.sh --records` is where they are validated now.
 check_queue() {
 	need python3 queue || return
+	need uv queue || return
 
 	if ./scripts/queue-selftest.sh >/dev/null; then
 		ok "queue: ordering and wake claims hold"
@@ -213,6 +214,7 @@ check_sync() {
 # PATH. It also holds the third promise: the command reads and writes nothing.
 check_status() {
 	need python3 status || return
+	need uv status || return
 	need git status || return
 
 	if ./scripts/fleet-status-selftest.sh >/dev/null; then
@@ -221,6 +223,29 @@ check_status() {
 		# Re-run visibly: a failing claim is the whole message.
 		./scripts/fleet-status-selftest.sh
 		fail "status: scripts/fleet-status-selftest.sh"
+	fi
+}
+
+# The `fleet` command, and the two scripts that forward to it: queue.sh and
+# fleet-status.sh give exactly what `fleet` gives, and what it writes stays
+# UTF-8 on a cp1252 console. The lock comes first because the forwarders run
+# `--frozen`, which never notices a uv.lock that no longer matches
+# pyproject.toml. tests/test_cli.py is stdlib unittest, so it runs natively on
+# Windows too, where it skips the bash half.
+check_cli() {
+	need uv cli || return
+
+	if ! uv lock --check >/dev/null 2>&1; then
+		uv lock --check
+		fail "cli: uv.lock does not match pyproject.toml — run \`uv lock\`"
+		return
+	fi
+	if uv run --frozen --quiet python -m unittest discover -s tests >/dev/null 2>&1; then
+		ok "cli: the forwarders give what fleet gives, and fleet writes UTF-8 on any console"
+	else
+		# Re-run visibly: a failing claim is the whole message.
+		uv run --frozen --quiet python -m unittest discover -s tests
+		fail "cli: tests/test_cli.py"
 	fi
 }
 
@@ -757,7 +782,7 @@ for arg in "$@"; do
 done
 
 if [ ${#checks[@]} -eq 0 ]; then
-	checks=(shell markdown yaml profiles queue reconcile status skills pane voice automerge onboarding install sync isolation)
+	checks=(shell markdown yaml profiles queue cli reconcile status skills pane voice automerge onboarding install sync isolation)
 fi
 
 for c in "${checks[@]}"; do
@@ -767,6 +792,7 @@ for c in "${checks[@]}"; do
 	yaml) check_yaml ;;
 	profiles) check_profiles ;;
 	queue) check_queue ;;
+	cli) check_cli ;;
 	reconcile) check_reconcile ;;
 	status) check_status ;;
 	sync) check_sync ;;
@@ -778,7 +804,7 @@ for c in "${checks[@]}"; do
 	install) check_install ;;
 	isolation) check_isolation ;;
 	*)
-		printf 'error: unknown check %q (want: shell markdown yaml profiles queue reconcile status skills pane voice automerge onboarding install sync isolation)\n' "$c" >&2
+		printf 'error: unknown check %q (want: shell markdown yaml profiles queue cli reconcile status skills pane voice automerge onboarding install sync isolation)\n' "$c" >&2
 		exit 2
 		;;
 	esac

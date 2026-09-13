@@ -111,6 +111,11 @@
 # clone.
 __pycache__/
 
+# GENERATED. The project environment `uv run` creates on first use, holding
+# PyYAML at the uv.lock pin and the `fleet` launcher. One per checkout, and
+# rebuilt from the lock on the next run when it is deleted.
+/.venv/
+
 # MACHINE + WORKING STATE. The reconciler's runtime state: its supervisor's
 # pid, the heartbeat that says its loop is actually ticking, its log, the
 # advisory `nudge` flag a worker's Stop hook drops, and the `down` flag that

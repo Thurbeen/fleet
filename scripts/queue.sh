@@ -331,8 +331,9 @@
 #                          --parent so `session list --parent` enumerates
 #                          workers, and reap refuses to delete it
 #
-# Requires: python3 (with PyYAML) — the same dependency the rest of the gate
-# has. `dispatch`, `watch`, `reap` and `refuel` additionally need thurbox-cli,
+# Requires: uv. This script forwards to `uv run fleet queue` with the same
+# arguments, output and exit code, and uv brings the Python and the PyYAML
+# pinned in uv.lock. `dispatch`, `watch`, `reap` and `refuel` additionally need thurbox-cli,
 # and `collect`, `reap` and `shepherd` ask the FORGE about a change request —
 # whichever `scripts/lib/forge.py` has configured: `gh` for GitHub, `glab` for
 # GitLab — and `shepherd` needs git as well. `refuel` reads the account's
@@ -353,9 +354,12 @@ case "${1:-}" in
 	;;
 esac
 
-if ! command -v python3 >/dev/null; then
-	echo "error: python3 not found" >&2
+if ! command -v uv >/dev/null; then
+	echo "error: uv not found" >&2
 	exit 2
 fi
 
-exec python3 scripts/lib/queue.py "$@"
+# --frozen: run what uv.lock says and never rewrite it, because a lock file
+# changed by a reader is a dirty tree sync-checkout.sh then refuses to update.
+# --quiet: uv's own progress lines would be output `fleet queue` never printed.
+exec uv run --frozen --quiet fleet queue "$@"

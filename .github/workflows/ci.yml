@@ -66,6 +66,12 @@ jobs:
               - 'scripts/queue.sh'
               - 'scripts/queue-selftest.sh'
               - 'scripts/lib/queue.py'
+              # The `fleet` command both forwarders run, and its test.
+              - 'scripts/fleet-status.sh'
+              - 'fleet/**'
+              - 'tests/**'
+              - 'pyproject.toml'
+              - 'uv.lock'
               - 'scripts/check.sh'
               - '.github/workflows/ci.yml'
             reconcile:
@@ -126,14 +132,17 @@ jobs:
   # all at once, that file overlap does NOT serialize, that a turn ending is not
   # a task finishing. Those are easy to invert by accident and expensive to
   # notice in a real run.
+  # `cli` rides along: the forwarders and the `fleet` command they run.
   queue:
     name: Task queue
     needs: changes
     if: needs.changes.outputs.queue == 'true'
-    runs-on: ubuntu-latest # PyYAML is preinstalled on the runner
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
-      - run: ./scripts/check.sh queue
+      # queue.sh forwards to `uv run fleet queue`; uv brings PyYAML from uv.lock.
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+      - run: ./scripts/check.sh queue cli
 
   # The reconciler's lifecycle, and a job rather than an assertion because it
   # starts a real supervised loop under setsid and watches it tick. It also
@@ -223,6 +232,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      # It re-runs queue.sh and fleet-status.sh, which forward to `uv run fleet`.
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
       - run: ./scripts/check.sh isolation
 
   # Single required status check. Every job feeds this gate; a branch ruleset

@@ -11,7 +11,7 @@
   "osvVulnerabilityAlerts": true,
   "packageRules": [
     {
-      "description": "The only dependency surface here is CI's actions, pinned by SHA with the version in a trailing comment. Keep them pinned to a digest rather than letting an update reintroduce a tag reference.",
+      "description": "CI's actions, pinned by SHA with the version in a trailing comment. Keep them pinned to a digest rather than letting an update reintroduce a tag reference.",
       "matchManagers": [
         "github-actions"
       ],

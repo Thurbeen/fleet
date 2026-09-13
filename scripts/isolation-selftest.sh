@@ -87,6 +87,13 @@ tmp="$(cd "$tmp" && pwd -P)"
 # `pip --user` lives under the real HOME, and a hostile HOME must not make it
 # vanish: that failure would be about this machine's packaging, not a leak.
 PYBASE="${PYTHONUSERBASE:-$(python3 -m site --user-base 2>/dev/null)}"
+# The same for uv's cache and Pythons, read here under the real HOME and
+# exported so every command below inherits them: scripts/queue.sh runs through
+# `uv run`, and the poisoned copy is a tree uv has never built an environment for.
+if command -v uv >/dev/null; then
+	UV_CACHE_DIR="${UV_CACHE_DIR:-$(uv cache dir 2>/dev/null)}" && export UV_CACHE_DIR
+	UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR:-$(uv python dir 2>/dev/null)}" && export UV_PYTHON_INSTALL_DIR
+fi
 
 # --- the poisoned copy --------------------------------------------------------
 
