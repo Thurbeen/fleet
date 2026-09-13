@@ -145,8 +145,8 @@
 # Usage: scripts/queue-selftest.sh        (also: ./scripts/check.sh queue)
 #
 # Requires: python3 (with PyYAML), plus git and jq for test 9 — `gh` and
-# `thurbox-cli` are stubbed on PATH there, but session-trust.sh, which test 9
-# drives for real, reads their output with jq.
+# `thurbox-cli` are stubbed on PATH there, and the trust step test 9 drives for
+# real is scripts/lib/session_trust.py reading the stub's output.
 
 set -uo pipefail
 
@@ -1054,7 +1054,15 @@ capqueue attach "$capt/01-task-a" "$sesa" >/dev/null
 	capline 103 "$sesa" "working"
 } >"$capev"
 
-export FLEET_QUEUE_WATCH_CMD="FLEET_QUEUE_WATCH_CMD='cat $capseed' FLEET_QUEUE_DIR='$capq' $QUEUE attach '$capt/02-task-b' $sesb >/dev/null 2>&1; cat $capev"
+# The override is an argv list and not a shell line (§21b), so a stream command
+# that does two things is a script of its own.
+cat >"$captmp/attach-then-read.sh" <<SH
+#!/bin/sh
+FLEET_QUEUE_WATCH_CMD='cat $capseed' FLEET_QUEUE_DIR='$capq' $QUEUE attach '$capt/02-task-b' $sesb >/dev/null 2>&1
+cat '$capev'
+SH
+chmod +x "$captmp/attach-then-read.sh"
+export FLEET_QUEUE_WATCH_CMD="$captmp/attach-then-read.sh"
 capqueue watch --for-secs 0 >/dev/null 2>&1
 export FLEET_QUEUE_WATCH_CMD="cat $capev"
 capqueue watch --for-secs 0 >/dev/null 2>&1
@@ -7019,6 +7027,92 @@ fi
 count_is "each with its own keys, in the order they appeared" \
 	"$(tr '\n' ';' <"$tmp/keys.log")" \
 	"session key $both down;session key $both enter;session key $both enter;" "$out"
+
+# --- 21b. dispatch runs with no bash on the machine --------------------------
+#
+# `dispatch` used to shell out to two bash scripts, `session-flags.sh` for the
+# task's profile and `session-trust.sh` for the dialog, and on a machine with no
+# bash each broke its own way. The profile was SWALLOWED: `profile_flags`
+# caught the failure and returned no flags, so the worker started without its
+# settings and nothing said so. The trust step failed AFTER `session create`,
+# leaving a session that was never sent its brief. On native Windows the first
+# is a swallowed `WinError 193` and the second an uncaught one. Both run
+# in-process now, and so does the watch override that used to be `sh -c`.
+#
+# Driven through queue.py itself with neither `bash` nor `sh` on PATH —
+# queue.sh is a bash script, so it cannot be the entry point here — against the
+# key-answering stub above, behind a dialog that must be answered for the send
+# to go at all.
+
+nobash="$tmp/no-bash"
+mkdir -p "$nobash"
+for t in python3 git cat mv rm; do ln -sf "$(command -v "$t")" "$nobash/$t"; done
+py="$(command -v python3)"
+nobash_path="$t21bin:$tbxbin:$ghbin:$sshbin:$noglab:$nobash"
+if env PATH="$nobash_path" "$py" -c \
+	'import shutil, sys; sys.exit(bool(shutil.which("bash") or shutil.which("sh")))'; then
+	pass "the PATH this section runs under has neither bash nor sh on it"
+else
+	fail "the PATH this section runs under has neither bash nor sh on it" "$nobash_path"
+fi
+nbq() { env PATH="$nobash_path" "$py" scripts/lib/queue.py "$@" 2>&1; }
+
+queue_before_21b="$FLEET_QUEUE_DIR"
+next_before_21b="$(cat "$tmp/next-session.json" 2>/dev/null)"
+export FLEET_QUEUE_DIR="$tmp/queue-nobash"
+nbtopic="$(env PATH="$nobash_path" "$py" scripts/lib/queue.py topic add no-bash \
+	--title 'Dispatch with no bash' --prompt 'dispatch must not call bash' 2>/dev/null)"
+nbq add "$nbtopic" profiled --title 'Profiled' --repo /tmp/repo-nobash \
+	--branch fix/nobash --number 01 --profile sweep >/dev/null
+printf 'Do the thing without bash.\n' >"$FLEET_QUEUE_DIR/$nbtopic/01-profiled/BRIEF.md"
+
+nbsid=d1a10900-0000-0000-0000-00000000000b
+printf '{"id":"%s","created":true}\n' "$nbsid" >"$tmp/next-session.json"
+behind_dialog "$nbsid"
+printf '%s\n' "$folder_dialog" >"$panes/$nbsid.txt"
+: >"$tmp/keys.log"
+out="$(
+	unset FLEET_QUEUE_WATCH_CMD
+	nbq dispatch
+)"
+refute "dispatch with no bash does not crash" "Traceback" "$out"
+expect "the task's profile reaches session create without bash" \
+	"--env MAX_THINKING_TOKENS=8000" "$(grep -F -- '--repo-path /tmp/repo-nobash' "$creates" | tail -1)"
+count_is "the trust dialog is answered in-process, down and then enter" \
+	"$(tr '\n' ';' <"$tmp/keys.log")" "session key $nbsid down;session key $nbsid enter;" "$out"
+expect "and only then is the brief sent" "session send $nbsid Read" "$(cat "$sends")"
+refute "so the session is not left unprompted" "NOT PROMPTED" "$out"
+
+# The watch override is an argv list: with no `sh` to hand a line to, it still
+# runs, and what it read is folded into the task it belongs to.
+nbev="$tmp/events-nobash.jsonl"
+printf '{"seq":900,"at":1788793000000,"session":"%s","event":"state","from_state":null,"to_state":"working","state":"working","reason":"hook"}\n' \
+	"$nbsid" >"$nbev"
+out="$(FLEET_QUEUE_WATCH_CMD="cat $nbev" nbq watch --for-secs 0)"
+refute "the watch override runs with no sh to run it" "could not read the event stream" "$out"
+count_is "and folds what it read into the task" \
+	"$(capseqs "$FLEET_QUEUE_DIR/$nbtopic/01-profiled/progress.jsonl")" "900" "$out"
+
+# The trust step on its own, the way a skill or a driver calls it: the Python
+# answers a dialog with no bash either, and its --json shape is unchanged.
+nbcli=d1a10900-0000-0000-0000-00000000000c
+behind_dialog "$nbcli"
+printf '%s\n' "$imports_dialog" >"$panes/$nbcli.txt"
+out="$(env PATH="$nobash_path" "$py" scripts/lib/session_trust.py "$nbcli" --timeout 5 --json 2>&1)"
+expect "session_trust.py answers a dialog with no bash on PATH" '"outcome":"answered"' "$out"
+expect "and says which session and agent it answered for" \
+	"{\"session\":\"$nbcli\",\"agent\":\"claude\"" "$out"
+expect "session-trust.sh keeps its CLI, --help and all" "Exit codes" \
+	"$(./scripts/session-trust.sh --help 2>&1)"
+expect "and still exits 2 on a session it cannot read" "2" \
+	"$(./scripts/session-trust.sh no-such-session >/dev/null 2>&1; echo $?)"
+
+export FLEET_QUEUE_DIR="$queue_before_21b"
+if [ -n "$next_before_21b" ]; then
+	printf '%s\n' "$next_before_21b" >"$tmp/next-session.json"
+else
+	rm -f "$tmp/next-session.json"
+fi
 
 # --- 22. a finished task closes itself, without --allow-unverified -----------
 #

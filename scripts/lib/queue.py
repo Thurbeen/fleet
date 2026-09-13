@@ -104,12 +104,17 @@ def _load_forge():
     shares ONE registry, and therefore one answer about which forges are
     configured.
     """
-    if "fleet_forge" in sys.modules:
-        return sys.modules["fleet_forge"]
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "forge.py")
-    spec = importlib.util.spec_from_file_location("fleet_forge", path)
+    return _load_lib("forge.py", "fleet_forge")
+
+
+def _load_lib(filename: str, name: str):
+    """A module beside this file, loaded once under `name` — see `_load_forge`."""
+    if name in sys.modules:
+        return sys.modules[name]
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
+    spec = importlib.util.spec_from_file_location(name, path)
     mod = importlib.util.module_from_spec(spec)
-    sys.modules["fleet_forge"] = mod
+    sys.modules[name] = mod
     spec.loader.exec_module(mod)
     return mod
 
@@ -2999,16 +3004,20 @@ def read_text(path: str) -> str:
 
 
 def profile_flags(profile: str) -> list:
-    """The agent settings for this task, from orchestration/session-profiles.yaml."""
-    try:
-        out = subprocess.run(
-            ["./scripts/session-flags.sh", profile],
-            capture_output=True,
-            check=True,
-        ).stdout
-    except (OSError, subprocess.CalledProcessError):
+    """The agent settings for this task, from orchestration/session-profiles.yaml.
+
+    In-process, and not through `scripts/session-flags.sh`: on a machine with
+    no bash that call failed, the failure was swallowed here, and the worker
+    started without its profile with nothing said (queue-selftest §21b). A
+    profile that is missing or breaks a rule still renders no flags.
+    """
+    profiles_mod = _load_lib("session_profiles.py", "fleet_session_profiles")
+    errors: list[str] = []
+    path = os.path.join(checkout_root(), "orchestration", "session-profiles.yaml")
+    profiles = profiles_mod.load_profiles(path, errors)
+    if profiles is None or errors or profile not in profiles:
         return []
-    return [f for f in out.decode().split("\0") if f]
+    return profiles_mod.render(profiles[profile])
 
 
 def brief_target(task: Task) -> str:
@@ -3400,7 +3409,9 @@ def watch_command(extra: list) -> list:
     """The stream command, real or the selftest's recorded-stream override."""
     override = os.environ.get("FLEET_QUEUE_WATCH_CMD")
     if override:
-        return ["sh", "-c", override]
+        # Split into argv with shell quoting and nothing else of a shell: there
+        # is no `sh` to hand a line to on native Windows.
+        return shlex.split(override)
     return ["thurbox-cli", "watch", "--json"] + extra
 
 
@@ -5899,14 +5910,16 @@ def branch_checkout(repo: str, branch: str, slug: str) -> tuple[str, str]:
 
 
 def trust_and_send(session: str, text: str, timeout: int = 20) -> tuple[bool, str]:
-    """Answer the trust dialog, then type. The order is the whole point (§1b)."""
-    trust = subprocess.run(
-        ["./scripts/session-trust.sh", session, "--timeout", str(timeout)],
-        capture_output=True,
-        check=False,
-    )
-    report = (trust.stdout + trust.stderr).decode().strip()
-    if trust.returncode != 0:
+    """Answer the trust dialog, then type. The order is the whole point (§1b).
+
+    The dialog is answered in-process by `session_trust.py`, the module
+    `scripts/session-trust.sh` forwards to: a machine with no bash could not
+    run the script, and dispatch then failed after `session create`, leaving a
+    session that was never sent its brief.
+    """
+    trust = _load_lib("session_trust.py", "fleet_session_trust")
+    code, report = trust.answer_dialogs(session, timeout)
+    if code != 0:
         return False, report
     # The returncode is READ. It used to be thrown away, so a send into a
     # session that had gone away returned `True` and every caller reported a
