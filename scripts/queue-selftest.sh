@@ -207,6 +207,9 @@ export FLEET_QUEUE_DIR="$tmp/queue"
 # Run logs go to a throwaway directory too (test 12). Without this, every run
 # of this file would scaffold logs into the operator's own orchestration/runs/.
 export FLEET_RUNS_DIR="$tmp/runs"
+# A shepherd fixer's worktree lives in fleet's own data directory, OUTSIDE any
+# checkout (test 9a). Pointed here so a run never adds one to the operator's.
+export XDG_DATA_HOME="$tmp/xdg"
 
 # --- the auto-merge allowlist, which is a FILE and not a literal -------------
 #
@@ -2279,6 +2282,9 @@ print(json.dumps(docs))
 	case "$*" in
 	*"-q .body") python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["body"])' \
 		"$SHEP/gh/$n.json" ;;
+	# The landing sweep's question, which 10e drives through this stub.
+	*"-q .state") python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["state"])' \
+		"$SHEP/gh/$n.json" ;;
 	*) cat "$SHEP/gh/$n.json" ;;
 	esac
 	;;
@@ -2500,6 +2506,22 @@ expect "the fixer is spawned on a checkout of the branch that already exists" \
 	"--repo-path" "$created"
 refute "and never asks thurbox to create a branch that is already there" \
 	"--worktree-branch" "$created"
+
+# WHERE that checkout goes. It used to be cut under the queue root, which is
+# inside the control-plane checkout, and Claude Code walks parent directories
+# for CLAUDE.md: the fixer found the lead's operating guide, stopped on its
+# external-imports dialog, and sat unprompted until a person pressed Enter.
+fixer_wt="$(git -C "$srepo" worktree list --porcelain | awk '
+	/^worktree / { p = substr($0, 10) }
+	$0 == "branch refs/heads/fix/conflicting" { print p }')"
+case "$fixer_wt" in
+"" | "$FLEET_QUEUE_DIR"/* | "$PWD"/*)
+	fail "a fixer's worktree lands outside the queue root and the checkout" \
+		"worktree: ${fixer_wt:-none}${nl}queue root: $FLEET_QUEUE_DIR${nl}checkout: $PWD"
+	;;
+*) pass "a fixer's worktree lands outside the queue root and the checkout" ;;
+esac
+expect "in fleet's own data directory" "$XDG_DATA_HOME/fleet/worktrees/" "$fixer_wt"
 if git -C "$srepo" worktree list | grep -q 'fix/conflicting'; then
 	pass "the existing branch is checked out as a worktree, not renamed aside"
 else
@@ -3050,11 +3072,45 @@ expect "and the landing sweep overwrites it with the merge" \
 expect "a pull request closed unmerged says so in the same place" \
 	"published:   closed" "$(lq show landings/02-closed-pr 2>&1)"
 
+# (e) A landed task's fixer checkout is taken back. git cut it, not thurbox, so
+#     `session delete` never removes it — observed 2026-09-13, reporting
+#     `removed_worktrees: []` for one the lead then found under the queue root
+#     and deleted by hand. 01's is where fixers go now; 02's is cut where they
+#     used to go, the kind still on disk from before the move.
+legacy_wt="$FLEET_QUEUE_DIR/.worktrees/${stopic}__02-green"
+git -C "$srepo" worktree add -q "$legacy_wt" fix/green
+python3 - "$shep/gh" <<'PY'
+import json
+import sys
+
+for n in (101, 102):
+    path = f"{sys.argv[1]}/{n}.json"
+    doc = json.load(open(path))
+    doc["state"] = "MERGED"
+    json.dump(doc, open(path, "w"))
+PY
+out="$(env PATH="$shep/bin:$base_path" $QUEUE reap 2>&1)"
+expect "a task whose pull request merged has landed" "landed" \
+	"$($QUEUE show "$stopic/01-conflicting" 2>&1)"
+for wt in "$XDG_DATA_HOME/fleet/worktrees/${stopic}__01-conflicting" "$legacy_wt"; do
+	if [ -e "$wt" ] || git -C "$srepo" worktree list | grep -qF "$wt"; then
+		fail "reap takes back a landed task's fixer checkout: $wt" \
+			"$out$nl$(git -C "$srepo" worktree list)"
+	else
+		pass "reap takes back a landed task's fixer checkout: ${wt#"$tmp"/}"
+	fi
+done
+if [ -e "$XDG_DATA_HOME/fleet/worktrees/${stopic}__03-skipped" ]; then
+	pass "and leaves the checkout of a task that has not landed"
+else
+	fail "and leaves the checkout of a task that has not landed" "$out"
+fi
+
 # The worktrees the fixers got are real; take them back off the test repo so
 # the temp directory can be removed without leaving stale registrations.
 for slug in 01-conflicting 03-skipped 07-gone 08-second 09-plain-pr; do
 	git -C "$srepo" worktree remove --force \
-		"$FLEET_QUEUE_DIR/.worktrees/${stopic}__${slug}" 2>/dev/null
+		"$XDG_DATA_HOME/fleet/worktrees/${stopic}__${slug}" 2>/dev/null
 done
 
 # --- 11. a task can name a HOST, and a local task does not change ------------
@@ -6313,12 +6369,12 @@ expect "whose session is still the first one" "$nsession" \
 # The fixer above got a real worktree; take it back off the test repo, as
 # section 13 does with its own.
 git -C "$glrepo" worktree remove --force \
-	"$tmp/queue-gitlab/.worktrees/${gltopic}__02-conflicting" 2>/dev/null
+	"$XDG_DATA_HOME/fleet/worktrees/${gltopic}__02-conflicting" 2>/dev/null
 
 # The fixer above got a real worktree; take it back off the test repo so the
 # temp directory can be removed without leaving a stale registration.
 git -C "$frepo" worktree remove --force \
-	"$tmp/queue-fake/.worktrees/${ftopic}__02-conflicting" 2>/dev/null
+	"$XDG_DATA_HOME/fleet/worktrees/${ftopic}__02-conflicting" 2>/dev/null
 
 # --- 20. a wait on a CONDITION: recordable, visible, and cleared only by hand -
 #
@@ -6571,6 +6627,99 @@ plan="$($QUEUE plan 2>&1)"
 expect "and the task returns to the ready set" "01-vm-identity" "$plan"
 expect "which is now two" "ready: 2" "$plan"
 refute "with nothing left holding it" "$AZ" "$plan"
+
+# --- 21. every dialog in front of the agent is answered before the send ------
+#
+# The defect, measured. On 2026-09-12 a shepherd fixer started under a
+# directory whose CLAUDE.md imports a file outside it, and Claude Code opened
+# this BEFORE anything else. `session-trust.sh` knew only the folder-trust
+# dialog, saw nothing it recognised, typed nothing, and the fixer sat
+# unprompted until a person pressed Enter. A worker started anywhere under a
+# repo with an external import meets the same dialog.
+#
+# The answer is the DEFAULT, `No`, and it is a bare Enter: `Yes` would load a
+# guide written for someone else into the worker. Driven for real against the
+# stub's pane — which is what "confirm it is there, then confirm it is gone"
+# needs — with the agent not yet reporting, as it is behind a modal dialog.
+
+imports_dialog='Allow external CLAUDE.md file imports?
+
+  ❯ No, disable external imports
+    Yes, allow external imports
+
+Enter to confirm · Esc to cancel'
+folder_dialog='Quick safety check: Is this a project you created or one you trust?
+
+  ❯ No, exit
+    Yes, I trust this folder
+
+Enter to confirm · Esc to cancel'
+
+behind_dialog() {
+	printf '{"id":"%s","name":"worker %s","state":"unreported","agent":"claude","hook_reported":false}\n' \
+		"$1" "$1" >"$sessions/$1.json"
+}
+
+# A `thurbox-cli` of this section's own, layered in front of the shared one:
+# every OTHER command still goes to the real stub, but `session key` here
+# actually answers the pane, closing whatever dialog is shown and revealing
+# the one queued behind it (`<id>.next.txt`), if any. Scoped to this section
+# and not folded into the shared stub, because §11(j) drives session-trust.sh
+# against a dialog that must stay exactly as written — that is the claim it
+# tests — and a shared stub that closes dialogs on Enter would make it lie.
+t21bin="$tmp/tbx-bin-21"
+mkdir -p "$t21bin"
+cat >"$t21bin/thurbox-cli" <<SH
+#!/bin/sh
+if [ "\$1 \$2" = "session key" ]; then
+	echo "\$*" >>"$tmp/keys.log"
+	if [ "\$4" = enter ] && [ -f "$panes/\$3.txt" ]; then
+		if [ -f "$panes/\$3.next.txt" ]; then
+			mv "$panes/\$3.next.txt" "$panes/\$3.txt"
+		else
+			rm -f "$panes/\$3.txt"
+		fi
+	fi
+	exit 0
+fi
+exec "$tbxbin/thurbox-cli" "\$@"
+SH
+chmod +x "$t21bin/thurbox-cli"
+trust() { env PATH="$t21bin:$base_path" ./scripts/session-trust.sh "$@" 2>&1; }
+
+imp=d1a10900-0000-0000-0000-000000000001
+behind_dialog "$imp"
+printf '%s\n' "$imports_dialog" >"$panes/$imp.txt"
+: >"$tmp/keys.log"
+if out="$(trust "$imp" --timeout 5)"; then
+	pass "the external-imports dialog is a gate session-trust.sh answers"
+else
+	fail "the external-imports dialog is a gate session-trust.sh answers" "$out"
+fi
+count_is "answered with its default, one bare Enter and nothing else" \
+	"$(cat "$tmp/keys.log")" "session key $imp enter" "$out"
+if [ -f "$panes/$imp.txt" ]; then
+	fail "and the dialog is gone before anything could be sent" "$(cat "$panes/$imp.txt")"
+else
+	pass "and the dialog is gone before anything could be sent"
+fi
+
+# Both at once, which is what a fresh path under such a repo shows: folder
+# trust first, then imports behind it. Answering the first and returning would
+# hand the send to the second.
+both=d1a10900-0000-0000-0000-000000000002
+behind_dialog "$both"
+printf '%s\n' "$folder_dialog" >"$panes/$both.txt"
+printf '%s\n' "$imports_dialog" >"$panes/$both.next.txt"
+: >"$tmp/keys.log"
+if out="$(trust "$both" --timeout 5)"; then
+	pass "a dialog queued behind the folder-trust one is answered too"
+else
+	fail "a dialog queued behind the folder-trust one is answered too" "$out"
+fi
+count_is "each with its own keys, in the order they appeared" \
+	"$(tr '\n' ';' <"$tmp/keys.log")" \
+	"session key $both down;session key $both enter;session key $both enter;" "$out"
 
 echo
 if [ "$failed" -eq 0 ]; then

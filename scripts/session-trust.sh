@@ -21,11 +21,12 @@
 # stray instruction at worst. So this script never sends unless it can SEE the
 # dialog, and never reports success unless it can see the dialog is gone.
 #
-#     confirm  the pane shows this agent's trust dialog
-#     answer   the keys that ACCEPT it, which are not the same per agent
-#     confirm  the dialog is gone and the agent is up
+#     confirm  the pane shows one of this agent's dialogs
+#     answer   the keys for THAT dialog, which are not the same per agent
+#     confirm  the dialog is gone — and answer the next one if another
+#              comes up behind it
 #
-# and if either confirmation fails it sends nothing and says so. A session
+# and if either confirmation fails it sends nothing more and says so. A session
 # waiting on a dialog is visible and fixable; a session that has been typed
 # into randomly is neither.
 #
@@ -50,7 +51,9 @@
 # PER-AGENT, and the differences are real (see the table in the code):
 #
 #   claude          a dialog whose default selection is "No, exit". A bare
-#                   Enter DISMISSES it. Down, then Enter.
+#                   Enter DISMISSES it. Down, then Enter. Under a directory
+#                   whose CLAUDE.md imports a file outside it, a second dialog
+#                   follows, and ITS default — No — is the answer. Enter.
 #   codex           a dialog; Enter accepts. Persists per repo root, so later
 #                   worktrees of the same project never show it.
 #   pi, pi-signed   a dialog; Enter accepts. Persists per path.
@@ -69,10 +72,10 @@
 #   scripts/session-trust.sh <session-uuid-or-name> [--timeout SECS] [--json]
 #
 # Exit codes, so a caller can decide without parsing prose:
-#   0  the pane is ready for a prompt — a dialog was answered, or there was
+#   0  the pane is ready for a prompt — every dialog was answered, or there was
 #      none and the agent is up
 #   2  usage, or the session could not be read
-#   3  could NOT confirm. Nothing was sent. Do not send a prompt either.
+#   3  could NOT confirm. Nothing more was sent. Do not send a prompt either.
 #
 # Requires: thurbox-cli, jq.
 
@@ -151,12 +154,17 @@ agent="$(jq -r '.detected_agent // .reports_as // .agent // ""' <<<"$info")"
 
 # --- the per-agent table -----------------------------------------------------
 #
-# `signature` is an extended regex matched case-insensitively against the pane.
-# `keys` is the space-separated key sequence that ACCEPTS, in order.
-# An empty `signature` means this agent has no dialog to answer.
+# A GATE is one dialog: a signature — an extended regex matched
+# case-insensitively against the pane — and the space-separated key sequence
+# that answers it, in order. An agent can show more than one, one after
+# another. An agent with no gate has no dialog to answer.
 
-signature=""
-keys=""
+sigs=()
+keyseqs=()
+gate() {
+	sigs+=("$1")
+	keyseqs+=("$2")
+}
 flag_only=""
 
 case "$agent" in
@@ -170,20 +178,31 @@ claude)
 	#
 	# Matched on the accepting option's own label, which is specific enough that
 	# ordinary agent output cannot produce it by accident.
-	signature='yes, i trust this folder|quick safety check: is this a project you created'
+	#
 	# THE TRAP, and it is right there in the capture above: the default
 	# selection is "No, exit". A bare Enter DISMISSES the dialog and the agent
 	# exits. Move the selection down to the accepting option first. This is the
-	# one agent where the obvious answer is the wrong one.
-	keys="down enter"
+	# one dialog where the obvious answer is the wrong one.
+	gate 'yes, i trust this folder|quick safety check: is this a project you created' \
+		"down enter"
+	# Observed live on Claude Code, 2026-09-12, on a shepherd fixer started
+	# under a directory whose CLAUDE.md imports a file outside it — shown
+	# before anything else:
+	#
+	#     Allow external CLAUDE.md file imports?
+	#     ❯ No, disable external imports
+	#       Yes, allow external imports
+	#
+	# Answered with its DEFAULT, a bare Enter. `Yes` would load a guide written
+	# for someone else — the lead's, in the case that found it — into a worker.
+	gate 'allow external claude\.md file imports|no, disable external imports' \
+		"enter"
 	;;
 codex)
-	signature='do you trust the contents of this directory|do you trust this directory'
-	keys="enter"
+	gate 'do you trust the contents of this directory|do you trust this directory' "enter"
 	;;
 pi | pi-signed)
-	signature='trust this project|do you trust'
-	keys="enter"
+	gate 'trust this project|do you trust' "enter"
 	;;
 grok | kimi)
 	# No dialog when launched inside a git repo root, which a thurbox worktree
@@ -204,6 +223,8 @@ cursor | muse)
 	# them this still refuses rather than guessing a keystroke: a bare Enter
 	# into Claude Code's dialog exits the agent, and an invented answer would
 	# do that to somebody's.
+	signature=""
+	keys=""
 	agent_root="${FLEET_AGENT_ROOT:-$(dirname "$here")}"
 	agent_conf="$agent_root/orchestration/agent.conf"
 	[ -f "$agent_conf" ] || agent_conf="$agent_root/orchestration/agent.example.conf"
@@ -214,8 +235,7 @@ cursor | muse)
 	if [ "$keys" = none ]; then
 		# The operator says this agent shows no dialog. Nothing to answer;
 		# it is still confirmed as up below.
-		signature=""
-		keys=""
+		:
 	elif [ -z "$signature" ]; then
 		say "no trust gate is known for '$agent'; sending nothing. Teach fleet
              one with TRUST_SIGNATURE and TRUST_KEYS in
@@ -223,7 +243,7 @@ cursor | muse)
              $here/session-trust.sh" unknown-agent
 		exit 3
 	else
-		keys="${keys:-enter}"
+		gate "$signature" "${keys:-enter}"
 	fi
 	;;
 esac
@@ -236,7 +256,7 @@ if [ -n "$flag_only" ]; then
 	exit 3
 fi
 
-# --- watch for the dialog ----------------------------------------------------
+# --- reading the pane --------------------------------------------------------
 
 # `--json` and `.output`, not the plain capture: the human format wraps the
 # pane in metadata lines, and a signature could in principle match one of
@@ -248,11 +268,23 @@ fi
 # so a signature spelled with spaces never matched there and the worker sat on
 # its dialog unprompted. Stripping both sides changes nothing a tmux pane
 # matched, and it also survives a dialog wrapped at the pane's width.
-pane_matches() {
-	[ -n "$signature" ] || return 1
+pane() {
 	thurbox-cli session capture "$uuid" --lines 60 --json 2>/dev/null |
-		jq -r '.output // ""' | tr -d '[:space:]' |
-		grep -qiE -- "$(printf %s "$signature" | tr -d '[:space:]')"
+		jq -r '.output // ""' | tr -d '[:space:]'
+}
+
+# The index of the gate the pane shows right now, if any.
+gate_on_pane() {
+	local text i
+	[ "${#sigs[@]}" -gt 0 ] || return 1
+	text="$(pane)"
+	for i in "${!sigs[@]}"; do
+		if grep -qiE -- "$(printf %s "${sigs[$i]}" | tr -d '[:space:]')" <<<"$text"; then
+			echo "$i"
+			return 0
+		fi
+	done
+	return 1
 }
 
 # An agent whose hooks have fired is running its own loop, which is proof there
@@ -262,76 +294,96 @@ agent_reported() {
 		jq -e '.hook_reported == true' >/dev/null
 }
 
-deadline=$((SECONDS + timeout_secs))
-saw_dialog=0
-while [ "$SECONDS" -lt "$deadline" ]; do
-	if pane_matches; then
-		saw_dialog=1
-		break
-	fi
-	if agent_reported; then
-		say "no dialog: $agent is already reporting; nothing sent" ready
-		exit 0
-	fi
-	sleep 1
-done
-
-if [ "$saw_dialog" -eq 0 ]; then
-	if [ -z "$signature" ]; then
-		say "$agent shows no trust dialog in a git worktree; nothing sent" ready
-		exit 0
-	fi
-	say "no trust dialog seen in ${timeout_secs}s and $agent has not reported.
-             Nothing was sent. Look at the pane before prompting it:
-               thurbox-cli session capture $uuid" unconfirmed
-	exit 3
-fi
-
-# --- answer it ---------------------------------------------------------------
-
-# WHERE THE SELECTOR ALREADY IS, for claude, and it outranks the table. The
-# dialog above defaults to "No, exit"; the one Claude Code 2.1.247 draws on
-# windows-hp (2026-09-12) is numbered and defaults to the other option:
-#
-#     ❯ 1. Yes, I trust this folder
-#       2. No, exit
-#
-# `down enter` there selects "No, exit" and the agent exits — observed, not
-# supposed. So when the selector is already on the accepting option, Enter
-# alone accepts, whichever layout drew it.
-if [ "$agent" = claude ] &&
-	thurbox-cli session capture "$uuid" --lines 60 --json 2>/dev/null |
-	jq -r '.output // ""' | tr -d '[:space:]' |
-		grep -qiE -- '❯([0-9]+\.)?yes,itrustthisfolder'; then
-	keys="enter"
-fi
-
-for k in $keys; do
-	if ! thurbox-cli session key "$uuid" "$k" >/dev/null 2>&1; then
-		say "could not send '$k' to the pane; the dialog is still up" send-failed
-		exit 3
-	fi
-	sleep 1
-done
-
-# --- confirm it took ---------------------------------------------------------
+# --- answer one gate, then confirm it took -----------------------------------
 #
 # A send that reports success is not proof the dialog was answered. The dialog
-# being GONE is.
+# being GONE is. Exits the script on either failure: nothing more is sent.
 
-for _ in 1 2 3 4 5 6 7 8 9 10; do
-	if ! pane_matches; then
-		say "answered $agent's trust dialog with '$keys'; the dialog is gone" answered
-		exit 0
+answer() {
+	local i="$1" k keys
+	keys="${keyseqs[$i]}"
+	# WHERE THE SELECTOR ALREADY IS, for claude, and it outranks the table. The
+	# folder-trust dialog above defaults to "No, exit"; the one Claude Code
+	# 2.1.247 draws on windows-hp (2026-09-12) is numbered and defaults to the
+	# other option:
+	#
+	#     ❯ 1. Yes, I trust this folder
+	#       2. No, exit
+	#
+	# `down enter` there selects "No, exit" and the agent exits — observed, not
+	# supposed. So when the selector is already on the accepting option, Enter
+	# alone accepts, whichever layout drew it.
+	if [ "$agent" = claude ] && [ "$keys" = "down enter" ] &&
+		grep -qiE -- '❯([0-9]+\.)?yes,itrustthisfolder' <<<"$(pane)"; then
+		keys="enter"
 	fi
-	sleep 1
-done
-
-say "sent '$keys' but $agent's trust dialog is still on the pane. Do not
+	for k in $keys; do
+		if ! thurbox-cli session key "$uuid" "$k" >/dev/null 2>&1; then
+			say "could not send '$k' to the pane; the dialog is still up" send-failed
+			exit 3
+		fi
+		sleep 1
+	done
+	for _ in 1 2 3 4 5 6 7 8 9 10; do
+		grep -qiE -- "$(printf %s "${sigs[$i]}" | tr -d '[:space:]')" <<<"$(pane)" || return 0
+		sleep 1
+	done
+	say "sent '$keys' but $agent's dialog is still on the pane. Do not
              prompt this session; look at it:
                thurbox-cli session capture $uuid
              The config-seeding fallback is:
                $here/trust-thurbox-dir.sh <that session's worktree path>
              — which seeds THIS machine. For a session on a remote host, run
              that script ON THE HOST, against the worktree path there." unconfirmed
+	exit 3
+}
+
+# --- watch, answering every dialog in turn -----------------------------------
+#
+# Another dialog can come up BEHIND the one just answered — Claude Code shows
+# folder trust, then external imports — and returning after the first would
+# hand the send to the second. So after each answer the pane is watched for
+# `settle` more seconds, cut short by the agent reporting. `max_answers` bounds
+# a dialog that keeps coming back, which is not one this script understands.
+
+settle=3
+max_answers=4
+answered=""
+count=0
+deadline=$((SECONDS + timeout_secs))
+while [ "$SECONDS" -lt "$deadline" ]; do
+	if i="$(gate_on_pane)"; then
+		if [ "$count" -ge "$max_answers" ]; then
+			say "answered $count dialogs ($answered) and another is still coming.
+             Nothing more was sent. Look at the pane before prompting it:
+               thurbox-cli session capture $uuid" unconfirmed
+			exit 3
+		fi
+		answer "$i"
+		count=$((count + 1))
+		answered="${answered:+$answered, }'${keyseqs[$i]}'"
+		deadline=$((SECONDS + settle))
+		continue
+	fi
+	if agent_reported; then
+		break
+	fi
+	sleep 1
+done
+
+if [ -n "$answered" ]; then
+	say "answered $agent's dialog(s) with $answered; none is left on the pane" answered
+	exit 0
+fi
+if agent_reported; then
+	say "no dialog: $agent is already reporting; nothing sent" ready
+	exit 0
+fi
+if [ "${#sigs[@]}" -eq 0 ]; then
+	say "$agent shows no trust dialog in a git worktree; nothing sent" ready
+	exit 0
+fi
+say "no trust dialog seen in ${timeout_secs}s and $agent has not reported.
+             Nothing was sent. Look at the pane before prompting it:
+               thurbox-cli session capture $uuid" unconfirmed
 exit 3

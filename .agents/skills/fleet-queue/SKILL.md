@@ -408,8 +408,10 @@ work there, and sending the brief while that dialog is up types the brief INTO
 the dialog — which is how every fleet-spawned worker used to break. The script
 confirms the dialog is really there before sending a key, answers with the
 sequence that agent needs (Claude's default selection is **`No, exit`**, so a
-bare Enter dismisses it), and confirms the dialog is gone. `thurbox-session` §1b
-has the per-agent table and the config-seeding fallback.
+bare Enter dismisses it), and confirms the dialog is gone. A dialog queued
+behind it — Claude's external `CLAUDE.md` imports prompt, answered `No` — is
+answered the same way before the send. `thurbox-session` §1b has the per-agent
+table and the config-seeding fallback.
 
 When it cannot confirm, **nothing is typed and the task is left unprompted**:
 
@@ -720,6 +722,12 @@ row and leaves the TUI to reap the window and worktrees on a sync that, run
 headless, never comes, leaving the disk unfreed. The record
 keeps a receipt, so `list` and `show` stop naming an id that no longer
 resolves.
+
+**A fixer's checkout is git's, not thurbox's, so `session delete` never frees
+it.** A landed or abandoned task's fixer checkout is removed separately, with
+`git worktree remove` and no `--force` — one still holding uncommitted work is
+kept and reported rather than thrown away. Checked at both its current
+location and the legacy one, so an older checkout still gets cleaned up.
 
 **`collect` runs the reap itself**, so the release belongs to the command you
 already run rather than to one more you have to remember. Its gate is not

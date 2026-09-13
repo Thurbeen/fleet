@@ -195,7 +195,7 @@ The per-agent differences, one of which is a trap:
 
 | agent | gate |
 |---|---|
-| `claude` | a dialog whose default selection is **`No, exit`**. A bare Enter DISMISSES it and the agent exits. Down, then Enter. |
+| `claude` | a dialog whose default selection is **`No, exit`**. A bare Enter DISMISSES it and the agent exits. Down, then Enter. Under a directory whose `CLAUDE.md` imports a file outside it, a second one follows: `Allow external CLAUDE.md file imports?`, answered with its default **`No`** (Enter), so a worker never loads a guide written for someone else. |
 | `codex` | a dialog; Enter accepts. Persists per repo root. |
 | `pi`, `pi-signed` | a dialog; Enter accepts. Persists per path. |
 | `grok`, `kimi` | no dialog inside a git repo, which a worktree always is. |
