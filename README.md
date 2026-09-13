@@ -84,9 +84,10 @@ pane on screen, and the reconciler. The one-liner already did three of them, so
 those come back as checks. It verifies each one and names anything missing with
 its remedy before it writes a thing. Run it twice and it converges.
 
-Four of those steps ask you something, and only four. Whether to install the
+Five of those steps ask you something, and only five. Whether to install the
 dependencies that are missing; which of the owners it found on your machine the
-map should cover; where the queue pane goes (a column on the right, by
+map should cover; what the lead calls you and what it answers to, before the
+extension renders them; where the queue pane goes (a column on the right, by
 default), unless you already answered that; and whether to bring the reconciler
 up. It reads every `gh` account
 on the machine — not just the active one — your git config and the remotes of

@@ -695,13 +695,15 @@ check_onboarding() {
 # a copy of this tree: prerequisites before the extension, the pane installed
 # and not placed, a second run that changes nothing, and a checkout that is
 # fast-forwarded or refused but never overwritten. Then `pane-ask.sh`: asked
-# once, both answers remembered, a placed pane never asked about.
+# once, both answers remembered, a placed pane never asked about. Then
+# `voice-ask.sh`: the two names recorded and rendered, a refused one writing
+# nothing, an answered voice.conf never overwritten unasked.
 check_install() {
 	need git install || return
 	need jq install || return
 
 	if ./scripts/install-selftest.sh >/dev/null 2>&1; then
-		ok "install: install.sh converges and places no pane; pane-ask.sh asks once"
+		ok "install: install.sh converges and places no pane; pane-ask.sh and voice-ask.sh ask once"
 	else
 		./scripts/install-selftest.sh
 		fail "install: scripts/install-selftest.sh"
