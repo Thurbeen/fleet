@@ -616,10 +616,13 @@ name, and each open pull request gets exactly one of these:
 | checks green, `MERGEABLE`, ours, and nothing attested it | recorded `green` and reported `ready to merge — not attested; yours`, **never merged by fleet** |
 | anything it could not read | reported, and otherwise left alone |
 
-A PR is tied back to a task by its recorded `artifact` or by its **head
-branch** matching the task's. One that matches neither is still classified and
-still merged — it simply has no session to send a fixer into, and the output
-names it as belonging to no task rather than passing over it in silence.
+A PR is tied back to a task by its recorded `artifact` — for a `pr` or
+`attested` task only, since a `note` task's artifact names the pull request it
+reviewed, not one of its own, and linking that would hand it a method that asks
+for no attestation — or by its **head branch** matching the task's. One that
+matches neither is still classified and still merged — it simply has no
+session to send a fixer into, and the output names it as belonging to no task
+rather than passing over it in silence.
 
 **A remote task's pull request is classified and merged like any other, and its
 fixer is withheld.** The fixer needs a checkout of the PR's head branch, and a

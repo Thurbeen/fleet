@@ -772,7 +772,7 @@ def policy_publish_default() -> tuple[str, str | None]:
     default reviewable in a diff, which was the argument for it — and made this
     repo ship one operator's pipeline as every clone's default, which is the
     argument against and the larger one. `publish.example.conf` is the tracked
-    half now: it documents the three artifact shapes, ships `pr`, and names no
+    half now: it documents the five artifact shapes, ships `pr`, and names no
     tool. POLICY.md still SAYS how a worker publishes, because every brief
     points at it; it no longer decides for somebody else's fleet.
 
