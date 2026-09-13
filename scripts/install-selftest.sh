@@ -426,7 +426,9 @@ printf '\n\033[1m§3 voice-ask.sh — both names asked before the render, kept o
 # renderer's own rule is what decides which names it refuses.
 voice="$clone/scripts/voice-ask.sh"
 vconf="$clone/orchestration/voice.conf"
-rm -f "$vconf"
+# §1 already installed the extension into this same clone; start §3 as if it
+# never had, since that is the state voice-ask.sh actually ships into.
+rm -f "$vconf" "$clone/FLEET.rendered.md"
 
 run_voice() { env -i HOME="$home" PATH="$bin" THURBOX_LOG="$LOG" THURBOX_UI="$UI" "$voice" "$@" 2>&1; }
 
@@ -458,6 +460,17 @@ done
 out="$(run_voice set Ripley "Mo${nl}ther")"
 expect_nonzero "3b a lead name spanning two lines is refused" $?
 if [ ! -e "$vconf" ]; then pass "3b and nothing was written for it"; else fail "3b and nothing was written for it"; rm -f "$vconf"; fi
+
+# --- 3b2. --replace before any install points at installing, not re-installing
+# A correction made before the extension has ever rendered a lead is not a
+# rename of one that is running: FLEET.rendered.md decides which message
+# prints, not whether --replace was used.
+out="$(run_voice set --replace Scratch Name)"
+expect_exit "3b2 --replace with nothing recorded yet still records" 0 $?
+expect "3b2 and before any install it points at installing" \
+	"Next: ./scripts/install-extension.sh renders them." "$out"
+refute "3b2 and never claims a lead is already running" "update-fleet" "$out"
+rm -f "$vconf"
 
 # --- 3c. two names given: recorded, and the render carries them ---------------
 out="$(run_voice set Ripley Mother)"
