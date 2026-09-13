@@ -301,8 +301,9 @@ on_debug() {
 	if [ "$_seen" = 1 ] && [ "$depth" -le "$_base" ]; then
 		probe_repo="$(mktemp -d)"
 		(cd "$probe_repo" && git init -q p && cd p && printf x >f && git add f && git commit -qm probe) >/dev/null 2>&1
+		local committed=$?
 		echo "isolated=yes"
-		echo "committed=$?"
+		echo "committed=$committed"
 		echo "branch=$(git -C "$probe_repo/p" rev-parse --abbrev-ref HEAD 2>/dev/null)"
 		echo "hooks=$(git -C "$probe_repo/p" config --get core.hooksPath 2>/dev/null)"
 		echo "home=$HOME"
