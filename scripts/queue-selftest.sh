@@ -6992,7 +6992,7 @@ api("repos/Thurbeen/thurbox/pulls/1107/reviews/7000001", {
 })
 PY
 
-aq() {
+aq2() {
 	env PATH="$auto/bin:$tbxbin:$base_path" FAKE_GH_DIR="$auto" GITLAB_HOST=gitlab.invalid \
 		FLEET_QUEUE_DIR="$tmp/queue-autonomy" "$QUEUE" "$@"
 }
@@ -7008,9 +7008,9 @@ print((yaml.safe_load(open(sys.argv[1])).get("publish") or {}).get(sys.argv[2]) 
 PY
 }
 
-rtopic="$(aq topic add as-recorded --title 'The fifteen, as their records say' \
+rtopic="$(aq2 topic add as-recorded --title 'The fifteen, as their records say' \
 	--prompt 'fleet should be more autonomous on closing tasks')"
-itopic="$(aq topic add as-added --title 'The fifteen, as add now records them' \
+itopic="$(aq2 topic add as-added --title 'The fifteen, as add now records them' \
 	--prompt 'fleet should be more autonomous on closing tasks')"
 
 # number|slug|recorded method|recorded how|branch|artifact|re-added as|target
@@ -7019,7 +7019,7 @@ itopic="$(aq topic add as-added --title 'The fifteen, as add now records them' \
 # this run's default (`attested`). `-` under re-added is a record that already
 # declared the right shape, so there is nothing to re-add.
 while IFS='|' read -r n slug method how branch artifact again target; do
-	aq add "$rtopic" "$slug" --repo /tmp/repo-records --branch "$branch" --number "$n" >/dev/null
+	aq2 add "$rtopic" "$slug" --repo /tmp/repo-records --branch "$branch" --number "$n" >/dev/null
 	python3 - "$aqdir/$rtopic/$n-$slug/task.yaml" "$method" "$how" <<'PY'
 import sys
 
@@ -7037,7 +7037,7 @@ PY
 	if [ "$again" != - ]; then
 		extra=(--publish "$again")
 		[ -n "$target" ] && extra+=(--target "$target")
-		aq add "$itopic" "$slug" --repo /tmp/repo-records --branch "$branch" \
+		aq2 add "$itopic" "$slug" --repo /tmp/repo-records --branch "$branch" \
 			--number "$n" "${extra[@]}" >/dev/null
 		dirs+=("$aqdir/$itopic/$n-$slug")
 	fi
@@ -7069,13 +7069,13 @@ done <<'EOF'
 15|survey-existing|||research/build-or-adopt||none|
 EOF
 
-out="$(aq collect 2>&1)"
+out="$(aq2 collect 2>&1)"
 
 # (a) As recorded. The three merged pull requests close themselves and land,
 #     and the attestation that went stale is kept as a note on the record.
 
 for t in 11-emoji-session-glyphs 12-cut-defensive-prose 13-reconciler-loop; do
-	s="$(aq show "$rtopic/$t" 2>&1)"
+	s="$(aq2 show "$rtopic/$t" 2>&1)"
 	expect "$t: a merged pull request closes its task, stale attestation and all" \
 		"state:       landed" "$s"
 	expect "$t: and the stale attestation is noted on the publish block, not held on" \
@@ -7090,19 +7090,19 @@ for t in 01-review-1107 02-review-1108 03-review-1117 04-review-1116 05-review-1
 	06-review-1114 07-win-clipboard-test 08-deb-tmux-race 09-explain-thurbox \
 	10-prove-and-propose 14-green-the-pr 15-survey-existing; do
 	expect "$t, as recorded, is still held: what it declares is still unproven" \
-		"published:   unverified" "$(aq show "$rtopic/$t" 2>&1)"
+		"published:   unverified" "$(aq2 show "$rtopic/$t" 2>&1)"
 done
 expect "a push task that shipped a note is told the shape its deliverable has" \
-	"--publish note --target" "$(aq show "$rtopic/01-review-1107" 2>&1)"
+	"--publish note --target" "$(aq2 show "$rtopic/01-review-1107" 2>&1)"
 expect "and a pull request from another branch is told how to name the one it worked on" \
-	"add --target" "$(aq show "$rtopic/14-green-the-pr" 2>&1)"
+	"add --target" "$(aq2 show "$rtopic/14-green-the-pr" 2>&1)"
 
 # (b) As `add` now records them. Every one closes itself, and nothing needed
 #     the escape hatch.
 
 for t in 01-review-1107 02-review-1108 03-review-1117 04-review-1116 05-review-1115 \
 	06-review-1114 07-win-clipboard-test 08-deb-tmux-race 10-prove-and-propose; do
-	s="$(aq show "$itopic/$t" 2>&1)"
+	s="$(aq2 show "$itopic/$t" 2>&1)"
 	expect "$t, added as a note on its target, is verified by the forge" \
 		"checked:     passed" "$s"
 	expect "$t: and lands at once — a note has no change request of its own to wait on" \
@@ -7111,16 +7111,16 @@ done
 expect "collect names the shape it verified" "[publish verified: note]" "$out"
 
 for t in 09-explain-thurbox 15-survey-existing; do
-	s="$(aq show "$itopic/$t" 2>&1)"
+	s="$(aq2 show "$itopic/$t" 2>&1)"
 	expect "$t, added as none, is closed with nothing claimed as checked" \
 		"checked:     skipped" "$s"
 	expect "$t: and lands" "state:       landed" "$s"
 done
 expect "and the document's URL is recorded, as given" \
-	"artifact:    http://docs.example.test:35547/review/" "$(aq show "$itopic/09-explain-thurbox" 2>&1)"
+	"artifact:    http://docs.example.test:35547/review/" "$(aq2 show "$itopic/09-explain-thurbox" 2>&1)"
 expect "and collect says out loud that nothing was checked" "[publish not checked: none]" "$out"
 
-s="$(aq show "$itopic/14-green-the-pr" 2>&1)"
+s="$(aq2 show "$itopic/14-green-the-pr" 2>&1)"
 expect "the fork's pull request, added with its target, is verified" "checked:     passed" "$s"
 expect "and waits for its merge like any open pull request" "state:       done" "$s"
 
@@ -7129,7 +7129,7 @@ refute "and nothing was closed by the escape hatch" "closed by --allow-unverifie
 
 # (c) Nothing here lets a worker's URL prove itself.
 
-ctopic="$(aq topic add no-trust-manufactured --prompt 'a note must be ours, and on the target')"
+ctopic="$(aq2 topic add no-trust-manufactured --prompt 'a note must be ours, and on the target')"
 claimed() {
 	cat >"$aqdir/$ctopic/$1/result.md" <<EOF
 ---
@@ -7139,74 +7139,74 @@ artifact: $2
 Done.
 EOF
 }
-aq add "$ctopic" somebody-elses --branch review/a --repo /tmp/repo-records --number 01 \
+aq2 add "$ctopic" somebody-elses --branch review/a --repo /tmp/repo-records --number 01 \
 	--publish note --target https://github.com/Thurbeen/thurbox/pull/1107 >/dev/null
 claimed 01-somebody-elses https://github.com/Thurbeen/thurbox/pull/1107#pullrequestreview-7000001
-aq add "$ctopic" ours-elsewhere --branch review/b --repo /tmp/repo-records --number 02 \
+aq2 add "$ctopic" ours-elsewhere --branch review/b --repo /tmp/repo-records --number 02 \
 	--publish note --target https://github.com/Thurbeen/thurbox/pull/1107 >/dev/null
 claimed 02-ours-elsewhere https://github.com/Thurbeen/thurbox/pull/1108#pullrequestreview-5187155662
-aq add "$ctopic" no-such-note --branch review/c --repo /tmp/repo-records --number 03 \
+aq2 add "$ctopic" no-such-note --branch review/c --repo /tmp/repo-records --number 03 \
 	--publish note --target https://github.com/Thurbeen/thurbox/pull/1107 >/dev/null
 claimed 03-no-such-note https://github.com/Thurbeen/thurbox/pull/1107#pullrequestreview-7000002
-aq add "$ctopic" stale-open --branch feat/stale-open --repo /tmp/repo-records --number 04 \
+aq2 add "$ctopic" stale-open --branch feat/stale-open --repo /tmp/repo-records --number 04 \
 	--publish attested >/dev/null
 claimed 04-stale-open https://github.com/Thurbeen/fleet/pull/60
-aq add "$ctopic" merged-elsewhere --branch feat/mine --repo /tmp/repo-records --number 05 \
+aq2 add "$ctopic" merged-elsewhere --branch feat/mine --repo /tmp/repo-records --number 05 \
 	--publish attested >/dev/null
 claimed 05-merged-elsewhere https://github.com/Thurbeen/fleet/pull/61
 
-out="$(aq collect 2>&1)"
-s="$(aq show "$ctopic/01-somebody-elses" 2>&1)"
+out="$(aq2 collect 2>&1)"
+s="$(aq2 show "$ctopic/01-somebody-elses" 2>&1)"
 expect "a pasted link to somebody else's review is missing" "published:   unverified" "$s"
 expect "and the refusal names who really wrote it" "stranger" "$s"
-s="$(aq show "$ctopic/02-ours-elsewhere" 2>&1)"
+s="$(aq2 show "$ctopic/02-ours-elsewhere" 2>&1)"
 expect "our own review on a pull request the task does not target is missing" \
 	"published:   unverified" "$s"
 expect "and the refusal names the target it should have been on" "target" "$s"
-s="$(aq show "$ctopic/03-no-such-note" 2>&1)"
+s="$(aq2 show "$ctopic/03-no-such-note" 2>&1)"
 expect "a note the forge cannot find is could-not-check, never passed or missing" \
 	"checked:     unknown" "$s"
-s="$(aq show "$ctopic/04-stale-open" 2>&1)"
+s="$(aq2 show "$ctopic/04-stale-open" 2>&1)"
 expect "a stale attestation on a pull request still OPEN is still held" \
 	"published:   unverified" "$s"
-s="$(aq show "$ctopic/05-merged-elsewhere" 2>&1)"
+s="$(aq2 show "$ctopic/05-merged-elsewhere" 2>&1)"
 expect "a merged pull request from another branch still proves nothing" \
 	"published:   unverified" "$s"
 
 mv "$auto/api/user.json" "$auto/api/user.json.away"
-aq add "$ctopic" who-am-i --branch review/d --repo /tmp/repo-records --number 06 \
+aq2 add "$ctopic" who-am-i --branch review/d --repo /tmp/repo-records --number 06 \
 	--publish note --target https://github.com/Thurbeen/thurbox/pull/1107 >/dev/null
 claimed 06-who-am-i https://github.com/Thurbeen/thurbox/pull/1107#pullrequestreview-5186731434
-aq collect >/dev/null 2>&1
+aq2 collect >/dev/null 2>&1
 mv "$auto/api/user.json.away" "$auto/api/user.json"
 expect "a forge that will not say who fleet runs as is could-not-check" \
-	"checked:     unknown" "$(aq show "$ctopic/06-who-am-i" 2>&1)"
+	"checked:     unknown" "$(aq2 show "$ctopic/06-who-am-i" 2>&1)"
 
-out="$(aq collect --allow-unverified 2>&1)"
+out="$(aq2 collect --allow-unverified 2>&1)"
 expect "and --allow-unverified is still the deliberate escape hatch" \
 	"closed by --allow-unverified" "$out"
 
 # (d) Intake no longer invites the workaround, and says what fits instead.
 
-if out="$(aq add "$ctopic" untargeted --repo /tmp/repo-records --branch review/e \
+if out="$(aq2 add "$ctopic" untargeted --repo /tmp/repo-records --branch review/e \
 	--publish note 2>&1)"; then
 	fail "a note task that names no target is refused at add" "$out"
 else
 	expect "a note task that names no target is refused at add" "--target" "$out"
 fi
-if out="$(aq add "$ctopic" push-at-a-pr --repo /tmp/repo-records --branch review/f \
+if out="$(aq2 add "$ctopic" push-at-a-pr --repo /tmp/repo-records --branch review/f \
 	--publish push --target https://github.com/Thurbeen/thurbox/pull/1107 2>&1)"; then
 	fail "a push task with a change request to work on is refused" "$out"
 else
 	expect "a push task with a change request to work on is refused" "--publish note" "$out"
 fi
-if out="$(aq add "$ctopic" pr-at-an-issue --repo /tmp/repo-records --branch review/g \
+if out="$(aq2 add "$ctopic" pr-at-an-issue --repo /tmp/repo-records --branch review/g \
 	--publish pr --target https://github.com/Thurbeen/thurbox/issues/12 2>&1)"; then
 	fail "a pull request task cannot target an issue" "$out"
 else
 	expect "a pull request task cannot target an issue" "issue" "$out"
 fi
-if out="$(aq add "$ctopic" nonsense --repo /tmp/repo-records --branch review/h \
+if out="$(aq2 add "$ctopic" nonsense --repo /tmp/repo-records --branch review/h \
 	--publish note --target 'the one from yesterday' 2>&1)"; then
 	fail "a target that is no change request or issue URL is refused" "$out"
 else
@@ -7219,11 +7219,11 @@ expect "and names its target" "**Target.** https://github.com/Thurbeen/thurbox/p
 b="$(brief_text "$aqdir/$itopic/09-explain-thurbox/BRIEF.md")"
 expect "a none task's brief says nothing will be checked" "**Publish.** \`none\`" "$b"
 
-h="$(aq add --help 2>&1)"
+h="$(aq2 add --help 2>&1)"
 expect "add --help names the note shape" "note" "$h"
 expect "and the none shape" "none" "$h"
 expect "and the target flag" "--target" "$h"
-expect "and check accepts every record above" "queue check: ok" "$(aq check 2>&1)"
+expect "and check accepts every record above" "queue check: ok" "$(aq2 check 2>&1)"
 
 if [ -s "$auto/glab-calls.log" ]; then
 	fail "nothing about github.com was asked through glab" "$(cat "$auto/glab-calls.log")"
