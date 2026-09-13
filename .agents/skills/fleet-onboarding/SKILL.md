@@ -14,7 +14,7 @@ pane **on screen**, and the reconciler up.
 **Do the work, don't narrate it — but keep the operator oriented while you do.**
 Every step is a script in `scripts/`, and running them is yours. What the
 operator needs from you is a sense of where they are, and a real say at the
-four points where the answer is genuinely theirs.
+five points where the answer is genuinely theirs.
 
 ### The shape of a run
 
@@ -25,12 +25,12 @@ Step 1/7  Dependencies      preflight.sh, then install what is missing   [ask]
 Step 2/7  This checkout     is this the clone to keep?
 Step 3/7  Owners            discover-owners.sh, then confirm             [ask]
 Step 4/7  Registry          sync-registry.sh
-Step 5/7  Extension         install-extension.sh
+Step 5/7  Extension         voice-ask.sh, then install-extension.sh      [ask]
 Step 6/7  Queue pane        place it on screen — right by default        [ask]
 Step 7/7  Reconciler        reconcile.sh ensure                          [ask]
 ```
 
-**Four questions, and no more than four.** Everything else is discoverable or
+**Five asks, and no more than five.** Everything else is discoverable or
 has one correct answer. Ask each one at the step it belongs to and not before —
 a wall of questions up front is asked before the operator has seen anything, and
 answered blind.
@@ -249,17 +249,47 @@ produced this same warning, indistinguishable from a typo. It no longer does.
 
 ## Step 5/7 — Thurbox extension
 
+It renders two gitignored files and installs them: `extension.toml` from
+`extension.toml.in` (it carries this clone's absolute path), and
+`FLEET.rendered.md` from `FLEET.md` (it carries two names — what the lead calls
+the operator, and what it answers to). It also hands the queue pane to
+`thurbox-cli plugin install`, which step 6 is about.
+
+**ASK — the two names, before the install and never after it.** The render
+bakes them into the lead's standing context, so a name chosen after this step
+costs a re-install and a lead restart. Ask the script first:
+
 ```bash
+./scripts/voice-ask.sh
+```
+
+`skip` means `orchestration/voice.conf` already holds an answer: say the two
+names it printed and install. On `ask`, ask both in one go, each offering the
+default it printed (`SLAYER` and `VEGA` as shipped) as the recommended answer:
+
+- **What should the lead call you?** — the default, or a name they type
+- **What should the lead answer to?** — the default, or a name they type
+
+The second is the name in the lead's prose only. The SESSION stays Mission
+Control, which `extension.toml.in` sets and nothing here asks about.
+
+Record the answer — **defaults included**, since an unrecorded answer is asked
+again on the next run — then install:
+
+```bash
+./scripts/voice-ask.sh set '<operator>' '<lead>'
 ./scripts/install-extension.sh
 ```
 
-It renders two gitignored files and installs them: `extension.toml` from
-`extension.toml.in` (it carries this clone's absolute path), and
-`FLEET.rendered.md` from `FLEET.md` (it carries the two names in
-`orchestration/voice.example.conf` — what the lead calls the operator, and what
-it answers to; copy that file to `voice.conf` beside it to change either). It
-also hands the queue pane to `thurbox-cli plugin install`, which step 6 is
-about.
+`set` renders both names before it writes anything and refuses what the
+renderer refuses — a quote, `|`, `\`, `&`, `@`, or a second line. It then
+writes nothing, so ask again for the one it named. It never overwrites an
+existing `voice.conf`; `--replace` does, and only on the operator's word.
+
+If this run is inside Mission Control itself, `install.sh` has already rendered
+the lead with the defaults. A different answer reaches that lead only after this
+install **and** a restart of the session you are running in. Say so, and leave
+the restart to the operator — `.agents/skills/update-fleet/` owns it.
 
 Verify, rather than trusting the installer's own closing message:
 
@@ -411,8 +441,8 @@ at all.
 ## Hand over
 
 Close with a short recap: the seven steps, one line each, and what each landed —
-dependencies installed, owners written, N repos across M owners, extension
-healthy, pane placed on the right, reconciler up.
+dependencies installed, owners written, N repos across M owners, the two names
+recorded and the extension healthy, pane placed on the right, reconciler up.
 
 **Nothing this skill wrote to the repo is tracked.** `registry/owners.txt`,
 `registry/repos.generated.yaml`, `extension.toml` and `FLEET.rendered.md` are
@@ -485,6 +515,7 @@ Assume someone runs this twice. Every step above **converges**:
 | Checkout | a question, not a write |
 | Owners | discovery re-reads the machine and marks what is already configured; adds only missing entries, never duplicates or reorders |
 | Registry | the script rewrites the file wholesale from live GitHub |
+| Names | `voice-ask.sh` says `skip` and keeps `voice.conf`; nothing is re-asked |
 | Extension | a reinstall keeps existing `agents.toml` entries, so a customized model survives |
 | Queue pane | `plugin install` reports it `current`, and `place-pane.sh` says "already placed" and touches nothing |
 | Reconciler | `ensure` adopts a running one, and a `down` flag it wrote stays honoured; never a twin |
@@ -493,6 +524,13 @@ So do not refuse on an already-configured clone. Detect it —
 `registry/owners.txt` with active entries, the generated map there, the
 extension healthy, `plugin check` green — say which parts are already in place,
 and offer to refresh the map rather than redoing everything.
+
+**An answered `orchestration/voice.conf` is kept and not re-asked.** Renaming
+either name is the operator's to start, and it needs more than a new file: the
+running lead keeps the names it was rendered with. The new answer goes in with
+`./scripts/voice-ask.sh set --replace '<operator>' '<lead>'`. Then
+`.agents/skills/update-fleet/` owns applying it — the re-install, then
+`thurbox-cli session restart` on the lead.
 
 ### What the operator gains afterwards
 

@@ -414,6 +414,96 @@ out="$(env -i HOME="$home" PATH="$nothurbox" "$ask" 2>&1)"
 expect "2g with no layout to read it does not ask" "skip" "$out"
 if [ ! -e "$state" ]; then pass "2g and records nothing, so a later session can"; else fail "2g and records nothing, so a later session can"; fi
 
+printf '\n\033[1m§3 voice-ask.sh — both names asked before the render, kept once answered, refused before anything is written\033[0m\n'
+
+# Onboarding asks what the lead calls the operator and what it answers to
+# BEFORE step 5 renders them, because after it a new name is a re-install and
+# a lead restart. The answer is the operator's gitignored voice.conf, and the
+# renderer's own rule is what decides which names it refuses.
+voice="$clone/scripts/voice-ask.sh"
+vconf="$clone/orchestration/voice.conf"
+rm -f "$vconf"
+
+run_voice() { env -i HOME="$home" PATH="$bin" THURBOX_LOG="$LOG" THURBOX_UI="$UI" "$voice" "$@" 2>&1; }
+
+if [ ! -x "$voice" ]; then
+	fail "3 scripts/voice-ask.sh exists and is executable" "no $voice"
+fi
+
+def_op="$(sed -n 's/^OPERATOR_NAME=//p' orchestration/voice.example.conf | head -1)"
+def_ai="$(sed -n 's/^ASSISTANT_NAME=//p' orchestration/voice.example.conf | head -1)"
+
+# --- 3a. nothing answered: ask, offering the tracked defaults -----------------
+out="$(run_voice)"
+expect_exit "3a a clone with no voice.conf exits 0" 0 $?
+expect "3a and says to ask" "ask" "$(printf '%s\n' "$out" | head -1)"
+expect "3a offering the operator default" "$def_op" "$out"
+expect "3a and the lead default" "$def_ai" "$out"
+expect "3a naming the line that records the answer" "voice-ask.sh set" "$out"
+if [ ! -e "$vconf" ]; then pass "3a asking writes nothing"; else fail "3a asking writes nothing"; fi
+
+# --- 3b. a refused name is refused before anything is written -----------------
+for bad in 'Ri|ley' 'Ri\ley' 'R&D' 'o@k' "O'Neil" 'say "hi"' ''; do
+	out="$(run_voice set "$bad" Mother)"
+	expect_nonzero "3b an operator name '$bad' is refused" $?
+	if [ ! -e "$vconf" ]; then pass "3b and no voice.conf was written for '$bad'"; else
+		fail "3b and no voice.conf was written for '$bad'" "$(cat "$vconf")"
+		rm -f "$vconf"
+	fi
+done
+out="$(run_voice set Ripley "Mo${nl}ther")"
+expect_nonzero "3b a lead name spanning two lines is refused" $?
+if [ ! -e "$vconf" ]; then pass "3b and nothing was written for it"; else fail "3b and nothing was written for it"; rm -f "$vconf"; fi
+
+# --- 3c. two names given: recorded, and the render carries them ---------------
+out="$(run_voice set Ripley Mother)"
+expect_exit "3c two plain names are recorded" 0 $?
+expect "3c the operator name is in voice.conf" "OPERATOR_NAME=Ripley" "$(cat "$vconf" 2>/dev/null)"
+expect "3c the lead name is in voice.conf" "ASSISTANT_NAME=Mother" "$(cat "$vconf" 2>/dev/null)"
+
+out="$(cd "$clone" && env -i HOME="$home" PATH="$bin" THURBOX_LOG="$LOG" THURBOX_UI="$UI" \
+	bash scripts/install-extension.sh </dev/null 2>&1)"
+expect_exit "3c the extension installs off that answer" 0 $?
+rendered="$(cat "$clone/FLEET.rendered.md" 2>/dev/null)"
+expect "3c FLEET.rendered.md calls the operator what they said" "Ripley" "$rendered"
+expect "3c and the lead answers to what they said" "Mother" "$rendered"
+refute "3c no default operator name survives the render" "$def_op" "$rendered"
+if [ -z "$(git -C "$clone" status --porcelain)" ]; then
+	pass "3c the answer and the render are both gitignored"
+else
+	fail "3c the answer and the render are both gitignored" "$(git -C "$clone" status --porcelain)"
+fi
+
+# --- 3d. answered once: never asked again, never overwritten unasked ----------
+before="$(cat "$vconf")"
+out="$(run_voice)"
+expect "3d the next run does not ask" "skip" "$(printf '%s\n' "$out" | head -1)"
+expect "3d and names what is kept" "Ripley" "$out"
+out="$(run_voice set Dallas Ash)"
+expect_nonzero "3d a second set without --replace is refused" $?
+expect "3d and it names the way to replace it" "--replace" "$out"
+if [ "$before" = "$(cat "$vconf")" ]; then pass "3d voice.conf is untouched"; else fail "3d voice.conf is untouched" "$(cat "$vconf")"; fi
+out="$(run_voice set --replace 'Dal|las' Ash)"
+expect_nonzero "3d --replace still refuses a bad name" $?
+if [ "$before" = "$(cat "$vconf")" ]; then pass "3d and still writes nothing"; else fail "3d and still writes nothing"; fi
+out="$(run_voice set --replace Dallas Ash)"
+expect_exit "3d --replace is the operator's say-so" 0 $?
+expect "3d and replaces it" "OPERATOR_NAME=Dallas" "$(cat "$vconf" 2>/dev/null)"
+expect "3d naming the re-install and restart a rename needs" "update-fleet" "$out"
+
+# --- 3e. the onboarding skill asks before step 5 installs ---------------------
+skill=".agents/skills/fleet-onboarding/SKILL.md"
+step5="$(sed -n '/^## Step 5\/7/,/^## Step 6\/7/p' "$skill")"
+ask_at="$(printf '%s\n' "$step5" | grep -n 'voice-ask.sh' | head -1 | cut -d: -f1)"
+install_at="$(printf '%s\n' "$step5" | grep -n '^\./scripts/install-extension.sh' | head -1 | cut -d: -f1)"
+if [ -n "$ask_at" ] && [ -n "$install_at" ] && [ "$ask_at" -lt "$install_at" ]; then
+	pass "3e step 5 runs voice-ask.sh before install-extension.sh"
+else
+	fail "3e step 5 runs voice-ask.sh before install-extension.sh" "voice-ask at ${ask_at:-?}, install at ${install_at:-?}"
+fi
+expect "3e and Re-running says an answered voice.conf is kept" "voice.conf" \
+	"$(sed -n '/^## Re-running/,$p' "$skill")"
+
 printf '\n'
 if [ "$failed" -eq 0 ]; then
 	printf '\033[32minstall selftest: everything passed\033[0m\n'

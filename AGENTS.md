@@ -113,8 +113,9 @@ names every path and the reason for each.
   fast-forward the checkout, `preflight.sh`, `install-extension.sh`, and
   nothing else. It installs no dependency, places no pane, and refuses rather
   than overwrites an existing checkout; its header owns where the clone goes and
-  why that choice is sticky. `./scripts/install-selftest.sh` drives it and
-  `pane-ask.sh` end to end; `check.sh install` runs it.
+  why that choice is sticky. `./scripts/install-selftest.sh` drives it,
+  `pane-ask.sh` and `voice-ask.sh` — onboarding's ask for the two names, before
+  step 5 renders them — end to end; `check.sh install` runs it.
 - `scripts/preflight.sh` — every dependency fleet needs, in one pass, in three
   tiers (required / recommended / gate), each row carrying what breaks without
   it and the command that installs it. It probes and prints; installing is the
