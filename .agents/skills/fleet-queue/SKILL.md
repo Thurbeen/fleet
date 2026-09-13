@@ -723,6 +723,12 @@ headless, never comes, leaving the disk unfreed. The record
 keeps a receipt, so `list` and `show` stop naming an id that no longer
 resolves.
 
+**A fixer's checkout is git's, not thurbox's, so `session delete` never frees
+it.** A landed or abandoned task's fixer checkout is removed separately, with
+`git worktree remove` and no `--force` — one still holding uncommitted work is
+kept and reported rather than thrown away. Checked at both its current
+location and the legacy one, so an older checkout still gets cleaned up.
+
 **`collect` runs the reap itself**, so the release belongs to the command you
 already run rather than to one more you have to remember. Its gate is not
 collect's — nothing collected a moment ago has a merged pull request — so it can
