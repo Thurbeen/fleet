@@ -4085,6 +4085,48 @@ def record_reaped(task: Task, sid: str, how: str) -> None:
     task.save()
 
 
+def release_fixer_checkouts(q: Queue, state_of, dry: bool) -> int:
+    """Take back the checkout `branch_checkout` cut for a finished task's fixer.
+
+    Nothing else does. git cut it, not thurbox, so `session delete` leaves it:
+    on 2026-09-13 one reported `removed_worktrees: []` and the lead removed the
+    checkout by hand. Released on the same states `reap` releases a session on,
+    and looked for where fixers go now and where they went before the move.
+
+    `git worktree remove` without `--force`, so a checkout holding uncommitted
+    work is kept and said out loud rather than thrown away.
+    """
+    acted = 0
+    for task in sorted(q.tasks.values(), key=lambda t: t.ref):
+        if state_of(task) not in ("landed", "abandoned") or task.doc.get("host"):
+            continue
+        slug = f"{task.topic}__{task.id}"
+        for path in (
+            os.path.join(fixer_worktrees_root(), slug),
+            os.path.join(queue_root(), ".worktrees", slug),
+        ):
+            if not os.path.isdir(path):
+                continue
+            acted += 1
+            if dry:
+                print(f"    {task.ref:<46} would remove fixer checkout {path}")
+                continue
+            proc = subprocess.run(
+                ["git", "-C", task.doc["repo"], "worktree", "remove", path],
+                capture_output=True, text=True,
+            )
+            if proc.returncode != 0:
+                err = (proc.stderr or proc.stdout).strip().splitlines()
+                print(
+                    f"    {task.ref:<46} kept       fixer checkout {path}: "
+                    + (err[-1] if err else "git worktree remove failed"),
+                    file=sys.stderr,
+                )
+                continue
+            print(f"    {task.ref:<46} removed    fixer checkout {path}")
+    return acted
+
+
 def reap(q: Queue, dry: bool = False, release: bool = True) -> int:
     """Land what has landed, then release the session of every task that is finished.
 
@@ -4118,6 +4160,10 @@ def reap(q: Queue, dry: bool = False, release: bool = True) -> int:
     if not release:
         print("      Sessions left alone (--no-reap); `queue.sh reap` releases them.")
         return acted
+
+    # Before the holders: a task whose own session is long gone can still have
+    # a fixer checkout on disk.
+    acted += release_fixer_checkouts(q, state_of, dry)
 
     holders = [
         t
@@ -5473,6 +5519,25 @@ def next_fix_file(task: Task, condition: str) -> str:
 # --- reaching the worker that is already there, or making a new one ----------
 
 
+def fixer_worktrees_root() -> str:
+    """Where `branch_checkout` cuts a fixer's checkout: fleet's XDG data directory.
+
+    OUTSIDE every checkout, which is the point. It used to be
+    `queue_root()/.worktrees`, inside the control plane, and Claude Code walks
+    parent directories for CLAUDE.md: a fixer there found the lead's operating
+    guide, stopped on its external-imports dialog before anything else, and
+    sat unprompted — and past that dialog it would have been reading
+    instructions written for the lead. This sits beside where thurbox keeps
+    its own worker worktrees, under no repository.
+
+    `release_fixer_checkouts` is what takes it back once the task lands.
+    """
+    data = os.environ.get("XDG_DATA_HOME") or os.path.join(
+        os.path.expanduser("~"), ".local", "share"
+    )
+    return os.path.join(data, "fleet", "worktrees")
+
+
 def branch_checkout(repo: str, branch: str, slug: str) -> tuple[str, str]:
     """A checkout of an EXISTING branch, to hand thurbox as `--repo-path`.
 
@@ -5508,7 +5573,7 @@ def branch_checkout(repo: str, branch: str, slug: str) -> tuple[str, str]:
     if path:
         return path, "already checked out there"
 
-    dest = os.path.join(queue_root(), ".worktrees", slug)
+    dest = os.path.join(fixer_worktrees_root(), slug)
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     if os.path.exists(dest):
         return "", f"{dest} is in the way; remove it and run again"

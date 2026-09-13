@@ -408,8 +408,10 @@ work there, and sending the brief while that dialog is up types the brief INTO
 the dialog — which is how every fleet-spawned worker used to break. The script
 confirms the dialog is really there before sending a key, answers with the
 sequence that agent needs (Claude's default selection is **`No, exit`**, so a
-bare Enter dismisses it), and confirms the dialog is gone. `thurbox-session` §1b
-has the per-agent table and the config-seeding fallback.
+bare Enter dismisses it), and confirms the dialog is gone. A dialog queued
+behind it — Claude's external `CLAUDE.md` imports prompt, answered `No` — is
+answered the same way before the send. `thurbox-session` §1b has the per-agent
+table and the config-seeding fallback.
 
 When it cannot confirm, **nothing is typed and the task is left unprompted**:
 
