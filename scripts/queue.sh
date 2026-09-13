@@ -72,7 +72,9 @@
 #              request. The TOOL is `--how`: free text rendered into the brief
 #              and never parsed, which is what lets a task name a publisher
 #              fleet has never heard of. `add` takes both, defaulting to
-#              POLICY.md's frontmatter.
+#              POLICY.md's frontmatter. A `stuck` or `failed` task is the
+#              worker's own verdict, so its result.md is read again, and acted
+#              on only when the outcome in it CHANGED — through the same check.
 #   `reap`     asks the FORGE whether each concluded task's change request has
 #              merged, moves the ones that did to `landed`, and only then
 #              deletes their sessions and worktrees. A `push`, `note` or `none`
