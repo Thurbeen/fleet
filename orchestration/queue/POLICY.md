@@ -26,6 +26,18 @@ normal and expected.
 If your change conflicts with theirs, an ordinary rebase resolves it. Rebase
 onto your base branch before you start.
 
+## Nothing private or local-only goes public
+
+Assume every repo you publish to is public. Commits, code comments, docs,
+fixtures, pull request bodies and every comment you post must not carry
+anything private or local-only: machine or host names, usernames and home paths,
+IP addresses and network names, account or secret-store names, session ids,
+local evidence paths, or anything read from the control plane's own records
+and configuration. Describe what was measured, not which machine it was
+measured on. Search your diff and your text for such details before you push
+or post. The operator's `OPERATOR.md`, when your brief names one, lists the
+concrete terms.
+
 ## Gate locally before you push
 
 Run the repo's own gate and make it green first. In this control plane that is
