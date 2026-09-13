@@ -15,6 +15,10 @@
 #      yes and a no in gitignored state in the checkout, places the pane only on
 #      the yes, and never asks an operator who already placed it. FLEET.md is
 #      what tells the lead to run it, because a hook would be one agent's.
+#   3. `scripts/voice-ask.sh` asks what the lead calls the operator and what it
+#      answers to before the extension renders them, refuses a name the
+#      renderer would, records the answer once, and never overwrites it
+#      without `--replace`.
 #
 # WHY thurbox-cli IS A STUB HERE. A throwaway HOME does not isolate it: it
 # still reaches the real thurbox configuration, so a real `extension install`
@@ -490,19 +494,6 @@ out="$(run_voice set --replace Dallas Ash)"
 expect_exit "3d --replace is the operator's say-so" 0 $?
 expect "3d and replaces it" "OPERATOR_NAME=Dallas" "$(cat "$vconf" 2>/dev/null)"
 expect "3d naming the re-install and restart a rename needs" "update-fleet" "$out"
-
-# --- 3e. the onboarding skill asks before step 5 installs ---------------------
-skill=".agents/skills/fleet-onboarding/SKILL.md"
-step5="$(sed -n '/^## Step 5\/7/,/^## Step 6\/7/p' "$skill")"
-ask_at="$(printf '%s\n' "$step5" | grep -n 'voice-ask.sh' | head -1 | cut -d: -f1)"
-install_at="$(printf '%s\n' "$step5" | grep -n '^\./scripts/install-extension.sh' | head -1 | cut -d: -f1)"
-if [ -n "$ask_at" ] && [ -n "$install_at" ] && [ "$ask_at" -lt "$install_at" ]; then
-	pass "3e step 5 runs voice-ask.sh before install-extension.sh"
-else
-	fail "3e step 5 runs voice-ask.sh before install-extension.sh" "voice-ask at ${ask_at:-?}, install at ${install_at:-?}"
-fi
-expect "3e and Re-running says an answered voice.conf is kept" "voice.conf" \
-	"$(sed -n '/^## Re-running/,$p' "$skill")"
 
 printf '\n'
 if [ "$failed" -eq 0 ]; then

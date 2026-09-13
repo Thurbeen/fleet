@@ -106,7 +106,7 @@ set)
 	printf 'recorded: the lead calls the operator %s and answers to %s (%s)\n' "$op" "$lead" "$CONF"
 
 	# A lead rendered before this answer keeps the names it was rendered with.
-	if [ "$replace" -eq 1 ] || [ -f FLEET.rendered.md ]; then
+	if [ -f FLEET.rendered.md ]; then
 		printf 'A lead that is already running still uses the old names: re-install and restart it,\n'
 		printf 'which .agents/skills/update-fleet/ owns.\n'
 	else
