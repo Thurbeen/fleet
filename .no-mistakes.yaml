@@ -15,9 +15,11 @@
 
 commands:
   # scripts/check.sh IS the repo's gate — shellcheck, rumdl over every tracked
-  # markdown file, a YAML parse of the whole tree plus the registry's shape,
-  # the session profiles, the task queue, and the skills-symlink check. Named
-  # explicitly rather than left to agent
+  # markdown file, a YAML parse of the whole tree, the session profiles, the
+  # task queue, the skills-symlink check, and isolation, which proves the gate
+  # itself reads no operator state. It reads no live queue record and no
+  # registry map either — those are `./scripts/fleet-status.sh --records`, the
+  # operator's own health check. Named explicitly rather than left to agent
   # detection so the step is deterministic, and pointed at the same script CI
   # and the prek hooks run, so a green local run and a green pull request mean
   # the same thing. That parity matters more here than in most repos: CI only
