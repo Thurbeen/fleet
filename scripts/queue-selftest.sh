@@ -3643,13 +3643,13 @@ expect "and it was spoken to throughout, so that silence means something" \
 	"ToBase64String" "$(cat "$sshstate/me@winbox.commands" 2>/dev/null)"
 
 # (j) THE TRUST DIALOG ON A WINDOWS PANE. Two things about it were observed on
-#     windows-hp and each broke the handoff on its own: psmux captures the pane
-#     with every space gone, so a signature spelled with spaces never matched;
-#     and the Claude Code there draws the dialog with the selector already on
-#     "Yes", where the table's `down enter` selects "No, exit" and the agent
-#     exits. Both layouts are driven here, against session-trust.sh itself; the
-#     stub pane never changes, so each run ends "still on the pane" and names
-#     the keys it sent, which is the claim.
+#     a Windows 11 host and each broke the handoff on its own: psmux captures
+#     the pane with every space gone, so a signature spelled with spaces never
+#     matched; and the Claude Code there draws the dialog with the selector
+#     already on "Yes", where the table's `down enter` selects "No, exit" and
+#     the agent exits. Both layouts are driven here, against session-trust.sh
+#     itself; the stub pane never changes, so each run ends "still on the pane"
+#     and names the keys it sent, which is the claim.
 tsession=dddddddd-dddd-dddd-dddd-dddddddddddd
 printf '{"id":"%s","name":"trust","state":"unreported","agent":"claude","hook_reported":false}\n' \
 	"$tsession" >"$sessions/$tsession.json"

@@ -264,7 +264,7 @@ fi
 #
 # WHITESPACE IS NOT PART OF THE MATCH, on either side. psmux 3.3.6 — the
 # multiplexer of a Windows host — captures Claude Code's dialog with every
-# space gone (`❯1.Yes,Itrustthisfolder`, observed on windows-hp 2026-09-12),
+# space gone (`❯1.Yes,Itrustthisfolder`, seen on a Windows 11 host 2026-09-12),
 # so a signature spelled with spaces never matched there and the worker sat on
 # its dialog unprompted. Stripping both sides changes nothing a tmux pane
 # matched, and it also survives a dialog wrapped at the pane's width.
@@ -304,8 +304,8 @@ answer() {
 	keys="${keyseqs[$i]}"
 	# WHERE THE SELECTOR ALREADY IS, for claude, and it outranks the table. The
 	# folder-trust dialog above defaults to "No, exit"; the one Claude Code
-	# 2.1.247 draws on windows-hp (2026-09-12) is numbered and defaults to the
-	# other option:
+	# 2.1.247 draws on a Windows 11 host (2026-09-12) is numbered and defaults
+	# to the other option:
 	#
 	#     ❯ 1. Yes, I trust this folder
 	#       2. No, exit
