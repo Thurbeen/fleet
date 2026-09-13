@@ -12,6 +12,12 @@ The machinery is tracked; what a running fleet writes is not — this repo is
 public, and that content is not something to publish. `.gitignore`'s header
 names every path and the reason for each.
 
+- `pyproject.toml`, `uv.lock` and `fleet/` — fleet is a uv project, and
+  `uv run fleet <group> …` is its one command on Linux and native Windows.
+  `fleet/cli.py` loads the `scripts/lib/` modules by path, and
+  `scripts/queue.sh` and `scripts/fleet-status.sh` forward to it with the same
+  arguments, output and exit code. `tests/test_cli.py` holds that, and
+  `check.sh cli` runs it.
 - `registry/owners.txt` — the GitHub owners the map covers, one per line.
   `registry/owners.example.txt` is the tracked copy it starts from.
 - `registry/repos.generated.yaml` — generated index of every repo under those

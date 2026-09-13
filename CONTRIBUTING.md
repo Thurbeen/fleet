@@ -165,12 +165,15 @@ with why the path cannot be a `~`. Raise it only alongside the reason.
 
 ## Dependencies
 
-Two dependency surfaces, both pinned and both kept current by
+Three dependency surfaces, all pinned and all kept current by
 [Renovate](https://renovatebot.com) (`renovate.json`): the GitHub Actions used
 by CI, pinned by commit SHA with the version in a trailing comment — a tag
-reference in a workflow is a bug — and `rumdl`, pinned by version in
+reference in a workflow is a bug — `rumdl`, pinned by version in
 `RUMDL_VERSION` in `ci.yml`, tracked by a custom regex manager since Renovate
-has no built-in manager for a version in an `env:` block.
+has no built-in manager for a version in an `env:` block, and the Python
+dependencies in `pyproject.toml` and the committed `uv.lock` (PyYAML, and the
+`uv_build` build backend), which Renovate's default PEP 621 manager picks up
+with no custom rule.
 
 ## Prose
 

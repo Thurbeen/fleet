@@ -49,7 +49,8 @@
 # Environment: FLEET_QUEUE_DIR, honoured exactly as scripts/queue.sh honours
 # it, and FLEET_REGISTRY_FILE, which relocates the registry map the same way.
 #
-# Requires: python3 (with PyYAML). thurbox-cli, gh, git and quota-axi are each
+# Requires: uv. This script forwards to `uv run fleet status` with the same
+# arguments, output and exit code, as scripts/queue.sh does. thurbox-cli, gh, git and quota-axi are each
 # optional and cost only their own section — quota-axi in particular is a tool
 # on the operator's PATH, never a dependency this repo vendors.
 # scripts/fleet-status-selftest.sh proves it.
@@ -65,9 +66,10 @@ case "${1:-}" in
 	;;
 esac
 
-if ! command -v python3 >/dev/null; then
-	echo "error: python3 not found" >&2
+if ! command -v uv >/dev/null; then
+	echo "error: uv not found" >&2
 	exit 2
 fi
 
-exec python3 scripts/lib/fleet_status.py "$@"
+# The flags are scripts/queue.sh's, for its reasons.
+exec uv run --frozen --quiet fleet status "$@"

@@ -32,9 +32,11 @@
 #             answer, never the operator's; one that wants its own still
 #             exports it afterwards.
 #
-# WHAT IT KEEPS: PATH, and PYTHONUSERBASE. Where the tools are installed is not
-# operator state, and a PyYAML installed with `pip --user` lives under the real
-# HOME this replaces.
+# WHAT IT KEEPS: PATH, PYTHONUSERBASE, and uv's cache and Python directories.
+# Where the tools are installed is not operator state: a PyYAML installed with
+# `pip --user` lives under the real HOME this replaces, and so do the PyYAML and
+# the Python every `uv run` behind scripts/queue.sh would otherwise fetch again
+# for each copy of the tree a selftest builds.
 
 selftest_isolate() {
 	local dir="$1" repo i
@@ -42,6 +44,14 @@ selftest_isolate() {
 
 	if [ -z "${PYTHONUSERBASE:-}" ] && command -v python3 >/dev/null; then
 		PYTHONUSERBASE="$(python3 -m site --user-base 2>/dev/null)" && export PYTHONUSERBASE
+	fi
+	if command -v uv >/dev/null; then
+		if [ -z "${UV_CACHE_DIR:-}" ]; then
+			UV_CACHE_DIR="$(uv cache dir 2>/dev/null)" && export UV_CACHE_DIR
+		fi
+		if [ -z "${UV_PYTHON_INSTALL_DIR:-}" ]; then
+			UV_PYTHON_INSTALL_DIR="$(uv python dir 2>/dev/null)" && export UV_PYTHON_INSTALL_DIR
+		fi
 	fi
 
 	mkdir -p "$dir/home/.config" "$dir/home/.cache" "$dir/home/.local/share" \

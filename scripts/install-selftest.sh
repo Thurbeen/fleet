@@ -139,6 +139,7 @@ stub "$bin" python3 'case "$1" in
   --version) echo "Python 3.13.0" ;;
   -c) case "$2" in *yaml*) echo "6.0.1" ;; esac ;;
 esac'
+stub "$bin" uv 'echo "uv 0.12.13"'
 stub "$bin" apt-get 'exit 0'
 # `extension install` drains stdin on purpose. Under `curl | sh` the script IS
 # stdin, and an installer that lets a child read it loses every line after that

@@ -162,6 +162,7 @@ stub "$full" python3 'case "$1" in
   --version) echo "Python 3.13.0" ;;
   -c) case "$2" in *yaml*) echo "6.0.1" ;; esac ;;
 esac'
+stub "$full" uv 'echo "uv 0.12.13"'
 stub "$full" thurbox-cli "echo 'thurbox-cli $floor'"
 stub "$full" git 'echo "git version 2.43.0"'
 stub "$full" quota-axi 'echo "0.1.41"'

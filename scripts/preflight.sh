@@ -209,10 +209,20 @@ have required jq \
 	"scripts/sync-registry.sh and scripts/install-extension.sh read JSON with it" \
 	"${jq_install:-see https://jqlang.github.io/jq/download/}"
 
+# uv has a package on Arch and Homebrew. Everywhere else its own installer is
+# the command, and on Windows (Git Bash or MSYS) it is winget.
+case "$(uname -s 2>/dev/null)" in
+MINGW* | MSYS* | CYGWIN*) uv_install="winget install --id astral-sh.uv -e" ;;
+*) uv_install="$(pkg_cmd '' '' uv uv)" ;;
+esac
+have required uv \
+	"scripts/queue.sh and scripts/fleet-status.sh run \`fleet\` through it, with the Python and PyYAML uv.lock pins" \
+	"${uv_install:-curl -LsSf https://astral.sh/uv/install.sh | sh}"
+
 yaml_install="$(pkg_cmd python3-yaml python3-pyyaml python-yaml '')"
 py_install="$(pkg_cmd python3 python3 python python3)"
 if have required python3 \
-	"the queue, the forge seam and the status screen are Python" \
+	"scripts/session-flags.sh, the reconciler's lead notice and the gate still call it directly" \
 	"${py_install:-see https://www.python.org/downloads/}"; then
 	if python3 -c 'import yaml' >/dev/null 2>&1; then
 		record required PyYAML ok "$(python3 -c 'import yaml; print(yaml.__version__)' 2>/dev/null)" \

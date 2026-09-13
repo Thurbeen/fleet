@@ -1640,7 +1640,7 @@ refute "and does not reject the alias alongside it" "'no-mistakes'" "$out"
 nogh="$tmp/nogh-bin"
 noghq="$tmp/nogh-queue"
 mkdir -p "$nogh"
-for t in bash dirname python3 git; do ln -sf "$(command -v "$t")" "$nogh/$t"; done
+for t in bash dirname uv git; do ln -sf "$(command -v "$t")" "$nogh/$t"; done
 nq() { env PATH="$nogh" FLEET_QUEUE_DIR="$noghq" ./scripts/queue.sh "$@"; }
 
 nq topic add offline --prompt 'collect on a machine with no forge to ask' >/dev/null
@@ -1672,6 +1672,10 @@ mkdir -p "$bare/scripts/lib" "$bare/orchestration/queue"
 cp scripts/queue.sh "$bare/scripts/queue.sh"
 for lib in queue.py forge.py; do
 	ln -s "$PWD/scripts/lib/$lib" "$bare/scripts/lib/$lib"
+done
+# The project queue.sh forwards to, so `uv run fleet` finds this clone's.
+for f in pyproject.toml uv.lock fleet; do
+	ln -s "$PWD/$f" "$bare/$f"
 done
 cat >"$bare/orchestration/queue/POLICY.md" <<'EOF'
 # Standing policy for fleet workers
@@ -2030,6 +2034,10 @@ mkdir -p "$fake/scripts/lib" "$fake/deep/sub/dir"
 cp scripts/queue.sh "$fake/scripts/queue.sh"
 for lib in queue.py forge.py; do
 	ln -s "$PWD/scripts/lib/$lib" "$fake/scripts/lib/$lib"
+done
+# And the project queue.sh forwards to, anchored the same way.
+for f in pyproject.toml uv.lock fleet; do
+	ln -s "$PWD/$f" "$fake/$f"
 done
 FAKEQ="$fake/scripts/queue.sh"
 

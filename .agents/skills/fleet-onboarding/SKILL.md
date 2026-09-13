@@ -61,7 +61,7 @@ missing or a `thurbox-cli` is below the manifest's floor.
 
 | Tier | What it means |
 |---|---|
-| required | fleet cannot run — `git`, `gh` (authenticated), `jq`, `python3` + PyYAML, `thurbox-cli` |
+| required | fleet cannot run — `git`, `gh` (authenticated), `jq`, `uv`, `python3` + PyYAML, `thurbox-cli` |
 | recommended | a named capability degrades — `quota-axi` for fuel and `refuel`, `glab` for GitLab |
 | gate | only `./scripts/check.sh` needs it — `lua`, `shellcheck`, `rumdl`, `prek`, plus the git commit-signing configuration, which is not a tool |
 

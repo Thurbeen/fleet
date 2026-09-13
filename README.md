@@ -101,12 +101,12 @@ What it needs, and what it will tell you itself:
 ./scripts/preflight.sh --commands # exactly what to run for the ones missing
 ```
 
-`git`, `gh` (authenticated), `jq`, `python3` with PyYAML and `thurbox-cli`
-**2.19.0 or newer** are required; `quota-axi` and `glab` are recommended, and
-each names what degrades without it. `gh` is not optional even on a GitLab-only
-fleet — it is what builds the repo map. A `glab` that is logged in is also the
-configuration: fleet asks it which GitLab instances this machine holds, so a
-self-hosted one needs no variable exported for it.
+`git`, `gh` (authenticated), `jq`, `uv`, `python3` with PyYAML and
+`thurbox-cli` **2.19.0 or newer** are required; `quota-axi` and `glab` are
+recommended, and each names what degrades without it. `gh` is not optional even
+on a GitLab-only fleet — it is what builds the repo map. A `glab` that is logged
+in is also the configuration: fleet asks it which GitLab instances this machine
+holds, so a self-hosted one needs no variable exported for it.
 
 That done, open the Mission Control session in thurbox and give it a goal.
 

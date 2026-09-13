@@ -1,0 +1,18 @@
+[project]
+name = "fleet"
+version = "0.0.0"
+description = "A control plane that orchestrates and maps projects through thurbox."
+requires-python = ">=3.11"
+dependencies = ["pyyaml>=6.0.3"]
+
+[project.scripts]
+fleet = "fleet.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.12.13,<0.13"]
+build-backend = "uv_build"
+
+# The package sits at the top of the checkout, beside the scripts/lib/ modules
+# it dispatches to, rather than under src/.
+[tool.uv.build-backend]
+module-root = ""

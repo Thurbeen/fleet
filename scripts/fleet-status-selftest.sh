@@ -99,7 +99,7 @@ sandbox() {
 	printf '%s\n' "$dir"
 }
 
-BASE_TOOLS=(bash env sh python3 git dirname basename awk sed cat grep ps uname)
+BASE_TOOLS=(bash env sh uv python3 git dirname basename awk sed cat grep ps uname)
 bare="$(sandbox "$tmp/bin-bare" "${BASE_TOOLS[@]}")"
 stubbed="$(sandbox "$tmp/bin-stubbed" "${BASE_TOOLS[@]}")"
 
