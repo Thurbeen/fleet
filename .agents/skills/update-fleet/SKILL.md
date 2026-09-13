@@ -244,6 +244,12 @@ and this skill changes no tracked state. Print what failed and hand it over.
 
 A green gate is worth one line. A red one is worth the failing check's output.
 
+**The gate says nothing about the operator's own records** — it reads no queue
+record and no registry map, so its verdict here is the verdict CI gave. Whether
+those are sound after the sync is `./scripts/fleet-status.sh --records`: report
+its two lines, and a problem there as one in the records, not in what
+arrived.
+
 ## 8. Hand over the stale lead — the step that cannot be automated
 
 If an `INSTRUCTION_PATH` moved, the running Mission Control session **froze

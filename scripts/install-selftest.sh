@@ -40,14 +40,10 @@ set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 2
 REPO="$PWD"
 
-# The caller's git and gh environment decide nothing here; see
-# onboarding-selftest.sh, which argues each of these.
-unset GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GH_TOKEN GITHUB_TOKEN GH_HOST GITLAB_HOST
+# The caller's git and forge environment decide nothing here either:
+# scripts/lib/selftest-env.sh clears them once the temp directory exists, and
+# onboarding-selftest.sh argues each one.
 unset FLEET_DIR FLEET_REPO FLEET_BRANCH
-for ((_i = 0; _i <= ${GIT_CONFIG_COUNT:-0}; _i++)); do
-	unset "GIT_CONFIG_KEY_$_i" "GIT_CONFIG_VALUE_$_i"
-done
-unset GIT_CONFIG_COUNT _i
 
 nl=$'\n'
 failed=0
@@ -88,6 +84,9 @@ tmp="$(mktemp -d)"
 # Resolved, so a path printed by a script compares equal to the one built here
 # on a machine whose temp directory is a symlink.
 tmp="$(cd "$tmp" && pwd -P)"
+# shellcheck source=scripts/lib/selftest-env.sh
+. scripts/lib/selftest-env.sh
+selftest_isolate "$tmp/env"
 
 # --- the sandbox --------------------------------------------------------------
 

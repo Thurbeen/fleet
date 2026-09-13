@@ -957,10 +957,12 @@ it existed.
 So **the repo does not back your queue up.** Say that plainly when someone
 assumes otherwise; `.gitignore`'s header owns the reasoning.
 
-`./scripts/check.sh queue` validates your records and re-proves the ordering and
-wake claims against a throwaway queue. It runs in the gate, so a change that
-quietly makes the queue serialize by default fails there rather than in a run
-six weeks later.
+`./scripts/check.sh queue` re-proves the ordering and wake claims against a
+throwaway queue. It runs in the gate, so a change that quietly makes the queue
+serialize by default fails there rather than in a run six weeks later. It does
+**not** read your records — the gate reads no operator state, so one commit gets
+one verdict in every checkout. `./scripts/fleet-status.sh --records` validates
+them, and `./scripts/queue.sh check` lists every problem.
 
 ## The loop
 

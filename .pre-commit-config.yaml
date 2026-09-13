@@ -27,7 +27,7 @@ repos:
         pass_filenames: false
 
       - id: yaml
-        name: YAML parses, registry shape holds
+        name: YAML parses
         entry: ./scripts/check.sh yaml
         language: system
         files: '\.ya?ml$'

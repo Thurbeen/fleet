@@ -147,12 +147,12 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 2
 # own commit signing must not reach it: `commit.gpgsign = true` with the key
 # scoped by an `includeIf gitdir:` block makes every commit here fail with
 # `either user.signingkey or gpg.ssh.defaultKeyCommand needs to be configured`
-# and surfaces as a dozen unrelated-looking queue failures. The
-# GIT_CONFIG_COUNT triple outranks every config file, including a
-# GIT_CONFIG_GLOBAL the caller set, so this settles it for the whole run.
-export GIT_CONFIG_COUNT=1
-export GIT_CONFIG_KEY_0=commit.gpgsign
-export GIT_CONFIG_VALUE_0=false
+# and surfaces as a dozen unrelated-looking queue failures. Neither may a real
+# ~/.config/thurbox/hosts.toml, a forge login, or the THURBOX_SESSION of the
+# worker running the gate. scripts/lib/selftest-env.sh settles all of it for
+# the whole run, as soon as $tmp exists.
+# shellcheck source=scripts/lib/selftest-env.sh
+. scripts/lib/selftest-env.sh
 
 QUEUE="./scripts/queue.sh"
 nl=$'\n'
@@ -203,6 +203,7 @@ for tool in python3 git jq; do
 done
 
 tmp="$(mktemp -d)"
+selftest_isolate "$tmp/env"
 export FLEET_QUEUE_DIR="$tmp/queue"
 # Run logs go to a throwaway directory too (test 12). Without this, every run
 # of this file would scaffold logs into the operator's own orchestration/runs/.

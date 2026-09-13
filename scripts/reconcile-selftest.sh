@@ -102,6 +102,11 @@ wait_for() {
 }
 
 tmp="$(mktemp -d)"
+# Nothing of this machine's or this checkout's operator reaches this run;
+# scripts/lib/selftest-env.sh says what that covers.
+# shellcheck source=scripts/lib/selftest-env.sh
+. scripts/lib/selftest-env.sh
+selftest_isolate "$tmp/env"
 calls="$tmp/calls"
 : >"$calls"
 

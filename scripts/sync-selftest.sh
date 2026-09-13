@@ -155,6 +155,12 @@ head_of() { git -C "$1" rev-parse HEAD 2>/dev/null; }
 printf '\n§1 a reachable origin is never reported as unreachable\n'
 
 tmp="$(mktemp -d)"
+# Every case builds repos, so the host's global git config — signing, hooks,
+# a default branch — must not reach them; scripts/lib/selftest-env.sh says
+# what else it keeps out.
+# shellcheck source=scripts/lib/selftest-env.sh
+. scripts/lib/selftest-env.sh
+selftest_isolate "$tmp/env"
 r1="$tmp/case1"
 mkdir -p "$r1"
 new_repo "$r1"

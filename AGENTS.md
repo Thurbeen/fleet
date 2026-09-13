@@ -285,6 +285,13 @@ runs it, the prek hooks run it, and `.no-mistakes.yaml` points its `lint`
 command at it, so a green local run and a green pull request mean the same
 thing.
 
+**The gate reads no operator state** — not the queue's records, the registry
+map, a gitignored `*.conf`, your HOME or your git config — so one commit gets
+one verdict in a worker's worktree, on CI and in this checkout alike.
+`./scripts/fleet-status.sh --records` is where your live records are validated
+now; `check.sh isolation` is what keeps the gate from reading them
+again, and every selftest goes through `scripts/lib/selftest-env.sh`.
+
 Changes that open a pull request land by **squash merge** — the only merge
 method the remote allows — so the pull request title becomes the commit on
 `main`. `CONTRIBUTING.md` owns that process.

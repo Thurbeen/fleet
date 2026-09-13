@@ -6833,6 +6833,24 @@ def cmd_check(args) -> int:
         print(f"queue check: ok — {root} not created yet, nothing to validate")
         return 0
 
+    q, problems = record_problems(root)
+    for line in problems:
+        print(f"    {line}", file=sys.stderr)
+    if problems:
+        print(f"queue check: {len(problems)} problem(s)", file=sys.stderr)
+        return 1
+    print(f"queue check: ok — {len(q.topics)} topic(s), {len(q.tasks)} task(s) in {root}")
+    return 0
+
+
+def record_problems(root: str) -> tuple["Queue", list]:
+    """The queue under `root`, and every way one of its records is wrong.
+
+    `queue.sh check` prints these, and `scripts/fleet-status.sh` reports them —
+    which is where the OPERATOR'S records are validated. The code gate
+    validates none: they are live data in one checkout, and a gate that read
+    them gave one commit a different verdict there than on CI.
+    """
     # `all`: a record does not stop being a record because its topic left the
     # default view, and a check that only validated what is on screen would go
     # quiet about exactly the records nobody is looking at.
@@ -6907,14 +6925,7 @@ def cmd_check(args) -> int:
     cycle = find_cycle(q)
     if cycle:
         problems.append("blocker cycle: " + " -> ".join(cycle))
-
-    for line in problems:
-        print(f"    {line}", file=sys.stderr)
-    if problems:
-        print(f"queue check: {len(problems)} problem(s)", file=sys.stderr)
-        return 1
-    print(f"queue check: ok — {len(q.topics)} topic(s), {len(q.tasks)} task(s) in {root}")
-    return 0
+    return q, problems
 
 
 def cmd_root(args) -> int:
