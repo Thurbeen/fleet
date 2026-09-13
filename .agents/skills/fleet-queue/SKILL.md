@@ -119,7 +119,7 @@ rule to remember:
 | what | when | what you get |
 |---|---|---|
 | the host must be known | `add` | the name is checked against `hosts.toml`, and the refusal lists the hosts that do exist |
-| POSIX hosts only | `add` | a host with a non-`tmux` `multiplexer` is how `hosts.toml` spells a Windows host, and is refused by name. Every remote command fleet runs is POSIX shell |
+| a shell fleet can speak | `add` | the `multiplexer` says which: `tmux` is a POSIX host, `psmux` is native Windows and is spoken to in PowerShell. Any other is refused by name |
 | session sharing must be on | `add` | `share_sessions = false` switches off the delegation that lets `session capture` see that pane, so the trust dialog could not be answered and the worker would stall unread |
 
 **Credentials are never moved.** The host needs its OWN credentials for the forge
@@ -378,7 +378,7 @@ order, and one NO stops that task where it stands — still `queued`, so fixing
 the host and re-running `dispatch` sends it:
 
 ```text
-    reachable   it answers ssh, and answers as a POSIX shell
+    reachable   it answers ssh, in the shell its multiplexer says it speaks
     repo        --repo is a git checkout at that path ON THAT MACHINE
     forge       it has credentials of its own for the forge THAT repo's `origin`
                 names — an ssh key, or a `gh` / `glab` login

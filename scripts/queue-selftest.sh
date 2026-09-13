@@ -546,6 +546,12 @@ script="\$prev"
 	exit 255
 }
 
+# A Windows host: sshd there hands the command to PowerShell 5. Its own
+# program, below, because it decodes what it is sent rather than matching it.
+[ -f "$sshstate/\$dest.windows" ] && {
+	exec python3 "$sshbin/windows-host.py" "$remotes" "$sshstate" "\$dest" "\$script"
+}
+
 # A real shell on a fake host. sshd runs the account's login shell as
 # \`<shell> -c <script>\` — NOT as a login shell and not interactively, which is
 # the whole of defect 2 — so that is exactly what this does.
@@ -591,11 +597,84 @@ esac
 SH
 chmod +x "$sshbin/ssh"
 
+# The Windows host, `<dest>.windows`. It answers ONLY what a PowerShell 5 sshd
+# answers: a command that is not `powershell ... -EncodedCommand <base64>` is
+# POSIX shell sent to the wrong machine, and it fails the way it fails there —
+# and is logged to `<dest>.posix`, the tripwire, so a POSIX command reaching
+# this host is a named failure rather than an empty answer. A command that IS
+# encoded is decoded from UTF-16LE and answered on what it asks, and the brief
+# push and result fetch move real bytes through base64 into $remotes, with the
+# host's `C:\...` spelled as a directory tree under it.
+cat >"$sshbin/windows-host.py" <<'PY'
+import base64
+import os
+import re
+import sys
+
+remotes, state, dest, script = sys.argv[1:5]
+PREFIX = "powershell -NoProfile -NonInteractive -EncodedCommand "
+
+
+def flag(name):
+    return os.path.exists(os.path.join(state, f"{dest}.{name}"))
+
+
+def local(path):
+    return os.path.join(remotes, dest, path.replace(":", "").replace("\\", "/").lstrip("/"))
+
+
+def literal(pattern, body):
+    m = re.search(pattern + r"'((?:[^']|'')*)'", body)
+    return m.group(1).replace("''", "'") if m else ""
+
+
+if not script.startswith(PREFIX):
+    with open(os.path.join(state, f"{dest}.posix"), "a") as fh:
+        fh.write(script + "\n")
+    word = (script.split() or ["?"])[0]
+    sys.stderr.write(
+        f"{word} : The term '{word}' is not recognized as the name of a cmdlet, "
+        "function, script file, or operable program.\n"
+    )
+    sys.exit(1)
+
+body = base64.b64decode(script[len(PREFIX):]).decode("utf-16-le")
+with open(os.path.join(state, f"{dest}.commands"), "a") as fh:
+    fh.write(body + "\n---\n")
+
+if "fleet-powershell-ok" in body:
+    print("fleet-powershell-ok")
+elif "'no-dir'" in body:
+    if flag("norepo"):
+        print("no-dir")
+        sys.exit(1)
+    print("ok")
+elif "with an ssh key" in body:
+    if flag("noforge"):
+        print("github.com|`gh`")
+        sys.exit(1)
+    print("github.com with an ssh key")
+elif "FromBase64String" in body:
+    target = local(literal(r"WriteAllBytes\(", body))
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    with open(target, "wb") as fh:
+        fh.write(base64.b64decode(sys.stdin.read().strip()))
+    print("fleet-wrote")
+elif "ToBase64String" in body:
+    target = local(literal(r"-LiteralPath ", body))
+    if not os.path.isfile(target):
+        print("fleet-no-file")
+        sys.exit(1)
+    with open(target, "rb") as fh:
+        print(base64.b64encode(fh.read()).decode("ascii"))
+PY
+
 # The hosts thurbox is told about, in hosts.toml's own shape. `devbox` is the
 # ordinary POSIX host; `profilebox` is the same shape with a real shell behind
-# it (`.realshell` above), for the login-`PATH` question; the last two are the
-# shapes fleet refuses outright, and both refusals happen at `add` time without
-# any host being contacted.
+# it (`.realshell` above), for the login-`PATH` question; `winbox` is a Windows
+# host, answered by `windows-host.py` above; the last two are the shapes fleet
+# refuses outright, and both refusals happen at `add` time without any host
+# being contacted.
 cat >"$tmp/hosts.toml" <<'EOF'
 [[hosts]]
 name = "devbox"
@@ -609,6 +688,11 @@ destination = "me@profilebox"
 name = "winbox"
 destination = "me@winbox"
 multiplexer = "psmux"
+
+[[hosts]]
+name = "oddbox"
+destination = "me@oddbox"
+multiplexer = "zellij"
 
 [[hosts]]
 name = "lonebox"
@@ -633,6 +717,7 @@ echo fleet-fake-agent 1.2.3
 EOF
 chmod +x "$profilehome/.local/bin/fleet-fake-agent"
 : >"$sshstate/me@profilebox.realshell"
+: >"$sshstate/me@winbox.windows"
 
 # --- `quota-axi`, stubbed on PATH for the whole run --------------------------
 #
@@ -2991,11 +3076,12 @@ rtopic="$($QUEUE topic add run-somewhere-else \
 	2>/dev/null)"
 
 # (a) The refusals that cost nothing, all at `add` time and none of them
-#     touching a host: a name thurbox does not know, a Windows host, and a
-#     host whose session sharing is off — which is the trust dialog, decided.
+#     touching a host: a name thurbox does not know, a multiplexer fleet has no
+#     shell for, and a host whose session sharing is off — which is the trust
+#     dialog, decided. A Windows host is NOT one of them any more; (i) drives it.
 for spec in \
 	"nosuch:no host named" \
-	"winbox:POSIX hosts only" \
+	"oddbox:has no shell for" \
 	"lonebox:share_sessions = false"; do
 	IFS=: read -r hname want <<<"$spec"
 	if out="$($QUEUE add "$rtopic" "reject-$hname" --title "Reject $hname" \
@@ -3255,6 +3341,196 @@ expect "and the result fetched back is byte-for-byte what was written" \
 	"same=True" "$bytes_moved"
 refute "with none of the profile's own greeting in it" \
 	"Welcome to profilebox" "$bytes_moved"
+
+# (i) A WINDOWS HOST, driven through its own shell. `winbox` runs `psmux`,
+#     which is how hosts.toml says native Windows, and its sshd answers in
+#     PowerShell 5 (`windows-host.py` above). The claims of (d) to (g) again,
+#     and two that only a Windows host can make false:
+#
+#     nothing POSIX ever reaches it. The stub logs any command that is not
+#       `-EncodedCommand` to `me@winbox.posix`, the tripwire, and the first
+#       claim below proves that tripwire fires, so its silence later means
+#       something.
+#     the bytes survive the trip. PowerShell's console code page is not UTF-8,
+#       and neither a brief nor a result is ASCII.
+#
+#     In a queue of its own, for (b)'s reason: `dispatch` acts on every ready
+#     task in the queue it is pointed at.
+export FLEET_QUEUE_DIR="$tmp/queue-windows"
+
+misdeclared="$(python3 - <<'PY'
+import sys
+
+sys.path.insert(0, "scripts/lib")
+import queue as q
+
+entry, why = q.host_entry("winbox")
+entry = dict(entry, multiplexer="tmux")
+last = q.probe_host(entry, "/srv/code/app")[-1]
+print("%s|%s|%s" % (last["check"], last["ok"], last["detail"]))
+PY
+)"
+expect "a Windows host hosts.toml calls \`tmux\` is caught at the first probe" \
+	"posix shell|False|the host answered ssh but did not print the POSIX shell sentinel" \
+	"$misdeclared"
+if [ -s "$sshstate/me@winbox.posix" ]; then
+	pass "and the tripwire saw the POSIX command that reached it"
+else
+	fail "the tripwire saw the POSIX command that reached it" "me@winbox.posix is empty"
+fi
+: >"$sshstate/me@winbox.posix"
+
+wtopic="$($QUEUE topic add run-on-windows --title 'Run a task on Windows' \
+	--prompt 'fleet should dispatch to a psmux host — café ✓' 2>/dev/null)"
+winrepo='C:\Users\me\src\widget'
+if out="$($QUEUE add "$wtopic" build-on-winbox --title 'Build it on winbox' \
+	--repo "$winrepo" --host winbox --branch fix/build-on-winbox --number 30 2>&1)"; then
+	pass "a psmux host is accepted at add time"
+else
+	fail "a psmux host is accepted at add time" "$out"
+fi
+# A second task, held on a condition, so this topic is not FINISHED when the
+# Windows task lands: a topic whose every task is terminal archives itself in
+# that same pass, and `reap` loads live topics only, so a session it kept for a
+# host that was down would never be looked at again.
+$QUEUE add "$wtopic" hold-topic-open --title 'Hold the topic open' \
+	--repo /tmp/repo-a --branch fix/hold-topic-open --number 31 >/dev/null
+$QUEUE block "$wtopic/31-hold-topic-open" --condition 'the Windows claims have run' \
+	--kind other --why 'keeps this topic live, so reap still sees the Windows session' \
+	>/dev/null
+wtask="$FLEET_QUEUE_DIR/$wtopic/30-build-on-winbox"
+# shellcheck disable=SC2016 # the `$` and the backticks are the brief's own text
+printf '%s\n' 'Build the thing on winbox: naïve café ✓, "double", $dollar, `tick`.' \
+	>"$wtask/BRIEF.md"
+
+out="$($QUEUE dispatch --dry-run 2>&1)"
+expect "its dry run says fleet will speak PowerShell to it" "speaking PowerShell" "$out"
+refute "and never plans a POSIX copy onto it" "cat > <worktree>" "$out"
+
+for spec in \
+	"down:reachable:No route to host" \
+	"norepo:repo:does not exist on that host" \
+	"noforge:forge:credentials of its own"; do
+	IFS=: read -r flag probe want <<<"$spec"
+	: >"$sshstate/me@winbox.$flag"
+	out="$($QUEUE dispatch 2>&1)"
+	expect "a Windows host that fails the \`$probe\` probe is not spawned" "NOT SPAWNED" "$out"
+	expect "and that probe says why, in the same words a POSIX host's does: $probe" \
+		"$want" "$out"
+	rm -f "$sshstate/me@winbox.$flag"
+done
+
+wsession=bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
+wworktree='C:\Users\me\AppData\Local\thurbox\worktrees\widget-5678\fix-build-on-winbox'
+winfs="$remotes/me@winbox/C/Users/me/AppData/Local/thurbox/worktrees/widget-5678/fix-build-on-winbox"
+printf '{"id":"%s","created":true}\n' "$wsession" >"$tmp/next-session.json"
+python3 - "$sessions/$wsession.json" "$wsession" "$winrepo" "$wworktree" <<'PY'
+import json
+import sys
+
+path, sid, repo, wt = sys.argv[1:5]
+with open(path, "w") as fh:
+    json.dump({"id": sid, "name": "Build it on winbox", "state": "working",
+               "agent": "claude", "hook_reported": True,
+               "worktrees": [{"repo_path": repo, "worktree_path": wt,
+                              "branch": "fix/build-on-winbox"}]}, fh)
+PY
+
+out="$($QUEUE dispatch 2>&1)"
+expect "every probe passes, in PowerShell" "reachable: answers ssh, PowerShell" "$out"
+expect "and the brief is copied to the host" "brief copied to me@winbox" "$out"
+for name in BRIEF.md POLICY.md PROMPT.md; do
+	case "$name" in
+	BRIEF.md) src="$wtask/BRIEF.md" ;;
+	POLICY.md) src="$PWD/orchestration/queue/POLICY.md" ;;
+	PROMPT.md) src="$FLEET_QUEUE_DIR/$wtopic/PROMPT.md" ;;
+	esac
+	if cmp -s "$src" "$winfs/$name"; then
+		pass "$name lands in the Windows worktree byte for byte"
+	else
+		fail "$name lands in the Windows worktree byte for byte" \
+			"$(ls -l "$winfs" 2>&1)"
+	fi
+done
+wrecord="$(python3 - "$wtask/task.yaml" <<'PY'
+import sys
+
+import yaml
+
+rec = yaml.safe_load(open(sys.argv[1]))["remote"]
+print(rec["brief"])
+print(rec["result"])
+PY
+)"
+expect "the record names the brief in the host's own spelling" \
+	"$wworktree\\BRIEF.md" "$wrecord"
+expect "and the result beside it, where collect will look" \
+	"$wworktree\\result.md" "$wrecord"
+
+python3 - "$winfs/result.md" <<'PY'
+import sys
+
+with open(sys.argv[1], "wb") as fh:
+    fh.write(("---\noutcome: shipped\n"
+              "artifact: https://github.com/remote-owner/app/pull/4343\n---\n"
+              "Built it on winbox \u2014 caf\u00e9 \u2713.\r\nWritten by Windows.\r\n").encode())
+PY
+pipeline_pr 4343 fix/build-on-winbox
+cat >"$sessions/$wsession.json" <<EOF
+{"id":"$wsession","name":"Build it on winbox","state":"idle","agent":"claude"}
+EOF
+out="$($QUEUE collect 2>&1)"
+expect "collect fetches a Windows worker's result" "result fetched from me@winbox" "$out"
+expect "and closes the task on it, exactly as it would locally" "shipped" "$out"
+if cmp -s "$winfs/result.md" "$wtask/result.md"; then
+	pass "the fetched result is the bytes the worker wrote, CRLF and all"
+else
+	fail "the fetched result is the bytes the worker wrote" \
+		"$(od -c "$wtask/result.md" 2>&1 | tail -4)"
+fi
+
+echo MERGED >"$states/4343.state"
+: >"$sshstate/me@winbox.down"
+out="$($QUEUE reap 2>&1)"
+expect "a session on an unreachable Windows host is kept" "unreachable: host winbox" "$out"
+rm -f "$sshstate/me@winbox.down"
+expect "and released once it answers again" "reaped" "$($QUEUE reap 2>&1)"
+
+if [ -s "$sshstate/me@winbox.posix" ]; then
+	fail "no POSIX command ever reached the Windows host" "$(cat "$sshstate/me@winbox.posix")"
+else
+	pass "no POSIX command ever reached the Windows host"
+fi
+expect "and it was spoken to throughout, so that silence means something" \
+	"ToBase64String" "$(cat "$sshstate/me@winbox.commands" 2>/dev/null)"
+
+# (j) THE TRUST DIALOG ON A WINDOWS PANE. Two things about it were observed on
+#     windows-hp and each broke the handoff on its own: psmux captures the pane
+#     with every space gone, so a signature spelled with spaces never matched;
+#     and the Claude Code there draws the dialog with the selector already on
+#     "Yes", where the table's `down enter` selects "No, exit" and the agent
+#     exits. Both layouts are driven here, against session-trust.sh itself; the
+#     stub pane never changes, so each run ends "still on the pane" and names
+#     the keys it sent, which is the claim.
+tsession=dddddddd-dddd-dddd-dddd-dddddddddddd
+printf '{"id":"%s","name":"trust","state":"unreported","agent":"claude","hook_reported":false}\n' \
+	"$tsession" >"$sessions/$tsession.json"
+
+printf '%s\n' 'Quicksafetycheck:Isthisaprojectyoucreatedoroneyoutrust?' \
+	'❯1.Yes,Itrustthisfolder' '2.No,exit' '' 'Entertoconfirm·Esctocancel' \
+	>"$panes/$tsession.txt"
+out="$(./scripts/session-trust.sh --timeout 3 "$tsession" 2>&1)"
+refute "a dialog psmux captured with its spaces gone is still seen" \
+	"no trust dialog seen" "$out"
+expect "and with the selector already on Yes, Enter alone answers it" \
+	"sent 'enter' but" "$out"
+
+printf '%s\n' 'Quick safety check: Is this a project you created or one you trust?' \
+	'❯ No, exit' '  Yes, I trust this folder' 'Enter to confirm · Esc to cancel' \
+	>"$panes/$tsession.txt"
+expect "while a dialog defaulting to No still moves down to Yes first" \
+	"sent 'down enter' but" "$(./scripts/session-trust.sh --timeout 3 "$tsession" 2>&1)"
+rm -f "$panes/$tsession.txt" "$sessions/$tsession.json"
 
 # --- 12. refuel: the account window first, then the session that ran dry -----
 #

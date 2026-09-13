@@ -231,14 +231,15 @@
 # because it injects into the lead's terminal whatever machine it comes from.
 #
 # Three probes run before anything is spawned, and one failure stops that task
-# where it stands: the host answers ssh as a POSIX shell, the repo is a
+# where it stands: the host answers ssh in the shell it speaks, the repo is a
 # checkout at that path, and it has credentials OF ITS OWN for the forge that
 # repo's `origin` names — GitHub or GitLab. The repo is asked about before its
 # forge because which forge to prove a credential against is a fact about that
 # checkout's origin, so it cannot be asked before the checkout is known to
-# exist. Fleet never sends credentials anywhere. POSIX hosts only — a Windows
-# host (hosts.toml spells one with a non-tmux `multiplexer`) is refused by
-# name.
+# exist. Fleet never sends credentials anywhere. A `tmux` host is spoken to in
+# POSIX shell and a `psmux` one — how hosts.toml spells native Windows — in
+# PowerShell, through one seam (`HostShell` in scripts/lib/queue.py); any other
+# multiplexer is refused by name.
 #
 # TWO THINGS ABOUT A REMOTE SPAWN THAT ARE NOT OPTIONS. It gets no `--parent`:
 # thurbox refuses a parent that lives on another host and the lead is local, so
