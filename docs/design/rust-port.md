@@ -17,13 +17,14 @@ selftests under both implementations, and retires `queue.py` writer by writer.
 |---|---|---|
 | What the contract is | The files on disk, down to the line shapes other readers parse. The binary is one reader and writer among several | §2.1, §3 |
 | Schema evolution | `schema:` on every record; normalise once, at the read boundary; unknown fields survive a rewrite; migrate lazily on write; never write a record newer than the binary | §2.2 |
+| Session release | A held session is a fact about its task, swept across archived topics too. A host that reports no state is an `Unobservable` session state, not a missing one | §3 |
 | Script paths | Every entry point in `scripts/` stays as a forwarder, and during the port routes each verb to one implementation | §2.3 |
 | Crate shape | One crate, library plus binary, in this repository under `crates/fleet/`; modules mirror today's seams | §5 |
 | thurbox coupling | Shell out to `thurbox-cli` behind a trait. Do not link the `0.0.0-dev` crate | §4 |
 | Seams | Traits for forge, agent, thurbox, host transport and quota. Out-of-tree forges become executables speaking JSON, replacing Python plugin files | §4 |
 | CLI | AXI: TOON by default, `--json` frozen where something already parses it, `fleet` alone shows status, help examples executed in CI | §6 |
 | Tests | The bash selftests are the conformance suite. `FLEET_IMPL` points them at either implementation, and a verb switches only when its sections pass under Rust | §7 |
-| Portability | std plus a short crate list replaces `timeout`, `jq`, `sed`, `find`, `mktemp` and `date`. `git`, `ssh`, `gh`, `glab`, `thurbox-cli` and `quota-axi` stay processes. Windows is pending on `remote-host-support/02-02` | §8 |
+| Portability | std plus a short crate list replaces `timeout`, `jq`, `sed`, `find`, `mktemp` and `date`. `git`, `ssh`, `gh`, `glab`, `thurbox-cli` and `quota-axi` stay processes. Dispatch to a Windows host goes through a `HostShell` seam (#80). fleet runs on Windows under WSL; native Windows can only come with retiring Python | §4, §8 |
 | Distribution | Prebuilt binaries from fleet's own release workflow, modelled on thurbox's. The checkout pins the version it was written for. `update-fleet` is a fast-forward, then a fetch of the pinned binary | §9 |
 | Port order | Prep in Python → records and read-only verbs → reconciler → release and install path → queue writers, lowest blast radius first → retire Python | §10 |
 
@@ -346,7 +347,42 @@ than install anything the owner rewrites.
 | `layout.lua`, in thurbox's interface directory | the operator | `place-pane.sh` writes a guarded block after a yes and a backup, then verifies with `lua` and `plugin check` | Same steps; `lua` stays an external check |
 | `plugins.toml` and plugin files | thurbox | `thurbox-cli plugin install` and `remove` | Same |
 | `<TRANSCRIPT_DIR>/<agent_session_id>.jsonl` | the agent | `refuel` reads rate-limit records | Same, through the `Agent` seam |
-| `<worktree>/BRIEF.md` and `result.md` on a remote host | that host | copied with `ssh … 'cat >'`, fetched with `ssh … cat` | Same, through the `Host` seam |
+| `<worktree>/BRIEF.md` and `result.md` on a remote host | that host | on a POSIX host, copied with `ssh … 'cat >'` and fetched with `ssh … cat`; on a psmux host, base64 bytes inside a UTF-16LE `-EncodedCommand` (#80) | Same, through `Host` and `HostShell` |
+
+### Runtime edges the port models rather than inherits
+
+Running a real Windows host (`remote-host-support/02-02`, #80) found two
+sessions that are never released. Both live in the gap between a task's record
+and the session it holds, and today's Python carries them as behaviour nobody
+chose.
+
+- **A host that reports no state.** thurbox turns hook status off on psmux
+  hosts, so a Windows worker's session reads `unreported` for good and never
+  `idle`. `collect` still closes the task on its `result.md`. But `reap`
+  releases only a session it has seen at rest, so the session of a landed
+  Windows task stays until the operator deletes it.
+- **An archived topic still holding a session.** When a topic's last remote
+  task lands while its host is down, `reap` rightly keeps the session, because
+  it cannot reach the host. The topic archives in that same pass, and later
+  passes load only live topics, so nothing ever looks at that session again.
+
+The design:
+
+- **A held session is a fact about the task, not a view of its topic.** A task
+  holds a session while `session` is set and it has no `reaped` block, whatever
+  its topic's `archived` says. `reap` sweeps held sessions across every topic,
+  archived ones included, so archiving hides a topic from views and ends no
+  obligation. Refusing to archive instead was rejected: a host that stays down
+  would pin a finished topic in every default view.
+- **"Cannot observe" is a state of its own.** The session-state type separates
+  `Unobservable`, a host known not to report hook state, from `Unreported`, a
+  session thurbox has not heard from yet. The port does not invent what `reap`
+  does with the unobservable session of a landed task. Until the operator picks
+  a rule (§13), it keeps the session as today and says so in `list` and `show`,
+  so the leak is visible instead of silent.
+- **Both are bugs today, so each gets a failing selftest and a fix in Python
+  first**, in step 0 of §10. The port then carries the fixed behaviour, proven
+  by the same sections.
 
 ## 4. Seams stay seams
 
@@ -363,18 +399,27 @@ Every seam in the binary is held to it.
 | Seam | Implementations shipped | Configured by | Test double |
 |---|---|---|---|
 | `Forge` | GitHub through `gh`; GitLab through `glab`, with hosts from `glab auth status` | the host in a `RepoId`; `GH_HOST`, `GITLAB_HOST` | stub CLIs on `PATH`; an external forge process |
-| `Agent` | one entry per agent fleet has watched: limit banner, transcript layout, trust dialog | `agent.conf` | an `agent.conf` describing a fake agent, as selftest §12b does |
+| `Agent` | one entry per agent fleet has watched: limit banner, transcript layout, trust dialog. Trust signatures match with whitespace removed, because psmux captures panes without spaces. The accepting keys can differ by platform: Claude Code on Windows already has "Yes" selected | `agent.conf` | an `agent.conf` describing a fake agent, as selftest §12b does; both trust-dialog layouts, as #80's §11(j) does |
 | `Publish` | the closed set of shapes `pr`, `attested` and `push`. An enum, not a trait: a shape is a fact about an artifact, and the tool is free text | `publish.conf` | fixtures |
 | `Thurbox` | `thurbox-cli`, as a process | `PATH`; `min_thurbox_version` | a stub `thurbox-cli`; `FLEET_QUEUE_WATCH_CMD` |
-| `Host` | local; or ssh, through a POSIX login shell for lookups and without one for copying bytes | the host's entry in `hosts.toml` | a stub `ssh` |
+| `Host` | local, or ssh | the host's entry in `hosts.toml` | a stub `ssh` |
+| `HostShell` | `PosixShell`: a POSIX login shell for lookups, none for copying bytes. `PowerShell`: UTF-16LE `-EncodedCommand`, file bytes as base64 both ways, `\` in paths. Any other multiplexer is refused by name | the host's `multiplexer` (`tmux` or `psmux`), confirmed by the first probe | a fake PowerShell host behind the stub `ssh` that decodes `-EncodedCommand` and logs any unencoded command as a POSIX tripwire, as #80's §11(i) does |
 | `Quota` | `quota-axi` | `FUEL_PROVIDER`, `AGENT_PROVIDERS` | a stub `quota-axi` |
 
-Three decisions follow.
+Four decisions follow.
 
 **"Could not tell" is in the type.** Every seam method returns its answer or a
 reason, as `Result<T, CouldNotTell>`, and nothing converts a reason into a
 verdict. `forge.py` says a timeout must never be able to manufacture a merge;
 in Rust, code that tried would not compile.
+
+**Nothing crosses to a host as text.** `HostShell` takes and returns bytes for
+every file it moves, and base64 is the wire format on a shell that re-encodes
+its console. PowerShell 5 pipes stdin and stdout through the `ibm850` code
+page, so a string handed to it loses every non-ASCII character. Callers never
+pass a shell command string either: each implementation builds the commands it
+sends, so no POSIX syntax can reach a PowerShell host. The tripwire in the test
+double is what proves that holds.
 
 **Out-of-tree forges become processes.** Today `FLEET_FORGE_PLUGINS` names
 Python files that export `forges()`, and the selftest drives the whole queue
@@ -585,6 +630,7 @@ and it is what makes the port safe, so it is not rewritten during it.
 | `awk` | 9 | Gone, like `sed` |
 | `date -d` | the pane's probe, scripts | `jiff` |
 | `setsid`, `kill -0`, `nohup` | the reconciler | A detached child through `process-wrap`; the loop is alive while its lock on `reconcile/lock` is held |
+| `cat >`, `cat`, `printf`, `[ -d ]` sent over ssh | remote probes, brief copy, result fetch | `HostShell` (§4): the same POSIX commands, or PowerShell through `-EncodedCommand` with base64 bytes, as #80 builds |
 | `python3` and PyYAML | every queue verb | Gone once the last verb is ported, and not before |
 
 These stay external processes, deliberately:
@@ -592,10 +638,10 @@ These stay external processes, deliberately:
 - **`git`**, not `gix` or `git2`. fleet needs worktrees, the operator's
   credential helpers and ssh config, and exactly the git behaviour thurbox's
   workers get.
-- **`ssh`**, the system OpenSSH client, which Windows also ships. A remote host
-  is reached through the account's POSIX login shell for lookups, and without
-  one for copying bytes. `queue.py` already makes that case, and it carries over
-  unchanged.
+- **`ssh`**, the system OpenSSH client, which Windows also ships. What runs on
+  the far side is `HostShell`'s business (§4): a POSIX login shell for lookups
+  and none for bytes, or PowerShell. `queue.py` already makes both cases, and
+  they carry over unchanged.
 - **`thurbox-cli`**, **`gh`**, **`glab`** and **`quota-axi`**, the seams of §4.
 - **`lua`**, **`shellcheck`** and **`rumdl`**, for the gate only.
 
@@ -606,22 +652,51 @@ Two things the binary does not fix on its own:
 - **The forwarders are bash.** On a machine without bash, the `./scripts/…`
   strings in instructions do not run, whatever the binary can do.
 
-**Windows is pending on `remote-host-support/02-02-psmux-and-windows`.** That
-task answers whether fleet can dispatch to a Windows host and whether fleet can
-run on Windows. It had not written its result when this document was written.
+**Windows, as answered by `remote-host-support/02-02-psmux-and-windows`.** It
+asked two questions, and they have different answers.
 
-Decided regardless:
+**Dispatching to a Windows host is contained, and #80 (open) builds it in
+Python.** On `windows-hp` (PowerShell 5.1, psmux 3.3.6), all three POSIX
+couplings the old refusal named were real:
 
-- the binary builds for `x86_64-pc-windows-msvc` from the start, as thurbox's
-  does;
-- records are written with `\n` line endings on every platform;
-- the reconciler's liveness is a file lock, so it needs no Unix signals;
-- a Windows host is already spelled in `hosts.toml` as a non-`tmux`
-  multiplexer, and the `Host` seam keeps that.
+- the probes used `printf` and `[ -d ]`, which PowerShell does not have;
+- the brief copy used `cat > path`, which writes nothing there;
+- the result fetch used `cat path`.
 
-Waiting on that result: whether fleet itself runs on Windows. That decides
-whether forwarders get `.cmd` twins, and whether the bash suite needs a second
-harness.
+A fourth coupling was never named: psmux captures panes with spaces stripped,
+so the trust signature never matched. #80 adds a `HostShell` seam, proven live:
+the probes ran, a 6.2 KB brief and result with non-ASCII text and CRLF line
+endings came back byte-identical, and a real trust dialog was answered. The
+port takes that seam over as `HostShell` (§4), with its rules:
+
+- file bytes cross as bytes, base64 on the wire, never as a string through a
+  console code page;
+- each implementation builds the commands it sends, so no POSIX syntax reaches
+  a PowerShell host;
+- matching against a captured pane ignores whitespace, because the multiplexer
+  decides what a capture keeps;
+- records the control plane writes keep `\n`, while a `result.md` fetched from
+  a Windows host is stored as it came, CRLF included, so its reader accepts
+  `\r\n`.
+
+The same run exposed two sessions that are never released; §3's runtime edges
+model them.
+
+**Running fleet on Windows works under WSL with no code change**, since fleet
+and thurbox both run as Linux inside the distro. Natively it is a port, not a
+seam: about 14.5k lines of bash, Python that shells out to `session-flags.sh`
+and `session-trust.sh`, and a bash supervisor loop. That port is this one, so:
+
+- **WSL is how fleet runs on Windows**, now and for the length of the port.
+- **Native Windows can only arrive with step 5 of §10.** Until Python is
+  retired, the forwarders are bash and `dispatch` shells out to bash, so no
+  earlier step can run natively.
+- **The binary still builds for `x86_64-pc-windows-msvc` from the start.** It is
+  cheap in CI and keeps Unix-only calls out of the code: the reconciler's
+  liveness is a file lock, and `process-wrap` uses job objects. Building it is
+  not a claim that it is supported.
+- **`.cmd` twins for the forwarders and a second test harness wait** until
+  native Windows is wanted (§13).
 
 ## 9. Distribution and update
 
@@ -719,7 +794,8 @@ pain, and `queue.py` last. This design keeps the reconciler early and
 flowchart TD
   P0["0. Prep, no Rust: schema, normalise at read, preserved fields in
   queue.py; the queue lock; the forge process protocol; no test imports
-  queue.py; forwarders route through fleet-bin"]
+  queue.py; HostShell from #80; fixes for the two unreleased sessions;
+  forwarders route through fleet-bin"]
   P1["1. Records and read-only verbs: queue root, list, show, plan, check;
   fleet status. Built locally, opt-in with FLEET_IMPL=rust"]
   P2["2. Reconciler: ensure, start, stop, status, nudge, hook, logs;
@@ -744,6 +820,11 @@ pass, then change its output to AXI in a follow-up.
 While a verb is being ported, its Python is frozen. A fix lands in Rust and
 switches that verb to Rust, rather than being written twice. A fix too urgent to
 wait for parity goes to Python, and is ported along with the verb.
+
+Python's `dispatch` shells out to `session-flags.sh` and `session-trust.sh`,
+and that needs no special ordering. Step 3 ports both behind their forwarders,
+so Python keeps calling the same paths until step 4 ports `dispatch` itself and
+the calls become function calls.
 
 ## 11. Costs
 
@@ -773,6 +854,10 @@ wait for parity goes to Python, and is ported along with the verb.
   Windows until that is revisited.
 - **fleet maintains its own emitter.** Matching PyYAML's output shape takes a
   small module, and no crate maintains that module for fleet.
+- **Windows hosts are proven on one machine.** #80's live proof is `windows-hp`
+  alone, with no Windows CI. A full worker run there, PowerShell 7 as the sshd
+  shell, a GitLab origin and a non-22 ssh port were not tested. `HostShell` in
+  Rust inherits that gap until a Windows runner exists.
 
 ## 12. Lock-in register
 
@@ -792,11 +877,16 @@ wait for parity goes to Python, and is ported along with the verb.
 | fleet's own release workflow, GitHub releases only | reach through package managers | Low: add channels later, or move to a shared reusable workflow |
 | Shelling out to `git`, not `gix` | a binary with no git dependency | Low, behind one module |
 | The bash selftests as the conformance suite | running the tests natively on Windows | High: a 6,248-line rewrite, and an optional one |
+| `HostShell` picked by the host's multiplexer (inherited from #80) | a Windows host whose sshd shell is not what its multiplexer implies, such as `cmd` | Low: a third implementation, or a `shell` key in the host's entry |
+| WSL as the way fleet runs on Windows | native Windows during the port | Nothing to keep; reversing it is the port itself, at step 5 |
 | `process-wrap`, `jiff` (pre-1.0), `serde-saphyr`, `toon-format` (pre-1.0) | nothing structural | Low each: each is used from one module |
 
 ## 13. Open questions
 
-1. **Windows.** Pending on `remote-host-support/02-02-psmux-and-windows` (§8).
+1. **The unobservable session of a landed task** (§3). Keep it and say so, as
+   the port does by default? Release it on a rule, such as a pane capture that
+   has not changed across two `reap` passes? Or ask thurbox to report hook state
+   on psmux hosts, which removes the question?
 2. **The binary's name.** Other tools install a binary called `fleet`. Keeping
    it inside the checkout makes a collision rarer, not impossible.
 3. **Lost run-log edits.** Is §3's hash check worth having, or is "the fence is
@@ -806,6 +896,8 @@ wait for parity goes to Python, and is ported along with the verb.
    also glances at `fleet status`. Is there a `--human` rendering, or is TOON
    for everyone?
 6. **After Python.** Port the bash suite to Rust integration tests, or keep it?
+7. **Native Windows.** Is it wanted at all after step 5, given WSL works? The
+   answer decides `.cmd` forwarders and a second test harness.
 
 ## Versions checked
 
