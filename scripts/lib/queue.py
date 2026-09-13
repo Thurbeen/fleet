@@ -94,8 +94,8 @@ from datetime import datetime, timezone
 import yaml
 
 
-def _load_forge():
-    """Load scripts/lib/forge.py beside this file, under a name of its own.
+def _load_sibling(name: str, filename: str):
+    """Load a module from scripts/lib beside this file, under a name of its own.
 
     Not a plain `import forge`: this file is loaded three ways — as `queue` off
     `scripts/lib` on sys.path, and by `fleet_status.py` and the pane harness
@@ -104,12 +104,12 @@ def _load_forge():
     shares ONE registry, and therefore one answer about which forges are
     configured.
     """
-    if "fleet_forge" in sys.modules:
-        return sys.modules["fleet_forge"]
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "forge.py")
-    spec = importlib.util.spec_from_file_location("fleet_forge", path)
+    if name in sys.modules:
+        return sys.modules[name]
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
+    spec = importlib.util.spec_from_file_location(name, path)
     mod = importlib.util.module_from_spec(spec)
-    sys.modules["fleet_forge"] = mod
+    sys.modules[name] = mod
     spec.loader.exec_module(mod)
     return mod
 
@@ -120,7 +120,12 @@ def _load_forge():
 # FORGE_PROBE_TEMPLATE's ssh check below, which is a different coupling (git
 # hosting, not the forge API) and reads the repository's own `origin` rather
 # than naming a forge.
-forge = _load_forge()
+forge = _load_sibling("fleet_forge", "forge.py")
+
+# WHICH OS. Every place this file behaves differently on POSIX and Windows —
+# where thurbox keeps its config, how a record reaches the disk — it asks this
+# module, and nothing here reads `os.name`.
+fleet_platform = _load_sibling("fleet_platform", "fleet_platform.py")
 
 # The four conditions that justify making one task wait for another. They are
 # firstmate's, and they are a closed set on purpose: "these edit the same file"
@@ -1044,10 +1049,7 @@ def read_yaml(path: str) -> dict:
 
 def write_yaml(path: str, doc: dict, header: str) -> None:
     body = yaml.safe_dump(doc, sort_keys=False, default_flow_style=False)
-    tmp = path + ".tmp"
-    with open(tmp, "w") as fh:
-        fh.write(header.rstrip() + "\n" + body)
-    os.replace(tmp, path)
+    fleet_platform.write_record(path, header.rstrip() + "\n" + body)
 
 
 TASK_HEADER = """\
@@ -1576,8 +1578,7 @@ def cmd_topic_add(args) -> int:
         },
         TOPIC_HEADER,
     )
-    with open(os.path.join(path, "PROMPT.md"), "w") as fh:
-        fh.write(prompt.rstrip() + "\n")
+    fleet_platform.write_record(os.path.join(path, "PROMPT.md"), prompt.rstrip() + "\n")
 
     # Opening a topic is where a run begins, so it is where its log begins —
     # nobody has to decide to make one. On stderr because stdout is the VALUE
@@ -1809,8 +1810,7 @@ def cmd_add(args) -> int:
 
     os.makedirs(path)
     task.save()
-    with open(task.file("BRIEF.md"), "w") as fh:
-        fh.write(text)
+    fleet_platform.write_record(task.file("BRIEF.md"), text)
 
     print(task.ref)
     return 0
@@ -2255,9 +2255,6 @@ SSH_CONNECTION_FAILED = 255
 SSH_GUARD_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]
 SSH_TIMEOUT = 60
 
-HOSTS_TOML_FALLBACK = os.path.expanduser("~/.config/thurbox/hosts.toml")
-
-
 # THE SHELL EVERY REMOTE COMMAND RUNS IN, and the reason it is not the default
 # one. `ssh host 'cmd'` gets a shell that is neither a login shell nor an
 # interactive one: none of the account's profile has run, so `PATH` is the bare
@@ -2358,7 +2355,7 @@ def thurbox_config() -> dict:
 def hosts_file() -> str:
     """Where thurbox reads hosts.toml — asked of thurbox rather than assumed."""
     path = ((thurbox_config().get("paths") or {}).get("hosts_toml")) or ""
-    return str(path) or HOSTS_TOML_FALLBACK
+    return str(path) or os.path.join(fleet_platform.thurbox_config_dir(), "hosts.toml")
 
 
 def host_entry(name: str) -> tuple[dict | None, str]:
@@ -2977,8 +2974,7 @@ def pull_remote_result(task: Task) -> str:
     text, why = fetch_result(entry, str(src))
     if text is None:
         return ""  # not there yet is the normal state of a working task
-    with open(task.file("result.md"), "w") as fh:
-        fh.write(text)
+    fleet_platform.write_record(task.file("result.md"), text)
     return f"result fetched from {rec.get('destination')}:{src}"
 
 
@@ -3580,8 +3576,7 @@ def record_event(task: Task, ev: dict) -> None:
         "observed": now(),
     }
     try:
-        with open(task.file("progress.jsonl"), "a") as fh:
-            fh.write(json.dumps(entry) + "\n")
+        fleet_platform.append_record(task.file("progress.jsonl"), json.dumps(entry) + "\n")
     except OSError as exc:
         raise QueueError(
             f"{task.ref}: could not append to progress.jsonl: {exc}\n"
@@ -3970,8 +3965,9 @@ def record_publish(task: Task, state: str, detail: str, by: str, extra: dict | N
     block.update({"state": state, "detail": detail, "at": now(), "by": by, **(extra or {})})
     task.doc["publish"] = block
     task.save()
-    with open(task.file("progress.jsonl"), "a") as fh:
-        fh.write(json.dumps({"publish": dict(block), "observed": now()}) + "\n")
+    fleet_platform.append_record(
+        task.file("progress.jsonl"), json.dumps({"publish": dict(block), "observed": now()}) + "\n"
+    )
 
 
 def report_unverified(task: Task, url, detail: str) -> None:
@@ -5856,7 +5852,7 @@ def next_fix_file(task: Task, condition: str) -> str:
 
 
 def fixer_worktrees_root() -> str:
-    """Where `branch_checkout` cuts a fixer's checkout: fleet's XDG data directory.
+    """Where `branch_checkout` cuts a fixer's checkout: fleet's data directory.
 
     OUTSIDE every checkout, which is the point. It used to be
     `queue_root()/.worktrees`, inside the control plane, and Claude Code walks
@@ -5868,10 +5864,7 @@ def fixer_worktrees_root() -> str:
 
     `release_fixer_checkouts` is what takes it back once the task lands.
     """
-    data = os.environ.get("XDG_DATA_HOME") or os.path.join(
-        os.path.expanduser("~"), ".local", "share"
-    )
-    return os.path.join(data, "fleet", "worktrees")
+    return os.path.join(fleet_platform.fleet_data_dir(), "worktrees")
 
 
 def branch_checkout(repo: str, branch: str, slug: str) -> tuple[str, str]:
@@ -6071,8 +6064,9 @@ def record_shepherd(task: Task, entry: dict | None) -> None:
     else:
         task.doc["shepherd"] = entry
     task.save()
-    with open(task.file("progress.jsonl"), "a") as fh:
-        fh.write(json.dumps({"shepherd": entry, "observed": now()}) + "\n")
+    fleet_platform.append_record(
+        task.file("progress.jsonl"), json.dumps({"shepherd": entry, "observed": now()}) + "\n"
+    )
 
 
 def rec_for(task, url: str) -> dict:
@@ -6272,8 +6266,7 @@ def shepherd_pr(cr: forge.ChangeRequest, task, args) -> dict:
 
     drift = base_drift(task.doc["repo"], base, branch) if condition == "conflicting" else ""
     path = next_fix_file(task, condition)
-    with open(path, "w") as fh:
-        fh.write(fixer_brief(task, cr, condition, detail, drift))
+    fleet_platform.write_record(path, fixer_brief(task, cr, condition, detail, drift))
 
     if reuse:
         ok, report = trust_and_send(
@@ -6705,10 +6698,7 @@ def refresh_run_log(q: Queue, slug: str) -> tuple[str, str]:
         return path, ""
 
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    tmp = path + ".tmp"
-    with open(tmp, "w") as fh:
-        fh.write(new)
-    os.replace(tmp, path)
+    fleet_platform.write_record(path, new)
     return path, verb
 
 
