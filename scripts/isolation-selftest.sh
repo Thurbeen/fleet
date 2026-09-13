@@ -276,7 +276,57 @@ fi
 
 # --- §3 every selftest isolates itself through that helper --------------------
 
-printf '\n§3 every selftest goes through the helper\n'
+printf '\n§3 every selftest calls the helper, under the hostile host\n'
+
+# Sources a selftest just far enough to run its REAL `selftest_isolate` call,
+# under the hostile host, then stops before whatever the selftest does next —
+# so this is cheap for queue-selftest.sh and reconcile-selftest.sh too. A
+# DEBUG trap with functrace sees every command, including inside the function
+# call: it records the call stack depth at the `selftest_isolate ...` line
+# itself, lets every command the function's body runs proceed untouched, and
+# only once the stack has unwound back to that depth — the selftest's own next
+# command — does it report what the call actually left behind and exit. A
+# selftest that never reaches the call, or one where the call is dead code or
+# in an unreached branch, never prints `isolated=yes` and runs to completion
+# (or its own failure) instead of stopping here.
+probe="$tmp/probe-isolate.sh"
+cat >"$probe" <<'BASH'
+set -uo pipefail
+set -o functrace
+target="$1"
+_seen=0
+_base=-1
+on_debug() {
+	local depth=${#FUNCNAME[@]}
+	if [ "$_seen" = 1 ] && [ "$depth" -le "$_base" ]; then
+		probe_repo="$(mktemp -d)"
+		(cd "$probe_repo" && git init -q p && cd p && printf x >f && git add f && git commit -qm probe) >/dev/null 2>&1
+		echo "isolated=yes"
+		echo "committed=$?"
+		echo "branch=$(git -C "$probe_repo/p" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+		echo "hooks=$(git -C "$probe_repo/p" config --get core.hooksPath 2>/dev/null)"
+		echo "home=$HOME"
+		echo "session=${THURBOX_SESSION:-}"
+		echo "token=${GH_TOKEN:-}${GITHUB_TOKEN:-}"
+		echo "forge=${GH_HOST:-}${GITLAB_HOST:-}"
+		echo "queuedir=${FLEET_QUEUE_DIR:-}"
+		rm -rf "$probe_repo"
+		exit 0
+	fi
+	if [ "$_seen" = 0 ]; then
+		case "$BASH_COMMAND" in
+		selftest_isolate\ *)
+			_seen=1
+			_base=$depth
+			;;
+		esac
+	fi
+}
+trap on_debug DEBUG
+# shellcheck disable=SC1090
+source "$target"
+echo "isolated=no-call-seen"
+BASH
 
 # The tree under test, not the copy: §1 swapped the copy's queue-selftest.sh
 # for a marker.
@@ -284,12 +334,17 @@ for s in scripts/*-selftest.sh; do
 	name="$(basename "$s")"
 	# This file builds the hostile host the helper exists to defeat.
 	[ "$name" = isolation-selftest.sh ] && continue
-	if grep -qE '^[[:space:]]*(\.|source)[[:space:]].*scripts/lib/selftest-env\.sh' "$s" &&
-		grep -qE '^[[:space:]]*selftest_isolate[[:space:]]' "$s"; then
-		pass "$name isolates itself through $helper"
-	else
-		fail "$name isolates itself through $helper (leak: host git config, HOME, forge credentials and THURBOX_SESSION reach it)"
-	fi
+	out="$(under_hostile bash "$probe" "$PWD/$s")"
+	expect "$name calls $helper's selftest_isolate for real (leak: the call is dead, unreached, or missing)" \
+		"isolated=yes" "$out"
+	expect "$name: and the call leaves a commit possible despite the hostile signing config" "committed=0" "$out"
+	expect "$name: and init.defaultBranch is not the hostile host's" "branch=main" "$out"
+	expect "$name: and no host hooksPath reaches a repo it builds after" "hooks=${nl}" "$out"
+	refute "$name: and HOME is not the hostile host's" "home=$hostile/home" "$out"
+	expect "$name: and no worker THURBOX_SESSION reaches it" "session=${nl}" "$out"
+	expect "$name: and no forge credential reaches it" "token=${nl}" "$out"
+	expect "$name: and no forge host override reaches it" "forge=${nl}" "$out"
+	refute "$name: and its queue lives outside the checkout's own" "queuedir=$PWD/orchestration/queue" "$out"
 done
 
 # --- §4 the selftests cheap enough to run twice, run poisoned -----------------
