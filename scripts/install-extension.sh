@@ -153,8 +153,11 @@ esac
 # The glyph setting, from the operator's own copy when there is one and from the
 # tracked defaults when there is not. Read as DATA and never sourced: this file
 # is a setting, and a setting that can execute is a different kind of file.
-GLYPH_CONF="$REPO_ROOT/orchestration/session-glyphs.conf"
-[ -f "$GLYPH_CONF" ] || GLYPH_CONF="$REPO_ROOT/orchestration/session-glyphs.example.conf"
+# FLEET_GLYPH_ROOT relocates it, as it does for queue.py's worker spawns, so the
+# gate's render reads the tracked default and never an operator's override.
+GLYPH_ROOT="${FLEET_GLYPH_ROOT:-$REPO_ROOT}"
+GLYPH_CONF="$GLYPH_ROOT/orchestration/session-glyphs.conf"
+[ -f "$GLYPH_CONF" ] || GLYPH_CONF="$GLYPH_ROOT/orchestration/session-glyphs.example.conf"
 [ -f "$GLYPH_CONF" ] || die "missing the glyph setting: $GLYPH_CONF"
 
 glyph_setting() {

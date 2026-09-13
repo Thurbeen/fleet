@@ -706,6 +706,63 @@ def probe_fuel_all() -> dict:
     return sec
 
 
+# --- records -----------------------------------------------------------------
+#
+# THE OPERATOR'S HEALTH CHECK. The live queue records and the registry map are
+# validated here, and nowhere in `scripts/check.sh`: the gate reads no operator
+# state, because a gate that did gave one commit a different verdict in the
+# control-plane checkout than on CI. A problem in this section is "your records
+# need attention", never "this commit is broken". Both validators are the ones
+# the rest of the repo uses — `queue.py`'s record_problems(), which
+# `queue.sh check` prints, and `check_yaml.py`'s registry_problems().
+#
+# ON REQUEST, NEVER ON THE SCREEN. Validating a record means opening it, and an
+# archived topic's task files are exactly the ones the screen promises never to
+# open — a finished topic costs one read of its topic.yaml. So this is
+# `--records`, and the screen stays the cheap reading.
+
+# Relocates the registry map, as FLEET_QUEUE_DIR relocates the queue.
+REGISTRY_ENV = "FLEET_REGISTRY_FILE"
+REGISTRY_FILE = os.path.join("registry", "repos.generated.yaml")
+RECORD_PROBLEMS_SHOWN = 8
+
+
+def _load_check_yaml():
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "check_yaml.py")
+    spec = importlib.util.spec_from_file_location("fleet_check_yaml", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def probe_records() -> dict:
+    sec: dict = {"unavailable": None, "queue": None, "registry": None}
+
+    root = os.path.abspath(fleetqueue.queue_root())
+    row = {"path": root, "summary": "", "problems": []}
+    if not os.path.isdir(root):
+        row["summary"] = "not created yet"
+    else:
+        try:
+            q, row["problems"] = fleetqueue.record_problems(root)
+            row["summary"] = f"{len(q.topics)} topic(s), {len(q.tasks)} task(s)"
+        except Exception as exc:  # a record too broken to load is a problem, not a crash
+            row["problems"] = [f"{root}: {exc}"]
+    sec["queue"] = row
+
+    path = os.environ.get(REGISTRY_ENV) or os.path.join(REPO_ROOT, REGISTRY_FILE)
+    row = {"path": path, "summary": "", "problems": []}
+    if not os.path.exists(path):
+        row["summary"] = "not synced yet — `sync-registry.sh`"
+    else:
+        try:
+            row["summary"], row["problems"] = _load_check_yaml().registry_problems(path)
+        except Exception as exc:
+            row["problems"] = [f"{path}: {exc}"]
+    sec["registry"] = row
+    return sec
+
+
 # --- rendering ---------------------------------------------------------------
 
 
@@ -768,6 +825,22 @@ def render_queue(sec: dict) -> list:
                 lines.append(f"        {note}")
     for risk in sec["risks"]:
         lines.append(f"  risk: {', '.join(risk['tasks'])} all touch {risk['touches']}")
+    return lines
+
+
+def render_records(sec: dict) -> list:
+    lines = [head("RECORDS", "your live queue and registry map, validated")]
+    for name, remedy in (("queue", "`queue.sh check` lists every one"),
+                         ("registry", "`sync-registry.sh` regenerates it")):
+        row = sec[name]
+        problems = row["problems"]
+        if not problems:
+            lines.append(cont(f"{name}: ok — {row['summary']}"))
+            continue
+        lines.append(cont(f"{name}: {len(problems)} problem(s) in {row['path']}"))
+        lines += [cont(f"  {p}") for p in problems[:RECORD_PROBLEMS_SHOWN]]
+        hidden = len(problems) - RECORD_PROBLEMS_SHOWN
+        lines.append(cont(f"  {f'and {hidden} more; ' if hidden > 0 else ''}{remedy}"))
     return lines
 
 
@@ -996,7 +1069,19 @@ def main(argv: list) -> int:
         help="only the fuel reading, as one blank-line-separated "
              "name<TAB>value record per provider",
     )
+    p.add_argument(
+        "--records", action="store_true",
+        help="validate your live queue records and registry map, and print only that",
+    )
     args = p.parse_args(argv)
+
+    if args.records:
+        sec = probe_records()
+        if args.json:
+            print(json.dumps(sec, indent=2))
+        else:
+            sys.stdout.write("\n".join(render_records(sec)) + "\n")
+        return 0
 
     # THE FUEL SECTION ALONE, AND AT ITS OWN COST. `--json` collects
     # everything, which is a `gh pr list` per repo in flight and a

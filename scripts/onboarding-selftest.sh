@@ -51,8 +51,8 @@
 #
 # Usage: scripts/onboarding-selftest.sh   (also: ./scripts/check.sh onboarding)
 #
-# Requires: bash, and the coreutils the scripts under test use. No thurbox, no
-# gh, no network.
+# Requires: bash, python3 (with PyYAML) for §4a's map shape, and the coreutils
+# the scripts under test use. No thurbox, no gh, no network.
 
 # Every stub body below is source for ANOTHER shell, so `$1` in one has to
 # survive into the file being written rather than expanding here.
@@ -65,29 +65,21 @@ REPO="$PWD"
 
 # EVERY git probe below is decided by the git ENVIRONMENT before any config
 # file gets a say: GIT_CONFIG_GLOBAL replaces ~/.gitconfig outright, and
-# GIT_CONFIG_COUNT/KEY_n/VALUE_n layer on top of everything. A caller that sets
-# either — `GIT_CONFIG_GLOBAL=/tmp/nosign ./scripts/check.sh onboarding` is how
-# this repo is gated on a machine whose signing is misconfigured — would
-# otherwise decide this script's answers for it: §1f's signing case AND §2's
-# fixture ~/.gitconfig both. Cleared ONCE, here, at the boundary they share.
-# §1f sets GIT_CONFIG_GLOBAL as a per-command prefix, which this does not touch.
-unset GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM
-for ((_i = 0; _i <= ${GIT_CONFIG_COUNT:-0}; _i++)); do
-	unset "GIT_CONFIG_KEY_$_i" "GIT_CONFIG_VALUE_$_i"
-done
-unset GIT_CONFIG_COUNT _i
-
+# GIT_CONFIG_COUNT/KEY_n/VALUE_n layer on top of everything, so a caller that
+# sets either would answer §1f's signing case AND §2's fixture ~/.gitconfig.
 # The same thing one seam over: §4 and §5 stub `gh` and decide which account
-# answers by the token the stub is handed, and three variables in the caller's
-# environment override that before the stub is ever reached. `GH_TOKEN` or
-# `GITHUB_TOKEN` short-circuits `gh_accounts` — both scripts then take the
-# active-session path and the stub matches the operator's REAL token against
-# fixture names — and `GH_HOST` moves which host's logins are enumerated, so
-# the fixture list under `github.com` comes back empty. `GITLAB_HOST` is the
-# same kind of decider one forge over: §6's rows branch on it, so an operator
-# who exports it would answer §6a and §6d for them. Cleared ONCE, here.
-# §6b and §6c set GITLAB_HOST as a per-command prefix, which this does not touch.
-unset GH_TOKEN GITHUB_TOKEN GH_HOST GITLAB_HOST
+# answers by the token the stub is handed. `GH_TOKEN` or `GITHUB_TOKEN`
+# short-circuits `gh_accounts` — both scripts then take the active-session path
+# and the stub matches the operator's REAL token against fixture names — and
+# `GH_HOST` moves which host's logins are enumerated, so the fixture list under
+# `github.com` comes back empty. `GITLAB_HOST` answers §6a and §6d.
+#
+# scripts/lib/selftest-env.sh clears all of them ONCE, as soon as the temp
+# directory exists, at the boundary every section shares. §1f's
+# GIT_CONFIG_GLOBAL and §6b/§6c's GITLAB_HOST are per-command prefixes, which it
+# does not touch.
+# shellcheck source=scripts/lib/selftest-env.sh
+. scripts/lib/selftest-env.sh
 
 nl=$'\n'
 failed=0
@@ -124,6 +116,7 @@ expect_exit() {
 }
 
 tmp="$(mktemp -d)"
+selftest_isolate "$tmp/env"
 
 # A PATH built from nothing, so "missing" means missing even here. Only the
 # utilities the scripts under test actually call are linked in; a tool a test
@@ -634,6 +627,15 @@ for owner in octo acme-org client-org employer-org; do
 			"sync said:${nl}$out"
 	fi
 done
+
+# 4a. And the map has the shape the control plane reads. The gate no longer
+# validates the operator's own map — that is `fleet-status.sh --records` — so
+# this is where the generator and the validator are held to one shape.
+if shape="$(python3 scripts/lib/check_yaml.py --registry "$map" 2>&1)"; then
+	pass "4a the generated map has the shape the control plane reads"
+else
+	fail "4a the generated map has the shape the control plane reads" "$shape"
+fi
 
 # 4b. The `no accessible repos` warning now means ONE thing. It is still
 # printed for an owner nothing reaches — that is the typo signal and the only

@@ -209,7 +209,7 @@
 #                        default view; refuses one with a live task
 #   scripts/queue.sh unarchive <topic>    # put it back in every view
 #   scripts/queue.sh show <ref>           # one task's whole record, archived or not
-#   scripts/queue.sh check                # validate every record (./scripts/check.sh queue)
+#   scripts/queue.sh check                # validate every record (fleet-status.sh --records)
 #   scripts/queue.sh root [--foreign]     # the resolved queue directory,
 #                        absolute; --foreign instead names the control plane,
 #                        and exits 0, only when this checkout is not it

@@ -72,6 +72,11 @@ for tool in python3 git; do
 done
 
 tmp="$(mktemp -d)"
+# Nothing of this machine's or this checkout's operator reaches this run;
+# scripts/lib/selftest-env.sh says what that covers.
+# shellcheck source=scripts/lib/selftest-env.sh
+. scripts/lib/selftest-env.sh
+selftest_isolate "$tmp/env"
 export FLEET_QUEUE_DIR="$tmp/queue"
 # `topic add` also opens a run log; keep this run's out of the operator's
 # orchestration/runs/, the same way FLEET_QUEUE_DIR keeps its queue out.
@@ -100,7 +105,7 @@ stubbed="$(sandbox "$tmp/bin-stubbed" "${BASE_TOOLS[@]}")"
 
 # --- a queue with something in it -------------------------------------------
 
-"$QUEUE" topic add selftest --title "Selftest topic" --prompt 'the prompt, verbatim' >/dev/null 2>&1
+PATH="$bare" "$QUEUE" topic add selftest --title "Selftest topic" --prompt 'the prompt, verbatim' >/dev/null 2>&1
 cat >"$tmp/brief.md" <<'MD'
 ## What to do
 
@@ -118,15 +123,15 @@ None.
 
 It is done.
 MD
-"$QUEUE" add selftest dispatched-task --title "A dispatched task" --repo "$tmp/repo" \
+PATH="$bare" "$QUEUE" add selftest dispatched-task --title "A dispatched task" --repo "$tmp/repo" \
 	--branch t/dispatched --touches FLEET.md --brief-file "$tmp/brief.md" >/dev/null
-"$QUEUE" add selftest ready-task --title "A ready task" --repo "$tmp/repo" \
+PATH="$bare" "$QUEUE" add selftest ready-task --title "A ready task" --repo "$tmp/repo" \
 	--branch t/ready --touches FLEET.md --brief-file "$tmp/brief.md" >/dev/null
-"$QUEUE" add selftest waiting-task --title "A waiting task" --repo "$tmp/repo" \
+PATH="$bare" "$QUEUE" add selftest waiting-task --title "A waiting task" --repo "$tmp/repo" \
 	--branch t/waiting --brief-file "$tmp/brief.md" >/dev/null
-"$QUEUE" block selftest/03-waiting-task --on selftest/01-dispatched-task \
+PATH="$bare" "$QUEUE" block selftest/03-waiting-task --on selftest/01-dispatched-task \
 	--kind semantic-dependency --why 'consumes the flag the first one adds' >/dev/null
-"$QUEUE" attach selftest/01-dispatched-task 11111111-1111-1111-1111-111111111111 >/dev/null
+PATH="$bare" "$QUEUE" attach selftest/01-dispatched-task 11111111-1111-1111-1111-111111111111 >/dev/null
 
 # --- 1. every probe missing, and it still answers ----------------------------
 
@@ -186,6 +191,53 @@ else
 	fail "a missing queue directory does not fail the command" "exit $rc${nl}$gone"
 fi
 expect "the checkout still reports with no queue at all" "CHECKOUT" "$gone"
+
+# --- 3b. the operator's records are validated here, and not in the gate ------
+#
+# `scripts/check.sh` reads no operator state, so one commit gets one verdict in
+# every checkout — which makes `--records` the only place a malformed queue
+# record or a registry map of the wrong shape is reported. It is a flag and not
+# a section of the screen, because validating opens every record and the
+# screen promises never to open an archived one. It is held to this file's
+# first rule all the same: a broken record costs lines, never the exit code.
+
+refute "the screen validates nothing, so it opens no record it need not" "RECORDS" "$out"
+ok_rec="$(PATH="$bare" "$STATUS" --records 2>&1)"
+expect "a sound queue's records read as ok" "queue: ok — 1 topic(s), 3 task(s)" "$ok_rec"
+expect "an unsynced registry map is not a problem" "registry: ok — not synced yet" "$ok_rec"
+
+broken="$tmp/broken-queue"
+mkdir -p "$broken/bad/01-bad"
+printf 'slug: bad\ntitle: A bad topic\n' >"$broken/bad/topic.yaml"
+cat >"$broken/bad/01-bad/task.yaml" <<'YAML'
+id: 01-bad
+topic: bad
+title: A bad record
+state: half-done
+repo: /nowhere
+branch: bad/branch
+blocked_by:
+  - {task: bad/42-gone, kind: semantic-dependency, why: made up for this test}
+YAML
+printf 'owners: not-a-list\n' >"$tmp/bad-registry.yaml"
+rec="$(PATH="$bare" FLEET_QUEUE_DIR="$broken" FLEET_REGISTRY_FILE="$tmp/bad-registry.yaml" "$STATUS" --records 2>&1)"
+rc=$?
+if [ "$rc" -eq 0 ]; then
+	pass "broken records cost lines, never the command"
+else
+	fail "broken records cost lines, never the command" "exit $rc${nl}$rec"
+fi
+expect "RECORDS names a state nobody defined" "state 'half-done' is not one of" "$rec"
+expect "and a blocker naming a task that does not exist" "bad/42-gone, which does not exist" "$rec"
+expect "and a record with no brief" "no BRIEF.md" "$rec"
+expect "and says which command lists every one" "queue.sh check" "$rec"
+expect "and a registry map of the wrong shape" "owners missing or not a list" "$rec"
+recjs="$(PATH="$bare" FLEET_QUEUE_DIR="$broken" "$STATUS" --records --json 2>&1)"
+expect "--records --json carries the same problems" "is not one of" "$recjs"
+
+printf 'owners:\n  - name: octo\n    repos: []\ntotals:\n  repos: 0\n' >"$tmp/good-registry.yaml"
+rec="$(PATH="$bare" FLEET_REGISTRY_FILE="$tmp/good-registry.yaml" "$STATUS" --records 2>&1)"
+expect "a registry map of the right shape reads as ok" "registry: ok — 0 repos across 1 owners" "$rec"
 
 # --- 4. the state vocabulary is not flattened --------------------------------
 #

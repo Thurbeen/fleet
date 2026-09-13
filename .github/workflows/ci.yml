@@ -213,6 +213,18 @@ jobs:
       # install.sh and pane-ask.sh, driven end to end; same stubs, same job.
       - run: ./scripts/check.sh onboarding install
 
+  # Unfiltered, because what it guards is every check's INPUTS: that no check
+  # or selftest reads a queue record, a registry map, a gitignored setting, the
+  # caller's HOME or their git config. A change to any script can break that,
+  # and a runner holds none of those things, so only a job that builds them —
+  # a poisoned checkout under a hostile host — can see it. Seconds.
+  isolation:
+    name: Isolation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - run: ./scripts/check.sh isolation
+
   # Single required status check. Every job feeds this gate; a branch ruleset
   # requires only "All Checks", so adding or removing jobs never needs a
   # ruleset change — but a new job MUST be added to `needs:` below, or it can
@@ -231,6 +243,7 @@ jobs:
       - skills
       - pane
       - onboarding
+      - isolation
     runs-on: ubuntu-latest
     steps:
       - name: Verify all checks passed

@@ -46,6 +46,14 @@ set -uo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 2
 
+# The render reads nothing but its fixture today; this keeps it that way, so
+# nothing of this machine's or this checkout's operator can reach it later.
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+# shellcheck source=scripts/lib/selftest-env.sh
+. scripts/lib/selftest-env.sh
+selftest_isolate "$tmp/env"
+
 HARNESS="scripts/lib/pane_harness.lua"
 nl=$'\n'
 failed=0

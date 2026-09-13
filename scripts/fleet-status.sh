@@ -11,6 +11,7 @@
 #   scripts/fleet-status.sh          # the screen
 #   scripts/fleet-status.sh --json   # the same reading, machine-readable
 #   scripts/fleet-status.sh --fuel   # the fuel section alone, one field per line
+#   scripts/fleet-status.sh --records  # validate your queue records and registry map
 #
 # IT DEGRADES AND NEVER FAILS. No thurbox, no `gh`, no network, no queue:
 # each costs exactly its own section, which then says what it could not
@@ -37,8 +38,16 @@
 # own fields under their own names, so the pane and this screen cannot come to
 # different conclusions about what quota-axi said.
 #
+# `--records` IS THE OPERATOR'S HEALTH CHECK. Whether the live queue records and
+# the registry map are sound is answered here, and not by `scripts/check.sh`,
+# which reads no operator state so that one commit gets one verdict in every
+# checkout. A problem there is about the records, never about the code — run
+# it after a sync, or whenever a queue command reports something odd. It is a
+# flag and not a section because it opens every record, archived topics'
+# included, and the screen promises never to.
+#
 # Environment: FLEET_QUEUE_DIR, honoured exactly as scripts/queue.sh honours
-# it.
+# it, and FLEET_REGISTRY_FILE, which relocates the registry map the same way.
 #
 # Requires: python3 (with PyYAML). thurbox-cli, gh, git and quota-axi are each
 # optional and cost only their own section — quota-axi in particular is a tool

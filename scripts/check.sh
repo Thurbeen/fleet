@@ -13,8 +13,20 @@
 #   scripts/check.sh --fix markdown      # apply the fixes a check can apply
 #
 # Checks: shell, markdown, yaml, profiles, queue, reconcile, status, skills,
-# pane, voice, automerge, onboarding, install, sync. Only `markdown` has a fixer; `--fix` is a no-op for
-# the rest, so `scripts/check.sh --fix` is always safe to run.
+# pane, voice, automerge, onboarding, install, sync, isolation. Only `markdown`
+# has a fixer; `--fix` is a no-op for the rest, so `scripts/check.sh --fix` is
+# always safe to run.
+#
+# IT READS NO OPERATOR STATE. One commit gets one verdict — on CI, in a worker's
+# worktree, and in the control-plane checkout — so no check reads what a running
+# fleet wrote into a checkout: the queue's records, the registry map, the
+# gitignored `orchestration/*.conf`, the reconciler's runtime, or the caller's
+# HOME and git config. Checks read tracked files; every selftest runs through
+# `scripts/lib/selftest-env.sh`. The live half moved and did not vanish:
+# `./scripts/fleet-status.sh --records` validates the operator's queue records
+# and registry map, and `./scripts/queue.sh check` still validates the queue on
+# its own. `isolation` holds the line, by re-running the
+# checks that could leak in a poisoned copy of the tree under a hostile host.
 #
 # Requires: shellcheck, rumdl, python3 (with PyYAML), lua. A missing tool
 # fails the check rather than skipping it — a gate that silently passes when
@@ -97,7 +109,7 @@ check_yaml() {
 	fi
 
 	if python3 scripts/lib/check_yaml.py "${files[@]}"; then
-		ok "yaml: ${#files[@]} tracked files parse, registry shape holds"
+		ok "yaml: ${#files[@]} tracked files parse"
 	else
 		fail "yaml"
 	fi
@@ -125,26 +137,22 @@ check_profiles() {
 	fi
 }
 
-# The task queue, in two halves. `queue.sh check` validates the local
-# records — a blocker naming a task that no longer exists, a state word nobody
-# defined — and says so and passes when the queue has never been used, the way
-# check_yaml.py treats an unsynced registry.
+# The task queue's claims. The queue makes claims that are easy to invert by
+# accident: that independent work goes out all at once, that file overlap does
+# NOT serialize, that a turn ending is not a task finishing. Each is a test
+# against a throwaway queue, so a change that quietly reverses one fails here
+# rather than in a run six weeks later.
 #
-# `queue-selftest.sh` is the other half and the more important one. The queue
-# makes claims that are easy to invert by accident: that independent work goes
-# out all at once, that file overlap does NOT serialize, that a turn ending is
-# not a task finishing. Each is a test against a throwaway queue, so a change
-# that quietly reverses one fails here rather than in a run six weeks later.
+# NOT this checkout's own records. `queue.sh check` over them used to run here,
+# which validated 72 live topics in the control-plane checkout and an empty
+# directory everywhere else — so a record nobody touched could fail a commit
+# there that CI passed. Those records are the operator's, and
+# `fleet-status.sh --records` is where they are validated now.
 check_queue() {
 	need python3 queue || return
 
-	local out
-	if ! out="$(./scripts/queue.sh check)"; then
-		fail "queue: ./scripts/queue.sh check"
-		return
-	fi
 	if ./scripts/queue-selftest.sh >/dev/null; then
-		ok "queue: ${out#queue check: }, ordering and wake claims hold"
+		ok "queue: ordering and wake claims hold"
 	else
 		# Re-run visibly: a failing claim is the whole message.
 		./scripts/queue-selftest.sh
@@ -547,9 +555,15 @@ check_voice() {
 	}
 	printf 'OPERATOR_NAME=GATEOP\nASSISTANT_NAME=GATEAI\n' >"$tmp/voice.conf"
 
+	# The glyph and the agent render into the same manifest, and off the
+	# tracked defaults only: an operator's session-glyphs.conf or agent.conf in
+	# this checkout decides nothing about this commit.
+	mkdir -p "$tmp/defaults/orchestration"
+	cp orchestration/*.example.conf "$tmp/defaults/orchestration/"
+
 	local out="$tmp/FLEET.rendered.md" report
-	if ! report="$(FLEET_VOICE_CONF="$tmp/voice.conf" \
-		./scripts/install-extension.sh --render-only "$tmp" 2>&1)"; then
+	if ! report="$(FLEET_VOICE_CONF="$tmp/voice.conf" FLEET_GLYPH_ROOT="$tmp/defaults" \
+		FLEET_AGENT_ROOT="$tmp/defaults" ./scripts/install-extension.sh --render-only "$tmp" 2>&1)"; then
 		fail "voice: install-extension.sh --render-only failed: $report"
 		miss=1
 	elif [ ! -f "$out" ]; then
@@ -597,24 +611,30 @@ check_automerge() {
 		miss=1
 	fi
 
-	# And the set itself, read the way `shepherd` reads it. A checkout with an
-	# operator's own auto-merge.conf in it answers about that file instead, so
-	# the gate reads the tracked one directly there rather than passing on a
-	# result about somebody's private list.
-	local shipped
-	if [ -f orchestration/auto-merge.conf ]; then
-		shipped="skip"
-	else
-		shipped="$(FLEET_AUTO_MERGE_REPOS='' python3 -c '
+	# And the set itself, read the way `shepherd` reads it — from a root that
+	# holds the tracked example and nothing else, which is exactly what a fresh
+	# clone holds. Never this checkout's root: an operator's auto-merge.conf
+	# there would answer instead, and the gate used to answer `skip` rather than
+	# judge somebody's private list, so the claim went unproven in the one
+	# checkout that has one.
+	local shipped fresh
+	fresh="$(mktemp -d)" || {
+		fail "automerge: could not make a temp directory for the fresh-clone reading"
+		return
+	}
+	mkdir -p "$fresh/orchestration"
+	cp "$example" "$fresh/orchestration/"
+	shipped="$(env -u FLEET_AUTO_MERGE_ROOT FLEET_AUTO_MERGE_REPOS='' python3 - "$fresh" <<'PY' 2>&1
 import sys
 sys.path.insert(0, "scripts/lib")
 import queue as q
-print("entries=" + (" ".join(sorted(q.auto_merge_repos(q.checkout_root()))) or "none"))
-' 2>&1)"
-		if [ "$shipped" != "entries=none" ]; then
-			fail "automerge: a fresh clone would inherit a merge allowlist: $shipped"
-			miss=1
-		fi
+print("entries=" + (" ".join(sorted(q.auto_merge_repos(sys.argv[1]))) or "none"))
+PY
+)"
+	rm -rf "$fresh"
+	if [ "$shipped" != "entries=none" ]; then
+		fail "automerge: a fresh clone would inherit a merge allowlist: $shipped"
+		miss=1
 	fi
 
 	# THE SAME RULE FOR EVERY TRACKED SETTING. An owner, a repository, a
@@ -665,7 +685,7 @@ print(" ".join(sorted(q.PUBLISH_METHODS)))
 		{ fail "automerge: the publish methods are '''$shapes''', and must be artifact shapes"; miss=1; }
 
 	[ "$miss" -eq 0 ] &&
-		ok "automerge: no tracked setting names a repository, a tool or an agent"
+		ok "automerge: no tracked setting names a repository, a tool or an agent, and a fresh clone merges nowhere"
 }
 
 # THE SETUP NOBODY RE-RUNS. Onboarding's scripts — preflight, discover-owners,
@@ -710,6 +730,24 @@ check_install() {
 	fi
 }
 
+# ONE COMMIT, ONE VERDICT. The header's promise that no check reads operator
+# state, held by building the worst case: a poisoned copy of the tree under a
+# hostile host, with every check that reads settings or records and every
+# selftest cheap enough to run twice re-run inside it. Seconds, because the two
+# slow selftests are held to the shared helper rather than re-run.
+check_isolation() {
+	need git isolation || return
+	need jq isolation || return
+	need python3 isolation || return
+
+	if ./scripts/isolation-selftest.sh >/dev/null 2>&1; then
+		ok "isolation: a poisoned checkout under a hostile host gets the same verdict"
+	else
+		./scripts/isolation-selftest.sh
+		fail "isolation: scripts/isolation-selftest.sh"
+	fi
+}
+
 checks=()
 for arg in "$@"; do
 	case "$arg" in
@@ -719,7 +757,7 @@ for arg in "$@"; do
 done
 
 if [ ${#checks[@]} -eq 0 ]; then
-	checks=(shell markdown yaml profiles queue reconcile status skills pane voice automerge onboarding install sync)
+	checks=(shell markdown yaml profiles queue reconcile status skills pane voice automerge onboarding install sync isolation)
 fi
 
 for c in "${checks[@]}"; do
@@ -738,8 +776,9 @@ for c in "${checks[@]}"; do
 	automerge) check_automerge ;;
 	onboarding) check_onboarding ;;
 	install) check_install ;;
+	isolation) check_isolation ;;
 	*)
-		printf 'error: unknown check %q (want: shell markdown yaml profiles queue reconcile status skills pane voice automerge onboarding install sync)\n' "$c" >&2
+		printf 'error: unknown check %q (want: shell markdown yaml profiles queue reconcile status skills pane voice automerge onboarding install sync isolation)\n' "$c" >&2
 		exit 2
 		;;
 	esac
