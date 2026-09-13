@@ -38,16 +38,20 @@ before anyone else sees it.
 
 ## Publish the way your brief says
 
-Your brief's **Publish** line names one of three methods, what it must leave
-behind, and what proves it. It is the authority: where it names a tool, use
-that tool. Do not switch methods.
+Your brief's **Publish** line names one method, what it must leave behind, and
+what proves it. It is the authority: where it names a tool, use that tool. Do
+not switch methods.
 
 `queue.sh collect` then goes and looks for that artifact: the forge for a change
-request — a pull request on GitHub, a merge request on GitLab — git for a commit
-on the base branch. A task whose artifact is not there, or is not from your
-branch, **is not closed** — the lead sees it at collect time and sends you back.
-So verify your own artifact before you report done. For an `attested` task
-that is one command, in the CLI your forge has.
+request — a pull request on GitHub, a merge request on GitLab — or for a review
+or comment on one, and git for a commit on the base branch. A task whose
+artifact is not there, or is not from your branch — or is not on the
+**Target** your brief names, when it names one — **is not closed**: the lead
+sees it at collect time and sends you back. A `note` must also be written by
+the account this machine's forge CLI is logged in as, so post it yourself and
+never link somebody else's. A `none` task is not checked at all. So verify
+your own artifact before you report done. For an `attested` task that is one
+command, in the CLI your forge has.
 
 On GitHub:
 
@@ -113,14 +117,15 @@ this shape:
 ```markdown
 ---
 outcome: shipped | stuck | failed | not-applicable
-artifact: <PR URL, or commit URL for a `push` task, or omit>
+artifact: <PR URL, commit URL for a `push` task, note URL for a `note` task, or omit>
 ---
 A short paragraph: what you actually did, and anything the lead must know.
 ```
 
 `outcome` is one of those four words and nothing else. `artifact` is whatever
-your brief's Publish line says it is — a change request URL for two of the
-three methods, a commit URL for `push`; `not-applicable` and `stuck` usually have
+your brief's Publish line says it is — a change request URL for `pr` and
+`attested`, a commit URL for `push`, the note's own URL for `note`, and what you
+produced, if anything, for `none`; `not-applicable` and `stuck` usually have
 none, and that is fine. `shipped` is a claim that the artifact exists, so
 report it without one, or with something of the wrong shape, and the lead's
 `collect` holds your task open rather than trusting the word alone.

@@ -519,8 +519,19 @@ LEAVE BEHIND, and `collect` goes and looks for that:
 | `attested` | a PR carrying an attestation | the forge: a PR from this task's branch, its body carrying an attestation for the commit that would merge |
 | `pr` | a PR by any means at all | the forge: a PR from this task's branch, open or merged |
 | `push` | a commit on the base branch | git: that commit is an ancestor of `origin/<base>` |
+| `note` | a review or comment on the task's `--target` | the forge: the note exists, was written by the account fleet runs as, and sits on that target |
+| `none` | nothing fleet can check — a document off the forge, a commit with no remote | nothing: the URL is recorded, the task closes, and nothing calls it verified |
 
-**Those three words are SHAPES and none of them is a tool.** A pipeline, an
+**Pick the shape of the deliverable, not the nearest one that exists.** A task
+that reviews or comments on a change request is `--publish note --target <its
+URL>` — never `push` with "nothing to commit", which no commit URL can prove and
+which ten tasks once had to be closed by hand for. A task that pushes to a pull
+request it did not open — a contributor's, from a fork — is `--publish pr
+--target <that pull request>`, and is checked against that pull request rather
+than its own scaffolding branch. `add` refuses a `note` with no target, a `push`
+with one, and a pull-request method aimed at an issue.
+
+**Those words are SHAPES and none of them is a tool.** A pipeline, an
 in-house script, `make release`, a slash command — every one of them ends in a
 pull request or a commit on the base branch. `--how` is the other half and it is
 FREE TEXT — "run `/publish`", "use `make release`". It is rendered into the
@@ -563,9 +574,16 @@ the body says, "this change request comes from this task's branch" is a fact of
 the forge — which closes the hole that reading prose never could: a worker
 pasting somebody else's good pull request.
 
+**A change request the forge reports merged closes its task**, even when its
+attestation went stale. The attestation answered "may this merge", and whoever
+merged it answered that; the stale one is kept on the record's publish block as
+`attestation`, a note and never a hold. Nothing about it loosens the shepherd's
+merge gate, which still merges no unattested pull request.
+
 When a task is held open: read the artifact, then send that worker back to
 publish again and collect again. If you have read it yourself and judged it good
 as it stands, `collect --allow-unverified` closes it and records that you did.
+It should be rare: a task that keeps needing it was declared the wrong shape.
 
 ### 5a. Shepherd the pull requests — the fourth thing
 
@@ -598,10 +616,13 @@ name, and each open pull request gets exactly one of these:
 | checks green, `MERGEABLE`, ours, and nothing attested it | recorded `green` and reported `ready to merge — not attested; yours`, **never merged by fleet** |
 | anything it could not read | reported, and otherwise left alone |
 
-A PR is tied back to a task by its recorded `artifact` or by its **head
-branch** matching the task's. One that matches neither is still classified and
-still merged — it simply has no session to send a fixer into, and the output
-names it as belonging to no task rather than passing over it in silence.
+A PR is tied back to a task by its recorded `artifact` — for a `pr` or
+`attested` task only, since a `note` task's artifact names the pull request it
+reviewed, not one of its own, and linking that would hand it a method that asks
+for no attestation — or by its **head branch** matching the task's. One that
+matches neither is still classified and still merged — it simply has no
+session to send a fixer into, and the output names it as belonging to no task
+rather than passing over it in silence.
 
 **A remote task's pull request is classified and merged like any other, and its
 fixer is withheld.** The fixer needs a checkout of the PR's head branch, and a

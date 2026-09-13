@@ -27,9 +27,13 @@ names every path and the reason for each.
 - `orchestration/publish.example.conf` and `agent.example.conf` — the two
   settings that keep fleet agnostic about YOUR tools. The first holds the
   default publish method and the free-text command that produces it, plus the
-  attestation marker your pipeline emits; `scripts/lib/queue.py` models three
-  ARTIFACT SHAPES (`attested`, `pr`, `push`) and no tool names, so a publisher
-  fleet has never heard of still works. The second holds which agent your
+  attestation marker your pipeline emits; `scripts/lib/queue.py` models five
+  ARTIFACT SHAPES (`attested`, `pr`, `push`, `note`, `none`) and no tool
+  names, so a publisher fleet has never heard of still works. `note` is a
+  review or comment on the change request or issue a task records as its
+  `target` (`queue.sh add --target`), and `none` is a deliverable no forge
+  holds; both words, and `target`, are part of `task.yaml`'s contract. The
+  second holds which agent your
   workers run, which provider `refuel` gates on, and how that agent says it hit
   a limit. **Both tracked copies name nothing** — `./scripts/check.sh automerge`
   fails one that does — so a fresh clone inherits no operator's pipeline,

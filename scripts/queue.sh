@@ -51,26 +51,35 @@
 #   `collect`  reads the result.md a worker wrote when it knew what it had
 #              concluded, and only that closes a task. It also CHECKS that
 #              task's artifact against the PUBLISH METHOD the task declares —
-#              `attested`, `pr` or `push`, which name what the work must
-#              LEAVE BEHIND rather than which tool made it. So "publish the way
-#              your brief says" stops being an unverifiable instruction about a
-#              method: collect asks the forge for a change request — a pull
-#              request on GitHub, a merge request on GitLab — from this task's
-#              own branch (and, for `attested`, an attestation for the
-#              commit that would merge), or asks git whether a `push` task's
-#              commit reached the base branch. An artifact that is not there is
-#              reported and the task is left OPEN; a check that could not run
-#              (no forge CLI, no network, a base branch this machine cannot read)
-#              says so and is never read as either verdict. The TOOL is
-#              `--how`: free text rendered into the brief and never parsed,
-#              which is what lets a task name a publisher fleet has never heard
-#              of. `add` takes both, defaulting to POLICY.md's frontmatter.
+#              `attested`, `pr`, `push`, `note` or `none`, which name what the
+#              work must LEAVE BEHIND rather than which tool made it. So
+#              "publish the way your brief says" stops being an unverifiable
+#              instruction about a method: collect asks the forge for a change
+#              request — a pull request on GitHub, a merge request on GitLab —
+#              from this task's own branch or its recorded `--target` (and,
+#              for `attested`, an attestation for the commit that would merge —
+#              unless the forge already reports it MERGED, which closes the
+#              task and keeps the stale attestation as a note rather than a
+#              hold), the forge again for a `note` task's review or comment on
+#              its `--target`, written by the account fleet runs as, or asks
+#              git whether a `push` task's commit reached the base branch. A
+#              `none` task is not checked at all. An artifact that is not there
+#              is reported and the task is left OPEN; a check that could not
+#              run (no forge CLI, no network, a base branch this machine cannot
+#              read) says so and is never read as either verdict. `add` refuses
+#              a `note` with no `--target`, a `push` or `none` with one, and a
+#              `pr` or `attested` aimed at an issue rather than a change
+#              request. The TOOL is `--how`: free text rendered into the brief
+#              and never parsed, which is what lets a task name a publisher
+#              fleet has never heard of. `add` takes both, defaulting to
+#              POLICY.md's frontmatter.
 #   `reap`     asks the FORGE whether each concluded task's change request has
 #              merged, moves the ones that did to `landed`, and only then
-#              deletes their sessions and worktrees. A `push` task has nothing
-#              left to ask by this point — `collect` already confirmed its
-#              commit reached the base branch before closing it — so it lands
-#              in the same run reap follows. `collect` runs it, because
+#              deletes their sessions and worktrees. A `push`, `note` or `none`
+#              task has nothing left to ask by this point — each already has
+#              its own final answer, from `collect` or from having no change
+#              request of its own to wait for — so it lands in the same run
+#              reap follows. `collect` runs it, because
 #              "delete each session as it closes out" was a documented MANUAL
 #              step and twenty gigabytes sat in a worktree whose change request
 #              had merged the day before. It never touches a session thurbox
@@ -163,7 +172,8 @@
 #   scripts/queue.sh topic add <slug> --title T --prompt 'the ask'   # or --prompt-file F|-
 #   scripts/queue.sh add <topic> <slug> --title T --repo P --branch B [--base main]
 #                        [--host H] [--profile default] [--touches a,b] [--brief-file F]
-#                        [--publish attested|pr|push] [--how 'run `/publish`']
+#                        [--publish attested|pr|push|note|none] [--target U]
+#                        [--how 'run `/publish`']
 #                        # --brief-file fills whichever of the brief's four
 #                        # sections its own `## ` headings name; a body with no
 #                        # headings all goes into `What to do`. A file that

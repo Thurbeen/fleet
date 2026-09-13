@@ -353,7 +353,7 @@ def brief_shortfall(path: str) -> str:
     return ""
 
 
-# HOW A TASK PUBLISHES, as three words about the ARTIFACT it leaves behind —
+# HOW A TASK PUBLISHES, as one word about the ARTIFACT it leaves behind —
 # and the ONE place each is written down. `render_brief` writes `brief` into
 # the worker's instructions, `publish_verdict` goes and looks for `artifact`,
 # and `report_unverified` and `cmd_show` quote `proof` when it does not hold.
@@ -367,7 +367,7 @@ def brief_shortfall(path: str) -> str:
 #
 # WHY ARTIFACT SHAPES AND NOT TOOL NAMES. A tool fleet has never heard of — an
 # operator's own `/publish` skill, a repo's `make release` — still ends in a
-# pull request or a commit on the base branch, so these three words cover every
+# pull request or a commit on the base branch, so three of these words cover every
 # tool there will ever be while naming none of them. The tool itself rides on
 # the record as `publish.how`: free text, rendered into the brief, never
 # parsed. That is the whole of fleet's agnosticism, and it lasts exactly as
@@ -381,7 +381,24 @@ def brief_shortfall(path: str) -> str:
 # merge. WHAT an attestation looks like is `ATTESTATION_MARKER` in
 # `orchestration/publish.conf`, so fleet reads the operator's format rather
 # than asking them to emit fleet's.
+#
+# TWO SHAPES THAT ARE NOT CODE. Ten tasks once posted a review or a comment and
+# were declared `push`, "nothing to commit", because nothing else existed. No
+# commit URL could ever prove them, so every one was closed by
+# `--allow-unverified`. `note` is that deliverable, named: a review or comment
+# on the change request or issue the task TARGETS, proven when the forge says
+# who wrote it and what it sits on. `none` is the honest answer for what no
+# forge holds — a document on somebody's own server, a commit in a repository
+# with no remote. It records the URL and checks nothing, and says so; a word
+# that claimed to verify a link to somebody's laptop would be a verdict on
+# nothing.
 PUBLISH_DEFAULT = "pr"
+
+# The methods whose artifact is the task's OWN change request. A `note` task's
+# URL names a change request too — the one the note sits on — and reading it as
+# the task's would make somebody else's pull request look like this task's
+# work: to the landing check, and to the shepherd's merge gate.
+CHANGE_METHODS = ("attested", "pr")
 
 # Accepted wherever a method is read, so a record written before the rename
 # still loads and `--publish no-mistakes` still works. New records say
@@ -425,6 +442,29 @@ PUBLISH_METHODS = {
         ),
         "artifact": "that commit's URL",
         "proof": "the commit is an ancestor of the base branch on `origin`",
+    },
+    "note": {
+        "brief": (
+            "post a note — a review or a comment — on this task's Target, as the "
+            "account this machine's forge CLI is logged in as; there is nothing "
+            "to commit and no pull request to open"
+        ),
+        "artifact": "that note's URL",
+        "proof": (
+            "the forge says that note exists, was written by the account fleet "
+            "runs as, and sits on this task's target"
+        ),
+    },
+    "none": {
+        "brief": (
+            "nothing fleet can verify is expected — a document off the forge, "
+            "or work with nowhere to publish it"
+        ),
+        "artifact": "the URL of what you produced, if there is one",
+        "proof": (
+            "nothing: a `none` task closes on the worker's word, and its URL is "
+            "recorded unchecked"
+        ),
     },
 }
 
@@ -732,7 +772,7 @@ def policy_publish_default() -> tuple[str, str | None]:
     default reviewable in a diff, which was the argument for it — and made this
     repo ship one operator's pipeline as every clone's default, which is the
     argument against and the larger one. `publish.example.conf` is the tracked
-    half now: it documents the three artifact shapes, ships `pr`, and names no
+    half now: it documents the five artifact shapes, ships `pr`, and names no
     tool. POLICY.md still SAYS how a worker publishes, because every brief
     points at it; it no longer decides for somebody else's fleet.
 
@@ -1589,6 +1629,45 @@ def branch_refusal(repo: str, branch: str, base: str, host: str | None) -> str:
     )
 
 
+def target_refusal(method: str, target: str | None) -> str:
+    """Why `add` refuses this method with this target, or "" when it does not.
+
+    REFUSED, NOT WARNED, AND ON STRUCTURE, NOT ON `--how`. Ten tasks were once
+    declared `push` with a `how` saying "nothing to commit", and a check that
+    read that sentence would be fleet parsing the one field whose whole contract
+    is that nothing parses it. What CAN be read is the shape: a note with
+    nothing to sit on, a push with a change request to work on, a pull request
+    aimed at an issue. Each is a task that cannot be verified as declared, and
+    a warning would be scrolled past exactly the way the workaround was.
+    """
+    if not target:
+        if method == "note":
+            return (
+                "--publish note needs --target: a note is proven by sitting on the "
+                "change request or issue it was asked for, and a task that names "
+                "none leaves nothing to check it against. Add `--target <its URL>`."
+            )
+        return ""
+    if not forge.TARGET_URL_RE.match(target):
+        return (
+            f"--target {target!r} is not a change request or issue URL "
+            "(…/pull/<n>, …/-/merge_requests/<n>, …/issues/<n>)"
+        )
+    if method in ("push", "none"):
+        return (
+            f"--publish {method} has no use for --target {target}: nothing a "
+            f"`{method}` task leaves behind is checked against one. A task that "
+            "reviews or comments on it is `--publish note`; one that pushes to its "
+            "branch is `--publish pr` or `attested`."
+        )
+    if method in CHANGE_METHODS and not forge.change_url(target):
+        return (
+            f"--publish {method} is proven by a pull request, and {target} is an "
+            "issue. A task whose deliverable is a comment on it is `--publish note`."
+        )
+    return ""
+
+
 def cmd_add(args) -> int:
     root = queue_root()
     tpath = os.path.join(root, args.topic)
@@ -1651,6 +1730,10 @@ def cmd_add(args) -> int:
         method, how = args.publish, args.how
     elif args.how:
         how = args.how
+    target = (args.target or "").strip() or None
+    refusal = target_refusal(method, target)
+    if refusal:
+        raise QueueError(refusal)
 
     doc = {
         "id": tid,
@@ -1664,6 +1747,10 @@ def cmd_add(args) -> int:
         "host": args.host,
         "branch": args.branch,
         "base": args.base,
+        # The change request or issue this task works ON, when it is not one
+        # its own branch opens — a review's pull request, a contributor's fork.
+        # Verification compares against this instead of `branch`.
+        "target": target,
         "profile": args.profile,
         "agent": args.agent,
         "touches": [s.strip() for s in (args.touches or "").split(",") if s.strip()],
@@ -1788,6 +1875,7 @@ def render_brief(task: Task, topic: dict, body: str | None) -> str:
         f"## {h}\n\n{filled.get(h, BRIEF_PLACEHOLDER)}" for h in BRIEF_SECTIONS
     )
     where = f" on host `{host}`" if host else ""
+    target_line = f"\n- **Target.** {d['target']}" if d.get("target") else ""
     if host:
         result_target = (
             "    result.md — in the root of this worktree, beside the BRIEF.md\n"
@@ -1817,7 +1905,7 @@ Task `{task.ref}` of topic **{topic.get("title", task.topic)}**.
 The prompt this came from is at {prompt_ref}; read it if the goal here is unclear.
 
 - **Repo.** `{d["repo"]}`{where}
-- **Branch.** `{d["branch"]}` off `{d["base"]}`
+- **Branch.** `{d["branch"]}` off `{d["base"]}`{target_line}
 {publish_line}
 - **Expected to touch.** {", ".join(f"`{p}`" for p in d["touches"]) or "not recorded"}
 - **Standing policy.** {policy_ref}{operator_line}
@@ -1840,7 +1928,7 @@ with exactly this shape:
 ```markdown
 ---
 outcome: shipped | stuck | failed | not-applicable
-artifact: <PR URL, or commit URL for a `push` task, or omit>
+artifact: <PR URL, commit URL for a `push` task, note URL for a `note` task, or omit>
 ---
 A short paragraph: what you actually did, and anything the lead must know.
 ```
@@ -3529,12 +3617,13 @@ def task_publish(task: Task) -> tuple[str, str | None]:
     return method, text or None
 
 
-def publish_verdict(task: Task, outcome, url) -> tuple[str, str]:
+def publish_verdict(task: Task, outcome, url) -> tuple[str, str, dict]:
     """Does this task's artifact prove it published? Four answers, per method.
 
         skipped   nothing to check — the outcome does not require an artifact
                   (`not-applicable` or `stuck`), and none, or one of the wrong
-                  shape, was given.
+                  shape, was given. Or the method is `none`, which names
+                  nothing to check.
         passed    the forge, or git, says the artifact this task's method names
                   is there, from this task's branch, in the state claimed.
         missing   `shipped` with no such artifact, or one that does not hold up.
@@ -3553,14 +3642,24 @@ def publish_verdict(task: Task, outcome, url) -> tuple[str, str]:
     missing or malformed one is not the same silence as `not-applicable` and
     `stuck` legitimately producing none — it is `missing`, held open like any
     other unproven `shipped` claim.
+
+    The third value is fields `collect` writes onto the publish block beside
+    the verdict. Only a pull request ever has any; see `pull_request_verdict`.
     """
     method, _how = task_publish(task)
     if method == "push":
-        return commit_verdict(task, outcome, url)
+        return (*commit_verdict(task, outcome, url), {})
+    if method == "note":
+        return (*note_verdict(task, outcome, url), {})
+    if method == "none":
+        return "skipped", (
+            "a `none` task names nothing fleet can check; its artifact is "
+            "recorded as given"
+        ), {}
     return pull_request_verdict(task, method, outcome, url)
 
 
-def pull_request_verdict(task: Task, method: str, outcome, url) -> tuple[str, str]:
+def pull_request_verdict(task: Task, method: str, outcome, url) -> tuple[str, str, dict]:
     """The forge as witness, for the two methods that end in a pull request.
 
     THE HEAD BRANCH IS CHECKED FOR BOTH, and it costs nothing — the field
@@ -3578,38 +3677,74 @@ def pull_request_verdict(task: Task, method: str, outcome, url) -> tuple[str, st
     The commit list comes back in the same call and is read only to WORD the
     refusal — `pipeline_moved_the_head` tells the one stale attestation the
     pipeline caused itself apart from every other. It cannot change a verdict.
+
+    A TARGET REPLACES THE BRANCH. A task that works on a pull request it did not
+    open — a contributor's, from a fork — cannot share that pull request's head
+    branch, because thurbox will not cut a worktree on a branch already checked
+    out. So `add --target` records WHICH change request, and that is compared
+    instead. It is still nothing a worker can write for itself: the lead typed
+    it at intake, before any worker existed.
+
+    A MERGE ENDS THE ATTESTATION'S QUESTION. An attestation answers "may this
+    merge", and whoever merged a pull request the forge reports merged has
+    answered that. Holding the task open on a stale one held it open for good,
+    because landing only ever sweeps a task that concluded. So it concludes,
+    and the attestation that did not hold is kept on the publish block as
+    `attestation` — a note on the record, never a hold. Who MAY merge an
+    unattested pull request is the shepherd's gate, and nothing here touches it.
+
+    The third value is those fields for the publish block: `state`, when this
+    check knows better than `collect_publish_state` does, and that note.
     """
     if not forge.change_url(url):
         if outcome == "shipped":
-            return "missing", "shipped with no pull request to check"
-        return "skipped", "no pull request to check"
+            return "missing", "shipped with no pull request to check", {}
+        return "skipped", "no pull request to check", {}
     which, ref = forge.for_url(url)
     if which is None:
-        return "unknown", ref
+        return "unknown", ref, {}
     cr, why = which.get(ref)
     if why:
-        return "unknown", why
+        return "unknown", why, {}
 
-    branch = str(task.doc.get("branch") or "")
-    if not cr.head_branch:
-        return "unknown", "the forge did not say which branch this pull request is from"
-    if cr.head_branch != branch:
-        return "missing", (
-            f"the pull request is from branch {cr.head_branch}, and this task's "
-            f"is {branch}"
-        )
+    named, target, why = task_target(task)
+    if named:
+        if target is None:
+            return "unknown", why, {}
+        if not target.same(forge.Target(cr.repo, cr.number, "change")):
+            return "missing", (
+                f"the pull request is {cr.url}, and this task's target is {named}"
+            ), {}
+        whose = "is this task's target"
+    else:
+        branch = str(task.doc.get("branch") or "")
+        if not cr.head_branch:
+            return "unknown", "the forge did not say which branch this pull request is from", {}
+        if cr.head_branch != branch:
+            return "missing", (
+                f"the pull request is from branch {cr.head_branch}, and this task's "
+                f"is {branch}; a task that works on a change request it did not "
+                "open names it with `add --target`"
+            ), {}
+        whose = f"is from {branch}"
 
     if method == "attested":
         attested, why = attestation_verdict(cr.body, cr.head_sha)
-        if not attested:
-            why += pipeline_moved_the_head(cr)
-        return ("passed" if attested else "missing"), why
+        if attested:
+            return "passed", why, {}
+        why += pipeline_moved_the_head(cr)
+        if cr.state == "merged":
+            return "passed", (
+                "the pull request is merged, so nothing is left for an attestation "
+                f"to authorise; its attestation did not hold: {why}"
+            ), {"state": "merged", "attestation": why}
+        return "missing", why, {}
 
     if cr.state not in ("open", "merged"):
         return "missing", (
             f"the pull request is {cr.state or 'in no state the forge named'}"
-        )
-    return "passed", f"the pull request is {cr.state} and is from {branch}"
+        ), {}
+    return "passed", f"the pull request is {cr.state} and {whose}", {}
 
 
 # The pipeline's own commits, which are the ONE way an `attested` branch grows
@@ -3676,6 +3811,78 @@ def pipeline_moved_the_head(cr: forge.ChangeRequest) -> str:
     )
 
 
+def task_target(task: Task) -> tuple[str, "forge.Target | None", str]:
+    """(the URL `add --target` recorded, what it names, why that could not be read).
+
+    ("", None, "") is a task that names no target. A URL with no Target beside
+    it is one no forge configured HERE recognises — which every caller reads as
+    "could not check" and never as "names no target", or a check would quietly
+    fall back to the branch the target was recorded to replace.
+    """
+    named = str(task.doc.get("target") or "").strip()
+    if not named:
+        return "", None, ""
+    which, target = forge.for_target(named)
+    if which is None:
+        return named, None, target
+    return named, target, ""
+
+
+def note_verdict(task: Task, outcome, url) -> tuple[str, str]:
+    """The forge as witness, for a task whose deliverable is a note — a review
+    or a comment on the change request or issue the task targets.
+
+    Three facts, each asked of the forge and none read off the URL: the note
+    EXISTS; it was WRITTEN by the account this machine's forge CLI runs as,
+    which is the account every worker here posts as; and it SITS ON this task's
+    target, as the forge says and not as the URL says. A URL is text a worker
+    typed. `pull/1107#pullrequestreview-…` can name any review at all,
+    somebody else's included, and a check that trusted the path would let a
+    pasted link prove itself.
+
+    "No such note" is `unknown`, exactly as "no such change request" is: a 404
+    and an unreachable forge are both a question nobody could put. A note by
+    another account, on anything but the target, or a URL its own forge does
+    not read as a note at all, is `missing` — those are answers.
+    """
+    text = str(url or "").strip()
+    if not forge.NOTE_URL_RE.match(text):
+        if outcome == "shipped":
+            return "missing", "shipped with no note URL to check"
+        return "skipped", "no note to check"
+    named, target, why = task_target(task)
+    if not named:
+        return "missing", (
+            "this `note` task names no target, so nothing can show the note sits "
+            "where it was asked for — record one with `add --target`"
+        )
+    if target is None:
+        return "unknown", why
+    which, ref = forge.for_note(text)
+    if which is None:
+        return ("missing" if forge.owner(text) else "unknown"), ref
+    note, why = which.note(ref)
+    if why:
+        return "unknown", why
+    host = ref.target.repo.host
+    me, why = which.whoami(host)
+    if why:
+        return "unknown", why
+    if not note.author:
+        return "unknown", "the forge did not say who wrote the note"
+    if note.target is None:
+        return "unknown", "the forge did not say what the note sits on"
+    if note.author.lower() != me.lower():
+        return "missing", (
+            f"the note was written by {note.author}, and fleet runs as {me} on {host}"
+        )
+    if not note.target.same(target):
+        return "missing", (
+            f"the note sits on {note.target}, and this task's target is {named}"
+        )
+    return "passed", f"{me} wrote it, on {named}"
+
+
 def commit_verdict(task: Task, outcome, url) -> tuple[str, str]:
     """git as witness, for the method that ends on the base branch and not in a PR.
 
@@ -3688,6 +3895,13 @@ def commit_verdict(task: Task, outcome, url) -> tuple[str, str]:
     """
     match = COMMIT_URL_RE.match((url or "").strip())
     if not match:
+        if outcome == "shipped" and forge.NOTE_URL_RE.match(str(url or "").strip()):
+            # The workaround this used to be, said out loud where it is seen.
+            return "missing", (
+                "shipped with no commit URL to check: that is a note on a change "
+                "request or issue, and a task whose deliverable is one is added "
+                "`--publish note --target <what it sits on>`"
+            )
         if outcome == "shipped":
             return "missing", "shipped with no commit URL to check"
         return "skipped", "no commit to check"
@@ -3720,14 +3934,16 @@ def collect_publish_state(verdict: str, method: str) -> str:
     `skipped` is the "" — a task that legitimately produced no artifact has no
     publish to observe, and an absent state is what says "nothing has looked".
     `pushed` is terminal: the code is on the base branch, so the task lands in
-    this same run and there is nothing left for the shepherd to watch.
+    this same run and there is nothing left for the shepherd to watch. `posted`
+    is terminal for the same reason: the note is on the forge, and nothing about
+    it waits for a merge.
     """
     if verdict == "passed":
-        return "pushed" if method == "push" else "open"
+        return {"push": "pushed", "note": "posted"}.get(method, "open")
     return {"missing": "unverified", "unknown": "unknown"}.get(verdict, "")
 
 
-def record_publish(task: Task, state: str, detail: str, by: str) -> None:
+def record_publish(task: Task, state: str, detail: str, by: str, extra: dict | None = None) -> None:
     """The publish block, stamped by whoever LOOKED — never by a worker.
 
     Merged into whatever is already there, so the method and the `how` the lead
@@ -3740,7 +3956,7 @@ def record_publish(task: Task, state: str, detail: str, by: str) -> None:
     it is not a stream event and never moves a watch floor (`folded_through`).
     """
     block = dict(task.doc.get("publish") or {})
-    block.update({"state": state, "detail": detail, "at": now(), "by": by})
+    block.update({"state": state, "detail": detail, "at": now(), "by": by, **(extra or {})})
     task.doc["publish"] = block
     task.save()
     with open(task.file("progress.jsonl"), "a") as fh:
@@ -3799,7 +4015,7 @@ def cmd_collect(args) -> int:
             continue
         artifact = meta.get("artifact")
         method, _how = task_publish(task)
-        verdict, detail = publish_verdict(task, outcome, artifact)
+        verdict, detail, seen = publish_verdict(task, outcome, artifact)
         # Recorded before the branch below, so a held-back task carries the
         # reason in its record and not only in the terminal that saw it. The
         # METHOD is recorded with it because a verdict is only readable beside
@@ -3807,9 +4023,10 @@ def cmd_collect(args) -> int:
         task.doc["artifact_check"] = {
             "verdict": verdict, "detail": detail, "at": now(), "method": method,
         }
-        state = collect_publish_state(verdict, method)
+        seen = dict(seen)
+        state = seen.pop("state", "") or collect_publish_state(verdict, method)
         if state:
-            record_publish(task, state, detail, "collect")
+            record_publish(task, state, detail, "collect", seen)
 
         if verdict == "missing" and not args.allow_unverified:
             task.save()
@@ -3823,12 +4040,16 @@ def cmd_collect(args) -> int:
         task.doc["concluded_at"] = now()
         task.save()
         concluded += 1
-        artifacts += 1 if pr_ref(task.doc.get("artifact")) else 0
+        artifacts += 1 if method in CHANGE_METHODS and pr_ref(task.doc.get("artifact")) else 0
         line = f"    {task.ref}  {outcome}"
         if artifact:
             line += f"  {artifact}"
         if verdict == "passed":
             line += f"  [publish verified: {method}]"
+            if seen.get("attestation"):
+                line += "  [merged; its attestation did not hold — noted, not held]"
+        elif verdict == "skipped" and method == "none":
+            line += "  [publish not checked: none]"
         elif verdict == "missing":
             line += "  [publish NOT verified — closed by --allow-unverified]"
         elif verdict == "unknown":
@@ -3930,13 +4151,14 @@ HOLDING_STATES = ("done", "landed", "abandoned", "stuck", "failed")
 LANDED_STATE = {"merged": "landed", "none": "landed", "closed": "abandoned"}
 
 
-def artifact_landing(artifact) -> tuple[str, str]:
+def artifact_landing(artifact, method: str | None = None) -> tuple[str, str]:
     """Has this task's artifact reached main? Asked of the forge, never of a worker.
 
         none      nothing to wait for — `not-applicable` produced no artifact,
-                  or the artifact is not a pull request. Such a task skips
-                  straight through rather than waiting forever for a merge
-                  that is never going to happen.
+                  or the artifact is not a pull request, or the task is a
+                  `note` or `none` one, whose URL may NAME a pull request that
+                  is not its own. Such a task skips straight through rather
+                  than waiting for a merge that is not its to wait for.
         merged    the pull request is on main.
         closed    it was closed unmerged: nothing more will happen on that
                   branch, and the work did not land either.
@@ -3948,6 +4170,8 @@ def artifact_landing(artifact) -> tuple[str, str]:
                   a timeout must not be able to manufacture a merge, and a
                   merge is what authorises a deletion.
     """
+    if method in ("note", "none"):
+        return "none", f"a `{method}` task has no pull request of its own to wait for"
     url = forge.change_url(artifact)
     if not url:
         return "none", "no pull request to wait for"
@@ -3978,7 +4202,7 @@ def sweep_landings(q: Queue, dry: bool) -> dict:
     for task in sorted(q.tasks.values(), key=lambda t: t.ref):
         if task.state != "done":
             continue
-        kind, detail = artifact_landing(task.doc.get("artifact"))
+        kind, detail = artifact_landing(task.doc.get("artifact"), task_publish(task)[0])
         seen[task.ref] = (kind, detail)
         nxt = LANDED_STATE.get(kind)
         if dry:
@@ -6021,8 +6245,15 @@ def link_task(cr: forge.ChangeRequest, tasks: list) -> object:
     worker reported once. The HEAD BRANCH is what the pull request is actually
     open from, and it is what connects a task's second pull request back to it
     after its first one merged and its artifact stopped being current.
+
+    Only a task whose artifact IS its own change request links by artifact. A
+    `note` task's URL names the pull request it reviewed, and linking that
+    would put the note task's method on somebody else's pull request — a method
+    that asks for no attestation, which would clear the merge gate for it.
     """
     for task in tasks:
+        if task_publish(task)[0] not in CHANGE_METHODS:
+            continue
         ref = pr_ref(task.doc.get("artifact"))
         if ref and ref.number == cr.number and ref.repo == cr.repo:
             return task
@@ -6772,6 +7003,8 @@ def cmd_show(args) -> int:
         print(f"    {'remote:':<12} {remote.get('destination')}:{remote['worktree']}")
     method, how = task_publish(task)
     print(f"    {'publish:':<12} {method}{f' — {how}' if how else ''}")
+    if d.get("target"):
+        print(f"    {'target:':<12} {d['target']}")
     check = d.get("artifact_check") or {}
     if check.get("verdict"):
         print(f"    {'checked:':<12} {check['verdict']} — {check.get('detail', '')}")
@@ -6885,6 +7118,13 @@ def record_problems(root: str) -> tuple["Queue", list]:
                 f"{ref}: publish method {pub['method']!r} is not one of "
                 + ", ".join(sorted(PUBLISH_METHODS))
             )
+        target = d.get("target")
+        if target is not None and not (
+            isinstance(target, str) and forge.TARGET_URL_RE.match(target)
+        ):
+            problems.append(f"{ref}: target {target!r} is not a change request or issue URL")
+        if publish_method(pub.get("method")) == "note" and not target:
+            problems.append(f"{ref}: a `note` task names no target to check its note against")
         # The ONLY thing ever asked of `how`. It names a tool fleet does not
         # know, so "it is text" is the whole contract — anything more is fleet
         # deciding which tools exist.
@@ -6998,8 +7238,17 @@ def build_parser() -> argparse.ArgumentParser:
         # folded into its shape first and never reaches the record.
         type=publish_method,
         choices=sorted(PUBLISH_METHODS),
-        help="what this task must PRODUCE. Defaults to the publish block in "
-        "POLICY.md's frontmatter, and to `pr` when there is none",
+        help="what this task must PRODUCE: `pr` or `attested`, a pull request "
+        "from its branch; `push`, a commit on its base; `note`, a review or "
+        "comment on its --target; `none`, nothing fleet can check. Defaults to "
+        "orchestration/publish.conf, and to `pr` when there is none",
+    )
+    a.add_argument(
+        "--target",
+        help="the change request or issue this task works ON, by URL, when its "
+        "own branch does not open it: the pull request a `note` reviews, or a "
+        "contributor's pull request a `pr` task pushes to. A `note` task needs "
+        "one; a `pr` or `attested` one is then verified against it, not its branch",
     )
     a.add_argument(
         "--how",
