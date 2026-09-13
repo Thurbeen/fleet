@@ -19,6 +19,9 @@ env:
   # Renovate bumps it — see renovate.json's customManagers.
   RUMDL_VERSION: "0.2.67"
 
+# Every job carries a `timeout-minutes` — GitHub's default is six hours, and a
+# hung step would hold the required status that long. Each is a few times the
+# job's usual duration. scripts/lib/check_workflow.py fails a job without one.
 jobs:
   # Classify the PR diff so a docs-only change skips the shell job. Job-level
   # `if:` (not workflow-level `paths-ignore:`) keeps the always-run `all-checks`
@@ -26,6 +29,7 @@ jobs:
   changes:
     name: Detect changes
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       shell: ${{ steps.filter.outputs.shell }}
       markdown: ${{ steps.filter.outputs.markdown }}
@@ -34,7 +38,7 @@ jobs:
       queue: ${{ steps.filter.outputs.queue }}
       reconcile: ${{ steps.filter.outputs.reconcile }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
         id: filter
         with:
@@ -57,6 +61,7 @@ jobs:
               - '**/*.yaml'
               - '**/*.yml'
               - 'scripts/lib/check_yaml.py'
+              - 'scripts/lib/check_workflow.py'
               - 'scripts/check.sh'
               - '.github/workflows/ci.yml'
             profiles:
@@ -97,8 +102,9 @@ jobs:
     needs: changes
     if: needs.changes.outputs.shell == 'true'
     runs-on: ubuntu-latest # shellcheck is preinstalled on the runner
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: ./scripts/check.sh shell
 
   markdown:
@@ -106,28 +112,33 @@ jobs:
     needs: changes
     if: needs.changes.outputs.markdown == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install rumdl
         run: pipx install "rumdl==${RUMDL_VERSION}"
       - run: ./scripts/check.sh markdown docs
 
+  # `workflow` rides here because this file is YAML: the filter already fires
+  # on every change to it.
   yaml:
     name: YAML
     needs: changes
     if: needs.changes.outputs.yaml == 'true'
     runs-on: ubuntu-latest # PyYAML is preinstalled on the runner
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
-      - run: ./scripts/check.sh yaml
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: ./scripts/check.sh yaml workflow
 
   profiles:
     name: Session profiles
     needs: changes
     if: needs.changes.outputs.profiles == 'true'
     runs-on: ubuntu-latest # PyYAML is preinstalled on the runner
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: ./scripts/check.sh profiles
 
   # The queue's records, and — the part worth a job of its own — the selftest
@@ -141,8 +152,9 @@ jobs:
     needs: changes
     if: needs.changes.outputs.queue == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # queue.sh forwards to `uv run fleet queue`; uv brings PyYAML from uv.lock.
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
       - run: ./scripts/check.sh queue cli
@@ -157,8 +169,9 @@ jobs:
     needs: changes
     if: needs.changes.outputs.reconcile == 'true'
     runs-on: ubuntu-latest # the selftest stubs its queue command; no extra deps
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: ./scripts/check.sh reconcile
 
   # Unfiltered on purpose. `.claude/skills` is a committed symlink to
@@ -168,8 +181,9 @@ jobs:
   skills:
     name: Skills layout
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: ./scripts/check.sh skills
 
   # Unfiltered, like the skills job above and for a related reason: what this
@@ -181,8 +195,9 @@ jobs:
   pane:
     name: TUI pane
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # The pane is Lua, and `pane-selftest.sh` renders it rather than grepping
       # it — so the gate needs an interpreter. `lua5.4` for `utf8.codes`, which
       # is how the harness counts COLUMNS instead of bytes; the symlink is
@@ -211,8 +226,9 @@ jobs:
   onboarding:
     name: Onboarding
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # place-pane.sh reads its own edit back with `lua` and restores the
       # backup when the result no longer parses; without an interpreter that
       # assertion silently skips. The apt dance is the pane job's — see there.
@@ -233,16 +249,43 @@ jobs:
   isolation:
     name: Isolation
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # It re-runs queue.sh and fleet-status.sh, which forward to `uv run fleet`.
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
       - run: ./scripts/check.sh isolation
 
+  # Native Windows, with no bash: the checks that already run there, through
+  # the same `fleet` entry point an operator uses. Unfiltered, because "still
+  # works on Windows" is a property of every file, and no paths filter can say
+  # which change breaks it. Each task that ports a check to Python adds it to
+  # `--platform-ported` in the same pull request.
+  windows:
+    name: Windows
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+      # Lua is the one gate tool not on PyPI. The runner image ships MSYS2, so
+      # its pacman installs Lua in seconds with no third-party action.
+      # Chocolatey's `lua` package is 5.1, which the pane harness cannot run
+      # (it needs 5.4 for `utf8.codes`); building it from source through a
+      # setup action also works, and costs two more pinned actions and half a
+      # minute.
+      - name: Install lua
+        run: |
+          C:\msys64\usr\bin\pacman.exe -S --noconfirm --needed mingw-w64-ucrt-x86_64-lua
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          "C:\msys64\ucrt64\bin" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+      - run: uv run fleet check --platform-ported
+
   # Single required status check. Every job feeds this gate; a branch ruleset
   # requires only "All Checks", so adding or removing jobs never needs a
   # ruleset change — but a new job MUST be added to `needs:` below, or it can
-  # fail while this gate reports green.
+  # fail while this gate reports green. `./scripts/check.sh workflow` fails
+  # one that is not.
   all-checks:
     name: All Checks
     if: always()
@@ -258,7 +301,9 @@ jobs:
       - pane
       - onboarding
       - isolation
+      - windows
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Verify all checks passed
         run: |
