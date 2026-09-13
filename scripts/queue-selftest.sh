@@ -488,19 +488,6 @@ case "\$1 \$2" in
 "session delete")
 	echo "\$*" >>"$deletions"
 	;;
-"session key")
-	# Every key is LOGGED, so a test can assert on exactly what was pressed and
-	# in what order. Enter closes whatever dialog the pane fixture shows, and
-	# the pane then shows the one queued behind it (\`<id>.next.txt\`), if any.
-	echo "\$*" >>"$tmp/keys.log"
-	if [ "\$4" = enter ] && [ -f "$panes/\$3.txt" ]; then
-		if [ -f "$panes/\$3.next.txt" ]; then
-			mv "$panes/\$3.next.txt" "$panes/\$3.txt"
-		else
-			rm -f "$panes/\$3.txt"
-		fi
-	fi
-	;;
 *) exit 0 ;;
 esac
 SH
@@ -6672,7 +6659,33 @@ behind_dialog() {
 	printf '{"id":"%s","name":"worker %s","state":"unreported","agent":"claude","hook_reported":false}\n' \
 		"$1" "$1" >"$sessions/$1.json"
 }
-trust() { env PATH="$tbxbin:$base_path" ./scripts/session-trust.sh "$@" 2>&1; }
+
+# A `thurbox-cli` of this section's own, layered in front of the shared one:
+# every OTHER command still goes to the real stub, but `session key` here
+# actually answers the pane, closing whatever dialog is shown and revealing
+# the one queued behind it (`<id>.next.txt`), if any. Scoped to this section
+# and not folded into the shared stub, because §11(j) drives session-trust.sh
+# against a dialog that must stay exactly as written — that is the claim it
+# tests — and a shared stub that closes dialogs on Enter would make it lie.
+t21bin="$tmp/tbx-bin-21"
+mkdir -p "$t21bin"
+cat >"$t21bin/thurbox-cli" <<SH
+#!/bin/sh
+if [ "\$1 \$2" = "session key" ]; then
+	echo "\$*" >>"$tmp/keys.log"
+	if [ "\$4" = enter ] && [ -f "$panes/\$3.txt" ]; then
+		if [ -f "$panes/\$3.next.txt" ]; then
+			mv "$panes/\$3.next.txt" "$panes/\$3.txt"
+		else
+			rm -f "$panes/\$3.txt"
+		fi
+	fi
+	exit 0
+fi
+exec "$tbxbin/thurbox-cli" "\$@"
+SH
+chmod +x "$t21bin/thurbox-cli"
+trust() { env PATH="$t21bin:$base_path" ./scripts/session-trust.sh "$@" 2>&1; }
 
 imp=d1a10900-0000-0000-0000-000000000001
 behind_dialog "$imp"
