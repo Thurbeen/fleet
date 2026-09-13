@@ -764,6 +764,7 @@ check_isolation() {
 	need git isolation || return
 	need jq isolation || return
 	need python3 isolation || return
+	need uv isolation || return
 
 	if ./scripts/isolation-selftest.sh >/dev/null 2>&1; then
 		ok "isolation: a poisoned checkout under a hostile host gets the same verdict"
