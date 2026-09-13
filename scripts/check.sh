@@ -653,7 +653,7 @@ print("entries=" + (" ".join(sorted(q.auto_merge_repos(q.checkout_root()))) or "
 				{ fail "automerge: $ag ships $key=$val; that is the operator's"; miss=1; }
 		done
 	fi
-	# And no method may be a tool name again: the three are artifact shapes.
+	# And no method may be a tool name again: the five are artifact shapes.
 	local shapes
 	shapes="$(python3 -c '
 import sys
@@ -661,7 +661,7 @@ sys.path.insert(0, "scripts/lib")
 import queue as q
 print(" ".join(sorted(q.PUBLISH_METHODS)))
 ' 2>&1)"
-	[ "$shapes" = "attested pr push" ] ||
+	[ "$shapes" = "attested none note pr push" ] ||
 		{ fail "automerge: the publish methods are '''$shapes''', and must be artifact shapes"; miss=1; }
 
 	[ "$miss" -eq 0 ] &&

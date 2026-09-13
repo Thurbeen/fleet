@@ -113,6 +113,15 @@
 #      widening it by nothing — and a spawn that fails anyway reports what
 #      thurbox said rather than its exit status.
 #
+#  22. A FINISHED TASK CLOSES ITSELF, without `--allow-unverified`. A note — a
+#      review or a comment — is its own shape, verified through the forge seam
+#      against the change request or issue the task TARGETS and the account
+#      fleet runs as; a change request the forge reports merged closes its
+#      task whatever its attestation said; a task can name the pull request it
+#      works on instead of opening one; and a document fleet cannot ask about
+#      is `none`, recorded and never dressed up as checked. Fifteen real
+#      records drive it, and nothing in it lets a worker's URL prove itself.
+#
 # Test 4 is also the wake proof. The event source is `thurbox-cli watch`, which
 # this script replaces with a recorded stream through `FLEET_QUEUE_WATCH_CMD` —
 # the same override a different transport would use. What matters is the shape:
@@ -1707,8 +1716,8 @@ PY
 expect "the tracked publish default is pr, which needs no tool" \
 	"method=pr" "$shipped_publish"
 expect "and it names no command at all" "how=none" "$shipped_publish"
-expect "and the three methods are artifact shapes, none of them a tool name" \
-	"methods=attested pr push" "$shipped_publish"
+expect "and the methods are artifact shapes, none of them a tool name" \
+	"methods=attested none note pr push" "$shipped_publish"
 
 # The retired spelling still loads, so a record written before the rename is
 # not a record that has to be hand-edited.
@@ -5224,6 +5233,37 @@ class FakeForge(fg.Forge):
         ok = os.path.exists(os.path.join(_dir(), "push", login))
         return ok, f"{login} {'may' if ok else 'may not'} push to {repo}"
 
+    def parse_target_url(self, url):
+        m = re.match(r"^https://" + re.escape(HOST) + r"/(.+?)/-/(merge_requests|issues)/(\d+)$",
+                     (url or "").strip())
+        if not m:
+            return None
+        kind = "change" if m.group(2) == "merge_requests" else "issue"
+        return fg.Target(fg.RepoId(HOST, m.group(1)), int(m.group(3)), kind, m.group(0))
+
+    def parse_note_url(self, url):
+        base, _, fragment = (url or "").strip().partition("#note_")
+        target = self.parse_target_url(base)
+        if target is None or not fragment.isdigit():
+            return None
+        return fg.NoteRef(target, int(fragment), url.strip())
+
+    def note(self, ref):
+        if _down():
+            return None, "the fake forge is unreachable"
+        path = os.path.join(_dir(), "notes", "%d.json" % ref.id)
+        if not os.path.exists(path):
+            return None, f"no note {ref.id} on {ref.target.repo}"
+        with open(path) as fh:
+            d = json.load(fh)
+        on = fg.Target(ref.target.repo, d["on"], d.get("kind", "change"), "")
+        return fg.Note(ref=ref, author=d.get("author", ""), target=on), ""
+
+    def whoami(self, host):
+        if _down():
+            return "", "the fake forge is unreachable"
+        return "letur", ""
+
     def describe_merge(self, method, delete_branch):
         return f"fake forge: {method}" + (" and delete the branch" if delete_branch else "")
 
@@ -5419,6 +5459,35 @@ expect "an auto-merge entry that names no forge is refused, not matched" \
 	"must name its forge" "$out"
 refute "and nothing under it would be merged" "would-merge" "$out"
 
+# --- 13g. a note goes through the seam, and never links a pull request ------
+#
+# A `note` task's artifact is a review or a comment ON a change request, and
+# its URL names that change request. Read as the task's OWN pull request, it
+# would hand the shepherd a method that asks for no attestation, and an
+# unattested pull request would merge because somebody reviewed it. So the
+# note is verified through the seam, and the change request it sits on stays
+# exactly as unlinked as it was before anyone looked at it.
+
+mkdir -p "$fk/notes"
+printf '{"author": "letur", "on": 207}\n' >"$fk/notes/1.json"
+fake_cr 207 'head_branch="someone/else"' 'body="Opened by hand."'
+fq add "$ftopic" review-207 --title 'Review change 207' --repo "$frepo" \
+	--branch review/207 --number 07 --publish note \
+	--target https://forge.test:8443/acme/widgets/-/merge_requests/207 >/dev/null
+cat >"$tmp/queue-fake/$ftopic/07-review-207/result.md" <<'EOF'
+---
+outcome: shipped
+artifact: https://forge.test:8443/acme/widgets/-/merge_requests/207#note_1
+---
+Reviewed it.
+EOF
+out="$(fq collect 2>&1)"
+expect "a note on a forge that is not GitHub is verified through the seam" \
+	"[publish verified: note]" "$out"
+out="$(fq shepherd --topic "$ftopic" 2>&1)"
+refute "and the unattested change request it reviewed is never merged on its account" \
+	"207 " "$(cat "$fk/merged.log")"
+
 # --- 13f. the regression test: nobody reached around the seam ----------------
 
 if [ -s "$fk/gh-calls.log" ]; then
@@ -5563,6 +5632,10 @@ if argv[:1] == ["api"]:
     path = argv[1].split("?")[0]
     if path.endswith("/commits"):
         name = "commits"
+    elif "/notes/" in path:
+        name = "note"
+    elif path == "user":
+        name = "user"
     elif "/members/all" in path:
         name = "members"
     elif path.count("/") == 1:
@@ -5751,6 +5824,43 @@ for said, want in (("success", "passed"), ("skipped", "passed"), ("failed", "fai
                    ("manual", "pending"), ("created", "pending")):
     claim("pipeline %s reads as %s" % (said, want),
           pipeline_verdicts({"id": 1, "sha": head, "status": said}), [want])
+
+# Notes: a comment on a merge request or an issue, asked of the instance its URL
+# names, and the account glab is logged in as THERE. The two answers are
+# CONSTRUCTED from GitLab's REST documentation (`GET .../notes/:id`, `GET
+# /user`), behind authentication like the project and members ones above.
+# In a try, so an adapter that lacks the interface is a FAIL row and not a
+# traceback that silently takes every claim above it down with it.
+try:
+    api = os.path.join(os.environ["FAKE_GLAB_DIR"], "api")
+    json.dump({"id": 77, "author": {"id": 7, "username": "letur"},
+               "noteable_type": "MergeRequest", "noteable_iid": 301, "body": "Reviewed."},
+              open(os.path.join(api, "note.json"), "w"))
+    json.dump({"id": 7, "username": "letur"}, open(os.path.join(api, "user.json"), "w"))
+    nref = selfhosted.parse_note_url(
+        "https://gitlab.example.com/acme/group/widgets/-/merge_requests/301#note_77")
+    claim("a #note_ URL on a merge request is a note", nref is not None, True)
+    claim("on the merge request its path names",
+          (nref.target.number, nref.target.kind), (301, "change"))
+    note, why = selfhosted.note(nref)
+    claim("and glab answers for it", why, "")
+    claim("with the author GitLab recorded", note.author, "letur")
+    claim("sitting on what GitLab says it sits on",
+          (note.target.number, note.target.kind), (301, "change"))
+    claim("the account glab runs as is asked of that instance",
+          selfhosted.whoami("gitlab.example.com"), ("letur", ""))
+    iref = selfhosted.parse_note_url(
+        "https://gitlab.example.com/acme/group/widgets/-/issues/12#note_78")
+    claim("a note on an issue sits on an issue",
+          (iref.target.number, iref.target.kind), (12, "issue"))
+    claim("an issue URL is a target a note can sit on",
+          selfhosted.parse_target_url(
+              "https://gitlab.example.com/acme/group/widgets/-/issues/12").kind, "issue")
+    calls = open(os.path.join(os.environ["FAKE_GLAB_DIR"], "calls.log")).read()
+    claim("and the identity call named the self-hosted instance",
+          "api user --hostname gitlab.example.com" in calls, True)
+except Exception as exc:  # noqa: BLE001 - a missing interface is the failure under test
+    rows.append(("FAIL", "the GitLab adapter answers for notes", repr(exc)))
 
 for verdict, name, detail in rows:
     print("%s\t%s\t%s" % (verdict, name, detail))
@@ -6720,6 +6830,406 @@ fi
 count_is "each with its own keys, in the order they appeared" \
 	"$(tr '\n' ';' <"$tmp/keys.log")" \
 	"session key $both down;session key $both enter;session key $both enter;" "$out"
+
+# --- 22. a finished task closes itself, without --allow-unverified -----------
+#
+# Fifteen records in the operator's own queue were closed by
+# `collect --allow-unverified`, or are held by it still. Each is copied here:
+# the fields `collect` reads, its result's frontmatter, and what the forge
+# really answered for its artifact on 2026-09-13. The prose is cut to one line
+# and a private hostname is replaced, because those records are the
+# operator's and this file is public. They are four kinds of the same failure:
+#
+#   ten are a NOTE — a review or a comment — declared `push` because no other
+#     shape existed, so no commit URL could ever have proved them
+#   three are a pull request the forge reports MERGED whose attestation had
+#     gone stale, held open by a verdict that ran before landing could
+#   one worked on an EXISTING pull request from a fork, whose head is not the
+#     scaffolding branch fleet gave the task
+#   one is a document off the forge, and one a survey committed in a
+#     repository with no remote: nothing fleet can ask anybody about
+#
+# Every record is driven TWICE. As recorded, it shows what the new code does
+# with a record nobody re-declares: the three merged ones close by themselves,
+# and the rest stay held, because what they declare — `push` with no commit,
+# a branch that is not the pull request's — is still unproven, and closing
+# them would mean taking the worker's own URL as proof of itself. As `add` now
+# records the same task — `note` with its `--target`, `pr` with its
+# `--target`, `none` for what has nothing to check — each closes by itself.
+#
+# `gh` here serves those recorded answers, and `glab` is a TRIPWIRE: nothing
+# about github.com may be asked through GitLab's CLI. `GITLAB_HOST` is set so
+# that building the registry asks `glab` nothing either.
+
+auto="$tmp/autonomy"
+mkdir -p "$auto/bin" "$auto/prs" "$auto/api"
+: >"$auto/glab-calls.log"
+
+cat >"$auto/bin/gh" <<'PY'
+#!/usr/bin/env python3
+"""`gh`, answering from the recorded store under $FAKE_GH_DIR and nothing else."""
+import json
+import os
+import re
+import sys
+
+D = os.environ["FAKE_GH_DIR"]
+argv = sys.argv[1:]
+
+
+def served(path):
+    try:
+        return open(os.path.join(D, path)).read()
+    except OSError:
+        return None
+
+
+def refuse(message):
+    sys.stderr.write(message + "\n")
+    raise SystemExit(1)
+
+
+if argv[:2] == ["pr", "view"]:
+    m = re.match(r"^https://github\.com/([^/]+)/([^/]+)/pull/(\d+)$", argv[2])
+    doc = served("prs/%s_%s_%s.json" % m.groups()) if m else None
+    if doc is None:
+        refuse("GraphQL: Could not resolve to a PullRequest: %s" % argv[2])
+    print(json.loads(doc)["state"] if "-q" in argv else doc)
+    raise SystemExit(0)
+
+if argv[:1] == ["api"]:
+    rest = argv[1:]
+    if rest[:1] == ["--hostname"]:
+        rest = rest[2:]
+    doc = served("api/%s.json" % rest[0].replace("/", "__"))
+    if doc is None:
+        # What GitHub really answers for a review asked for under a pull
+        # request it is not on, measured: a 404, and nothing about where it is.
+        sys.stdout.write('{"message":"Not Found","status":"404"}')
+        refuse("gh: Not Found (HTTP 404)")
+    print(doc)
+    raise SystemExit(0)
+
+refuse("unknown command: gh %s" % " ".join(argv))
+PY
+chmod +x "$auto/bin/gh"
+
+cat >"$auto/bin/glab" <<'SH'
+#!/bin/sh
+echo "glab $*" >>"$FAKE_GH_DIR/glab-calls.log"
+echo "glab: nothing about github.com may be asked through glab" >&2
+exit 1
+SH
+chmod +x "$auto/bin/glab"
+
+# The forge's side of the fifteen, as it answered. The attestation marker is
+# this run's publish.conf's, not the operator's pipeline's.
+python3 - "$auto" <<'PY'
+import json
+import os
+import sys
+
+root = sys.argv[1]
+ME = "LeTuR"
+
+
+def body(attested):
+    steps = [{"step": s, "status": "completed"} for s in ("review", "test", "push")]
+    payload = json.dumps({"head_sha": attested, "steps": steps})
+    return "<!-- fleet-attestation:v1 %s -->\n\nShipped it." % payload
+
+
+def pr(repo, n, state, branch, head, attested=None):
+    doc = {"state": state, "headRefName": branch, "headRefOid": head,
+           "body": body(attested) if attested else "Opened by hand.", "commits": []}
+    name = "%s_%d.json" % (repo.replace("/", "_"), n)
+    json.dump(doc, open(os.path.join(root, "prs", name), "w"))
+
+
+def api(path, doc):
+    name = path.replace("/", "__") + ".json"
+    json.dump(doc, open(os.path.join(root, "api", name), "w"))
+
+
+# Merged, each with an attestation for a commit that is no longer the head.
+pr("Thurbeen/fleet", 48, "MERGED", "feat/reconciler-loop",
+   "a2b520cd945bf0ec8990810d058610a3203dbc4f", "3dea99ac714e24fb2f7c3baf91df642bbb011ca5")
+pr("Thurbeen/fleet", 51, "MERGED", "feat/emoji-session-glyphs",
+   "55d8b791b14766c162f86f82ecdc6211e9ced802", "dde3ef1ab0fafbc02a866c0dca0a68ed04eeb128")
+pr("Thurbeen/fleet", 58, "MERGED", "docs/prune-the-rationale",
+   "eb807947893ff67c0772066d7081a34ab08b04e8", "cbd9481d069fd933256e926064c62b61ad4dfb21")
+# Open, from a fork's branch the task never had.
+pr("kunchenguid/firstmate", 3779, "OPEN", "thurbox-native",
+   "f68d7c6026f8070d8d4dc6e7a76a33f524d95a67", "f68d7c6026f8070d8d4dc6e7a76a33f524d95a67")
+# The pull requests the ten notes sit on. 1114 was closed without merging.
+for n in (1107, 1108, 1115, 1116, 1117):
+    pr("Thurbeen/thurbox", n, "MERGED", "contrib/pr-%d" % n, "%040d" % n)
+pr("Thurbeen/thurbox", 1114, "CLOSED", "contrib/pr-1114", "%040d" % 1114)
+# Two for the claims after the fifteen: stale and still open, and merged from a
+# branch that is not the task's.
+pr("Thurbeen/fleet", 60, "OPEN", "feat/stale-open", "%040d" % 60, "f" * 40)
+pr("Thurbeen/fleet", 61, "MERGED", "feat/theirs", "%040d" % 61, "%040d" % 61)
+
+api("user", {"login": ME})
+for n, rid in ((1107, 5186731434), (1108, 5187155662), (1117, 5189498328),
+               (1116, 5189500334), (1115, 5189502936), (1114, 5189496505)):
+    api("repos/Thurbeen/thurbox/pulls/%d/reviews/%d" % (n, rid), {
+        "id": rid, "user": {"login": ME},
+        "html_url": "https://github.com/Thurbeen/thurbox/pull/%d#pullrequestreview-%d" % (n, rid),
+        "pull_request_url": "https://api.github.com/repos/Thurbeen/thurbox/pulls/%d" % n,
+    })
+for n, cid in ((1108, 5646922086), (1107, 5646949262), (1117, 5651202185)):
+    api("repos/Thurbeen/thurbox/issues/comments/%d" % cid, {
+        "id": cid, "user": {"login": ME},
+        "html_url": "https://github.com/Thurbeen/thurbox/pull/%d#issuecomment-%d" % (n, cid),
+        "issue_url": "https://api.github.com/repos/Thurbeen/thurbox/issues/%d" % n,
+    })
+# Somebody else's review, on the very pull request a task targets.
+api("repos/Thurbeen/thurbox/pulls/1107/reviews/7000001", {
+    "id": 7000001, "user": {"login": "stranger"},
+    "html_url": "https://github.com/Thurbeen/thurbox/pull/1107#pullrequestreview-7000001",
+    "pull_request_url": "https://api.github.com/repos/Thurbeen/thurbox/pulls/1107",
+})
+PY
+
+aq() {
+	env PATH="$auto/bin:$tbxbin:$base_path" FAKE_GH_DIR="$auto" GITLAB_HOST=gitlab.invalid \
+		FLEET_QUEUE_DIR="$tmp/queue-autonomy" "$QUEUE" "$@"
+}
+aqdir="$tmp/queue-autonomy"
+
+publish_field() {
+	python3 - "$aqdir/$1/task.yaml" "$2" <<'PY'
+import sys
+
+import yaml
+
+print((yaml.safe_load(open(sys.argv[1])).get("publish") or {}).get(sys.argv[2]) or "")
+PY
+}
+
+rtopic="$(aq topic add as-recorded --title 'The fifteen, as their records say' \
+	--prompt 'fleet should be more autonomous on closing tasks')"
+itopic="$(aq topic add as-added --title 'The fifteen, as add now records them' \
+	--prompt 'fleet should be more autonomous on closing tasks')"
+
+# number|slug|recorded method|recorded how|branch|artifact|re-added as|target
+#
+# An empty recorded method is a record from before `publish` existed, read as
+# this run's default (`attested`). `-` under re-added is a record that already
+# declared the right shape, so there is nothing to re-add.
+while IFS='|' read -r n slug method how branch artifact again target; do
+	aq add "$rtopic" "$slug" --repo /tmp/repo-records --branch "$branch" --number "$n" >/dev/null
+	python3 - "$aqdir/$rtopic/$n-$slug/task.yaml" "$method" "$how" <<'PY'
+import sys
+
+import yaml
+
+path, method, how = sys.argv[1:]
+doc = yaml.safe_load(open(path))
+if method:
+    doc["publish"] = {"method": method, "how": how or None}
+else:
+    doc.pop("publish")
+open(path, "w").write(yaml.safe_dump(doc, sort_keys=False))
+PY
+	dirs=("$aqdir/$rtopic/$n-$slug")
+	if [ "$again" != - ]; then
+		extra=(--publish "$again")
+		[ -n "$target" ] && extra+=(--target "$target")
+		aq add "$itopic" "$slug" --repo /tmp/repo-records --branch "$branch" \
+			--number "$n" "${extra[@]}" >/dev/null
+		dirs+=("$aqdir/$itopic/$n-$slug")
+	fi
+	for d in "${dirs[@]}"; do
+		[ -d "$d" ] || continue
+		{
+			echo ---
+			echo "outcome: shipped"
+			[ -n "$artifact" ] && echo "artifact: $artifact"
+			echo ---
+			echo "Shipped it."
+		} >"$d/result.md"
+	done
+done <<'EOF'
+01|review-1107|push|posts a review; there is nothing to commit|review/pr-1107|https://github.com/Thurbeen/thurbox/pull/1107#pullrequestreview-5186731434|note|https://github.com/Thurbeen/thurbox/pull/1107
+02|review-1108|push|posts a review; there is nothing to commit|review/pr-1108|https://github.com/Thurbeen/thurbox/pull/1108#pullrequestreview-5187155662|note|https://github.com/Thurbeen/thurbox/pull/1108
+03|review-1117|push|posts a review; nothing to commit|review/open-pr-1117|https://github.com/Thurbeen/thurbox/pull/1117#pullrequestreview-5189498328|note|https://github.com/Thurbeen/thurbox/pull/1117
+04|review-1116|push|posts a review; nothing to commit|review/open-pr-1116|https://github.com/Thurbeen/thurbox/pull/1116#pullrequestreview-5189500334|note|https://github.com/Thurbeen/thurbox/pull/1116
+05|review-1115|push|posts a review; nothing to commit|review/open-pr-1115|https://github.com/Thurbeen/thurbox/pull/1115#pullrequestreview-5189502936|note|https://github.com/Thurbeen/thurbox/pull/1115
+06|review-1114|push|posts a review; nothing to commit|review/open-pr-1114|https://github.com/Thurbeen/thurbox/pull/1114#pullrequestreview-5189496505|note|https://github.com/Thurbeen/thurbox/pull/1114
+07|win-clipboard-test|push|posts evidence as a PR comment; nothing to commit|lab/win-1108-repro|https://github.com/Thurbeen/thurbox/pull/1108#issuecomment-5646922086|note|https://github.com/Thurbeen/thurbox/pull/1108
+08|deb-tmux-race|push|posts evidence as a PR comment; nothing to commit|lab/deb-1107-repro|https://github.com/Thurbeen/thurbox/pull/1107#issuecomment-5646949262|note|https://github.com/Thurbeen/thurbox/pull/1107
+09|explain-thurbox|push|publishes a thurview document; there is nothing to commit|docs/thurview-explainer|http://docs.example.test:35547/review/f90d2474-48ad-4e64-8beb-3c8aa4d6e998|none|
+10|prove-and-propose|push|posts test evidence on #1117 and drafts a proposal; nothing to commit|lab/nvim-editor-flow|https://github.com/Thurbeen/thurbox/pull/1117#issuecomment-5651202185|note|https://github.com/Thurbeen/thurbox/pull/1117
+11|emoji-session-glyphs|||feat/emoji-session-glyphs|https://github.com/Thurbeen/fleet/pull/51|-|
+12|cut-defensive-prose|no-mistakes|run `/no-mistakes --yes`|docs/prune-the-rationale|https://github.com/Thurbeen/fleet/pull/58|-|
+13|reconciler-loop|||feat/reconciler-loop|https://github.com/Thurbeen/fleet/pull/48|-|
+14|green-the-pr|pr||fix/3779-green|https://github.com/kunchenguid/firstmate/pull/3779|pr|https://github.com/kunchenguid/firstmate/pull/3779
+15|survey-existing|||research/build-or-adopt||none|
+EOF
+
+out="$(aq collect 2>&1)"
+
+# (a) As recorded. The three merged pull requests close themselves and land,
+#     and the attestation that went stale is kept as a note on the record.
+
+for t in 11-emoji-session-glyphs 12-cut-defensive-prose 13-reconciler-loop; do
+	s="$(aq show "$rtopic/$t" 2>&1)"
+	expect "$t: a merged pull request closes its task, stale attestation and all" \
+		"state:       landed" "$s"
+	expect "$t: and the stale attestation is noted on the publish block, not held on" \
+		"no longer what would merge" "$(publish_field "$rtopic/$t" attestation)"
+done
+refute "and none of the three needed the escape hatch" "closed by --allow-unverified" "$out"
+
+# The other twelve declare something that is still not true of them. They are
+# held, and the refusal names the shape that WOULD prove each.
+
+for t in 01-review-1107 02-review-1108 03-review-1117 04-review-1116 05-review-1115 \
+	06-review-1114 07-win-clipboard-test 08-deb-tmux-race 09-explain-thurbox \
+	10-prove-and-propose 14-green-the-pr 15-survey-existing; do
+	expect "$t, as recorded, is still held: what it declares is still unproven" \
+		"published:   unverified" "$(aq show "$rtopic/$t" 2>&1)"
+done
+expect "a push task that shipped a note is told the shape its deliverable has" \
+	"--publish note --target" "$(aq show "$rtopic/01-review-1107" 2>&1)"
+expect "and a pull request from another branch is told how to name the one it worked on" \
+	"add --target" "$(aq show "$rtopic/14-green-the-pr" 2>&1)"
+
+# (b) As `add` now records them. Every one closes itself, and nothing needed
+#     the escape hatch.
+
+for t in 01-review-1107 02-review-1108 03-review-1117 04-review-1116 05-review-1115 \
+	06-review-1114 07-win-clipboard-test 08-deb-tmux-race 10-prove-and-propose; do
+	s="$(aq show "$itopic/$t" 2>&1)"
+	expect "$t, added as a note on its target, is verified by the forge" \
+		"checked:     passed" "$s"
+	expect "$t: and lands at once — a note has no change request of its own to wait on" \
+		"state:       landed" "$s"
+done
+expect "collect names the shape it verified" "[publish verified: note]" "$out"
+
+for t in 09-explain-thurbox 15-survey-existing; do
+	s="$(aq show "$itopic/$t" 2>&1)"
+	expect "$t, added as none, is closed with nothing claimed as checked" \
+		"checked:     skipped" "$s"
+	expect "$t: and lands" "state:       landed" "$s"
+done
+expect "and the document's URL is recorded, as given" \
+	"artifact:    http://docs.example.test:35547/review/" "$(aq show "$itopic/09-explain-thurbox" 2>&1)"
+expect "and collect says out loud that nothing was checked" "[publish not checked: none]" "$out"
+
+s="$(aq show "$itopic/14-green-the-pr" 2>&1)"
+expect "the fork's pull request, added with its target, is verified" "checked:     passed" "$s"
+expect "and waits for its merge like any open pull request" "state:       done" "$s"
+
+refute "no re-added record was held open" "$itopic/" "$(printf '%s\n' "$out" | grep 'NOT CLOSED')"
+refute "and nothing was closed by the escape hatch" "closed by --allow-unverified" "$out"
+
+# (c) Nothing here lets a worker's URL prove itself.
+
+ctopic="$(aq topic add no-trust-manufactured --prompt 'a note must be ours, and on the target')"
+claimed() {
+	cat >"$aqdir/$ctopic/$1/result.md" <<EOF
+---
+outcome: shipped
+artifact: $2
+---
+Done.
+EOF
+}
+aq add "$ctopic" somebody-elses --branch review/a --repo /tmp/repo-records --number 01 \
+	--publish note --target https://github.com/Thurbeen/thurbox/pull/1107 >/dev/null
+claimed 01-somebody-elses https://github.com/Thurbeen/thurbox/pull/1107#pullrequestreview-7000001
+aq add "$ctopic" ours-elsewhere --branch review/b --repo /tmp/repo-records --number 02 \
+	--publish note --target https://github.com/Thurbeen/thurbox/pull/1107 >/dev/null
+claimed 02-ours-elsewhere https://github.com/Thurbeen/thurbox/pull/1108#pullrequestreview-5187155662
+aq add "$ctopic" no-such-note --branch review/c --repo /tmp/repo-records --number 03 \
+	--publish note --target https://github.com/Thurbeen/thurbox/pull/1107 >/dev/null
+claimed 03-no-such-note https://github.com/Thurbeen/thurbox/pull/1107#pullrequestreview-7000002
+aq add "$ctopic" stale-open --branch feat/stale-open --repo /tmp/repo-records --number 04 \
+	--publish attested >/dev/null
+claimed 04-stale-open https://github.com/Thurbeen/fleet/pull/60
+aq add "$ctopic" merged-elsewhere --branch feat/mine --repo /tmp/repo-records --number 05 \
+	--publish attested >/dev/null
+claimed 05-merged-elsewhere https://github.com/Thurbeen/fleet/pull/61
+
+out="$(aq collect 2>&1)"
+s="$(aq show "$ctopic/01-somebody-elses" 2>&1)"
+expect "a pasted link to somebody else's review is missing" "published:   unverified" "$s"
+expect "and the refusal names who really wrote it" "stranger" "$s"
+s="$(aq show "$ctopic/02-ours-elsewhere" 2>&1)"
+expect "our own review on a pull request the task does not target is missing" \
+	"published:   unverified" "$s"
+expect "and the refusal names the target it should have been on" "target" "$s"
+s="$(aq show "$ctopic/03-no-such-note" 2>&1)"
+expect "a note the forge cannot find is could-not-check, never passed or missing" \
+	"checked:     unknown" "$s"
+s="$(aq show "$ctopic/04-stale-open" 2>&1)"
+expect "a stale attestation on a pull request still OPEN is still held" \
+	"published:   unverified" "$s"
+s="$(aq show "$ctopic/05-merged-elsewhere" 2>&1)"
+expect "a merged pull request from another branch still proves nothing" \
+	"published:   unverified" "$s"
+
+mv "$auto/api/user.json" "$auto/api/user.json.away"
+aq add "$ctopic" who-am-i --branch review/d --repo /tmp/repo-records --number 06 \
+	--publish note --target https://github.com/Thurbeen/thurbox/pull/1107 >/dev/null
+claimed 06-who-am-i https://github.com/Thurbeen/thurbox/pull/1107#pullrequestreview-5186731434
+aq collect >/dev/null 2>&1
+mv "$auto/api/user.json.away" "$auto/api/user.json"
+expect "a forge that will not say who fleet runs as is could-not-check" \
+	"checked:     unknown" "$(aq show "$ctopic/06-who-am-i" 2>&1)"
+
+out="$(aq collect --allow-unverified 2>&1)"
+expect "and --allow-unverified is still the deliberate escape hatch" \
+	"closed by --allow-unverified" "$out"
+
+# (d) Intake no longer invites the workaround, and says what fits instead.
+
+if out="$(aq add "$ctopic" untargeted --repo /tmp/repo-records --branch review/e \
+	--publish note 2>&1)"; then
+	fail "a note task that names no target is refused at add" "$out"
+else
+	expect "a note task that names no target is refused at add" "--target" "$out"
+fi
+if out="$(aq add "$ctopic" push-at-a-pr --repo /tmp/repo-records --branch review/f \
+	--publish push --target https://github.com/Thurbeen/thurbox/pull/1107 2>&1)"; then
+	fail "a push task with a change request to work on is refused" "$out"
+else
+	expect "a push task with a change request to work on is refused" "--publish note" "$out"
+fi
+if out="$(aq add "$ctopic" pr-at-an-issue --repo /tmp/repo-records --branch review/g \
+	--publish pr --target https://github.com/Thurbeen/thurbox/issues/12 2>&1)"; then
+	fail "a pull request task cannot target an issue" "$out"
+else
+	expect "a pull request task cannot target an issue" "issue" "$out"
+fi
+if out="$(aq add "$ctopic" nonsense --repo /tmp/repo-records --branch review/h \
+	--publish note --target 'the one from yesterday' 2>&1)"; then
+	fail "a target that is no change request or issue URL is refused" "$out"
+else
+	expect "a target that is no change request or issue URL is refused" "target" "$out"
+fi
+
+b="$(brief_text "$aqdir/$itopic/01-review-1107/BRIEF.md")"
+expect "a note task's brief says so" "**Publish.** \`note\`" "$b"
+expect "and names its target" "**Target.** https://github.com/Thurbeen/thurbox/pull/1107" "$b"
+b="$(brief_text "$aqdir/$itopic/09-explain-thurbox/BRIEF.md")"
+expect "a none task's brief says nothing will be checked" "**Publish.** \`none\`" "$b"
+
+h="$(aq add --help 2>&1)"
+expect "add --help names the note shape" "note" "$h"
+expect "and the none shape" "none" "$h"
+expect "and the target flag" "--target" "$h"
+expect "and check accepts every record above" "queue check: ok" "$(aq check 2>&1)"
+
+if [ -s "$auto/glab-calls.log" ]; then
+	fail "nothing about github.com was asked through glab" "$(cat "$auto/glab-calls.log")"
+else
+	pass "nothing about github.com was asked through glab"
+fi
 
 echo
 if [ "$failed" -eq 0 ]; then

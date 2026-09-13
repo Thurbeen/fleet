@@ -948,6 +948,7 @@ local PUBLISH_WORD = {
   unknown = { text = "unknown", tone = "muted" },
   open = { text = "open", tone = "muted", note = "review" },
   pushed = { text = "pushed ✓", tone = "ok" },
+  posted = { text = "posted ✓", tone = "ok" },
   draft = { text = "draft", tone = "warn" },
   ["checks-running"] = { text = "checks ⟳", tone = "warn" },
   ["checks-failed"] = { text = "checks ✗", tone = "bad" },

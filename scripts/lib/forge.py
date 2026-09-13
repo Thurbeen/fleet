@@ -37,6 +37,14 @@ it:
     can_push                may this account push to this repository — the last
                             gate before an unattended merge
     merge                   merge it, by a named method
+    parse_target_url        is this URL a change request or an issue — what a
+                            task names as the thing it works ON
+    parse_note_url          is this URL a review or a comment, and on what
+    note                    one note, as the forge answers for it: who wrote it
+                            and what it sits on. What `collect` checks a `note`
+                            publish against, and never what its URL claims
+    whoami                  which account this machine's CLI runs as on a host
+                            — the account every worker here posts as
 
 REPOSITORY IDENTITY CARRIES A HOST. `Thurbeen/fleet` names two different
 repositories if two forges are configured, and self-hosted instances are the
@@ -133,6 +141,54 @@ class ChangeRef:
 
     def __str__(self) -> str:
         return self.url
+
+
+@dataclass(frozen=True)
+class Target:
+    """What a task works ON: a change request or an issue, named rather than fetched.
+
+    `kind` is half of the identity, because GitLab numbers merge requests and
+    issues separately and `!12` is not `#12`. `url` is one spelling of it and
+    takes no part in comparing two — `same` does that, since a forge's own
+    answer and a URL a lead typed name one target in two spellings.
+    """
+
+    repo: RepoId
+    number: int
+    kind: str  # "change" | "issue"
+    url: str = ""
+
+    def same(self, other) -> bool:
+        return other is not None and (self.repo, self.number, self.kind) == (
+            other.repo, other.number, other.kind
+        )
+
+    def __str__(self) -> str:
+        return self.url or f"{self.repo.path}#{self.number} on {self.repo.host}"
+
+
+@dataclass(frozen=True)
+class NoteRef:
+    """A note — a review or a comment — named rather than fetched.
+
+    `target` is where its URL SAYS it sits, which a URL can say falsely; only
+    the forge's answer, `Note.target`, is evidence. `kind` is the adapter's own
+    word for which of its APIs holds the note, and nothing above it reads that.
+    """
+
+    target: Target
+    id: int
+    url: str
+    kind: str = ""
+
+
+@dataclass
+class Note:
+    """One note, as the forge answers for it. Empty or None: the forge did not say."""
+
+    ref: NoteRef
+    author: str = ""
+    target: Target | None = None
 
 
 @dataclass(frozen=True)
@@ -236,6 +292,20 @@ def change_url(url) -> str:
     """
     m = CHANGE_URL_RE.match((url or "").strip())
     return m.group(1) if m else ""
+
+
+# The same "is it shaped like one" question, for the two other things a task
+# can name: what it works on — a change request or an ISSUE — and a note on
+# one. Offline and forge-agnostic, so `add` can refuse a typo with no network,
+# and so a refusal can say "that is a note" without asking anybody. Which forge
+# owns one is `for_target` and `for_note`, below.
+TARGET_URL_RE = re.compile(
+    r"^https?://[^/\s]+/[^/\s]+(?:/[^/\s]+)+?/(?:pull|merge_requests|issues)/\d+/?$"
+)
+NOTE_URL_RE = re.compile(
+    r"^https?://[^/\s]+/[^/\s]+(?:/[^/\s]+)+?/(?:pull|merge_requests|issues)/\d+"
+    r"#(?:pullrequestreview-|issuecomment-|discussion_r|note_)\d+$"
+)
 
 
 # --- which hosts a CLI is configured for -------------------------------------
@@ -381,6 +451,18 @@ class Forge:
     def merge(self, cr: ChangeRequest, method: str, delete_branch: bool) -> tuple:
         return False, f"{self.name} cannot merge"
 
+    def parse_target_url(self, url: str) -> Target | None:
+        return None
+
+    def parse_note_url(self, url: str) -> NoteRef | None:
+        return None
+
+    def note(self, ref: NoteRef) -> tuple:
+        return None, f"{self.name} cannot read a note"
+
+    def whoami(self, host: str) -> tuple:
+        return "", f"{self.name} cannot say which account it runs as"
+
 
 # --- GitHub, the first implementation ----------------------------------------
 
@@ -431,6 +513,20 @@ GH_STATES = {"OPEN": "open", "MERGED": "merged", "CLOSED": "closed"}
 
 GH_PUSH_PERMISSIONS = {"admin", "maintain", "write"}
 
+# A pull request or an issue, and a note on one. GitHub's three note fragments
+# are three different APIs: a review, a conversation comment — which GitHub
+# files under issues even on a pull request — and a comment on a diff line.
+GH_TARGET_RE = re.compile(r"^https?://([^/\s]+)/([^/\s]+/[^/\s]+?)/(pull|issues)/(\d+)/?$")
+GH_NOTE_RE = re.compile(
+    r"^https?://([^/\s]+)/([^/\s]+/[^/\s]+?)/(pull|issues)/(\d+)"
+    r"#(pullrequestreview-|issuecomment-|discussion_r)(\d+)$"
+)
+GH_NOTE_KINDS = {
+    "pullrequestreview-": "review",
+    "issuecomment-": "comment",
+    "discussion_r": "review-comment",
+}
+
 
 class GitHubForge(Forge):
     """GitHub, through the `gh` CLI. Every `gh` invocation fleet makes is here.
@@ -455,6 +551,8 @@ class GitHubForge(Forge):
         # One answer per (repo, login) per process. The question does not
         # change inside a run and every open pull request would ask it again.
         self._push: dict = {}
+        # And one login per host, for the same reason: every note asks it.
+        self._me: dict = {}
 
     # --- naming ---
 
@@ -670,6 +768,71 @@ class GitHubForge(Forge):
         self._push[key] = answer
         return answer
 
+    def parse_target_url(self, url: str) -> Target | None:
+        m = GH_TARGET_RE.match((url or "").strip())
+        if not m or not self.owns_host(m.group(1)):
+            return None
+        host, path, noun, n = m.group(1).lower(), m.group(2), m.group(3), m.group(4)
+        return Target(
+            RepoId(host, path), int(n), "change" if noun == "pull" else "issue",
+            f"https://{host}/{path}/{noun}/{n}",
+        )
+
+    def parse_note_url(self, url: str) -> NoteRef | None:
+        text = (url or "").strip()
+        m = GH_NOTE_RE.match(text)
+        if not m:
+            return None
+        target = self.parse_target_url(text.split("#", 1)[0])
+        kind = GH_NOTE_KINDS[m.group(5)]
+        # Only a conversation comment can sit on an issue.
+        if target is None or (kind != "comment" and target.kind != "change"):
+            return None
+        return NoteRef(target, int(m.group(6)), text, kind)
+
+    def note(self, ref: NoteRef) -> tuple:
+        """One note, and where GITHUB says it is.
+
+        A review is asked for under the pull request its URL names, and GitHub
+        answers 404 for one that is not on it — measured on 2026-09-13. The
+        other two kinds are asked for by id alone. Either way the answer's own
+        `html_url` is what places the note, not the URL it was asked by.
+        """
+        t = ref.target
+        path = {
+            "review": f"repos/{t.repo.path}/pulls/{t.number}/reviews/{ref.id}",
+            "comment": f"repos/{t.repo.path}/issues/comments/{ref.id}",
+            "review-comment": f"repos/{t.repo.path}/pulls/comments/{ref.id}",
+        }.get(ref.kind)
+        if path is None:
+            return None, f"github has no note of kind {ref.kind!r}"
+        doc, why = self._json(["api", "--hostname", t.repo.host, path], timeout=30)
+        if why:
+            return None, f"gh api could not read the note: {why}"
+        if not isinstance(doc, dict):
+            return None, "gh api did not answer with a note"
+        user = doc.get("user")
+        where = str(doc.get("html_url") or "").split("#", 1)[0]
+        return Note(
+            ref=ref,
+            author=str(user.get("login") or "") if isinstance(user, dict) else "",
+            target=self.parse_target_url(where),
+        ), ""
+
+    def whoami(self, host: str) -> tuple:
+        """The login `gh` uses on `host`, which is the one a worker here posts as."""
+        host = (host or "").lower()
+        if host not in self._me:
+            doc, why = self._json(["api", "--hostname", host, "user"], timeout=30)
+            login = str(doc.get("login") or "") if isinstance(doc, dict) else ""
+            if why:
+                self._me[host] = ("", f"gh could not say which account it runs as on {host}: {why}")
+            elif not login:
+                self._me[host] = ("", f"gh did not name the account it runs as on {host}")
+            else:
+                self._me[host] = (login, "")
+        return self._me[host]
+
     def describe_merge(self, method: str, delete_branch: bool) -> str:
         return "gh pr merge --" + method + (" --delete-branch" if delete_branch else "")
 
@@ -749,6 +912,13 @@ GL_REMOTE_SCP_RE = re.compile(r"^(?:[^@/\s]+@)?([^:/\s]+):(.+?)(?:\.git)?/?$")
 # so they are the one thing in a merge request author that says "not a person".
 GL_BOT_RE = re.compile(r"^(?:project|group)_\d+_bot")
 
+# A merge request or an issue, and — with `#note_<id>` on the end — a note on
+# one. GitLab has one note API for both, keyed by which of the two it sits on.
+GL_TARGET_RE = re.compile(r"^https?://([^/\s]+)/(.+?)/-/(merge_requests|issues)/(\d+)/?$")
+# `noteable_type`, in fleet's two words. A note on a commit or a snippet sits
+# on neither, and is no note a task can target.
+GL_NOTEABLE = {"MergeRequest": "change", "Issue": "issue"}
+
 # glab prints its own errors as a decorated block on stderr. These are the
 # decoration, not the message.
 GL_NOISE = {"", "error", "warning"}
@@ -803,6 +973,7 @@ class GitLabForge(Forge):
         # would otherwise ask again.
         self._push: dict = {}
         self._squash: dict = {}
+        self._me: dict = {}
 
     @staticmethod
     def _host(text: str) -> str:
@@ -1171,6 +1342,59 @@ class GitLabForge(Forge):
         self._push[key] = answer
         return answer
 
+    def parse_target_url(self, url: str) -> Target | None:
+        m = GL_TARGET_RE.match((url or "").strip())
+        if not m or not self.owns_host(m.group(1)) or "/" not in m.group(2):
+            return None
+        host, path, noun, n = m.group(1).lower(), m.group(2), m.group(3), m.group(4)
+        return Target(
+            RepoId(host, path), int(n), "change" if noun == "merge_requests" else "issue",
+            f"https://{host}/{path}/-/{noun}/{n}",
+        )
+
+    def parse_note_url(self, url: str) -> NoteRef | None:
+        text = (url or "").strip()
+        base, sep, fragment = text.partition("#note_")
+        target = self.parse_target_url(base)
+        if target is None or not sep or not fragment.isdigit():
+            return None
+        return NoteRef(target, int(fragment), text, "note")
+
+    def note(self, ref: NoteRef) -> tuple:
+        """One note, and where GITLAB says it is: `noteable_type` and `noteable_iid`."""
+        t = ref.target
+        noun = "merge_requests" if t.kind == "change" else "issues"
+        doc, why = self._api(
+            t.repo, f"projects/{self._project(t.repo)}/{noun}/{t.number}/notes/{ref.id}",
+            timeout=30,
+        )
+        if why:
+            return None, f"glab api could not read the note: {why}"
+        if not isinstance(doc, dict):
+            return None, "glab api did not answer with a note"
+        kind = GL_NOTEABLE.get(str(doc.get("noteable_type") or ""))
+        iid = doc.get("noteable_iid")
+        author = doc.get("author")
+        return Note(
+            ref=ref,
+            author=str(author.get("username") or "") if isinstance(author, dict) else "",
+            target=Target(t.repo, iid, kind) if kind and isinstance(iid, int) else None,
+        ), ""
+
+    def whoami(self, host: str) -> tuple:
+        """The username `glab` uses on `host`, asked of that instance and no other."""
+        host = self._host(host)
+        if host not in self._me:
+            doc, why = self._json(["api", "user", "--hostname", host], timeout=30)
+            login = str(doc.get("username") or "") if isinstance(doc, dict) else ""
+            if why:
+                self._me[host] = ("", f"glab could not say which account it runs as on {host}: {why}")
+            elif not login:
+                self._me[host] = ("", f"glab did not name the account it runs as on {host}")
+            else:
+                self._me[host] = (login, "")
+        return self._me[host]
+
     def _squash_allowed(self, repo: RepoId) -> tuple:
         """(True / False / None, why). `None` is "the project did not say".
 
@@ -1316,6 +1540,54 @@ def for_repo(repo: RepoId) -> tuple:
         if f.owns_host(repo.host):
             return f, ""
     return None, f"no configured forge owns {repo.host}"
+
+
+def owner(url: str) -> Forge | None:
+    """The configured forge whose host this URL is on, or None."""
+    m = re.match(r"^https?://([^/\s]+)/", (url or "").strip())
+    if not m:
+        return None
+    for f in forges():
+        if f.owns_host(m.group(1)):
+            return f
+    return None
+
+
+def for_target(url: str) -> tuple:
+    """(forge, Target) for a change request or issue URL, or (None, why-not)."""
+    text = (url or "").strip()
+    if not TARGET_URL_RE.match(text):
+        return None, f"{text!r} is not a change request or issue URL"
+    for f in forges():
+        target = f.parse_target_url(text)
+        if target is not None:
+            return f, target
+    return None, _unrecognised(text)
+
+
+def for_note(url: str) -> tuple:
+    """(forge, NoteRef) for a review or comment URL, or (None, why-not).
+
+    Like `for_url`, "no configured forge owns that host" is a REASON and not a
+    verdict. A host that IS owned by a forge that does not read the URL as a
+    note is a different sentence, and `owner` is how a caller tells the two
+    apart.
+    """
+    text = (url or "").strip()
+    if not NOTE_URL_RE.match(text):
+        return None, "not a review or comment URL"
+    for f in forges():
+        ref = f.parse_note_url(text)
+        if ref is not None:
+            return f, ref
+    return None, _unrecognised(text)
+
+
+def _unrecognised(url: str) -> str:
+    which = owner(url)
+    if which is not None:
+        return f"{which.name} does not recognise {url}"
+    return f"no configured forge owns {url.split('/')[2]}"
 
 
 def repo_from_remote(remote_url: str) -> RepoId | None:
