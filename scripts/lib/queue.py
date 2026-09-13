@@ -2404,7 +2404,7 @@ def host_entry(name: str) -> tuple[dict | None, str]:
 
     # THE TRUST DIALOG, decided here. `session capture`, `key` and `send` all
     # work against a remote session — thurbox delegates each verb to the
-    # thurbox-cli on the host — so `session-trust.sh` answers a remote dialog
+    # thurbox-cli on the host — so `session_trust.py` answers a remote dialog
     # exactly as it answers a local one. That delegation is switched off
     # wholesale by `share_sessions = false`, and then nothing can see the pane:
     # the worker would sit on its dialog with the brief unread, which is the
@@ -4579,7 +4579,7 @@ STALE_WORKING_SECS = 30 * 60
 REFUEL_CAP = 3
 
 # HOW EACH AGENT SAYS IT RAN OUT, one entry per agent fleet has actually
-# WATCHED do it — the same shape as `scripts/session-trust.sh`'s per-agent
+# WATCHED do it — the same shape as `scripts/lib/session_trust.py`'s per-agent
 # table, and for the same reason: fleet drives several agents, so knowing one
 # of them is a fact about that agent and not a assumption about all of them.
 #
