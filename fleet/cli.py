@@ -2,6 +2,7 @@
 
     uv run fleet queue <verb> ...   scripts/lib/queue.py
     uv run fleet status ...         scripts/lib/fleet_status.py
+    uv run fleet check ...          scripts/lib/check.py
 
 A group names a module that already has a `main(argv) -> int`. This loads it by
 path and hands it the rest of the argv, the way those modules already load each
@@ -22,6 +23,7 @@ LIB = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 
 GROUPS = {
     "queue": ("queue.py", "the task queue: topics, tasks, dispatch and completion"),
     "status": ("fleet_status.py", "one reading of the whole fleet"),
+    "check": ("check.py", "the gate checks that also run on Windows"),
 }
 
 USAGE = "usage: fleet <group> [args...]\n\ngroups:\n" + "".join(

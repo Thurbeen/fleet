@@ -12,8 +12,8 @@
 #   scripts/check.sh shell yaml          # only the named ones
 #   scripts/check.sh --fix markdown      # apply the fixes a check can apply
 #
-# Checks: shell, markdown, yaml, profiles, queue, cli, reconcile, status, skills,
-# pane, voice, automerge, onboarding, install, sync, isolation. Only `markdown`
+# Checks: shell, markdown, yaml, workflow, profiles, queue, cli, reconcile,
+# status, skills, pane, voice, automerge, onboarding, install, sync, isolation. Only `markdown`
 # has a fixer; `--fix` is a no-op for the rest, so `scripts/check.sh --fix` is
 # always safe to run.
 #
@@ -112,6 +112,19 @@ check_yaml() {
 		ok "yaml: ${#files[@]} tracked files parse"
 	else
 		fail "yaml"
+	fi
+}
+
+# CI's single required status is `All Checks`, so a job it does not need can
+# fail while the pull request reports green. check_workflow.py holds that, a
+# timeout on every job, and a job on windows-latest.
+check_workflow() {
+	need python3 workflow || return
+
+	if python3 scripts/lib/check_workflow.py; then
+		ok "workflow: All Checks needs every job, every job has a timeout, one runs on Windows"
+	else
+		fail "workflow: scripts/lib/check_workflow.py"
 	fi
 }
 
@@ -783,7 +796,7 @@ for arg in "$@"; do
 done
 
 if [ ${#checks[@]} -eq 0 ]; then
-	checks=(shell markdown yaml profiles queue cli reconcile status skills pane voice automerge onboarding install sync isolation)
+	checks=(shell markdown yaml workflow profiles queue cli reconcile status skills pane voice automerge onboarding install sync isolation)
 fi
 
 for c in "${checks[@]}"; do
@@ -791,6 +804,7 @@ for c in "${checks[@]}"; do
 	shell) check_shell ;;
 	markdown) check_markdown ;;
 	yaml) check_yaml ;;
+	workflow) check_workflow ;;
 	profiles) check_profiles ;;
 	queue) check_queue ;;
 	cli) check_cli ;;
@@ -805,7 +819,7 @@ for c in "${checks[@]}"; do
 	install) check_install ;;
 	isolation) check_isolation ;;
 	*)
-		printf 'error: unknown check %q (want: shell markdown yaml profiles queue cli reconcile status skills pane voice automerge onboarding install sync isolation)\n' "$c" >&2
+		printf 'error: unknown check %q (want: shell markdown yaml workflow profiles queue cli reconcile status skills pane voice automerge onboarding install sync isolation)\n' "$c" >&2
 		exit 2
 		;;
 	esac
