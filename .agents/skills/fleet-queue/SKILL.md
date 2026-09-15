@@ -962,7 +962,10 @@ whole topic in view.
 ```
 
 `queue.sh add` onto an archived topic un-archives it, so you can never dispatch
-into a topic no view draws.
+into a topic no view draws. `collect` does the same for a topic that holds a
+task that is not finished, and names the task when it does: a record written
+back over a landing can reopen a task inside an archived topic, and nothing
+reading only the live view would ever see it again.
 
 **The operator has their own view: point them at it rather than narrating into
 it.** The TUI queue pane (`F3`) draws the same records — topics classified by
