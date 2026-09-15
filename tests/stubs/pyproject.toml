@@ -13,6 +13,8 @@ thurbox-cli = "fleet_stubs.thurbox:main"
 ssh = "fleet_stubs.ssh:main"
 glab = "fleet_stubs.glab:main"
 quota-axi = "fleet_stubs.quota:main"
+# Copied under any other name by `Stubs.tool`.
+fleet-stub = "fleet_stubs.anytool:main"
 
 [tool.uv.build-backend]
 module-name = "fleet_stubs"

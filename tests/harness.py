@@ -93,7 +93,7 @@ def isolate(environ: dict, root: Path, stub_bin: Path) -> dict:
     appdata = home / "AppData"
     for d in (home / ".config", home / ".cache", home / ".local" / "share", home / ".local" / "state",
               appdata / "Roaming", appdata / "Local", root / "settings" / "orchestration",
-              root / "queue", root / "runs", root / "reconcile", root / "stubs"):
+              root / "queue", root / "runs", root / "reconcile", root / "stubs" / "bin"):
         d.mkdir(parents=True, exist_ok=True)
     (home / ".gitconfig").write_text(
         "[user]\n\tname = selftest\n\temail = selftest@example.invalid\n"
@@ -140,7 +140,8 @@ def isolate(environ: dict, root: Path, stub_bin: Path) -> dict:
         FLEET_RECONCILE_DIR=str(root / "reconcile"),
         FLEET_REGISTRY_FILE=str(root / "registry" / "repos.generated.yaml"),
         FLEET_STUB_ROOT=str(root / "stubs"),
-        PATH=str(stub_bin) + os.pathsep + environ.get("PATH", ""),
+        # A test's own stand-ins (`Stubs.tool`) first, then the package's.
+        PATH=os.pathsep.join((str(root / "stubs" / "bin"), str(stub_bin), environ.get("PATH", ""))),
         # Output is read as UTF-8 here; a Windows console's code page is not.
         PYTHONIOENCODING="utf-8",
     )
@@ -158,8 +159,8 @@ class Run:
         return self.stdout + self.stderr
 
 
-def run_queue(*args: str, cwd: Path = REPO, script: Path | None = None, **env: str | None) -> Run:
-    """Run the queue's real entry point the way an operator would.
+def run(argv: list[str], cwd: Path = REPO, stdin: str | None = None, **env: str | None) -> Run:
+    """Run `argv` in a child, as fleet's own subprocess calls do.
 
     A keyword sets an environment variable for this one call, and None unsets it.
     """
@@ -170,10 +171,27 @@ def run_queue(*args: str, cwd: Path = REPO, script: Path | None = None, **env: s
         else:
             child[k] = v
     done = subprocess.run(
-        [*PYTHON, str(script or REPO / "scripts" / "lib" / "queue.py"), *args],
-        cwd=cwd, env=child, capture_output=True, encoding="utf-8", errors="replace",
+        argv, cwd=cwd, env=child, input=stdin, capture_output=True, encoding="utf-8", errors="replace",
     )
     return Run(done.returncode, done.stdout, done.stderr)
+
+
+def run_queue(*args: str, cwd: Path = REPO, script: Path | None = None, **env: str | None) -> Run:
+    """Run the queue's real entry point the way an operator would."""
+    return run([*PYTHON, str(script or REPO / "scripts" / "lib" / "queue.py"), *args], cwd=cwd, **env)
+
+
+def run_fleet(*args: str, cwd: Path = REPO, stdin: str | None = None, **env: str | None) -> Run:
+    """Run `fleet <args>` through the console script's own `main`, from any cwd."""
+    boot = "import sys\nfrom fleet.cli import main\nsys.exit(main())"
+    return run([*PYTHON, "-c", boot, *args], cwd=cwd, stdin=stdin, **env)
+
+
+def lib(filename: str):
+    """A scripts/lib module, loaded by path under `fleet_<name>` exactly as fleet/cli.py loads it."""
+    from fleet.cli import load
+
+    return load(filename)
 
 
 class Stubs:
@@ -181,6 +199,23 @@ class Stubs:
 
     def __init__(self, root: Path):
         self.root = root
+        self.bin = root / "bin"
+
+    def tool(self, name: str, script: str) -> None:
+        """Answer as `name` for this test: `script` is Python run with that tool's argv.
+
+        A name the stub package already declares keeps its executable and
+        takes this answer instead of its canned one. Any other name gets a copy
+        of the `fleet-stub` launcher in this test's own bin, first on PATH.
+        """
+        self._write(f"scripts/{name}.py", script)
+        if name in STUB_TOOLS:
+            return
+        launcher = shutil.which("fleet-stub")
+        if not launcher:
+            raise RuntimeError("fleet-stub not on PATH: the stub package is not installed")
+        self.bin.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(launcher, self.bin / (name + (".exe" if os.name == "nt" else "")))
 
     def _write(self, rel: str, text: str) -> None:
         path = self.root / rel

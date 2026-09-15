@@ -151,3 +151,22 @@ def test_a_child_process_finds_every_stub_and_no_real_tool(tmp_path, stub_bin):
     assert not trip.exists(), f"a real tool ran instead of its stub:\n{trip.read_text()}"
     logged = (Path(env["FLEET_STUB_ROOT"]) / "calls.log").read_text().splitlines()
     assert logged == [f"{tool} fleet-harness-probe" for tool in STUB_TOOLS]
+
+
+def test_a_test_can_stand_in_for_any_tool_by_name(stubs):
+    # A tool the stub package does not declare — onboarding asks for `lua`,
+    # `rumdl` and a dozen more — found by bare name from a child, as fleet
+    # calls it, with an answer and an exit code the test chose.
+    stubs.tool("rumdl", "import sys\nprint('rumdl answered', *sys.argv[1:])\nraise SystemExit(3)\n")
+    done = subprocess.run(["rumdl", "--version"], capture_output=True, text=True)
+    assert (done.returncode, done.stdout) == (3, "rumdl answered --version\n"), done.stderr
+    assert stubs.calls("rumdl") == ["rumdl --version"]
+
+
+def test_a_scripted_answer_replaces_a_built_in_stub(stubs):
+    # The per-test answer wins over the package's canned one, so a test about
+    # five `gh` logins does not need a sixth stub package.
+    stubs.tool("gh", "import sys\nprint('scripted', *sys.argv[1:])\n")
+    done = subprocess.run(["gh", "auth", "status"], capture_output=True, text=True)
+    assert (done.returncode, done.stdout) == (0, "scripted auth status\n"), done.stderr
+    assert stubs.calls("gh") == ["gh auth status"]
