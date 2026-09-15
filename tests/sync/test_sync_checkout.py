@@ -25,7 +25,7 @@ import shutil
 from pathlib import Path
 
 from harness import REPO, expect, git, lib, refute, run_fleet, write
-from synckit import advance_origin, head_of, new_repo
+from synckit import advance_origin, head_of, new_repo, remove_on_origin
 
 
 def sync(work: Path, **env):
@@ -173,7 +173,28 @@ def test_an_unrelated_path_does_not_raise_the_hand_over(tmp_path):
     work = new_repo(tmp_path)
     advance_origin(tmp_path, "docs/unrelated.md")
 
-    refute(sync(work).out, "restart-lead:")
+    refute(sync(work).out, "restart-lead:", "restart-reconciler:")
+
+
+def test_a_sync_that_removes_the_reconcilers_code_says_to_restart_it(tmp_path):
+    """A loop runs the code it started with. The bash reconciler outlived the
+    update that deleted its script and failed every pass for hours, and the
+    sync that deleted it said nothing."""
+    work = new_repo(tmp_path)
+    advance_origin(tmp_path, "scripts/reconcile.sh")
+    sync(work)
+    remove_on_origin(tmp_path, "scripts/reconcile.sh")
+
+    done = sync(work)
+
+    expect(done.out, "restart-reconciler: yes", "scripts/reconcile.sh", "uv run fleet reconcile status")
+
+
+def test_new_loop_code_says_to_restart_the_reconciler_too(tmp_path):
+    work = new_repo(tmp_path)
+    advance_origin(tmp_path, "scripts/lib/reconcile.py")
+
+    expect(sync(work).out, "restart-reconciler: yes", "scripts/lib/reconcile.py")
 
 
 def test_the_lead_is_named_as_the_installed_manifest_spells_it(tmp_path):

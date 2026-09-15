@@ -539,5 +539,31 @@ class SpawnDetached(TempDirCase):
         self.assertEqual(seen.read_text(encoding="utf-8"), "0", "the grandchild got a console window of its own")
 
 
+class OtherProcesses(TempDirCase):
+    """What proves a legacy reconciler before it is signalled: argv and working directory, exactly."""
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "only Linux's /proc is read")
+    def test_a_process_argv_and_working_directory_are_read_exactly(self):
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)", "two words"], cwd=self.tmp)
+        try:
+            self.assertIn(proc.pid, fp.process_ids())
+            argv, cwd = fp.process_argv_cwd(proc.pid)
+            self.assertEqual(argv[1:], ["-c", "import time; time.sleep(60)", "two words"])
+            self.assertEqual(cwd, os.path.realpath(self.tmp))
+            proc.kill()
+            deadline = time.monotonic() + 10
+            while fp.process_argv_cwd(proc.pid) and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertIsNone(fp.process_argv_cwd(proc.pid), "a zombie runs nothing")
+        finally:
+            proc.kill()
+            proc.wait(timeout=30)
+
+    @unittest.skipIf(sys.platform.startswith("linux"), "Linux reads /proc")
+    def test_elsewhere_no_process_is_proven(self):
+        self.assertEqual(fp.process_ids(), [])
+        self.assertIsNone(fp.process_argv_cwd(os.getpid()))
+
+
 if __name__ == "__main__":
     unittest.main()

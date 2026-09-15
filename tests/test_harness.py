@@ -63,6 +63,9 @@ def hostile_host(root: Path) -> dict:
         GH_HOST="github.private.invalid",
         GITLAB_HOST="gitlab.private.invalid",
         THURBOX_SESSION="00000000-0000-0000-0000-operatorlead",
+        THURBOX_CONFIG_DIR=str(home / ".config" / "thurbox"),
+        TMUX="/tmp/tmux-1000/default,4242,0",
+        TMUX_PANE="%3",
         FLEET_QUEUE_DIR=str(REPO / "orchestration" / "queue"),
         TRIPWIRE_LOG=str(root / "tripwire.log"),
         PATH=str(trip) + os.pathsep + env_path(),
@@ -105,10 +108,13 @@ def test_isolated_env_defeats_the_hostile_host(tmp_path, stub_bin):
     for var in ("HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "XDG_CONFIG_HOME"):
         assert Path(env[var]).is_relative_to(tmp_path / "env"), f"leak: {var}={env[var]}"
     for var in (
-        "THURBOX_SESSION", "GH_TOKEN", "GITHUB_TOKEN", "GITLAB_TOKEN", "GH_HOST", "GITLAB_HOST",
+        "THURBOX_SESSION", "THURBOX_CONFIG_DIR", "TMUX", "TMUX_PANE",
+        "GH_TOKEN", "GITHUB_TOKEN", "GITLAB_TOKEN", "GH_HOST", "GITLAB_HOST",
         "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_DIR",
     ):
         assert var not in env, f"leak: {var} reaches a test"
+    # A loop a test starts goes with the run that started it, killed or not.
+    assert env["FLEET_RECONCILE_PARENT_PID"] == str(os.getpid())
     assert env.get("GIT_CONFIG_GLOBAL") != hostile["GIT_CONFIG_GLOBAL"]
 
     # Whatever a child resolves as HOME, thurbox's hosts.toml is not there.
