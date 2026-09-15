@@ -33,6 +33,15 @@ repos:
         files: '\.ya?ml$'
         pass_filenames: false
 
+      # A job All Checks does not need can fail while the pull request reports
+      # green, and a commit straight to main never meets CI to find out.
+      - id: workflow
+        name: CI workflow gates every job
+        entry: ./scripts/check.sh workflow
+        language: system
+        files: '^(\.github/workflows/ci\.yml|scripts/lib/check_workflow\.py)$'
+        pass_filenames: false
+
       - id: profiles
         name: session profiles render
         entry: ./scripts/check.sh profiles

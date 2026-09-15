@@ -29,7 +29,9 @@ def problems(path: str) -> list[str]:
 
     found = []
     for name, job in jobs.items():
-        if "timeout-minutes" not in job:
+        # A job that calls a reusable workflow (`uses:`) cannot take a timeout;
+        # GitHub rejects the key there, and the called workflow's jobs carry it.
+        if "timeout-minutes" not in job and "uses" not in job:
             found.append(f"{path}: job `{name}` has no timeout-minutes")
 
     needs = jobs[GATE].get("needs") or []
