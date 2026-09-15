@@ -147,7 +147,7 @@
 -- and there is no key on it that dispatches, collects or merges anything. Its
 -- one action is hiding and showing its column: a global F-key, because a pane
 -- that cannot hold focus can only ever be reached by a global chord; the
--- `[F3 hide]` button on its top border, which is the same action under the
+-- `Fleet · F3` button on its top border, which is the same action under the
 -- pointer; and a `Fleet` pill in the action band, because a closed column
 -- draws no button to click and the band is the one place that still can. The
 -- wheel scrolls it, since a pane that is never focused cannot be given a `j`.
