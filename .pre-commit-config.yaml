@@ -3,25 +3,34 @@
 #
 #     prek install
 #
-# Every hook shells out to scripts/check.sh, which is also what CI runs and what
-# .publish.yaml declares as the gate — so a hook cannot drift from the gate it is
-# standing in for. One hook per check rather than a single whole-gate
-# hook, so a commit touching only prose does not wait on shellcheck.
+# Every hook runs `uv run fleet check <name>`, which is also what CI runs and
+# what .publish.yaml declares as the gate — so a hook cannot drift from the gate
+# it stands in for. One hook per static check rather than a single whole-gate
+# hook, so a commit touching only prose does not wait on the test suite. The
+# commands carry no shell syntax, so they run the same from bash, cmd and
+# PowerShell.
 default_stages: [pre-commit]
 
 repos:
   - repo: local
     hooks:
-      - id: shell
-        name: shellcheck
-        entry: ./scripts/check.sh shell
+      - id: lock
+        name: uv.lock matches pyproject.toml
+        entry: uv run --frozen fleet check lock
         language: system
-        files: '\.sh$'
+        files: '^(pyproject\.toml|uv\.lock|tests/stubs/pyproject\.toml)$'
+        pass_filenames: false
+
+      - id: lint
+        name: ruff
+        entry: uv run --frozen fleet check lint
+        language: system
+        files: '\.py$'
         pass_filenames: false
 
       - id: markdown
         name: markdown (rumdl)
-        entry: ./scripts/check.sh markdown
+        entry: uv run --frozen fleet check markdown
         language: system
         files: '\.md$'
         pass_filenames: false
@@ -35,7 +44,7 @@ repos:
 
       - id: yaml
         name: YAML parses
-        entry: ./scripts/check.sh yaml
+        entry: uv run --frozen fleet check yaml
         language: system
         files: '\.ya?ml$'
         pass_filenames: false
@@ -44,24 +53,23 @@ repos:
       # green, and a commit straight to main never meets CI to find out.
       - id: workflow
         name: CI workflow gates every job
-        entry: ./scripts/check.sh workflow
+        entry: uv run --frozen fleet check workflow
         language: system
         files: '^(\.github/workflows/ci\.yml|scripts/lib/check_workflow\.py)$'
         pass_filenames: false
 
       - id: profiles
         name: session profiles render
-        entry: ./scripts/check.sh profiles
+        entry: uv run --frozen fleet check profiles
         language: system
-        files: '^(orchestration/session-profiles\.yaml|scripts/session-flags\.sh|scripts/lib/session_profiles\.py)$'
+        files: '^(orchestration/session-profiles\.yaml|scripts/lib/session_profiles\.py)$'
         pass_filenames: false
 
-      # Unfiltered: the failure this catches is a checkout that materialised
-      # .claude/skills as a regular file instead of a symlink, which shows up
-      # in a commit that touches no skill at all.
+      # Unfiltered: a skill hand-added under .claude/ instead of .agents/skills
+      # shows up in a commit that touches no skill at all.
       - id: skills
         name: agent skills layout
-        entry: ./scripts/check.sh skills
+        entry: uv run --frozen fleet check skills
         language: system
         always_run: true
         pass_filenames: false

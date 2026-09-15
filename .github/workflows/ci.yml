@@ -11,303 +11,65 @@ concurrency:
 
 permissions:
   contents: read
-  # dorny/paths-filter reads the PR's changed files via the API.
-  pull-requests: read
 
-# Every job carries a `timeout-minutes` — GitHub's default is six hours, and a
-# hung step would hold the required status that long. Each is a few times the
-# job's usual duration. scripts/lib/check_workflow.py fails a job without one.
 jobs:
-  # Classify the PR diff so a docs-only change skips the shell job. Job-level
-  # `if:` (not workflow-level `paths-ignore:`) keeps the always-run `all-checks`
-  # gate reporting a status — a skipped job counts as success.
-  changes:
-    name: Detect changes
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      shell: ${{ steps.filter.outputs.shell }}
-      markdown: ${{ steps.filter.outputs.markdown }}
-      yaml: ${{ steps.filter.outputs.yaml }}
-      profiles: ${{ steps.filter.outputs.profiles }}
-      queue: ${{ steps.filter.outputs.queue }}
-      reconcile: ${{ steps.filter.outputs.reconcile }}
+  # The whole gate, `uv run fleet check`, on a Linux runner and a native
+  # Windows one with no bash. One command on both, so a green local run, a
+  # green Linux job and a green Windows job all mean the same thing. Unfiltered:
+  # "still works on Windows" is a property of every file, and no paths filter
+  # can say which change breaks it.
+  #
+  # Every job carries a `timeout-minutes`: GitHub's default is six hours, and a
+  # hung step would hold the required status that long.
+  # scripts/lib/check_workflow.py fails a job without one.
+  check:
+    name: Gate (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
-        id: filter
-        with:
-          # Every filter includes this workflow and the gate script, so editing
-          # either re-runs all jobs.
-          filters: |
-            shell:
-              - '**/*.sh'
-              - 'scripts/check.sh'
-              - '.github/workflows/ci.yml'
-            markdown:
-              - '**/*.md'
-              - '.rumdl.toml'
-              - 'pyproject.toml'
-              - 'uv.lock'
-              - 'scripts/check.sh'
-              - '.github/workflows/ci.yml'
-            yaml:
-              - '**/*.yaml'
-              - '**/*.yml'
-              - 'scripts/lib/check_yaml.py'
-              - 'scripts/lib/check_workflow.py'
-              - 'scripts/check.sh'
-              - '.github/workflows/ci.yml'
-            profiles:
-              - 'orchestration/session-profiles.yaml'
-              - 'scripts/session-flags.sh'
-              - 'scripts/lib/session_profiles.py'
-              - 'scripts/check.sh'
-              - '.github/workflows/ci.yml'
-            queue:
-              - 'scripts/queue.sh'
-              - 'scripts/queue-selftest.sh'
-              - 'scripts/lib/queue.py'
-              - 'scripts/lib/fleet_platform.py'
-              # The `fleet` command both forwarders run, and its test.
-              - 'scripts/fleet-status.sh'
-              - 'fleet/**'
-              - 'tests/**'
-              - 'pyproject.toml'
-              - 'uv.lock'
-              # Dispatch calls both in-process, and the selftest drives both.
-              - 'scripts/session-trust.sh'
-              - 'scripts/lib/session_trust.py'
-              - 'scripts/lib/session_profiles.py'
-              - 'scripts/check.sh'
-              - '.github/workflows/ci.yml'
-            reconcile:
-              - 'scripts/reconcile.sh'
-              - 'scripts/reconcile-selftest.sh'
-              # The loop drives queue.sh and asks it which checkout owns the
-              # queue, so a change there can break it without touching a
-              # reconcile file.
-              - 'scripts/queue.sh'
-              - 'scripts/lib/queue.py'
-              - 'scripts/lib/fleet_platform.py'
-              - 'scripts/check.sh'
-              - '.github/workflows/ci.yml'
-
-  # Every job below runs scripts/check.sh rather than inlining its checks, so
-  # the local gate and this one cannot drift apart. That matters here because
-  # CI fires only on pull requests while routine control-plane changes go
-  # straight to `main`. The Windows job is the one exception: it has no bash,
-  # so it runs `fleet check`, which calls the same Python modules and Lua
-  # harness check.sh does.
-  shell:
-    name: Shell
-    needs: changes
-    if: needs.changes.outputs.shell == 'true'
-    runs-on: ubuntu-latest # shellcheck is preinstalled on the runner
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: ./scripts/check.sh shell
-
-  markdown:
-    name: Markdown
-    needs: changes
-    if: needs.changes.outputs.markdown == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # rumdl is pinned in pyproject.toml's dev group, the same pin the Windows
-      # job runs, so a rumdl release cannot turn a green pull request red on
-      # its own and the two runners cannot disagree about a file.
+      # uv brings Python, PyYAML and the gate's own tools (pytest, ruff, rumdl)
+      # from uv.lock, so both runners lint and test with the same versions.
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
-      - run: uv run --frozen ./scripts/check.sh markdown docs
-
-  # `workflow` rides here because this file is YAML: the filter already fires
-  # on every change to it.
-  yaml:
-    name: YAML
-    needs: changes
-    if: needs.changes.outputs.yaml == 'true'
-    runs-on: ubuntu-latest # PyYAML is preinstalled on the runner
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: ./scripts/check.sh yaml workflow
-
-  profiles:
-    name: Session profiles
-    needs: changes
-    if: needs.changes.outputs.profiles == 'true'
-    runs-on: ubuntu-latest # PyYAML is preinstalled on the runner
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: ./scripts/check.sh profiles
-
-  # The queue's records, and — the part worth a job of its own — the selftest
-  # that re-proves its ordering and wake claims: that independent work goes out
-  # all at once, that file overlap does NOT serialize, that a turn ending is not
-  # a task finishing. Those are easy to invert by accident and expensive to
-  # notice in a real run.
-  # `cli` rides along: the forwarders and the `fleet` command they run.
-  queue:
-    name: Task queue
-    needs: changes
-    if: needs.changes.outputs.queue == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # queue.sh forwards to `uv run fleet queue`; uv brings PyYAML from uv.lock.
-      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
-      - run: ./scripts/check.sh queue cli
-
-  # The reconciler's lifecycle, and a job rather than an assertion because it
-  # starts a real supervised loop under setsid and watches it tick. It also
-  # proves the loop asks the queue for watch, collect, shepherd and refuel and
-  # NOTHING else — no dispatch, no reap, no record of its own — which is the
-  # rule that keeps the queue single-writer.
-  reconcile:
-    name: Reconciler
-    needs: changes
-    if: needs.changes.outputs.reconcile == 'true'
-    runs-on: ubuntu-latest # the selftest stubs its queue command; no extra deps
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: ./scripts/check.sh reconcile
-
-  # Unfiltered on purpose. `.claude/skills` is a committed symlink to
-  # `.agents/skills`, and the way that breaks is a CHECKOUT that materialises it
-  # as a regular file rather than a link — which no diff mentions. Running this
-  # on every pull request is what proves the layout survives a fresh clone.
-  skills:
-    name: Skills layout
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: ./scripts/check.sh skills
-
-  # Unfiltered, like the skills job above and for a related reason: what this
-  # catches spans a Lua file, a shell script and two documents at once, so a
-  # paths filter would have to list all four to be correct — and a filter that
-  # is wrong here fails silently, which is the exact failure the check exists
-  # to prevent. It is greps and one offline render; running it always costs
-  # seconds.
-  pane:
-    name: TUI pane
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # The pane is Lua, and `pane-selftest.sh` renders it rather than grepping
-      # it — so the gate needs an interpreter. `lua5.4` for `utf8.codes`, which
-      # is how the harness counts COLUMNS instead of bytes; the symlink is
-      # because the package ships no unversioned `lua` and `check.sh` looks for
-      # the same name an operator has locally.
-      - name: Install lua
-        run: |
-          # The runner image preinstalls a google-chrome-stable apt source we
-          # never use; when its index goes stale, `apt-get update` exits
-          # non-zero for the whole run and (with the runner's default `-e`
-          # shell) aborts this step before lua is even installed. Drop it so
-          # this step depends only on the repos it actually needs. Ubuntu
-          # 24.04 runners ship it as deb822 `google-chrome.sources` rather
-          # than the old `google-chrome.list`, so remove both forms.
-          sudo rm -f /etc/apt/sources.list.d/google-chrome.list /etc/apt/sources.list.d/google-chrome.sources
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends lua5.4
-          sudo ln -sf /usr/bin/lua5.4 /usr/local/bin/lua
-      - run: ./scripts/check.sh pane
-
-  # Unfiltered, for the same reason the pane job is: what it covers spans four
-  # scripts, a fixture and the pane's own slot declaration, so a paths filter
-  # would have to list all of them to be correct. It is also the setup nobody
-  # re-runs — a regression here is invisible to every operator who is already
-  # set up, and total for the next one. Two seconds, offline, all stubs.
-  onboarding:
-    name: Onboarding
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # place-pane.sh reads its own edit back with `lua` and restores the
-      # backup when the result no longer parses; without an interpreter that
-      # assertion silently skips. The apt dance is the pane job's — see there.
-      - name: Install lua
+      # Lua is the one gate tool not on PyPI: the pane check renders the pane
+      # with it, and needs 5.4 for `utf8.codes`.
+      #
+      # Linux: the runner image preinstalls a google-chrome apt source whose
+      # index can go stale and fail `apt-get update` for the whole step, so it
+      # is dropped first. The package ships no unversioned `lua`, hence the link.
+      - name: Install lua (Linux)
+        if: runner.os == 'Linux'
         run: |
           sudo rm -f /etc/apt/sources.list.d/google-chrome.list /etc/apt/sources.list.d/google-chrome.sources
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends lua5.4
           sudo ln -sf /usr/bin/lua5.4 /usr/local/bin/lua
-      # install.sh and pane-ask.sh, driven end to end; same stubs, same job.
-      - run: ./scripts/check.sh onboarding install
-
-  # Unfiltered, because what it guards is every check's INPUTS: that no check
-  # or selftest reads a queue record, a registry map, a gitignored setting, the
-  # caller's HOME or their git config. A change to any script can break that,
-  # and a runner holds none of those things, so only a job that builds them —
-  # a poisoned checkout under a hostile host — can see it. Seconds.
-  isolation:
-    name: Isolation
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # It re-runs queue.sh and fleet-status.sh, which forward to `uv run fleet`.
-      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
-      - run: ./scripts/check.sh isolation
-
-  # Native Windows, with no bash: the checks that already run there, through
-  # the same `fleet` entry point an operator uses. Unfiltered, because "still
-  # works on Windows" is a property of every file, and no paths filter can say
-  # which change breaks it. Each task that ports a check to Python adds it to
-  # `--platform-ported` in the same pull request.
-  windows:
-    name: Windows
-    runs-on: windows-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
-      # Lua is the one gate tool not on PyPI. The runner image ships MSYS2, so
-      # its pacman installs Lua in seconds with no third-party action.
-      # Chocolatey's `lua` package is 5.1, which the pane harness cannot run
-      # (it needs 5.4 for `utf8.codes`); building it from source through a
-      # setup action also works, and costs two more pinned actions and half a
-      # minute. `-y` refreshes the image's package list, which otherwise names
-      # a revision the mirror drops once a newer one is published.
-      - name: Install lua
+      # Windows: the image ships MSYS2, whose pacman installs Lua in seconds
+      # with no third-party action. Chocolatey's `lua` is 5.1, which the pane
+      # harness cannot run. `-y` refreshes the image's package list, which
+      # otherwise names a revision the mirror drops once a newer one is out.
+      - name: Install lua (Windows)
+        if: runner.os == 'Windows'
         run: |
           C:\msys64\usr\bin\pacman.exe -Sy --noconfirm --needed mingw-w64-ucrt-x86_64-lua
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           "C:\msys64\ucrt64\bin" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
       # `--frozen`: run against uv.lock as committed, never a fresh resolution.
-      - run: uv run --frozen fleet check --platform-ported
+      - run: uv run --frozen fleet check
 
-  # Single required status check. Every job feeds this gate; a branch ruleset
-  # requires only "All Checks", so adding or removing jobs never needs a
-  # ruleset change — but a new job MUST be added to `needs:` below, or it can
-  # fail while this gate reports green. `./scripts/check.sh workflow` fails
-  # one that is not.
+  # Single required status check. A branch ruleset requires only "All Checks",
+  # so adding or removing jobs never needs a ruleset change — but a new job
+  # MUST be added to `needs:` below, or it can fail while this gate reports
+  # green. `uv run fleet check workflow` fails one that is not.
   all-checks:
     name: All Checks
     if: always()
     needs:
-      - changes
-      - shell
-      - markdown
-      - yaml
-      - profiles
-      - queue
-      - reconcile
-      - skills
-      - pane
-      - onboarding
-      - isolation
-      - windows
+      - check
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
