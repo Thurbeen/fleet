@@ -12,7 +12,7 @@ installed, owners known, registry synced, thurbox extension installed, the queue
 pane **on screen**, and the reconciler up.
 
 **Do the work, don't narrate it — but keep the operator oriented while you do.**
-Every step is a script in `scripts/`, and running them is yours. What the
+Every step is a `uv run fleet` command, and running them is yours. What the
 operator needs from you is a sense of where they are, and a real say at the
 five points where the answer is genuinely theirs.
 
@@ -21,13 +21,13 @@ five points where the answer is genuinely theirs.
 Seven steps, in this order, each announced in one line before you do it:
 
 ```text
-Step 1/7  Dependencies      preflight.sh, then install what is missing   [ask]
+Step 1/7  Dependencies      fleet preflight, then install what is missing [ask]
 Step 2/7  This checkout     is this the clone to keep?
-Step 3/7  Owners            discover-owners.sh, then confirm             [ask]
-Step 4/7  Registry          sync-registry.sh
-Step 5/7  Extension         voice-ask.sh, then install-extension.sh      [ask]
-Step 6/7  Queue pane        place it on screen — right by default        [ask]
-Step 7/7  Reconciler        reconcile.sh ensure                          [ask]
+Step 3/7  Owners            fleet discover-owners, then confirm           [ask]
+Step 4/7  Registry          fleet sync-registry
+Step 5/7  Extension         fleet voice-ask, then fleet install-extension [ask]
+Step 6/7  Queue pane        place it on screen — right by default         [ask]
+Step 7/7  Reconciler        fleet reconcile ensure                        [ask]
 ```
 
 **Five asks, and no more than five.** Everything else is discoverable or
@@ -45,13 +45,13 @@ is tracked is the machinery plus the `_TEMPLATE.md` forms. Say that when it
 comes up; a user who finds half the layout missing should hear that it is
 correct.
 
-Each script's own header is its full usage, and each remains the supported
-manual path.
+Each command's module docstring under `scripts/lib/` is its full usage, and
+each remains the supported manual path.
 
 ## Step 1/7 — Dependencies
 
 ```bash
-./scripts/preflight.sh
+uv run fleet preflight
 ```
 
 One pass over everything fleet needs, in three tiers, each row carrying what
@@ -61,9 +61,15 @@ missing or a `thurbox-cli` is below the manifest's floor.
 
 | Tier | What it means |
 |---|---|
-| required | fleet cannot run — `git`, `gh` (authenticated), `jq`, `uv`, `python3` + PyYAML, `thurbox-cli` |
-| recommended | a named capability degrades — `quota-axi` for fuel and `refuel`, `glab` for GitLab |
-| gate | only `./scripts/check.sh` needs it — `lua`, `shellcheck`, `rumdl`, `prek`, plus the git commit-signing configuration, which is not a tool |
+| required | fleet cannot run — `git`, `gh` (authenticated), `uv`, `thurbox-cli`, and the multiplexer thurbox runs sessions in: `tmux` 3.2 or newer, or `psmux` on native Windows |
+| recommended | a named capability degrades — `quota-axi` for fuel and `refuel`, `glab` (authenticated) for GitLab |
+| gate | only `uv run fleet check` needs it — `lua`, `prek`, plus the git commit-signing configuration, which is not a tool |
+
+There is no Python row. `uv` is the one runtime dependency that carries the
+rest: it brings the Python and the PyYAML `uv.lock` pins, and the gate's own
+`ruff`, `rumdl` and `pytest`. The table itself is data —
+`scripts/lib/preflight.py`'s `dependencies()` — so what a row says and what an
+installer acts on can never drift apart.
 
 The two authentication rows are the ones worth reading rather than skimming,
 because neither CLI's own status command answers the question fleet has.
@@ -77,18 +83,18 @@ gitlab.com has a working setup, and this row says so.
 `gh` is required even on a fleet whose work is entirely on GitLab: it is what
 builds the repo map from `registry/owners.txt`, which is a list of GITHUB
 owners. `quota-axi` is the one most often missed, and it is not decorative —
-without it the pane's fuel rows and `./scripts/fleet-status.sh` have nothing to
-read, and `queue.sh refuel` cannot tell a spent account window from a live one
-before it restarts a worker.
+without it the pane's fuel rows and `uv run fleet status` have nothing to
+read, and `fleet queue refuel` cannot tell a spent account window from a live
+one before it restarts a worker.
 
 The last gate row is not a tool at all: **git commit signing turned on with no
 key outside this checkout**. Nothing here needs it fixed to run a fleet, but
 every commit in a repo an `includeIf gitdir:` key does not cover then fails —
 a throwaway sandbox, or a worktree somewhere that block does not name.
-`scripts/queue-selftest.sh` forces signing off for the repos it builds, so the
-gate itself no longer reports it as a dozen unrelated queue failures. Report it
-as what it is — a machine-config problem with a one-line fix and no bearing on
-the rest of the setup.
+Every test runs under `tests/harness.py`'s `isolated_env`, whose git
+configuration turns signing off, so the gate itself never reports it as a dozen
+unrelated queue failures. Report it as what it is — a machine-config problem
+with a one-line fix and no bearing on the rest of the setup.
 
 **ASK — installing is the operator's call.** A package manager is the one part
 of this setup that touches the machine outside the checkout, so nothing is
@@ -99,28 +105,30 @@ installed unasked. Show the missing rows and ask:
 - **Required only** — the smallest thing that runs
 - **Skip** — nothing is installed
 
-Then run the lines, which are the script's own — one flag per answer, so which
+Then run the lines, which are the command's own — one flag per answer, so which
 lines to run is never your judgement call:
 
 ```bash
-./scripts/preflight.sh --commands                                  # everything missing
-./scripts/preflight.sh --commands --tier required --tier recommended
-./scripts/preflight.sh --commands --tier required
+uv run fleet preflight --commands                                  # everything missing
+uv run fleet preflight --commands --tier required --tier recommended
+uv run fleet preflight --commands --tier required
 ```
 
-Run them one at a time and show what each said; several need `sudo`, and an
-operator watching a sudo prompt should know which command asked for it. An
-install that fails is reported and does not stop the others — one missing gate
-tool is not a reason to abandon a setup.
+The lines are for THIS machine's package manager — `winget` on native Windows;
+`apt-get`, `dnf`, `pacman` or `brew` elsewhere — or a tool's own installer where
+that is the recommended route. Run them one at a time and show what each said;
+on Linux several need `sudo`, and an operator watching a sudo prompt should know
+which command asked for it. An install that fails is reported and does not stop
+the others — one missing gate tool is not a reason to abandon a setup.
 
-Then **re-run `./scripts/preflight.sh` and read it back.** That is the
+Then **re-run `uv run fleet preflight` and read it back.** That is the
 verification, not the package manager's exit code.
 
 If a REQUIRED tool is still missing after that, stop here and say which. A
 half-onboarded clone — owners written, no registry — is worse than one that
 never started. The single exception is `thurbox-cli`: steps 1 to 4 are still
 worth doing without it, so say plainly that steps 5 and 6 are deferred and that
-`./scripts/install-extension.sh` is the one command that picks them both up.
+`uv run fleet install-extension` is the one command that picks them both up.
 
 ## Step 2/7 — This checkout
 
@@ -137,7 +145,7 @@ about to vanish. So if the working directory is a thurbox worktree, a temp
 directory or an obvious throwaway, say so now and stop — moving later costs a
 session deletion (see step 5), and it is free to avoid here.
 
-`./scripts/sync-checkout.sh` is how changes arrive afterwards. It runs from the
+`uv run fleet sync-checkout` is how changes arrive afterwards. It runs from the
 `SessionStart` hook and only ever fast-forwards, so there is nothing to
 configure; it is worth knowing it exists because it is also what reports that a
 pull left the running lead session holding stale instructions.
@@ -148,7 +156,7 @@ pull left the running lead session holding stale instructions.
 nearly all of it is already on the machine. Ask the machine first:
 
 ```bash
-./scripts/discover-owners.sh
+uv run fleet discover-owners
 ```
 
 Three sources, each candidate printed with the evidence behind it:
@@ -178,7 +186,7 @@ evidence and ask which the map should cover:
 - **Just my account** — the narrowest useful map
 - **A subset I name** — they pick from the list
 - **Scan somewhere else first** — their clones live outside the default roots,
-  so run `./scripts/discover-owners.sh ~/that/dir` and ask again with the
+  so run `uv run fleet discover-owners ~/that/dir` and ask again with the
   fuller list
 
 An account with no orgs and no other evidence has nothing to ask about — write
@@ -199,7 +207,7 @@ so start from the tracked example rather than from memory:
 - Replace the two `# your-github-username` / `# your-org` placeholder lines with
   the confirmed owners, one per line, username first.
 - On a **re-run** there are no placeholders left, and appending by hand is no
-  longer the way to do it: `./scripts/add-owner.sh <owner>...` appends, leaves
+  longer the way to do it: `uv run fleet add-owner <owner>...` appends, leaves
   the existing order alone — the sync emits owners in this file's order, so
   reshuffling it churns the generated map for nothing — and refuses a
   duplicate. **What the operator gains afterwards**, below, is the fuller path.
@@ -221,16 +229,16 @@ by inheriting the thurbox server's environment rather than by living in a file.
 ## Step 4/7 — Registry
 
 ```bash
-./scripts/sync-registry.sh
+uv run fleet sync-registry
 ```
 
 It enumerates every repo the operator's `gh` sessions can reach — **every
 login, not just the active one**, each asked with its own token and none of them
 switched — keeps the ones under those owners, and writes
 `registry/repos.generated.yaml` — **generated**, so never hand-edit it and never
-hand-write it if the script fails. A repo two logins both reach is one repo, and
-a login whose credential no longer works costs its own repos and not the map:
-it is named on stderr and skipped.
+hand-write it if the command fails. A repo two logins both reach is one repo,
+and a login whose credential no longer works costs its own repos and not the
+map: it is named on stderr and skipped.
 
 Verify the map is not empty, and read the totals back as the evidence:
 
@@ -238,7 +246,7 @@ Verify the map is not empty, and read the totals back as the evidence:
 tail -3 registry/repos.generated.yaml   # totals: repos / owners
 ```
 
-**The trap:** a mistyped owner does not fail the sync. The script prints
+**The trap:** a mistyped owner does not fail the sync. The command prints
 `warning: no accessible repos for owner '<x>'` on stderr and carries on, so a
 typo yields a quietly thinner map. Surface that warning — it means a typo or an
 org no login can see, and it is fixable in seconds now.
@@ -401,11 +409,11 @@ question, with what it does in the option itself:
 - **Bring it up now** (recommended) — folds thurbox's event stream and runs
   `collect`, `shepherd` and `refuel` on their own intervals
 - **Leave it down** — every one of those then happens only when the lead
-  remembers, and `./scripts/reconcile.sh ensure` starts it later
+  remembers, and `uv run fleet reconcile ensure` starts it later
 
 ```bash
-./scripts/reconcile.sh ensure
-./scripts/reconcile.sh status
+uv run fleet reconcile ensure
+uv run fleet reconcile status
 ```
 
 Without it, one session ended with 19 of 20 progress timelines empty and three
@@ -415,24 +423,30 @@ answer is buying.
 **`ensure`, never `start`, for exactly that reason.** It has the same `down`
 flag with the same durability, in `orchestration/reconcile/down`, and the same
 three correct answers on a re-run: started it, adopted it, or left it down
-because the operator asked.
+because the operator asked. A running loop holds an exclusive lock in that same
+directory for its whole life, and the OS drops the lock however the loop died,
+so a crashed loop is never mistaken for a live one and never a reason for a
+twin.
 
 Three things to pass on, once:
 
 - It **reconciles and does not decide**. No dispatch, no cancel, no reorder,
-  and it writes no record itself — `scripts/queue.sh` stays the only writer,
+  and it writes no record itself — `fleet queue` stays the only writer,
   which is what keeps the queue single-writer.
 - It **will occasionally type one line into Mission Control**, and only ever
   the same one: that N tasks are ready and nothing will dispatch them. That is
   the loop telling the actor who may act; an unprompted line there is this and
   not a bug. It arrives once per transition and never while the lead is
   mid-turn.
-- To switch it off for good: `./scripts/reconcile.sh stop`. To bring it back:
-  `./scripts/reconcile.sh start`.
+- To switch it off for good: `uv run fleet reconcile stop`. To bring it back:
+  `uv run fleet reconcile start`.
 
-Optionally, and only if they ask for it: `./scripts/reconcile.sh hook` prints a
+Optionally, and only if they ask for it: `uv run fleet reconcile hook` prints a
 Claude Code `Stop` hook that makes a finishing worker nudge the loop into its
-next pass immediately. It goes in `~/.config/thurbox/hooks/claude.json`, which
+next pass immediately — one command, `uv run --project <this checkout> fleet
+reconcile nudge`, that exits 0 whatever happens and so never blocks a worker. It
+goes in thurbox's hooks file, which `uv run fleet paths thurbox-hooks` names for
+this machine (thurbox keeps it under `%APPDATA%` on native Windows), and which
 is **thurbox's file and not fleet's** — so this prints the block and the
 operator pastes it, and a thurbox update may take it away again. It is an
 accelerator, never the mechanism: a worker that ran out of quota fires no hook
@@ -477,19 +491,22 @@ cp -n orchestration/agent.example.conf orchestration/agent.conf
 
 *Where fleet may merge.* A fresh clone
 has no `orchestration/auto-merge.conf` and the tracked example names no
-repository, so `queue.sh shepherd` reviews every pull request and merges none —
-saying so by name. Nobody inherits another operator's merge rights by cloning a
-public repo. Offer the file, never write it; the example's header owns the
-format and the gates a merge still clears:
+repository, so `fleet queue shepherd` reviews every pull request and merges
+none — saying so by name. Nobody inherits another operator's merge rights by
+cloning a public repo. Offer the file, never write it; the example's header owns
+the format and the gates a merge still clears:
 
 ```bash
 cp -n orchestration/auto-merge.example.conf orchestration/auto-merge.conf
 ```
 
-Gate anyway; the `yaml` check is the one that asserts the generated map's shape:
+Gate anyway — `uv run fleet check` reads no operator state, so it proves the
+machinery this clone runs, not the map; `uv run fleet status --records` is the
+one that holds the generated map to its shape:
 
 ```bash
-./scripts/check.sh
+uv run fleet check
+uv run fleet status --records
 ```
 
 Then tell them the one thing that is theirs to do next: open the Mission
@@ -514,10 +531,10 @@ Assume someone runs this twice. Every step above **converges**:
 | Dependencies | pure probes; nothing is installed without the same question |
 | Checkout | a question, not a write |
 | Owners | discovery re-reads the machine and marks what is already configured; adds only missing entries, never duplicates or reorders |
-| Registry | the script rewrites the file wholesale from live GitHub |
-| Names | `voice-ask.sh` says `skip` and keeps `voice.conf`; nothing is re-asked |
+| Registry | the command rewrites the file wholesale from live GitHub |
+| Names | `fleet voice-ask` says `skip` and keeps `voice.conf`; nothing is re-asked |
 | Extension | a reinstall keeps existing `agents.toml` entries, so a customized model survives |
-| Queue pane | `plugin install` reports it `current`, and `place-pane.sh` says "already placed" and touches nothing |
+| Queue pane | `plugin install` reports it `current`, and `fleet place-pane` says "already placed" and touches nothing |
 | Reconciler | `ensure` adopts a running one, and a `down` flag it wrote stays honoured; never a twin |
 
 So do not refuse on an already-configured clone. Detect it —
@@ -528,7 +545,7 @@ and offer to refresh the map rather than redoing everything.
 **An answered `orchestration/voice.conf` is kept and not re-asked.** Renaming
 either name is the operator's to start, and it needs more than a new file: the
 running lead keeps the names it was rendered with. The new answer goes in with
-`./scripts/voice-ask.sh set --replace '<operator>' '<lead>'`. Then
+`uv run fleet voice-ask set --replace '<operator>' '<lead>'`. Then
 `.agents/skills/update-fleet/` owns applying it — the re-install, then
 `thurbox-cli session restart` on the lead.
 
@@ -540,9 +557,9 @@ the checks have to catch up. That is **one command**, and offering it is the
 narrow thing this section exists for — not the seven steps again:
 
 ```bash
-./scripts/add-owner.sh                       # what is new; writes nothing
-./scripts/add-owner.sh --all                 # add every new owner, then sync
-./scripts/add-owner.sh <owner> [<owner>...]  # add the ones they picked
+uv run fleet add-owner                       # what is new; writes nothing
+uv run fleet add-owner --all                 # add every new owner, then sync
+uv run fleet add-owner <owner> [<owner>...]  # add the ones they picked
 ```
 
 The report groups owners **by the account that reaches them**, because after a
@@ -571,7 +588,7 @@ Three things it does not do, each deliberate:
   the command over and let them run it; then run the report again.
 - **A GitLab host never becomes an owner.** `registry/owners.txt` is read by
   `gh`. Authenticating one changes two other things and the report says so: the
-  `glab auth` row in `preflight.sh` starts naming that host, and a task can
+  `glab auth` row in `fleet preflight` starts naming that host, and a task can
   target a repository there through the forge seam in `scripts/lib/forge.py`.
 - **It does not onboard a fresh clone.** With no `registry/owners.txt` it
   refuses and points back at step 3, where the candidates come from three

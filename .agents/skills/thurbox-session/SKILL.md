@@ -27,7 +27,7 @@ branch points at. A stale local `main` produces a worker that does correct work
 and opens a CONFLICTING PR. Fixing that afterwards costs a force-push.
 
 ```bash
-scripts/sync-checkout.sh   # fast-forwards main when clean; reports otherwise
+uv run fleet sync-checkout   # fast-forwards main when clean; reports otherwise
 ```
 
 This repo's `SessionStart` hook (`.claude/settings.json`) runs that, so the
@@ -101,7 +101,7 @@ follow from how the name is used:
   fails leaves that task `queued` while the rest of the set still goes out.
   `scripts/lib/queue.py`'s `session_name()` cuts by byte, on a codepoint
   boundary, for exactly that reason.
-- **fleet's own workers wear a mark.** `queue.sh dispatch` puts `🚀 ` in front
+- **fleet's own workers wear a mark.** `fleet queue dispatch` puts `🚀 ` in front
   of the name it builds from the task title, under the one setting in
   `orchestration/session-glyphs.example.conf` that also decides the lead's. The
   convention above is unchanged — the name is still an imperative sentence, now
@@ -110,8 +110,9 @@ follow from how the name is used:
 
 ## 1a. Remote hosts (`--host`)
 
-Hosts come from `~/.config/thurbox/hosts.toml`; a host `foo` registers the
-backend `ssh:foo`.
+Hosts come from thurbox's `hosts.toml`, in the directory `uv run fleet paths
+thurbox-config` prints — thurbox keeps it under `%APPDATA%` on native Windows.
+A host `foo` registers the backend `ssh:foo`.
 
 With `--host`, **everything runs on the remote**: the agent process, the tmux
 window, and the git worktrees. Only the TUI is local. Three consequences:
@@ -153,20 +154,21 @@ also captures a pane with its spaces gone (`Yes,Itrustthisfolder`), so match a
 pane with whitespace stripped.
 
 **The pane IS reachable on a remote host.** `session get`, `session capture`,
-`session key` and `session send` each delegate the whole verb to the
-thurbox-cli on that machine, so `scripts/session-trust.sh` answers a remote
-trust dialog exactly as it answers a local one. The config-seeding fallback
-does not travel: `scripts/trust-thurbox-dir.sh` writes THIS machine's
-`~/.claude.json`, and a remote agent reads the remote one. Run it on the host
-if you need it. The one host where delegation is unavailable is one whose
-`hosts.toml` entry sets `share_sessions = false`; there, nothing can see the
-pane and nothing can answer the dialog.
+`session key` and `session send` each delegate the whole verb to the thurbox-cli
+on that machine, so `uv run fleet session-trust` answers a remote trust dialog
+exactly as it answers a local one. The config-seeding fallback does not travel:
+`uv run fleet trust-thurbox-dir` writes THIS machine's `~/.claude.json`, and a
+remote agent reads the remote one. Run it on the host if you need it. The one
+host where delegation is unavailable is one whose `hosts.toml` entry sets
+`share_sessions = false`; there, nothing can see the pane and nothing can answer
+the dialog.
 
-**`./scripts/queue.sh add --host <name>` is the driven version of all of it**,
+**`uv run fleet queue add --host <name>` is the driven version of all of it**,
 and is what the control plane should use rather than a hand-rolled spawn: it
-refuses an unknown, non-POSIX or unshared host at `add` time, runs the three
-probes above before it spawns, copies the brief into the remote worktree, and
-fetches the worker's `result.md` back over ssh. `fleet-queue` §1 and §4 own it.
+refuses an unknown host, one whose shell it cannot speak, or an unshared one at
+`add` time, runs the three probes above before it spawns, copies the brief into
+the remote worktree, and fetches the worker's `result.md` back over ssh.
+`fleet-queue` §1 and §4 own it.
 
 ## 1b. Get past the trust dialog — as part of the spawn, not after it
 
@@ -176,14 +178,14 @@ sits on that dialog — the session exists, the pane is live, the agent has not
 started — and `session send` then types the brief INTO the dialog. This broke
 every worker fleet spawned.
 
-**`scripts/session-trust.sh <uuid>` is the answer, and `./scripts/queue.sh
+**`uv run fleet session-trust <uuid>` is the answer, and `uv run fleet queue
 dispatch` runs it for you** between `session create` and the first `session
 send`. Run it yourself only for a session you spawned by hand, and only in that
 same window — before anything has been typed into the pane.
 
 ```bash
-scripts/session-trust.sh <uuid>          # confirm → answer → confirm
-scripts/session-trust.sh <uuid> --json   # for a driver
+uv run fleet session-trust <uuid>          # confirm → answer → confirm
+uv run fleet session-trust <uuid> --json   # for a driver
 ```
 
 It **confirms the dialog is on the pane before sending anything**, answers with
@@ -205,7 +207,7 @@ The per-agent differences, one of which is a trap:
 can exit the agent instead of dismissing a dialog. Teach it one with
 `TRUST_SIGNATURE` and `TRUST_KEYS` in `orchestration/agent.conf`
 (`TRUST_KEYS=none` for an agent with no dialog at all);
-`scripts/lib/session_trust.py`, which `session-trust.sh` forwards to, owns the
+`scripts/lib/session_trust.py`, which `fleet session-trust` runs, owns the
 mechanics.
 
 **Which path the trust is recorded against** (observed 2026-09-07, Claude Code):
@@ -215,12 +217,12 @@ and later ones do not — but a whole ready set dispatched at once against one
 repo draws the dialog on every one of them simultaneously, because none has
 been answered yet when they start.
 
-**The config-seeding fallback.** `scripts/trust-thurbox-dir.sh` writes Claude
+**The config-seeding fallback.** `uv run fleet trust-thurbox-dir` writes Claude
 Code's trust into `~/.claude.json` directly:
 
 ```bash
-scripts/trust-thurbox-dir.sh /abs/path/to/worktree   # one path
-scripts/trust-thurbox-dir.sh --all-worktrees         # every existing one
+uv run fleet trust-thurbox-dir /abs/path/to/worktree   # one path
+uv run fleet trust-thurbox-dir --all-worktrees         # every existing one
 ```
 
 Use it when a dialog cannot be answered, or to pre-seed before an unattended
@@ -265,12 +267,11 @@ else — reach for `session restart` first.
 
 **The rule that goes with `adopt`: read `created` before you send.**
 
-```bash
-out=$(thurbox-cli session create --name "$name" ... --on-existing adopt --json)
-id=$(jq -r .id <<<"$out")
-if [ "$(jq -r .created <<<"$out")" = true ]; then
-	# brand new — write the brief and send it (§3)
-fi
+```text
+thurbox-cli session create --name '<name>' ... --on-existing adopt --json
+  "id":      every later command keys off it
+  "created": true   brand new — write the brief and send it (§3)
+             false  adopted — send nothing, read its state (§4a)
 ```
 
 `session send` types its text into the pane and presses Enter. Sending a brief
@@ -284,18 +285,19 @@ running* — go and read its state (§4a) instead.
 Everything so far is about the session. These are about the **agent** inside it:
 model, effort, feature flags, and the command line itself. Do not write them on
 the spawn command line — they live in `orchestration/session-profiles.yaml`, one
-named profile per set of settings, and `./scripts/session-flags.sh` renders one
-into flags:
+named profile per set of settings, and `uv run fleet session-flags` renders
+one into flags:
 
 ```bash
-mapfile -d '' -t flags < <(./scripts/session-flags.sh sweep)
-thurbox-cli session create --name "$name" --repo-path "$repo" \
-  --worktree-branch "$branch" --on-existing adopt "${flags[@]}" --json
+uv run fleet session-flags sweep     # the `sweep` profile's flags
+uv run fleet session-flags --check   # validate every profile
 ```
 
-`mapfile -d ''` because the flags come out NUL-separated: a `--arg` value is
-often a whole command line. `./scripts/session-flags.sh sweep | tr '\0' '\n'`
-is how you read them yourself, and `--check` validates every profile in
+The flags come out NUL-separated, because a `--arg` value is often a whole
+command line: split the output on NUL and pass each piece to `session create`
+as its own argument. `uv run fleet queue dispatch` does not go through that
+output at all — it renders the task's profile in-process, so no shell stands
+between a task and its settings. `--check` validates every profile in
 `session-profiles.yaml`, which is the one file there is.
 
 Two rules the gate enforces, so a profile breaking either never reaches `main`:
@@ -338,9 +340,10 @@ idle while it works — §4a has why `uncovered` is not `idle`. The second is th
 same launch, declared: `--reports-as` changes nothing about what runs, it tells
 thurbox which agent's hooks the pane speaks.
 
-So the two ship together or not at all, and `session-flags.sh` refuses a profile
-with `command` and no `reports_as`. `thurbox-cli session reports-as <session>
-<agent>` makes the same declaration after the fact, with `--clear` to undo it.
+So the two ship together or not at all, and `fleet session-flags` refuses a
+profile with `command` and no `reports_as`. `thurbox-cli session reports-as
+<session> <agent>` makes the same declaration after the fact, with `--clear` to
+undo it.
 
 ## 2. Multi-repo mode
 
@@ -363,8 +366,8 @@ thurbox-cli session create --name 'Add a license header to every source file' \
 
 **What the worker actually sees.** With two or more members, thurbox launches
 the agent in a per-session **symlink workspace**
-(`~/.local/share/thurbox/workspaces/<agent_session_id>/`) holding one symlink
-per repo, with the agent's cwd set there, so every repo appears as a
+(`workspaces/<agent_session_id>/` under thurbox's data directory) holding one
+symlink per repo, with the agent's cwd set there, so every repo appears as a
 subdirectory. Symlinks only, rebuilt on each launch, removed on delete without
 touching the repos. The consequences:
 
@@ -413,7 +416,7 @@ was adopted, not created, and is already working on this (§1c).
 **`send` tells you it typed, and nothing more.** `sent: true, submitted: true`
 is a claim about the keystrokes, not about the worker — the agent may take the
 message and work for an hour while every field in `session get` stands still
-(§4c). If the worker has a queue record, message it with `./scripts/queue.sh
+(§4c). If the worker has a queue record, message it with `uv run fleet queue
 send <ref> '<one line>'` instead: same handoff, and it writes down WHEN, which
 is the only thing that makes a later observation mean anything.
 
@@ -438,7 +441,7 @@ the WHAT   a result file the worker wrote when it knew what it had concluded.
 agent reports `done` at the end of every turn — including the one where it gave
 up. A lead that treats "turn ended" as "task done" closes tasks that failed.
 
-`./scripts/queue.sh` implements exactly this pair: `watch` folds transitions
+`uv run fleet queue` implements exactly this pair: `watch` folds transitions
 into each task's record and closes nothing; `collect` reads the worker's own
 result file and only then does a task close. See
 `.agents/skills/fleet-queue/SKILL.md`. Put the result contract at the end of
@@ -503,7 +506,7 @@ and `session list` cannot produce it. A session whose host has gone away
 answers with the state that was LATCHED before it went — so a worker that last
 reported `idle` still reads `idle` an hour after its machine died, and nothing
 in the JSON says otherwise. For a remote session, ask the HOST (`ssh <host>
-true`) before you believe a resting state. `queue.sh reap` does exactly that
+true`) before you believe a resting state. `fleet queue reap` does exactly that
 before it deletes anything.
 
 `get` and `list` answer differently, and the difference is intended:
@@ -537,11 +540,11 @@ remote session has no pane to look at from here and answers
 A worked reading of a control-plane session created as a bare shell, which a
 harness then launched Claude into:
 
-```bash
-thurbox-cli session get <uuid> --json | jq '{agent,detected_agent,state,state_source,hook_coverage,hook_corroboration}'
-# {"agent":"zsh","detected_agent":"claude","state":"running",
-#  "state_source":"process","hook_coverage":"none",
-#  "hook_corroboration":"foreign-agent"}
+```text
+thurbox-cli session get <uuid> --json, six of its fields:
+  {"agent":"zsh","detected_agent":"claude","state":"running",
+   "state_source":"process","hook_coverage":"none",
+   "hook_corroboration":"foreign-agent"}
 ```
 
 `uncovered` from `list` and `running` from `get`, for the same session at the
@@ -586,7 +589,7 @@ for. With fuel in the account, `session restart <uuid>` re-spawns with
 `--resume`, so the conversation and the brief survive; answer the trust dialog
 again (§1b) before you send anything into the new pane.
 
-**For a session the queue dispatched, `./scripts/queue.sh refuel` is all of the
+**For a session the queue dispatched, `uv run fleet queue refuel` is all of the
 above in one verb** — the account first, the conjunction, the trusted handoff,
 a cap and a record. Do not hand-restart those; see `fleet-queue` §5c.
 
@@ -617,8 +620,9 @@ recorded:
 | the head of its branch, in the repo the worktree came from | it committed |
 | `thurbox-cli watch --json --since <seq>` | its session transitioned |
 
-`./scripts/queue.sh send` records the instant and the branch head for you, and
-`queue.sh list` / `queue.sh show` print the comparison — see `fleet-queue` §4a.
+`uv run fleet queue send` records the instant and the branch head for you,
+and `fleet queue list` / `fleet queue show` print the comparison — see
+`fleet-queue` §4a.
 None of it is a verdict about the worker: "nothing has moved since" is a fact,
 and a worker that has not answered yet reads exactly like one that never got
 the message.
@@ -642,21 +646,21 @@ workspace), and cancels pending scheduled commands. `session restore <uuid>`
 undoes a soft delete.
 
 **A session the queue dispatched is not yours to delete by hand.**
-`./scripts/queue.sh reap` releases those itself once the forge says their pull
+`uv run fleet queue reap` releases those itself once the forge says their pull
 requests merged, and it reads this section's state table before it does — see
 `fleet-queue` §5b. The commands here are for sessions you spawned yourself.
 
 ## Run loop
 
 1. Clarify the goal. Pick or write a playbook in `orchestration/playbooks/`.
-2. `./scripts/queue.sh topic add` opens this run's log — see `fleet-queue`'s
+2. `uv run fleet queue topic add` opens this run's log — see `fleet-queue`'s
    **The run log**.
 3. Per unit of work: `session create` — with an `--on-existing` mode (§1c) and
    the run's profile flags (§1d) — → `session send`, unless `created` came back
    `false` → read the result file it writes → record.
 4. Review PRs. `session delete --force` as each closes out — for a session
-   the queue dispatched, `queue.sh reap` does this once the PR merges.
+   the queue dispatched, `fleet queue reap` does this once the PR merges.
 
-For more than one unit of work, drive it through `./scripts/queue.sh` and the
+For more than one unit of work, drive it through `uv run fleet queue` and the
 `fleet-queue` skill instead of by hand: it owns the records, the ordering, and
 both halves of step 3's completion.

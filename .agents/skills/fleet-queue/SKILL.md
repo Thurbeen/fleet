@@ -9,8 +9,10 @@ allowed-tools: Read, Edit, Write, Bash, Glob, Grep
 
 A prompt is not a turn in this conversation. It is a **topic** on disk, which
 becomes **tasks** on disk, each carrying its own instructions in its own file.
-`./scripts/queue.sh` owns all of it and its header is the full usage; this skill
-is how to think while driving it. Three things it buys: nothing is lost to a
+`uv run fleet queue` owns all of it — `scripts/lib/queue.py`'s docstring is its
+model and its usage, and `--help` on any verb gives that verb's flags; this
+skill is how to think
+while driving it. Three things it buys: nothing is lost to a
 context reset, independent work goes out all at once, and your context stays
 clean — you read a line per task, and each worker reads one brief.
 
@@ -33,7 +35,7 @@ TUI pane is right not to show.
 Ask the tooling rather than the shell prompt:
 
 ```bash
-./scripts/queue.sh root      # the queue this invocation would use, absolute
+uv run fleet queue root      # the queue this invocation would use, absolute
 ```
 
 If that is not the control plane's checkout, go there and work there. `topic
@@ -51,7 +53,7 @@ change — *find out why X* is a brief, not an investigation you run here. A
 topic with one task costs nothing; a task with no topic costs you the prompt.
 
 ```bash
-./scripts/queue.sh topic add report-status-honestly \
+uv run fleet queue topic add report-status-honestly \
   --title 'Make thurbox report agent status honestly' \
   --prompt-file -    <<'EOF'
 <the ask, exactly as it arrived — do not summarise it>
@@ -71,7 +73,7 @@ Then decompose. A topic is the unit of **intent**; a task is the unit of
 validate on its own. The decomposition is yours.
 
 ```bash
-./scripts/queue.sh add report-status-honestly drop-idle-default \
+uv run fleet queue add report-status-honestly drop-idle-default \
   --title 'Stop defaulting an unreported session to idle' \
   --repo /home/you/code/thurbox \
   --branch fix/drop-idle-default \
@@ -96,13 +98,14 @@ instead — leaving a task `queued` and needing a hand-edit of `task.yaml`:
 
 ### `--host` — running a task on another machine
 
-`add --host <name>` takes a name from thurbox's `hosts.toml` and moves the
-worker there: the agent, its tmux window and its git worktree all live on that
+`add --host <name>` takes a name from thurbox's `hosts.toml` (in the
+directory `uv run fleet paths thurbox-config` prints) and moves the worker
+there: the agent, its multiplexer window and its git worktree all live on that
 machine, and only the TUI stays here. **Omit it and nothing changes** — a task
 with no host takes the same path it always did.
 
 ```bash
-./scripts/queue.sh add report-status-honestly build-the-arm-image \
+uv run fleet queue add report-status-honestly build-the-arm-image \
   --title 'Build the arm64 image' \
   --host devbox \
   --repo /srv/code/thurbox \        # ON DEVBOX. Not a path here.
@@ -183,8 +186,9 @@ none of it told a worker anything.
 **Cut persuasion.** The worker follows the brief; it does not have to be
 convinced. Drop the sentence explaining why the task is worth doing, the one
 saying a decision was weighed carefully, and the one reassuring the reader that
-something is settled. "Serialize with `queue.sh block`" carries everything
-"Serialize with `queue.sh block` — this is deliberate and the right call" does.
+something is settled. "Serialize with `fleet queue block`" carries everything
+"Serialize with `fleet queue block` — this is deliberate and the right call"
+does.
 
 **Keep every measured fact.** Counts, file paths, sizes, exact token and
 version values, command names, and the specific past failure a constraint
@@ -221,7 +225,8 @@ it in that file, not to copy it into the brief in hand.
 
 ## 3. Order — the part that is counterintuitive
 
-Run `./scripts/queue.sh plan`. It answers two questions and refuses to blur them.
+Run `uv run fleet queue plan`. It answers two questions and refuses to blur
+them.
 
 ```text
 ready: 3 task(s) — every one of them goes out now, there is no concurrency cap
@@ -254,13 +259,13 @@ bookkeeping and removes nothing. So **serialize only for a concrete condition
 that makes independent progress unsafe.**
 
 ```bash
-./scripts/queue.sh block report-status-honestly/03-render-detected-agent \
+uv run fleet queue block report-status-honestly/03-render-detected-agent \
   --on report-status-honestly/01-drop-idle-default \
   --kind semantic-dependency \
   --why 'reads the detected_agent field 01 introduces'
 ```
 
-`--kind` is a closed set, and `queue.sh block --help` lists it:
+`--kind` is a closed set, and `fleet queue block --help` lists it:
 
 | kind | when |
 |---|---|
@@ -292,7 +297,7 @@ conversation and leave the record silent.
 than a task:
 
 ```bash
-./scripts/queue.sh block vending-machine-egress-resume/01-vm-identity-reconciliation \
+uv run fleet queue block vending-machine-egress-resume/01-vm-identity-reconciliation \
   --condition 'az is authenticated for the billing tenant' \
   --kind missing-credential \
   --why 'the first instruction in the brief reads Azure, and az account show fails'
@@ -323,20 +328,20 @@ observe, so no timer, no `collect`, no `reap` and no later dispatch appearing to
 work will release it:
 
 ```bash
-./scripts/queue.sh block <ref> --clear --condition 'az is authenticated for the billing tenant'
+uv run fleet queue block <ref> --clear --condition 'az is authenticated for the billing tenant'
 ```
 
 A condition that expired on its own would put back the silence it was recorded
 to break. The cost is that a stale one holds a task forever, which is why
-`--why` is required and why `plan`, `list`, `show`, `fleet-status.sh` and the
+`--why` is required and why `plan`, `list`, `show`, `fleet status` and the
 TUI pane all carry it in front of you — the pane draws it `⊘` rather than `↳`,
 because the wait it marks has no actor but you.
 
 ## 4. Dispatch — the whole ready set, in one go
 
 ```bash
-./scripts/queue.sh dispatch --dry-run   # read the spawn commands first
-./scripts/queue.sh dispatch
+uv run fleet queue dispatch --dry-run   # read the spawn commands first
+uv run fleet queue dispatch
 ```
 
 One invocation spawns every ready task. It passes `--on-existing fail` (a twin
@@ -355,7 +360,7 @@ are no longer `queued` and are not spawned twice.
 ### Naming refs, and the one thing they are for
 
 ```bash
-./scripts/queue.sh dispatch report-status-honestly/01-drop-idle-default
+uv run fleet queue dispatch report-status-honestly/01-drop-idle-default
 ```
 
 Refs launch exactly those tasks and refuse, by name and with the blocker, one
@@ -422,20 +427,20 @@ When it cannot confirm, **nothing is typed and the task is left unprompted**:
 
 1 session(s) exist but were NOT prompted. Look at the pane, then retry the
 handoff — nothing was typed into them:
-    ./scripts/queue.sh prompt
+    uv run fleet queue prompt
 ```
 
-Look at the pane (`thurbox-cli session capture <uuid>`), then `queue.sh prompt`
-to retry the handoff. `cursor` and `muse` are not answered by a keystroke at
-all — they take a launch flag, so spawn them under the `cursor-trusted` /
-`muse-trusted` profiles instead.
+Look at the pane (`thurbox-cli session capture <uuid>`), then `fleet queue
+prompt` to retry the handoff. `cursor` and `muse` are not answered by a
+keystroke at all — they take a launch flag, so spawn them under the
+`cursor-trusted` / `muse-trusted` profiles instead.
 
 ### 4a. Course-correcting a worker — `send`, and never `session send`
 
 New scope for a worker that is already running goes through the queue:
 
 ```bash
-./scripts/queue.sh send <ref> 'Also update the changelog before you open the PR.'
+uv run fleet queue send <ref> 'Also update the changelog before you open the PR.'
 ```
 
 **One line.** `session send` types the text and presses Enter, so a second line
@@ -481,12 +486,12 @@ worker message injects into your terminal and interrupts whoever is talking to
 you. So the queue splits completion into two things you READ:
 
 ```text
-WHEN   ./scripts/queue.sh watch --for-secs 60
+WHEN   uv run fleet queue watch --for-secs 60
        Reads `thurbox-cli watch` — the event stream — resuming each task
        from its own progress.jsonl, so a restart misses nothing and one
        task's events never consume another's. Closes NOTHING.
 
-WHAT   ./scripts/queue.sh collect
+WHAT   uv run fleet queue collect
        Reads the result.md each worker wrote. Only this closes a task, and
        it verifies that task's artifact before it does.
 ```
@@ -494,7 +499,7 @@ WHAT   ./scripts/queue.sh collect
 And then a third thing, which happens LATER and is not a completion at all:
 
 ```text
-RELEASE ./scripts/queue.sh reap [--dry-run]
+RELEASE uv run fleet queue reap [--dry-run]
         Asks the forge whether each concluded task's pull request merged,
         moves the ones that did to `landed`, and deletes those sessions and
         their worktrees. A `push` task has nothing left to ask — its commit
@@ -567,7 +572,7 @@ Three answers, and the third is not the second:
 "Could not run" is the forge CLI absent, no network, a change request it
 cannot read, or a base branch this machine cannot see. That must never read as
 a pass or a fail — CI and an offline laptop both still have to collect.
-`queue.sh show <ref>` prints the method and the verdict, so both survive the
+`fleet queue show <ref>` prints the method and the verdict, so both survive the
 scrollback.
 
 **The head-branch check is the one a worker cannot write for itself.** Whatever
@@ -602,8 +607,8 @@ checks fail, a review lands on it, and none of that reaches the task that
 opened it.
 
 ```bash
-./scripts/queue.sh shepherd --dry-run   # what it would dispatch and merge
-./scripts/queue.sh shepherd             # do it
+uv run fleet queue shepherd --dry-run   # what it would dispatch and merge
+uv run fleet queue shepherd             # do it
 ```
 
 **It asks the forge, not the records.** A task records ONE `artifact` — the
@@ -764,8 +769,8 @@ location and the legacy one, so an older checkout still gets cleaned up.
 already run rather than to one more you have to remember. Its gate is not
 collect's — nothing collected a moment ago has a merged pull request — so it can
 only ever act on work from an earlier pass. `collect --no-reap` records what
-landed and touches no session; `queue.sh reap --dry-run` says what it would do
-and writes nothing. Reach for the dry run first whenever you are unsure.
+landed and touches no session; `fleet queue reap --dry-run` says what it would
+do and writes nothing. Reach for the dry run first whenever you are unsure.
 
 It only ever considers sessions THIS QUEUE recorded. Your own session and
 anything spawned by hand are not in the records; the lead's is refused by name
@@ -807,9 +812,9 @@ long as you leave it there: `watch` folds no transition, `collect` finds no
 result, `reap` sees a task that is not finished. Nothing in the loop notices.
 
 ```bash
-./scripts/queue.sh refuel --dry-run     # what it would restart, writing nothing
-./scripts/queue.sh refuel               # every recorded session
-./scripts/queue.sh refuel <ref>         # just that task's
+uv run fleet queue refuel --dry-run     # what it would restart, writing nothing
+uv run fleet queue refuel               # every recorded session
+uv run fleet queue refuel <ref>         # just that task's
 ```
 
 **It asks the ACCOUNT before it looks at a single session.** That window is the
@@ -823,7 +828,7 @@ It reads ONE account, through `fleet_status.probe_fuel`: the provider the
 tasks in hand draw on, derived from their agent or pinned by `FUEL_PROVIDER` in
 `orchestration/agent.conf`. A spent window on a provider the fleet never
 dispatches must not strand a worker, and tasks that disagree on an agent are
-`undetermined` rather than guessed at. `fleet-status.sh`'s `FUEL` section reads
+`undetermined` rather than guessed at. `fleet status`'s `FUEL` section reads
 every authenticated provider (`probe_fuel_all`), **so the two can legitimately
 disagree** — the screen may show one provider fine while `refuel` reports the
 fleet's own spent.
@@ -869,7 +874,7 @@ and no `outcome`; `collect` stays the only thing that closes a task. The lead's
 own session is refused by name, and a remote task's pane and transcript are on
 its host, so that one is reported `undetermined` rather than guessed at.
 
-### 5d. `reconcile.sh` — the loop that runs 5, 5a and 5c for you
+### 5d. `fleet reconcile` — the loop that runs 5, 5a and 5c for you
 
 Everything in §5 is something you have to remember. On 2026-09-08 nobody did,
 for one session: 19 of 20 progress timelines empty, three merges unnoticed for
@@ -877,16 +882,16 @@ forty minutes, and six workers sitting at a token limit that the OPERATOR
 spotted.
 
 ```sh
-./scripts/reconcile.sh ensure     # start it unless it is running or asked down
-./scripts/reconcile.sh status     # ticking? since when? on what queue?
-./scripts/reconcile.sh logs       # what it has been doing
-./scripts/reconcile.sh stop       # durably down; only `start` brings it back
+uv run fleet reconcile ensure     # start it unless it is running or asked down
+uv run fleet reconcile status     # ticking? since when? on what queue?
+uv run fleet reconcile logs       # what it has been doing
+uv run fleet reconcile stop       # durably down; only `start` brings it back
 ```
 
 It folds `watch` continuously and runs `collect`, `shepherd` and `refuel` on
 their own intervals. **AGENTS.md's reconciler section owns what it may and may
-not do**, and `reconcile.sh`'s header argues each interval. Two things belong
-here, because they are about you rather than about it:
+not do**, and `scripts/lib/reconcile.py`'s docstring argues each interval.
+Two things belong here, because they are about you rather than about it:
 
 - **It will type one line at you, and only ever this one:** that N tasks are
   ready and nothing will dispatch them. Treat it as `plan` already run —
@@ -920,7 +925,7 @@ while you still know it, not at the end from scrollback.
 - The block is **rewritten, not appended to**, so refreshing three times leaves
   one file rather than three copies of a timeline. A refresh that changes
   nothing prints nothing.
-- `./scripts/queue.sh run [<topic>]` is that refresh made explicit — for a
+- `uv run fleet queue run [<topic>]` is that refresh made explicit — for a
   topic older than this feature, or when you just want the path.
 - Delete the fence and the log is yours entirely: the queue reports it as
   `left alone` and never writes into it again.
@@ -930,11 +935,11 @@ while you still know it, not at the end from scrollback.
 ## 6. The views, and keeping your context clean
 
 ```bash
-./scripts/queue.sh list              # a line per task, grouped by topic
-./scripts/queue.sh list --topic X    # one topic, archived or not
-./scripts/queue.sh list --archived   # only the topics the default view hides
-./scripts/queue.sh list --all        # both
-./scripts/queue.sh show <ref>        # one task's whole record, archived or not
+uv run fleet queue list              # a line per task, grouped by topic
+uv run fleet queue list --topic X    # one topic, archived or not
+uv run fleet queue list --archived   # only the topics the default view hides
+uv run fleet queue list --all        # both
+uv run fleet queue show <ref>        # one task's whole record, archived or not
 ```
 
 `list` is what you read when someone asks what is in flight. **Do not read the
@@ -948,7 +953,7 @@ A ref is `<topic>/<task>`, or a bare task id when only one topic has it.
 A topic whose every task reached `landed` or `abandoned` gets an `archived`
 timestamp in its `topic.yaml`, written by the landing sweep `collect` and
 `reap` run. Archived topics **leave every default view** — `list`,
-`fleet-status.sh` and the TUI pane — and each of those still
+`fleet status` and the TUI pane — and each of those still
 prints how many it is hiding, so a short queue is never mistaken for an idle
 one. Nothing is moved or deleted: it is a flag and a filter, and `show <ref>`
 reaches an archived task with no unarchiving first.
@@ -958,15 +963,15 @@ evidence (§5b) and the operator has to see them, so one of either keeps the
 whole topic in view.
 
 ```bash
-./scripts/queue.sh archive <topic>    # early — refuses if any task is live
-./scripts/queue.sh unarchive <topic>  # put it back in every view
+uv run fleet queue archive <topic>    # early — refuses if any task is live
+uv run fleet queue unarchive <topic>  # put it back in every view
 ```
 
-`queue.sh add` onto an archived topic un-archives it, so you can never dispatch
-into a topic no view draws. `collect` does the same for a topic that holds a
-task that is not finished, and names the task when it does: a record written
-back over a landing can reopen a task inside an archived topic, and nothing
-reading only the live view would ever see it again.
+`fleet queue add` onto an archived topic un-archives it, so you can never
+dispatch into a topic no view draws. `collect` does the same for a topic that
+holds a task that is not finished, and names the task when it does: a record
+written back over a landing can reopen a task inside an archived topic, and
+nothing reading only the live view would ever see it again.
 
 **The operator has their own view: point them at it rather than narrating into
 it.** The TUI queue pane (`F3`) draws the same records — topics classified by
@@ -991,12 +996,13 @@ it existed.
 So **the repo does not back your queue up.** Say that plainly when someone
 assumes otherwise; `.gitignore`'s header owns the reasoning.
 
-`./scripts/check.sh queue` re-proves the ordering and wake claims against a
-throwaway queue. It runs in the gate, so a change that quietly makes the queue
-serialize by default fails there rather than in a run six weeks later. It does
+`uv run fleet check queue` re-proves the ordering and wake claims against a
+throwaway queue — the pytest area `tests/queue/`. It runs in the gate, so a
+change that quietly makes the queue serialize by default fails there rather
+than in a run six weeks later. It does
 **not** read your records — the gate reads no operator state, so one commit gets
-one verdict in every checkout. `./scripts/fleet-status.sh --records` validates
-them, and `./scripts/queue.sh check` lists every problem.
+one verdict in every checkout. `uv run fleet status --records` validates
+them, and `uv run fleet queue check` lists every problem.
 
 ## The loop
 
@@ -1012,7 +1018,7 @@ them, and `./scripts/queue.sh check` lists every problem.
 8. `refuel` when a worker has been `working` far too long, or when the operator
    says the fleet has hit a limit. It reads the account's fuel first and
    restarts nothing while that is spent.
-9. Or run none of 6, 7 and 8 by hand: `./scripts/reconcile.sh ensure` keeps
+9. Or run none of 6, 7 and 8 by hand: `uv run fleet reconcile ensure` keeps
    them ticking, and §5d says what that does and does not change.
 10. `plan` again. Review the PRs; the operator merges every one `shepherd` did
     not. Sessions release themselves once their pull requests land — `collect`
