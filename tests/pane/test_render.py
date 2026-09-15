@@ -196,8 +196,15 @@ def test_the_hide_hint_is_a_button_and_a_pill_opens_the_pane_again():
     target, and since a closed column draws nothing to click, the action band
     carries a pill that opens it."""
     frame = render("44", "--frame")
-    expect(frame_line(frame, "top_right"), "F3")
-    expect(frame_line(render("44", "--frame", "--chord", "f5"), "top_right"), "F5")
+    # A chip like the agent pane's tabs beside it: ` Label · Key `, the chord
+    # spelled the way the action band spells it, filled while the column is
+    # open and brighter under the pointer.
+    assert frame_line(frame, "top_right") == "top_right:  Fleet · F3 ", frame
+    assert frame_line(render("44", "--frame", "--chord", "f5"), "top_right") == "top_right:  Fleet · F5 "
+    assert frame_line(render("44", "--frame", "--chord", "ctrl+shift+t"), "top_right") == "top_right:  Fleet · ^⇧T "
+    assert frame_line(frame, "top_right_style") == "top_right_style: fg=inverted_fg bg=accent bold", frame
+    hovered = render("44", "--frame", "--hover", "hide")
+    assert frame_line(hovered, "top_right_style") == "top_right_style: fg=inverted_fg bg=accent_bright bold", hovered
     assert "F3" not in frame_line(frame, "title"), f"the chord is spelled a second time in the title\n{frame}"
     expect(render("44", "--click", "F3"), "toggled fleetqueue")
     expect(render("30", "--click", "F3"), "toggled fleetqueue")
