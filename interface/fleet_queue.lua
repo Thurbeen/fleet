@@ -220,6 +220,7 @@
 -- that the visible rows are WINDOWED before any spans are built: a frame where
 -- the probe said nothing new walks one already-built table and one slice of it.
 
+local hover = require("lib.hover")
 local panels = require("lib.panels")
 local theme = require("lib.theme")
 local ui = require("lib.ui")
@@ -798,14 +799,33 @@ end
 --- The identity the hide button's run carries, which `on_click` answers.
 local HIDE_BUTTON = "hide"
 
+--- A chord the way the action band and the agent pane's tabs spell it: `F3`,
+--- `^T`, `^⇧T`. One action reads the same wherever it is offered.
+local function compact_chord(chord)
+  local modifiers, key = "", chord
+  while true do
+    local prefix, rest = string.match(key, "^(%a+)%+(.*)$")
+    local symbol = prefix and ({ ctrl = "^", shift = "⇧", alt = "⌥", cmd = "⌘" })[prefix]
+    if not symbol then
+      break
+    end
+    modifiers, key = modifiers .. symbol, rest
+  end
+  return modifiers .. string.upper(string.sub(key, 1, 1)) .. string.sub(key, 2)
+end
+
 --- The pane's frame, with a button on its top border that hides the column.
 ---
---- The hint is ON THE FRAME because an unfocusable pane is never visited by the
+--- The button is ON THE FRAME because an unfocusable pane is never visited by the
 --- focus ring, so its keys never reach the footer's context hints. It is in the
 --- top-right OVERLAY and not in the title, because the kernel records a click
 --- target for an overlay run and none for a title run: in the title it could
 --- only ever be read, never pressed. The chord is read from the registry rather
 --- than spelled here, so a rebind moves it.
+---
+--- It is drawn as the agent pane's tabs are — ` Label · Key `, accent-filled
+--- while the column is open, `accent_bright` under the pointer — so it reads as
+--- the same kind of button as every other one on screen.
 ---
 --- `position`, when the rows do not all fit, is which of them are on screen,
 --- and it goes on the BOTTOM border for the reason the button goes on the top
@@ -820,8 +840,16 @@ local function frame(position)
     overlay = {},
   }
   if chord then
+    local style
+    if hover.id(HIDE_BUTTON) then
+      style = { fg = theme.role("inverted_fg"), bg = theme.role("accent_bright"), bold = true }
+    elseif panels.shown(SLOT) then
+      style = { fg = theme.role("inverted_fg"), bg = theme.role("accent"), bold = true }
+    else
+      style = { fg = theme.role("selection_fg"), bg = theme.role("selection_bg"), bold = true }
+    end
     spec.overlay.top_right = {
-      { text = "[" .. chord:upper() .. " hide]", id = HIDE_BUTTON, style = { fg = theme.muted } },
+      { text = " Fleet · " .. compact_chord(chord) .. " ", id = HIDE_BUTTON, style = style },
     }
   end
   if position then

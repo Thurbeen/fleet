@@ -211,7 +211,8 @@ prints is the one the gate holds to the pane's actual slot name.
 **global** chord because an unfocusable pane can never be reached by any other
 kind — and it is the way BACK, since the binding resolves from the key registry
 rather than from what is on screen, so a hidden pane still answers it. The hint
-rides on the pane's own top border as a `[F3 hide]` button, because a pane the
+rides on the pane's own top border as a `Fleet · F3` button, filled like the
+agent pane's tabs, because a pane the
 focus ring skips never reaches the footer's context hints; it sits in the
 frame's overlay rather than its title because only an overlay run is a click
 target. A click on it hides the column, and the `Fleet` pill in the action

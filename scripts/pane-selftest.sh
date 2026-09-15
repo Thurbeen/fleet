@@ -303,8 +303,16 @@ expect "and still says it at 30" "read 15m ago" "$(grep -m1 -- "fuel" <<<"$STALE
 # column draws nothing to click — the action band carries a pill that opens it.
 echo "pane: the hide button and the pill"
 
-expect "the hide button names the chord" "F3" "$(render 44 --frame | grep '^top_right:')"
-expect "and a rebind moves it" "F5" "$(render 44 --frame --chord f5 | grep '^top_right:')"
+# The button is a chip like the agent pane's tabs beside it: ` Label · Key `,
+# the chord spelled the way the action band spells it, filled while the column
+# is open and brighter under the pointer.
+expect "the hide button is a chip naming the chord" "top_right:  Fleet · F3 " "$(render 44 --frame)"
+expect "and a rebind moves it" "top_right:  Fleet · F5 " "$(render 44 --frame --chord f5)"
+expect "spelled as the action band spells a chord" "top_right:  Fleet · ^⇧T " \
+	"$(render 44 --frame --chord ctrl+shift+t)"
+expect "filled like an active tab" "top_right_style: fg=inverted_fg bg=accent bold" "$(render 44 --frame)"
+expect "and lit under the pointer" "top_right_style: fg=inverted_fg bg=accent_bright bold" \
+	"$(render 44 --frame --hover hide)"
 refute "and it is not spelled a second time in the title" "F3" "$(render 44 --frame | grep '^title:')"
 expect "clicking the hint hides the column" "toggled fleetqueue" "$(render 44 --click F3)"
 expect "and it still works at 30" "toggled fleetqueue" "$(render 30 --click F3)"

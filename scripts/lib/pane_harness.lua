@@ -40,6 +40,9 @@
 -- `--pills` prints every action-band pill the pane declares, one per line, as
 -- `pill <action> <label> <priority>`.
 --
+-- `--hover <id>` is the identity the pointer is over, so a hover style can be
+-- asserted. `--frame` prints each top-right run's `fg`, `bg` and weight too.
+--
 -- `--chord <key>` is what the key registry answers for the toggle, so a rebind
 -- can be rendered. `--fuel-read <seconds>` is how long ago the fuel reading
 -- was taken; the default is two minutes, inside the pane's own TTL.
@@ -53,7 +56,7 @@
 
 local WIDTH = tonumber(arg[1] or "") or 44
 local MARKS, ACCENT, FRAME, PILLS = false, false, false, false
-local CHORD, CLICK, FUEL_READ = "f3", nil, 120
+local CHORD, CLICK, HOVER, FUEL_READ = "f3", nil, nil, 120
 local LONG, HEIGHT, WHEEL, ACTION = 0, 200, {}, nil
 -- `--long-label` adds a third fuel window whose label is as long as the pane
 -- lets a label be, the shape a per-model window takes.
@@ -82,6 +85,8 @@ for i, a in ipairs(arg) do
     CHORD = arg[i + 1]
   elseif a == "--click" then
     CLICK = arg[i + 1]
+  elseif a == "--hover" then
+    HOVER = arg[i + 1]
   elseif a == "--fuel-read" then
     FUEL_READ = tonumber(arg[i + 1]) or FUEL_READ
   end
@@ -175,6 +180,9 @@ widgets.time_ago = function(millis, now)
 end
 
 local theme = setmetatable({
+  role = function(name)
+    return name
+  end,
   spinner_frame = function()
     return "◐"
   end,
@@ -259,6 +267,16 @@ package.preload["lib.theme"] = function()
 end
 package.preload["lib.ui"] = function()
   return ui
+end
+package.preload["lib.hover"] = function()
+  return {
+    id = function(id)
+      return id ~= nil and id == HOVER
+    end,
+    role = function(role)
+      return role ~= nil and role == HOVER
+    end,
+  }
 end
 package.preload["lib.panels"] = function()
   return { toggle = function(name)
@@ -579,6 +597,13 @@ if FRAME then
   local overlay = frame.overlay or {}
   print("title: " .. slot_text(runs_of(frame.title)))
   print("top_right: " .. slot_text(runs_of(overlay.top_right)))
+  local styles = {}
+  for _, run in ipairs(runs_of(overlay.top_right)) do
+    local style = run.style or {}
+    styles[#styles + 1] = ("fg=%s bg=%s%s"):format(
+      tostring(style.fg), tostring(style.bg), style.bold and " bold" or "")
+  end
+  print("top_right_style: " .. table.concat(styles, " | "))
   print("bottom_right: " .. slot_text(runs_of(overlay.bottom_right)))
   print("root: " .. tostring(tree.id or tree.role or ""))
   return
