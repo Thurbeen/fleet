@@ -42,7 +42,7 @@ healthy. The pidfile and heartbeat stay, for people.
 A LOOP FROM BEFORE THE UV PORT holds no lock: the bash `scripts/reconcile.sh`
 supervisor wrote a pidfile only, and outlived the update that deleted its
 script, failing every pass. `status` names one still running from this
-checkout, and `ensure`, `start`, `stop` and `restart` end it first. Proven by
+checkout, and `ensure`, `start`, `stop` and `restart` end it. Proven by
 its argv and working directory each time before it is signalled
 (`is_legacy`), never by a pid.
 
@@ -672,6 +672,9 @@ def guard_control_plane(cfg: Config) -> bool:
 
 
 def come_up(cfg: Config) -> int:
+    # A legacy loop holds no lock, so neither adoption nor launch can see the twin.
+    if not stop_legacy(cfg):
+        return 1
     if running(cfg):
         say(f"fleet reconciler: already ticking (pid {pid_of(cfg)}) — adopted, not restarted")
         return 0
@@ -683,10 +686,11 @@ def come_up(cfg: Config) -> int:
 
 def cmd_ensure(cfg: Config) -> int:
     if asked_down(cfg):
+        gone = stop_legacy(cfg)
         say("fleet reconciler: down, and staying down — you asked for it:")
         sys.stdout.write(indented(read(cfg.path("down")), "    "))
         say("    bring it back with uv run fleet reconcile start")
-        return 0
+        return 0 if gone else 1
     return come_up(cfg)
 
 
@@ -703,7 +707,9 @@ def cmd_stop(cfg: Config) -> int:
     os.makedirs(cfg.rt, exist_ok=True)
     down = cfg.path("down")
     fleet_platform.write_record(down, f"stopped {now()} by {who()}\n")
-    if bring_down(cfg):
+    # After the flag, so a legacy loop that will not die cannot keep this one up.
+    legacy_gone = stop_legacy(cfg)
+    if bring_down(cfg) and legacy_gone:
         say(f"fleet reconciler: down, durably — {down} keeps it down across a")
         say("    restart, a reboot and the next onboarding run.")
         say("    bring it back with uv run fleet reconcile start")
@@ -863,9 +869,6 @@ def main(argv: list[str]) -> int:
         return with_lock(cfg, supervise)
     if cmd == "__loop":
         return with_lock(cfg, tick)
-    # Before anything they decide: a legacy loop is a twin none of them can see.
-    if cmd in ("ensure", "start", "stop", "restart") and not stop_legacy(cfg):
-        return 1
     handlers = {
         "ensure": cmd_ensure, "start": cmd_start, "stop": cmd_stop, "restart": cmd_restart,
         "status": cmd_status, "hook": cmd_hook,
