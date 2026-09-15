@@ -358,7 +358,7 @@ def unfilled_sections(text: str) -> list:
 def brief_shortfall(path: str) -> str:
     """Why this BRIEF.md is not something to send a worker, or "" if it is."""
     try:
-        with open(path) as fh:
+        with open(path, encoding="utf-8") as fh:
             text = fh.read()
     except OSError:
         return "never written"
@@ -602,7 +602,7 @@ def read_kv_conf(path: str) -> dict[str, str]:
     """`KEY=value` lines, as data. An unreadable file is no settings at all."""
     conf: dict[str, str] = {}
     try:
-        with open(path) as fh:
+        with open(path, encoding="utf-8") as fh:
             for raw in fh:
                 line = raw.strip()
                 if not line or line.startswith("#") or "=" not in line:
@@ -744,7 +744,7 @@ def policy_publish_block() -> dict | None:
     """
     global _POLICY_PUBLISH_WARNED
     try:
-        with open(policy_path()) as fh:
+        with open(policy_path(), encoding="utf-8") as fh:
             text = fh.read()
     except OSError:
         return None
@@ -840,7 +840,7 @@ def operator_instructions() -> str:
     question asked of it is whether there is any.
     """
     try:
-        with open(operator_path()) as fh:
+        with open(operator_path(), encoding="utf-8") as fh:
             return fh.read().strip()
     except OSError:
         return ""
@@ -883,7 +883,7 @@ SESSION_TABLE_RE = re.compile(r"^\[\[sessions\]\]", re.M)
 def manifest_session(path: str) -> tuple[str | None, str | None]:
     """(session name, repo_path) from the first [[sessions]] block of a manifest."""
     try:
-        with open(path) as fh:
+        with open(path, encoding="utf-8") as fh:
             text = fh.read()
     except OSError:
         return None, None
@@ -1040,7 +1040,7 @@ def age_of(stamp) -> str:
 
 
 def read_yaml(path: str) -> dict:
-    with open(path) as fh:
+    with open(path, encoding="utf-8") as fh:
         doc = yaml.safe_load(fh)
     if not isinstance(doc, dict):
         raise QueueError(f"{path}: expected a mapping")
@@ -1563,7 +1563,7 @@ def cmd_topic_add(args) -> int:
 
     prompt = args.prompt
     if args.prompt_file:
-        prompt = sys.stdin.read() if args.prompt_file == "-" else open(args.prompt_file).read()
+        prompt = sys.stdin.read() if args.prompt_file == "-" else open(args.prompt_file, encoding="utf-8").read()
     if not prompt:
         raise QueueError("a topic needs the prompt that opened it: --prompt or --prompt-file")
 
@@ -1792,7 +1792,7 @@ def cmd_add(args) -> int:
     #
     # `add` with no --brief-file is untouched. That is the deliberate "scaffold
     # it, I will write it" path, and dispatch stays its backstop.
-    brief = open(args.brief_file).read() if args.brief_file else None
+    brief = open(args.brief_file, encoding="utf-8").read() if args.brief_file else None
     text = render_brief(task, read_yaml(os.path.join(tpath, "topic.yaml")), brief)
     if args.brief_file:
         missing = unfilled_sections(text)
@@ -2988,7 +2988,7 @@ def read_text(path: str) -> str:
     above is what stops that reaching a host at all, at dispatch.
     """
     try:
-        with open(path) as fh:
+        with open(path, encoding="utf-8") as fh:
             return fh.read()
     except OSError:
         return BRIEF_PLACEHOLDER
@@ -3387,7 +3387,7 @@ def read_cursor(root: str) -> int | None:
     """
     path = os.path.join(root, ".cursor")
     try:
-        return int(open(path).read().strip())
+        return int(open(path, encoding="utf-8").read().strip())
     except (OSError, ValueError):
         return None
 
@@ -3454,7 +3454,7 @@ def folded_through(task: Task) -> int | None:
     """
     high = None
     try:
-        fh = open(task.file("progress.jsonl"))
+        fh = open(task.file("progress.jsonl"), encoding="utf-8")
     except OSError:
         return None
     with fh:
@@ -4010,7 +4010,7 @@ def cmd_collect(args) -> int:
 
         if not os.path.exists(path):
             continue
-        meta, body = parse_result(open(path).read())
+        meta, body = parse_result(open(path, encoding="utf-8").read())
         outcome = str(meta.get("outcome", "")).strip()
         if task.state in REREAD_STATES and outcome == task.doc.get("outcome"):
             continue  # the verdict it concluded on; nothing new to read
@@ -5323,7 +5323,7 @@ def auto_merge_repos(root: str | None = None) -> set:
         return parse_auto_merge(re.split(r"[,\s]+", raw), AUTO_MERGE_ENV)
     path = auto_merge_conf_path(root)
     try:
-        with open(path) as fh:
+        with open(path, encoding="utf-8") as fh:
             lines = [line.partition("#")[0] for line in fh]
     except OSError:
         return set()
@@ -6646,12 +6646,12 @@ def refresh_run_log(q: Queue, slug: str) -> tuple[str, str]:
     path = run_log_path(slug, q.topics.get(slug, {}))
     old = ""
     if os.path.exists(path):
-        with open(path) as fh:
+        with open(path, encoding="utf-8") as fh:
             old = fh.read()
         verb = "updated"
     else:
         try:
-            with open(run_template_path()) as fh:
+            with open(run_template_path(), encoding="utf-8") as fh:
                 old = fh.read()
         except OSError as exc:
             return path, f"not scaffolded — {exc}"
@@ -6809,7 +6809,7 @@ def last_transition(task: Task) -> tuple[str | None, str]:
     if not os.path.exists(path):
         return None, ""
     try:
-        rows = open(path).read().splitlines()
+        rows = open(path, encoding="utf-8").read().splitlines()
     except OSError as exc:
         return None, f"progress.jsonl could not be read: {exc}"
     newest = None
@@ -7125,7 +7125,7 @@ def cmd_show(args) -> int:
     print(f"    {'brief:':<12} {task.file('BRIEF.md')}")
     progress = task.file("progress.jsonl")
     if os.path.exists(progress):
-        lines = open(progress).read().splitlines()
+        lines = open(progress, encoding="utf-8").read().splitlines()
         print(f"    {'progress:':<12} {len(lines)} transition(s), last: {lines[-1] if lines else '-'}")
     if os.path.exists(task.file("result.md")):
         print(f"    {'result:':<12} {task.file('result.md')}")

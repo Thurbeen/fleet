@@ -1,6 +1,10 @@
 """The queue's records and directories, through the platform seam, on this OS.
 
     uv run python -m unittest discover -s tests
+
+The queue runs with no PYTHONUTF8, because an operator's shell sets none: on
+Windows that leaves the locale's cp1252 as Python's default encoding, and a
+record must still come out, and read back, as UTF-8.
 """
 
 from __future__ import annotations
@@ -19,6 +23,8 @@ queue = load("queue.py")
 QUEUE = os.path.join(LIB, "queue.py")
 WINDOWS = os.name == "nt"
 
+DROPPED = ("FLEET_", "THURBOX_", "PYTHONUTF8", "PYTHONIOENCODING")
+
 
 class QueueRecords(unittest.TestCase):
     def setUp(self) -> None:
@@ -27,29 +33,27 @@ class QueueRecords(unittest.TestCase):
         self.tmp = Path(tmp.name)
         settings = self.tmp / "settings"
         settings.mkdir()
-        self.env = {
-            k: v for k, v in os.environ.items() if not k.startswith(("FLEET_", "THURBOX_"))
-        }
+        self.env = {k: v for k, v in os.environ.items() if not k.startswith(DROPPED)}
         self.env.update(
             FLEET_QUEUE_DIR=str(self.tmp / "queue"),
             FLEET_RUNS_DIR=str(self.tmp / "runs"),
             FLEET_PUBLISH_ROOT=str(settings),
             FLEET_AGENT_ROOT=str(settings),
             FLEET_GLYPH_ROOT=str(settings),
-            PYTHONUTF8="1",
         )
 
     def queue(self, *args: str) -> subprocess.CompletedProcess:
         return subprocess.run(
             [sys.executable, QUEUE, *args],
-            capture_output=True, text=True, env=self.env, timeout=120, cwd=self.tmp,
+            capture_output=True, encoding="utf-8", errors="replace",
+            env=self.env, timeout=120, cwd=self.tmp,
         )
 
-    def topic_with_a_task(self) -> str:
-        out = self.queue("topic", "add", "line-endings", "--title", "Line endings",
-                         "--prompt", "first line\nsecond line")
+    def topic_with_a_task(self, prompt_file: Path | None = None, title: str = "LF on disk") -> str:
+        source = ["--prompt-file", str(prompt_file)] if prompt_file else ["--prompt", "first line\nsecond line"]
+        out = self.queue("topic", "add", "line-endings", "--title", "Line endings", *source)
         self.assertEqual(out.returncode, 0, out.stderr)
-        out = self.queue("add", out.stdout.strip(), "lf-on-disk", "--title", "LF on disk",
+        out = self.queue("add", out.stdout.strip(), "lf-on-disk", "--title", title,
                          "--repo", str(self.tmp / "repo"), "--branch", "fix/lf-on-disk")
         self.assertEqual(out.returncode, 0, out.stderr)
         return out.stdout.strip()
@@ -74,6 +78,29 @@ class QueueRecords(unittest.TestCase):
             out = self.queue(*verb)
             self.assertEqual(out.returncode, 0, f"{verb}: {out.stderr}")
         self.assertIn("LF on disk", self.queue("show", ref).stdout)
+
+    def test_records_are_utf8_and_survive_being_read_back(self):
+        """A record the queue writes, it reads back and rewrites unchanged, whatever the locale."""
+        prompt = "dash — moon ◐ end"
+        prompt_file = self.tmp / "prompt.txt"
+        prompt_file.write_bytes(prompt.encode("utf-8"))
+        ref = self.topic_with_a_task(prompt_file, title="Task — one")
+        topic = ref.split("/")[0]
+
+        self.assertEqual((self.tmp / "queue" / topic / "PROMPT.md").read_bytes(),
+                         (prompt + "\n").encode("utf-8"))
+
+        logs = []
+        for _ in range(2):
+            out = self.queue("run", topic)
+            self.assertEqual(out.returncode, 0, out.stderr)
+            (log,) = (self.tmp / "runs").glob("*.md")
+            logs.append(log.read_bytes())
+        self.assertIn("Task — one".encode("utf-8"), logs[-1])
+        self.assertEqual(logs[0], logs[1], "refreshing the run log changed bytes it did not own")
+
+        out = self.queue("show", ref)
+        self.assertEqual(out.returncode, 0, out.stderr)
 
     def test_a_crlf_result_parses(self):
         meta, body = queue.parse_result(
