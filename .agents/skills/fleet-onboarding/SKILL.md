@@ -213,11 +213,8 @@ so start from the tracked example rather than from memory:
   duplicate. **What the operator gains afterwards**, below, is the fuller path.
 
 Verify before moving on; the sync refuses a file with no active entries, and it
-is better to catch that here:
-
-```bash
-grep -vE '^[[:space:]]*(#|$)' registry/owners.txt
-```
+is better to catch that here: read `registry/owners.txt` back, and see at least
+one line that is neither blank nor a `#` comment.
 
 Nothing else needs seeding. Playbooks and session profiles are tracked files
 the operator edits directly — `orchestration/playbooks/<name>.md` from
@@ -240,11 +237,8 @@ hand-write it if the command fails. A repo two logins both reach is one repo,
 and a login whose credential no longer works costs its own repos and not the
 map: it is named on stderr and skipped.
 
-Verify the map is not empty, and read the totals back as the evidence:
-
-```bash
-tail -3 registry/repos.generated.yaml   # totals: repos / owners
-```
+Verify the map is not empty, and read the totals back as the evidence: the last
+three lines of `registry/repos.generated.yaml` count the repos and the owners.
 
 **The trap:** a mistyped owner does not fail the sync. The command prints
 `warning: no accessible repos for owner '<x>'` on stderr and carries on, so a
@@ -265,10 +259,10 @@ the operator, and what it answers to). It also hands the queue pane to
 
 **ASK — the two names, before the install and never after it.** The render
 bakes them into the lead's standing context, so a name chosen after this step
-costs a re-install and a lead restart. Ask the script first:
+costs a re-install and a lead restart. Ask the command first:
 
 ```bash
-./scripts/voice-ask.sh
+uv run fleet voice-ask
 ```
 
 `skip` means `orchestration/voice.conf` already holds an answer: say the two
@@ -285,8 +279,8 @@ Record the answer — **defaults included**, since an unrecorded answer is asked
 again on the next run — then install:
 
 ```bash
-./scripts/voice-ask.sh set '<operator>' '<lead>'
-./scripts/install-extension.sh
+uv run fleet voice-ask set '<operator>' '<lead>'
+uv run fleet install-extension
 ```
 
 `set` renders both names before it writes anything and refuses what the
@@ -321,13 +315,13 @@ deletes the session and its history, so hand that decision to the operator:
 
 ```bash
 thurbox-cli extension deactivate fleet   # deletes the session
-./scripts/install-extension.sh           # respawns it at the right path
+uv run fleet install-extension           # respawns it at the right path
 ```
 
 ## Step 6/7 — The queue pane, on screen
 
 Step 5 installed the pane. This step is the half that **is not finished when
-that script exits 0**, and skipping it is how an operator ends a setup with a
+that command exits 0**, and skipping it is how an operator ends a setup with a
 pane that loads, lists, declares its keys — and draws nothing.
 
 A thurbox pane names a *slot*; the arrangement decides where that slot goes.
@@ -353,25 +347,25 @@ the question:
   session list on the left, the agent in the middle, the queue on the right
 - **Place it on the left** — between the session list and the terminal
 - **Show me the block, I will add it myself** — print it and stop
-- **Skip** — the pane stays installed and invisible; `./scripts/place-pane.sh`
+- **Skip** — the pane stays installed and invisible; `uv run fleet place-pane`
   places it whenever they want it
 
-**Ask it through `./scripts/pane-ask.sh`, the one record of the answer.**
+**Ask it through `uv run fleet pane-ask`, the one record of the answer.**
 Mission Control asks this same question on its first session, so an answer
 given here and not recorded is a question asked twice. Run it bare first:
 `skip` means it was already answered or the layout already places the pane, and
 there is nothing to ask. On `ask`, ask, then record the answer:
 
 ```bash
-./scripts/place-pane.sh --dry-run    # the file, the anchor, the exact block
-./scripts/pane-ask.sh yes            # right of the terminal (yes --left for the other side)
-./scripts/pane-ask.sh no             # skip, or "I will add it myself" — remembered
+uv run fleet place-pane --dry-run   # the file, the anchor, the exact block
+uv run fleet pane-ask yes           # right of the terminal (yes --left: other side)
+uv run fleet pane-ask no            # skip, or "I will add it myself" — remembered
 ```
 
 If they chose to add it themselves, print this block — with its guard, since a
 bare `{ slot = "fleetqueue" }` draws but leaves `F3` opening a pane that never
 closes — say plainly that you stopped there on purpose, and still run
-`./scripts/pane-ask.sh no` to record that choice, exactly as you would for
+`uv run fleet pane-ask no` to record that choice, exactly as you would for
 skip: without it, Mission Control's own first-run ask has no record and asks
 again.
 
@@ -382,23 +376,25 @@ end
 ```
 
 **`.agents/skills/fleet-pane/` §4 owns the rest and this step does not restate
-it**: where the block goes, what `place-pane.sh` refuses and backs up, and
-`thurbox-cli plugin dir --text | head -1` for the interface directory (a dev
-build's is not `~/.config/thurbox/ui`). Its §7 is the symptom table if the pane
-comes back placed and empty.
+it**: where the block goes, what `fleet place-pane` refuses and backs up, and
+the first line of `thurbox-cli plugin dir --text` for the interface directory —
+never a literal path, since a dev build's differs and native Windows keeps it
+under `%APPDATA%`. Its §7 is the symptom table if the pane comes back placed and
+empty.
 
 **One last thing that is theirs and not yours.** The pane finds the queue by
-running `./scripts/queue.sh root` in the Mission Control session's checkout,
+running `scripts/lib/pane_probe.py` through `uv` in the Mission Control
+session's checkout,
 which needs the **`run` capability**. Declaring it does not grant it and you
 cannot grant it for them — the switch is thurbox's own settings, `Ctrl+,` →
 `]` → `t`. Say it once. Until they do, the pane draws an honest "not trusted
 yet" rather than an empty column, so nothing is broken in the meantime.
 
 **On a re-run**, `plugin install` reports the pane `current`, `plugin check`
-says whether the block is already there, and `place-pane.sh` says "already
+says whether the block is already there, and `fleet place-pane` says "already
 placed" and changes nothing. Check before you speak; a second run must never
 propose a block that is already in the file. If `thurbox-cli` was missing at
-step 1, defer this step exactly as step 5 is deferred: same script, same
+step 1, defer this step exactly as step 5 is deferred: same command, same
 sentence.
 
 ## Step 7/7 — The reconciler
@@ -484,9 +480,18 @@ knows whose quota window to gate on. Without that last one `refuel` derives it
 from the tasks and reports `undetermined` when they disagree, which restarts
 nothing.
 
+Copy each only where the operator has none yet; neither form overwrites:
+
 ```bash
 cp -n orchestration/publish.example.conf orchestration/publish.conf
 cp -n orchestration/agent.example.conf orchestration/agent.conf
+```
+
+```powershell
+foreach ($f in "publish", "agent") {
+  $conf = "orchestration/$f.conf"
+  if (-not (Test-Path $conf)) { Copy-Item "orchestration/$f.example.conf" $conf }
+}
 ```
 
 *Where fleet may merge.* A fresh clone
@@ -498,6 +503,12 @@ the format and the gates a merge still clears:
 
 ```bash
 cp -n orchestration/auto-merge.example.conf orchestration/auto-merge.conf
+```
+
+```powershell
+if (-not (Test-Path orchestration/auto-merge.conf)) {
+  Copy-Item orchestration/auto-merge.example.conf orchestration/auto-merge.conf
+}
 ```
 
 Gate anyway — `uv run fleet check` reads no operator state, so it proves the

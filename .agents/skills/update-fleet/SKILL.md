@@ -120,8 +120,19 @@ looks:
 
 ```bash
 uv run fleet queue shepherd --dry-run
+```
+
+Then copy the example where the operator has no file yet — neither form
+overwrites — and edit `orchestration/auto-merge.conf`:
+
+```bash
 cp -n orchestration/auto-merge.example.conf orchestration/auto-merge.conf
-$EDITOR orchestration/auto-merge.conf
+```
+
+```powershell
+if (-not (Test-Path orchestration/auto-merge.conf)) {
+  Copy-Item orchestration/auto-merge.example.conf orchestration/auto-merge.conf
+}
 ```
 
 `Fleet merges NOTHING` near the end of that output means the file does not
@@ -147,11 +158,21 @@ handed to every clone.
   reports `undetermined` — restarting nothing — rather than gating on a window
   it guessed.
 
+Copy each only where the operator has none yet; neither form overwrites:
+
 ```bash
 cp -n orchestration/publish.example.conf orchestration/publish.conf
 cp -n orchestration/agent.example.conf orchestration/agent.conf
-uv run fleet queue add --help     # --publish names the shapes
 ```
+
+```powershell
+foreach ($f in "publish", "agent") {
+  $conf = "orchestration/$f.conf"
+  if (-not (Test-Path $conf)) { Copy-Item "orchestration/$f.example.conf" $conf }
+}
+```
+
+`uv run fleet queue add --help` names the `--publish` shapes.
 
 Read on every pass, so no reinstall and no restart.
 
