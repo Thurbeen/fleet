@@ -6,7 +6,7 @@ the shape the control plane reads.
     check_yaml.py --registry <map>    that map has the registry's shape
 
 The first form is called by scripts/check.sh (and through it by CI, prek and
-the no-mistakes lint step) with the list of tracked *.yml/*.yaml files as
+the gate `.publish.yaml` declares) with the list of tracked *.yml/*.yaml files as
 argv. It lives in a file rather than a CI heredoc so the local gate and the
 pull-request gate run the same assertions — CI here only fires on pull
 requests, while routine control-plane changes go straight to `main`, so the
@@ -14,7 +14,7 @@ local run is the one that has to be trustworthy.
 
 Takes the file list from argv (check.sh builds it with `git ls-files`) rather
 than walking the filesystem itself: a glob silently skips dot-prefixed paths
-like `.github/` and `.no-mistakes.yaml` unless every segment is spelled out,
+like `.github/` and `.publish.yaml` unless every segment is spelled out,
 which previously let this check report a clean tree while parsing almost none
 of it.
 

@@ -2,7 +2,7 @@
 # The control plane's whole gate, in one place.
 #
 # CI runs this (one check per job, so a docs-only PR skips the shell job), the
-# prek hooks run it, and `.no-mistakes.yaml` points its `lint` command at it.
+# prek hooks run it, and `.publish.yaml` declares it as this repo's whole gate.
 # One definition means a green local run and a green CI run mean the same
 # thing — the failure this repo is most exposed to, because CI only fires on
 # pull requests while routine control-plane changes go straight to `main`.

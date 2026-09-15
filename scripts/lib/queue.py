@@ -3793,11 +3793,11 @@ def pipeline_moved_the_head(cr: forge.ChangeRequest) -> str:
     absent list is silence, and silence must not become a claim about who
     pushed what.
     """
-    m = attestation_re().search(cr.body or "")
-    if not m:
+    raw = attestation_json(cr.body or "")
+    if raw is None:
         return ""
     try:
-        doc = json.loads(m.group(1))
+        doc = json.loads(raw)
     except ValueError:
         return ""
     attested = str(doc.get("head_sha") or "").lower() if isinstance(doc, dict) else ""
@@ -5392,16 +5392,41 @@ def check_verdicts(cr: forge.ChangeRequest) -> tuple[list, list]:
 # asking them to emit fleet's instead would be fleet dictating a format to a
 # tool it has never heard of. `orchestration/publish.example.conf` owns the
 # shape; this only compiles whatever it names.
+#
+# AND SO IS THE SHAPE, which is the half this file got wrong. It read one:
+# the JSON inside the comment. A publisher that writes the marker alone in the
+# comment and the JSON in a fenced block underneath is not a different marker,
+# it is a different SHAPE, so no value of `ATTESTATION_MARKER` reaches it and
+# the body reads as unattested — which fails closed, and therefore failed
+# silently. Both are matched now, and everything after the match is one rule
+# over whichever one carried the block.
+DEFAULT_ATTESTATION_MARKER = "publish-attestation/v1"
 
 
 def attestation_re(marker: str | None = None) -> "re.Pattern":
-    """The HTML comment this fleet's pipeline leaves, per publish.conf."""
+    """The HTML comment this fleet's pipeline leaves, in either shape."""
     marker = marker or publish_conf().get("ATTESTATION_MARKER", "").strip()
     if not marker:
-        marker = "fleet-attestation"
+        marker = DEFAULT_ATTESTATION_MARKER
+    m = re.escape(marker)
     return re.compile(
-        r"<!--\s*" + re.escape(marker) + r":v1\s+(\{.*?\})\s*-->", re.S
+        # The marker alone, then the fenced block that follows it. The closing
+        # fence is what bounds the JSON, the same way `-->` bounds it below.
+        r"<!--\s*" + m + r"\s*-->\s*```(?:json)?\s*(?P<fenced>\{.*?\})\s*```"
+        # Or the JSON inside the comment. `:v1` is optional because the shape
+        # that spelled the version apart from the marker named it there.
+        r"|<!--\s*" + m + r"(?::v1)?\s+(?P<inline>\{.*?\})\s*-->",
+        re.S,
     )
+
+
+def attestation_json(body: str) -> str | None:
+    """The attestation's JSON text, from whichever shape the body carries."""
+    m = attestation_re().search(body or "")
+    if not m:
+        return None
+    return m.group("fenced") or m.group("inline")
+
 
 # The attestation is written DURING the pipeline's `pr` step, so in every body
 # that carries one `pr` reads `running` and `ci` reads `pending`. Demanding
@@ -5412,6 +5437,46 @@ ATTESTATION_TRAILING_STEPS = {"pr", "ci"}
 ATTESTATION_DONE = {"completed", "skipped"}
 ATTESTATION_TRAILING_OK = ATTESTATION_DONE | {"running", "pending"}
 
+# THE OTHER SHAPE'S VOCABULARY, and it is not a superset of the one above.
+# Both spell `skipped` and they mean opposite things: above, a step that had
+# nothing to do; here, a step that did not run, which is the failure the
+# format was written to make visible and therefore blocks. So a block is read
+# under the vocabulary it declares rather than under a union of the two — a
+# union would let the looser reading answer for a block that meant the
+# stricter one. `verdict` is what declares it: the shape below carries it and
+# the shape above has no such field.
+ATTESTATION_STEP_OK = {"passed", "not-applicable"}
+
+
+def _declared_verdict(doc: dict, steps: list, attested: str) -> tuple[bool, str]:
+    """The reading for a block that states its own verdict.
+
+    BOTH HALVES, because the format says the verdict is DERIVED from the step
+    statuses — passed only when every step passed or did not apply. A block
+    whose two halves disagree is malformed, and reading whichever half says
+    yes is how a `skipped` step would slip past the one check it was added to
+    fail. Neither half is a stronger claim than the head sha above it: this
+    says the gate was clean, and that says it was clean about this commit.
+    """
+    verdict = str(doc.get("verdict") or "").lower()
+    bad = [
+        f"{st.get('name') or 'an unnamed step'} is "
+        f"{str(st.get('status') or '').lower() or 'unreported'}"
+        for st in steps
+        if str(st.get("status") or "").lower() not in ATTESTATION_STEP_OK
+    ]
+    if verdict != "passed":
+        why = f"the attestation's verdict is {verdict or 'unstated'}"
+        if bad:
+            why += ": " + ", ".join(bad[:4])
+        return False, why
+    if bad:
+        return False, (
+            "the attestation says it passed and its own steps do not: "
+            + ", ".join(bad[:4])
+        )
+    return True, f"the pipeline attests {attested[:8]}, which is this head"
+
 
 def attestation_verdict(body: str, head_sha: str) -> tuple[bool, str]:
     """(did the pipeline run on THIS commit, one line saying how it is known).
@@ -5419,14 +5484,14 @@ def attestation_verdict(body: str, head_sha: str) -> tuple[bool, str]:
     False is never "probably fine": every way of failing to read the
     attestation is a way of not being merged.
     """
-    m = attestation_re().search(body or "")
-    if not m:
+    raw = attestation_json(body)
+    if raw is None:
         return False, (
             "the body carries no attestation, so nothing but its own "
             "prose says the pipeline ever ran"
         )
     try:
-        doc = json.loads(m.group(1))
+        doc = json.loads(raw)
     except ValueError:
         return False, "the attestation is not valid JSON"
     if not isinstance(doc, dict):
@@ -5446,10 +5511,15 @@ def attestation_verdict(body: str, head_sha: str) -> tuple[bool, str]:
     steps = doc.get("steps")
     if not isinstance(steps, list) or not steps:
         return False, "the attestation lists no steps"
-    unfinished = []
     for st in steps:
         if not isinstance(st, dict):
             return False, "the attestation's steps are malformed"
+
+    if "verdict" in doc:
+        return _declared_verdict(doc, steps, attested)
+
+    unfinished = []
+    for st in steps:
         name = str(st.get("step") or "an unnamed step")
         status = str(st.get("status") or "").lower()
         allowed = (

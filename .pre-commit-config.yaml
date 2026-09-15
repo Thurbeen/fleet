@@ -3,9 +3,9 @@
 #
 #     prek install
 #
-# Every hook shells out to scripts/check.sh, which is also what CI and
-# .no-mistakes.yaml's `lint` command run — so a hook cannot drift from the gate
-# it is standing in for. One hook per check rather than a single whole-gate
+# Every hook shells out to scripts/check.sh, which is also what CI runs and what
+# .publish.yaml declares as the gate — so a hook cannot drift from the gate it is
+# standing in for. One hook per check rather than a single whole-gate
 # hook, so a commit touching only prose does not wait on shellcheck.
 default_stages: [pre-commit]
 
