@@ -1798,7 +1798,7 @@ end
 --- EVERY WINDOW, ALWAYS, IN THE RECORD'S ORDER. Drawing only the binding one
 --- made the row change meaning whenever two windows' percentages crossed.
 --- The binding window is marked — its label in the theme's accent — and the
---- rows never move. A record from an older `fleet-status.sh` carries no
+--- rows never move. A record from an older `fleet status` carries no
 --- windows, and draws its binding reading as the one row it had.
 ---
 --- A PROVIDER THAT COULD NOT BE READ IS NOT DRAWN. It has no bar to draw and
@@ -2145,7 +2145,7 @@ return {
         -- "empty" here would be the one lie this pane is able to tell.
         return saying({
           archived .. " archived topic(s), nothing live",
-          "queue.sh list --archived",
+          "uv run fleet queue list --archived",
         }, width)
       end
       return saying({ "the queue is empty", model.root or lead.cwd }, width)
