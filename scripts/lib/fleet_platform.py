@@ -340,6 +340,36 @@ def alive(pid: int) -> bool:
     return True
 
 
+def process_ids() -> list[int]:
+    """Every pid `process_argv_cwd` can be asked about: Linux's /proc, and none elsewhere."""
+    if not sys.platform.startswith("linux"):
+        return []
+    try:
+        return [int(name) for name in os.listdir("/proc") if name.isdigit()]
+    except OSError:
+        return []
+
+
+def process_argv_cwd(pid: int) -> tuple[list[str], str] | None:
+    """A process's argv and working directory, or None when either cannot be read.
+
+    Linux: /proc, exactly as the kernel holds them. Elsewhere None: `ps` flattens
+    argv into one string and a working directory needs `lsof`, and an identity
+    half read proves nothing. A zombie has no argv and no working directory, so
+    it is None too: it runs nothing.
+    """
+    if not sys.platform.startswith("linux"):
+        return None
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as fh:
+            raw = fh.read()
+        cwd = os.readlink(f"/proc/{pid}/cwd")
+    except OSError:
+        return None
+    argv = [part.decode("utf-8", errors="replace") for part in raw.split(b"\0")[:-1]]
+    return (argv, cwd) if argv else None
+
+
 def _windows_alive(pid: int) -> bool:
     import ctypes
     from ctypes import wintypes

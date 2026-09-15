@@ -13,8 +13,10 @@ what keeps all of that out, held to these guarantees by
             and `main`.
   HOME      a throwaway one — and USERPROFILE, APPDATA and LOCALAPPDATA, which
             is where Windows looks instead — with every XDG base inside it.
-  env       forge credentials and host overrides, THURBOX_SESSION, and every
-            FLEET_* variable the caller had.
+  env       forge credentials and host overrides, every THURBOX_* variable,
+            the caller's TMUX and TMUX_PANE, and every FLEET_* variable the
+            caller had. FLEET_RECONCILE_PARENT_PID is this test run, so a loop
+            a test starts ends with the run even when no teardown does.
   settings  FLEET_{AUTO_MERGE,PUBLISH,AGENT,GLYPH}_ROOT and FLEET_VOICE_CONF at
             a copy of the TRACKED *.example.conf only; FLEET_QUEUE_DIR,
             FLEET_RUNS_DIR and FLEET_RECONCILE_DIR at empty directories; and
@@ -48,12 +50,12 @@ STUB_TOOLS = ("gh", "thurbox-cli", "ssh", "glab", "quota-axi")
 
 DROPPED = {
     "GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GH_HOST",
-    "GH_CONFIG_DIR", "GITLAB_TOKEN", "GITLAB_HOST", "GLAB_CONFIG_DIR", "THURBOX_SESSION",
+    "GH_CONFIG_DIR", "GITLAB_TOKEN", "GITLAB_HOST", "GLAB_CONFIG_DIR", "TMUX", "TMUX_PANE",
     "GIT_CONFIG_COUNT", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_PARAMETERS",
     "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
     "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_NAMESPACE", "GIT_PREFIX",
 }
-DROPPED_PREFIXES = ("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_", "FLEET_")
+DROPPED_PREFIXES = ("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_", "FLEET_", "THURBOX_")
 
 # How fleet's own code is run: any text read or written in the locale's encoding
 # is an error. That is UTF-8 on a Linux runner and cp1252 on a Windows console,
@@ -141,6 +143,7 @@ def isolate(environ: dict, root: Path, stub_bin: Path) -> dict:
         FLEET_QUEUE_DIR=str(root / "queue"),
         FLEET_RUNS_DIR=str(root / "runs"),
         FLEET_RECONCILE_DIR=str(root / "reconcile"),
+        FLEET_RECONCILE_PARENT_PID=str(os.getpid()),
         FLEET_REGISTRY_FILE=str(root / "registry" / "repos.generated.yaml"),
         FLEET_STUB_ROOT=str(root / "stubs"),
         # A test's own stand-ins (`Stubs.tool`) first, then the package's.

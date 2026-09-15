@@ -101,7 +101,7 @@ do. Otherwise map the list:
 | `registry/owners.txt` | §5 | the generated map covers the wrong owners |
 | `orchestration/auto-merge.example.conf`, or `scripts/lib/queue.py`'s allowlist | §5b | `shepherd` may now merge in a different set of repos, or in none |
 | `orchestration/publish.example.conf`, `agent.example.conf`, or POLICY.md's frontmatter | §5c | tasks may publish a different way, or `refuel` may gate on a different account |
-| `scripts/lib/reconcile.py`, `scripts/lib/fleet_platform.py` | §6 | the running reconciler loop is executing old code |
+| `scripts/lib/reconcile.py`, `scripts/lib/fleet_platform.py`, `scripts/reconcile.sh` — or a `restart-reconciler:` line | §6 | the running reconciler loop is executing old code, or code the sync removed |
 | `FLEET.md`, `AGENTS.md`, `CLAUDE.md`, `.agents/skills`, `.claude/skills`, `.claude/settings.json` — or a `restart-lead:` line | §8 | the lead is holding instructions it froze at launch |
 
 `FLEET.md` is in two rows: the extension's `[[files]]` payload is
@@ -255,6 +255,12 @@ If it reports the loop asked down, say so and change nothing. If it is
 running, `uv run fleet reconcile restart` replaces it — but that command
 clears the flag, so use it only on a loop that is actually up, and never as a
 way to bring a stopped one back. Report what `status` says it is watching.
+
+**A `legacy` line in `status` is a bash reconciler from before the uv port**,
+still running from this checkout with its script deleted, so every pass it runs
+fails, and it holds no lock, so it reads as down. `ensure` stops it and then
+starts this one (as do `start`, `stop` and `restart`), and a down flag still
+keeps the new one down. Say which pid went.
 
 ## 7. Gate
 

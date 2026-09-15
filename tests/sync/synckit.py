@@ -35,16 +35,28 @@ def new_repo(root: Path) -> Path:
     return work
 
 
-def advance_origin(root: Path, file: str = "CHANGELOG.md") -> None:
+def upstream(root: Path) -> Path:
     up = root / "upstream"
     shutil.rmtree(up, ignore_errors=True)
     git("clone", "--quiet", str(root / "origin.git"), str(up), cwd=root)
+    return up
+
+
+def advance_origin(root: Path, file: str = "CHANGELOG.md") -> None:
+    up = upstream(root)
     path = up / file
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a", encoding="utf-8", newline="\n") as fh:
         fh.write("incoming\n")
     git("add", file, cwd=up)
     git("commit", "--quiet", "-m", f"incoming: {file}", cwd=up)
+    git("push", "--quiet", "origin", "main", cwd=up)
+
+
+def remove_on_origin(root: Path, file: str) -> None:
+    up = upstream(root)
+    git("rm", "--quiet", file, cwd=up)
+    git("commit", "--quiet", "-m", f"removed: {file}", cwd=up)
     git("push", "--quiet", "origin", "main", cwd=up)
 
 
