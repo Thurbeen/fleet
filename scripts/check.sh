@@ -177,23 +177,12 @@ check_profiles() {
 # there that CI passed. Those records are the operator's, and
 # `fleet-status.sh --records` is where they are validated now.
 check_queue() {
-	need python3 queue || return
 	need uv queue || return
 
-	if ./scripts/queue-selftest.sh >/dev/null; then
-		ok "queue: ordering and wake claims hold"
+	if uv run --frozen --quiet pytest -q tests/queue >/dev/null 2>&1; then
+		ok "queue: ordering, wake, collect, shepherd, hosts, refuel, forges and dispatch hold (tests/queue)"
 	else
-		# Re-run visibly: a failing claim is the whole message.
-		./scripts/queue-selftest.sh
-		fail "queue: scripts/queue-selftest.sh"
-	fi
-
-	# The claims already ported to pytest, with the harness they stand on. These
-	# run natively on Windows as well; the bash above does not.
-	if uv run --frozen --quiet pytest -q tests/test_harness.py tests/queue >/dev/null 2>&1; then
-		ok "queue: the ported claims hold (tests/queue)"
-	else
-		uv run --frozen --quiet pytest -q tests/test_harness.py tests/queue
+		uv run --frozen --quiet pytest -q tests/queue
 		fail "queue: tests/queue"
 	fi
 }
@@ -492,11 +481,13 @@ print(" ".join(sorted(q.PUBLISH_METHODS)))
 # of the block) and the thurbox floor has one owner (§1c reads it from the
 # manifest and expects it in the remedy).
 check_onboarding() {
-	if ./scripts/onboarding-selftest.sh >/dev/null 2>&1; then
-		ok "onboarding: scripts/onboarding-selftest.sh"
+	need uv onboarding || return
+
+	if uv run --frozen --quiet pytest -q tests/onboarding >/dev/null 2>&1; then
+		ok "onboarding: preflight and discover-owners (tests/onboarding)"
 	else
-		./scripts/onboarding-selftest.sh
-		fail "onboarding: scripts/onboarding-selftest.sh"
+		uv run --frozen --quiet pytest -q tests/onboarding
+		fail "onboarding: tests/onboarding"
 	fi
 }
 
@@ -527,15 +518,13 @@ check_install() {
 # slow selftests are held to the shared helper rather than re-run.
 check_isolation() {
 	need git isolation || return
-	need jq isolation || return
-	need python3 isolation || return
 	need uv isolation || return
 
-	if ./scripts/isolation-selftest.sh >/dev/null 2>&1; then
-		ok "isolation: a poisoned checkout under a hostile host gets the same verdict"
+	if uv run --frozen --quiet pytest -q tests/isolation >/dev/null 2>&1; then
+		ok "isolation: a poisoned checkout under a hostile host gets the same verdict (tests/isolation)"
 	else
-		./scripts/isolation-selftest.sh
-		fail "isolation: scripts/isolation-selftest.sh"
+		uv run --frozen --quiet pytest -q tests/isolation
+		fail "isolation: tests/isolation"
 	fi
 }
 
