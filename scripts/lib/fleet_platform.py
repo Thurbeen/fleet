@@ -56,6 +56,19 @@ def fleet_data_dir() -> str:
     )
 
 
+# --- installing ---------------------------------------------------------------
+
+
+def install_family() -> str:
+    """Which OS family's install routes apply here: "windows" or "posix".
+
+    "windows" means winget and PowerShell installers; "posix" means a distro's
+    package manager or Homebrew, and `sh` installers. preflight's table keys
+    every route by it, so nothing there asks which OS it is on.
+    """
+    return "windows" if WINDOWS else "posix"
+
+
 # --- records ------------------------------------------------------------------
 
 # A reader holding a record open makes Windows refuse the replace until it lets
