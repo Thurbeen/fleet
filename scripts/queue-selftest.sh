@@ -7503,6 +7503,69 @@ refute "and its session is still the evidence" "23232323-0000-0000-0000-00000000
 expect "a failed task its worker later called not-applicable is read again, and lands" \
 	"state:       landed" "$(aq2 show "$stopic/03-failed-then-moot" 2>&1)"
 
+# --- 24. a task reopened inside an archived topic is still read ---------------
+#
+# Seen on 2026-09-15: a `shepherd` run loaded a task while it was `dispatched`
+# and merged its pull request. While it was still running, `collect` closed the
+# task, `reap` landed it and archived the topic, and then the shepherd saved
+# the record it had loaded before any of that — `dispatched` again, inside a
+# topic now archived. `collect` reads the live view only, so from then on it
+# printed `0 result(s) read` and never named the task, however often the worker
+# rewrote its result.
+#
+# An archived topic is a claim that every task in it is finished. A task that
+# is not breaks the claim, so `collect` reopens the topic and says so, then
+# reads the task like any other: verified, landed and reaped in the same pass.
+
+rtopic="$(aq2 topic add reopened-in-archive --prompt 'a finished task a stale write reopened is never read again')"
+rpr_is() {
+	python3 - "$auto/prs/Thurbeen_thurbox_4242.json" "$1" <<'PY'
+import json
+import sys
+
+doc = {"state": sys.argv[2], "headRefName": "fix/reopened", "headRefOid": "4242" * 10,
+       "body": "Opened by hand.", "commits": []}
+json.dump(doc, open(sys.argv[1], "w"))
+PY
+}
+reopened_says() {
+	cat >"$aqdir/$rtopic/01-reopened/result.md" <<EOF
+---
+outcome: shipped
+artifact: https://github.com/Thurbeen/thurbox/pull/4242
+---
+$1
+EOF
+}
+rsid="24242424-0000-0000-0000-000000000001"
+rrec="$aqdir/$rtopic/01-reopened/task.yaml"
+aq2 add "$rtopic" reopened --repo /tmp/repo-records --branch fix/reopened --number 01 \
+	--publish pr >/dev/null
+aq2 attach "$rtopic/01-reopened" "$rsid" >/dev/null
+session_is "$rsid" working
+rpr_is OPEN
+reopened_says "It is open and not merged."
+# What a shepherd pass that started now holds in memory.
+cp "$rrec" "$tmp/reopened-stale.yaml"
+
+rpr_is MERGED
+out="$(aq2 collect 2>&1)"
+expect "collect closes, lands and archives a task whose pull request merged" \
+	"archived   1 task(s) landed or abandoned" "$out"
+
+# The shepherd saves what it loaded, and the worker says it again.
+cp "$tmp/reopened-stale.yaml" "$rrec"
+session_is "$rsid" idle
+: >"$deletions"
+reopened_says "It is merged now."
+out="$(aq2 collect 2>&1)"
+expect "collect names a task that is unfinished inside an archived topic" \
+	"$rtopic/01-reopened" "$out"
+expect "and reads its result like any other" "$rtopic/01-reopened  shipped" "$out"
+expect "and it lands in the same pass" "state:       landed" "$(aq2 show "$rtopic/01-reopened" 2>&1)"
+expect "and reap releases its session in the same pass" \
+	"session delete $rsid --force" "$(cat "$deletions")"
+
 echo
 if [ "$failed" -eq 0 ]; then
 	printf '\033[32mqueue-selftest: every claim holds\033[0m\n'

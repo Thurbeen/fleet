@@ -1452,9 +1452,10 @@ def topic_meta_path(root: str, slug: str) -> str:
 def unfinished(tasks: list, state_of=None) -> Task | None:
     """The first task that is not finished, or None when every one of them is.
 
-    THE one predicate. The automatic sweep, `cmd_archive` and `cmd_check` all
-    ask this and nothing else, because three implementations of "is this topic
-    done" is three chances to hide a topic somebody is still working in.
+    THE one predicate. The automatic sweep, `cmd_archive`, `cmd_check` and
+    `collect`'s reopening of an archived topic all ask this and nothing else,
+    because four implementations of "is this topic done" is four chances to
+    hide a topic somebody is still working in.
     Returns the task rather than a bool so a refusal can name it.
 
     `state_of` is how the sweep asks the question during a dry run, where the
@@ -3991,8 +3992,37 @@ def report_unverified(task: Task, url, detail: str) -> None:
     )
 
 
+def reopen_unfinished_archives(root: str) -> None:
+    """Clear `archived` on every topic that holds a task that is not finished.
+
+    An archived topic claims every task in it is finished, and the live view
+    trusts that claim so completely that it never opens the task directories.
+    A record written back over a landing breaks it: a `shepherd` that loaded a
+    task while `dispatched` and saved it after `collect` had closed it and
+    `reap` had archived its topic left a `dispatched` task no live reader
+    could see. `collect` read `0 result(s)` and never named it again.
+
+    So `collect`, the command that closes tasks, reads every archived record
+    and not only the live ones. One `task.yaml` per archived task per pass is
+    the price, and `list` and the pane still skip them. The topic comes back
+    rather than being read around, so every other reader sees the task too,
+    and `reap` archives it again once the task lands.
+    """
+    for slug, tasks in sorted(Queue(root, scope="archived").by_topic().items()):
+        task = unfinished(tasks)
+        if task is None:
+            continue
+        set_archived(root, slug, None)
+        print(
+            f"    {slug:<46} unarchived {task.ref} is `{task.state}`, and an "
+            "archived topic holds only finished tasks"
+        )
+
+
 def cmd_collect(args) -> int:
-    q = Queue(queue_root())
+    root = queue_root()
+    reopen_unfinished_archives(root)
+    q = Queue(root)
     concluded = 0
     held = 0
     artifacts = 0
