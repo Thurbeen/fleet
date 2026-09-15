@@ -19,26 +19,23 @@ live on branches in the repositories they belong to.
 
 ## How it fits together
 
-![Architecture diagram. The operator gives Mission Control, the lead agent
-session in thurbox, a prompt and watches the queue pane. The lead drives the
-queue with queue.sh. Dispatch starts one worker session per task in its own git
-worktree, locally or on a remote host. Workers write result.md and publish a
-change request through the forge seam, GitHub via gh or GitLab via glab. The
-reconciler runs watch, collect, shepherd, refuel and plan, asks the forge about
-change requests, wakes the lead when work is ready, and never dispatches. The
-registry and settings feed the lead and the queue. Along the bottom, the loop:
+![Architecture diagram. You prompt Mission Control, the lead session, which
+reads the registry and dispatches tasks into the queue. The queue gives each
+worker a brief and gets back a result, and the queue pane shows it to you.
+Workers open pull or merge requests on the forge. The reconciler updates the
+queue, checks and merges on the forge, and wakes the lead. Below, the loop:
 intake, brief, dispatch, watch, collect, shepherd, merge, reap, plus
 refuel.](docs/fleet-architecture.svg)
 
 Each box in the diagram:
 
-- **You, the operator.** You give prompts, watch the pane, review change
+- **You.** You give prompts, watch the pane, review change
   requests, and merge the ones fleet did not.
 - **Mission Control.** The lead agent session. thurbox runs it for the `fleet`
   extension, opened on your clone, with [`FLEET.md`](FLEET.md) as its standing
   context. It turns your prompt into tasks, writes a brief for each one, and
   dispatches them. Only the lead dispatches tasks.
-- **The queue.** Plain files under `orchestration/queue/`.
+- **Queue.** Plain files under `orchestration/queue/`.
   [`scripts/queue.sh`](scripts/queue.sh) (or `uv run fleet queue`, the same
   command) is the only thing that writes them. A topic keeps your prompt word
   for word. Each task in it has four files: `task.yaml` (what is intended and
@@ -49,7 +46,7 @@ Each box in the diagram:
   `--host`, and its session then runs on that machine over ssh. Workers share
   no context with the lead or with each other. Each one reads its brief,
   publishes its work, and writes `result.md`.
-- **Forge seam.** Every question about a change request goes through
+- **Forge.** Every question about a change request goes through
   [`scripts/lib/forge.py`](scripts/lib/forge.py): GitHub through `gh`, GitLab
   through `glab`. A repository is named by host and path, such as
   `github.com/you/app`, so self-hosted instances work the same way.
