@@ -259,3 +259,39 @@ def test_a_stuck_task_whose_worker_later_shipped_is_read_again(aq, stubs):
     refute(deletions(), "23232323-0000-0000-0000-000000000002")
 
     expect(aq.show(f"{stopic}/03-failed-then-moot"), "state:       landed")
+
+
+# --- 24. a task reopened inside an archived topic is still read ---------------------
+
+
+def test_a_task_a_stale_write_reopened_inside_an_archived_topic_is_read_again(aq, stubs):
+    """A `shepherd` that loaded a task while `dispatched` saved it after `collect`
+    had landed it and `reap` had archived its topic: `dispatched` again, inside a
+    topic only the live view is read from, so `collect` said `0 result(s) read`
+    and never named the task. An archived topic claims every task in it is
+    finished; `collect` reopens one that breaks the claim and reads the task."""
+    head = "4242" * 10
+    rtopic = ok(aq.q("topic", "add", "reopened-in-archive",
+                     "--prompt", "a finished task a stale write reopened is never read again")).stdout.strip()
+    ok(aq.q("add", rtopic, "reopened", "--repo", "/tmp/repo-records", "--branch", "fix/reopened", "--number", "01",
+            "--publish", "pr"))
+    sid = "24242424-0000-0000-0000-000000000001"
+    ok(aq.q("attach", f"{rtopic}/01-reopened", sid))
+    stubs.session_is(sid, "working")
+    task = aq.queue / rtopic / "01-reopened"
+    aq.records.pr("Thurbeen/thurbox", 4242, "OPEN", "fix/reopened", head)
+    result(task, "shipped", "It is open and not merged.", f"{TB}4242")
+    # What a shepherd pass that started now holds in memory.
+    stale = (task / "task.yaml").read_bytes()
+
+    aq.records.pr("Thurbeen/thurbox", 4242, "MERGED", "fix/reopened", head)
+    expect(aq.q("collect").out, "archived   1 task(s) landed or abandoned")
+
+    # The shepherd saves what it loaded, and the worker says it again.
+    (task / "task.yaml").write_bytes(stale)
+    stubs.session_is(sid, "idle")
+    result(task, "shipped", "It is merged now.", f"{TB}4242")
+    out = aq.q("collect").out
+    expect(out, f"{rtopic}/01-reopened", f"{rtopic}/01-reopened  shipped")
+    expect(aq.show(f"{rtopic}/01-reopened"), "state:       landed")
+    expect("\n".join(stubs.calls("thurbox-cli", "session delete")), f"session delete {sid} --force")
