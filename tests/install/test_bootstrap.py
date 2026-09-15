@@ -84,7 +84,7 @@ class PowerShell:
         if piped and not args:
             # `irm | iex`'s shape: the script's TEXT, evaluated, with no file and no param().
             argv = [POWERSHELL, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
-                    f"Get-Content -Raw -LiteralPath '{script}' | Invoke-Expression; exit $LASTEXITCODE"]
+                    f"Get-Content -Raw -LiteralPath '{script}' | Invoke-Expression; exit $FleetInstallExit"]
         else:
             argv = [POWERSHELL, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script), *args]
         done = subprocess.run(argv, input=b"", env=env, capture_output=True)
@@ -168,6 +168,22 @@ def test_a_fresh_machine_gets_uv_a_clone_and_a_whole_fleet_install(box, driver, 
     probe = next(i for i, c in enumerate(calls) if c.startswith("thurbox-cli --version"))
     assert probe < calls.index(install), "the extension ran before the prerequisites were probed"
     assert (box.clone / ".claude" / "skills" / "fleet-queue" / "SKILL.md").is_file()
+
+
+def test_a_uv_an_earlier_run_installed_is_found_and_not_downloaded_again(box, driver, stubs, tmp_path):
+    """UV_NO_MODIFY_PATH, or a window opened before the installer changed PATH,
+    leaves uv off a new shell's PATH: the next run looks where the installer puts it."""
+    (stubs.bin / ("uv" + EXE)).unlink()
+    uv_home = tmp_path / "uv-home"
+    uv_home.mkdir()
+    installer = driver.uv_installer(tmp_path)
+    env = dict(FLEET_YES="1", UV_INSTALL_DIR=str(uv_home), UV_NO_MODIFY_PATH="1",
+               FLEET_TEST_UV_INSTALLER=str(installer))
+    assert box(**env).code == 0
+    write(installer, "exit 3\n")
+    again = box(**env)
+    assert again.code == 0, again.out
+    refute(again.out, "uv is not installed")
 
 
 def test_the_uv_installer_seam_never_fires_unset(driver):

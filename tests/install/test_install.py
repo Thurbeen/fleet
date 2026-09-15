@@ -163,7 +163,9 @@ def test_an_installer_one_liner_runs_through_its_familys_shell(stubs, checkout, 
     shell = "powershell" if family == "windows" else "sh"
     place(stubs, shell, installs({}))
     place(stubs, "winget" if family == "windows" else "apt-get", installs({}))
-    done = run_install(checkout, stubs, family, "--yes")
+    # No claim on the exit code: on real Windows the PATH refresh after an
+    # install reads the machine's registry, which may well hold a thurbox.
+    run_install(checkout, stubs, family, "--yes")
     calls = stubs.calls(shell)
     if family == "windows":
         assert calls == ["powershell -ExecutionPolicy ByPass -c irm "
@@ -171,7 +173,6 @@ def test_an_installer_one_liner_runs_through_its_familys_shell(stubs, checkout, 
     else:
         assert calls == ["sh -c curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh"
                          " | sh"], calls
-    assert done.code == 1, "the stand-in installed nothing, so thurbox-cli is still missing"
 
 
 def test_dev_adds_the_gate_tier(stubs, checkout):

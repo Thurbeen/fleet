@@ -66,7 +66,20 @@ function Update-FleetPath {
     $env:Path = $entries -join ';'
 }
 
+# The installer's own order of places, put on this session's PATH where uv is in one.
+function Add-FleetUvPath {
+    $dirs = @($env:UV_INSTALL_DIR, $env:XDG_BIN_HOME)
+    if ($env:XDG_DATA_HOME) { $dirs += (Join-Path $env:XDG_DATA_HOME '..\bin') }
+    $dirs += (Join-Path $HOME '.local\bin')
+    $dirs += (Join-Path $env:USERPROFILE '.local\bin')
+    $found = @($dirs | Where-Object { $_ -and (Test-Path -LiteralPath (Join-Path $_ 'uv.exe')) })
+    if ($found) { $env:Path = (($found + @($env:Path)) -join ';') }
+}
+
 function Install-FleetUv {
+    if (Test-FleetCommand 'uv') { return $true }
+    # Installed by an earlier run into a directory this session's PATH lacks.
+    Add-FleetUvPath
     if (Test-FleetCommand 'uv') { return $true }
     Write-Host "uv is not installed; installing it with astral's installer (no admin needed)."
     # A child PowerShell, so the installer's own `exit` cannot end this session.
@@ -80,12 +93,7 @@ function Install-FleetUv {
         Write-FleetRefusal "the uv installer failed; its error is above."
         return $false
     }
-    # The installer's own order of places; this session's PATH holds none of them yet.
-    $dirs = @($env:UV_INSTALL_DIR, $env:XDG_BIN_HOME)
-    if ($env:XDG_DATA_HOME) { $dirs += (Join-Path $env:XDG_DATA_HOME '..\bin') }
-    $dirs += (Join-Path $HOME '.local\bin')
-    $dirs += (Join-Path $env:USERPROFILE '.local\bin')
-    $env:Path = ((@($dirs | Where-Object { $_ }) + @($env:Path)) -join ';')
+    Add-FleetUvPath
     if (-not (Test-FleetCommand 'uv')) {
         Write-FleetRefusal "uv was installed but this window cannot find it. Open a new PowerShell and run this again."
         return $false

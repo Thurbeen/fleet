@@ -76,7 +76,18 @@ confirm() {
 	case "$answer" in [yY]*) return 0 ;; *) return 1 ;; esac
 }
 
+uv_dirs_on_path() {
+	# The installer's own order of places, which a fresh shell's PATH may not hold yet.
+	for d in "$HOME/.local/bin" "${XDG_DATA_HOME:+$XDG_DATA_HOME/../bin}" "${XDG_BIN_HOME:-}" "${UV_INSTALL_DIR:-}"; do
+		[ -n "$d" ] && [ -x "$d/uv" ] && PATH="$d:$PATH"
+	done
+	export PATH
+}
+
 ensure_uv() {
+	command -v uv >/dev/null 2>&1 && return
+	# Installed by an earlier run into a directory this shell's PATH lacks.
+	uv_dirs_on_path
 	command -v uv >/dev/null 2>&1 && return
 	say "uv is not installed; installing it with astral's installer (no root needed)."
 	if [ -n "${FLEET_TEST_UV_INSTALLER:-}" ]; then
@@ -88,11 +99,7 @@ ensure_uv() {
 	else
 		die "uv is not installed, and fetching its installer needs curl or wget. Install one, then run this again."
 	fi
-	# The installer's own order of places; this process's PATH holds none of them yet.
-	for d in "$HOME/.local/bin" "${XDG_DATA_HOME:+$XDG_DATA_HOME/../bin}" "${XDG_BIN_HOME:-}" "${UV_INSTALL_DIR:-}"; do
-		[ -n "$d" ] && PATH="$d:$PATH"
-	done
-	export PATH
+	uv_dirs_on_path
 	command -v uv >/dev/null 2>&1 ||
 		die "uv was installed but this shell cannot find it. Open a new shell and run this again."
 }
