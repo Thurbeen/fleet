@@ -138,12 +138,19 @@ def test_what_counts_as_an_owner_is_not_widened(root):
     assert owners_file(root) == before
 
 
-def test_a_clone_with_no_owners_file_is_refused_and_pointed_at_onboarding(tmp_path, stubs):
+def test_a_clone_with_no_owners_file_is_pointed_at_onboarding_and_never_written_from_here(tmp_path, stubs):
+    """A report is not a failure: no map is a fleet that works. Writing a first
+    owners file from here still is refused, because that question needs asking."""
     stubs.tool("gh", GH)
     bare = sandbox(tmp_path / "bare", None)
     done = add_owner(bare)
-    assert done.code == 1
-    expect(done.out, "discover-owners")
+    assert done.code == 0, done.out
+    expect(done.out, "discover-owners", "optional")
+    for args in (("--all",), ("octo",)):
+        done = add_owner(bare, *args)
+        assert done.code == 1, done.out
+        expect(done.out, "discover-owners")
+    assert not (bare / "registry" / "owners.txt").exists()
 
 
 def test_all_with_no_account_that_answered_is_refused(root, stubs):

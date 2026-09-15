@@ -540,19 +540,21 @@ else:
 
 
 def test_a_missing_required_dependency_stops_before_the_extension(box, driver, stubs):
-    (stubs.bin / ("gh" + EXE)).unlink()
+    # The multiplexer, and not a forge CLI: no forge is required.
+    mux = "psmux" if family(driver) == "windows" else "tmux"
+    (stubs.bin / (mux + EXE)).unlink()
     name, _ = driver.manager
-    place(stubs, name, installs({}, fail=("gh", "GitHub.cli")))
+    place(stubs, name, installs({}, fail=("tmux", "marlocarlo.psmux")))
     place(stubs, "sudo", SUDO)
 
     asked = box()
     assert asked.code != 0, asked.out
-    expect(asked.out, "--yes", "install --id GitHub.cli" if driver.name == "powershell" else "apt-get install -y gh")
+    expect(asked.out, "--yes", "install --id marlocarlo.psmux" if mux == "psmux" else "apt-get install -y tmux")
     assert extension_calls(stubs) == []
 
     failed = box(FLEET_YES="1")
     assert failed.code != 0, failed.out
-    expect(failed.out, "failed: gh", "Stopped before the extension")
+    expect(failed.out, f"failed: {mux}", "Stopped before the extension")
     assert extension_calls(stubs) == []
 
 

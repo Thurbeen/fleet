@@ -21,8 +21,10 @@ with an empty one.
 
 The file is GENERATED, so never hand-edit it, and gitignored like
 registry/owners.txt; .gitignore says why. Curated context lives in
-registry/context/<repo>.md, which this never touches. Requires `gh`,
-authenticated; no PAT and no CI secret.
+registry/context/<repo>.md, which this never touches. Needs `gh`,
+authenticated; no PAT and no CI secret. THE MAP IS OPTIONAL: with no owners
+file, no owner in it, or no `gh`, this says so and exits 0 without writing —
+a local-only fleet dispatches against local repos and has no map.
 """
 
 from __future__ import annotations
@@ -128,17 +130,25 @@ def entry(repo: dict) -> str:
     )
 
 
+def skip(message: str) -> int:
+    """Nothing to sync, and not a failure: the map is optional, and a local-only
+    fleet has none. The map on disk, if any, is left exactly as it was."""
+    sys.stderr.write(f"note: {message}\n       The repo map is optional, so there is nothing to sync.\n")
+    return 0
+
+
 def sync() -> int:
-    if not shutil.which("gh"):
-        return fail("gh not found")
     if not os.path.isfile(OWNERS_FILE):
-        return fail(f"missing {OWNERS_FILE} — it is yours and gitignored.\n"
-                    "       Copy the tracked example and fill it in:\n"
+        return skip(f"no {OWNERS_FILE} — it is yours and gitignored.\n"
+                    "       To build a map, copy the tracked example and fill it in:\n"
                     "         cp registry/owners.example.txt registry/owners.txt")
     owners = read_owners(OWNERS_FILE)
     if not owners:
-        return fail(f"no owners configured. Edit {OWNERS_FILE} and uncomment (or add) your\n"
-                    "       GitHub username and any orgs you belong to, one per line.")
+        return skip(f"no owners configured. To build a map, edit {OWNERS_FILE} and uncomment\n"
+                    "       (or add) your GitHub username and any orgs you belong to, one per line.")
+    if not shutil.which("gh"):
+        return skip(f"gh not found: the map is read from GitHub with gh, and {OUT} is left as it was.\n"
+                    "       `uv run fleet preflight --tier forge` installs it.")
 
     host = map_host()
     accounts = gh.accounts(host)

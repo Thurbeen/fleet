@@ -414,6 +414,11 @@ class Forge:
     """
 
     name = "forge"
+    # The CLI this forge is asked through, or "" for one that needs none (a
+    # plugin). A forge whose CLI is absent owns its hosts and can answer
+    # nothing about them, and `available` is how a caller says so up front
+    # instead of once per failed call.
+    cli = ""
     hosts: tuple = ()
     # The merge methods this forge can actually perform. A caller asking for
     # one that is not here is told so BEFORE anything is merged: a GitLab
@@ -423,6 +428,10 @@ class Forge:
 
     def owns_host(self, host: str) -> bool:
         return (host or "").lower() in self.hosts
+
+    def available(self) -> bool:
+        """This machine can ask this forge anything at all: its CLI is on PATH."""
+        return not self.cli or shutil.which(self.cli) is not None
 
     def parse_change_url(self, url: str) -> ChangeRef | None:
         return None
@@ -550,6 +559,7 @@ class GitHubForge(Forge):
     """
 
     name = "github"
+    cli = "gh"
     merge_methods = ("squash", "merge", "rebase")
 
     def __init__(self, hosts=None):
@@ -984,6 +994,7 @@ class GitLabForge(Forge):
     """
 
     name = "gitlab"
+    cli = "glab"
     # GitLab's `squash` is not a merge method: it is a flag ON the merge, and
     # the merge method (`merge` / `rebase_merge` / `ff`) is a separate project
     # setting. So all three of fleet's words are things this forge can do, and
@@ -1553,12 +1564,38 @@ def _load_plugin(path: str) -> list:
         return []
 
 
+PREFLIGHT_HINT = "`uv run fleet preflight --tier forge` adds one"
+
+
+def available() -> list:
+    """Every configured forge this machine can actually ask.
+
+    Empty is an ordinary machine and not a broken one: a local-only fleet has
+    no forge CLI and no login, and every caller degrades to "could not check"
+    or to saying once that there is nothing to ask.
+    """
+    return [f for f in forges() if f.available()]
+
+
+def no_forge_reason() -> str:
+    """The one sentence for a machine where no forge can be asked."""
+    absent = "; ".join(f"{f.cli} not found on PATH" for f in forges() if f.cli and not f.available())
+    return f"no forge configured: {absent or 'none is registered'} — {PREFLIGHT_HINT}"
+
+
+def _unavailable(f: Forge, host: str) -> str:
+    """Why a URL on a host a forge owns cannot be asked about HERE. Still a
+    reason and never a verdict: a missing CLI must not manufacture `missing`."""
+    return f"no forge configured: {f.cli} not found on PATH, so {host} cannot be asked from here — {PREFLIGHT_HINT}"
+
+
 def for_url(url: str) -> tuple:
     """(forge, ref) for a change request URL, or (None, why-not).
 
     "No configured forge owns that host" is a REASON and not a verdict: an
     artifact on a forge nobody configured is one fleet could not ask about,
-    which is exactly what `collect` and the landing check call `unknown`.
+    which is exactly what `collect` and the landing check call `unknown`. The
+    same holds for a host whose forge has no CLI on this machine.
     """
     canonical = change_url(url)
     if not canonical:
@@ -1566,7 +1603,7 @@ def for_url(url: str) -> tuple:
     for f in forges():
         ref = f.parse_change_url(canonical)
         if ref is not None:
-            return f, ref
+            return (f, ref) if f.available() else (None, _unavailable(f, ref.repo.host))
     host = canonical.split("/")[2] if "://" in canonical else canonical
     return None, f"no configured forge owns {host}"
 
@@ -1575,18 +1612,18 @@ def for_repo(repo: RepoId) -> tuple:
     """(forge, '') for a repository, or (None, why-not)."""
     for f in forges():
         if f.owns_host(repo.host):
-            return f, ""
+            return (f, "") if f.available() else (None, _unavailable(f, repo.host))
     return None, f"no configured forge owns {repo.host}"
 
 
 def owner(url: str) -> Forge | None:
-    """The configured forge whose host this URL is on, or None."""
+    """The configured forge whose host this URL is on and that can be asked, or None."""
     m = re.match(r"^https?://([^/\s]+)/", (url or "").strip())
     if not m:
         return None
     for f in forges():
         if f.owns_host(m.group(1)):
-            return f
+            return f if f.available() else None
     return None
 
 
@@ -1598,7 +1635,7 @@ def for_target(url: str) -> tuple:
     for f in forges():
         target = f.parse_target_url(text)
         if target is not None:
-            return f, target
+            return (f, target) if f.available() else (None, _unavailable(f, text.split("/")[2]))
     return None, _unrecognised(text)
 
 
@@ -1616,7 +1653,7 @@ def for_note(url: str) -> tuple:
     for f in forges():
         ref = f.parse_note_url(text)
         if ref is not None:
-            return f, ref
+            return (f, ref) if f.available() else (None, _unavailable(f, text.split("/")[2]))
     return None, _unrecognised(text)
 
 
@@ -1644,6 +1681,8 @@ def open_change_requests_in_checkout(path: str) -> tuple:
     directory that is not a git repository at all still has to produce a
     sentence rather than an empty list that reads as "nothing is open".
     """
+    if not available():
+        return [], no_forge_reason()
     forge = None
     remote = _git_remote(path)
     if remote:

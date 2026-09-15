@@ -53,7 +53,10 @@ Each box in the diagram:
 - **Forge.** Every question about a change request goes through
   [`scripts/lib/forge.py`](scripts/lib/forge.py): GitHub through `gh`, GitLab
   through `glab`. A repository is named by host and path, such as
-  `github.com/you/app`, so self-hosted instances work the same way.
+  `github.com/you/app`, so self-hosted instances work the same way. No forge
+  is required: with no `gh`, no `glab` and no login, fleet runs local-only
+  against local repositories, and a `push` or `none` task is proven with git
+  alone.
 - **Reconciler.** [`scripts/lib/reconcile.py`](scripts/lib/reconcile.py) is a
   supervised loop that you start and stop. It runs the queue's `watch`,
   `collect`, `shepherd` and `refuel` on their own intervals. When a task
@@ -64,7 +67,8 @@ Each box in the diagram:
   the same files and writes nothing.
 - **Registry and settings.** `registry/owners.txt` lists the GitHub owners you
   work under. [`scripts/lib/sync_registry.py`](scripts/lib/sync_registry.py) turns it
-  into a map of every repository, and `registry/context/<repo>.md` holds your
+  into a map of every repository; the map is optional, and a local-only fleet
+  has none. `registry/context/<repo>.md` holds your
   notes on each project. The `orchestration/*.conf` files hold your publish,
   auto-merge and agent settings.
 
@@ -118,6 +122,8 @@ checks each step as it goes.
 
    Pick a clone location you will keep: the extension records the path.
    Re-running is safe, and `uv run fleet preflight` lists what is still missing.
+   No forge CLI is installed unless you ask: `uv run fleet install --forge github`
+   (or `gitlab`) adds one and names its login for you to run.
 
    One machine can run several fleets — one clone each, each with a Mission
    Control and a queue of its own. Name the second one, and it neither touches
@@ -137,8 +143,9 @@ checks each step as it goes.
    /fleet-onboarding
    ```
 
-   It finds your GitHub owners, builds the repository map, puts the queue pane
-   on screen and starts the reconciler. Where the choice is yours, it asks.
+   It finds your GitHub owners and builds the repository map if you work on a
+   forge, puts the queue pane on screen and starts the reconciler. Where the
+   choice is yours, it asks.
 
 ## Day to day
 
@@ -222,7 +229,7 @@ because this repository is public; back up your clone if that content matters.
 | `orchestration/agent.conf` | no | Which agent workers run; [`agent.example.conf`](orchestration/agent.example.conf) is the form. |
 | `orchestration/fleet.conf` | no | This fleet's name, when one machine runs more than one; [`fleet.example.conf`](orchestration/fleet.example.conf) names none, which is the fleet every clone is until it says otherwise. |
 | `orchestration/voice.conf`, `session-glyphs.conf` | no | What the lead calls you, and the marks on session names; [`voice.example.conf`](orchestration/voice.example.conf) and [`session-glyphs.example.conf`](orchestration/session-glyphs.example.conf) hold the defaults. |
-| `registry/owners.txt` | no | GitHub owners the map covers; [`owners.example.txt`](registry/owners.example.txt) is the form. |
+| `registry/owners.txt` | no | GitHub owners the map covers, if you want a map; [`owners.example.txt`](registry/owners.example.txt) is the form. |
 | `registry/repos.generated.yaml` | no | Generated repository map. Never edit it by hand. |
 | `registry/context/<repo>.md` | [`_TEMPLATE.md`](registry/context/_TEMPLATE.md) only | Your notes on each project. |
 
