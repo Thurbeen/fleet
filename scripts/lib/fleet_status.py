@@ -448,14 +448,32 @@ def fuel_reason(state: dict) -> str:
     return "; ".join(bits)
 
 
+def epoch_of(instant) -> int | None:
+    """An ISO instant as epoch seconds, or None when it is not one."""
+    try:
+        return int(datetime.fromisoformat(str(instant)).timestamp())
+    except ValueError:
+        return None
+
+
 def fuel_windows(provider: dict) -> list:
-    """The provider's windows that carry a number, in declaration order.
+    """The provider's windows that carry a number, SHORTEST WINDOW FIRST.
 
     A provider can have several that reset independently — a session window, a
     week, a per-model week — so there is no one reset to report and quota-axi
     deliberately does not invent one. A window with no `resetsAt` has not been
     triggered yet rather than being a gap, so it is kept and its reset is
     simply absent.
+
+    THE ORDER IS THE WINDOW'S LENGTH, never which one binds. A reader that
+    drew windows in binding order would swap its rows whenever two percentages
+    crossed — the flip this order exists to prevent. The sort is stable, so
+    windows of one length, and any whose length quota-axi did not say, keep
+    its declaration order, the unmeasured ones last.
+
+    `resets_epoch` is the same instant as `resets_at`, in epoch seconds, for
+    the same reason `read_at` is: the pane has no `os` and cannot parse an
+    instant, and a reset it cannot subtract is a reset it cannot count down.
     """
     out = []
     for w in provider.get("windows") or []:
@@ -464,14 +482,20 @@ def fuel_windows(provider: dict) -> list:
         remaining = w.get("percentRemaining")
         if not isinstance(remaining, (int, float)) or isinstance(remaining, bool):
             continue
+        seconds = w.get("windowSeconds")
+        if not isinstance(seconds, (int, float)) or isinstance(seconds, bool):
+            seconds = None
         out.append(
             {
                 "id": str(w.get("id") or "?"),
                 "label": w.get("label"),
                 "remaining": remaining,
+                "window_seconds": seconds,
                 "resets_at": str(w["resetsAt"]) if w.get("resetsAt") else None,
+                "resets_epoch": epoch_of(w["resetsAt"]) if w.get("resetsAt") else None,
             }
         )
+    out.sort(key=lambda w: (w["window_seconds"] is None, w["window_seconds"] or 0))
     return out
 
 
@@ -1027,6 +1051,16 @@ def render_fuel_record(sec: dict) -> str:
             elif isinstance(value, list):
                 value = ",".join(str(v) for v in value)
             lines.append(f"{name}\t{value}")
+        # EVERY WINDOW, after the fields: `window<TAB>id<TAB>percent<TAB>reset
+        # epoch<TAB>label`, one line each, in `fuel_windows`' order. A reader
+        # that knows only `name<TAB>value` still parses the record — it sees a
+        # field it does not draw — and an absent reset or label is an empty
+        # column, so the line keeps its shape.
+        for w in rec.get("windows") or []:
+            cols = (w["id"], w["remaining"], w.get("resets_epoch"), w.get("label"))
+            lines.append("\t".join(
+                ["window"] + [" ".join(str("" if c is None else c).split()) for c in cols]
+            ))
         blocks.append("\n".join(lines))
     return "\n\n".join(blocks) + "\n"
 

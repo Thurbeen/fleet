@@ -175,8 +175,11 @@ refute "no blocker under a task that is running" "publish-agnostic/03-draw" "$WI
 expect "the task's number survives" "01 Cut the pane back" "$WIDE"
 refute "the id row is gone" "01-declutter-the-pane" "$WIDE"
 
+# 27 rather than 26 since the fuel block draws every window: the fixture's
+# account holds two, and the detail row that named only the binding one is
+# gone, so the block costs one row more for the same reading.
 rows="$(grep -c . <<<"$WIDE")"
-if [ "$rows" -le 26 ]; then
+if [ "$rows" -le 27 ]; then
 	pass "the whole queue fits in $rows rows"
 else
 	fail "the whole queue costs $rows rows" "$WIDE"
@@ -214,6 +217,37 @@ refute "and still no cleared blocker" "✓ 01-declare" "$NARROW"
 # The width the pane routinely gets, which is the whole reason the note moved
 # up the ladder: a next move drawn only at 44 is a next move nobody reads.
 expect "the next move survives 30 columns" "open — review" "$NARROW"
+
+# --- 7. every fuel window, all the time -------------------------------------
+
+# The block drew only the window that binds right now, so on an account with a
+# five-hour and a seven-day window the row flipped between the two whenever
+# their percentages crossed. It draws every window the reading carries, in the
+# record's order (shortest first), and marks the binding one with a theme role
+# instead of hiding the others.
+echo "pane: every fuel window"
+
+# The row that carries `label`, as its line number in a render ("" if none).
+row_of() { grep -n -- "$1" <<<"$2" | head -1 | cut -d: -f1; }
+
+ACCENT="$(render 44 --accent)"
+for width in 44 30; do
+	out="$WIDE"
+	[ "$width" = 30 ] && out="$NARROW"
+	short="$(row_of " session " "$out")"
+	long="$(row_of " week " "$out")"
+	if [ -n "$short" ] && [ -n "$long" ] && [ "$short" -lt "$long" ]; then
+		pass "both windows are drawn at $width, shortest first"
+	else
+		fail "both windows are drawn at $width, shortest first" "$out"
+	fi
+	expect "the window that does not bind keeps its number at $width" "62%" "$out"
+	expect "and the one that binds keeps its own at $width" "18%" "$out"
+done
+expect "each window says when it comes back" "3h" "$(grep -- " session " <<<"$WIDE")"
+expect "on its own clock" "4d" "$(grep -- " week " <<<"$WIDE")"
+expect "the binding window is marked with a theme role" "A " "$(grep -- " week " <<<"$ACCENT")"
+refute "and the other is not" "A " "$(grep -- " session " <<<"$ACCENT")"
 
 # --- 6. the lead it probes is this machine's --------------------------------
 
