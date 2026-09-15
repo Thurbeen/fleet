@@ -346,8 +346,8 @@ def answer_dialogs(session: str, timeout: int = 20, as_json: bool = False) -> tu
                 return i
         return None
 
-    def answer(i: int) -> tuple[int, str] | None:
-        """Answer one gate, then confirm it took. None when it did.
+    def answer(i: int) -> tuple[tuple[int, str] | None, str]:
+        """Answer one gate, then confirm it took: (the failure or None, the keys sent).
 
         A send that reports success is not proof the dialog was answered. The
         dialog being GONE is. On either failure nothing more is sent.
@@ -357,14 +357,14 @@ def answer_dialogs(session: str, timeout: int = 20, as_json: bool = False) -> tu
             keys = "enter"
         for k in keys.split():
             if not send_key(uuid, k):
-                return 3, say(f"could not send '{k}' to the pane; the dialog is still up",
-                              "send-failed")
+                return (3, say(f"could not send '{k}' to the pane; the dialog is still up",
+                               "send-failed")), keys
             time.sleep(1)
         for _ in range(10):
             if not shows(signature, pane(uuid)):
-                return None
+                return None, keys
             time.sleep(1)
-        return 3, say(
+        return (3, say(
             f"sent '{keys}' but {agent}'s dialog is still on the pane. Do not\n"
             "             prompt this session; look at it:\n"
             f"               thurbox-cli session capture {uuid}\n"
@@ -374,7 +374,7 @@ def answer_dialogs(session: str, timeout: int = 20, as_json: bool = False) -> tu
             "             — which seeds THIS machine. For a session on a remote host, run\n"
             "             that script ON THE HOST, against the worktree path there.",
             "unconfirmed",
-        )
+        )), keys
 
     # --- watch, answering every dialog in turn -------------------------------
     #
@@ -395,10 +395,10 @@ def answer_dialogs(session: str, timeout: int = 20, as_json: bool = False) -> tu
                     f"               thurbox-cli session capture {uuid}",
                     "unconfirmed",
                 )
-            failed = answer(i)
+            failed, sent = answer(i)
             if failed:
                 return failed
-            answered.append(f"'{gates[i][1]}'")
+            answered.append(f"'{sent}'")
             deadline = time.monotonic() + SETTLE
             continue
         if agent_reported(uuid):

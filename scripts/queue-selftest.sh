@@ -7102,10 +7102,25 @@ out="$(env PATH="$nobash_path" "$py" scripts/lib/session_trust.py "$nbcli" --tim
 expect "session_trust.py answers a dialog with no bash on PATH" '"outcome":"answered"' "$out"
 expect "and says which session and agent it answered for" \
 	"{\"session\":\"$nbcli\",\"agent\":\"claude\"" "$out"
+
+# #84's rule with no bash: a psmux capture squeezes the spaces out, and the
+# selector is already on "Yes", so Enter alone answers it — and the report names
+# the key that was sent, not the table's `down enter`.
+nbyes=d1a10900-0000-0000-0000-00000000000d
+behind_dialog "$nbyes"
+printf '%s\n' 'Quicksafetycheck:Isthisaprojectyoucreatedoroneyoutrust?' \
+	'❯1.Yes,Itrustthisfolder' '2.No,exit' >"$panes/$nbyes.txt"
+: >"$tmp/keys.log"
+out="$(env PATH="$nobash_path" "$py" scripts/lib/session_trust.py "$nbyes" --timeout 5 2>&1)"
+count_is "a squeezed dialog already on Yes is answered with Enter alone" \
+	"$(tr '\n' ';' <"$tmp/keys.log")" "session key $nbyes enter;" "$out"
+expect "and the report names the key it sent, not the table's" \
+	"with 'enter'; none is left" "$out"
+
 expect "session-trust.sh keeps its CLI, --help and all" "Exit codes" \
 	"$(./scripts/session-trust.sh --help 2>&1)"
-expect "and still exits 2 on a session it cannot read" "2" \
-	"$(./scripts/session-trust.sh no-such-session >/dev/null 2>&1; echo $?)"
+./scripts/session-trust.sh no-such-session >/dev/null 2>&1
+count_is "and still exits 2 on a session it cannot read" "$?" 2 ""
 
 export FLEET_QUEUE_DIR="$queue_before_21b"
 if [ -n "$next_before_21b" ]; then
