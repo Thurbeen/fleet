@@ -22,9 +22,11 @@ names a local script to run instead, and nothing reads it unless it is set.
 from __future__ import annotations
 
 import json
+import http.server
 import os
 import shutil
 import subprocess
+import threading
 import sys
 from pathlib import Path
 
@@ -79,9 +81,14 @@ class PowerShell:
         system = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32")
         return os.pathsep.join([system, os.path.dirname(POWERSHELL)])
 
-    def run(self, env: dict, *args: str, piped: bool = True) -> Run:
+    def run(self, env: dict, *args: str, piped: bool = True, url: str | None = None) -> Run:
         script = REPO / "install.ps1"
-        if piped and not args:
+        if url:
+            # The one-liner exactly as the README gives it: downloaded with irm
+            # and piped straight into iex, in a child `powershell -c`.
+            argv = [POWERSHELL, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+                    f"irm {url} | iex; exit $FleetInstallExit"]
+        elif piped and not args:
             # `irm | iex`'s shape: the script's TEXT, evaluated, with no file and no param().
             argv = [POWERSHELL, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
                     f"Get-Content -Raw -LiteralPath '{script}' | Invoke-Expression; exit $FleetInstallExit"]
@@ -127,7 +134,7 @@ def box(driver, stubs, origin, tmp_path, isolated_env):
     path = os.pathsep.join([str(stubs.bin), driver.base(tmp_path / "base")])
     home = isolated_env / "home"
 
-    def run(*args: str, piped: bool = True, **extra: str | None) -> Run:
+    def run(*args: str, piped: bool = True, url: str | None = None, **extra: str | None) -> Run:
         env = dict(os.environ)
         env.update(PATH=path, FLEET_REPO=str(origin), FLEET_INSTALL_FAMILY=family(driver))
         env.pop("FLEET_DIR", None)
@@ -136,13 +143,40 @@ def box(driver, stubs, origin, tmp_path, isolated_env):
                 env.pop(k, None)
             else:
                 env[k] = v
-        done = driver.run(env, *args, piped=piped)
+        done = driver.run(env, *args, piped=piped, url=url) if url else driver.run(env, *args, piped=piped)
         return Run(done.code, plain(done.stdout), plain(done.stderr))
 
     run.home = home
     run.clone = home / "fleet"
     run.path = path
     return run
+
+
+@pytest.fixture
+def served_install_ps1():
+    """install.ps1 over HTTP from this machine, as raw.githubusercontent.com serves it."""
+    body = (REPO / "install.ps1").read_bytes()
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}/install.ps1"
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 def extension_calls(stubs) -> list[str]:
@@ -168,6 +202,42 @@ def test_a_fresh_machine_gets_uv_a_clone_and_a_whole_fleet_install(box, driver, 
     probe = next(i for i, c in enumerate(calls) if c.startswith("thurbox-cli --version"))
     assert probe < calls.index(install), "the extension ran before the prerequisites were probed"
     assert (box.clone / ".claude" / "skills" / "fleet-queue" / "SKILL.md").is_file()
+
+
+@pytest.mark.skipif(POWERSHELL is None, reason="no PowerShell on this machine")
+def test_the_readmes_windows_one_liner_irm_piped_to_iex_installs(stubs, origin, tmp_path, isolated_env,
+                                                                  served_install_ps1):
+    """`powershell -c "irm <url> | iex"` is the command the README gives, and the
+    one the tests used to stand in for with `Get-Content -Raw`, which evaluates
+    the same text by another path and hid that the real one did not run."""
+    driver = PowerShell()
+    tools = full_machine("windows") | {"uv": uv_standin()}
+    machine(stubs, tools)
+    env = dict(os.environ)
+    env.update(PATH=os.pathsep.join([str(stubs.bin), driver.base(tmp_path / "base")]),
+               FLEET_REPO=str(origin), FLEET_INSTALL_FAMILY="windows", FLEET_YES="1",
+               FLEET_TEST_UV_INSTALLER=str(driver.uv_installer(tmp_path)))
+    env.pop("FLEET_DIR", None)
+    done = driver.run(env, url=served_install_ps1)
+    out = plain(done.stdout) + plain(done.stderr)
+    for broken in ("Invoke-Expression :", "Missing closing", "empty string"):
+        assert broken not in out, f"iex was not handed the script whole:\n{out}"
+    assert done.code == 0, out
+    assert (isolated_env / "home" / "fleet" / "extension.toml.in").is_file(), out
+
+
+def test_a_uv_installer_that_installs_nothing_stops_the_bootstrap_before_the_clone(box, driver, stubs, tmp_path):
+    """The uv step's refusal is the end of the run. A child installer that prints
+    and installs nothing must not read as success and walk on into the clone."""
+    installer = tmp_path / ("uv-noop.ps1" if driver.name == "powershell" else "uv-noop.sh")
+    write(installer, "Write-Output 'the stand-in installer ran and installed nothing'\n"
+                     if driver.name == "powershell" else "echo 'the stand-in installer ran and installed nothing'\n")
+    tools = full_machine(family(driver))
+    machine(stubs, tools)
+    done = box(FLEET_YES="1", FLEET_TEST_UV_INSTALLER=str(installer))
+    assert done.code != 0, done.out
+    assert not box.clone.exists(), f"the bootstrap cloned after its uv step refused:\n{done.out}"
+    refute(done.out, "installing into", "Cloned ")
 
 
 def test_a_uv_an_earlier_run_installed_is_found_and_not_downloaded_again(box, driver, stubs, tmp_path):
