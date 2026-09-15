@@ -52,6 +52,11 @@ DROPPED = {
 }
 DROPPED_PREFIXES = ("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_", "FLEET_")
 
+# How fleet's own code is run: any text read or written in the locale's encoding
+# is an error. That is UTF-8 on a Linux runner and cp1252 on a Windows console,
+# so a record that only round-trips on one of them fails on both.
+PYTHON = (sys.executable, "-X", "warn_default_encoding", "-W", "error::EncodingWarning")
+
 
 def install_stubs(where: Path) -> Path:
     """Install tests/stubs into a fresh venv and return its executables' directory."""
@@ -148,7 +153,7 @@ def run_queue(*args: str, cwd: Path = REPO, script: Path | None = None, **env: s
         else:
             child[k] = v
     done = subprocess.run(
-        [sys.executable, str(script or REPO / "scripts" / "lib" / "queue.py"), *args],
+        [*PYTHON, str(script or REPO / "scripts" / "lib" / "queue.py"), *args],
         cwd=cwd, env=child, capture_output=True, encoding="utf-8", errors="replace",
     )
     return Run(done.returncode, done.stdout, done.stderr)
@@ -249,7 +254,7 @@ def queue_module(code: str, *args: str, cwd: Path = REPO) -> str:
     the standard library's for the rest of the test run.
     """
     done = subprocess.run(
-        [sys.executable, "-c", "import sys\nsys.path.insert(0, 'scripts/lib')\nimport queue as q\n" + code, *args],
+        [*PYTHON, "-c", "import sys\nsys.path.insert(0, 'scripts/lib')\nimport queue as q\n" + code, *args],
         cwd=cwd, capture_output=True, encoding="utf-8", errors="replace",
     )
     assert done.returncode == 0, done.stderr
