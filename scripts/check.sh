@@ -201,19 +201,20 @@ check_queue() {
 # The reconciler's lifecycle, the part of it that can break silently: it runs
 # `collect`, so a second instance or a stop that does not stop costs closed
 # tasks and reaped sessions.
-# reconcile-selftest.sh proves adoption, a durable stop, and the three claims
-# that are specific to it — that the four cadences are four separate clocks,
-# that the ONLY things it ever asks the queue to do are watch, collect,
-# shepherd, refuel and the read-only plan, and that the one line it sends the
-# lead goes out on a transition rather than on every pass. It stubs the queue
-# command and thurbox-cli, so it needs no thurbox, no `gh` and no network.
+# tests/reconcile proves adoption, a durable stop, and the three claims that
+# are specific to it — that the four cadences are four separate clocks, that
+# the ONLY things it ever asks the queue to do are watch, collect, shepherd,
+# refuel and the read-only plan, and that the one line it sends the lead goes
+# out on a transition rather than on every pass. It stubs the queue command and
+# thurbox-cli, so it needs no thurbox, no `gh` and no network.
 check_reconcile() {
-	if ./scripts/reconcile-selftest.sh >/dev/null; then
+	need uv reconcile || return
+	if uv run --frozen --quiet pytest -q tests/reconcile >/dev/null 2>&1; then
 		ok "reconcile: adopts rather than duplicates, a stop stays stopped, it writes no record, and it wakes the lead once per transition"
 	else
 		# Re-run visibly: a failing claim is the whole message.
-		./scripts/reconcile-selftest.sh
-		fail "reconcile: scripts/reconcile-selftest.sh"
+		uv run --frozen --quiet pytest -q tests/reconcile
+		fail "reconcile: tests/reconcile"
 	fi
 }
 
