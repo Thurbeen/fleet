@@ -7,169 +7,208 @@
 
 # fleet
 
-A **control plane** for your work across GitHub and GitLab. You hand it a goal;
-it splits the goal into tasks, runs an AI agent session on each one in a real
-repo, and gives you back change requests — pull requests, merge requests — to
-review.
+fleet is a control plane for AI coding agents working across your GitHub and
+GitLab repositories. You give it a goal. It splits the goal into tasks, runs
+one agent session per task in the real repository, and hands you back pull
+requests or merge requests to review.
 
-It is one repo holding two things: a **map** of your projects, and the
-**orchestration** of the agent sessions run against them, using
-[thurbox](https://github.com/Thurbeen/thurbox). It keeps the plan and the log
-and never the work itself — every branch lives in a worker's own git worktree,
-in the repo that work belongs to.
+It runs on [thurbox](https://github.com/Thurbeen/thurbox), a terminal UI for
+agent sessions. This repository holds the machinery. The plan, the log and your
+map of projects live in your clone and are never committed. The code changes
+live on branches in the repositories they belong to.
 
-## How it works
+## How it fits together
 
-```text
-      your prompt
-           │
-           ▼
-        ┌───────┐        one topic on disk, your words kept verbatim
-        │ topic │
-        └───┬───┘
-      ┌─────┼─────┐      one repo, one branch, one brief each
-      ▼     ▼     ▼
-    task  task  task
-      │     │     │
-      ▼     ▼     ▼      a thurbox worker session per task,
-   worker worker worker  each in its own git worktree
-      │     │     │
-      ▼     ▼     ▼
-     PR    PR    PR      you review; you merge
-```
+![Architecture diagram. The operator gives Mission Control, the lead agent
+session in thurbox, a prompt and watches the queue pane. The lead drives the
+queue with queue.sh. Dispatch starts one worker session per task in its own git
+worktree, locally or on a remote host. Workers write result.md and publish a
+change request through the forge seam, GitHub via gh or GitLab via glab. The
+reconciler runs watch, collect, shepherd, refuel and plan, asks the forge about
+change requests, wakes the lead when work is ready, and never dispatches. The
+registry and settings feed the lead and the queue. Along the bottom, the loop:
+intake, brief, dispatch, watch, collect, shepherd, merge, reap, plus
+refuel.](docs/fleet-architecture.svg)
 
-Independent tasks all go out at once — that is the point of it. Workers share
-no context with you and none with each other, so each gets a brief written from
-scratch, and each reports back by writing a file rather than by interrupting
-you. You watch it happen in the queue pane.
+Each box in the diagram:
 
-## Setup
+- **You, the operator.** You give prompts, watch the pane, review change
+  requests, and merge the ones fleet did not.
+- **Mission Control.** The lead agent session. thurbox runs it for the `fleet`
+  extension, opened on your clone, with [`FLEET.md`](FLEET.md) as its standing
+  context. It turns your prompt into tasks, writes a brief for each one, and
+  dispatches them. Only the lead dispatches tasks.
+- **The queue.** Plain files under `orchestration/queue/`.
+  [`scripts/queue.sh`](scripts/queue.sh) (or `uv run fleet queue`, the same
+  command) is the only thing that writes them. A topic keeps your prompt word
+  for word. Each task in it has four files: `task.yaml` (what is intended and
+  where it stands), `BRIEF.md` (the worker's instructions), `progress.jsonl`
+  (what happened) and `result.md` (what the worker concluded).
+- **Workers.** `dispatch` starts one thurbox session per task, each in its own
+  git worktree on a new branch of the target repository. A task can name a
+  `--host`, and its session then runs on that machine over ssh. Workers share
+  no context with the lead or with each other. Each one reads its brief,
+  publishes its work, and writes `result.md`.
+- **Forge seam.** Every question about a change request goes through
+  [`scripts/lib/forge.py`](scripts/lib/forge.py): GitHub through `gh`, GitLab
+  through `glab`. A repository is named by host and path, such as
+  `github.com/you/app`, so self-hosted instances work the same way.
+- **Reconciler.** [`scripts/reconcile.sh`](scripts/reconcile.sh) is a
+  supervised loop that you start and stop. It runs the queue's `watch`,
+  `collect`, `shepherd` and `refuel` on their own intervals. When a task
+  becomes ready, it types one line into the lead's terminal. It never
+  dispatches, and it changes the queue only through `queue.sh`.
+- **Queue pane.** [`interface/fleet_queue.lua`](interface/fleet_queue.lua)
+  draws the queue and your remaining agent quota in a thurbox column. It reads
+  the same files and writes nothing.
+- **Registry and settings.** `registry/owners.txt` lists the GitHub owners you
+  work under. [`scripts/sync-registry.sh`](scripts/sync-registry.sh) turns it
+  into a map of every repository, and `registry/context/<repo>.md` holds your
+  notes on each project. The `orchestration/*.conf` files hold your publish,
+  auto-merge and agent settings.
 
-One line clones fleet, checks what it needs, and installs its thurbox
-extension:
+The loop along the bottom, one step at a time:
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/Thurbeen/fleet/main/install.sh | sh
-```
+1. **intake**: the prompt becomes a topic, and the topic becomes tasks.
+2. **brief**: the lead writes each task's `BRIEF.md` from scratch.
+3. **dispatch**: every task with no blocker goes out at once.
+4. **watch**: thurbox's event stream is folded into `progress.jsonl`.
+5. **collect**: reads `result.md` and checks the artifact it names. Only this
+   closes a task.
+6. **shepherd**: looks at every open change request, sends a fixer to one
+   that conflicts, fails its checks or has changes requested, and merges where
+   you allowed it.
+7. **merge**: a squash merge, by `shepherd` or by you.
+8. **reap**: once the forge reports the merge, the task is `landed` and its
+   session is deleted.
 
-Or read it before you run it:
+Beside the loop, **refuel** restarts a worker that stopped at its agent's token
+limit, but only while the account still has quota.
 
-```bash
-curl -fsSLo install.sh https://raw.githubusercontent.com/Thurbeen/fleet/main/install.sh
-less install.sh
-sh install.sh
-```
+## Quick start
 
-It clones into `~/fleet`; `FLEET_DIR=<dir>` or `--dir <dir>` puts it elsewhere,
-and a machine whose Mission Control session already opens a checkout reuses
-that one. **Pick the place you will keep:** the extension bakes the path in,
-and moving the clone later costs the lead session its conversation. Run it again
-and it converges — an existing clone is fast-forwarded, and one that has
-diverged, or has uncommitted changes in the way, is refused rather than reset.
+This section is deliberately short. The
+[onboarding skill](.agents/skills/fleet-onboarding/SKILL.md) owns setup and
+checks each step as it goes.
 
-It installs no dependency: when a required one is missing it stops before the
-extension and prints the lines to run. Nor does it put the queue pane on your
-screen — the first Mission Control session asks you that, once.
+1. Install. The one-line installer clones fleet, checks its dependencies and
+   installs the thurbox extension:
 
-Then open thurbox, start the Mission Control session, and run:
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/Thurbeen/fleet/main/install.sh | sh
+   ```
 
-```text
-/fleet-onboarding
-```
+   Pick a clone location you will keep: the extension records the path.
+   `./scripts/preflight.sh` lists what fleet needs and what is missing.
 
-The [onboarding skill](.agents/skills/fleet-onboarding/SKILL.md) does the rest
-rather than instructing you through it — seven steps: dependencies, this
-checkout, your GitHub owners, the repo map, the thurbox extension, the queue
-pane on screen, and the reconciler. The one-liner already did three of them, so
-those come back as checks. It verifies each one and names anything missing with
-its remedy before it writes a thing. Run it twice and it converges.
+2. Open thurbox, start the Mission Control session, and run:
 
-Five of those steps ask you something, and only five. Whether to install the
-dependencies that are missing; which of the owners it found on your machine the
-map should cover; what the lead calls you and what it answers to, before the
-extension renders them; where the queue pane goes (a column on the right, by
-default), unless you already answered that; and whether to bring the reconciler
-up. It reads every `gh` account
-on the machine — not just the active one — your git config and the remotes of
-the clones you already have, so the owners step is a list to confirm rather
-than one to type.
+   ```text
+   /fleet-onboarding
+   ```
 
-What it needs, and what it will tell you itself:
+   It finds your GitHub owners, builds the repository map, puts the queue pane
+   on screen and starts the reconciler. Where the choice is yours, it asks.
 
-```bash
-./scripts/preflight.sh            # every dependency, in three tiers, with why
-./scripts/preflight.sh --commands # exactly what to run for the ones missing
-```
+## Day to day
 
-`git`, `gh` (authenticated), `jq`, `uv`, `python3` with PyYAML and
-`thurbox-cli` **2.19.0 or newer** are required; `quota-axi` and `glab` are
-recommended, and each names what degrades without it. `gh` is not optional even
-on a GitLab-only fleet — it is what builds the repo map. A `glab` that is logged
-in is also the configuration: fleet asks it which GitLab instances this machine
-holds, so a self-hosted one needs no variable exported for it.
+**Give fleet a prompt.** Type what you want into the Mission Control session,
+in plain words. The lead opens a topic, writes the briefs, and dispatches.
 
-That done, open the Mission Control session in thurbox and give it a goal.
+**Watch the pane.** `F3` shows and hides it. For a one-shot summary of quota,
+queue, sessions, pull requests and checkout, run `./scripts/fleet-status.sh`.
 
-Afterwards, when you gain an owner, a repository or a whole `gh` account, one
-command says what your map does not cover yet and catches it up:
+![The queue pane in a thurbox column beside the session list: the account's
+remaining quota as a bar, then running tasks grouped under their topics, one
+row each.](media/fleet-queue-pane.gif)
 
-```bash
-./scripts/add-owner.sh        # what is new, grouped by the account that reaches it
-./scripts/add-owner.sh --all  # add them, then sync and say what moved in the map
-```
+**What happens by itself** while the reconciler is up:
 
-It logs nobody in and writes nothing until you ask it to.
+- finished tasks are collected, and their artifacts checked against the forge;
+- change requests that conflict, fail checks or get changes requested are
+  handed to a fixer;
+- attested, green change requests in repositories you allowed are
+  squash-merged;
+- merged work is marked `landed`, its session is removed, and tasks waiting on
+  it become ready;
+- the lead is told when there is something new to dispatch;
+- a topic whose tasks have all landed or been abandoned is archived.
 
-## Watching it
+**What needs you:**
 
-**The queue pane** is the live view: the queue in a thurbox column, so you do
-not leave the terminal for it, with a bar for each subscription's fuel above
-it. Onboarding installs it and `F3` opens and closes it. It **displays and
-does not control** — `./scripts/queue.sh` stays the only thing that writes.
+- **Merges `shepherd` did not take.** `orchestration/auto-merge.conf` names the
+  repositories fleet may merge in. A fresh clone names none. Everything else,
+  including change requests with no attestation and anything from a fork, is
+  yours to review and merge.
+- **Conditions.** A task can wait on something the queue cannot see, such as a
+  login, an approval or a decision. Only a person clears that. Tell the lead
+  when it holds.
+- **Stuck or failed tasks.** Their sessions are kept so you can look at what
+  happened and decide.
+- **The reconciler itself.** `./scripts/reconcile.sh stop` keeps it down, even
+  across a reboot, until you run `start`.
+- **Updates.** After pulling a change to `FLEET.md`, `AGENTS.md` or the skills,
+  the running lead has stale instructions. The
+  [update-fleet skill](.agents/skills/update-fleet/SKILL.md) handles the
+  hand-over.
 
-It reads the same four files per task and no fifth: the plan, the progress, the
-outcome, and the change request. A column is narrow, so it draws only what you
-would act on from a glance and leaves the rest to `./scripts/queue.sh show`.
+## Concepts
 
-![The queue pane in a thurbox column beside the session list, both in a dark
-red-on-near-black doom palette: the account's fuel drawn as a labelled bar with
-its reserve above the queue, then four running tasks grouped under their three
-topics and collapsed to one row each — ordinal, title and age, with an
-uncollected or unverified-artifact note beneath the ones that carry one — and
-the archived topics folded into a muted count. Beside it the session list holds
-one mission-control lead and the four workers it spawned as its children, each
-marked with an emoji, and the centre pane holds the transcript of the selected
-worker, whose own task the queue names as
-running](media/fleet-queue-pane.gif)
+| Term | Meaning |
+| --- | --- |
+| topic | One prompt, stored word for word, and the tasks it became. |
+| task | One repository, one branch, one piece of work a single worker can finish and check. |
+| brief | A task's `BRIEF.md`: goal, constraints and what "done" means, written for a worker that knows nothing else. |
+| result | A task's `result.md`, written by its worker: an outcome (`shipped`, `stuck`, `failed` or `not-applicable`), the artifact, and a short note. |
+| shipped / landed | `shipped` is the worker saying the artifact exists; once `collect` has checked that artifact, the task is `done` and its session is kept for review fixes. `landed` means the forge reports the change merged. Tasks blocked on it are released only then. |
+| shepherd | The pass that keeps open change requests moving: fixers for broken ones, merges where allowed. |
+| refuel | The pass that restarts workers stopped at a token limit, once quota allows. |
+| reconciler | The supervised loop that runs `watch`, `collect`, `shepherd` and `refuel` so nobody has to remember to. |
+| attestation | A JSON block in a change request's body that names the commit a publish pipeline checked. It counts only when it names the current head. fleet publishes its own changes with the [`publish`](https://github.com/LeTuR/publish) skill. |
+| forge | Where change requests live: GitHub or GitLab, reached through `scripts/lib/forge.py`. |
 
-## Your working copy
+## Where things live
 
-The machinery is tracked; what a running fleet writes is not. Your owners file,
-your generated map, your project notes, your queue and your run logs live in
-your working copy and are gitignored — this repo is public, and none of that is
-something to publish, so back that copy up yourself if it matters beyond this
-machine. `.gitignore`'s header names every path and the reason for each.
+The machinery is tracked. Everything a running fleet writes is gitignored,
+because this repository is public; back up your clone if that content matters.
+[`.gitignore`](.gitignore)'s header gives the reason for each entry.
 
-Your settings are yours the same way, and each has a tracked `.example` beside
-it documenting the format: `registry/owners.txt` (the owners the map covers),
-`orchestration/voice.conf` (what the lead calls you), `session-glyphs.conf`
-(the mark fleet's sessions wear), `orchestration/publish.conf` (the publish
-method and the command that produces it), `orchestration/agent.conf` (which
-agent your workers run) and `orchestration/auto-merge.conf` — **the
-repositories fleet may merge in unattended, which the tracked copy deliberately
-leaves empty.** Clone this and fleet merges nowhere until you say otherwise; no
-operator inherits another's merge rights.
+| Path | Tracked | What it is |
+| --- | --- | --- |
+| [`FLEET.md`](FLEET.md) | yes | Standing context for the Mission Control session. |
+| [`extension.toml.in`](extension.toml.in) | yes | The thurbox extension manifest, rendered to a gitignored `extension.toml` by `scripts/install-extension.sh`. |
+| [`scripts/`](scripts/) | yes | Every command; each script's header is its full usage. [`check.sh`](scripts/check.sh) is the gate. |
+| [`interface/fleet_queue.lua`](interface/fleet_queue.lua) | yes | The queue pane. |
+| [`.agents/skills/`](.agents/skills/) | yes | Agent skills; `.claude/skills` is a symlink to this directory. |
+| [`orchestration/queue/`](orchestration/queue/README.md) | README, `POLICY.md` and `OPERATOR.example.md` only | Topics and tasks. |
+| `orchestration/queue/OPERATOR.md` | no | Your standing instructions to every worker; [`OPERATOR.example.md`](orchestration/queue/OPERATOR.example.md) is the form. |
+| `orchestration/runs/` | [`_TEMPLATE.md`](orchestration/runs/_TEMPLATE.md) only | One log per topic. |
+| [`orchestration/playbooks/`](orchestration/playbooks/) | yes | Reusable recipes for running thurbox. |
+| [`orchestration/session-profiles.yaml`](orchestration/session-profiles.yaml) | yes | Named settings a worker session starts with. |
+| `orchestration/reconcile/` | no | The reconciler's pid, heartbeat, log and flags. |
+| `orchestration/publish.conf` | no | How tasks publish; [`publish.example.conf`](orchestration/publish.example.conf) is the form. |
+| `orchestration/auto-merge.conf` | no | Repositories fleet may merge in; [`auto-merge.example.conf`](orchestration/auto-merge.example.conf) names none. |
+| `orchestration/agent.conf` | no | Which agent workers run; [`agent.example.conf`](orchestration/agent.example.conf) is the form. |
+| `orchestration/voice.conf`, `session-glyphs.conf` | no | What the lead calls you, and the marks on session names; [`voice.example.conf`](orchestration/voice.example.conf) and [`session-glyphs.example.conf`](orchestration/session-glyphs.example.conf) hold the defaults. |
+| `registry/owners.txt` | no | GitHub owners the map covers; [`owners.example.txt`](registry/owners.example.txt) is the form. |
+| `registry/repos.generated.yaml` | no | Generated repository map. Never edit it by hand. |
+| `registry/context/<repo>.md` | [`_TEMPLATE.md`](registry/context/_TEMPLATE.md) only | Your notes on each project. |
 
 ## More
 
-- [`AGENTS.md`](AGENTS.md) — how an agent should operate inside this repo, and
-  the reasoning behind how the queue runs.
-- [`CONTRIBUTING.md`](CONTRIBUTING.md) — the gate (`./scripts/check.sh`), the
-  squash-only merge policy, the layout conventions.
-- Every script's header is its own full usage. `./scripts/fleet-status.sh`
-  answers "where are we?" in one read-only call — fuel, queue, sessions, pull
-  requests, checkout.
+- [`AGENTS.md`](AGENTS.md): how an agent works inside this repository, and why
+  the queue runs the way it does.
+- [`CONTRIBUTING.md`](CONTRIBUTING.md): the gate, review rules and squash-only
+  merging.
+- The skills:
+  [fleet-onboarding](.agents/skills/fleet-onboarding/SKILL.md) (set up),
+  [fleet-queue](.agents/skills/fleet-queue/SKILL.md) (run the queue),
+  [thurbox-session](.agents/skills/thurbox-session/SKILL.md) (drive one
+  worker),
+  [fleet-pane](.agents/skills/fleet-pane/SKILL.md) (the pane) and
+  [update-fleet](.agents/skills/update-fleet/SKILL.md) (catch up with
+  `main`).
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).

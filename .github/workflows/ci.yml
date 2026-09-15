@@ -48,6 +48,9 @@ jobs:
             markdown:
               - '**/*.md'
               - '.rumdl.toml'
+              # The `docs` check rides along: the README's links and diagram.
+              - 'docs/**'
+              - 'scripts/lib/check_docs.py'
               - 'scripts/check.sh'
               - '.github/workflows/ci.yml'
             yaml:
@@ -107,7 +110,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - name: Install rumdl
         run: pipx install "rumdl==${RUMDL_VERSION}"
-      - run: ./scripts/check.sh markdown
+      - run: ./scripts/check.sh markdown docs
 
   yaml:
     name: YAML
