@@ -1804,6 +1804,10 @@ local FUEL_NUMBER = 4
 --- the bar is still a bar at thirty cells.
 local FUEL_LABEL_MAX = 10
 
+--- Columns a label is not cut below to make room for a window's reset. Under
+--- it the label stops naming its window, and the reset is what goes instead.
+local FUEL_LABEL_MIN = 4
+
 --- The reading as a bar, with the reserve marked where it falls across it.
 ---
 --- THE BAR IS A SECOND ENCODING OF THE NUMBER, never a replacement: it makes
@@ -1878,7 +1882,8 @@ end
 --- WHAT A NARROW COLUMN DROPS, and this column is routinely thirty cells wide.
 --- The bar first — under FUEL_BAR_MIN cells it is a decoration and the number
 --- is the reading, and the words say what the bar can only show — then the
---- reset. The label, the number and `low` never go.
+--- label's tail, down to FUEL_LABEL_MIN, then the reset. The number and `low`
+--- never go.
 ---
 --- TWO READINGS ARE NOT BARS. No record yet is the spinner, and a stale
 --- reading is hatched and flagged, so a remembered number never looks like a
@@ -1980,7 +1985,13 @@ local function fuel_rows(fuel, width, spinner)
     end
   end
   local low_width = any_low and widgets.len(FUEL_LOW) or 0
-  label_width = math.min(label_width, FUEL_LABEL_MAX, math.max(1, width - 3 - FUEL_NUMBER - low_width))
+  -- What a row spends besides its label and bar: the indent, the gap after
+  -- the label, the number and `low`. The label also gives way to the RESET,
+  -- down to FUEL_LABEL_MIN: a label cut to `Model …` still names its window,
+  -- and a window with no reset drawn says nothing about when it comes back.
+  local fixed = 3 + FUEL_NUMBER + low_width
+  label_width = math.min(label_width, FUEL_LABEL_MAX, math.max(1, width - fixed),
+    math.max(FUEL_LABEL_MIN, width - fixed - FUEL_RESET - 2))
 
   for _, rec in ipairs(shown) do
     local name = ui.row({ width = width })
@@ -2233,7 +2244,7 @@ return {
     -- One row goes to the "↑ above" note as soon as the offset moves, so the
     -- last screenful is one row shorter than the first. Budgeting for it here is
     -- what lets the bottom of the queue actually be reached: without the `+ 1`
-    -- the final two rows stayed under a "↓ 2 more" that never went away.
+    -- the final two rows stayed under a "↓ 2 below" that never went away.
     local max_offset = (#rows <= room) and 0 or math.max(0, #rows - room + 1)
     local offset = math.min(math.max(0, state.offset or 0), max_offset)
     if offset ~= state.offset then

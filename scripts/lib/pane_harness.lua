@@ -55,8 +55,13 @@ local WIDTH = tonumber(arg[1] or "") or 44
 local MARKS, ACCENT, FRAME, PILLS = false, false, false, false
 local CHORD, CLICK, FUEL_READ = "f3", nil, 120
 local LONG, HEIGHT, WHEEL, ACTION = 0, 200, {}, nil
+-- `--long-label` adds a third fuel window whose label is as long as the pane
+-- lets a label be, the shape a per-model window takes.
+local LONG_LABEL = false
 for i, a in ipairs(arg) do
-  if a == "--long" then
+  if a == "--long-label" then
+    LONG_LABEL = true
+  elseif a == "--long" then
     LONG = tonumber(arg[i + 1]) or 0
   elseif a == "--height" then
     HEIGHT = tonumber(arg[i + 1]) or HEIGHT
@@ -410,6 +415,9 @@ local FUEL = table.concat({
   "window\tfive_hour\t62\t" .. (NOW + 3 * 3600 + 600) .. "\tsession",
   "window\tseven_day\t18\t" .. (NOW + 4 * 86400 + 7200) .. "\tweek",
 }, "\n")
+if LONG_LABEL then
+  FUEL = FUEL .. "\nwindow\tmodel_week\t40\t" .. (NOW + 2 * 86400) .. "\tModel week"
+end
 
 local LEAD = { id = "s1", name = "⌖ Mission Control", cwd = "/home/operator/fleet", status = "ok" }
 _G.thurbox.sessions = { LEAD }
@@ -534,7 +542,8 @@ end
 if CLICK then
   -- The run whose text holds what was clicked is the hit — exactly the
   -- identity the kernel records for a run that names one. A run with neither
-  -- an `id` nor a `role` records none, so clicking it reaches no handler.
+  -- an `id` nor a `role` records none, so the click lands on the nearest
+  -- target under it, which for a row is the pane's own root identity.
   local overlay = (tree.frame or {}).overlay or {}
   local runs = {}
   for _, slot in ipairs({ "top_left", "top_right", "bottom_left", "bottom_right" }) do
@@ -545,8 +554,12 @@ if CLICK then
   runs_in(tree, runs)
   for _, run in ipairs(runs) do
     if run.text:find(CLICK, 1, true) then
-      if (run.id or run.role) and pane.on_click then
-        pane.on_click({ id = run.id, role = run.role, class = "", x = 0, y = 0,
+      local id, role = run.id, run.role
+      if not (id or role) then
+        id, role = tree.id, tree.role
+      end
+      if (id or role) and pane.on_click then
+        pane.on_click({ id = id, role = role, class = "", x = 0, y = 0,
           w = width_of(run.text), h = 1, dragging = false })
         tree = pane.render(ctx)
       end

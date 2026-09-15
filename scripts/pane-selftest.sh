@@ -275,6 +275,20 @@ for width in 44 30; do
 	expect "a reset says it is a reset at $width" "resets 4d" "$(grep -- " week " <<<"$out")"
 done
 
+# The `low` column costs four cells, and at 30 a label as long as the pane
+# allows used to push every reset out of the block — so the one account with a
+# window under the reserve was the one that could not see when it comes back.
+# The label gives way first.
+LABEL_NARROW="$(render 30 --long-label)"
+expect "a long label does not cost the reset at 30" "resets 4d" "$(grep -- " week " <<<"$LABEL_NARROW")"
+expect "and the long window keeps its own" "resets 2d" "$(grep -- "40%" <<<"$LABEL_NARROW")"
+widest="$(wc -L <<<"$LABEL_NARROW")"
+if [ "$widest" -le 30 ]; then
+	pass "and nothing overflows 30 with it (widest row: $widest)"
+else
+	fail "a row is $widest columns wide with a long label" "$LABEL_NARROW"
+fi
+
 # A reading older than the TTL means the refresh is not happening, and then
 # its age is the most important thing on the row — said in words.
 STALE_READ="$(render 44 --fuel-read 900)"
@@ -294,7 +308,6 @@ expect "and a rebind moves it" "F5" "$(render 44 --frame --chord f5 | grep '^top
 refute "and it is not spelled a second time in the title" "F3" "$(render 44 --frame | grep '^title:')"
 expect "clicking the hint hides the column" "toggled fleetqueue" "$(render 44 --click F3)"
 expect "and it still works at 30" "toggled fleetqueue" "$(render 30 --click F3)"
-expect "clicking the title does nothing" "nothing toggled" "$(render 44 --click Fleet)"
 expect "the pane declares an action-band pill for its toggle" \
 	"pill fleetqueue.toggle Fleet" "$(render 44 --pills)"
 
@@ -310,6 +323,12 @@ echo "pane: a queue longer than the pane"
 position() { sed -n 's/^bottom_right: *\([0-9]*\)-\([0-9]*\) of \([0-9]*\) *$/\1 \2 \3/p' <<<"$1"; }
 
 long() { render 44 --long 40 --height 24 "$@"; }
+
+# A row with no link of its own lands on the pane's root identity, which is
+# there for the wheel — so a click on it must hide nothing and move nothing.
+body_click="$(long --frame --click "Long task number 3")"
+expect "clicking a task row hides nothing" "nothing toggled" "$body_click"
+expect "and moves nothing" "bottom_right:  1-" "$body_click"
 
 # THE WHEEL NEVER REACHED MOST OF THIS PANE. The kernel offers a tick to the
 # pane whose click target is under the pointer, and records a pane's own rect
