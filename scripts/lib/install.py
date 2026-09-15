@@ -262,7 +262,9 @@ def extension_step(checkout: str) -> int:
         return int(loaded.main([]) or 0)
     say("  scripts/lib/install_extension.py is not in this checkout, so the extension cannot be installed from here.")
     script, bash = os.path.join(checkout, "scripts", "install-extension.sh"), shutil.which("bash")
-    if os.path.isfile(script) and bash:
+    # POSIX only: the `bash` a Windows PATH finds is WSL's launcher, which would
+    # run the script against another machine's thurbox.
+    if os.path.isfile(script) and bash and fleet_platform.install_family() == "posix":
         say("  Falling back to scripts/install-extension.sh.")
         return subprocess.run([bash, script], cwd=checkout, stdin=subprocess.DEVNULL, check=False).returncode
     return 1
