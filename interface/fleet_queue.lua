@@ -145,8 +145,11 @@
 -- READ-ONLY BY CONSTRUCTION. `focusable = false`, so the focus ring walks past
 -- it and `ctrl+h`/`ctrl+l` never land here: it is a readout, not a place you go,
 -- and there is no key on it that dispatches, collects or merges anything. Its
--- one action is the F-key that hides and shows its column — a global chord,
--- because a pane that cannot hold focus can only ever be reached by one. The
+-- one action is hiding and showing its column: a global F-key, because a pane
+-- that cannot hold focus can only ever be reached by a global chord; the
+-- `[F3 hide]` button on its top border, which is the same action under the
+-- pointer; and a `Fleet` pill in the action band, because a closed column
+-- draws no button to click and the band is the one place that still can. The
 -- wheel scrolls it, since a pane that is never focused cannot be given a `j`.
 --
 -- WHERE THE QUEUE IS. This pane runs inside the thurbox interface, which knows
@@ -184,7 +187,9 @@
 -- being read as one. The bar is a
 -- SECOND encoding of the number beside it, coloured against the reserve that
 -- arrives on the record and marked where that floor falls — never a
--- replacement for the number.
+-- replacement for the number. A window at or under that floor also says `low`
+-- in words, and the floor itself is never written as a number: it is fleet's
+-- constant, and `reserve 20%` on the head row read as "20% left".
 --
 -- A provider that could NOT be read is not drawn: it has no bar and no number,
 -- and the column belongs to the readings. The exception is nothing reading at
@@ -204,7 +209,8 @@
 -- AND IT IS THE ONE PROBE THAT COSTS THE NETWORK, so it has its own `FUEL_TTL`
 -- minutes long instead of the queue's seconds: a pane that refetched it per
 -- frame would burn the fuel it is reporting. What is drawn is therefore always
--- a CACHED reading, and it is drawn with its age for exactly that reason.
+-- a CACHED reading — and one younger than that TTL is the pane working as
+-- designed, so its age is drawn only once the reading is OVERDUE.
 --
 -- NOT `pure`, deliberately. The bundled panes declare it and this one does not:
 -- `run` re-asks from `render`, and a pure pane whose tree still stands is not
@@ -221,6 +227,11 @@ local widgets = require("lib.widgets")
 
 local SLOT = "fleetqueue"
 local TOGGLE = "fleetqueue.toggle"
+local PAGE_UP = "fleetqueue.page_up"
+local PAGE_DOWN = "fleetqueue.page_down"
+
+--- The identities the scroll marks carry, which `on_click` answers.
+local SCROLL_UP, SCROLL_DOWN = "scroll-up", "scroll-down"
 
 --- The thurbox session that opens the control-plane checkout, WITHOUT its mark.
 ---
@@ -307,6 +318,12 @@ local FUEL_GLYPH = "⛽"
 
 --- Rows the wheel moves.
 local SCROLL_STEP = 3
+
+--- Move the scroll window, never above the top. The bottom is the render's to
+--- clamp, because only the render knows how many rows there are.
+local function scroll_by(rows)
+  state.offset = math.max(0, (state.offset or 0) + rows)
+end
 
 --- One probe, answering with the whole queue in a line-per-record format.
 ---
@@ -778,23 +795,39 @@ local function blank()
   return line({ { text = "" } })
 end
 
---- The pane's frame, with the chord that hides it written into the title.
+--- The identity the hide button's run carries, which `on_click` answers.
+local HIDE_BUTTON = "hide"
+
+--- The pane's frame, with a button on its top border that hides the column.
 ---
---- The hint is in the TITLE because an unfocusable pane is never visited by the
---- focus ring, so its keys never reach the footer's context hints. The chord is
---- read from the registry rather than spelled here, so a rebind moves it.
-local function frame()
+--- The hint is ON THE FRAME because an unfocusable pane is never visited by the
+--- focus ring, so its keys never reach the footer's context hints. It is in the
+--- top-right OVERLAY and not in the title, because the kernel records a click
+--- target for an overlay run and none for a title run: in the title it could
+--- only ever be read, never pressed. The chord is read from the registry rather
+--- than spelled here, so a rebind moves it.
+---
+--- `position`, when the rows do not all fit, is which of them are on screen,
+--- and it goes on the BOTTOM border for the reason the button goes on the top
+--- one: a border cell costs the queue no row.
+local function frame(position)
   local chord = ui.chord(TOGGLE)
-  local title = { { text = " Fleet queue " } }
-  if chord then
-    title[#title + 1] = { text = chord:upper() .. " hides ", style = { fg = theme.muted } }
-  end
-  return {
-    title = title,
+  local spec = {
+    title = { { text = " Fleet queue " } },
     borders = "all",
     border_style = theme.muted,
     padding = 0,
+    overlay = {},
   }
+  if chord then
+    spec.overlay.top_right = {
+      { text = "[" .. chord:upper() .. " hide]", id = HIDE_BUTTON, style = { fg = theme.muted } },
+    }
+  end
+  if position then
+    spec.overlay.bottom_right = { { text = " " .. position .. " ", style = { fg = theme.muted } } }
+  end
+  return spec
 end
 
 --- The pane with one thing to say in it.
@@ -1680,22 +1713,28 @@ local function summary_spans(model, width)
   return row:spans_list()
 end
 
---- How old the cached reading is, said the way every other age in this pane is.
+--- How old the reading is, in words — but only once it is OVERDUE.
 ---
---- It is drawn because the reading is always cached — `FUEL_TTL` is minutes —
---- and a number with no age silently claims to be now. `read_at` arrives as
---- epoch seconds for this: a pane has no `os` and cannot parse an instant.
-local function read_age(fuel)
+--- It used to be drawn always, as a bare `1m` at the end of the head row, and
+--- nothing on the row said it was an age or of what. Every reading is cached by
+--- design, so an age inside `FUEL_TTL` — plus the `FUEL_TIMEOUT` the refresh
+--- may take to land — is the pane working as intended and tells the reader
+--- nothing. Past that, a refresh that should have arrived has not, the numbers
+--- are older than they look, and the age is the most important thing on the
+--- row: so it is drawn then, and drawn as `read 15m ago`. `read_at` arrives as
+--- epoch seconds because a pane has no `os` and cannot parse an instant.
+local function overdue_age(fuel)
   local now = widgets.now_ms()
-  if (fuel.read_at or 0) <= 0 or now <= 0 then
+  local at = (fuel.read_at or 0) * 1000
+  if at <= 0 or now <= 0 or now - at <= (FUEL_TTL + FUEL_TIMEOUT) * 1000 then
     return nil
   end
-  return (widgets.time_ago(fuel.read_at * 1000, now):gsub(" ago", ""))
+  return "read " .. widgets.time_ago(at, now)
 end
 
---- How long until a window resets, said the way `read_age` says an age: `3h`,
---- `4d`. Nil when the window has not been triggered, or when its reset is
---- already behind the clock — a stale reading, whose age the head row says.
+--- How long until a window resets, compactly: `3h`, `4d`. Nil when the window
+--- has not been triggered, or when its reset is already behind the clock — a
+--- stale reading, which the provider row flags.
 ---
 --- A countdown and not the instant, because an instant is twelve columns even
 --- compacted and a thirty-column row has a bar to fit. `resets_epoch` arrives
@@ -1710,26 +1749,36 @@ local function reset_in(epoch)
   return (widgets.time_ago(now, epoch * 1000):gsub(" ago", ""))
 end
 
---- Columns the reset countdown is given, so every percentage in the block
---- ends in the same one. `59m` is the widest; a week is `7d`.
-local FUEL_RESET = 3
+--- The word in front of a reset countdown. A bare `4d` beside a percentage is
+--- a number a new reader has to guess at — four days left? four days old? —
+--- so the countdown says what it counts down to.
+local FUEL_RESET_WORD = "resets "
 
---- The reading's colour, taken from the reserve the reading itself carries.
+--- Columns the reset is given: `resets 59m` is the widest; a week is `7d`.
+local FUEL_RESET = 10
+
+--- What a window at or under the reserve says after its number.
+local FUEL_LOW = " low"
+
+--- Is this reading at or under the reserve it carries?
 ---
 --- The threshold is not this file's to hold: FLEET.md's `## Fuel` section owns
 --- it, `fleet_status.py` carries the same number, and it travels down with
---- every record — so the pane compares and never spells it. AT the reserve is
---- red as well as under it, because the rule that number stands for is "below
---- it you dispatch nothing new", and a reading sitting exactly on the floor is
---- not headroom to dispatch into.
+--- every record — so the pane compares and never spells it. AT the reserve
+--- counts as well as under it, because the rule that number stands for is
+--- "below it you dispatch nothing new", and a reading sitting exactly on the
+--- floor is not headroom to dispatch into.
+local function is_low(fuel)
+  return fuel.remaining ~= nil and fuel.reserve ~= nil and fuel.remaining <= fuel.reserve
+end
+
+--- The reading's colour, taken from the reserve the reading itself carries.
+--- `is_low` decides it, so the colour and the `low` word never disagree.
 local function fuel_tone(fuel)
   if not fuel.remaining or not fuel.reserve then
     return theme.muted
   end
-  if fuel.remaining <= fuel.reserve then
-    return theme.bad
-  end
-  return theme.ok
+  return is_low(fuel) and theme.bad or theme.ok
 end
 
 --- The bar's four glyphs.
@@ -1755,16 +1804,20 @@ local FUEL_NUMBER = 4
 --- the bar is still a bar at thirty cells.
 local FUEL_LABEL_MAX = 10
 
+--- Columns a label is not cut below to make room for a window's reset. Under
+--- it the label stops naming its window, and the reset is what goes instead.
+local FUEL_LABEL_MIN = 4
+
 --- The reading as a bar, with the reserve marked where it falls across it.
 ---
 --- THE BAR IS A SECOND ENCODING OF THE NUMBER, never a replacement: it makes
 --- "nearly gone" legible without reading, and the number beside it stays for
 --- everything a glance cannot do.
 ---
---- THE FLOOR IS MARKED because it is what the colour is computed against.
---- `reserve N%` is the first thing the block gives up as it narrows, and a
---- tick on the bar hands that arithmetic back without spending a row on it.
---- The threshold itself is never spelled here — it rides in on the record.
+--- THE FLOOR IS MARKED because it is what the colour is computed against. It
+--- is never written as a number — `reserve 20%` on the head row read as a
+--- reading — so the tick is where the floor is seen and `low` is where
+--- crossing it is said. The threshold rides in on the record.
 local function bar_spans(fuel, cells)
   local filled = math.floor((fuel.remaining / 100) * cells + 0.5)
   filled = math.max(0, math.min(cells, filled))
@@ -1827,19 +1880,26 @@ end
 --- that is the one failure this pane must not commit silently.
 ---
 --- WHAT A NARROW COLUMN DROPS, and this column is routinely thirty cells wide.
---- In order: the reserve on the head row, then the bar — under FUEL_BAR_MIN
---- cells it is a decoration and the number is the reading — then the reset.
---- The number never goes.
+--- The bar first — under FUEL_BAR_MIN cells it is a decoration and the number
+--- is the reading, and the words say what the bar can only show — then the
+--- label's tail, down to FUEL_LABEL_MIN, then the reset. The number and `low`
+--- never go.
 ---
 --- TWO READINGS ARE NOT BARS. No record yet is the spinner, and a stale
 --- reading is hatched and flagged, so a remembered number never looks like a
 --- freshly measured one.
 local function fuel_rows(fuel, width, spinner)
-  -- Measured, never counted: with the glyph on this is nine columns and not
-  -- eight, and every budget below is taken from what it leaves. Clamped to
-  -- `width` itself, because at the narrowest columns even this mandatory
-  -- prefix does not fit whole.
-  local lead = widgets.keep_left(FUEL_GLYPH and (" " .. FUEL_GLYPH .. " fuel ") or " fuel ", width)
+  -- Measured, never counted: the glyph is two columns and not one, and every
+  -- budget below is taken from what it leaves. Clamped to `width` itself,
+  -- because at the narrowest columns even this mandatory prefix does not fit
+  -- whole.
+  --
+  -- `fuel left` when there are numbers under it, because a bare percentage
+  -- does not say whether it counts what is spent or what remains.
+  local function lead_of(word)
+    return widgets.keep_left(FUEL_GLYPH and (" " .. FUEL_GLYPH .. " " .. word .. " ") or (" " .. word .. " "), width)
+  end
+  local lead = lead_of("fuel")
 
   --- The muted row under a reading, at the most detail that fits.
   local function detail(text)
@@ -1876,17 +1936,16 @@ local function fuel_rows(fuel, width, spinner)
   end
 
   -- THE AGE BELONGS TO THE BLOCK, not to a provider: it is one probe, and
-  -- every record in it was read at the same instant. The reserve is the
-  -- block's too — one floor, applied to every provider — which is what frees
-  -- each reading's row for its bar.
-  local age = read_age(fuel[1])
+  -- every record in it was read at the same instant. It is in the warning
+  -- colour because it is only ever drawn when the reading is overdue.
+  local age = overdue_age(fuel[1])
   local head = ui.row({ width = width })
-  head:add(lead, { fg = theme.muted })
 
   if #shown == 0 then
+    head:add(lead, { fg = theme.muted })
     head:add(widgets.truncate_hard("unavailable", math.max(0, width - head.used)),
       { fg = theme.warn })
-    flush_right(head, age, { fg = theme.muted })
+    flush_right(head, age, { fg = theme.warn })
     -- The first record's reason, named: fleet's own provider leads the record,
     -- so this is the one whose failure matters most to what runs below.
     local first = fuel[1]
@@ -1897,12 +1956,8 @@ local function fuel_rows(fuel, width, spinner)
     return { line(head:spans_list()), detail(why) }
   end
 
-  local reserve = fuel[1].reserve and ("reserve " .. fuel[1].reserve .. "%") or ""
-  local right = age and (widgets.len(age) + 2) or 0
-  if reserve ~= "" and width - head.used - right >= widgets.len(reserve) then
-    head:add(reserve, { fg = theme.muted })
-  end
-  flush_right(head, age, { fg = theme.muted })
+  head:add(lead_of("fuel left"), { fg = theme.muted })
+  flush_right(head, age, { fg = theme.warn })
 
   local rows = { line(head:spans_list()) }
 
@@ -1918,13 +1973,25 @@ local function fuel_rows(fuel, width, spinner)
   -- The widest label drawn, held to what the column can spend on labels: the
   -- LABEL gives way before the number does, because a truncated window is
   -- still the right window and a truncated percentage is not a reading.
-  local label_width = 1
+  --
+  -- The `low` column is the block's too, and it is spent only when some window
+  -- in the block is low: every bar still ends in the same column, and the
+  -- ordinary reading pays nothing for a word it does not draw.
+  local label_width, any_low = 1, false
   for _, rec in ipairs(shown) do
     for _, w in ipairs(windows_of(rec)) do
       label_width = math.max(label_width, widgets.len(w.label))
+      any_low = any_low or is_low({ remaining = w.remaining, reserve = rec.reserve })
     end
   end
-  label_width = math.min(label_width, FUEL_LABEL_MAX, math.max(1, width - 3 - FUEL_NUMBER))
+  local low_width = any_low and widgets.len(FUEL_LOW) or 0
+  -- What a row spends besides its label and bar: the indent, the gap after
+  -- the label, the number and `low`. The label also gives way to the RESET,
+  -- down to FUEL_LABEL_MIN: a label cut to `Model …` still names its window,
+  -- and a window with no reset drawn says nothing about when it comes back.
+  local fixed = 3 + FUEL_NUMBER + low_width
+  label_width = math.min(label_width, FUEL_LABEL_MAX, math.max(1, width - fixed),
+    math.max(FUEL_LABEL_MIN, width - fixed - FUEL_RESET - 2))
 
   for _, rec in ipairs(shown) do
     local name = ui.row({ width = width })
@@ -1949,13 +2016,14 @@ local function fuel_rows(fuel, width, spinner)
       row:add(" ")
       local number = w.remaining .. "%"
       number = string.rep(" ", math.max(0, FUEL_NUMBER - widgets.len(number))) .. number
-      local room = width - row.used - widgets.len(number)
+      local room = width - row.used - widgets.len(number) - low_width
       -- The reset column is kept even for a window with none, so every bar
       -- in the block ends in the same column; it goes only when the number
       -- itself would not fit beside it.
-      local reset = room >= FUEL_RESET + 1 and (reset_in(w.resets_epoch) or "") or nil
+      local countdown = reset_in(w.resets_epoch)
+      local reset = room >= FUEL_RESET + 2 and (countdown and (FUEL_RESET_WORD .. countdown) or "") or nil
       if reset then
-        room = room - FUEL_RESET - 1
+        room = room - FUEL_RESET - 2
       end
       local cells = room - 1
       if cells >= FUEL_BAR_MIN then
@@ -1965,8 +2033,12 @@ local function fuel_rows(fuel, width, spinner)
         row:add(" ")
       end
       row:add(number, { fg = fuel_tone(reading), bold = true })
-      if reset then
-        row:add(" " .. string.rep(" ", FUEL_RESET - widgets.len(reset)) .. reset, { fg = theme.muted })
+      if any_low then
+        local low = is_low(reading)
+        row:add(low and FUEL_LOW or string.rep(" ", low_width), low and { fg = theme.bad, bold = true } or nil)
+      end
+      if reset and reset ~= "" then
+        row:add("  " .. reset, { fg = theme.muted })
       end
       rows[#rows + 1] = line(row:spans_list())
     end
@@ -2000,10 +2072,11 @@ return {
       -- title, and never saw the key — the collision is invisible from in
       -- here. F2, F3, F5 and F11 are unclaimed.
       --
-      -- Nothing about the pane depends on this being F3. The title below
-      -- resolves its own chord from the key registry with `ui.chord`, so
-      -- rebinding the action in thurbox's settings moves both the binding and
-      -- the hint that advertises it; nothing here spells a key twice.
+      -- Nothing about the pane depends on this being F3. The hide button on
+      -- the frame resolves its own chord from the key registry with
+      -- `ui.chord`, so rebinding the action in thurbox's settings moves both
+      -- the binding and the button that advertises it; nothing here spells a
+      -- key twice.
       key = "f3",
       action = TOGGLE,
       desc = "hide or show the fleet queue column",
@@ -2017,9 +2090,26 @@ return {
     },
   },
 
+  -- THE PAGE ACTIONS HAVE NO CHORD, on purpose. The pane cannot hold focus, so
+  -- a plugin-scoped key never reaches it, and the kernel has no scope for "while
+  -- the pointer is over this pane". What is left is global, and a global key
+  -- acts wherever you are: a `ctrl+<letter>` pair would be taken from the agent
+  -- in every terminal, and an F-key pair would spend two of the three F-keys
+  -- nothing claims on a pane you glance at. So the keyboard reaches them through
+  -- the palette, the pointer through the wheel and the clickable marks, and
+  -- nothing is taken from anybody.
   commands = {
     { action = TOGGLE, desc = "hide or show the fleet queue column" },
+    { action = PAGE_UP, desc = "scroll the fleet queue up a page" },
+    { action = PAGE_DOWN, desc = "scroll the fleet queue down a page" },
   },
+
+  -- The clickable way BACK. The button on the frame hides the column, and a
+  -- closed column draws no frame to click, so the action band carries the
+  -- toggle as a pill; the band resolves its chord from the same registry.
+  -- Below the kernel's own entries, so a narrow band sheds this one first and
+  -- the F-key still reaches the column.
+  pills = { { action = TOGGLE, label = "Fleet", priority = 50 } },
 
   render = function(ctx)
     local width = math.max(4, (ctx.width or 30) - 2)
@@ -2154,7 +2244,7 @@ return {
     -- One row goes to the "↑ above" note as soon as the offset moves, so the
     -- last screenful is one row shorter than the first. Budgeting for it here is
     -- what lets the bottom of the queue actually be reached: without the `+ 1`
-    -- the final two rows stayed under a "↓ 2 more" that never went away.
+    -- the final two rows stayed under a "↓ 2 below" that never went away.
     local max_offset = (#rows <= room) and 0 or math.max(0, #rows - room + 1)
     local offset = math.min(math.max(0, state.offset or 0), max_offset)
     if offset ~= state.offset then
@@ -2162,10 +2252,19 @@ return {
       -- bottom does not have to be wound all the way back.
       state.offset = offset
     end
+    -- What one PAGE is, for the handlers that page rather than tick: the rows
+    -- a screenful shows between its two marks. A handler runs outside render
+    -- and has no height of its own to measure, so it reads this.
+    local page = math.max(1, room - 2)
+    if state.page ~= page then
+      state.page = page
+    end
 
+    -- The marks carry identities, so a click on either pages the window — the
+    -- way to scroll with no wheel and no chord taken from anything.
     if offset > 0 then
       children[#children + 1] = line({
-        { text = "  ↑ " .. offset .. " above", style = { fg = theme.muted } },
+        { text = "  ↑ " .. offset .. " above", id = SCROLL_UP, style = { fg = theme.muted } },
       })
     end
     local drawn = 0
@@ -2177,10 +2276,11 @@ return {
     -- Rows past the bottom would be clipped with nothing said about it, which is
     -- the one way a pane like this can lie. The count takes over the last row it
     -- drew, so the tally includes the row it displaced.
+    local shown_last = last
     if last < #rows then
       local hidden = #rows - last + (drawn > 0 and 1 or 0)
       local note = line({
-        { text = "  ↓ " .. hidden .. " more", style = { fg = theme.muted } },
+        { text = "  ↓ " .. hidden .. " below", id = SCROLL_DOWN, style = { fg = theme.muted } },
       })
       if drawn > 0 or offset > 0 then
         -- Replace, not append: at room == 1 the "↑ above" note already spent
@@ -2188,26 +2288,69 @@ return {
         -- is no row to swap out either — swap the up-note itself instead of
         -- pushing the frame one line past its rect.
         children[#children] = note
+        if drawn > 0 then
+          shown_last = last - 1
+        end
       else
         children[#children + 1] = note
       end
     end
 
-    return { type = "box", frame = frame(), children = children }
+    -- WHERE THE WINDOW IS, only when there is somewhere else it could be.
+    -- Counted in the rows the window moves over, because those are what the
+    -- marks count and what a tick moves; an ASCII hyphen, because an en dash
+    -- is East_Asian_Width AMBIGUOUS and a terminal may draw it two cells wide.
+    local position
+    if max_offset > 0 then
+      position = (offset + 1) .. "-" .. math.max(offset + 1, shown_last) .. " of " .. #rows
+    end
+
+    -- THE ROOT CARRIES AN IDENTITY, AND THAT IS WHAT MAKES THE WHEEL WORK. The
+    -- kernel sends a wheel tick to the pane whose CLICK TARGET is under the
+    -- pointer, and records a pane's own rect as a target only when the pane is
+    -- focusable. This one is not, so the wheel reached it only over the few
+    -- rows that carried a link, and scrolled nothing everywhere else. A node
+    -- with an identity records its whole rect, and the rows' own targets are
+    -- recorded after it, so they still win where they are.
+    return { type = "box", id = SLOT, frame = frame(position), children = children }
   end,
 
   -- The wheel, because a pane that never holds focus can never be given a `j`.
   -- Taking the tick here is what stops the kernel turning it into an `up`/`down`
   -- keystroke for whatever does have focus.
+  --
+  -- Past the bottom is fine here: the next render clamps it.
   on_scroll = function(wheel)
-    local step = wheel.up and -SCROLL_STEP or SCROLL_STEP
-    state.offset = math.max(0, (state.offset or 0) + step)
+    scroll_by(wheel.up and -SCROLL_STEP or SCROLL_STEP)
     return true
+  end,
+
+  -- The hide button and the two scroll marks. Their runs carry an `id` and no
+  -- kernel verb, so the click comes here. Anything else — the pane's own root
+  -- identity, a row with no link — is declined and left to the kernel.
+  on_click = function(hit)
+    if hit.id == HIDE_BUTTON then
+      panels.toggle(SLOT)
+      return true
+    elseif hit.id == SCROLL_UP then
+      scroll_by(-(state.page or 1))
+      return true
+    elseif hit.id == SCROLL_DOWN then
+      scroll_by(state.page or 1)
+      return true
+    end
+    return false
   end,
 
   on_action = function(action)
     if action == TOGGLE then
       panels.toggle(SLOT)
+      return true
+    elseif action == PAGE_UP then
+      scroll_by(-(state.page or 1))
+      return true
+    elseif action == PAGE_DOWN then
+      scroll_by(state.page or 1)
       return true
     end
     return false

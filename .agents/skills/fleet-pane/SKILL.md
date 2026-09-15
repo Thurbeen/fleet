@@ -211,12 +211,24 @@ prints is the one the gate holds to the pane's actual slot name.
 **global** chord because an unfocusable pane can never be reached by any other
 kind — and it is the way BACK, since the binding resolves from the key registry
 rather than from what is on screen, so a hidden pane still answers it. The hint
-rides in the pane's own title (`F3 hides`) because a pane the focus ring skips
-never reaches the footer's context hints.
+rides on the pane's own top border as a `[F3 hide]` button, because a pane the
+focus ring skips never reaches the footer's context hints; it sits in the
+frame's overlay rather than its title because only an overlay run is a click
+target. A click on it hides the column, and the `Fleet` pill in the action
+band is the clickable way back, since a closed column has no border to click.
 
-Nothing depends on the key being F3: the title resolves its own chord from the
-registry, so rebinding the action in thurbox's settings moves the binding and
-the hint together. What the key must not be is one the KERNEL already owns — a
+Nothing depends on the key being F3: the button resolves its own chord from the
+registry, and so does the pill, so rebinding the action in thurbox's settings
+moves the binding and both hints together.
+
+A queue longer than the column scrolls under the fuel block and the counters,
+which stay put. The wheel scrolls it; `↑ N above` and `↓ N below` are clickable
+and page it; the palette (`Ctrl+P`) has `fleetqueue.page_up` and
+`fleetqueue.page_down`; and the bottom border says which rows are on screen
+(`12-30 of 58`). There is deliberately no scroll chord: the pane never holds
+focus, so only a global key could reach it, and a global key is taken from
+every terminal. If the wheel does nothing over the pane, the pane's root has
+lost its `id` — an unfocusable pane is a wheel target only through one. What the key must not be is one the KERNEL already owns — a
 plugin-scoped binding loses to a kernel one silently, registering fine and never
 receiving the key. `./scripts/check.sh pane` refuses those; see §8.
 

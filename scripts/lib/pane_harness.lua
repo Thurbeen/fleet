@@ -27,14 +27,63 @@
 -- `--accent` prefixes every row with `A` when a span is drawn in the theme's
 -- `accent` role and `.` when none is, which is how a mark carried by colour
 -- alone — the binding fuel window — is asserted in a text render.
+--
+-- `--frame` prints the frame instead of the rows: its title, then its
+-- top-right overlay, which is where the hide button lives, then its
+-- bottom-right overlay, which is where the scroll position lives.
+--
+-- `--click <text>` clicks the run where `<text>` is drawn — on the frame's
+-- overlay or on a row — the way the kernel would: that run's identity becomes
+-- the hit handed to `on_click`. It prints `toggled <slot>` for every panel the
+-- click toggled, or `nothing toggled`, and then the render as usual.
+--
+-- `--pills` prints every action-band pill the pane declares, one per line, as
+-- `pill <action> <label> <priority>`.
+--
+-- `--chord <key>` is what the key registry answers for the toggle, so a rebind
+-- can be rendered. `--fuel-read <seconds>` is how long ago the fuel reading
+-- was taken; the default is two minutes, inside the pane's own TTL.
+--
+-- Scrolling, applied in this order before anything is printed:
+--   `--long <n>`    adds a topic of n running tasks, a queue longer than a pane
+--   `--height <h>`  the pane's outer height (default 200: everything fits)
+--   `--wheel <n>`   n wheel ticks, down when positive and up when negative,
+--                   with a render after each tick as the kernel does; may repeat
+--   `--action <a>`  runs a declared action, as its chord or the palette would
 
 local WIDTH = tonumber(arg[1] or "") or 44
-local MARKS, ACCENT = false, false
-for _, a in ipairs(arg) do
+local MARKS, ACCENT, FRAME, PILLS = false, false, false, false
+local CHORD, CLICK, FUEL_READ = "f3", nil, 120
+local LONG, HEIGHT, WHEEL, ACTION = 0, 200, {}, nil
+-- `--long-label` adds a third fuel window whose label is as long as the pane
+-- lets a label be, the shape a per-model window takes.
+local LONG_LABEL = false
+for i, a in ipairs(arg) do
+  if a == "--long-label" then
+    LONG_LABEL = true
+  elseif a == "--long" then
+    LONG = tonumber(arg[i + 1]) or 0
+  elseif a == "--height" then
+    HEIGHT = tonumber(arg[i + 1]) or HEIGHT
+  elseif a == "--wheel" then
+    WHEEL[#WHEEL + 1] = tonumber(arg[i + 1]) or 0
+  elseif a == "--action" then
+    ACTION = arg[i + 1]
+  end
   if a == "--marks" then
     MARKS = true
   elseif a == "--accent" then
     ACCENT = true
+  elseif a == "--frame" then
+    FRAME = true
+  elseif a == "--pills" then
+    PILLS = true
+  elseif a == "--chord" then
+    CHORD = arg[i + 1]
+  elseif a == "--click" then
+    CLICK = arg[i + 1]
+  elseif a == "--fuel-read" then
+    FUEL_READ = tonumber(arg[i + 1]) or FUEL_READ
   end
 end
 
@@ -196,9 +245,11 @@ local ui = {
     return setmetatable({ spans = {}, used = 0, width = opts.width, tone = opts.tone }, Row)
   end,
   chord = function()
-    return "f3"
+    return CHORD
   end,
 }
+
+local toggled = {}
 
 package.preload["lib.widgets"] = function()
   return widgets
@@ -210,7 +261,9 @@ package.preload["lib.ui"] = function()
   return ui
 end
 package.preload["lib.panels"] = function()
-  return { toggle = function() end, shown = function()
+  return { toggle = function(name)
+    toggled[#toggled + 1] = name
+  end, shown = function()
     return true
   end }
 end
@@ -320,6 +373,19 @@ local TOPICS = {
   },
 }
 
+-- A queue longer than the pane, for the scroll window: one topic of running
+-- work, so every row it adds is a row the operator would want to reach.
+if LONG > 0 then
+  local tasks = {}
+  for n = 1, LONG do
+    tasks[n] = {
+      id = ("%02d-long-task"):format(n), state = "dispatched",
+      title = ("Long task number %d"):format(n), brief = 1, moved = ago(n),
+    }
+  end
+  table.insert(TOPICS, 1, { slug = "long-queue", title = "A queue longer than the pane", tasks = tasks })
+end
+
 local out = { "R\t/home/operator/fleet/orchestration/queue" }
 for _, topic in ipairs(TOPICS) do
   out[#out + 1] = table.concat({ "T", topic.slug, topic.title }, "\t")
@@ -337,15 +403,21 @@ out[#out + 1] = "A\t7"
 -- Two windows on two clocks, and the LONGER one binds. That is the reading
 -- the block used to flip on: it drew only the binding window, so the row
 -- changed meaning whenever the two percentages crossed.
+--
+-- The binding window is also UNDER the reserve and the other is not, so the
+-- render has one row that must say `low` and one that must not.
 local FUEL = table.concat({
   "provider\tclaude",
   "remaining\t18",
-  "reserve\t15",
+  "reserve\t20",
   "limited_by\tseven_day",
-  "read_at\t" .. (NOW - 120),
+  "read_at\t" .. (NOW - FUEL_READ),
   "window\tfive_hour\t62\t" .. (NOW + 3 * 3600 + 600) .. "\tsession",
   "window\tseven_day\t18\t" .. (NOW + 4 * 86400 + 7200) .. "\tweek",
 }, "\n")
+if LONG_LABEL then
+  FUEL = FUEL .. "\nwindow\tmodel_week\t40\t" .. (NOW + 2 * 86400) .. "\tModel week"
+end
 
 local LEAD = { id = "s1", name = "⌖ Mission Control", cwd = "/home/operator/fleet", status = "ok" }
 _G.thurbox.sessions = { LEAD }
@@ -408,7 +480,110 @@ end
 
 -- `render` is handed the pane's OUTER width; the pane spends two columns on
 -- its border, so this asks for the border too and reports the inner rows.
-local tree = pane.render({ width = WIDTH + 2, height = 200, elapsed = 0 })
+local ctx = { width = WIDTH + 2, height = HEIGHT, elapsed = 0 }
+local tree = pane.render(ctx)
+for _, ticks in ipairs(WHEEL) do
+  for _ = 1, math.abs(ticks) do
+    pane.on_scroll({ up = ticks < 0, x = 1, y = 1 })
+    tree = pane.render(ctx)
+  end
+end
+if ACTION then
+  pane.on_action(ACTION)
+  tree = pane.render(ctx)
+end
+
+if PILLS then
+  for _, pill in ipairs(pane.pills or {}) do
+    print(("pill %s %s %s"):format(pill.action, pill.label, tostring(pill.priority)))
+  end
+  return
+end
+
+--- A frame slot's runs, which may be one span or a list of them.
+local function runs_of(text)
+  if type(text) ~= "table" then
+    return {}
+  end
+  if type(text.text) == "string" then
+    return { text }
+  end
+  return text
+end
+
+--- Every run the tree paints, overlay slots first, then each row's spans.
+local function runs_in(node, sink)
+  if node.type == "box" then
+    for _, child in ipairs(node.children or {}) do
+      runs_in(child, sink)
+    end
+    return sink
+  end
+  local rows = node.text
+  if rows[1] and type(rows[1].text) == "string" then
+    rows = { rows }
+  end
+  for _, spans in ipairs(rows) do
+    for _, span in ipairs(spans) do
+      sink[#sink + 1] = span
+    end
+  end
+  return sink
+end
+
+local function slot_text(runs)
+  local text = ""
+  for _, run in ipairs(runs) do
+    text = text .. run.text
+  end
+  return text
+end
+
+if CLICK then
+  -- The run whose text holds what was clicked is the hit — exactly the
+  -- identity the kernel records for a run that names one. A run with neither
+  -- an `id` nor a `role` records none, so the click lands on the nearest
+  -- target under it, which for a row is the pane's own root identity.
+  local overlay = (tree.frame or {}).overlay or {}
+  local runs = {}
+  for _, slot in ipairs({ "top_left", "top_right", "bottom_left", "bottom_right" }) do
+    for _, run in ipairs(runs_of(overlay[slot])) do
+      runs[#runs + 1] = run
+    end
+  end
+  runs_in(tree, runs)
+  for _, run in ipairs(runs) do
+    if run.text:find(CLICK, 1, true) then
+      local id, role = run.id, run.role
+      if not (id or role) then
+        id, role = tree.id, tree.role
+      end
+      if (id or role) and pane.on_click then
+        pane.on_click({ id = id, role = role, class = "", x = 0, y = 0,
+          w = width_of(run.text), h = 1, dragging = false })
+        tree = pane.render(ctx)
+      end
+      break
+    end
+  end
+  if #toggled == 0 then
+    print("nothing toggled")
+  end
+  for _, name in ipairs(toggled) do
+    print("toggled " .. name)
+  end
+end
+
+if FRAME then
+  local frame = tree.frame or {}
+  local overlay = frame.overlay or {}
+  print("title: " .. slot_text(runs_of(frame.title)))
+  print("top_right: " .. slot_text(runs_of(overlay.top_right)))
+  print("bottom_right: " .. slot_text(runs_of(overlay.bottom_right)))
+  print("root: " .. tostring(tree.id or tree.role or ""))
+  return
+end
+
 for _, row in ipairs(lines_of(tree, {})) do
   local text = (row.text:gsub("%s+$", ""))
   if MARKS then

@@ -34,6 +34,10 @@
 #      FIRST thing the width ladder dropped, so it reached neither width this
 #      file renders while `attested` — one word under every task in the
 #      queue — reached both. These assert the order that fixes it.
+#   8. EVERY FUEL LABEL SAYS WHAT IT IS. No threshold posing as a reading, no
+#      bare age, and a window under the reserve says `low` in words.
+#   9. THE HIDE HINT IS A BUTTON. A click on it hides the column, and a pill in
+#      the action band is the clickable way back.
 #
 # And the rule none of that may cost: it still degrades. The pane routinely
 # gets thirty columns, so every assertion here runs at 30 as well as at 44.
@@ -248,6 +252,165 @@ expect "each window says when it comes back" "3h" "$(grep -- " session " <<<"$WI
 expect "on its own clock" "4d" "$(grep -- " week " <<<"$WIDE")"
 expect "the binding window is marked with a theme role" "A " "$(grep -- " week " <<<"$ACCENT")"
 refute "and the other is not" "A " "$(grep -- " session " <<<"$ACCENT")"
+
+# --- 8. every fuel label says what it is ------------------------------------
+
+# The head row read `⛽ fuel  reserve 20%  1m`. `reserve 20%` is fleet's own
+# dispatch floor — a constant, not a reading — and read as "20% fuel left";
+# `1m` was the age of the cached reading with nothing saying so. A label a new
+# reader has to look up in the source is a label that misleads.
+echo "pane: fuel labels"
+
+for width in 44 30; do
+	out="$WIDE"
+	[ "$width" = 30 ] && out="$NARROW"
+	head_row="$(grep -m1 -- "fuel" <<<"$out")"
+	refute "the fuel head row does not show the reserve at $width" "reserve" "$head_row"
+	expect "and says the numbers are what is left at $width" "fuel left" "$head_row"
+	# A reading inside the probe's own TTL is the ordinary case, so its age is
+	# not news and costs no columns.
+	refute "a fresh reading carries no age at $width" "ago" "$head_row"
+	expect "a window under the reserve says so at $width" "low" "$(grep -- " week " <<<"$out")"
+	refute "and a window above it does not at $width" "low" "$(grep -- " session " <<<"$out")"
+	expect "a reset says it is a reset at $width" "resets 4d" "$(grep -- " week " <<<"$out")"
+done
+
+# The `low` column costs four cells, and at 30 a label as long as the pane
+# allows used to push every reset out of the block — so the one account with a
+# window under the reserve was the one that could not see when it comes back.
+# The label gives way first.
+LABEL_NARROW="$(render 30 --long-label)"
+expect "a long label does not cost the reset at 30" "resets 4d" "$(grep -- " week " <<<"$LABEL_NARROW")"
+expect "and the long window keeps its own" "resets 2d" "$(grep -- "40%" <<<"$LABEL_NARROW")"
+widest="$(wc -L <<<"$LABEL_NARROW")"
+if [ "$widest" -le 30 ]; then
+	pass "and nothing overflows 30 with it (widest row: $widest)"
+else
+	fail "a row is $widest columns wide with a long label" "$LABEL_NARROW"
+fi
+
+# A reading older than the TTL means the refresh is not happening, and then
+# its age is the most important thing on the row — said in words.
+STALE_READ="$(render 44 --fuel-read 900)"
+expect "an overdue reading says how old it is" "read 15m ago" "$(grep -m1 -- "fuel" <<<"$STALE_READ")"
+STALE_NARROW="$(render 30 --fuel-read 900)"
+expect "and still says it at 30" "read 15m ago" "$(grep -m1 -- "fuel" <<<"$STALE_NARROW")"
+
+# --- 9. the hide hint is a button, and the pane has a way back --------------
+
+# The pane cannot hold focus, so the only ways to reach it were a chord. The
+# hint that names the chord is also a click target now, and — since a closed
+# column draws nothing to click — the action band carries a pill that opens it.
+echo "pane: the hide button and the pill"
+
+expect "the hide button names the chord" "F3" "$(render 44 --frame | grep '^top_right:')"
+expect "and a rebind moves it" "F5" "$(render 44 --frame --chord f5 | grep '^top_right:')"
+refute "and it is not spelled a second time in the title" "F3" "$(render 44 --frame | grep '^title:')"
+expect "clicking the hint hides the column" "toggled fleetqueue" "$(render 44 --click F3)"
+expect "and it still works at 30" "toggled fleetqueue" "$(render 30 --click F3)"
+expect "the pane declares an action-band pill for its toggle" \
+	"pill fleetqueue.toggle Fleet" "$(render 44 --pills)"
+
+# --- 10. a queue longer than the pane scrolls, and says where it is ---------
+
+# Forty running tasks in a pane twenty-four rows tall. The head rows — fuel and
+# the counters — stay put above the window; the window moves under the wheel,
+# the clickable marks and the palette's page actions, and the frame's bottom
+# border says which rows are on screen out of how many.
+echo "pane: a queue longer than the pane"
+
+# The position on the bottom border, as `<first> <last> <total>`.
+position() { sed -n 's/^bottom_right: *\([0-9]*\)-\([0-9]*\) of \([0-9]*\) *$/\1 \2 \3/p' <<<"$1"; }
+
+long() { render 44 --long 40 --height 24 "$@"; }
+
+# A row with no link of its own lands on the pane's root identity, which is
+# there for the wheel — so a click on it must hide nothing and move nothing.
+body_click="$(long --frame --click "Long task number 3")"
+expect "clicking a task row hides nothing" "nothing toggled" "$body_click"
+expect "and moves nothing" "bottom_right:  1-" "$body_click"
+
+# THE WHEEL NEVER REACHED MOST OF THIS PANE. The kernel offers a tick to the
+# pane whose click target is under the pointer, and records a pane's own rect
+# as a target only for a FOCUSABLE pane — which this one is not. So the tick
+# landed only over the rows that carried a link. A root node with an identity
+# is a target over its whole rect, which is the one thing a text render can
+# check about a rule that lives in the kernel.
+root="$(long --frame | sed -n 's/^root: //p')"
+if [ -n "$root" ]; then
+	pass "the pane's root carries an identity, so the wheel has a target over all of it ($root)"
+else
+	fail "the pane's root carries no identity, so the kernel records no wheel target over it" "$(long --frame)"
+fi
+
+read -r first last total <<<"$(position "$(long --frame)")"
+if [ "${first:-}" = 1 ] && [ -n "${last:-}" ] && [ "${total:-0}" -gt "$last" ]; then
+	pass "a list that does not fit says which rows are on screen ($first-$last of $total)"
+else
+	fail "a list that does not fit says which rows are on screen" "$(long --frame)"
+fi
+expect "and marks that more is below" "↓" "$(long)"
+refute "and nothing above, at the top" "↑" "$(long)"
+refute "a list that fits says no position" "of" "$(render 44 --frame | grep '^bottom_right:')"
+
+read -r wfirst wlast _ <<<"$(position "$(long --frame --wheel 2)")"
+if [ "${wfirst:-0}" -gt 1 ] && [ "${wlast:-0}" -gt "${last:-0}" ]; then
+	pass "the wheel moves the window, and the position follows ($wfirst-$wlast)"
+else
+	fail "the wheel moves the window, and the position follows" "$(long --frame --wheel 2)"
+fi
+expect "and a mark says what is above" "↑" "$(long --wheel 2)"
+
+read -r bfirst blast btotal <<<"$(position "$(long --frame --wheel 999)")"
+if [ -n "${blast:-}" ] && [ "$blast" = "$btotal" ]; then
+	pass "it clamps at the bottom ($bfirst-$blast of $btotal)"
+else
+	fail "it clamps at the bottom" "$(long --frame --wheel 999)"
+fi
+refute "and says nothing is below there" "↓" "$(long --wheel 999)"
+read -r ufirst ulast _ <<<"$(position "$(long --frame --wheel 999 --wheel -1)")"
+if [ -n "${ulast:-}" ] && [ "$ulast" -lt "$btotal" ]; then
+	pass "one tick up from the bottom moves at once, not after winding back ($ufirst-$ulast)"
+else
+	fail "one tick up from the bottom moves at once" "$(long --frame --wheel 999 --wheel -1)"
+fi
+read -r tfirst _ _ <<<"$(position "$(long --frame --wheel 3 --wheel -999)")"
+if [ "${tfirst:-}" = 1 ]; then
+	pass "it clamps at the top"
+else
+	fail "it clamps at the top" "$(long --frame --wheel 3 --wheel -999)"
+fi
+
+head_rows="$(long --wheel 999 | head -2)"
+expect "the fuel block stays above the window when scrolled" "fuel left" "$head_rows"
+expect "and so do the counters" "running" "$(long --wheel 999 | sed -n '1,/^─/!p' | head -2)"
+
+read -r cfirst _ _ <<<"$(position "$(long --frame --click below)")"
+if [ "${cfirst:-0}" -gt 1 ]; then
+	pass "clicking the mark below pages down ($cfirst)"
+else
+	fail "clicking the mark below pages down" "$(long --frame --click below)"
+fi
+read -r cufirst _ _ <<<"$(position "$(long --frame --wheel 999 --click above)")"
+if [ -n "${cufirst:-}" ] && [ "$cufirst" -lt "${bfirst:-0}" ]; then
+	pass "clicking the mark above pages up ($cufirst)"
+else
+	fail "clicking the mark above pages up" "$(long --frame --wheel 999 --click above)"
+fi
+read -r pfirst _ _ <<<"$(position "$(long --frame --action fleetqueue.page_down)")"
+read -r pufirst _ _ <<<"$(position "$(long --frame --wheel 999 --action fleetqueue.page_up)")"
+if [ "${pfirst:-0}" -gt 1 ] && [ -n "${pufirst:-}" ] && [ "$pufirst" -lt "${bfirst:-0}" ]; then
+	pass "the palette's page actions move it without the wheel"
+else
+	fail "the palette's page actions move it without the wheel" \
+		"down: $(long --frame --action fleetqueue.page_down)${nl}up: $(long --frame --wheel 999 --action fleetqueue.page_up)"
+fi
+widest="$(long --wheel 5 | wc -L)"
+if [ "$widest" -le 44 ]; then
+	pass "a scrolled render still fits its column"
+else
+	fail "a scrolled render is $widest columns wide" "$(long --wheel 5)"
+fi
 
 # --- 6. the lead it probes is this machine's --------------------------------
 
