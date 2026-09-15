@@ -204,26 +204,16 @@ def test_a_fresh_machine_gets_uv_a_clone_and_a_whole_fleet_install(box, driver, 
     assert (box.clone / ".claude" / "skills" / "fleet-queue" / "SKILL.md").is_file()
 
 
-@pytest.mark.skipif(POWERSHELL is None, reason="no PowerShell on this machine")
-def test_the_readmes_windows_one_liner_irm_piped_to_iex_installs(stubs, origin, tmp_path, isolated_env,
-                                                                  served_install_ps1):
+@pytest.mark.parametrize("driver", [DRIVERS[1]], indirect=True)
+def test_the_readmes_windows_one_liner_irm_piped_to_iex_installs(box, driver, stubs, served_install_ps1):
     """`powershell -c "irm <url> | iex"` is the command the README gives, and the
     one the tests used to stand in for with `Get-Content -Raw`, which evaluates
     the same text by another path and hid that the real one did not run."""
-    driver = PowerShell()
-    tools = full_machine("windows") | {"uv": uv_standin()}
-    machine(stubs, tools)
-    env = dict(os.environ)
-    env.update(PATH=os.pathsep.join([str(stubs.bin), driver.base(tmp_path / "base")]),
-               FLEET_REPO=str(origin), FLEET_INSTALL_FAMILY="windows", FLEET_YES="1",
-               FLEET_TEST_UV_INSTALLER=str(driver.uv_installer(tmp_path)))
-    env.pop("FLEET_DIR", None)
-    done = driver.run(env, url=served_install_ps1)
-    out = plain(done.stdout) + plain(done.stderr)
+    done = box(FLEET_YES="1", url=served_install_ps1)
     for broken in ("Invoke-Expression :", "Missing closing", "empty string"):
-        assert broken not in out, f"iex was not handed the script whole:\n{out}"
-    assert done.code == 0, out
-    assert (isolated_env / "home" / "fleet" / "extension.toml.in").is_file(), out
+        refute(done.out, broken)
+    assert done.code == 0, done.out
+    assert (box.clone / "extension.toml.in").is_file(), done.out
 
 
 def test_a_uv_installer_that_installs_nothing_stops_the_bootstrap_before_the_clone(box, driver, stubs, tmp_path):
