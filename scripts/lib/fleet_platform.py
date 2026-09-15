@@ -14,6 +14,7 @@ from __future__ import annotations
 import contextlib
 import os
 import subprocess
+import sys
 import time
 
 WINDOWS = os.name == "nt"
@@ -195,3 +196,38 @@ def _windows_alive(pid: int) -> bool:
         return k32.WaitForSingleObject(wintypes.HANDLE(handle), 0) == wait_timeout
     finally:
         k32.CloseHandle(wintypes.HANDLE(handle))
+
+
+# --- `fleet paths` --------------------------------------------------------------
+
+
+def checkout_dir() -> str:
+    """The fleet checkout this module belongs to."""
+    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def paths() -> dict[str, str]:
+    """Every path a skill, a hook or a message names, as this machine spells it."""
+    return {
+        "checkout": checkout_dir(),
+        "thurbox-config": thurbox_config_dir(),
+        "thurbox-hooks": os.path.join(thurbox_config_dir(), "hooks", "claude.json"),
+        "fleet-data": fleet_data_dir(),
+    }
+
+
+def main(argv: list[str]) -> int:
+    """`fleet paths [name]`: every path as `name<TAB>path`, or one name's path alone."""
+    known = paths()
+    if not argv:
+        for name, path in known.items():
+            print(f"{name}\t{path}")
+        return 0
+    if argv[0] in ("-h", "--help"):
+        print("usage: fleet paths [" + "|".join(known) + "]")
+        return 0
+    if len(argv) == 1 and argv[0] in known:
+        print(known[argv[0]])
+        return 0
+    print(f"fleet paths: no path named {' '.join(argv)!r} (have: {', '.join(known)})", file=sys.stderr)
+    return 2
