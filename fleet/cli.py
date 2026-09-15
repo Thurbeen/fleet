@@ -23,11 +23,25 @@ LIB = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 
 GROUPS = {
     "queue": ("queue.py", "the task queue: topics, tasks, dispatch and completion"),
     "status": ("fleet_status.py", "one reading of the whole fleet"),
-    "check": ("check.py", "the gate checks that also run on Windows"),
+    "reconcile": ("reconcile.py", "the supervised loop that keeps the queue moving"),
+    "check": ("check.py", "the gate: every check, or the named ones"),
+    "install": ("install.py", "set this checkout up: dependencies, skills link, extension"),
+    "preflight": ("preflight.py", "every dependency fleet needs, and how to install it"),
+    "discover-owners": ("discover_owners.py", "the GitHub owners this machine can reach"),
+    "add-owner": ("add_owner.py", "add owners the current gh accounts reach to the map"),
+    "sync-registry": ("sync_registry.py", "rebuild the generated repo map"),
+    "sync-checkout": ("sync_checkout.py", "fast-forward this checkout from origin"),
+    "install-extension": ("install_extension.py", "render and install the thurbox extension and pane"),
+    "place-pane": ("place_pane.py", "place the queue pane in layout.lua"),
+    "pane-ask": ("pane_ask.py", "ask once whether to place the queue pane"),
+    "voice-ask": ("voice_ask.py", "ask once for the names the lead uses"),
+    "trust-thurbox-dir": ("trust_thurbox_dir.py", "trust a directory for thurbox's agent"),
+    "session-flags": ("session_profiles.py", "render a session profile into session create flags"),
+    "session-trust": ("session_trust.py", "answer a new session's trust dialog"),
 }
 
 USAGE = "usage: fleet <group> [args...]\n\ngroups:\n" + "".join(
-    f"  {name:<8}{about}\n" for name, (_, about) in GROUPS.items()
+    f"  {name:<19}{about}\n" for name, (_, about) in GROUPS.items()
 )
 
 
