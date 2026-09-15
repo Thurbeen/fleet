@@ -1,0 +1,21 @@
+gitlab.com
+  x gitlab.com: API call failed: GET https://gitlab.com/api/v4/user: 401 {message: 401 Unauthorized}
+  ✓ Git operations for gitlab.com configured to use ssh protocol.
+  ✓ API calls for gitlab.com are made over https protocol.
+  ✓ REST API Endpoint: https://gitlab.com/api/v4/
+  ✓ GraphQL Endpoint: https://gitlab.com/api/graphql/
+  ! No token found (checked config file, keyring, and environment variables).
+gitlab.example.com
+  ✓ Logged in to gitlab.example.com as some-account (/home/user/.config/glab-cli/config.yml)
+  ✓ Git operations for gitlab.example.com configured to use ssh protocol.
+  ✓ API calls for gitlab.example.com are made over https protocol.
+  ✓ REST API Endpoint: https://gitlab.example.com/api/v4/
+  ✓ GraphQL Endpoint: https://gitlab.example.com/api/graphql/
+  ✓ Token found in configuration file (plaintext): **************************
+  ! To store this token more securely, run glab auth login --hostname gitlab.example.com to move it into the operating system keyring.
+          
+   ERROR  
+          
+                                                                                                                      
+  X could not authenticate to one or more of the configured GitLab instances.                                         
+
