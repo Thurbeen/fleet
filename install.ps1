@@ -142,13 +142,17 @@ function Get-FleetLeadCheckout {
     if (-not (Test-FleetCommand 'thurbox-cli')) { return $null }
     # thurbox-cli writes UTF-8, and Windows PowerShell 5.1 decodes a native
     # command's output in the console's code page: a non-ASCII path would not
-    # match, and a second checkout would be cloned.
+    # match, and a second checkout would be cloned. Only for this one read:
+    # this runs in the operator's own window.
+    $previous = [Console]::OutputEncoding
     try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch { }
     try {
         $json = (& thurbox-cli session list --json 2>$null) -join "`n"
         $sessions = $json | ConvertFrom-Json -ErrorAction Stop
     } catch {
         return $null
+    } finally {
+        try { [Console]::OutputEncoding = $previous } catch { }
     }
     foreach ($session in $sessions) {
         if ("$($session.name)" -like '* Mission Control' -and $session.cwd -and

@@ -375,6 +375,31 @@ else:
     assert not box.clone.exists(), f"a second clone was made:\n{done.out}"
 
 
+@pytest.mark.skipif(POWERSHELL is None, reason="no PowerShell on this machine")
+def test_the_bootstrap_leaves_the_operators_console_encoding_as_it_found_it(box, stubs, origin, tmp_path):
+    """`irm | iex` runs in the operator's own window: reading thurbox-cli as
+    UTF-8 must not leave every later native command in that window decoded so."""
+    elsewhere = tmp_path / "elsewhere" / "fleet"
+    assert box(FLEET_YES="1", FLEET_DIR=str(elsewhere)).code == 0
+    place(stubs, "thurbox-cli", f"""
+import sys
+if sys.argv[1:3] == ["session", "list"]:
+    print("[]")
+else:
+    print("thurbox-cli {FLOOR}")
+""")
+    env = dict(os.environ, PATH=box.path, FLEET_REPO=str(origin), FLEET_INSTALL_FAMILY="windows", FLEET_YES="1",
+               FLEET_DIR=str(elsewhere))
+    script = REPO / "install.ps1"
+    probe = ("[Console]::OutputEncoding = [Text.Encoding]::GetEncoding(437); "
+             f"Get-Content -Raw -LiteralPath '{script}' | Invoke-Expression; "
+             "'encoding after: ' + [Console]::OutputEncoding.CodePage")
+    done = subprocess.run([POWERSHELL, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", probe],
+                          input=b"", env=env, capture_output=True)
+    out = done.stdout.decode("utf-8", "replace")
+    assert "encoding after: 437" in out, out[-2000:]
+
+
 # --- 1i. a missing required dependency stops before the extension ---------------------------
 
 
