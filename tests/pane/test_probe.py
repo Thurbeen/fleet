@@ -47,6 +47,9 @@ def test_every_live_task_is_one_record_and_an_archived_topic_only_a_count(tmp_pa
     done = ok(q("topic", "add", "old", "--title", "Finished long ago", "--prompt", "p")).stdout.strip()
     with open(root / done / "topic.yaml", "a", encoding="utf-8") as fh:
         fh.write("archived: '2026-09-01T00:00:00+00:00'\n")
+    # Not read, not merely not shown: an archived topic's task files are never
+    # opened, so one that cannot be parsed changes nothing.
+    write(root / done / "01-unreadable" / "task.yaml", "a: b: c\n")
 
     records = probe()
     assert records[0] == ["R", str(root)]
