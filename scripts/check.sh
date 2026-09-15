@@ -12,8 +12,8 @@
 #   scripts/check.sh shell yaml          # only the named ones
 #   scripts/check.sh --fix markdown      # apply the fixes a check can apply
 #
-# Checks: shell, markdown, yaml, profiles, queue, cli, reconcile, status, skills,
-# pane, voice, automerge, onboarding, install, sync, isolation. Only `markdown`
+# Checks: shell, markdown, docs, yaml, profiles, queue, cli, reconcile, status,
+# skills, pane, voice, automerge, onboarding, install, sync, isolation. Only `markdown`
 # has a fixer; `--fix` is a no-op for the rest, so `scripts/check.sh --fix` is
 # always safe to run.
 #
@@ -93,6 +93,21 @@ check_markdown() {
 		ok "markdown: rumdl clean (${#files[@]} tracked files)"
 	else
 		fail "markdown: rumdl"
+	fi
+}
+
+# The README's links and the diagram it opens with. rumdl lints the prose and
+# never where it points, and both failures here are silent on GitHub: a moved
+# file is a link that 404s, and an SVG that does not parse is a broken-image
+# icon. scripts/lib/check_docs.py's header names every rule.
+check_docs() {
+	need python3 docs || return
+	need git docs || return
+
+	if python3 scripts/lib/check_docs.py README.md; then
+		ok "docs: README's relative links resolve to tracked files; its SVG diagram parses, is real text, loads nothing and has a dark palette"
+	else
+		fail "docs: scripts/lib/check_docs.py README.md"
 	fi
 }
 
@@ -783,13 +798,14 @@ for arg in "$@"; do
 done
 
 if [ ${#checks[@]} -eq 0 ]; then
-	checks=(shell markdown yaml profiles queue cli reconcile status skills pane voice automerge onboarding install sync isolation)
+	checks=(shell markdown docs yaml profiles queue cli reconcile status skills pane voice automerge onboarding install sync isolation)
 fi
 
 for c in "${checks[@]}"; do
 	case "$c" in
 	shell) check_shell ;;
 	markdown) check_markdown ;;
+	docs) check_docs ;;
 	yaml) check_yaml ;;
 	profiles) check_profiles ;;
 	queue) check_queue ;;
@@ -805,7 +821,7 @@ for c in "${checks[@]}"; do
 	install) check_install ;;
 	isolation) check_isolation ;;
 	*)
-		printf 'error: unknown check %q (want: shell markdown yaml profiles queue cli reconcile status skills pane voice automerge onboarding install sync isolation)\n' "$c" >&2
+		printf 'error: unknown check %q (want: shell markdown docs yaml profiles queue cli reconcile status skills pane voice automerge onboarding install sync isolation)\n' "$c" >&2
 		exit 2
 		;;
 	esac

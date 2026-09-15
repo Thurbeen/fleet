@@ -26,6 +26,13 @@ repos:
         files: '\.md$'
         pass_filenames: false
 
+      - id: docs
+        name: README links and diagram
+        entry: ./scripts/check.sh docs
+        language: system
+        files: '^(README\.md|docs/.*|scripts/lib/check_docs\.py)$'
+        pass_filenames: false
+
       - id: yaml
         name: YAML parses
         entry: ./scripts/check.sh yaml
