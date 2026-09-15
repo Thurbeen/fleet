@@ -1,25 +1,35 @@
 #!/usr/bin/env python3
-"""The gate checks that already run natively on Windows, in Python.
+"""The control plane's whole gate, in one place, the same on Linux and Windows.
 
-    fleet check --platform-ported [--fix]   every check below
-    fleet check [--fix] <check>...          only the named ones
+    uv run fleet check                   every check
+    uv run fleet check yaml queue        only the named ones
+    uv run fleet check --fix markdown    apply the fixes a check can apply
+    uv run fleet check --list            every check: name, kind, what it runs
 
-Checks: markdown, yaml, profiles, queue, cli, pane, workflow. Only `markdown`
-has a fixer.
+CI runs it on a Linux and a Windows runner, the prek hooks run it, and
+`.publish.yaml` declares it as the gate the `publish` skill runs. One
+definition means a green local run and a green CI run mean the same thing —
+the failure this repo is most exposed to, because CI only fires on pull
+requests while routine control-plane changes go straight to `main`.
 
-`scripts/check.sh` is still the whole gate on Linux, and every check here is
-one of its checks (or, for `queue`, the read half of one) rather than a second
-definition of it: each calls the same Python module or Lua harness that
-check.sh does. The Windows CI job runs this, so the set is exactly the checks
-that pass on `windows-latest`. A task that ports another check adds it here in
-the same pull request; the last one retires `--platform-ported`, and then
-`fleet check` is the gate on both.
+TWO KINDS OF CHECK. A STATIC check reads tracked files: the lock, ruff, rumdl,
+the YAML, the workflow's promises and the session profiles. A TESTS check is a
+pytest area under `tests/`, each driving fleet's real entry points against
+stub tools. A full run does every static check and then ONE pytest run over
+every area, so the stub tools install once. `markdown` and `lint` have fixers;
+`--fix` is a no-op for the rest, so it is always safe to pass.
 
-LIKE check.sh, IT READS NO OPERATOR STATE. `queue` builds its own throwaway
-queue under a throwaway HOME, with the tracked `*.example.conf` as the only
-settings — the same pins `scripts/lib/selftest-env.sh` gives every selftest —
-and every other check reads tracked files only. A missing tool fails its check
-rather than skipping it.
+IT READS NO OPERATOR STATE. One commit gets one verdict — on CI, in a worker's
+worktree and in the control-plane checkout — so no check reads what a running
+fleet wrote: the queue's records, the registry map, the gitignored
+`orchestration/*.conf`, the reconciler's runtime, or the caller's HOME and git
+config. Static checks read tracked files; every test runs inside
+`tests/conftest.py`'s `isolated_env`; `isolation` proves both in a poisoned
+checkout under a hostile host. The operator's live records are validated by
+`uv run fleet status --records` instead.
+
+A MISSING TOOL FAILS ITS CHECK rather than skipping it: a gate that passes
+because its linter is absent passes on the machine that has the least.
 """
 
 from __future__ import annotations
@@ -27,184 +37,170 @@ from __future__ import annotations
 import glob
 import os
 import shutil
-import site
 import subprocess
 import sys
-import tempfile
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-PORTED = ["markdown", "yaml", "profiles", "queue", "cli", "pane", "workflow"]
+
+# name -> (targets, tools the area needs on PATH, what it holds). Targets are
+# globs under the checkout; `--list` prints what they expand to, and
+# tests/test_check.py fails an area that expands to nothing.
+TESTS = {
+    "cli": (["tests/test_*.py"], ["uv"], "the fleet command, the harness, the platform seam and the gate itself"),
+    "queue": (["tests/queue"], ["uv", "git"], "ordering, wake, collect, shepherd, hosts, refuel, forges, dispatch"),
+    "reconcile": (["tests/reconcile"], ["uv"], "the loop: adoption, a durable stop, its clocks, one writer"),
+    "status": (["tests/status"], ["uv", "git"], "fleet status degrades a section at a time and writes nothing"),
+    "sync": (["tests/sync"], ["uv", "git"], "sync-checkout, sync-registry and add-owner"),
+    "onboarding": (["tests/onboarding"], ["uv"], "preflight and discover-owners"),
+    "pane": (["tests/pane"], ["uv", "lua"], "the queue pane renders, agrees with its docs, and is placed on request"),
+    "extension": (["tests/extension"], ["uv"], "the manifest, the rendered payload and the first-run asks"),
+    "install": (["tests/install"], ["uv", "git"], "the one-command install, converging and idempotent"),
+    "skills": (["tests/skills"], [], "one skills tree, and every skill has a SKILL.md"),
+    "automerge": (["tests/settings"], [], "no tracked setting names a repository, a tool or an agent"),
+    "isolation": (["tests/isolation"], ["uv", "git"], "a poisoned checkout under a hostile host gets the same verdict"),
+}
 
 
 def tracked(*patterns: str) -> list[str]:
-    out = subprocess.run(
-        ["git", "ls-files", "-z", "--", *patterns], cwd=REPO, capture_output=True, check=True
-    ).stdout
-    return [f for f in out.decode().split("\0") if f]
+    out = subprocess.run(["git", "ls-files", "-z", "--", *patterns], cwd=REPO, capture_output=True, check=True).stdout
+    return [f for f in out.decode("utf-8").split("\0") if f]
 
 
-def run(argv: list[str], **kw) -> subprocess.CompletedProcess:
-    return subprocess.run(argv, cwd=REPO, **kw)
+def run(argv: list[str]) -> int:
+    return subprocess.run(argv, cwd=REPO).returncode
 
 
-def missing(tool: str) -> str | None:
-    return None if shutil.which(tool) else f"{tool} not found"
+def missing(*tools: str) -> str | None:
+    gone = [t for t in tools if not shutil.which(t)]
+    return f"{', '.join(gone)} not found" if gone else None
+
+
+def expand(targets: list[str]) -> list[str]:
+    return sorted({os.path.relpath(p, REPO).replace(os.sep, "/") for t in targets for p in glob.glob(os.path.join(REPO, t))})
+
+
+# --- static checks ------------------------------------------------------------
+
+
+def check_lock(fix: bool) -> str | None:
+    # First, because every `uv run --frozen` trusts uv.lock without noticing
+    # one that no longer matches pyproject.toml.
+    if err := missing("uv"):
+        return err
+    return "uv.lock does not match pyproject.toml — run `uv lock`" if run(["uv", "lock", "--check"]) else None
+
+
+def check_lint(fix: bool) -> str | None:
+    # The rules live in pyproject.toml, so no user-level ruff config decides.
+    if err := missing("ruff"):
+        return err
+    return "ruff" if run(["ruff", "check", *(["--fix"] if fix else []), "fleet", "scripts", "tests"]) else None
 
 
 def check_markdown(fix: bool) -> str | None:
-    # An explicit file list, not a directory walk, for check.sh's reason: rumdl
-    # walks nothing inside a linked git worktree, where every worker runs.
-    if err := missing("rumdl"):
+    # An explicit file list, not a directory walk: rumdl walks nothing inside a
+    # LINKED git worktree, where `.git` is a file, and every worker runs in one.
+    if err := missing("rumdl") or missing("git"):
         return err
     files = tracked("*.md")
     if not files:
         return "no tracked *.md files found"
-    if run(["rumdl", "check", *(["--fix"] if fix else []), *files]).returncode:
+    if run(["rumdl", "check", *(["--fix"] if fix else []), *files]):
         return "rumdl"
     print(f"      rumdl clean ({len(files)} tracked files)")
     return None
 
 
 def check_yaml(fix: bool) -> str | None:
+    if err := missing("git"):
+        return err
     files = tracked("*.yml", "*.yaml")
     if not files:
         return "no tracked *.yml/*.yaml files found"
-    if run([sys.executable, "scripts/lib/check_yaml.py", *files]).returncode:
+    if run([sys.executable, "scripts/lib/check_yaml.py", *files]):
         return "scripts/lib/check_yaml.py"
     print(f"      {len(files)} tracked files parse")
     return None
 
 
-def check_profiles(fix: bool) -> str | None:
-    argv = [sys.executable, "scripts/lib/session_profiles.py", "orchestration/session-profiles.yaml", "--check"]
-    return "scripts/lib/session_profiles.py --check" if run(argv).returncode else None
-
-
-def isolated_env(tmp: str) -> dict[str, str]:
-    """selftest-env.sh's pins, for a Python caller on either OS."""
-    env = dict(os.environ)
-    # Kept, as selftest-env.sh keeps it: a `pip --user` PyYAML lives under the
-    # real HOME this replaces.
-    env.setdefault("PYTHONUSERBASE", site.getuserbase())
-    home = os.path.join(tmp, "home")
-    for var, sub in [
-        ("HOME", ""), ("USERPROFILE", ""), ("APPDATA", "AppData/Roaming"),
-        ("LOCALAPPDATA", "AppData/Local"), ("XDG_CONFIG_HOME", ".config"),
-        ("XDG_CACHE_HOME", ".cache"), ("XDG_DATA_HOME", ".local/share"), ("XDG_STATE_HOME", ".local/state"),
-    ]:
-        env[var] = os.path.join(home, sub) if sub else home
-        os.makedirs(env[var], exist_ok=True)
-    for var in [k for k in env if k.startswith("GIT_") or k.startswith("GIT_CONFIG_")]:
-        del env[var]
-    for var in ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GH_HOST",
-                "GH_CONFIG_DIR", "GITLAB_TOKEN", "GITLAB_HOST", "GLAB_CONFIG_DIR", "THURBOX_SESSION"]:
-        env.pop(var, None)
-    env["GIT_CONFIG_NOSYSTEM"] = "1"
-    # A Python child on Windows writes its pipe in the console code page (cp1252
-    # on the runner), so queue.py's em dash arrives as a byte UTF-8 cannot read.
-    env["PYTHONIOENCODING"] = "utf-8"
-
-    settings = os.path.join(tmp, "settings")
-    os.makedirs(os.path.join(settings, "orchestration"))
-    for conf in glob.glob(os.path.join(REPO, "orchestration", "*.example.conf")):
-        shutil.copy(conf, os.path.join(settings, "orchestration"))
-    for var in ["FLEET_AUTO_MERGE_ROOT", "FLEET_PUBLISH_ROOT", "FLEET_AGENT_ROOT", "FLEET_GLYPH_ROOT"]:
-        env[var] = settings
-    env["FLEET_VOICE_CONF"] = os.path.join(settings, "orchestration", "voice.example.conf")
-    for var, sub in [("FLEET_QUEUE_DIR", "queue"), ("FLEET_RUNS_DIR", "runs"), ("FLEET_RECONCILE_DIR", "reconcile")]:
-        env[var] = os.path.join(tmp, sub)
-        os.makedirs(env[var])
-    env["FLEET_REGISTRY_FILE"] = os.path.join(tmp, "registry", "repos.generated.yaml")
-    return env
-
-
-def check_queue(fix: bool) -> str | None:
-    # The READ half of check.sh's queue check: the verbs a lead runs to see the
-    # queue, against a topic and task built for it. The selftest that proves the
-    # ordering and wake claims is bash, and stays check.sh's until it is ported.
-    with tempfile.TemporaryDirectory() as tmp:
-        env = isolated_env(tmp)
-        queue = [sys.executable, "scripts/lib/queue.py"]
-        task = "ported-checks/01-first-task"
-        steps = [
-            ["topic", "add", "ported-checks", "--prompt", "a queue built to be read"],
-            ["add", "ported-checks", "first-task", "--title", "A task to read back",
-             "--repo", os.path.join(tmp, "repo"), "--branch", "fix/first-task"],
-            ["root"], ["list"], ["plan"], ["check"], ["show", task],
-        ]
-        for step in steps:
-            done = run([*queue, *step], env=env, capture_output=True, text=True, encoding="utf-8")
-            if done.returncode:
-                sys.stdout.write(done.stdout + done.stderr)
-                return f"queue.py {' '.join(step[:2])} exited {done.returncode}"
-            if step == ["plan"] and task not in done.stdout:
-                sys.stdout.write(done.stdout)
-                return f"queue.py plan does not list {task} as ready"
-    print("      topic add, add, root, list, plan, check and show read back a throwaway queue")
-    return None
-
-
-def check_cli(fix: bool) -> str | None:
-    # check.sh's cli check, whole: the lock first, then tests/, which skip their
-    # bash half on Windows. `uv run` is what puts `fleet` on PATH for them.
-    if err := missing("uv"):
-        return err
-    if run(["uv", "lock", "--check"]).returncode:
-        return "uv.lock does not match pyproject.toml — run `uv lock`"
-    if run(["uv", "run", "--frozen", "--quiet", "python", "-m", "unittest", "discover", "-s", "tests"]).returncode:
-        return "tests/"
-    return None
-
-
-def check_pane(fix: bool) -> str | None:
-    # The render, at both widths pane-selftest.sh holds the pane to. Its row
-    # assertions are bash and stay check.sh's until that selftest is ported.
-    if err := missing("lua"):
-        return err
-    for args in [["44"], ["30"], ["44", "--marks"]]:
-        done = run(["lua", "scripts/lib/pane_harness.lua", *args], capture_output=True)
-        if done.returncode or not done.stdout.strip():
-            sys.stdout.buffer.write(done.stdout + done.stderr)
-            return f"the pane did not render: lua scripts/lib/pane_harness.lua {' '.join(args)}"
-    print("      renders at 44 and 30 columns, and with --marks")
-    return None
-
-
 def check_workflow(fix: bool) -> str | None:
-    return "scripts/lib/check_workflow.py" if run([sys.executable, "scripts/lib/check_workflow.py"]).returncode else None
+    # All Checks is the one required status, so a job it does not need can fail
+    # while the pull request reports green.
+    return "scripts/lib/check_workflow.py" if run([sys.executable, "scripts/lib/check_workflow.py"]) else None
 
 
-CHECKS = {name: globals()[f"check_{name}"] for name in PORTED}
+def check_profiles(fix: bool) -> str | None:
+    # The two rules that keep a profile safe — no THURBOX_* key thurbox would
+    # discard, no `command` without `reports_as` — held where a commit meets them.
+    argv = [sys.executable, "scripts/lib/session_profiles.py", "orchestration/session-profiles.yaml", "--check"]
+    return "session_profiles.py --check" if run(argv) else None
+
+
+STATIC = {
+    "lock": check_lock,
+    "lint": check_lint,
+    "markdown": check_markdown,
+    "yaml": check_yaml,
+    "workflow": check_workflow,
+    "profiles": check_profiles,
+}
+FIXERS = {"markdown", "lint"}
+
+
+def check_tests(names: list[str]) -> str | None:
+    tools = sorted({tool for name in names for tool in TESTS[name][1]})
+    if err := missing(*tools):
+        return err
+    targets = expand([t for name in names for t in TESTS[name][0]])
+    if not targets:
+        return "no tests to run"
+    return "pytest" if run([sys.executable, "-m", "pytest", "-q", *targets]) else None
+
+
+def listing() -> str:
+    rows = [f"{name}\tstatic\t-" for name in STATIC]
+    rows += [f"{name}\ttests\t{' '.join(expand(targets)) or '-'}" for name, (targets, _, _) in TESTS.items()]
+    return "".join(row + "\n" for row in rows)
 
 
 def main(argv: list[str]) -> int:
     # Line-buffered, so each verdict lands after the tool output it judges.
     sys.stdout.reconfigure(line_buffering=True)
-    usage = (
-        f"usage: fleet check [--fix] --platform-ported | <check>...  (checks: {' '.join(PORTED)})\n"
-        "The whole gate is still ./scripts/check.sh."
-    )
+    everything = [*STATIC, *TESTS]
+    usage = f"usage: fleet check [--fix] [--list] [check...]\nchecks: {' '.join(everything)}\n"
     if "-h" in argv or "--help" in argv:
-        print(usage)
+        sys.stdout.write(__doc__.strip() + "\n\n" + usage)
+        return 0
+    if "--list" in argv:
+        sys.stdout.write(listing())
         return 0
     fix = "--fix" in argv
-    names = [a for a in argv if a not in ("--fix", "--platform-ported")]
-    if "--platform-ported" in argv:
-        names = PORTED + names
-    unknown = [n for n in names if n not in CHECKS]
-    if unknown or not names:
-        print(usage, file=sys.stderr)
+    names = [a for a in argv if a != "--fix"] or everything
+    unknown = [n for n in names if n not in STATIC and n not in TESTS]
+    if unknown:
+        sys.stderr.write(f"fleet check: no check named {', '.join(unknown)}\n{usage}")
         return 2
 
-    failed = False
-    for name in dict.fromkeys(names):
-        err = CHECKS[name](fix)
-        if err:
-            print(f"\033[31mFAIL\033[0m  {name}: {err}", file=sys.stderr)
-            failed = True
-        else:
-            print(f"\033[32mok\033[0m    {name}")
+    verdicts: list[tuple[str, str | None]] = []
+    for name in dict.fromkeys(n for n in names if n in STATIC):
+        verdicts.append((name, STATIC[name](fix)))
+        report(*verdicts[-1])
+    areas = list(dict.fromkeys(n for n in names if n in TESTS))
+    if areas:
+        label = "tests" if len(areas) > 1 else areas[0]
+        verdicts.append((label, check_tests(areas)))
+        report(*verdicts[-1])
+    failed = [name for name, err in verdicts if err]
+    if failed:
+        print(f"\033[31mFAIL\033[0m  {len(failed)} of {len(verdicts)}: {' '.join(failed)}", file=sys.stderr)
     return 1 if failed else 0
+
+
+def report(name: str, err: str | None) -> None:
+    if err:
+        print(f"\033[31mFAIL\033[0m  {name}: {err}", file=sys.stderr)
+    else:
+        print(f"\033[32mok\033[0m    {name}")
 
 
 if __name__ == "__main__":

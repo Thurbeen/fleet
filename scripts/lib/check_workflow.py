@@ -9,8 +9,9 @@
    was written, and nothing held it until this.
 2. Every job has a `timeout-minutes`. GitHub's default is six hours, and a
    hung Windows step would hold the required status that long.
-3. A job runs on `windows-latest`, so a change that breaks fleet on Windows
-   fails the pull request instead of the next Windows operator.
+3. A job runs on `windows-latest`, directly or as a matrix entry, so a change
+   that breaks fleet on Windows fails the pull request instead of the next
+   Windows operator.
 """
 
 import sys
@@ -40,9 +41,22 @@ def problems(path: str) -> list[str]:
         if name != GATE and name not in needs:
             found.append(f"{path}: `{GATE}` does not need job `{name}`")
 
-    if not any(job.get("runs-on") == "windows-latest" for job in jobs.values()):
+    if not any(runs_on_windows(job) for job in jobs.values()):
         found.append(f"{path}: no job runs on windows-latest")
     return found
+
+
+def runs_on_windows(job: dict) -> bool:
+    """`runs-on: windows-latest`, or a matrix whose values list it."""
+    runs_on = job.get("runs-on")
+    if runs_on == "windows-latest":
+        return True
+    matrix = (job.get("strategy") or {}).get("matrix") or {}
+    if not isinstance(runs_on, str) or "matrix." not in runs_on or not isinstance(matrix, dict):
+        return False
+    values = [v for vs in matrix.values() if isinstance(vs, list) for v in vs]
+    values += [v for entry in matrix.get("include") or [] if isinstance(entry, dict) for v in entry.values()]
+    return "windows-latest" in values
 
 
 def main() -> int:
