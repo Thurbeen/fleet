@@ -1,39 +1,51 @@
 # Contributing
 
-This is a **control plane**: markdown playbooks, a handful of shell scripts, a
-generated registry, and agent skills. Everything below follows from that.
+This is a **control plane**: markdown playbooks, one Python command run through
+uv, a generated registry, and agent skills. Everything below follows from that.
 
 ## The gate
 
-One script is the whole gate:
+One command is the whole gate, the same on Linux and on native Windows:
 
-```bash
-./scripts/check.sh          # every check
-./scripts/check.sh --fix    # the same, applying the fixes a check can apply
-./scripts/check.sh shell    # just one check
+```text
+uv run fleet check          # every check
+uv run fleet check --fix    # the same, applying the fixes a check can apply
+uv run fleet check lint     # just one check
+uv run fleet check --list   # every check: name, kind, what it runs
 ```
 
-CI runs that script, the pre-commit hooks run it, and `.publish.yaml` declares
+CI runs that command, the pre-commit hooks run it, and `.publish.yaml` declares
 it as this repository's whole gate, so a green local run and a green pull
 request mean the same thing. That matters more here than in most repos: **CI
 only fires on pull requests** while routine control-plane changes go straight to
 `main`, so the local run is the one doing the work.
 
-A missing tool fails the check rather than skipping it. The script's header
-holds the full list of checks, the tools they need, and the full usage —
-it is the one place that list lives.
+Two kinds of check. A STATIC one reads tracked files: `uv.lock` against
+`pyproject.toml`, ruff over the Python, rumdl over every tracked markdown file,
+a YAML parse, the CI workflow's promises and the session profiles. A TESTS one
+is a pytest area under `tests/`, driving fleet's real entry points against stub
+tools inside `tests/harness.py`'s `isolated_env`. uv brings Python, PyYAML,
+pytest, ruff and rumdl from `uv.lock`; `lua` is the one gate tool it does not,
+for the pane.
+
+A missing tool fails the check rather than skipping it. `scripts/lib/check.py`'s
+docstring and `--list` hold the full list of checks, the tools they need, and
+the full usage — it is the one place that list lives.
 
 ### Pre-commit hooks
 
 Optional, and run with [`prek`](https://github.com/j178/prek) rather than the
 Python `pre-commit`:
 
-```bash
+```text
 prek install
 ```
 
-`.pre-commit-config.yaml` holds one hook per check, each shelling out to
-`scripts/check.sh` — so the hooks cannot drift from CI.
+`.pre-commit-config.yaml` holds one hook per fast check, each running
+`uv run --frozen fleet check <name>` — so the hooks cannot drift from CI. The
+commands carry no shell syntax, so they run the same from bash, cmd and
+PowerShell; the test areas are left to the full gate, so a commit touching only
+prose does not wait on the suite.
 
 ### The gate before the push
 
@@ -51,9 +63,9 @@ Its own comments carry the reasoning for every key it sets.
 gate-control fields only from the trusted default branch, so a contributor
 could not weaken the rules that reviewed their own change. Nothing reproduces
 that here: a change to `.publish.yaml`, to the rules below, or to
-`scripts/check.sh` takes effect on the branch that makes it, and the only thing
-standing between a weakened rule and a merge is that weakening it shows up in
-the diff. Review it as such.
+`scripts/lib/check.py` takes effect on the branch that makes it, and the only
+thing standing between a weakened rule and a merge is that weakening it shows up
+in the diff. Review it as such.
 
 ## Review rules, by path
 
@@ -72,17 +84,28 @@ expect both to be read.
 
 ### `scripts/**`
 
-Shell run by humans and by CI, linted by shellcheck under `scripts/check.sh`.
-Two constraints this repo has already paid for:
+Python run by humans, by hooks and by CI, as `uv run fleet <group>` on Linux and
+on native Windows: `scripts/lib/<module>.py`, which `fleet/cli.py` loads by
+path. Linted by ruff under `uv run fleet check lint`, with the rules pinned in
+`pyproject.toml` so no user-level ruff config decides, and tested by pytest
+under `tests/`. The constraints this repo has already paid for:
 
-A script here must work inside a LINKED GIT WORKTREE, where `.git` is a file
+Every OS difference goes through `scripts/lib/fleet_platform.py`, one function
+with both branches, and no caller reads `os.name`. Every text `open()` and
+text-mode `subprocess.run` passes `encoding="utf-8"`: a Windows console and
+locale default to cp1252, and the tests run fleet's code with `EncodingWarning`
+as an error. A module loads a sibling by path under a `fleet_` key, never as a
+bare name that could shadow the standard library (`queue`, `platform`).
+
+A module here must work inside a LINKED GIT WORKTREE, where `.git` is a file
 rather than a directory. Every thurbox worker runs in one, and a tool that walks
 a directory tree looking for a git repo can silently find nothing there — which
 reads as a pass. Prefer `git ls-files` and explicit paths over letting a linter
 discover its own inputs.
 
-`scripts/sync-checkout.sh` runs from a `SessionStart` hook and must always exit
-0: a sync problem must never block a session from starting. It only ever
+`scripts/lib/sync_checkout.py` runs from a `SessionStart` hook and must always
+exit 0: a sync problem must never block a session from starting, and the hook
+is one shell-neutral command with no `|| true` of its own. It only ever
 fast-forwards, and never rebases or resets.
 
 Comments explain why, never what. A stale comment is worse than none.
@@ -118,7 +141,7 @@ Do not request test coverage for either.
 renders into `thurbox-cli session create` flags, so judge it the way you would
 judge a command line. It is committed and this repo is public, so a credential
 in it is a finding regardless of how it is spelled. Two further rules are
-machine-enforced by `./scripts/check.sh profiles` — a `THURBOX_*` key (thurbox's
+machine-enforced by `uv run fleet check profiles` — a `THURBOX_*` key (thurbox's
 identity vars always win over `--env`, so it would look applied and do nothing)
 and a `command` without a `reports_as` (thurbox reads hook coverage against the
 command's file stem, so an undeclared session reports nothing and renders as
@@ -128,7 +151,7 @@ would then pass.
 
 ### `registry/**`
 
-`registry/repos.generated.yaml` is generated by `scripts/sync-registry.sh` and
+`registry/repos.generated.yaml` is generated by `uv run fleet sync-registry` and
 must never be hand-edited; a diff that edits it directly is a finding regardless
 of whether the content is correct. `registry/context/<repo>.md` is the opposite:
 human-owned judgement the sync never touches.
@@ -136,7 +159,7 @@ human-owned judgement the sync never touches.
 ### `extension.toml.in`
 
 The thurbox extension manifest, rendered to a gitignored `extension.toml` by
-`scripts/install-extension.sh`. `__REPO_PATH__` is load-bearing — no thurbox
+`uv run fleet install-extension`. `__REPO_PATH__` is load-bearing — no thurbox
 token spells "my clone" (`{home}` is the extension home), so it cannot be
 simplified back to a `~` path.
 
@@ -155,11 +178,12 @@ reports green.
 Actions are pinned by commit SHA with the version in a trailing comment, and
 Renovate keeps them current. A tag reference is a finding.
 
-The jobs run `scripts/check.sh` rather than inlining their checks, so that the
-local gate and the pull-request gate cannot drift apart. The Windows job is the
-exception, because it has no bash: it runs `uv run fleet check
---platform-ported`, which calls the same modules for the checks already ported
-to Python, and every job gets a `timeout-minutes` (`scripts/check.sh workflow`
+One `check` job runs `uv run --frozen fleet check` over a matrix of a Linux and
+a native Windows runner, rather than inlining its checks, so that the local gate
+and the pull-request gate cannot drift apart. The Windows runner has no bash to
+fall back on, and it is unfiltered: "still works on Windows" is a property of
+every file. Each runner installs `lua` itself, the one gate tool uv does not
+bring, and every job gets a `timeout-minutes` (`uv run fleet check workflow`
 holds that and the `needs:` rule above).
 
 ## Merging: squash only
@@ -202,10 +226,10 @@ auto-discovers the same path, so the symlink already serves both. Do not mirror
 the tree into `.opencode/skills`, which would register the same skill twice, and
 do not add a second copy under `.claude/`.
 
-`scripts/check.sh skills` guards both failure modes: it asserts the link is a
-symlink pointing at `../.agents/skills` (a clone made with `core.symlinks=false`
-materialises it as a text file holding its target instead), that it resolves,
-and that every skill directory has a `SKILL.md`.
+`uv run fleet check skills` guards the layout: that `.claude/skills` resolves
+to `.agents/skills` (a clone made with `core.symlinks=false` materialises a
+tracked link as a text file holding its target instead), and that every skill
+directory has a `SKILL.md`.
 
 ### What is tracked, and what is not
 
@@ -231,7 +255,7 @@ that file lands ignored and nobody sees it.
 
 ### The generated registry
 
-`registry/repos.generated.yaml` is written by `./scripts/sync-registry.sh` from
+`registry/repos.generated.yaml` is written by `uv run fleet sync-registry` from
 every `gh` login on your machine, not just the active one. Never hand-edit it,
 and never commit it — it is gitignored, along with `registry/owners.txt`. Human
 judgement about a project goes in `registry/context/<repo>.md`, which the sync
@@ -241,7 +265,7 @@ machinery, not the operator's content.
 ### The session profiles
 
 `orchestration/session-profiles.yaml` holds the settings a worker session
-starts under, and `./scripts/session-flags.sh` renders one profile into
+starts under, and `uv run fleet session-flags` renders one profile into
 `thurbox-cli session create` flags. **One file, one layer**, committed so a
 change to it is reviewed in a diff — which is the point.
 
@@ -252,8 +276,8 @@ in the file, and a real credential is better off never in a file at all — a
 worker inherits the environment of the thurbox server that spawns it, so a
 credential belongs wherever that process gets its own.
 
-`scripts/check.sh profiles` enforces the two rules a reviewer should not have to
-catch by eye — and only those two. A `THURBOX_*`
+`uv run fleet check profiles` enforces the two rules a reviewer should not have
+to catch by eye — and only those two. A `THURBOX_*`
 key is refused, because thurbox's own identity variables always win over
 `--env` and such a setting would look applied while doing nothing. And
 `command` without `reports_as` is refused, because thurbox reads hook coverage
@@ -263,7 +287,7 @@ session reports nothing and renders as `uncovered` while it works.
 ### The extension manifest
 
 `extension.toml` is rendered from `extension.toml.in` by
-`./scripts/install-extension.sh` and is gitignored — it carries your clone's
+`uv run fleet install-extension` and is gitignored — it carries your clone's
 absolute path. Edit the `.in` file and re-run the installer.
 
 The same run renders `FLEET.rendered.md`, the payload the manifest ships, from
@@ -271,7 +295,7 @@ the tracked `FLEET.md` — substituting the two names in
 `orchestration/voice.example.conf` (or the gitignored `voice.conf` beside it).
 Edit `FLEET.md`, never the rendered copy. Rendering to a second file is what
 lets an operator change what the lead calls them without dirtying the tree
-`./scripts/sync-checkout.sh` has to fast-forward.
+`uv run fleet sync-checkout` has to fast-forward.
 
 `min_thurbox_version` there is a claim about the whole range the manifest
 supports, and the file's header records why the floor sits where it does, along
@@ -284,13 +308,13 @@ Two dependency surfaces, both pinned and both kept current by
 by CI, pinned by commit SHA with the version in a trailing comment — a tag
 reference in a workflow is a bug — and the Python dependencies in
 `pyproject.toml` and the committed `uv.lock`: PyYAML, the `uv_build` build
-backend, and the gate tools `rumdl` and `ruff` in the `dev` group, which CI
-runs through `uv run` on both runners so they share one pin. Renovate's default
-PEP 621 manager picks all of them up with no custom rule.
+backend, and the gate tools `pytest`, `rumdl` and `ruff` in the `dev` group,
+which CI runs through `uv run` on both runners so they share one pin. Renovate's
+default PEP 621 manager picks all of them up with no custom rule.
 
 ## Prose
 
-Hand-wrap markdown at 80 columns — `scripts/check.sh markdown` enforces it.
+Hand-wrap markdown at 80 columns — `uv run fleet check markdown` enforces it.
 
 ### Documentation ownership
 
@@ -325,13 +349,13 @@ agent needs only while launching a worker belongs there rather than in
 documents above. `.claude/skills` is a symlink to `.agents/skills`, so the skill
 has exactly one copy; never write a second one under `.claude/`.
 
-`scripts/queue.sh`'s header owns the task queue: the layout, the ordering rule,
-and why completion is a stream plus a file rather than a message.
-`orchestration/queue/README.md` owns the on-disk record shape, and
+`scripts/lib/queue.py`'s docstring owns the task queue: the layout, the
+ordering rule, and why completion is a stream plus a file rather than a
+message. `orchestration/queue/README.md` owns the on-disk record shape, and
 `.agents/skills/fleet-queue/SKILL.md` is the working reference for driving it —
 a reference, not an owner. `scripts/lib/session_trust.py` owns the
 trust-dialog mechanics and the per-agent table, and
-`scripts/trust-thurbox-dir.sh`'s owns the config-seeding fallback. `README.md`
+`scripts/lib/trust_thurbox_dir.py` owns the config-seeding fallback. `README.md`
 owns the human-facing version of all of it. Point at one of those rather than
 restating the doctrine in a fifth place.
 

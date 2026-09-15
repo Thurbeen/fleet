@@ -13,36 +13,39 @@ public, and that content is not something to publish. `.gitignore`'s header
 names every path and the reason for each.
 
 - `pyproject.toml`, `uv.lock` and `fleet/` — fleet is a uv project, and
-  `uv run fleet <group> …` is its one command on Linux and native Windows.
-  `fleet/cli.py` loads the `scripts/lib/` modules by path, and
-  `scripts/queue.sh` and `scripts/fleet-status.sh` forward to it with the same
-  arguments, output and exit code. `tests/test_cli.py` holds that, and
-  `check.sh cli` runs it.
+  `uv run fleet <group> …` is its one command on Linux and native Windows;
+  `uv run fleet --help` lists every group. `fleet/cli.py` loads the
+  `scripts/lib/` module a group names, by path, and each module's docstring
+  owns its usage and its rationale. uv brings Python and PyYAML from `uv.lock`,
+  so there is no system `python3` or PyYAML to install, and no bash to run.
+  `tests/test_cli.py` holds the command, and `fleet check cli` runs it.
 - `scripts/lib/fleet_platform.py` — the PLATFORM seam: every place fleet
   behaves differently on POSIX and native Windows (thurbox's config directory,
   fleet's data directory, how a record reaches the disk, a lock, a detached
   spawn, whether a pid is alive) is one function with both branches inside it,
   so no caller reads `os.name`. Records are UTF-8 with LF on every OS: write
   them through it and read them with `encoding="utf-8"`.
-  `tests/test_platform.py` proves each branch on the OS that takes it.
-- `tests/` — the pytest suite replacing the bash selftests one section at a
-  time, and running natively on Windows. `tests/harness.py` owns the two things
-  every test stands on: `isolated_env`, which is `scripts/lib/selftest-env.sh`
-  for Python, and the stub `gh`, `thurbox-cli`, `ssh`, `glab` and `quota-axi`,
-  a package in `tests/stubs` installed as real executables first on PATH.
-  Fleet's code runs there with any locale-encoded read or write as an error.
-  `check.sh queue` runs `tests/queue/` beside what is left of
-  `scripts/queue-selftest.sh`.
+  `tests/test_platform.py` proves each branch on the OS that takes it. **Name a
+  thurbox path through `uv run fleet paths`** (`thurbox-config`,
+  `thurbox-hooks`, `fleet-data`) rather than spelling `~/.config/thurbox`:
+  thurbox keeps it under `%APPDATA%` on native Windows.
+- `tests/` — the pytest suite, one area per subsystem, running on Linux and
+  natively on Windows. `tests/harness.py` owns the two things every test
+  stands on: `isolated_env` — a throwaway HOME, git config and `FLEET_*` roots
+  — and the stub `gh`, `thurbox-cli`, `ssh`, `glab` and `quota-axi`, a package
+  in `tests/stubs` installed as real executables first on PATH. Fleet's code
+  runs there with any locale-encoded read or write as an error. Each area is a
+  named check: `uv run fleet check --list` maps them.
 - `registry/owners.txt` — the GitHub owners the map covers, one per line.
   `registry/owners.example.txt` is the tracked copy it starts from.
 - `registry/repos.generated.yaml` — generated index of every repo under those
-  owners. **Never hand-edit it.** Refresh with `./scripts/sync-registry.sh`.
+  owners. **Never hand-edit it.** Refresh with `uv run fleet sync-registry`.
 - `registry/context/<repo>.md` — the human-owned truth about a project: what it
   is, how it relates to others, current goals. Read the relevant one before
   reasoning about a project, and keep it short and current.
 - `orchestration/session-profiles.yaml` — named default settings a worker
   session STARTS under (`--env`, and `--command` for a setting that is a flag),
-  as opposed to where its work goes. `./scripts/session-flags.sh <profile>`
+  as opposed to where its work goes. `uv run fleet session-flags <profile>`
   renders one into `session create` flags. One file, one layer — edit it
   directly. The file's own header owns the rules that keep a profile safe.
 - `orchestration/publish.example.conf` and `agent.example.conf` — the two
@@ -52,16 +55,16 @@ names every path and the reason for each.
   ARTIFACT SHAPES (`attested`, `pr`, `push`, `note`, `none`) and no tool
   names, so a publisher fleet has never heard of still works. `note` is a
   review or comment on the change request or issue a task records as its
-  `target` (`queue.sh add --target`), and `none` is a deliverable no forge
+  `target` (`fleet queue add --target`), and `none` is a deliverable no forge
   holds; both words, and `target`, are part of `task.yaml`'s contract. The
-  second holds which agent your
-  workers run, which provider `refuel` gates on, and how that agent says it hit
-  a limit. **Both tracked copies name nothing** — `./scripts/check.sh automerge`
-  fails one that does — so a fresh clone inherits no operator's pipeline,
-  vendor or agent. Copy either to a gitignored `*.conf` beside it to set
-  anything. The marker is read in TWO SHAPES — the JSON inside the comment, or
-  the marker alone with the JSON in a fenced block after it — because a
-  publisher that writes the second is a different SHAPE and not a different
+  second holds which agent your workers run, which provider `refuel` gates on,
+  and how that agent says it hit a limit. **Both tracked copies name nothing**
+  — `uv run fleet check automerge` fails one that does — so a fresh clone
+  inherits no operator's pipeline, vendor or agent. Copy either to a gitignored
+  `*.conf` beside it to set anything. The marker is read in TWO SHAPES — the
+  JSON inside the comment, or the marker alone with the JSON in a fenced block
+  after it — because a publisher that writes the second is a different SHAPE
+  and not a different
   string, which no value of the setting would have reached. The retired word
   `no-mistakes` is still accepted wherever a method is read and means
   `attested`, so a record written before the rename still loads.
@@ -70,15 +73,16 @@ names every path and the reason for each.
   `GLYPHS=on|off` setting whose `off` is the one-cell `⌖` and no worker prefix.
   Tracked defaults; copy it to a gitignored `session-glyphs.conf` beside it to
   change anything, since editing a tracked file would leave
-  `scripts/sync-checkout.sh` a dirty tree. Two readers and no third:
-  `scripts/install-extension.sh` renders the lead's mark into the manifest, and
+  `fleet sync-checkout` a dirty tree. Two readers and no third:
+  `fleet install-extension` renders the lead's mark into the manifest, and
   `scripts/lib/queue.py` puts the worker's on at dispatch. **Changing it is a
   RENAME of the lead, and installing is not applying one** — see
   `extension.toml.in`'s RENAMING header.
 - `orchestration/queue/<topic>/` — the task queue. A prompt becomes a TOPIC
   holding its verbatim `PROMPT.md`; the topic decomposes into task directories,
   each with its own `task.yaml`, `BRIEF.md`, `progress.jsonl` and `result.md`.
-  `./scripts/queue.sh` owns it end to end and its header is the full usage.
+  `uv run fleet queue` owns it end to end, and `scripts/lib/queue.py`'s
+  docstring is the model and the full usage.
   Gitignored except the `README.md` that documents the layout, the `POLICY.md`
   every brief points its worker at instead of restating it, and
   `OPERATOR.example.md` — the form of the operator's own `OPERATOR.md`, which
@@ -87,7 +91,7 @@ names every path and the reason for each.
   checkout — the clone the Mission Control session opens — and not to whatever
   directory your shell is in**, so a second clone of this repo cannot
   silently fork it: `topic add` and `add` refuse there, everything else
-  warns, and `queue.sh root` names the directory in use.
+  warns, and `fleet queue root` names the directory in use.
 - `scripts/lib/forge.py` — the FORGE seam. Everything fleet knows about a
   change request — a pull request on GitHub, a merge request on GitLab — it
   asks this module for; `scripts/lib/queue.py` runs no forge CLI itself and
@@ -96,38 +100,40 @@ names every path and the reason for each.
   self-hosted instance is the ordinary case and not a special one. **Which
   hosts the GitLab adapter owns is READ OFF THE MACHINE**, from `glab auth
   status`; `configured_hosts`' own docstring owns that rule and its two
-  overrides, and the file's header owns the interface and how to add a third.
-  Two things follow: a repository is identified by HOST plus path
+  overrides, and the module's docstring owns the interface and how to add a
+  third. Two things follow: a repository is identified by HOST plus path
   (`github.com/Thurbeen/fleet`), because a bare `owner/repo` names two
   different repositories once two forges exist; and **the seam is driven, not
-  asserted** — `queue-selftest.sh` §13 and §14 run `collect`, the landing check
-  and `shepherd` through a second forge with `gh` on PATH as a tripwire. That
-  is the bar every other seam here is judged against.
-- `orchestration/reconcile/` — the reconciler's runtime state: its supervisor's
-  pid, the heartbeat proving its loop is ticking, its log, the advisory `nudge`
-  flag, the `down` flag, and `notified.json` — which ready tasks the lead has
+  asserted** — `tests/queue/test_forge_seam.py` and `test_gitlab.py` run
+  `collect`, the landing check and `shepherd` through a second forge with `gh`
+  on PATH as a tripwire. That is the bar every other seam here is judged
+  against.
+- `orchestration/reconcile/` — the reconciler's runtime state: the `lock` its
+  supervisor holds for its whole life, the heartbeat proving its loop is
+  ticking, a pidfile for people, its log, the advisory `nudge` flag, the `down`
+  flag, and `notified.json` — which ready tasks the lead has
   already been woken about, so a transition is told once. That last one is
   runtime state and not a record for the same reason as all the others: "the
   lead has been told" is true of one machine's loop and one conversation, and
   writing it onto a task would make the loop a second writer over the queue.
-  Written by `./scripts/reconcile.sh` and created on first start. The loop's
-  code is tracked; nothing it writes is.
+  Written by `uv run fleet reconcile` (`scripts/lib/reconcile.py`) and created
+  on first start. The loop's code is tracked; nothing it writes is.
 - `interface/fleet_queue.lua` — the TUI queue pane, and the fleet's only live
   view of the queue, drawn in a thurbox column over the same records
-  `queue.sh list` reads. `scripts/install-extension.sh` installs it
+  `fleet queue list` reads. `uv run fleet install-extension` installs it
   with `thurbox-cli plugin install`; the file's own header owns the view.
   **Placing it is a guarded block in the user's `layout.lua`, and
-  `./scripts/place-pane.sh` writes that block — only ever after the operator
+  `uv run fleet place-pane` writes that block — only ever after the operator
   was ASKED and said yes** — because a pane no arrangement places loads, lists,
   and draws nothing. It refuses a layout it cannot recognise, backs the file up,
   re-reads its own edit with `lua`, and verifies with `thurbox-cli plugin
   check`; the fleet-pane skill's §4 owns the ask. **The first Mission Control
   session asks it, once per checkout, ever**: FLEET.md has the lead run
-  `./scripts/pane-ask.sh`, which keeps the answer in the gitignored
+  `uv run fleet pane-ask`, which keeps the answer in the gitignored
   `orchestration/first-run/` and never asks where the pane is already placed —
-  a script and not a hook, because a hook would be one agent's.
-  `./scripts/pane-selftest.sh` renders it offline — no thurbox, no queue, no
-  session; `check.sh pane` runs it.
+  a command and not a hook, because a hook would be one agent's.
+  `tests/pane/` renders it offline — no thurbox, no queue, no session;
+  `fleet check pane` runs it.
   `.agents/skills/fleet-pane/` is the driving surface for all of it: install,
   verify, place, hide, remove, diagnose.
 - `orchestration/playbooks/<name>.md` — reusable recipes for running thurbox.
@@ -139,31 +145,35 @@ names every path and the reason for each.
   overwrites it. Gitignored, like everything a run produces; the template is
   the one tracked file there.
 - `install.sh` — the one-liner (`curl … | sh`), in POSIX sh: clone or
-  fast-forward the checkout, `preflight.sh`, `install-extension.sh`, and
-  nothing else. It installs no dependency, places no pane, and refuses rather
+  fast-forward the checkout, then hand over to fleet's own commands — the
+  preflight and the extension install. It places no pane, and refuses rather
   than overwrites an existing checkout; its header owns where the clone goes and
-  why that choice is sticky. `./scripts/install-selftest.sh` drives it,
-  `pane-ask.sh` and `voice-ask.sh` — onboarding's ask for the two names, before
-  step 5 renders them — end to end; `check.sh install` runs it.
-- `scripts/preflight.sh` — every dependency fleet needs, in one pass, in three
-  tiers (required / recommended / gate), each row carrying what breaks without
-  it and the command that installs it. It probes and prints; installing is the
-  operator's, which is what `--commands` is for. `scripts/discover-owners.sh`
-  is its counterpart for the one input the map needs: it reads every `gh`
-  account, the git config and the remotes of the clones already on the disk,
-  and prints owner candidates with the evidence for each. Both write nothing.
-  EVERY `gh` ACCOUNT, not just the active one, there and in
-  `scripts/sync-registry.sh` — a machine with several logins reaches a
-  different set of repositories per login. `scripts/lib/gh-accounts.sh` is the
-  seam every reader goes through and its header owns the mechanism; the one
-  thing to know here is that it reads each login's token BY NAME and never
-  switches the account the operator's `gh` is pointing at. **Neither CLI's own status
-  command answers the question preflight has**, so both authentication rows go
-  through a seam instead: `gh auth` is decided per ACCOUNT, and `glab auth` per
-  HOST through `scripts/lib/glab-hosts.sh` — a bare `glab auth status` is
-  all-or-nothing across every instance glab has configured, so it called a
-  self-hosted-only setup broken, which the forge seam says is the ordinary one.
-- `scripts/add-owner.sh` — the incremental half, for what the operator gains
+  why that choice is sticky. `tests/install/` and `tests/extension/` drive it,
+  `fleet pane-ask` and `fleet voice-ask` — onboarding's ask for the two names,
+  before the extension renders them — end to end; `fleet check install
+  extension` runs them.
+- `uv run fleet preflight` — every dependency fleet needs, in one pass, in
+  three tiers (required / recommended / gate), each row carrying what breaks
+  without it and the command that installs it with this machine's package
+  manager (winget on Windows). **The table is data**: `scripts/lib/preflight.py`
+  holds it as records, so another module acts on exactly what preflight
+  reports. It probes and prints; installing is the operator's, which is what
+  `--commands` is for. `uv run fleet discover-owners` is its counterpart for
+  the one input the map needs: it reads every `gh` account, the git config and
+  the remotes of the clones already on the disk, and prints owner candidates
+  with the evidence for each. Both write nothing. EVERY `gh` ACCOUNT, not just
+  the active one, there and in `fleet sync-registry` — a machine with several
+  logins reaches a different set of repositories per login.
+  `scripts/lib/gh_accounts.py` is the seam every reader goes through and its
+  docstring owns the mechanism; the one thing to know here is that it reads
+  each login's token BY NAME and never switches the account the operator's `gh`
+  is pointing at. **Neither CLI's own status command answers the question
+  preflight has**, so both authentication rows go through a seam instead: `gh
+  auth` is decided per ACCOUNT, and `glab auth` per HOST through
+  `scripts/lib/glab_hosts.py` — a bare `glab auth status` is all-or-nothing
+  across every instance glab has configured, so it called a self-hosted-only
+  setup broken, which the forge seam says is the ordinary one.
+- `uv run fleet add-owner` — the incremental half, for what the operator gains
   AFTER a first run: an owner, a repo, or a whole account. It names the owners
   the current `gh` accounts reach that `registry/owners.txt` does not list,
   grouped by the account that reaches them; with `--all` or a named list it
@@ -183,7 +193,7 @@ names every path and the reason for each.
   `fleet-pane` (getting the TUI queue pane onto a screen, and diagnosing one
   that is installed and drawing nothing), and `update-fleet` (a working control
   plane that is BEHIND origin, and the consequences of the sync that
-  `scripts/sync-checkout.sh` only ever reports).
+  `fleet sync-checkout` only ever reports).
 
 ## Orchestration model
 
@@ -191,8 +201,9 @@ This repo drives [thurbox](https://github.com/Thurbeen/thurbox) **directly**. Do
 not invoke an external `orchestrate` skill or any other outside orchestration
 workflow — the control plane is self-contained.
 
-The loop, driven by `./scripts/queue.sh`, whose header is its full usage and
-whose rules `.agents/skills/fleet-queue/` owns. What follows is the index, not
+The loop, driven by `uv run fleet queue`, whose module docstring
+(`scripts/lib/queue.py`) is its full usage and whose rules
+`.agents/skills/fleet-queue/` owns. What follows is the index, not
 a second copy — read the skill before you run any of it:
 
 1. **Intake.** A prompt becomes a topic, kept verbatim, decomposed into tasks —
@@ -204,20 +215,21 @@ a second copy — read the skill before you run any of it:
 3. **Order, then dispatch the whole ready set at once.** File or subsystem
    overlap is a RISK SIGNAL that gets reported rather than held back; serialize
    only for a concrete condition that makes independent progress unsafe, and
-   record it with `queue.sh block`. **A blocker names a task or a CONDITION**,
-   and only a person clears the second kind — nothing releases a task on a
-   guess. A queue that runs one task at a time is slower than no queue at all.
+   record it with `fleet queue block`. **A blocker names a task or a
+   CONDITION**, and only a person clears the second kind — nothing releases a
+   task on a guess. A queue that runs one task at a time is slower than no
+   queue at all.
 4. Each worker targets a real repo and its own git worktree — the control plane
    holds the plan and the log, never the workers' branches. `dispatch` gets each
    new session past its agent's trust dialog before it sends the brief, calling
-   `scripts/lib/session_trust.py` in-process (`scripts/session-trust.sh` is a
-   thin forwarder to the same module, kept for skills and hooks that name it),
-   because sending one into that dialog is how every fleet-spawned worker used
-   to break. A task may name a `--host` and run on that machine instead, probed
-   first and carried by ssh, so that completion stays one model.
+   `scripts/lib/session_trust.py` in-process (`uv run fleet session-trust` runs
+   the same module by hand), because sending one into that dialog is how every
+   fleet-spawned worker used to break. A task may name a `--host` and run on
+   that machine instead, probed first and carried by ssh, so that completion
+   stays one model.
 5. **Completion is two things you read, never something that interrupts you.**
-   `queue.sh watch` folds thurbox's event stream into each task's record and
-   closes nothing; `queue.sh collect` reads the `result.md` the worker wrote,
+   `fleet queue watch` folds thurbox's event stream into each task's record and
+   closes nothing; `fleet queue collect` reads the `result.md` the worker wrote,
    and only that closes a task. A turn ending is not a task finishing. The run
    log refreshes its own facts as this happens, which leaves you the half no
    record can hold: the goal in your words, the decisions, what went wrong.
@@ -225,11 +237,11 @@ a second copy — read the skill before you run any of it:
 6. **Release is a third thing, and it is not manual.** `shipped` means the
    artifact exists and the session is kept, because it is the cheap way to fix
    what review finds. Only the FORGE saying it merged moves a task to `landed`,
-   and `queue.sh reap` — which `collect` runs itself — deletes the session
+   and `fleet queue reap` — which `collect` runs itself — deletes the session
    then. It never touches one that is working, blocked, or was given up in:
    that session is the evidence. Blockers clear on `landed`, and a topic whose
    every task is terminal archives itself.
-7. **The change request outlives the task, so `queue.sh shepherd` is a fourth
+7. **The change request outlives the task, so `fleet queue shepherd` is a fourth
    thing, run as reflexively as `collect`.** It asks the FORGE for every open
    change request on the repos the queue names, not the tasks' recorded
    artifacts, and merges only where the operator's own
@@ -237,27 +249,30 @@ a second copy — read the skill before you run any of it:
    NONE, so a fresh clone of this public repo merges nowhere. Squash is the
    only method it merges by. `--dry-run` first.
 8. **A worker that hits its agent's token limit does not fail — it sits, and
-   nothing above ever notices.** `queue.sh refuel` is a fifth thing: the
+   nothing above ever notices.** `fleet queue refuel` is a fifth thing: the
    account's shared quota window first, and a restart only when a stale
    `working` is paired with the agent's own limit signal.
 9. Review the change requests; the operator merges every one `shepherd` did
    not, and everything after that is `reap`'s.
 
 **Nothing above happens because somebody remembered to run it.**
-`./scripts/reconcile.sh` is a supervised loop — `ensure` / `start` / `stop` /
-`status`, a supervisor pid, a log and a durable `down` flag, under the rule
-that `ensure` honours the flag and `start` clears it. It consumes `queue.sh
-watch` continuously and calls `collect`,
-`shepherd` and `refuel` on separate intervals; its header argues every number
-and is the full usage. Four things about it are load-bearing:
+`uv run fleet reconcile` is a supervised loop — `ensure` / `start` / `stop` /
+`status`, a log and a durable `down` flag, under the rule that `ensure` honours
+the flag and `start` clears it. **Up is a lock plus a heartbeat**: the
+supervisor holds an exclusive lock on `orchestration/reconcile/lock` for its
+whole life, the OS drops it however that process dies, so no stale pid is ever
+trusted or signalled, and a holder that never beats is never called healthy.
+It consumes `fleet queue watch` continuously and calls `collect`, `shepherd`
+and `refuel` on separate intervals; `scripts/lib/reconcile.py`'s docstring
+argues every number and is the full usage. Four things about it are
+load-bearing:
 
 - **It writes no record.** Every effect on the queue goes through
-  `./scripts/queue.sh`, which
-  stays the only writer over the records; its own runtime directory above holds
-  the rest. It calls exactly `watch`, `collect`,
-  `shepherd`, `refuel` and the read-only `plan`, and
-  `scripts/reconcile-selftest.sh` asserts that the set is those five and argues
-  in place why a READ may join it while `dispatch` never may.
+  `fleet queue`, which stays the only writer over the records; its own runtime
+  directory above holds the rest. It calls exactly `watch`, `collect`,
+  `shepherd`, `refuel` and the read-only `plan`, and `tests/reconcile/` asserts
+  that the set is those five and argues in place why a READ may join it while
+  `dispatch` never may.
 - **It reconciles; it does not decide.** No dispatch, no cancel, no reorder,
   and it does not re-decide `refuel`'s rule about a spent quota window.
 - **It tells the lead when the ready set grows, which is the one thing it says
@@ -274,13 +289,13 @@ and is the full usage. Four things about it are load-bearing:
   condition, so the one reading carries the answer and there is no second
   opinion here to keep in step.
 - **`nudge` is the accelerator and never the guarantee.** A worker's Claude
-  Code `Stop` hook can call `./scripts/reconcile.sh nudge` to bring the
-  periodic pass forward; a worker that died on a token limit fires no hook at
-  all, which is why the timer is what the design rests on. `reconcile.sh hook`
-  PRINTS the block rather than installing it — that file
-  (`~/.config/thurbox/hooks/claude.json`) is thurbox's, and a thurbox update
-  rewrites it. `nudge` runs no queue command, so a worker firing it can never
-  collect or reap itself.
+  Code `Stop` hook can call `uv run --project <checkout> fleet reconcile nudge`
+  to bring the periodic pass forward; a worker that died on a token limit fires
+  no hook at all, which is why the timer is what the design rests on.
+  `fleet reconcile hook` PRINTS the block rather than installing it — that
+  file (`uv run fleet paths thurbox-hooks` names it) is thurbox's, and a
+  thurbox update rewrites it. `nudge` runs no queue command, so a worker
+  firing it can never collect or reap itself.
 
 `.agents/skills/fleet-queue/` is the driving surface for 1–3 and 5–8, and
 `.agents/skills/thurbox-session/` for one session: spawning, prompting, cleanup.
@@ -293,7 +308,7 @@ means, and what settings the agent starts with.
 ## Keeping the map honest
 
 - After adding, renaming, or archiving a repo — or after editing
-  `registry/owners.txt` — run `./scripts/sync-registry.sh` locally. Never edit
+  `registry/owners.txt` — run `uv run fleet sync-registry` locally. Never edit
   the generated YAML directly. There is nothing to push: both files are
   gitignored.
 - When you learn something durable about a project (its purpose shifted, a new
@@ -305,31 +320,33 @@ means, and what settings the agent starts with.
 CI only runs on pull requests, and routine control-plane changes go straight to
 `main`. So gate locally before you push:
 
-```bash
-./scripts/check.sh          # every check
-./scripts/check.sh --fix    # same, applying the fixes a check can apply
+```text
+uv run fleet check          # every check
+uv run fleet check --fix    # same, applying the fixes a check can apply
+uv run fleet check --list   # every check, and what it runs
 ```
 
-That one script is the whole gate, and its header names every check it runs. CI
-runs it, the prek hooks run it, and `.publish.yaml` declares it as the gate the
-`publish` skill runs, so a green local run and a green pull request mean the
-same thing. `CONTRIBUTING.md` owns that declaration and the review rules
-`.publish.yaml` points at.
+That one command is the whole gate, and `scripts/lib/check.py`'s docstring
+owns it. CI runs it on a Linux and a native Windows runner, the prek hooks run
+it, and `.publish.yaml` declares it as the gate the `publish` skill runs, so a
+green local run and a green pull request mean the same thing.
+`CONTRIBUTING.md` owns that declaration and the review rules `.publish.yaml`
+points at.
 
 **The gate reads no operator state** — not the queue's records, the registry
 map, a gitignored `*.conf`, your HOME or your git config — so one commit gets
 one verdict in a worker's worktree, on CI and in this checkout alike.
-`./scripts/fleet-status.sh --records` is where your live records are validated
-now; `check.sh isolation` is what keeps the gate from reading them
-again, and every selftest goes through `scripts/lib/selftest-env.sh`.
+`uv run fleet status --records` is where your live records are validated;
+`fleet check isolation` is what keeps the gate from reading them again, and
+every test runs inside `tests/harness.py`'s `isolated_env`.
 
 Changes that open a pull request land by **squash merge** — the only merge
 method the remote allows — so the pull request title becomes the commit on
 `main`. `CONTRIBUTING.md` owns that process.
 
-`extension.toml` is generated by `./scripts/install-extension.sh` and gitignored.
-Edit `extension.toml.in` instead, and re-run the installer. Two consequences to
-know before you debug the extension:
+`extension.toml` is generated by `uv run fleet install-extension` and
+gitignored. Edit `extension.toml.in` instead, and re-run the installer. Two
+consequences to know before you debug the extension:
 
 - **Re-installing does not move the Mission Control session.** thurbox reuses
   an extension's session by name and never repoints it, so after the clone
@@ -341,7 +358,7 @@ know before you debug the extension:
 - **`thurbox-cli extension update fleet` re-reads the *rendered* file**, not
   `extension.toml.in`, because the install stamped this clone as the extension's
   `source`. So it refreshes to whatever was last rendered, and fails outright if
-  `extension.toml` was cleaned away. `./scripts/install-extension.sh` is this
+  `extension.toml` was cleaned away. `uv run fleet install-extension` is this
   extension's real update command.
 - **The lead SESSION is Mission Control; the EXTENSION is still `fleet`**,
   which is why every command above still takes `fleet`. The extension registers
@@ -360,14 +377,16 @@ know before you debug the extension:
 
 ## Pulling changes in
 
-`./scripts/sync-checkout.sh` fast-forwards this checkout from `origin`, and the
-`SessionStart` hook runs it. It only ever fast-forwards and refuses rather than
-forces on a dirty tree, a feature branch, or a divergence.
+`uv run fleet sync-checkout` fast-forwards this checkout from `origin`, and the
+`SessionStart` hook runs it (`uv run --frozen --quiet fleet sync-checkout`, one
+command every shell parses alike, which exits 0 itself). It only ever
+fast-forwards and refuses rather than forces on a dirty tree, a feature branch,
+or a divergence.
 
 **After a sync that touched `FLEET.md`, `AGENTS.md` or `.agents/skills/`, the
 running Mission Control session is holding stale instructions** — it froze
 them at launch and nothing reloads them from disk. This is equally true of a
-plain `git pull`. The sync script says so when it happens; act on it rather
+plain `git pull`. The sync says so when it happens; act on it rather
 than assuming the new instructions reached the lead.
 
 `.agents/skills/update-fleet/` drives that whole update — the sync, then only
