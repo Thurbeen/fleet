@@ -180,17 +180,20 @@ CHECKS = {name: globals()[f"check_{name}"] for name in PORTED}
 def main(argv: list[str]) -> int:
     # Line-buffered, so each verdict lands after the tool output it judges.
     sys.stdout.reconfigure(line_buffering=True)
+    usage = (
+        f"usage: fleet check [--fix] --platform-ported | <check>...  (checks: {' '.join(PORTED)})\n"
+        "The whole gate is still ./scripts/check.sh."
+    )
+    if "-h" in argv or "--help" in argv:
+        print(usage)
+        return 0
     fix = "--fix" in argv
     names = [a for a in argv if a not in ("--fix", "--platform-ported")]
     if "--platform-ported" in argv:
         names = PORTED + names
     unknown = [n for n in names if n not in CHECKS]
     if unknown or not names:
-        print(
-            f"usage: fleet check [--fix] --platform-ported | <check>...  (checks: {' '.join(PORTED)})\n"
-            "The whole gate is still ./scripts/check.sh.",
-            file=sys.stderr,
-        )
+        print(usage, file=sys.stderr)
         return 2
 
     failed = False

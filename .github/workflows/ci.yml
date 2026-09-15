@@ -14,11 +14,6 @@ permissions:
   # dorny/paths-filter reads the PR's changed files via the API.
   pull-requests: read
 
-env:
-  # Pinned so a rumdl release cannot turn a green pull request red on its own.
-  # Renovate bumps it — see renovate.json's customManagers.
-  RUMDL_VERSION: "0.2.67"
-
 # Every job carries a `timeout-minutes` — GitHub's default is six hours, and a
 # hung step would hold the required status that long. Each is a few times the
 # job's usual duration. scripts/lib/check_workflow.py fails a job without one.
@@ -52,9 +47,8 @@ jobs:
             markdown:
               - '**/*.md'
               - '.rumdl.toml'
-              # The `docs` check rides along: the README's links and diagram.
-              - 'docs/**'
-              - 'scripts/lib/check_docs.py'
+              - 'pyproject.toml'
+              - 'uv.lock'
               - 'scripts/check.sh'
               - '.github/workflows/ci.yml'
             yaml:
@@ -96,7 +90,9 @@ jobs:
   # Every job below runs scripts/check.sh rather than inlining its checks, so
   # the local gate and this one cannot drift apart. That matters here because
   # CI fires only on pull requests while routine control-plane changes go
-  # straight to `main`.
+  # straight to `main`. The Windows job is the one exception: it has no bash,
+  # so it runs `fleet check`, which calls the same Python modules and Lua
+  # harness check.sh does.
   shell:
     name: Shell
     needs: changes
@@ -115,9 +111,11 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Install rumdl
-        run: pipx install "rumdl==${RUMDL_VERSION}"
-      - run: ./scripts/check.sh markdown docs
+      # rumdl is pinned in pyproject.toml's dev group, the same pin the Windows
+      # job runs, so a rumdl release cannot turn a green pull request red on
+      # its own and the two runners cannot disagree about a file.
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+      - run: uv run --frozen ./scripts/check.sh markdown docs
 
   # `workflow` rides here because this file is YAML: the filter already fires
   # on every change to it.
@@ -273,13 +271,15 @@ jobs:
       # Chocolatey's `lua` package is 5.1, which the pane harness cannot run
       # (it needs 5.4 for `utf8.codes`); building it from source through a
       # setup action also works, and costs two more pinned actions and half a
-      # minute.
+      # minute. `-y` refreshes the image's package list, which otherwise names
+      # a revision the mirror drops once a newer one is published.
       - name: Install lua
         run: |
-          C:\msys64\usr\bin\pacman.exe -S --noconfirm --needed mingw-w64-ucrt-x86_64-lua
+          C:\msys64\usr\bin\pacman.exe -Sy --noconfirm --needed mingw-w64-ucrt-x86_64-lua
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           "C:\msys64\ucrt64\bin" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
-      - run: uv run fleet check --platform-ported
+      # `--frozen`: run against uv.lock as committed, never a fresh resolution.
+      - run: uv run --frozen fleet check --platform-ported
 
   # Single required status check. Every job feeds this gate; a branch ruleset
   # requires only "All Checks", so adding or removing jobs never needs a
