@@ -12,14 +12,12 @@ The automatic sweep, the manual command and the `add` clear all ask the same
 question, and every reader answers it out of the topic file alone.
 """
 
-import re
-import shutil
 
 import pytest
 from kit_display import set_state_line
 from queuekit import ok, result
 
-from harness import REPO, expect, refute, run, run_fleet, write
+from harness import PYTHON, REPO, expect, refute, run, run_fleet, write
 from harness import run_queue as q
 
 
@@ -122,15 +120,14 @@ def test_an_archived_topics_task_files_are_never_opened(unparseable):
     expect(q("list", "--archived").out, "all-landed")
 
 
-@pytest.mark.skipif(shutil.which("sh") is None, reason="the pane's queue probe is a POSIX shell script")
 def test_the_panes_probe_counts_the_archived_topic_the_same_way(unparseable):
     """The TUI pane is the third reader, and the only one that is not Python: a
     pane that disagreed with `list` would be a second opinion about a model it
-    does not own. Its probe is run exactly as the pane runs it."""
+    does not own. Its probe is the module the pane's command line runs, on
+    POSIX and on Windows alike."""
     pane = (REPO / "interface" / "fleet_queue.lua").read_text(encoding="utf-8")
-    probe = re.search(r"^local PROBE = \[==\[\n(.*?)^\]==\]$", pane, re.MULTILINE | re.DOTALL)
-    assert probe, "the pane carries its queue probe in a PROBE block"
-    out = run(["sh", "-c", probe.group(1)]).stdout
+    assert "scripts/lib/pane_probe.py" in pane, "the pane runs its queue probe from scripts/lib/pane_probe.py"
+    out = run([*PYTHON, str(REPO / "scripts" / "lib" / "pane_probe.py")]).stdout
     expect(out, "A\t1", "half-live")
     refute(out, "all-landed")
 
