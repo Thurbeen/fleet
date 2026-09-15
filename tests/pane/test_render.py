@@ -76,8 +76,11 @@ def test_the_publish_row_says_the_next_move(wide):
 def test_one_row_per_task(wide):
     expect(wide, "01 Cut the pane back")
     refute(wide, "01-declutter-the-pane")
+    # 27 rather than 26 since the fuel block draws every window: the fixture's
+    # account holds two, and the detail row that named only the binding one is
+    # gone, so the block costs one row more for the same reading.
     rows = [line for line in wide.splitlines() if line]
-    assert len(rows) <= 26, f"the whole queue costs {len(rows)} rows\n{wide}"
+    assert len(rows) <= 27, f"the whole queue costs {len(rows)} rows\n{wide}"
 
 
 def test_finished_work_weighs_less(wide):
@@ -97,6 +100,31 @@ def test_it_still_degrades_to_30_columns(narrow):
     assert widest <= 30, f"a row is {widest} columns wide in a 30-column pane\n{narrow}"
     expect(narrow, "Cut the pane back", "↳ 02-shepherd", "⊘ az login", "open — review")
     refute(narrow, "✓ 01-declare")
+
+
+def row_of(label: str, out: str) -> int | None:
+    """The index of the first row that carries `label`, or None."""
+    return next((i for i, line in enumerate(out.splitlines()) if label in line), None)
+
+
+def test_every_fuel_window_is_drawn_all_the_time(wide, narrow):
+    """The block drew only the window that binds right now, so on an account with
+    a five-hour and a seven-day window the row flipped between the two whenever
+    their percentages crossed. It draws every window the reading carries, in the
+    record's order (shortest first), and marks the binding one with a theme role
+    instead of hiding the others."""
+    for width, out in (("44", wide), ("30", narrow)):
+        short, long = row_of(" session ", out), row_of(" week ", out)
+        assert short is not None and long is not None and short < long, \
+            f"both windows are drawn at {width}, shortest first\n{out}"
+        expect(out, "62%", "18%")
+    session = next(line for line in wide.splitlines() if " session " in line)
+    week = next(line for line in wide.splitlines() if " week " in line)
+    expect(session, "3h")
+    expect(week, "4d")
+    accent = render("44", "--accent")
+    assert next(line for line in accent.splitlines() if " week " in line).startswith("A "), accent
+    assert not next(line for line in accent.splitlines() if " session " in line).startswith("A "), accent
 
 
 def test_a_remote_lead_listed_first_does_not_take_the_pane():

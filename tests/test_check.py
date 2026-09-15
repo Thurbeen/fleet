@@ -30,7 +30,7 @@ def listed() -> dict[str, tuple[str, list[str]]]:
 
 def test_every_check_is_listed_and_every_test_area_exists():
     checks = listed()
-    for name in ("lock", "lint", "markdown", "yaml", "workflow", "profiles", "cli", "queue", "reconcile", "status",
+    for name in ("lock", "lint", "markdown", "docs", "yaml", "workflow", "profiles", "cli", "queue", "reconcile", "status",
                  "sync", "onboarding", "pane", "extension", "install", "skills", "automerge", "isolation"):
         assert name in checks, f"no {name} check: {sorted(checks)}"
     for name, (kind, targets) in checks.items():

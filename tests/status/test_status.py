@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime
 import os
 import time
 from pathlib import Path
@@ -211,6 +212,24 @@ def test_fuel_flag_is_the_fuel_section_alone_and_spends_no_other_probe(stubs):
     refute(done.out, "2026-03-19T03:43:45.600Z", "298906")
     # A pane has no `os` and cannot parse an instant, so the age has to be subtractable.
     assert abs(time.time() - int(records(done.stdout)[0]["read_at"])) < 300
+
+
+def test_the_record_carries_every_window_shortest_first(stubs):
+    """EVERY WINDOW, not only the one that binds. A record that carried the
+    binding window alone made the pane flip between the five-hour and the
+    seven-day window whenever their percentages crossed. So each window is a
+    `window` line — id, percent, reset as epoch seconds, label — shortest window
+    first, whatever order quota-axi declared them in (the stand-in declares the
+    week first). The binding window is still `limited_by`, and still the reading."""
+    stubs.tool("quota-axi", fuel_of(64))
+    done = status("--fuel")
+    rows = [line.split("\t")[1:] for line in done.stdout.splitlines() if line.startswith("window\t")]
+    assert [r[0] for r in rows] == ["five_hour", "seven_day", "model:fable"], done.out
+    week = rows[1]
+    assert week[1] == "64" and week[3] == "week", week
+    want = int(datetime.fromisoformat("2026-03-20T17:59:45.600+00:00").timestamp())
+    assert int(week[2]) == want, f"reset is not epoch seconds: {week}"
+    expect(done.out, "limited_by\tseven_day")
 
 
 def test_an_unreadable_fuel_record_is_a_reason_and_carries_no_number(stubs):

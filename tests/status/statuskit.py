@@ -81,17 +81,19 @@ def claude(weekly: int) -> dict:
     """Three windows that reset independently, measured and projected."""
     return {
         "provider": "claude", "plan": "max", "source": "oauth",
+        # The week is declared first on purpose: the record orders windows
+        # shortest first whatever order quota-axi declared them in.
         "windows": [
-            {"id": "five_hour", "label": "session", "kind": "session", "percentRemaining": 90,
-             "resetsAt": "2026-03-15T20:10:48.000Z",
-             "pace": {"status": "behind", "reservePercentPoints": 12.4, "burnMultiple": 0.5921,
-                      "projectedExhaustedAt": "2026-03-15T18:02:11.000Z"}},
             {"id": "seven_day", "label": "week", "kind": "weekly", "percentRemaining": weekly,
-             "resetsAt": "2026-03-20T17:59:45.600Z",
+             "windowSeconds": 604800, "resetsAt": "2026-03-20T17:59:45.600Z",
              "pace": {"status": "ahead", "reservePercentPoints": -8.2, "burnMultiple": 1.295,
                       "projectedExhaustedAt": "2026-03-19T03:43:45.600Z"}},
+            {"id": "five_hour", "label": "session", "kind": "session", "percentRemaining": 90,
+             "windowSeconds": 18000, "resetsAt": "2026-03-15T20:10:48.000Z",
+             "pace": {"status": "behind", "reservePercentPoints": 12.4, "burnMultiple": 0.5921,
+                      "projectedExhaustedAt": "2026-03-15T18:02:11.000Z"}},
             {"id": "model:fable", "label": "Fable week", "kind": "model", "percentRemaining": 100,
-             "resetsAt": "2026-03-20T08:25:12.000Z"},
+             "windowSeconds": 604800, "resetsAt": "2026-03-20T08:25:12.000Z"},
         ],
         "state": {"status": "fresh", "stale": False},
         "quotaSemantics": {"status": "known", "effectiveAvailability": [

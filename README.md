@@ -50,7 +50,7 @@ Each box in the diagram:
   [`scripts/lib/forge.py`](scripts/lib/forge.py): GitHub through `gh`, GitLab
   through `glab`. A repository is named by host and path, such as
   `github.com/you/app`, so self-hosted instances work the same way.
-- **Reconciler.** [`scripts/reconcile.sh`](scripts/reconcile.sh) is a
+- **Reconciler.** [`scripts/lib/reconcile.py`](scripts/lib/reconcile.py) is a
   supervised loop that you start and stop. It runs the queue's `watch`,
   `collect`, `shepherd` and `refuel` on their own intervals. When a task
   becomes ready, it types one line into the lead's terminal. It never
@@ -59,7 +59,7 @@ Each box in the diagram:
   draws the queue and your remaining agent quota in a thurbox column. It reads
   the same files and writes nothing.
 - **Registry and settings.** `registry/owners.txt` lists the GitHub owners you
-  work under. [`scripts/sync-registry.sh`](scripts/sync-registry.sh) turns it
+  work under. [`scripts/lib/sync_registry.py`](scripts/lib/sync_registry.py) turns it
   into a map of every repository, and `registry/context/<repo>.md` holds your
   notes on each project. The `orchestration/*.conf` files hold your publish,
   auto-merge and agent settings.

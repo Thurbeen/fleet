@@ -111,6 +111,15 @@ def check_markdown(fix: bool) -> str | None:
     return None
 
 
+def check_docs(fix: bool) -> str | None:
+    # rumdl checks the prose, not where it points: a relative link to a file that
+    # moved renders and 404s, and an SVG that does not parse renders as a broken
+    # image. check_docs.py holds both for the README.
+    if err := missing("git"):
+        return err
+    return "scripts/lib/check_docs.py README.md" if run([sys.executable, "scripts/lib/check_docs.py", "README.md"]) else None
+
+
 def check_yaml(fix: bool) -> str | None:
     if err := missing("git"):
         return err
@@ -140,6 +149,7 @@ STATIC = {
     "lock": check_lock,
     "lint": check_lint,
     "markdown": check_markdown,
+    "docs": check_docs,
     "yaml": check_yaml,
     "workflow": check_workflow,
     "profiles": check_profiles,
