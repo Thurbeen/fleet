@@ -33,7 +33,7 @@ def main(argv: list) -> int:
         return m.group(1).replace("''", "'") if m else ""
 
     if not script.startswith(PREFIX):
-        with open(os.path.join(state, f"{dest}.posix"), "a") as fh:
+        with open(os.path.join(state, f"{dest}.posix"), "a", encoding="utf-8") as fh:
             fh.write(script + "\n")
         word = (script.split() or ["?"])[0]
         sys.stderr.write(
@@ -43,7 +43,7 @@ def main(argv: list) -> int:
         return 1
 
     body = base64.b64decode(script[len(PREFIX):]).decode("utf-16-le")
-    with open(os.path.join(state, f"{dest}.commands"), "a") as fh:
+    with open(os.path.join(state, f"{dest}.commands"), "a", encoding="utf-8") as fh:
         fh.write(body + "\n---\n")
 
     if "fleet-powershell-ok" in body:

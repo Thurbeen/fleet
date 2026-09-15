@@ -187,6 +187,15 @@ check_queue() {
 		./scripts/queue-selftest.sh
 		fail "queue: scripts/queue-selftest.sh"
 	fi
+
+	# The claims already ported to pytest, with the harness they stand on. These
+	# run natively on Windows as well; the bash above does not.
+	if uv run --frozen --quiet pytest -q tests/test_harness.py tests/queue >/dev/null 2>&1; then
+		ok "queue: the ported claims hold (tests/queue)"
+	else
+		uv run --frozen --quiet pytest -q tests/test_harness.py tests/queue
+		fail "queue: tests/queue"
+	fi
 }
 
 # The reconciler's lifecycle, the part of it that can break silently: it runs

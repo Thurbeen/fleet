@@ -8,7 +8,7 @@ dependencies = ["pyyaml>=6.0.3"]
 # Gate tools, pinned here so every runner installs the same ones. `uv run`
 # syncs this group by default, so `uv run fleet check` finds rumdl on PATH.
 [dependency-groups]
-dev = ["rumdl==0.2.73", "ruff==0.16.7"]
+dev = ["pytest==9.1.1", "rumdl==0.2.73", "ruff==0.16.7"]
 
 [project.scripts]
 fleet = "fleet.cli:main"
@@ -21,3 +21,8 @@ build-backend = "uv_build"
 # it dispatches to, rather than under src/.
 [tool.uv.build-backend]
 module-root = ""
+
+# No .pytest_cache in the tree: a checkout the gate leaves dirty is one
+# sync-checkout.sh refuses to fast-forward.
+[tool.pytest.ini_options]
+addopts = ["-p", "no:cacheprovider"]

@@ -223,7 +223,9 @@ printf '\n§1 the checks, in a poisoned checkout\n'
 
 # `check.sh queue` runs queue-selftest.sh, whose own isolation is §3's. Swapped
 # for a marker here so what is under test is what check_queue ITSELF reads, at
-# a cost of milliseconds rather than a second full queue selftest.
+# a cost of milliseconds rather than a second full queue selftest. Its pytest
+# half is NOT swapped: run for real under the hostile host, it is what proves
+# tests/harness.py's isolated_env holds there, as §2 proves the bash helper.
 printf '#!/usr/bin/env bash\ntouch "%s"\n' "$tmp/queue-selftest-ran" >"$copy/scripts/queue-selftest.sh"
 
 out="$(under_hostile ./scripts/check.sh queue)"
