@@ -35,7 +35,7 @@ import yaml
 def registry_problems(path: str) -> tuple[str, list[str]]:
     """(a one-line summary, every way the map at `path` has the wrong shape)."""
     try:
-        with open(path) as fh:
+        with open(path, encoding="utf-8") as fh:
             doc = yaml.safe_load(fh)
     except Exception as exc:  # noqa: BLE001 — an unreadable map is a problem
         return "", [f"{path}: {exc}"]
@@ -74,7 +74,7 @@ def main() -> int:
     bad = False
     for path in sys.argv[1:]:
         try:
-            with open(path) as fh:
+            with open(path, encoding="utf-8") as fh:
                 list(yaml.safe_load_all(fh))
         except Exception as exc:  # noqa: BLE001 — report every parse failure
             print(f"::error file={path}::{exc}")

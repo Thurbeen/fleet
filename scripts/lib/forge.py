@@ -388,7 +388,7 @@ def configured_hosts(cli: str, timeout: int = 10) -> list:
 def _auth_status_hosts(argv: list, timeout: int):
     """The hostnames `argv` printed, or None if it never answered at all."""
     try:
-        out = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+        out = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", timeout=timeout)
     except (OSError, subprocess.SubprocessError):
         return None
     seen: dict = {}
@@ -586,7 +586,7 @@ class GitHubForge(Forge):
             return None, "gh not found on PATH"
         try:
             out = subprocess.run(
-                ["gh"] + argv, capture_output=True, text=True, cwd=cwd, timeout=timeout
+                ["gh"] + argv, capture_output=True, text=True, encoding="utf-8", cwd=cwd, timeout=timeout
             )
         except (OSError, subprocess.SubprocessError) as exc:
             return None, f"gh could not be run: {exc}"
@@ -1047,7 +1047,7 @@ class GitLabForge(Forge):
             return None, "glab not found on PATH"
         try:
             out = subprocess.run(
-                ["glab"] + argv, capture_output=True, text=True, cwd=cwd, timeout=timeout
+                ["glab"] + argv, capture_output=True, text=True, encoding="utf-8", cwd=cwd, timeout=timeout
             )
         except (OSError, subprocess.SubprocessError) as exc:
             return None, f"glab could not be run: {exc}"
@@ -1653,7 +1653,7 @@ def _git_remote(path: str) -> str:
     try:
         out = subprocess.run(
             ["git", "-C", path, "remote", "get-url", "origin"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, encoding="utf-8", timeout=10,
         )
     except (OSError, subprocess.SubprocessError):
         return ""

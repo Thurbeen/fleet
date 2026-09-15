@@ -30,10 +30,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 FLEET = shutil.which("fleet")
 
-# Inside cp1252 on purpose: this test is about the console, and a record's own
-# encoding is tests/test_queue_records.py's, so the 🚀 goes where nothing writes
-# it into a file.
-TITLE = "Ship it — now"
+# Outside cp1252 on purpose, so it proves both halves on a Windows console: the
+# record `topic add` writes holds it, and the line `list` prints encodes it.
+TITLE = "Ship it — now 🚀"
 
 DROPPED = ("GH_", "GITHUB_", "GITLAB_", "GLAB_", "FLEET_", "THURBOX_", "PYTHONUTF8", "PYTHONIOENCODING")
 

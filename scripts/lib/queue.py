@@ -902,7 +902,7 @@ def live_session_cwd(name: str) -> str | None:
         out = subprocess.run(
             ["thurbox-cli", "session", "list", "--json"],
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8",
             timeout=10,
         )
     except (OSError, subprocess.SubprocessError):
@@ -2345,7 +2345,7 @@ def thurbox_config() -> dict:
     try:
         proc = subprocess.run(
             ["thurbox-cli", "config", "show", "--json"],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, encoding="utf-8", timeout=30,
         )
         return json.loads(proc.stdout) if proc.returncode == 0 else {}
     except (OSError, subprocess.SubprocessError, ValueError):
@@ -2649,7 +2649,7 @@ def ssh_run(entry: dict, script: str, stdin: str | None = None, login: bool = Tr
     try:
         return subprocess.run(
             ssh_argv(entry) + [host_shell(entry).command(script, login)],
-            input=stdin, capture_output=True, text=True, timeout=SSH_TIMEOUT,
+            input=stdin, capture_output=True, text=True, encoding="utf-8", timeout=SSH_TIMEOUT,
         )
     except subprocess.TimeoutExpired:
         # Not `str(exc)`: that is the whole argv, and a PowerShell command's
@@ -2866,7 +2866,7 @@ def session_worktree(sid: str) -> tuple[str, str]:
     try:
         proc = subprocess.run(
             ["thurbox-cli", "session", "get", sid, "--json"],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, encoding="utf-8", timeout=30,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return "", f"thurbox-cli session get could not run: {exc}"
@@ -4280,7 +4280,7 @@ def live_sessions() -> tuple[set | None, str]:
     try:
         proc = subprocess.run(
             ["thurbox-cli", "session", "list", "--json"],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, encoding="utf-8", timeout=30,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return None, f"thurbox-cli session list could not run: {exc}"
@@ -4307,7 +4307,7 @@ def session_state(sid: str) -> tuple[str | None, str]:
     try:
         proc = subprocess.run(
             ["thurbox-cli", "session", "get", sid, "--json"],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, encoding="utf-8", timeout=30,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return None, f"thurbox-cli session get could not run: {exc}"
@@ -4381,7 +4381,7 @@ def release_fixer_checkouts(q: Queue, state_of, dry: bool) -> int:
                 continue
             proc = subprocess.run(
                 ["git", "-C", task.doc["repo"], "worktree", "remove", path],
-                capture_output=True, text=True,
+                capture_output=True, text=True, encoding="utf-8",
             )
             if proc.returncode != 0:
                 err = (proc.stderr or proc.stdout).strip().splitlines()
@@ -4511,7 +4511,7 @@ def reap(q: Queue, dry: bool = False, release: bool = True) -> int:
         # is never actually freed, which is the entire point.
         proc = subprocess.run(
             ["thurbox-cli", "session", "delete", sid, "--force"],
-            capture_output=True, text=True,
+            capture_output=True, text=True, encoding="utf-8",
         )
         if proc.returncode != 0:
             err = (proc.stderr or proc.stdout).strip().splitlines()
@@ -4889,7 +4889,7 @@ def pane_exhaustion(sid: str, agent: str | None = None) -> tuple[str, str]:
     try:
         proc = subprocess.run(
             ["thurbox-cli", "session", "capture", sid, "--lines", str(CAPTURE_LINES), "--json"],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, encoding="utf-8", timeout=30,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return "unknown", f"session capture could not run: {exc}"
@@ -4938,7 +4938,7 @@ def session_doc(sid: str) -> tuple[dict | None, str]:
     try:
         proc = subprocess.run(
             ["thurbox-cli", "session", "get", sid, "--json"],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, encoding="utf-8", timeout=30,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return None, f"thurbox-cli session get could not run: {exc}"
@@ -4973,7 +4973,7 @@ def restart_session(sid: str) -> tuple[bool, str]:
     """
     try:
         proc = subprocess.run(
-            ["thurbox-cli", "session", "restart", sid], capture_output=True, text=True, timeout=120
+            ["thurbox-cli", "session", "restart", sid], capture_output=True, text=True, encoding="utf-8", timeout=120
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return False, f"session restart could not run: {exc}"
@@ -5721,7 +5721,7 @@ def git_out(repo: str, argv: list, timeout: int = 30) -> str:
     """git, best effort. A failure is the empty string — never an exception."""
     try:
         out = subprocess.run(
-            ["git", "-C", repo] + argv, capture_output=True, text=True, timeout=timeout
+            ["git", "-C", repo] + argv, capture_output=True, text=True, encoding="utf-8", timeout=timeout
         )
     except (OSError, subprocess.SubprocessError):
         return ""
@@ -5916,7 +5916,7 @@ def branch_checkout(repo: str, branch: str, slug: str) -> tuple[str, str]:
         out = subprocess.run(
             ["git", "-C", repo, "worktree", "add", dest, branch],
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8",
             timeout=120,
         )
     except (OSError, subprocess.SubprocessError) as exc:

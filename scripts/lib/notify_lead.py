@@ -129,7 +129,7 @@ fleetqueue = _load_queue()
 
 def read_state(state_dir: str) -> dict:
     try:
-        with open(os.path.join(state_dir, STATE_FILE)) as fh:
+        with open(os.path.join(state_dir, STATE_FILE), encoding="utf-8") as fh:
             doc = json.load(fh)
     except (OSError, json.JSONDecodeError):
         return {}
@@ -144,7 +144,7 @@ def write_state(state_dir: str, told: list, note: str) -> None:
     """
     try:
         os.makedirs(state_dir, exist_ok=True)
-        with open(os.path.join(state_dir, STATE_FILE), "w") as fh:
+        with open(os.path.join(state_dir, STATE_FILE), "w", encoding="utf-8") as fh:
             json.dump({"told": told, "note": note}, fh)
     except OSError:
         pass
@@ -198,7 +198,7 @@ def lead_session(name: str) -> tuple[str | None, str]:
         out = subprocess.run(
             ["thurbox-cli", "session", "list", "--json"],
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8",
             timeout=10,
         )
     except (OSError, subprocess.SubprocessError) as exc:
@@ -231,7 +231,7 @@ def wake(sid: str, text: str) -> tuple[bool, str]:
         out = subprocess.run(
             ["thurbox-cli", "session", "send", sid, text],
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8",
             timeout=20,
         )
     except (OSError, subprocess.SubprocessError) as exc:

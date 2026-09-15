@@ -85,7 +85,7 @@ def run(argv: list, cwd: str | None = None, timeout: int = 10) -> tuple[str | No
     if not shutil.which(argv[0]):
         return None, f"{argv[0]} not found"
     try:
-        p = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+        p = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, encoding="utf-8", timeout=timeout)
     except subprocess.TimeoutExpired:
         return None, f"{argv[0]} timed out after {timeout}s"
     except OSError as exc:
@@ -396,7 +396,7 @@ def agent_conf() -> dict:
         path = os.path.join(root, AGENT_CONF_DEFAULTS)
     conf = {}
     try:
-        with open(path) as fh:
+        with open(path, encoding="utf-8") as fh:
             for raw in fh:
                 line = raw.strip()
                 if not line or line.startswith("#") or "=" not in line:
