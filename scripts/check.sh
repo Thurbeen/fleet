@@ -314,22 +314,11 @@ check_pane() {
 }
 
 check_skills() {
-	local link=".claude/skills"
-
-	if [ ! -L "$link" ]; then
-		fail "skills: $link is not a symlink (git config core.symlinks=true, then re-checkout)"
-		return
-	fi
-
-	local target
-	target="$(readlink "$link")"
-	if [ "$target" != "../.agents/skills" ]; then
-		fail "skills: $link points at '$target', expected '../.agents/skills'"
-		return
-	fi
-
-	if [ ! -d "$link/" ]; then
-		fail "skills: $link does not resolve to a directory"
+	# `.claude/skills` is untracked and made by `uv run fleet install`, so a
+	# fresh clone has none; tests/skills holds what must be true either way.
+	if ! uv run --frozen --quiet pytest -q tests/skills >/dev/null 2>&1; then
+		uv run --frozen --quiet pytest -q tests/skills
+		fail "skills: tests/skills"
 		return
 	fi
 
@@ -341,7 +330,7 @@ check_skills() {
 			missing=1
 		fi
 	done
-	[ "$missing" -eq 0 ] && ok "skills: $link -> $target resolves; every skill has a SKILL.md"
+	[ "$missing" -eq 0 ] && ok "skills: .claude/skills untracked, ignored, and resolving when present; every skill has a SKILL.md"
 }
 
 # THE VOICE, WHICH IS A SETTING AND NOT A LITERAL. `FLEET.md` is the lead's
@@ -491,23 +480,21 @@ check_onboarding() {
 	fi
 }
 
-# THE ONE-LINER AND THE FIRST-RUN ASK, driven as an operator meets them.
-# `install-selftest.sh` pipes install.sh into `sh` in a throwaway HOME against
-# a copy of this tree: prerequisites before the extension, the pane installed
-# and not placed, a second run that changes nothing, and a checkout that is
-# fast-forwarded or refused but never overwritten. Then `pane-ask.sh`: asked
-# once, both answers remembered, a placed pane never asked about. Then
-# `voice-ask.sh`: the two names recorded and rendered, a refused one writing
-# nothing, an answered voice.conf never overwritten unasked.
+# THE ONE-LINER, driven as an operator meets it. tests/install pipes install.sh
+# into `sh` (and install.ps1 into PowerShell, where there is one) in a
+# throwaway HOME against a copy of this tree, and drives `fleet install` on
+# stand-in package managers for both OS families: one plan, one question,
+# every route's exact argv, a second run that changes nothing, and a checkout
+# that is fast-forwarded or refused but never overwritten.
 check_install() {
 	need git install || return
-	need jq install || return
+	need uv install || return
 
-	if ./scripts/install-selftest.sh >/dev/null 2>&1; then
-		ok "install: install.sh converges and places no pane; pane-ask.sh and voice-ask.sh ask once"
+	if uv run --frozen --quiet pytest -q tests/install >/dev/null 2>&1; then
+		ok "install: the bootstraps and fleet install converge, ask once, and change nothing twice"
 	else
-		./scripts/install-selftest.sh
-		fail "install: scripts/install-selftest.sh"
+		uv run --frozen --quiet pytest -q tests/install
+		fail "install: tests/install"
 	fi
 }
 

@@ -65,8 +65,99 @@ def install_family() -> str:
     "windows" means winget and PowerShell installers; "posix" means a distro's
     package manager or Homebrew, and `sh` installers. preflight's table keys
     every route by it, so nothing there asks which OS it is on.
+
+    `FLEET_INSTALL_FAMILY` pins it, so either family's routes can be driven
+    against stand-in package managers on any OS; any other value is ignored.
     """
+    pinned = os.environ.get("FLEET_INSTALL_FAMILY")
+    if pinned in ("windows", "posix"):
+        return pinned
     return "windows" if WINDOWS else "posix"
+
+
+def running_as_root() -> bool:
+    """Whether a package manager's `sudo` would be redundant here.
+
+    POSIX: the effective uid is 0, as in a container. Windows: never — no route
+    there goes through sudo, and winget installs for the user who runs it.
+    """
+    return not WINDOWS and os.geteuid() == 0
+
+
+def merged_path(current: str, *more: str) -> str:
+    """`current`, then every entry of `more` it does not already hold, in order."""
+    seen, entries = set(), []
+    for value in (current, *more):
+        for entry in value.split(os.pathsep):
+            key = os.path.normcase(entry)
+            if entry and key not in seen:
+                seen.add(key)
+                entries.append(entry)
+    return os.pathsep.join(entries)
+
+
+def refresh_path() -> None:
+    """Let this process find what an installer just put on the user's PATH.
+
+    Windows: an installer writes the new directory into the registry's user or
+    machine `Path`, which a running process never re-reads, so the next line
+    would not find the tool it just installed. Both are read and appended to
+    this process's PATH, which keeps what it already had first. POSIX: a
+    package manager installs onto a PATH that is already there; nothing to do.
+    """
+    if not WINDOWS:
+        return
+    import winreg
+
+    values = []
+    for hive, key in ((winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"),
+                      (winreg.HKEY_CURRENT_USER, "Environment")):
+        try:
+            with winreg.OpenKey(hive, key) as handle:
+                values.append(os.path.expandvars(winreg.QueryValueEx(handle, "Path")[0]))
+        except OSError:
+            continue
+    os.environ["PATH"] = merged_path(os.environ.get("PATH", ""), *values)
+
+
+# --- directory links ------------------------------------------------------------
+
+
+def is_dir_link(path: str) -> bool:
+    """Whether `path` is a link to a directory as `make_dir_link` makes one: a
+    symlink, or on Windows a junction, which `os.path.islink` does not see."""
+    if os.path.islink(path):
+        return True
+    if not WINDOWS:
+        return False
+    import stat
+
+    try:
+        return os.lstat(path).st_reparse_tag == stat.IO_REPARSE_TAG_MOUNT_POINT
+    except (OSError, AttributeError):
+        return False
+
+
+def make_dir_link(link: str, target: str) -> None:
+    """Make `link` point at the directory `target`, replacing a link already there.
+
+    POSIX: a RELATIVE symlink, so a checkout that moves keeps it. Windows: a
+    directory junction, because a symlink needs Developer Mode or an elevated
+    process and a junction needs neither; a junction holds an absolute path, so
+    a moved checkout gets it re-made by the next install. Never replaces a
+    file or a real directory: that is the caller's decision to make first.
+    """
+    if is_dir_link(link):
+        if WINDOWS:
+            os.rmdir(link)  # removes a junction, never what it points at
+        else:
+            os.unlink(link)
+    if WINDOWS:
+        import _winapi
+
+        _winapi.CreateJunction(os.path.abspath(target), os.path.abspath(link))
+    else:
+        os.symlink(os.path.relpath(os.path.abspath(target), os.path.dirname(os.path.abspath(link))), link)
 
 
 # --- records ------------------------------------------------------------------

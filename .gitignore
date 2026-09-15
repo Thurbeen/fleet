@@ -106,6 +106,12 @@
 !/orchestration/queue/POLICY.md
 !/orchestration/queue/OPERATOR.example.md
 
+# MACHINE. The link that lets Claude Code and opencode load .agents/skills/,
+# made by `uv run fleet install`: a symlink on POSIX, a junction on Windows. It
+# is not tracked because a default Windows clone checks a tracked link out as a
+# text file holding its target, and then no agent found a single skill.
+/.claude/skills
+
 # GENERATED. Python's bytecode cache. scripts/lib/fleet_status.py loads
 # queue.py as a module, and importing anything writes one of these beside the
 # source — so it appears the first time a command runs and never in a fresh

@@ -662,10 +662,10 @@ def cmd_nudge(cfg: Config) -> int:
     return 0
 
 
-def hook_command() -> str:
+def hook_command(checkout: str = CHECKOUT) -> str:
     """One command every shell parses the same: forward slashes, which bash does
     not eat and Windows accepts, and double quotes only around a path with a space."""
-    project = CHECKOUT.replace("\\", "/")
+    project = checkout.replace("\\", "/")
     if any(c.isspace() for c in project):
         project = f'"{project}"'
     return f"uv run --project {project} fleet reconcile nudge"

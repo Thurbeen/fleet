@@ -93,7 +93,103 @@ class InstallFamily(unittest.TestCase):
 
     @unittest.skipIf(WINDOWS, "the POSIX branch")
     def test_install_family_is_posix_elsewhere(self):
-        self.assertEqual(fp.install_family(), "posix")
+        with environ(FLEET_INSTALL_FAMILY=None):
+            self.assertEqual(fp.install_family(), "posix")
+
+    def test_install_family_can_be_pinned_so_either_familys_routes_run_on_any_os(self):
+        for family in ("windows", "posix"):
+            with environ(FLEET_INSTALL_FAMILY=family):
+                self.assertEqual(fp.install_family(), family)
+
+    def test_an_unknown_pinned_family_is_ignored(self):
+        with environ(FLEET_INSTALL_FAMILY="beos"):
+            self.assertEqual(fp.install_family(), "windows" if WINDOWS else "posix")
+
+    @unittest.skipIf(WINDOWS, "the POSIX branch")
+    def test_running_as_root_is_the_effective_uid(self):
+        self.assertEqual(fp.running_as_root(), os.geteuid() == 0)
+
+    @unittest.skipUnless(WINDOWS, "the Windows branch")
+    def test_running_as_root_is_never_true_on_windows(self):
+        self.assertFalse(fp.running_as_root())
+
+
+class RefreshPath(unittest.TestCase):
+    def test_merged_path_keeps_what_is_there_first_and_adds_only_new_entries(self):
+        sep = os.pathsep
+        merged = fp.merged_path(sep.join(["a", "b"]), sep.join(["b", "c"]), sep.join(["", "c", "d"]))
+        self.assertEqual(merged, sep.join(["a", "b", "c", "d"]))
+
+    @unittest.skipIf(WINDOWS, "the POSIX branch")
+    def test_refresh_path_changes_nothing_on_posix(self):
+        with environ(PATH="/nowhere"):
+            fp.refresh_path()
+            self.assertEqual(os.environ["PATH"], "/nowhere")
+
+    @unittest.skipUnless(WINDOWS, "the registry branch")
+    def test_refresh_path_adds_the_registry_path_a_new_install_wrote(self):
+        import winreg
+
+        key = r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key) as handle:
+            machine = winreg.QueryValueEx(handle, "Path")[0]
+        first = os.path.expandvars(next(p for p in machine.split(";") if p))
+        with tempfile.TemporaryDirectory() as mine, environ(PATH=mine):
+            fp.refresh_path()
+            entries = os.environ["PATH"].split(os.pathsep)
+            self.assertEqual(entries[0], mine, "what this process already had stays first")
+            self.assertIn(first.lower(), [e.lower() for e in entries])
+
+
+class DirLinks(TempDirCase):
+    def target(self) -> Path:
+        target = self.tmp / ".agents" / "skills"
+        (target / "one").mkdir(parents=True)
+        (target / "one" / "SKILL.md").write_text("x\n", encoding="utf-8")
+        (self.tmp / ".claude").mkdir()
+        return target
+
+    def test_make_dir_link_creates_a_link_that_resolves_to_the_target(self):
+        target = self.target()
+        link = self.tmp / ".claude" / "skills"
+        fp.make_dir_link(str(link), str(target))
+        self.assertTrue(fp.is_dir_link(str(link)))
+        self.assertTrue((link / "one" / "SKILL.md").is_file())
+        self.assertEqual(link.resolve(), target.resolve())
+
+    def test_make_dir_link_replaces_a_link_that_points_elsewhere(self):
+        target = self.target()
+        elsewhere = self.tmp / "elsewhere"
+        elsewhere.mkdir()
+        link = self.tmp / ".claude" / "skills"
+        fp.make_dir_link(str(link), str(elsewhere))
+        fp.make_dir_link(str(link), str(target))
+        self.assertEqual(link.resolve(), target.resolve())
+        self.assertTrue(elsewhere.is_dir(), "replacing the link removed what it pointed at")
+
+    def test_a_real_directory_and_a_file_are_not_links(self):
+        self.target()
+        self.assertFalse(fp.is_dir_link(str(self.tmp / ".agents")))
+        (self.tmp / "file").write_text("../.agents/skills", encoding="utf-8")
+        self.assertFalse(fp.is_dir_link(str(self.tmp / "file")))
+        self.assertFalse(fp.is_dir_link(str(self.tmp / "absent")))
+
+    @unittest.skipIf(WINDOWS, "the symlink branch")
+    def test_on_posix_it_is_a_relative_symlink_so_a_moved_checkout_keeps_it(self):
+        target = self.target()
+        link = self.tmp / ".claude" / "skills"
+        fp.make_dir_link(str(link), str(target))
+        self.assertTrue(link.is_symlink())
+        self.assertEqual(os.readlink(link), os.path.join("..", ".agents", "skills"))
+
+    @unittest.skipUnless(WINDOWS, "the junction branch")
+    def test_on_windows_it_is_a_junction_which_needs_no_privilege(self):
+        import stat
+
+        target = self.target()
+        link = self.tmp / ".claude" / "skills"
+        fp.make_dir_link(str(link), str(target))
+        self.assertEqual(os.lstat(link).st_reparse_tag, stat.IO_REPARSE_TAG_MOUNT_POINT)
 
 
 class Records(TempDirCase):
