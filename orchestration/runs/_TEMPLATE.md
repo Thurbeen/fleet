@@ -1,6 +1,6 @@
 # Run: `<YYYY-MM-DD>` — `<slug>`
 
-> One run, one topic. `./scripts/queue.sh topic add` opens this file, and
+> One run, one topic. `uv run fleet queue topic add` opens this file, and
 > `dispatch`, `collect`, `shepherd` and `run` refresh the fenced block below
 > from the queue's own records as the run goes on.
 >

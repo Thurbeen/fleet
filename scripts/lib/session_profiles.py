@@ -1,13 +1,21 @@
 #!/usr/bin/env python3
 """Render one session profile into `thurbox-cli session create` flags.
 
-Called by scripts/session-flags.sh, never on its own — that wrapper owns the
-argument handling and the usage message. Two modes:
+Run as `uv run fleet session-flags`, and in-process by `queue.py dispatch`,
+which calls `load_profiles` and `render` directly so that no shell stands
+between a task and its profile:
 
-    session_profiles.py <path> --check       validate every profile, print a
-                                             one-line summary
-    session_profiles.py <path> <profile>     validate every profile, then
-                                             write that one's flags to stdout
+    fleet session-flags                  the `default` profile
+    fleet session-flags sweep            a named profile
+    fleet session-flags --check          validate every profile
+
+`orchestration/session-profiles.yaml` is read from this checkout whatever the
+caller's directory is. The gate's older form names the file itself:
+
+    session_profiles.py <path> --check|<profile>
+
+A profile carrying `command` renders `--command`, so drop `--agent` from that
+`session create` call: thurbox refuses both together.
 
 ONE FILE, ONE LAYER. `<path>` holds every profile there is. There used to be a
 gitignored `.local.yaml` overlay beside it, so a profile could be tuned without
@@ -16,8 +24,7 @@ somebody pulled from, and the file is now simply the operator's to edit.
 
 Flags are written NUL-separated so a value may contain anything execve
 accepts — a `--arg` is frequently a whole command line, and a line-based
-protocol would corrupt one that spans lines. The caller reads them with
-`mapfile -d '' -t`.
+protocol would corrupt one that spans lines. A caller splits them on NUL.
 
 Both modes validate EVERY profile, not just the one being rendered. A profile
 that breaks a rule means the file is broken, and finding that out while
@@ -25,6 +32,7 @@ rendering a different profile is better than finding it out when a worker
 starts wrong.
 """
 
+import os
 import re
 import sys
 
@@ -122,7 +130,7 @@ def render(profile):
 def load_profiles(path, errors):
     """Parse and validate the profiles file. Returns its mapping, or None."""
     try:
-        with open(path) as fh:
+        with open(path, encoding="utf-8") as fh:
             doc = yaml.safe_load(fh)
     except FileNotFoundError:
         print(f"{path}: no such file", file=sys.stderr)
@@ -149,11 +157,36 @@ def load_profiles(path, errors):
     return doc["profiles"]
 
 
-def main() -> int:
-    if len(sys.argv) != 3:
-        print("usage: session_profiles.py <path> --check|<profile>", file=sys.stderr)
-        return 2
-    path, wanted = sys.argv[1], sys.argv[2]
+PROFILES = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "orchestration", "session-profiles.yaml",
+)
+
+
+def parse_args(argv: list[str]) -> tuple[str, str] | int:
+    """(path, wanted), or an exit code once the usage is dealt with."""
+    if len(argv) == 2 and not argv[0].startswith("-") and argv[0].endswith((".yaml", ".yml")):
+        return argv[0], argv[1]
+    wanted = "default"
+    for arg in argv:
+        if arg in ("-h", "--help"):
+            print(__doc__.strip())
+            return 0
+        if arg == "--check":
+            wanted = "--check"
+        elif arg.startswith("-"):
+            print(f"error: unknown option {arg!r} (want: --check)", file=sys.stderr)
+            return 2
+        else:
+            wanted = arg
+    return PROFILES, wanted
+
+
+def main(argv: list[str] | None = None) -> int:
+    parsed = parse_args(sys.argv[1:] if argv is None else argv)
+    if isinstance(parsed, int):
+        return parsed
+    path, wanted = parsed
 
     errors: list[str] = []
     profiles = load_profiles(path, errors)
@@ -166,7 +199,8 @@ def main() -> int:
         return 1
 
     if wanted == "--check":
-        print(f"profiles ok: {len(profiles)} in {path}")
+        shown = os.path.relpath(path, os.path.dirname(os.path.dirname(PROFILES))) if path == PROFILES else path
+        print(f"profiles ok: {len(profiles)} in {shown}")
         return 0
 
     if wanted not in profiles:

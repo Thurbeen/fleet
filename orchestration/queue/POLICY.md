@@ -1,8 +1,8 @@
 # Standing policy for fleet workers
 
-This is the policy every task in every repo runs under. `queue.sh add`'s brief
-scaffold points each worker here by absolute path instead of restating it, and
-this is the only copy.
+This is the policy every task in every repo runs under. `fleet queue add`'s
+brief scaffold points each worker here by absolute path instead of restating
+it, and this is the only copy.
 
 If you are a worker: **read this once before you start.** Your brief holds what
 is true for your task; this holds what is true for all of them. The brief does
@@ -41,7 +41,7 @@ concrete terms.
 ## Gate locally before you push
 
 Run the repo's own gate and make it green first. In this control plane that is
-`./scripts/check.sh`, and `./scripts/check.sh --fix` applies the fixes a check
+`uv run fleet check`, and `uv run fleet check --fix` applies the fixes a check
 can apply. Where a repo names a different gate in its `AGENTS.md` or
 `CONTRIBUTING.md`, that one is the gate.
 
@@ -54,9 +54,9 @@ Your brief's **Publish** line names one method, what it must leave behind, and
 what proves it. It is the authority: where it names a tool, use that tool. Do
 not switch methods.
 
-`queue.sh collect` then goes and looks for that artifact: the forge for a change
-request — a pull request on GitHub, a merge request on GitLab — or for a review
-or comment on one, and git for a commit on the base branch. A task whose
+`fleet queue collect` then goes and looks for that artifact: the forge for a
+change request — a pull request on GitHub, a merge request on GitLab — or for a
+review or comment on one, and git for a commit on the base branch. A task whose
 artifact is not there, or is not from your branch — or is not on the
 **Target** your brief names, when it names one — **is not closed**: the lead
 sees it at collect time and sends you back. A `note` must also be written by
@@ -113,7 +113,7 @@ operator's pipeline shipped to every clone.
   request's title becomes the commit on `main`. Write the title accordingly.
   A repo that forbids squash — a GitLab project can, with
   `squash_option: never` — is one fleet reports and leaves for you.
-- **You do not merge.** Opening it is where your work ends. `queue.sh
+- **You do not merge.** Opening it is where your work ends. `fleet queue
   shepherd` may later merge it for you in the repos the operator's own
   `orchestration/auto-merge.conf` names (host-qualified, as in
   `github.com/owner/repo` or `gitlab.example.com/group/project`), but only once

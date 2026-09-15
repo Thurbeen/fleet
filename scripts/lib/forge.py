@@ -32,7 +32,7 @@ it:
     open_change_requests    every open change request on a repository
     open_change_requests_in_checkout
                             the same, asked of a local checkout rather than of
-                            a repository id — what `fleet-status.sh` needs and
+                            a repository id — what `fleet status` needs and
                             the only caller that has a path but no identity
     can_push                may this account push to this repository — the last
                             gate before an unattended merge
@@ -69,10 +69,10 @@ discovery is not done for `gh`.
 
 ADDING A FORGE. Write a class with the methods below and register it: either
 in `BUILTIN` here, or — for a test, or a forge that is not fleet's business to
-ship — through `FLEET_FORGE_PLUGINS`, a colon-separated list of Python files
-each exporting `forges()`. `scripts/queue-selftest.sh` drives the whole queue
-through a plugin with no network and no `gh` behind it, which is how this seam
-is proved rather than asserted.
+ship — through `FLEET_FORGE_PLUGINS`, a PATH-style list (`:` on POSIX, `;` on
+Windows) of Python files each exporting `forges()`. The queue's tests drive
+the whole queue through a plugin with no network and no `gh` behind it, which
+is how this seam is proved rather than asserted.
 """
 
 from __future__ import annotations
@@ -352,15 +352,16 @@ def configured_hosts(cli: str, timeout: int = 10) -> list:
     machine that has neither CLI.
 
     WHY THE GITHUB ADAPTER DOES NOT USE THIS, though `gh auth status` prints
-    the same shape and GitHub Enterprise is the same problem. §13 of
-    `queue-selftest.sh` drives the whole queue through a forge that is not
-    GitHub with `gh` on PATH as a TRIPWIRE — it fails on any invocation at all,
+    the same shape and GitHub Enterprise is the same problem.
+    `tests/queue/test_forge_seam.py` drives the whole queue through a forge
+    that is not GitHub with `gh` on PATH as a TRIPWIRE — it fails on any
+    invocation at all,
     so code reaching around this seam shows up there by name. Building the
     GitHub adapter would run `gh auth status` and trip it, and the honest
     choice between "discover GitHub Enterprise" and "keep the regression test
     that keeps this seam honest" is the second one: `GH_HOST` was never the
     half that was broken. This function takes the CLI by name so that
-    everything else — `scripts/preflight.sh` reporting auth per host, say —
+    everything else — `fleet preflight` reporting auth per host, say —
     can ask it about `gh` too, and so that the day that tripwire can tell a
     configuration read from a change-request call, the adapter needs one line.
     """
@@ -388,7 +389,7 @@ def configured_hosts(cli: str, timeout: int = 10) -> list:
 def _auth_status_hosts(argv: list, timeout: int):
     """The hostnames `argv` printed, or None if it never answered at all."""
     try:
-        out = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+        out = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", timeout=timeout)
     except (OSError, subprocess.SubprocessError):
         return None
     seen: dict = {}
@@ -483,7 +484,7 @@ GH_FIELDS = (
     "author,headRepositoryOwner,isCrossRepository"
 )
 
-# The narrower set `fleet-status.sh` needs: it prints a line per pull request
+# The narrower set `fleet status` needs: it prints a line per pull request
 # and decides nothing, so it does not pay for the safety fields.
 GH_STATUS_FIELDS = "number,url,title,headRefName,state,statusCheckRollup"
 
@@ -586,7 +587,7 @@ class GitHubForge(Forge):
             return None, "gh not found on PATH"
         try:
             out = subprocess.run(
-                ["gh"] + argv, capture_output=True, text=True, cwd=cwd, timeout=timeout
+                ["gh"] + argv, capture_output=True, text=True, encoding="utf-8", cwd=cwd, timeout=timeout
             )
         except (OSError, subprocess.SubprocessError) as exc:
             return None, f"gh could not be run: {exc}"
@@ -877,7 +878,7 @@ class GitHubForge(Forge):
 GL_PAGE = 100
 GL_LIST_LIMIT = 1000
 
-# What `fleet-status.sh` reads out of a checkout. Lower than the shepherd's cap
+# What `fleet status` reads out of a checkout. Lower than the shepherd's cap
 # because it decides nothing and one line per merge request is all it prints.
 GL_CHECKOUT_LIMIT = 50
 
@@ -1047,7 +1048,7 @@ class GitLabForge(Forge):
             return None, "glab not found on PATH"
         try:
             out = subprocess.run(
-                ["glab"] + argv, capture_output=True, text=True, cwd=cwd, timeout=timeout
+                ["glab"] + argv, capture_output=True, text=True, encoding="utf-8", cwd=cwd, timeout=timeout
             )
         except (OSError, subprocess.SubprocessError) as exc:
             return None, f"glab could not be run: {exc}"
@@ -1481,10 +1482,11 @@ class GitLabForge(Forge):
 
 BUILTIN = (GitHubForge, GitLabForge)
 
-# A colon-separated list of Python files, each exporting `forges()`. This is
-# how the selftest drives the whole queue through a forge that has no network
-# and no `gh` behind it, and how a forge fleet does not ship can be tried out
-# without editing this file.
+# A list of Python files, each exporting `forges()`, separated the way PATH is
+# (`os.pathsep`): split on `:` alone, a Windows path's drive letter became an
+# entry of its own. This is how the tests drive the whole queue through a forge
+# that has no network and no `gh` behind it, and how a forge fleet does not
+# ship can be tried out without editing this file.
 PLUGIN_ENV = "FLEET_FORGE_PLUGINS"
 
 _REGISTRY: list | None = None
@@ -1500,7 +1502,7 @@ def forges() -> list:
     global _REGISTRY
     if _REGISTRY is None:
         _REGISTRY = [cls() for cls in BUILTIN]
-        for path in os.environ.get(PLUGIN_ENV, "").split(":"):
+        for path in os.environ.get(PLUGIN_ENV, "").split(os.pathsep):
             path = path.strip()
             if path:
                 _REGISTRY.extend(_load_plugin(path))
@@ -1622,7 +1624,7 @@ def open_change_requests_in_checkout(path: str) -> tuple:
     """Every open change request in a local checkout, without naming its repository.
 
     The one question asked of a PATH rather than of a `RepoId`, because
-    `fleet-status.sh` has a checkout on disk and no identity for it — and a
+    `fleet status` has a checkout on disk and no identity for it — and a
     directory that is not a git repository at all still has to produce a
     sentence rather than an empty list that reads as "nothing is open".
     """
@@ -1653,7 +1655,7 @@ def _git_remote(path: str) -> str:
     try:
         out = subprocess.run(
             ["git", "-C", path, "remote", "get-url", "origin"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, encoding="utf-8", timeout=10,
         )
     except (OSError, subprocess.SubprocessError):
         return ""
@@ -1664,10 +1666,10 @@ def _git_remote(path: str) -> str:
 
 
 if __name__ == "__main__":
-    # `python3 scripts/lib/forge.py hosts glab` — the one thing in this module
-    # a shell script needs, since `configured_hosts` answers a question
-    # (`scripts/preflight.sh`'s "which instances should I report auth for")
-    # that is not itself about a change request. One host per line, nothing on
+    # `uv run python scripts/lib/forge.py hosts glab` — the one thing in this
+    # module worth asking from a terminal, since `configured_hosts` answers a
+    # question ("which instances should auth be reported for") that is not
+    # itself about a change request. One host per line, nothing on
     # a machine that has no such CLI, and always exit 0: a CLI that is not
     # installed is an answer, not an error.
     if len(sys.argv) == 3 and sys.argv[1] == "hosts":

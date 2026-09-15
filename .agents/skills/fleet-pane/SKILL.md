@@ -1,6 +1,6 @@
 ---
 name: fleet-pane
-description: Put the fleet queue pane on the operator's thurbox screen and diagnose it when it is installed and drawing nothing, or drawing the wrong thing. Covers the install (a side effect of scripts/install-extension.sh), what verifies it, the layout.lua block that places it and the script that writes that block on the operator's word, the F-key that hides it, and removal. Use when asked to install, place, hide, remove or debug the TUI queue pane, when the pane is there and empty, or when it draws too much to read.
+description: Put the fleet queue pane on the operator's thurbox screen and diagnose it when it is installed and drawing nothing, or drawing the wrong thing. Covers the install (a side effect of uv run fleet install-extension), what verifies it, the layout.lua block that places it and the command that writes that block on the operator's word, the F-key that hides it, and removal. Use when asked to install, place, hide, remove or debug the TUI queue pane, when the pane is there and empty, or when it draws too much to read.
 user-invocable: true
 allowed-tools: Read, Bash, Glob, Grep
 ---
@@ -19,7 +19,7 @@ screen and finding out why it is not on one.
 > pane no arrangement places loads cleanly, declares its keys, appears in
 > `plugin list`, and draws nothing.
 >
-> **`./scripts/place-pane.sh` writes that block, and only ever because the
+> **`uv run fleet place-pane` writes that block, and only ever because the
 > operator said to.** It is never a step that happens on the way to something
 > else: ask, then run it. It refuses a layout it cannot recognise, backs the
 > file up, re-reads its own edit with `lua`, and verifies with `plugin check`.
@@ -33,12 +33,12 @@ but not there".
 
 A **readout, not a place you go**. `focusable = false`, so the focus ring walks
 past it, `ctrl+h`/`ctrl+l` never land on it, and no key on it dispatches,
-collects or merges anything — `scripts/queue.sh` stays the only thing that
+collects or merges anything — `uv run fleet queue` stays the only thing that
 writes to the queue. The wheel scrolls it. Its one action is the F-key in §5.
 
 It is the fleet's only live view of the queue, over the same records
-`./scripts/queue.sh list` reads. `queue.sh show` is still where you read a task
-in full; the pane is for noticing a task changed state without asking.
+`uv run fleet queue list` reads. `fleet queue show` is still where you read a
+task in full; the pane is for noticing a task changed state without asking.
 
 **`interface/fleet_queue.lua`'s header owns what it draws and why** — the fuel
 rows above the counters, the `⇡` artifact row under a task (its declared
@@ -47,19 +47,19 @@ turned out to be,
 and what fleet last saw), and what a narrow column drops first (`PUBLISH_WORD`,
 `PUBLISH_LADDER`).
 
-**It calls nothing itself.** Fuel comes from `./scripts/fleet-status.sh --fuel`
-on a five-minute TTL, never from `quota-axi` directly; FLEET.md's `## Fuel`
-section owns the reserve. Every word of the `⇡` row comes off `task.yaml`'s
-`publish` block, written by `collect`, `shepherd` and `reap` — so the pane runs
-no `gh` and says nothing `queue.sh show` would not print in the same word.
+**It calls nothing itself.** Fuel comes from `uv run fleet status --fuel` on a
+five-minute TTL, never from `quota-axi` directly; FLEET.md's `## Fuel` section
+owns the reserve. Every word of the `⇡` row comes off `task.yaml`'s `publish`
+block, written by `collect`, `shepherd` and `reap` — so the pane runs no `gh`
+and says nothing `fleet queue show` would not print in the same word.
 
 Four consequences are worth knowing here because they turn into questions:
 
 - **An absent row means "nothing to report", never a fault.** A provider that
   could not be read is not drawn; a task whose publish has not started has no
   `⇡` row. Only nothing reading at all draws a head row saying `unavailable`,
-  with the reason under it. `./scripts/fleet-status.sh` names every provider
-  and why its fetch failed.
+  with the reason under it. `uv run fleet status` names every provider and why
+  its fetch failed.
 - **A remembered reading never looks measured.** A probe that has not answered
   is a spinner and a stale one is hatched and flagged.
 - **`green` is not the ok colour.** It means every gate the forge knows about
@@ -73,30 +73,44 @@ Four consequences are worth knowing here because they turn into questions:
   font that draws it narrow shears every row below it.
 
 It runs inside the thurbox interface, which knows nothing about fleet, so it
-finds the control plane by **probing the lead session by NAME** and running
-`./scripts/queue.sh root` in it. Two consequences that explain most of §7: the
-lead must exist under the name the pane expects, and the pane needs thurbox's
-`run` capability to ask it anything. The name lives in the `CONTROL_PLANE`
-constant at the top of `interface/fleet_queue.lua` and in `extension.toml.in`,
-which owns renaming it.
+finds the control plane by **probing the lead session by NAME** and running its
+queue probe in that session's checkout. Two consequences that explain most of
+§7: the lead must exist under the name the pane expects, and the pane needs
+thurbox's `run` capability to ask it anything. The name lives in the
+`CONTROL_PLANE` constant at the top of `interface/fleet_queue.lua` and in
+`extension.toml.in`, which owns renaming it.
+
+**Both probes are one command line**, because thurbox runs a pane's probe
+through `sh -c` on POSIX and `cmd /C` on Windows, and a plain command is the
+one thing both read the same way:
+
+```text
+uv run --frozen --quiet python scripts/lib/pane_probe.py
+uv run --frozen --quiet fleet status --fuel
+```
+
+So `uv` has to be on the PATH thurbox runs them with.
+`scripts/lib/pane_probe.py`'s docstring owns the record format the pane reads;
+it asks `queue.py` for the queue root, which is the answer
+`uv run fleet queue root` gives in that checkout.
 
 That constant holds the name **without the glyph**, matching the lead behind any
 single mark: which glyph the lead wears is a setting
 (`orchestration/session-glyphs.example.conf`) that
-`scripts/install-extension.sh` renders into the manifest, and a pane spelling
+`uv run fleet install-extension` renders into the manifest, and a pane spelling
 one of its values would say "no session" the day the operator flipped it.
-`./scripts/check.sh pane` holds the two files to the same name.
+`uv run fleet check pane` holds the two files to the same name.
 
 ## 2. Installing it
 
-```bash
-./scripts/install-extension.sh
+```sh
+uv run fleet install-extension
 ```
 
-That is the whole command. The pane is **not a separate step**: that script
-installs the thurbox extension and, in a second pass, hands
-`interface/fleet_queue.lua` to `thurbox-cli plugin install` with the destination
-name and `--text`. Its header owns the details.
+That is the whole command. The pane is **not a separate step**: it installs the
+thurbox extension and, in a second pass, hands `interface/fleet_queue.lua` to
+`thurbox-cli plugin install` with the destination name and `--text`.
+`scripts/lib/install_extension.py`'s docstring owns the details.
 
 Two things to get right before running it:
 
@@ -111,12 +125,12 @@ Two things to get right before running it:
 
 The pane install is not fatal to the extension install — a control plane with
 no pane still works — so a failed `plugin install` prints a warning and the
-script still exits 0. Read the output; do not infer the pane from the exit
+command still exits 0. Read the output; do not infer the pane from the exit
 code.
 
 ## 3. Verifying
 
-```bash
+```sh
 thurbox-cli plugin check --text
 ```
 
@@ -144,7 +158,7 @@ whether anything draws it. `--json` adds `installed_from`, which is the useful
 part: it names the checkout the pane was installed from, so a stale path here
 and a moved clone are the same bug.
 
-## 4. Placing it — the operator's call, and then the script's job
+## 4. Placing it — the operator's call, and then the command's job
 
 The block goes **inside the `columns` list** of `layout.lua`, beside the other
 side columns:
@@ -164,34 +178,38 @@ or the block printed for them to add by hand.
 
 On yes:
 
-```bash
-./scripts/place-pane.sh --dry-run    # the file, the anchor and the exact block
-./scripts/place-pane.sh              # right of the terminal
-./scripts/place-pane.sh --left       # between the session list and the terminal
-./scripts/place-pane.sh --check      # is it placed? changes nothing
+```sh
+uv run fleet place-pane --dry-run    # the file, the anchor and the exact block
+uv run fleet place-pane              # right of the terminal
+uv run fleet place-pane --left       # between the session list and the terminal
+uv run fleet place-pane --check      # is it placed? changes nothing
 ```
 
-**The first-run ask goes through `./scripts/pane-ask.sh`**, which FLEET.md
-has the lead run at the start of every session: it says `ask` only while the
-pane is unplaced and nobody has answered, `yes [--left]` runs `place-pane.sh`,
-and either answer is kept in the gitignored `orchestration/first-run/pane` so
-the question is asked once per checkout, ever. A layout that already places the
-pane is never asked about. Answering here by hand with `place-pane.sh` is fine
-too — the next `pane-ask.sh` finds it placed and records that.
+**The first-run ask goes through `uv run fleet pane-ask`**, which FLEET.md has
+the lead run at the start of every session: it says `ask` only while the pane is
+unplaced and nobody has answered, and the operator's answer goes back as its
+argument — `yes`, `yes --left` or `no`. `yes` runs `fleet place-pane`, and the
+answer is kept in the gitignored `orchestration/first-run/pane` so the question
+is asked once per checkout, ever. A layout that already places the pane is never
+asked about. Answering here by hand with `fleet place-pane` is fine too — the
+next `fleet pane-ask` finds it placed and records that.
 
-What makes it safe enough to run, argued in full in its header: it refuses a
-layout it does not recognise and names the part it could not find, it is
-idempotent, it backs the file up to `layout.lua.bak-<timestamp>`, it re-reads
-its own edit with `lua` and restores the backup if the result no longer parses,
-and it finishes with `thurbox-cli plugin check`. The slot it writes is read from
-`interface/fleet_queue.lua`, so a rename cannot half-land.
+What makes it safe enough to run, argued in full in
+`scripts/lib/place_pane.py`'s docstring: it refuses a layout it does not
+recognise and names the part it could not find, it is idempotent, it backs the
+file up to `layout.lua.bak-<timestamp>`, it re-reads its own edit with `lua`
+(when `lua` is on PATH) and restores the backup if the result no longer parses,
+and it finishes with `thurbox-cli plugin check`. It rewrites the file in place
+and keeps its line endings, so a CRLF layout stays CRLF. The slot it writes is
+read from `interface/fleet_queue.lua`, so a rename cannot half-land.
 
 If they would rather do it themselves, print the block, name the file, and stop
-there on purpose. Find it rather than assuming `~/.config/thurbox/ui` — a dev
-build's interface directory is elsewhere:
+there on purpose. Find the file rather than assuming a path — on Windows the
+interface directory is under `%APPDATA%`, and a dev build's is elsewhere again.
+The first line this prints is the directory, and `layout.lua` is in it:
 
-```bash
-thurbox-cli plugin dir --text | head -1
+```sh
+thurbox-cli plugin dir --text
 ```
 
 **Give the guard, not just the slot.** `plugin check` suggests a bare
@@ -201,7 +219,7 @@ column is carved on every frame, so the key flips a panel state nothing reads
 and the pane opens and never closes. `panels` and `filled` both already exist in
 the stock `layout.lua`, guarding the session list exactly this way.
 
-`./scripts/install-extension.sh` prints this same block, at the moment it is
+`uv run fleet install-extension` prints this same block, at the moment it is
 needed, when `plugin check` came back unplaced. Prefer letting it — the block it
 prints is the one the gate holds to the pane's actual slot name.
 
@@ -231,11 +249,11 @@ focus, so only a global key could reach it, and a global key is taken from
 every terminal. If the wheel does nothing over the pane, the pane's root has
 lost its `id` — an unfocusable pane is a wheel target only through one. What the key must not be is one the KERNEL already owns — a
 plugin-scoped binding loses to a kernel one silently, registering fine and never
-receiving the key. `./scripts/check.sh pane` refuses those; see §8.
+receiving the key. `uv run fleet check pane` refuses those; see §8.
 
 ## 6. Removing it
 
-```bash
+```sh
 thurbox-cli plugin remove plugins/91_fleet_queue.lua
 ```
 
@@ -243,9 +261,9 @@ The argument is the **destination path**, not the basename.
 `plugin remove 91_fleet_queue.lua` answers "not listed in plugins.toml" and
 removes nothing. That one command takes back the file, its `plugins.toml` entry
 and the lock together; `plugin list` names the path to pass while it is still
-installed, and `scripts/install-extension.sh`'s header owns this.
+installed, and `scripts/lib/install_extension.py`'s docstring owns this.
 
-Removing the pane leaves the `layout.lua` block behind, and `place-pane.sh`
+Removing the pane leaves the `layout.lua` block behind, and `fleet place-pane`
 has no verb that takes it back out — a block it did not necessarily write is
 not one it should delete. It is guarded by `filled(ctx, "fleetqueue")`, so an
 orphaned block carves nothing and is harmless; deleting it is the operator's
@@ -270,16 +288,16 @@ spells out in the column itself, so:
 
 | What you see | What it means | What to do |
 |---|---|---|
-| no column; `plugin check` exits non-zero | installed, placed by nothing | §4 — ask, then `./scripts/place-pane.sh` |
+| no column; `plugin check` exits non-zero | installed, placed by nothing | §4 — ask, then `uv run fleet place-pane` |
 | column opens and never closes | placement block is missing `panels.shown` | §4 — the guard is missing from a hand-added block |
-| `F3` opens Help, Theme or Settings | the chord collides with a kernel one | rebind in thurbox settings; `check.sh pane` refuses a kernel chord in the repo |
+| `F3` opens Help, Theme or Settings | the chord collides with a kernel one | rebind in thurbox settings; `fleet check pane` refuses a kernel chord in the repo |
 | `not trusted yet` | the `run` capability is declared, not granted | the operator grants it: settings (`Ctrl+,`) → `]` → `t`. You cannot do it for them |
 | `no '<lead>' session` | no session by the name the pane probes | the extension has not been installed, or the lead was renamed — §2, and `extension.toml.in`'s RENAMING header |
 | `<n> <lead> sessions here`, then a cwd per row | more than one lead on THIS machine, in different checkouts, so the pane will not pick a queue | remove the lead that is not your fleet (`thurbox-cli session list`). A lead mirrored from another host beside one local lead is normal: the pane binds the local one and says nothing |
 | `the <lead> session is unreachable` | thurbox has the session but cannot reach it | a thurbox-side problem, not a pane one |
-| `the queue probe did not run` | the probe could not be executed in that session | usually the capability or a wedged session; the cwd it names is where it tried |
-| `not the control-plane checkout` | the lead session opens a directory with no `./scripts/queue.sh` | the manifest points at the wrong clone — moved-clone case in §2 |
-| `queue.sh could not name a queue directory` | `queue.sh root` answered nothing usable | run `./scripts/queue.sh root` in that checkout and read what it says |
+| `the queue probe did not run`, and a cwd | the probe printed nothing: it could not be executed in that session, `uv` is not on the PATH thurbox ran it with, or that directory is not a fleet checkout | a cwd that is not your control-plane checkout is the moved-clone case in §2; otherwise the capability, a wedged session, or run the probe line from §1 in that directory and read what it says |
+| `no queue directory at <path>` | queue.py resolved a queue root that does not exist | run `uv run fleet queue root` in that checkout and read what it says |
+| `the queue probe failed: <why>` | the probe ran and could not read the queue | the reason is the diagnosis; run the probe line from §1 in that checkout to see it whole |
 | `the queue is empty` | nothing is queued | correct, not a fault |
 
 Note what is NOT a fault: a non-zero exit from the probe. It spells every
@@ -294,7 +312,8 @@ frame; the constant and the reasoning are at the top of `fleet_queue.lua`.
 **And a pane that draws the WRONG thing is a different problem from a pane that
 draws nothing.** "It draws too much", "I cannot tell what is running", "a row
 appeared that should not be there" are claims about layout, and none of the
-messages above apply to them. Render it instead of squinting at it:
+messages above apply to them. Render it instead of squinting at it, from the
+checkout:
 
 ```sh
 lua scripts/lib/pane_harness.lua 44        # the pane, as text, at 44 columns
@@ -309,20 +328,23 @@ the harness to reproduce a shape you are chasing.
 
 ## 8. The gate
 
-`./scripts/check.sh pane` keeps this skill, the installer and the pane from
+`uv run fleet check pane` keeps this skill, the installer and the pane from
 drifting apart: it holds ONE spelling of the slot name, the placement guard, the
-`plugin remove` path and the F-key across all three — this file among them — and
-refuses a binding on a chord the kernel owns. `check_pane` in `scripts/check.sh`
-is what it asserts; what matters here is that an edit to any of those strings
-must go green in `./scripts/check.sh` before it ships.
+`plugin remove` path and the F-key across all three — this file among them —
+and refuses a binding on a chord the kernel owns.
+`tests/pane/test_agreement.py` is what it asserts; what matters here is that an
+edit to any of those strings must go green in `uv run fleet check` before it
+ships.
 
-It also runs `./scripts/pane-selftest.sh` (needs `lua`), which renders the pane
-offline and asserts the DESIGN rather than the wiring — one row per task, no row
-carrying no information, finished work weighing less than running work, and all
-of it still fitting thirty columns. `./scripts/check.sh onboarding` covers the
-writer: `scripts/onboarding-selftest.sh` §3 drives `place-pane.sh` against a
-stock layout — placed right by default, left on `--left`, idempotent, backed up,
-refused on an arrangement it cannot read, still parsing as Lua afterwards.
+The same check runs `tests/pane/test_render.py` (needs `lua`), which renders
+the pane offline through the harness and asserts the DESIGN rather than the
+wiring — one row per task, no row carrying no information, finished work
+weighing less than running work, and all of it still fitting thirty columns.
+`tests/pane/test_place_pane.py` covers the writer: it drives
+`fleet place-pane` against a recorded stock layout — placed right by default,
+left on `--left`, idempotent, backed up, line endings kept, refused on an
+arrangement it cannot read, still parsing as Lua afterwards.
+`uv run fleet check extension` covers the installer and the first-run ask.
 
-Neither is a Lua linter. The pane's own gate is `thurbox-cli plugin check`,
+None of it is a Lua linter. The pane's own gate is `thurbox-cli plugin check`,
 which needs a thurbox install, so it belongs at install time — §3.

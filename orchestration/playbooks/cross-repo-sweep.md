@@ -34,20 +34,25 @@ One worker session **per repo**, all with the same prompt shape.
 
 ## Run
 
-1. `./scripts/queue.sh topic add` opens this run's log. Build the repo list
+1. `uv run fleet queue topic add` opens this run's log. Build the repo list
    from the registry; write it into the run log's Goal section up front.
 2. Fast-forward every target's base branch before spawning against it. A stale
    local `main` yields a worker that does correct work in a conflicting PR.
 3. Launch in waves of `max_parallel`, each with `--parent "$THURBOX_SESSION"`,
    `--on-existing adopt`, and the profile's flags:
 
-   ```bash
-   mapfile -d '' -t flags < <(./scripts/session-flags.sh "$profile")
-   out=$(thurbox-cli session create --name "$name" --repo-path "$repo" \
-     --worktree-branch "$branch" --parent "$THURBOX_SESSION" \
-     --on-existing adopt "${flags[@]}" --json)
-   [ "$(jq -r .created <<<"$out")" = true ] && send_the_brief
+   ```text
+   uv run fleet session-flags <profile>      # the flags, NUL-separated
+   thurbox-cli session create --name <name> --repo-path <repo> \
+     --worktree-branch <branch> --parent "$THURBOX_SESSION" \
+     --on-existing adopt <the flags, one argument each> --json
    ```
+
+   Split the flags on NUL, never on whitespace: a `--arg` value is often a
+   whole command line. Send the brief only when the JSON says `"created":
+   true`. A sweep driven through the queue splits nothing: `uv run fleet queue
+   dispatch` renders each task's profile in-process and answers the trust
+   dialog itself.
 
    `adopt` is the whole point of a sweep: this loop is a driver reconciling
    desired state, it gets re-run whenever a wave is resumed or a repo list
@@ -55,8 +60,8 @@ One worker session **per repo**, all with the same prompt shape.
    per repo — after which the name that addresses each worker matches two
    sessions and is refused rather than guessed. `created: false` means that
    repo is already covered, so do not re-send its brief. Answer each new
-   session's trust dialog before prompting it (`./scripts/session-trust.sh`).
-4. Read the results the workers wrote (`./scripts/queue.sh watch`, then
+   session's trust dialog before prompting it (`uv run fleet session-trust`).
+4. Read the results the workers wrote (`uv run fleet queue watch`, then
    `collect`); as one repo reports, start the next. A wave can also stall on a
    worker
    waiting for an approval nobody is going to give: `session list --json`
@@ -65,7 +70,7 @@ One worker session **per repo**, all with the same prompt shape.
    `idle` means the agent said it is at rest, and it is the only one that does.
 5. Collect PR URLs and `NOT_APPLICABLE` into the run log's Outcome section.
 6. Review PRs in a batch. Each session goes when its pull request merges —
-   `./scripts/queue.sh collect` reaps it, `reap --dry-run` says what it would
+   `uv run fleet queue collect` reaps it, `reap --dry-run` says what it would
    do — so nothing is left holding a worktree per repo.
 
 ## Notes

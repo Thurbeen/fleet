@@ -16,7 +16,7 @@ have their own update paths. Say so if asked to do more.
 
 > **This skill changes no tracked state on its own initiative.** No commits, no
 > pushes, no reverts, no `git checkout -- .`, no rebase, no reset. It runs
-> `./scripts/sync-checkout.sh`, which only ever fast-forwards, and everything
+> `uv run fleet sync-checkout`, which only ever fast-forwards, and everything
 > after that is re-installing or re-generating something the sync left stale.
 > When the sync refuses, you report the refusal and the operator's action — you
 > do not reconcile the tree for them.
@@ -28,18 +28,20 @@ behind origin ends at "already current; nothing to re-apply."
 ## 1. Sync — the one command that decides the rest
 
 ```bash
-before="$(git rev-parse HEAD)"
-msg="$(./scripts/sync-checkout.sh | jq -r '.systemMessage // empty')"
-after="$(git rev-parse HEAD)"
-printf '%s\n' "${msg:-already current}"
+git rev-parse HEAD            # before
+uv run fleet sync-checkout    # one JSON object, or nothing at all
+git rev-parse HEAD            # after
 ```
 
-`scripts/sync-checkout.sh`'s header owns the rules — read it rather than
-guessing at them. It fast-forwards only when that is unambiguously safe, it
-never rebases or resets, and it **always exits 0**, so the exit code tells you
-nothing. The message does, and **no message at all means nothing to say**.
+Keep both SHAs; §2 diffs between them. `scripts/lib/sync_checkout.py`'s
+docstring owns the rules (`uv run fleet sync-checkout --help` prints it) — read
+it rather than guessing at them. It fast-forwards only when that is
+unambiguously safe, it never rebases or resets, and it **always exits 0**, so
+the exit code tells you nothing. The message does: the object's `systemMessage`
+field, which is the same text the `SessionStart` hook shows. **No output at all
+means nothing to say.**
 
-| What `msg` says | What happened | What you do |
+| What the message says | What happened | What you do |
 |---|---|---|
 | *(empty)* | already current | stop — say it in one line |
 | `fast-forwarded '<branch>' N commit(s) to <sha>` | the work case | go to §2 |
@@ -80,26 +82,26 @@ by hand. Naming the wrong one of those costs a force-push.
 ## 2. What moved
 
 The sync's own message classifies two path sets — `INSTRUCTION_PATHS` and
-`WIRING_PATHS`, defined at the top of `scripts/sync-checkout.sh` — and reports
-them as `restart-lead:` and `reinstall-extension:` lines. **Read those; do not
-re-derive them.** For the paths it has no opinion about, diff the range it just
-moved:
+`WIRING_PATHS`, defined at the top of `scripts/lib/sync_checkout.py` — and
+reports them as `restart-lead:` and `reinstall-extension:` lines. **Read those;
+do not re-derive them.** For the paths it has no opinion about, diff the range
+it just moved:
 
 ```bash
-git diff --name-only "$before" "$after"
+git diff --name-only <before> <after>
 ```
 
-`$before` equal to `$after` means nothing moved and there is nothing below to
+`<before>` equal to `<after>` means nothing moved and there is nothing below to
 do. Otherwise map the list:
 
 | A path in the range | Step | Why |
 |---|---|---|
-| `extension.toml.in`, `FLEET.md`, `orchestration/voice.example.conf` — or a `reinstall-extension:` line | §3 | the installed extension no longer matches what it was rendered from |
+| `extension.toml.in`, `FLEET.md`, `orchestration/voice.example.conf`, `orchestration/session-glyphs.example.conf` — or a `reinstall-extension:` line | §3 | the installed extension no longer matches what it was rendered from |
 | `interface/fleet_queue.lua` | §4 | the installed plugin is a stale copy of that file |
 | `registry/owners.txt` | §5 | the generated map covers the wrong owners |
 | `orchestration/auto-merge.example.conf`, or `scripts/lib/queue.py`'s allowlist | §5b | `shepherd` may now merge in a different set of repos, or in none |
 | `orchestration/publish.example.conf`, `agent.example.conf`, or POLICY.md's frontmatter | §5c | tasks may publish a different way, or `refuel` may gate on a different account |
-| `scripts/reconcile.sh` | §6 | the running reconciler loop is executing old code |
+| `scripts/lib/reconcile.py`, `scripts/lib/fleet_platform.py` | §6 | the running reconciler loop is executing old code |
 | `FLEET.md`, `AGENTS.md`, `CLAUDE.md`, `.agents/skills`, `.claude/skills`, `.claude/settings.json` — or a `restart-lead:` line | §8 | the lead is holding instructions it froze at launch |
 
 `FLEET.md` is in two rows: the extension's `[[files]]` payload is
@@ -117,14 +119,26 @@ file finds `shepherd` merging nowhere. Intended, and silent unless somebody
 looks:
 
 ```bash
-./scripts/queue.sh shepherd --dry-run | tail -6
-cp -n orchestration/auto-merge.example.conf orchestration/auto-merge.conf
-$EDITOR orchestration/auto-merge.conf
+uv run fleet queue shepherd --dry-run
 ```
 
-`Fleet merges NOTHING` in that output means the file does not exist. Entries
-are host-qualified; the example's header owns the format and the gates.
-Read every pass, so no reinstall and no restart, and both files are gitignored.
+Then copy the example where the operator has no file yet — neither form
+overwrites — and edit `orchestration/auto-merge.conf`:
+
+```bash
+cp -n orchestration/auto-merge.example.conf orchestration/auto-merge.conf
+```
+
+```powershell
+if (-not (Test-Path orchestration/auto-merge.conf)) {
+  Copy-Item orchestration/auto-merge.example.conf orchestration/auto-merge.conf
+}
+```
+
+`Fleet merges NOTHING` near the end of that output means the file does not
+exist. Entries are host-qualified; the example's header owns the format and the
+gates. Read every pass, so no reinstall and no restart, and both files are
+gitignored.
 
 ### §5c — the publish default and the agent, which moved out of tracked files
 
@@ -144,19 +158,29 @@ handed to every clone.
   reports `undetermined` — restarting nothing — rather than gating on a window
   it guessed.
 
+Copy each only where the operator has none yet; neither form overwrites:
+
 ```bash
 cp -n orchestration/publish.example.conf orchestration/publish.conf
 cp -n orchestration/agent.example.conf orchestration/agent.conf
-./scripts/queue.sh add --help | grep -A2 publish     # the three shapes
 ```
+
+```powershell
+foreach ($f in "publish", "agent") {
+  $conf = "orchestration/$f.conf"
+  if (-not (Test-Path $conf)) { Copy-Item "orchestration/$f.example.conf" $conf }
+}
+```
+
+`uv run fleet queue add --help` names the `--publish` shapes.
 
 Read on every pass, so no reinstall and no restart.
 
 `scripts/lib/queue.py` and `scripts/lib/notify_lead.py` are absent from this
-table: the reconciler's loop sources neither — every pass shells out to
-`./scripts/queue.sh` and `python3 scripts/lib/notify_lead.py` as fresh
-subprocesses, so a change reaches the loop on its next call with no restart. §6
-covers `scripts/reconcile.sh` itself, which the running loop does hold in
+table: the reconciler's loop imports neither — every pass runs `fleet queue` and
+`scripts/lib/notify_lead.py` as fresh child processes, so a change reaches the
+loop on its next call with no restart. §6 covers `scripts/lib/reconcile.py`
+itself, and the platform seam it loads, which the running loop does hold in
 memory.
 
 Run §3–§6 in any order, then §7, then §8 last — §8 is the one that cannot be
@@ -165,30 +189,30 @@ automated, and everything else should already be done when you raise it.
 ## 3. Wiring — re-install the extension
 
 ```bash
-./scripts/install-extension.sh
+uv run fleet install-extension
 ```
 
 **This is the extension's real update command.** `thurbox-cli extension update
 fleet` re-reads the *rendered* `extension.toml`, not `extension.toml.in`, so it
 refreshes to whatever was last rendered and fails outright if `extension.toml`
-was cleaned away. The script's own header owns the rest.
+was cleaned away. Its `--help` owns the rest.
 
 **A non-zero exit here is a finding, not a failure to retry.** The installer
 verifies the LIVE session's directory against this clone, and exits non-zero
 when they differ — the moved-clone case, which `extension status` calls healthy
 because it checks that the session exists, not where it points. Its message
 names the remedy, and that remedy **deletes the lead's conversation history**,
-which is why the script refuses to run it for you. Surface the message verbatim
+which is why the command refuses to run it for you. Surface the message verbatim
 and stop; do not paper over the exit code, and do not run the remedy unasked.
 
-The script also re-installs the TUI pane as a second, deliberately non-fatal
+The command also re-installs the TUI pane as a second, deliberately non-fatal
 pass. It prints warnings there and still exits 0, so **read its output rather
 than inferring the pane from the exit code** — §4.
 
 ## 4. Pane — the installed plugin is stale
 
 `.agents/skills/fleet-pane/` owns the pane end to end: the install, the one
-command that verifies it, the `layout.lua` block that places it and the script
+command that verifies it, the `layout.lua` block that places it and the command
 that writes that block once the operator says so, the F-key, removal, and the
 symptom table for a pane that is installed and drawing nothing. **Use that
 skill; do not restate its procedure here.** §3 already re-ran the install, so
@@ -198,7 +222,7 @@ placement section.
 ## 5. Registry — only when the owners changed
 
 ```bash
-./scripts/sync-registry.sh
+uv run fleet sync-registry
 ```
 
 **Only when `registry/owners.txt` moved in the range, or the operator asks for
@@ -210,43 +234,45 @@ and nothing to push afterwards.
 ## 6. Reconciler — restart it on new loop code, unless it was asked down
 
 ```bash
-./scripts/reconcile.sh ensure
+uv run fleet reconcile ensure
 ```
 
-**`ensure`, never `start`.** `scripts/reconcile.sh`'s own header owns the
+**`ensure`, never `start`.** `scripts/lib/reconcile.py`'s docstring owns the
 `ensure`/`start`/`stop` split, and it is the whole point: `stop` writes a
 durable down flag, `ensure` honours it, and `start` clears it. An update must
 not undo an operator's `stop`.
 
-`ensure` adopts a loop that is already running, so on its own it will not pick
-up new code in `scripts/reconcile.sh` — the loop's body was read into the
-running shell at start. When §2 put you here, ask for the restart explicitly:
+`ensure` adopts a loop that is already running — the one holding the lock in
+`orchestration/reconcile/` — so on its own it will not pick up new code in
+`scripts/lib/reconcile.py`: the running supervisor loaded that module when it
+started. When §2 put you here, ask for the restart explicitly:
 
 ```bash
-./scripts/reconcile.sh status   # ticking? since when? asked down?
+uv run fleet reconcile status   # ticking? since when? asked down?
 ```
 
 If it reports the loop asked down, say so and change nothing. If it is
-running, `./scripts/reconcile.sh restart` replaces it — but that command
+running, `uv run fleet reconcile restart` replaces it — but that command
 clears the flag, so use it only on a loop that is actually up, and never as a
 way to bring a stopped one back. Report what `status` says it is watching.
 
 ## 7. Gate
 
 ```bash
-./scripts/check.sh
+uv run fleet check
 ```
 
-Last, and **report its result honestly**. It is the whole gate — the same script
-CI and the prek hooks run — so a red run here is a real problem in what just
-arrived, not noise to route around. Do not run `--fix`: that edits tracked files,
-and this skill changes no tracked state. Print what failed and hand it over.
+Last, and **report its result honestly**. It is the whole gate — the same
+command CI runs on a Linux and a native Windows runner, and the prek hooks run —
+so a red run here is a real problem in what just arrived, not noise to route
+around. Do not run `--fix`: that edits tracked files, and this skill changes no
+tracked state. Print what failed and hand it over.
 
 A green gate is worth one line. A red one is worth the failing check's output.
 
 **The gate says nothing about the operator's own records** — it reads no queue
 record and no registry map, so its verdict here is the verdict CI gave. Whether
-those are sound after the sync is `./scripts/fleet-status.sh --records`: report
+those are sound after the sync is `uv run fleet status --records`: report
 its two lines, and a problem there as one in the records, not in what
 arrived.
 
@@ -274,8 +300,8 @@ because thurbox has no icon field, and which glyph is a setting
 name — `thurbox-cli session list` shows the one that is actually running, and
 that is the string to paste.
 
-Verified against the CLI, and it is what `scripts/sync-checkout.sh` names in its
-own `restart-lead:` message:
+Verified against the CLI, and it is what `scripts/lib/sync_checkout.py` names
+in its own `restart-lead:` message:
 
 - `session restart` is documented as *"Restart a session in-place (kills the
   window, re-spawns with `--resume`)"* — a new process, so it reads
@@ -316,8 +342,8 @@ thurbox-cli session delete '<the lead>'
 
 The extension self-heals the session, so it comes back under the same name at
 the same checkout, reading everything from disk with **no conversation at all**.
-`scripts/sync-checkout.sh`'s message names this as the alternative; say the cost
-in those words — the lead's history is gone — and let the operator choose.
+`scripts/lib/sync_checkout.py`'s message names this as the alternative; say the
+cost in those words — the lead's history is gone — and let the operator choose.
 
 **Never do either unasked.** Offer the sequence, name what it costs, and stop.
 

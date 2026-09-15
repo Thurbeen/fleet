@@ -28,35 +28,33 @@ review:
     - AGENTS.md
     - CONTRIBUTING.md
 
-# scripts/check.sh IS the repo's gate — shellcheck, rumdl over every tracked
-# markdown file, a YAML parse of the whole tree, the session profiles, the task
-# queue, the CLI, the skills-symlink check, and isolation, which proves the
-# gate itself reads no operator state. It reads no live queue record and no
-# registry map either — those are `./scripts/fleet-status.sh --records`, the
-# operator's own health check.
+# `uv run fleet check` IS the repo's gate — the lock, ruff, rumdl over every
+# tracked markdown file, a YAML parse of the whole tree, the CI workflow's
+# promises, the session profiles, and every pytest area under tests/, which
+# drive fleet's real entry points against stub tools, including isolation,
+# which proves the gate itself reads no operator state. It reads no live queue
+# record and no registry map either — those are `uv run fleet status
+# --records`, the operator's own health check.
 #
-# ONE STEP, because lint and test are the same script here. There is nothing to
-# compile and nothing to unit-test: `./scripts/check.sh queue` runs
-# scripts/queue-selftest.sh, the repo's one real test, and it is part of the
-# same run. Naming the script rather than leaving the gate to be discovered is
-# the point — a discovered gate is the agent deciding what "running the tests
-# here" means, which invites something that reaches outside the worktree
-# (spawning a real thurbox session, or running sync-registry.sh against the
-# live GitHub API).
+# ONE STEP, because lint and test are the same command here. Naming it rather
+# than leaving the gate to be discovered is the point — a discovered gate is the
+# agent deciding what "running the tests here" means, which invites something
+# that reaches outside the worktree (spawning a real thurbox session, or
+# running sync-registry against the live GitHub API).
 #
-# It is also the same script CI and the prek hooks run, so a green local run
-# and a green pull request mean the same thing. That parity matters more here
-# than in most repos: CI only fires on pull requests while routine
-# control-plane changes go straight to `main`, which makes the local run the
-# one doing the work.
+# It is also what CI runs on Linux and on native Windows, and what the prek
+# hooks run, so a green local run and a green pull request mean the same thing.
+# That parity matters more here than in most repos: CI only fires on pull
+# requests while routine control-plane changes go straight to `main`, which
+# makes the local run the one doing the work.
 gate:
   - name: check
-    run: ./scripts/check.sh
-    # Markdown is the only surface here with a formatter, and `run` above
-    # enforces exactly what this fixes, so prose an agent writes would
-    # otherwise reach the check unformatted and cost a round. `--fix` is a
-    # no-op for every other check, which is why it needs no argument.
-    fix: ./scripts/check.sh --fix
+    run: uv run --frozen fleet check
+    # Markdown and Python lint are the surfaces with a fixer, and `run` above
+    # enforces exactly what they fix, so prose or code an agent writes would
+    # otherwise reach the check unfixed and cost a round. `--fix` is a no-op for
+    # every other check, which is why it needs no argument.
+    fix: uv run --frozen fleet check --fix
 
 ci:
   required: true

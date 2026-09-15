@@ -1,0 +1,277 @@
+"""The TUI queue pane is a GLANCE.
+
+The pane's failure mode is not a crash, it is a wall: every fact at equal
+weight, and no grep can see a row. So this renders the pane with
+scripts/lib/pane_harness.lua against a queue built to be the reported screen —
+a running topic that also holds a merged task, a blocker chain with a cleared
+edge, tasks nothing has emitted an event for, a settled topic — and asserts the
+rules the redesign is: no row with nothing on it, one row per task, finished
+work weighs less, the two tallies agree, the two kinds of wait do not look
+alike, and the publish row says the next move. At 44 columns and again at 30,
+because the pane routinely gets thirty.
+
+Needs `lua` (5.4 or newer, for `utf8.codes`); every test here skips without one.
+"""
+
+from __future__ import annotations
+
+import re
+import unicodedata
+
+import pytest
+from panekit import REAL_LUA
+
+from harness import REPO, expect, refute, run
+
+pytestmark = pytest.mark.skipif(not REAL_LUA, reason="no lua on PATH: the pane is rendered by lua")
+
+
+def render(*args: str) -> str:
+    done = run([REAL_LUA, "scripts/lib/pane_harness.lua", *args], cwd=REPO)
+    assert done.code == 0 and done.stdout.strip(), f"the pane did not render at {args}:\n{done.out}"
+    return done.stdout
+
+
+@pytest.fixture
+def wide() -> str:
+    return render("44")
+
+
+@pytest.fixture
+def narrow() -> str:
+    return render("30")
+
+
+def cells(line: str) -> int:
+    return sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in line)
+
+
+def test_no_row_carries_no_information(wide):
+    refute(wide, "✓ 01-declare-publish-method", "events")
+    assert "   brief" not in wide.splitlines(), "a row says only that a brief exists"
+    # `shipped` under a task drawn with the `done` glyph is the same fact twice.
+    refute(wide, "shipped")
+
+
+def test_what_still_has_to_be_there_is_there(wide):
+    expect(wide, "↳ 02-shepherd-records-publish", "no brief", "uncollected", "#47", "green")
+
+
+def test_a_condition_outside_the_queue_looks_unlike_a_wait_on_a_task(wide):
+    """`↳` ends when the named task lands; `⊘` ends only when somebody runs
+    `block --clear`, so the operator reading the row is the actor."""
+    expect(wide, "⊘ az login: for the tenant", "credential")
+    refute(wide, "↳ az login")
+    # The writer's YAML quoting is not drawn.
+    refute(wide, "⊘ 'az login")
+
+
+def test_the_publish_row_says_the_next_move(wide):
+    expect(wide, "open — review", "!52", "green — yours to merge")
+    # The method gives way to the note, not the reverse.
+    refute(wide, "attested · #47")
+    # A blocker under a task that is running holds nothing.
+    refute(wide, "publish-agnostic/03-draw")
+
+
+def test_one_row_per_task(wide):
+    expect(wide, "01 Cut the pane back")
+    refute(wide, "01-declutter-the-pane")
+    # 27 rather than 26 since the fuel block draws every window: the fixture's
+    # account holds two, and the detail row that named only the binding one is
+    # gone, so the block costs one row more for the same reading.
+    rows = [line for line in wide.splitlines() if line]
+    assert len(rows) <= 27, f"the whole queue costs {len(rows)} rows\n{wide}"
+
+
+def test_finished_work_weighs_less(wide):
+    refute(wide, "Declare the publish method on the task")
+    expect(wide, "1 landed")
+    marks = render("44", "--marks")
+    expect(marks, "B  ◐ 01 Cut the pane back")
+    refute(marks, "B  ● 01 Remove the web monitor")
+
+
+def test_the_two_tallies_agree(wide):
+    expect(wide, "3 running", "3 topics")
+
+
+def test_it_still_degrades_to_30_columns(narrow):
+    widest = max(cells(line) for line in narrow.splitlines())
+    assert widest <= 30, f"a row is {widest} columns wide in a 30-column pane\n{narrow}"
+    expect(narrow, "Cut the pane back", "↳ 02-shepherd", "⊘ az login", "open — review")
+    refute(narrow, "✓ 01-declare")
+
+
+def row_of(label: str, out: str) -> int | None:
+    """The index of the first row that carries `label`, or None."""
+    return next((i for i, line in enumerate(out.splitlines()) if label in line), None)
+
+
+def test_every_fuel_window_is_drawn_all_the_time(wide, narrow):
+    """The block drew only the window that binds right now, so on an account with
+    a five-hour and a seven-day window the row flipped between the two whenever
+    their percentages crossed. It draws every window the reading carries, in the
+    record's order (shortest first), and marks the binding one with a theme role
+    instead of hiding the others."""
+    for width, out in (("44", wide), ("30", narrow)):
+        short, long = row_of(" session ", out), row_of(" week ", out)
+        assert short is not None and long is not None and short < long, \
+            f"both windows are drawn at {width}, shortest first\n{out}"
+        expect(out, "62%", "18%")
+    session = next(line for line in wide.splitlines() if " session " in line)
+    week = next(line for line in wide.splitlines() if " week " in line)
+    expect(session, "3h")
+    expect(week, "4d")
+    accent = render("44", "--accent")
+    assert next(line for line in accent.splitlines() if " week " in line).startswith("A "), accent
+    assert not next(line for line in accent.splitlines() if " session " in line).startswith("A "), accent
+
+
+def test_a_remote_lead_listed_first_does_not_take_the_pane():
+    """One remote lead beside one local one is an ordinary setup."""
+    out = render("44", "--leads", "remote-first")
+    expect(out, "Cut the pane back")
+    refute(out, "the queue is empty", "Mission Control")
+
+
+def test_two_local_leads_are_named_as_a_problem():
+    out = render("44", "--leads", "two-local")
+    expect(out, "2 Mission Control sessions here")
+    refute(out, "Cut the pane back")
+
+
+# --- every fuel label says what it is ---------------------------------------
+
+
+def fuel_head(out: str) -> str:
+    return next(line for line in out.splitlines() if "fuel" in line)
+
+
+def row_with(label: str, out: str) -> str:
+    return next(line for line in out.splitlines() if label in line)
+
+
+def test_every_fuel_label_says_what_it_is(wide, narrow):
+    """The head row read `⛽ fuel  reserve 20%  1m`: `reserve 20%` is fleet's
+    own dispatch floor, a constant and not a reading, and read as "20% fuel
+    left"; `1m` was the age of the cached reading with nothing saying so."""
+    for width, out in (("44", wide), ("30", narrow)):
+        head = fuel_head(out)
+        assert "reserve" not in head, f"the fuel head row shows the reserve at {width}\n{out}"
+        expect(head, "fuel left")
+        # A reading inside the probe's own TTL is the ordinary case: no age.
+        assert "ago" not in head, f"a fresh reading carries an age at {width}\n{out}"
+        expect(row_with(" week ", out), "low", "resets 4d")
+        assert "low" not in row_with(" session ", out), f"a window above the reserve says low at {width}\n{out}"
+
+
+def test_a_long_label_gives_way_before_the_reset(tmp_path):
+    """At 30 a label as long as the pane allows used to push every reset out of
+    the block, so the one window under the reserve could not say when it
+    comes back. The label gives way first."""
+    out = render("30", "--long-label")
+    expect(row_with(" week ", out), "resets 4d")
+    expect(row_with("40%", out), "resets 2d")
+    widest = max(cells(line) for line in out.splitlines())
+    assert widest <= 30, f"a row is {widest} columns wide with a long label\n{out}"
+
+
+def test_an_overdue_reading_says_how_old_it_is():
+    """A reading older than the TTL means the refresh is not happening, and then
+    its age is the most important thing on the row, said in words."""
+    expect(fuel_head(render("44", "--fuel-read", "900")), "read 15m ago")
+    expect(fuel_head(render("30", "--fuel-read", "900")), "read 15m ago")
+
+
+# --- the hide hint is a button, and the pane has a way back -----------------
+
+
+def frame_line(out: str, key: str) -> str:
+    return next((line for line in out.splitlines() if line.startswith(f"{key}:")), "")
+
+
+def test_the_hide_hint_is_a_button_and_a_pill_opens_the_pane_again():
+    """The pane cannot hold focus, so the hint that names its chord is a click
+    target, and since a closed column draws nothing to click, the action band
+    carries a pill that opens it."""
+    frame = render("44", "--frame")
+    # A chip like the agent pane's tabs beside it: ` Label · Key `, the chord
+    # spelled the way the action band spells it, filled while the column is
+    # open and brighter under the pointer.
+    assert frame_line(frame, "top_right") == "top_right:  Fleet · F3 ", frame
+    assert frame_line(render("44", "--frame", "--chord", "f5"), "top_right") == "top_right:  Fleet · F5 "
+    assert frame_line(render("44", "--frame", "--chord", "ctrl+shift+t"), "top_right") == "top_right:  Fleet · ^⇧T "
+    assert frame_line(frame, "top_right_style") == "top_right_style: fg=inverted_fg bg=accent bold", frame
+    hovered = render("44", "--frame", "--hover", "hide")
+    assert frame_line(hovered, "top_right_style") == "top_right_style: fg=inverted_fg bg=accent_bright bold", hovered
+    assert "F3" not in frame_line(frame, "title"), f"the chord is spelled a second time in the title\n{frame}"
+    expect(render("44", "--click", "F3"), "toggled fleetqueue")
+    expect(render("30", "--click", "F3"), "toggled fleetqueue")
+    expect(render("44", "--pills"), "pill fleetqueue.toggle Fleet")
+
+
+# --- a queue longer than the pane scrolls, and says where it is -------------
+
+
+def long(*args: str) -> str:
+    """Forty running tasks in a pane twenty-four rows tall."""
+    return render("44", "--long", "40", "--height", "24", *args)
+
+
+def position(out: str) -> tuple[int, int, int] | None:
+    """The frame's bottom border, as (first, last, total), or None when it shows no position."""
+    found = re.search(r"^bottom_right: *(\d+)-(\d+) of (\d+) *$", out, re.MULTILINE)
+    return tuple(int(n) for n in found.groups()) if found else None
+
+
+def test_a_click_on_a_task_row_moves_nothing_and_the_root_takes_the_wheel():
+    """A row with no link lands on the pane's root identity, which is there for
+    the wheel: the kernel records a pane's own rect as a wheel target only for a
+    focusable pane, and this one is not, so an identity on the root is what
+    makes the whole pane scroll."""
+    clicked = long("--frame", "--click", "Long task number 3")
+    expect(clicked, "nothing toggled", "bottom_right:  1-")
+    root = frame_line(long("--frame"), "root").removeprefix("root:").strip()
+    assert root, f"the pane's root carries no identity\n{long('--frame')}"
+
+
+def test_a_list_that_does_not_fit_says_where_it_is_and_marks_what_is_hidden():
+    first, last, total = position(long("--frame")) or (0, 0, 0)
+    assert first == 1 and total > last > 0, long("--frame")
+    expect(long(), "↓")
+    assert "↑" not in long(), "a list at its top marks something above"
+    assert "of" not in frame_line(render("44", "--frame"), "bottom_right"), "a list that fits shows a position"
+
+
+def test_the_wheel_moves_the_window_and_clamps_at_both_ends():
+    _, last, _ = position(long("--frame"))
+    wfirst, wlast, _ = position(long("--frame", "--wheel", "2"))
+    assert wfirst > 1 and wlast > last, long("--frame", "--wheel", "2")
+    expect(long("--wheel", "2"), "↑")
+
+    bfirst, blast, btotal = position(long("--frame", "--wheel", "999"))
+    assert blast == btotal, long("--frame", "--wheel", "999")
+    assert "↓" not in long("--wheel", "999"), "the bottom of the list marks something below"
+    _, ulast, _ = position(long("--frame", "--wheel", "999", "--wheel", "-1"))
+    assert ulast < btotal, "one tick up from the bottom did not move at once"
+    tfirst, _, _ = position(long("--frame", "--wheel", "3", "--wheel", "-999"))
+    assert tfirst == 1, "the list does not clamp at the top"
+
+
+def test_fuel_and_the_counters_stay_above_the_window_when_scrolled():
+    scrolled = long("--wheel", "999").splitlines()
+    expect("\n".join(scrolled[:2]), "fuel left")
+    after_rule = scrolled[next(i for i, line in enumerate(scrolled) if line.startswith("─")) + 1:]
+    expect("\n".join(after_rule[:2]), "running")
+
+
+def test_the_marks_and_the_page_actions_page_the_window():
+    bfirst, _, _ = position(long("--frame", "--wheel", "999"))
+    assert position(long("--frame", "--click", "below"))[0] > 1, "clicking the mark below did not page down"
+    assert position(long("--frame", "--wheel", "999", "--click", "above"))[0] < bfirst, "clicking above did not page up"
+    assert position(long("--frame", "--action", "fleetqueue.page_down"))[0] > 1, "page_down did not move"
+    assert position(long("--frame", "--wheel", "999", "--action", "fleetqueue.page_up"))[0] < bfirst, \
+        "page_up did not move"
+    widest = max(cells(line) for line in long("--wheel", "5").splitlines())
+    assert widest <= 44, f"a scrolled render is {widest} columns wide"

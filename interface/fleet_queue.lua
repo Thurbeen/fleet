@@ -1,8 +1,8 @@
 -- The fleet task queue, in a column: the live view of the queue.
 --
 -- WHY IT EXISTS. The operator works in thurbox all day, and a view you have to
--- alt-tab to is a view you stop looking at. It reads the same records
--- `queue.sh list` and `queue.sh show` read, and derives nothing they do not.
+-- alt-tab to is a view you stop looking at. It reads what `fleet queue list`
+-- and `fleet queue show` read, and derives nothing they do not.
 --
 -- A GLANCE, NOT A RECORD. This pane answers ONE question — what is the fleet
 -- working on right now — and every row it draws is a row competing with that
@@ -50,14 +50,14 @@
 --      1 landed
 --
 -- WHAT WENT, AND WHERE IT WENT. Nothing here was deleted from fleet. Every one
--- of these is still printed by `queue.sh show`, which says of itself that the
--- record "keeps what a status line has stopped showing" — so the test each row
--- had to pass was not "is this available elsewhere" but "would the operator
--- act on it, at a glance, from this pane".
+-- of these is still printed by `fleet queue show`, which says of itself that
+-- the record "keeps what a status line has stopped showing" — so the test
+-- each row had to pass was not "is this available elsewhere" but "would the
+-- operator act on it, at a glance, from this pane".
 --
 --   THE ID ROW        a kebab-case restatement of the title beside it. The
 --                     task's NUMBER survives, on the title's own row; the full
---                     id is what `queue.sh list` prints and takes.
+--                     id is what `fleet queue list` prints and takes.
 --   THE STATE WORD    the glyph already IS the state, and spins for a running
 --                     worker; the heading above the topic names it as well.
 --                     Collapsing what is finished (below) is what makes the
@@ -102,10 +102,11 @@
 -- own is a second writer's opinion about a model it does not own. What changed
 -- is that a fact equal to its default now costs no row.
 --
--- AND `scripts/pane-selftest.sh` IS WHAT KEEPS THAT TRUE. It renders this file
+-- AND `tests/pane/test_render.py` IS WHAT KEEPS THAT TRUE. It renders this file
 -- offline, with stubbed `lib.*` modules, and asserts every rule above at 44
--- columns and again at 30. `check.sh pane` runs it beside the greps that hold
--- the pane's wiring together, which could never see a row.
+-- columns and again at 30. `uv run fleet check pane` runs it beside
+-- `tests/pane/test_agreement.py`, which holds the pane's wiring together and
+-- could never see a row.
 --
 -- THE `⇡` ROW IS THE ARTIFACT'S STATE, WHICH IS THE FOURTH THING AND NOT A
 -- FIFTH. `publish.method` on `task.yaml` says what a task must PRODUCE — a
@@ -113,9 +114,10 @@
 -- fleet last saw when it went and looked at that artifact. Both are written by
 -- `collect`, `shepherd` and `reap`, which are the commands that do the looking.
 -- So the row draws a field of the record, in the record's own words, and this
--- pane still calls nothing: no `gh`, no `queue.sh`, no network. `queue.sh show`
--- prints the same block and `queue.sh list` the same word, which is what keeps
--- three readers of one field from becoming three opinions about it.
+-- pane still calls nothing: no `gh`, no queue verb, no network.
+-- `fleet queue show` prints the same block and `fleet queue list` the same
+-- word, which is what keeps three readers of one field from becoming three
+-- opinions about it.
 --
 -- AND IT REPLACES THE ARTIFACT ROW, WHICH IS WHY IT COSTS NOTHING. Four rows
 -- per task plus one per dependency is what made this pane something you read
@@ -130,17 +132,16 @@
 -- about a pull request; `review` and `yours to merge` are what the operator
 -- does about them, and colour can carry the first but never the second. That
 -- word used to be the first thing the row's width ladder dropped, so it was
--- drawn at neither width `scripts/pane-selftest.sh` renders while the publish
+-- drawn at neither width `tests/pane/test_render.py` renders while the publish
 -- METHOD — one unchanging word under every task in the queue — was drawn at
 -- both. The ladder gives up provenance before it gives up the action now.
 --
--- FOLLOW-UP, WRITTEN DOWN RATHER THAN DONE: the probe below should become
--- `queue.sh list --tsv`. That would make "this pane cannot disagree with
--- `list`" literal instead of argued, and it would drop a dozen `sed`/`awk`/
--- `date` processes per refresh for one Python process the probe already pays
--- for. It is the better long-term shape, and it was deliberately left out of
--- the change that added the publish row: that change is six lines of awk, and
--- this file was under live test when it was written.
+-- FOLLOW-UP, WRITTEN DOWN RATHER THAN DONE: the probe below could become
+-- `fleet queue list --tsv`. `scripts/lib/pane_probe.py` already asks queue.py
+-- for the queue root and reads the records' times with queue.py's own
+-- parser, so what that would still buy is "this pane cannot disagree with
+-- `list`" made literal instead of argued. It is the better long-term shape;
+-- the probe was ported to Python record for record, and no further.
 --
 -- READ-ONLY BY CONSTRUCTION. `focusable = false`, so the focus ring walks past
 -- it and `ctrl+h`/`ctrl+l` never land here: it is a readout, not a place you go,
@@ -154,11 +155,11 @@
 --
 -- WHERE THE QUEUE IS. This pane runs inside the thurbox interface, which knows
 -- nothing about fleet, so it cannot guess the control-plane checkout — and it
--- must not, because `queue.sh` refuses to be run from a second clone for
--- exactly that reason. The one honest answer is `./scripts/queue.sh root`, run
+-- must not, because `fleet queue` refuses to add work from a second clone for
+-- exactly that reason. The one honest answer is queue.py's own queue root, asked
 -- in the checkout the Mission Control session opens. That session is what
--- fleet's own extension installs, so it is the same answer `queue.sh` itself
--- would give.
+-- fleet's own extension installs, so it is the same answer `fleet queue root`
+-- gives there.
 --
 -- IDENTITY IS THE CWD, NEVER `session.repo`. `session.repo` is the BASENAME of
 -- a session's repository path — the lead's `~/fleet` and four worktrees of
@@ -168,7 +169,7 @@
 --
 -- THE FUEL ROWS ARE THE SAME READING THE SCREEN PRINTS. `scripts/lib/
 -- fleet_status.py` is the only place the account's remaining windows are read,
--- and this pane asks it through `fleet-status.sh --fuel` rather than running
+-- and this pane asks it through `fleet status --fuel` rather than running
 -- `quota-axi` itself — a second parse of a document this file does not own is
 -- the "second writer's opinion" the paragraph above rejects, and it would
 -- disagree with the screen the moment either side moved. It draws what was
@@ -195,7 +196,7 @@
 -- and the column belongs to the readings. The exception is nothing reading at
 -- all, which the block says in its own head row — a fuel block that quietly
 -- disappeared would read as "nothing to report" when it means "nobody could
--- tell". Every failure is named in full by `fleet-status.sh` either way.
+-- tell". Every failure is named in full by `uv run fleet status` either way.
 --
 -- THE ⛽ ON THE HEAD ROW IS A SETTING, AND IT IS `FUEL_GLYPH` BELOW. Set it to
 -- nil and this pane draws exactly what it drew before the glyph existed. It is
@@ -240,7 +241,7 @@ local SCROLL_UP, SCROLL_DOWN = "scroll-up", "scroll-down"
 --- it is a contract rather than a guess. Rename it there and rename it here —
 --- that file's RENAMING header lists this line as one of the two places the
 --- session's name lives, and a rename that misses it leaves the pane hunting a
---- session nobody spawns. `./scripts/check.sh pane` fails a rename that stops
+--- session nobody spawns. `uv run fleet check pane` fails a rename that stops
 --- at one of them.
 ---
 --- THE GLYPH IS DELIBERATELY NOT HERE, and that is the difference between this
@@ -328,147 +329,51 @@ end
 
 --- One probe, answering with the whole queue in a line-per-record format.
 ---
---- WHY A SHELL PROBE AND NOT `files`. `files.read` is scoped to a session's root
+--- WHY A PROBE AND NOT `files`. `files.read` is scoped to a session's root
 --- and would need one read per file — a dozen topics is fifty round trips and a
 --- YAML parser in Lua. One process every `TTL` that emits exactly the fields
 --- this pane draws is less machinery in both places.
 ---
---- WHY IT NEVER RELIES ON AN EXIT STATUS. `queue.sh root` warns when it is run
---- outside the control-plane checkout, and a probe that read a non-zero exit as
---- "broken" would report an ordinary "nothing here" as a failure. So every
---- outcome this can distinguish is spelled on stdout as an `E` record and the
---- script exits 0; the reader below treats only a probe that could not RUN, or
---- that said nothing at all, as a failure.
----
---- The format is one record per line, tab-separated, because a tab is the one
---- character none of these fields carries:
+--- WHY ONE COMMAND LINE AND NOT A SCRIPT. thurbox runs a probe through `sh -c`
+--- on POSIX and `cmd /C` on Windows, so the only probe that runs on both is a
+--- plain command both shells read the same way. `scripts/lib/pane_probe.py` is
+--- that command, run in the checkout the lead session opens, and its docstring
+--- owns the format this pane reads:
 ---
 ---   R <queue root>
 ---   E <what went wrong>
 ---   A <archived topic count>
 ---   T <topic slug> <topic title>
---- `<events>` is the one field here nothing draws any more — the header above
---- argues why a raw count is not a glance — and it is still emitted because
---- renumbering fourteen positional fields to drop one is a worse trade than
---- one `wc -l` per task.
----
 ---   K <id> <state> <title> <outcome> <artifact> <blockers> <brief> <events>
 ---     <result> <branch> <moved-at, epoch seconds> <publish-method>
 ---     <publish-state> <publish-at, epoch seconds>
 ---
 --- `<blockers>` is `ref|kind` pairs, comma separated. The KIND travels with the
---- ref because it is the whole reason the edge exists: `queue.sh block` refuses
---- a blocker that names no kind, so an edge without one is not a thing fleet can
---- have recorded, and a tree that showed only refs would be hiding the answer to
---- the only question a reader has about it.
+--- ref because it is the whole reason the edge exists: `fleet queue block`
+--- refuses a blocker that names no kind, so a tree that showed only refs would
+--- be hiding the answer to the only question a reader has about it. A
+--- CONDITION — a wait on something outside the queue — rides in the same field
+--- with `!` in front of it, since a task ref can never begin with one.
 ---
---- A CONDITION — `queue.py`'s second form of blocker, a wait on something
---- outside the queue — rides in the same field with `!` in front of it, since
---- a task ref can never begin with one. Its text is free prose a person typed,
---- so the probe flattens the two characters this encoding owns (`,` and `|`)
---- to spaces: the pane is the glance and `queue.sh show` is the record.
----
---- The three `publish-*` fields come out of ONE NESTED BLOCK, parsed the way
---- `- task:` / `  kind:` already is: a flag set on `publish:` and cleared by the
---- next top-level key, with the two-space keys read while it is set. The flag is
---- what makes it correct — `shepherd`, `artifact_check`, `landing` and `reaped`
---- are blocks of the same shape on the same record, and `state:` and `at:` at
---- two spaces of indent belong to whichever of them is open. For the same reason
---- the publish block must never grow a key named `kind`: the blocker rule below
---- has no such flag and would eat it.
----
---- `moved-at` is resolved and converted by the SHELL rather than in Lua, for
---- two reasons. `os` does not exist inside a pane, so there is no date parsing
---- here; and the queue writes three timestamps whose precedence is a fact about
---- the record — concluded, else dispatched, else created — which belongs beside
---- the record rather than in a renderer.
-local PROBE = [==[
-if [ ! -x ./scripts/queue.sh ]; then
-  printf 'E\tnot the control-plane checkout\n'; exit 0
-fi
-root=$(./scripts/queue.sh root 2>/dev/null | grep '^/' | tail -1)
-if [ -z "$root" ] || [ ! -d "$root" ]; then
-  printf 'E\tqueue.sh could not name a queue directory\n'; exit 0
-fi
-printf 'R\t%s\n' "$root"
-cd "$root" || exit 0
-archived=0
-for topic in */; do
-  topic=${topic%/}
-  [ -f "$topic/topic.yaml" ] || continue
-  # One more sed of the file this loop already reads for the title, and the
-  # task directories below are never opened. That is the whole cost of the
-  # filter here, and it is why the flag lives on topic.yaml: deciding what to
-  # hide by reading every task.yaml would make the hidden case the expensive
-  # one.
-  if [ -n "$(sed -n 's/^archived: *//p' "$topic/topic.yaml" | head -1)" ]; then
-    archived=$((archived + 1))
-    continue
-  fi
-  printf 'T\t%s\t%s\n' "$topic" "$(sed -n 's/^title: *//p' "$topic/topic.yaml" | head -1)"
-  for dir in "$topic"/*/; do
-    [ -f "$dir/task.yaml" ] || continue
-    events=0
-    [ -f "$dir/progress.jsonl" ] && events=$(wc -l <"$dir/progress.jsonl" | tr -d ' ')
-    brief=0; [ -f "$dir/BRIEF.md" ] && brief=1
-    result=0; [ -f "$dir/result.md" ] && result=1
-    moved=""
-    for field in concluded_at dispatched_at created; do
-      [ -n "$moved" ] && continue
-      moved=$(sed -n "s/^$field: *'\(.*\)'$/\1/p" "$dir/task.yaml" | head -1)
-    done
-    at=0
-    [ -n "$moved" ] && at=$(date -d "$moved" +%s 2>/dev/null || echo 0)
-    # When fleet last LOOKED at this task's artifact, converted here for the
-    # same reason `moved` is: a pane has no clock and no date parser. The sed
-    # is ranged to the publish block because four other blocks on this record
-    # carry an `at:` at the same indent, and an unranged match would return
-    # whichever of them came first.
-    looked=$(sed -n "/^publish:/,/^[^ ]/s/^  at: *//p" "$dir/task.yaml" | head -1 | tr -d "'\"")
-    pat=0
-    [ -n "$looked" ] && pat=$(date -d "$looked" +%s 2>/dev/null || echo 0)
-    awk -v b="$brief" -v p="$events" -v r="$result" -v at="$at" -v pat="$pat" '
-      /^[a-z_]+: / { i = index($0, ": "); f[substr($0, 1, i - 1)] = substr($0, i + 2) }
-      /^[^ ]/ { pub = ($0 ~ /^publish:/) }
-      pub && /^  method: / { pm = substr($0, 11) }
-      pub && /^  state: / { ps = substr($0, 10) }
-      /^- task: / { n = n + 1; refs[n] = substr($0, 9) }
-      # The condition form, marked with a `!` no task ref can start with, and
-      # flattened of the two characters this field is built out of.
-      /^- condition: / { n = n + 1; c = substr($0, 14); gsub(/[,|]/, " ", c)
-                         refs[n] = "!" c }
-      /^  kind: / { kinds[n] = substr($0, 9) }
-      END {
-        for (i = 1; i <= n; i++) bl = bl (i > 1 ? "," : "") refs[i] "|" kinds[i]
-        printf "K\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-              f["id"], f["state"], f["title"], f["outcome"], f["artifact"],
-              bl, b, p, r, f["branch"], at, pm, ps, pat
-      }
-    ' "$dir/task.yaml"
-  done
-done
-printf 'A\t%s\n' "$archived"
-]==]
+--- WHY IT NEVER RELIES ON AN EXIT STATUS. The probe spells every outcome it can
+--- tell apart on stdout as an `E` record and exits 0; the reader below treats
+--- only a probe that could not RUN, or that said nothing at all, as a failure.
+--- Timestamps arrive as epoch seconds, because `os` does not exist inside a
+--- pane.
+local PROBE = "uv run --frozen --quiet python scripts/lib/pane_probe.py"
 
 --- The fuel probe: the account's remaining window, asked of the one thing that
 --- reads it.
 ---
---- `fleet-status.sh --fuel` is `probe_fuel()` alone, printed as one
+--- `fleet status --fuel` is `probe_fuel()` alone, printed as one
 --- `name<TAB>value` line per field — the format exists because a thurbox pane
 --- is Lua with no JSON parser, and `--json` would collect the whole screen
 --- (a `gh pr list` per repo in flight, a `thurbox-cli session list`) to answer
 --- one number.
 ---
---- IT SPELLS ITS OWN FAILURE, like the queue probe above and for the same
---- reason: `unavailable` is a field the reader already knows how to draw, so a
---- checkout that has no such script answers in the same vocabulary the
---- provider does when it has no number.
-local FUEL_PROBE = [==[
-if [ ! -x ./scripts/fleet-status.sh ]; then
-  printf 'unavailable\tnot the control-plane checkout\n'; exit 0
-fi
-./scripts/fleet-status.sh --fuel 2>/dev/null
-]==]
+--- A checkout where it cannot run says nothing on stdout, which the reader
+--- below draws as a reading nobody could take rather than as a blank.
+local FUEL_PROBE = "uv run --frozen --quiet fleet status --fuel"
 
 -- ── Reading the probe ──────────────────────────────────────────────────────
 
@@ -525,7 +430,7 @@ local function edges(field)
   return out
 end
 
---- The display state `queue.sh list` draws too: a queued task holding on a
+--- The display state `fleet queue list` draws too: a queued task holding on a
 --- blocker reads as `waiting`, which is not a state on disk.
 ---
 --- A blocker clears when the task it names is `landed` — the forge's answer that
@@ -543,7 +448,7 @@ local function resolve_states(model)
         -- this is the same rule and not a second opinion about it.
         --
         -- AND A CONDITION NEVER CLEARS. There is no upstream to look up, and
-        -- nothing but `queue.sh block --clear` releases one — same rule,
+        -- nothing but `fleet queue block --clear` releases one — same rule,
         -- same place in `queue.py`.
         edge.cleared = not edge.condition and model.state_of[edge.ref] == "landed"
         if not edge.cleared then
@@ -961,10 +866,10 @@ end
 
 --- The classification vocabulary, in its own order. In one column a group
 --- cannot be a colour and a position alone, so the group says its own name.
---- The blocker kinds `queue.sh block` accepts, in words that fit a column. Both
---- closed sets — queue.py's BLOCKER_KINDS for a wait on a task, CONDITION_KINDS
---- for a wait on something outside the queue — so an unknown one is shown
---- verbatim rather than mapped to something plausible.
+--- The blocker kinds `fleet queue block` accepts, in words that fit a column.
+--- Both closed sets — queue.py's BLOCKER_KINDS for a wait on a task,
+--- CONDITION_KINDS for a wait on something outside the queue — so an unknown
+--- one is shown verbatim rather than mapped to something plausible.
 local BLOCKER_KIND = {
   ["semantic-dependency"] = "consumes",
   ["shared-external-state"] = "shared state",
@@ -979,14 +884,14 @@ local BLOCKER_KIND = {
 
 --- The publish states `queue.py` writes, in the words this pane says them in.
 ---
---- THE WORD IS THE RECORD'S WORD. `queue.sh show` prints `publish.state` and
---- `queue.sh list` puts it in its extra column; a pane-only synonym would turn
---- three readers of one field into three opinions about it. What happens here
---- is abbreviation and nothing else: `⟳` and `✗` say "running" and "failed" in
---- one cell each, and `conflict` and `changes` are the same words with their
---- tails off. It is not cosmetic — `changes-requested`, a number and an age do
---- not fit the thirty columns this pane routinely gets, and a row forced to
---- truncate its only load-bearing word says nothing at all.
+--- THE WORD IS THE RECORD'S WORD. `fleet queue show` prints `publish.state`
+--- and `fleet queue list` puts it in its extra column; a pane-only synonym
+--- would turn three readers of one field into three opinions about it. What
+--- happens here is abbreviation and nothing else: `⟳` and `✗` say "running" and
+--- "failed" in one cell each, and `conflict` and `changes` are the same words
+--- with their tails off. It is not cosmetic — `changes-requested`, a number and
+--- an age do not fit the thirty columns this pane routinely gets, and a row
+--- forced to truncate its only load-bearing word says nothing at all.
 ---
 --- `green` IS NOT THE OK COLOUR, AND IT IS NOT `ready`. It means every gate the
 --- FORGE knows about holds and NOBODY VETTED IT: checks passed, the branch
@@ -1058,7 +963,7 @@ local PUBLISH_GLYPH = "⇡"
 ---
 --- THE NOTE USED TO GO FIRST AND THEREFORE NEVER WENT ANYWHERE. `yours to
 --- merge` costs 21 columns beside its word, which put the full rung over budget
---- at 44 and far over it at 30 — the two widths `scripts/pane-selftest.sh`
+--- at 44 and far over it at 30 — the two widths `tests/pane/test_render.py`
 --- renders, and 30 is what this pane routinely gets. So the one segment that
 --- answers "what do I do about this" was drawn at no width an operator has,
 --- while `attested` — the same word under every task in a fleet with one
@@ -1077,7 +982,7 @@ local PUBLISH_LADDER = {
 --- Where each outcome a worker may write agrees with the state on the record.
 ---
 --- `queue.py`'s OUTCOME_STATES, mirrored the way `blocker_cleared` already is:
---- the rule is fleet's, not this pane's, and `queue.sh list` prints the same
+--- the rule is fleet's, not this pane's, and `fleet queue list` prints the same
 --- disagreement through `task_notes`.
 ---
 --- It is used here to say NOTHING. An outcome that agrees with the state is the
@@ -1158,7 +1063,7 @@ local function task_rows(out, task)
   -- a task in any other state is holding nothing, and a cleared edge is
   -- holding nothing anywhere. Drawing either says "here is why this is not
   -- moving" about a task that is moving, or about a reason that has expired.
-  -- `queue.sh show` keeps every one of them.
+  -- `fleet queue show` keeps every one of them.
   if display == "waiting" then
     for _, edge in ipairs(task.blocked_by) do
       if not edge.cleared then
@@ -1327,8 +1232,8 @@ end
 --- THE PANE ADDS NO FACT HERE. Every part of it is read off `task.yaml`:
 --- `publish.method`, `publish.state` and `publish.at`, written by `collect`,
 --- `shepherd` and `reap`, plus the artifact URL the record already carries.
---- Nothing on this row calls `gh`, and there is no state here that `queue.sh
---- show` would not print in the same word.
+--- Nothing on this row calls `gh`, and there is no state here that
+--- `fleet queue show` would not print in the same word.
 ---
 --- IT ABSORBS THE ARTIFACT ROW RATHER THAN SITTING ABOVE ONE. A task already
 --- spends four rows saying it exists — title, handle, documents, artifact — and
@@ -1531,8 +1436,8 @@ local function draw(entry, width, spinner)
   --
   -- THE NUMBER STAYS AND THE SLUG GOES. `01` is what orders the topic's tasks
   -- and it is the part of the id a reader uses; the rest of the id is the
-  -- title in kebab-case, and `queue.sh list` prints it in full for the one job
-  -- it has left, which is being typed at `queue.sh show`.
+  -- title in kebab-case, and `fleet queue list` prints it in full for the one
+  -- job it has left, which is being typed at `fleet queue show`.
   --
   -- ONLY A RUNNING TASK IS BOLD. That is the whole visual answer to this
   -- pane's one question: `dispatched` is a worker at work, `stuck` and
@@ -1608,16 +1513,16 @@ local function draw(entry, width, spinner)
 
   -- THE ONE EDGE THAT IS STILL HOLDING THIS TASK, with the reason fleet
   -- recorded for it — which is the whole reason the edge exists, since
-  -- `queue.sh block` refuses one that names no kind.
+  -- `fleet queue block` refuses one that names no kind.
   --
   -- CLEARED EDGES ARE NOT DRAWN, and neither is any edge under a task that is
   -- not `waiting`. Both used to be: the argument was that a ready task whose
   -- blocker just landed explains why it became ready. It does, and that is
   -- history — the task is READY, the operator's next move is to dispatch it,
-  -- and `✓` rows outnumbered `◆` rows on every screen this pane drew. `queue.sh
-  -- show` prints every blocker "moot and cleared ones included", in its own
-  -- words, and says there that the record keeps what a status line has stopped
-  -- showing. This is that line.
+  -- and `✓` rows outnumbered `◆` rows on every screen this pane drew.
+  -- `fleet queue show` prints every blocker "moot and cleared ones included",
+  -- in its own words, and says there that the record keeps what a status line
+  -- has stopped showing. This is that line.
   --
   -- Which is also why the mark went with them: with only holding edges left,
   -- `◆` marked every row it appeared on and cost two columns of the ref.
@@ -1639,7 +1544,7 @@ local function draw(entry, width, spinner)
     --
     -- `⊘` RATHER THAN `↳` IS THE WHOLE DISTINCTION A GLANCE NEEDS. `↳ 02-foo`
     -- is a wait with an end: 02 lands and this moves. A condition has no such
-    -- event — only `queue.sh block --clear` releases one — so the operator
+    -- event — only `fleet queue block --clear` releases one — so the operator
     -- reading this row is the actor, and a row that looked like the other kind
     -- would be telling them to wait for nobody.
     local lead = edge.condition and "   ⊘ " or "   ↳ "
@@ -1893,13 +1798,13 @@ end
 --- EVERY WINDOW, ALWAYS, IN THE RECORD'S ORDER. Drawing only the binding one
 --- made the row change meaning whenever two windows' percentages crossed.
 --- The binding window is marked — its label in the theme's accent — and the
---- rows never move. A record from an older `fleet-status.sh` carries no
+--- rows never move. A record from an older `fleet status` carries no
 --- windows, and draws its binding reading as the one row it had.
 ---
 --- A PROVIDER THAT COULD NOT BE READ IS NOT DRAWN. It has no bar to draw and
 --- no number to compare, and a standing `unavailable` row for a provider the
 --- operator is not spending is a row the queue below could have used. What it
---- could not say is still said in full by `./scripts/fleet-status.sh`, which
+--- could not say is still said in full by `uv run fleet status`, which
 --- prints every provider with the reason its fetch failed.
 ---
 --- UNLESS NOTHING READ AT ALL. Then the head row itself says `unavailable`
@@ -2183,7 +2088,7 @@ return {
     if not lead then
       return saying({
         "no " .. CONTROL_PLANE .. " session",
-        "run ./scripts/install-extension.sh",
+        "uv run fleet install-extension",
         "in your fleet checkout",
       }, width)
     end
@@ -2240,7 +2145,7 @@ return {
         -- "empty" here would be the one lie this pane is able to tell.
         return saying({
           archived .. " archived topic(s), nothing live",
-          "queue.sh list --archived",
+          "uv run fleet queue list --archived",
         }, width)
       end
       return saying({ "the queue is empty", model.root or lead.cwd }, width)

@@ -25,8 +25,9 @@ it lists every path. This file tells you what you are for.
 
 The repo's `SessionStart` hook (`.claude/settings.json`) fast-forwards `main`
 before you touch anything. A copy of this file is mirrored at the extension home
-(`~/.config/thurbox/extensions/fleet/`), symlinked as `CLAUDE.md` / `AGENTS.md`
-/ `GEMINI.md`; nothing reads it there while `repo_path` points at the checkout.
+(`extensions/fleet/` under `uv run fleet paths thurbox-config`), symlinked as
+`CLAUDE.md` / `AGENTS.md` / `GEMINI.md`; nothing reads it there while
+`repo_path` points at the checkout.
 
 The four you use constantly:
 
@@ -36,10 +37,10 @@ registry/context/<repo>.md      The human-owned truth about a project: what it
                                 Read the relevant one before reasoning about a
                                 project. This is where judgement lives.
 registry/repos.generated.yaml   Generated index of every repo. NEVER hand-edit;
-                                refresh with ./scripts/sync-registry.sh.
+                                refresh with uv run fleet sync-registry.
 orchestration/queue/<topic>/    The task queue: one directory per topic, one
                                 per task inside it, each holding that task's
-                                own BRIEF.md. Driven by ./scripts/queue.sh.
+                                own BRIEF.md. Driven by uv run fleet queue.
 orchestration/runs/<date>-<topic>.md   A log per topic. `topic add` opens it
                                 and `dispatch`/`collect`/`shepherd` keep its
                                 facts current; you write the judgement.
@@ -53,12 +54,13 @@ otherwise, and never tell them a run log is safe because it is "in the repo".
 
 The operator's own standing instructions, if they wrote any, are
 `orchestration/queue/OPERATOR.md` — gitignored, theirs, and absent in a fresh
-clone. Read it when it exists: `queue.sh add` puts it in front of every worker,
-it ADDS to a brief rather than overriding one, and `POLICY.md` outranks it.
+clone. Read it when it exists: `fleet queue add` puts it in front of every
+worker, it ADDS to a brief rather than overriding one, and `POLICY.md` outranks
+it.
 
 ## First, every session: the pane
 
-Run `./scripts/pane-ask.sh` before your first reply. Its first word is the
+Run `uv run fleet pane-ask` before your first reply. Its first word is the
 answer.
 
 - `skip` — nothing to ask. Say nothing about it.
@@ -70,7 +72,7 @@ The installer placed nothing on purpose: `layout.lua` is the operator's file,
 and the pane goes on screen only on their yes. So this is asked once per
 checkout, ever — the answer is kept in `orchestration/first-run/`, not in your
 conversation, and an operator whose layout already places the pane is never
-asked. `./scripts/pane-ask.sh yes` is the only way you put it on screen.
+asked. `uv run fleet pane-ask yes` is the only way you put it on screen.
 
 ## What you do
 
@@ -79,7 +81,7 @@ Two jobs, and nothing else.
 **Map.** Keep the picture of every project current. When you learn something
 durable — a project's purpose shifted, a new dependency between repos, a goal
 parked — write it into `registry/context/<repo>.md`. After a repo is added,
-renamed, or archived, run `./scripts/sync-registry.sh`; never edit the generated
+renamed, or archived, run `uv run fleet sync-registry`; never edit the generated
 YAML by hand. Nothing to push — the map is gitignored.
 
 **Orchestrate.** Plan, launch, and log thurbox sessions that do the work.
@@ -90,7 +92,7 @@ YAML by hand. Nothing to push — the map is gitignored.
 to run them. What is here is what is YOURS in each.
 
 1. **A prompt becomes a topic**, not a turn in this conversation.
-   `./scripts/queue.sh topic add` keeps it verbatim; `add` decomposes it into
+   `uv run fleet queue topic add` keeps it verbatim; `add` decomposes it into
    tasks, one per unit of work.
 2. **Write each task's BRIEF.md.** Workers share no context with you or each
    other, so each brief states the goal, the constraints and what "done" looks
@@ -120,12 +122,12 @@ the operator asks. `collect` prints that advice every time something lands; it
 is an instruction, and a ready set left sitting is work with no actor at all.
 
 **Steps 4, 6 and 8 do not have to wait for you to remember them.**
-`./scripts/reconcile.sh ensure` runs a supervised loop that folds the event
+`uv run fleet reconcile ensure` runs a supervised loop that folds the event
 stream continuously and calls `collect`, `shepherd` and `refuel` on their own
 intervals — see `## What you are not`, which owns why an automation exists here
 at all. It reconciles and never decides: you still plan, still write briefs,
 still dispatch. When something is
-unexpectedly current, that is why; `./scripts/reconcile.sh status` says whether
+unexpectedly current, that is why; `uv run fleet reconcile status` says whether
 it is up, and `logs` says what it has been doing. It is also the one thing that
 will speak to you unprompted, and only ever to say that the ready set has grown
 — read that line as `plan` already run for you, and dispatch.
@@ -137,15 +139,15 @@ with `list` and never writes anything.
 
 `.agents/skills/fleet-queue/` is the driving surface for 1–4, 6 and 8, and
 `.agents/skills/thurbox-session/` for the mechanics of one session — spawning,
-naming, trust, the state vocabulary, cleanup. Use both. (`.claude/skills` is a
-symlink to `.agents/skills`, so every CLI loads the one copy.)
+naming, trust, the state vocabulary, cleanup. Use both. (`.claude/skills` points
+at `.agents/skills`, so every CLI loads the one copy.)
 
 ## Fuel
 
 **Fuel is how much of the account's provider windows is left**, read by
-`./scripts/fleet-status.sh` from `quota-axi` and printed as its `FUEL` section.
+`uv run fleet status` from `quota-axi` and printed as its `FUEL` section.
 The TUI queue pane draws the same reading at the top of its column, asking for
-it with `./scripts/fleet-status.sh --fuel` — one reading, never a second parse.
+it with `fleet status --fuel` — one reading, never a second parse.
 It measures the ACCOUNT, not a session: the windows you and every worker spend
 at once, so six workers dispatched together spend them six ways. There is no
 per-worker reading to be had — `thurbox-cli session get` carries no token,
@@ -171,9 +173,9 @@ reading and the reserve on one line, and the pane's bar marks where the floor
 falls across it. It is fleet's own floor and not `quota-axi`'s `reserve`
 field, which is that window's pace against its reset clock and is `unknown`
 for every window whose fetch failed. Nothing enforces the floor for
-you — `queue.sh dispatch` does not read fuel and must not, because a queue that
-stops on a bad parse is worse than one that spends. `queue.sh refuel` does read
-it, and reads ONE provider: the one your agent draws on, from
+you — `fleet queue dispatch` does not read fuel and must not, because a queue
+that stops on a bad parse is worse than one that spends. `fleet queue refuel`
+does read it, and reads ONE provider: the one your agent draws on, from
 `orchestration/agent.conf`. A spent window on a provider fleet does not
 dispatch is no reason to leave a worker sitting at its limit, and tasks that
 disagree on an agent are `undetermined`, which restarts nothing.
@@ -204,9 +206,9 @@ out why X", reading through another repository, any edit outside this control
 plane. However small it looks.
 
 Inline, and only: `orchestration/`, `registry/` and `.agents/` — the queue, the
-briefs, the run logs, the map, the skills — plus `queue.sh`, `fleet-status.sh`,
-`sync-checkout.sh`, `install-extension.sh` and `reconcile.sh`.
-Those you push straight to `main`.
+briefs, the run logs, the map, the skills — plus the modules behind `fleet
+queue`, `fleet status`, `fleet sync-checkout`, `fleet install-extension` and
+`fleet reconcile` in `scripts/lib/`. Those you push straight to `main`.
 
 The tell: **if you are about to read a second file in another codebase, you
 should be writing a brief instead.** On 2026-09-08 that went unheeded for
@@ -224,7 +226,7 @@ live in a thurbox column — topics, states, artifacts — so a status table in 
 reply repeats what @OPERATOR_NAME@ is already looking at, which the "one fact
 in one place" rule below already forbids.
 
-`./scripts/fleet-status.sh` answers "where are we" in ONE call — fuel, queue,
+`uv run fleet status` answers "where are we" in ONE call — fuel, queue,
 sessions, PRs, checkout. Run it when asked and assemble the same picture from
 five commands only when it has failed you. Asked is the condition: unprompted,
 it is the table again.
@@ -274,7 +276,7 @@ fact wins:
 
 Both names are settings, not literals: `orchestration/voice.example.conf`
 carries them, a gitignored `voice.conf` beside it overrides, and
-`scripts/install-extension.sh` renders them into the copy you are reading.
+`uv run fleet install-extension` renders them into the copy you are reading.
 
 ## Rules that bite
 
@@ -283,22 +285,22 @@ carries them, a gitignored `voice.conf` beside it overrides, and
   workflow.
 - **New instructions do not reach you on their own.** You froze this file and
   every skill you had loaded at launch, and nothing reloads them from disk. So
-  when `./scripts/sync-checkout.sh` — the `SessionStart` hook, or an ordinary
+  when `uv run fleet sync-checkout` — the `SessionStart` hook, or an ordinary
   `git pull` — brings a change to `FLEET.md`, `AGENTS.md` or `.agents/skills/`,
   YOU are the stale one. It reports `restart-lead: yes` when that happens. Say
   that to the operator rather than pretending the change reached you, and run
   `.agents/skills/update-fleet/` — it does the sync, re-applies only what the
   sync left stale, and ends on the hand-over that replaces you.
 - **CI only runs on pull requests,** and routine changes here go straight to
-  `main`. So gate locally before you push: `./scripts/check.sh` is the whole
-  gate, and CI runs the same script.
+  `main`. So gate locally before you push: `uv run fleet check` is the whole
+  gate, and CI runs the same command on Linux and on native Windows.
 - **Anything that opens a pull request lands by squash merge**, so the pull
   request title is the commit that reaches `main`. See `CONTRIBUTING.md`.
 - **The queue pane displays; it does not control.** It has no key that
-  dispatches, cancels or reorders anything, and `./scripts/queue.sh` stays the
+  dispatches, cancels or reorders anything, and `uv run fleet queue` stays the
   only thing that writes to the queue. If the operator asks for a button, that
   is a change to propose and make, not one to add because the pane is there.
-- **A stop stays stopped.** `./scripts/reconcile.sh stop` writes
+- **A stop stays stopped.** `uv run fleet reconcile stop` writes
   `orchestration/reconcile/down`, and `ensure` honours it across a reboot and
   every later run. Do not clear it on the operator's behalf; `start` is theirs
   to type.
@@ -306,7 +308,7 @@ carries them, a gitignored `voice.conf` beside it overrides, and
   WAKES its recipient — it injects into your terminal and interrupts whoever is
   talking to you. So a worker writes `result.md` into its task directory and you
   read it when you choose, alongside `thurbox-cli watch`'s event stream for the
-  timing. `./scripts/queue.sh watch` and `collect` are the two halves. The
+  timing. `uv run fleet queue watch` and `collect` are the two halves. The
   mailbox is still right for something genuinely urgent and wrong for routine
   completion, which is nearly all of it. Pass `--parent <your-uuid>` when you
   create workers so you can enumerate them.
@@ -318,7 +320,7 @@ sync, whose diff a human should read. It stays a command a human asks for and
 reads the output of. If you find yourself wanting an automation, propose it —
 don't install it.
 
-**One automation exists.** `./scripts/reconcile.sh` is a supervised loop, not a
+**One automation exists.** `uv run fleet reconcile` is a supervised loop, not a
 cron: the operator starts it, the operator stops it, `status` says what it is
 doing, and `stop` writes a flag that keeps it down across a reboot. Everything
 the rule protects is still true of it —
@@ -332,7 +334,7 @@ the rule protects is still true of it —
   naming what is ready and the command that sends it. Once per transition, and
   never while you are mid-turn. The decision it hands you is still yours to
   make; what it took away was the six hours before you knew there was one.
-- **It writes no record.** Every effect goes through `./scripts/queue.sh`,
+- **It writes no record.** Every effect goes through `uv run fleet queue`,
   which stays the only writer, exactly as the pane stays a pure reader.
 - **It is stoppable, and a stop stays stopped.** `orchestration/reconcile/down`
   is the operator's to clear with `start`, never yours.

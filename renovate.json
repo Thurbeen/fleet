@@ -26,19 +26,5 @@
     }
   ],
   "semanticCommits": "enabled",
-  "semanticCommitScope": null,
-  "customManagers": [
-    {
-      "customType": "regex",
-      "description": "The rumdl pin in CI's markdown job. Renovate has no manager for a version in an env: block, so match it by name.",
-      "managerFilePatterns": [
-        "**/.github/workflows/ci.yml"
-      ],
-      "matchStrings": [
-        "RUMDL_VERSION:\\s*[\"']?(?<currentValue>[0-9][0-9.]*)"
-      ],
-      "datasourceTemplate": "pypi",
-      "depNameTemplate": "rumdl"
-    }
-  ]
+  "semanticCommitScope": null
 }

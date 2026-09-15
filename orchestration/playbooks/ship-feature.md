@@ -33,7 +33,7 @@ One worker session.
 
 1. Read `registry/context/<repo>.md` for goals and gotchas; fold the relevant
    bits into the prompt.
-2. `./scripts/queue.sh topic add` opens this run's log; write the goal into it
+2. `uv run fleet queue topic add` opens this run's log; write the goal into it
    now.
 3. Fast-forward `base` in the target repo, then `session create --parent
    "$THURBOX_SESSION" --on-existing adopt` with the profile's flags →
@@ -46,10 +46,10 @@ One worker session.
    worker mid-turn. The skill's §1c and §1d have the mechanics.
 4. Read the result file the worker wrote, when you choose. Do not ask it to
    mail you: `message send` wakes the lead and interrupts whoever is talking to
-   it. `./scripts/queue.sh watch` gives the timing without interrupting anyone.
+   it. `uv run fleet queue watch` gives the timing without interrupting anyone.
 5. Review the PR — `collect`'s refresh already has it in the run log's facts —
    then merge or hand back.
-6. `./scripts/queue.sh collect` reaps the session once the pull request
+6. `uv run fleet queue collect` reaps the session once the pull request
    merges. For a session you spawned outside the queue, `session delete <uuid>
    --force` once merged or abandoned.
 

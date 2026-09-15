@@ -18,17 +18,17 @@
 #   WORKING STATE  the operator's own content: what they asked for, what came
 #                  back, and what they concluded
 
-# MACHINE. Rendered from extension.toml.in by scripts/install-extension.sh and
-# carrying this clone's absolute path, which is true only on one machine —
+# MACHINE. Rendered from extension.toml.in by `uv run fleet install-extension`
+# and carrying this clone's absolute path, which is true only on one machine —
 # extension.toml.in's header says why the path cannot be a `~`.
 /extension.toml
 
 # GENERATED. FLEET.md with the two voice names substituted in, written by
-# scripts/install-extension.sh and shipped as the extension's [[files]] payload.
-# FLEET.md is the tracked source and carries the placeholders;
+# `uv run fleet install-extension` and shipped as the extension's [[files]]
+# payload. FLEET.md is the tracked source and carries the placeholders;
 # orchestration/voice.example.conf carries the defaults. Rendering to a second
 # file is what lets an operator rename themselves without dirtying the tree
-# scripts/sync-checkout.sh has to fast-forward.
+# `uv run fleet sync-checkout` has to fast-forward.
 /FLEET.rendered.md
 
 # WORKING STATE. Your GitHub owners. registry/owners.example.txt is the tracked
@@ -70,8 +70,9 @@
 # when you want something other than the default.
 /orchestration/session-glyphs.conf
 
-# GENERATED. Rebuilt wholesale from your `gh` session by scripts/sync-registry.sh,
-# and an index of every repo you can reach is not a thing to publish.
+# GENERATED. Rebuilt wholesale from your `gh` accounts by
+# `uv run fleet sync-registry`, and an index of every repo you can reach is not
+# a thing to publish.
 /registry/repos.generated.yaml
 
 # WORKING STATE. The judgement about one of your projects, written from
@@ -80,10 +81,10 @@
 !/registry/context/_TEMPLATE.md
 
 # WORKING STATE. One file per orchestration run — the record of what you did,
-# when, and how it went. scripts/queue.sh opens one per topic and refreshes the
-# facts inside it, so these carry machine paths and session ids freely; the
-# judgement around those facts is the operator's. _TEMPLATE.md is the form,
-# it is generic, and it stays.
+# when, and how it went. `uv run fleet queue` opens one per topic and refreshes
+# the facts inside it, so these carry machine paths and session ids freely; the
+# judgement around those facts is the operator's. _TEMPLATE.md is the form, it
+# is generic, and it stays.
 /orchestration/runs/*.md
 !/orchestration/runs/_TEMPLATE.md
 
@@ -105,6 +106,12 @@
 !/orchestration/queue/POLICY.md
 !/orchestration/queue/OPERATOR.example.md
 
+# MACHINE. The link that lets Claude Code and opencode load .agents/skills/,
+# made by `uv run fleet install`: a symlink on POSIX, a junction on Windows. It
+# is not tracked because a default Windows clone checks a tracked link out as a
+# text file holding its target, and then no agent found a single skill.
+/.claude/skills
+
 # GENERATED. Python's bytecode cache. scripts/lib/fleet_status.py loads
 # queue.py as a module, and importing anything writes one of these beside the
 # source — so it appears the first time a command runs and never in a fresh
@@ -112,20 +119,23 @@
 __pycache__/
 
 # GENERATED. The project environment `uv run` creates on first use, holding
-# PyYAML at the uv.lock pin and the `fleet` launcher. One per checkout, and
-# rebuilt from the lock on the next run when it is deleted.
+# PyYAML and the gate's tools at the uv.lock pins, and the `fleet` launcher.
+# One per checkout, and rebuilt from the lock on the next run when it is
+# deleted.
 /.venv/
 
-# MACHINE + WORKING STATE. The reconciler's runtime state: its supervisor's
-# pid, the heartbeat that says its loop is actually ticking, its log, the
-# advisory `nudge` flag a worker's Stop hook drops, and the `down` flag that
-# keeps an explicit stop honoured across a restart and a reboot. The loop's
-# CODE is tracked (scripts/reconcile.sh); everything it writes at runtime is
-# not, for the same reason the queue's own records are not.
+# MACHINE + WORKING STATE. The reconciler's runtime state: the `lock` its loop
+# holds for as long as it lives, its supervisor's pid, the heartbeat that says
+# its loop is actually ticking, its log, the advisory `nudge` flag a worker's
+# Stop hook drops, the `down` flag that keeps an explicit stop honoured across a
+# restart and a reboot, and `notified.json`. The loop's CODE is tracked
+# (scripts/lib/reconcile.py); everything it writes at runtime is not, for the
+# same reason the queue's own records are not.
 /orchestration/reconcile/
 
 # MACHINE. The operator's answer to the one first-run question — whether the
-# queue pane goes on screen — written by scripts/pane-ask.sh so the lead asks it
-# once per checkout and never again. The layout.lua that answer is about is one
-# machine's, and the lead's conversation is disposable, so it lives here.
+# queue pane goes on screen — written by `uv run fleet pane-ask` so the lead
+# asks it once per checkout and never again. The layout.lua that answer is
+# about is one machine's, and the lead's conversation is disposable, so it lives
+# here.
 /orchestration/first-run/

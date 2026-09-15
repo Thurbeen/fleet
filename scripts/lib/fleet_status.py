@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
-# The lead's whole situational awareness, in one call. scripts/fleet-status.sh
-# is the entry point and its header is the usage.
+# The lead's whole situational awareness, in one call — the fuel, the queue,
+# the workers, the pull requests and this checkout, on one screen.
+#
+# Usage:
+#   uv run fleet status             # the screen
+#   uv run fleet status --json      # the same reading, machine-readable
+#   uv run fleet status --fuel      # the fuel section alone, one field per line
+#   uv run fleet status --records   # validate your queue records and registry map
 #
 # WHY THIS EXISTS. Answering "where are we?" used to cost three to five
 # commands spread over three checkouts and four tools: a `git status` and a
-# `git log` per checkout, `queue.sh list`, `queue.sh plan`, `thurbox-cli
+# `git log` per checkout, `fleet queue list`, `fleet queue plan`, `thurbox-cli
 # session list`, the forge's own list. Most of a long session's tool
 # calls were situational awareness rather than work, and every one of them cost
 # a round trip and a piece of the context window. This is those calls, folded
@@ -20,11 +26,38 @@
 #
 # THE OTHER RULE: IT READS. It starts nothing, stops nothing, syncs nothing and
 # dispatches nothing. Every probe below is a list command or a `status`.
-# scripts/fleet-status-selftest.sh proves both rules against stubs.
+# tests/status/ proves both rules against stubs. The exit status is 0 for
+# "this command ran", never for "the fleet is healthy" — read the sections.
 #
 # It also does not re-derive what another command already resolves. The queue
 # root comes from queue.py, so this is never a second opinion about which
 # records it is reading.
+#
+# FUEL IS THE ACCOUNT'S, NOT A SESSION'S. It comes from `quota-axi`, the only
+# source that has a number at all — `thurbox-cli session get --json` carries no
+# token, usage, cost or limit field. quota-axi measures the subscription window
+# every session spends at once, so there is one reading per authenticated
+# provider and no per-worker breakdown to be had. FLEET.md's `## Fuel` section
+# owns the reserve and what the lead does near it.
+#
+# `--fuel` IS THAT SECTION ALONE, as `name<TAB>value` records — one per
+# provider, separated by a blank line. It exists for the TUI queue pane, which
+# draws the same readings and can afford neither `--json` (which collects
+# every section, so a `gh pr list` per repo in flight) nor a JSON parser. It
+# prints `probe_fuel_all()`'s own fields under their own names, so the pane
+# and this screen cannot come to different conclusions about what quota-axi
+# said.
+#
+# `--records` IS THE OPERATOR'S HEALTH CHECK, argued at the records section
+# below. It is a flag and not a section because it opens every record,
+# archived topics' included, and the screen promises never to.
+#
+# Environment: FLEET_QUEUE_DIR, honoured exactly as `fleet queue` honours it,
+# and FLEET_REGISTRY_FILE, which relocates the registry map the same way.
+#
+# Requires: uv. thurbox-cli, gh, git and quota-axi are each optional and cost
+# only their own section — quota-axi in particular is a tool on the operator's
+# PATH, never a dependency this repo vendors.
 
 from __future__ import annotations
 
@@ -67,7 +100,7 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 LABEL = 10  # the left gutter every section header shares
 
 # A task in one of these has said what it concluded; the rest are open.
-# `landed` is concluded AND merged — the state whose session `queue.sh reap`
+# `landed` is concluded AND merged — the state whose session `fleet queue reap`
 # has already released, so its absence from thurbox is expected, not news.
 CONCLUDED = {"done", "landed", "stuck", "failed", "abandoned"}
 
@@ -85,7 +118,7 @@ def run(argv: list, cwd: str | None = None, timeout: int = 10) -> tuple[str | No
     if not shutil.which(argv[0]):
         return None, f"{argv[0]} not found"
     try:
-        p = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+        p = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, encoding="utf-8", timeout=timeout)
     except subprocess.TimeoutExpired:
         return None, f"{argv[0]} timed out after {timeout}s"
     except OSError as exc:
@@ -158,14 +191,14 @@ def probe_queue() -> dict:
                     # disagrees with its own outcome, a task nothing dispatched,
                     # and the blockers that are actually holding something.
                     # queue.py derives it, so this cannot say it differently
-                    # from `queue.sh list` or the pane.
+                    # from `fleet queue list` or the pane.
                     "notes": fleetqueue.task_notes(q, t),
                 }
             )
         sec["topics"].append(entry)
 
     sec["counts"] = counts
-    # Topics this reading declined to open. Same number `queue.sh list` prints
+    # Topics this reading declined to open. Same number `fleet queue list` prints
     # and the TUI pane shows: they are three readers over one set of records,
     # and the whole point of a status screen is that it cannot disagree with
     # the thing it is reporting on.
@@ -289,7 +322,7 @@ def probe_prs(tasks: list) -> dict:
     remote = [
         {"repo": f"(on host {h})", "kind": "skipped",
          "reason": "runs on a remote host; its change requests are read by "
-                   "`queue.sh shepherd`, which asks the forge and not a checkout"}
+                   "`fleet queue shepherd`, which asks the forge and not a checkout"}
         for h in sorted({t["host"] for t in live if t.get("host")})
     ]
     live = [t for t in live if not t.get("host")]
@@ -396,7 +429,7 @@ def agent_conf() -> dict:
         path = os.path.join(root, AGENT_CONF_DEFAULTS)
     conf = {}
     try:
-        with open(path) as fh:
+        with open(path, encoding="utf-8") as fh:
             for raw in fh:
                 line = raw.strip()
                 if not line or line.startswith("#") or "=" not in line:
@@ -667,7 +700,7 @@ def probe_fuel(provider: str | None = None) -> dict:
 
     THIS IS THE GATE'S ENTRY POINT, and that is why it takes one provider.
     `scripts/lib/queue.py`'s `account_fuel()` calls it to decide whether
-    `queue.sh refuel` restarts anything, and it passes the provider IT derived
+    `fleet queue refuel` restarts anything, and it passes the provider IT derived
     from the agent the tasks in hand are running. The gate must read that one
     window and never an average or whichever provider happens to be lowest: a
     spent window on a provider the fleet never dispatches is no reason to leave
@@ -733,12 +766,12 @@ def probe_fuel_all() -> dict:
 # --- records -----------------------------------------------------------------
 #
 # THE OPERATOR'S HEALTH CHECK. The live queue records and the registry map are
-# validated here, and nowhere in `scripts/check.sh`: the gate reads no operator
+# validated here, and nowhere in `fleet check`: the gate reads no operator
 # state, because a gate that did gave one commit a different verdict in the
 # control-plane checkout than on CI. A problem in this section is "your records
 # need attention", never "this commit is broken". Both validators are the ones
 # the rest of the repo uses — `queue.py`'s record_problems(), which
-# `queue.sh check` prints, and `check_yaml.py`'s registry_problems().
+# `fleet queue check` prints, and `check_yaml.py`'s registry_problems().
 #
 # ON REQUEST, NEVER ON THE SCREEN. Validating a record means opening it, and an
 # archived topic's task files are exactly the ones the screen promises never to
@@ -777,7 +810,7 @@ def probe_records() -> dict:
     path = os.environ.get(REGISTRY_ENV) or os.path.join(REPO_ROOT, REGISTRY_FILE)
     row = {"path": path, "summary": "", "problems": []}
     if not os.path.exists(path):
-        row["summary"] = "not synced yet — `sync-registry.sh`"
+        row["summary"] = "not synced yet — `uv run fleet sync-registry`"
     else:
         try:
             row["summary"], row["problems"] = _load_check_yaml().registry_problems(path)
@@ -822,15 +855,15 @@ def render_queue(sec: dict) -> list:
     if not tasks:
         if sec.get("archived"):
             return lines + [cont(f"{sec['archived']} archived topic(s) and nothing "
-                                 "live — `queue.sh list --archived`")]
-        return lines + [cont("empty — `queue.sh topic add` opens one")]
+                                 "live — `fleet queue list --archived`")]
+        return lines + [cont("empty — `fleet queue topic add` opens one")]
     order = ("ready", "waiting", "dispatched", "done", "landed", "stuck", "failed",
              "abandoned")
     tally = [f"{k} {sec['counts'][k]}" for k in order if sec["counts"].get(k)]
     lines.append(cont(f"{len(topics)} topic(s), {tasks} task(s) — " + ", ".join(tally)))
     if sec.get("archived"):
         lines.append(cont(f"{sec['archived']} archived topic(s) hidden — "
-                          "`queue.sh list --archived`"))
+                          "`fleet queue list --archived`"))
     for topic in topics:
         lines.append(f"  {topic['slug']} — {topic['title']}")
         for t in topic["tasks"]:
@@ -854,8 +887,8 @@ def render_queue(sec: dict) -> list:
 
 def render_records(sec: dict) -> list:
     lines = [head("RECORDS", "your live queue and registry map, validated")]
-    for name, remedy in (("queue", "`queue.sh check` lists every one"),
-                         ("registry", "`sync-registry.sh` regenerates it")):
+    for name, remedy in (("queue", "`uv run fleet queue check` lists every one"),
+                         ("registry", "`uv run fleet sync-registry` regenerates it")):
         row = sec[name]
         problems = row["problems"]
         if not problems:
@@ -1096,7 +1129,7 @@ def collect() -> dict:
 
 
 def main(argv: list) -> int:
-    p = argparse.ArgumentParser(prog="fleet-status.sh", add_help=True)
+    p = argparse.ArgumentParser(prog="fleet status", add_help=True)
     p.add_argument("--json", action="store_true", help="the same reading, machine-readable")
     p.add_argument(
         "--fuel", action="store_true",

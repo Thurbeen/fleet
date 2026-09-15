@@ -1,10 +1,11 @@
 # Control-plane extension manifest — the UNRENDERED source.
 #
-# This file is not installable as-is. `scripts/install-extension.sh` renders it
-# to a gitignored `extension.toml`, substituting `__REPO_PATH__` with the
-# absolute path of your clone, then installs that:
+# This file is not installable as-is. `uv run fleet install-extension`
+# (`scripts/lib/install_extension.py`) renders it to a gitignored
+# `extension.toml`, substituting `__REPO_PATH__` with the absolute path of your
+# clone, then installs that:
 #
-#     ./scripts/install-extension.sh
+#     uv run fleet install-extension
 #
 # WHY THE PLACEHOLDER EXISTS — do not "simplify" it back to `~/...`.
 #
@@ -22,18 +23,20 @@
 #
 # Permanently, and independently of that bug: no token spells "my clone".
 # `{home}` is substituted — but it resolves to the extension home
-# (`~/.config/thurbox/extensions/fleet`), not to your checkout. The session must
-# open the checkout, because it needs `registry/` and `orchestration/` in hand.
+# (`extensions/fleet` under the directory `uv run fleet paths thurbox-config`
+# names), not to your checkout. The session must open the checkout, because it
+# needs `registry/` and `orchestration/` in hand.
 #
 # A committed file cannot hardcode a path that exists on exactly one machine.
-# Hence `__REPO_PATH__`, rendered at install time.
+# Hence `__REPO_PATH__`, rendered at install time as an escaped TOML string, so
+# a Windows path's backslashes survive.
 #
 # AND RENDERING IT AGAIN IS NOT ENOUGH IF THE CLONE MOVED. thurbox's
 # `ensure_extension` finds an extension's session by NAME and reuses the one it
 # finds; it never compares that session's directory against the manifest's. So a
 # re-install rewrites this file, reports success, and leaves the live session
 # opening the OLD path — with `extension status` still calling it healthy.
-# `scripts/install-extension.sh` closes that gap itself: it compares the live
+# `uv run fleet install-extension` closes that gap itself: it compares the live
 # session's cwd against this clone and exits non-zero naming the remedy
 # (`extension deactivate`, which deletes the session, then re-install).
 #
@@ -48,9 +51,9 @@
 #   [[automations]]   No scheduled resource, in either flavour. The `send` one
 #                     (session_ref + prompt) and the headless `exec` one
 #                     (command) would both fit the registry sync — and the sync
-#                     commits and pushes to `main`, so it stays a manual
-#                     `./scripts/sync-registry.sh` run by a human who can read
-#                     the diff.
+#                     rewrites the map every session plans from, so it stays a
+#                     manual `uv run fleet sync-registry` run by a human who
+#                     reads what it reports.
 #   [[external_files]]
 #   [[agent_patches]]
 #   [[config_merges]] The three payload kinds that reach OUTSIDE the extension
@@ -66,7 +69,7 @@
 #                     this extension's home, and `[[external_files]]` is exactly
 #                     the payload kind that puts a file there. It still goes
 #                     through `thurbox-cli plugin install`, called from
-#                     `scripts/install-extension.sh`, for three reasons a
+#                     `uv run fleet install-extension`, for three reasons a
 #                     manifest payload cannot match:
 #
 #                       * It is RECORDED. The pane is written into the user's
@@ -84,19 +87,19 @@
 #                         overwritten.
 #
 #                     So the stance holds unchanged: nothing in THIS FILE reaches
-#                     outside the extension home. The pane is installed by a
-#                     script, through thurbox's own front door for panes, and
-#                     placing it stays the user's own call — `scripts/place-pane.sh`
+#                     outside the extension home. The pane is installed by
+#                     fleet, through thurbox's own front door for panes, and
+#                     placing it stays the user's own call — `fleet place-pane`
 #                     writes that block only once they have been asked and said
-#                     yes, and its header owns what keeps that safe.
+#                     yes, and its docstring owns what keeps that safe.
 #   home / --home     Omitted, so the home defaults to
 #                     `<config>/extensions/fleet`. Do NOT "fix" the placeholder
 #                     by installing with `--home <your clone>`: that would make
 #                     `{home}` the checkout, lay this extension's payload and
 #                     symlinks into your working tree, and — because
 #                     `uninstall --purge` only refuses paths shallower than two
-#                     components or `$HOME` itself — let a purge delete the
-#                     clone.
+#                     components or the home directory itself — let a purge
+#                     delete the clone.
 #   [[files]] flags   `executable`, `if_absent` and `substitute` all go unused:
 #                     the single payload file is prose, is not a user-edited
 #                     seed, and contains no `{home}` to substitute.
@@ -111,9 +114,9 @@
 #                                      the rest is the name — see the glyph
 #                                      header below
 #   the extension `fleet`              the id every `thurbox-cli extension ...`
-#                                      command takes, the directory it derives
-#                                      and the directory it derives
-#                                      (`~/.config/thurbox/extensions/fleet`).
+#                                      command takes, and the directory it
+#                                      derives (`extensions/fleet` under
+#                                      thurbox's config directory).
 #                                      It registers no agent — see the
 #                                      no-[[agents]] note further down
 #
@@ -132,9 +135,9 @@
 # ARRIVES.
 # `orchestration/session-glyphs.example.conf` is the one place it is chosen —
 # `GLYPHS=on` for `📡` (the default), `GLYPHS=off` for `⌖` — and
-# `scripts/install-extension.sh` substitutes it into the rendered manifest the
-# same way it substitutes `__REPO_PATH__`. That file's header owns the whole
-# argument; two things about it belong here, where the name is:
+# `uv run fleet install-extension` substitutes it into the rendered manifest
+# the same way it substitutes `__REPO_PATH__`. That file's header owns the
+# whole argument; two things about it belong here, where the name is:
 #
 #   * `📡` is U+1F4E1, East_Asian_Width WIDE: TWO cells in the tmux grid the TUI
 #     draws on. `⌖` is U+2316 POSITION MARKER, Neutral, so one cell and not an
@@ -175,10 +178,12 @@
 #                                        words still have to agree
 #
 # Two more places move with them without being one of the two:
-# `scripts/queue-selftest.sh` asserts that (1) rendered ends in (2), and
-# `scripts/check.sh pane` asserts the same of the unrendered file, so the gate
-# fails a rename that stops at either. FLEET.md names the lead in prose and
-# carries no literal to update.
+# `tests/pane/test_agreement.py` asserts that (1), unrendered, is the glyph
+# placeholder in front of (2), so `uv run fleet check pane` fails a rename that
+# stops at either; and `tests/extension/test_install_extension.py` spells the
+# rendered name under each glyph setting, so `uv run fleet check extension`
+# fails until it moves too. FLEET.md names the lead in prose and carries no
+# literal to update.
 #
 # A PARTIAL RENAME is the failure mode: change (1) alone and thurbox spawns the
 # new name while the pane goes on probing the old one, so the queue pane says
@@ -203,7 +208,7 @@
 #
 #     1. git pull                                   # the new name, on disk
 #     2. thurbox-cli session fork '<old>' --name '<new>'
-#     3. ./scripts/install-extension.sh             # adopts the session that
+#     3. uv run fleet install-extension             # adopts the session that
 #                                                   # already answers to <new>
 #     4. thurbox-cli session delete '<old>' --force
 #     5. thurbox-cli extension status fleet         # unchanged — the extension
@@ -216,7 +221,7 @@
 #
 #     1. thurbox-cli extension deactivate fleet     # deletes the <old> session
 #     2. git pull
-#     3. ./scripts/install-extension.sh             # spawns <new>
+#     3. uv run fleet install-extension             # spawns <new>
 #
 #     Step 1 must come FIRST. `deactivate` tears down the sessions the
 #     INSTALLED manifest declares, so run it after the rename is installed and
@@ -230,13 +235,13 @@
 # that agent is thurbox's to rename, not this extension's. Skip that uninstall
 # and you get two registered
 # extensions and two self-healing sessions, each recreating itself, plus an
-# orphaned `~/.config/thurbox/extensions/fleet/`.
+# orphaned `extensions/fleet/` under thurbox's config directory.
 #
 # THE PAYLOAD's FILENAME is separate again: this manifest names
 # `FLEET.rendered.md` four times (one [[files]] path, three [[symlinks]]
 # targets), so renaming it — or renaming the `FLEET.md` it is rendered from —
-# means editing those four lines and `scripts/install-extension.sh` together.
-# Neither rename above requires it.
+# means editing those four lines and `scripts/lib/install_extension.py`
+# together. Neither rename above requires it.
 #
 # WORKER session names are in none of this. They are free-form strings that
 # nothing resolves — by the convention in orchestration/playbooks/ each is an
@@ -299,7 +304,7 @@ min_thurbox_version = "2.19.0"
 # `claude` entry carries `--settings <config>/hooks/claude.json`, which is how
 # the built-in `hooks` extension makes an agent report `working`, `blocked`,
 # `done` and `idle` back to thurbox. Pinning a model there dropped that file,
-# and a lead that reports no state is one `queue.sh watch`, `reap` and
+# and a lead that reports no state is one `fleet queue watch`, `reap` and
 # `refuel` all read wrong — `refuel` in particular treats a stale `working`
 # as a wedged session.
 #
@@ -314,7 +319,7 @@ min_thurbox_version = "2.19.0"
 #
 # WHICH stock agent is the operator's setting and not this repo's. `AGENT` in
 # `orchestration/agent.conf` names it — the same setting every worker spawn
-# reads — and `scripts/install-extension.sh` substitutes it here the way it
+# reads — and `uv run fleet install-extension` substitutes it here the way it
 # substitutes `__REPO_PATH__`. With it unset the placeholder renders `claude`,
 # which is the agent thurbox ships and the one this manifest was written
 # against: a fallback for a name thurbox must be given, not a claim that fleet
@@ -329,12 +334,18 @@ min_thurbox_version = "2.19.0"
 #
 # AND WHAT SHIPS IS THE RENDERED COPY, NOT THE TRACKED ONE. `FLEET.md` is the
 # source and carries `@OPERATOR_NAME@` and `@ASSISTANT_NAME@`;
-# `scripts/install-extension.sh` substitutes the two names out of
+# `uv run fleet install-extension` substitutes the two names out of
 # `orchestration/voice.example.conf` (or the gitignored `voice.conf` beside it)
 # and writes `FLEET.rendered.md`, which is gitignored exactly as the rendered
-# manifest is. Rendering to a second file rather than in place is the whole
-# point: an operator who changed what the lead calls them has edited no tracked
-# file, so `scripts/sync-checkout.sh` still has a clean tree to fast-forward.
+# manifest is. Rendering to a second file rather than over `FLEET.md` is the
+# whole point: an operator who changed what the lead calls them has edited no
+# tracked file, so `uv run fleet sync-checkout` still has a clean tree to
+# fast-forward.
+#
+# AND THAT SECOND FILE IS REWRITTEN IN PLACE, never replaced. Without the
+# privilege to make a symbolic link, thurbox on Windows lays the [[symlinks]]
+# below down as hard links, and a hard link to a file that was replaced goes
+# on reading the old text.
 #
 # The `substitute` flag below would not have done this. It substitutes `{home}`
 # and nothing else, so the names could never have travelled that way.
@@ -372,6 +383,6 @@ agent = "__LEAD_AGENT__"
 # and orchestration/ in hand, and the repo's SessionStart hook
 # (.claude/settings.json) fast-forwards main before any work starts.
 #
-# Rendered by scripts/install-extension.sh. See the header for why this is an
-# absolute path and not a `~`.
+# Rendered by `uv run fleet install-extension`. See the header for why this is
+# an absolute path and not a `~`.
 repo_path = "__REPO_PATH__"

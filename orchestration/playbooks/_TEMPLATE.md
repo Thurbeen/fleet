@@ -33,18 +33,18 @@ How to decompose the goal into thurbox sessions. For each session, define:
 
 ## Run
 
-1. `./scripts/queue.sh topic add` — which opens this run's log under
+1. `uv run fleet queue topic add` — which opens this run's log under
    `../runs/` for you. Write the goal into it now; the facts arrive by
    themselves.
 2. Fast-forward each target repo's base branch, then `thurbox-cli session create`
    with `--parent "$THURBOX_SESSION"`, the chosen `--on-existing` mode, and the
-   profile's flags from `./scripts/session-flags.sh`.
-3. Get each new session past its trust dialog (`./scripts/session-trust.sh
+   profile's flags from `uv run fleet session-flags <profile>`.
+3. Get each new session past its trust dialog (`uv run fleet session-trust
    <uuid>`), then `thurbox-cli session send <uuid>` the prompt, ending with the
    result-FILE contract so the worker reports back instead of you polling — but
    only when the spawn returned `created: true`; an adopted session is already
-   working. `./scripts/queue.sh dispatch` does both steps for you.
-4. Read the results the workers wrote (`./scripts/queue.sh watch` for the
+   working. `uv run fleet queue dispatch` does both steps for you.
+4. Read the results the workers wrote (`uv run fleet queue watch` for the
    timing, `collect` for the conclusions) — `collect`'s refresh puts each
    outcome in the run log's facts as it lands. Do not have workers mail you —
    `message send` wakes the lead and interrupts whoever is talking to it.
