@@ -186,6 +186,10 @@ class Lock(TempDirCase):
             holder.kill()
             holder.wait(timeout=30)
             holder.stdout.close()
+        # Windows releases a dead process's locks when it gets to it, not at once.
+        deadline = time.time() + 10
+        while lock_probe(lock) != "got" and time.time() < deadline:
+            time.sleep(0.2)
         self.assertEqual(lock_probe(lock), "got")
 
 

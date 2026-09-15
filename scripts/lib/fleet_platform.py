@@ -110,7 +110,9 @@ def exclusive_lock(path: str):
 
     The OS drops the lock when the holder's handle closes, however its process
     ended, so a lock nobody holds proves its last holder is gone. A pidfile
-    cannot: its pid may since belong to somebody else.
+    cannot: its pid may since belong to somebody else. The converse is not
+    instant: Windows releases a killed process's locks when it gets to them,
+    so a lock can still read as held for a moment after its holder died.
     """
     fh = open(path, "a+b")
     try:
