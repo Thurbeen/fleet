@@ -36,7 +36,7 @@ Each box in the diagram:
   context. It turns your prompt into tasks, writes a brief for each one, and
   dispatches them. Only the lead dispatches tasks.
 - **Queue.** Plain files under `orchestration/queue/`.
-  [`scripts/queue.sh`](scripts/queue.sh) (or `uv run fleet queue`, the same
+  [`scripts/lib/queue.py`](scripts/lib/queue.py) (or `uv run fleet queue`, the same
   command) is the only thing that writes them. A topic keeps your prompt word
   for word. Each task in it has four files: `task.yaml` (what is intended and
   where it stands), `BRIEF.md` (the worker's instructions), `progress.jsonl`

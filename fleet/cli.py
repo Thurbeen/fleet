@@ -7,9 +7,7 @@
 A group names a module that already has a `main(argv) -> int`. This loads it by
 path and hands it the rest of the argv, the way those modules already load each
 other (`_load_sibling` in scripts/lib/queue.py), so nothing moved: every record is
-read and written by the same code as before. `scripts/queue.sh` and
-`scripts/fleet-status.sh` forward here, which is why their usage text still
-says `queue.sh` and `fleet-status.sh`.
+read and written by the same code as before.
 """
 
 from __future__ import annotations

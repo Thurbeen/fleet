@@ -54,7 +54,7 @@
 
   <rect class="box" x="320" y="152" width="240" height="64" rx="8"/>
   <text class="t" x="336" y="180">Queue</text>
-  <text class="s" x="336" y="200">topic → tasks · queue.sh</text>
+  <text class="s" x="336" y="200">topic → tasks · fleet queue</text>
 
   <rect class="rec" x="616" y="152" width="240" height="64" rx="8"/>
   <text class="t" x="632" y="180">Reconciler</text>

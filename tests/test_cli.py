@@ -1,17 +1,15 @@
-"""The `fleet` command, and the two scripts that still stand in for it.
+"""The `fleet` command, the one entry point on Linux and native Windows.
 
 Two claims, both easy to lose without anyone noticing:
 
-- `scripts/queue.sh` and `scripts/fleet-status.sh` are FORWARDERS. Whatever
-  `fleet queue ...` and `fleet status ...` print and exit with, they print and
-  exit with too, and they need `uv` on PATH rather than a `python3`.
+- `fleet` names every group it has, and an unknown one is a usage error.
 - What `fleet` writes is UTF-8 whatever the console's code page is. A Windows
   console defaults to cp1252, where `—` comes out as a different byte and `🚀`
   raises before the line is written at all.
 
 Run it through uv, which is what puts the `fleet` console script on PATH:
 
-    uv run python -m unittest discover -s tests
+    uv run pytest tests/test_cli.py
 
 It reads no operator state. Every FLEET_* root points into a throwaway
 directory, as tests/harness.py's `isolated_env` does for pytest, and the
@@ -75,44 +73,6 @@ class FleetTestCase(unittest.TestCase):
 
     def fleet(self, *args: str, **env: str) -> subprocess.CompletedProcess:
         return self.run_argv([FLEET, *args], **env)
-
-
-@unittest.skipIf(os.name == "nt", "the forwarders are bash; Windows runs `fleet` itself")
-class ForwardersTest(FleetTestCase):
-    """Each forwarder gives exactly what `fleet` gives, and finds it through uv alone."""
-
-    def setUp(self) -> None:
-        super().setUp()
-        # A PATH holding the forwarder's own needs and nothing else, so a
-        # forwarder that still reaches for `python3` fails here even on a
-        # machine that has one.
-        uv = shutil.which("uv")
-        self.assertIsNotNone(uv, "no `uv` on PATH")
-        self.bin = self.tmp / "bin"
-        self.bin.mkdir()
-        for tool, src in (("bash", shutil.which("bash")), ("dirname", shutil.which("dirname")), ("uv", uv)):
-            (self.bin / tool).symlink_to(src)
-
-    def assert_same(self, script: str, group: str, *args: str) -> None:
-        path = str(self.bin)
-        via_script = self.run_argv([str(ROOT / "scripts" / script), *args], PATH=path)
-        via_fleet = self.fleet(group, *args, PATH=path)
-        label = f"{script} {' '.join(args)}"
-        self.assertEqual(
-            (via_script.returncode, via_script.stdout, via_script.stderr),
-            (via_fleet.returncode, via_fleet.stdout, via_fleet.stderr),
-            label,
-        )
-
-    def test_queue_sh_forwards_to_fleet_queue(self) -> None:
-        for args in (("root",), ("plan",), ("plan", "--json"), ("list",), ("check",), ("show", "nope/🚀"), ("no-such-verb",)):
-            with self.subTest(args=args):
-                self.assert_same("queue.sh", "queue", *args)
-
-    def test_fleet_status_sh_forwards_to_fleet_status(self) -> None:
-        for args in (("--records",), ("--records", "--json"), ("--no-such-flag",)):
-            with self.subTest(args=args):
-                self.assert_same("fleet-status.sh", "status", *args)
 
 
 class Utf8OutputTest(FleetTestCase):

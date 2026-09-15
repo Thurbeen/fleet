@@ -147,7 +147,7 @@ check_workflow() {
 # two rules that make a profile safe — no `THURBOX_*` key thurbox would
 # discard, no `command` without the `reports_as` that keeps the session
 # reporting — are only worth anything if a profile that breaks one cannot be
-# committed. scripts/session-flags.sh owns those assertions; this runs them so
+# committed. scripts/lib/session_profiles.py owns those assertions; this runs them so
 # there is one implementation rather than two.
 #
 # It does NOT check for secrets, and the profiles file says so rather than
@@ -155,13 +155,13 @@ check_workflow() {
 # committed to a public repo, so nothing environment-specific goes in it — and
 # not a gate.
 check_profiles() {
-	need python3 profiles || return
+	need uv profiles || return
 
 	local out
-	if out="$(./scripts/session-flags.sh --check)"; then
+	if out="$(uv run --frozen --quiet fleet session-flags --check)"; then
 		ok "profiles: $out"
 	else
-		fail "profiles: scripts/session-flags.sh --check"
+		fail "profiles: uv run fleet session-flags --check"
 	fi
 }
 
