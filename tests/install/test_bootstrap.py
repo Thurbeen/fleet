@@ -376,11 +376,11 @@ else:
 
 
 @pytest.mark.skipif(POWERSHELL is None, reason="no PowerShell on this machine")
-def test_the_bootstrap_leaves_the_operators_console_encoding_as_it_found_it(box, stubs, origin, tmp_path):
+def test_the_bootstrap_leaves_the_operators_console_encoding_as_it_found_it(box, stubs, origin):
     """`irm | iex` runs in the operator's own window: reading thurbox-cli as
     UTF-8 must not leave every later native command in that window decoded so."""
-    elsewhere = tmp_path / "elsewhere" / "fleet"
-    assert box(FLEET_YES="1", FLEET_DIR=str(elsewhere)).code == 0
+    # No FLEET_DIR: the lead's checkout is only looked for when nothing names one.
+    assert box(FLEET_YES="1").code == 0
     place(stubs, "thurbox-cli", f"""
 import sys
 if sys.argv[1:3] == ["session", "list"]:
@@ -388,8 +388,8 @@ if sys.argv[1:3] == ["session", "list"]:
 else:
     print("thurbox-cli {FLOOR}")
 """)
-    env = dict(os.environ, PATH=box.path, FLEET_REPO=str(origin), FLEET_INSTALL_FAMILY="windows", FLEET_YES="1",
-               FLEET_DIR=str(elsewhere))
+    env = dict(os.environ, PATH=box.path, FLEET_REPO=str(origin), FLEET_INSTALL_FAMILY="windows", FLEET_YES="1")
+    env.pop("FLEET_DIR", None)
     script = REPO / "install.ps1"
     probe = ("[Console]::OutputEncoding = [Text.Encoding]::GetEncoding(437); "
              f"Get-Content -Raw -LiteralPath '{script}' | Invoke-Expression; "
