@@ -23,7 +23,7 @@ import os
 import sys
 
 import pytest
-from harness import expect, refute
+from harness import expect, refute, write
 from installkit import (
     GH_LOGGED_OUT, SUDO, WINDOWS, fleet, full_machine, installs, launcher, load_install, machine, place, plain,
     tree_snapshot,
@@ -264,9 +264,13 @@ def test_the_extension_step_calls_the_checkouts_install_extension_main(checkout,
     assert stubs.calls("extension") == [f"extension install {checkout}"]
 
 
-def test_a_checkout_without_the_extension_module_says_so(checkout, capsys):
+def test_a_checkout_without_the_extension_module_says_so_and_runs_no_script(checkout, stubs, capsys):
     (checkout / "scripts" / "lib" / "install_extension.py").unlink()
-    (checkout / "scripts" / "install-extension.sh").unlink(missing_ok=True)
+    # A leftover bash script is never the way round a missing module: on Windows
+    # the `bash` on PATH is WSL's launcher, pointed at another machine's thurbox.
+    write(checkout / "scripts" / "install-extension.sh", "#!/bin/sh\nexit 0\n")
     install = load_install()
     assert install.extension_step(str(checkout)) == 1
-    expect(capsys.readouterr().out, "scripts/lib/install_extension.py")
+    out = capsys.readouterr().out
+    expect(out, "scripts/lib/install_extension.py")
+    assert "install-extension.sh" not in out, out

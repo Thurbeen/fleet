@@ -2,8 +2,10 @@
 
 `nudge` is the only verb safe in a worker's Stop hook: it writes one flag file
 and runs no queue command, so a worker firing it can never collect or reap
-itself. It brings the periodic pass forward and nothing else. The hook is
-PRINTED, never installed, because the file it belongs in is thurbox's.
+itself. It brings the periodic pass forward and nothing else. `fleet install`
+merges the hook into Claude Code's user settings, never into thurbox's hooks
+file, which thurbox rewrites on every start; `hook` prints the same block for
+an operator who adds it by hand.
 """
 
 from __future__ import annotations
@@ -62,11 +64,16 @@ def hook_block(text: str) -> dict:
 
 
 def test_the_hook_is_one_shell_neutral_nudge(recon, monkeypatch, isolated_env):
-    config = isolated_env / "thurbox config"
-    monkeypatch.setenv("THURBOX_CONFIG_DIR", str(config))
+    claude = isolated_env / "claude config"
+    thurbox = isolated_env / "thurbox config"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(claude))
+    monkeypatch.setenv("THURBOX_CONFIG_DIR", str(thurbox))
     out = recon("hook")
     assert out.code == 0, out.out
-    expect(out.out, os.path.join(str(config), "hooks", "claude.json"))
+    # Where it lasts, and the command that puts it there.
+    expect(out.out, os.path.join(str(claude), "settings.json"), "uv run fleet install")
+    assert os.path.join(str(thurbox), "hooks", "claude.json") not in out.out, \
+        "thurbox rewrites its hooks file on every start, so a nudge added there does not last"
 
     block = hook_block(out.stdout)
     assert block["type"] == "command"

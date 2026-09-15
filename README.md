@@ -88,15 +88,22 @@ This section is deliberately short. The
 [onboarding skill](.agents/skills/fleet-onboarding/SKILL.md) owns setup and
 checks each step as it goes.
 
-1. Install. The one-line installer clones fleet, checks its dependencies and
-   installs the thurbox extension:
+1. Install. One command installs uv if it is missing, clones fleet, shows
+   every missing dependency with the command that installs it, asks once, and
+   sets up the thurbox extension, the skills link and the reconciler's hook:
 
    ```bash
-   curl -fsSL https://raw.githubusercontent.com/Thurbeen/fleet/main/install.sh | sh
+   curl -LsSf https://raw.githubusercontent.com/Thurbeen/fleet/main/install.sh | sh
+   ```
+
+   On Windows, from PowerShell:
+
+   ```powershell
+   powershell -c "irm https://raw.githubusercontent.com/Thurbeen/fleet/main/install.ps1 | iex"
    ```
 
    Pick a clone location you will keep: the extension records the path.
-   `./scripts/preflight.sh` lists what fleet needs and what is missing.
+   Re-running is safe, and `uv run fleet preflight` lists what is still missing.
 
 2. Open thurbox, start the Mission Control session, and run:
 
@@ -176,7 +183,7 @@ because this repository is public; back up your clone if that content matters.
 | [`extension.toml.in`](extension.toml.in) | yes | The thurbox extension manifest, rendered to a gitignored `extension.toml` by `uv run fleet install-extension`. |
 | [`scripts/lib/`](scripts/lib/) | yes | The module behind every `uv run fleet` command; each docstring is its full usage. [`check.py`](scripts/lib/check.py) is the gate, `uv run fleet check`. |
 | [`interface/fleet_queue.lua`](interface/fleet_queue.lua) | yes | The queue pane. |
-| [`.agents/skills/`](.agents/skills/) | yes | Agent skills; `.claude/skills` is a symlink to this directory. |
+| [`.agents/skills/`](.agents/skills/) | yes | Agent skills; `uv run fleet install` links `.claude/skills` to this directory. |
 | [`orchestration/queue/`](orchestration/queue/README.md) | README, `POLICY.md` and `OPERATOR.example.md` only | Topics and tasks. |
 | `orchestration/queue/OPERATOR.md` | no | Your standing instructions to every worker; [`OPERATOR.example.md`](orchestration/queue/OPERATOR.example.md) is the form. |
 | `orchestration/runs/` | [`_TEMPLATE.md`](orchestration/runs/_TEMPLATE.md) only | One log per topic. |

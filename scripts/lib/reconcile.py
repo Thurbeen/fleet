@@ -672,13 +672,16 @@ def hook_command(checkout: str = CHECKOUT) -> str:
 
 
 def cmd_hook(cfg: Config) -> int:
-    """PROPOSED, NOT INSTALLED: the file it belongs in is thurbox's, and a thurbox
-    update rewrites it. Fleet writing into it would be one tool editing another's
-    file behind its back."""
-    hooks = os.path.join(fleet_platform.thurbox_config_dir(), "hooks", "claude.json")
+    """The worker Stop hook that nudges the loop, as `fleet install` merges it.
+
+    It lives in Claude Code's user settings, which Claude Code merges with the
+    settings thurbox hands each worker. Not in thurbox's own hooks file: thurbox
+    rewrites that from its embedded payload on every start and heartbeat tick."""
+    settings = fleet_platform.claude_settings_file()
     block = json.dumps({"type": "command", "command": hook_command(), "timeout": 10}, indent=2)
-    say(f'Add this to the "Stop" array in {hooks} —')
-    say("the file thurbox passes to every worker as --settings. It is a NUDGE")
+    say(f'`uv run fleet install` adds this to the "Stop" hooks in {settings}.')
+    say("To add it by hand, put it there as well: thurbox rewrites its own hooks")
+    say("file on every start. It is a NUDGE")
     say("and nothing more: it tells the reconciler to run its periodic pass now")
     say(f"instead of waiting out {cfg.collect}s. It closes nothing, it reaps")
     say("nothing, and if it never fires the loop's own timers still catch")
@@ -688,9 +691,7 @@ def cmd_hook(cfg: Config) -> int:
     say("")
     say("It is one command with nothing a shell reads differently, so bash, cmd")
     say("and PowerShell run it alike. `nudge` exits 0 whatever happens, and a Stop")
-    say("hook blocks the agent only on exit 2, so this one never blocks it. fleet")
-    say("does not write that file for you — it is thurbox's, and a thurbox update")
-    say("rewrites it.")
+    say("hook blocks the agent only on exit 2, so this one never blocks it.")
     return 0
 
 

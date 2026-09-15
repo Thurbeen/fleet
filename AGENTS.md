@@ -144,14 +144,18 @@ names every path and the reason for each.
   Everything outside that fence is the lead's judgement and nothing ever
   overwrites it. Gitignored, like everything a run produces; the template is
   the one tracked file there.
-- `install.sh` — the one-liner (`curl … | sh`), in POSIX sh: clone or
-  fast-forward the checkout, then hand over to fleet's own commands — the
-  preflight and the extension install. It places no pane, and refuses rather
-  than overwrites an existing checkout; its header owns where the clone goes and
-  why that choice is sticky. `tests/install/` and `tests/extension/` drive it,
-  `fleet pane-ask` and `fleet voice-ask` — onboarding's ask for the two names,
-  before the extension renders them — end to end; `fleet check install
-  extension` runs them.
+- `install.sh` and `install.ps1` — the one-liners (`curl … | sh`,
+  `irm … | iex`): install uv when it is missing, clone or fast-forward the
+  checkout, and hand over to `uv run fleet install` (`scripts/lib/install.py`).
+  That prints every missing dependency with this machine's command, asks once
+  (`--yes` skips), installs through the package manager, links
+  `.claude/skills`, merges the reconciler's Stop nudge into Claude Code's user
+  settings, installs the extension and ends with preflight; a second run
+  changes nothing. It places no pane, and refuses rather than overwrites an
+  existing checkout; `install.sh`'s header owns where the clone goes and why
+  that choice is sticky. `tests/install/` drives both bootstraps, and
+  `tests/extension/` drives `fleet pane-ask` and `fleet voice-ask` —
+  onboarding's ask for the two names, before the extension renders them.
 - `uv run fleet preflight` — every dependency fleet needs, in one pass, in
   three tiers (required / recommended / gate), each row carrying what breaks
   without it and the command that installs it with this machine's package
@@ -182,7 +186,9 @@ names every path and the reason for each.
   host is reported as evidence and never as an owner. The fleet-onboarding
   skill's **Re-running** section owns the ask that goes with it.
 - `.agents/skills/<name>/SKILL.md` — agent skills, in one agent-agnostic tree.
-  `.claude/skills` is a **symlink** to it, so Claude Code and opencode (which
+  `.claude/skills` points at it — made by `uv run fleet install`, a symlink on
+  POSIX and a junction on Windows, untracked and gitignored — so Claude Code
+  and opencode (which
   auto-discovers `.claude/skills`) both load the same copy. Never add a second
   copy under `.claude/`, and do not mirror into `.opencode/skills` — that
   registers the same skill twice. Five skills live there: `fleet-queue` (the
@@ -292,9 +298,10 @@ load-bearing:
   Code `Stop` hook can call `uv run --project <checkout> fleet reconcile nudge`
   to bring the periodic pass forward; a worker that died on a token limit fires
   no hook at all, which is why the timer is what the design rests on.
-  `fleet reconcile hook` PRINTS the block rather than installing it — that
-  file (`uv run fleet paths thurbox-hooks` names it) is thurbox's, and a
-  thurbox update rewrites it. `nudge` runs no queue command, so a worker
+  `uv run fleet install` merges the hook into Claude Code's user settings
+  (`uv run fleet paths claude-settings`), never into thurbox's hooks file,
+  which thurbox rewrites on every start; `fleet reconcile hook` prints it.
+  `nudge` runs no queue command, so a worker
   firing it can never collect or reap itself.
 
 `.agents/skills/fleet-queue/` is the driving surface for 1–3 and 5–8, and

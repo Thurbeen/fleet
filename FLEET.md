@@ -139,8 +139,8 @@ with `list` and never writes anything.
 
 `.agents/skills/fleet-queue/` is the driving surface for 1–4, 6 and 8, and
 `.agents/skills/thurbox-session/` for the mechanics of one session — spawning,
-naming, trust, the state vocabulary, cleanup. Use both. (`.claude/skills` is a
-symlink to `.agents/skills`, so every CLI loads the one copy.)
+naming, trust, the state vocabulary, cleanup. Use both. (`.claude/skills` points
+at `.agents/skills`, so every CLI loads the one copy.)
 
 ## Fuel
 

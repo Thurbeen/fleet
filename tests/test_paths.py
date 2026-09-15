@@ -10,7 +10,7 @@ from pathlib import Path
 
 from harness import REPO, run_fleet
 
-NAMES = ("checkout", "thurbox-config", "thurbox-hooks", "fleet-data")
+NAMES = ("checkout", "thurbox-config", "thurbox-hooks", "fleet-data", "claude-settings")
 
 
 def listing(out: str) -> dict[str, str]:
@@ -38,6 +38,15 @@ def test_the_paths_are_the_ones_fleet_platform_answers(isolated_env):
     # isolated_env pins XDG_CONFIG_HOME and XDG_DATA_HOME on every OS.
     assert Path(paths["thurbox-config"]) == isolated_env / "home" / ".config" / "thurbox"
     assert Path(paths["fleet-data"]) == isolated_env / "home" / ".local" / "share" / "fleet"
+
+
+def test_claude_codes_user_settings_follow_its_own_variable(tmp_path, isolated_env):
+    """Where `fleet install` merges the reconciler's Stop nudge: Claude Code's
+    user settings, which thurbox leaves alone, unlike its own hooks file."""
+    pinned = run_fleet("paths", "claude-settings", CLAUDE_CONFIG_DIR=str(tmp_path / "claude"))
+    assert Path(pinned.stdout.strip()) == tmp_path / "claude" / "settings.json", pinned.out
+    default = run_fleet("paths", "claude-settings", CLAUDE_CONFIG_DIR=None)
+    assert Path(default.stdout.strip()) == isolated_env / "home" / ".claude" / "settings.json", default.out
 
 
 def test_an_unknown_name_is_a_usage_error():

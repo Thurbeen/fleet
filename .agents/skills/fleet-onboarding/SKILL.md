@@ -21,7 +21,7 @@ five points where the answer is genuinely theirs.
 Seven steps, in this order, each announced in one line before you do it:
 
 ```text
-Step 1/7  Dependencies      fleet preflight, then install what is missing [ask]
+Step 1/7  Dependencies      fleet install: the plan, one answer          [ask]
 Step 2/7  This checkout     is this the clone to keep?
 Step 3/7  Owners            fleet discover-owners, then confirm           [ask]
 Step 4/7  Registry          fleet sync-registry
@@ -98,31 +98,32 @@ with a one-line fix and no bearing on the rest of the setup.
 
 **ASK — installing is the operator's call.** A package manager is the one part
 of this setup that touches the machine outside the checkout, so nothing is
-installed unasked. Show the missing rows and ask:
+installed unasked. `uv run fleet install` prints the whole plan — every missing
+dependency with THIS machine's command (`winget` on native Windows; `apt-get`,
+`dnf`, `pacman` or `brew` elsewhere, or a tool's own installer where that is the
+recommended route), the `.claude/skills` link and the reconciler's nudge hook —
+and asks once. Show that plan and ask:
 
-- **Install everything missing** (recommended) — required, recommended and gate
-- **Required and recommended** — skip the tools only the gate needs
-- **Required only** — the smallest thing that runs
+- **Install the plan** (recommended) — required and recommended
+- **The plan and the gate's tools** — for an operator who will run
+  `uv run fleet check`
 - **Skip** — nothing is installed
 
-Then run the lines, which are the command's own — one flag per answer, so which
-lines to run is never your judgement call:
+Then run it with their answer, so what gets installed is never your judgement
+call:
 
 ```bash
-uv run fleet preflight --commands                                  # everything missing
-uv run fleet preflight --commands --tier required --tier recommended
-uv run fleet preflight --commands --tier required
+uv run fleet install --yes          # the plan
+uv run fleet install --yes --dev    # the plan and the gate tier
 ```
 
-The lines are for THIS machine's package manager — `winget` on native Windows;
-`apt-get`, `dnf`, `pacman` or `brew` elsewhere — or a tool's own installer where
-that is the recommended route. Run them one at a time and show what each said;
-on Linux several need `sudo`, and an operator watching a sudo prompt should know
-which command asked for it. An install that fails is reported and does not stop
-the others — one missing gate tool is not a reason to abandon a setup.
-
-Then **re-run `uv run fleet preflight` and read it back.** That is the
-verification, not the package manager's exit code.
+On Linux several routes need `sudo`, and an operator watching a sudo prompt
+should know which command asked for it; the output names each as it runs. An
+install that fails is reported and does not stop the others. When every
+required row is present it also installs the extension with the default names,
+which step 5 re-renders with the operator's. It ends with `uv run fleet
+preflight`, and **that table is the verification**, not a package manager's
+exit code. Re-running is safe: a complete machine is asked nothing.
 
 If a REQUIRED tool is still missing after that, stop here and say which. A
 half-onboarded clone — owners written, no registry — is worse than one that
@@ -288,7 +289,7 @@ renderer refuses — a quote, `|`, `\`, `&`, `@`, or a second line. It then
 writes nothing, so ask again for the one it named. It never overwrites an
 existing `voice.conf`; `--replace` does, and only on the operator's word.
 
-If this run is inside Mission Control itself, `install.sh` has already rendered
+If this run is inside Mission Control itself, `fleet install` has already rendered
 the lead with the defaults. A different answer reaches that lead only after this
 install **and** a restart of the session you are running in. Say so, and leave
 the restart to the operator — `.agents/skills/update-fleet/` owns it.
@@ -437,16 +438,14 @@ Three things to pass on, once:
 - To switch it off for good: `uv run fleet reconcile stop`. To bring it back:
   `uv run fleet reconcile start`.
 
-Optionally, and only if they ask for it: `uv run fleet reconcile hook` prints a
-Claude Code `Stop` hook that makes a finishing worker nudge the loop into its
-next pass immediately — one command, `uv run --project <this checkout> fleet
-reconcile nudge`, that exits 0 whatever happens and so never blocks a worker. It
-goes in thurbox's hooks file, which `uv run fleet paths thurbox-hooks` names for
-this machine (thurbox keeps it under `%APPDATA%` on native Windows), and which
-is **thurbox's file and not fleet's** — so this prints the block and the
-operator pastes it, and a thurbox update may take it away again. It is an
-accelerator, never the mechanism: a worker that ran out of quota fires no hook
-at all.
+The worker `Stop` hook that makes a finishing worker nudge the loop into its
+next pass is already in place: step 1's `uv run fleet install` merged it into
+Claude Code's user settings (`uv run fleet paths claude-settings`) — one
+command, `uv run --project <this checkout> fleet reconcile nudge`, that exits 0
+whatever happens and so never blocks a worker. It is not in thurbox's hooks
+file, which thurbox rewrites on every start. It fires on Stop in every Claude
+Code session on the machine, which costs a flag file. It is an accelerator,
+never the mechanism: a worker that ran out of quota fires no hook at all.
 
 ## Hand over
 

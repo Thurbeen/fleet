@@ -1,2 +1,0 @@
-#!/usr/bin/env bash
-exec uv run --project "$(dirname "$0")/.." fleet preflight "$@"

@@ -123,10 +123,10 @@ it sends an agent down a fallback path forever. Check it against `thurbox-cli
 <cmd> --help`, which is version-matched to the installed binary, before
 asserting an absence.
 
-`.claude/skills` is a symlink to this tree. Do not add a parallel copy under
-`.claude/`, and do not mirror into `.opencode/skills` — opencode auto-discovers
-`.claude/skills`, so the symlink already serves it and a mirror would register
-the same skill twice.
+`.claude/skills` points at this tree (`uv run fleet install` makes it). Do not
+add a parallel copy under `.claude/`, and do not mirror into `.opencode/skills`
+— opencode auto-discovers `.claude/skills`, so the link already serves it and a
+mirror would register the same skill twice.
 
 ### `orchestration/**`
 
@@ -218,17 +218,19 @@ pull request.
 
 ### Skills live in `.agents/`
 
-`.agents/skills/<name>/SKILL.md` holds the real files. `.claude/skills` is a
-**symlink** to that directory, committed as a symlink (git mode `120000`).
+`.agents/skills/<name>/SKILL.md` holds the real files. `.claude/skills` points
+at that directory and is **not tracked**: `uv run fleet install` makes it — a
+relative symlink on POSIX, a junction on Windows, which needs no privilege —
+and `.gitignore` lists it. A tracked link broke on Windows, where a default
+clone has `core.symlinks=false` and checked it out as a text file.
 
 One tree, every CLI: Claude Code reads `.claude/skills` and opencode
-auto-discovers the same path, so the symlink already serves both. Do not mirror
+auto-discovers the same path, so the link already serves both. Do not mirror
 the tree into `.opencode/skills`, which would register the same skill twice, and
 do not add a second copy under `.claude/`.
 
-`uv run fleet check skills` guards the layout: that `.claude/skills` resolves
-to `.agents/skills` (a clone made with `core.symlinks=false` materialises a
-tracked link as a text file holding its target instead), and that every skill
+`uv run fleet check skills` guards the layout: that `.claude/skills` is untracked
+and ignored, resolves to `.agents/skills` where it exists, and that every skill
 directory has a `SKILL.md`.
 
 ### What is tracked, and what is not
@@ -346,7 +348,7 @@ root-level config file's rationale belongs here, not in `README.md`.
 `thurbox-cli`: spawning, prompting, completion detection, cleanup. Detail an
 agent needs only while launching a worker belongs there rather than in
 `AGENTS.md`. It is a reference, not an owner — the rationale still lives in the
-documents above. `.claude/skills` is a symlink to `.agents/skills`, so the skill
+documents above. `.claude/skills` points at `.agents/skills`, so the skill
 has exactly one copy; never write a second one under `.claude/`.
 
 `scripts/lib/queue.py`'s docstring owns the task queue: the layout, the

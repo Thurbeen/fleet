@@ -189,9 +189,8 @@ def make_link(checkout: str) -> tuple[bool, str]:
 
 
 def claude_settings_file() -> str:
-    """Claude Code's user settings: `CLAUDE_CONFIG_DIR`, else `~/.claude`, on every OS."""
-    base = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude")
-    return os.path.join(base, "settings.json")
+    """Claude Code's user settings, as `fleet paths claude-settings` names them."""
+    return fleet_platform.claude_settings_file()
 
 
 def _settings(path: str) -> tuple[dict | None, str]:
@@ -261,12 +260,6 @@ def extension_step(checkout: str) -> int:
         spec.loader.exec_module(loaded)
         return int(loaded.main([]) or 0)
     say("  scripts/lib/install_extension.py is not in this checkout, so the extension cannot be installed from here.")
-    script, bash = os.path.join(checkout, "scripts", "install-extension.sh"), shutil.which("bash")
-    # POSIX only: the `bash` a Windows PATH finds is WSL's launcher, which would
-    # run the script against another machine's thurbox.
-    if os.path.isfile(script) and bash and fleet_platform.install_family() == "posix":
-        say("  Falling back to scripts/install-extension.sh.")
-        return subprocess.run([bash, script], cwd=checkout, stdin=subprocess.DEVNULL, check=False).returncode
     return 1
 
 

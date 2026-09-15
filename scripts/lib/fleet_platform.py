@@ -310,6 +310,17 @@ def checkout_dir() -> str:
     return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
+def claude_settings_file() -> str:
+    """Claude Code's user settings: `CLAUDE_CONFIG_DIR`, else `~/.claude`, on every OS.
+
+    Where `fleet install` merges the reconciler's Stop nudge. Claude Code merges
+    these with the settings thurbox hands each worker, and thurbox leaves them
+    alone, where it rewrites its own hooks file on every start.
+    """
+    base = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude")
+    return os.path.join(base, "settings.json")
+
+
 def paths() -> dict[str, str]:
     """Every path a skill, a hook or a message names, as this machine spells it."""
     return {
@@ -317,6 +328,7 @@ def paths() -> dict[str, str]:
         "thurbox-config": thurbox_config_dir(),
         "thurbox-hooks": os.path.join(thurbox_config_dir(), "hooks", "claude.json"),
         "fleet-data": fleet_data_dir(),
+        "claude-settings": claude_settings_file(),
     }
 
 
