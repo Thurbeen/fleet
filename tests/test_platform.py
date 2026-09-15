@@ -86,6 +86,16 @@ class Directories(TempDirCase):
             self.assertEqual(fp.fleet_data_dir(), os.path.join(str(self.tmp), ".local", "share", "fleet"))
 
 
+class InstallFamily(unittest.TestCase):
+    @unittest.skipUnless(WINDOWS, "the Windows branch")
+    def test_install_family_is_windows_on_windows(self):
+        self.assertEqual(fp.install_family(), "windows")
+
+    @unittest.skipIf(WINDOWS, "the POSIX branch")
+    def test_install_family_is_posix_elsewhere(self):
+        self.assertEqual(fp.install_family(), "posix")
+
+
 class Records(TempDirCase):
     def test_write_record_puts_lf_on_disk(self):
         path = self.tmp / "task.yaml"
