@@ -1,212 +1,129 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 824" width="960" height="824" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 464" width="880" height="464" role="img" aria-labelledby="title desc">
   <title id="title">How fleet fits together</title>
-  <desc id="desc">The operator gives Mission Control, the lead agent session in thurbox, a prompt and watches the queue pane. The lead drives the queue with queue.sh: a topic holds tasks, each with task.yaml, BRIEF.md, progress.jsonl and result.md. Dispatch starts one worker session per task in its own git worktree, locally or on a remote host; each worker writes result.md and publishes a change request through the forge seam, GitHub via gh or GitLab via glab. The reconciler runs watch, collect, shepherd, refuel and plan through queue.sh, asks the forge about change requests, wakes the lead when work is ready, and never dispatches. The registry and the operator's settings feed the lead and the queue. Along the bottom, the loop: intake, brief, dispatch, watch, collect, shepherd, merge, reap, plus refuel.</desc>
+  <desc id="desc">You prompt Mission Control, the lead session, which reads the registry and dispatches tasks into the queue. The queue gives each worker a brief and gets back a result; the queue pane shows it to you. Workers open pull or merge requests on the forge. The reconciler updates the queue, checks and merges on the forge, and wakes the lead. The loop: intake, brief, dispatch, watch, collect, shepherd, merge, reap, plus refuel.</desc>
   <style>
     .bg { fill: #ffffff; stroke: #d1d9e0; }
     .box { fill: #f6f8fa; stroke: #d1d9e0; }
-    .card { fill: #ffffff; stroke: #d1d9e0; }
     .lead { fill: #ddf4ff; stroke: #0969da; stroke-width: 1.5; }
     .rec { fill: #fbefff; stroke: #8250df; stroke-width: 1.5; }
-    .pill { fill: #f6f8fa; stroke: #59636e; }
+    .pill { fill: #ffffff; stroke: #818b98; }
     text { fill: #1f2328; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif; font-size: 12px; }
-    .h { font-size: 16px; font-weight: 600; }
-    .t { font-size: 14px; font-weight: 600; }
-    .ct { font-weight: 600; }
+    .t { font-size: 15px; font-weight: 600; }
     .s { fill: #59636e; }
-    .b { font-weight: 600; }
-    .m { fill: #59636e; font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace; font-size: 11px; }
     .l { fill: #59636e; font-size: 11px; }
     .c { text-anchor: middle; }
     .e { text-anchor: end; }
     .ln { stroke: #59636e; stroke-width: 1.25; fill: none; }
     .dash { stroke-dasharray: 4 3; }
-    .lnr { stroke: #8250df; stroke-width: 1.25; fill: none; }
     .ah { fill: #59636e; }
-    .ahr { fill: #8250df; }
     @media (prefers-color-scheme: dark) {
       .bg { fill: #0d1117; stroke: #3d444d; }
       .box { fill: #151b23; stroke: #3d444d; }
-      .card { fill: #0d1117; stroke: #3d444d; }
       .lead { fill: #0f2744; stroke: #4493f8; }
       .rec { fill: #231a3a; stroke: #ab7df8; }
-      .pill { fill: #151b23; stroke: #9198a1; }
+      .pill { fill: #0d1117; stroke: #656c76; }
       text { fill: #f0f6fc; }
-      .s, .m, .l { fill: #9198a1; }
+      .s, .l { fill: #9198a1; }
       .ln { stroke: #9198a1; }
-      .lnr { stroke: #ab7df8; }
       .ah { fill: #9198a1; }
-      .ahr { fill: #ab7df8; }
     }
   </style>
   <defs>
     <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0,1 L9,5 L0,9 z"/></marker>
-    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ahr" d="M0,1 L9,5 L0,9 z"/></marker>
   </defs>
 
-  <rect class="bg" x="0.5" y="0.5" width="959" height="823" rx="12"/>
+  <rect class="bg" x="0.5" y="0.5" width="879" height="463" rx="12"/>
 
-  <!-- header and legend -->
-  <text class="h" x="24" y="42">How fleet fits together</text>
-  <line class="ln" x1="560" y1="38" x2="584" y2="38"/>
-  <text class="l" x="590" y="42">acts</text>
-  <line class="ln dash" x1="632" y1="38" x2="656" y2="38"/>
-  <text class="l" x="662" y="42">reads</text>
-  <rect class="lead" x="714" y="32" width="12" height="12" rx="3"/>
-  <text class="l" x="732" y="42">lead</text>
-  <rect class="rec" x="776" y="32" width="12" height="12" rx="3"/>
-  <text class="l" x="794" y="42">reconciler</text>
-  <rect class="pill" x="870" y="32" width="12" height="12" rx="3"/>
-  <text class="l" x="888" y="42">you</text>
+  <!-- row 1 -->
+  <rect class="box" x="24" y="24" width="240" height="64" rx="8"/>
+  <text class="t" x="40" y="52">You</text>
+  <text class="s" x="40" y="72">prompt · review · merge</text>
 
-  <!-- row 1: pane, operator, lead -->
-  <rect class="box" x="24" y="68" width="264" height="108" rx="8"/>
-  <text class="t" x="40" y="94">Queue pane</text>
-  <text class="m" x="40" y="116">interface/fleet_queue.lua</text>
-  <text class="s" x="40" y="136">a column in the thurbox TUI · F3</text>
-  <text class="s" x="40" y="156">reads the records · writes nothing</text>
+  <rect class="lead" x="320" y="24" width="240" height="64" rx="8"/>
+  <text class="t" x="336" y="52">Mission Control</text>
+  <text class="s" x="336" y="72">the lead agent session</text>
 
-  <rect class="pill" x="348" y="68" width="264" height="108" rx="8"/>
-  <text class="t" x="364" y="94">You, the operator</text>
-  <text class="s" x="364" y="116">give a prompt · watch the pane</text>
-  <text class="s" x="364" y="136">review · merge what shepherd did not</text>
-  <text class="s" x="364" y="156">clear conditions only a person can</text>
+  <rect class="box" x="616" y="24" width="240" height="64" rx="8"/>
+  <text class="t" x="632" y="52">Registry and settings</text>
+  <text class="s" x="632" y="72">repo map · notes · *.conf</text>
 
-  <rect class="lead" x="672" y="68" width="264" height="108" rx="8"/>
-  <text class="t" x="688" y="94">Mission Control</text>
-  <text class="s" x="688" y="116">the lead agent session in thurbox</text>
-  <text class="s" x="688" y="136">the fleet extension · FLEET.md</text>
-  <text class="s" x="688" y="156">plans · writes briefs · dispatches</text>
+  <!-- row 2 -->
+  <rect class="box" x="24" y="152" width="240" height="64" rx="8"/>
+  <text class="t" x="40" y="180">Queue pane</text>
+  <text class="s" x="40" y="200">live view · read-only · F3</text>
 
-  <line class="ln dash" x1="348" y1="122" x2="290" y2="122" marker-end="url(#a)"/>
-  <text class="l c" x="318" y="114">watch</text>
-  <line class="ln" x1="612" y1="122" x2="670" y2="122" marker-end="url(#a)"/>
-  <text class="l c" x="642" y="114">prompt</text>
+  <rect class="box" x="320" y="152" width="240" height="64" rx="8"/>
+  <text class="t" x="336" y="180">Queue</text>
+  <text class="s" x="336" y="200">topic → tasks · queue.sh</text>
 
-  <!-- row 1 to row 2 -->
-  <line class="ln dash" x1="230" y1="176" x2="391" y2="235" marker-end="url(#a)"/>
-  <text class="l" x="322" y="198">reads</text>
-  <line class="ln" x1="740" y1="176" x2="573" y2="235" marker-end="url(#a)"/>
-  <text class="l e" x="666" y="198">drives queue.sh</text>
-  <line class="lnr" x1="880" y1="236" x2="880" y2="178" marker-end="url(#ar)"/>
-  <text class="l" x="888" y="212">wakes</text>
+  <rect class="rec" x="616" y="152" width="240" height="64" rx="8"/>
+  <text class="t" x="632" y="180">Reconciler</text>
+  <text class="s" x="632" y="200">automatic · never dispatches</text>
 
-  <!-- row 2: registry and settings, queue, reconciler -->
-  <rect class="box" x="24" y="236" width="264" height="196" rx="8"/>
-  <text class="t" x="40" y="262">Registry and settings</text>
-  <text class="m" x="40" y="286">registry/owners.txt</text>
-  <text class="s" x="40" y="304">→ sync-registry.sh, through gh →</text>
-  <text class="m" x="40" y="324">registry/repos.generated.yaml</text>
-  <text class="m" x="40" y="342">registry/context/&lt;repo&gt;.md</text>
-  <text class="s" x="40" y="360">what the lead reads to plan</text>
-  <text class="m" x="40" y="386">orchestration/*.conf</text>
-  <text class="s" x="40" y="404">publish · auto-merge · agent</text>
+  <!-- row 3 -->
+  <rect class="box" x="320" y="280" width="240" height="72" rx="8"/>
+  <text class="t" x="336" y="306">Workers</text>
+  <text class="s" x="336" y="324">one session per task</text>
+  <text class="s" x="336" y="340">own git worktree · local or remote</text>
 
-  <rect class="box" x="348" y="236" width="264" height="196" rx="8"/>
-  <text class="t" x="364" y="262">The queue</text>
-  <text class="m" x="364" y="282">queue.sh · uv run fleet queue</text>
-  <text class="m" x="364" y="308">orchestration/queue/&lt;topic&gt;/</text>
-  <text class="m" x="376" y="328">PROMPT.md</text>
-  <text class="s" x="514" y="328">verbatim</text>
-  <text class="m" x="376" y="346">&lt;NN-task&gt;/</text>
-  <text class="m" x="392" y="364">task.yaml</text>
-  <text class="s" x="514" y="364">intent + state</text>
-  <text class="m" x="392" y="382">BRIEF.md</text>
-  <text class="s" x="514" y="382">instructions</text>
-  <text class="m" x="392" y="400">progress.jsonl</text>
-  <text class="s" x="514" y="400">events</text>
-  <text class="m" x="392" y="418">result.md</text>
-  <text class="s" x="514" y="418">verdict</text>
+  <rect class="box" x="616" y="280" width="240" height="72" rx="8"/>
+  <text class="t" x="632" y="306">Forge</text>
+  <text class="s" x="632" y="324">GitHub via gh</text>
+  <text class="s" x="632" y="340">GitLab via glab</text>
 
-  <rect class="rec" x="672" y="236" width="264" height="196" rx="8"/>
-  <text class="t" x="688" y="262">Reconciler</text>
-  <text class="m" x="688" y="282">scripts/reconcile.sh</text>
-  <text class="s" x="688" y="306">a supervised loop you start and stop</text>
-  <text class="s" x="688" y="326">runs watch · collect · shepherd</text>
-  <text class="s" x="688" y="344">refuel · plan, through queue.sh</text>
-  <text class="s" x="688" y="362">wakes the lead when work is ready</text>
-  <text class="b" x="688" y="392">never dispatches</text>
-  <text class="b" x="688" y="410">writes no record</text>
+  <!-- arrows -->
+  <line class="ln" x1="264" y1="56" x2="318" y2="56" marker-end="url(#a)"/>
+  <text class="l c" x="292" y="48">prompt</text>
+  <line class="ln dash" x1="616" y1="56" x2="562" y2="56" marker-end="url(#a)"/>
+  <text class="l c" x="589" y="48">reads</text>
 
-  <line class="ln dash" x1="288" y1="320" x2="346" y2="320" marker-end="url(#a)"/>
-  <text class="l c" x="317" y="312">settings</text>
-  <line class="ln" x1="672" y1="320" x2="614" y2="320" marker-end="url(#a)"/>
-  <text class="l c" x="643" y="312">runs</text>
+  <line class="ln dash" x1="144" y1="152" x2="144" y2="90" marker-end="url(#a)"/>
+  <line class="ln dash" x1="320" y1="184" x2="266" y2="184" marker-end="url(#a)"/>
 
-  <!-- row 2 to row 3 -->
-  <line class="ln" x1="400" y1="432" x2="400" y2="490" marker-end="url(#a)"/>
-  <text class="l e" x="392" y="466">dispatch</text>
-  <line class="ln" x1="520" y1="492" x2="520" y2="434" marker-end="url(#a)"/>
-  <text class="l e" x="512" y="466">result.md</text>
-  <line class="ln dash" x1="596" y1="492" x2="698" y2="434" marker-end="url(#a)"/>
-  <text class="l e" x="604" y="462">events</text>
-  <line class="ln" x1="804" y1="432" x2="804" y2="490" marker-end="url(#a)"/>
-  <text class="l" x="812" y="466">collect · shepherd</text>
+  <line class="ln" x1="440" y1="88" x2="440" y2="150" marker-end="url(#a)"/>
+  <text class="l" x="448" y="124">dispatch</text>
 
-  <!-- row 3: workers, forge -->
-  <rect class="box" x="24" y="492" width="588" height="148" rx="8"/>
-  <text class="t" x="40" y="518">Workers</text>
-  <text class="s" x="108" y="518">one thurbox session per task · publishes by the method in publish.conf</text>
+  <line class="ln" x1="616" y1="184" x2="562" y2="184" marker-end="url(#a)"/>
+  <text class="l c" x="589" y="176">updates</text>
+  <line class="ln" x1="680" y1="152" x2="542" y2="90" marker-end="url(#a)"/>
+  <text class="l" x="628" y="114">wakes</text>
 
-  <rect class="card" x="40" y="532" width="176" height="92" rx="6"/>
-  <text class="ct" x="52" y="554">worker session</text>
-  <text class="s" x="52" y="574">its own git worktree</text>
-  <text class="m" x="52" y="594">github.com/you/app</text>
-  <text class="s" x="52" y="612">writes result.md</text>
+  <line class="ln" x1="410" y1="216" x2="410" y2="278" marker-end="url(#a)"/>
+  <text class="l e" x="402" y="252">brief</text>
+  <line class="ln" x1="470" y1="280" x2="470" y2="218" marker-end="url(#a)"/>
+  <text class="l" x="478" y="252">result</text>
 
-  <rect class="card" x="230" y="532" width="176" height="92" rx="6"/>
-  <text class="ct" x="242" y="554">worker session</text>
-  <text class="s" x="242" y="574">its own git worktree</text>
-  <text class="m" x="242" y="594">github.com/you/app</text>
-  <text class="s" x="242" y="612">writes result.md</text>
+  <line class="ln" x1="560" y1="316" x2="614" y2="316" marker-end="url(#a)"/>
+  <text class="l c" x="588" y="308">PR · MR</text>
+  <line class="ln" x1="736" y1="216" x2="736" y2="278" marker-end="url(#a)"/>
+  <text class="l" x="744" y="252">checks · merges</text>
 
-  <rect class="card dash" x="420" y="532" width="176" height="92" rx="6"/>
-  <text class="ct" x="432" y="554">worker on --host</text>
-  <text class="s" x="432" y="574">another machine, over ssh</text>
-  <text class="m" x="432" y="594">github.com/you/web</text>
-  <text class="s" x="432" y="612">writes result.md</text>
-
-  <rect class="box" x="672" y="492" width="264" height="148" rx="8"/>
-  <text class="t" x="688" y="518">Forge seam</text>
-  <text class="m" x="688" y="538">scripts/lib/forge.py</text>
-  <text class="s" x="688" y="562">GitHub through gh</text>
-  <text class="s" x="688" y="580">GitLab through glab</text>
-  <text class="s" x="688" y="604">change requests · checks</text>
-  <text class="s" x="688" y="622">attestation · squash merge</text>
-
-  <line class="ln" x1="612" y1="570" x2="670" y2="570" marker-end="url(#a)"/>
-  <text class="l c" x="642" y="562">publish</text>
-
-  <!-- row 4: the loop -->
-  <text class="t" x="24" y="692">The loop</text>
-  <text class="s" x="100" y="692">colour says who runs each step</text>
-
-  <rect class="lead" x="24" y="708" width="86" height="30" rx="15"/>
-  <text class="c" x="67" y="727">intake</text>
-  <rect class="lead" x="142" y="708" width="86" height="30" rx="15"/>
-  <text class="c" x="185" y="727">brief</text>
-  <rect class="lead" x="260" y="708" width="86" height="30" rx="15"/>
-  <text class="c" x="303" y="727">dispatch</text>
-  <rect class="rec" x="378" y="708" width="86" height="30" rx="15"/>
-  <text class="c" x="421" y="727">watch</text>
-  <rect class="rec" x="496" y="708" width="86" height="30" rx="15"/>
-  <text class="c" x="539" y="727">collect</text>
-  <rect class="rec" x="614" y="708" width="86" height="30" rx="15"/>
-  <text class="c" x="657" y="727">shepherd</text>
-  <rect class="pill" x="732" y="708" width="86" height="30" rx="15"/>
-  <text class="c" x="775" y="727">merge</text>
-  <rect class="rec" x="850" y="708" width="86" height="30" rx="15"/>
-  <text class="c" x="893" y="727">reap</text>
-
-  <line class="ln" x1="114" y1="723" x2="138" y2="723" marker-end="url(#a)"/>
-  <line class="ln" x1="232" y1="723" x2="256" y2="723" marker-end="url(#a)"/>
-  <line class="ln" x1="350" y1="723" x2="374" y2="723" marker-end="url(#a)"/>
-  <line class="ln" x1="468" y1="723" x2="492" y2="723" marker-end="url(#a)"/>
-  <line class="ln" x1="586" y1="723" x2="610" y2="723" marker-end="url(#a)"/>
-  <line class="ln" x1="704" y1="723" x2="728" y2="723" marker-end="url(#a)"/>
-  <line class="ln" x1="822" y1="723" x2="846" y2="723" marker-end="url(#a)"/>
-
-  <rect class="rec" x="24" y="752" width="86" height="30" rx="15"/>
-  <text class="c" x="67" y="771">refuel</text>
-  <text class="s" x="122" y="771">restarts a worker stuck at its token limit, only while the quota window has room</text>
-  <text class="s" x="24" y="804">merge: shepherd squash-merges in the repos auto-merge.conf names, and only attested, green change requests; you merge the rest</text>
+  <!-- the loop -->
+  <text class="t" x="24" y="402">The loop</text>
+  <rect class="pill" x="24" y="416" width="70" height="26" rx="13"/>
+  <text class="c" x="59" y="433">intake</text>
+  <rect class="pill" x="114" y="416" width="70" height="26" rx="13"/>
+  <text class="c" x="149" y="433">brief</text>
+  <rect class="pill" x="204" y="416" width="70" height="26" rx="13"/>
+  <text class="c" x="239" y="433">dispatch</text>
+  <rect class="pill" x="294" y="416" width="70" height="26" rx="13"/>
+  <text class="c" x="329" y="433">watch</text>
+  <rect class="pill" x="384" y="416" width="70" height="26" rx="13"/>
+  <text class="c" x="419" y="433">collect</text>
+  <rect class="pill" x="474" y="416" width="70" height="26" rx="13"/>
+  <text class="c" x="509" y="433">shepherd</text>
+  <rect class="pill" x="564" y="416" width="70" height="26" rx="13"/>
+  <text class="c" x="599" y="433">merge</text>
+  <rect class="pill" x="654" y="416" width="70" height="26" rx="13"/>
+  <text class="c" x="689" y="433">reap</text>
+  <line class="ln" x1="97" y1="429" x2="111" y2="429" marker-end="url(#a)"/>
+  <line class="ln" x1="187" y1="429" x2="201" y2="429" marker-end="url(#a)"/>
+  <line class="ln" x1="277" y1="429" x2="291" y2="429" marker-end="url(#a)"/>
+  <line class="ln" x1="367" y1="429" x2="381" y2="429" marker-end="url(#a)"/>
+  <line class="ln" x1="457" y1="429" x2="471" y2="429" marker-end="url(#a)"/>
+  <line class="ln" x1="547" y1="429" x2="561" y2="429" marker-end="url(#a)"/>
+  <line class="ln" x1="637" y1="429" x2="651" y2="429" marker-end="url(#a)"/>
+  <text class="s c" x="746" y="433">+</text>
+  <rect class="pill dash" x="768" y="416" width="70" height="26" rx="13"/>
+  <text class="c" x="803" y="433">refuel</text>
 </svg>
