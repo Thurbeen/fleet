@@ -36,7 +36,9 @@ from installkit import (
 )
 
 SH = shutil.which("sh")
-POWERSHELL = shutil.which("powershell") or shutil.which("pwsh")
+# install.ps1 is the Windows bootstrap. A Linux runner that ships pwsh (GitHub's
+# ubuntu image does) is not a machine it is for: it finds no uv.exe and no winget.
+POWERSHELL = (shutil.which("powershell") or shutil.which("pwsh")) if WINDOWS else None
 
 
 class Sh:
@@ -100,7 +102,7 @@ DRIVERS = [
     pytest.param(Sh(), id="sh", marks=pytest.mark.skipif(SH is None or WINDOWS,
                                                           reason="no POSIX sh on this machine")),
     pytest.param(PowerShell(), id="powershell", marks=pytest.mark.skipif(POWERSHELL is None,
-                                                                          reason="no PowerShell on this machine")),
+                                                                          reason="install.ps1 runs on Windows")),
 ]
 
 
@@ -375,7 +377,7 @@ else:
     assert not box.clone.exists(), f"a second clone was made:\n{done.out}"
 
 
-@pytest.mark.skipif(POWERSHELL is None, reason="no PowerShell on this machine")
+@pytest.mark.skipif(POWERSHELL is None, reason="install.ps1 runs on Windows")
 def test_the_bootstrap_leaves_the_operators_console_encoding_as_it_found_it(box, stubs, origin):
     """`irm | iex` runs in the operator's own window: reading thurbox-cli as
     UTF-8 must not leave every later native command in that window decoded so."""
