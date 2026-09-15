@@ -101,6 +101,9 @@ def test_collect_reads_the_change_request_through_the_seam(seam, stubs):
     # A publish claim verified on a forge that is not GitHub, read off a /-/merge_requests/ URL.
     expect(out, "01-landed", "merge_requests/201")
     refute(out, "reaped")  # its change request is open
+    # The plugin list is a PATH-style list, so a Windows path's drive letter is
+    # part of the path and not an entry of its own.
+    refute(out, "could not load")
 
     ok(seam.q("add", seam.topic, "unreadable", "--title", "One the forge cannot answer for",
               "--repo", str(seam.repo), "--branch", "fix/unreadable", "--number", "05"))

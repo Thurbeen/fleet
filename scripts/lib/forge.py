@@ -69,10 +69,10 @@ discovery is not done for `gh`.
 
 ADDING A FORGE. Write a class with the methods below and register it: either
 in `BUILTIN` here, or — for a test, or a forge that is not fleet's business to
-ship — through `FLEET_FORGE_PLUGINS`, a colon-separated list of Python files
-each exporting `forges()`. `scripts/queue-selftest.sh` drives the whole queue
-through a plugin with no network and no `gh` behind it, which is how this seam
-is proved rather than asserted.
+ship — through `FLEET_FORGE_PLUGINS`, a PATH-style list (`:` on POSIX, `;` on
+Windows) of Python files each exporting `forges()`. The queue's tests drive
+the whole queue through a plugin with no network and no `gh` behind it, which
+is how this seam is proved rather than asserted.
 """
 
 from __future__ import annotations
@@ -1481,10 +1481,11 @@ class GitLabForge(Forge):
 
 BUILTIN = (GitHubForge, GitLabForge)
 
-# A colon-separated list of Python files, each exporting `forges()`. This is
-# how the selftest drives the whole queue through a forge that has no network
-# and no `gh` behind it, and how a forge fleet does not ship can be tried out
-# without editing this file.
+# A list of Python files, each exporting `forges()`, separated the way PATH is
+# (`os.pathsep`): split on `:` alone, a Windows path's drive letter became an
+# entry of its own. This is how the tests drive the whole queue through a forge
+# that has no network and no `gh` behind it, and how a forge fleet does not
+# ship can be tried out without editing this file.
 PLUGIN_ENV = "FLEET_FORGE_PLUGINS"
 
 _REGISTRY: list | None = None
@@ -1500,7 +1501,7 @@ def forges() -> list:
     global _REGISTRY
     if _REGISTRY is None:
         _REGISTRY = [cls() for cls in BUILTIN]
-        for path in os.environ.get(PLUGIN_ENV, "").split(":"):
+        for path in os.environ.get(PLUGIN_ENV, "").split(os.pathsep):
             path = path.strip()
             if path:
                 _REGISTRY.extend(_load_plugin(path))
