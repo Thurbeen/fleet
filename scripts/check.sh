@@ -305,233 +305,23 @@ check_cli() {
 # thurbox install, so it belongs at install time and not here.
 #
 # What DOES belong here is the failure this repo can cause on its own. The pane
-# names a slot, and `install-extension.sh`, the onboarding skill and the
+# names a slot, and `fleet install-extension`, the onboarding skill and the
 # fleet-pane skill each print a `layout.lua` block naming that slot. If any of
 # them drifts, the operator is handed a block that places a slot nothing
 # fills: the pane loads, lists, and draws nothing, and every message they have
 # says it should work.
 check_pane() {
-	local pane="interface/fleet_queue.lua"
+	need uv pane || return
+	# tests/pane renders the pane with lua and skips that without one; this
+	# gate fails on a missing tool rather than skipping, so it asks first.
+	need lua pane || return
 
-	if [ ! -f "$pane" ]; then
-		fail "pane: $pane is missing"
-		return
-	fi
-
-	local slot
-	slot="$(sed -n 's/^local SLOT = "\(.*\)"$/\1/p' "$pane" | head -1)"
-	if [ -z "$slot" ]; then
-		fail "pane: could not read the slot name from $pane"
-		return
-	fi
-
-	# The files that DOCUMENT the placement block, which the README deliberately
-	# does not: it is a setup step, two skills walk an operator through it, and
-	# the installer prints the block at the moment it is needed.
-	local f miss=0
-	for f in scripts/install-extension.sh .agents/skills/fleet-onboarding/SKILL.md .agents/skills/fleet-pane/SKILL.md; do
-		grep -q "slot = \"$slot\"" "$f" || {
-			fail "pane: $f does not name slot \"$slot\" in a layout.lua line"
-			miss=1
-		}
-		# The guard, and not only the slot. A placement block without
-		# `panels.shown` is carved on every frame, so the pane's F-key flips a
-		# panel state nothing reads and the column opens and never closes —
-		# which `thurbox-cli plugin check` cannot catch, because the pane DOES
-		# draw. That shipped once; this is what keeps it from shipping twice.
-		grep -q "panels.shown(\"$slot\")" "$f" || {
-			fail "pane: $f documents slot \"$slot\" without the panels.shown guard, so its F-key would not close the column"
-			miss=1
-		}
-	done
-
-	# The installed name, which the installer's own header documents as the
-	# argument to `plugin remove`. It is the destination PATH and not its
-	# basename — `plugin remove 91_fleet_queue.lua` answers "not listed in
-	# plugins.toml" and removes nothing, which is how this check earned its
-	# place: the docs said the basename until the command was actually run.
-	local dest
-	dest="$(sed -n 's/^PANE_DEST="\(.*\)"$/\1/p' scripts/install-extension.sh | head -1)"
-	if [ -z "$dest" ]; then
-		fail "pane: could not read PANE_DEST from scripts/install-extension.sh"
-		miss=1
-	elif ! grep -q "plugin remove $dest" scripts/install-extension.sh; then
-		fail "pane: scripts/install-extension.sh does not document 'plugin remove $dest'"
-		miss=1
-	fi
-
-	# The chord must not be one the KERNEL already owns. A plugin-scoped
-	# binding does not outrank a kernel one, and the failure is silent in the
-	# worst way: the pane still registers, `ui.chord` still finds it, the pane's
-	# own title still advertises it — and the key never reaches the pane,
-	# because thurbox's action band answers it first. F6 shipped exactly like
-	# that, reading "F6 hides" in a title while F6 opened Settings.
-	local reserved="f1 f4 f6 f10 f12"
-
-	# The chord, which the docs promise and only the pane binds.
-	local chord
-	chord="$(sed -n 's/^      key = "\(f[0-9]*\)",$/\1/p' "$pane" | head -1)"
-	if [ -z "$chord" ]; then
-		fail "pane: could not read the F-key from $pane"
-		miss=1
+	if uv run --frozen --quiet pytest -q tests/pane >/dev/null 2>&1; then
+		ok "pane: slot, chord, fuel source and lead name agree, and the render holds at 44 and 30 columns (tests/pane)"
 	else
-		case " $reserved " in
-		*" $chord "*)
-			fail "pane: $chord is a kernel chord (help/theme/settings/reload/perf); a plugin binding loses to it and the key would never reach the pane"
-			miss=1
-			;;
-		esac
-		local upper
-		upper="$(printf '%s' "$chord" | tr '[:lower:]' '[:upper:]')"
-		for f in scripts/install-extension.sh README.md .agents/skills/fleet-pane/SKILL.md; do
-			grep -q "$upper" "$f" || {
-				fail "pane: $f does not mention the pane's $upper chord"
-				miss=1
-			}
-		done
+		uv run --frozen --quiet pytest -q tests/pane
+		fail "pane: tests/pane"
 	fi
-
-	# ONE SOURCE FOR THE FUEL READING. The pane draws the account's fuel, and
-	# the only place that reading exists is `probe_fuel()` in
-	# scripts/lib/fleet_status.py. A pane that ran `quota-axi` itself would be
-	# a second parse of a document it does not own, disagreeing with the screen
-	# the moment either side is touched — so the pane asks the flag, and the
-	# flag has to still be there.
-	if ! grep -q -- "fleet-status.sh --fuel" "$pane"; then
-		fail "pane: $pane does not read fuel through 'fleet-status.sh --fuel'"
-		miss=1
-	fi
-	if ! grep -q -- '"--fuel"' scripts/lib/fleet_status.py; then
-		fail "pane: scripts/lib/fleet_status.py no longer offers --fuel, which the pane's probe calls"
-		miss=1
-	fi
-	# Comment lines dropped first: the pane's header has to be able to EXPLAIN
-	# that it does not read quota-axi. What is banned is code that does.
-	if grep -v '^[[:space:]]*--' "$pane" | grep -q "quota-axi"; then
-		fail "pane: $pane reads quota-axi itself; the reading comes from fleet-status.sh, never from a second parse"
-		miss=1
-	fi
-
-	# AND ONE VOCABULARY. The record is `name<TAB>value` lines with a blank
-	# line between providers, and the pane is the only reader of it — so a
-	# field renamed on one side and not the other costs the pane exactly that
-	# fact, silently, with both files still perfectly valid. Every `fields.x`
-	# the pane reads has to be a name `RECORD_FIELDS` actually emits.
-	local wire fields f
-	wire="$(sed -n '/^RECORD_FIELDS = (/,/^)/p' scripts/lib/fleet_status.py |
-		tr -d ' \t"' | tr ',' '\n' | grep -E '^[a-z_]+$')"
-	fields="$(grep -oE 'fields\.[a-z_]+' "$pane" | sed 's/^fields\.//' | sort -u)"
-	for f in $fields; do
-		grep -qx "$f" <<<"$wire" || {
-			fail "pane: $pane reads a '$f' field that scripts/lib/fleet_status.py's RECORD_FIELDS does not emit"
-			miss=1
-		}
-	done
-
-	# AND ONE THRESHOLD, WHICH THE PANE NEVER SPELLS. FLEET.md's `## Fuel`
-	# section owns the reserve, `fleet_status.py` carries the same number, and
-	# it travels down on every record — so the pane compares against what it
-	# was handed and colours a bar by it. A literal here is a second copy of a
-	# rule that would then move in one place and not the other.
-	local reserve
-	reserve="$(sed -n 's/^FUEL_RESERVE = \([0-9]*\)$/\1/p' scripts/lib/fleet_status.py | head -1)"
-	if [ -z "$reserve" ]; then
-		fail "pane: could not read FUEL_RESERVE from scripts/lib/fleet_status.py"
-		miss=1
-	elif grep -v '^[[:space:]]*--' "$pane" | grep -qE "(^|[^0-9])$reserve([^0-9]|\$)"; then
-		fail "pane: $pane spells the reserve threshold ($reserve) itself; it arrives on the record, so the pane compares and never states it"
-		miss=1
-	fi
-
-	# ONE PLACE SPELLS THE LEAD'S GLYPH, AND IT IS NOT THIS FILE. The mark the
-	# lead wears is a setting (orchestration/session-glyphs.example.conf) that
-	# scripts/install-extension.sh renders into the manifest, so the pane holds
-	# the NAME and matches whatever mark is in front of it. A glyph in the
-	# pane's code would be a second copy of that setting, and the pane would
-	# report "no session" the day the operator flipped it — a partial rename
-	# reached without anyone renaming anything. Comment lines are dropped first:
-	# the pane's header has to be able to EXPLAIN the setting it does not carry.
-	local lead_name manifest_name
-	lead_name="$(sed -n 's/^local CONTROL_PLANE = "\(.*\)"$/\1/p' "$pane" | head -1)"
-	manifest_name="$(sed -n '/^\[\[sessions\]\]/,$p' extension.toml.in |
-		sed -n 's/^name *= *"\(.*\)"/\1/p' | head -1)"
-	if [ -z "$lead_name" ] || [ -z "$manifest_name" ]; then
-		fail "pane: could not read CONTROL_PLANE from $pane or the session name from extension.toml.in"
-		miss=1
-	else
-		if [ "$manifest_name" != "__LEAD_GLYPH__ $lead_name" ]; then
-			fail "pane: extension.toml.in spawns '$manifest_name' but $pane matches '$lead_name' behind one mark; a rename that stops at one of them leaves the pane hunting a session nobody spawns"
-			miss=1
-		fi
-	fi
-
-	# And the glyphs themselves appear in no line of the pane's CODE — only in
-	# the comment that explains why they do not.
-	local g key
-	for key in LEAD_GLYPH_ON LEAD_GLYPH_OFF WORKER_GLYPH_ON; do
-		g="$(sed -n "s/^$key=//p" orchestration/session-glyphs.example.conf | head -1)"
-		[ -n "$g" ] || continue
-		if grep -v '^[[:space:]]*--' "$pane" | grep -qF "$g"; then
-			fail "pane: $pane spells the $key glyph in code; the mark is a setting the pane matches around, never one it carries"
-			miss=1
-		fi
-	done
-
-	# The setting's own file, held to the same rule the pane's glyph is: bare
-	# codepoints, so the width both sides measure is the width that is drawn.
-	local glyphs="orchestration/session-glyphs.example.conf"
-	if [ ! -f "$glyphs" ]; then
-		fail "pane: $glyphs is missing; nothing would render the lead's mark"
-		miss=1
-	elif LC_ALL=C grep -qP '\xef\xb8\x8f|\xef\xb8\x8e|\xe2\x80\x8d' "$glyphs" 2>/dev/null; then
-		fail "pane: $glyphs carries a variation selector or a zero-width joiner; a session glyph is a bare codepoint so its width is one both sides agree on"
-		miss=1
-	fi
-
-	# NO VARIATION SELECTOR, AND NOTHING BUILT OUT OF ONE. The pane's fuel
-	# glyph is a bare codepoint on purpose: U+FE0F asks for an emoji
-	# presentation the terminal may not have, adds a character some terminals
-	# count as a column and others do not, and a zero-width joiner builds a
-	# glyph whose width nothing agrees on. Every row here is budgeted in
-	# cells, so a character the painter and the terminal measure differently
-	# shears the whole column.
-	if LC_ALL=C grep -qP '\xef\xb8\x8f|\xef\xb8\x8e|\xe2\x80\x8d' "$pane" 2>/dev/null; then
-		fail "pane: $pane carries a variation selector or a zero-width joiner; the fuel glyph is a bare codepoint so its width is one both sides agree on"
-		miss=1
-	fi
-
-	# AND ONE COST MODEL. `quota-axi` makes a network call, so the fuel probe
-	# must not run at the queue probe's cadence — a pane that refetched it
-	# every ten seconds would burn the fuel it is reporting.
-	local ttl fuel_ttl
-	ttl="$(sed -n 's/^local TTL = \([0-9]*\)$/\1/p' "$pane" | head -1)"
-	fuel_ttl="$(sed -n 's/^local FUEL_TTL = \([0-9]*\)$/\1/p' "$pane" | head -1)"
-	if [ -z "$ttl" ] || [ -z "$fuel_ttl" ]; then
-		fail "pane: could not read TTL and FUEL_TTL from $pane"
-		miss=1
-	elif [ "$fuel_ttl" -le "$ttl" ]; then
-		fail "pane: FUEL_TTL ($fuel_ttl s) is not longer than the queue's TTL ($ttl s); the fuel probe hits the network"
-		miss=1
-	fi
-
-	# AND THE ROWS THEMSELVES, which every grep above is blind to. The pane's
-	# real failure is a wall of uniform text, and it has now been one: eight
-	# tasks in thirty-eight rows, with a merged task drawn exactly like a
-	# running one. `pane-selftest.sh` renders this file offline and asserts the
-	# design it is supposed to have, at 44 columns and again at 30.
-	if [ -f scripts/pane-selftest.sh ] && need lua pane; then
-		if ./scripts/pane-selftest.sh >/dev/null; then
-			ok "pane: scripts/pane-selftest.sh"
-		else
-			./scripts/pane-selftest.sh
-			fail "pane: scripts/pane-selftest.sh"
-			miss=1
-		fi
-	else
-		miss=1
-	fi
-
-	[ "$miss" -eq 0 ] && ok "pane: slot \"$slot\", $dest and $chord agree across installer and docs; fuel is one record per provider at ${fuel_ttl}s"
 }
 
 check_skills() {
@@ -569,83 +359,19 @@ check_skills() {
 # standing context and the source of the extension's payload, and the two names
 # in it — what the lead calls the operator and what it answers to — are the
 # operator's choice, exactly as the session glyph is. So `orchestration/voice.example.conf`
-# is the one place they are spelled, `scripts/install-extension.sh` renders them
+# is the one place they are spelled, `fleet install-extension` renders them
 # into the gitignored `FLEET.rendered.md` the manifest actually ships, and
 # `FLEET.md` carries placeholders. A name written into FLEET.md would be a
 # second copy of the setting that no `voice.conf` could move.
 check_voice() {
-	need git voice || return
+	need uv voice || return
 
-	local conf="orchestration/voice.example.conf" miss=0
-	if [ ! -f "$conf" ]; then
-		fail "voice: $conf is missing; nothing would render the lead's names"
-		return
-	fi
-
-	local key val names=()
-	for key in OPERATOR_NAME ASSISTANT_NAME; do
-		val="$(sed -n "s/^$key=//p" "$conf" | head -1)"
-		if [ -z "$val" ]; then
-			fail "voice: $conf sets no $key"
-			miss=1
-		else
-			names+=("$val")
-		fi
-	done
-
-	# The placeholders have to be IN FLEET.md, and the defaults have to not be:
-	# the render is what puts a name in front of the lead, and a literal beside
-	# the placeholder is the copy that stops moving.
-	for key in @OPERATOR_NAME@ @ASSISTANT_NAME@; do
-		if ! grep -qF -- "$key" FLEET.md; then
-			fail "voice: FLEET.md carries no $key; the render would have nothing to substitute"
-			miss=1
-		fi
-	done
-	for val in ${names[@]+"${names[@]}"}; do
-		if grep -qF -- "$val" FLEET.md; then
-			fail "voice: FLEET.md spells '$val' itself; the name is a setting the render carries in, never one the prose holds"
-			miss=1
-		fi
-	done
-
-	# AND THE RENDER ITSELF, which is the only part of this a grep cannot
-	# argue with. Rendered into a temp directory, off an override conf, so the
-	# gate never touches the operator's own rendered payload.
-	local tmp
-	tmp="$(mktemp -d)" || {
-		fail "voice: could not make a temp directory to render into"
-		return
-	}
-	printf 'OPERATOR_NAME=GATEOP\nASSISTANT_NAME=GATEAI\n' >"$tmp/voice.conf"
-
-	# The glyph and the agent render into the same manifest, and off the
-	# tracked defaults only: an operator's session-glyphs.conf or agent.conf in
-	# this checkout decides nothing about this commit.
-	mkdir -p "$tmp/defaults/orchestration"
-	cp orchestration/*.example.conf "$tmp/defaults/orchestration/"
-
-	local out="$tmp/FLEET.rendered.md" report
-	if ! report="$(FLEET_VOICE_CONF="$tmp/voice.conf" FLEET_GLYPH_ROOT="$tmp/defaults" \
-		FLEET_AGENT_ROOT="$tmp/defaults" ./scripts/install-extension.sh --render-only "$tmp" 2>&1)"; then
-		fail "voice: install-extension.sh --render-only failed: $report"
-		miss=1
-	elif [ ! -f "$out" ]; then
-		fail "voice: --render-only wrote no $out"
-		miss=1
+	if uv run --frozen --quiet pytest -q tests/extension >/dev/null 2>&1; then
+		ok "voice: orchestration/voice.example.conf renders into FLEET.md's placeholders; the extension and both asks hold (tests/extension)"
 	else
-		grep -qF -- GATEOP "$out" ||
-			{ fail "voice: the rendered payload does not carry OPERATOR_NAME from the conf"; miss=1; }
-		grep -qF -- GATEAI "$out" ||
-			{ fail "voice: the rendered payload does not carry ASSISTANT_NAME from the conf"; miss=1; }
-		if grep -qE -- '@(OPERATOR|ASSISTANT)_NAME@' "$out"; then
-			fail "voice: a name placeholder survived into the rendered payload"
-			miss=1
-		fi
+		uv run --frozen --quiet pytest -q tests/extension
+		fail "voice: tests/extension"
 	fi
-	rm -rf "$tmp"
-
-	[ "$miss" -eq 0 ] && ok "voice: $conf renders into FLEET.md's placeholders"
 }
 
 # WHERE FLEET MAY MERGE, WHICH IS THE OPERATOR'S AND NOT THIS REPO'S. The
