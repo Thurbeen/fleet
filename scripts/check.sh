@@ -224,21 +224,22 @@ check_reconcile() {
 # and every session inherits the stale `main` the script exists to prevent.
 # That is how `timeout 15 git fetch` shipped — `timeout` is GNU coreutils and is
 # absent on a stock macOS, so it exited 127 and every Mac session reported an
-# unreachable origin while the network was fine. The selftest builds a PATH
-# holding only the tools the script may use, which reproduces that condition on
-# any platform, and holds the rest of the contract around it: a refusal changes
-# no tracked state, a real outage is still reported, and a fast-forward that
-# brings instructions raises restart-lead.
+# unreachable origin while the network was fine. tests/sync holds the fetch to
+# the child's own timeout with tripwires standing in for `timeout` and
+# `gtimeout`, and the rest of the contract around it: a refusal changes no
+# tracked state, a real outage is still reported, a fast-forward that brings
+# instructions raises restart-lead, and the hook is one command every shell
+# parses the same. The registry and add-owner claims run with it.
 check_sync() {
 	need git sync || return
-	need jq sync || return
+	need uv sync || return
 
-	if ./scripts/sync-selftest.sh >/dev/null; then
+	if uv run --frozen --quiet pytest -q tests/sync >/dev/null 2>&1; then
 		ok "sync: bounds the fetch without coreutils, refuses without touching the tree, and raises the hand-over"
 	else
 		# Re-run visibly: a failing claim is the whole message.
-		./scripts/sync-selftest.sh
-		fail "sync: scripts/sync-selftest.sh"
+		uv run --frozen --quiet pytest -q tests/sync
+		fail "sync: tests/sync"
 	fi
 }
 

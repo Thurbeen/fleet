@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "root=$(git rev-parse --show-toplevel 2>/dev/null) && [ -x \"$root/scripts/sync-checkout.sh\" ] && bash \"$root/scripts/sync-checkout.sh\" || true",
+            "command": "uv run --frozen --quiet fleet sync-checkout",
             "timeout": 25,
             "statusMessage": "Syncing the control plane with origin..."
           }

@@ -361,7 +361,7 @@ done
 
 printf '\n§4 the cheap selftests, in a poisoned checkout under a hostile host\n'
 
-for s in fleet-status sync onboarding install; do
+for s in onboarding install; do
 	out="$(under_hostile "./scripts/$s-selftest.sh")"
 	expect_green "$s-selftest.sh passes here exactly as on a clean runner" $? "$out"
 done
