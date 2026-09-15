@@ -36,3 +36,8 @@ select = ["E4", "E7", "E9", "F"]
 # `fleet sync-checkout` refuses to fast-forward.
 [tool.pytest.ini_options]
 addopts = ["-p", "no:cacheprovider"]
+# The suite builds whole checkouts, stub venvs and queues under tmp_path, and
+# pytest keeps the last three sessions' directories by default. Keep only a
+# failed test's, from the last session: that is the evidence worth reading.
+tmp_path_retention_policy = "failed"
+tmp_path_retention_count = 1
