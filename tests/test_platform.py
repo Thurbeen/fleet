@@ -134,11 +134,42 @@ class RefreshPath(unittest.TestCase):
         with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key) as handle:
             machine = winreg.QueryValueEx(handle, "Path")[0]
         first = os.path.expandvars(next(p for p in machine.split(";") if p))
-        with tempfile.TemporaryDirectory() as mine, environ(PATH=mine):
+        with tempfile.TemporaryDirectory() as mine, environ(PATH=mine, FLEET_NO_PATH_REFRESH=None):
             fp.refresh_path()
             entries = os.environ["PATH"].split(os.pathsep)
             self.assertEqual(entries[0], mine, "what this process already had stays first")
             self.assertIn(first.lower(), [e.lower() for e in entries])
+
+    @unittest.skipUnless(WINDOWS, "the registry branch")
+    def test_a_test_machine_can_keep_the_registry_out_of_its_path(self):
+        with tempfile.TemporaryDirectory() as mine, environ(PATH=mine, FLEET_NO_PATH_REFRESH="1"):
+            fp.refresh_path()
+            self.assertEqual(os.environ["PATH"], mine)
+
+
+class SplitCommand(unittest.TestCase):
+    """An operator's command-override line, as argv: no shell reads it, on any OS."""
+
+    def test_posix_quoting_on_posix(self):
+        self.assertEqual(fp.split_command("replay --file 'a b.json'", windows=False),
+                         ["replay", "--file", "a b.json"])
+
+    def test_a_windows_path_keeps_its_backslashes(self):
+        self.assertEqual(fp.split_command(r"C:\fleet\replay.exe --json", windows=True),
+                         [r"C:\fleet\replay.exe", "--json"])
+
+    def test_a_quoted_windows_path_with_a_space_is_one_argument(self):
+        self.assertEqual(fp.split_command(r'"C:\Program Files\replay.exe" --json', windows=True),
+                         [r"C:\Program Files\replay.exe", "--json"])
+
+    def test_an_apostrophe_in_a_windows_path_is_a_letter(self):
+        self.assertEqual(fp.split_command(r"C:\Users\O'Neil\replay.exe", windows=True),
+                         [r"C:\Users\O'Neil\replay.exe"])
+
+    def test_a_line_that_does_not_parse_says_so(self):
+        with self.assertRaises(ValueError) as caught:
+            fp.split_command("replay 'unclosed", windows=False)
+        self.assertIn("replay 'unclosed", str(caught.exception))
 
 
 class DirLinks(TempDirCase):
@@ -488,6 +519,18 @@ class SpawnDetached(TempDirCase):
             parent.stdout.close()
             if child_pid and fp.alive(child_pid):
                 os.kill(child_pid, signal.SIGTERM)
+
+    @unittest.skipUnless(WINDOWS, "a console window is a Windows thing")
+    def test_what_a_detached_child_runs_opens_no_console_window(self):
+        """The reconciler runs every queue pass as a console child. A detached
+        process with no console makes Windows give each such child a new,
+        visible console window; one with a hidden console lends it that one."""
+        seen = self.tmp / "console"
+        grandchild = f"import ctypes; open({str(seen)!r}, 'w').write(str(ctypes.windll.kernel32.GetConsoleWindow()))"
+        child = f"import subprocess, sys; subprocess.run([sys.executable, '-c', {grandchild!r}])"
+        proc = fp.spawn_detached([sys.executable, "-c", child])
+        proc.wait(timeout=60)
+        self.assertEqual(seen.read_text(encoding="utf-8"), "0", "the grandchild got a console window of its own")
 
 
 if __name__ == "__main__":

@@ -104,6 +104,22 @@ def test_the_link_leaves_the_tree_clean(checkout):
     assert git("status", "--porcelain", cwd=checkout) == ""
 
 
+@pytest.mark.skipif(WINDOWS or os.geteuid() == 0, reason="a read-only directory stops a link only for a non-root POSIX user")
+def test_a_link_the_filesystem_refuses_is_a_reported_failure_not_a_crash(checkout):
+    """A checkout on a volume with no symlinks or junctions: the install still
+    reports, and still reaches the hook, the extension and preflight."""
+    parent = checkout / ".claude"
+    parent.mkdir(exist_ok=True)
+    parent.chmod(0o555)
+    try:
+        install = load_install()
+        ok, message = install.make_link(str(checkout))
+    finally:
+        parent.chmod(0o755)
+    assert not ok
+    assert ".claude/skills" in message
+
+
 @pytest.mark.skipif(not WINDOWS, reason="the junction branch")
 def test_on_windows_the_link_is_a_junction(checkout):
     import stat
@@ -185,6 +201,23 @@ def test_a_moved_checkouts_nudge_is_repointed_not_duplicated(checkout, isolated_
     assert install.hook_state(path, nudge(checkout))[0] == "update"
     assert install.apply_hook(path, nudge(checkout))[0]
     assert stop_commands(settings_file(isolated_env)) == [nudge(checkout)]
+
+
+def test_a_settings_file_with_a_byte_order_mark_is_merged_into(checkout, isolated_env):
+    """Windows PowerShell 5.1's `Set-Content -Encoding UTF8` writes one."""
+    path = settings_file(isolated_env)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"\xef\xbb\xbf" + json.dumps({"model": "their-choice"}).encode("utf-8"))
+    install = load_install()
+    assert install.hook_state(str(path), nudge(checkout))[0] == "add"
+    assert install.apply_hook(str(path), nudge(checkout))[0]
+    data = json.loads(path.read_text(encoding="utf-8-sig"))
+    assert data["model"] == "their-choice"
+    assert stop_commands_of(data) == [nudge(checkout)]
+
+
+def stop_commands_of(data: dict) -> list[str]:
+    return [h["command"] for entry in data["hooks"]["Stop"] for h in entry["hooks"]]
 
 
 def test_a_settings_file_that_is_not_json_is_refused_and_untouched(checkout, isolated_env):

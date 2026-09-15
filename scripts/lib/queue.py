@@ -183,7 +183,9 @@ Environment:
                          checkout's orchestration/runs). The _TEMPLATE.md
                          they are scaffolded from is always the checkout's.
   FLEET_QUEUE_WATCH_CMD  the event source, for a replay or another transport
-                         (default: thurbox-cli watch --json)
+                         (default: thurbox-cli watch --json); one command,
+                         split with this OS's quoting and run with no shell,
+                         so not a pipeline
   THURBOX_SESSION        set inside a thurbox session; dispatch passes it as
                          --parent so `session list --parent` enumerates
                          workers, and reap refuses to delete it
@@ -2758,6 +2760,11 @@ def host_shell(entry: dict):
     return MULTIPLEXER_SHELLS.get(str(entry.get("multiplexer") or "tmux"), POSIX)
 
 
+def ssh_text(data: bytes) -> str:
+    """What text mode would have handed back: UTF-8, with universal newlines."""
+    return data.decode("utf-8", "replace").replace("\r\n", "\n").replace("\r", "\n")
+
+
 def ssh_run(entry: dict, script: str, stdin: str | None = None, login: bool = True):
     """One command on the host, in the shell it speaks. Never raises; the
     caller reads it.
@@ -2772,10 +2779,13 @@ def ssh_run(entry: dict, script: str, stdin: str | None = None, login: bool = Tr
     shell and ignores it.
     """
     try:
-        return subprocess.run(
+        # Bytes both ways: text-mode stdin on a Windows lead turns every LF it
+        # sends into CRLF, and a brief would reach a POSIX host that way.
+        done = subprocess.run(
             ssh_argv(entry) + [host_shell(entry).command(script, login)],
-            input=stdin, capture_output=True, text=True, encoding="utf-8", timeout=SSH_TIMEOUT,
+            input=None if stdin is None else stdin.encode("utf-8"), capture_output=True, timeout=SSH_TIMEOUT,
         )
+        return subprocess.CompletedProcess(done.args, done.returncode, ssh_text(done.stdout), ssh_text(done.stderr))
     except subprocess.TimeoutExpired:
         # Not `str(exc)`: that is the whole argv, and a PowerShell command's
         # argv is kilobytes of base64 that say nothing about what went wrong.
@@ -3527,9 +3537,12 @@ def watch_command(extra: list) -> list:
     """The stream command, real or a test's recorded-stream override."""
     override = os.environ.get("FLEET_QUEUE_WATCH_CMD")
     if override:
-        # Split into argv with shell quoting and nothing else of a shell: there
-        # is no `sh` to hand a line to on native Windows.
-        return shlex.split(override)
+        # Split into argv with the OS's own quoting and nothing else of a shell:
+        # there is no `sh` to hand a line to on native Windows.
+        try:
+            return fleet_platform.split_command(override)
+        except ValueError as exc:
+            raise QueueError(f"FLEET_QUEUE_WATCH_CMD: {exc}") from exc
     return ["thurbox-cli", "watch", "--json"] + extra
 
 

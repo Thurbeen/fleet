@@ -7,9 +7,12 @@ then hand over here. This owns the rest, in this order:
      recommended tiers, the gate tier too with `--dev` — each with the command
      `preflight.install_plan` gives for this machine's package manager. A row
      with no plan is listed and never run: "you run" for a login only the
-     operator can do, "no route" for a tool nothing here can install. Then the
-     two pieces of wiring below, when they are not already in place. Python is
-     not a row: uv provides it.
+     operator can do, "no route" for a tool nothing here can install, "needs"
+     for a route through a tool that is not here (quota-axi's npm). With apt,
+     the package lists are refreshed once, first: a fresh image has none. Then
+     the two pieces of wiring below, when they are not already in place. Python
+     is not a row: uv provides it. PATH is read again first, so what an earlier
+     run installed is found from the window that ran it.
   2. ONE QUESTION, for the whole plan. `--yes` answers it. Nothing to do asks
      nothing. No terminal and no `--yes` prints the plan, installs nothing and
      exits 1 — a question nobody can answer is not a yes.
@@ -103,6 +106,9 @@ def prepare(argv: tuple[str, ...], root: bool) -> list[str]:
     return argv
 
 
+APT_UPDATE = ("sudo", "apt-get", "update")
+
+
 def plan_rows(dev: bool, root: bool) -> list[Row]:
     tiers = ["required", "recommended"] + (["gate"] if dev else [])
     manager = preflight.package_manager()
@@ -119,7 +125,18 @@ def plan_rows(dev: bool, root: bool) -> list[Row]:
             # An installer one-liner: the line is what the operator reads.
             rows.append(Row(dep.name, "install", plan.text, plan.argv))
         else:
-            rows.append(Row(dep.name, "install", " ".join(prepare(plan.argv, root)), plan.argv))
+            argv = prepare(plan.argv, root)
+            # A route through a tool nothing here installs (quota-axi's npm, a
+            # missing sudo) is the operator's to unblock, not a failure each run.
+            absent = [tool for tool in dict.fromkeys(argv[:2] if argv[0] == "sudo" else argv[:1])
+                      if not shutil.which(tool)]
+            if absent:
+                rows.append(Row(dep.name, "needs", f"{absent[0]} first, then: {' '.join(argv)}"))
+            else:
+                rows.append(Row(dep.name, "install", " ".join(argv), plan.argv))
+    if manager == "apt" and any(row.argv and "apt-get" in row.argv[:2] for row in rows):
+        # A fresh image ships with no package lists, and `install` then finds nothing.
+        rows.insert(0, Row("apt lists", "refresh", " ".join(prepare(APT_UPDATE, root)), APT_UPDATE))
     return rows
 
 
@@ -175,13 +192,17 @@ def make_link(checkout: str) -> tuple[bool, str]:
     if state == "refuse":
         return False, why
     link = os.path.join(checkout, *LINK.split("/"))
-    if not fleet_platform.is_dir_link(link):
-        if os.path.isfile(link):
-            os.remove(link)
-        elif os.path.isdir(link):
-            os.rmdir(link)
-    os.makedirs(os.path.dirname(link), exist_ok=True)
-    fleet_platform.make_dir_link(link, os.path.join(checkout, *TARGET.split("/")))
+    try:
+        if not fleet_platform.is_dir_link(link):
+            if os.path.isfile(link):
+                os.remove(link)
+            elif os.path.isdir(link):
+                os.rmdir(link)
+        os.makedirs(os.path.dirname(link), exist_ok=True)
+        fleet_platform.make_dir_link(link, os.path.join(checkout, *TARGET.split("/")))
+    except OSError as exc:
+        # A volume with no symlinks or junctions: reported, and the rest still runs.
+        return False, f"could not link {LINK} -> {TARGET} ({exc})"
     return True, f"{LINK} -> {TARGET}"
 
 
@@ -196,7 +217,8 @@ def claude_settings_file() -> str:
 def _settings(path: str) -> tuple[dict | None, str]:
     """The settings as a dict, or None and why it cannot be merged into."""
     try:
-        with open(path, encoding="utf-8") as fh:
+        # utf-8-sig: Windows PowerShell 5.1's `Set-Content -Encoding UTF8` writes a BOM.
+        with open(path, encoding="utf-8-sig") as fh:
             data = json.load(fh)
     except FileNotFoundError:
         return {}, ""
@@ -283,6 +305,9 @@ def main(argv: list[str], checkout: str | None = None) -> int:
 
     root = fleet_platform.running_as_root()
     say(f"fleet install: {checkout}")
+    # What an earlier run installed is on the registry's PATH and not yet on
+    # this window's: without this, a second run plans it and asks again.
+    fleet_platform.refresh_path()
     rows = plan_rows(dev, root)
     link, link_why = link_state(checkout)
     settings, command = claude_settings_file(), reconcile.hook_command(checkout)

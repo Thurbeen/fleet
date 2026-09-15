@@ -63,6 +63,17 @@ def hook_block(text: str) -> dict:
     return json.loads("\n".join(lines[start:end + 1]))
 
 
+def test_a_checkout_path_a_shell_would_split_or_expand_reaches_uv_whole():
+    """A profile named with an apostrophe, a space, or a `$` must not leave a
+    Stop hook that fails on every turn while install reports it in place."""
+    from fleet.cli import load
+
+    hook_command = load("reconcile.py").hook_command
+    for checkout in ("C:/Users/O'Neil/fleet", "/srv/two words/fleet", "/srv/cost$HOME/fleet", "/srv/a (b)/fleet"):
+        assert shlex.split(hook_command(checkout)) == \
+            ["uv", "run", "--project", checkout, "fleet", "reconcile", "nudge"], hook_command(checkout)
+
+
 def test_the_hook_is_one_shell_neutral_nudge(recon, monkeypatch, isolated_env):
     claude = isolated_env / "claude config"
     thurbox = isolated_env / "thurbox config"

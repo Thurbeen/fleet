@@ -130,6 +130,9 @@ def isolate(environ: dict, root: Path, stub_bin: Path) -> dict:
         GIT_AUTHOR_EMAIL="selftest@example.invalid",
         GIT_COMMITTER_NAME="selftest",
         GIT_COMMITTER_EMAIL="selftest@example.invalid",
+        # A machine a test builds from stand-ins stays that machine: a real
+        # Windows registry's PATH would put the real tools back beside them.
+        FLEET_NO_PATH_REFRESH="1",
         FLEET_AUTO_MERGE_ROOT=settings,
         FLEET_PUBLISH_ROOT=settings,
         FLEET_AGENT_ROOT=settings,

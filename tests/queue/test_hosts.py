@@ -154,6 +154,9 @@ def test_a_remote_task_is_spawned_on_its_host_with_its_brief_really_there(
 
     there = hosts.remote("me@devbox", WORKTREE)
     assert (there / "BRIEF.md").is_file(), "the brief really is on the host's filesystem"
+    # Records are LF on every OS, and a Windows lead's text-mode stdin would add a CR to every line.
+    for name in ("BRIEF.md", "POLICY.md", "PROMPT.md"):
+        assert b"\r" not in (there / name).read_bytes(), f"{name} reached a POSIX host with CRLF"
     expect((there / "BRIEF.md").read_text(encoding="utf-8"), "Build the thing on devbox")
     policy = REPO / "orchestration" / "queue" / "POLICY.md"
     assert (there / "POLICY.md").read_text(encoding="utf-8") == policy.read_text(encoding="utf-8")

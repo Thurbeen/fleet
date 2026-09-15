@@ -140,6 +140,10 @@ function Install-FleetGit([bool]$Yes) {
 # The checkout a running Mission Control lead opens, or $null.
 function Get-FleetLeadCheckout {
     if (-not (Test-FleetCommand 'thurbox-cli')) { return $null }
+    # thurbox-cli writes UTF-8, and Windows PowerShell 5.1 decodes a native
+    # command's output in the console's code page: a non-ASCII path would not
+    # match, and a second checkout would be cloned.
+    try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch { }
     try {
         $json = (& thurbox-cli session list --json 2>$null) -join "`n"
         $sessions = $json | ConvertFrom-Json -ErrorAction Stop

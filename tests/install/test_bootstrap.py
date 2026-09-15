@@ -357,6 +357,24 @@ else:
     assert not box.clone.exists(), "a second clone was made"
 
 
+def test_a_leads_checkout_under_a_non_ascii_path_is_still_the_default(box, stubs, tmp_path):
+    """thurbox-cli writes UTF-8, and Windows PowerShell 5.1 decodes a native
+    command's output in the console's code page unless told otherwise."""
+    elsewhere = tmp_path / "José" / "fleet"
+    assert box(FLEET_YES="1", FLEET_DIR=str(elsewhere)).code == 0
+    sessions = json.dumps([{"name": "X Mission Control", "cwd": str(elsewhere)}], ensure_ascii=False)
+    place(stubs, "thurbox-cli", f"""
+import sys
+if sys.argv[1:3] == ["session", "list"]:
+    sys.stdout.buffer.write({sessions!r}.encode("utf-8") + b"\\n")
+else:
+    print("thurbox-cli {FLOOR}")
+""")
+    done = box(FLEET_YES="1")
+    assert done.code == 0, done.out
+    assert not box.clone.exists(), f"a second clone was made:\n{done.out}"
+
+
 # --- 1i. a missing required dependency stops before the extension ---------------------------
 
 
@@ -399,7 +417,11 @@ def test_no_git_and_yes_installs_git_through_the_os_manager_then_clones(box, dri
     place(stubs, "sudo", SUDO)
     done = box(FLEET_YES="1")
     assert done.code == 0, done.out
-    assert driver.git_line in stubs.calls("sudo" if driver.name == "sh" else name), stubs.calls(name)
+    if driver.name == "sh":
+        # A fresh image ships with no package lists: refreshed first, or git is "not found".
+        assert stubs.calls("sudo") == ["sudo apt-get update", driver.git_line], stubs.calls("sudo")
+    else:
+        assert driver.git_line in stubs.calls(name), stubs.calls(name)
     assert (box.clone / "extension.toml.in").is_file()
 
 

@@ -108,7 +108,10 @@ ensure_uv() {
 git_line() {
 	sudo="sudo "
 	[ "$(id -u 2>/dev/null)" = 0 ] && sudo=""
+	UPDATE=""
 	if command -v apt-get >/dev/null 2>&1; then
+		# A fresh image ships with no package lists, and install then finds no git.
+		UPDATE="${sudo}apt-get update"
 		LINE="${sudo}apt-get install -y git"
 	elif command -v dnf >/dev/null 2>&1; then
 		LINE="${sudo}dnf install -y git"
@@ -127,6 +130,9 @@ ensure_git() {
 	[ -n "$LINE" ] || die "git is not installed, and cloning fleet needs it. No package manager this knows
 (apt-get, dnf, pacman, brew) is here: install git, then run this again."
 	say "git is not installed, and cloning fleet needs it. This installs it:"
+	if [ -n "$UPDATE" ]; then
+		say "  $UPDATE"
+	fi
 	say "  $LINE"
 	confirm "Install git now?"
 	case $? in
@@ -136,6 +142,10 @@ ensure_git() {
 	*) die "git was not installed. Install it, then run this again." ;;
 	esac
 	# LINE is words on purpose: a command and its arguments, no globs.
+	# shellcheck disable=SC2086
+	if [ -n "$UPDATE" ]; then
+		$UPDATE </dev/null || die "refreshing the package lists failed; its error is above"
+	fi
 	# shellcheck disable=SC2086
 	$LINE </dev/null || die "installing git failed; its error is above"
 	command -v git >/dev/null 2>&1 || die "git was installed but this shell cannot find it. Open a new shell and run this again."

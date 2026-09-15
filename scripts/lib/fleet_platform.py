@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import contextlib
 import os
+import shlex
+import signal
 import subprocess
 import sys
 import time
@@ -104,8 +106,12 @@ def refresh_path() -> None:
     would not find the tool it just installed. Both are read and appended to
     this process's PATH, which keeps what it already had first. POSIX: a
     package manager installs onto a PATH that is already there; nothing to do.
+
+    `FLEET_NO_PATH_REFRESH=1` leaves PATH as it is. TESTS ONLY: a test builds a
+    machine from stand-ins on PATH, and a real Windows registry would put the
+    real tools back beside them.
     """
-    if not WINDOWS:
+    if not WINDOWS or os.environ.get("FLEET_NO_PATH_REFRESH") == "1":
         return
     import winreg
 
@@ -248,21 +254,68 @@ def spawn_detached(argv: list[str], **popen) -> subprocess.Popen:
     """Start `argv` so that it outlives this process and the session it runs in.
 
     POSIX: a new session, so the hangup that ends a terminal or an ssh session
-    never reaches it. Windows: no console, a process group of its own, and out
-    of the job an ssh session kills everything in when it ends. Measured on
-    Windows 11, a child started without CREATE_BREAKAWAY_FROM_JOB died with
-    its parent's ssh session, and one started with it kept running.
+    never reaches it. Windows: a console of its own with no window, a process
+    group of its own, and out of the job an ssh session kills everything in
+    when it ends. Measured on Windows 11, a child started without
+    CREATE_BREAKAWAY_FROM_JOB died with its parent's ssh session, and one
+    started with it kept running. A hidden console and not none: a process
+    with no console gives every console program it runs a new, visible window,
+    which for the reconciler was one per queue pass.
     """
     popen.setdefault("stdin", subprocess.DEVNULL)
     if WINDOWS:
         popen["creationflags"] = popen.get("creationflags", 0) | (
-            subprocess.DETACHED_PROCESS
+            subprocess.CREATE_NO_WINDOW
             | subprocess.CREATE_NEW_PROCESS_GROUP
             | subprocess.CREATE_BREAKAWAY_FROM_JOB
         )
     else:
         popen["start_new_session"] = True
     return subprocess.Popen(argv, **popen)
+
+
+def terminate_tree(pid: int, force: bool = False) -> None:
+    """End `pid` and what it is running, as a stop has to.
+
+    POSIX: `spawn_detached` made it the leader of its own process group, and
+    every command it runs is in that group, so the group is signalled: TERM,
+    or KILL with `force`. Windows: `taskkill /T /F`, which ends the process
+    and its descendants at once; Windows has no signal a console-less process
+    would act on. Never raises: the caller checks whether it worked.
+    """
+    if WINDOWS:
+        taskkill = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "taskkill.exe")
+        try:
+            subprocess.run([taskkill, "/PID", str(pid), "/T", "/F"], capture_output=True, check=False)
+        except OSError:
+            pass
+        return
+    sig = signal.SIGKILL if force else signal.SIGTERM
+    try:
+        os.killpg(pid, sig)
+    except OSError:
+        try:
+            os.kill(pid, sig)
+        except OSError:
+            pass
+
+
+def split_command(line: str, windows: bool = WINDOWS) -> list[str]:
+    """An operator's command line as argv, with no shell to read it.
+
+    POSIX: shell quoting. Windows: only double quotes group, as on a Windows
+    command line, so a backslash in a path and an apostrophe in a name are
+    ordinary characters. A pipeline is not a command here: it arrives as words.
+    Raises ValueError, naming the line, when a quote is left open.
+    """
+    try:
+        if not windows:
+            return shlex.split(line)
+        lexer = shlex.shlex(line, posix=False)
+        lexer.whitespace_split, lexer.quotes, lexer.commenters = True, '"', ""
+        return [word[1:-1] if len(word) > 1 and word[0] == word[-1] == '"' else word for word in lexer]
+    except ValueError as exc:
+        raise ValueError(f"cannot read {line!r} as a command: {exc}") from exc
 
 
 def alive(pid: int) -> bool:

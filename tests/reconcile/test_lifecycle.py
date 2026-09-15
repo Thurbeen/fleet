@@ -165,6 +165,36 @@ def test_stop_terminates_a_loop_that_ignores_the_flag(recon, monkeypatch, capsys
         holder.stdout.close()
 
 
+def test_a_stop_ends_the_queue_command_in_flight_too(recon, monkeypatch, isolated_env, capsys):
+    """A refuel or shepherd left running after its loop is gone keeps acting,
+    and the next loop's first pass runs the same work beside it."""
+    slow_pid = isolated_env / "slow.pid"
+    monkeypatch.setenv("RECON_SLOW", "collect:120")
+    monkeypatch.setenv("RECON_SLOW_PID", str(slow_pid))
+    assert recon("ensure").code == 0
+    assert wait_for(lambda: slow_pid.is_file() and slow_pid.read_text(encoding="utf-8").strip(), 30)
+    collect = int(slow_pid.read_text(encoding="utf-8"))
+    mod = lib("reconcile.py")
+    monkeypatch.setattr(mod, "STOP_GRACE_SECS", 0)
+    try:
+        assert mod.main(["stop"]) == 0, capsys.readouterr().out
+        assert wait_for(lambda: not mod.fleet_platform.alive(collect), 15), "the collect in flight outlived the stop"
+    finally:
+        if mod.fleet_platform.alive(collect):
+            mod.fleet_platform.terminate_tree(collect, force=True)
+
+
+def test_launch_leaves_a_loop_that_is_already_ticking_alone(recon):
+    """Two `ensure`s that overlap: the second must adopt the loop the first just
+    started, not end it mid-pass and start another."""
+    assert recon("ensure").code == 0
+    pid = recon.pid()
+    mod = lib("reconcile.py")
+    assert mod.launch(mod.Config.from_env())
+    assert recon.pid() == pid, "launch replaced a loop that was ticking"
+    assert mod.fleet_platform.alive(int(pid))
+
+
 def test_logs_reads_the_loop_log(recon):
     missing = recon("logs")
     assert missing.code == 1

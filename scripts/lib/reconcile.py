@@ -88,9 +88,11 @@ THE CADENCES, and why each number is the number:
 Environment:
   FLEET_RECONCILE_DIR           runtime state (default orchestration/reconcile)
   FLEET_RECONCILE_QUEUE_CMD     the queue command it drives, as an argv: a JSON
-                                list, or a line split with shell quoting and
-                                nothing else of a shell (default: `fleet queue`
-                                on this interpreter). The seam tests stub.
+                                list, or a line split with this OS's quoting
+                                (shell quoting on POSIX, double quotes only on
+                                Windows) and nothing else of a shell (default:
+                                `fleet queue` on this interpreter). The seam
+                                tests stub.
   FLEET_RECONCILE_WATCH_SECS    seconds per `watch` call   (default 20)
   FLEET_RECONCILE_COLLECT_SECS  seconds between collects   (default 120)
   FLEET_RECONCILE_REFUEL_SECS   seconds between refuels    (default 300)
@@ -112,7 +114,6 @@ import json
 import os
 import re
 import shlex
-import signal
 import subprocess
 import sys
 import time
@@ -185,7 +186,11 @@ class Config:
         if not override:
             cmd, label = [sys.executable, "-c", BOOT, CHECKOUT, "queue"], "fleet queue"
         else:
-            cmd = [str(a) for a in json.loads(override)] if override.startswith("[") else shlex.split(override)
+            try:
+                cmd = ([str(a) for a in json.loads(override)] if override.startswith("[")
+                       else fleet_platform.split_command(override))
+            except ValueError as exc:
+                raise SystemExit(f"fleet reconciler: FLEET_RECONCILE_QUEUE_CMD: {exc}") from exc
             label = " ".join(cmd)
 
         def secs(name: str, default: int) -> int:
@@ -487,17 +492,17 @@ def supervise(cfg: Config) -> int:
 
 
 def terminate(cfg: Config) -> bool:
-    """End the lock holder by its pid: TERM, then KILL where the OS has one."""
+    """End the lock holder and the queue command it is running, gently then by force.
+
+    The command too: a refuel or shepherd left running after its loop is gone
+    keeps acting, and the next loop's first pass would do the same work beside it."""
     if not lock_held(cfg):
         return True
     wait_until(lambda: pid_of(cfg) > 0 or not lock_held(cfg), LOCK_RETRY_SECS)
     pid = pid_of(cfg)
-    for sig in (signal.SIGTERM, getattr(signal, "SIGKILL", signal.SIGTERM)):
+    for force in (False, True):
         if pid and fleet_platform.alive(pid):
-            try:
-                os.kill(pid, sig)
-            except OSError:
-                pass
+            fleet_platform.terminate_tree(pid, force)
         # Windows releases a killed process's lock when it gets to it.
         if wait_until(lambda: not lock_held(cfg), KILL_WAIT_SECS):
             return True
@@ -517,9 +522,13 @@ def bring_down(cfg: Config) -> bool:
 
 def launch(cfg: Config) -> bool:
     os.makedirs(cfg.rt, exist_ok=True)
-    # A supervisor holding the lock without ever beating is a phantom: end it
-    # rather than leave it retrying behind the new one.
-    terminate(cfg)
+    if lock_held(cfg):
+        # A loop another `ensure` just started beats within moments: adopt it.
+        if wait_until(lambda: running(cfg), START_WAIT_SECS):
+            return True
+        # A supervisor holding the lock without ever beating is a phantom: end
+        # it rather than leave it retrying behind the new one.
+        terminate(cfg)
     remove(cfg.path("heartbeat"))
     remove(cfg.path("pid"))
     log(cfg, "starting")
@@ -662,12 +671,21 @@ def cmd_nudge(cfg: Config) -> int:
     return 0
 
 
+HOOK_BARE = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789/._:@+=,~-")
+
+
 def hook_command(checkout: str = CHECKOUT) -> str:
     """One command every shell parses the same: forward slashes, which bash does
-    not eat and Windows accepts, and double quotes only around a path with a space."""
+    not eat and Windows accepts; the path bare when every character is plain,
+    in double quotes when it holds a space, an apostrophe or the like, and in a
+    POSIX shell's single quotes only when a double-quoted shell would expand it."""
     project = checkout.replace("\\", "/")
-    if any(c.isspace() for c in project):
+    if set(project) <= HOOK_BARE:
+        pass
+    elif not any(c in project for c in '"$`!'):
         project = f'"{project}"'
+    else:
+        project = shlex.quote(project)
     return f"uv run --project {project} fleet reconcile nudge"
 
 

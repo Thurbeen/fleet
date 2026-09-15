@@ -66,7 +66,7 @@ def test_the_plan_names_every_gap_with_the_command_that_closes_it(stubs, checkou
         expect(out, "winget install --id GLab.GLab -e --accept-source-agreements --accept-package-agreements",
                "winget install --id marlocarlo.psmux -e")
     else:
-        expect(out, "sudo apt-get install -y glab", "sudo apt-get install -y tmux")
+        expect(out, "sudo apt-get update", "sudo apt-get install -y glab", "sudo apt-get install -y tmux")
     expect(out, "npm install -g quota-axi", "you run", "gh auth login", ".claude/skills")
 
 
@@ -96,9 +96,10 @@ def test_yes_runs_every_route_exactly_then_the_extension_then_preflight(stubs, c
             npm,
         ], calls
     else:
+        # A fresh image ships with no package lists, so apt refreshes them once, first.
         assert calls == [
-            "apt-get install -y tmux", "apt-get install -y glab",
-            "sudo apt-get install -y tmux", "sudo apt-get install -y glab", npm,
+            "apt-get update", "apt-get install -y tmux", "apt-get install -y glab",
+            "sudo apt-get update", "sudo apt-get install -y tmux", "sudo apt-get install -y glab", npm,
         ], calls
     out = plain(done.stdout)
     refute(out, "gh auth login\n  running")
@@ -141,6 +142,23 @@ def test_one_failed_install_is_reported_and_the_rest_still_run(stubs, checkout, 
     assert stubs.calls("npm") == ["npm install -g quota-axi"], "the install after the failed one never ran"
     assert (stubs.bin / ("quota-axi" + (".exe" if WINDOWS else ""))).exists()
     assert stubs.calls("extension"), "a recommended failure is no reason to skip the extension"
+
+
+@pytest.mark.parametrize("family", FAMILIES)
+def test_a_route_whose_own_tool_is_missing_is_listed_and_never_asked_run_or_failed(stubs, checkout, family):
+    """quota-axi installs through npm, which nothing here installs: a machine
+    without Node would otherwise be asked, and fail, on every run."""
+    machine(stubs, full_machine(family), without=("quota-axi",))
+    place(stubs, "winget" if family == "windows" else "apt-get", installs({}))
+    done = run_install(checkout, stubs, family, "--yes")
+    out = plain(done.out)
+    assert done.code == 0, out
+    expect(out, "npm first, then: npm install -g quota-axi")
+    refute(out, "failed: quota-axi")
+    again = run_install(checkout, stubs, family)
+    assert again.code == 0, again.out
+    expect(again.stdout, "Nothing to install")
+    refute(again.out, "[y/N]", "--yes")
 
 
 @pytest.mark.parametrize(("manager", "want"), [
@@ -198,6 +216,27 @@ def test_usage(stubs, checkout):
 class Terminal(io.StringIO):
     def isatty(self) -> bool:
         return True
+
+
+def test_path_is_read_again_before_the_plan(checkout, monkeypatch):
+    """A tool the last run installed is on the registry's PATH but not on the PATH
+    of the window that ran it, so a second run from that window would plan it,
+    ask again and run the manager again."""
+    install = load_install()
+    order = []
+
+    class Planned(Exception):
+        pass
+
+    def plan(dev, root):
+        order.append("plan")
+        raise Planned
+
+    monkeypatch.setattr(install.fleet_platform, "refresh_path", lambda: order.append("refresh"))
+    monkeypatch.setattr(install, "plan_rows", plan)
+    with pytest.raises(Planned):
+        install.main([], checkout=str(checkout))
+    assert order == ["refresh", "plan"], order
 
 
 @pytest.mark.parametrize(("answer", "code"), [("y\n", 0), ("n\n", 1)])
