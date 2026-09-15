@@ -169,14 +169,19 @@
 -- `quota-axi` itself — a second parse of a document this file does not own is
 -- the "second writer's opinion" the paragraph above rejects, and it would
 -- disagree with the screen the moment either side moved. It draws what was
--- MEASURED (percent, the binding window, when that window comes back) and
+-- MEASURED (percent, which window binds, when each window comes back) and
 -- never quota-axi's `runway` or `projectedExhaustedAt`, which FLEET.md forbids
 -- fleet from restating as its own.
 --
--- ONE ROW PER SUBSCRIPTION THAT HAS A NUMBER, each with the provider's name, a
--- bar and its percentage. The account may hold several and they are separate
--- windows on separate clocks, so nothing here is summed across them and the
--- name is what keeps three readings from being read as one. The bar is a
+-- ONE BLOCK PER SUBSCRIPTION THAT HAS A NUMBER: the provider's name, then EVERY
+-- window it reports, one row each with its label, a bar, its percentage and
+-- when it resets — shortest window first, the order the record arrives in. The
+-- binding window is marked in the theme's accent rather than drawn instead of
+-- the others: drawn alone, the row flipped between a five-hour and a seven-day
+-- window whenever their percentages crossed. The account may hold several
+-- subscriptions and they are separate windows on separate clocks, so nothing
+-- here is summed across them and the name is what keeps three readings from
+-- being read as one. The bar is a
 -- SECOND encoding of the number beside it, coloured against the reserve that
 -- arrives on the record and marked where that floor falls — never a
 -- replacement for the number.
@@ -701,8 +706,11 @@ end
 --- drawn as one. A reading nobody could take at all — no quota-axi, no
 --- credential anywhere — arrives as a single record with `unavailable` and no
 --- provider, which is what a failed single-provider reading always looked like.
+---
+--- `window` is the one field that repeats: one line per window, as
+--- `id<TAB>percent<TAB>reset epoch<TAB>label`, already in the order to draw.
 local function build_fuel(stdout)
-  local out, fields = {}, nil
+  local out, fields, windows = {}, nil, nil
 
   local function close()
     if fields then
@@ -712,17 +720,28 @@ local function build_fuel(stdout)
         remaining = tonumber(fields.remaining),
         reserve = tonumber(fields.reserve),
         limited_by = fields.limited_by,
-        resets_at = fields.resets_at,
         stale = fields.stale == "1",
         read_at = tonumber(fields.read_at),
+        windows = windows,
       }
-      fields = nil
+      fields, windows = nil, nil
     end
   end
 
   for line in (stdout .. "\n"):gmatch("(.-)\n") do
     local name, value = line:match("^([a-z_]+)\t(.*)$")
-    if name then
+    if name == "window" then
+      fields, windows = fields or {}, windows or {}
+      local id, pct, resets, label = value:match("^([^\t]*)\t([^\t]*)\t([^\t]*)\t?(.*)$")
+      if id and tonumber(pct) then
+        windows[#windows + 1] = {
+          id = id,
+          label = (label ~= "" and label) or id,
+          remaining = tonumber(pct),
+          resets_epoch = tonumber(resets),
+        }
+      end
+    elseif name then
       fields = fields or {}
       fields[name] = value
     else
@@ -1674,54 +1693,26 @@ local function read_age(fuel)
   return (widgets.time_ago(fuel.read_at * 1000, now):gsub(" ago", ""))
 end
 
---- An instant with detail taken off it — never a different instant.
+--- How long until a window resets, said the way `read_age` says an age: `3h`,
+--- `4d`. Nil when the window has not been triggered, or when its reset is
+--- already behind the clock — a stale reading, whose age the head row says.
 ---
---- `1` drops the seconds, `2` drops the year as well. Both are compactions of
---- what quota-axi said and not a re-reading of it: the offset or `Z` stays on,
---- because a reset time whose zone has been filed off is a wrong reset time.
---- The year goes last and goes safely — the longest window quota-axi reports
---- is a week, so a reset is always inside the year the reader is standing in.
-local function compact_instant(iso, level)
-  local out = iso
-  if level >= 1 then
-    local head, tail = out:match("^(.-T%d%d:%d%d):%d%d[%.%d]*(.*)$")
-    if head then
-      out = head .. tail
-    end
+--- A countdown and not the instant, because an instant is twelve columns even
+--- compacted and a thirty-column row has a bar to fit. `resets_epoch` arrives
+--- as epoch seconds for the same reason `read_at` does.
+local function reset_in(epoch)
+  local now = widgets.now_ms()
+  if not epoch or now <= 0 or epoch * 1000 <= now then
+    return nil
   end
-  if level >= 2 then
-    out = (out:gsub("^%d%d%d%d%-", ""))
-  end
-  return out
+  -- `time_ago` measures from its first argument to its second, so handed now
+  -- and the reset it measures the time left.
+  return (widgets.time_ago(now, epoch * 1000):gsub(" ago", ""))
 end
 
---- What the detail row gives up as the column narrows, in order.
----
---- The reserve is no longer on this ladder: it is said once on the block's
---- head row, for every provider at once, and each bar marks where it falls —
---- so repeating it per reading would spend columns saying what the colour
---- already says. The instant is compacted first, then the word "resets", and
---- the binding window is the last thing standing: a reset with no window named
---- does not say what is resetting.
-local FUEL_DETAIL = {
-  { instant = 0, word = true },
-  { instant = 1, word = true },
-  { instant = 2, word = true },
-  { instant = 2, word = false },
-  {},
-}
-
-local function detail_segments(fuel, level)
-  local segs = {}
-  if (fuel.limited_by or "") ~= "" then
-    segs[#segs + 1] = fuel.limited_by
-  end
-  if level.instant and (fuel.resets_at or "") ~= "" then
-    local when = compact_instant(fuel.resets_at, level.instant)
-    segs[#segs + 1] = level.word and ("resets " .. when) or when
-  end
-  return segs
-end
+--- Columns the reset countdown is given, so every percentage in the block
+--- ends in the same one. `59m` is the widest; a week is `7d`.
+local FUEL_RESET = 3
 
 --- The reading's colour, taken from the reserve the reading itself carries.
 ---
@@ -1759,9 +1750,10 @@ local FUEL_BAR_MIN = 5
 --- one. `100%` is the widest reading there is.
 local FUEL_NUMBER = 4
 
---- Columns a provider's name may spend. Long enough for the names quota-axi
---- reports, short enough that the bar is still a bar at thirty cells.
-local FUEL_LABEL_MAX = 8
+--- Columns a window's label may spend. Long enough for the labels quota-axi
+--- reports (`session`, `week`, a per-model `Fable week`), short enough that
+--- the bar is still a bar at thirty cells.
+local FUEL_LABEL_MAX = 10
 
 --- The reading as a bar, with the reserve marked where it falls across it.
 ---
@@ -1809,11 +1801,19 @@ local function bar_spans(fuel, cells)
   return spans
 end
 
---- The fuel block: one row per subscription, above everything competing for it.
+--- The fuel block: every window of every subscription, above everything
+--- competing for it.
 ---
---- ONE ROW PER PROVIDER THAT HAS A NUMBER, with its name, a bar and its
---- percentage. The name is not decoration: three subscriptions drawn without
---- one are three numbers that read as one reading with two mistakes in it.
+--- ONE NAME ROW PER PROVIDER THAT HAS A NUMBER, then ONE ROW PER WINDOW with
+--- its label, a bar, its percentage and when it resets. The name is not
+--- decoration: three subscriptions drawn without one are three numbers that
+--- read as one reading with two mistakes in it.
+---
+--- EVERY WINDOW, ALWAYS, IN THE RECORD'S ORDER. Drawing only the binding one
+--- made the row change meaning whenever two windows' percentages crossed.
+--- The binding window is marked — its label in the theme's accent — and the
+--- rows never move. A record from an older `fleet-status.sh` carries no
+--- windows, and draws its binding reading as the one row it had.
 ---
 --- A PROVIDER THAT COULD NOT BE READ IS NOT DRAWN. It has no bar to draw and
 --- no number to compare, and a standing `unavailable` row for a provider the
@@ -1828,15 +1828,8 @@ end
 ---
 --- WHAT A NARROW COLUMN DROPS, and this column is routinely thirty cells wide.
 --- In order: the reserve on the head row, then the bar — under FUEL_BAR_MIN
---- cells it is a decoration and the number is the reading. The number never
---- goes.
----
---- WHAT SEVERAL SUBSCRIPTIONS DROP. One reading keeps the detail row it always
---- had: the binding window and when it comes back. Several do not, because N
---- readings at two rows each pushes the queue itself off the column, and
---- `./scripts/fleet-status.sh` is where every window is printed in full. So
---- the detail row is drawn only when exactly one provider carries a number —
---- which is still the common case, with the others unread rather than absent.
+--- cells it is a decoration and the number is the reading — then the reset.
+--- The number never goes.
 ---
 --- TWO READINGS ARE NOT BARS. No record yet is the spinner, and a stale
 --- reading is hatched and flagged, so a remembered number never looks like a
@@ -1913,64 +1906,69 @@ local function fuel_rows(fuel, width, spinner)
 
   local rows = { line(head:spans_list()) }
 
-  -- The widest name drawn, held to what the column can spend on names: the
-  -- LABEL gives way before the number does, because a truncated provider is
-  -- still the right provider and a truncated percentage is not a reading.
+  --- A record's windows, or its binding reading as the one window it has.
+  local function windows_of(rec)
+    if rec.windows and #rec.windows > 0 then
+      return rec.windows
+    end
+    local id = rec.limited_by or ""
+    return { { id = id, label = id, remaining = rec.remaining } }
+  end
+
+  -- The widest label drawn, held to what the column can spend on labels: the
+  -- LABEL gives way before the number does, because a truncated window is
+  -- still the right window and a truncated percentage is not a reading.
   local label_width = 1
   for _, rec in ipairs(shown) do
-    label_width = math.max(label_width, widgets.len(rec.provider or ""))
+    for _, w in ipairs(windows_of(rec)) do
+      label_width = math.max(label_width, widgets.len(w.label))
+    end
   end
-  label_width = math.min(label_width, FUEL_LABEL_MAX, math.max(1, width - 2 - FUEL_NUMBER))
+  label_width = math.min(label_width, FUEL_LABEL_MAX, math.max(1, width - 3 - FUEL_NUMBER))
 
   for _, rec in ipairs(shown) do
-    local row = ui.row({ width = width })
-    row:add(" ")
-    row:add(widgets.pad(widgets.truncate(rec.provider or "", label_width), label_width),
-      { fg = theme.muted })
-    row:add(" ")
-    local number = rec.remaining .. "%"
-    number = string.rep(" ", math.max(0, FUEL_NUMBER - widgets.len(number))) .. number
+    local name = ui.row({ width = width })
+    name:add(" " .. widgets.truncate(rec.provider or "", math.max(1, width - 1)), { fg = theme.muted })
     -- quota-axi's own word for its reading, passed through rather than
-    -- interpreted: it means the number is remembered, not just observed.
-    local note = rec.stale and "stale" or nil
-    local room = width - row.used
-    -- Dropped rather than overflowed. The hatched bar says the same thing, and
-    -- where there is no room for a bar either, `fleet-status.sh` still does.
-    if note and widgets.len(number) + widgets.len(note) + 1 > room then
-      note = nil
+    -- interpreted: it means the numbers are remembered, not just observed.
+    -- Dropped rather than overflowed; the hatched bars say the same thing.
+    if rec.stale then
+      flush_right(name, "stale", { fg = theme.warn })
     end
-    local cells = room - widgets.len(number) - 1
-      - (note and (widgets.len(note) + 1) or 0)
-    if cells >= FUEL_BAR_MIN then
-      for _, span in ipairs(bar_spans(rec, cells)) do
-        row:add(span.text, span.style)
-      end
-      row:add(" ")
-    end
-    row:add(number, { fg = fuel_tone(rec), bold = true })
-    if note then
-      row:add(" " .. note, { fg = theme.warn })
-    end
-    rows[#rows + 1] = line(row:spans_list())
-  end
+    rows[#rows + 1] = line(name:spans_list())
 
-  if #shown == 1 then
-    -- The widest level that fits, and the narrowest one when none does — which
-    -- `detail` then truncates, the same last resort the documents row takes.
-    local budget = math.max(1, width - 3)
-    local chosen
-    for _, level in ipairs(FUEL_DETAIL) do
-      local segs = detail_segments(shown[1], level)
-      if #segs == 0 then
-        break
+    for _, w in ipairs(windows_of(rec)) do
+      -- The reserve and the staleness are the provider's, the number the
+      -- window's: this is what the bar and the colour are computed against.
+      local reading = { remaining = w.remaining, reserve = rec.reserve, stale = rec.stale }
+      local binds = w.id ~= "" and w.id == rec.limited_by
+      local row = ui.row({ width = width })
+      row:add("  ")
+      row:add(widgets.pad(widgets.truncate(w.label, label_width), label_width),
+        binds and { fg = theme.accent, bold = true } or { fg = theme.muted })
+      row:add(" ")
+      local number = w.remaining .. "%"
+      number = string.rep(" ", math.max(0, FUEL_NUMBER - widgets.len(number))) .. number
+      local room = width - row.used - widgets.len(number)
+      -- The reset column is kept even for a window with none, so every bar
+      -- in the block ends in the same column; it goes only when the number
+      -- itself would not fit beside it.
+      local reset = room >= FUEL_RESET + 1 and (reset_in(w.resets_epoch) or "") or nil
+      if reset then
+        room = room - FUEL_RESET - 1
       end
-      chosen = table.concat(segs, " · ")
-      if widgets.len(chosen) <= budget then
-        break
+      local cells = room - 1
+      if cells >= FUEL_BAR_MIN then
+        for _, span in ipairs(bar_spans(reading, cells)) do
+          row:add(span.text, span.style)
+        end
+        row:add(" ")
       end
-    end
-    if chosen then
-      rows[#rows + 1] = detail(chosen)
+      row:add(number, { fg = fuel_tone(reading), bold = true })
+      if reset then
+        row:add(" " .. string.rep(" ", FUEL_RESET - widgets.len(reset)) .. reset, { fg = theme.muted })
+      end
+      rows[#rows + 1] = line(row:spans_list())
     end
   end
   return rows

@@ -23,12 +23,18 @@
 -- `--marks` prefixes every row with `B` when it carries a bold span and `.`
 -- when it does not, which is how "the running work is the dominant thing" is
 -- asserted rather than admired.
+--
+-- `--accent` prefixes every row with `A` when a span is drawn in the theme's
+-- `accent` role and `.` when none is, which is how a mark carried by colour
+-- alone — the binding fuel window — is asserted in a text render.
 
 local WIDTH = tonumber(arg[1] or "") or 44
-local MARKS = false
+local MARKS, ACCENT = false, false
 for _, a in ipairs(arg) do
   if a == "--marks" then
     MARKS = true
+  elseif a == "--accent" then
+    ACCENT = true
   end
 end
 
@@ -328,11 +334,17 @@ for _, topic in ipairs(TOPICS) do
 end
 out[#out + 1] = "A\t7"
 
+-- Two windows on two clocks, and the LONGER one binds. That is the reading
+-- the block used to flip on: it drew only the binding window, so the row
+-- changed meaning whenever the two percentages crossed.
 local FUEL = table.concat({
   "provider\tclaude",
-  "remaining\t62",
+  "remaining\t18",
   "reserve\t15",
+  "limited_by\tseven_day",
   "read_at\t" .. (NOW - 120),
+  "window\tfive_hour\t62\t" .. (NOW + 3 * 3600 + 600) .. "\tsession",
+  "window\tseven_day\t18\t" .. (NOW + 4 * 86400 + 7200) .. "\tweek",
 }, "\n")
 
 local LEAD = { id = "s1", name = "⌖ Mission Control", cwd = "/home/operator/fleet", status = "ok" }
@@ -383,12 +395,13 @@ local function lines_of(node, sink)
     rows = { rows }
   end
   for _, spans in ipairs(rows) do
-    local text, bold = "", false
+    local text, bold, accent = "", false, false
     for _, span in ipairs(spans) do
       text = text .. (span.text or "")
       bold = bold or (span.style and span.style.bold) or false
+      accent = accent or (span.style and span.style.fg == "accent") or false
     end
-    sink[#sink + 1] = { text = text, bold = bold }
+    sink[#sink + 1] = { text = text, bold = bold, accent = accent }
   end
   return sink
 end
@@ -400,6 +413,8 @@ for _, row in ipairs(lines_of(tree, {})) do
   local text = (row.text:gsub("%s+$", ""))
   if MARKS then
     print((row.bold and "B " or ". ") .. text)
+  elseif ACCENT then
+    print((row.accent and "A " or ". ") .. text)
   else
     print(text)
   end

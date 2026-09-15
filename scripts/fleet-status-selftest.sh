@@ -291,16 +291,16 @@ cat <<'JSON'
 {"generatedAt":"2026-03-15T16:42:00.000Z","schemaVersion":5,"providers":[
  {"provider":"claude","plan":"max","source":"oauth",
   "windows":[
-    {"id":"five_hour","label":"session","kind":"session","percentRemaining":90,
-     "resetsAt":"2026-03-15T20:10:48.000Z",
-     "pace":{"status":"behind","reservePercentPoints":12.4,"burnMultiple":0.5921,
-             "projectedExhaustedAt":"2026-03-15T18:02:11.000Z"}},
     {"id":"seven_day","label":"week","kind":"weekly","percentRemaining":$2,
-     "resetsAt":"2026-03-20T17:59:45.600Z",
+     "windowSeconds":604800,"resetsAt":"2026-03-20T17:59:45.600Z",
      "pace":{"status":"ahead","reservePercentPoints":-8.2,"burnMultiple":1.295,
              "projectedExhaustedAt":"2026-03-19T03:43:45.600Z"}},
+    {"id":"five_hour","label":"session","kind":"session","percentRemaining":90,
+     "windowSeconds":18000,"resetsAt":"2026-03-15T20:10:48.000Z",
+     "pace":{"status":"behind","reservePercentPoints":12.4,"burnMultiple":0.5921,
+             "projectedExhaustedAt":"2026-03-15T18:02:11.000Z"}},
     {"id":"model:fable","label":"Fable week","kind":"model","percentRemaining":100,
-     "resetsAt":"2026-03-20T08:25:12.000Z"}],
+     "windowSeconds":604800,"resetsAt":"2026-03-20T08:25:12.000Z"}],
   "state":{"status":"fresh","stale":false},
   "quotaSemantics":{"status":"known","effectiveAvailability":[
     {"scope":"all_models","status":"known","effectivePercentRemaining":$2,
@@ -478,6 +478,29 @@ print("epoch")
 PY
 )"
 expect "read_at is epoch seconds a pane can subtract" "epoch" "$age"
+
+# EVERY WINDOW, not only the one that binds. A record that carried the binding
+# window alone made the pane flip between the five-hour and the seven-day window
+# whenever their percentages crossed. So each window is a `window` line — id,
+# percent, reset as epoch seconds, label — in a stable order: shortest window
+# first, whatever order quota-axi declared them in (the stub declares the week
+# first). The binding window is still `limited_by`, and still the reading.
+windows="$(python3 - "$rec" <<'PY' 2>&1
+import sys
+from datetime import datetime
+rows = [
+    line.split("\t")[1:] for line in sys.argv[1].splitlines()
+    if line.startswith("window\t")
+]
+assert [r[0] for r in rows] == ["five_hour", "seven_day", "model:fable"], rows
+week = rows[1]
+assert week[1] == "64" and week[3] == "week", week
+want = int(datetime.fromisoformat("2026-03-20T17:59:45.600+00:00").timestamp())
+assert int(week[2]) == want, f"reset is not epoch seconds: {week}"
+print("every window")
+PY
+)"
+expect "the record carries every window, shortest first" "every window" "$windows"
 
 # The unavailable case is the one a pane gets wrong: it must be a REASON, never
 # a zero and never an empty record that reads as 0% left. The provider is NAMED
