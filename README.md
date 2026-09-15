@@ -36,8 +36,8 @@ Each box in the diagram:
   context. It turns your prompt into tasks, writes a brief for each one, and
   dispatches them. Only the lead dispatches tasks.
 - **Queue.** Plain files under `orchestration/queue/`.
-  [`scripts/lib/queue.py`](scripts/lib/queue.py) (or `uv run fleet queue`, the same
-  command) is the only thing that writes them. A topic keeps your prompt word
+  `uv run fleet queue` ([`scripts/lib/queue.py`](scripts/lib/queue.py)) is the
+  only thing that writes them. A topic keeps your prompt word
   for word. Each task in it has four files: `task.yaml` (what is intended and
   where it stands), `BRIEF.md` (the worker's instructions), `progress.jsonl`
   (what happened) and `result.md` (what the worker concluded).
@@ -54,7 +54,7 @@ Each box in the diagram:
   supervised loop that you start and stop. It runs the queue's `watch`,
   `collect`, `shepherd` and `refuel` on their own intervals. When a task
   becomes ready, it types one line into the lead's terminal. It never
-  dispatches, and it changes the queue only through `queue.sh`.
+  dispatches, and it changes the queue only through `fleet queue`.
 - **Queue pane.** [`interface/fleet_queue.lua`](interface/fleet_queue.lua)
   draws the queue and your remaining agent quota in a thurbox column. It reads
   the same files and writes nothing.
@@ -113,7 +113,7 @@ checks each step as it goes.
 in plain words. The lead opens a topic, writes the briefs, and dispatches.
 
 **Watch the pane.** `F3` shows and hides it. For a one-shot summary of quota,
-queue, sessions, pull requests and checkout, run `./scripts/fleet-status.sh`.
+queue, sessions, pull requests and checkout, run `uv run fleet status`.
 
 ![The queue pane in a thurbox column beside the session list: the account's
 remaining quota as a bar, then running tasks grouped under their topics, one
@@ -142,7 +142,7 @@ row each.](media/fleet-queue-pane.gif)
   when it holds.
 - **Stuck or failed tasks.** Their sessions are kept so you can look at what
   happened and decide.
-- **The reconciler itself.** `./scripts/reconcile.sh stop` keeps it down, even
+- **The reconciler itself.** `uv run fleet reconcile stop` keeps it down, even
   across a reboot, until you run `start`.
 - **Updates.** After pulling a change to `FLEET.md`, `AGENTS.md` or the skills,
   the running lead has stale instructions. The
@@ -173,8 +173,8 @@ because this repository is public; back up your clone if that content matters.
 | Path | Tracked | What it is |
 | --- | --- | --- |
 | [`FLEET.md`](FLEET.md) | yes | Standing context for the Mission Control session. |
-| [`extension.toml.in`](extension.toml.in) | yes | The thurbox extension manifest, rendered to a gitignored `extension.toml` by `scripts/install-extension.sh`. |
-| [`scripts/`](scripts/) | yes | Every command; each script's header is its full usage. [`check.sh`](scripts/check.sh) is the gate. |
+| [`extension.toml.in`](extension.toml.in) | yes | The thurbox extension manifest, rendered to a gitignored `extension.toml` by `uv run fleet install-extension`. |
+| [`scripts/lib/`](scripts/lib/) | yes | The module behind every `uv run fleet` command; each docstring is its full usage. [`check.py`](scripts/lib/check.py) is the gate, `uv run fleet check`. |
 | [`interface/fleet_queue.lua`](interface/fleet_queue.lua) | yes | The queue pane. |
 | [`.agents/skills/`](.agents/skills/) | yes | Agent skills; `.claude/skills` is a symlink to this directory. |
 | [`orchestration/queue/`](orchestration/queue/README.md) | README, `POLICY.md` and `OPERATOR.example.md` only | Topics and tasks. |
