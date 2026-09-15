@@ -10,8 +10,6 @@ there is no lead session at all.
 
 from __future__ import annotations
 
-import re
-
 from harness import expect
 from reconcilekit import wait_for
 
@@ -32,7 +30,7 @@ def test_the_lead_is_woken_once_per_transition(recon, stubs):
     assert wait_for(lambda: len(sends()) >= 1), f"ready work never reached the lead\n{recon.log()}"
     woke = sends()[0]
     expect(woke, "alpha/01-first")
-    assert re.search(r"queue(\.sh)? dispatch", woke), f"the wake carries the command that sends it: {woke}"
+    assert "uv run fleet queue dispatch" in woke, f"the wake carries the command that sends it: {woke}"
     assert "\n" not in woke, "the wake is one line, not a report"
 
     collects_pass(3)

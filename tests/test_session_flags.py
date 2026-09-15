@@ -1,6 +1,6 @@
 """`fleet session-flags`: one session profile, rendered into `session create` flags.
 
-`scripts/session-flags.sh` in Python, with the same CLI: the `default` profile
+The CLI the retired shell script had: the `default` profile
 when none is named, a named one, `--check` to validate every profile, and flags
 NUL-separated, because a `--arg` value is often a whole command line. It reads
 `orchestration/session-profiles.yaml` from the checkout whatever the caller's

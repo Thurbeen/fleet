@@ -9,7 +9,7 @@ worker. Driven for real against a pane that closes on Enter, with the agent not
 yet reporting, as it is behind a modal dialog.
 
 §21b: dispatch runs with no bash on the machine. It used to shell out to
-`session-flags.sh` for the profile and `session-trust.sh` for the dialog, and
+shell scripts for the profile and for the dialog, and
 with no bash the profile was SWALLOWED — the worker started without its settings
 and nothing said so — while the trust step failed AFTER `session create`, leaving
 a session never sent its brief. Both run in-process now, and so does the watch
@@ -146,7 +146,7 @@ def test_a_squeezed_dialog_already_on_yes_is_answered_with_enter_alone(stubs, no
 
 
 def test_the_trust_command_keeps_its_cli():
-    """`session-trust.sh`'s CLI, now `fleet session-trust`: --help and all, and exit 2
+    """The trust command's CLI, `fleet session-trust`: --help and all, and exit 2
     on a session it cannot read."""
     expect(fleet("session-trust", "--help").out, "Exit codes")
     assert fleet("session-trust", "no-such-session").code == 2

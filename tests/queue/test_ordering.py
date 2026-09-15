@@ -81,5 +81,5 @@ def test_one_dispatch_launches_the_whole_ready_set(briefed):
         # Each worker is pointed at its own brief and nothing else.
         "BRIEF.md and do what it says",
         # Every spawn answers the trust dialog, and before it prompts.
-        "session-trust.sh", "trust dialog first",
+        "fleet session-trust", "trust dialog first",
     )

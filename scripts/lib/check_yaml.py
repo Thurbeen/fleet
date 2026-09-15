@@ -2,17 +2,17 @@
 """Every tracked YAML file parses — and, asked separately, a registry map has
 the shape the control plane reads.
 
-    check_yaml.py <file>...           every file parses (scripts/check.sh)
+    check_yaml.py <file>...           every file parses (`fleet check yaml`)
     check_yaml.py --registry <map>    that map has the registry's shape
 
-The first form is called by scripts/check.sh (and through it by CI, prek and
-the gate `.publish.yaml` declares) with the list of tracked *.yml/*.yaml files as
-argv. It lives in a file rather than a CI heredoc so the local gate and the
-pull-request gate run the same assertions — CI here only fires on pull
-requests, while routine control-plane changes go straight to `main`, so the
-local run is the one that has to be trustworthy.
+The first form is called by `uv run fleet check yaml` (and through it by CI,
+prek and the gate `.publish.yaml` declares) with the list of tracked
+*.yml/*.yaml files as argv. It lives in a file rather than a CI heredoc so the
+local gate and the pull-request gate run the same assertions — CI here only
+fires on pull requests, while routine control-plane changes go straight to
+`main`, so the local run is the one that has to be trustworthy.
 
-Takes the file list from argv (check.sh builds it with `git ls-files`) rather
+Takes the file list from argv (`fleet check` builds it with `git ls-files`) rather
 than walking the filesystem itself: a glob silently skips dot-prefixed paths
 like `.github/` and `.publish.yaml` unless every segment is spelled out,
 which previously let this check report a clean tree while parsing almost none
@@ -21,9 +21,9 @@ of it.
 THE GATE NEVER READS THE OPERATOR'S MAP. `registry/repos.generated.yaml` is
 generated from the operator's own `gh` sessions and gitignored, so a gate that
 validated it gave one commit a different verdict in the control-plane checkout
-than on CI. The shape is still proven, twice: scripts/onboarding-selftest.sh
-generates a map with sync-registry.sh against stubs and holds it to
-`--registry`, and scripts/fleet-status.sh reads the operator's own map through
+than on CI. The shape is still proven, twice: tests/sync/test_registry.py
+generates a map with `fleet sync-registry` against stubs and holds it to
+`--registry`, and `fleet status --records` reads the operator's own map through
 registry_problems() and reports what it finds.
 """
 

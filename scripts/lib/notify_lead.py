@@ -8,10 +8,11 @@ on `forge-agnostic/02-02-gitlab-adapter` cleared. That task was dispatched at
 twenty-eight minutes of work that was ready, unclaimed, and had no actor.
 
 Nothing was broken. The reconciler may not dispatch — `AGENTS.md` says it
-reconciles and does not decide, and `reconcile-selftest.sh` holds it to the
-verbs it is allowed to want. The lead is the only actor that may dispatch, and
-it is an interactive session that acts when someone speaks to it.
-`reconcile.sh nudge` wakes the LOOP; there was no path in the other direction.
+reconciles and does not decide, and `tests/reconcile/` holds it to the verbs
+it is allowed to want. The lead is the only actor that may dispatch, and it is
+an interactive session that acts when someone speaks to it.
+`fleet reconcile nudge` wakes the LOOP; there was no path in the other
+direction.
 
 NOTIFYING IS NOT DECIDING, and that is the whole seam. This changes no record,
 moves no task and launches nothing. It reads the ready set and puts it in front
@@ -46,18 +47,19 @@ an unauthenticated `az`, and the line below was correctly typed about work
 nobody could do. The fix is `queue.py`'s second form of blocker — a CONDITION,
 which `is_ready` never clears — and it reaches this file for free, through the
 one reading it takes. A rule about conditions written HERE as well would be the
-second opinion the single reading exists to prevent; `queue-selftest.sh` §20a
-asserts the outcome instead, as the case it came from.
+second opinion the single reading exists to prevent;
+`tests/queue/test_conditions.py` asserts the outcome instead, as the case it
+came from.
 
 WHERE THE STATE LIVES. In the reconciler's own runtime directory, beside its
 pid, heartbeat and flags — never on the task. "The lead has been told" is a
 fact about one machine's loop and one conversation; it is not part of what a
 task IS, and writing it onto a record would make this the second writer over
-the queue. `scripts/reconcile.sh` still writes no record.
+the queue. `scripts/lib/reconcile.py` still writes no record.
 
-Usage (it is `scripts/reconcile.sh`'s, and nothing else's):
+Usage (it is `scripts/lib/reconcile.py`'s, and nothing else's):
 
-    ./scripts/queue.sh plan --json | python3 scripts/lib/notify_lead.py --state-dir DIR
+    uv run fleet queue plan --json | uv run python scripts/lib/notify_lead.py --state-dir DIR
 
 It prints a line worth logging, or nothing, and it exits 0 whatever happens.
 A notifier that can fail the pass it rides on would cost the reconciler the
@@ -169,7 +171,7 @@ def say(state_dir: str, told: list, note: str) -> int:
 def lead_name() -> str:
     """What the lead session is called, or "" when nothing here can tell.
 
-    The RENDERED extension.toml only. `install-extension.sh` writes it into the
+    The RENDERED extension.toml only. `fleet install-extension` writes it into the
     control-plane clone, so its presence is the claim; the tracked
     `extension.toml.in` beside it carries a `__LEAD_GLYPH__` placeholder, which
     names a session that does not exist. Unknown stays silent — a fleet driven
@@ -248,7 +250,7 @@ def message(ready: list) -> str:
     more = "" if len(ready) <= NAMED else f" and {len(ready) - NAMED} more"
     return (
         f"fleet reconciler: {len(ready)} task(s) ready and nothing will dispatch "
-        f"them — {shown}{more}. Run ./scripts/queue.sh dispatch"
+        f"them — {shown}{more}. Run: uv run fleet queue dispatch"
     )
 
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """The fleet task queue: durable records on disk, ordered by recorded blockers.
 
-Called through scripts/queue.sh, which owns the usage text. This file owns the
-model. Three ideas, and the whole thing follows from them:
+Run as `uv run fleet queue <verb>`. This docstring owns the model and, at its
+end, the usage. Three ideas, and the whole thing follows from them:
 
 1. A PROMPT BECOMES A RECORD. Not a turn in a conversation that a context reset
    loses. A prompt opens a TOPIC — the unit of intent, which is usually several
@@ -72,6 +72,131 @@ copied to the host before the worker is prompted, and the result is fetched back
 into this same result.md before it is read. See the remote-hosts section below
 for why the alternative (a worker reporting through `message send`) was refused.
 A task with no host is untouched by any of it.
+
+A BLOCKER NAMES A TASK OR A CONDITION. `--on <ref>` is the wait with an end: it
+clears when that task LANDS. `--condition '<what>'` is the wait on something the
+queue cannot observe — a credential, an approval, a window, a machine somebody
+has to fix, a decision nobody has made. Nothing clears one but `block --clear`
+naming it back: no timer, no `collect`, no `reap`, and no inference from a later
+dispatch working. Every blocker names a kind and a reason, so it survives the
+next planning pass instead of being re-derived; `block` refuses one that does
+not.
+
+`dispatch` takes refs for the one case that is neither ready nor blocked — the
+operator has not authorized a task yet. That is a fact about this moment, so it
+records nothing: the task stays queued and the next bare `dispatch` sends it.
+
+WHAT `collect` CHECKS. A task declares a PUBLISH METHOD — `attested`, `pr`,
+`push`, `note` or `none` — which names what the work must LEAVE BEHIND rather
+than which tool made it. `collect` asks the forge for a change request from the
+task's own branch or its recorded `--target` (and, for `attested`, an
+attestation for the commit that would merge, unless the forge already reports
+it merged), the forge again for a `note` task's review or comment on its
+`--target`, or git whether a `push` task's commit reached the base branch. An
+artifact that is not there leaves the task OPEN; a check that could not run
+says so and is never read as either verdict. The TOOL is `--how`: free text
+rendered into the brief and never parsed, which is what lets a task name a
+publisher fleet has never heard of. A `stuck` or `failed` task is read again,
+and acted on only when the outcome in its result.md CHANGED.
+
+`send` IS NOT A SIXTH THING. It is how the lead course-corrects a worker
+mid-flight, and it belongs here rather than in `thurbox-cli session send`
+because it WRITES THE INSTANT DOWN, plus a BASELINE (the branch head). `list`
+and `show` compare that against two things a worker cannot fake — the head of
+its branch and a transition in progress.jsonl dated after the message — and a
+source that could not be read is `not checked` rather than a silent no.
+
+`shepherd` and `refuel` are the fourth and fifth things, each argued at its own
+section below: the change request outlives the task, and a worker that hits its
+agent's token limit SITS rather than failing.
+
+THE RUN LOG IS PRODUCED, NOT REMEMBERED. `topic add` opens
+`orchestration/runs/<opened>-<topic>.md` from the tracked _TEMPLATE.md;
+`dispatch`, `collect` and `shepherd` rewrite a fenced block inside it from the
+records, and everything outside the fence is the lead's. `run` is that refresh
+made explicit.
+
+Usage:
+  uv run fleet queue topic add <slug> --title T --prompt 'the ask'   # or --prompt-file F|-
+  uv run fleet queue add <topic> <slug> --title T --repo P --branch B [--base main]
+                       [--host H] [--profile default] [--touches a,b] [--brief-file F]
+                       [--publish attested|pr|push|note|none] [--target U]
+                       [--how 'run `/publish`']
+                       # --brief-file fills whichever of the brief's four
+                       # sections its own `## ` headings name; a body with no
+                       # headings all goes into `What to do`. A file that
+                       # leaves any section unwritten is refused HERE, naming
+                       # them, and nothing is created — as is a --branch no
+                       # worktree could be cut for, which includes --base,
+                       # and a --title thurbox could not make a session name
+                       # of: that name is the title wearing the worker's mark
+                       # and cut to thurbox's byte cap, and it carries no
+                       # `/`, no `\\`, no `..` and no leading `.`
+  uv run fleet queue block <ref> --on <ref> --kind KIND --why 'reason'   # or --clear,
+                       which names the blocker to remove, since a task can
+                       carry several; `block --help` lists the valid kinds
+  uv run fleet queue block <ref> --condition 'what holds it' --kind KIND --why 'reason'
+                       # the second form; clears only with
+                       # `block <ref> --clear --condition 'what holds it'`.
+                       # Its kinds are their own closed set, also in --help
+  uv run fleet queue plan [--json]        # what goes out now, what waits, and why
+  uv run fleet queue dispatch [<ref>...] [--dry-run]  # the whole ready set at
+                       once with no ref, which is the norm; refs launch
+                       exactly those, refuse one that is not ready, and leave
+                       the rest queued with nothing recorded
+  uv run fleet queue attach <ref> <uuid>  # record a session you spawned by hand
+  uv run fleet queue prompt [<ref>]       # retry the handoff to a session that
+                       was created but not prompted; every such one by default
+  uv run fleet queue send <ref> 'one line'  # message a task's worker, and
+                       RECORD that you did
+  uv run fleet queue watch [--for-secs N] # fold transitions in; close nothing
+  uv run fleet queue collect [--allow-unverified] [--no-reap]  # read results,
+                       close what is done; --allow-unverified closes one whose
+                       artifact failed the publish check, after you have
+                       judged that artifact; --no-reap leaves every session
+                       alone
+  uv run fleet queue reap [--dry-run]     # land what merged, release its session
+  uv run fleet queue refuel [<ref>] [--dry-run]  # the account's fuel first, then
+                       restart the workers that ran dry against it
+  uv run fleet queue shepherd [--dry-run] # every open change request on the repo: fix or merge
+                       [--json] [--topic T] [--ref R] [--no-merge] [--force]
+  uv run fleet queue run [<topic>]        # refresh the run log(s) by hand
+  uv run fleet queue list [--topic T] [--archived] [--all]  # the lead's view:
+                       a line per task; archived topics hidden by default
+  uv run fleet queue archive <topic>      # hide a finished topic from every
+                       default view; refuses one with a live task
+  uv run fleet queue unarchive <topic>    # put it back in every view
+  uv run fleet queue show <ref>           # one task's whole record, archived or not
+  uv run fleet queue check                # validate every record (`fleet status --records`)
+  uv run fleet queue root [--foreign]     # the resolved queue directory,
+                       absolute; --foreign instead names the control plane,
+                       and exits 0, only when this checkout is not it
+
+A ref is `<topic>/<task>`, or a bare task id when only one topic has it.
+`uv run fleet queue <verb> --help` gives each verb's flags.
+
+Environment:
+  FLEET_QUEUE_DIR        where the queue lives (default: this checkout's
+                         orchestration/queue). Honoured VERBATIM and never
+                         guarded — someone who set it meant it.
+  FLEET_RUNS_DIR         where run logs are written (default: this
+                         checkout's orchestration/runs). The _TEMPLATE.md
+                         they are scaffolded from is always the checkout's.
+  FLEET_QUEUE_WATCH_CMD  the event source, for a replay or another transport
+                         (default: thurbox-cli watch --json)
+  THURBOX_SESSION        set inside a thurbox session; dispatch passes it as
+                         --parent so `session list --parent` enumerates
+                         workers, and reap refuses to delete it
+
+Requires: uv, which brings the Python and the PyYAML pinned in uv.lock.
+`dispatch`, `watch`, `reap` and `refuel` additionally need thurbox-cli, and
+`collect`, `reap` and `shepherd` ask the FORGE about a change request —
+whichever `scripts/lib/forge.py` has configured: `gh` for GitHub, `glab` for
+GitLab — and `shepherd` needs git as well. `refuel` reads the account's quota
+window with `quota-axi` (https://github.com/kunchenguid/quota-axi), which fleet
+neither installs nor sends any credential to. A task that names a `--host`
+additionally needs `ssh`. Every one of those degrades to "could not check"
+rather than to a guess.
 """
 
 from __future__ import annotations
@@ -532,7 +657,7 @@ def checkout_root() -> str:
     Anchoring on `__file__` rather than on `git rev-parse --show-toplevel` is
     deliberate: rev-parse answers "which checkout is the SHELL in", which is
     the question that produced two queues in the first place. The script's own
-    path answers "which checkout is this queue.sh", which is the one that has a
+    path answers "which checkout is this code in", which is the one that has a
     single right answer no matter where it is invoked from. A git worktree of
     this repo is a different checkout by this rule, and that is correct — it
     has its own orchestration/queue/.
@@ -546,7 +671,7 @@ def checkout_root() -> str:
 # in its NAME. `orchestration/session-glyphs.example.conf` is the one place the
 # mark is chosen, `session-glyphs.conf` beside it is the operator's gitignored
 # override, and the two readers are this file (every worker fleet spawns) and
-# `scripts/install-extension.sh` (the lead). No line of CODE here spells a
+# `fleet install-extension` (the lead). No line of CODE here spells a
 # glyph — one would be a second copy of a setting this file does not own — and
 # the comment below spells one only to do the arithmetic it is about.
 #
@@ -571,7 +696,7 @@ def glyph_conf(root: str | None = None) -> dict[str, str]:
     executed. A setting that can run is a different kind of file.
 
     `FLEET_GLYPH_ROOT` overrides where that setting is read from, the same way
-    `FLEET_QUEUE_DIR` relocates queue state — so a selftest can dispatch a real
+    `FLEET_QUEUE_DIR` relocates queue state — so a test can dispatch a real
     task without inheriting whatever the developer's own gitignored
     session-glyphs.conf says.
     """
@@ -713,7 +838,7 @@ def queue_root() -> str:
     """Where the queue lives, as an absolute path.
 
     FLEET_QUEUE_DIR is honoured verbatim and never second-guessed — the
-    selftests and anyone pointing a harness at a temp directory rely on that.
+    tests and anyone pointing a harness at a temp directory rely on that.
     Otherwise the queue belongs to this CHECKOUT, not to the process cwd.
     """
     return os.environ.get("FLEET_QUEUE_DIR") or os.path.join(
@@ -858,7 +983,7 @@ def operator_instructions() -> str:
 # the install already produced rather than new state this file invents:
 #
 #   extension.toml   rendered into the control-plane clone by
-#                    scripts/install-extension.sh, with `repo_path` naming it.
+#                    `fleet install-extension`, with `repo_path` naming it.
 #                    Gitignored, so its presence IS the claim. No thurbox needed.
 #   the live session thurbox-cli reports the lead session's real `cwd`, which
 #                    is the only authority when the clone has moved. Its NAME
@@ -871,8 +996,8 @@ def operator_instructions() -> str:
 
 SESSION_REPO_PATH_RE = re.compile(r'^\s*repo_path\s*=\s*"([^"]*)"', re.M)
 SESSION_NAME_RE = re.compile(r'^\s*name\s*=\s*"([^"]*)"', re.M)
-# The TABLE HEADER, anchored at the start of a line — the same thing
-# scripts/install-extension.sh matches with `/^\[\[sessions\]\]/`. A plain
+# The TABLE HEADER, anchored at the start of a line — the same thing the
+# extension installer matches when it reads the manifest back. A plain
 # substring search finds the manifest header's own PROSE about `[[sessions]]`
 # first and reads the top-level extension name as the session's. That was
 # invisible for as long as the two were the same word, and stopped being
@@ -972,7 +1097,7 @@ def guard_creating() -> None:
         f"    control plane: {owner}\n"
         "  Records written here are invisible to the pane and to the lead.\n"
         "  Open the topic where the queue lives:\n"
-        f"      {os.path.join(owner, 'scripts', 'queue.sh')} ...\n"
+        f"      uv run --project {owner} fleet queue ...\n"
         "  or, if you really mean this checkout's queue, name it:\n"
         f"      FLEET_QUEUE_DIR={os.path.join(here, 'orchestration', 'queue')}"
     )
@@ -996,7 +1121,7 @@ def warn_foreign(root: str) -> None:
 
     Only when this checkout already HOLDS records: with none here there is no
     second queue for anything to be confused by, and a warning on every
-    `check.sh` run in every worktree is how a warning stops being read.
+    `fleet check` run in every worktree is how a warning stops being read.
     """
     owner = foreign_checkout()
     if not owner or not has_records(root):
@@ -1053,7 +1178,7 @@ def write_yaml(path: str, doc: dict, header: str) -> None:
 
 
 TASK_HEADER = """\
-# A fleet task record. scripts/queue.sh owns this file's shape and rewrites it,
+# A fleet task record. `fleet queue` owns this file's shape and rewrites it,
 # so comments you add here do not survive. The instructions belong in BRIEF.md,
 # which is yours; this is the index entry.
 #
@@ -1269,7 +1394,7 @@ class Queue:
 
 # --- what a record MEANS, in one place ---------------------------------------
 #
-# `queue.sh list`, `queue.sh plan`, `fleet-status.sh` and the TUI pane all show
+# `fleet queue list`, `fleet queue plan`, `fleet status` and the TUI pane all show
 # these three readings, and each used to derive its own. That is how the queue
 # came to print `landed` with a "held by" line under it, a blocker on an
 # `abandoned` upstream as though a merge were still coming, and `abandoned`
@@ -1393,7 +1518,7 @@ def dispatch_gap(q: Queue, task: Task) -> str | None:
     """A task nothing is holding and nothing is running.
 
     A FACT and not a countdown: this says a session was never attached, never
-    how long ago one should have been. `queue.sh` has no clock in its output
+    how long ago one should have been. `fleet queue` has no clock in its output
     and this does not give it one.
     """
     if task.state != "queued" or task.doc.get("session"):
@@ -1508,7 +1633,7 @@ def sweep_archives(q: Queue, state_of, dry: bool) -> int:
         if not dry:
             set_archived(q.root, slug, now())
     if archived and not dry:
-        print("      `queue.sh list --archived` still shows them; `show <ref>` still reaches them.")
+        print("      `fleet queue list --archived` still shows them; `show <ref>` still reaches them.")
     return archived
 
 
@@ -1582,7 +1707,7 @@ def cmd_topic_add(args) -> int:
 
     # Opening a topic is where a run begins, so it is where its log begins —
     # nobody has to decide to make one. On stderr because stdout is the VALUE
-    # here: `topic="$(queue.sh topic add ...)"` still gets a bare slug.
+    # here: `topic="$(uv run fleet queue topic add ...)"` still gets a bare slug.
     log, note = refresh_run_log(Queue(root), args.slug)
     print(f"run log {note or 'ready'}: {log}", file=sys.stderr)
 
@@ -1900,7 +2025,7 @@ def render_brief(task: Task, topic: dict, body: str | None) -> str:
         result_note = f"""
 You are running on the remote host `{host}`, so the control plane's own
 directories are not on this filesystem and an absolute path to one would
-resolve to nothing here. `queue.sh collect` fetches that file over ssh, and it
+resolve to nothing here. `fleet queue collect` fetches that file over ssh, and it
 closes this task exactly as it would locally.
 
 **Delete {delete_names} before you commit**, or they land in your pull
@@ -2100,7 +2225,7 @@ def block_on_condition(q: Queue, task: Task, condition: str, args) -> int:
     print(
         f"{task.ref} waits on a condition outside the queue ({args.kind}): "
         f"{condition}\n"
-        f"    Nothing clears this but you: ./scripts/queue.sh block {task.ref} "
+        f"    Nothing clears this but you: uv run fleet queue block {task.ref} "
         f"--clear --condition {shlex.quote(condition)}"
     )
     return 0
@@ -2998,9 +3123,10 @@ def read_text(path: str) -> str:
 def profile_flags(profile: str) -> list:
     """The agent settings for this task, from orchestration/session-profiles.yaml.
 
-    In-process, and not through `scripts/session-flags.sh`: on a machine with
-    no bash that call failed, the failure was swallowed here, and the worker
-    started without its profile with nothing said (queue-selftest §21b). A
+    In-process, and not through a child process: on a machine with no bash
+    the old shell call failed, the failure was swallowed here, and the worker
+    started without its profile with nothing said
+    (tests/queue/test_dialogs.py). A
     profile that is missing or breaks a rule still renders no flags.
     """
     profiles_mod = _load_sibling("fleet_session_profiles", "session_profiles.py")
@@ -3214,7 +3340,7 @@ def cmd_dispatch(args) -> int:
             elif shell:
                 print("      ssh <host> powershell -EncodedCommand <BRIEF.md, as base64,"
                       " into <worktree>\\BRIEF.md>   # the worker's filesystem is not this one")
-            print("      ./scripts/session-trust.sh <uuid>   # answer the trust dialog first")
+            print("      uv run fleet session-trust <uuid>   # answer the trust dialog first")
             print(f"      thurbox-cli session send <uuid> {shell_quote([send])}")
         return 0
 
@@ -3286,7 +3412,7 @@ def cmd_dispatch(args) -> int:
         print(
             f"\n{len(unprompted)} session(s) exist but were NOT prompted. Look at the\n"
             "pane, then retry the handoff — nothing was typed into them:\n"
-            "    ./scripts/queue.sh prompt",
+            "    uv run fleet queue prompt",
             file=sys.stderr,
         )
     refresh_run_logs(q)
@@ -3316,7 +3442,7 @@ def prompt_session(task: Task, timeout: int = 20) -> tuple[bool, str]:
     Split out of dispatch because it is the retry path too. A session that
     could not be confirmed past the dialog is left recorded and UNPROMPTED
     rather than silently sent a brief that would land in the dialog — the
-    record says `prompted: false` and `queue.sh prompt` picks it up again.
+    record says `prompted: false` and `fleet queue prompt` picks it up again.
     """
     session = task.doc.get("session")
     if not session:
@@ -3341,7 +3467,7 @@ def prompt_session(task: Task, timeout: int = 20) -> tuple[bool, str]:
             report += (
                 f"\n(this worker is on host {task.doc['host']}: `session capture` and "
                 "`session key` reach it by delegation to the thurbox-cli there, so the "
-                "pane is answerable — but `scripts/trust-thurbox-dir.sh` seeds THIS "
+                "pane is answerable — but `fleet trust-thurbox-dir` seeds THIS "
                 "machine's ~/.claude.json and would do nothing for it.)"
             )
         return False, report
@@ -3398,7 +3524,7 @@ def read_cursor(root: str) -> int | None:
 
 
 def watch_command(extra: list) -> list:
-    """The stream command, real or the selftest's recorded-stream override."""
+    """The stream command, real or a test's recorded-stream override."""
     override = os.environ.get("FLEET_QUEUE_WATCH_CMD")
     if override:
         # Split into argv with shell quoting and nothing else of a shell: there
@@ -3558,7 +3684,7 @@ def cmd_watch(args) -> int:
             continue
         task = q.tasks[ref]
         if os.path.exists(task.file("result.md")):
-            print(f"    {ref}: a result is waiting — read it with `queue.sh collect`")
+            print(f"    {ref}: a result is waiting — read it with `fleet queue collect`")
         else:
             print(
                 f"    {ref}: turn ended with no result file yet. That is not a\n"
@@ -3587,7 +3713,7 @@ def record_event(task: Task, ev: dict) -> None:
         raise QueueError(
             f"{task.ref}: could not append to progress.jsonl: {exc}\n"
             "Nothing was lost — the stream is replayed from each task's own\n"
-            "record, so fix the path and run `queue.sh watch` again."
+            "record, so fix the path and run `fleet queue watch` again."
         ) from exc
 
 
@@ -3989,7 +4115,7 @@ def report_unverified(task: Task, url, detail: str) -> None:
         "        Send the worker back to publish again, then collect again.\n"
         "        If you have read the artifact yourself and judged it good as\n"
         "        it stands, close it deliberately with\n"
-        "        `queue.sh collect --allow-unverified`.",
+        "        `fleet queue collect --allow-unverified`.",
         file=sys.stderr,
     )
 
@@ -4116,7 +4242,7 @@ def cmd_collect(args) -> int:
         # left behind. A sibling nobody runs reproduces the bug exactly.
         print(
             f"         {artifacts} of them left an open pull request. Run\n"
-            "         `queue.sh shepherd --dry-run` — a PR can go bad long\n"
+            "         `fleet queue shepherd --dry-run` — a PR can go bad long\n"
             "         after the worker that wrote it stopped."
         )
 
@@ -4409,7 +4535,7 @@ def reap(q: Queue, dry: bool = False, release: bool = True) -> int:
     landings = sweep_landings(q, dry)
     acted = sum(1 for kind, _ in landings.values() if kind in LANDED_STATE)
     if acted and not dry:
-        print("      Run `queue.sh plan` — a blocker clears when the task it names LANDS.")
+        print("      Run `fleet queue plan` — a blocker clears when the task it names LANDS.")
 
     # A dry run promotes nothing, so the state on disk still says `done` for a
     # task that just landed. Project the sweep's answer forward instead, or a
@@ -4426,7 +4552,7 @@ def reap(q: Queue, dry: bool = False, release: bool = True) -> int:
     acted += sweep_archives(q, state_of, dry)
 
     if not release:
-        print("      Sessions left alone (--no-reap); `queue.sh reap` releases them.")
+        print("      Sessions left alone (--no-reap); `fleet queue reap` releases them.")
         return acted
 
     # Before the holders: a task whose own session is long gone can still have
@@ -5182,7 +5308,7 @@ def refuel(q: Queue, ref: str | None = None, dry: bool = False) -> int:
         print(f"        {detail}")
         if not prompted:
             print(f"        the session is up but was NOT prompted: {report}\n"
-                  f"        nothing was typed into it — retry with `queue.sh prompt {task.ref}`",
+                  f"        nothing was typed into it — retry with `fleet queue prompt {task.ref}`",
                   file=sys.stderr)
         fired += 1
 
@@ -5226,7 +5352,7 @@ def cmd_refuel(args) -> int:
 # for a reason unrelated to what it was asked to do. It is a sibling — and
 # because a command nobody remembers to run reproduces the bug this fixes,
 # `collect` ends by naming it whenever it closed a task carrying an artifact,
-# and `--json` is the seam `scripts/fleet-status.sh` reads it through.
+# and `--json` is the seam `fleet status` reads it through.
 #
 # THE RULES THAT KEEP IT FROM BEING WORSE THAN NOTHING:
 #
@@ -5295,7 +5421,7 @@ AUTO_MERGE_CONF_DEFAULTS = "orchestration/auto-merge.example.conf"
 
 # The one way to say it somewhere other than the conf file, and it REPLACES the
 # set rather than adding to it: a fleet driving somebody else's repositories is
-# a different fleet, not this one plus an extra. `queue-selftest.sh` is the
+# a different fleet, not this one plus an extra. The test suite is the
 # second fleet it was written for.
 AUTO_MERGE_ENV = "FLEET_AUTO_MERGE_REPOS"
 
@@ -5336,7 +5462,7 @@ def auto_merge_conf_path(root: str | None = None) -> str:
     """The auto-merge list in force: the operator's copy, or the tracked one.
 
     `FLEET_AUTO_MERGE_ROOT` overrides where it is read from, the same way
-    `FLEET_GLYPH_ROOT` relocates the glyph setting — so a selftest can exercise
+    `FLEET_GLYPH_ROOT` relocates the glyph setting — so a test can exercise
     the file itself without inheriting whatever the developer's own gitignored
     auto-merge.conf says.
     """
@@ -5777,9 +5903,10 @@ on `{base}` and are not up for debate here.
 Then force-push the rebased branch (`git push --force-with-lease`) so the
 existing pull request updates.""",
     "checks-failed": """\
-Make the failing checks pass. `./scripts/check.sh` is this repo's whole gate
-and CI runs the same script, so a green local run is the thing to get to.
-Push to the same branch so the existing pull request re-runs them.""",
+Make the failing checks pass. Run the gate this repository declares — its
+AGENTS.md or CONTRIBUTING.md names it — locally, since CI runs the same
+checks and a green local run is the thing to get to. Push to the same branch
+so the existing pull request re-runs them.""",
     "changes-requested": """\
 Address the review that requested changes, then push to the same branch. Reply
 to the review only if something in it was mistaken; otherwise let the diff be
@@ -5931,8 +6058,8 @@ def trust_and_send(session: str, text: str, timeout: int = 20) -> tuple[bool, st
     """Answer the trust dialog, then type. The order is the whole point (§1b).
 
     The dialog is answered in-process by `session_trust.py`, the module
-    `scripts/session-trust.sh` forwards to: a machine with no bash could not
-    run the script, and dispatch then failed after `session create`, leaving a
+    `fleet session-trust` runs too: a machine with no bash could not run
+    the old shell script, and dispatch then failed after `session create`, leaving a
     session that was never sent its brief.
     """
     trust = _load_sibling("fleet_session_trust", "session_trust.py")
@@ -6537,7 +6664,7 @@ def runs_root() -> str:
     """Where run logs are written — FLEET_RUNS_DIR, as FLEET_QUEUE_DIR is.
 
     A harness pointing the queue at a throwaway directory has to be able to
-    point the logs somewhere throwaway too, or every selftest run scaffolds
+    point the logs somewhere throwaway too, or every test run scaffolds
     into the operator's own orchestration/runs/.
     """
     return os.environ.get("FLEET_RUNS_DIR") or os.path.join(checkout_root(), RUNS_DIR)
@@ -6619,7 +6746,7 @@ def run_facts(q: Queue, slug: str) -> str:
     lines = [
         FACTS_BEGIN,
         "",
-        "<!-- Generated from the queue's records by `./scripts/queue.sh`, and",
+        "<!-- Generated from the queue's records by `uv run fleet queue`, and",
         "     rewritten in place every time it runs. Write nothing in here;",
         "     everything outside this fence is yours and is never touched. -->",
         "",
@@ -6998,7 +7125,7 @@ def cmd_send(args) -> int:
     if not sid:
         raise QueueError(
             f"{task.ref} has no session recorded, so there is nobody to send to.\n"
-            "`queue.sh dispatch` starts one; `queue.sh attach <ref> <uuid>` records "
+            "`fleet queue dispatch` starts one; `fleet queue attach <ref> <uuid>` records "
             "one you\nspawned by hand."
         )
 
@@ -7013,7 +7140,7 @@ def cmd_send(args) -> int:
         print(f"    baseline: no branch head — {baseline['head_note']}")
     if ok:
         print(
-            "    Recorded. `queue.sh list` and `queue.sh show` now answer whether "
+            "    Recorded. `fleet queue list` and `fleet queue show` now answer whether "
             "anything\n    has moved since, without opening a worktree."
         )
     else:
@@ -7037,7 +7164,7 @@ def where_it_runs(task: Task) -> str:
 def cmd_list(args) -> int:
     root = queue_root()
     # The first line answers "which queue am I looking at?" without being asked.
-    # `queue.sh root` prints the same path, so the two can never disagree
+    # `fleet queue root` prints the same path, so the two can never disagree
     # silently about what they are showing.
     print(f"queue: {os.path.abspath(root)}")
     # Named explicitly, so a topic stays reachable BY NAME however it is
@@ -7189,7 +7316,7 @@ def cmd_check(args) -> int:
 def record_problems(root: str) -> tuple["Queue", list]:
     """The queue under `root`, and every way one of its records is wrong.
 
-    `queue.sh check` prints these, and `scripts/fleet-status.sh` reports them —
+    `fleet queue check` prints these, and `fleet status --records` reports them —
     which is where the OPERATOR'S records are validated. The code gate
     validates none: they are live data in one checkout, and a gate that read
     them gave one commit a different verdict there than on CI.
@@ -7212,7 +7339,7 @@ def record_problems(root: str) -> tuple["Queue", list]:
         if held:
             problems.append(
                 f"{slug}: archived while {held.ref} is `{held.state}` — "
-                "run `queue.sh unarchive` on it"
+                "run `fleet queue unarchive` on it"
             )
     for ref, t in sorted(q.tasks.items()):
         d = t.doc
@@ -7284,8 +7411,8 @@ def cmd_root(args) -> int:
     `--foreign` asks the other half of the same question: is THIS checkout
     provably not the control plane? It prints the control plane's path and
     exits 0 when it is, and prints nothing and exits 1 otherwise — so a caller
-    can branch on the exit status without parsing anything. `scripts/
-    reconcile.sh` is why it exists: that loop runs `collect`, which closes
+    can branch on the exit status without parsing anything. `fleet
+    reconcile` is why it exists: that loop runs `collect`, which closes
     tasks and reaps sessions, and a worker running it in its own worktree
     would reap its own session. Silence covers both "this IS the control
     plane" and "nothing here can tell", exactly as foreign_checkout() does,
@@ -7306,7 +7433,7 @@ def cmd_root(args) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="queue.sh", add_help=True)
+    p = argparse.ArgumentParser(prog="fleet queue", add_help=True)
     sub = p.add_subparsers(dest="cmd", required=True)
 
     t = sub.add_parser("topic", help="open a topic from a prompt")

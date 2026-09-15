@@ -152,7 +152,7 @@ HEAD = "a" * 40
 EARLIER = "b" * 40
 PASSED = [
     {"name": "review", "status": "passed", "rounds": 2, "findings": 3, "fixed": 3},
-    {"name": "check", "status": "passed", "command": "./scripts/check.sh"},
+    {"name": "check", "status": "passed", "command": "uv run fleet check"},
     {"name": "push", "status": "passed"},
     {"name": "ci", "status": "passed", "conclusion": "success"},
 ]

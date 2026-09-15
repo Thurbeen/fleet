@@ -132,7 +132,7 @@ def test_broken_records_cost_lines_and_never_the_exit_code(tmp_path, bare):
 
     assert done.code == 0, done.out
     expect(done.out, "state 'half-done' is not one of", "bad/42-gone, which does not exist", "no BRIEF.md",
-           "queue.sh check", "owners missing or not a list")
+           "fleet queue check", "owners missing or not a list")
     expect(status("--records", "--json", PATH=bare, FLEET_QUEUE_DIR=str(broken)).out, "is not one of")
 
 

@@ -14,7 +14,7 @@ Run it through uv, which is what puts the `fleet` console script on PATH:
     uv run python -m unittest discover -s tests
 
 It reads no operator state. Every FLEET_* root points into a throwaway
-directory, as scripts/lib/selftest-env.sh does for the bash selftests, and the
+directory, as tests/harness.py's `isolated_env` does for pytest, and the
 forge and thurbox variables are dropped.
 """
 

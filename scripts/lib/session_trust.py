@@ -8,7 +8,7 @@ worker fleet spawned sat on that dialog: the session existed, the pane was
 live, the agent had not started. `session send` then typed the brief INTO the
 dialog. Sessions fleet created were broken, every time.
 
-WHY A KEYSTROKE AND NOT A CONFIG EDIT. `scripts/trust-thurbox-dir.sh` can
+WHY A KEYSTROKE AND NOT A CONFIG EDIT. `fleet trust-thurbox-dir` can
 seed Claude Code's trust into ~/.claude.json and it still works — it is the
 right fallback when a dialog cannot be answered. It is the wrong DEFAULT: it
 writes to a file the user owns, for a tool fleet did not install, and it
@@ -31,27 +31,27 @@ waiting on a dialog is visible and fixable; a session that has been typed
 into randomly is neither.
 
 It is safe to run only in the window between `session create` and the first
-`session send`, which is when `scripts/queue.sh dispatch` runs it: nothing
+`session send`, which is when `fleet queue dispatch` runs it: nothing
 has been typed into that pane yet, so there is no composer content to
 corrupt. Do not run it against a session that is already working.
 
 IN-PROCESS, AND NO SHELL. `dispatch` calls `answer_dialogs` directly, and
-`scripts/session-trust.sh` is a forwarder to this file. It needs thurbox-cli
-and Python and nothing else — no bash, no jq — because a native Windows
-machine has neither, and the bash version crashed dispatch there after
-`session create`, leaving a session that was never sent its brief.
+`fleet session-trust` runs this file. It needs thurbox-cli and Python and
+nothing else, because a native Windows machine has no shell to lean on: the
+old bash version crashed dispatch there after `session create`, leaving a
+session that was never sent its brief.
 
 A REMOTE SESSION IS ANSWERED THE SAME WAY, and this is the reason the
 keystroke is the default rather than the config edit. `session get`, `session
 capture` and `session key` each DELEGATE to the thurbox-cli on the host, so
 every command below reaches a pane on another machine unchanged. The config
-edit does not: `trust-thurbox-dir.sh` writes THIS machine's ~/.claude.json,
+edit does not: `fleet trust-thurbox-dir` writes THIS machine's ~/.claude.json,
 and a remote agent reads the remote one, so seeding here would do nothing at
 all for a worker over there — silently.
 
 The one host this cannot answer is one whose hosts.toml entry sets
 `share_sessions = false`, which switches that delegation off wholesale.
-`queue.sh add --host` refuses such a host outright rather than dispatching a
+`fleet queue add --host` refuses such a host outright rather than dispatching a
 worker that would sit on a dialog nothing can see.
 
 PER-AGENT, and the differences are real (see GATES below):
@@ -75,8 +75,7 @@ this refuses and sends nothing, because the `claude` row above is why —
 guessing a keystroke there exits the agent.
 
 Usage:
-  scripts/session-trust.sh <session-uuid-or-name> [--timeout SECS] [--json]
-  python3 scripts/lib/session_trust.py <the same arguments>
+  uv run fleet session-trust <session-uuid-or-name> [--timeout SECS] [--json]
 
 Exit codes, so a caller can decide without parsing prose:
   0  the pane is ready for a prompt — every dialog was answered, or there was
@@ -369,10 +368,10 @@ def answer_dialogs(session: str, timeout: int = 20, as_json: bool = False) -> tu
             "             prompt this session; look at it:\n"
             f"               thurbox-cli session capture {uuid}\n"
             "             The config-seeding fallback is:\n"
-            f"               {os.path.join(os.path.dirname(HERE), 'trust-thurbox-dir.sh')}"
+            f"               uv run --project {os.path.dirname(os.path.dirname(HERE))} fleet trust-thurbox-dir"
             " <that session's worktree path>\n"
             "             — which seeds THIS machine. For a session on a remote host, run\n"
-            "             that script ON THE HOST, against the worktree path there.",
+            "             that command ON THE HOST, against the worktree path there.",
             "unconfirmed",
         )), keys
 

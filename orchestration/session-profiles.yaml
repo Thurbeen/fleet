@@ -6,9 +6,10 @@
 # holds the other half — the settings that shape the agent itself, which do
 # not vary per run and are worth reviewing in a diff.
 #
-# `./scripts/session-flags.sh <profile>` renders one profile into the
+# `uv run fleet session-flags <profile>` renders one profile into the
 # `--env` / `--command` / `--arg` / `--reports-as` flags `session create`
-# takes. `.agents/skills/thurbox-session/SKILL.md` shows the call.
+# takes, and `fleet queue dispatch` renders a task's profile in-process.
+# `.agents/skills/thurbox-session/SKILL.md` shows the call.
 #
 # ONE FILE, ONE LAYER. Every profile there is lives here, and this file is
 # yours to edit. There used to be a gitignored `.local.yaml` overlay beside it;
@@ -16,7 +17,7 @@
 # stopped mattering when this stopped being a template anyone pulls from.
 #
 # ONE CONVENTION, then TWO RULES THE GATE ENFORCES. The distinction is real:
-# ./scripts/check.sh cannot detect a secret and does not try, so only the two
+# `uv run fleet check` cannot detect a secret and does not try, so only the two
 # numbered rules below stop a file reaching `main`.
 #
 # THE CONVENTION: nothing environment-specific in here. This file is committed
@@ -80,7 +81,7 @@ profiles:
       ANTHROPIC_MODEL: "claude-opus-5"
 
   # THE FLAG HALF OF TRUST. Most agents ask about a directory they have not
-  # seen with a DIALOG, which `scripts/session-trust.sh` answers with a
+  # seen with a DIALOG, which `fleet session-trust` answers with a
   # keystroke as part of every dispatch. Two do not: they take a launch flag,
   # and a launch flag is exactly what a profile is for.
   #

@@ -33,6 +33,6 @@ target-version = "py311"
 select = ["E4", "E7", "E9", "F"]
 
 # No .pytest_cache in the tree: a checkout the gate leaves dirty is one
-# sync-checkout.sh refuses to fast-forward.
+# `fleet sync-checkout` refuses to fast-forward.
 [tool.pytest.ini_options]
 addopts = ["-p", "no:cacheprovider"]

@@ -33,7 +33,7 @@ def clone(tmp_path) -> Path:
 
 
 def declare_control_plane(fake: Path, repo_path: Path) -> None:
-    """The manifest install-extension.sh would have rendered, naming the control plane."""
+    """The manifest `fleet install-extension` would have rendered, naming the control plane."""
     write(fake / "extension.toml", f'[[sessions]]\nname = "fleet"\nrepo_path = "{repo_path}"\n')
 
 

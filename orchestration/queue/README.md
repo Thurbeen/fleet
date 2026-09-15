@@ -23,15 +23,16 @@ skill" — and every brief scaffolded afterwards points its worker there too. No
 such file, no pointer. Copy `OPERATOR.example.md` to start; its header holds
 the format and the precedence.
 
-`../../scripts/queue.sh` owns it. Its header is the full usage; this file is
-the layout, so a fresh clone with an empty queue still shows what goes here.
+`uv run fleet queue` owns it, and `../../scripts/lib/queue.py`'s docstring and
+`uv run fleet queue --help` are the full usage; this file is the layout, so a
+fresh clone with an empty queue still shows what goes here.
 
 **One queue, one checkout.** This directory belongs to the control plane — the
-clone the `fleet` session opens — and is resolved from `queue.sh`'s own
-location, never from the shell's cwd. If you landed here in a second clone (the
+clone the `fleet` session opens — and is resolved from the checkout `queue.py`
+lives in, never from the shell's cwd. If you landed here in a second clone (the
 one workers branch and push from, because the control plane may have no
-`origin`), this is not the queue anyone is reading: `../../scripts/queue.sh
-root` prints the one in use and `queue.sh topic add` refuses here. Set
+`origin`), this is not the queue anyone is reading: `uv run fleet queue root`
+prints the one in use and `fleet queue topic add` refuses here. Set
 `FLEET_QUEUE_DIR` to override all of that, verbatim.
 
 ## Shape
@@ -48,7 +49,7 @@ OPERATOR.md                          your standing instructions — yours, ignor
   topic.yaml                         slug, title, when it opened, whether archived
   PROMPT.md                          the prompt that opened it, VERBATIM
   <NN>-<slug>/                       e.g. 01-drop-idle-default/
-    task.yaml                        intent + current state — queue.sh owns it
+    task.yaml                        intent + current state — the queue owns it
     BRIEF.md                         the instructions ONE worker reads
     progress.jsonl                   one line per observed transition
     result.md                        what the worker concluded, in its words
@@ -63,9 +64,9 @@ Four files per task, because four different things want four different answers:
 | File | Answers | Written by |
 |---|---|---|
 | `task.yaml` + `BRIEF.md` | what is **intended** | the lead, at intake |
-| `progress.jsonl` | what has **happened**, and when | `queue.sh watch` |
+| `progress.jsonl` | what has **happened**, and when | `fleet queue watch` |
 | `result.md` | what was **concluded** | the worker, when it knows |
-| `task.yaml`'s `state` | where it stands now | `queue.sh collect`, then `queue.sh reap` |
+| `task.yaml`'s `state` | where it stands now | `fleet queue collect`, then `fleet queue reap` |
 
 A topic view — every task under one heading, plan beside progress beside
 outcome — is therefore the directory listing. It needs no field that is not
@@ -77,16 +78,16 @@ column, as a reader: it opens these four files and adds nothing to them.
 **Only `blocked_by` makes a task wait**, and every entry there names EITHER a
 `task:` — the wait that ends when that task lands — OR a `condition:` outside
 the queue, which nothing clears but `block --clear` naming it back. Never both:
-`queue.sh check` reports an entry that carries the two. Each form takes a kind
-from its own closed set plus a reason, and `queue.sh block` refuses one without
-both; `block --help` lists the kinds of each. Files two tasks both expect to
-change go under `touches`, where `plan` reports them as a risk beside the ready
-set and holds nothing up.
+`fleet queue check` reports an entry that carries the two. Each form takes a
+kind from its own closed set plus a reason, and `fleet queue block` refuses one
+without both; `block --help` lists the kinds of each. Files two tasks both
+expect to change go under `touches`, where `plan` reports them as a risk beside
+the ready set and holds nothing up.
 
-**`queue.sh watch` closes nothing.** It folds thurbox's event stream into
+**`fleet queue watch` closes nothing.** It folds thurbox's event stream into
 `progress.jsonl`. A transition says a turn ended, which is not the claim that a
-task finished — only the worker's own `result.md`, read by `queue.sh collect`,
-closes anything.
+task finished — only the worker's own `result.md`, read by `fleet queue
+collect`, closes anything.
 
 **`collect` checks the artifact it is handed.** Each task declares a publish
 METHOD — `attested`, `pr`, `push`, `note` or `none` — naming what it must
@@ -102,11 +103,11 @@ about a method and a method leaves no trace anyone can read. A check that could
 not run — no forge CLI, no network, a base branch this machine cannot see — says
 exactly that and is never counted as either verdict. `collect
 --allow-unverified` closes a flagged task once you have read that artifact
-yourself. `queue.sh show` prints the method, the verdict and the publish state
-that came of it; the tool itself is `publish.how`, free text fleet renders into
-the brief and never parses.
+yourself. `fleet queue show` prints the method, the verdict and the publish
+state that came of it; the tool itself is `publish.how`, free text fleet
+renders into the brief and never parses.
 
-**`done` is not the end of the record.** `queue.sh reap` — which `collect`
+**`done` is not the end of the record.** `fleet queue reap` — which `collect`
 runs for you — asks the forge whether a `done` task's change request merged and
 moves it to `landed` (or, if it closed unmerged, `abandoned`); a task with no
 change-request artifact goes straight to `landed`. Landing releases the

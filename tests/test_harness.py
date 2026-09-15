@@ -1,7 +1,7 @@
 """The harness's own two promises, proven before any test leans on them.
 
-`isolated_env` is `scripts/lib/selftest-env.sh` in Python, so it is held to the
-guarantees `scripts/isolation-selftest.sh` §2 holds that helper to: run under a
+`isolated_env` is what every test runs inside, so it is held to the
+guarantees `tests/isolation/` holds the whole gate to: run under a
 HOSTILE host — a global git config that signs and hooks every commit and names
 `trunk` the default branch, a thurbox hosts.toml in HOME, forge credentials,
 forge host overrides and a worker's THURBOX_SESSION in the environment — and

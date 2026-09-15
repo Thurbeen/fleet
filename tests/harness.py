@@ -5,7 +5,7 @@ operator's own control-plane checkout — and only the last carries a global git
 config that signs every commit or routes every hook, a HOME holding thurbox's
 hosts.toml and every forge CLI's login, a THURBOX_SESSION when a worker runs
 the gate, and gitignored settings files in the checkout itself. `isolate` is
-`scripts/lib/selftest-env.sh` for Python, held to the same guarantees by
+what keeps all of that out, held to these guarantees by
 `tests/test_harness.py`:
 
   git       no system config, no caller GIT_CONFIG_* or GIT_DIR-family

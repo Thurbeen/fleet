@@ -56,7 +56,7 @@ def test_a_dry_run_says_what_it_would_do_and_does_none_of_it(stopic, shep):
     assert shep.creates() == [], shep.tbx_log()
     assert shep.merged() == [] and "pr merge" not in shep.gh_log(), shep.gh_log()
 
-    # --json is a clean seam for scripts/fleet-status.sh.
+    # --json is a clean seam for `fleet status`.
     assert "prs" in json.loads(q("shepherd", "--dry-run", "--json").stdout)
 
 
