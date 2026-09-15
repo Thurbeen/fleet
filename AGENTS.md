@@ -18,6 +18,13 @@ names every path and the reason for each.
   `scripts/queue.sh` and `scripts/fleet-status.sh` forward to it with the same
   arguments, output and exit code. `tests/test_cli.py` holds that, and
   `check.sh cli` runs it.
+- `scripts/lib/fleet_platform.py` — the PLATFORM seam: every place fleet
+  behaves differently on POSIX and native Windows (thurbox's config directory,
+  fleet's data directory, how a record reaches the disk, a lock, a detached
+  spawn, whether a pid is alive) is one function with both branches inside it,
+  so no caller reads `os.name`. Records are UTF-8 with LF on every OS: write
+  them through it and read them with `encoding="utf-8"`.
+  `tests/test_platform.py` proves each branch on the OS that takes it.
 - `registry/owners.txt` — the GitHub owners the map covers, one per line.
   `registry/owners.example.txt` is the tracked copy it starts from.
 - `registry/repos.generated.yaml` — generated index of every repo under those

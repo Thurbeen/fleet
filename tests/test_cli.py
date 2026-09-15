@@ -30,10 +30,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 FLEET = shutil.which("fleet")
 
-# Inside cp1252 on purpose. Records and run logs are still written in the
-# locale's encoding, which on Windows is cp1252, so a title outside it fails in
-# `topic add` before anything is printed. That is the record writer's to fix,
-# not this entry point's, so the 🚀 goes where nothing writes it into a file.
+# Inside cp1252 on purpose: this test is about the console, and a record's own
+# encoding is tests/test_queue_records.py's, so the 🚀 goes where nothing writes
+# it into a file.
 TITLE = "Ship it — now"
 
 DROPPED = ("GH_", "GITHUB_", "GITLAB_", "GLAB_", "FLEET_", "THURBOX_", "PYTHONUTF8", "PYTHONIOENCODING")
