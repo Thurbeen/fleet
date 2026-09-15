@@ -75,6 +75,10 @@ jobs:
               - 'tests/**'
               - 'pyproject.toml'
               - 'uv.lock'
+              # Dispatch calls both in-process, and the selftest drives both.
+              - 'scripts/session-trust.sh'
+              - 'scripts/lib/session_trust.py'
+              - 'scripts/lib/session_profiles.py'
               - 'scripts/check.sh'
               - '.github/workflows/ci.yml'
             reconcile:

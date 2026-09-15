@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Render one session profile into `thurbox-cli session create` flags.
 
-Called by scripts/session-flags.sh, never on its own — that wrapper owns the
-argument handling and the usage message. Two modes:
+Called by scripts/session-flags.sh, which owns the argument handling and the
+usage message, and in-process by `queue.py dispatch`, which calls
+`load_profiles` and `render` directly so that no shell stands between a task
+and its profile. Two modes on the command line:
 
     session_profiles.py <path> --check       validate every profile, print a
                                              one-line summary

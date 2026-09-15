@@ -345,7 +345,7 @@ $THURBOX_SESSION` so `session list --parent` enumerates your workers — **excep
 on a task that names a `--host`**, where thurbox refuses a parent living on
 another machine and there is no way to spell one, so a remote worker has no
 parent and is enumerated by its task record instead — and the
-task's session profile from `./scripts/session-flags.sh`. Each worker is sent
+task's session profile from `orchestration/session-profiles.yaml`. Each worker is sent
 one line pointing at the absolute path of its own brief — nothing is copied into
 its worktree, so nothing can land in its PR.
 
@@ -402,10 +402,11 @@ commits.
 
 ### The trust dialog, handled here rather than remembered
 
-Every spawn runs `./scripts/session-trust.sh` between `session create` and the
-first `session send`. An agent started in a fresh worktree asks whether it may
+Every spawn runs `scripts/lib/session_trust.py` in-process (dispatch calls it
+directly rather than shelling out) between `session create` and the first
+`session send`. An agent started in a fresh worktree asks whether it may
 work there, and sending the brief while that dialog is up types the brief INTO
-the dialog — which is how every fleet-spawned worker used to break. The script
+the dialog — which is how every fleet-spawned worker used to break. It
 confirms the dialog is really there before sending a key, answers with the
 sequence that agent needs (Claude's default selection is **`No, exit`**, so a
 bare Enter dismisses it), and confirms the dialog is gone. A dialog queued
@@ -854,7 +855,7 @@ get --json` carries no usage field at all — do not look for one.
 
 The restart is `session restart` (kills the window, re-spawns with `--resume`,
 so the conversation and the brief survive) followed by dispatch's own handoff:
-`session-trust.sh` first, because a re-spawned agent in a worktree can ask the
+`session_trust.py` first, because a re-spawned agent in a worktree can ask the
 trust question again and sending into that dialog types the prompt INTO it.
 Every restart is recorded on the task and **capped at three** — a session that
 runs dry, resumes and runs dry again is a task too big for its window, and a

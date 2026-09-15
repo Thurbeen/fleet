@@ -201,11 +201,12 @@ a second copy — read the skill before you run any of it:
    guess. A queue that runs one task at a time is slower than no queue at all.
 4. Each worker targets a real repo and its own git worktree — the control plane
    holds the plan and the log, never the workers' branches. `dispatch` gets each
-   new session past its agent's trust dialog before it sends the brief
-   (`./scripts/session-trust.sh`), because sending one into that dialog is how
-   every fleet-spawned worker used to break. A task may name a `--host` and run
-   on that machine instead, probed first and carried by ssh, so that completion
-   stays one model.
+   new session past its agent's trust dialog before it sends the brief, calling
+   `scripts/lib/session_trust.py` in-process (`scripts/session-trust.sh` is a
+   thin forwarder to the same module, kept for skills and hooks that name it),
+   because sending one into that dialog is how every fleet-spawned worker used
+   to break. A task may name a `--host` and run on that machine instead, probed
+   first and carried by ssh, so that completion stays one model.
 5. **Completion is two things you read, never something that interrupts you.**
    `queue.sh watch` folds thurbox's event stream into each task's record and
    closes nothing; `queue.sh collect` reads the `result.md` the worker wrote,

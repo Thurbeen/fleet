@@ -329,7 +329,7 @@ has exactly one copy; never write a second one under `.claude/`.
 and why completion is a stream plus a file rather than a message.
 `orchestration/queue/README.md` owns the on-disk record shape, and
 `.agents/skills/fleet-queue/SKILL.md` is the working reference for driving it —
-a reference, not an owner. `scripts/session-trust.sh`'s header owns the
+a reference, not an owner. `scripts/lib/session_trust.py` owns the
 trust-dialog mechanics and the per-agent table, and
 `scripts/trust-thurbox-dir.sh`'s owns the config-seeding fallback. `README.md`
 owns the human-facing version of all of it. Point at one of those rather than

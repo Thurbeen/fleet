@@ -1,0 +1,457 @@
+#!/usr/bin/env python3
+"""Get a freshly created session past its agent's trust dialog, without
+touching anything the operator owns.
+
+THE BUG. thurbox mints a FRESH worktree path per session, and most agents ask
+whether they may work in a directory they have not seen before. So every
+worker fleet spawned sat on that dialog: the session existed, the pane was
+live, the agent had not started. `session send` then typed the brief INTO the
+dialog. Sessions fleet created were broken, every time.
+
+WHY A KEYSTROKE AND NOT A CONFIG EDIT. `scripts/trust-thurbox-dir.sh` can
+seed Claude Code's trust into ~/.claude.json and it still works — it is the
+right fallback when a dialog cannot be answered. It is the wrong DEFAULT: it
+writes to a file the user owns, for a tool fleet did not install, and it
+needs a different file format for every agent. Answering the prompt touches
+nothing that outlives the session, and it is one mechanism for the agents
+whose gate is a prompt at all.
+
+THE FAILURE MODE THIS IS BUILT AROUND: sending a key blindly. If the dialog
+is not there, the key lands in a live agent's composer — noise at best, a
+stray instruction at worst. So this never sends unless it can SEE the
+dialog, and never reports success unless it can see the dialog is gone.
+
+    confirm  the pane shows one of this agent's dialogs
+    answer   the keys for THAT dialog, which are not the same per agent
+    confirm  the dialog is gone — and answer the next one if another
+             comes up behind it
+
+and if either confirmation fails it sends nothing more and says so. A session
+waiting on a dialog is visible and fixable; a session that has been typed
+into randomly is neither.
+
+It is safe to run only in the window between `session create` and the first
+`session send`, which is when `scripts/queue.sh dispatch` runs it: nothing
+has been typed into that pane yet, so there is no composer content to
+corrupt. Do not run it against a session that is already working.
+
+IN-PROCESS, AND NO SHELL. `dispatch` calls `answer_dialogs` directly, and
+`scripts/session-trust.sh` is a forwarder to this file. It needs thurbox-cli
+and Python and nothing else — no bash, no jq — because a native Windows
+machine has neither, and the bash version crashed dispatch there after
+`session create`, leaving a session that was never sent its brief.
+
+A REMOTE SESSION IS ANSWERED THE SAME WAY, and this is the reason the
+keystroke is the default rather than the config edit. `session get`, `session
+capture` and `session key` each DELEGATE to the thurbox-cli on the host, so
+every command below reaches a pane on another machine unchanged. The config
+edit does not: `trust-thurbox-dir.sh` writes THIS machine's ~/.claude.json,
+and a remote agent reads the remote one, so seeding here would do nothing at
+all for a worker over there — silently.
+
+The one host this cannot answer is one whose hosts.toml entry sets
+`share_sessions = false`, which switches that delegation off wholesale.
+`queue.sh add --host` refuses such a host outright rather than dispatching a
+worker that would sit on a dialog nothing can see.
+
+PER-AGENT, and the differences are real (see GATES below):
+
+  claude          a dialog whose default selection is "No, exit". A bare
+                  Enter DISMISSES it. Down, then Enter. Under a directory
+                  whose CLAUDE.md imports a file outside it, a second dialog
+                  follows, and ITS default — No — is the answer. Enter.
+  codex           a dialog; Enter accepts. Persists per repo root, so later
+                  worktrees of the same project never show it.
+  pi, pi-signed   a dialog; Enter accepts. Persists per path.
+  grok, kimi      no dialog in a git worktree. Nothing to do.
+  cursor, muse    NOT a keystroke — a launch flag (`--trust`, `--yolo`).
+                  This refuses them and says where the flag goes: a profile
+                  in orchestration/session-profiles.yaml.
+
+AN AGENT THAT IS NOT IN THE TABLE is the operator's to teach, not fleet's to
+guess: `TRUST_SIGNATURE` and `TRUST_KEYS` in orchestration/agent.conf, with
+`TRUST_KEYS=none` for an agent that shows no dialog at all. With neither set
+this refuses and sends nothing, because the `claude` row above is why —
+guessing a keystroke there exits the agent.
+
+Usage:
+  scripts/session-trust.sh <session-uuid-or-name> [--timeout SECS] [--json]
+  python3 scripts/lib/session_trust.py <the same arguments>
+
+Exit codes, so a caller can decide without parsing prose:
+  0  the pane is ready for a prompt — every dialog was answered, or there was
+     none and the agent is up
+  2  usage, or the session could not be read
+  3  could NOT confirm. Nothing more was sent. Do not send a prompt either.
+
+Requires: thurbox-cli.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+# After each answer the pane is watched this many more seconds for a dialog
+# behind it; `MAX_ANSWERS` bounds a dialog that keeps coming back, which is not
+# one this understands.
+SETTLE = 3
+MAX_ANSWERS = 4
+
+# --- the per-agent table -----------------------------------------------------
+#
+# A GATE is one dialog: a signature — a regex matched case-insensitively
+# against the pane — and the space-separated key sequence that answers it, in
+# order. An agent can show more than one, one after another. An agent with no
+# gate has no dialog to answer.
+
+GATES = {
+    "claude": [
+        # Observed live on Claude Code, 2026-09-07, in a fresh thurbox worktree:
+        #
+        #     Quick safety check: Is this a project you created or one you trust?
+        #     ❯ No, exit
+        #       Yes, I trust this folder
+        #     Enter to confirm · Esc to cancel
+        #
+        # Matched on the accepting option's own label, which is specific enough
+        # that ordinary agent output cannot produce it by accident.
+        #
+        # THE TRAP, and it is right there in the capture above: the default
+        # selection is "No, exit". A bare Enter DISMISSES the dialog and the
+        # agent exits. Move the selection down to the accepting option first.
+        # This is the one dialog where the obvious answer is the wrong one.
+        ("yes, i trust this folder|quick safety check: is this a project you created",
+         "down enter"),
+        # Observed live on Claude Code, 2026-09-12, on a shepherd fixer started
+        # under a directory whose CLAUDE.md imports a file outside it — shown
+        # before anything else:
+        #
+        #     Allow external CLAUDE.md file imports?
+        #     ❯ No, disable external imports
+        #       Yes, allow external imports
+        #
+        # Answered with its DEFAULT, a bare Enter. `Yes` would load a guide
+        # written for someone else — the lead's, in the case that found it —
+        # into a worker.
+        (r"allow external claude\.md file imports|no, disable external imports", "enter"),
+    ],
+    "codex": [("do you trust the contents of this directory|do you trust this directory", "enter")],
+    "pi": [("trust this project|do you trust", "enter")],
+    "pi-signed": [("trust this project|do you trust", "enter")],
+    # No dialog when launched inside a git repo root, which a thurbox worktree
+    # always is. Nothing to answer; still confirmed as up below.
+    "grok": [],
+    "kimi": [],
+}
+FLAG_ONLY = {"cursor", "muse"}
+
+# WHERE THE SELECTOR ALREADY IS, for claude, and it outranks the table. The
+# folder-trust dialog above defaults to "No, exit"; the one Claude Code 2.1.247
+# draws on a Windows 11 host (2026-09-12) is numbered and defaults to the other
+# option:
+#
+#     ❯ 1. Yes, I trust this folder
+#       2. No, exit
+#
+# `down enter` there selects "No, exit" and the agent exits — observed, not
+# supposed. So when the selector is already on the accepting option, Enter
+# alone accepts, whichever layout drew it. Matched against the squeezed pane.
+YES_SELECTED = re.compile(r"❯([0-9]+\.)?yes,itrustthisfolder", re.IGNORECASE)
+
+
+# --- talking to thurbox ------------------------------------------------------
+
+
+def _run(args: list) -> subprocess.CompletedProcess | None:
+    try:
+        return subprocess.run(["thurbox-cli", *args], capture_output=True, check=False)
+    except OSError:
+        return None
+
+
+def _json(proc: subprocess.CompletedProcess | None) -> dict:
+    if proc is None:
+        return {}
+    try:
+        value = json.loads(proc.stdout.decode("utf-8", errors="replace"))
+    except ValueError:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def session_info(session: str) -> dict:
+    """`session get --json`, or {} when thurbox could not answer it."""
+    proc = _run(["session", "get", session, "--json"])
+    return _json(proc) if proc is not None and proc.returncode == 0 else {}
+
+
+def squeeze(text: str) -> str:
+    """Text with every whitespace character gone.
+
+    WHITESPACE IS NOT PART OF THE MATCH, on either side. psmux 3.3.6 — the
+    multiplexer of a Windows host — captures Claude Code's dialog with every
+    space gone (`❯1.Yes,Itrustthisfolder`, observed 2026-09-12), so a signature
+    spelled with spaces never matched there and the worker sat on its dialog
+    unprompted. Stripping both sides changes nothing a tmux pane matched, and it
+    also survives a dialog wrapped at the pane's width.
+    """
+    return re.sub(r"\s+", "", text)
+
+
+def pane(uuid: str) -> str:
+    """The pane, squeezed.
+
+    `--json` and `.output`, not the plain capture: the human format wraps the
+    pane in metadata lines, and a signature could in principle match one of
+    those instead of the pane itself.
+    """
+    output = _json(_run(["session", "capture", uuid, "--lines", "60", "--json"])).get("output")
+    return squeeze(output) if isinstance(output, str) else ""
+
+
+def shows(signature: str, text: str) -> bool:
+    try:
+        return re.search(squeeze(signature), text, re.IGNORECASE) is not None
+    except re.error:
+        # A signature the operator wrote that is not a valid pattern matches
+        # nothing, which is what `grep -E` made of one.
+        return False
+
+
+def agent_reported(uuid: str) -> bool:
+    """An agent whose hooks have fired is running its own loop, which is proof
+    there is no modal dialog in front of it."""
+    return session_info(uuid).get("hook_reported") is True
+
+
+def send_key(uuid: str, key: str) -> bool:
+    proc = _run(["session", "key", uuid, key])
+    return proc is not None and proc.returncode == 0
+
+
+# --- an agent fleet has not watched ------------------------------------------
+
+
+def conf_value(path: str, key: str) -> str:
+    """The first `KEY=value` line's value, verbatim, or ""."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.rstrip("\r\n")
+                if line.startswith(key + "="):
+                    return line[len(key) + 1:]
+    except OSError:
+        pass
+    return ""
+
+
+def taught_gates(agent_root: str) -> list | None:
+    """What `orchestration/agent.conf` teaches: a gate list, or None for nothing.
+
+    NOT IN THE TABLE IS NOT THE END. The table is what fleet has WATCHED, and
+    the operator has watched their own agent — so `TRUST_SIGNATURE` and
+    `TRUST_KEYS` there teach it one, the same way `LIMIT_BANNER` and
+    `TRANSCRIPT_DIR` teach `refuel` one. Without them this still refuses rather
+    than guessing a keystroke: a bare Enter into Claude Code's dialog exits the
+    agent, and an invented answer would do that to somebody's.
+    """
+    conf = os.path.join(agent_root, "orchestration", "agent.conf")
+    if not os.path.isfile(conf):
+        conf = os.path.join(agent_root, "orchestration", "agent.example.conf")
+    signature = conf_value(conf, "TRUST_SIGNATURE")
+    keys = conf_value(conf, "TRUST_KEYS")
+    if keys == "none":
+        # The operator says this agent shows no dialog. Nothing to answer; it
+        # is still confirmed as up.
+        return []
+    if not signature:
+        return None
+    return [(signature, keys or "enter")]
+
+
+# --- the whole handshake -----------------------------------------------------
+
+
+def answer_dialogs(session: str, timeout: int = 20, as_json: bool = False) -> tuple[int, str]:
+    """Confirm, answer and confirm every dialog in front of the agent.
+
+    Returns the exit code and the one line of report, formatted for the
+    command line (`session-trust: ...`) or as the `--json` object. Every
+    outcome is terminal and says exactly one thing, which is why this returns
+    rather than prints.
+    """
+    agent = ""
+
+    def say(detail: str, outcome: str) -> str:
+        if as_json:
+            return json.dumps(
+                {"session": session, "agent": agent, "outcome": outcome, "detail": detail},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        return f"session-trust: {detail}"
+
+    # --- who is in the pane --------------------------------------------------
+    info = session_info(session)
+    if not info:
+        return 2, say(f"no such session: {session}", "error")
+    uuid = str(info.get("id") or session)
+    # `detected_agent` is what is observably running and wins over the row's
+    # `agent` when they disagree — a session created as a bare shell that a
+    # harness launched an agent into is exactly that case.
+    for key in ("detected_agent", "reports_as", "agent"):
+        if info.get(key) not in (None, False):
+            agent = str(info[key])
+            break
+
+    if agent in GATES:
+        gates = GATES[agent]
+    elif agent in FLAG_ONLY:
+        return 3, say(
+            f"'{agent}' is not answered by a keystroke — it takes a launch flag\n"
+            "             (cursor: --trust, muse: --yolo). Put it in a profile in\n"
+            "             orchestration/session-profiles.yaml and spawn under that profile.\n"
+            "             Nothing was sent.",
+            "flag-required",
+        )
+    elif not agent:
+        return 3, say("could not tell which agent holds the pane; sending nothing", "unconfirmed")
+    else:
+        agent_root = os.environ.get("FLEET_AGENT_ROOT") or os.path.dirname(os.path.dirname(HERE))
+        gates = taught_gates(agent_root)
+        if gates is None:
+            return 3, say(
+                f"no trust gate is known for '{agent}'; sending nothing. Teach fleet\n"
+                "             one with TRUST_SIGNATURE and TRUST_KEYS in\n"
+                "             orchestration/agent.conf, or add it to the table in\n"
+                f"             {os.path.join(HERE, 'session_trust.py')}",
+                "unknown-agent",
+            )
+
+    def gate_on_pane() -> int | None:
+        """The index of the gate the pane shows right now, if any."""
+        if not gates:
+            return None
+        text = pane(uuid)
+        for i, (signature, _keys) in enumerate(gates):
+            if shows(signature, text):
+                return i
+        return None
+
+    def answer(i: int) -> tuple[tuple[int, str] | None, str]:
+        """Answer one gate, then confirm it took: (the failure or None, the keys sent).
+
+        A send that reports success is not proof the dialog was answered. The
+        dialog being GONE is. On either failure nothing more is sent.
+        """
+        signature, keys = gates[i]
+        if agent == "claude" and keys == "down enter" and YES_SELECTED.search(pane(uuid)):
+            keys = "enter"
+        for k in keys.split():
+            if not send_key(uuid, k):
+                return (3, say(f"could not send '{k}' to the pane; the dialog is still up",
+                               "send-failed")), keys
+            time.sleep(1)
+        for _ in range(10):
+            if not shows(signature, pane(uuid)):
+                return None, keys
+            time.sleep(1)
+        return (3, say(
+            f"sent '{keys}' but {agent}'s dialog is still on the pane. Do not\n"
+            "             prompt this session; look at it:\n"
+            f"               thurbox-cli session capture {uuid}\n"
+            "             The config-seeding fallback is:\n"
+            f"               {os.path.join(os.path.dirname(HERE), 'trust-thurbox-dir.sh')}"
+            " <that session's worktree path>\n"
+            "             — which seeds THIS machine. For a session on a remote host, run\n"
+            "             that script ON THE HOST, against the worktree path there.",
+            "unconfirmed",
+        )), keys
+
+    # --- watch, answering every dialog in turn -------------------------------
+    #
+    # Another dialog can come up BEHIND the one just answered — Claude Code
+    # shows folder trust, then external imports — and returning after the first
+    # would hand the send to the second. So after each answer the pane is
+    # watched for SETTLE more seconds, cut short by the agent reporting.
+    answered: list[str] = []
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        i = gate_on_pane()
+        if i is not None:
+            if len(answered) >= MAX_ANSWERS:
+                return 3, say(
+                    f"answered {len(answered)} dialogs ({', '.join(answered)}) and another"
+                    " is still coming.\n"
+                    "             Nothing more was sent. Look at the pane before prompting it:\n"
+                    f"               thurbox-cli session capture {uuid}",
+                    "unconfirmed",
+                )
+            failed, sent = answer(i)
+            if failed:
+                return failed
+            answered.append(f"'{sent}'")
+            deadline = time.monotonic() + SETTLE
+            continue
+        if agent_reported(uuid):
+            break
+        time.sleep(1)
+
+    if answered:
+        return 0, say(f"answered {agent}'s dialog(s) with {', '.join(answered)}; "
+                      "none is left on the pane", "answered")
+    if agent_reported(uuid):
+        return 0, say(f"no dialog: {agent} is already reporting; nothing sent", "ready")
+    if not gates:
+        return 0, say(f"{agent} shows no trust dialog in a git worktree; nothing sent", "ready")
+    return 3, say(
+        f"no trust dialog seen in {timeout}s and {agent} has not reported.\n"
+        "             Nothing was sent. Look at the pane before prompting it:\n"
+        f"               thurbox-cli session capture {uuid}",
+        "unconfirmed",
+    )
+
+
+def main(argv: list | None = None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    timeout, as_json, session = 20, False, ""
+    while args:
+        arg = args.pop(0)
+        if arg in ("-h", "--help"):
+            print(__doc__.strip())
+            return 0
+        if arg == "--timeout":
+            value = args.pop(0) if args else "20"
+            try:
+                timeout = int(value)
+            except ValueError:
+                print(f"error: --timeout wants whole seconds, not {value!r}", file=sys.stderr)
+                return 2
+        elif arg == "--json":
+            as_json = True
+        elif arg.startswith("-"):
+            print(f"error: unknown option {arg}", file=sys.stderr)
+            return 2
+        else:
+            session = arg
+    if not session:
+        print(__doc__.strip())
+        return 2
+    if shutil.which("thurbox-cli") is None:
+        print("error: thurbox-cli not found", file=sys.stderr)
+        return 2
+    code, report = answer_dialogs(session, timeout, as_json)
+    print(report)
+    return code
+
+
+if __name__ == "__main__":
+    sys.exit(main())
