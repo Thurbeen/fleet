@@ -53,7 +53,7 @@
 # arguments, output and exit code, as scripts/queue.sh does. thurbox-cli, gh, git and quota-axi are each
 # optional and cost only their own section — quota-axi in particular is a tool
 # on the operator's PATH, never a dependency this repo vendors.
-# scripts/fleet-status-selftest.sh proves it.
+# tests/status proves it.
 
 set -uo pipefail
 

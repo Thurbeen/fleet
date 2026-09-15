@@ -249,19 +249,19 @@ check_sync() {
 # thurbox's state vocabulary through unflattened, because reporting `uncovered`
 # or `unreported` as `idle` tells the lead a worker mid-turn has finished. Both
 # are only observable with those things MISSING, which is never the state a
-# gate run is in, so the selftest constructs it out of stubs on a sandboxed
-# PATH. It also holds the third promise: the command reads and writes nothing.
+# gate run is in, so tests/status constructs it out of stand-ins on a PATH
+# holding no tool at all. It also holds the third promise: the command reads
+# and writes nothing.
 check_status() {
-	need python3 status || return
 	need uv status || return
 	need git status || return
 
-	if ./scripts/fleet-status-selftest.sh >/dev/null; then
+	if uv run --frozen --quiet pytest -q tests/status >/dev/null 2>&1; then
 		ok "status: degrades a section at a time, keeps thurbox's words, writes nothing"
 	else
 		# Re-run visibly: a failing claim is the whole message.
-		./scripts/fleet-status-selftest.sh
-		fail "status: scripts/fleet-status-selftest.sh"
+		uv run --frozen --quiet pytest -q tests/status
+		fail "status: tests/status"
 	fi
 }
 
