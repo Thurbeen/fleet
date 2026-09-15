@@ -88,11 +88,11 @@ THE CADENCES, and why each number is the number:
 Environment:
   FLEET_RECONCILE_DIR           runtime state (default orchestration/reconcile)
   FLEET_RECONCILE_QUEUE_CMD     the queue command it drives, as an argv: a JSON
-                                list, or a line split with this OS's quoting
-                                (shell quoting on POSIX, double quotes only on
-                                Windows) and nothing else of a shell (default:
-                                `fleet queue` on this interpreter). The seam
-                                tests stub.
+                                list, or a line split with shell quoting (on
+                                Windows a backslash is an ordinary character)
+                                and nothing else of a shell (default: `fleet
+                                queue` on this interpreter). The seam tests
+                                stub.
   FLEET_RECONCILE_WATCH_SECS    seconds per `watch` call   (default 20)
   FLEET_RECONCILE_COLLECT_SECS  seconds between collects   (default 120)
   FLEET_RECONCILE_REFUEL_SECS   seconds between refuels    (default 300)

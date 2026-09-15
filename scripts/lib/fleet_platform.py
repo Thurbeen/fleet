@@ -303,17 +303,18 @@ def terminate_tree(pid: int, force: bool = False) -> None:
 def split_command(line: str, windows: bool = WINDOWS) -> list[str]:
     """An operator's command line as argv, with no shell to read it.
 
-    POSIX: shell quoting. Windows: only double quotes group, as on a Windows
-    command line, so a backslash in a path and an apostrophe in a name are
-    ordinary characters. A pipeline is not a command here: it arrives as words.
+    Shell quoting on every OS, so what `shlex.join` writes comes back whole.
+    On Windows a backslash is an ordinary character and never an escape, so
+    `C:\\fleet\\replay.exe` keeps its path; an apostrophe in a name goes inside
+    double quotes. A pipeline is not a command here: it arrives as words.
     Raises ValueError, naming the line, when a quote is left open.
     """
     try:
         if not windows:
             return shlex.split(line)
-        lexer = shlex.shlex(line, posix=False)
-        lexer.whitespace_split, lexer.quotes, lexer.commenters = True, '"', ""
-        return [word[1:-1] if len(word) > 1 and word[0] == word[-1] == '"' else word for word in lexer]
+        lexer = shlex.shlex(line, posix=True)
+        lexer.whitespace_split, lexer.escape, lexer.commenters = True, "", ""
+        return list(lexer)
     except ValueError as exc:
         raise ValueError(f"cannot read {line!r} as a command: {exc}") from exc
 

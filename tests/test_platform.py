@@ -10,6 +10,7 @@ nothing about the real one.
 from __future__ import annotations
 
 import os
+import shlex
 import signal
 import subprocess
 import sys
@@ -162,9 +163,14 @@ class SplitCommand(unittest.TestCase):
         self.assertEqual(fp.split_command(r'"C:\Program Files\replay.exe" --json', windows=True),
                          [r"C:\Program Files\replay.exe", "--json"])
 
-    def test_an_apostrophe_in_a_windows_path_is_a_letter(self):
-        self.assertEqual(fp.split_command(r"C:\Users\O'Neil\replay.exe", windows=True),
-                         [r"C:\Users\O'Neil\replay.exe"])
+    def test_an_apostrophe_in_a_double_quoted_windows_path_is_a_letter(self):
+        self.assertEqual(fp.split_command(r'"C:\Users\O'"'"r'Neil\replay.exe" --json', windows=True),
+                         [r"C:\Users\O'Neil\replay.exe", "--json"])
+
+    def test_what_shlex_join_writes_comes_back_whole_on_windows(self):
+        """The tests, and anyone scripting the setting from Python, write it with shlex.join."""
+        argv = [r"C:\Program Files\Python\python.exe", "-c", "import sys; print(sys.argv)", r"C:\Users\O'Neil\x.json"]
+        self.assertEqual(fp.split_command(shlex.join(argv), windows=True), argv)
 
     def test_a_line_that_does_not_parse_says_so(self):
         with self.assertRaises(ValueError) as caught:

@@ -184,8 +184,9 @@ Environment:
                          they are scaffolded from is always the checkout's.
   FLEET_QUEUE_WATCH_CMD  the event source, for a replay or another transport
                          (default: thurbox-cli watch --json); one command,
-                         split with this OS's quoting and run with no shell,
-                         so not a pipeline
+                         split with shell quoting (on Windows a backslash is
+                         an ordinary character) and run with no shell, so
+                         not a pipeline
   THURBOX_SESSION        set inside a thurbox session; dispatch passes it as
                          --parent so `session list --parent` enumerates
                          workers, and reap refuses to delete it
