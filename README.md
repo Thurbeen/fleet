@@ -37,7 +37,7 @@ Each box in the diagram:
 - **Mission Control.** The lead agent session. thurbox runs it for the `fleet`
   extension, opened on your clone, with [`FLEET.md`](FLEET.md) as its standing
   context. It turns your prompt into tasks, writes a brief for each one, and
-  dispatches them. Nothing else dispatches.
+  dispatches them. Only the lead dispatches tasks.
 - **The queue.** Plain files under `orchestration/queue/`.
   [`scripts/queue.sh`](scripts/queue.sh) (or `uv run fleet queue`, the same
   command) is the only thing that writes them. A topic keeps your prompt word
@@ -108,7 +108,7 @@ checks each step as it goes.
    ```
 
    It finds your GitHub owners, builds the repository map, puts the queue pane
-   on screen and starts the reconciler. It asks before each of those.
+   on screen and starts the reconciler. Where the choice is yours, it asks.
 
 ## Day to day
 
@@ -132,7 +132,7 @@ row each.](media/fleet-queue-pane.gif)
 - merged work is marked `landed`, its session is removed, and tasks waiting on
   it become ready;
 - the lead is told when there is something new to dispatch;
-- a topic whose tasks are all finished is archived.
+- a topic whose tasks have all landed or been abandoned is archived.
 
 **What needs you:**
 
@@ -160,7 +160,7 @@ row each.](media/fleet-queue-pane.gif)
 | task | One repository, one branch, one piece of work a single worker can finish and check. |
 | brief | A task's `BRIEF.md`: goal, constraints and what "done" means, written for a worker that knows nothing else. |
 | result | A task's `result.md`, written by its worker: an outcome (`shipped`, `stuck`, `failed` or `not-applicable`), the artifact, and a short note. |
-| shipped / landed | `shipped` is the worker saying the artifact exists; the task is then `done` and its session is kept for review fixes. `landed` means the forge reports the change merged. Tasks blocked on it are released only then. |
+| shipped / landed | `shipped` is the worker saying the artifact exists; once `collect` has checked that artifact, the task is `done` and its session is kept for review fixes. `landed` means the forge reports the change merged. Tasks blocked on it are released only then. |
 | shepherd | The pass that keeps open change requests moving: fixers for broken ones, merges where allowed. |
 | refuel | The pass that restarts workers stopped at a token limit, once quota allows. |
 | reconciler | The supervised loop that runs `watch`, `collect`, `shepherd` and `refuel` so nobody has to remember to. |
