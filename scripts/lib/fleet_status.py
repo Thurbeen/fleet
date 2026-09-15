@@ -777,7 +777,7 @@ def probe_records() -> dict:
     path = os.environ.get(REGISTRY_ENV) or os.path.join(REPO_ROOT, REGISTRY_FILE)
     row = {"path": path, "summary": "", "problems": []}
     if not os.path.exists(path):
-        row["summary"] = "not synced yet — `sync-registry.sh`"
+        row["summary"] = "not synced yet — `uv run fleet sync-registry`"
     else:
         try:
             row["summary"], row["problems"] = _load_check_yaml().registry_problems(path)
@@ -855,7 +855,7 @@ def render_queue(sec: dict) -> list:
 def render_records(sec: dict) -> list:
     lines = [head("RECORDS", "your live queue and registry map, validated")]
     for name, remedy in (("queue", "`queue.sh check` lists every one"),
-                         ("registry", "`sync-registry.sh` regenerates it")):
+                         ("registry", "`uv run fleet sync-registry` regenerates it")):
         row = sec[name]
         problems = row["problems"]
         if not problems:
