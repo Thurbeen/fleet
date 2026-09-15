@@ -122,7 +122,7 @@ def render(profile):
 def load_profiles(path, errors):
     """Parse and validate the profiles file. Returns its mapping, or None."""
     try:
-        with open(path) as fh:
+        with open(path, encoding="utf-8") as fh:
             doc = yaml.safe_load(fh)
     except FileNotFoundError:
         print(f"{path}: no such file", file=sys.stderr)

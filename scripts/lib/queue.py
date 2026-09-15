@@ -353,7 +353,7 @@ def unfilled_sections(text: str) -> list:
 def brief_shortfall(path: str) -> str:
     """Why this BRIEF.md is not something to send a worker, or "" if it is."""
     try:
-        with open(path) as fh:
+        with open(path, encoding="utf-8") as fh:
             text = fh.read()
     except OSError:
         return "never written"
@@ -597,7 +597,7 @@ def read_kv_conf(path: str) -> dict[str, str]:
     """`KEY=value` lines, as data. An unreadable file is no settings at all."""
     conf: dict[str, str] = {}
     try:
-        with open(path) as fh:
+        with open(path, encoding="utf-8") as fh:
             for raw in fh:
                 line = raw.strip()
                 if not line or line.startswith("#") or "=" not in line:
@@ -739,7 +739,7 @@ def policy_publish_block() -> dict | None:
     """
     global _POLICY_PUBLISH_WARNED
     try:
-        with open(policy_path()) as fh:
+        with open(policy_path(), encoding="utf-8") as fh:
             text = fh.read()
     except OSError:
         return None
@@ -835,7 +835,7 @@ def operator_instructions() -> str:
     question asked of it is whether there is any.
     """
     try:
-        with open(operator_path()) as fh:
+        with open(operator_path(), encoding="utf-8") as fh:
             return fh.read().strip()
     except OSError:
         return ""
@@ -878,7 +878,7 @@ SESSION_TABLE_RE = re.compile(r"^\[\[sessions\]\]", re.M)
 def manifest_session(path: str) -> tuple[str | None, str | None]:
     """(session name, repo_path) from the first [[sessions]] block of a manifest."""
     try:
-        with open(path) as fh:
+        with open(path, encoding="utf-8") as fh:
             text = fh.read()
     except OSError:
         return None, None
@@ -897,7 +897,7 @@ def live_session_cwd(name: str) -> str | None:
         out = subprocess.run(
             ["thurbox-cli", "session", "list", "--json"],
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8",
             timeout=10,
         )
     except (OSError, subprocess.SubprocessError):
@@ -1035,7 +1035,7 @@ def age_of(stamp) -> str:
 
 
 def read_yaml(path: str) -> dict:
-    with open(path) as fh:
+    with open(path, encoding="utf-8") as fh:
         doc = yaml.safe_load(fh)
     if not isinstance(doc, dict):
         raise QueueError(f"{path}: expected a mapping")
@@ -1045,7 +1045,7 @@ def read_yaml(path: str) -> dict:
 def write_yaml(path: str, doc: dict, header: str) -> None:
     body = yaml.safe_dump(doc, sort_keys=False, default_flow_style=False)
     tmp = path + ".tmp"
-    with open(tmp, "w") as fh:
+    with open(tmp, "w", encoding="utf-8") as fh:
         fh.write(header.rstrip() + "\n" + body)
     os.replace(tmp, path)
 
@@ -1561,7 +1561,7 @@ def cmd_topic_add(args) -> int:
 
     prompt = args.prompt
     if args.prompt_file:
-        prompt = sys.stdin.read() if args.prompt_file == "-" else open(args.prompt_file).read()
+        prompt = sys.stdin.read() if args.prompt_file == "-" else open(args.prompt_file, encoding="utf-8").read()
     if not prompt:
         raise QueueError("a topic needs the prompt that opened it: --prompt or --prompt-file")
 
@@ -1575,7 +1575,7 @@ def cmd_topic_add(args) -> int:
         },
         TOPIC_HEADER,
     )
-    with open(os.path.join(path, "PROMPT.md"), "w") as fh:
+    with open(os.path.join(path, "PROMPT.md"), "w", encoding="utf-8") as fh:
         fh.write(prompt.rstrip() + "\n")
 
     # Opening a topic is where a run begins, so it is where its log begins —
@@ -1791,7 +1791,7 @@ def cmd_add(args) -> int:
     #
     # `add` with no --brief-file is untouched. That is the deliberate "scaffold
     # it, I will write it" path, and dispatch stays its backstop.
-    brief = open(args.brief_file).read() if args.brief_file else None
+    brief = open(args.brief_file, encoding="utf-8").read() if args.brief_file else None
     text = render_brief(task, read_yaml(os.path.join(tpath, "topic.yaml")), brief)
     if args.brief_file:
         missing = unfilled_sections(text)
@@ -1808,7 +1808,7 @@ def cmd_add(args) -> int:
 
     os.makedirs(path)
     task.save()
-    with open(task.file("BRIEF.md"), "w") as fh:
+    with open(task.file("BRIEF.md"), "w", encoding="utf-8") as fh:
         fh.write(text)
 
     print(task.ref)
@@ -2347,7 +2347,7 @@ def thurbox_config() -> dict:
     try:
         proc = subprocess.run(
             ["thurbox-cli", "config", "show", "--json"],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, encoding="utf-8", timeout=30,
         )
         return json.loads(proc.stdout) if proc.returncode == 0 else {}
     except (OSError, subprocess.SubprocessError, ValueError):
@@ -2651,7 +2651,7 @@ def ssh_run(entry: dict, script: str, stdin: str | None = None, login: bool = Tr
     try:
         return subprocess.run(
             ssh_argv(entry) + [host_shell(entry).command(script, login)],
-            input=stdin, capture_output=True, text=True, timeout=SSH_TIMEOUT,
+            input=stdin, capture_output=True, text=True, encoding="utf-8", timeout=SSH_TIMEOUT,
         )
     except subprocess.TimeoutExpired:
         # Not `str(exc)`: that is the whole argv, and a PowerShell command's
@@ -2868,7 +2868,7 @@ def session_worktree(sid: str) -> tuple[str, str]:
     try:
         proc = subprocess.run(
             ["thurbox-cli", "session", "get", sid, "--json"],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, encoding="utf-8", timeout=30,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return "", f"thurbox-cli session get could not run: {exc}"
@@ -2976,7 +2976,7 @@ def pull_remote_result(task: Task) -> str:
     text, why = fetch_result(entry, str(src))
     if text is None:
         return ""  # not there yet is the normal state of a working task
-    with open(task.file("result.md"), "w") as fh:
+    with open(task.file("result.md"), "w", encoding="utf-8") as fh:
         fh.write(text)
     return f"result fetched from {rec.get('destination')}:{src}"
 
@@ -2992,7 +2992,7 @@ def read_text(path: str) -> str:
     above is what stops that reaching a host at all, at dispatch.
     """
     try:
-        with open(path) as fh:
+        with open(path, encoding="utf-8") as fh:
             return fh.read()
     except OSError:
         return BRIEF_PLACEHOLDER
@@ -3391,7 +3391,7 @@ def read_cursor(root: str) -> int | None:
     """
     path = os.path.join(root, ".cursor")
     try:
-        return int(open(path).read().strip())
+        return int(open(path, encoding="utf-8").read().strip())
     except (OSError, ValueError):
         return None
 
@@ -3458,7 +3458,7 @@ def folded_through(task: Task) -> int | None:
     """
     high = None
     try:
-        fh = open(task.file("progress.jsonl"))
+        fh = open(task.file("progress.jsonl"), encoding="utf-8")
     except OSError:
         return None
     with fh:
@@ -3579,7 +3579,7 @@ def record_event(task: Task, ev: dict) -> None:
         "observed": now(),
     }
     try:
-        with open(task.file("progress.jsonl"), "a") as fh:
+        with open(task.file("progress.jsonl"), "a", encoding="utf-8") as fh:
             fh.write(json.dumps(entry) + "\n")
     except OSError as exc:
         raise QueueError(
@@ -3969,7 +3969,7 @@ def record_publish(task: Task, state: str, detail: str, by: str, extra: dict | N
     block.update({"state": state, "detail": detail, "at": now(), "by": by, **(extra or {})})
     task.doc["publish"] = block
     task.save()
-    with open(task.file("progress.jsonl"), "a") as fh:
+    with open(task.file("progress.jsonl"), "a", encoding="utf-8") as fh:
         fh.write(json.dumps({"publish": dict(block), "observed": now()}) + "\n")
 
 
@@ -4014,7 +4014,7 @@ def cmd_collect(args) -> int:
 
         if not os.path.exists(path):
             continue
-        meta, body = parse_result(open(path).read())
+        meta, body = parse_result(open(path, encoding="utf-8").read())
         outcome = str(meta.get("outcome", "")).strip()
         if task.state in REREAD_STATES and outcome == task.doc.get("outcome"):
             continue  # the verdict it concluded on; nothing new to read
@@ -4248,7 +4248,7 @@ def live_sessions() -> tuple[set | None, str]:
     try:
         proc = subprocess.run(
             ["thurbox-cli", "session", "list", "--json"],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, encoding="utf-8", timeout=30,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return None, f"thurbox-cli session list could not run: {exc}"
@@ -4275,7 +4275,7 @@ def session_state(sid: str) -> tuple[str | None, str]:
     try:
         proc = subprocess.run(
             ["thurbox-cli", "session", "get", sid, "--json"],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, encoding="utf-8", timeout=30,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return None, f"thurbox-cli session get could not run: {exc}"
@@ -4349,7 +4349,7 @@ def release_fixer_checkouts(q: Queue, state_of, dry: bool) -> int:
                 continue
             proc = subprocess.run(
                 ["git", "-C", task.doc["repo"], "worktree", "remove", path],
-                capture_output=True, text=True,
+                capture_output=True, text=True, encoding="utf-8",
             )
             if proc.returncode != 0:
                 err = (proc.stderr or proc.stdout).strip().splitlines()
@@ -4479,7 +4479,7 @@ def reap(q: Queue, dry: bool = False, release: bool = True) -> int:
         # is never actually freed, which is the entire point.
         proc = subprocess.run(
             ["thurbox-cli", "session", "delete", sid, "--force"],
-            capture_output=True, text=True,
+            capture_output=True, text=True, encoding="utf-8",
         )
         if proc.returncode != 0:
             err = (proc.stderr or proc.stdout).strip().splitlines()
@@ -4857,7 +4857,7 @@ def pane_exhaustion(sid: str, agent: str | None = None) -> tuple[str, str]:
     try:
         proc = subprocess.run(
             ["thurbox-cli", "session", "capture", sid, "--lines", str(CAPTURE_LINES), "--json"],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, encoding="utf-8", timeout=30,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return "unknown", f"session capture could not run: {exc}"
@@ -4906,7 +4906,7 @@ def session_doc(sid: str) -> tuple[dict | None, str]:
     try:
         proc = subprocess.run(
             ["thurbox-cli", "session", "get", sid, "--json"],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, encoding="utf-8", timeout=30,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return None, f"thurbox-cli session get could not run: {exc}"
@@ -4941,7 +4941,7 @@ def restart_session(sid: str) -> tuple[bool, str]:
     """
     try:
         proc = subprocess.run(
-            ["thurbox-cli", "session", "restart", sid], capture_output=True, text=True, timeout=120
+            ["thurbox-cli", "session", "restart", sid], capture_output=True, text=True, encoding="utf-8", timeout=120
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return False, f"session restart could not run: {exc}"
@@ -5327,7 +5327,7 @@ def auto_merge_repos(root: str | None = None) -> set:
         return parse_auto_merge(re.split(r"[,\s]+", raw), AUTO_MERGE_ENV)
     path = auto_merge_conf_path(root)
     try:
-        with open(path) as fh:
+        with open(path, encoding="utf-8") as fh:
             lines = [line.partition("#")[0] for line in fh]
     except OSError:
         return set()
@@ -5689,7 +5689,7 @@ def git_out(repo: str, argv: list, timeout: int = 30) -> str:
     """git, best effort. A failure is the empty string — never an exception."""
     try:
         out = subprocess.run(
-            ["git", "-C", repo] + argv, capture_output=True, text=True, timeout=timeout
+            ["git", "-C", repo] + argv, capture_output=True, text=True, encoding="utf-8", timeout=timeout
         )
     except (OSError, subprocess.SubprocessError):
         return ""
@@ -5887,7 +5887,7 @@ def branch_checkout(repo: str, branch: str, slug: str) -> tuple[str, str]:
         out = subprocess.run(
             ["git", "-C", repo, "worktree", "add", dest, branch],
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8",
             timeout=120,
         )
     except (OSError, subprocess.SubprocessError) as exc:
@@ -6041,7 +6041,7 @@ def record_shepherd(task: Task, entry: dict | None) -> None:
     else:
         task.doc["shepherd"] = entry
     task.save()
-    with open(task.file("progress.jsonl"), "a") as fh:
+    with open(task.file("progress.jsonl"), "a", encoding="utf-8") as fh:
         fh.write(json.dumps({"shepherd": entry, "observed": now()}) + "\n")
 
 
@@ -6242,7 +6242,7 @@ def shepherd_pr(cr: forge.ChangeRequest, task, args) -> dict:
 
     drift = base_drift(task.doc["repo"], base, branch) if condition == "conflicting" else ""
     path = next_fix_file(task, condition)
-    with open(path, "w") as fh:
+    with open(path, "w", encoding="utf-8") as fh:
         fh.write(fixer_brief(task, cr, condition, detail, drift))
 
     if reuse:
@@ -6653,12 +6653,12 @@ def refresh_run_log(q: Queue, slug: str) -> tuple[str, str]:
     path = run_log_path(slug, q.topics.get(slug, {}))
     old = ""
     if os.path.exists(path):
-        with open(path) as fh:
+        with open(path, encoding="utf-8") as fh:
             old = fh.read()
         verb = "updated"
     else:
         try:
-            with open(run_template_path()) as fh:
+            with open(run_template_path(), encoding="utf-8") as fh:
                 old = fh.read()
         except OSError as exc:
             return path, f"not scaffolded — {exc}"
@@ -6676,7 +6676,7 @@ def refresh_run_log(q: Queue, slug: str) -> tuple[str, str]:
 
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     tmp = path + ".tmp"
-    with open(tmp, "w") as fh:
+    with open(tmp, "w", encoding="utf-8") as fh:
         fh.write(new)
     os.replace(tmp, path)
     return path, verb
@@ -6819,7 +6819,7 @@ def last_transition(task: Task) -> tuple[str | None, str]:
     if not os.path.exists(path):
         return None, ""
     try:
-        rows = open(path).read().splitlines()
+        rows = open(path, encoding="utf-8").read().splitlines()
     except OSError as exc:
         return None, f"progress.jsonl could not be read: {exc}"
     newest = None
@@ -7135,7 +7135,7 @@ def cmd_show(args) -> int:
     print(f"    {'brief:':<12} {task.file('BRIEF.md')}")
     progress = task.file("progress.jsonl")
     if os.path.exists(progress):
-        lines = open(progress).read().splitlines()
+        lines = open(progress, encoding="utf-8").read().splitlines()
         print(f"    {'progress:':<12} {len(lines)} transition(s), last: {lines[-1] if lines else '-'}")
     if os.path.exists(task.file("result.md")):
         print(f"    {'result:':<12} {task.file('result.md')}")
