@@ -189,14 +189,11 @@ def test_a_uv_installer_that_installs_nothing_stops_the_bootstrap_before_the_clo
 
 @pytest.mark.parametrize("name", ["install.ps1", "install.sh"])
 def test_the_bootstraps_are_ascii_with_lf_line_endings(name):
-    """Windows PowerShell 5.1 would not evaluate install.ps1 through the README's
-    `powershell -c "irm <url> | iex"` while it carried one em dash in a comment:
-    iex was handed the script a line at a time and stopped at the first
-    function. The same bytes in ASCII ran. Measured on a Windows 11 machine with
-    the one-liner started from a PowerShell parent, as an operator types it; a
-    Python parent, which is all this suite has, did not reproduce it, and the
-    mechanism inside PowerShell is not known. So the bootstraps are held to the
-    shape that ran rather than to a run of the one-liner here."""
+    """Both bootstraps are also read as files: install.ps1's header and the README
+    offer `irm <url> -OutFile install.ps1` then `powershell -File install.ps1`,
+    and Windows PowerShell 5.1 decodes a .ps1 with no byte-order mark in the
+    ANSI code page, so one non-ASCII byte would reach it as different text than
+    the tracked file. A CR, in turn, is part of every line `sh` reads."""
     data = (REPO / name).read_bytes()
     assert b"\r" not in data, f"{name} has CR line endings"
     bad = [(n, line) for n, line in enumerate(data.split(b"\n"), 1) if any(b > 127 for b in line)]

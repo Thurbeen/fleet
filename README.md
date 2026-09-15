@@ -102,6 +102,14 @@ checks each step as it goes.
    powershell -c "irm https://raw.githubusercontent.com/Thurbeen/fleet/main/install.ps1 | iex"
    ```
 
+   If Microsoft Defender blocks that launch, download the script and run it
+   as a file instead:
+
+   ```powershell
+   irm https://raw.githubusercontent.com/Thurbeen/fleet/main/install.ps1 -OutFile install.ps1
+   powershell -ExecutionPolicy Bypass -File install.ps1
+   ```
+
    Pick a clone location you will keep: the extension records the path.
    Re-running is safe, and `uv run fleet preflight` lists what is still missing.
 
