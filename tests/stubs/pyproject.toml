@@ -15,6 +15,8 @@ glab = "fleet_stubs.glab:main"
 quota-axi = "fleet_stubs.quota:main"
 # Copied under any other name by `Stubs.tool`.
 fleet-stub = "fleet_stubs.anytool:main"
+# Copied under a real tool's name, behind the stubs, by `tripwires`.
+fleet-tripwire = "fleet_stubs.tripwire:main"
 
 [tool.uv.build-backend]
 module-name = "fleet_stubs"

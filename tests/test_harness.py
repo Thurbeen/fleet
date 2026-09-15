@@ -19,7 +19,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from harness import REPO, STUB_TOOLS, isolate
+from harness import REPO, STUB_TOOLS, isolate, tripwires
 
 
 def hostile_host(root: Path) -> dict:
@@ -41,13 +41,9 @@ def hostile_host(root: Path) -> dict:
     (home / ".gitconfig").write_text(gitconfig.read_text())
 
     # A tripwire for every stubbed tool, BEHIND the stubs on PATH: it only runs
-    # if a stub was not found first, and then it says so.
-    trip = root / "bin"
-    trip.mkdir()
-    for tool in STUB_TOOLS:
-        script = trip / tool
-        script.write_text(f'#!/bin/sh\necho "{tool} $*" >>"{root / "tripwire.log"}"\nexit 97\n')
-        script.chmod(0o755)
+    # if a stub was not found first, and then it says so. A real executable on
+    # every OS, so the claim is not vacuous where `#!/bin/sh` means nothing.
+    trip = tripwires(root / "bin", STUB_TOOLS)
 
     env = dict(os.environ)
     env.update(
@@ -68,6 +64,7 @@ def hostile_host(root: Path) -> dict:
         GITLAB_HOST="gitlab.private.invalid",
         THURBOX_SESSION="00000000-0000-0000-0000-operatorlead",
         FLEET_QUEUE_DIR=str(REPO / "orchestration" / "queue"),
+        TRIPWIRE_LOG=str(root / "tripwire.log"),
         PATH=str(trip) + os.pathsep + env_path(),
     )
     return env

@@ -187,6 +187,17 @@ def run_fleet(*args: str, cwd: Path = REPO, stdin: str | None = None, **env: str
     return run([*PYTHON, "-c", boot, *args], cwd=cwd, stdin=stdin, **env)
 
 
+def tripwires(where: Path, tools) -> Path:
+    """A directory holding a tripwire under each tool's name, which logs to TRIPWIRE_LOG and exits 97."""
+    launcher = shutil.which("fleet-tripwire")
+    if not launcher:
+        raise RuntimeError("fleet-tripwire not on PATH: the stub package is not installed")
+    where.mkdir(parents=True, exist_ok=True)
+    for tool in tools:
+        shutil.copy2(launcher, where / (tool + (".exe" if os.name == "nt" else "")))
+    return where
+
+
 def lib(filename: str):
     """A scripts/lib module, loaded by path under `fleet_<name>` exactly as fleet/cli.py loads it."""
     from fleet.cli import load
