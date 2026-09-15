@@ -229,15 +229,31 @@ def test_the_readmes_windows_one_liner_irm_piped_to_iex_installs(stubs, origin, 
 def test_a_uv_installer_that_installs_nothing_stops_the_bootstrap_before_the_clone(box, driver, stubs, tmp_path):
     """The uv step's refusal is the end of the run. A child installer that prints
     and installs nothing must not read as success and walk on into the clone."""
+    (stubs.bin / ("uv" + EXE)).unlink()
+    uv_home = tmp_path / "uv-home"
+    uv_home.mkdir()
     installer = tmp_path / ("uv-noop.ps1" if driver.name == "powershell" else "uv-noop.sh")
     write(installer, "Write-Output 'the stand-in installer ran and installed nothing'\n"
                      if driver.name == "powershell" else "echo 'the stand-in installer ran and installed nothing'\n")
-    tools = full_machine(family(driver))
-    machine(stubs, tools)
-    done = box(FLEET_YES="1", FLEET_TEST_UV_INSTALLER=str(installer))
+    done = box(FLEET_YES="1", UV_INSTALL_DIR=str(uv_home), UV_NO_MODIFY_PATH="1",
+               FLEET_TEST_UV_INSTALLER=str(installer))
+    assert "the stand-in installer ran" in done.out, f"the uv step never ran, so this proves nothing:\n{done.out}"
     assert done.code != 0, done.out
     assert not box.clone.exists(), f"the bootstrap cloned after its uv step refused:\n{done.out}"
-    refute(done.out, "installing into", "Cloned ")
+    refute(done.out, "Cloned ")
+
+
+@pytest.mark.parametrize("name", ["install.ps1", "install.sh"])
+def test_the_bootstraps_are_ascii_with_lf_line_endings(name):
+    """Windows PowerShell 5.1 would not evaluate install.ps1 through the README's
+    `irm | iex` while it carried one em dash in a comment: iex was handed the
+    script a line at a time and stopped at the first function. The same file in
+    ASCII ran. Measured on a Windows 11 machine; the mechanism inside PowerShell
+    is not known, so both bootstraps are held to the shape that ran."""
+    data = (REPO / name).read_bytes()
+    assert b"\r" not in data, f"{name} has CR line endings"
+    bad = [(n, line) for n, line in enumerate(data.split(b"\n"), 1) if any(b > 127 for b in line)]
+    assert not bad, f"{name} has non-ASCII bytes on lines {[n for n, _ in bad]}"
 
 
 def test_a_uv_an_earlier_run_installed_is_found_and_not_downloaded_again(box, driver, stubs, tmp_path):

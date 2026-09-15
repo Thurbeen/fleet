@@ -31,6 +31,7 @@ Usage: check_docs.py README.md [more.md ...]
 from __future__ import annotations
 
 import os
+import posixpath
 import re
 import subprocess
 import sys
@@ -130,7 +131,9 @@ def main(argv: list[str]) -> int:
     tracked = tracked_paths()
     problems = []
     for md in argv:
-        base = os.path.dirname(md)
+        # Resolved as git names paths, with forward slashes on every OS: an
+        # os.path join on Windows gives backslashes, which match no tracked path.
+        base = posixpath.dirname(md.replace(os.sep, "/"))
         with open(md, encoding="utf-8") as f:
             text = f.read()
         svgs = []
@@ -138,7 +141,7 @@ def main(argv: list[str]) -> int:
             rel = local(url)
             if rel is None:
                 continue
-            path = os.path.normpath(os.path.join(base, rel))
+            path = posixpath.normpath(posixpath.join(base, rel))
             if path not in tracked:
                 problems.append(f"{md}: links to {url!r}, which is not a tracked file")
                 continue

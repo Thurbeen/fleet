@@ -12,7 +12,7 @@
 #
 #   1. uv         astral's own installer, which needs no admin
 #   2. git        winget, after saying so and asking once
-#   3. checkout   clone it, or fast-forward the one already there — sticky
+#   3. checkout   clone it, or fast-forward the one already there - sticky
 #                 where the Mission Control lead already opens one, never
 #                 overwriting a directory that is not a fleet clone, another
 #                 branch, a divergence, or uncommitted changes it is behind on
@@ -83,11 +83,14 @@ function Install-FleetUv {
     if (Test-FleetCommand 'uv') { return $true }
     Write-Host "uv is not installed; installing it with astral's installer (no admin needed)."
     # A child PowerShell, so the installer's own `exit` cannot end this session.
+    # Its output goes to the screen and never into this function's return
+    # value: what a child prints would otherwise make a failed install read as
+    # success and walk on into the clone.
     $shell = [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
     if ($env:FLEET_TEST_UV_INSTALLER) {
-        & $shell -NoProfile -ExecutionPolicy Bypass -File $env:FLEET_TEST_UV_INSTALLER
+        & $shell -NoProfile -ExecutionPolicy Bypass -File $env:FLEET_TEST_UV_INSTALLER | Out-Host
     } else {
-        & $shell -NoProfile -ExecutionPolicy Bypass -Command 'irm https://astral.sh/uv/install.ps1 | iex'
+        & $shell -NoProfile -ExecutionPolicy Bypass -Command 'irm https://astral.sh/uv/install.ps1 | iex' | Out-Host
     }
     if ($LASTEXITCODE -ne 0) {
         Write-FleetRefusal "the uv installer failed; its error is above."
@@ -121,7 +124,7 @@ function Install-FleetGit([bool]$Yes) {
             return $false
         }
     }
-    & winget install --id Git.Git -e --accept-source-agreements --accept-package-agreements
+    & winget install --id Git.Git -e --accept-source-agreements --accept-package-agreements | Out-Host
     if ($LASTEXITCODE -ne 0) {
         Write-FleetRefusal "installing git failed; its error is above."
         return $false
@@ -160,7 +163,7 @@ function Sync-FleetCheckout([string]$Dir, [string]$Repo, [string]$Branch) {
         if ($parent -and -not (Test-Path -LiteralPath $parent)) {
             New-Item -ItemType Directory -Force -Path $parent | Out-Null
         }
-        & git clone --quiet --branch $Branch $Repo $Dir
+        & git clone --quiet --branch $Branch $Repo $Dir | Out-Host
         if ($LASTEXITCODE -ne 0) {
             Write-FleetRefusal "git clone of $Repo failed; its error is above."
             return $false
@@ -186,7 +189,7 @@ function Sync-FleetCheckout([string]$Dir, [string]$Repo, [string]$Branch) {
         return $false
     }
 
-    & git -C $Dir fetch --quiet origin $Branch
+    & git -C $Dir fetch --quiet origin $Branch | Out-Host
     if ($LASTEXITCODE -ne 0) {
         Write-Host "Could not fetch origin; carrying on with the checkout as it is."
         return $true
@@ -204,7 +207,7 @@ function Sync-FleetCheckout([string]$Dir, [string]$Repo, [string]$Branch) {
         return $false
     }
     if ($behind -gt 0) {
-        & git -C $Dir merge --ff-only --quiet "origin/$Branch"
+        & git -C $Dir merge --ff-only --quiet "origin/$Branch" | Out-Host
         if ($LASTEXITCODE -ne 0) {
             Write-FleetRefusal "the fast-forward of $Dir failed; its error is above."
             return $false

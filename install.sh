@@ -32,7 +32,7 @@
 #   the lead's own checkout     a Mission Control session already opens one, so
 #                               a second clone would be one thurbox never uses
 #   ~/fleet                     a plain directory the operator can find and
-#                               back up — the queue and the map live in it
+#                               back up - the queue and the map live in it
 #
 # NOTHING EXISTING IS OVERWRITTEN. A directory that is not a fleet clone is
 # refused. An existing clone is fast-forwarded and only fast-forwarded: on
@@ -41,7 +41,7 @@
 #
 # POSIX sh, because `| sh` runs whatever /bin/sh is. The body is one function
 # called on the last line, so the shell has read all of it before any child
-# runs — under `| sh` stdin IS the rest of this file, and a child that read it
+# runs - under `| sh` stdin IS the rest of this file, and a child that read it
 # would swallow every line after itself. For the same reason every question is
 # read from /dev/tty and never from stdin. With no terminal, `--yes` (or
 # FLEET_YES=1) is the answer; without either, it refuses and prints the command.
