@@ -684,10 +684,11 @@ environment REPLACES the file rather than adding to it.
   then be theirs to write.
 - **An attestation naming its CURRENT head commit.** Not the `## ` headings a
   pipeline prints — those are text anyone can paste, so counting them let a
-  body authorise its own merge. The attestation is an HTML comment carrying
-  the commit the pipeline ran on and a status per step, and its marker is the
-  operator's (`ATTESTATION_MARKER`); one from an earlier push is refused,
-  because a verdict is about the code it saw. A PR whose task declared another
+  body authorise its own merge. The attestation is JSON naming the commit the
+  pipeline ran on and a status per step, either inside an HTML comment or in a
+  fenced block under one, and its marker is the operator's
+  (`ATTESTATION_MARKER`); one from an earlier push is refused, because a
+  verdict is about the code it saw. A PR whose task declared another
   method carries none, is recorded `green` rather than `ready`, and is handed
   back: the checks it passed are whatever checks that repo happens to have, and
   nothing says review, tests and lint ran on the head that would land.

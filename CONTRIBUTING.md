@@ -13,11 +13,11 @@ One script is the whole gate:
 ./scripts/check.sh shell    # just one check
 ```
 
-CI runs that script, the pre-commit hooks run it, and `.no-mistakes.yaml` points
-its `lint` command at it, so a green local run and a green pull request mean the
-same thing. That matters more here than in most repos: **CI only fires on pull
-requests** while routine control-plane changes go straight to `main`, so the
-local run is the one doing the work.
+CI runs that script, the pre-commit hooks run it, and `.publish.yaml` declares
+it as this repository's whole gate, so a green local run and a green pull
+request mean the same thing. That matters more here than in most repos: **CI
+only fires on pull requests** while routine control-plane changes go straight to
+`main`, so the local run is the one doing the work.
 
 A missing tool fails the check rather than skipping it. The script's header
 holds the full list of checks, the tools they need, and the full usage —
@@ -37,16 +37,126 @@ prek install
 
 ### The gate before the push
 
-Changes here are gated with
-[no-mistakes](https://github.com/kunchenguid/no-mistakes) before they reach the
-push target. `.no-mistakes.yaml` is committed and carries the reasoning for
-every key it sets.
+Changes here are published with the
+[`publish`](https://github.com/LeTuR/publish) skill: it rebases, reviews the
+whole branch against this repository's own rules, runs the gate, commits the
+fixes, pushes, opens the pull request, watches CI, and writes an attestation
+naming the commit it ran on.
 
-Its **gate-control** fields — `commands.*`, `agent`, `document.instructions`,
-`review.path_instructions`, `ci.rerun_transient`, `no_ci`,
-`disable_project_settings` — are read only from the trusted default branch. A
-contributor therefore cannot weaken the gate that reviews their own change; an
-edit to one of those fields takes effect once it has merged to `main`.
+`.publish.yaml` is committed and is how this repository declares all of that —
+the gate command above, the base branch, and the documents the review reads.
+Its own comments carry the reasoning for every key it sets.
+
+**The declaration is ordinary branch content.** The tool this replaced read its
+gate-control fields only from the trusted default branch, so a contributor
+could not weaken the rules that reviewed their own change. Nothing reproduces
+that here: a change to `.publish.yaml`, to the rules below, or to
+`scripts/check.sh` takes effect on the branch that makes it, and the only thing
+standing between a weakened rule and a merge is that weakening it shows up in
+the diff. Review it as such.
+
+## Review rules, by path
+
+House rules a reviewer reading only the diff would not know. Each heading is
+the path glob its rules apply to: **read the ones the change touches**, and
+skip the rest. They were scoped by glob mechanically until the gate that did
+that was removed; the skill's `review.rules` is a flat list of files, so the
+scoping is these headings and this sentence.
+
+Nothing here is excluded from review any more, either.
+`registry/repos.generated.yaml` and `media/**` used to be skipped as files
+carrying no reviewable intent — the sync script is the reviewable artifact, its
+output is not, and the banner artwork is a raster with no reviewable diff. The
+rules below still say so; what is gone is the mechanism that acted on it, so
+expect both to be read.
+
+### `scripts/**`
+
+Shell run by humans and by CI, linted by shellcheck under `scripts/check.sh`.
+Two constraints this repo has already paid for:
+
+A script here must work inside a LINKED GIT WORKTREE, where `.git` is a file
+rather than a directory. Every thurbox worker runs in one, and a tool that walks
+a directory tree looking for a git repo can silently find nothing there — which
+reads as a pass. Prefer `git ls-files` and explicit paths over letting a linter
+discover its own inputs.
+
+`scripts/sync-checkout.sh` runs from a `SessionStart` hook and must always exit
+0: a sync problem must never block a session from starting. It only ever
+fast-forwards, and never rebases or resets.
+
+Comments explain why, never what. A stale comment is worse than none.
+
+### `.agents/skills/**`
+
+An agent skill: the working reference a coding agent loads when it is about to
+drive thurbox. Judge it as instructions rather than as prose — every command
+must be one that the installed `thurbox-cli` actually accepts, with the flags
+spelled as that binary spells them, because an agent will run what this file
+says without checking.
+
+A claim about what a CLI does not expose is the expensive kind of mistake here:
+it sends an agent down a fallback path forever. Check it against `thurbox-cli
+<cmd> --help`, which is version-matched to the installed binary, before
+asserting an absence.
+
+`.claude/skills` is a symlink to this tree. Do not add a parallel copy under
+`.claude/`, and do not mirror into `.opencode/skills` — opencode auto-discovers
+`.claude/skills`, so the symlink already serves it and a mirror would register
+the same skill twice.
+
+### `orchestration/**`
+
+Playbooks are recipes an operator follows; run logs are history. A playbook
+states its inputs, how the goal decomposes into sessions, and the acceptance
+signal for each. It does not restate a target repo's own conventions — it
+points at them.
+
+Do not request test coverage for either.
+
+`orchestration/session-profiles.yaml` is neither: it is configuration that
+renders into `thurbox-cli session create` flags, so judge it the way you would
+judge a command line. It is committed and this repo is public, so a credential
+in it is a finding regardless of how it is spelled. Two further rules are
+machine-enforced by `./scripts/check.sh profiles` — a `THURBOX_*` key (thurbox's
+identity vars always win over `--env`, so it would look applied and do nothing)
+and a `command` without a `reports_as` (thurbox reads hook coverage against the
+command's file stem, so an undeclared session reports nothing and renders as
+`uncovered` while it works). If a diff weakens either assertion in
+`scripts/lib/session_profiles.py`, that is the finding, not the profile that
+would then pass.
+
+### `registry/**`
+
+`registry/repos.generated.yaml` is generated by `scripts/sync-registry.sh` and
+must never be hand-edited; a diff that edits it directly is a finding regardless
+of whether the content is correct. `registry/context/<repo>.md` is the opposite:
+human-owned judgement the sync never touches.
+
+### `extension.toml.in`
+
+The thurbox extension manifest, rendered to a gitignored `extension.toml` by
+`scripts/install-extension.sh`. `__REPO_PATH__` is load-bearing — no thurbox
+token spells "my clone" (`{home}` is the extension home), so it cannot be
+simplified back to a `~` path.
+
+`min_thurbox_version` is a claim about the whole range this manifest supports,
+not a note about the version someone happens to run. Raising it is only correct
+alongside the reason, and lowering it means every behavior the repo's prose
+relies on must hold at the new floor too.
+
+### `.github/workflows/**`
+
+CI fires only on pull requests. Every job feeds the single required "All Checks"
+gate, so adding or removing a job never needs a branch ruleset change — but a
+new job must be listed in that gate's `needs:`, or it can fail while the gate
+reports green.
+
+Actions are pinned by commit SHA with the version in a trailing comment, and
+Renovate keeps them current. A tag reference is a finding.
+
+The jobs run `scripts/check.sh` rather than inlining their checks, so that the
+local gate and the pull-request gate cannot drift apart.
 
 ## Merging: squash only
 
@@ -179,12 +289,59 @@ with no custom rule.
 
 Hand-wrap markdown at 80 columns — `scripts/check.sh markdown` enforces it.
 
-Each class of fact has exactly one owner, and `.no-mistakes.yaml`'s
-`document.instructions` is the map. In short: `README.md` is the human-facing
-guide, `AGENTS.md` the agent-facing operating guide for working *inside* this
-repo, `FLEET.md` the standing context of the long-lived Mission Control
-session, this file the contribution process and the configuration of external
-tooling, and `.agents/skills/thurbox-session/SKILL.md` the working reference
-for driving `thurbox-cli`. A script's or config file's own header owns how that
-thing works.
-Reduce a duplicate to a pointer rather than keeping two copies in step.
+### Documentation ownership
+
+This repo carries four overlapping prose files by design, and the failure mode
+is one fact restated in all four and updated in one. **Every fact has exactly
+one owner; reduce a duplicate to a pointer rather than synchronizing it.** This
+section is the map, and `.publish.yaml` names this file so a review reads it.
+
+`README.md` is the human-facing guide: what the control plane is, the
+quickstart, the customization surface, and the layout. It owns the setup story.
+
+`AGENTS.md` is the agent-facing operating guide for working INSIDE this repo —
+what the trees are, the run loop, and the local gates. It is an index into the
+other owners, not a second copy of them. `CLAUDE.md` is a two-line pointer that
+imports it and owns nothing; never write content there.
+
+`FLEET.md` is the standing context of the long-lived Mission Control session,
+laid down at the extension home by `extension.toml.in`. It owns what that
+session is FOR. It deliberately defers to `AGENTS.md` for how to work in the
+repo.
+
+`CONTRIBUTING.md` — this file — owns the contribution process: the
+branch-and-pull-request flow, the squash-only merge policy, the local gate, the
+review rules above, and the configuration of external tooling such as
+`.publish.yaml`, `.pre-commit-config.yaml`, `.rumdl.toml` and `renovate.json`. A
+root-level config file's rationale belongs here, not in `README.md`.
+
+`.agents/skills/thurbox-session/SKILL.md` is the working reference for driving
+`thurbox-cli`: spawning, prompting, completion detection, cleanup. Detail an
+agent needs only while launching a worker belongs there rather than in
+`AGENTS.md`. It is a reference, not an owner — the rationale still lives in the
+documents above. `.claude/skills` is a symlink to `.agents/skills`, so the skill
+has exactly one copy; never write a second one under `.claude/`.
+
+`scripts/queue.sh`'s header owns the task queue: the layout, the ordering rule,
+and why completion is a stream plus a file rather than a message.
+`orchestration/queue/README.md` owns the on-disk record shape, and
+`.agents/skills/fleet-queue/SKILL.md` is the working reference for driving it —
+a reference, not an owner. `scripts/session-trust.sh`'s header owns the
+trust-dialog mechanics and the per-agent table, and
+`scripts/trust-thurbox-dir.sh`'s owns the config-seeding fallback. `README.md`
+owns the human-facing version of all of it. Point at one of those rather than
+restating the doctrine in a fifth place.
+
+`orchestration/playbooks/<name>.md` owns a repeatable recipe for a class of
+work; `orchestration/runs/<date>-<slug>.md` owns what happened in one run and is
+append-only history, never edited to match a later decision.
+`registry/context/<repo>.md` owns the human truth about one project.
+`orchestration/session-profiles.yaml` owns the settings a worker session starts
+under, and its own header comment owns the schema and the three rules;
+`README.md` owns it as a customization surface and this file the rationale for
+the gate check over it. Point at one of those rather than restating a rule in a
+fourth place.
+
+This repository has no `CHANGELOG.md` and does not need one. Do not add a new
+documentation file to close a perceived gap when an owner above already covers
+the subject.

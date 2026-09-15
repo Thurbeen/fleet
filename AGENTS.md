@@ -44,8 +44,12 @@ names every path and the reason for each.
   a limit. **Both tracked copies name nothing** — `./scripts/check.sh automerge`
   fails one that does — so a fresh clone inherits no operator's pipeline,
   vendor or agent. Copy either to a gitignored `*.conf` beside it to set
-  anything. `no-mistakes` is still accepted wherever a method is read and means
-  `attested`.
+  anything. The marker is read in TWO SHAPES — the JSON inside the comment, or
+  the marker alone with the JSON in a fenced block after it — because a
+  publisher that writes the second is a different SHAPE and not a different
+  string, which no value of the setting would have reached. The retired word
+  `no-mistakes` is still accepted wherever a method is read and means
+  `attested`, so a record written before the rename still loads.
 - `orchestration/session-glyphs.example.conf` — the mark fleet's sessions wear
   in the thurbox session list: `📡` on the lead, `🚀` on every worker, under ONE
   `GLYPHS=on|off` setting whose `off` is the one-cell `⌖` and no worker prefix.
@@ -291,9 +295,10 @@ CI only runs on pull requests, and routine control-plane changes go straight to
 ```
 
 That one script is the whole gate, and its header names every check it runs. CI
-runs it, the prek hooks run it, and `.no-mistakes.yaml` points its `lint`
-command at it, so a green local run and a green pull request mean the same
-thing.
+runs it, the prek hooks run it, and `.publish.yaml` declares it as the gate the
+`publish` skill runs, so a green local run and a green pull request mean the
+same thing. `CONTRIBUTING.md` owns that declaration and the review rules
+`.publish.yaml` points at.
 
 **The gate reads no operator state** — not the queue's records, the registry
 map, a gitignored `*.conf`, your HOME or your git config — so one commit gets

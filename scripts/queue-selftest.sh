@@ -3043,6 +3043,114 @@ expect "a newer run still in progress is pending, not the old run's pass" \
 	"checks still running" "$line_205"
 refute "and it is not ready on the older run's word" "ready: " "$line_205"
 
+# --- 9k. the attestation's OTHER shape: a marker, then a fenced block --------
+#
+# The shape this file's fixtures use — the JSON INSIDE the HTML comment — was
+# the only one fleet could read, and no value of `ATTESTATION_MARKER` would
+# have changed that: a publisher that writes the marker alone in the comment
+# and the JSON in a fenced block underneath differs in SHAPE, not in string.
+# Both are read now, and the rule the check exists for is one rule over both —
+# a verdict naming a commit that is not the head authorises nothing.
+#
+# The block below is the shape `references/attestation.md` specifies, built
+# here rather than pasted, so a claim about it is a claim about the format and
+# not about one pull request that happened to carry it.
+attest_root="$tmp/attest-shapes"
+mkdir -p "$attest_root/orchestration"
+cat >"$attest_root/orchestration/publish.conf" <<'EOF'
+METHOD=attested
+HOW=run the publish skill
+ATTESTATION_MARKER=publish-attestation/v1
+EOF
+
+fenced="$(env FLEET_PUBLISH_ROOT="$attest_root" python3 - <<'PY'
+import json
+import sys
+
+sys.path.insert(0, "scripts/lib")
+import queue as q
+
+HEAD = "a" * 40
+EARLIER = "b" * 40
+
+PASSED = [
+    {"name": "review", "status": "passed", "rounds": 2, "findings": 3, "fixed": 3},
+    {"name": "check", "status": "passed", "command": "./scripts/check.sh"},
+    {"name": "push", "status": "passed"},
+    {"name": "ci", "status": "passed", "conclusion": "success"},
+]
+
+
+def body(head=HEAD, verdict="passed", steps=None):
+    doc = {
+        "schema": "publish-attestation/v1",
+        "head_sha": head,
+        "base": "main",
+        "base_sha": "c" * 40,
+        "repository": "Thurbeen/fleet",
+        "attested_at": "2026-09-15T10:00:00Z",
+        "gate_source": ".publish.yaml",
+        "steps": PASSED if steps is None else steps,
+        "verdict": verdict,
+    }
+    return (
+        "Removes the thing.\n\n"
+        "<!-- publish-attestation/v1 -->\n"
+        "```json\n" + json.dumps(doc, indent=2) + "\n```\n"
+        "<!-- /publish-attestation -->\n"
+    )
+
+
+def say(label, ok_why):
+    ok, why = ok_why
+    print(f"{label}={'yes' if ok else 'no'}: {why}")
+
+
+say("current", q.attestation_verdict(body(), HEAD))
+say("stale", q.attestation_verdict(body(head=EARLIER), HEAD))
+say("blocked", q.attestation_verdict(body(verdict="blocked"), HEAD))
+say("skipped", q.attestation_verdict(
+    body(verdict="passed", steps=PASSED[:2] + [{"name": "ci", "status": "skipped",
+                                                "reason": "pipeline still running"}]),
+    HEAD))
+say("notapplicable", q.attestation_verdict(
+    body(steps=PASSED[:3] + [{"name": "ci", "status": "not-applicable",
+                              "reason": "this repository runs no pipeline"}]),
+    HEAD))
+say("noverdict", q.attestation_verdict(
+    body().replace('"verdict": "passed"', '"verdict": ""'), HEAD))
+PY
+)"
+expect "the skill's own shape is read, and its head is this head" \
+	"current=yes" "$fenced"
+expect "and an attestation for an earlier head still authorises nothing" \
+	"stale=no" "$fenced"
+expect "a blocked verdict on the current head is refused, not read as a pass" \
+	"blocked=no" "$fenced"
+expect "a skipped step blocks, which is the whole reason the field exists" \
+	"skipped=no" "$fenced"
+expect "and a not-applicable one does not" "notapplicable=yes" "$fenced"
+expect "a block whose verdict is empty proves nothing" "noverdict=no" "$fenced"
+
+# The shape every OTHER fixture in this file uses, under the marker this run's
+# own `publish.conf` names. Reading the new one is an addition; a pipeline that
+# already emitted the old one is not a pipeline this change breaks.
+inline="$(python3 - <<'PY'
+import json
+import sys
+
+sys.path.insert(0, "scripts/lib")
+import queue as q
+
+HEAD = "d" * 40
+steps = [{"step": s, "status": "completed"} for s in ("review", "test", "push")]
+payload = json.dumps({"head_sha": HEAD, "steps": steps})
+ok, why = q.attestation_verdict("<!-- fleet-attestation:v1 %s -->\n" % payload, HEAD)
+print(f"inline={'yes' if ok else 'no'}: {why}")
+PY
+)"
+expect "the older shape, inside the comment, is still read" "inline=yes" "$inline"
+
 # --- 10. the shepherd writes down the publish state it already saw -----------
 #
 # Every fact below arrived in the ONE `gh pr list` the pass already makes, and
@@ -7144,7 +7252,7 @@ done <<'EOF'
 09|explain-thurbox|push|publishes a thurview document; there is nothing to commit|docs/thurview-explainer|http://docs.example.test:35547/review/f90d2474-48ad-4e64-8beb-3c8aa4d6e998|none|
 10|prove-and-propose|push|posts test evidence on #1117 and drafts a proposal; nothing to commit|lab/nvim-editor-flow|https://github.com/Thurbeen/thurbox/pull/1117#issuecomment-5651202185|note|https://github.com/Thurbeen/thurbox/pull/1117
 11|emoji-session-glyphs|||feat/emoji-session-glyphs|https://github.com/Thurbeen/fleet/pull/51|-|
-12|cut-defensive-prose|no-mistakes|run `/no-mistakes --yes`|docs/prune-the-rationale|https://github.com/Thurbeen/fleet/pull/58|-|
+12|cut-defensive-prose|no-mistakes|run the repo's own publish command|docs/prune-the-rationale|https://github.com/Thurbeen/fleet/pull/58|-|
 13|reconciler-loop|||feat/reconciler-loop|https://github.com/Thurbeen/fleet/pull/48|-|
 14|green-the-pr|pr||fix/3779-green|https://github.com/kunchenguid/firstmate/pull/3779|pr|https://github.com/kunchenguid/firstmate/pull/3779
 15|survey-existing|||research/build-or-adopt||none|

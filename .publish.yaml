@@ -1,0 +1,62 @@
+# How this repository is published, read by the `publish` skill.
+#
+# Reference: the skill's own `references/gate.md`, which owns every key below.
+# This file replaces the gate configuration a tool used to hold, and the two
+# things that tool read from prose — the documentation ownership map and the
+# house rules a reviewer would not know from the diff — are `review.rules`
+# below, in the documents that already owned their subjects.
+#
+# ONE DIFFERENCE WORTH KNOWING. The old gate read its own configuration from
+# the trusted default branch, never from the pushed branch, so a contributor
+# could not weaken the rules that review their own change. Nothing here
+# reproduces that: this file and the documents it names are ordinary branch
+# content, and the only thing standing between a weakened rule and a merge is
+# that weakening it shows up in the diff.
+version: 1
+
+forge: github
+base: main
+
+review:
+  # The skill finds AGENTS.md and CONTRIBUTING.md on its own; naming them is
+  # how this repository says they are not background but the standard. Both
+  # are read in full — `rules` is a list of FILES, and there is no way here to
+  # scope one to the paths a change touches, so the scoping the old gate did
+  # by glob survives as the headings under CONTRIBUTING.md's "Review rules, by
+  # path" and an instruction to read the ones that match.
+  rules:
+    - AGENTS.md
+    - CONTRIBUTING.md
+
+# scripts/check.sh IS the repo's gate — shellcheck, rumdl over every tracked
+# markdown file, a YAML parse of the whole tree, the session profiles, the task
+# queue, the CLI, the skills-symlink check, and isolation, which proves the
+# gate itself reads no operator state. It reads no live queue record and no
+# registry map either — those are `./scripts/fleet-status.sh --records`, the
+# operator's own health check.
+#
+# ONE STEP, because lint and test are the same script here. There is nothing to
+# compile and nothing to unit-test: `./scripts/check.sh queue` runs
+# scripts/queue-selftest.sh, the repo's one real test, and it is part of the
+# same run. Naming the script rather than leaving the gate to be discovered is
+# the point — a discovered gate is the agent deciding what "running the tests
+# here" means, which invites something that reaches outside the worktree
+# (spawning a real thurbox session, or running sync-registry.sh against the
+# live GitHub API).
+#
+# It is also the same script CI and the prek hooks run, so a green local run
+# and a green pull request mean the same thing. That parity matters more here
+# than in most repos: CI only fires on pull requests while routine
+# control-plane changes go straight to `main`, which makes the local run the
+# one doing the work.
+gate:
+  - name: check
+    run: ./scripts/check.sh
+    # Markdown is the only surface here with a formatter, and `run` above
+    # enforces exactly what this fixes, so prose an agent writes would
+    # otherwise reach the check unformatted and cost a round. `--fix` is a
+    # no-op for every other check, which is why it needs no argument.
+    fix: ./scripts/check.sh --fix
+
+ci:
+  required: true
