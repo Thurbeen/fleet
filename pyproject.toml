@@ -16,3 +16,13 @@ build-backend = "uv_build"
 # it dispatches to, rather than under src/.
 [tool.uv.build-backend]
 module-root = ""
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
+
+# No .pytest_cache in the tree: a checkout the gate leaves dirty is one
+# sync-checkout.sh refuses to fast-forward.
+[tool.pytest.ini_options]
+addopts = ["-p", "no:cacheprovider"]

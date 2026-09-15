@@ -18,6 +18,14 @@ names every path and the reason for each.
   `scripts/queue.sh` and `scripts/fleet-status.sh` forward to it with the same
   arguments, output and exit code. `tests/test_cli.py` holds that, and
   `check.sh cli` runs it.
+- `tests/` — the pytest suite replacing the bash selftests one section at a
+  time, and running natively on Windows. `tests/harness.py` owns the two things
+  every test stands on: `isolated_env`, which is `scripts/lib/selftest-env.sh`
+  for Python, and the stub `gh`, `thurbox-cli`, `ssh`, `glab` and `quota-axi`,
+  a package in `tests/stubs` installed as real executables first on PATH.
+  Fleet's code runs there with any locale-encoded read or write as an error.
+  `check.sh queue` runs `tests/queue/` beside what is left of
+  `scripts/queue-selftest.sh`.
 - `registry/owners.txt` — the GitHub owners the map covers, one per line.
   `registry/owners.example.txt` is the tracked copy it starts from.
 - `registry/repos.generated.yaml` — generated index of every repo under those

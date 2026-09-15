@@ -19,6 +19,8 @@ the gate, and gitignored settings files in the checkout itself. `isolate` is
             a copy of the TRACKED *.example.conf only; FLEET_QUEUE_DIR,
             FLEET_RUNS_DIR and FLEET_RECONCILE_DIR at empty directories; and
             FLEET_REGISTRY_FILE at a registry map that does not exist.
+  keeps     PATH, PYTHONUSERBASE, and uv's cache and Python directories: where
+            the tools are installed is not operator state.
 
 WHY STUBS ARE CONSOLE SCRIPTS. Fleet calls `gh`, `thurbox-cli`, `ssh`, `glab`
 and `quota-axi` by bare name. `tests/stubs` declares each as a console script,
@@ -37,6 +39,7 @@ import site
 import subprocess
 import sys
 from dataclasses import dataclass
+from functools import cache
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -56,6 +59,14 @@ DROPPED_PREFIXES = ("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_", "FLEET_")
 # is an error. That is UTF-8 on a Linux runner and cp1252 on a Windows console,
 # so a record that only round-trips on one of them fails on both.
 PYTHON = (sys.executable, "-X", "warn_default_encoding", "-W", "error::EncodingWarning")
+
+
+@cache
+def uv_dir(kind: str) -> str | None:
+    """`uv cache dir` or `uv python dir`, read once under the real HOME."""
+    uv = shutil.which("uv")
+    done = subprocess.run([uv, kind, "dir"], capture_output=True, text=True, encoding="utf-8") if uv else None
+    return done.stdout.strip() if done and done.returncode == 0 else None
 
 
 def install_stubs(where: Path) -> Path:
@@ -86,7 +97,8 @@ def isolate(environ: dict, root: Path, stub_bin: Path) -> dict:
         d.mkdir(parents=True, exist_ok=True)
     (home / ".gitconfig").write_text(
         "[user]\n\tname = selftest\n\temail = selftest@example.invalid\n"
-        "[commit]\n\tgpgsign = false\n[tag]\n\tgpgsign = false\n[init]\n\tdefaultBranch = main\n"
+        "[commit]\n\tgpgsign = false\n[tag]\n\tgpgsign = false\n[init]\n\tdefaultBranch = main\n",
+        encoding="utf-8",
     )
     for conf in (REPO / "orchestration").glob("*.example.conf"):
         shutil.copy(conf, root / "settings" / "orchestration" / conf.name)
@@ -98,6 +110,11 @@ def isolate(environ: dict, root: Path, stub_bin: Path) -> dict:
     # Where the TOOLS are installed is not operator state: a PyYAML installed
     # with `pip --user` lives under the real HOME this replaces.
     env.setdefault("PYTHONUSERBASE", site.getuserbase())
+    # So do uv's cache and Pythons, which every `uv run` would fetch again under
+    # the throwaway HOME.
+    for var, kind in (("UV_CACHE_DIR", "cache"), ("UV_PYTHON_INSTALL_DIR", "python")):
+        if var not in env and uv_dir(kind):
+            env[var] = uv_dir(kind)
     settings = str(root / "settings")
     env.update(
         HOME=str(home),
@@ -168,7 +185,7 @@ class Stubs:
     def _write(self, rel: str, text: str) -> None:
         path = self.root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, newline="\n")
+        path.write_text(text, encoding="utf-8", newline="\n")
 
     # gh
     def pipeline_pr(self, n: int, branch: str, attested: str | None = None) -> None:
