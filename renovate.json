@@ -9,6 +9,14 @@
   "minimumReleaseAge": "7 days",
   "internalChecksFilter": "strict",
   "osvVulnerabilityAlerts": true,
+  "description": [
+    "ignorePaths is empty on purpose, and is not the default. config:recommended pulls in :ignoreModulesAndTests, which ignores **/tests/**, and tests/stubs/pyproject.toml is a real package file there: it declares the uv_build the stub tools are built with, the same constraint the root pyproject holds. Ignoring it would let the two drift. This repo vendors nothing, so the rest of that preset's list has nothing to match.",
+    "lockFileMaintenance keeps uv.lock's transitive pins moving. CI runs uv run --frozen, so the lock IS what every runner installs, and nothing in pyproject.toml names those packages for a version bump to reach."
+  ],
+  "ignorePaths": [],
+  "lockFileMaintenance": {
+    "enabled": true
+  },
   "packageRules": [
     {
       "description": "CI's actions, pinned by SHA with the version in a trailing comment. Keep them pinned to a digest rather than letting an update reintroduce a tag reference.",
