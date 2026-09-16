@@ -20,14 +20,24 @@ jobs:
   # can say which change breaks it.
   #
   # SHARDED BY THE GATE'S OWN AREA NAMES, because the areas are nothing like
-  # equal and the suite waits on subprocesses rather than on CPU. Measured on
-  # four cores, against 734s for one serial run: `queue` 299s, `install` with
-  # `isolation` 169s, the other sixteen checks 154s. The critical path is
-  # `queue`, so the wall clock is a bit over 40% of the serial run.
+  # equal and the suite waits on subprocesses rather than on CPU. Splitting
+  # jobs beats splitting workers here: pytest-xdist over one job was measured
+  # at 8m11s against 12m14s serial on four cores — 1.5x, because the waiting
+  # does not parallelise — and two tests changed outcome class under it.
   #
-  # Running one job's tests under pytest-xdist instead was measured at 8m11s
-  # against 12m14s — 1.5x, because the waiting does not parallelise — and two
-  # tests changed outcome class under it. So this splits jobs, not workers.
+  # THE SPLIT IS PER RUNNER, because the two do not agree about which area is
+  # dear. `install` and `isolation` shared a shard at first, and on Linux that
+  # was the cheapest of three (2m50s) while on Windows it was the dearest
+  # (9m46s) — both drive whole checkouts and re-run the gate in a subprocess,
+  # and process creation is where Windows is weakest. They get a shard each, so
+  # neither runner carries a shard built for the other:
+  #
+  #   shard      Linux    Windows (before the split)
+  #   queue      4m42s    7m42s
+  #   install    2m50s    9m46s   <- install + isolation together
+  #   rest       2m42s    4m39s
+  #
+  # Four shards leave `queue` the critical path on both.
   #
   # The `areas` strings are a COPY of the names in scripts/lib/check.py, and a
   # copy goes stale: check_workflow.py fails a workflow whose shards do not
@@ -46,7 +56,9 @@ jobs:
           - name: queue
             areas: queue
           - name: install
-            areas: install isolation
+            areas: install
+          - name: isolation
+            areas: isolation
           - name: rest
             areas: lock lint markdown docs yaml workflow profiles cli reconcile status sync onboarding pane extension skills automerge
     runs-on: ${{ matrix.os }}

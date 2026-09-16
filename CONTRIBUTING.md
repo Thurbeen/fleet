@@ -196,6 +196,12 @@ the `needs:` rule and the timeouts: **the shards must name every check
 and CI fails until a shard lists it. A single bare `fleet check` satisfies the
 promise too, with nothing to list.
 
+The split is per runner, not per area cost on one machine. `install` and
+`isolation` shared a shard at first: on Linux it was the cheapest of the three,
+on Windows the dearest by a wide margin, because both drive whole checkouts and
+process creation is where Windows is weakest. Rebalance on the numbers from a
+real run, not on a local measurement of one OS.
+
 ## Merging: squash only
 
 **Squash is the only merge method this repository allows.** Merge commits and
