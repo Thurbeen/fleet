@@ -9,12 +9,14 @@ dead and a pidfile is a note for people, never evidence.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 import textwrap
 import time
 
-from harness import expect, lib, refute, write
+import pytest
+from harness import PYTHON, REPO, expect, lib, refute, write
 from reconcilekit import wait_for
 
 from fleet.cli import LIB
@@ -182,6 +184,64 @@ def test_a_stop_ends_the_queue_command_in_flight_too(recon, monkeypatch, isolate
     finally:
         if mod.fleet_platform.alive(collect):
             mod.fleet_platform.terminate_tree(collect, force=True)
+
+
+# A test run as the loop sees one: it starts the loop and then is killed before
+# any teardown can stop it.
+TEST_RUN = textwrap.dedent(
+    """
+    import os, subprocess, sys, time
+    os.environ["FLEET_RECONCILE_PARENT_PID"] = str(os.getpid())
+    boot = "import sys\\nfrom fleet.cli import main\\nsys.exit(main())"
+    done = subprocess.run([sys.executable, "-c", boot, "reconcile", "ensure"], cwd=sys.argv[1],
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    print(done.returncode, flush=True)
+    time.sleep(300)
+    """
+)
+
+# How long a loop may outlive what it watches: ten ticks of the compressed watch.
+ORPHAN_SECS = 10
+
+
+def test_a_killed_test_run_leaks_no_supervisor(recon):
+    """An interrupted test run never reaches the fixture's `stop`, and a detached
+    loop would tick against its temp directory forever. It watches the run's pid
+    and goes with it."""
+    run = subprocess.Popen([*PYTHON, "-c", TEST_RUN, str(REPO)], stdout=subprocess.PIPE, text=True)
+    try:
+        assert run.stdout.readline().strip() == "0", recon.log()
+        supervisor = int(recon.pid())
+        assert wait_for(lambda: recon.count("watch") >= 1)
+
+        run.kill()
+        run.wait(timeout=30)
+
+        mod = lib("reconcile.py")
+        assert wait_for(lambda: not mod.fleet_platform.alive(supervisor), ORPHAN_SECS), (
+            f"the supervisor outlived the run that started it\n{recon.log()}")
+        expect(recon.log(), "is gone; supervisor exiting")
+    finally:
+        if run.poll() is None:
+            run.kill()
+            run.wait(timeout=30)
+        run.stdout.close()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows will not delete a directory whose lock and log the loop holds "
+                                            "open; the watched parent is what ends a leaked loop there")
+def test_a_supervisor_whose_runtime_directory_is_deleted_exits(recon):
+    assert recon("ensure").code == 0
+    supervisor = int(recon.pid())
+    mod = lib("reconcile.py")
+
+    shutil.rmtree(recon.rt)
+
+    assert wait_for(lambda: not mod.fleet_platform.alive(supervisor), ORPHAN_SECS), (
+        "the supervisor kept ticking with its runtime directory gone")
+    # Nothing in a pass may make it again: the loop would then read as at home
+    # at the next boundary and never exit.
+    assert not recon.rt.exists(), "the loop made its runtime directory again instead of exiting"
 
 
 def test_launch_leaves_a_loop_that_is_already_ticking_alone(recon):

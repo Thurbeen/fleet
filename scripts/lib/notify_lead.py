@@ -143,9 +143,12 @@ def write_state(state_dir: str, told: list, note: str) -> None:
 
     Best effort on purpose: a runtime directory that cannot be written is worth
     a repeated notification, and is not worth failing a reconciler pass over.
+
+    Into the loop's runtime directory, and NEVER making it: that directory
+    being gone is how the loop knows it has nothing left to run for, and a
+    notify that made it again mid-pass left an orphaned loop ticking forever.
     """
     try:
-        os.makedirs(state_dir, exist_ok=True)
         with open(os.path.join(state_dir, STATE_FILE), "w", encoding="utf-8") as fh:
             json.dump({"told": told, "note": note}, fh)
     except OSError:

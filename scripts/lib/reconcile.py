@@ -39,6 +39,18 @@ the lock is held AND the loop has written a heartbeat: a supervisor whose loop
 cannot run at all holds the lock and never beats, and is never adopted or called
 healthy. The pidfile and heartbeat stay, for people.
 
+A LOOP FROM BEFORE THE UV PORT holds no lock: the bash `scripts/reconcile.sh`
+supervisor wrote a pidfile only, and outlived the update that deleted its
+script, failing every pass. `status` names one still running from this
+checkout, and `ensure`, `start`, `stop` and `restart` end it. Proven by
+its argv and working directory each time before it is signalled
+(`is_legacy`), never by a pid.
+
+IT GOES WITH WHAT IT RUNS FOR. A loop whose runtime directory is deleted, or
+whose FLEET_RECONCILE_PARENT_PID is gone, exits at the next boundary. Only
+tests set the second: a run killed before its teardown would otherwise leak a
+detached loop ticking against a deleted temp directory.
+
 IT WRITES NO RECORD. Every effect on the queue goes through `fleet queue`, the
 only writer over the records. Its own runtime directory is not an exception: a
 pid, a heartbeat, a log, the flags and `notified.json` are facts about this loop
@@ -97,6 +109,7 @@ Environment:
   FLEET_RECONCILE_COLLECT_SECS  seconds between collects   (default 120)
   FLEET_RECONCILE_REFUEL_SECS   seconds between refuels    (default 300)
   FLEET_RECONCILE_SHEPHERD_SECS seconds between shepherds  (default 900)
+  FLEET_RECONCILE_PARENT_PID    exit once this pid is gone (default: unset; tests set it)
   FLEET_QUEUE_DIR               the queue to reconcile (default: this checkout's)
   FLEET_LEAD_SESSION            the lead session to wake; read by notify_lead.py
 
@@ -178,6 +191,7 @@ class Config:
     collect: int
     refuel: int
     shepherd: int
+    parent: int = 0
 
     @classmethod
     def from_env(cls) -> Config:
@@ -196,7 +210,8 @@ class Config:
         def secs(name: str, default: int) -> int:
             return int(os.environ.get(f"FLEET_RECONCILE_{name}_SECS") or default)
 
-        return cls(rt, cmd, label, secs("WATCH", 20), secs("COLLECT", 120), secs("REFUEL", 300), secs("SHEPHERD", 900))
+        return cls(rt, cmd, label, secs("WATCH", 20), secs("COLLECT", 120), secs("REFUEL", 300), secs("SHEPHERD", 900),
+                   int(os.environ.get("FLEET_RECONCILE_PARENT_PID") or 0))
 
     def path(self, name: str) -> str:
         return os.path.join(self.rt, name)
@@ -325,6 +340,88 @@ def beat_age(cfg: Config) -> int | None:
         return None
 
 
+def orphaned(cfg: Config) -> str:
+    """Why this loop has nothing left to run for, or "".
+
+    Its runtime directory was deleted under it, or the process it was told to
+    watch is gone. The second is set only by tests: a test run killed before its
+    teardown never stops the loop it started, which would otherwise tick against
+    a deleted temp directory forever."""
+    if not os.path.isdir(cfg.rt):
+        return f"{cfg.rt} is gone"
+    if cfg.parent and not fleet_platform.alive(cfg.parent):
+        return f"parent pid {cfg.parent} is gone"
+    return ""
+
+
+def over(cfg: Config) -> bool:
+    return asked_down(cfg) or bool(orphaned(cfg))
+
+
+# --- the loop from before the uv port -----------------------------------------
+
+# The bash reconciler put this word in its supervisor's argv, so that nothing
+# else would be mistaken for it. Its loop outlived the update that deleted its
+# script, failing every pass, and it held no lock for `running` to see.
+LEGACY_SCRIPT = os.path.join("scripts", "reconcile.sh")
+LEGACY_SUPERVISOR = "__fleet-reconcile-supervisor"
+
+
+def is_legacy(pid: int) -> str:
+    """The argv of this checkout's legacy supervisor, if `pid` is one, else "".
+
+    Proven, never guessed: its argv runs `scripts/reconcile.sh
+    __fleet-reconcile-supervisor`, that script resolved from its working directory
+    is this checkout's, and the working directory is this checkout, where the
+    script put itself. Asked afresh every time, so a pid that has since become
+    somebody else's is never signalled."""
+    facts = fleet_platform.process_argv_cwd(pid)
+    if not facts:
+        return ""
+    argv, cwd = facts
+    home = os.path.realpath(CHECKOUT)
+    if os.path.realpath(cwd) != home:
+        return ""
+    script = os.path.join(home, LEGACY_SCRIPT)
+    for arg, following in zip(argv, argv[1:]):
+        if following == LEGACY_SUPERVISOR and os.path.realpath(os.path.join(cwd, arg)) == script:
+            return " ".join(argv)
+    return ""
+
+
+def legacy_loops() -> list[tuple[int, str]]:
+    """Every legacy supervisor running from this checkout, as (pid, argv).
+
+    Not its pidfile: that holds no lock, and its pid may be anybody's by now."""
+    found = []
+    for pid in fleet_platform.process_ids():
+        argv = is_legacy(pid)
+        if argv:
+            found.append((pid, argv))
+    return found
+
+
+def stop_legacy(cfg: Config) -> bool:
+    """End every legacy supervisor and the pass it is running, and say so. False if one survives."""
+    stopped = True
+    for pid, _ in legacy_loops():
+        for force in (False, True):
+            if not is_legacy(pid):
+                break
+            # Its process group: setsid made it the leader, and its pass is in it.
+            fleet_platform.terminate_tree(pid, force)
+            if wait_until(lambda pid=pid: not is_legacy(pid), KILL_WAIT_SECS):
+                break
+        if is_legacy(pid):
+            err(f"fleet reconciler: could not stop the legacy bash reconciler (pid {pid})")
+            stopped = False
+            continue
+        line = f"stopped a legacy bash reconciler (pid {pid}), left running from before the uv port"
+        log(cfg, line)
+        say(f"fleet reconciler: {line}")
+    return stopped
+
+
 # --- the loop -----------------------------------------------------------------
 
 
@@ -391,8 +488,8 @@ def trim_log(cfg: Config) -> None:
 
 
 def rest(cfg: Config, secs: float) -> None:
-    """Sleep, but not through a stop."""
-    wait_until(lambda: asked_down(cfg), max(secs, 0), step=0.2)
+    """Sleep, but not through a stop, nor past what the loop runs for."""
+    wait_until(lambda: over(cfg), max(secs, 0), step=0.2)
 
 
 def tick(cfg: Config) -> int:
@@ -407,7 +504,7 @@ def tick(cfg: Config) -> int:
     last = {"collect": float("-inf"), "shepherd": float("-inf"), "refuel": float("-inf")}
     while True:
         # Checked at the top of every pass, so a stop is honoured at the next boundary.
-        if asked_down(cfg):
+        if over(cfg):
             return 0
         stamp = time.monotonic()
         fleet_platform.write_record(cfg.path("heartbeat"), f"{int(time.time())}\n")
@@ -427,7 +524,7 @@ def tick(cfg: Config) -> int:
             if (verb == "collect" and did_collect) or (verb != "collect" and stamp - last[verb] >= every):
                 run_pass(cfg, verb, [verb])
                 last[verb] = stamp
-                if asked_down(cfg):
+                if over(cfg):
                     return 0
 
         # LAST, on collect's clock: it sees the landings collect just recorded.
@@ -473,6 +570,10 @@ def supervise(cfg: Config) -> int:
                 log(cfg, "tick loop raised:")
                 log_raw(cfg, indented(traceback.format_exc(), "    "))
                 rc = 1
+            why = orphaned(cfg)
+            if why:
+                log(cfg, f"{why}; supervisor exiting")
+                return 0
             if asked_down(cfg):
                 log(cfg, "asked down; supervisor exiting")
                 return 0
@@ -571,6 +672,9 @@ def guard_control_plane(cfg: Config) -> bool:
 
 
 def come_up(cfg: Config) -> int:
+    # A legacy loop holds no lock, so neither adoption nor launch can see the twin.
+    if not stop_legacy(cfg):
+        return 1
     if running(cfg):
         say(f"fleet reconciler: already ticking (pid {pid_of(cfg)}) — adopted, not restarted")
         return 0
@@ -582,10 +686,11 @@ def come_up(cfg: Config) -> int:
 
 def cmd_ensure(cfg: Config) -> int:
     if asked_down(cfg):
+        gone = stop_legacy(cfg)
         say("fleet reconciler: down, and staying down — you asked for it:")
         sys.stdout.write(indented(read(cfg.path("down")), "    "))
         say("    bring it back with uv run fleet reconcile start")
-        return 0
+        return 0 if gone else 1
     return come_up(cfg)
 
 
@@ -602,7 +707,9 @@ def cmd_stop(cfg: Config) -> int:
     os.makedirs(cfg.rt, exist_ok=True)
     down = cfg.path("down")
     fleet_platform.write_record(down, f"stopped {now()} by {who()}\n")
-    if bring_down(cfg):
+    # After the flag, so a legacy loop that will not die cannot keep this one up.
+    legacy_gone = stop_legacy(cfg)
+    if bring_down(cfg) and legacy_gone:
         say(f"fleet reconciler: down, durably — {down} keeps it down across a")
         say("    restart, a reboot and the next onboarding run.")
         say("    bring it back with uv run fleet reconcile start")
@@ -627,6 +734,10 @@ def cmd_status(cfg: Config) -> int:
     # Asked of the queue itself, so this line and `fleet queue list` cannot disagree.
     rc, out = run_queue(cfg, ["root"], merge=False)
     queue = out.strip() if rc == 0 and out.strip() else os.environ.get("FLEET_QUEUE_DIR", "orchestration/queue")
+    for pid, argv in legacy_loops():
+        say(f"legacy    a bash reconciler from before the uv port is still running (pid {pid}):")
+        say(f"          {argv}")
+        say("          its script is gone, so every pass fails; uv run fleet reconcile ensure stops it")
     if running(cfg):
         age = beat_age(cfg)
         if age is not None and age > cfg.stall:

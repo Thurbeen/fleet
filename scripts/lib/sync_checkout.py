@@ -22,6 +22,11 @@ paths says so, as an action for the operator. The same goes for the extension
 manifest: once it or FLEET.md moves, the installed extension no longer matches
 what it was rendered from.
 
+RESTART THE RECONCILER when a sync moves its code. A running loop keeps the
+code it started with, and one whose code the sync deleted fails every pass: the
+bash reconciler outlived the update that removed `scripts/reconcile.sh` and
+logged exit 127 for hours while nothing collected.
+
 THE FETCH IS BOUNDED BY THE CHILD'S OWN TIMEOUT, never by coreutils `timeout`,
 which is not on a stock macOS or on Windows. Calling it there exited 127, which
 read as a failed fetch, so every session on a Mac reported "could not reach
@@ -63,7 +68,11 @@ WIRING_PATHS = (
     "orchestration/voice.example.conf",
 )
 
-OFFLINE = "control-plane sync: could not reach origin (offline?). Working from the local checkout."
+# What a running reconciler loop executes: the bash script from before the uv
+# port, and the module and platform seam the supervisor holds in memory.
+RECONCILER_PATHS = ("scripts/reconcile.sh", "scripts/lib/reconcile.py", "scripts/lib/fleet_platform.py")
+
+OFFLINE ="control-plane sync: could not reach origin (offline?). Working from the local checkout."
 
 
 def git(root: str | None, *args: str) -> subprocess.CompletedProcess:
@@ -208,6 +217,16 @@ def sync() -> str | None:
             f"\nreinstall-extension: yes — {wiring}\n"
             "That changed, so the installed extension no longer matches the manifest it was\n"
             "rendered from. Re-render and reinstall it: 'uv run fleet install-extension'."
+        )
+
+    loop = changed(root, before, RECONCILER_PATHS)
+    if loop:
+        msg += (
+            f"\nrestart-reconciler: yes — {loop}\n"
+            "A reconciler started before this sync still runs its old code, and fails every pass\n"
+            "if that code was removed. Ask 'uv run fleet reconcile status': a legacy loop it names,\n"
+            "'uv run fleet reconcile ensure' stops and replaces; a loop that is up,\n"
+            "'uv run fleet reconcile restart' replaces. One asked down stays down."
         )
     return msg
 
