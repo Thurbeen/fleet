@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import tempfile
 from pathlib import Path
 
 from harness import PYTHON, REPO, Run, git, run, write
@@ -36,8 +37,14 @@ def new_repo(root: Path) -> Path:
 
 
 def upstream(root: Path) -> Path:
-    up = root / "upstream"
-    shutil.rmtree(up, ignore_errors=True)
+    """A fresh clone of origin to commit through, in a directory of its own.
+
+    A new directory per call and never a reused one: git writes its objects
+    read-only, which makes deleting a clone fail on Windows, and a delete that
+    ignores its errors left the old clone standing for `git clone` to refuse as
+    a non-empty destination. The second call is the one that broke.
+    """
+    up = Path(tempfile.mkdtemp(prefix="upstream-", dir=root))
     git("clone", "--quiet", str(root / "origin.git"), str(up), cwd=root)
     return up
 
