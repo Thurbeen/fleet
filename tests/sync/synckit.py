@@ -36,9 +36,19 @@ def new_repo(root: Path) -> Path:
 
 
 def upstream(root: Path) -> Path:
+    """The clone that pushes to origin, made once and then refreshed.
+
+    Deleting it between pushes is what a second caller used to do, and on
+    Windows that silently left it behind: git marks its object files read-only
+    and `shutil.rmtree` cannot unlink one there, so the next `git clone` hit a
+    non-empty destination and exited 128.
+    """
     up = root / "upstream"
-    shutil.rmtree(up, ignore_errors=True)
-    git("clone", "--quiet", str(root / "origin.git"), str(up), cwd=root)
+    if not up.exists():
+        git("clone", "--quiet", str(root / "origin.git"), str(up), cwd=root)
+        return up
+    git("fetch", "--quiet", "origin", cwd=up)
+    git("reset", "--quiet", "--hard", "origin/main", cwd=up)
     return up
 
 
