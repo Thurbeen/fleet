@@ -12,13 +12,28 @@
 3. A job runs on `windows-latest`, directly or as a matrix entry, so a change
    that breaks fleet on Windows fails the pull request instead of the next
    Windows operator.
+4. The names the jobs pass to `fleet check` cover every check `check.py` knows,
+   and name nothing it does not. The gate is SHARDED across jobs to cut the
+   wall clock, so the workflow now holds a copy of the area list — and a copy
+   is a thing that goes stale. An area added to `check.py` and to no shard
+   would never run on CI, and `All Checks` would still report green.
+
+   A bare `uv run fleet check` runs every check, so a workflow that only ever
+   calls it that way keeps this promise with nothing to list.
 """
 
+import importlib.util
+import os
+import re
 import sys
 
 import yaml
 
 GATE = "all-checks"
+
+# `${{ matrix.shard.areas }}` and friends, which is how a sharded job says
+# which checks it runs.
+MATRIX_REF = re.compile(r"\$\{\{\s*matrix\.([A-Za-z0-9_.-]+)\s*\}\}")
 
 
 def problems(path: str) -> list[str]:
@@ -43,7 +58,74 @@ def problems(path: str) -> list[str]:
 
     if not any(runs_on_windows(job) for job in jobs.values()):
         found.append(f"{path}: no job runs on windows-latest")
+
+    named = gate_names(jobs)
+    if named is not None:
+        every = check_names()
+        found += [f"{path}: no job runs `fleet check {name}`" for name in every if name not in named]
+        found += [f"{path}: a job runs `fleet check {name}`, which is not a check" for name in sorted(named - set(every))]
     return found
+
+
+def check_names() -> list[str]:
+    """Every check name the gate knows, read from check.py beside this file."""
+    name = "fleet_check"
+    module = sys.modules.get(name)
+    if module is None:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "check.py")
+        spec = importlib.util.spec_from_file_location(name, path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+    return [*module.STATIC, *module.TESTS]
+
+
+def expand(text: str, matrix: dict) -> list[str]:
+    """`text` once per value of each matrix reference in it.
+
+    One reference at a time, which is what a shard line holds; two would need
+    their product, and no job here writes one.
+    """
+    ref = MATRIX_REF.search(text)
+    if not ref:
+        return [text]
+    values = matrix_values(matrix, ref.group(1))
+    return [text[:ref.start()] + value + text[ref.end():] for value in values]
+
+
+def matrix_values(matrix: dict, path: str) -> list[str]:
+    """Every value `matrix.<path>` takes: a key, or a key and one field of it."""
+    key, _, field = path.partition(".")
+    entries = matrix.get(key) if isinstance(matrix.get(key), list) else []
+    entries = [*entries, *(e.get(key) for e in matrix.get("include") or [] if isinstance(e, dict) and key in e)]
+    if not field:
+        return [str(e) for e in entries if not isinstance(e, (dict, list))]
+    return [str(e[field]) for e in entries if isinstance(e, dict) and field in e]
+
+
+def gate_names(jobs: dict) -> set | None:
+    """Every check name the workflow passes to `fleet check`.
+
+    None when the promise does not apply: no step runs the gate, or one runs it
+    bare, which is every check and leaves nothing to list.
+    """
+    named = set()
+    ran = False
+    for job in jobs.values():
+        matrix = (job.get("strategy") or {}).get("matrix") or {}
+        for step in job.get("steps") or []:
+            run = step.get("run") if isinstance(step, dict) else None
+            for line in (run or "").splitlines():
+                _, gate, rest = line.partition("fleet check")
+                if not gate:
+                    continue
+                ran = True
+                for text in expand(rest, matrix):
+                    words = [w for w in text.split() if not w.startswith("-")]
+                    if not words:
+                        return None
+                    named.update(words)
+    return named if ran else None
 
 
 def runs_on_windows(job: dict) -> bool:
