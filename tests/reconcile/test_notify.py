@@ -10,7 +10,7 @@ there is no lead session at all.
 
 from __future__ import annotations
 
-from harness import expect
+from harness import expect, lib
 from reconcilekit import wait_for
 
 
@@ -59,3 +59,17 @@ def test_the_lead_is_woken_once_per_transition(recon, stubs):
     assert len(sends()) == held, "no lead session means no send"
     assert recon.count("watch") > watched, "and the loop keeps folding regardless"
     assert recon.log().count("no session named") <= 1, "an absent lead is reported once, not once per pass"
+
+
+def test_remembering_what_was_said_never_makes_the_runtime_directory(isolated_env):
+    """The state file goes INTO the loop's runtime directory and never creates it.
+
+    Creating it is how a deleted directory came back: the loop checks it is
+    still there at the top of every pass, and a notify that made it again in
+    the middle of one left an orphaned loop ticking forever."""
+    mod = lib("notify_lead.py")
+    gone = isolated_env / "reconcile-that-was-deleted"
+
+    mod.write_state(str(gone), ["alpha/01-first"], "")
+
+    assert not gone.exists(), "notify made the runtime directory again"

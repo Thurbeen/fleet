@@ -239,6 +239,9 @@ def test_a_supervisor_whose_runtime_directory_is_deleted_exits(recon):
 
     assert wait_for(lambda: not mod.fleet_platform.alive(supervisor), ORPHAN_SECS), (
         "the supervisor kept ticking with its runtime directory gone")
+    # Nothing in a pass may make it again: the loop would then read as at home
+    # at the next boundary and never exit.
+    assert not recon.rt.exists(), "the loop made its runtime directory again instead of exiting"
 
 
 def test_launch_leaves_a_loop_that_is_already_ticking_alone(recon):
