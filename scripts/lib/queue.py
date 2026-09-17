@@ -3207,44 +3207,16 @@ def spawn_commands(task: Task) -> tuple[list, str]:
     if d.get("host"):
         create += ["--host", d["host"]]
     flags = profile_flags(d.get("profile") or "default")
+    refusal = agent_policy_refusal(task)
+    if refusal:
+        raise QueueError(f"{task.ref}: {refusal}")
     policy = agent_policy()
     repo = None if d.get("host") else repo_from_checkout(d["repo"])
-    if policy and repo is None:
-        if d.get("host"):
-            raise QueueError(
-                f"{task.ref}: --host task cannot be checked against agent policy "
-                "because its checkout is on another machine."
-            )
-        raise QueueError(
-            f"{task.ref}: cannot read origin for {d['repo']!r}, so agent policy "
-            "cannot be checked."
-        )
     matched = agents_for_repo(repo, policy)
     # A profile carrying `command` replaces `--agent`; thurbox refuses both.
-    if "--command" in flags:
-        if matched:
-            allowed, prefix = matched
-            raise QueueError(
-                f"{task.ref}: profile carries a custom `command`, but agent policy "
-                f"covers this repository with {prefix!r} allowing only "
-                f"{', '.join(allowed)}. Fleet cannot tell which agent a free "
-                "command launches, so dispatch is refused."
-            )
-    else:
+    if "--command" not in flags:
         recorded = d.get("agent")
-        if matched:
-            allowed, prefix = matched
-            if recorded:
-                if recorded not in allowed:
-                    raise QueueError(
-                        f"{task.ref}: task records agent {recorded!r}, but policy "
-                        f"for {prefix!r} allows only {', '.join(allowed)}."
-                    )
-                agent = recorded
-            else:
-                agent = allowed[0]
-        else:
-            agent = recorded or configured_agent()
+        agent = recorded or (matched[0][0] if matched else configured_agent())
         if agent:
             create += ["--agent", agent]
     # NOT ON A REMOTE SPAWN, and there is no way to ask for it there. thurbox
@@ -3443,7 +3415,11 @@ def cmd_dispatch(args) -> int:
                       f"failed on host {t.doc['host']}", file=sys.stderr)
                 continue
 
-        create, _send = spawn_commands(t)
+        try:
+            create, _send = spawn_commands(t)
+        except QueueError as exc:
+            print(f"    {t.ref}: NOT SPAWNED — {exc}", file=sys.stderr)
+            continue
         proc = None
         try:
             proc = subprocess.run(create, capture_output=True, check=True)
@@ -5645,18 +5621,14 @@ def agent_policy(root: str | None = None) -> dict[str, list[str]]:
     executed. The environment REPLACES the file rather than adding to it.
     A missing file is an empty policy: no checks, no new behaviour.
     """
-    raw = os.environ.get(AGENT_POLICY_ENV, "").strip()
-    if raw:
-        # Entries are separated by whitespace, but a value may contain spaces
-        # after commas (`alpha, beta`). A piece without `=` is a continuation of
-        # the previous entry's agent list.
-        pieces = re.split(r"\s+", raw)
-        entries: list[str] = []
-        for piece in pieces:
-            if "=" in piece or not entries:
-                entries.append(piece)
-            else:
-                entries[-1] += " " + piece
+    if AGENT_POLICY_ENV in os.environ:
+        # The environment REPLACES the file, so an empty string means "no
+        # rules" rather than "read the file". Spaces around `=` and after
+        # commas are formatting only; split into entries after normalising them.
+        raw = os.environ.get(AGENT_POLICY_ENV, "").strip()
+        normalised = re.sub(r"\s*=\s*", "=", raw)
+        normalised = re.sub(r",\s+", ",", normalised)
+        entries = [e for e in normalised.split() if e]
         return parse_agent_policy(entries, AGENT_POLICY_ENV)
     path = agent_policy_path(root)
     try:
@@ -5693,6 +5665,42 @@ def agents_for_repo(
     if not best_prefix:
         return None
     return best_agents, best_prefix
+
+
+def agent_policy_refusal(task: Task) -> str | None:
+    """Why this task cannot be dispatched under the current policy, or None."""
+    policy = agent_policy()
+    d = task.doc
+    repo = None if d.get("host") else repo_from_checkout(d["repo"])
+    if policy and repo is None:
+        if d.get("host"):
+            return (
+                "--host task cannot be checked against agent policy "
+                "because its checkout is on another machine."
+            )
+        return (
+            f"cannot read origin for {d['repo']!r}, so agent policy "
+            "cannot be checked."
+        )
+    matched = agents_for_repo(repo, policy)
+    if matched is None:
+        return None
+    allowed, prefix = matched
+    flags = profile_flags(d.get("profile") or "default")
+    if "--command" in flags:
+        return (
+            f"profile carries a custom `command`, but agent policy "
+            f"covers this repository with {prefix!r} allowing only "
+            f"{', '.join(allowed)}. Fleet cannot tell which agent a free "
+            "command launches, so dispatch is refused."
+        )
+    recorded = d.get("agent")
+    if recorded and recorded not in allowed:
+        return (
+            f"task records agent {recorded!r}, but policy "
+            f"for {prefix!r} allows only {', '.join(allowed)}."
+        )
+    return None
 
 
 def pr_ref(artifact: str) -> forge.ChangeRef | None:

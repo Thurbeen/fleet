@@ -133,10 +133,12 @@ def test_isolated_env_defeats_the_hostile_host(tmp_path, stub_bin):
     for var in ("FLEET_RUNS_DIR", "FLEET_RECONCILE_DIR"):
         assert Path(env[var]).is_dir() and not Path(env[var]).is_relative_to(REPO)
     assert not Path(env["FLEET_REGISTRY_FILE"]).exists()
-    for var in ("FLEET_AUTO_MERGE_ROOT", "FLEET_PUBLISH_ROOT", "FLEET_AGENT_ROOT", "FLEET_GLYPH_ROOT",
-                "FLEET_NAME_ROOT"):
+    example_confs = sorted(p.name for p in (REPO / "orchestration").glob("*.example.conf"))
+    expected = sorted(example_confs + ["agent-policy.conf"])
+    for var in ("FLEET_AUTO_MERGE_ROOT", "FLEET_PUBLISH_ROOT", "FLEET_AGENT_ROOT",
+                "FLEET_AGENT_POLICY_ROOT", "FLEET_GLYPH_ROOT", "FLEET_NAME_ROOT"):
         confs = sorted(p.name for p in (Path(env[var]) / "orchestration").iterdir())
-        assert confs == sorted(p.name for p in (REPO / "orchestration").glob("*.example.conf"))
+        assert confs == expected, f"{var}: {confs} != {expected}"
 
 
 def test_a_child_process_finds_every_stub_and_no_real_tool(tmp_path, stub_bin):

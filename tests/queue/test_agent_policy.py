@@ -248,3 +248,109 @@ def test_recorded_agent_caught_on_dispatch_when_policy_appears(checkout, forge_s
     assert "task records agent" in out, out
     assert "old-agent" in out
     assert "new-agent" in out
+
+
+def test_env_policy_allows_spaces_around_equals(checkout, forge_store):
+    topic = q(
+        "topic", "add", "spaces", "--title", "Spaces",
+        "--prompt", "spaces around equals",
+    ).stdout.strip()
+    env = policy_env(forge_store, f"{QUALIFIED_REPO} = alpha, beta")
+    ok(q(
+        "add", topic, "allowed", "--title", "Allowed",
+        "--repo", str(checkout), "--branch", "fix/allowed", "--number", "01",
+        "--agent", "beta",
+        **env,
+    ))
+    done = q(
+        "add", topic, "disallowed", "--title", "Disallowed",
+        "--repo", str(checkout), "--branch", "fix/disallowed", "--number", "02",
+        "--agent", "gamma",
+        **env,
+    )
+    assert done.code != 0, done.out
+    assert "gamma" in done.out
+    assert "alpha" in done.out
+
+
+def test_empty_env_policy_replaces_file(checkout, forge_store):
+    policy_root = Path(os.environ["FLEET_AGENT_POLICY_ROOT"]) / "orchestration"
+    policy_root.mkdir(parents=True, exist_ok=True)
+    (policy_root / "agent-policy.conf").write_text(
+        f"{QUALIFIED_REPO}=restricted-agent\n", encoding="utf-8"
+    )
+    topic = q(
+        "topic", "add", "empty-env", "--title", "Empty env",
+        "--prompt", "empty env replaces file",
+    ).stdout.strip()
+    env = policy_env(forge_store, "")
+    ok(q(
+        "add", topic, "free", "--title", "Free",
+        "--repo", str(checkout), "--branch", "fix/free", "--number", "01",
+        "--agent", "anything",
+        **env,
+    ))
+
+
+def test_dispatch_reports_policy_refusal_per_task_and_continues_batch(checkout, forge_store, stubs):
+    topic = q(
+        "topic", "add", "batch", "--title", "Batch",
+        "--prompt", "batch policy refusal",
+    ).stdout.strip()
+    env = policy_env(forge_store, f"{QUALIFIED_REPO}=alpha")
+    ok(q(
+        "add", topic, "ok", "--title", "ok", "--repo", str(checkout),
+        "--branch", "fix/ok", "--number", "01", "--agent", "alpha",
+        **env,
+    ))
+    fill_brief(Path(os.environ["FLEET_QUEUE_DIR"]) / topic / "01-ok" / "BRIEF.md")
+    # The bad task records an agent that the policy forbids, as if the policy
+    # appeared after the task was added.
+    ok(q(
+        "add", topic, "bad", "--title", "bad", "--repo", str(checkout),
+        "--branch", "fix/bad", "--number", "02",
+        **env,
+    ))
+    bad_task = Path(os.environ["FLEET_QUEUE_DIR"]) / topic / "02-bad" / "task.yaml"
+    bad_task.write_text(
+        bad_task.read_text(encoding="utf-8").replace("agent: null", "agent: beta"),
+        encoding="utf-8",
+    )
+    fill_brief(Path(os.environ["FLEET_QUEUE_DIR"]) / topic / "02-bad" / "BRIEF.md")
+    ok(q(
+        "add", topic, "also-ok", "--title", "also-ok", "--repo", str(checkout),
+        "--branch", "fix/also-ok", "--number", "03", "--agent", "alpha",
+        **env,
+    ))
+    fill_brief(Path(os.environ["FLEET_QUEUE_DIR"]) / topic / "03-also-ok" / "BRIEF.md")
+    sid = "e5555555-5555-5555-5555-555555555555"
+    next_session(stubs, sid)
+    stubs.tool("thurbox-cli", ANSWERING_KEYS)
+    out = q("dispatch", **env).out
+    assert "NOT SPAWNED" in out, out
+    assert "beta" in out
+    creates = stubs.calls("thurbox-cli", "session create")
+    assert len(creates) == 2, creates
+    assert all("fix/ok" in c or "fix/also-ok" in c for c in creates), creates
+
+
+def test_isolation_from_checkout_agent_policy_conf(checkout, forge_store):
+    # A restrictive file in the isolated settings directory is ignored when
+    # FLEET_AGENT_POLICY is the empty string, proving the variable replaces
+    # the file and tests do not fall back to the checkout.
+    policy_root = Path(os.environ["FLEET_AGENT_POLICY_ROOT"]) / "orchestration"
+    policy_root.mkdir(parents=True, exist_ok=True)
+    (policy_root / "agent-policy.conf").write_text(
+        f"{QUALIFIED_REPO}=restricted-agent\n", encoding="utf-8"
+    )
+    topic = q(
+        "topic", "add", "isolated", "--title", "Isolated",
+        "--prompt", "isolated from checkout",
+    ).stdout.strip()
+    env = policy_env(forge_store, "")
+    ok(q(
+        "add", topic, "free", "--title", "Free",
+        "--repo", str(checkout), "--branch", "fix/free", "--number", "01",
+        "--agent", "anything",
+        **env,
+    ))

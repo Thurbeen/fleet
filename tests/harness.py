@@ -104,6 +104,14 @@ def isolate(environ: dict, root: Path, stub_bin: Path) -> dict:
     )
     for conf in (REPO / "orchestration").glob("*.example.conf"):
         shutil.copy(conf, root / "settings" / "orchestration" / conf.name)
+    # The agent-policy reader prefers the operator's copy. Put an empty one in
+    # the isolated settings directory so a test without `FLEET_AGENT_POLICY`
+    # sees the same "no rules" default a fresh clone does, not the machine's
+    # own `agent-policy.conf`.
+    shutil.copy(
+        root / "settings" / "orchestration" / "agent-policy.example.conf",
+        root / "settings" / "orchestration" / "agent-policy.conf",
+    )
 
     env = {
         k: v for k, v in environ.items()
@@ -138,6 +146,7 @@ def isolate(environ: dict, root: Path, stub_bin: Path) -> dict:
         FLEET_AUTO_MERGE_ROOT=settings,
         FLEET_PUBLISH_ROOT=settings,
         FLEET_AGENT_ROOT=settings,
+        FLEET_AGENT_POLICY_ROOT=settings,
         FLEET_GLYPH_ROOT=settings,
         FLEET_NAME_ROOT=settings,
         FLEET_VOICE_CONF=str(root / "settings" / "orchestration" / "voice.example.conf"),
