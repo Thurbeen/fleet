@@ -60,7 +60,7 @@ jobs:
           - name: isolation
             areas: isolation
           - name: rest
-            areas: lock lint markdown docs yaml workflow profiles cli reconcile status sync onboarding pane extension skills automerge
+            areas: lock lint markdown docs yaml workflow profiles cli reconcile status sync onboarding pane extension skills automerge architecture
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
