@@ -107,7 +107,7 @@ def test_status_names_a_legacy_loop_still_running_from_this_checkout(here):
 
 
 @pytest.mark.parametrize(("verb", "then"), [("ensure", "ticking (pid "), ("start", "ticking (pid "),
-                                            ("stop", "down, durably")])
+                                            ("restart", "ticking (pid "), ("stop", "down, durably")])
 def test_ensure_start_and_stop_end_the_legacy_loop_first(recon, here, verb, then):
     legacy = Legacy(here)
     try:
@@ -137,3 +137,19 @@ def test_a_look_alike_from_another_checkout_is_never_signalled(recon, here, tmp_
         assert stranger.proc.poll() is None and alive(stranger.pass_in_flight), "a stranger was signalled"
     finally:
         stranger.kill()
+
+
+def test_a_legacy_loop_goes_even_while_the_fleet_is_asked_down(recon, here):
+    """The down flag is about THIS loop, and never a reason to leave the old one
+    ticking: its passes fail either way, and the operator asked for none."""
+    assert reconcile(here, "stop").code == 0
+    legacy = Legacy(here)
+    try:
+        done = reconcile(here, "ensure")
+
+        assert done.code == 0, done.out
+        expect(done.out, f"stopped a legacy bash reconciler (pid {legacy.pid})", "down, and staying down")
+        assert wait_for(legacy.gone, 10), "the legacy loop outlived an ensure under the down flag"
+        refute(reconcile(here, "status").out, "ticking", "legacy    ")
+    finally:
+        legacy.kill()
