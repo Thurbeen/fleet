@@ -1,63 +1,64 @@
 #!/usr/bin/env python3
-# The lead's whole situational awareness, in one call — the fuel, the queue,
-# the workers, the pull requests and this checkout, on one screen.
-#
-# Usage:
-#   uv run fleet status             # the screen
-#   uv run fleet status --json      # the same reading, machine-readable
-#   uv run fleet status --fuel      # the fuel section alone, one field per line
-#   uv run fleet status --records   # validate your queue records and registry map
-#
-# WHY THIS EXISTS. Answering "where are we?" used to cost three to five
-# commands spread over three checkouts and four tools: a `git status` and a
-# `git log` per checkout, `fleet queue list`, `fleet queue plan`, `thurbox-cli
-# session list`, the forge's own list. Most of a long session's tool
-# calls were situational awareness rather than work, and every one of them cost
-# a round trip and a piece of the context window. This is those calls, folded
-# into one screen the lead can afford to run reflexively.
-#
-# THE ONE RULE: DEGRADE, NEVER FAIL. No network, no forge CLI, no thurbox, no
-# queue — each of those costs exactly its own section, which then
-# says what it could not determine and why. Every probe funnels through run(),
-# which converts every way a subprocess can go wrong into a reason string, and
-# every section carries an `unavailable` field that is either None or that
-# reason. A status command that exits non-zero because one probe failed tells
-# the lead nothing at all, which is strictly worse than not having one.
-#
-# THE OTHER RULE: IT READS. It starts nothing, stops nothing, syncs nothing and
-# dispatches nothing. Every probe below is a list command or a `status`.
-# tests/status/ proves both rules against stubs. The exit status is 0 for
-# "this command ran", never for "the fleet is healthy" — read the sections.
-#
-# It also does not re-derive what another command already resolves. The queue
-# root comes from queue.py, so this is never a second opinion about which
-# records it is reading.
-#
-# FUEL IS THE ACCOUNT'S, NOT A SESSION'S. It comes from `quota-axi`, the only
-# source that has a number at all — `thurbox-cli session get --json` carries no
-# token, usage, cost or limit field. quota-axi measures the subscription window
-# every session spends at once, so there is one reading per authenticated
-# provider and no per-worker breakdown to be had. FLEET.md's `## Fuel` section
-# owns the reserve and what the lead does near it.
-#
-# `--fuel` IS THAT SECTION ALONE, as `name<TAB>value` records — one per
-# provider, separated by a blank line. It exists for the TUI queue pane, which
-# draws the same readings and can afford neither `--json` (which collects
-# every section, so a `gh pr list` per repo in flight) nor a JSON parser. It
-# prints `probe_fuel_all()`'s own fields under their own names, so the pane
-# and this screen cannot come to different conclusions about what quota-axi
-# said.
-#
-# `--records` IS THE OPERATOR'S HEALTH CHECK, argued at the records section
-# below. It is a flag and not a section because it opens every record,
-# archived topics' included, and the screen promises never to.
-#
-# Environment: FLEET_QUEUE_DIR, honoured exactly as `fleet queue` honours it,
-# and FLEET_REGISTRY_FILE, which relocates the registry map the same way.
-#
-# Requires: uv. thurbox-cli, gh, git and quota-axi are each optional and cost
-# only their own section — quota-axi in particular is a tool on the operator's
-# PATH, never a dependency this repo vendors.
+"""The lead's whole situational awareness, in one call — the fuel, the queue,
+the workers, the pull requests and this checkout, on one screen.
+
+Usage:
+  uv run fleet status             # the screen
+  uv run fleet status --json      # the same reading, machine-readable
+  uv run fleet status --fuel      # the fuel section alone, one field per line
+  uv run fleet status --records   # validate your queue records and registry map
+
+WHY THIS EXISTS. Answering "where are we?" used to cost three to five
+commands spread over three checkouts and four tools: a `git status` and a
+`git log` per checkout, `fleet queue list`, `fleet queue plan`, `thurbox-cli
+session list`, the forge's own list. Most of a long session's tool
+calls were situational awareness rather than work, and every one of them cost
+a round trip and a piece of the context window. This is those calls, folded
+into one screen the lead can afford to run reflexively.
+
+THE ONE RULE: DEGRADE, NEVER FAIL. No network, no forge CLI, no thurbox, no
+queue — each of those costs exactly its own section, which then
+says what it could not determine and why. Every probe funnels through run(),
+which converts every way a subprocess can go wrong into a reason string, and
+every section carries an `unavailable` field that is either None or that
+reason. A status command that exits non-zero because one probe failed tells
+the lead nothing at all, which is strictly worse than not having one.
+
+THE OTHER RULE: IT READS. It starts nothing, stops nothing, syncs nothing and
+dispatches nothing. Every probe below is a list command or a `status`.
+tests/status/ proves both rules against stubs. The exit status is 0 for
+"this command ran", never for "the fleet is healthy" — read the sections.
+
+It also does not re-derive what another command already resolves. The queue
+root comes from queue.py, so this is never a second opinion about which
+records it is reading.
+
+FUEL IS THE ACCOUNT'S, NOT A SESSION'S. It comes from `quota-axi`, the only
+source that has a number at all — `thurbox-cli session get --json` carries no
+token, usage, cost or limit field. quota-axi measures the subscription window
+every session spends at once, so there is one reading per authenticated
+provider and no per-worker breakdown to be had. FLEET.md's `## Fuel` section
+owns the reserve and what the lead does near it.
+
+`--fuel` IS THAT SECTION ALONE, as `name<TAB>value` records — one per
+provider, separated by a blank line. It exists for the TUI queue pane, which
+draws the same readings and can afford neither `--json` (which collects
+every section, so a `gh pr list` per repo in flight) nor a JSON parser. It
+prints `probe_fuel_all()`'s own fields under their own names, so the pane
+and this screen cannot come to different conclusions about what quota-axi
+said.
+
+`--records` IS THE OPERATOR'S HEALTH CHECK, argued at the records section
+below. It is a flag and not a section because it opens every record,
+archived topics' included, and the screen promises never to.
+
+Environment: FLEET_QUEUE_DIR, honoured exactly as `fleet queue` honours it,
+and FLEET_REGISTRY_FILE, which relocates the registry map the same way.
+
+Requires: uv. thurbox-cli, gh, git and quota-axi are each optional and cost
+only their own section — quota-axi in particular is a tool on the operator's
+PATH, never a dependency this repo vendors.
+"""
 
 from __future__ import annotations
 
@@ -76,8 +77,12 @@ def _load_queue():
     """Load scripts/lib/queue.py under a name that is not `queue`.
 
     Loaded under another name because this directory on sys.path would
-    shadow the standard library's `queue` for the whole process.
+    shadow the standard library's `queue` for the whole process, and under the
+    key every other loader uses, so a process that already holds queue.py gets
+    that copy rather than a second one with a forge registry of its own.
     """
+    if "fleet_queue" in sys.modules:
+        return sys.modules["fleet_queue"]
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "queue.py")
     spec = importlib.util.spec_from_file_location("fleet_queue", path)
     module = importlib.util.module_from_spec(spec)
@@ -785,9 +790,12 @@ RECORD_PROBLEMS_SHOWN = 8
 
 
 def _load_check_yaml():
+    if "fleet_check_yaml" in sys.modules:
+        return sys.modules["fleet_check_yaml"]
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "check_yaml.py")
     spec = importlib.util.spec_from_file_location("fleet_check_yaml", path)
     module = importlib.util.module_from_spec(spec)
+    sys.modules["fleet_check_yaml"] = module
     spec.loader.exec_module(module)
     return module
 

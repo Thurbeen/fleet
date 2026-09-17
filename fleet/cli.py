@@ -45,8 +45,17 @@ USAGE = "usage: fleet <group> [args...]\n\ngroups:\n" + "".join(
 
 
 def load(filename: str):
-    """The module in scripts/lib/, keyed in sys.modules as its loaders key it."""
+    """The module in scripts/lib/, keyed in sys.modules as its loaders key it.
+
+    The copy already loaded, if there is one: a module executed a second time
+    is a second module, and the caller holding the first one — `queue.py`
+    holding the forge registry, `fleet_status.py` holding queue.py — then
+    disagrees with this one about everything either remembers. Every
+    `_load_sibling` in scripts/lib keeps the same rule.
+    """
     name = "fleet_" + filename.removesuffix(".py").removeprefix("fleet_")
+    if name in sys.modules:
+        return sys.modules[name]
     spec = importlib.util.spec_from_file_location(name, os.path.join(LIB, filename))
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
