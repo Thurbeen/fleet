@@ -123,6 +123,10 @@ checks each step as it goes.
    sh install.sh --dir ~/fleet-acme --name acme
    ```
 
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File install.ps1 --dir $HOME\fleet-acme --name acme
+   ```
+
 2. Open thurbox, start the Mission Control session, and run:
 
    ```text

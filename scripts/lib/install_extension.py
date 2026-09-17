@@ -337,11 +337,19 @@ def install(cli: str, rendered: Rendered) -> int:
             # all, because nothing is running under the name it would take.
             # Only an unnamed fleet can be the second case: a named one already
             # made that choice, so it is told the moved-clone remedy alone.
+            # A FILE AND ITS CONTENTS, never a shell line that writes it. `echo
+            # NAME=<name> >` is three different commands: cmd reads `<name>` as
+            # a redirect, PowerShell 5.1's `>` writes UTF-16LE, which this reads
+            # back as anything but a setting, and only a POSIX shell does what
+            # it looks like. The path is spelled with `/` because it is prose
+            # here and every document names it that way.
             second = "" if rendered.fleet else (
                 "\n\nIf this is a SECOND fleet rather than the first one moving, name it\n"
                 "instead — it then gets an extension and a Mission Control of its own,\n"
-                "and the session above is left alone:\n\n"
-                f"  echo NAME=<name> > {os.path.join('orchestration', 'fleet.conf')}\n"
+                "and the session above is left alone. Put one line in\n"
+                "orchestration/fleet.conf, beside the example that documents it:\n\n"
+                "  NAME=<name>\n\n"
+                "then install again:\n\n"
                 "  uv run fleet install-extension\n\n"
                 "orchestration/fleet.example.conf holds the grammar and what a name costs\n"
                 "a fleet that is already running."

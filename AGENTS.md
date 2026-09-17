@@ -95,7 +95,7 @@ names every path and the reason for each.
   the answer. **Naming a fleet that is already running is a RENAME** with
   everything `extension.toml.in`'s RENAMING header says one costs; name the
   SECOND fleet. A second fleet is a second clone:
-  `sh install.sh --dir ~/fleet-acme --name acme`, and
+  `sh install.sh --dir ~/fleet-acme --name acme` (`install.ps1` on Windows), and
   `uv run fleet queue`'s control-plane guard is what keeps two of them from
   writing one queue.
 - `orchestration/queue/<topic>/` — the task queue. A prompt becomes a TOPIC

@@ -339,10 +339,22 @@ another fleet's lead rather than this one having moved, do not deactivate
 anything: name this fleet instead, which costs nothing because nothing is
 running under the name it takes.
 
+Write `orchestration/fleet.conf` in this checkout with one line — letters,
+digits, `_` and `-`, and no double underscore:
+
+```text
+NAME=acme
+```
+
 ```bash
-printf 'NAME=acme\n' > orchestration/fleet.conf   # letters, digits, _ and -
 uv run fleet install-extension
 ```
+
+**Write that file, never redirect a shell into it.** An agent runs on whatever
+shell the machine has, and `> orchestration/fleet.conf` is three commands: cmd
+reads `<name>` as a redirect, Windows PowerShell's `>` writes UTF-16LE, which
+fleet reads back as anything but a setting, and only a POSIX shell does what it
+looks like.
 
 It then installs as `fleet-acme` with a lead called `<glyph> Mission Control ·
 acme`, and the first fleet is untouched. Ask the operator which of the two
