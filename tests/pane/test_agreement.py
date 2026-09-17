@@ -5,7 +5,8 @@ a `layout.lua` block naming that slot. If any of them drifts, the operator is
 given a block that places a slot nothing fills: the pane loads, lists, and
 draws nothing, and every message they have says it should work. The same goes
 for the F-key, the name `plugin remove` takes, the fuel reading's one source,
-its field names and threshold, the lead's name, and the glyphs.
+its field names and threshold, the lead's name, the mark that names its
+fleet, and the glyphs.
 
 Not a Lua linter, deliberately: the pane's own gate is `thurbox-cli plugin
 check`, which needs a thurbox install and belongs at install time.
@@ -102,7 +103,14 @@ def test_the_pane_never_spells_the_reserve_threshold():
 def test_the_pane_matches_the_lead_the_manifest_spawns():
     lead = one(r'^local CONTROL_PLANE = "(.*)"$', PANE_TEXT)
     sessions = read(REPO / "extension.toml.in").split("\n[[sessions]]\n", 1)[1]
-    assert one(r'^name *= *"(.*)"', sessions) == f"__LEAD_GLYPH__ {lead}"
+    assert one(r'^name *= *"(.*)"', sessions) == f"__LEAD_GLYPH__ {lead}__FLEET_LABEL__"
+
+
+def test_the_pane_reads_a_fleets_name_back_the_way_the_renderer_wrote_it():
+    """The mark between a lead and its fleet is the one string install-extension
+    and the pane must spell alike: the renderer puts it into the session name,
+    and the pane is what reads it off the live session."""
+    assert one(r'^local FLEET_MARK = "(.*)"$', PANE_TEXT) == lib("install_extension.py").FLEET_SEPARATOR
 
 
 def test_no_glyph_setting_is_spelled_in_the_panes_code():

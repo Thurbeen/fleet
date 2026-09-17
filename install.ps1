@@ -28,6 +28,12 @@
 #
 # Settings, from the environment:
 #   FLEET_DIR     where the checkout goes (default: %USERPROFILE%\fleet)
+#   FLEET_NAME    this fleet's name, when this machine runs more than one; the
+#                 clone then defaults to %USERPROFILE%\fleet-NAME and arrives
+#                 with orchestration/fleet.conf naming it. install.sh's header
+#                 argues it. A fleet that already named itself something else is
+#                 never renamed here: that is a rename, and extension.toml.in's
+#                 RENAMING header says what one costs.
 #   FLEET_REPO    what to clone (default: https://github.com/Thurbeen/fleet.git)
 #   FLEET_BRANCH  the branch to track (default: main)
 #   FLEET_YES     1 answers every question yes
@@ -35,7 +41,7 @@
 #   FLEET_TEST_UV_INSTALLER   TESTS ONLY: a local .ps1 run instead of
 #                 downloading astral's installer; nothing reads it unless set
 #
-# As a file it also takes --dir DIR and --yes.
+# As a file it also takes --dir DIR, --name NAME and --yes.
 # Exit (as a file): 0 installed, 1 refused or a step failed, 2 usage.
 
 function Test-FleetCommand([string]$Name) {
@@ -137,9 +143,13 @@ function Install-FleetGit([bool]$Yes) {
     return $true
 }
 
-# The checkout a running Mission Control lead opens, or $null.
+# Every checkout a running Mission Control lead opens, as an array.
+#
+# A fleet may have named itself (`<mark> Mission Control - acme`), so the name
+# is matched the way the pane matches it: an optional one-character mark, the
+# words, and optionally the separator and the fleet's own name.
 function Get-FleetLeadCheckout {
-    if (-not (Test-FleetCommand 'thurbox-cli')) { return $null }
+    if (-not (Test-FleetCommand 'thurbox-cli')) { return @() }
     # thurbox-cli writes UTF-8, and Windows PowerShell 5.1 decodes a native
     # command's output in the console's code page: a non-ASCII path would not
     # match, and a second checkout would be cloned. Only for this one read:
@@ -150,17 +160,54 @@ function Get-FleetLeadCheckout {
         $json = (& thurbox-cli session list --json 2>$null) -join "`n"
         $sessions = $json | ConvertFrom-Json -ErrorAction Stop
     } catch {
-        return $null
+        return @()
     } finally {
         try { [Console]::OutputEncoding = $previous } catch { }
     }
+    $found = @()
     foreach ($session in $sessions) {
-        if ("$($session.name)" -like '* Mission Control' -and $session.cwd -and
-            (Test-Path -LiteralPath (Join-Path $session.cwd 'extension.toml.in'))) {
-            return [string]$session.cwd
+        $name = "$($session.name)"
+        if (($name -like '* Mission Control') -or ($name -like "* Mission Control $([char]0xB7) *")) {
+            if ($session.cwd -and (Test-Path -LiteralPath (Join-Path $session.cwd 'extension.toml.in'))) {
+                $found += [string]$session.cwd
+            }
         }
     }
-    return $null
+    return $found
+}
+
+# Write NAME into the clone's own orchestration/fleet.conf, which is what makes
+# it a fleet of its own. Nothing here renames a fleet that already named itself.
+function Set-FleetName([string]$Dir, [string]$Name) {
+    if (-not $Name) { return $true }
+    $conf = Join-Path $Dir 'orchestration\fleet.conf'
+    if (-not (Test-Path -LiteralPath $conf)) {
+        New-Item -ItemType Directory -Force -Path (Join-Path $Dir 'orchestration') | Out-Null
+        [IO.File]::WriteAllText($conf, "NAME=$Name`n")
+        Write-Host "This fleet is named '$Name' (orchestration/fleet.conf)."
+        return $true
+    }
+    $lines = [IO.File]::ReadAllLines($conf)
+    $out = @()
+    $wrote = $false
+    foreach ($line in $lines) {
+        if ($line -like 'NAME=*') {
+            $current = $line.Substring(5)
+            if ($current -and $current -ne $Name) {
+                Write-FleetRefusal "$Dir is the fleet '$current', and this run says '$Name'.`nRenaming a fleet that is already running spawns a second lead and orphans the`nfirst, so this does not do it. extension.toml.in's RENAMING header holds the two`nsequences - one keeps the lead's conversation, one discards it."
+                return $false
+            }
+            if ($current -eq $Name) { return $true }
+            $out += "NAME=$Name"
+            $wrote = $true
+        } else {
+            $out += $line
+        }
+    }
+    if (-not $wrote) { $out += "NAME=$Name" }
+    [IO.File]::WriteAllText($conf, ($out -join "`n") + "`n")
+    Write-Host "This fleet is named '$Name' (orchestration/fleet.conf)."
+    return $true
 }
 
 function Sync-FleetCheckout([string]$Dir, [string]$Repo, [string]$Branch) {
@@ -238,6 +285,7 @@ function Install-Fleet {
     $script:FleetInstallExit = 1
     $yes = ($env:FLEET_YES -eq '1')
     $dirArg = $null
+    $name = $env:FLEET_NAME
     for ($i = 0; $i -lt $args.Count; $i++) {
         switch -regex ($args[$i]) {
             '^(--yes|-y)$' { $yes = $true }
@@ -246,8 +294,21 @@ function Install-Fleet {
                 $i++; $dirArg = $args[$i]
             }
             '^--dir=' { $dirArg = $args[$i].Substring(6) }
+            '^--name$' {
+                if ($i + 1 -ge $args.Count) { Write-FleetRefusal '--name takes a name'; $script:FleetInstallExit = 2; return }
+                $i++; $name = $args[$i]
+            }
+            '^--name=' { $name = $args[$i].Substring(7) }
             default { Write-FleetRefusal "unknown argument: $($args[$i])"; $script:FleetInstallExit = 2; return }
         }
+    }
+
+    # The same grammar the renderer holds a name to, refused before a clone
+    # rather than after one.
+    if ($name -and ($name -notmatch '^[A-Za-z0-9][A-Za-z0-9_-]{0,23}$')) {
+        Write-FleetRefusal "--name $name is not a name a fleet can carry: letters, digits, '_' and '-',`nstarting with a letter or a digit, at most 24 of them."
+        $script:FleetInstallExit = 2
+        return
     }
 
     $repo = if ($env:FLEET_REPO) { $env:FLEET_REPO } else { 'https://github.com/Thurbeen/fleet.git' }
@@ -260,10 +321,24 @@ function Install-Fleet {
         $dir = $dirArg; $why = '--dir'
     } elseif ($env:FLEET_DIR) {
         $dir = $env:FLEET_DIR; $why = 'FLEET_DIR'
+    } elseif ($name) {
+        # A NAMED run is a fleet of its own by construction, so it never lands
+        # on the fleet already installed here, which is what asking thurbox
+        # would do.
+        $dir = Join-Path $env:USERPROFILE "fleet-$name"
+        $why = "the default for a fleet named $name; set FLEET_DIR to choose another"
     } else {
-        $dir = Get-FleetLeadCheckout
-        $why = 'the checkout your Mission Control session already opens'
-        if (-not $dir) {
+        $leads = @(Get-FleetLeadCheckout)
+        if ($leads.Count -gt 1) {
+            Write-FleetRefusal ("this machine already runs $($leads.Count) fleets, and nothing here says which one this is:`n" +
+                (($leads | ForEach-Object { "  $_" }) -join "`n") +
+                "`n`nName the checkout you mean with --dir DIR, or start another fleet with --name NAME.")
+            return
+        }
+        if ($leads.Count -eq 1) {
+            $dir = $leads[0]
+            $why = 'the checkout your Mission Control session already opens'
+        } else {
             $dir = Join-Path $env:USERPROFILE 'fleet'
             $why = 'the default; set FLEET_DIR to choose another'
         }
@@ -275,6 +350,7 @@ function Install-Fleet {
     Write-Host "       ($why)"
     Write-Host ''
     if (-not (Sync-FleetCheckout $dir $repo $branch)) { return }
+    if (-not (Set-FleetName $dir $name)) { return }
     Write-Host ''
 
     $fleetArgs = @('run', '--project', $dir, 'fleet', 'install')

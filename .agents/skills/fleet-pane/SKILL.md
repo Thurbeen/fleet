@@ -53,6 +53,16 @@ owns the reserve. Every word of the `⇡` row comes off `task.yaml`'s `publish`
 block, written by `collect`, `shepherd` and `reap` — so the pane runs no `gh`
 and says nothing `fleet queue show` would not print in the same word.
 
+**Which fleet it draws is the SESSION LIST's answer, not a setting.** A machine
+may run several fleets — one clone each, each with a Mission Control of its own
+— and they are different queues. With one lead the pane draws it and asks
+nothing. With several it draws whichever lead is selected in the session list,
+remembers that choice by its checkout, and keeps drawing it while you work in
+worker sessions (a worker names no fleet, and its worktree points at no queue).
+Until one is selected it lists them and draws none: the fleet you meant is not
+a thing to guess. The frame's title carries the fleet's name whenever it has
+one.
+
 Four consequences are worth knowing here because they turn into questions:
 
 - **An absent row means "nothing to report", never a fault.** A provider that
@@ -293,7 +303,8 @@ spells out in the column itself, so:
 | `F3` opens Help, Theme or Settings | the chord collides with a kernel one | rebind in thurbox settings; `fleet check pane` refuses a kernel chord in the repo |
 | `not trusted yet` | the `run` capability is declared, not granted | the operator grants it: settings (`Ctrl+,`) → `]` → `t`. You cannot do it for them |
 | `no '<lead>' session` | no session by the name the pane probes | the extension has not been installed, or the lead was renamed — §2, and `extension.toml.in`'s RENAMING header |
-| `<n> <lead> sessions here`, then a cwd per row | more than one lead on THIS machine, in different checkouts, so the pane will not pick a queue | remove the lead that is not your fleet (`thurbox-cli session list`). A lead mirrored from another host beside one local lead is normal: the pane binds the local one and says nothing |
+| `<n> <lead> sessions here`, then a row per fleet | several fleets on THIS machine, and none of them selected yet — a supported setup, not a fault | select the lead whose queue you want in the session list; the pane binds it and stays there while you work in worker sessions. A lead mirrored from another host beside one local lead is normal: the pane binds the local one and says nothing |
+| the pane draws the WRONG fleet's queue | a machine with several fleets, bound to the one last selected | select this fleet's lead in the session list. The title says which fleet is drawn (` Fleet queue · acme `), and a fleet that named none is the only fleet there is, so its title says nothing |
 | `the <lead> session is unreachable` | thurbox has the session but cannot reach it | a thurbox-side problem, not a pane one |
 | `the queue probe did not run`, and a cwd | the probe printed nothing: it could not be executed in that session, `uv` is not on the PATH thurbox ran it with, or that directory is not a fleet checkout | a cwd that is not your control-plane checkout is the moved-clone case in §2; otherwise the capability, a wedged session, or run the probe line from §1 in that directory and read what it says |
 | `no queue directory at <path>` | queue.py resolved a queue root that does not exist | run `uv run fleet queue root` in that checkout and read what it says |

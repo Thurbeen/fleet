@@ -32,6 +32,12 @@ normal: a control plane with no `origin` of its own needs one that workers can
 branch and push from. Opening a topic there gives you a whole second queue the
 TUI pane is right not to show.
 
+"The control plane" means YOURS. One machine may run several fleets, each a
+checkout with a Mission Control and a queue of its own
+(`orchestration/fleet.example.conf`), and the guard below reads THIS checkout's
+own manifest — so another fleet's queue is not yours to write, read or reason
+about, and nothing you run here reaches it.
+
 Ask the tooling rather than the shell prompt:
 
 ```bash

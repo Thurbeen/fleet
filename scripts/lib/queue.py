@@ -976,11 +976,19 @@ def operator_instructions() -> str:
 
 # --- which checkout owns the queue -------------------------------------------
 #
-# The control plane is one checkout. A second clone of this repo is the
-# SUPPORTED shape — the control plane may have no `origin` of its own, so
-# workers branch and push from a clone that does — and that is exactly how the
-# queue silently forked: a `topic add` run with the shell in the second clone
-# wrote records the TUI pane was right to not show, and nothing said a word.
+# A queue belongs to ONE checkout, and this is the question "is that checkout
+# this one". A second clone of this repo is the SUPPORTED shape — the control
+# plane may have no `origin` of its own, so workers branch and push from a clone
+# that does — and that is exactly how the queue silently forked: a `topic add`
+# run with the shell in the second clone wrote records the TUI pane was right to
+# not show, and nothing said a word.
+#
+# SEVERAL FLEETS ON ONE MACHINE CHANGE NOTHING HERE, and that is the point.
+# Each fleet is a checkout with a Mission Control of its own
+# (`orchestration/fleet.example.conf`), and the answer below is read out of THIS
+# checkout's own rendered manifest — so fleet B's clone is fleet B's control
+# plane and fleet A is not consulted, while a copy of either is still refused.
+# This guard is what keeps two fleets from ever writing one queue.
 #
 # Two ways to recognise the control plane, cheapest first, and both are things
 # the install already produced rather than new state this file invents:

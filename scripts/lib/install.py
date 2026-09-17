@@ -29,6 +29,10 @@ then hand over here. This owns the rest, in this order:
      into thurbox's hooks file: thurbox rewrites that from its embedded payload
      at every TUI start and every automation tick, and its own docs say the
      agent's own settings are what survive — claude merges both, and both run.
+     ONE PER FLEET, since these settings are one file every worker on the
+     machine shares and a worker does not know which fleet dispatched it: a
+     second fleet's nudge is added beside the first's, and only a nudge whose
+     checkout is GONE is repointed. `_stale` argues it.
   6. THE EXTENSION AND QUEUE PANE, through this checkout's
      `scripts/lib/install_extension.py` — never with a required row still
      missing, since the extension is what a missing tool breaks.
@@ -47,6 +51,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -242,6 +247,40 @@ def _nudges(data: dict) -> list[dict]:
     return found
 
 
+def _nudge_checkout(command: str) -> str:
+    """The checkout a nudge names, or "" when the command cannot be read.
+
+    `reconcile.hook_command` writes the path bare, double-quoted or POSIX-quoted
+    depending on what is in it, and `shlex` reads all three back.
+    """
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        return ""
+    if "--project" in parts:
+        after = parts[parts.index("--project") + 1:]
+        if after:
+            return after[0]
+    return ""
+
+
+def _stale(hook: dict) -> bool:
+    """A nudge whose checkout is not there any more.
+
+    THIS IS WHAT TELLS A MOVE FROM A SECOND FLEET, and they used to be one thing
+    to this file: any nudge naming another checkout was taken for this one
+    before it moved, and was repointed. A machine may run SEVERAL fleets — one
+    clone each, one reconciler each — and these settings are ONE file every
+    worker on the machine shares, so repointing took the other fleet's nudge
+    away and left its loop woken by nothing but its own timer.
+
+    A directory that is gone cannot be a fleet. Anything else is somebody's, and
+    is left alone.
+    """
+    checkout = _nudge_checkout(str(hook.get("command", "")))
+    return bool(checkout) and not os.path.isdir(checkout)
+
+
 def hook_state(path: str, command: str) -> tuple[str, str]:
     """"ok", "add", "update" (a moved checkout's nudge) or "refuse", and why."""
     data, error = _settings(path)
@@ -250,17 +289,28 @@ def hook_state(path: str, command: str) -> tuple[str, str]:
     nudges = _nudges(data)
     if any(h.get("command") == command for h in nudges):
         return "ok", "already in place"
-    return ("update", "it names another checkout") if nudges else ("add", "not there yet")
+    if any(_stale(h) for h in nudges):
+        return "update", "it names a checkout that is not there any more"
+    return "add", "beside another fleet's" if nudges else "not there yet"
 
 
 def apply_hook(path: str, command: str) -> tuple[bool, str]:
+    """Leave the Stop hooks holding this fleet's nudge and every LIVE one beside it."""
     state, why = hook_state(path, command)
     if state in ("ok", "refuse"):
         return state == "ok", why
     data, _ = _settings(path)
     if state == "update":
+        # The first nudge naming a directory that is gone becomes ours; any
+        # others are dropped rather than left pointing nowhere, so a clone that
+        # moved twice stops collecting hooks nothing can run.
         for hook in _nudges(data):
-            hook["command"] = command
+            if _stale(hook):
+                hook["command"] = command
+                break
+        for entry in data.get("hooks", {}).get("Stop", []):
+            entry["hooks"] = [h for h in entry.get("hooks", []) if not _stale(h)]
+        data["hooks"]["Stop"] = [e for e in data["hooks"]["Stop"] if e.get("hooks")]
     else:
         data.setdefault("hooks", {}).setdefault("Stop", []).append(
             {"hooks": [{"type": "command", "command": command, "timeout": 10}]})

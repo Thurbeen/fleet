@@ -319,6 +319,30 @@ thurbox-cli extension deactivate fleet   # deletes the session
 uv run fleet install-extension           # respawns it at the right path
 ```
 
+**That same refusal has a SECOND cause, and the remedies are opposites.** One
+machine may run several fleets — one clone each, one queue each, one Mission
+Control each — and an unnamed second fleet renders the extension id and the
+lead name the first one already answers to. So if the live session it names is
+another fleet's lead rather than this one having moved, do not deactivate
+anything: name this fleet instead, which costs nothing because nothing is
+running under the name it takes.
+
+```bash
+printf 'NAME=acme\n' > orchestration/fleet.conf   # letters, digits, _ and -
+uv run fleet install-extension
+```
+
+It then installs as `fleet-acme` with a lead called `<glyph> Mission Control ·
+acme`, and the first fleet is untouched. Ask the operator which of the two
+situations it is — the clone moved, or this is a second fleet — and never guess:
+one answer deletes a conversation. `orchestration/fleet.example.conf` holds the
+grammar, and naming a fleet that is ALREADY running is a rename with everything
+`extension.toml.in`'s RENAMING header says one costs.
+
+Everything after this step is per-checkout already — the queue, the registry,
+the run logs, the reconciler, the pane's binding — so a second fleet runs the
+same seven steps in its own clone and shares nothing with the first.
+
 ## Step 6/7 — The queue pane, on screen
 
 Step 5 installed the pane. This step is the half that **is not finished when
@@ -558,6 +582,20 @@ running lead keeps the names it was rendered with. The new answer goes in with
 `uv run fleet voice-ask set --replace '<operator>' '<lead>'`. Then
 `.agents/skills/update-fleet/` owns applying it — the re-install, then
 `thurbox-cli session restart` on the lead.
+
+### A second fleet
+
+Not a re-run either: a clone of its own, at a directory of its own, naming
+itself. One command does the whole of it, and the first fleet is neither
+touched nor asked about:
+
+```bash
+sh install.sh --dir ~/fleet-acme --name acme
+```
+
+Then run this skill again **in that checkout** — its owners, its registry, its
+pane binding and its reconciler are its own. The pane draws whichever fleet's
+lead is selected in the session list, so both are one keystroke apart.
 
 ### What the operator gains afterwards
 

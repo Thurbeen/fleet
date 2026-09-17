@@ -81,6 +81,23 @@ names every path and the reason for each.
   `scripts/lib/queue.py` puts the worker's on at dispatch. **Changing it is a
   RENAME of the lead, and installing is not applying one** — see
   `extension.toml.in`'s RENAMING header.
+- `orchestration/fleet.example.conf` — THIS FLEET'S NAME, which is what lets
+  one machine run more than one. A fleet is a CHECKOUT — queue, registry, run
+  logs, reconciler runtime and first-run answers all live in it — so two clones
+  were always two fleets in every respect but two NAMES, and thurbox resolves
+  both of those by name: the extension (`fleet`) and the lead
+  (`<glyph> Mission Control`). `NAME=acme` renders them `fleet-acme` and
+  `<glyph> Mission Control · acme` instead. Tracked and naming none, so an
+  unnamed fleet renders exactly what fleet always rendered and a machine with
+  one fleet never meets this; copy it to a gitignored `fleet.conf` beside it.
+  ONE READER: `fleet install-extension`, at render time — everything else reads
+  the rendered manifest or the live session list, so there is no second copy of
+  the answer. **Naming a fleet that is already running is a RENAME** with
+  everything `extension.toml.in`'s RENAMING header says one costs; name the
+  SECOND fleet. A second fleet is a second clone:
+  `sh install.sh --dir ~/fleet-acme --name acme`, and
+  `uv run fleet queue`'s control-plane guard is what keeps two of them from
+  writing one queue.
 - `orchestration/queue/<topic>/` — the task queue. A prompt becomes a TOPIC
   holding its verbatim `PROMPT.md`; the topic decomposes into task directories,
   each with its own `task.yaml`, `BRIEF.md`, `progress.jsonl` and `result.md`.
@@ -371,11 +388,14 @@ consequences to know before you debug the extension:
   `extension.toml` was cleaned away. `uv run fleet install-extension` is this
   extension's real update command.
 - **The lead SESSION is Mission Control; the EXTENSION is still `fleet`**,
-  which is why every command above still takes `fleet`. The extension registers
-  **no agent of its own**: the lead binds to a stock thurbox agent — `AGENT` in
-  `orchestration/agent.conf`, rendered into the manifest, else thurbox's own
-  `claude` — so it inherits the hook settings that let it report state and
-  whatever model that agent defaults to.
+  which is why every command above still takes `fleet` — or `fleet-<name>`
+  once this fleet named itself (the `fleet.example.conf` bullet above). Every
+  `thurbox-cli extension ...` command takes the id the RENDERED manifest
+  carries, so read it there rather than assuming the bare word. The extension
+  registers **no agent of its own**: the lead binds to a stock thurbox agent —
+  `AGENT` in `orchestration/agent.conf`, rendered into the manifest, else
+  thurbox's own `claude` — so it inherits the hook settings that let it report
+  state and whatever model that agent defaults to.
   `extension.toml.in`'s no-`[[agents]]` note owns why. A
   glyph is part of the session name because thurbox has no per-session icon
   field, and WHICH glyph is a setting (see the glyph bullet above), so the

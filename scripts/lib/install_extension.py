@@ -7,7 +7,16 @@ TOML string, so a Windows path's backslashes survive. `__LEAD_GLYPH__` is the
 lead's mark, one machine's TERMINAL's choice: `orchestration/session-glyphs
 .example.conf`, or the gitignored `session-glyphs.conf` beside it.
 `__LEAD_AGENT__` is `AGENT` in `orchestration/agent.conf`, else thurbox's stock
-`claude`. The rendered `extension.toml` is gitignored.
+`claude`. `__FLEET_SUFFIX__` and `__FLEET_LABEL__` are this fleet's NAME
+(`orchestration/fleet.conf`) on the extension id and on the lead — `fleet-acme`
+and `Mission Control · acme` — and render empty for the unnamed fleet every
+clone is until it says otherwise. The rendered `extension.toml` is gitignored.
+
+SEVERAL FLEETS ON ONE MACHINE ARE THOSE TWO NAMES AND NOTHING ELSE. Each fleet
+is a checkout — queue, registry, run logs, reconciler runtime, first-run answers
+— and thurbox resolves an extension and a session by NAME, so an unnamed second
+clone registers over the first and is handed the first's lead. Naming it is what
+makes the two independent; `orchestration/fleet.example.conf` argues the rest.
 
 IT ALSO RENDERS THE PAYLOAD. FLEET.md carries `@OPERATOR_NAME@` and
 `@ASSISTANT_NAME@` (`@` because markdown reads `__x__` as bold), and
@@ -19,9 +28,9 @@ Windows makes `[[symlinks]]` into hard links, and a file replaced by a new one
 would leave those links on the old names. A rendered payload reaches no
 running lead — the session froze FLEET.md at launch.
 
-Settings are read as DATA, never executed. FLEET_GLYPH_ROOT, FLEET_AGENT_ROOT
-and FLEET_VOICE_CONF relocate them, so the gate renders the tracked defaults
-and never an operator's override.
+Settings are read as DATA, never executed. FLEET_GLYPH_ROOT, FLEET_AGENT_ROOT,
+FLEET_NAME_ROOT and FLEET_VOICE_CONF relocate them, so the gate renders the
+tracked defaults and never an operator's override.
 
 CHANGING THE GLYPH IS A RENAME, and this cannot apply one: thurbox has no
 rename verb and `ensure_extension` matches by name. extension.toml.in's
@@ -36,6 +45,10 @@ deletes the lead's conversation and is therefore the operator's call:
 
     thurbox-cli extension deactivate fleet   # deletes the session
     uv run fleet install-extension           # respawns it at the new path
+
+THE SAME SYMPTOM IS ALSO A SECOND FLEET that has not named itself, and the
+remedies are opposites — so an UNNAMED fleet is told both, and a named one,
+which already made that choice, is told only the first.
 
 IT ALSO INSTALLS THE TUI PANE with `thurbox-cli plugin install`, which records
 it in the user's plugins.toml, and does NOT place it: placing is an edit to the
@@ -71,7 +84,7 @@ from dataclasses import dataclass
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(os.path.dirname(HERE))
 PANE_DEST = "plugins/91_fleet_queue.lua"
-PLACEHOLDERS = ("__REPO_PATH__", "__LEAD_GLYPH__", "__LEAD_AGENT__")
+PLACEHOLDERS = ("__REPO_PATH__", "__LEAD_GLYPH__", "__LEAD_AGENT__", "__FLEET_SUFFIX__", "__FLEET_LABEL__")
 NAME_PLACEHOLDERS = ("@OPERATOR_NAME@", "@ASSISTANT_NAME@")
 
 
@@ -98,6 +111,7 @@ class Rendered:
     manifest: str
     glyph: str
     glyph_conf: str
+    fleet: str
 
 
 def read(path: str) -> str:
@@ -136,6 +150,44 @@ def lead_glyph(conf: str) -> str:
     if any(c in glyph for c in "|'\" "):
         raise Refused(f"the lead glyph from {conf} contains a quote, a pipe or a space: {glyph}")
     return glyph
+
+
+# WHERE A FLEET'S NAME IS ALLOWED TO GO. It becomes a directory under thurbox's
+# config (`extensions/fleet-<name>`) and a path segment inside a session name,
+# on two operating systems — so the grammar is bare, and narrow on purpose. The
+# cap is short because the whole rendered lead name is what a mailbox address
+# has to be pasted as.
+FLEET_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,23}")
+
+# What separates the lead from its fleet. One cell, no variation selector, and
+# not a character a worker's imperative title reaches for — extension.toml.in's
+# own header owns that argument, and interface/fleet_queue.lua matches it.
+FLEET_SEPARATOR = " · "
+
+
+def fleet_name() -> str:
+    """Which fleet this checkout is, or "" — and "" is the tracked default.
+
+    One setting, read HERE and nowhere else, exactly as the glyph and the agent
+    are: everything downstream reads the rendered manifest or the live session
+    list instead, so there is no second copy of this answer to keep in step.
+
+    Unnamed renders the two names fleet always used, so a machine with one
+    fleet is never renamed by this setting existing. `orchestration/fleet.example.conf`
+    holds the rest of the argument.
+    """
+    conf = pick(os.environ.get("FLEET_NAME_ROOT") or REPO_ROOT, "fleet")
+    name = (setting(conf, "NAME") if os.path.isfile(conf) else "").strip()
+    if not name:
+        return ""
+    if not FLEET_NAME_RE.fullmatch(name):
+        raise Refused(
+            f"NAME in {conf} is not a name a fleet can carry: {name!r}\n"
+            "  It becomes a directory under thurbox's config and a path segment\n"
+            "  inside a session name, so it is letters, digits, '_' and '-',\n"
+            "  starting with a letter or a digit, at most 24 of them."
+        )
+    return name
 
 
 def lead_agent() -> str:
@@ -182,6 +234,7 @@ def render(dest: str, voice: str | None = None) -> Rendered:
     glyph_conf = pick(os.environ.get("FLEET_GLYPH_ROOT") or REPO_ROOT, "session-glyphs")
     glyph = lead_glyph(glyph_conf)
     agent = lead_agent()
+    fleet = fleet_name()
     voice = voice or os.environ.get("FLEET_VOICE_CONF") or pick(REPO_ROOT, "voice")
     operator, lead = voice_names(voice)
 
@@ -191,6 +244,8 @@ def render(dest: str, voice: str | None = None) -> Rendered:
         .replace("__REPO_PATH__", REPO_ROOT.replace("\\", "\\\\"))
         .replace("__LEAD_GLYPH__", glyph)
         .replace("__LEAD_AGENT__", agent)
+        .replace("__FLEET_SUFFIX__", f"-{fleet}" if fleet else "")
+        .replace("__FLEET_LABEL__", f"{FLEET_SEPARATOR}{fleet}" if fleet else "")
     )
     # A half-rendered manifest would register a session in a directory literally
     # named __REPO_PATH__, or bound to an agent thurbox has never heard of.
@@ -210,12 +265,14 @@ def render(dest: str, voice: str | None = None) -> Rendered:
     write_in_place(payload_out, payload)
     return Rendered(
         report=[
-            f"rendered {out} (repo_path = {REPO_ROOT}, lead glyph = {glyph}, agent = {agent})",
+            f"rendered {out} (repo_path = {REPO_ROOT}, lead glyph = {glyph}, agent = {agent}, "
+            f"fleet = {fleet or 'unnamed'})",
             f"rendered {payload_out} (operator = {operator}, lead answers to = {lead})",
         ],
         manifest=manifest,
         glyph=glyph,
         glyph_conf=glyph_conf,
+        fleet=fleet,
     )
 
 
@@ -256,6 +313,22 @@ def install(cli: str, rendered: Rendered) -> int:
         listing = session_list(cli)
         live = next((s.get("cwd") or "" for s in listing if s.get("name") == session_name), "")
         if live and not same_dir(live, REPO_ROOT):
+            # TWO SITUATIONS WEAR THIS ONE SYMPTOM, and they have opposite
+            # remedies. The clone MOVED — one fleet, repoint it, and that costs
+            # the lead's conversation. Or this is a SECOND fleet that has not
+            # been named yet — two fleets, and naming this one costs nothing at
+            # all, because nothing is running under the name it would take.
+            # Only an unnamed fleet can be the second case: a named one already
+            # made that choice, so it is told the moved-clone remedy alone.
+            second = "" if rendered.fleet else (
+                "\n\nIf this is a SECOND fleet rather than the first one moving, name it\n"
+                "instead — it then gets an extension and a Mission Control of its own,\n"
+                "and the session above is left alone:\n\n"
+                f"  echo NAME=<name> > {os.path.join('orchestration', 'fleet.conf')}\n"
+                "  uv run fleet install-extension\n\n"
+                "orchestration/fleet.example.conf holds the grammar and what a name costs\n"
+                "a fleet that is already running."
+            )
             print(
                 f"\nerror: the '{session_name}' session still opens a different directory.\n\n"
                 f"  live session: {live}\n"
@@ -265,7 +338,8 @@ def install(cli: str, rendered: Rendered) -> int:
                 "that actually runs. To repoint it — this DELETES that session and its\n"
                 "conversation history, so it is your call, not this command's:\n\n"
                 f"  thurbox-cli extension deactivate {ext_name}\n"
-                "  uv run fleet install-extension",
+                "  uv run fleet install-extension"
+                f"{second}",
                 file=sys.stderr,
             )
             return 1

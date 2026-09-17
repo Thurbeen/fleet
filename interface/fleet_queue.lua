@@ -256,18 +256,42 @@ local SCROLL_UP, SCROLL_DOWN = "scroll-up", "scroll-down"
 --- without this file moving with it.
 local CONTROL_PLANE = "Mission Control"
 
---- Is this session the lead: the name, optionally wearing one mark?
+--- What stands between the lead and the FLEET it belongs to, when one is named.
 ---
---- The prefix is bounded rather than free — one non-space token of at most four
---- bytes, which is one UTF-8 codepoint — because a worker's name is an
---- imperative sentence about its work and one of those can end in these words.
---- "🚀 Rename Mission Control" is a worker; "📡 Mission Control" is the lead.
-local function is_control_plane(name)
-  if name == CONTROL_PLANE then
-    return true
+--- A machine may run several fleets — one clone each, each with a Mission
+--- Control of its own — and `orchestration/fleet.conf` is where a fleet takes
+--- its name. `fleet install-extension` renders it into the manifest, on this
+--- side of this mark; the mark itself is chosen in the same file the lead's
+--- glyph is, and for the same reasons: U+00B7 is one cell, needs no variation
+--- selector, and is not a character a worker's imperative title reaches for.
+---
+--- This is the one string here that must agree with the renderer, which is why
+--- `uv run fleet check pane` compares the two.
+local FLEET_MARK = " · "
+
+--- The fleet this session leads: its name, "" for a fleet that named none, or
+--- nil when the session is not a lead at all.
+---
+--- The mark in front is bounded rather than free — one non-space token of at
+--- most four bytes, which is one UTF-8 codepoint — because a worker's name is
+--- an imperative sentence about its work and one of those can end in these
+--- words. "🚀 Rename Mission Control" is a worker; "📡 Mission Control" is the
+--- lead of an unnamed fleet, and "📡 Mission Control · acme" leads `acme`.
+---
+--- The fleet's own name is matched as the grammar that renders it — letters,
+--- digits, `_` and `-` — so "🚀 Fix Mission Control · then ship it" is still a
+--- worker.
+local function fleet_of(name)
+  local body = name
+  local mark, rest = name:match("^(%S+) (.*)$")
+  if mark and #mark <= 4
+    and (rest == CONTROL_PLANE or rest:sub(1, #CONTROL_PLANE + #FLEET_MARK) == CONTROL_PLANE .. FLEET_MARK) then
+    body = rest
   end
-  local mark = name:match("^(%S+) " .. CONTROL_PLANE .. "$")
-  return mark ~= nil and #mark <= 4
+  if body == CONTROL_PLANE then
+    return ""
+  end
+  return body:match("^" .. CONTROL_PLANE .. FLEET_MARK .. "([%w_-]+)$")
 end
 
 --- Seconds an answer stays fresh.
@@ -735,10 +759,16 @@ end
 --- `position`, when the rows do not all fit, is which of them are on screen,
 --- and it goes on the BOTTOM border for the reason the button goes on the top
 --- one: a border cell costs the queue no row.
-local function frame(position)
+--- `fleet`, when there is one, is which fleet's queue this is — the name a
+--- second Mission Control on this machine took. It goes in the TITLE because
+--- the title costs no row and is on screen whatever the queue is doing, and a
+--- pane that draws one fleet's work without saying which fleet is the one lie
+--- multiple fleets could make it tell. An unnamed fleet is the only fleet
+--- there is, so it says nothing.
+local function frame(position, fleet)
   local chord = ui.chord(TOGGLE)
   local spec = {
-    title = { { text = " Fleet queue " } },
+    title = { { text = " Fleet queue" .. ((fleet or "") ~= "" and FLEET_MARK .. fleet or "") .. " " } },
     borders = "all",
     border_style = theme.muted,
     padding = 0,
@@ -2058,40 +2088,78 @@ return {
     -- installs. Its cwd is the identity — never `session.repo`, which is a
     -- basename several different checkouts share.
     --
-    -- THIS MACHINE'S LEAD FIRST. thurbox sets `host` on a session it reaches
+    -- THIS MACHINE'S LEADS FIRST. thurbox sets `host` on a session it reaches
     -- over ssh or wsl, and a lead mirrored from another host is an ordinary
     -- neighbour of the local one — often listed ahead of it. Binding to the
     -- first by name probed that host and drew its empty queue over live work
-    -- here. So a local lead wins silently, and only when there is none does
-    -- the first lead by name stand in. Two local leads in different checkouts
-    -- are two queues, and which is the fleet is not the pane's guess to make.
-    local lead
-    local locals, local_cwds = {}, {}
+    -- here. So local leads win silently, and only when there is none does the
+    -- first lead by name stand in.
+    local remote
+    local leads, seen = {}, {}
     for _, session in ipairs(thurbox.sessions or {}) do
-      if session.cwd and is_control_plane(session.name or "") then
-        lead = lead or session
-        if not session.host and not local_cwds[session.cwd] then
-          local_cwds[session.cwd] = true
-          locals[#locals + 1] = session
+      local fleet = session.cwd and fleet_of(session.name or "")
+      if fleet then
+        remote = remote or { session = session, fleet = fleet }
+        if not session.host and not seen[session.cwd] then
+          seen[session.cwd] = true
+          leads[#leads + 1] = { session = session, fleet = fleet }
         end
       end
     end
-    if #locals > 1 then
-      local lines = { #locals .. " " .. CONTROL_PLANE .. " sessions here" }
-      for _, session in ipairs(locals) do
-        lines[#lines + 1] = session.cwd
-      end
-      lines[#lines + 1] = "remove the one that is not your fleet"
-      return saying(lines, width)
+    if #leads == 0 and remote then
+      leads[1] = remote
     end
-    lead = locals[1] or lead
-    if not lead then
+    if #leads == 0 then
       return saying({
         "no " .. CONTROL_PLANE .. " session",
         "uv run fleet install-extension",
         "in your fleet checkout",
       }, width)
     end
+
+    -- WHICH FLEET, when this machine runs several. Each is a checkout with a
+    -- Mission Control of its own, and they are different queues — so the pane
+    -- does not guess, and it does not ask twice either.
+    --
+    -- IT FOLLOWS THE SESSION LIST. `store.selected` is what that pane publishes
+    -- and the agent pane already reads, so "the fleet you are looking at" is a
+    -- question thurbox has answered already; a setting of the pane's own would
+    -- be a second answer to keep in step, and one that goes stale the day a
+    -- checkout moves.
+    --
+    -- AND IT REMEMBERS. Selecting a lead is how you choose a fleet; then you
+    -- spend the day in WORKER sessions, which name no fleet and never could —
+    -- a worker's cwd is its worktree of the target repo, with nothing in it
+    -- that points back at the queue that dispatched it. A pane that fell back
+    -- to the chooser on every worker would be a pane nobody could read, so the
+    -- choice sticks to the cwd until another lead is selected. One fleet needs
+    -- none of this and is drawn without being chosen.
+    local chosen = leads[1]
+    if #leads > 1 then
+      chosen = nil
+      local selected = store and store.selected
+      for _, entry in ipairs(leads) do
+        if selected and entry.session.id == selected then
+          chosen = entry
+          state.fleet = entry.session.cwd
+        end
+      end
+      for _, entry in ipairs(leads) do
+        if not chosen and entry.session.cwd == state.fleet then
+          chosen = entry
+        end
+      end
+      if not chosen then
+        local lines = { #leads .. " " .. CONTROL_PLANE .. " sessions here" }
+        for _, entry in ipairs(leads) do
+          lines[#lines + 1] = (entry.fleet ~= "" and entry.fleet .. "  " or "") .. entry.session.cwd
+        end
+        lines[#lines + 1] = "select one in the session list to draw its queue"
+        return saying(lines, width)
+      end
+    end
+
+    local lead, fleet = chosen.session, chosen.fleet
     if lead.status == "unreachable" then
       return saying({ "the " .. CONTROL_PLANE .. " session is unreachable" }, width)
     end
@@ -2245,7 +2313,7 @@ return {
     -- rows that carried a link, and scrolled nothing everywhere else. A node
     -- with an identity records its whole rect, and the rows' own targets are
     -- recorded after it, so they still win where they are.
-    return { type = "box", id = SLOT, frame = frame(position), children = children }
+    return { type = "box", id = SLOT, frame = frame(position, fleet), children = children }
   end,
 
   -- The wheel, because a pane that never holds focus can never be given a `j`.
