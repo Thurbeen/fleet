@@ -49,9 +49,8 @@ its argv and working directory each time before it is signalled
 IT GOES WITH WHAT IT RUNS FOR. A loop whose runtime directory is deleted — the
 `lock` it holds there is the tell, because `nudge` makes the directory again
 and never that — or whose FLEET_RECONCILE_PARENT_PID is gone, exits at the next
-boundary. Only
-tests set the second: a run killed before its teardown would otherwise leak a
-detached loop ticking against a deleted temp directory.
+boundary. Only tests set the second: a run killed before its teardown would
+otherwise leak a detached loop ticking against a deleted temp directory.
 
 IT WRITES NO RECORD. Every effect on the queue goes through `fleet queue`, the
 only writer over the records. Its own runtime directory is not an exception: a

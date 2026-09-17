@@ -41,8 +41,9 @@ GATE = "all-checks"
 MATRIX_REF = re.compile(r"\$\{\{\s*matrix\.([A-Za-z0-9_.-]+)\s*\}\}")
 
 # Where the gate's own words end and the next command begins, so a step that
-# chains one is read for what it runs the gate with and not for `echo`.
-CHAINED = re.compile(r"&&|\|\||;|\||>")
+# chains or redirects one is read for what it runs the gate with — not for
+# `echo`, and not for the `2` in `2>&1`.
+CHAINED = re.compile(r"&&|\|\||;|\||\d*>>?")
 
 
 def problems(path: str) -> list[str]:
@@ -65,7 +66,8 @@ def problems(path: str) -> list[str]:
         if name != GATE and name not in needs:
             found.append(f"{path}: `{GATE}` does not need job `{name}`")
 
-    if not any("windows-latest" in runners(job) for job in jobs.values()):
+    # `.split()`: a runner is named by its labels, and `windows-latest` may be one of several.
+    if not any("windows-latest" in runner.split() for job in jobs.values() for runner in runners(job)):
         found.append(f"{path}: no job runs on windows-latest")
 
     every = check_names()
@@ -141,7 +143,12 @@ def gate_names(jobs: dict, every: list[str]) -> dict[str, set] | None:
 
 
 def runners(job: dict) -> list[str]:
-    """Every runner this job runs on: a literal `runs-on`, or a matrix's values.
+    """Every runner this job runs on, one entry each, named as `runs-on` names it.
+
+    A LIST IS ONE RUNNER: `runs-on: [self-hosted, windows-latest]` picks a
+    single machine carrying every label, so it is one entry spelling all of
+    them, and not one runner per label that would each be asked to run the
+    whole gate.
 
     A `runs-on` naming a matrix key that is not there stays as it is written,
     so an unresolved runner is reported under its own spelling rather than
@@ -149,11 +156,12 @@ def runners(job: dict) -> list[str]:
     """
     runs_on = job.get("runs-on")
     if isinstance(runs_on, list):
-        return [str(v) for v in runs_on]
+        return [" ".join(str(v) for v in runs_on)]
     if not isinstance(runs_on, str):
         return []
     matrix = (job.get("strategy") or {}).get("matrix") or {}
     return expand(runs_on, matrix if isinstance(matrix, dict) else {}) or [runs_on]
+
 
 
 def main() -> int:

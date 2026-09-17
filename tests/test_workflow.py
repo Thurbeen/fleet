@@ -189,3 +189,42 @@ def test_a_gate_run_chained_after_another_command_is_read_for_its_own_words(tmp_
 
     assert not any("echo" in p or "done" in p for p in found), found
     assert any("lock" in p for p in found), "the checks that step does not run are still missing"
+
+
+def test_a_redirected_gate_run_is_read_for_its_own_words(tmp_path):
+    """`fleet check lint 2>&1 | tee gate.log` runs one check. The `2` of the
+    redirect is not a second one, and reporting it as an invented check name is
+    a gate that fails on a step that is doing nothing wrong."""
+    found = problems(tmp_path, """
+  check:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps: [{run: "uv run --frozen fleet check lint 2>&1 | tee gate.log"}]
+""")
+
+    assert not any("`fleet check 2`" in p or "tee" in p for p in found), found
+
+
+SHARED_LABEL = """
+  check:
+    runs-on: [self-hosted, linux]
+    timeout-minutes: 30
+    steps: [{run: "uv run --frozen fleet check %s"}]
+  windows:
+    runs-on: [self-hosted, windows-latest]
+    timeout-minutes: 30
+    steps: [{run: "uv run --frozen fleet check %s"}]
+"""
+
+
+def test_two_runners_sharing_a_label_do_not_cover_for_each_other(tmp_path):
+    """`runs-on: [self-hosted, linux]` picks ONE machine carrying both labels.
+    Counted a runner per label, the two jobs' shards both land under
+    `self-hosted`, which is then covered by halves that ran on two different
+    machines — and `linux`, which is no machine at all, is reported as missing
+    everything the other job ran."""
+    *most, only_linux = every_check()
+    found = problems(tmp_path, SHARED_LABEL % (only_linux, " ".join(most)), needs="check, windows")
+
+    assert any(only_linux in p and "windows-latest" in p for p in found), found
+    assert not any(p.endswith("on linux") or p.endswith("on self-hosted") for p in found), found
