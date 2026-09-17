@@ -72,7 +72,7 @@ WIRING_PATHS = (
 # port, and the module and platform seam the supervisor holds in memory.
 RECONCILER_PATHS = ("scripts/reconcile.sh", "scripts/lib/reconcile.py", "scripts/lib/fleet_platform.py")
 
-OFFLINE ="control-plane sync: could not reach origin (offline?). Working from the local checkout."
+OFFLINE = "control-plane sync: could not reach origin (offline?). Working from the local checkout."
 
 
 def git(root: str | None, *args: str) -> subprocess.CompletedProcess:

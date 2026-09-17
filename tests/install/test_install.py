@@ -20,10 +20,11 @@ from __future__ import annotations
 
 import io
 import os
+import pathlib
 import sys
 
 import pytest
-from harness import expect, refute, write
+from harness import REPO, expect, lib, refute, write
 from installkit import (
     GH_LOGGED_OUT, SUDO, WINDOWS, fleet, full_machine, installs, launcher, load_install, machine, place, plain,
     tree_snapshot,
@@ -301,6 +302,18 @@ def test_the_extension_step_calls_the_checkouts_install_extension_main(checkout,
     install = load_install()
     assert install.extension_step(str(checkout)) == 0
     assert stubs.calls("extension") == [f"extension install {checkout}"]
+
+
+def test_the_extension_step_publishes_no_other_checkouts_module(checkout, stubs, capsys):
+    """The module it runs is `checkout`'s, which the bootstrap makes a different
+    clone than this one. Left in sys.modules under the key every loader uses, it
+    is that tree's copy they all get for the rest of the process — here, a
+    stand-in whose constants the queue pane's own test then read as fleet's."""
+    install = load_install()
+    assert install.extension_step(str(checkout)) == 0
+
+    here = pathlib.Path(lib("install_extension.py").__file__)
+    assert here == REPO / "scripts" / "lib" / "install_extension.py", here
 
 
 def test_a_checkout_without_the_extension_module_says_so_and_runs_no_script(checkout, stubs, capsys):

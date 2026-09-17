@@ -14,6 +14,7 @@ import subprocess
 import sys
 import textwrap
 import time
+from pathlib import Path
 
 import pytest
 from harness import PYTHON, REPO, expect, lib, refute, write
@@ -242,6 +243,28 @@ def test_a_supervisor_whose_runtime_directory_is_deleted_exits(recon):
     # Nothing in a pass may make it again: the loop would then read as at home
     # at the next boundary and never exit.
     assert not recon.rt.exists(), "the loop made its runtime directory again instead of exiting"
+
+
+def test_a_directory_somebody_else_made_is_not_the_loops_own(isolated_env):
+    """What proves the loop is still at home is the lock file it holds, not the
+    directory's name being taken.
+
+    `fleet reconcile nudge` makes that directory whenever it is missing — a
+    worker's Stop hook fires it at any moment — so a loop that read the
+    directory alone would be brought back from the dead by a nudge racing its
+    exit, and would tick against a runtime nobody owns. The end-to-end deletion
+    above cannot state this: whether the nudge lands inside the window is a
+    race, and the rule is not."""
+    mod = lib("reconcile.py")
+    cfg = mod.Config.from_env()
+    os.makedirs(cfg.rt, exist_ok=True)
+    write(Path(cfg.path("lock")), "")
+    assert mod.orphaned(cfg) == "", "a loop holding its lock is at home"
+
+    shutil.rmtree(cfg.rt)
+    os.makedirs(cfg.rt)  # exactly what a nudge does, and all it does
+
+    assert mod.orphaned(cfg), "a directory made again under the loop reads as its own"
 
 
 def test_launch_leaves_a_loop_that_is_already_ticking_alone(recon):

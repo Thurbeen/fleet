@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The CI workflow keeps the three promises its `All Checks` gate rests on.
+"""The CI workflow keeps the four promises its `All Checks` gate rests on.
 
     check_workflow.py [<workflow>]    default: .github/workflows/ci.yml
 
@@ -13,10 +13,15 @@
    that breaks fleet on Windows fails the pull request instead of the next
    Windows operator.
 4. The names the jobs pass to `fleet check` cover every check `check.py` knows,
-   and name nothing it does not. The gate is SHARDED across jobs to cut the
-   wall clock, so the workflow now holds a copy of the area list — and a copy
-   is a thing that goes stale. An area added to `check.py` and to no shard
-   would never run on CI, and `All Checks` would still report green.
+   ON EVERY RUNNER THAT RUNS THE GATE, and name nothing it does not. The gate
+   is SHARDED across jobs to cut the wall clock, so the workflow now holds a
+   copy of the area list — and a copy is a thing that goes stale. An area added
+   to `check.py` and to no shard would never run on CI, and `All Checks` would
+   still report green.
+
+   Per runner, because covered in aggregate is not covered: a shard only the
+   Linux job takes leaves promise 3 to a green status that never ran it, and
+   "still works on Windows" is the property this matrix exists for.
 
    A bare `uv run fleet check` runs every check, so a workflow that only ever
    calls it that way keeps this promise with nothing to list.
@@ -34,6 +39,11 @@ GATE = "all-checks"
 # `${{ matrix.shard.areas }}` and friends, which is how a sharded job says
 # which checks it runs.
 MATRIX_REF = re.compile(r"\$\{\{\s*matrix\.([A-Za-z0-9_.-]+)\s*\}\}")
+
+# Where the gate's own words end and the next command begins, so a step that
+# chains or redirects one is read for what it runs the gate with — not for
+# `echo`, and not for the `2` in `2>&1`.
+CHAINED = re.compile(r"&&|\|\||;|\||\d*>>?")
 
 
 def problems(path: str) -> list[str]:
@@ -56,14 +66,17 @@ def problems(path: str) -> list[str]:
         if name != GATE and name not in needs:
             found.append(f"{path}: `{GATE}` does not need job `{name}`")
 
-    if not any(runs_on_windows(job) for job in jobs.values()):
+    # `.split()`: a runner is named by its labels, and `windows-latest` may be one of several.
+    if not any("windows-latest" in runner.split() for job in jobs.values() for runner in runners(job)):
         found.append(f"{path}: no job runs on windows-latest")
 
-    named = gate_names(jobs)
+    every = check_names()
+    named = gate_names(jobs, every)
     if named is not None:
-        every = check_names()
-        found += [f"{path}: no job runs `fleet check {name}`" for name in every if name not in named]
-        found += [f"{path}: a job runs `fleet check {name}`, which is not a check" for name in sorted(named - set(every))]
+        for runner, names in sorted(named.items()):
+            found += [f"{path}: nothing runs `fleet check {n}` on {runner}" for n in every if n not in names]
+        invented = {n for names in named.values() for n in names} - set(every)
+        found += [f"{path}: a job runs `fleet check {n}`, which is not a check" for n in sorted(invented)]
     return found
 
 
@@ -103,14 +116,17 @@ def matrix_values(matrix: dict, path: str) -> list[str]:
     return [str(e[field]) for e in entries if isinstance(e, dict) and field in e]
 
 
-def gate_names(jobs: dict) -> set | None:
-    """Every check name the workflow passes to `fleet check`.
+def gate_names(jobs: dict, every: list[str]) -> dict[str, set] | None:
+    """Every check name the workflow passes to `fleet check`, per runner it runs on.
 
-    None when the promise does not apply: no step runs the gate, or one runs it
-    bare, which is every check and leaves nothing to list.
+    A bare `fleet check` is every check there is, so it contributes all of them
+    to its job's runners rather than excusing the workflow: a bare run on one
+    runner says nothing about what the other one skipped.
+
+    None when no step runs the gate at all, which is the one shape this promise
+    cannot apply to.
     """
-    named = set()
-    ran = False
+    named: dict[str, set] = {}
     for job in jobs.values():
         matrix = (job.get("strategy") or {}).get("matrix") or {}
         for step in job.get("steps") or []:
@@ -119,26 +135,33 @@ def gate_names(jobs: dict) -> set | None:
                 _, gate, rest = line.partition("fleet check")
                 if not gate:
                     continue
-                ran = True
-                for text in expand(rest, matrix):
+                for text in expand(CHAINED.split(rest)[0], matrix):
                     words = [w for w in text.split() if not w.startswith("-")]
-                    if not words:
-                        return None
-                    named.update(words)
-    return named if ran else None
+                    for runner in runners(job):
+                        named.setdefault(runner, set()).update(words or every)
+    return named or None
 
 
-def runs_on_windows(job: dict) -> bool:
-    """`runs-on: windows-latest`, or a matrix whose values list it."""
+def runners(job: dict) -> list[str]:
+    """Every runner this job runs on, one entry each, named as `runs-on` names it.
+
+    A LIST IS ONE RUNNER: `runs-on: [self-hosted, windows-latest]` picks a
+    single machine carrying every label, so it is one entry spelling all of
+    them, and not one runner per label that would each be asked to run the
+    whole gate.
+
+    A `runs-on` naming a matrix key that is not there stays as it is written,
+    so an unresolved runner is reported under its own spelling rather than
+    dropping the job — and with it every check that job was the only one to run.
+    """
     runs_on = job.get("runs-on")
-    if runs_on == "windows-latest":
-        return True
+    if isinstance(runs_on, list):
+        return [" ".join(str(v) for v in runs_on)]
+    if not isinstance(runs_on, str):
+        return []
     matrix = (job.get("strategy") or {}).get("matrix") or {}
-    if not isinstance(runs_on, str) or "matrix." not in runs_on or not isinstance(matrix, dict):
-        return False
-    values = [v for vs in matrix.values() if isinstance(vs, list) for v in vs]
-    values += [v for entry in matrix.get("include") or [] if isinstance(entry, dict) for v in entry.values()]
-    return "windows-latest" in values
+    return expand(runs_on, matrix if isinstance(matrix, dict) else {}) or [runs_on]
+
 
 
 def main() -> int:

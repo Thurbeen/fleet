@@ -15,9 +15,12 @@ requests while routine control-plane changes go straight to `main`.
 TWO KINDS OF CHECK. A STATIC check reads tracked files: the lock, ruff, rumdl,
 the YAML, the workflow's promises and the session profiles. A TESTS check is a
 pytest area under `tests/`, each driving fleet's real entry points against
-stub tools. A full run does every static check and then ONE pytest run over
-every area, so the stub tools install once. `markdown` and `lint` have fixers;
-`--fix` is a no-op for the rest, so it is always safe to pass.
+stub tools — except `architecture`, which parses fleet's own source, because
+a rule like "only the platform seam reads the OS" is true of lines no run
+reaches and false on nobody's machine until the next operator's. A full run
+does every static check and then ONE pytest run over every area, so the stub
+tools install once. `markdown` and `lint` have fixers; `--fix` is a no-op for
+the rest, so it is always safe to pass.
 
 IT READS NO OPERATOR STATE. One commit gets one verdict — on CI, in a worker's
 worktree and in the control-plane checkout — so no check reads what a running
@@ -56,6 +59,7 @@ TESTS = {
     "extension": (["tests/extension"], ["uv"], "the manifest, the rendered payload and the first-run asks"),
     "install": (["tests/install"], ["uv", "git"], "the one-command install, converging and idempotent"),
     "skills": (["tests/skills"], [], "one skills tree, and every skill has a SKILL.md"),
+    "architecture": (["tests/architecture"], [], "the seams hold in the source, including the branch this run never takes"),
     "automerge": (["tests/settings"], [], "no tracked setting names a repository, a tool or an agent"),
     "isolation": (["tests/isolation"], ["uv", "git"], "a poisoned checkout under a hostile host gets the same verdict"),
 }

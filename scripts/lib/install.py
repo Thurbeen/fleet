@@ -273,12 +273,18 @@ def apply_hook(path: str, command: str) -> tuple[bool, str]:
 
 
 def extension_step(checkout: str) -> int:
-    """This checkout's install-extension group, in-process, under the key fleet/cli.py gives it."""
+    """`checkout`'s install-extension group, run in-process for its `main`.
+
+    NOT published in sys.modules, unlike every other module loaded here:
+    `checkout` is the tree being installed, which the bootstrap runs from
+    another clone than this file's. Under the key `fleet_install_extension`,
+    that foreign copy is what every later loader in this process gets back —
+    and nothing looks this one up again, so it needs no key at all.
+    """
     module = os.path.join(checkout, "scripts", "lib", "install_extension.py")
     if os.path.isfile(module):
         spec = importlib.util.spec_from_file_location("fleet_install_extension", module)
         loaded = importlib.util.module_from_spec(spec)
-        sys.modules["fleet_install_extension"] = loaded
         spec.loader.exec_module(loaded)
         return int(loaded.main([]) or 0)
     say("  scripts/lib/install_extension.py is not in this checkout, so the extension cannot be installed from here.")

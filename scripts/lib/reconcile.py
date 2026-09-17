@@ -46,10 +46,11 @@ checkout, and `ensure`, `start`, `stop` and `restart` end it. Proven by
 its argv and working directory each time before it is signalled
 (`is_legacy`), never by a pid.
 
-IT GOES WITH WHAT IT RUNS FOR. A loop whose runtime directory is deleted, or
-whose FLEET_RECONCILE_PARENT_PID is gone, exits at the next boundary. Only
-tests set the second: a run killed before its teardown would otherwise leak a
-detached loop ticking against a deleted temp directory.
+IT GOES WITH WHAT IT RUNS FOR. A loop whose runtime directory is deleted — the
+`lock` it holds there is the tell, because `nudge` makes the directory again
+and never that — or whose FLEET_RECONCILE_PARENT_PID is gone, exits at the next
+boundary. Only tests set the second: a run killed before its teardown would
+otherwise leak a detached loop ticking against a deleted temp directory.
 
 IT WRITES NO RECORD. Every effect on the queue goes through `fleet queue`, the
 only writer over the records. Its own runtime directory is not an exception: a
@@ -346,9 +347,15 @@ def orphaned(cfg: Config) -> str:
     Its runtime directory was deleted under it, or the process it was told to
     watch is gone. The second is set only by tests: a test run killed before its
     teardown never stops the loop it started, which would otherwise tick against
-    a deleted temp directory forever."""
-    if not os.path.isdir(cfg.rt):
-        return f"{cfg.rt} is gone"
+    a deleted temp directory forever.
+
+    THE LOCK FILE AND NOT THE DIRECTORY. `with_lock` makes both before the loop
+    starts and the lock stays for its life, while `nudge` makes the directory
+    alone whenever it is missing — from a worker's Stop hook, at any moment. A
+    loop that read the directory would be brought back from the dead by a nudge
+    racing its exit, and would go on ticking over a runtime nobody owns."""
+    if not os.path.isfile(cfg.path("lock")):
+        return f"{cfg.path('lock')} is gone"
     if cfg.parent and not fleet_platform.alive(cfg.parent):
         return f"parent pid {cfg.parent} is gone"
     return ""

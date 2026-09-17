@@ -35,7 +35,10 @@ names every path and the reason for each.
   — and the stub `gh`, `thurbox-cli`, `ssh`, `glab` and `quota-axi`, a package
   in `tests/stubs` installed as real executables first on PATH. Fleet's code
   runs there with any locale-encoded read or write as an error. Each area is a
-  named check: `uv run fleet check --list` maps them.
+  named check: `uv run fleet check --list` maps them. `tests/architecture/` is
+  the one area that never runs fleet — it parses every module under `fleet/`
+  and `scripts/lib/` and holds the constraints `CONTRIBUTING.md`'s `scripts/**`
+  review rules state, which are true of lines no run reaches.
 - `registry/owners.txt` — the GitHub owners the map covers, one per line.
   `registry/owners.example.txt` is the tracked copy it starts from.
 - `registry/repos.generated.yaml` — generated index of every repo under those

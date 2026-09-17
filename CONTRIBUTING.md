@@ -188,16 +188,18 @@ bring, and every job gets a `timeout-minutes`.
 The matrix also **shards that command by the gate's own area names**, because
 the areas are nothing like equal: `queue` alone is about half the suite, and the
 whole thing waits on subprocesses rather than on CPU, so splitting jobs beats
-running one job's tests in parallel. Three shards per runner put the critical
+running one job's tests in parallel. Four shards per runner put the critical
 path at `queue`. That makes the workflow hold a copy of the area list, and a
 copy goes stale — so `uv run fleet check workflow` holds a fourth promise beside
 the `needs:` rule and the timeouts: **the shards must name every check
-`scripts/lib/check.py` knows, and name nothing it does not.** Add an area there
-and CI fails until a shard lists it. A single bare `fleet check` satisfies the
-promise too, with nothing to list.
+`scripts/lib/check.py` knows, on every runner that runs the gate, and name
+nothing it does not.** Add an area there and CI fails until a shard lists it.
+Per runner because covered in aggregate is not covered: a shard only the Linux
+job takes would leave the Windows promise above to a status that never ran it.
+A single bare `fleet check` satisfies the promise too, with nothing to list.
 
 The split is per runner, not per area cost on one machine. `install` and
-`isolation` shared a shard at first: on Linux it was the cheapest of the three,
+`isolation` shared one shard at first: on Linux it was the cheapest of three,
 on Windows the dearest by a wide margin, because both drive whole checkouts and
 process creation is where Windows is weakest. Rebalance on the numbers from a
 real run, not on a local measurement of one OS.
