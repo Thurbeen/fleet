@@ -325,18 +325,29 @@ def apply_hook(path: str, command: str) -> tuple[bool, str]:
 def extension_step(checkout: str) -> int:
     """`checkout`'s install-extension group, run in-process for its `main`.
 
-    NOT published in sys.modules, unlike every other module loaded here:
-    `checkout` is the tree being installed, which the bootstrap runs from
-    another clone than this file's. Under the key `fleet_install_extension`,
-    that foreign copy is what every later loader in this process gets back —
-    and nothing looks this one up again, so it needs no key at all.
+    Published in sys.modules for the length of the call and REMOVED after it,
+    unlike every other module loaded here, which stays. `checkout` is the tree
+    being installed, which the bootstrap runs from another clone than this
+    file's. Left under the key `fleet_install_extension`, that foreign copy is
+    what every later loader in this process gets back — and nothing looks this
+    one up again, so it keeps no key.
+
+    It needs one WHILE it executes, though, and dropping it entirely was how
+    this step used to die on its own import: the module holds a `@dataclass`,
+    every annotation in it is a string under PEP 563, and `dataclass` resolves
+    one through `sys.modules[cls.__module__]` — None for a module no key
+    names, which raises before `main` exists to be called.
     """
     module = os.path.join(checkout, "scripts", "lib", "install_extension.py")
     if os.path.isfile(module):
         spec = importlib.util.spec_from_file_location("fleet_install_extension", module)
         loaded = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(loaded)
-        return int(loaded.main([]) or 0)
+        sys.modules[spec.name] = loaded
+        try:
+            spec.loader.exec_module(loaded)
+            return int(loaded.main([]) or 0)
+        finally:
+            sys.modules.pop(spec.name, None)
     say("  scripts/lib/install_extension.py is not in this checkout, so the extension cannot be installed from here.")
     return 1
 
