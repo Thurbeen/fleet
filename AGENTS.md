@@ -71,6 +71,16 @@ names every path and the reason for each.
   string, which no value of the setting would have reached. The retired word
   `no-mistakes` is still accepted wherever a method is read and means
   `attested`, so a record written before the rename still loads.
+- `orchestration/agent-policy.example.conf` — the per-repository agent policy:
+  which agents may serve which repositories. A rule maps a host-qualified
+  prefix (`github.com/owner/repo`, `gitlab.example.com/group/project`) to an
+  ordered comma-separated list of agents; the first is the default, the rest
+  are allowed only with `--agent`. Tracked and naming none, so a fresh clone
+  enforces nothing; copy it to a gitignored `agent-policy.conf` beside it to
+  set anything. `add` and `dispatch` read it on every call, so an edit takes
+  effect on the next one. A task whose checkout is on another machine, or
+  whose repository cannot be read from `origin`, is refused when any policy is
+  in force.
 - `orchestration/session-glyphs.example.conf` — the mark fleet's sessions wear
   in the thurbox session list: `📡` on the lead, `🚀` on every worker, under ONE
   `GLYPHS=on|off` setting whose `off` is the one-cell `⌖` and no worker prefix.

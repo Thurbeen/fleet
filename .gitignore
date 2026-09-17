@@ -63,6 +63,12 @@
 # second off the tasks rather than guessing.
 /orchestration/agent.conf
 
+# WORKING STATE. Which agents may serve which repositories. Like
+# auto-merge.conf, this is the operator's own policy and names nobody in the
+# tracked example; a fresh clone enforces nothing until this file says
+# otherwise.
+/orchestration/agent-policy.conf
+
 # MACHINE. Whether this terminal's font draws a two-cell emoji at two cells is
 # true of one machine, so the glyph setting is one machine's answer.
 # orchestration/session-glyphs.example.conf is the tracked copy that carries the
