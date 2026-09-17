@@ -303,6 +303,13 @@ thurbox-cli extension status fleet --json
 That exits non-zero and answers `{"error": ...}` when no manifest is
 registered, which is the honest signal that the install did not take.
 
+**`fleet` is the id of an UNNAMED fleet, and a named one is `fleet-<name>`** —
+a machine may run several, and asking about the wrong id answers about somebody
+else's extension or about none. The installer's own closing lines print this
+fleet's id in every command it hands you; `thurbox-cli extension status --json`,
+with no name, lists every installed extension. Take the id from one of those
+rather than typing `fleet`, in this step and in every command below.
+
 **The trap that matters most here:** `[[sessions]] repo_path` is baked in at
 install time. Run this from **the clone the operator intends to keep** — not a
 thurbox worktree, not a scratch copy, not a temp directory.
@@ -315,9 +322,14 @@ points. The installer catches this and exits non-zero; the remedy it names
 deletes the session and its history, so hand that decision to the operator:
 
 ```bash
-thurbox-cli extension deactivate fleet   # deletes the session
-uv run fleet install-extension           # respawns it at the right path
+thurbox-cli extension deactivate <this fleet's id>   # deletes the session
+uv run fleet install-extension                      # respawns it at the right path
 ```
+
+The id matters more here than anywhere else in this file: `deactivate` tears
+down the sessions the named extension declares, so `deactivate fleet` run for a
+fleet called `fleet-acme` deletes ANOTHER fleet's lead and its conversation,
+and leaves this one exactly as it was.
 
 **That same refusal has a SECOND cause, and the remedies are opposites.** One
 machine may run several fleets — one clone each, one queue each, one Mission
@@ -657,9 +669,10 @@ spawns a SECOND session beside the old one and calls that healthy.
 The lead is called Mission Control, wearing a glyph that is a setting rather
 than a literal (`orchestration/session-glyphs.example.conf`, rendered into the
 manifest at install time) — so read its exact name off `thurbox-cli session
-list` rather than from any file. The EXTENSION and its agent are still `fleet`,
-which is deliberate and is why `extension status fleet` stays the right question
-no matter what the session is called. `extension.toml.in`'s RENAMING
+list` rather than from any file. The EXTENSION is still `fleet` — or
+`fleet-<name>` where this fleet named itself — which is deliberate and is why
+`extension status <the id>` stays the right question no matter what the session
+is called. `extension.toml.in`'s RENAMING
 header owns both sequences — the `session fork` one that carries the lead's
 conversation across, and the `extension deactivate` one that discards it —
 including which step must come before which. Don't reimplement it here.

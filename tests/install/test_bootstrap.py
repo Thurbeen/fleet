@@ -432,8 +432,11 @@ def test_a_fleet_that_already_named_itself_is_never_silently_renamed(box, tmp_pa
     assert (where / "orchestration" / "fleet.conf").read_text(encoding="utf-8").strip() == "NAME=acme"
 
 
-def test_a_name_that_is_not_a_bare_token_is_refused(box, tmp_path):
-    done = box("--name", "two words", FLEET_YES="1", FLEET_DIR=str(tmp_path / "nope"))
+@pytest.mark.parametrize("bad", ["two words", "dev__two"], ids=["not-a-token", "placeholder-shaped"])
+def test_a_name_the_renderer_would_refuse_is_refused_before_the_clone(box, tmp_path, bad):
+    """Parity with `install_extension.fleet_name`, checked here so the operator
+    learns it before a clone exists rather than after one does."""
+    done = box("--name", bad, FLEET_YES="1", FLEET_DIR=str(tmp_path / "nope"))
     assert done.code != 0, done.out
     assert not (tmp_path / "nope").exists()
 

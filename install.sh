@@ -362,6 +362,11 @@ main() {
 			die "--name $NAME is not a name a fleet can carry: letters, digits, '_' and '-',
 starting with a letter or a digit." 2
 			;;
+		*__*)
+			die "--name $NAME carries a double underscore, which is how this repo spells an
+unrendered placeholder: a lead whose name holds one is read as a manifest nobody
+rendered, and the reconciler stops waking it. Use a single '_' or a '-'." 2
+			;;
 		esac
 		[ "${#NAME}" -le 24 ] || die "--name $NAME is longer than 24 characters" 2
 	fi

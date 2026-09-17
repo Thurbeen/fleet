@@ -114,6 +114,23 @@ def test_a_name_that_could_not_be_a_directory_or_a_session_is_refused(tmp_path, 
     assert not (tmp_path / "extension.toml").exists()
 
 
+def test_a_name_that_would_read_as_a_placeholder_is_refused(tmp_path):
+    """`__x__` is how this repo spells an unrendered placeholder, and
+    `notify_lead.py` reads a session name carrying `__` as a manifest nobody
+    rendered — so a fleet called `dev__two` would be a lead the reconciler
+    stops waking, silently, when ready work appears."""
+    name_fleet("dev__two")
+    done = render_only(tmp_path)
+    assert done.code == 1, done.out
+    expect(done.out, "double underscore")
+    assert not (tmp_path / "extension.toml").exists()
+
+    # A single underscore is a name, and stays one.
+    name_fleet("dev_two")
+    assert render_only(tmp_path).code == 0
+    assert manifest(tmp_path)["sessions"][0]["name"] == f"{LEAD} · dev_two"
+
+
 def test_a_second_fleet_is_not_the_first_fleets_lead_moving(stubs, tmp_path):
     """The crux. A live `📡 Mission Control` in another directory used to be the
     one thing install could not proceed past; for a NAMED fleet it is simply

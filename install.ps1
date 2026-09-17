@@ -310,6 +310,11 @@ function Install-Fleet {
         $script:FleetInstallExit = 2
         return
     }
+    if ($name -and $name.Contains('__')) {
+        Write-FleetRefusal "--name $name carries a double underscore, which is how this repo spells an`nunrendered placeholder: a lead whose name holds one is read as a manifest nobody`nrendered, and the reconciler stops waking it. Use a single '_' or a '-'."
+        $script:FleetInstallExit = 2
+        return
+    }
 
     $repo = if ($env:FLEET_REPO) { $env:FLEET_REPO } else { 'https://github.com/Thurbeen/fleet.git' }
     $branch = if ($env:FLEET_BRANCH) { $env:FLEET_BRANCH } else { 'main' }

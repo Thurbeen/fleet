@@ -43,8 +43,12 @@ success and the live session still opens the OLD path. This compares the live
 session's cwd with this checkout and exits non-zero naming the remedy, which
 deletes the lead's conversation and is therefore the operator's call:
 
-    thurbox-cli extension deactivate fleet   # deletes the session
-    uv run fleet install-extension           # respawns it at the new path
+    thurbox-cli extension deactivate <id>   # deletes the session
+    uv run fleet install-extension          # respawns it at the new path
+
+where <id> is this fleet's own — `fleet`, or `fleet-<name>`. The message this
+prints spells it; `deactivate` aimed at another fleet's id deletes that fleet's
+lead instead.
 
 THE SAME SYMPTOM IS ALSO A SECOND FLEET that has not named itself, and the
 remedies are opposites — so an UNNAMED fleet is told both, and a named one,
@@ -186,6 +190,19 @@ def fleet_name() -> str:
             "  It becomes a directory under thurbox's config and a path segment\n"
             "  inside a session name, so it is letters, digits, '_' and '-',\n"
             "  starting with a letter or a digit, at most 24 of them."
+        )
+    # AND NEVER A DOUBLE UNDERSCORE, which is this repo's placeholder spelling.
+    # The name goes into the lead's, and `scripts/lib/notify_lead.py` reads a
+    # session name carrying `__` as a manifest nobody rendered — so a fleet
+    # called `dev__two` would be a lead the reconciler never wakes when ready
+    # work appears, silently, which is the failure that module exists to
+    # prevent. One character costs nothing; a rename costs a conversation.
+    if "__" in name:
+        raise Refused(
+            f"NAME in {conf} carries a double underscore: {name!r}\n"
+            "  `__x__` is how this repo spells an unrendered placeholder, and a\n"
+            "  lead whose name holds one is read as a manifest nobody rendered:\n"
+            "  the reconciler would stop waking it. Use a single '_' or a '-'."
         )
     return name
 

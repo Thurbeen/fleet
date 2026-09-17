@@ -379,10 +379,12 @@ consequences to know before you debug the extension:
   an extension's session by name and never repoints it, so after the clone
   moves, a re-install rewrites the manifest and changes nothing that runs. The
   installer detects the mismatch and exits non-zero naming the remedy
-  (`thurbox-cli extension deactivate fleet`, which deletes the session, then
-  install again). `extension status` will not catch it — it checks that the
-  session exists, not where it points.
-- **`thurbox-cli extension update fleet` re-reads the *rendered* file**, not
+  (`thurbox-cli extension deactivate <this fleet's id>`, which deletes the
+  session, then install again — `fleet`, or `fleet-<name>` where this fleet
+  named itself, since the wrong id deletes another fleet's lead).
+  `extension status` will not catch it — it checks that the session exists, not
+  where it points.
+- **`thurbox-cli extension update <id>` re-reads the *rendered* file**, not
   `extension.toml.in`, because the install stamped this clone as the extension's
   `source`. So it refreshes to whatever was last rendered, and fails outright if
   `extension.toml` was cleaned away. `uv run fleet install-extension` is this

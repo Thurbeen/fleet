@@ -146,7 +146,12 @@
 #                                      every `thurbox-cli extension ...`
 #                                      command takes, and the directory it
 #                                      derives (`extensions/fleet` under
-#                                      thurbox's config directory).
+#                                      thurbox's config directory). EVERY
+#                                      `fleet` spelled in a command below is
+#                                      that id: on a machine running several,
+#                                      read it off the RENDERED manifest, since
+#                                      `deactivate` aimed at the wrong id tears
+#                                      down another fleet's lead.
 #                                      It registers no agent — see the
 #                                      no-[[agents]] note further down
 #

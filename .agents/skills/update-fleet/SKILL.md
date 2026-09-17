@@ -360,9 +360,12 @@ cost in those words — the lead's history is gone — and let the operator choo
 
 **Never do either unasked.** Offer the sequence, name what it costs, and stop.
 
-The heavier `thurbox-cli extension deactivate fleet` + re-install is a different
-operation, for a manifest that changed which session it declares; §3's
-moved-clone message is the case that calls for it. It is not how you refresh
+The heavier `thurbox-cli extension deactivate <this fleet's id>` + re-install is
+a different operation, for a manifest that changed which session it declares;
+§3's moved-clone message is the case that calls for it. The id is `fleet` for an
+unnamed fleet and `fleet-<name>` for one that named itself — `deactivate` takes
+down the sessions THAT extension declares, so the wrong id here deletes another
+fleet's lead. `thurbox-cli extension status --json` lists every installed id. It is not how you refresh
 instructions.
 
 ## 9. Report
