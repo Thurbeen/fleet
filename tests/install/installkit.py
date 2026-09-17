@@ -45,10 +45,23 @@ BOOT = "import sys\nsys.path.insert(0, sys.argv[1])\nfrom fleet.cli import main\
 # can read ORDER across the extension and the probes.
 EXTENSION_STANDIN = '''\
 """A test stand-in: logs that the extension was installed, and from where."""
+from __future__ import annotations
+
 import os
 import sys
+from dataclasses import dataclass
 
 CHECKOUT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+@dataclass
+class Rendered:
+    """The real module's shape, and the reason it is here: under PEP 563 every
+    annotation is a string, and `dataclass` resolves one through
+    sys.modules[cls.__module__] — so a module loaded under a key nothing
+    publishes raises at import, before `main` exists to be called."""
+
+    report: list[str]
 
 
 def main(argv):

@@ -316,6 +316,36 @@ def test_the_extension_step_publishes_no_other_checkouts_module(checkout, stubs,
     assert here == REPO / "scripts" / "lib" / "install_extension.py", here
 
 
+def test_the_extension_step_keys_the_module_it_executes(checkout, stubs, capsys):
+    """Publishing it is not a nicety, it is what lets the module import at all.
+
+    `install_extension.py` holds a `@dataclass`, and under PEP 563 the field
+    annotation is the string `list[str]`, which `dataclass` resolves through
+    sys.modules[cls.__module__]. A module executed under a key nothing
+    publishes has None there, so the step died in `exec_module` — on every
+    machine, before `main` was ever reached. The stand-in carries that shape,
+    which is why the two tests above drive it; this one says why.
+    """
+    install = load_install()
+    module = checkout / "scripts" / "lib" / "install_extension.py"
+    write(module, module.read_text(encoding="utf-8") + "\n\n@dataclass\nclass Second:\n    rows: list[str]\n")
+    assert install.extension_step(str(checkout)) == 0
+
+
+def test_the_extension_step_leaves_the_key_as_it_found_it(checkout, stubs, capsys):
+    """Restored, not deleted: a copy this process already holds keeps its key.
+
+    Dropping the key outright would leave `lib("install_extension.py")` — or
+    any `_load_sibling` for it — with nothing to hand back, so it would execute
+    that module a second time and this process would hold two copies of it,
+    which is the one thing tests/architecture/test_modules.py is about.
+    """
+    install = load_install()
+    already = lib("install_extension.py")
+    assert install.extension_step(str(checkout)) == 0
+    assert sys.modules["fleet_install_extension"] is already
+
+
 def test_a_checkout_without_the_extension_module_says_so_and_runs_no_script(checkout, stubs, capsys):
     (checkout / "scripts" / "lib" / "install_extension.py").unlink()
     # A leftover bash script is never the way round a missing module: on Windows
