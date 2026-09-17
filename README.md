@@ -33,7 +33,9 @@ Each box in the diagram:
   requests, and merge the ones fleet did not.
 - **Mission Control.** The lead agent session. thurbox runs it for the `fleet`
   extension, opened on your clone, with [`FLEET.md`](FLEET.md) as its standing
-  context. It turns your prompt into tasks, writes a brief for each one, and
+  context. One per clone: a machine running several fleets names each one
+  (`orchestration/fleet.conf`), and the name goes on the extension and on the
+  lead. It turns your prompt into tasks, writes a brief for each one, and
   dispatches them. Only the lead dispatches tasks.
 - **Queue.** Plain files under `orchestration/queue/`.
   `uv run fleet queue` ([`scripts/lib/queue.py`](scripts/lib/queue.py)) is the
@@ -112,6 +114,18 @@ checks each step as it goes.
 
    Pick a clone location you will keep: the extension records the path.
    Re-running is safe, and `uv run fleet preflight` lists what is still missing.
+
+   One machine can run several fleets — one clone each, each with a Mission
+   Control and a queue of its own. Name the second one, and it neither touches
+   the first nor is touched by it:
+
+   ```bash
+   sh install.sh --dir ~/fleet-acme --name acme
+   ```
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File install.ps1 --dir $HOME\fleet-acme --name acme
+   ```
 
 2. Open thurbox, start the Mission Control session, and run:
 
@@ -201,6 +215,7 @@ because this repository is public; back up your clone if that content matters.
 | `orchestration/publish.conf` | no | How tasks publish; [`publish.example.conf`](orchestration/publish.example.conf) is the form. |
 | `orchestration/auto-merge.conf` | no | Repositories fleet may merge in; [`auto-merge.example.conf`](orchestration/auto-merge.example.conf) names none. |
 | `orchestration/agent.conf` | no | Which agent workers run; [`agent.example.conf`](orchestration/agent.example.conf) is the form. |
+| `orchestration/fleet.conf` | no | This fleet's name, when one machine runs more than one; [`fleet.example.conf`](orchestration/fleet.example.conf) names none, which is the fleet every clone is until it says otherwise. |
 | `orchestration/voice.conf`, `session-glyphs.conf` | no | What the lead calls you, and the marks on session names; [`voice.example.conf`](orchestration/voice.example.conf) and [`session-glyphs.example.conf`](orchestration/session-glyphs.example.conf) hold the defaults. |
 | `registry/owners.txt` | no | GitHub owners the map covers; [`owners.example.txt`](registry/owners.example.txt) is the form. |
 | `registry/repos.generated.yaml` | no | Generated repository map. Never edit it by hand. |

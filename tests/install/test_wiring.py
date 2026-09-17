@@ -194,6 +194,8 @@ def test_the_operators_own_settings_and_hooks_are_kept(checkout, isolated_env):
 
 
 def test_a_moved_checkouts_nudge_is_repointed_not_duplicated(checkout, isolated_env, tmp_path):
+    """The checkout it names is GONE, so it is this fleet having moved and the
+    hook is the only thing that still points at where it was."""
     install = load_install()
     path = str(settings_file(isolated_env))
     old = nudge(tmp_path / "old-place")
@@ -201,6 +203,28 @@ def test_a_moved_checkouts_nudge_is_repointed_not_duplicated(checkout, isolated_
     assert install.hook_state(path, nudge(checkout))[0] == "update"
     assert install.apply_hook(path, nudge(checkout))[0]
     assert stop_commands(settings_file(isolated_env)) == [nudge(checkout)]
+
+
+def test_a_second_fleets_nudge_is_kept_and_this_ones_added_beside_it(checkout, isolated_env, tmp_path):
+    """A machine may run several fleets, and this file is ONE file shared by
+    every worker on it. A worker does not know which fleet dispatched it — its
+    Stop hook nudges every loop, and each loop reconciles its own queue. Taking
+    the first fleet's nudge away, which is what repointing did, left that
+    fleet's loop woken by nothing but its own timer."""
+    other = tmp_path / "the-other-fleet"
+    other.mkdir()
+    install = load_install()
+    path = str(settings_file(isolated_env))
+    install.apply_hook(path, nudge(other))
+
+    state, why = install.hook_state(path, nudge(checkout))
+    assert state == "add", why
+    assert install.apply_hook(path, nudge(checkout))[0]
+    assert stop_commands(settings_file(isolated_env)) == [nudge(other), nudge(checkout)]
+
+    # And re-running this fleet's install leaves both exactly as they are.
+    assert install.hook_state(path, nudge(checkout))[0] == "ok"
+    assert install.hook_state(path, nudge(other))[0] == "ok"
 
 
 def test_a_settings_file_with_a_byte_order_mark_is_merged_into(checkout, isolated_env):

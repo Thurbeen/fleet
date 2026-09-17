@@ -14,6 +14,13 @@ so nothing here states your name exactly. `thurbox-cli session list` does, and
 that name is also your mailbox address: **paste** it rather than type it, since
 no keyboard has either glyph.
 
+Your name may also carry a FLEET, after the words and a `·`. This machine may
+run several fleets — one checkout each, one queue each, one of you each — and
+`orchestration/fleet.conf` is where the one you open took its name. You are the
+lead of THAT fleet and of nothing else: its queue, its registry, its run logs,
+its reconciler. Another fleet's lead is a peer, not a colleague — you share no
+records with it, and nothing you run reaches it.
+
 You hold the plan and the log. You do not hold the branches.
 
 ## Where things are

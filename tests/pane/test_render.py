@@ -135,10 +135,59 @@ def test_a_remote_lead_listed_first_does_not_take_the_pane():
     refute(out, "the queue is empty", "Mission Control")
 
 
-def test_two_local_leads_are_named_as_a_problem():
+# --- which fleet's queue this is --------------------------------------------
+#
+# A machine may run several fleets — one per checkout, each with a Mission
+# Control of its own (orchestration/fleet.example.conf). So the pane's question
+# stopped being "is there a lead" and became "which one are you looking at",
+# and the answer is the session list's own selection.
+
+
+def test_two_leads_with_nothing_selected_are_a_choice_and_not_a_fault():
+    """Two fleets is a supported setup, so the pane asks which rather than
+    calling one of them a mistake — and never guesses."""
     out = render("44", "--leads", "two-local")
-    expect(out, "2 Mission Control sessions here")
-    refute(out, "Cut the pane back")
+    expect(out, "2 Mission Control sessions here", "/home/operator/fleet-copy", "select")
+    refute(out, "Cut the pane back", "remove the one")
+
+
+def test_two_named_leads_are_offered_by_the_names_their_fleets_chose():
+    out = render("44", "--leads", "two-named")
+    expect(out, "acme", "lab", "select")
+
+
+@pytest.mark.parametrize(
+    "selected,drawn,hidden",
+    [("s1", "Cut the pane back", "Calibrate the lab rig"),
+     ("s2", "Calibrate the lab rig", "Cut the pane back")],
+    ids=["acme", "lab"],
+)
+def test_the_selected_lead_is_the_queue_that_is_drawn(selected, drawn, hidden):
+    out = render("44", "--leads", "two-named", "--selected", selected)
+    expect(out, drawn)
+    refute(out, hidden)
+
+
+def test_the_fleet_that_was_chosen_survives_selecting_a_worker():
+    """The common case by far: you pick a fleet once, then spend the day in
+    worker sessions. A pane that fell back to the chooser on every one of them
+    would be a pane nobody could read."""
+    out = render("44", "--leads", "two-named", "--selected", "s2,w9")
+    expect(out, "Calibrate the lab rig")
+    refute(out, "select one")
+
+
+def test_one_lead_needs_no_selection_at_all():
+    """A machine with one fleet never meets any of this."""
+    out = render("44", "--selected", "w9")
+    expect(out, "Cut the pane back")
+
+
+def test_the_frame_names_the_fleet_whose_queue_it_draws():
+    named = render("44", "--leads", "two-named", "--selected", "s2", "--frame")
+    expect(named, "lab")
+    # An unnamed fleet is the only fleet there is, so the title says nothing.
+    assert "title:  Fleet queue " in render("44", "--frame"), render("44", "--frame")
 
 
 # --- every fuel label says what it is ---------------------------------------

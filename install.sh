@@ -31,8 +31,19 @@
 #   --dir DIR, or FLEET_DIR     what the operator said
 #   the lead's own checkout     a Mission Control session already opens one, so
 #                               a second clone would be one thurbox never uses
-#   ~/fleet                     a plain directory the operator can find and
+#   ~/fleet, or ~/fleet-NAME    a plain directory the operator can find and
 #                               back up - the queue and the map live in it
+#
+# A SECOND FLEET IS --name. One machine may run several, one clone each, each
+# with a Mission Control of its own; `--name acme` says this run is another one,
+# so it does not land on the fleet already installed here. It clones to
+# ~/fleet-acme by default and writes orchestration/fleet.conf, which is the one
+# setting that decides the extension and the lead the install then renders.
+# It never renames a fleet that already named itself something else: that is a
+# rename, and extension.toml.in's RENAMING header says what one costs.
+#
+# With SEVERAL fleets installed and neither --dir nor --name given, there is no
+# honest default left, so it refuses rather than guess which one you meant.
 #
 # NOTHING EXISTING IS OVERWRITTEN. A directory that is not a fleet clone is
 # refused. An existing clone is fast-forwarded and only fast-forwarded: on
@@ -48,6 +59,7 @@
 #
 # Settings, from the environment:
 #   FLEET_DIR     where the checkout goes (see above)
+#   FLEET_NAME    this fleet's name, as --name does (see above)
 #   FLEET_REPO    what to clone (default: https://github.com/Thurbeen/fleet.git)
 #   FLEET_BRANCH  the branch to track (default: main)
 #   FLEET_YES     1 answers every question yes, as --yes does
@@ -55,7 +67,7 @@
 #   FLEET_TEST_UV_INSTALLER   TESTS ONLY: a local script run instead of
 #                 downloading astral's installer; nothing reads it unless set
 #
-# Usage: sh install.sh [--dir DIR] [--yes]
+# Usage: sh install.sh [--dir DIR] [--name NAME] [--yes]
 # Exit: 0 installed, 1 refused or a step failed, 2 usage.
 
 say() { printf '%s\n' "$*"; }
@@ -151,25 +163,111 @@ ensure_git() {
 	command -v git >/dev/null 2>&1 || die "git was installed but this shell cannot find it. Open a new shell and run this again."
 }
 
-# Sets DIR and WHY. The lead thurbox already runs decides before the default.
-pick_dir() {
-	if command -v thurbox-cli >/dev/null 2>&1; then
-		lead_cwd="$(thurbox-cli session list --json </dev/null 2>/dev/null |
-			uv run --no-project --quiet python -c 'import json, sys
+# Every fleet checkout this machine's thurbox has a lead session for, one path
+# per line. A fleet may have named itself (`<mark> Mission Control - acme`), so
+# the name is matched the way the pane matches it: an optional one-codepoint
+# mark, the words, and optionally the mark and the fleet's own name.
+lead_cwds() {
+	command -v thurbox-cli >/dev/null 2>&1 || return 0
+	thurbox-cli session list --json </dev/null 2>/dev/null |
+		uv run --no-project --quiet python -c 'import json, sys
 try:
     sessions = json.load(sys.stdin)
 except ValueError:
     sessions = []
-print(next((s.get("cwd") or "" for s in sessions if isinstance(s, dict)
-            and str(s.get("name", "")).endswith(" Mission Control")), ""))' 2>/dev/null)"
-		if [ -n "$lead_cwd" ] && [ -f "$lead_cwd/extension.toml.in" ]; then
-			DIR="$lead_cwd"
-			WHY="the checkout your Mission Control session already opens"
-			return
-		fi
+LEAD = "Mission Control"
+for s in sessions:
+    if not isinstance(s, dict):
+        continue
+    name = str(s.get("name", ""))
+    mark, _, rest = name.partition(" ")
+    body = rest if rest and len(mark.encode()) <= 4 else name
+    if body == LEAD or body.startswith(LEAD + " \u00b7 "):
+        print(s.get("cwd") or "")' 2>/dev/null
+}
+
+# Sets DIR and WHY. The lead thurbox already runs decides before the default.
+pick_dir() {
+	# A NAMED run is a fleet of its own by construction, so it never lands on
+	# the fleet already installed here, which is what asking thurbox would do.
+	if [ -n "$NAME" ]; then
+		DIR="$HOME/fleet-$NAME"
+		WHY="the default for a fleet named $NAME; set FLEET_DIR or pass --dir to choose another"
+		return
+	fi
+
+	found=""
+	first=""
+	count=0
+	old_ifs="$IFS"
+	IFS='
+'
+	for cwd in $(lead_cwds); do
+		[ -n "$cwd" ] && [ -f "$cwd/extension.toml.in" ] || continue
+		count=$((count + 1))
+		[ -n "$first" ] || first="$cwd"
+		found="$found  $cwd
+"
+	done
+	IFS="$old_ifs"
+
+	if [ "$count" -gt 1 ]; then
+		die "this machine already runs $count fleets, and nothing here says which one this is:
+$found
+Name the checkout you mean with --dir DIR, or start another fleet with --name NAME."
+	fi
+	if [ "$count" -eq 1 ]; then
+		DIR="$first"
+		WHY="the checkout your Mission Control session already opens"
+		return
 	fi
 	DIR="$HOME/fleet"
 	WHY="the default; set FLEET_DIR or pass --dir to choose another"
+}
+
+# Write NAME into the clone's own orchestration/fleet.conf, which is what makes
+# it a fleet of its own. Nothing here renames a fleet that already named itself.
+#
+# Shell builtins only, as everywhere in this file: the machine this runs on is
+# the one that has the least, and `sed`, `grep` and `mv` are not things to
+# require for writing one line.
+name_the_fleet() {
+	[ -n "$NAME" ] || return 0
+	conf="$DIR/orchestration/fleet.conf"
+	if [ ! -f "$conf" ]; then
+		mkdir -p "$DIR/orchestration" || die "could not create $DIR/orchestration"
+		printf 'NAME=%s\n' "$NAME" >"$conf" || die "could not write $conf"
+		say "This fleet is named '$NAME' (orchestration/fleet.conf)."
+		return 0
+	fi
+
+	body=""
+	current=""
+	wrote=0
+	while IFS= read -r line || [ -n "$line" ]; do
+		case "$line" in
+		NAME=*)
+			current="${line#NAME=}"
+			if [ -n "$current" ] && [ "$current" != "$NAME" ]; then
+				die "$DIR is the fleet '$current', and this run says '$NAME'.
+Renaming a fleet that is already running spawns a second lead and orphans the
+first, so this does not do it. extension.toml.in's RENAMING header holds the two
+sequences - one keeps the lead's conversation, one discards it."
+			fi
+			line="NAME=$NAME"
+			wrote=1
+			;;
+		esac
+		body="$body$line
+"
+	done <"$conf"
+	[ "$current" = "$NAME" ] && return 0
+	if [ "$wrote" = 0 ]; then
+		body="${body}NAME=$NAME
+"
+	fi
+	printf '%s' "$body" >"$conf" || die "could not write $conf"
+	say "This fleet is named '$NAME' (orchestration/fleet.conf)."
 }
 
 # Clone into DIR, or bring the clone already there up to date without ever
@@ -228,6 +326,7 @@ $dirty"
 
 main() {
 	dir_arg=""
+	NAME="${FLEET_NAME:-}"
 	YES=0
 	[ "${FLEET_YES:-}" = 1 ] && YES=1
 	while [ $# -gt 0 ]; do
@@ -238,15 +337,39 @@ main() {
 			shift
 			;;
 		--dir=*) dir_arg="${1#--dir=}" ;;
+		--name)
+			[ $# -ge 2 ] || die "--name takes a name" 2
+			NAME="$2"
+			shift
+			;;
+		--name=*) NAME="${1#--name=}" ;;
 		-y | --yes) YES=1 ;;
 		-h | --help)
-			say "usage: sh install.sh [--dir DIR] [--yes]   (settings: FLEET_DIR, FLEET_REPO, FLEET_BRANCH, FLEET_YES)"
+			say "usage: sh install.sh [--dir DIR] [--name NAME] [--yes]   (settings: FLEET_DIR, FLEET_NAME, FLEET_REPO, FLEET_BRANCH, FLEET_YES)"
 			exit 0
 			;;
-		*) die "unknown argument: $1 (usage: sh install.sh [--dir DIR] [--yes])" 2 ;;
+		*) die "unknown argument: $1 (usage: sh install.sh [--dir DIR] [--name NAME] [--yes])" 2 ;;
 		esac
 		shift
 	done
+
+	# The same grammar the renderer holds a name to, refused here so it is
+	# refused before a clone rather than after one. It becomes a directory under
+	# thurbox's config and a path segment inside a session name.
+	if [ -n "$NAME" ]; then
+		case "$NAME" in
+		*[!A-Za-z0-9_-]* | [!A-Za-z0-9]*)
+			die "--name $NAME is not a name a fleet can carry: letters, digits, '_' and '-',
+starting with a letter or a digit." 2
+			;;
+		*__*)
+			die "--name $NAME carries a double underscore, which is how this repo spells an
+unrendered placeholder: a lead whose name holds one is read as a manifest nobody
+rendered, and the reconciler stops waking it. Use a single '_' or a '-'." 2
+			;;
+		esac
+		[ "${#NAME}" -le 24 ] || die "--name $NAME is longer than 24 characters" 2
+	fi
 
 	[ -n "${HOME:-}" ] || die "HOME is not set"
 	REPO="${FLEET_REPO:-https://github.com/Thurbeen/fleet.git}"
@@ -271,6 +394,7 @@ main() {
 	say ""
 	checkout
 	DIR="$(cd "$DIR" && pwd -P)"
+	name_the_fleet
 	say ""
 
 	set -- run --project "$DIR" fleet install

@@ -359,6 +359,88 @@ else:
     assert not box.clone.exists(), "a second clone was made"
 
 
+def leads(stubs, *rows: dict) -> None:
+    """What `thurbox-cli session list --json` answers the bootstrap's probe."""
+    listing = json.dumps(list(rows), ensure_ascii=False)
+    place(stubs, "thurbox-cli", f"""
+import sys
+if sys.argv[1:3] == ["session", "list"]:
+    sys.stdout.buffer.write({listing!r}.encode("utf-8") + b"\\n")
+else:
+    print("thurbox-cli {FLOOR}")
+""")
+
+
+# --- 1i. a SECOND fleet, which is a clone of its own and a name of its own -------
+
+
+def test_a_named_fleet_clones_beside_the_first_and_names_itself(box, stubs, tmp_path):
+    """The first fleet's lead is running, and its checkout is sticky — for the
+    FIRST fleet. `--name` says this is another one, so it lands beside that
+    clone instead of on it, and arrives already naming itself."""
+    first = tmp_path / "first" / "fleet"
+    assert box(FLEET_YES="1", FLEET_DIR=str(first)).code == 0
+    leads(stubs, {"name": "X Mission Control", "cwd": str(first)})
+
+    done = box("--name", "acme", FLEET_YES="1")
+    assert done.code == 0, done.out
+    second = box.home / "fleet-acme"
+    assert (second / "extension.toml.in").is_file(), done.out
+    assert (second / "orchestration" / "fleet.conf").read_text(encoding="utf-8").strip() == "NAME=acme"
+    assert not (first / "orchestration" / "fleet.conf").exists(), "the first fleet was renamed"
+    assert extension_calls(stubs)[-1] == f"extension install {second}"
+
+
+def test_a_named_leads_checkout_is_sticky_the_way_an_unnamed_ones_is(box, stubs, tmp_path):
+    """A fleet that named itself is still the fleet this machine has, so a
+    bootstrap naming no directory still lands on it rather than cloning a
+    second one beside it."""
+    elsewhere = tmp_path / "elsewhere" / "fleet-acme"
+    assert box("--name", "acme", FLEET_YES="1", FLEET_DIR=str(elsewhere)).code == 0
+    leads(stubs, {"name": "X Mission Control \u00b7 acme", "cwd": str(elsewhere)})
+
+    done = box(FLEET_YES="1")
+    assert done.code == 0, done.out
+    expect(done.out, str(elsewhere))
+    assert not box.clone.exists(), "a second clone was made"
+
+
+def test_two_leads_and_nothing_saying_which_is_refused_before_anything_is_cloned(box, stubs, tmp_path):
+    """Two fleets, and no directory and no name given: which one this run means
+    is not a thing to guess, and guessing wrong installs over a live fleet."""
+    one, two = tmp_path / "one" / "fleet", tmp_path / "two" / "fleet-lab"
+    assert box(FLEET_YES="1", FLEET_DIR=str(one)).code == 0
+    assert box("--name", "lab", FLEET_YES="1", FLEET_DIR=str(two)).code == 0
+    leads(stubs,
+          {"name": "X Mission Control", "cwd": str(one)},
+          {"name": "X Mission Control \u00b7 lab", "cwd": str(two)})
+
+    done = box(FLEET_YES="1")
+    assert done.code != 0, done.out
+    expect(done.out, str(one), str(two), "--dir", "--name")
+    assert not box.clone.exists()
+
+
+def test_a_fleet_that_already_named_itself_is_never_silently_renamed(box, tmp_path):
+    """Naming a fleet that is already running is a RENAME, which costs its lead
+    its conversation. The bootstrap does not make that choice for anybody."""
+    where = tmp_path / "named" / "fleet-acme"
+    assert box("--name", "acme", FLEET_YES="1", FLEET_DIR=str(where)).code == 0
+    done = box("--name", "lab", FLEET_YES="1", FLEET_DIR=str(where))
+    assert done.code != 0, done.out
+    expect(done.out, "acme", "lab")
+    assert (where / "orchestration" / "fleet.conf").read_text(encoding="utf-8").strip() == "NAME=acme"
+
+
+@pytest.mark.parametrize("bad", ["two words", "dev__two"], ids=["not-a-token", "placeholder-shaped"])
+def test_a_name_the_renderer_would_refuse_is_refused_before_the_clone(box, tmp_path, bad):
+    """Parity with `install_extension.fleet_name`, checked here so the operator
+    learns it before a clone exists rather than after one does."""
+    done = box("--name", bad, FLEET_YES="1", FLEET_DIR=str(tmp_path / "nope"))
+    assert done.code != 0, done.out
+    assert not (tmp_path / "nope").exists()
+
+
 def test_a_leads_checkout_under_a_non_ascii_path_is_still_the_default(box, stubs, tmp_path):
     """thurbox-cli writes UTF-8, and Windows PowerShell 5.1 decodes a native
     command's output in the console's code page unless told otherwise."""

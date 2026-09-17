@@ -8,10 +8,10 @@ CI proved is quietly skipped there — and the one place nobody reviews a gate
 run. So this builds that worst case on purpose:
 
   A POISONED COPY of the tree under test: a malformed queue record and an
-  OPERATOR.md, an auto-merge.conf naming a repository, publish, agent, glyph
-  and voice settings with odd values, a rendered extension.toml, a reconciler
-  runtime directory, and a registry map of the wrong shape. All of it is made
-  up here; nothing is copied from a real control plane.
+  OPERATOR.md, an auto-merge.conf naming a repository, publish, agent, glyph,
+  fleet-name and voice settings with odd values, a rendered extension.toml, a
+  reconciler runtime directory, and a registry map of the wrong shape. All of
+  it is made up here; nothing is copied from a real control plane.
 
   A HOSTILE HOST: `test_harness.hostile_host` — a git config that signs and
   hooks every commit and names `trunk` the default branch, a thurbox
@@ -70,6 +70,7 @@ def poison(copy: Path) -> None:
     write(o / "agent.conf", "AGENT=operator-private-agent\nFUEL_PROVIDER=operator-private-vendor\n"
                             "LIMIT_BANNER=you are out\n")
     write(o / "session-glyphs.conf", "GLYPHS=sideways\nLEAD_GLYPH_ON=@@\n")
+    write(o / "fleet.conf", "NAME=operator-private-fleet\n")
     write(o / "voice.conf", "OPERATOR_NAME=Operator Private\nASSISTANT_NAME=Private Lead\n")
     write(o / "reconcile" / "pid", "1\n")
     write(o / "reconcile" / "down", "asked down by the operator\n")

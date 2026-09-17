@@ -104,7 +104,10 @@ def test_the_leads_glyph_is_rendered_and_the_words_still_agree_with_the_pane():
     # setting is decoration; and whatever it renders to must END in the name the
     # pane matches, or the pane hunts a session nobody spawns.
     template = queue_module("print(q.manifest_session(sys.argv[1])[0])\n", str(REPO / "extension.toml.in")).strip()
-    assert template == "__LEAD_GLYPH__ Mission Control"
+    assert template == "__LEAD_GLYPH__ Mission Control__FLEET_LABEL__"
+    # An unnamed fleet renders that second placeholder away, which is what
+    # keeps the words below comparable at all.
+    template = template.replace("__FLEET_LABEL__", "")
 
     pane = (REPO / "interface" / "fleet_queue.lua").read_text(encoding="utf-8")
     found = re.search(r'^local CONTROL_PLANE = "(.*)"$', pane, re.MULTILINE)

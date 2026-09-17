@@ -104,19 +104,54 @@
 #                     the single payload file is prose, is not a user-edited
 #                     seed, and contains no `{home}` to substitute.
 
+# SEVERAL FLEETS ON ONE MACHINE, and both names above are how. A fleet is a
+# CHECKOUT: its queue, registry, run logs, reconciler runtime and first-run
+# answers all live in it, so two clones were always two fleets in every respect
+# but their names. These two were the singleton — thurbox resolves an extension
+# and a session BY NAME — so a second clone rendering `fleet` registered over
+# the first extension and was handed the first's live session, which install
+# could only report as a directory mismatch.
+#
+# `orchestration/fleet.conf` names this one (`NAME=acme`), and
+# `uv run fleet install-extension` renders it into the two placeholders below:
+#
+#   __FLEET_SUFFIX__  the extension's:      `fleet` -> `fleet-acme`
+#   __FLEET_LABEL__   the lead's:           `Mission Control` ->
+#                                           `Mission Control · acme`
+#
+# Both render EMPTY when no fleet is named, which is the tracked default and
+# byte-for-byte what this manifest rendered before the setting existed. A
+# machine with one fleet is therefore never renamed by this, and that is the
+# point: naming a running fleet costs exactly what the RENAMING header below
+# says a rename costs. Name the SECOND fleet. `fleet.example.conf`'s own header
+# owns the grammar and the rest of the argument.
+#
+# `·` (U+00B7 MIDDLE DOT, Neutral, one cell) separates the lead from its
+# fleet for the same reason the glyph is what it is: it needs no variation
+# selector, no colour font, and no terminal disagrees about its width. It is
+# also not a character a worker's imperative sentence reaches for, which is
+# what lets the pane tell `📡 Mission Control · acme` from
+# `🚀 Rename Mission Control`.
+#
 # RENAMING — the SESSION and the EXTENSION are two names, not one. They were
 # the same word (`fleet`) until the lead was renamed, which is what made them
 # look like one name in six places. They are not:
 #
-#   the session   `<glyph> Mission Control`
+#   the session   `<glyph> Mission Control` (`· <fleet>` when one is named)
 #                                      what the TUI lists and what the mailbox
 #                                      addresses. The GLYPH is a setting and
 #                                      the rest is the name — see the glyph
 #                                      header below
-#   the extension `fleet`              the id every `thurbox-cli extension ...`
+#   the extension `fleet`              (`fleet-<fleet>` when one is named) the id
+#                                      every `thurbox-cli extension ...`
 #                                      command takes, and the directory it
 #                                      derives (`extensions/fleet` under
-#                                      thurbox's config directory).
+#                                      thurbox's config directory). EVERY
+#                                      `fleet` spelled in a command below is
+#                                      that id: on a machine running several,
+#                                      read it off the RENDERED manifest, since
+#                                      `deactivate` aimed at the wrong id tears
+#                                      down another fleet's lead.
 #                                      It registers no agent — see the
 #                                      no-[[agents]] note further down
 #
@@ -254,7 +289,7 @@
 # verb for them either, and none of the sequences above is worth running on a
 # session that will be reaped when its change request merges.
 
-name = "fleet"
+name = "fleet__FLEET_SUFFIX__"
 description = "Control-plane session: the repo map and thurbox orchestration"
 config_version = 1
 version = "1.3.0"                # this extension's own version; bump on changes
@@ -377,7 +412,7 @@ target = "FLEET.rendered.md"
 # RENAMING headers.
 
 [[sessions]]
-name = "__LEAD_GLYPH__ Mission Control"
+name = "__LEAD_GLYPH__ Mission Control__FLEET_LABEL__"
 agent = "__LEAD_AGENT__"
 # The session opens your checkout, not the extension home: it needs registry/
 # and orchestration/ in hand, and the repo's SessionStart hook

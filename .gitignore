@@ -70,6 +70,14 @@
 # when you want something other than the default.
 /orchestration/session-glyphs.conf
 
+# MACHINE. Which fleet this checkout IS, when a machine runs more than one.
+# It names an extension and a lead, so it is the answer for one clone on one
+# machine and never a property of the repository.
+# orchestration/fleet.example.conf is the tracked copy, and it names no fleet:
+# unnamed renders the two names fleet has always used, so a machine with one
+# fleet needs this file no more than it needs the others here.
+/orchestration/fleet.conf
+
 # GENERATED. Rebuilt wholesale from your `gh` accounts by
 # `uv run fleet sync-registry`, and an index of every repo you can reach is not
 # a thing to publish.

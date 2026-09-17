@@ -205,6 +205,13 @@ names the remedy, and that remedy **deletes the lead's conversation history**,
 which is why the command refuses to run it for you. Surface the message verbatim
 and stop; do not paper over the exit code, and do not run the remedy unasked.
 
+On a machine running SEVERAL fleets that message has a second reading, and it
+is in the message: the session it names may be another fleet's lead rather than
+this clone's, which happens when this fleet has not named itself. Then the
+remedy is `orchestration/fleet.conf`, not a deactivate. Updating one fleet is
+per checkout either way — run this whole skill in each clone; nothing here
+reaches another fleet, and their extension ids and leads differ by name.
+
 The command also re-installs the TUI pane as a second, deliberately non-fatal
 pass. It prints warnings there and still exits 0, so **read its output rather
 than inferring the pane from the exit code** — §4.
@@ -353,9 +360,12 @@ cost in those words — the lead's history is gone — and let the operator choo
 
 **Never do either unasked.** Offer the sequence, name what it costs, and stop.
 
-The heavier `thurbox-cli extension deactivate fleet` + re-install is a different
-operation, for a manifest that changed which session it declares; §3's
-moved-clone message is the case that calls for it. It is not how you refresh
+The heavier `thurbox-cli extension deactivate <this fleet's id>` + re-install is
+a different operation, for a manifest that changed which session it declares;
+§3's moved-clone message is the case that calls for it. The id is `fleet` for an
+unnamed fleet and `fleet-<name>` for one that named itself — `deactivate` takes
+down the sessions THAT extension declares, so the wrong id here deletes another
+fleet's lead. `thurbox-cli extension status --json` lists every installed id. It is not how you refresh
 instructions.
 
 ## 9. Report

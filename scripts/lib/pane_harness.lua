@@ -43,6 +43,14 @@
 -- `--hover <id>` is the identity the pointer is over, so a hover style can be
 -- asserted. `--frame` prints each top-right run's `fg`, `bg` and weight too.
 --
+-- `--leads <shape>` is which Mission Control sessions thurbox reports:
+-- `remote-first` a lead mirrored from another host listed before the local
+-- one, `two-local` two UNNAMED leads in two checkouts, `two-named` two fleets
+-- that named themselves (`· acme`, `· lab`). `--selected <id[,id...]>`
+-- is what the session list published in `store.selected`, applied in order with
+-- a render after each, so a pane that stays on the fleet you chose while you
+-- work in a worker session can be asserted.
+--
 -- `--chord <key>` is what the key registry answers for the toggle, so a rebind
 -- can be rendered. `--fuel-read <seconds>` is how long ago the fuel reading
 -- was taken; the default is two minutes, inside the pane's own TTL.
@@ -58,6 +66,7 @@ local WIDTH = tonumber(arg[1] or "") or 44
 local MARKS, ACCENT, FRAME, PILLS = false, false, false, false
 local CHORD, CLICK, HOVER, FUEL_READ = "f3", nil, nil, 120
 local LONG, HEIGHT, WHEEL, ACTION = 0, 200, {}, nil
+local SELECTED = {}
 -- `--long-label` adds a third fuel window whose label is as long as the pane
 -- lets a label be, the shape a per-model window takes.
 local LONG_LABEL = false
@@ -89,6 +98,10 @@ for i, a in ipairs(arg) do
     HOVER = arg[i + 1]
   elseif a == "--fuel-read" then
     FUEL_READ = tonumber(arg[i + 1]) or FUEL_READ
+  elseif a == "--selected" then
+    for id in (arg[i + 1] or ""):gmatch("[^,]+") do
+      SELECTED[#SELECTED + 1] = id
+    end
   end
 end
 
@@ -289,6 +302,9 @@ end
 -- The kernel's globals.
 local NOW = 1757400000
 _G.state = { offset = 0 }
+-- The bus the session list publishes its selection on, which is how this pane
+-- knows which fleet you are looking at. Empty until `--selected` says otherwise.
+_G.store = {}
 _G.run = function() end
 _G.thurbox = { taken_at_ms = NOW * 1000, sessions = {}, runs = {} }
 
@@ -466,6 +482,23 @@ if LEADS == "remote-first" then
 elseif LEADS == "two-local" then
   local other = { id = "s2", name = "⌖ Mission Control", cwd = "/home/operator/fleet-copy", status = "ok" }
   _G.thurbox.sessions = { LEAD, other }
+elseif LEADS == "two-named" then
+  -- TWO FLEETS, each its own checkout and its own name — what
+  -- `orchestration/fleet.conf` renders into the manifest. `s1` keeps the whole
+  -- fixture queue; `s2` has a small one of its own, so which queue is drawn is
+  -- a question the render answers by itself. `w9` is an ordinary worker, and
+  -- selecting it is how the sticky binding is asserted.
+  local acme = { id = "s1", name = "⌖ Mission Control · acme", cwd = "/home/operator/fleet", status = "ok" }
+  local lab = { id = "s2", name = "⌖ Mission Control · lab", cwd = "/home/operator/fleet-lab", status = "ok" }
+  local worker = { id = "w9", name = "🚀 Calibrate the lab rig", cwd = "/home/operator/work/rig", status = "ok" }
+  _G.thurbox.sessions = { acme, lab, worker }
+  _G.thurbox.runs["fleetqueue:s2"] = { state = "ok", stdout = table.concat({
+    "R\t/home/operator/fleet-lab/orchestration/queue",
+    "T\tlab-rig\tThe lab's own topic",
+    table.concat({ "K", "01-calibrate", "dispatched", "Calibrate the lab rig",
+      "", "", "", "1", "0", "0", "feat/rig", tostring(NOW - 900), "", "", "0" }, "\t"),
+  }, "\n") .. "\n" }
+  _G.thurbox.runs["fleetfuel:s2"] = { state = "ok", stdout = FUEL .. "\n" }
 end
 
 local here = (arg[0]:match("^(.*)/scripts/lib/") or ".")
@@ -499,7 +532,16 @@ end
 -- `render` is handed the pane's OUTER width; the pane spends two columns on
 -- its border, so this asks for the border too and reports the inner rows.
 local ctx = { width = WIDTH + 2, height = HEIGHT, elapsed = 0 }
+if SELECTED[1] then
+  _G.store.selected = SELECTED[1]
+end
 local tree = pane.render(ctx)
+-- Each later selection is a separate frame, the way the kernel re-renders when
+-- the session list publishes a new one.
+for index = 2, #SELECTED do
+  _G.store.selected = SELECTED[index]
+  tree = pane.render(ctx)
+end
 for _, ticks in ipairs(WHEEL) do
   for _ = 1, math.abs(ticks) do
     pane.on_scroll({ up = ticks < 0, x = 1, y = 1 })
