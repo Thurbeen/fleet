@@ -330,7 +330,20 @@ def test_the_extension_step_keys_the_module_it_executes(checkout, stubs, capsys)
     module = checkout / "scripts" / "lib" / "install_extension.py"
     write(module, module.read_text(encoding="utf-8") + "\n\n@dataclass\nclass Second:\n    rows: list[str]\n")
     assert install.extension_step(str(checkout)) == 0
-    assert "fleet_install_extension" not in sys.modules
+
+
+def test_the_extension_step_leaves_the_key_as_it_found_it(checkout, stubs, capsys):
+    """Restored, not deleted: a copy this process already holds keeps its key.
+
+    Dropping the key outright would leave `lib("install_extension.py")` — or
+    any `_load_sibling` for it — with nothing to hand back, so it would execute
+    that module a second time and this process would hold two copies of it,
+    which is the one thing tests/architecture/test_modules.py is about.
+    """
+    install = load_install()
+    already = lib("install_extension.py")
+    assert install.extension_step(str(checkout)) == 0
+    assert sys.modules["fleet_install_extension"] is already
 
 
 def test_a_checkout_without_the_extension_module_says_so_and_runs_no_script(checkout, stubs, capsys):
