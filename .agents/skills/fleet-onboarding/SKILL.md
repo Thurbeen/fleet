@@ -268,7 +268,7 @@ uv run fleet voice-ask
 
 `skip` means `orchestration/voice.conf` already holds an answer: say the two
 names it printed and install. On `ask`, ask both in one go, each offering the
-default it printed (`SLAYER` and `VEGA` as shipped) as the recommended answer:
+default it printed (`Slayer` and `VEGA` as shipped) as the recommended answer:
 
 - **What should the lead call you?** — the default, or a name they type
 - **What should the lead answer to?** — the default, or a name they type

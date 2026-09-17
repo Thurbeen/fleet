@@ -3,8 +3,21 @@
 This is a **control-plane** repo. When you work here you are helping orchestrate
 and map projects, not shipping application code.
 
-This file is the one copy. `CLAUDE.md` beside it is a two-line pointer that
-imports it. Edit this file, not the pointer.
+This file is the one copy. `CLAUDE.md` beside it is a pointer that imports it,
+and imports the gitignored `FLEET.rendered.md` beside it too — which is how the
+lead's standing context reaches a session whose working directory is this
+checkout, since nothing reads the copy the extension lays down under its own
+home. Edit this file or `FLEET.md`, never the pointer and never the rendered
+copy.
+
+**A change to fleet itself gets its own session.** Mission Control does not
+edit this checkout in place: it holds the queue's records, the registry map and
+the reconciler's runtime state, and `uv run fleet sync-checkout` refuses to
+fast-forward a dirty tree — so editing here leaves the machine that dispatches
+work unable to update itself. It dispatches a worker onto its own worktree
+instead, which is why you are reading this. `FLEET.md`'s **What you delegate**
+owns the rule and the one thing that stays inline: what a run WRITES, never
+what fleet IS.
 
 ## What this repo is
 
@@ -211,15 +224,21 @@ names every path and the reason for each.
   and opencode (which
   auto-discovers `.claude/skills`) both load the same copy. Never add a second
   copy under `.claude/`, and do not mirror into `.opencode/skills` — that
-  registers the same skill twice. Five skills live there: `fleet-queue` (the
+  registers the same skill twice. Seven skills live there: `fleet-queue` (the
   queue: intake, ordering, dispatch, and the two halves of completion),
   `thurbox-session` (driving one worker session), `fleet-onboarding` (a fresh
   clone to a working control plane: dependencies, owners, registry, extension,
   the pane on screen, the loop up),
   `fleet-pane` (getting the TUI queue pane onto a screen, and diagnosing one
-  that is installed and drawing nothing), and `update-fleet` (a working control
+  that is installed and drawing nothing), `update-fleet` (a working control
   plane that is BEHIND origin, and the consequences of the sync that
-  `fleet sync-checkout` only ever reports).
+  `fleet sync-checkout` only ever reports), `diagnose-machine` (what is eating
+  this machine's CPU, RAM, swap and disk; what is safe to free, and the project
+  whose code produced the debris), and `review-prs` (a maintainer's recurring
+  review over a repository's open change requests, through to the merge).
+  **The last two drive a session rather than running in the lead**: both read
+  far more than their verdict is worth — process tables, `du` output, whole
+  diffs — and a lead that ran them itself would carry all of it.
 
 ## Orchestration model
 

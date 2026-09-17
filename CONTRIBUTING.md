@@ -348,13 +348,16 @@ quickstart, the customization surface, and the layout. It owns the setup story.
 
 `AGENTS.md` is the agent-facing operating guide for working INSIDE this repo —
 what the trees are, the run loop, and the local gates. It is an index into the
-other owners, not a second copy of them. `CLAUDE.md` is a two-line pointer that
+other owners, not a second copy of them. `CLAUDE.md` is a pointer that
 imports it and owns nothing; never write content there.
 
-`FLEET.md` is the standing context of the long-lived Mission Control session,
-laid down at the extension home by `extension.toml.in`. It owns what that
-session is FOR. It deliberately defers to `AGENTS.md` for how to work in the
-repo.
+`FLEET.md` is the standing context of the long-lived Mission Control session.
+It owns what that session is FOR, and defers to `AGENTS.md` for how to work in
+the repo. `extension.toml.in` lays the rendered copy down at the extension
+home, but that is not what the lead reads — an agent loads its context files
+from its working directory and that directory's ancestors, and the extension
+home is neither, so the checkout's `CLAUDE.md` imports `FLEET.rendered.md`
+beside it. `tests/extension/test_lead_context.py` holds that.
 
 `CONTRIBUTING.md` — this file — owns the contribution process: the
 branch-and-pull-request flow, the squash-only merge policy, the local gate, the

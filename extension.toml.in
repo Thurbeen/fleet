@@ -384,6 +384,17 @@ min_thurbox_version = "2.19.0"
 #
 # The `substitute` flag below would not have done this. It substitutes `{home}`
 # and nothing else, so the names could never have travelled that way.
+#
+# AND THE PAYLOAD IS NOT HOW THE LEAD READS IT. The [[symlinks]] below surface
+# it at the extension home under each CLI's convention, and an agent loads its
+# context files from its CWD and that directory's ancestors — which the
+# extension home is neither, since `repo_path` opens the checkout. So this ships
+# the payload and the checkout's own `CLAUDE.md` imports `FLEET.rendered.md`
+# beside it; that import is what reaches Mission Control, and
+# `tests/extension/test_lead_context.py` holds the two names together. The
+# symlinks stay: they cost nothing, they are what a reader looking in the
+# extension home expects to find, and an agent pointed at this directory would
+# then load it.
 
 [[files]]
 path = "FLEET.rendered.md"
