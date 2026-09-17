@@ -117,6 +117,7 @@ Resolve who owns a socket by asking the socket, not by reading its name:
 
 ```bash
 for f in /tmp/tmux-$(id -u)/*; do
+  [ -S "$f" ] || continue
   o=$(timeout 3 tmux -S "$f" display-message -p '#{pid}' 2>/dev/null)
   [ -n "$o" ] && echo "$f $o"
 done
@@ -200,6 +201,11 @@ git -C "$w" log --oneline @{u}..                   # must be empty
 git branch -r --contains "$(git -C "$w" rev-parse HEAD)"   # must name a remote branch
 ```
 
+**Read the second one's exit code, not just its output.** A branch with no
+upstream fails it outright and prints nothing on stdout, which is
+indistinguishable from "nothing unpushed" if you only look at the output — and
+it is the opposite answer: no upstream means the branch was never pushed at all.
+
 A `target/` is always safe to delete — it rebuilds. **The worktree around it is
 not**, and the third check is the one that matters after a squash merge: the
 branch is gone from the remote, but the commit's content is in `main`. A head
@@ -217,6 +223,7 @@ leaves the file behind. The ones that answer nothing:
 
 ```bash
 cd /tmp/tmux-$(id -u) && for f in *; do
+  [ -S "$f" ] || continue     # an unmatched glob is a literal `*`, not a socket
   timeout 3 tmux -S "$f" display-message -p '#{pid}' >/dev/null 2>&1 || echo "$f"
 done > stale.txt
 ```
