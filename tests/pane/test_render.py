@@ -284,6 +284,18 @@ def test_an_unavailable_account_still_draws_its_own_row_beside_a_reading_one():
         assert widest <= int(width), f"a row is {widest} columns wide at {width}\n{out}"
 
 
+def test_a_failed_provider_beside_its_own_accounts_reading_still_stays_dropped():
+    """FLEET.md still documents this exact case — one account, one provider
+    reading fine and a second failing — as the pane leaving the failed one
+    out entirely, never drawing it bar-less. Making a whole ACCOUNT with
+    nothing to read visible must not also surface a PROVIDER going quiet
+    beside a sibling that shares its own account's reading."""
+    for width in ("44", "30"):
+        out = render(width, "--fuel-partial-provider")
+        expect(out, "claude", "64")
+        refute(out, "auth_required", "Codex sign-in required", "codex")
+
+
 def test_an_overdue_reading_says_how_old_it_is():
     """A reading older than the TTL means the refresh is not happening, and then
     its age is the most important thing on the row, said in words."""

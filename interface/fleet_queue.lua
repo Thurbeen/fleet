@@ -1934,6 +1934,15 @@ local function fuel_rows(fuel, width, spinner)
     end
   end
 
+  -- Which ACCOUNTS already have a row, so a failed record knows whether it
+  -- is the account's only news or a provider going quiet beside a sibling
+  -- that still reads: the latter stays dropped, exactly as it always was
+  -- inside one account's own multi-provider reading.
+  local shown_accounts = {}
+  for _, rec in ipairs(shown) do
+    shown_accounts[rec.account or ""] = true
+  end
+
   -- THE AGE BELONGS TO THE BLOCK, not to a provider: it is one probe, and
   -- every record in it was read at the same instant. It is in the warning
   -- colour because it is only ever drawn when the reading is overdue.
@@ -1993,69 +2002,74 @@ local function fuel_rows(fuel, width, spinner)
     math.max(FUEL_LABEL_MIN, width - fixed - FUEL_RESET - 2))
 
   for _, rec in ipairs(fuel) do
-    local name = ui.row({ width = width })
-    name:add(" " .. widgets.truncate(fuel_name(rec), math.max(1, width - 1)), { fg = theme.muted })
-    -- A NAMED ACCOUNT WITH NOTHING TO READ STILL DRAWS A ROW, its own bar
-    -- replaced by its reason: `shown` above exists to size the bar layout
-    -- against the accounts that HAVE one, never to decide which accounts
-    -- appear at all. Filtering this loop the same way `shown` was built used
-    -- to drop an unavailable account's row outright whenever a sibling
-    -- account had a real reading — invisible rather than an `unavailable`
-    -- line, exactly the silent loss naming an account exists to end, just
-    -- reached through the pane instead of the `--fuel` text it parses.
-    if not (rec.remaining and not rec.unavailable) then
+    if rec.remaining and not rec.unavailable then
+      local name = ui.row({ width = width })
+      name:add(" " .. widgets.truncate(fuel_name(rec), math.max(1, width - 1)), { fg = theme.muted })
+      -- quota-axi's own word for its reading, passed through rather than
+      -- interpreted: it means the numbers are remembered, not just observed.
+      -- Dropped rather than overflowed; the hatched bars say the same thing.
+      if rec.stale then
+        flush_right(name, "stale", { fg = theme.warn })
+      end
+      rows[#rows + 1] = line(name:spans_list())
+
+      for _, w in ipairs(windows_of(rec)) do
+        -- The reserve and the staleness are the provider's, the number the
+        -- window's: this is what the bar and the colour are computed against.
+        local reading = { remaining = w.remaining, reserve = rec.reserve, stale = rec.stale }
+        local binds = w.id ~= "" and w.id == rec.limited_by
+        local row = ui.row({ width = width })
+        row:add("  ")
+        row:add(widgets.pad(widgets.truncate(w.label, label_width), label_width),
+          binds and { fg = theme.accent, bold = true } or { fg = theme.muted })
+        row:add(" ")
+        local number = w.remaining .. "%"
+        number = string.rep(" ", math.max(0, FUEL_NUMBER - widgets.len(number))) .. number
+        local room = width - row.used - widgets.len(number) - low_width
+        -- The reset column is kept even for a window with none, so every bar
+        -- in the block ends in the same column; it goes only when the number
+        -- itself would not fit beside it.
+        local countdown = reset_in(w.resets_epoch)
+        local reset = room >= FUEL_RESET + 2 and (countdown and (FUEL_RESET_WORD .. countdown) or "") or nil
+        if reset then
+          room = room - FUEL_RESET - 2
+        end
+        local cells = room - 1
+        if cells >= FUEL_BAR_MIN then
+          for _, span in ipairs(bar_spans(reading, cells)) do
+            row:add(span.text, span.style)
+          end
+          row:add(" ")
+        end
+        row:add(number, { fg = fuel_tone(reading), bold = true })
+        if any_low then
+          local low = is_low(reading)
+          row:add(low and FUEL_LOW or string.rep(" ", low_width), low and { fg = theme.bad, bold = true } or nil)
+        end
+        if reset and reset ~= "" then
+          row:add("  " .. reset, { fg = theme.muted })
+        end
+        rows[#rows + 1] = line(row:spans_list())
+      end
+    elseif not shown_accounts[rec.account or ""] then
+      -- A NAMED ACCOUNT WITH NOTHING TO READ STILL DRAWS A ROW, its own bar
+      -- replaced by its reason: `shown` above exists to size the bar layout
+      -- against the accounts that HAVE one, never to decide which ACCOUNTS
+      -- appear at all. Filtering this loop the same way `shown` was built
+      -- used to drop an unavailable account's row outright whenever a
+      -- sibling account had a real reading — invisible rather than an
+      -- `unavailable` line, exactly the silent loss naming an account
+      -- exists to end, just reached through the pane instead of the
+      -- `--fuel` text it parses. A PROVIDER failing beside a sibling THAT
+      -- SHARES ITS OWN ACCOUNT is a different fact and stays dropped below
+      -- — FLEET.md still documents that one as left out rather than drawn
+      -- bar-less, and `shown_accounts` is what tells the two apart.
+      local name = ui.row({ width = width })
+      name:add(" " .. widgets.truncate(fuel_name(rec), math.max(1, width - 1)), { fg = theme.muted })
       flush_right(name, "unavailable", { fg = theme.warn })
       rows[#rows + 1] = line(name:spans_list())
       rows[#rows + 1] = detail(rec.unavailable or "no reading")
-      goto continue
     end
-    -- quota-axi's own word for its reading, passed through rather than
-    -- interpreted: it means the numbers are remembered, not just observed.
-    -- Dropped rather than overflowed; the hatched bars say the same thing.
-    if rec.stale then
-      flush_right(name, "stale", { fg = theme.warn })
-    end
-    rows[#rows + 1] = line(name:spans_list())
-
-    for _, w in ipairs(windows_of(rec)) do
-      -- The reserve and the staleness are the provider's, the number the
-      -- window's: this is what the bar and the colour are computed against.
-      local reading = { remaining = w.remaining, reserve = rec.reserve, stale = rec.stale }
-      local binds = w.id ~= "" and w.id == rec.limited_by
-      local row = ui.row({ width = width })
-      row:add("  ")
-      row:add(widgets.pad(widgets.truncate(w.label, label_width), label_width),
-        binds and { fg = theme.accent, bold = true } or { fg = theme.muted })
-      row:add(" ")
-      local number = w.remaining .. "%"
-      number = string.rep(" ", math.max(0, FUEL_NUMBER - widgets.len(number))) .. number
-      local room = width - row.used - widgets.len(number) - low_width
-      -- The reset column is kept even for a window with none, so every bar
-      -- in the block ends in the same column; it goes only when the number
-      -- itself would not fit beside it.
-      local countdown = reset_in(w.resets_epoch)
-      local reset = room >= FUEL_RESET + 2 and (countdown and (FUEL_RESET_WORD .. countdown) or "") or nil
-      if reset then
-        room = room - FUEL_RESET - 2
-      end
-      local cells = room - 1
-      if cells >= FUEL_BAR_MIN then
-        for _, span in ipairs(bar_spans(reading, cells)) do
-          row:add(span.text, span.style)
-        end
-        row:add(" ")
-      end
-      row:add(number, { fg = fuel_tone(reading), bold = true })
-      if any_low then
-        local low = is_low(reading)
-        row:add(low and FUEL_LOW or string.rep(" ", low_width), low and { fg = theme.bad, bold = true } or nil)
-      end
-      if reset and reset ~= "" then
-        row:add("  " .. reset, { fg = theme.muted })
-      end
-      rows[#rows + 1] = line(row:spans_list())
-    end
-    ::continue::
   end
   return rows
 end

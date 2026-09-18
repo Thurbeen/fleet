@@ -84,6 +84,7 @@ local LONG_LABEL = false
 local FUEL_ACCOUNTS = false
 local FUEL_NAME_COLLISION = false
 local FUEL_MIXED_AVAILABILITY = false
+local FUEL_PARTIAL_PROVIDER = false
 for i, a in ipairs(arg) do
   if a == "--long-label" then
     LONG_LABEL = true
@@ -93,6 +94,8 @@ for i, a in ipairs(arg) do
     FUEL_NAME_COLLISION = true
   elseif a == "--fuel-mixed-availability" then
     FUEL_MIXED_AVAILABILITY = true
+  elseif a == "--fuel-partial-provider" then
+    FUEL_PARTIAL_PROVIDER = true
   elseif a == "--long" then
     LONG = tonumber(arg[i + 1]) or 0
   elseif a == "--height" then
@@ -548,6 +551,29 @@ if FUEL_MIXED_AVAILABILITY then
     "account\tclaude-spare",
     "checkout\t0",
     "unavailable\tquota-axi named no claude credential for this account",
+    "reserve\t20",
+    "read_at\t" .. (NOW - FUEL_READ),
+  }, "\n")
+end
+
+-- ONE account, two providers, one of them failing: FLEET.md still documents
+-- this case as dropped rather than drawn bar-less, so it must stay that way
+-- even now that a DIFFERENT account's failure draws its own row above.
+if FUEL_PARTIAL_PROVIDER then
+  FUEL = table.concat({
+    "provider\tclaude",
+    "account\tclaude",
+    "checkout\t1",
+    "remaining\t64",
+    "reserve\t20",
+    "limited_by\tseven_day",
+    "read_at\t" .. (NOW - FUEL_READ),
+    "window\tseven_day\t64\t" .. (NOW + 4 * 86400) .. "\tweek",
+    "",
+    "provider\tcodex",
+    "account\tclaude",
+    "checkout\t1",
+    "unavailable\tauth_required; Codex sign-in required",
     "reserve\t20",
     "read_at\t" .. (NOW - FUEL_READ),
   }, "\n")
