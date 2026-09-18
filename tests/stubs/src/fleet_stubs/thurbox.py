@@ -30,6 +30,10 @@ def main() -> int:
     elif verb == "session restart":
         print(json.dumps({"id": ident, "restarted": True}))
     elif verb == "session list":
+        answer = root / "session-list.json"
+        if answer.is_file():
+            sys.stdout.write(read(answer))
+            return 0
         sessions = sorted((root / "sessions").glob("*.json"))
         print(json.dumps([json.loads(read(s)) for s in sessions]))
     elif verb == "session get":
