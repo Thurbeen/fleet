@@ -675,17 +675,18 @@ def checkout_root() -> str:
     return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-# --- the session glyph, which is one setting and two names --------------------
+# --- the session glyph, which is one setting and one name per KIND ------------
 #
 # thurbox has no per-session icon field, so a session that wears a mark wears it
 # in its NAME. `orchestration/session-glyphs.example.conf` is the one place the
 # mark is chosen, `session-glyphs.conf` beside it is the operator's gitignored
-# override, and the two readers are this file (every worker fleet spawns) and
-# `fleet install-extension` (the lead). No line of CODE here spells a
-# glyph — one would be a second copy of a setting this file does not own — and
-# the comment below spells one only to do the arithmetic it is about.
+# override, and the two modules that read it are this file (every session fleet
+# spawns that is not the lead) and `fleet install-extension` (the lead). No line
+# of CODE here spells a glyph — one would be a second copy of a setting this
+# file does not own — and the comment below spells one only to do the arithmetic
+# it is about.
 #
-# `GLYPHS=off` leaves a worker's name exactly what it was before glyphs existed,
+# `GLYPHS=off` leaves every name exactly what it was before glyphs existed,
 # which is what makes the setting a way back rather than a different mode.
 
 GLYPH_CONF = "orchestration/session-glyphs.conf"
@@ -775,19 +776,58 @@ def configured_agent() -> str | None:
     return agent_conf().get("AGENT", "").strip() or None
 
 
-def worker_glyph(root: str | None = None) -> str:
-    """The mark every worker fleet spawns wears, or "" when glyphs are off."""
+# A KIND of session fleet spawns, and the setting key naming its mark. Three
+# kinds and one switch: `dispatch` renders a worker's name in-process, and
+# `fleet session-name` (scripts/lib/session_name.py) renders the other two for
+# the skills whose `session create` line spawns them — prose, which can read no
+# setting of its own. Adding a kind is a row here and a word in the setting;
+# it is never a second switch, because the reason to turn a mark off is the
+# terminal and the terminal has no opinion about which session it belongs to.
+GLYPH_KEYS = {
+    "worker": "WORKER_GLYPH_ON",
+    "diagnose": "DIAGNOSE_GLYPH_ON",
+    "review": "REVIEW_GLYPH_ON",
+}
+
+
+def session_glyph(kind: str, root: str | None = None) -> str:
+    """The mark one kind of fleet-spawned session wears, or "" when glyphs are off."""
+    if kind not in GLYPH_KEYS:
+        raise QueueError(f"no session kind {kind!r} (have: {', '.join(GLYPH_KEYS)})")
     conf = glyph_conf(root)
     setting = conf.get("GLYPHS", "on")
     if setting not in ("on", "off", ""):
         raise QueueError(f"GLYPHS in {GLYPH_CONF} is neither 'on' nor 'off'")
     if setting == "off":
         return ""
-    return conf.get("WORKER_GLYPH_ON", "")
+    return conf.get(GLYPH_KEYS[kind], "")
+
+
+def worker_glyph(root: str | None = None) -> str:
+    """The mark every worker fleet spawns wears, or "" when glyphs are off."""
+    return session_glyph("worker", root)
+
+
+def missing_glyph_word(kind: str, root: str | None = None) -> str:
+    """The setting key this kind's mark needs and the conf in force lacks, or "".
+
+    `conf_path` picks the operator's own `session-glyphs.conf` INSTEAD of the
+    tracked example, never merging the two, so a copy made before a kind
+    existed answers for that kind with silence: `GLYPHS=on` and no mark, which
+    is the one state a reader cannot tell from `off`.
+
+    Asked HERE rather than by the caller so that "are glyphs on" keeps one
+    answer. `session_glyph` has already validated `GLYPHS` and already returned
+    "" for `off`, so a caller re-deciding it would be a second rule that
+    disagrees on a value neither of them expected.
+    """
+    if session_glyph(kind, root):
+        return ""
+    return "" if glyph_conf(root).get("GLYPHS", "on") == "off" else GLYPH_KEYS[kind]
 
 
 def session_name(title: str, glyph: str) -> str:
-    """A worker's session name: its title, wearing the mark, within the cap.
+    """A spawned session's name: its title, wearing the mark, within the cap.
 
     The glyph goes in FRONT and the title is what gets cut, so a run of workers
     is a column of marks with the work beside it. Truncation is by byte and on a
@@ -801,15 +841,33 @@ def session_name(title: str, glyph: str) -> str:
     return encoded[:SESSION_NAME_BYTES].decode(errors="ignore")
 
 
-def session_name_refusal(title: str, glyph: str) -> str:
-    """Why `session create` would refuse this title, asked at `add` time.
+def unsafe_name(name: str) -> str:
+    """Why thurbox would refuse this name, as a clause, or "".
 
     thurbox's rule MIRRORED, never re-invented and never tightened: a session
     name becomes a path segment there, so `paths::validate_safe_name` refuses
-    an empty name, one over the byte cap, one starting `.`, and one holding
-    `/`, `\\` or `..` — the four shapes its own `unsafe_names_are_rejected`
-    enumerates. Everything else it accepts, and so does this: a title is
-    human-facing text and narrowing it further would be a defect of its own.
+    an empty name, one starting `.`, and one holding `/`, `\\` or `..` — the
+    shapes its own `unsafe_names_are_rejected` enumerates, the byte cap aside.
+    Everything else it accepts, and so does this: a title is human-facing text
+    and narrowing it further would be a defect of its own.
+
+    Takes a NAME rather than a title so that a caller may ask about one the
+    cap has not been applied to. `session_name_refusal` below asks about the
+    cut name, because that is what `dispatch` hands over; `fleet session-name`
+    asks about the whole one, because it refuses the cut instead of making it.
+    """
+    if not name:
+        return "and an empty name is not one it accepts"
+    if name.startswith("."):
+        return "and a name beginning with '.' is not one it accepts"
+    for bad in ("/", "\\", ".."):
+        if bad in name:
+            return f"and it contains {bad!r}, which thurbox refuses"
+    return ""
+
+
+def session_name_refusal(title: str, glyph: str) -> str:
+    """Why `session create` would refuse this title, asked at `add` time.
 
     Asked about the RENDERED name and not the raw title, because the rendered
     name is what `dispatch` hands to `session create`: the glyph goes in front,
@@ -820,16 +878,7 @@ def session_name_refusal(title: str, glyph: str) -> str:
     `title` in task.yaml, because there is no retitle verb.
     """
     name = session_name(title, glyph)
-    if not name:
-        why = "and an empty name is not one it accepts"
-    elif name.startswith("."):
-        why = "and a name beginning with '.' is not one it accepts"
-    else:
-        why = ""
-        for bad in ("/", "\\", ".."):
-            if bad in name:
-                why = f"and it contains {bad!r}, which thurbox refuses"
-                break
+    why = unsafe_name(name)
     if not why:
         return ""
     return (

@@ -35,6 +35,7 @@ GROUPS = {
     "voice-ask": ("voice_ask.py", "ask once for the names the lead uses"),
     "trust-thurbox-dir": ("trust_thurbox_dir.py", "trust a directory for thurbox's agent"),
     "session-flags": ("session_profiles.py", "render a session profile into session create flags"),
+    "session-name": ("session_name.py", "render the name a session fleet spawns wears"),
     "session-trust": ("session_trust.py", "answer a new session's trust dialog"),
     "paths": ("fleet_platform.py", "where thurbox's config and fleet's data live here"),
 }
