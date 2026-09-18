@@ -98,9 +98,8 @@ def test_the_copy_this_repo_ships_names_no_repository(tmp_path, monkeypatch):
     monkeypatch.setenv("FLEET_AUTO_MERGE_ROOT", str(clone))
     shipped = queue_module(
         "import forge\n"
-        "root = q.checkout_root()\n"
-        "path = q.auto_merge_conf_path(root)\n"
-        "repos = sorted(q.auto_merge_repos(root))\n"
+        "path = q.auto_merge_conf_path()\n"
+        "repos = sorted(q.auto_merge_repos())\n"
         "print('entries=' + (' '.join(repos) or 'none'))\n"
         "print('unqualified=' + (' '.join(r for r in repos if forge.RepoId.parse(r) is None) or 'none'))\n"
         "print('reading=' + ('operator' if path.endswith(q.AUTO_MERGE_CONF) else 'tracked'))\n"

@@ -1868,6 +1868,22 @@ def cmd_add(args) -> int:
     if refusal:
         raise QueueError(refusal)
 
+    # Refuse an explicit --agent that contradicts the operator's policy before
+    # the task record exists. The same check runs again at dispatch, because a
+    # rule may appear between add and dispatch.
+    if args.agent:
+        policy = agent_policy()
+        if policy:
+            repo = repo_from_checkout(args.repo) if not args.host else None
+            matched = agents_for_repo(repo, policy)
+            if matched:
+                allowed, prefix = matched
+                if args.agent not in allowed:
+                    raise QueueError(
+                        f"--agent {args.agent!r} contradicts policy for "
+                        f"{prefix!r}, which allows only {', '.join(allowed)}."
+                    )
+
     # Resolution, first hit wins and per FIELD. A stated method with no stated
     # tool drops the operator's global one rather than inheriting it: "run
     # attesting pipeline" is the wrong sentence to hand a `push` task. A
@@ -3191,9 +3207,19 @@ def spawn_commands(task: Task) -> tuple[list, str]:
     if d.get("host"):
         create += ["--host", d["host"]]
     flags = profile_flags(d.get("profile") or "default")
+    refusal = agent_policy_refusal(task)
+    if refusal:
+        # No ref prefix here: every caller already names the task itself
+        # (dispatch's "NOT SPAWNED", prompt's own per-task line), and a
+        # prefix here duplicated it in the printed message.
+        raise QueueError(refusal)
+    policy = agent_policy()
+    repo = None if d.get("host") else repo_from_checkout(d["repo"])
+    matched = agents_for_repo(repo, policy)
     # A profile carrying `command` replaces `--agent`; thurbox refuses both.
     if "--command" not in flags:
-        agent = d.get("agent") or configured_agent()
+        recorded = d.get("agent")
+        agent = recorded or (matched[0][0] if matched else configured_agent())
         if agent:
             create += ["--agent", agent]
     # NOT ON A REMOTE SPAWN, and there is no way to ask for it there. thurbox
@@ -3326,8 +3352,8 @@ def cmd_dispatch(args) -> int:
     if args.ref:
         rest = len(q.ready()) - len(ready)
         print(
-            f"dispatch: {len(ready)} named task(s), launched together — no "
-            "concurrency cap."
+            f"dispatch: {len(ready)} named task(s) ready, launching together — "
+            "no concurrency cap."
             + (
                 f"\n          {rest} other ready task(s) stay queued, and nothing "
                 "records that:\n          no ref is the norm, and the next bare "
@@ -3338,13 +3364,20 @@ def cmd_dispatch(args) -> int:
         )
     else:
         print(
-            f"dispatch: {len(ready)} task(s), launched together — no concurrency cap,\n"
-            "          because every one of them has no recorded blocker left."
+            f"dispatch: {len(ready)} task(s) ready, launching together — no "
+            "concurrency cap,\n          because every one of them has no "
+            "recorded blocker left."
         )
 
     if args.dry_run:
+        dry_failures = 0
         for t in ready:
-            create, send = spawn_commands(t)
+            try:
+                create, send = spawn_commands(t)
+            except QueueError as exc:
+                print(f"    {t.ref}: NOT SPAWNED — {exc}", file=sys.stderr)
+                dry_failures += 1
+                continue
             print(f"    {t.ref}")
             shell = host_shell(host_entry(t.doc["host"])[0] or {}) if t.doc.get("host") else None
             if shell:
@@ -3361,13 +3394,14 @@ def cmd_dispatch(args) -> int:
                       " into <worktree>\\BRIEF.md>   # the worker's filesystem is not this one")
             print("      uv run fleet session-trust <uuid>   # answer the trust dialog first")
             print(f"      thurbox-cli session send <uuid> {shell_quote([send])}")
-        return 0
+        return 1 if dry_failures else 0
 
     # Phase 1: create every session back to back, before any of them is kept
     # waiting on a trust dialog. That is what makes "launched together" true —
     # a whole wave against one repo draws its dialogs simultaneously only if
     # session creation for task 2 does not wait on task 1's trust confirmation.
     attached: list[Task] = []
+    failures = 0
     for t in ready:
         # A remote task is probed BEFORE it is spawned, in §1a's order, and one
         # failed probe stops it there. A remote worker that starts and then
@@ -3381,6 +3415,7 @@ def cmd_dispatch(args) -> int:
             if not entry:
                 print(f"    {t.ref}: NOT SPAWNED — host {t.doc['host']}: {why}",
                       file=sys.stderr)
+                failures += 1
                 continue
             probes = probe_host(entry, t.doc["repo"])
             for p in probes:
@@ -3390,15 +3425,22 @@ def cmd_dispatch(args) -> int:
             if not probes[-1]["ok"]:
                 print(f"    {t.ref}: NOT SPAWNED — the `{probes[-1]['check']}` probe "
                       f"failed on host {t.doc['host']}", file=sys.stderr)
+                failures += 1
                 continue
 
-        create, _send = spawn_commands(t)
+        try:
+            create, _send = spawn_commands(t)
+        except QueueError as exc:
+            print(f"    {t.ref}: NOT SPAWNED — {exc}", file=sys.stderr)
+            failures += 1
+            continue
         proc = None
         try:
             proc = subprocess.run(create, capture_output=True, check=True)
             session = json.loads(proc.stdout)["id"]
         except (OSError, subprocess.CalledProcessError, ValueError, KeyError) as exc:
             print(f"    {t.ref}: spawn failed: {spawn_failure(exc, proc)}", file=sys.stderr)
+            failures += 1
             continue
         attach(t, session)
 
@@ -3411,6 +3453,7 @@ def cmd_dispatch(args) -> int:
             if not ok:
                 print(f"    {t.ref}: session exists but was NOT prompted — the brief "
                       "never reached the host", file=sys.stderr)
+                failures += 1
                 continue
         attached.append(t)
 
@@ -3428,6 +3471,7 @@ def cmd_dispatch(args) -> int:
         if not ok:
             unprompted.append(t.ref)
     if unprompted:
+        failures += len(unprompted)
         print(
             f"\n{len(unprompted)} session(s) exist but were NOT prompted. Look at the\n"
             "pane, then retry the handoff — nothing was typed into them:\n"
@@ -3435,7 +3479,7 @@ def cmd_dispatch(args) -> int:
             file=sys.stderr,
         )
     refresh_run_logs(q)
-    return 0
+    return 1 if failures else 0
 
 
 def attach(task: Task, session: str) -> None:
@@ -3479,7 +3523,14 @@ def prompt_session(task: Task, timeout: int = 20) -> tuple[bool, str]:
         if not ok:
             return False, f"the brief is not on the host: {note}"
 
-    _, send = spawn_commands(task)
+    try:
+        _, send = spawn_commands(task)
+    except QueueError as exc:
+        # A policy refusal here is not a spawn failure to crash the whole
+        # retry batch over: the task stays `dispatched, prompted: false`, and
+        # `fleet queue prompt` picks it up again once the policy or the
+        # task's recorded agent changes.
+        return False, str(exc)
     ok, report = trust_and_send(session, send, timeout)
     if not ok:
         if task.doc.get("host"):
@@ -5447,6 +5498,11 @@ AUTO_MERGE_CONF_DEFAULTS = "orchestration/auto-merge.example.conf"
 # second fleet it was written for.
 AUTO_MERGE_ENV = "FLEET_AUTO_MERGE_REPOS"
 
+AGENT_POLICY_CONF = "orchestration/agent-policy.conf"
+AGENT_POLICY_CONF_DEFAULTS = "orchestration/agent-policy.example.conf"
+AGENT_POLICY_ENV = "FLEET_AGENT_POLICY"
+AGENT_POLICY_ROOT_ENV = "FLEET_AGENT_POLICY_ROOT"
+
 # Squash because it is the only method fleet's own remotes allow, so the pull
 # request title becomes the commit on `main`; CONTRIBUTING.md owns that. A
 # forge that cannot perform it says so BEFORE anything is merged rather than
@@ -5512,6 +5568,171 @@ def auto_merge_repos(root: str | None = None) -> set:
     except OSError:
         return set()
     return parse_auto_merge(lines, path)
+
+
+# --- agent policy by repository owner -----------------------------------------
+#
+# Which agents may serve which repositories. The operator's copy is
+# `orchestration/agent-policy.conf`; the tracked example names nobody. A rule
+# maps a host-qualified repository prefix to an ordered list of agents: the
+# first is the default, the rest are allowed when named explicitly.
+
+
+def _parse_policy_prefix(text: str) -> str | None:
+    """A host-qualified prefix with at least `host/owner`, or None."""
+    parts = [p for p in text.split("/") if p]
+    if len(parts) < 2 or "." not in parts[0]:
+        return None
+    return "/".join(parts).casefold()
+
+
+def parse_agent_policy(entries: list[str], source: str) -> dict[str, list[str]]:
+    """Host-qualified repository prefixes to allowed agents, refusing the rest.
+
+    One parser for both sources. A refusal is LOUD — a line on stderr —
+    because silence reads like a repository fleet declined to enforce a rule
+    on for one of the good reasons. A line with no agents is refused too;
+    an empty allowlist would forbid every agent, which is almost never what
+    a hand-edited line means.
+    """
+    out: dict[str, list[str]] = {}
+    for entry in entries:
+        entry = entry.strip()
+        if not entry:
+            continue
+        if "=" not in entry:
+            print(
+                f"{source}: ignoring {entry!r} — an agent-policy entry must "
+                "be REPO=AGENTS",
+                file=sys.stderr,
+            )
+            continue
+        repo_text, _, agents_text = entry.partition("=")
+        repo_text = repo_text.strip()
+        agents_text = agents_text.strip()
+        prefix = _parse_policy_prefix(repo_text)
+        if prefix is None:
+            print(
+                f"{source}: ignoring {repo_text!r} — an agent-policy entry must "
+                "name its forge, as in github.com/owner/repo",
+                file=sys.stderr,
+            )
+            continue
+        agents = [a.strip() for a in agents_text.split(",") if a.strip()]
+        if not agents:
+            print(
+                f"{source}: ignoring {repo_text!r} — no agents listed",
+                file=sys.stderr,
+            )
+            continue
+        out[prefix] = agents
+    return out
+
+
+def agent_policy_path(root: str | None = None) -> str:
+    """The agent-policy file in force: the operator's copy, or the tracked one."""
+    root = root or os.environ.get(AGENT_POLICY_ROOT_ENV) or checkout_root()
+    path = os.path.join(root, AGENT_POLICY_CONF)
+    if not os.path.exists(path):
+        path = os.path.join(root, AGENT_POLICY_CONF_DEFAULTS)
+    return path
+
+
+def agent_policy(root: str | None = None) -> dict[str, list[str]]:
+    """The repository-prefix agent policy in force, every time.
+
+    Read as DATA — one rule per line, `#` starts a comment — and never
+    executed. The environment REPLACES the file rather than adding to it.
+    A missing file is an empty policy: no checks, no new behaviour.
+    """
+    if AGENT_POLICY_ENV in os.environ:
+        # The environment REPLACES the file, so an empty string means "no
+        # rules" rather than "read the file". Spaces around `=` and after
+        # commas are formatting only; split into entries after normalising them.
+        raw = os.environ.get(AGENT_POLICY_ENV, "").strip()
+        normalised = re.sub(r"\s*=\s*", "=", raw)
+        # Both sides of a comma, not just the space after it: entries are
+        # whitespace-separated (there is no newline-per-entry in a shell
+        # variable, unlike the file), so a leftover space anywhere around an
+        # internal comma reads as a second entry boundary and silently drops
+        # every agent after it. `parse_agent_policy` below is the one place
+        # that actually understands a rule's syntax; this step only turns one
+        # flat string into the same per-line entries the file already hands
+        # it, one whitespace-run at a time.
+        normalised = re.sub(r"\s*,\s*", ",", normalised)
+        entries = [e for e in normalised.split() if e]
+        return parse_agent_policy(entries, AGENT_POLICY_ENV)
+    path = agent_policy_path(root)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            lines = [line.partition("#")[0] for line in fh]
+    except OSError:
+        return {}
+    return parse_agent_policy(lines, path)
+
+
+def agents_for_repo(
+    repo: forge.RepoId | None, policy: dict[str, list[str]]
+) -> tuple[list[str], str] | None:
+    """The agents allowed for `repo` and the prefix that selected them.
+
+    Longest host-qualified prefix wins, compared case-insensitively. A rule
+    for `github.com/owner/repo` beats a rule for `github.com/owner`. Returns
+    None when the policy is empty or no prefix matches.
+    """
+    if repo is None or not policy:
+        return None
+    qualified = repo.qualified.casefold()
+    best_prefix = ""
+    best_agents: list[str] = []
+    for prefix, agents in policy.items():
+        if not qualified.startswith(prefix):
+            continue
+        tail = qualified[len(prefix) :]
+        if tail and not tail.startswith("/"):
+            continue
+        if len(prefix) > len(best_prefix):
+            best_prefix = prefix
+            best_agents = agents
+    if not best_prefix:
+        return None
+    return best_agents, best_prefix
+
+
+def agent_policy_refusal(task: Task) -> str | None:
+    """Why this task cannot be dispatched under the current policy, or None."""
+    policy = agent_policy()
+    d = task.doc
+    repo = None if d.get("host") else repo_from_checkout(d["repo"])
+    if policy and repo is None:
+        if d.get("host"):
+            return (
+                "--host task cannot be checked against agent policy "
+                "because its checkout is on another machine."
+            )
+        return (
+            f"cannot read origin for {d['repo']!r}, so agent policy "
+            "cannot be checked."
+        )
+    matched = agents_for_repo(repo, policy)
+    if matched is None:
+        return None
+    allowed, prefix = matched
+    flags = profile_flags(d.get("profile") or "default")
+    if "--command" in flags:
+        return (
+            f"profile carries a custom `command`, but agent policy "
+            f"covers this repository with {prefix!r} allowing only "
+            f"{', '.join(allowed)}. Fleet cannot tell which agent a free "
+            "command launches, so dispatch is refused."
+        )
+    recorded = d.get("agent")
+    if recorded and recorded not in allowed:
+        return (
+            f"task records agent {recorded!r}, but policy "
+            f"for {prefix!r} allows only {', '.join(allowed)}."
+        )
+    return None
 
 
 def pr_ref(artifact: str) -> forge.ChangeRef | None:

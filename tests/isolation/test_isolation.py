@@ -8,10 +8,11 @@ CI proved is quietly skipped there — and the one place nobody reviews a gate
 run. So this builds that worst case on purpose:
 
   A POISONED COPY of the tree under test: a malformed queue record and an
-  OPERATOR.md, an auto-merge.conf naming a repository, publish, agent, glyph,
-  fleet-name and voice settings with odd values, a rendered extension.toml, a
-  reconciler runtime directory, and a registry map of the wrong shape. All of
-  it is made up here; nothing is copied from a real control plane.
+  OPERATOR.md, an auto-merge.conf naming a repository, publish, agent,
+  agent-policy, glyph, fleet-name and voice settings with odd values, a
+  rendered extension.toml, a reconciler runtime directory, and a registry map
+  of the wrong shape. All of it is made up here; nothing is copied from a real
+  control plane.
 
   A HOSTILE HOST: `test_harness.hostile_host` — a git config that signs and
   hooks every commit and names `trunk` the default branch, a thurbox
@@ -20,10 +21,13 @@ run. So this builds that worst case on purpose:
 
 Then the static checks and the test areas that read settings or records run in
 that copy under that host, and must pass exactly as on a clean runner, without
-repeating anything operator-private. The queue and reconcile areas are not run
-a second time: they stand on the same `isolated_env`, which test_harness.py
-proves against the same host, and `test_every_test_runs_isolated` holds every
-test to it.
+repeating anything operator-private. The reconcile area is not run a second
+time: it stands on the same `isolated_env`, which test_harness.py proves
+against the same host, and `test_every_test_runs_isolated` holds every test to
+it. The queue area IS run here, because it is the one reader of
+`orchestration/agent-policy.conf` — a setting that sits at the checkout root
+rather than inside a fixture, so nothing but a real poisoned copy proves it
+cannot leak.
 """
 
 import re
@@ -72,6 +76,7 @@ def poison(copy: Path) -> None:
     write(o / "session-glyphs.conf", "GLYPHS=sideways\nLEAD_GLYPH_ON=@@\n")
     write(o / "fleet.conf", "NAME=operator-private-fleet\n")
     write(o / "voice.conf", "OPERATOR_NAME=Operator Private\nASSISTANT_NAME=Private Lead\n")
+    write(o / "agent-policy.conf", "forge.test:8443/operator-private/private-repo=operator-private-agent\n")
     write(o / "reconcile" / "pid", "1\n")
     write(o / "reconcile" / "down", "asked down by the operator\n")
     write(o / "first-run" / "pane", "no\n")
@@ -124,7 +129,7 @@ def test_the_static_checks_read_no_record_and_no_setting(poisoned, hostile):
 
 
 def test_the_areas_that_read_settings_give_the_same_verdict(poisoned, hostile):
-    areas = [a for a in ("automerge", "skills", "extension", "status", "sync", "onboarding", "install")
+    areas = [a for a in ("automerge", "skills", "extension", "status", "sync", "onboarding", "install", "queue")
              if (poisoned / "tests" / {"automerge": "settings"}.get(a, a)).is_dir()]
     assert_same_verdict(gate(poisoned, hostile, *areas), hostile)
 
