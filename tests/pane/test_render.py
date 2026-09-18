@@ -310,6 +310,37 @@ def test_the_checkouts_own_account_with_no_credential_is_named_by_its_agent_not_
         )
 
 
+def test_a_single_account_fleet_whose_whole_reading_failed_does_not_prefix_the_reason():
+    """The block-level failure path used to prefix the reason by `fuel_name`.
+    That helper no longer returns `""` — a nameless checkout falls back to
+    `?` — so a single-account fleet with nothing to read gained `? — ` in
+    front of `quota-axi is not installed`, the one rendering that path is
+    meant to keep byte-identical to before accounts were named."""
+    for width in ("44", "30"):
+        out = render(width, "--fuel-unreadable")
+        expect(out, "unavailable", "quota-axi is not installed")
+        refute(out, "? —")
+        row = row_with("quota-axi is not installed", out)
+        assert row.strip() == "quota-axi is not installed", (
+            f"the whole-reading failure reason is prefixed at width {width}:\n{row!r}"
+        )
+
+
+def test_a_multi_account_fleet_whose_every_account_failed_keeps_the_account_in_the_reason():
+    """`#shown == 0` is also a two-account fleet with nothing readable, and
+    it still draws one reason from `fuel[1]`. Prefixing that line by the
+    provider alone drops `(account)`; prefixing by `fuel_name` keeps it,
+    while the provider guard still keeps `?` off a nameless checkout."""
+    for width in ("44", "30"):
+        out = render(width, "--fuel-accounts-unreadable")
+        expect(out, "unavailable", "claude (claude-spare)")
+        refute(out, "? —")
+        row = row_with("claude (claude-spare)", out)
+        assert row.strip().startswith("claude (claude-spare) —"), (
+            f"the named account is missing from the reason at width {width}:\n{row!r}"
+        )
+
+
 def test_an_overdue_reading_says_how_old_it_is():
     """A reading older than the TTL means the refresh is not happening, and then
     its age is the most important thing on the row, said in words."""

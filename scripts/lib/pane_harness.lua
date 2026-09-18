@@ -66,6 +66,12 @@
 -- account has no credential at all — `render_fuel_record` writes no
 -- `provider` line for it, exactly as `fleet_status.fuel_label()` reads it, so
 -- the row is named by the checkout's own agent name and never blank.
+-- `--fuel-unreadable` is a SINGLE-ACCOUNT fleet whose whole reading failed —
+-- quota-axi missing, one record, `unavailable` and no provider. That is the
+-- one case the pane must render exactly as it did before accounts were named.
+-- `--fuel-accounts-unreadable` is a MULTI-account fleet whose every account
+-- failed — the other way into `#shown == 0`. The named account leads, so the
+-- one reason line is where `fuel_name` and a bare `provider` disagree.
 --
 -- Scrolling, applied in this order before anything is printed:
 --   `--long <n>`    adds a topic of n running tasks, a queue longer than a pane
@@ -90,6 +96,8 @@ local FUEL_NAME_COLLISION = false
 local FUEL_MIXED_AVAILABILITY = false
 local FUEL_PARTIAL_PROVIDER = false
 local FUEL_CHECKOUT_NO_CREDENTIAL = false
+local FUEL_UNREADABLE = false
+local FUEL_ACCOUNTS_UNREADABLE = false
 for i, a in ipairs(arg) do
   if a == "--long-label" then
     LONG_LABEL = true
@@ -103,6 +111,10 @@ for i, a in ipairs(arg) do
     FUEL_PARTIAL_PROVIDER = true
   elseif a == "--fuel-checkout-no-credential" then
     FUEL_CHECKOUT_NO_CREDENTIAL = true
+  elseif a == "--fuel-unreadable" then
+    FUEL_UNREADABLE = true
+  elseif a == "--fuel-accounts-unreadable" then
+    FUEL_ACCOUNTS_UNREADABLE = true
   elseif a == "--long" then
     LONG = tonumber(arg[i + 1]) or 0
   elseif a == "--height" then
@@ -608,6 +620,43 @@ if FUEL_CHECKOUT_NO_CREDENTIAL then
     "limited_by\tseven_day",
     "read_at\t" .. (NOW - FUEL_READ),
     "window\tseven_day\t70\t" .. (NOW + 4 * 86400) .. "\tweek",
+  }, "\n")
+end
+
+-- A single-account fleet whose whole reading failed: `render_fuel_record`
+-- collapses that to one record with `unavailable` and no provider, no
+-- account, no checkout — the wire shape before accounts were named. The
+-- pane's block-level failure path must still draw that reason with nothing
+-- in front of it; prefixing by `fuel_name` paints `? — ` because that
+-- helper's nameless fallback is `?`, never the empty string.
+if FUEL_UNREADABLE then
+  FUEL = table.concat({
+    "unavailable\tquota-axi is not installed",
+    "reserve\t20",
+    "read_at\t" .. (NOW - FUEL_READ),
+  }, "\n")
+end
+
+-- Two accounts, neither readable: `#shown == 0` still draws one reason, from
+-- `fuel[1]`. The named account (`checkout\t0`) leads because that is the
+-- shape where prefixing by `provider` alone drops `(account)` and prefixing
+-- by `fuel_name` keeps it. The checkout's own record is there so this is a
+-- two-account fleet, not a collapsed single-account one.
+if FUEL_ACCOUNTS_UNREADABLE then
+  FUEL = table.concat({
+    "provider\tclaude",
+    "account\tclaude-spare",
+    "checkout\t0",
+    "unavailable\tquota-axi named no claude credential for this account",
+    "reserve\t20",
+    "read_at\t" .. (NOW - FUEL_READ),
+    "",
+    "provider\tclaude",
+    "account\tclaude",
+    "checkout\t1",
+    "unavailable\tauth_required; Claude sign-in required",
+    "reserve\t20",
+    "read_at\t" .. (NOW - FUEL_READ),
   }, "\n")
 end
 

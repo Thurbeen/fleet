@@ -1974,11 +1974,15 @@ local function fuel_rows(fuel, width, spinner)
     head:add(widgets.truncate_hard("unavailable", math.max(0, width - head.used)),
       { fg = theme.warn })
     flush_right(head, age, { fg = theme.warn })
-    -- The first record's reason, named: fleet's own provider leads the record,
-    -- so this is the one whose failure matters most to what runs below.
+    -- Guard on the PROVIDER, print `fuel_name`. That helper's nameless
+    -- fallback is `?`, so prefixing whenever `fuel_name ~= ""` painted
+    -- `? — ` onto a single-account fleet with nothing to read. A multi-account
+    -- fleet whose every account failed also lands here (`#shown == 0`) and
+    -- still draws one reason from `fuel[1]`: printing the provider alone
+    -- drops `(account)`, printing `fuel_name` keeps it.
     local first = fuel[1]
     local why = first.unavailable or "no reading"
-    if fuel_name(first) ~= "" then
+    if (first.provider or "") ~= "" then
       why = fuel_name(first) .. " — " .. why
     end
     return { line(head:spans_list()), detail(why) }
