@@ -57,6 +57,11 @@
 -- `--fuel-accounts` replaces the one reading with two: the same provider under
 -- two logins, which is what a fleet whose `agent.conf` names a second account
 -- draws.
+-- `--fuel-name-collision` is the fixture that tells `checkout` apart from a
+-- coincidence: the checkout's own account name differs from its provider, and
+-- the named account's agent is called the same as its own vendor — the one
+-- shape where deciding the parentheses by comparing `account` against
+-- `provider` disagrees with deciding it by the `checkout` flag.
 --
 -- Scrolling, applied in this order before anything is printed:
 --   `--long <n>`    adds a topic of n running tasks, a queue longer than a pane
@@ -77,11 +82,14 @@ local LONG_LABEL = false
 -- the reading `fleet status` takes when `agent.conf` carries an `ENV` line:
 -- two records naming the same provider, told apart by `account` alone.
 local FUEL_ACCOUNTS = false
+local FUEL_NAME_COLLISION = false
 for i, a in ipairs(arg) do
   if a == "--long-label" then
     LONG_LABEL = true
   elseif a == "--fuel-accounts" then
     FUEL_ACCOUNTS = true
+  elseif a == "--fuel-name-collision" then
+    FUEL_NAME_COLLISION = true
   elseif a == "--long" then
     LONG = tonumber(arg[i + 1]) or 0
   elseif a == "--height" then
@@ -486,6 +494,34 @@ if FUEL_ACCOUNTS then
     "read_at\t" .. (NOW - FUEL_READ),
     "window\tfive_hour\t70\t" .. (NOW + 2 * 3600) .. "\tsession",
     "window\tseven_day\t95\t" .. (NOW + 5 * 86400) .. "\tweek",
+  }, "\n")
+end
+
+-- The checkout's own account named `lead`, reading a provider called
+-- `codex` — its own name and its provider disagree, the way an operator's
+-- `AGENT=` line and `FUEL_PROVIDER` commonly do. Beside it, a NAMED account
+-- (`checkout\t0`) whose agent is called the same as its own vendor. Deciding
+-- the parentheses by comparing `account` against `provider` gets BOTH of
+-- these backwards; deciding it by the `checkout` flag gets both right.
+if FUEL_NAME_COLLISION then
+  FUEL = table.concat({
+    "provider\tcodex",
+    "account\tlead",
+    "checkout\t1",
+    "remaining\t40",
+    "reserve\t20",
+    "limited_by\tseven_day",
+    "read_at\t" .. (NOW - FUEL_READ),
+    "window\tseven_day\t40\t" .. (NOW + 4 * 86400) .. "\tweek",
+    "",
+    "provider\tcodex",
+    "account\tcodex",
+    "checkout\t0",
+    "remaining\t85",
+    "reserve\t20",
+    "limited_by\tseven_day",
+    "read_at\t" .. (NOW - FUEL_READ),
+    "window\tseven_day\t85\t" .. (NOW + 4 * 86400) .. "\tweek",
   }, "\n")
 end
 

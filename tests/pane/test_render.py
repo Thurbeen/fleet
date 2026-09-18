@@ -248,6 +248,24 @@ def test_two_accounts_of_one_provider_get_two_labelled_bars(tmp_path):
         assert widest <= int(width), f"a row is {widest} columns wide at {width}\n{out}"
 
 
+def test_the_checkout_flag_decides_the_parentheses_not_a_name_coincidence():
+    """Two records where comparing `account` against `provider` gets the
+    parentheses backwards: the checkout's own account (`checkout\\t1`) is
+    named `lead` while its provider is `codex` — an operator's `AGENT=` and
+    `FUEL_PROVIDER` commonly disagree like this — and a NAMED account
+    (`checkout\\t0`) is called `codex`, the same as its own vendor. A pane
+    that decided by name equality would print `codex (lead)` for the
+    checkout's own bar and a bare `codex` for the named one — exactly
+    backwards from what `fleet status`'s own labelling prints for the same
+    two records."""
+    for width in ("44", "30"):
+        out = render(width, "--fuel-name-collision")
+        refute(out, "codex (lead)")
+        expect(out, "codex (codex)")
+        widest = max(cells(line) for line in out.splitlines())
+        assert widest <= int(width), f"a row is {widest} columns wide at {width}\n{out}"
+
+
 def test_an_overdue_reading_says_how_old_it_is():
     """A reading older than the TTL means the refresh is not happening, and then
     its age is the most important thing on the row, said in words."""

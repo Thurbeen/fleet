@@ -41,6 +41,7 @@ from statuskit import (
     fuel_of,
     per_account,
     records,
+    window,
 )
 
 SECTIONS = ("FUEL", "QUEUE", "SESSIONS", "PRS", "CHECKOUT")
@@ -587,7 +588,12 @@ def test_the_checkouts_own_account_having_no_credential_does_not_hide_behind_ano
     `fuel_named()` saw one distinct account and dropped the very field that
     would have named it. The checkout's own account with nothing to read has
     to stay on screen as its own unavailable line, exactly like a named
-    account with no credential does."""
+    account with no credential does — and it takes the SAME fallback
+    `authenticated_providers()` always applied for a single-account fleet
+    (`AGENT=claude` names the guess), never a shortcut that skips the fetch:
+    `probe_fuel()` (`refuel`'s own reading of this exact account) takes that
+    fallback too, and skipping it here would have the screen call this
+    account unavailable for a reason the gate would not agree with."""
     spare = tmp_path / "spare-config"
     conf = tmp_path / "agentconf"
     write(conf / "orchestration" / "agent.conf",
@@ -605,13 +611,67 @@ def test_the_checkouts_own_account_having_no_credential_does_not_hide_behind_ano
     assert "claude" in by_account and "claude-spare" in by_account, blocks
     assert "unavailable" in by_account["claude"] and "remaining" not in by_account["claude"], blocks
     assert by_account["claude-spare"]["remaining"] == "70", blocks
-    # The checkout's own account had nothing to probe: an `auth` call, no fetch.
+    # Two distinct environments, so two `auth` calls and two fetches — the
+    # checkout's own guessed "claude" from `AGENT=claude` fetches like any
+    # named account's guess would, and comes back naming no provider.
     assert len(stubs.calls("quota-axi", "auth")) == 2, stubs.calls("quota-axi")
-    assert len(fetches(stubs)) == 1, fetches(stubs)
+    assert len(fetches(stubs)) == 2, fetches(stubs)
     done = status(FLEET_AGENT_ROOT=str(conf))
     expect(done.out, "2 reading(s) over 2 account(s)",
-           "unavailable — no provider has a credential to read",
+           "claude  unavailable — quota-axi reported no claude provider",
            "claude (claude-spare)  70% remaining")
+
+
+def test_two_providers_under_one_shared_environment_cost_one_auth_and_fetch_pair(tmp_path, stubs):
+    """An `ENV` line need not be a vendor-specific `*_CONFIG_DIR` — a broader
+    one, such as `HOME=`, moves every vendor's credential at once, so two
+    agents naming two different providers under the SAME `ENV` line are two
+    ACCOUNTS (different provider) but one ENVIRONMENT. `fuel_accounts()`'s own
+    dedup keys on `(provider, env)` and never merges these two entries, so the
+    saving has to happen in `probe_fuel_all()`: one `auth` and one
+    `--provider claude,codex` fetch for the shared environment, never a pair
+    per account sharing it — the same "asked once, split after" a checkout
+    that named a second LOGIN already gets, applied here to two vendors
+    sharing one login instead."""
+    shared = str(tmp_path / "worker2-home")
+    conf = tmp_path / "agentconf"
+    write(conf / "orchestration" / "agent.conf",
+          "AGENT=lead\n"
+          f"claude.ENV=HOME={shared}\n"
+          f"codex.ENV=HOME={shared}\n")
+    here_auth, here_fetch = auth(), fetch()
+    there_auth = auth(("claude", "available"), ("codex", "available"))
+    there_fetch = fetch(
+        claude(55),
+        {"provider": "codex", "windows": [window("five_hour", 33, "2026-03-15T20:00:00.000Z")],
+         "state": {"status": "ok", "stale": False}},
+    )
+    stubs.tool("quota-axi", (
+        "import json, os, sys\n"
+        f"SHARED = {shared!r}\n"
+        f"HERE_AUTH = {json.dumps(here_auth)!r}\n"
+        f"HERE_FETCH = {json.dumps(here_fetch)!r}\n"
+        f"THERE_AUTH = {json.dumps(there_auth)!r}\n"
+        f"THERE_FETCH = {json.dumps(there_fetch)!r}\n"
+        "shared = os.environ.get('HOME') == SHARED\n"
+        "auth_mode = sys.argv[1:2] == ['auth']\n"
+        "doc = (THERE_AUTH if auth_mode else THERE_FETCH) if shared else (HERE_AUTH if auth_mode else HERE_FETCH)\n"
+        "sys.stdout.write(doc)\n"
+    ))
+    done = status(FLEET_AGENT_ROOT=str(conf))
+    expect(done.out, "claude (claude)  55% remaining", "codex (codex)  33% remaining")
+    calls = stubs.calls("quota-axi")
+    auth_calls = [c for c in calls if c.startswith("quota-axi auth")]
+    fetch_calls = fetches(stubs)
+    # Two DISTINCT ENVIRONMENTS — the checkout's own (unset, and itself
+    # unavailable) and the one `claude` and `codex` share — cost one `auth`
+    # each, never one per account.
+    assert len(auth_calls) == 2, calls
+    # The checkout's own guessed fallback is its own environment and pays its
+    # own fetch; the shared environment's two providers still cost exactly
+    # ONE fetch between them, never two.
+    assert len(fetch_calls) == 2, calls
+    assert any("claude,codex" in c or "codex,claude" in c for c in fetch_calls), fetch_calls
 
 
 def test_the_not_discovered_hint_names_only_the_account_whose_auth_failed(tmp_path, stubs):
