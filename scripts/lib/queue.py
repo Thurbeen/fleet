@@ -3209,7 +3209,10 @@ def spawn_commands(task: Task) -> tuple[list, str]:
     flags = profile_flags(d.get("profile") or "default")
     refusal = agent_policy_refusal(task)
     if refusal:
-        raise QueueError(f"{task.ref}: {refusal}")
+        # No ref prefix here: every caller already names the task itself
+        # (dispatch's "NOT SPAWNED", prompt's own per-task line), and a
+        # prefix here duplicated it in the printed message.
+        raise QueueError(refusal)
     policy = agent_policy()
     repo = None if d.get("host") else repo_from_checkout(d["repo"])
     matched = agents_for_repo(repo, policy)
@@ -3349,8 +3352,8 @@ def cmd_dispatch(args) -> int:
     if args.ref:
         rest = len(q.ready()) - len(ready)
         print(
-            f"dispatch: {len(ready)} named task(s), launched together — no "
-            "concurrency cap."
+            f"dispatch: {len(ready)} named task(s) ready, launching together — "
+            "no concurrency cap."
             + (
                 f"\n          {rest} other ready task(s) stay queued, and nothing "
                 "records that:\n          no ref is the norm, and the next bare "
@@ -3361,13 +3364,20 @@ def cmd_dispatch(args) -> int:
         )
     else:
         print(
-            f"dispatch: {len(ready)} task(s), launched together — no concurrency cap,\n"
-            "          because every one of them has no recorded blocker left."
+            f"dispatch: {len(ready)} task(s) ready, launching together — no "
+            "concurrency cap,\n          because every one of them has no "
+            "recorded blocker left."
         )
 
     if args.dry_run:
+        dry_failures = 0
         for t in ready:
-            create, send = spawn_commands(t)
+            try:
+                create, send = spawn_commands(t)
+            except QueueError as exc:
+                print(f"    {t.ref}: NOT SPAWNED — {exc}", file=sys.stderr)
+                dry_failures += 1
+                continue
             print(f"    {t.ref}")
             shell = host_shell(host_entry(t.doc["host"])[0] or {}) if t.doc.get("host") else None
             if shell:
@@ -3384,13 +3394,14 @@ def cmd_dispatch(args) -> int:
                       " into <worktree>\\BRIEF.md>   # the worker's filesystem is not this one")
             print("      uv run fleet session-trust <uuid>   # answer the trust dialog first")
             print(f"      thurbox-cli session send <uuid> {shell_quote([send])}")
-        return 0
+        return 1 if dry_failures else 0
 
     # Phase 1: create every session back to back, before any of them is kept
     # waiting on a trust dialog. That is what makes "launched together" true —
     # a whole wave against one repo draws its dialogs simultaneously only if
     # session creation for task 2 does not wait on task 1's trust confirmation.
     attached: list[Task] = []
+    failures = 0
     for t in ready:
         # A remote task is probed BEFORE it is spawned, in §1a's order, and one
         # failed probe stops it there. A remote worker that starts and then
@@ -3404,6 +3415,7 @@ def cmd_dispatch(args) -> int:
             if not entry:
                 print(f"    {t.ref}: NOT SPAWNED — host {t.doc['host']}: {why}",
                       file=sys.stderr)
+                failures += 1
                 continue
             probes = probe_host(entry, t.doc["repo"])
             for p in probes:
@@ -3413,12 +3425,14 @@ def cmd_dispatch(args) -> int:
             if not probes[-1]["ok"]:
                 print(f"    {t.ref}: NOT SPAWNED — the `{probes[-1]['check']}` probe "
                       f"failed on host {t.doc['host']}", file=sys.stderr)
+                failures += 1
                 continue
 
         try:
             create, _send = spawn_commands(t)
         except QueueError as exc:
             print(f"    {t.ref}: NOT SPAWNED — {exc}", file=sys.stderr)
+            failures += 1
             continue
         proc = None
         try:
@@ -3426,6 +3440,7 @@ def cmd_dispatch(args) -> int:
             session = json.loads(proc.stdout)["id"]
         except (OSError, subprocess.CalledProcessError, ValueError, KeyError) as exc:
             print(f"    {t.ref}: spawn failed: {spawn_failure(exc, proc)}", file=sys.stderr)
+            failures += 1
             continue
         attach(t, session)
 
@@ -3438,6 +3453,7 @@ def cmd_dispatch(args) -> int:
             if not ok:
                 print(f"    {t.ref}: session exists but was NOT prompted — the brief "
                       "never reached the host", file=sys.stderr)
+                failures += 1
                 continue
         attached.append(t)
 
@@ -3455,6 +3471,7 @@ def cmd_dispatch(args) -> int:
         if not ok:
             unprompted.append(t.ref)
     if unprompted:
+        failures += len(unprompted)
         print(
             f"\n{len(unprompted)} session(s) exist but were NOT prompted. Look at the\n"
             "pane, then retry the handoff — nothing was typed into them:\n"
@@ -3462,7 +3479,7 @@ def cmd_dispatch(args) -> int:
             file=sys.stderr,
         )
     refresh_run_logs(q)
-    return 0
+    return 1 if failures else 0
 
 
 def attach(task: Task, session: str) -> None:
@@ -3506,7 +3523,14 @@ def prompt_session(task: Task, timeout: int = 20) -> tuple[bool, str]:
         if not ok:
             return False, f"the brief is not on the host: {note}"
 
-    _, send = spawn_commands(task)
+    try:
+        _, send = spawn_commands(task)
+    except QueueError as exc:
+        # A policy refusal here is not a spawn failure to crash the whole
+        # retry batch over: the task stays `dispatched, prompted: false`, and
+        # `fleet queue prompt` picks it up again once the policy or the
+        # task's recorded agent changes.
+        return False, str(exc)
     ok, report = trust_and_send(session, send, timeout)
     if not ok:
         if task.doc.get("host"):
@@ -5627,7 +5651,15 @@ def agent_policy(root: str | None = None) -> dict[str, list[str]]:
         # commas are formatting only; split into entries after normalising them.
         raw = os.environ.get(AGENT_POLICY_ENV, "").strip()
         normalised = re.sub(r"\s*=\s*", "=", raw)
-        normalised = re.sub(r",\s+", ",", normalised)
+        # Both sides of a comma, not just the space after it: entries are
+        # whitespace-separated (there is no newline-per-entry in a shell
+        # variable, unlike the file), so a leftover space anywhere around an
+        # internal comma reads as a second entry boundary and silently drops
+        # every agent after it. `parse_agent_policy` below is the one place
+        # that actually understands a rule's syntax; this step only turns one
+        # flat string into the same per-line entries the file already hands
+        # it, one whitespace-run at a time.
+        normalised = re.sub(r"\s*,\s*", ",", normalised)
         entries = [e for e in normalised.split() if e]
         return parse_agent_policy(entries, AGENT_POLICY_ENV)
     path = agent_policy_path(root)

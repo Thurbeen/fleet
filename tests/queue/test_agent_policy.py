@@ -139,8 +139,11 @@ def test_host_task_fails_closed_when_policy_exists(forge_store):
         "--host", "devbox",
     ))
     fill_brief(Path(os.environ["FLEET_QUEUE_DIR"]) / topic / "01-remote" / "BRIEF.md")
-    out = q("dispatch", **policy_env(forge_store, f"{QUALIFIED_REPO}=alpha")).out
-    assert "--host task cannot be checked against agent policy" in out, out
+    done = q("dispatch", **policy_env(forge_store, f"{QUALIFIED_REPO}=alpha"))
+    assert "--host task cannot be checked against agent policy" in done.out, done.out
+    # A refused task is not a silent no-op: a script or hook reading the exit
+    # code must see that the batch did not go out cleanly.
+    assert done.code != 0, done.out
 
 
 def test_bare_owner_repo_entry_is_ignored_with_message(checkout, forge_store):
@@ -273,6 +276,25 @@ def test_env_policy_allows_spaces_around_equals(checkout, forge_store):
     assert "alpha" in done.out
 
 
+def test_env_policy_allows_spaces_on_both_sides_of_comma(checkout, forge_store):
+    # A space BEFORE the comma, not just after: `re.sub(r",\s+", ",", ...)`
+    # only ever normalised the space that follows a comma, so "alpha , beta"
+    # left a dangling `,beta` behind, split by the entry splitter into an
+    # entry with no `=`, and dropped with a stderr message rather than kept
+    # as the second allowed agent.
+    topic = q(
+        "topic", "add", "comma-spaces", "--title", "Comma spaces",
+        "--prompt", "spaces surround the comma too",
+    ).stdout.strip()
+    env = policy_env(forge_store, f"{QUALIFIED_REPO} = alpha , beta")
+    ok(q(
+        "add", topic, "second-agent", "--title", "Second agent",
+        "--repo", str(checkout), "--branch", "fix/second", "--number", "01",
+        "--agent", "beta",
+        **env,
+    ))
+
+
 def test_empty_env_policy_replaces_file(checkout, forge_store):
     policy_root = Path(os.environ["FLEET_AGENT_POLICY_ROOT"]) / "orchestration"
     policy_root.mkdir(parents=True, exist_ok=True)
@@ -326,12 +348,112 @@ def test_dispatch_reports_policy_refusal_per_task_and_continues_batch(checkout, 
     sid = "e5555555-5555-5555-5555-555555555555"
     next_session(stubs, sid)
     stubs.tool("thurbox-cli", ANSWERING_KEYS)
-    out = q("dispatch", **env).out
-    assert "NOT SPAWNED" in out, out
-    assert "beta" in out
+    done = q("dispatch", **env)
+    assert "NOT SPAWNED" in done.out, done.out
+    assert "beta" in done.out
+    # `spawn_commands` used to bake the ref into the refusal text itself, and
+    # `cmd_dispatch` prefixed it a second time, so the ref appeared twice on
+    # the same line.
+    assert done.out.count("02-bad") == 1, done.out
+    # A batch with a refused task is not a clean run: something reading the
+    # exit code must be able to tell the difference.
+    assert done.code != 0, done.out
     creates = stubs.calls("thurbox-cli", "session create")
     assert len(creates) == 2, creates
     assert all("fix/ok" in c or "fix/also-ok" in c for c in creates), creates
+
+
+def test_dispatch_dry_run_reports_policy_refusal_per_task_and_continues_batch(checkout, forge_store):
+    topic = q(
+        "topic", "add", "dry-batch", "--title", "Dry batch",
+        "--prompt", "dry-run policy refusal",
+    ).stdout.strip()
+    env = policy_env(forge_store, f"{QUALIFIED_REPO}=alpha")
+    ok(q(
+        "add", topic, "ok", "--title", "ok", "--repo", str(checkout),
+        "--branch", "fix/ok", "--number", "01", "--agent", "alpha",
+        **env,
+    ))
+    fill_brief(Path(os.environ["FLEET_QUEUE_DIR"]) / topic / "01-ok" / "BRIEF.md")
+    # As above, an agent recorded before the policy existed.
+    ok(q(
+        "add", topic, "bad", "--title", "bad", "--repo", str(checkout),
+        "--branch", "fix/bad", "--number", "02",
+        **env,
+    ))
+    bad_task = Path(os.environ["FLEET_QUEUE_DIR"]) / topic / "02-bad" / "task.yaml"
+    bad_task.write_text(
+        bad_task.read_text(encoding="utf-8").replace("agent: null", "agent: beta"),
+        encoding="utf-8",
+    )
+    fill_brief(Path(os.environ["FLEET_QUEUE_DIR"]) / topic / "02-bad" / "BRIEF.md")
+    ok(q(
+        "add", topic, "also-ok", "--title", "also-ok", "--repo", str(checkout),
+        "--branch", "fix/also-ok", "--number", "03", "--agent", "alpha",
+        **env,
+    ))
+    fill_brief(Path(os.environ["FLEET_QUEUE_DIR"]) / topic / "03-also-ok" / "BRIEF.md")
+
+    # `--dry-run` used to call `spawn_commands` with no `try` at all, so it
+    # died on the first refused task instead of showing the whole batch.
+    done = q("dispatch", "--dry-run", **env)
+    assert done.out.count("thurbox-cli session create") == 2, done.out
+    assert "01-ok" in done.out, done.out
+    assert "03-also-ok" in done.out, done.out
+    assert "02-bad: NOT SPAWNED" in done.out, done.out
+    assert done.out.count("02-bad") == 1, done.out
+    assert "beta" in done.out, done.out
+    assert done.code != 0, done.out
+
+
+def test_prompt_reports_policy_refusal_per_task_and_continues_batch(checkout, forge_store, stubs):
+    topic = q(
+        "topic", "add", "retry-prompt", "--title", "Retry prompt",
+        "--prompt", "prompt retries under a tightened policy",
+    ).stdout.strip()
+    open_env = policy_env(forge_store, "")
+    ok(q(
+        "add", topic, "bad", "--title", "bad", "--repo", str(checkout),
+        "--branch", "fix/bad", "--number", "01", "--agent", "beta",
+        **open_env,
+    ))
+    ok(q(
+        "add", topic, "good", "--title", "good", "--repo", str(checkout),
+        "--branch", "fix/good", "--number", "02", "--agent", "alpha",
+        **open_env,
+    ))
+    queue_dir = Path(os.environ["FLEET_QUEUE_DIR"])
+    fill_brief(queue_dir / topic / "01-bad" / "BRIEF.md")
+    fill_brief(queue_dir / topic / "02-good" / "BRIEF.md")
+
+    # Both tasks are already `dispatched, prompted: false` — as if their
+    # sessions were created and are stuck behind a trust dialog, exactly what
+    # `fleet queue prompt` exists to retry. The policy then tightens between
+    # the dispatch and the retry, which `cmd_prompt` used to have no `try`
+    # around at all: it died on the first refused task and never reached the
+    # session that was still fine, leaving it stuck with no way to recover
+    # except a hand-edit.
+    sid = "f6666666-6666-6666-6666-666666666666"
+    for slug in ("01-bad", "02-good"):
+        task_file = queue_dir / topic / slug / "task.yaml"
+        task_file.write_text(
+            task_file.read_text(encoding="utf-8")
+            .replace("state: queued", "state: dispatched")
+            .replace("session: null", f"session: {sid}"),
+            encoding="utf-8",
+        )
+
+    stubs.tool("thurbox-cli", ANSWERING_KEYS)
+    stubs.session_is(sid, "idle")
+
+    restricted = policy_env(forge_store, f"{QUALIFIED_REPO}=alpha")
+    done = q("prompt", **restricted)
+    assert "01-bad  NOT PROMPTED" in done.out, done.out
+    assert "beta" in done.out, done.out
+    assert "02-good  prompted" in done.out, done.out
+    assert done.code != 0, done.out
+    sends = "\n".join(stubs.calls("thurbox-cli", "session send"))
+    assert sid in sends, sends
 
 
 def test_isolation_from_checkout_agent_policy_conf(checkout, forge_store):
