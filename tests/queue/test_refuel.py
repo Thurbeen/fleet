@@ -16,7 +16,7 @@ and nothing here writes `state` or `outcome`.
 import pytest
 from kit_refuel import (
     CLAUDE_BANNER, attach_task, no_quota, one_refuel_just_now, pane, quota_is, restarts, rewind_refuels, sends,
-    transcript,
+    teach, transcript,
 )
 from queuekit import ok
 
@@ -31,10 +31,16 @@ RESETS = "2026-09-09T02:10:00+00:00"
 
 
 @pytest.fixture
-def claude_home(tmp_path, monkeypatch):
+def claude_home(tmp_path, isolated_env):
+    """Where this fleet's agent keeps its transcripts, said the way an operator says it.
+
+    Its OWN `ENV` record and not this process's environment: the reader used to
+    resolve `CLAUDE_CONFIG_DIR` out of `os.environ`, which belongs to the lead
+    and not to the worker being asked about.
+    """
     home = tmp_path / "claude-config"
     (home / "projects" / "-tmp-repo-a").mkdir(parents=True)
-    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(home))
+    teach(isolated_env, f"claude.ENV=CLAUDE_CONFIG_DIR={home}")
     return home
 
 
@@ -145,8 +151,8 @@ def test_a_quota_that_cannot_be_read_is_undetermined_and_restarts_nothing(ran_dr
 # An interface is worth what a SECOND implementation driven through it is
 # worth (scripts/lib/forge.py's standard). So the sweep runs again for `nova`,
 # which has no entry in AGENT_LIMIT_SIGNALS: everything fleet needs comes from
-# the operator's agent.conf. THE TRIPWIRE IS THE POINT: no CLAUDE_CONFIG_DIR, no
-# claude banner, and a quota document for another provider — a built-in
+# the operator's agent.conf. THE TRIPWIRE IS THE POINT: no `claude` settings at
+# all, no claude banner, and a quota document for another provider — a built-in
 # `claude` reached for anywhere answers with the wrong window or none.
 
 NOVA_DRY = "bbbbbbb1-0000-0000-0000-000000000001"
@@ -170,7 +176,6 @@ def nova_root(tmp_path, monkeypatch):
         "TRUST_SIGNATURE=do you trust the contents of this workspace\nTRUST_KEYS=enter\n",
         encoding="utf-8", newline="\n")
     monkeypatch.setenv("FLEET_AGENT_ROOT", str(root))
-    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     return root
 
 

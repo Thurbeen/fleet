@@ -523,9 +523,12 @@ one shape that needs no setup (`pr`: a pull request from the task's branch) and
 leaves `session create` thurbox's own default agent. Offer them, and say what
 each buys: a default publish command so the lead never retypes `--publish`, an
 `ATTESTATION_MARKER` if their pipeline attests, and `FUEL_PROVIDER` so `refuel`
-knows whose quota window to gate on. Without that last one `refuel` derives it
-from the tasks and reports `undetermined` when they disagree, which restarts
-nothing.
+knows whose quota window to gate on. Without that last one `refuel` derives the
+provider from each task's agent and reports `undetermined` where it cannot,
+which restarts nothing. Ask too whether they run a SECOND ACCOUNT of the same
+agent: that is a per-agent block in the same file
+(`<agent>.LIKE=`, `<agent>.ENV=`), and without it every worker on it has no
+autopilot — its dialog is unanswered and its window unread.
 
 Copy each only where the operator has none yet; neither form overwrites:
 

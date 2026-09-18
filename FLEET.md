@@ -182,10 +182,12 @@ field, which is that window's pace against its reset clock and is `unknown`
 for every window whose fetch failed. Nothing enforces the floor for
 you — `fleet queue dispatch` does not read fuel and must not, because a queue
 that stops on a bad parse is worse than one that spends. `fleet queue refuel`
-does read it, and reads ONE provider: the one your agent draws on, from
+does read it, and reads ONE WINDOW PER ACCOUNT the tasks in hand draw on: the
+provider comes from your agent or from `FUEL_PROVIDER`, and which of that
+provider's accounts from the agent's own `ENV` line in
 `orchestration/agent.conf`. A spent window on a provider fleet does not
-dispatch is no reason to leave a worker sitting at its limit, and tasks that
-disagree on an agent are `undetermined`, which restarts nothing.
+dispatch is no reason to leave a worker sitting at its limit, and a task whose
+account cannot be worked out is `undetermined`, which restarts nothing.
 
 Near the floor you spend fuel on dispatching and on nothing else:
 

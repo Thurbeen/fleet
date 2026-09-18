@@ -93,6 +93,11 @@ def _load_queue():
 
 fleetqueue = _load_queue()
 
+# The agent settings seam, which queue.py has already loaded and keyed — the
+# SAME module object, so this file and `fleet queue` resolve a per-agent
+# setting one way and not two.
+agent_settings = fleetqueue.agent_settings
+
 # The forge seam, which queue.py has already loaded and keyed in sys.modules —
 # so this is the SAME module object and therefore the same registry, not a
 # second opinion about which forges are configured.
@@ -113,17 +118,23 @@ CONCLUDED = {"done", "landed", "stuck", "failed", "abandoned"}
 # --- probing -----------------------------------------------------------------
 
 
-def run(argv: list, cwd: str | None = None, timeout: int = 10) -> tuple[str | None, str | None]:
+def run(argv: list, cwd: str | None = None, timeout: int = 10,
+        env: dict | None = None) -> tuple[str | None, str | None]:
     """(stdout, None) or (None, why-not). Never raises, never inherits stdio.
 
     A missing tool, a tool that hangs, a tool that exits non-zero and a tool
     that is not executable are four different sentences the lead can act on,
     and none of them is an exception.
+
+    `env` is the WHOLE environment the child gets, already merged by its
+    caller, and None means this process's — which is what every probe here but
+    the fuel gauge wants.
     """
     if not shutil.which(argv[0]):
         return None, f"{argv[0]} not found"
     try:
-        p = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, encoding="utf-8", timeout=timeout)
+        p = subprocess.run(argv, cwd=cwd, env=env, capture_output=True, text=True,
+                           encoding="utf-8", timeout=timeout)
     except subprocess.TimeoutExpired:
         return None, f"{argv[0]} timed out after {timeout}s"
     except OSError as exc:
@@ -134,8 +145,8 @@ def run(argv: list, cwd: str | None = None, timeout: int = 10) -> tuple[str | No
     return p.stdout, None
 
 
-def run_json(argv: list, cwd: str | None = None, timeout: int = 10):
-    out, why = run(argv, cwd=cwd, timeout=timeout)
+def run_json(argv: list, cwd: str | None = None, timeout: int = 10, env: dict | None = None):
+    out, why = run(argv, cwd=cwd, timeout=timeout, env=env)
     if why:
         return None, why
     try:
@@ -416,34 +427,19 @@ def probe_checkout() -> dict:
 # read as its own provider name, which is the identity `agent_providers()`
 # ships. With neither set the screen has no preference and simply draws
 # quota-axi's own order; `FLEET_FUEL_PROVIDER` overrides both for one run.
-AGENT_CONF = "orchestration/agent.conf"
-AGENT_CONF_DEFAULTS = "orchestration/agent.example.conf"
+AGENT_CONF = agent_settings.AGENT_CONF
+AGENT_CONF_DEFAULTS = agent_settings.AGENT_CONF_DEFAULTS
 
 
 def agent_conf() -> dict:
     """`KEY=value` lines from the agent settings in force, read as data.
 
     The operator's copy when it exists, the tracked example beside it when it
-    does not — the same two-file rule `queue.py` applies to every
-    `orchestration/*.conf`, restated here only because this module is loaded
-    from `queue.py` and cannot import it back.
+    does not. Read through `agent_settings`, which is the one reader of that
+    file: this module used to keep a parse of its own, and a second parse is
+    how two answers about one setting come apart.
     """
-    root = os.environ.get("FLEET_AGENT_ROOT") or REPO_ROOT
-    path = os.path.join(root, AGENT_CONF)
-    if not os.path.exists(path):
-        path = os.path.join(root, AGENT_CONF_DEFAULTS)
-    conf = {}
-    try:
-        with open(path, encoding="utf-8") as fh:
-            for raw in fh:
-                line = raw.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                key, _, value = line.partition("=")
-                conf[key.strip()] = value.strip()
-    except OSError:
-        return {}
-    return conf
+    return agent_settings.conf()
 
 
 def fuel_provider() -> str:
@@ -537,7 +533,7 @@ def fuel_windows(provider: dict) -> list:
     return out
 
 
-def authenticated_providers() -> tuple[list, str | None]:
+def authenticated_providers(env: dict | None = None) -> tuple[list, str | None]:
     """The providers with a working credential, fleet's own first.
 
     WHY ASK AT ALL. `quota-axi --provider a,b,c` will happily go and ask a
@@ -560,7 +556,7 @@ def authenticated_providers() -> tuple[list, str | None]:
     section says so rather than guessing a vendor.
     """
     lead = fuel_provider()
-    doc, why = run_json(["quota-axi", "auth", "--json"], timeout=15)
+    doc, why = run_json(["quota-axi", "auth", "--json"], timeout=15, env=env)
     if why:
         return ([lead] if lead else []), why
     names = []
@@ -583,7 +579,7 @@ def authenticated_providers() -> tuple[list, str | None]:
     return names, None
 
 
-def fuel_read(providers: list):
+def fuel_read(providers: list, env: dict | None = None):
     """ONE quota-axi invocation, however many providers are being measured.
 
     The comma list is quota-axi's own way of asking for several at once, and it
@@ -600,7 +596,7 @@ def fuel_read(providers: list):
     return run_json(
         ["quota-axi", "--provider", ",".join(providers), "--full", "--json",
          "--no-credential-refresh"],
-        timeout=20,
+        timeout=20, env=env,
     )
 
 
@@ -689,7 +685,7 @@ def fuel_record(doc, provider: str, read_at: int) -> dict:
     return sec
 
 
-def probe_fuel(provider: str | None = None) -> dict:
+def probe_fuel(provider: str | None = None, env: dict | None = None) -> dict:
     """ONE provider's remaining windows, per quota-axi. Fleet's own by default.
 
     THE ONLY SOURCE. `thurbox-cli session get --json` carries no token, usage,
@@ -699,9 +695,20 @@ def probe_fuel(provider: str | None = None) -> dict:
     dependency: absent, it costs this section and says so.
 
     IT MEASURES THE ACCOUNT, NOT A SESSION. These are the subscription windows
-    the lead and every worker spend at once, so this is ONE reading per
-    provider and can never say what a given worker burned. Six workers
+    every session on that account spends at once, so this is ONE reading per
+    account and can never say what a given worker burned. Six workers
     dispatched together spend one window set six ways.
+
+    WHICH ACCOUNT IS `env`, AND IT IS A SECOND AXIS. A provider is a vendor;
+    an account is a credential, and quota-axi picks one out of the environment
+    it runs under. So two workers on one provider and two accounts are two
+    calls here under two environments, and `scripts/lib/queue.py`'s `refuel`
+    judges each worker against the reading its OWN account produced. Without
+    it, the gate read whichever account the LEAD happened to be signed in to
+    and every worker on another one was reported `undetermined` — honest, and
+    no autopilot at all. The environment comes from that agent's `ENV` record
+    (`scripts/lib/agent_settings.py`); None means this process's, which is the
+    single-account case and what the screen always does.
 
     THIS IS THE GATE'S ENTRY POINT, and that is why it takes one provider.
     `scripts/lib/queue.py`'s `account_fuel()` calls it to decide whether
@@ -721,13 +728,13 @@ def probe_fuel(provider: str | None = None) -> dict:
         # The operator has named none, so the one to read is whichever they are
         # actually signed in to. Asked rather than guessed: a vendor written
         # here would be this repo answering a question that is theirs.
-        names, why = authenticated_providers()
+        names, why = authenticated_providers(env=env)
         provider = names[0] if names else ""
         if not provider:
             sec = fuel_blank(provider, read_at)
             sec["unavailable"] = why or "no provider has a credential to read"
             return sec
-    doc, why = fuel_read([provider])
+    doc, why = fuel_read([provider], env=env)
     if why:
         sec = fuel_blank(provider, read_at)
         sec["unavailable"] = why

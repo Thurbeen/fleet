@@ -100,3 +100,40 @@ def one_refuel_just_now(task_yaml: Path) -> None:
     doc["refuels"] = doc["refuels"][:1]
     doc["refuels"][0]["at"] = datetime.datetime.now(datetime.UTC).isoformat()
     write(task_yaml, yaml.safe_dump(doc))
+
+
+def teach(isolated_env: Path, *lines: str) -> None:
+    """Add settings lines to the agent conf this test's fleet reads.
+
+    The file `tests/queue/conftest.py` already wrote, appended to — so a test
+    can say one thing about one agent without restating the checkout's own
+    answers, which is exactly the shape an operator's edit has.
+    """
+    conf = isolated_env / "settings" / "orchestration" / "agent.conf"
+    write(conf, conf.read_text(encoding="utf-8") + "".join(line + "\n" for line in lines))
+
+
+# `quota-axi` answering PER ACCOUNT: the document it reads is named after the
+# config directory it was run under, so a reading taken with the wrong
+# environment finds no document and fails the way a missing credential fails.
+# It is the only way to prove the environment reached the tool.
+ACCOUNT_QUOTA = '''
+import os
+import sys
+from pathlib import Path
+
+root = Path(os.environ["FLEET_STUB_ROOT"])
+account = Path(os.environ.get("CLAUDE_CONFIG_DIR", "")).name or "default"
+doc = root / f"quota-{account}.json"
+if not doc.is_file():
+    sys.stderr.write(f"quota-axi: no credentials for the {account} account\\n")
+    raise SystemExit(1)
+sys.stdout.write(doc.read_text(encoding="utf-8"))
+'''
+
+
+def account_quota(stubs: Stubs, account: str, percent: int, resets_at: str,
+                  provider: str = "claude") -> None:
+    """One account's window, keyed by the config directory that selects it."""
+    quota_is(stubs, percent, resets_at, provider)
+    (stubs.root / "quota.json").replace(stubs.root / f"quota-{account}.json")

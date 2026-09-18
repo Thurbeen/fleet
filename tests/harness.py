@@ -14,9 +14,12 @@ what keeps all of that out, held to these guarantees by
   HOME      a throwaway one — and USERPROFILE, APPDATA and LOCALAPPDATA, which
             is where Windows looks instead — with every XDG base inside it.
   env       forge credentials and host overrides, every THURBOX_* variable,
-            the caller's TMUX and TMUX_PANE, and every FLEET_* variable the
-            caller had. FLEET_RECONCILE_PARENT_PID is this test run, so a loop
-            a test starts ends with the run even when no teardown does.
+            the caller's TMUX and TMUX_PANE, every FLEET_* variable the caller
+            had, and every AGENT_HOME variable — the knob an agent moves its
+            config directory with, which on the operator's own machine names
+            the account they are signed in to. FLEET_RECONCILE_PARENT_PID is
+            this test run, so a loop a test starts ends with the run even when
+            no teardown does.
   settings  FLEET_{AUTO_MERGE,PUBLISH,AGENT,GLYPH,NAME}_ROOT and FLEET_VOICE_CONF at
             a copy of the TRACKED *.example.conf only; FLEET_QUEUE_DIR,
             FLEET_RUNS_DIR and FLEET_RECONCILE_DIR at empty directories; and
@@ -48,12 +51,20 @@ REPO = Path(__file__).resolve().parent.parent
 STUBS = REPO / "tests" / "stubs"
 STUB_TOOLS = ("gh", "thurbox-cli", "ssh", "glab", "quota-axi")
 
+# The variable each agent fleet has watched moves its config directory with —
+# `home_env` in `scripts/lib/queue.py`'s AGENT_LIMIT_SIGNALS. On the operator's
+# own machine it names WHICH ACCOUNT they are signed in to, so a test that
+# inherited it would read that account's transcripts and take its quota
+# reading: operator state, and a different verdict per machine.
+AGENT_HOMES = {"CLAUDE_CONFIG_DIR"}
+
 DROPPED = {
     "GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GH_HOST",
     "GH_CONFIG_DIR", "GITLAB_TOKEN", "GITLAB_HOST", "GLAB_CONFIG_DIR", "TMUX", "TMUX_PANE",
     "GIT_CONFIG_COUNT", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_PARAMETERS",
     "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
     "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_NAMESPACE", "GIT_PREFIX",
+    *AGENT_HOMES,
 }
 DROPPED_PREFIXES = ("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_", "FLEET_", "THURBOX_")
 
