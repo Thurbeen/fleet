@@ -33,10 +33,15 @@ THE KEYS, and nothing else is per-agent:
                    rather than to a guess — which is the whole reason a second
                    account was unserviceable.
   ENV              the account: `NAME=VALUE` pairs, comma separated. ONE record
-                   read by both readers that need it — `transcript_root()` for
-                   the directory the records are in, and `probe_fuel()` for the
-                   environment the quota reading runs under — because "which
-                   account" is one answer and two of them would drift.
+                   read by every reader that needs it — `transcript_root()` for
+                   the directory the records are in, `probe_fuel()` for the
+                   environment `refuel`'s quota reading runs under, and
+                   `fuel_accounts()` for the set of accounts `fleet status`
+                   reads its FUEL section from — because "which account" is one
+                   answer and two of them would drift. The screen was the last
+                   reader to be wired up, and until it was it reported the
+                   window of whichever account the LEAD ran as while the
+                   workers spent another.
   TRUST_SIGNATURE  \\
   TRUST_KEYS        |  the four the checkout already held globally, now
   LIMIT_BANNER      |  sayable about one agent.

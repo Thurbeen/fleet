@@ -54,6 +54,18 @@
 -- `--chord <key>` is what the key registry answers for the toggle, so a rebind
 -- can be rendered. `--fuel-read <seconds>` is how long ago the fuel reading
 -- was taken; the default is two minutes, inside the pane's own TTL.
+-- `--fuel-accounts` replaces the one reading with two: the same provider under
+-- two logins, which is what a fleet whose `agent.conf` names a second account
+-- draws.
+-- `--fuel-name-collision` is the fixture that tells `checkout` apart from a
+-- coincidence: the checkout's own account name differs from its provider, and
+-- the named account's agent is called the same as its own vendor — the one
+-- shape where deciding the parentheses by comparing `account` against
+-- `provider` disagrees with deciding it by the `checkout` flag.
+-- `--fuel-checkout-no-credential` is a two-account fleet whose CHECKOUT'S OWN
+-- account has no credential at all — `render_fuel_record` writes no
+-- `provider` line for it, exactly as `fleet_status.fuel_label()` reads it, so
+-- the row is named by the checkout's own agent name and never blank.
 --
 -- Scrolling, applied in this order before anything is printed:
 --   `--long <n>`    adds a topic of n running tasks, a queue longer than a pane
@@ -70,9 +82,27 @@ local SELECTED = {}
 -- `--long-label` adds a third fuel window whose label is as long as the pane
 -- lets a label be, the shape a per-model window takes.
 local LONG_LABEL = false
+-- `--fuel-accounts` is a fleet spending TWO LOGINS of one provider, which is
+-- the reading `fleet status` takes when `agent.conf` carries an `ENV` line:
+-- two records naming the same provider, told apart by `account` alone.
+local FUEL_ACCOUNTS = false
+local FUEL_NAME_COLLISION = false
+local FUEL_MIXED_AVAILABILITY = false
+local FUEL_PARTIAL_PROVIDER = false
+local FUEL_CHECKOUT_NO_CREDENTIAL = false
 for i, a in ipairs(arg) do
   if a == "--long-label" then
     LONG_LABEL = true
+  elseif a == "--fuel-accounts" then
+    FUEL_ACCOUNTS = true
+  elseif a == "--fuel-name-collision" then
+    FUEL_NAME_COLLISION = true
+  elseif a == "--fuel-mixed-availability" then
+    FUEL_MIXED_AVAILABILITY = true
+  elseif a == "--fuel-partial-provider" then
+    FUEL_PARTIAL_PROVIDER = true
+  elseif a == "--fuel-checkout-no-credential" then
+    FUEL_CHECKOUT_NO_CREDENTIAL = true
   elseif a == "--long" then
     LONG = tonumber(arg[i + 1]) or 0
   elseif a == "--height" then
@@ -451,6 +481,134 @@ local FUEL = table.concat({
 }, "\n")
 if LONG_LABEL then
   FUEL = FUEL .. "\nwindow\tmodel_week\t40\t" .. (NOW + 2 * 86400) .. "\tModel week"
+end
+
+-- The same provider read under two accounts: the first is the checkout's own
+-- and the second the login an agent's `ENV` selects. The numbers are far apart
+-- on purpose — a pane that drew one reading twice would still look right.
+if FUEL_ACCOUNTS then
+  FUEL = table.concat({
+    "provider\tclaude",
+    "account\tclaude",
+    "checkout\t1",
+    "remaining\t18",
+    "reserve\t20",
+    "limited_by\tseven_day",
+    "read_at\t" .. (NOW - FUEL_READ),
+    "window\tfive_hour\t62\t" .. (NOW + 3 * 3600 + 600) .. "\tsession",
+    "window\tseven_day\t18\t" .. (NOW + 4 * 86400 + 7200) .. "\tweek",
+    "",
+    "provider\tclaude",
+    "account\tclaude-spare",
+    "checkout\t0",
+    "remaining\t70",
+    "reserve\t20",
+    "limited_by\tfive_hour",
+    "read_at\t" .. (NOW - FUEL_READ),
+    "window\tfive_hour\t70\t" .. (NOW + 2 * 3600) .. "\tsession",
+    "window\tseven_day\t95\t" .. (NOW + 5 * 86400) .. "\tweek",
+  }, "\n")
+end
+
+-- The checkout's own account named `lead`, reading a provider called
+-- `codex` — its own name and its provider disagree, the way an operator's
+-- `AGENT=` line and `FUEL_PROVIDER` commonly do. Beside it, a NAMED account
+-- (`checkout\t0`) whose agent is called the same as its own vendor. Deciding
+-- the parentheses by comparing `account` against `provider` gets BOTH of
+-- these backwards; deciding it by the `checkout` flag gets both right.
+if FUEL_NAME_COLLISION then
+  FUEL = table.concat({
+    "provider\tcodex",
+    "account\tlead",
+    "checkout\t1",
+    "remaining\t40",
+    "reserve\t20",
+    "limited_by\tseven_day",
+    "read_at\t" .. (NOW - FUEL_READ),
+    "window\tseven_day\t40\t" .. (NOW + 4 * 86400) .. "\tweek",
+    "",
+    "provider\tcodex",
+    "account\tcodex",
+    "checkout\t0",
+    "remaining\t85",
+    "reserve\t20",
+    "limited_by\tseven_day",
+    "read_at\t" .. (NOW - FUEL_READ),
+    "window\tseven_day\t85\t" .. (NOW + 4 * 86400) .. "\tweek",
+  }, "\n")
+end
+
+-- One account with a real reading beside one with none at all: the pane's
+-- own `shown` filter used to decide which rows this loop draws, so an
+-- unavailable account's row vanished outright whenever a sibling account had
+-- a reading, rather than drawing as its own labelled `unavailable` line the
+-- way the `--fuel` text this pane parses already does.
+if FUEL_MIXED_AVAILABILITY then
+  FUEL = table.concat({
+    "provider\tclaude",
+    "account\tclaude",
+    "checkout\t1",
+    "remaining\t64",
+    "reserve\t20",
+    "limited_by\tseven_day",
+    "read_at\t" .. (NOW - FUEL_READ),
+    "window\tseven_day\t64\t" .. (NOW + 4 * 86400) .. "\tweek",
+    "",
+    "provider\tclaude",
+    "account\tclaude-spare",
+    "checkout\t0",
+    "unavailable\tquota-axi named no claude credential for this account",
+    "reserve\t20",
+    "read_at\t" .. (NOW - FUEL_READ),
+  }, "\n")
+end
+
+-- ONE account, two providers, one of them failing: FLEET.md still documents
+-- this case as dropped rather than drawn bar-less, so it must stay that way
+-- even now that a DIFFERENT account's failure draws its own row above.
+if FUEL_PARTIAL_PROVIDER then
+  FUEL = table.concat({
+    "provider\tclaude",
+    "account\tclaude",
+    "checkout\t1",
+    "remaining\t64",
+    "reserve\t20",
+    "limited_by\tseven_day",
+    "read_at\t" .. (NOW - FUEL_READ),
+    "window\tseven_day\t64\t" .. (NOW + 4 * 86400) .. "\tweek",
+    "",
+    "provider\tcodex",
+    "account\tclaude",
+    "checkout\t1",
+    "unavailable\tauth_required; Codex sign-in required",
+    "reserve\t20",
+    "read_at\t" .. (NOW - FUEL_READ),
+  }, "\n")
+end
+
+-- The checkout's own account (`checkout\t1`) with no `provider` line at all —
+-- what `render_fuel_record` writes when `quota-axi auth` names no credential
+-- under this environment and the checkout's own agent guessed no vendor
+-- either. `fuel_name` has no provider to fall back on and must still name
+-- the row, by the account (the checkout's own agent name) rather than a
+-- blank string in front of `unavailable`.
+if FUEL_CHECKOUT_NO_CREDENTIAL then
+  FUEL = table.concat({
+    "account\tclaude",
+    "checkout\t1",
+    "unavailable\tno provider has a credential to read",
+    "reserve\t20",
+    "read_at\t" .. (NOW - FUEL_READ),
+    "",
+    "provider\tclaude",
+    "account\tclaude-spare",
+    "checkout\t0",
+    "remaining\t70",
+    "reserve\t20",
+    "limited_by\tseven_day",
+    "read_at\t" .. (NOW - FUEL_READ),
+    "window\tseven_day\t70\t" .. (NOW + 4 * 86400) .. "\tweek",
+  }, "\n")
 end
 
 local LEAD = { id = "s1", name = "⌖ Mission Control", cwd = "/home/operator/fleet", status = "ok" }

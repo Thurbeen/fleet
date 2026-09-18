@@ -654,6 +654,18 @@ end
 --- credential anywhere — arrives as a single record with `unavailable` and no
 --- provider, which is what a failed single-provider reading always looked like.
 ---
+--- `account` is the OTHER half of that identity, and it arrives only when the
+--- fleet has more than one: an account is a provider plus the login that
+--- selects it, so two records reading `claude` under two logins are told apart
+--- by nothing else. A fleet with one account sends no `account` field at all
+--- and this draws exactly what it drew before there was a second.
+---
+--- `checkout` says which record is the checkout's OWN reading — `1` for it,
+--- `0` for a named account — and travels beside `account` for the same reason:
+--- a named account can be called the same as its own vendor, so comparing
+--- `account` against `provider` to guess "is this the checkout's own" reads a
+--- coincidence as a fact. `fuel_name` below reads this flag instead.
+---
 --- `window` is the one field that repeats: one line per window, as
 --- `id<TAB>percent<TAB>reset epoch<TAB>label`, already in the order to draw.
 local function build_fuel(stdout)
@@ -663,6 +675,8 @@ local function build_fuel(stdout)
     if fields then
       out[#out + 1] = {
         provider = fields.provider,
+        account = fields.account,
+        checkout = fields.checkout,
         unavailable = fields.unavailable,
         remaining = tonumber(fields.remaining),
         reserve = tonumber(fields.reserve),
@@ -1817,13 +1831,48 @@ local function bar_spans(fuel, cells)
   return spans
 end
 
+--- How one reading names itself: the provider, and whose account when the
+--- record carries one. `fleet status` phrases its own blocks the same way, so
+--- the screen and the column name one account one way.
+---
+--- `checkout` DECIDES THE PARENTHESES, never a comparison between `account`
+--- and `provider`: a named account whose agent happens to share its vendor's
+--- name (or, before `fleet_status.fuel_accounts()` stopped revisiting the
+--- checkout's own agent, the checkout's own name) would satisfy that
+--- comparison too and lose the one thing telling its bar apart from the
+--- checkout's own.
+---
+--- THE CHECKOUT'S OWN AGENT NAME IS THE FALLBACK LABEL, never a bare blank —
+--- `fleet_status.fuel_label()` documents the same fallback for a checkout
+--- account with no provider at all, and the two must name that one account
+--- the same word rather than the screen naming it and the pane drawing it
+--- with nothing in front of `unavailable`.
+local function fuel_name(rec)
+  local provider = rec.provider or ""
+  if rec.account == nil or rec.checkout == "1" then
+    if provider ~= "" then
+      return provider
+    end
+    return rec.account or "?"
+  end
+  local account = rec.account or ""
+  local named_provider = provider ~= "" and provider or "?"
+  if account ~= "" then
+    return named_provider .. " (" .. account .. ")"
+  end
+  return named_provider
+end
+
 --- The fuel block: every window of every subscription, above everything
 --- competing for it.
 ---
---- ONE NAME ROW PER PROVIDER THAT HAS A NUMBER, then ONE ROW PER WINDOW with
+--- ONE NAME ROW PER READING THAT HAS A NUMBER, then ONE ROW PER WINDOW with
 --- its label, a bar, its percentage and when it resets. The name is not
 --- decoration: three subscriptions drawn without one are three numbers that
---- read as one reading with two mistakes in it.
+--- read as one reading with two mistakes in it. A reading that carries an
+--- `account` is named `provider (account)`, because on a fleet with two logins
+--- of one vendor the provider alone is the ambiguity the name row exists to
+--- remove.
 ---
 --- EVERY WINDOW, ALWAYS, IN THE RECORD'S ORDER. Drawing only the binding one
 --- made the row change meaning whenever two windows' percentages crossed.
@@ -1831,16 +1880,22 @@ end
 --- rows never move. A record from an older `fleet status` carries no
 --- windows, and draws its binding reading as the one row it had.
 ---
---- A PROVIDER THAT COULD NOT BE READ IS NOT DRAWN. It has no bar to draw and
---- no number to compare, and a standing `unavailable` row for a provider the
---- operator is not spending is a row the queue below could have used. What it
---- could not say is still said in full by `uv run fleet status`, which
---- prints every provider with the reason its fetch failed.
+--- A PROVIDER THAT COULD NOT BE READ IS NOT DRAWN BESIDE A SIBLING UNDER ITS
+--- OWN ACCOUNT THAT WAS. It has no bar to draw and no number to compare, and a
+--- standing `unavailable` row for a provider whose own account already has a
+--- reading on screen is a row the queue below could have used. What it could
+--- not say is still said in full by `uv run fleet status`, which prints every
+--- provider with the reason its fetch failed.
 ---
---- UNLESS NOTHING READ AT ALL. Then the head row itself says `unavailable`
---- with the reason under it, because a fuel block that quietly disappeared
---- would read as "nothing to report" when it means "nobody could tell" — and
---- that is the one failure this pane must not commit silently.
+--- AN ACCOUNT WITH NOTHING READ AT ALL DRAWS ITS OWN ROW INSTEAD, one per
+--- account rather than one for the whole block — a fleet spending two
+--- accounts with only one of them readable still shows the other's reading
+--- beside it. `shown_accounts` below is what decides which rule a failed
+--- record follows: dropped when its own account is already shown by a
+--- sibling, drawn with `unavailable` and the reason under it when it is not,
+--- because a fuel block that quietly disappeared would read as "nothing to
+--- report" when it means "nobody could tell" — and that is the one failure
+--- this pane must not commit silently.
 ---
 --- WHAT A NARROW COLUMN DROPS, and this column is routinely thirty cells wide.
 --- The bar first — under FUEL_BAR_MIN cells it is a decoration and the number
@@ -1851,6 +1906,7 @@ end
 --- TWO READINGS ARE NOT BARS. No record yet is the spinner, and a stale
 --- reading is hatched and flagged, so a remembered number never looks like a
 --- freshly measured one.
+
 local function fuel_rows(fuel, width, spinner)
   -- Measured, never counted: the glyph is two columns and not one, and every
   -- budget below is taken from what it leaves. Clamped to `width` itself,
@@ -1898,6 +1954,15 @@ local function fuel_rows(fuel, width, spinner)
     end
   end
 
+  -- Which ACCOUNTS already have a row, so a failed record knows whether it
+  -- is the account's only news or a provider going quiet beside a sibling
+  -- that still reads: the latter stays dropped, exactly as it always was
+  -- inside one account's own multi-provider reading.
+  local shown_accounts = {}
+  for _, rec in ipairs(shown) do
+    shown_accounts[rec.account or ""] = true
+  end
+
   -- THE AGE BELONGS TO THE BLOCK, not to a provider: it is one probe, and
   -- every record in it was read at the same instant. It is in the warning
   -- colour because it is only ever drawn when the reading is overdue.
@@ -1913,8 +1978,8 @@ local function fuel_rows(fuel, width, spinner)
     -- so this is the one whose failure matters most to what runs below.
     local first = fuel[1]
     local why = first.unavailable or "no reading"
-    if (first.provider or "") ~= "" then
-      why = first.provider .. " — " .. why
+    if fuel_name(first) ~= "" then
+      why = fuel_name(first) .. " — " .. why
     end
     return { line(head:spans_list()), detail(why) }
   end
@@ -1956,54 +2021,74 @@ local function fuel_rows(fuel, width, spinner)
   label_width = math.min(label_width, FUEL_LABEL_MAX, math.max(1, width - fixed),
     math.max(FUEL_LABEL_MIN, width - fixed - FUEL_RESET - 2))
 
-  for _, rec in ipairs(shown) do
-    local name = ui.row({ width = width })
-    name:add(" " .. widgets.truncate(rec.provider or "", math.max(1, width - 1)), { fg = theme.muted })
-    -- quota-axi's own word for its reading, passed through rather than
-    -- interpreted: it means the numbers are remembered, not just observed.
-    -- Dropped rather than overflowed; the hatched bars say the same thing.
-    if rec.stale then
-      flush_right(name, "stale", { fg = theme.warn })
-    end
-    rows[#rows + 1] = line(name:spans_list())
+  for _, rec in ipairs(fuel) do
+    if rec.remaining and not rec.unavailable then
+      local name = ui.row({ width = width })
+      name:add(" " .. widgets.truncate(fuel_name(rec), math.max(1, width - 1)), { fg = theme.muted })
+      -- quota-axi's own word for its reading, passed through rather than
+      -- interpreted: it means the numbers are remembered, not just observed.
+      -- Dropped rather than overflowed; the hatched bars say the same thing.
+      if rec.stale then
+        flush_right(name, "stale", { fg = theme.warn })
+      end
+      rows[#rows + 1] = line(name:spans_list())
 
-    for _, w in ipairs(windows_of(rec)) do
-      -- The reserve and the staleness are the provider's, the number the
-      -- window's: this is what the bar and the colour are computed against.
-      local reading = { remaining = w.remaining, reserve = rec.reserve, stale = rec.stale }
-      local binds = w.id ~= "" and w.id == rec.limited_by
-      local row = ui.row({ width = width })
-      row:add("  ")
-      row:add(widgets.pad(widgets.truncate(w.label, label_width), label_width),
-        binds and { fg = theme.accent, bold = true } or { fg = theme.muted })
-      row:add(" ")
-      local number = w.remaining .. "%"
-      number = string.rep(" ", math.max(0, FUEL_NUMBER - widgets.len(number))) .. number
-      local room = width - row.used - widgets.len(number) - low_width
-      -- The reset column is kept even for a window with none, so every bar
-      -- in the block ends in the same column; it goes only when the number
-      -- itself would not fit beside it.
-      local countdown = reset_in(w.resets_epoch)
-      local reset = room >= FUEL_RESET + 2 and (countdown and (FUEL_RESET_WORD .. countdown) or "") or nil
-      if reset then
-        room = room - FUEL_RESET - 2
-      end
-      local cells = room - 1
-      if cells >= FUEL_BAR_MIN then
-        for _, span in ipairs(bar_spans(reading, cells)) do
-          row:add(span.text, span.style)
-        end
+      for _, w in ipairs(windows_of(rec)) do
+        -- The reserve and the staleness are the provider's, the number the
+        -- window's: this is what the bar and the colour are computed against.
+        local reading = { remaining = w.remaining, reserve = rec.reserve, stale = rec.stale }
+        local binds = w.id ~= "" and w.id == rec.limited_by
+        local row = ui.row({ width = width })
+        row:add("  ")
+        row:add(widgets.pad(widgets.truncate(w.label, label_width), label_width),
+          binds and { fg = theme.accent, bold = true } or { fg = theme.muted })
         row:add(" ")
+        local number = w.remaining .. "%"
+        number = string.rep(" ", math.max(0, FUEL_NUMBER - widgets.len(number))) .. number
+        local room = width - row.used - widgets.len(number) - low_width
+        -- The reset column is kept even for a window with none, so every bar
+        -- in the block ends in the same column; it goes only when the number
+        -- itself would not fit beside it.
+        local countdown = reset_in(w.resets_epoch)
+        local reset = room >= FUEL_RESET + 2 and (countdown and (FUEL_RESET_WORD .. countdown) or "") or nil
+        if reset then
+          room = room - FUEL_RESET - 2
+        end
+        local cells = room - 1
+        if cells >= FUEL_BAR_MIN then
+          for _, span in ipairs(bar_spans(reading, cells)) do
+            row:add(span.text, span.style)
+          end
+          row:add(" ")
+        end
+        row:add(number, { fg = fuel_tone(reading), bold = true })
+        if any_low then
+          local low = is_low(reading)
+          row:add(low and FUEL_LOW or string.rep(" ", low_width), low and { fg = theme.bad, bold = true } or nil)
+        end
+        if reset and reset ~= "" then
+          row:add("  " .. reset, { fg = theme.muted })
+        end
+        rows[#rows + 1] = line(row:spans_list())
       end
-      row:add(number, { fg = fuel_tone(reading), bold = true })
-      if any_low then
-        local low = is_low(reading)
-        row:add(low and FUEL_LOW or string.rep(" ", low_width), low and { fg = theme.bad, bold = true } or nil)
-      end
-      if reset and reset ~= "" then
-        row:add("  " .. reset, { fg = theme.muted })
-      end
-      rows[#rows + 1] = line(row:spans_list())
+    elseif not shown_accounts[rec.account or ""] then
+      -- A NAMED ACCOUNT WITH NOTHING TO READ STILL DRAWS A ROW, its own bar
+      -- replaced by its reason: `shown` above exists to size the bar layout
+      -- against the accounts that HAVE one, never to decide which ACCOUNTS
+      -- appear at all. Filtering this loop the same way `shown` was built
+      -- used to drop an unavailable account's row outright whenever a
+      -- sibling account had a real reading — invisible rather than an
+      -- `unavailable` line, exactly the silent loss naming an account
+      -- exists to end, just reached through the pane instead of the
+      -- `--fuel` text it parses. A PROVIDER failing beside a sibling THAT
+      -- SHARES ITS OWN ACCOUNT is a different fact and stays dropped below
+      -- — FLEET.md still documents that one as left out rather than drawn
+      -- bar-less, and `shown_accounts` is what tells the two apart.
+      local name = ui.row({ width = width })
+      name:add(" " .. widgets.truncate(fuel_name(rec), math.max(1, width - 1)), { fg = theme.muted })
+      flush_right(name, "unavailable", { fg = theme.warn })
+      rows[#rows + 1] = line(name:spans_list())
+      rows[#rows + 1] = detail(rec.unavailable or "no reading")
     end
   end
   return rows

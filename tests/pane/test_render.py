@@ -226,6 +226,90 @@ def test_a_long_label_gives_way_before_the_reset(tmp_path):
     assert widest <= 30, f"a row is {widest} columns wide with a long label\n{out}"
 
 
+def test_two_accounts_of_one_provider_get_two_labelled_bars(tmp_path):
+    """A fleet whose `agent.conf` names a second login spends two windows of one
+    vendor, and `fleet status --fuel` sends two records naming the same
+    provider. Drawn without the account they are one reading with a mistake in
+    it: two name rows that both read `claude`, four window rows under them, and
+    no way to tell which 70% belongs to the account the workers run on."""
+    for width in ("44", "30"):
+        out = render(width, "--fuel-accounts")
+        expect(out, "claude (claude-spare)")
+        # The checkout's own account keeps the bare provider — there is nothing
+        # to disambiguate it from until a second account exists, and `refuel`
+        # names one account the same way.
+        assert out.splitlines()[1].strip() == "claude", out
+        # Each account keeps its own binding window and its own verdict: the
+        # first is under the reserve and the second is not.
+        rows = [line for line in out.splitlines() if " week " in line]
+        assert len(rows) == 2, out
+        assert "low" in rows[0] and "low" not in rows[1], out
+        widest = max(cells(line) for line in out.splitlines())
+        assert widest <= int(width), f"a row is {widest} columns wide at {width}\n{out}"
+
+
+def test_the_checkout_flag_decides_the_parentheses_not_a_name_coincidence():
+    """Two records where comparing `account` against `provider` gets the
+    parentheses backwards: the checkout's own account (`checkout\\t1`) is
+    named `lead` while its provider is `codex` — an operator's `AGENT=` and
+    `FUEL_PROVIDER` commonly disagree like this — and a NAMED account
+    (`checkout\\t0`) is called `codex`, the same as its own vendor. A pane
+    that decided by name equality would print `codex (lead)` for the
+    checkout's own bar and a bare `codex` for the named one — exactly
+    backwards from what `fleet status`'s own labelling prints for the same
+    two records."""
+    for width in ("44", "30"):
+        out = render(width, "--fuel-name-collision")
+        refute(out, "codex (lead)")
+        expect(out, "codex (codex)")
+        widest = max(cells(line) for line in out.splitlines())
+        assert widest <= int(width), f"a row is {widest} columns wide at {width}\n{out}"
+
+
+def test_an_unavailable_account_still_draws_its_own_row_beside_a_reading_one():
+    """The row loop used to filter itself down to the same `shown` set the bar
+    layout is sized against — records with a `remaining` and no `unavailable`
+    — so an account with neither simply never appeared: not a blank line, no
+    row at all, invisible beside a sibling account's bar. The `--fuel` text
+    this pane parses already names such an account `unavailable`; the pane
+    has to say the same thing, not fewer accounts than it read."""
+    for width in ("44", "30"):
+        out = render(width, "--fuel-mixed-availability")
+        # The `unavailable` word itself is a flush-right note, dropped under
+        # the same "fewer than four columns left, so drop it" rule `stale`
+        # already follows — the reason line beneath it is what proves the
+        # account's row survived at every width, narrow ones included.
+        expect(out, "claude", "64", "claude (claude-spare)", "quota-axi named no claude")
+        widest = max(cells(line) for line in out.splitlines())
+        assert widest <= int(width), f"a row is {widest} columns wide at {width}\n{out}"
+
+
+def test_a_failed_provider_beside_its_own_accounts_reading_still_stays_dropped():
+    """FLEET.md still documents this exact case — one account, one provider
+    reading fine and a second failing — as the pane leaving the failed one
+    out entirely, never drawing it bar-less. Making a whole ACCOUNT with
+    nothing to read visible must not also surface a PROVIDER going quiet
+    beside a sibling that shares its own account's reading."""
+    for width in ("44", "30"):
+        out = render(width, "--fuel-partial-provider")
+        expect(out, "claude", "64")
+        refute(out, "auth_required", "Codex sign-in required", "codex")
+
+
+def test_the_checkouts_own_account_with_no_credential_is_named_by_its_agent_not_left_blank():
+    """`fuel_label` (`fleet_status.py`) makes the checkout's own agent name the
+    fallback label when there is no provider at all, never a bare blank in
+    front of `unavailable`. `fuel_name` has to fall back the same way, since
+    the screen and the pane must name that one account the same word."""
+    for width in ("44", "30"):
+        out = render(width, "--fuel-checkout-no-credential")
+        expect(out, "claude (claude-spare)", "70")
+        row = row_with("unavailable", out)
+        assert row.strip().startswith("claude"), (
+            f"the checkout's own unavailable row has no name at width {width}:\n{row!r}"
+        )
+
+
 def test_an_overdue_reading_says_how_old_it_is():
     """A reading older than the TTL means the refresh is not happening, and then
     its age is the most important thing on the row, said in words."""
