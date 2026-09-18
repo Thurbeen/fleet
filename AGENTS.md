@@ -32,6 +32,21 @@ names every path and the reason for each.
   owns its usage and its rationale. uv brings Python and PyYAML from `uv.lock`,
   so there is no system `python3` or PyYAML to install, and no bash to run.
   `tests/test_cli.py` holds the command, and `fleet check cli` runs it.
+- `scripts/lib/agent_settings.py` — the AGENT seam, and the one reader of
+  `orchestration/agent.conf`. Everything fleet knows about an agent — its trust
+  dialog, its limit signal, where its transcripts are, which account it draws
+  on — is a fact about that agent, so every one of those is sayable about ONE:
+  put the agent in front of the key (`<agent>.LIMIT_BANNER=`), the way
+  `AGENT_PROVIDERS` already puts it in front of a provider. Two keys are new:
+  `<agent>.LIKE=` says this agent IS that one under another account, which is
+  what hands it the built-in row of an agent fleet has WATCHED rather than a
+  guessed one; `<agent>.ENV=` is that account, as the environment variables
+  that select it, and it is ONE record read by both things that need it — the
+  directory an agent's transcripts are in, and the environment `quota-axi` is
+  run under to read that account's window. **Resolution is the agent's own
+  line, then its `LIKE`'s, then the checkout-wide setting**, so a checkout with
+  no dotted line behaves exactly as it did and the tracked example still names
+  nothing. The module's docstring owns the rest.
 - `scripts/lib/fleet_platform.py` — the PLATFORM seam: every place fleet
   behaves differently on POSIX and native Windows (thurbox's config directory,
   fleet's data directory, how a record reaches the disk, a lock, a detached

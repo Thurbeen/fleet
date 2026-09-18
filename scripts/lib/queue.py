@@ -255,6 +255,13 @@ forge = _load_sibling("fleet_forge", "forge.py")
 # module, and nothing here reads `os.name`.
 fleet_platform = _load_sibling("fleet_platform", "fleet_platform.py")
 
+# WHICH AGENT. Everything fleet knows about one agent — its trust dialog, its
+# limit signal, where its transcripts are, which account it draws on — is a
+# fact about that agent and not about this checkout. This module owns
+# `orchestration/agent.conf` and the rule that resolves a setting for one
+# agent; nothing here parses that file itself.
+agent_settings = _load_sibling("fleet_agent_settings", "agent_settings.py")
+
 # The four conditions that justify making one task wait for another. They are
 # firstmate's, and they are a closed set on purpose: "these edit the same file"
 # is not among them and cannot be spelled here.
@@ -727,25 +734,20 @@ def conf_path(name: str, defaults: str, root: str) -> str:
 
 
 def read_kv_conf(path: str) -> dict[str, str]:
-    """`KEY=value` lines, as data. An unreadable file is no settings at all."""
-    conf: dict[str, str] = {}
-    try:
-        with open(path, encoding="utf-8") as fh:
-            for raw in fh:
-                line = raw.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                key, _, value = line.partition("=")
-                conf[key.strip()] = value.strip()
-    except OSError:
-        return {}
-    return conf
+    """`KEY=value` lines, as data. An unreadable file is no settings at all.
+
+    ONE GRAMMAR for every one of these files, which is why the parse itself is
+    `agent_settings.read_conf` — that module reads `agent.conf` before this one
+    is called, and a second implementation of the same five lines is how the
+    two would come to disagree about a comment or a blank value.
+    """
+    return agent_settings.read_conf(path)
 
 
 PUBLISH_CONF = "orchestration/publish.conf"
 PUBLISH_CONF_DEFAULTS = "orchestration/publish.example.conf"
-AGENT_CONF = "orchestration/agent.conf"
-AGENT_CONF_DEFAULTS = "orchestration/agent.example.conf"
+AGENT_CONF = agent_settings.AGENT_CONF
+AGENT_CONF_DEFAULTS = agent_settings.AGENT_CONF_DEFAULTS
 
 
 def publish_conf(root: str | None = None) -> dict[str, str]:
@@ -755,9 +757,12 @@ def publish_conf(root: str | None = None) -> dict[str, str]:
 
 
 def agent_conf(root: str | None = None) -> dict[str, str]:
-    """The agent settings in force. `FLEET_AGENT_ROOT` relocates them."""
-    root = root or os.environ.get("FLEET_AGENT_ROOT") or checkout_root()
-    return read_kv_conf(conf_path(AGENT_CONF, AGENT_CONF_DEFAULTS, root))
+    """The agent settings in force. `FLEET_AGENT_ROOT` relocates them.
+
+    The dotted `<agent>.KEY` lines come back with everything else; reading one
+    OUT of this dict is `agent_settings`' job and never a `.get()` here.
+    """
+    return agent_settings.conf(root)
 
 
 def configured_agent() -> str | None:
@@ -4832,12 +4837,20 @@ def limit_signal(agent: str | None) -> dict:
 
     `LIMIT_BANNER` and `TRANSCRIPT_DIR` in `orchestration/agent.conf` teach
     fleet an agent it has never watched, without a code change and without
-    fleet claiming to know a sentence nobody observed.
+    fleet claiming to know a sentence nobody observed. Either can be said
+    ABOUT ONE AGENT (`<agent>.LIMIT_BANNER=`), and that outranks the
+    checkout-wide line, which keeps the position it has always had: ahead of
+    the table below, because a sentence the operator watched beats one this
+    repo wrote down.
+
+    A second account of a watched agent has no row of its own and gets the
+    watched one through `<agent>.LIKE=`, which is the whole point: fleet
+    invents nothing here.
     """
-    sig = dict(AGENT_LIMIT_SIGNALS.get((agent or "").strip(), {}))
     conf = agent_conf()
-    banner = conf.get("LIMIT_BANNER", "").strip()
-    tdir = conf.get("TRANSCRIPT_DIR", "").strip()
+    sig = dict(agent_settings.row(AGENT_LIMIT_SIGNALS, agent, conf) or {})
+    banner = agent_settings.value("LIMIT_BANNER", agent, conf)
+    tdir = agent_settings.value("TRANSCRIPT_DIR", agent, conf)
     if banner:
         sig["banner"] = banner
     if tdir:
@@ -4874,17 +4887,22 @@ TRANSCRIPT_TAIL_BYTES = 512 * 1024
 # not.
 QUOTA_CMD = "quota-axi"
 
-# The provider that gauge reads, and so the only agent whose account this can
-# speak for. A task running something else is not refused — its account window
-# is undetermined, and undetermined restarts nothing.
+# The provider that gauge reads, and so the agent whose account it speaks for.
+# A task whose account cannot be worked out is not refused — its window is
+# undetermined, and undetermined restarts nothing.
 #
 # NO NAME IS WRITTEN HERE. A literal would gate every operator's fleet on one
 # operator's vendor, and reading the WRONG provider is worse than reading none:
 # a spent window somewhere the fleet never dispatches would strand a worker at
 # its limit. `FUEL_PROVIDER` in `orchestration/agent.conf` sets it outright;
-# with that empty this reads the provider off the tasks in hand, and answers
-# None when they do not agree — which reaches every caller as `undetermined`,
-# which restarts nothing.
+# with that empty this reads the provider off the task in hand.
+#
+# A PROVIDER IS NOT AN ACCOUNT, and this is the distinction the per-agent
+# settings put in. Two workers on the same provider and different accounts
+# have different windows, so a reading is keyed by BOTH: the provider names
+# the vendor, and the agent's `ENV` record names which of that vendor's
+# accounts quota-axi is to read. One pass can hold several, and each task is
+# judged against its own rather than against one reading for the whole sweep.
 
 
 def agent_providers() -> dict[str, str]:
@@ -4905,31 +4923,33 @@ def agent_providers() -> dict[str, str]:
     return out
 
 
-def fuel_agent(tasks=()) -> str | None:
-    """The provider `refuel` may speak for on this pass, or None to not guess.
+def task_agent(task) -> str:
+    """The agent a task runs, or the one every spawn names when it named none."""
+    return (task.doc.get("agent") or "").strip() or (configured_agent() or "")
 
-    `FUEL_PROVIDER` pins one outright. Otherwise the agent in hand is mapped
-    through `AGENT_PROVIDERS` and, failing that, used as its own provider name.
-    Tasks that do not agree on one agent answer None, which reaches the caller
-    as `undetermined` and restarts nothing.
+
+def fuel_agent(agent: str | None = None) -> str | None:
+    """The provider this agent draws on, or None to not guess.
+
+    `FUEL_PROVIDER` pins one outright. Otherwise `AGENT_PROVIDERS` is asked —
+    for the agent, then for whatever it is `LIKE`, since a second account of an
+    agent draws on that agent's provider — and failing that the agent is used
+    as its own provider name, which is the identity quota-axi's naming makes
+    right most of the time.
     """
-    pinned = agent_conf().get("FUEL_PROVIDER", "").strip()
+    conf = agent_conf()
+    pinned = conf.get("FUEL_PROVIDER", "").strip()
     if pinned:
         return pinned
-    agents = {(t.doc.get("agent") or "").strip() for t in tasks}
-    agents.discard("")
-    if not agents:
-        agent = configured_agent()
-    elif len(agents) == 1:
-        agent = agents.pop()
-    else:
-        return None
-    if not agent:
-        return None
-    return agent_providers().get(agent, agent)
+    named = agent_providers()
+    chain = agent_settings.chain(agent, conf)
+    for name in chain:
+        if name in named:
+            return named[name]
+    return chain[-1] if chain else None
 
 
-def provider_is_known(provider: str) -> tuple[bool, str]:
+def provider_is_known(provider: str, env: dict | None = None) -> tuple[bool, str]:
     """Does quota-axi hold a credential for this provider?
 
     Asked rather than assumed, because quota-axi supports many providers and a
@@ -4938,7 +4958,7 @@ def provider_is_known(provider: str) -> tuple[bool, str]:
     worse than reading none.
     """
     try:
-        names, why = fuel_gauge().authenticated_providers()
+        names, why = fuel_gauge().authenticated_providers(env=env)
     except (OSError, ImportError, AttributeError, SyntaxError) as exc:
         return True, f"the provider list could not be read ({exc})"
     if why:
@@ -4961,17 +4981,22 @@ def fuel_gauge():
     return module
 
 
-def account_fuel(provider: str) -> tuple[str, str]:
-    """('fuel' | 'spent' | 'unknown', detail) for the account every session spends.
+def account_fuel(provider: str, env: dict | None = None) -> tuple[str, str]:
+    """('fuel' | 'spent' | 'unknown', detail) for ONE account's window.
 
-    `effectivePercentRemaining` is the subscription window the lead and every
-    worker draw on at once — six workers dispatched together spend one window
-    six ways — so this is ONE reading for the whole pass and never a per-session
-    one. There is no per-session number anywhere: `session get --json` carries
-    no token, usage, cost or limit field at all.
+    `effectivePercentRemaining` is a subscription window that every session
+    drawing on that account spends at once — six workers dispatched together
+    spend one window six ways — so this is ONE reading per ACCOUNT and never a
+    per-session one. There is no per-session number anywhere: `session get
+    --json` carries no token, usage, cost or limit field at all.
+
+    `env` is the agent's own `ENV` record, and it is what makes this a reading
+    of an account rather than of a vendor: quota-axi picks its credentials out
+    of the environment it runs under, so two accounts of one provider are two
+    calls under two environments.
     """
     try:
-        sec = fuel_gauge().probe_fuel(provider)
+        sec = fuel_gauge().probe_fuel(provider, env=env)
     except (OSError, ImportError, AttributeError, SyntaxError) as exc:
         return "unknown", f"the fuel gauge could not be loaded: {exc}"
     if sec.get("unavailable"):
@@ -4995,13 +5020,23 @@ def transcript_root(agent: str | None = None) -> str:
     Each agent's own env knob is read rather than a home being assumed, and an
     agent with no entry and no `TRANSCRIPT_DIR` returns "" so every caller
     degrades to `undetermined` instead of globbing somebody else's directory.
+
+    IT READS THE AGENT'S ENVIRONMENT, NEVER THIS PROCESS'S. `home_env` names
+    the variable the agent moves its home with, and the value comes from that
+    agent's own `ENV` record. It used to come from `os.environ`, which is the
+    LEAD's — a Mission Control session on the operator's main account,
+    answering a question about a worker on a different one. The answer was the
+    lead's own directory every time, so a worker on a second account had no
+    transcript fleet would ever read and half of `refuel`'s detection was
+    silently dead.
     """
     sig = limit_signal(agent)
     home = sig.get("home")
     if not home:
         return ""
     env = sig.get("home_env")
-    home = (env and os.environ.get(env)) or os.path.expanduser(home)
+    account = agent_settings.account_env(agent, agent_conf())
+    home = (env and account.get(env)) or os.path.expanduser(home)
     return os.path.join(home, sig["transcript"]) if sig.get("transcript") else home
 
 
@@ -5199,6 +5234,73 @@ def record_time(stamp) -> float:
         return 0.0
 
 
+# --- the accounts one pass reads ---------------------------------------------
+#
+# ONE READING PER ACCOUNT, and an account is a provider plus the environment
+# quota-axi is asked under. A pass used to take one provider for every task it
+# held and report `undetermined` for the rest; two workers on one vendor and
+# two logins were then one window read twice under the same credentials, which
+# is one window read once and attributed to both.
+
+
+class Account:
+    """One window, read once, and the tasks judged against it."""
+
+    def __init__(self, label: str, provider: str, env: dict | None):
+        self.label, self.provider, self.env = label, provider, env
+        self.verdict, self.detail = "unknown", "not read"
+
+    def read(self) -> "Account":
+        known, why = provider_is_known(self.provider, env=self.env)
+        self.verdict, self.detail = ("unknown", why) if not known else account_fuel(
+            self.provider, env=self.env
+        )
+        return self
+
+
+def account_key(task) -> tuple | None:
+    """What identifies the window this task spends, or None when fleet cannot tell.
+
+    The provider AND the account: a pass may hold two agents that are the same
+    vendor under different logins, and their windows are not each other's.
+    Tasks whose agents resolve to the same pair share one reading.
+    """
+    agent = task_agent(task)
+    provider = fuel_agent(agent)
+    if not provider:
+        return None
+    env = agent_settings.account_env(agent, agent_conf())
+    return (provider, tuple(sorted(env.items())))
+
+
+def account_label(tasks, provider: str, env: dict) -> str:
+    """How the account line names itself: the provider, and whose account when
+    more than one agent's is being read, since the provider alone is ambiguous then."""
+    who = sorted({task_agent(t) for t in tasks if task_agent(t)})
+    return f"{provider} ({', '.join(who)})" if env and who else provider
+
+
+def read_accounts(tasks) -> dict:
+    """Every distinct account this pass touches, read once each, in task order.
+
+    `None` keys nothing: a task whose provider cannot be worked out has no
+    window, says so in its own line, and never borrows another task's.
+    """
+    grouped: dict = {}
+    for task in tasks:
+        key = account_key(task)
+        if key is not None:
+            grouped.setdefault(key, []).append(task)
+    accounts = {}
+    for key, held in grouped.items():
+        provider, pairs = key
+        env = dict(pairs)
+        accounts[key] = Account(
+            account_label(held, provider, env), provider, {**os.environ, **env} if env else None
+        ).read()
+    return accounts
+
+
 def refuel(q: Queue, ref: str | None = None, dry: bool = False) -> int:
     """Restart the workers that ran dry — and only once the account can pay.
 
@@ -5213,42 +5315,28 @@ def refuel(q: Queue, ref: str | None = None, dry: bool = False) -> int:
         f"refuel: {len(holders)} recorded session(s); the cap is {REFUEL_CAP} "
         "restart(s) per task"
     )
-    provider = fuel_agent(holders)
-    if provider is None:
-        print(
-            "    account ?          undetermined  no provider to read: "
-            f"{AGENT_CONF} names none and these\n"
-            "      tasks do not agree on one agent. Undetermined restarts "
-            "nothing — name a\n"
-            f"      FUEL_PROVIDER there (see {AGENT_CONF_DEFAULTS}) to gate on "
-            "one window."
-        )
-        verdict, detail = "unknown", "no provider named"
-    else:
-        known, why = provider_is_known(provider)
-        if not known:
-            verdict, detail = "unknown", why
-        else:
-            verdict, detail = account_fuel(provider)
-        print(f"    account {provider:<10} "
-              f"{'undetermined' if verdict == 'unknown' else verdict:<12} {detail}")
-    if verdict == "spent":
-        print(
-            "      The account window is SPENT, and it is the operator's own "
-            "subscription —\n"
-            "      the lead and every worker draw on it. The fleet is waiting on "
-            "the window,\n"
-            "      not on any session: resuming a worker now would hit the same "
-            "wall and burn\n"
-            "      the reset. Nothing is touched until it comes back."
-        )
-    if verdict == "unknown":
-        print(
-            "      The account's own quota could not be read, and undetermined is "
-            "never a pass\n"
-            f"      and never a failure — so nothing is acted on. {QUOTA_CMD}: "
-            "https://github.com/kunchenguid/quota-axi"
-        )
+    accounts = read_accounts(holders)
+    for account in accounts.values():
+        print(f"    account {account.label:<26} "
+              f"{'undetermined' if account.verdict == 'unknown' else account.verdict:<12} "
+              f"{account.detail}")
+        if account.verdict == "spent":
+            print(
+                "      That window is SPENT, and it is a subscription every "
+                "session on the\n"
+                "      account draws on. The fleet is waiting on the window, not "
+                "on any session:\n"
+                "      resuming a worker now would hit the same wall and burn the "
+                "reset. Nothing\n"
+                "      on that account is touched until it comes back."
+            )
+        if account.verdict == "unknown":
+            print(
+                "      That account's own quota could not be read, and "
+                "undetermined is never a pass\n"
+                f"      and never a failure — so nothing is acted on. {QUOTA_CMD}: "
+                "https://github.com/kunchenguid/quota-axi"
+            )
 
     lead = os.environ.get("THURBOX_SESSION")
     acted = fired = kept = 0
@@ -5268,20 +5356,20 @@ def refuel(q: Queue, ref: str | None = None, dry: bool = False) -> int:
                   "worker still in flight is refuelled")
             kept += 1
             continue
-        agent = task.doc.get("agent") or provider
-        if provider is None or agent != provider:
-            runs = agent or "thurbox's own default"
-            print(f"    {task.ref:<46} undetermined  the fuel gauge reads the "
-                  f"{provider or 'unnamed'} account and this task runs `{runs}`")
+        account = accounts.get(account_key(task))
+        if account is None:
+            runs = task_agent(task) or "thurbox's own default"
+            print(f"    {task.ref:<46} undetermined  no provider to read for `{runs}`: "
+                  f"name one with FUEL_PROVIDER or AGENT_PROVIDERS in {AGENT_CONF}")
             kept += 1
             continue
-        if verdict != "fuel":
+        if account.verdict != "fuel":
             # The reason is the account line above, printed once: repeating a
             # hundred characters of it per task buries the one thing a reader
             # is looking for, which is which tasks it applies to.
-            word = "kept" if verdict == "spent" else "undetermined"
-            print(f"    {task.ref:<46} {word:<13} the {provider} account window is "
-                  f"{'spent' if verdict == 'spent' else 'unreadable'} — see above")
+            word = "kept" if account.verdict == "spent" else "undetermined"
+            print(f"    {task.ref:<46} {word:<13} the {account.label} window is "
+                  f"{'spent' if account.verdict == 'spent' else 'unreadable'} — see above")
             kept += 1
             continue
         if task.doc.get("host"):

@@ -157,6 +157,12 @@ handed to every clone.
   agent in hand, or takes `FUEL_PROVIDER` from `orchestration/agent.conf`, and
   reports `undetermined` — restarting nothing — rather than gating on a window
   it guessed.
+- **Agent settings are per agent.** `orchestration/agent.conf` takes
+  `<agent>.LIKE`, `<agent>.ENV` and a per-agent form of its four existing
+  settings, so a fleet running two agents — or a second ACCOUNT of one —
+  describes both. Nothing is required: a checkout with no dotted line behaves
+  exactly as it did. If the operator was hand-editing that file between
+  dispatches to serve a second account, this is what replaces it.
 
 Copy each only where the operator has none yet; neither form overwrites:
 

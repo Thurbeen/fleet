@@ -61,6 +61,20 @@ def test_the_tracked_agent_settings_name_no_agent_or_vendor():
         assert all(v == "" for v in values("agent.example.conf", key)), f"agent.example.conf ships {key}"
 
 
+def test_the_tracked_agent_settings_name_no_agent_in_front_of_a_key():
+    """The per-agent form is `<agent>.KEY=`, which the rule above cannot see.
+
+    Every setting there is a blank line the operator fills in, so a leak could
+    only arrive as a per-agent one — and that form carries an agent's NAME in
+    the key itself, which is the thing a tracked file may never hold. The
+    section documenting it is comments; a live dotted line is the failure.
+    """
+    text = (ORCH / "agent.example.conf").read_text(encoding="utf-8")
+    live = [line for line in text.splitlines() if line.strip() and not line.lstrip().startswith("#")]
+    dotted = [line for line in live if "=" in line and "." in line.partition("=")[0]]
+    assert dotted == [], f"agent.example.conf names an agent in a key: {dotted}"
+
+
 def test_every_publish_method_is_an_artifact_shape():
     out = queue_module("print(' '.join(sorted(q.PUBLISH_METHODS)))\n")
     assert out.strip() == "attested none note pr push"

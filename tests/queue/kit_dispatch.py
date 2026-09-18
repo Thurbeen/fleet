@@ -72,10 +72,16 @@ FOLDER_DIALOG = """Quick safety check: Is this a project you created or one you 
 Enter to confirm · Esc to cancel"""
 
 
-def behind_dialog(stubs: Stubs, sid: str, pane: str, queued: str | None = None) -> None:
-    """A session whose agent has not reported yet, as it has not behind a modal dialog."""
+def behind_dialog(stubs: Stubs, sid: str, pane: str, queued: str | None = None,
+                  agent: str = "claude") -> None:
+    """A session whose agent has not reported yet, as it has not behind a modal dialog.
+
+    `agent` is what thurbox says is in the pane, and it is what the trust step
+    looks a dialog up by — so a second account of an agent, running under a
+    name of its own, is spelled here.
+    """
     write(stubs.root / "sessions" / f"{sid}.json", json.dumps(
-        {"id": sid, "name": f"worker {sid}", "state": "unreported", "agent": "claude", "hook_reported": False}
+        {"id": sid, "name": f"worker {sid}", "state": "unreported", "agent": agent, "hook_reported": False}
     ) + "\n")
     write(stubs.root / "panes" / f"{sid}.txt", pane + "\n")
     if queued is not None:

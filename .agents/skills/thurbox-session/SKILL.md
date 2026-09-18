@@ -578,8 +578,16 @@ entry per agent fleet has actually WATCHED hit a limit — `claude` today — th
 same way §1b's table keeps one per trust dialog. An agent with no entry is
 reported `undetermined`, which restarts nothing, and `LIMIT_BANNER` /
 `TRANSCRIPT_DIR` in `orchestration/agent.conf` teach it one without a code
-change. Nothing is matched that nobody observed: a guessed pattern restarts a
-live worker mid-turn.
+change. Both are sayable about ONE agent there (`<agent>.LIMIT_BANNER=`), and a
+second account of an agent already in the table takes the watched row with
+`<agent>.LIKE=`. Nothing is matched that nobody observed: a guessed pattern
+restarts a live worker mid-turn.
+
+**Where the transcript is, is the AGENT's answer and not yours.** The reader
+resolves that agent's config-directory variable out of its own `ENV` line in
+`orchestration/agent.conf`, never out of the environment the lead happens to be
+running in — the lead sits on one account and the worker may be on another, and
+reading the lead's was how a second account's transcripts went unread.
 
 **Ask the account before you restart anything.** The limit is not the session's,
 it is the operator's subscription window, shared by every session on this

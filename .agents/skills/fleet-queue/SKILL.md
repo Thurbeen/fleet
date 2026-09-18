@@ -823,26 +823,29 @@ uv run fleet queue refuel               # every recorded session
 uv run fleet queue refuel <ref>         # just that task's
 ```
 
-**It asks the ACCOUNT before it looks at a single session.** That window is the
-operator's own subscription, which the lead and every worker draw on: while it
-is spent every session is stuck for the same reason, and restarting them is
-worse than useless — each resumes, hits the same wall within seconds, and burns
-the reset it was waiting for. Three concurrent pipeline runs did that on
-2026-08-29 and lost every step in flight.
+**It asks the ACCOUNT before it looks at a single session.** That window is a
+subscription every session on the account draws on: while it is spent those
+sessions are stuck for the same reason, and restarting them is worse than
+useless — each resumes, hits the same wall within seconds, and burns the reset
+it was waiting for. Three concurrent pipeline runs did that on 2026-08-29 and
+lost every step in flight.
 
-It reads ONE account, through `fleet_status.probe_fuel`: the provider the
-tasks in hand draw on, derived from their agent or pinned by `FUEL_PROVIDER` in
-`orchestration/agent.conf`. A spent window on a provider the fleet never
-dispatches must not strand a worker, and tasks that disagree on an agent are
+It reads ONE WINDOW PER ACCOUNT the pass touches, through
+`fleet_status.probe_fuel`. An account is a PROVIDER — from the task's agent, or
+pinned by `FUEL_PROVIDER` in `orchestration/agent.conf` — PLUS the environment
+that selects it, from that agent's own `ENV` line there. So two workers on one
+provider and two logins get two readings and are judged one each; tasks sharing
+an account share one reading, and a task whose provider cannot be worked out is
 `undetermined` rather than guessed at. `fleet status`'s `FUEL` section reads
 every authenticated provider (`probe_fuel_all`), **so the two can legitimately
 disagree** — the screen may show one provider fine while `refuel` reports the
-fleet's own spent.
+account a worker actually spends as spent.
 
 ```text
-    account claude     spent        0% remaining — five_hour resets 2026-09-09T02:10:00+00:00
-      The account window is SPENT … The fleet is waiting on the window, not on
-      any session … Nothing is touched until it comes back.
+    account claude                     fuel         62% remaining, resets 2026-09-09T02:10:00+00:00
+    account claude (spare)             spent        0% remaining, resets 2026-09-09T02:10:00+00:00
+      That window is SPENT … The fleet is waiting on the window, not on any
+      session … Nothing on that account is touched until it comes back.
 ```
 
 A quota that could not be read is `undetermined` — never a pass, never a

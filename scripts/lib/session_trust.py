@@ -74,6 +74,15 @@ guess: `TRUST_SIGNATURE` and `TRUST_KEYS` in orchestration/agent.conf, with
 this refuses and sends nothing, because the `claude` row above is why —
 guessing a keystroke there exits the agent.
 
+BOTH ARE SAYABLE ABOUT ONE AGENT — `<agent>.TRUST_SIGNATURE=`,
+`<agent>.TRUST_KEYS=` — and a line that names an agent outranks the table,
+since it is the operator describing that agent rather than their fleet. The
+case that needed it is the SECOND ACCOUNT of an agent already in the table: it
+runs under a name of its own, so it matched no key, and answering its dialog
+meant editing the checkout's one `TRUST_SIGNATURE` before each dispatch and
+putting it back afterwards. `<agent>.LIKE=<the watched agent>` is the whole of
+it now. See scripts/lib/agent_settings.py.
+
 Usage:
   uv run fleet session-trust <session-uuid-or-name> [--timeout SECS] [--json]
 
@@ -88,6 +97,7 @@ Requires: thurbox-cli.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import re
@@ -97,6 +107,27 @@ import sys
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def _load_sibling(name: str, filename: str):
+    """Load a module from scripts/lib beside this file, under a name of its own.
+
+    The rule every module here follows: keyed in sys.modules as `fleet/cli.py`
+    keys it, so the copy `queue.py` already holds is the copy this gets — one
+    answer about what the settings say, not two.
+    """
+    if name in sys.modules:
+        return sys.modules[name]
+    spec = importlib.util.spec_from_file_location(name, os.path.join(HERE, filename))
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+# WHICH AGENT. A trust dialog is a fact about an agent, so which one to expect
+# is asked per agent rather than per checkout.
+agent_settings = _load_sibling("fleet_agent_settings", "agent_settings.py")
 
 # After each answer the pane is watched this many more seconds for a dialog
 # behind it; `MAX_ANSWERS` bounds a dialog that keeps coming back, which is not
@@ -152,7 +183,7 @@ GATES = {
 }
 FLAG_ONLY = {"cursor", "muse"}
 
-# WHERE THE SELECTOR ALREADY IS, for claude, and it outranks the table. The
+# WHERE THE SELECTOR ALREADY IS, and it outranks the table. The
 # folder-trust dialog above defaults to "No, exit"; the one Claude Code 2.1.247
 # draws on a Windows 11 host (2026-09-12) is numbered and defaults to the other
 # option:
@@ -163,6 +194,10 @@ FLAG_ONLY = {"cursor", "muse"}
 # `down enter` there selects "No, exit" and the agent exits — observed, not
 # supposed. So when the selector is already on the accepting option, Enter
 # alone accepts, whichever layout drew it. Matched against the squeezed pane.
+#
+# It is spelled with Claude Code's own label, so it can only match Claude
+# Code's dialog however the agent is NAMED — which is what makes it hold for a
+# second account of it, running under a name of its own.
 YES_SELECTED = re.compile(r"❯([0-9]+\.)?yes,itrustthisfolder", re.IGNORECASE)
 
 
@@ -239,20 +274,7 @@ def send_key(uuid: str, key: str) -> bool:
 # --- an agent fleet has not watched ------------------------------------------
 
 
-def conf_value(path: str, key: str) -> str:
-    """The first `KEY=value` line's value, verbatim, or ""."""
-    try:
-        with open(path, encoding="utf-8") as fh:
-            for line in fh:
-                line = line.rstrip("\r\n")
-                if line.startswith(key + "="):
-                    return line[len(key) + 1:]
-    except OSError:
-        pass
-    return ""
-
-
-def taught_gates(agent_root: str) -> list | None:
+def taught_gates(agent_root: str, agent: str = "", only_named: bool = False) -> list | None:
     """What `orchestration/agent.conf` teaches: a gate list, or None for nothing.
 
     NOT IN THE TABLE IS NOT THE END. The table is what fleet has WATCHED, and
@@ -261,12 +283,19 @@ def taught_gates(agent_root: str) -> list | None:
     `TRANSCRIPT_DIR` teach `refuel` one. Without them this still refuses rather
     than guessing a keystroke: a bare Enter into Claude Code's dialog exits the
     agent, and an invented answer would do that to somebody's.
+
+    TWO LOOKUPS, AND THE ORDER IS THE POINT. `only_named` reads the lines that
+    NAME this agent (`<agent>.TRUST_SIGNATURE=`) and nothing else; the caller
+    puts that ahead of the built-in table, because a line naming one agent is
+    the operator saying something about that agent and not about their fleet.
+    The plain lookup — the agent's line, then the checkout's — is the fallback,
+    and the checkout-wide setting keeps exactly the position it has always had:
+    behind the table, answering for agents the table does not carry.
     """
-    conf = os.path.join(agent_root, "orchestration", "agent.conf")
-    if not os.path.isfile(conf):
-        conf = os.path.join(agent_root, "orchestration", "agent.example.conf")
-    signature = conf_value(conf, "TRUST_SIGNATURE")
-    keys = conf_value(conf, "TRUST_KEYS")
+    conf = agent_settings.conf(agent_root)
+    read = agent_settings.named if only_named else agent_settings.value
+    signature = read("TRUST_SIGNATURE", agent, conf)
+    keys = read("TRUST_KEYS", agent, conf)
     if keys == "none":
         # The operator says this agent shows no dialog. Nothing to answer; it
         # is still confirmed as up.
@@ -311,9 +340,20 @@ def answer_dialogs(session: str, timeout: int = 20, as_json: bool = False) -> tu
             agent = str(info[key])
             break
 
-    if agent in GATES:
-        gates = GATES[agent]
-    elif agent in FLAG_ONLY:
+    agent_root = os.environ.get("FLEET_AGENT_ROOT") or os.path.dirname(os.path.dirname(HERE))
+    conf = agent_settings.conf(agent_root)
+    # A line that NAMES this agent is the most specific answer there is, so it
+    # comes before everything — including the two tables below, which are keyed
+    # by the agents fleet itself has watched. A second account of a watched
+    # agent has neither a line nor a key of its own; `<agent>.LIKE=` hands it
+    # the watched row through `agent_settings.row`.
+    named = taught_gates(agent_root, agent, only_named=True) if agent else None
+    table = agent_settings.row(GATES, agent, conf)
+    if named is not None:
+        gates = named
+    elif table is not None:
+        gates = table
+    elif any(name in FLAG_ONLY for name in agent_settings.chain(agent, conf)):
         return 3, say(
             f"'{agent}' is not answered by a keystroke — it takes a launch flag\n"
             "             (cursor: --trust, muse: --yolo). Put it in a profile in\n"
@@ -324,14 +364,15 @@ def answer_dialogs(session: str, timeout: int = 20, as_json: bool = False) -> tu
     elif not agent:
         return 3, say("could not tell which agent holds the pane; sending nothing", "unconfirmed")
     else:
-        agent_root = os.environ.get("FLEET_AGENT_ROOT") or os.path.dirname(os.path.dirname(HERE))
-        gates = taught_gates(agent_root)
+        gates = taught_gates(agent_root, agent)
         if gates is None:
             return 3, say(
                 f"no trust gate is known for '{agent}'; sending nothing. Teach fleet\n"
-                "             one with TRUST_SIGNATURE and TRUST_KEYS in\n"
-                "             orchestration/agent.conf, or add it to the table in\n"
-                f"             {os.path.join(HERE, 'session_trust.py')}",
+                f"             one with {agent}.TRUST_SIGNATURE and {agent}.TRUST_KEYS in\n"
+                "             orchestration/agent.conf — or, where it is another account of\n"
+                f"             an agent fleet knows, {agent}.LIKE=<that agent>. A checkout-wide\n"
+                "             TRUST_SIGNATURE still answers for every agent with no line of\n"
+                f"             its own; the table is in {os.path.join(HERE, 'session_trust.py')}",
                 "unknown-agent",
             )
 
@@ -352,7 +393,7 @@ def answer_dialogs(session: str, timeout: int = 20, as_json: bool = False) -> tu
         dialog being GONE is. On either failure nothing more is sent.
         """
         signature, keys = gates[i]
-        if agent == "claude" and keys == "down enter" and YES_SELECTED.search(pane(uuid)):
+        if keys == "down enter" and YES_SELECTED.search(pane(uuid)):
             keys = "enter"
         for k in keys.split():
             if not send_key(uuid, k):
