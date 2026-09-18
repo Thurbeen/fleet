@@ -647,9 +647,30 @@ def fuel_accounts() -> list[dict]:
     with nothing dispatched against it is still drawn, and `fleet check
     isolation` keeps the gate out of operator records.
 
+    THE CHECKOUT'S OWN ACCOUNT READS ITS `ENV` THROUGH THE SAME CHAIN `refuel`
+    does — `agent_settings.account_env(lead, settings)` — never a bare `{}`. A
+    checkout-wide `ENV=` line, or a `<lead>.ENV=` line naming the checkout's
+    own agent directly, moves the checkout's own default account exactly as it
+    moves `task_agent()`'s default resolution; reading it as `{}` regardless
+    left `fleet status` and `fleet queue refuel` naming two different accounts
+    for a checkout that set only that one line.
+
     AN AGENT WITH NO `ENV` ADDS NOTHING: it runs on the checkout's own account,
-    which is already first in the list. Two agents whose `ENV` and provider
-    resolve alike are ONE account and get one reading.
+    which is already first in the list. `lead` ITSELF IS NEVER RE-ASKED IN THE
+    LOOP — its account is entry zero, resolved above; asking again would add a
+    second entry under the same name for the same environment, and dedup
+    cannot save it because the two entries have no key in common to dedup on
+    (`provider=None` a "every provider" entry, `provider=<vendor>` a one-provider
+    entry). Two agents whose `ENV` and provider resolve alike are ONE account
+    and get one reading — that dedup governs any two names other than `lead`.
+
+    EVERY NON-CHECKOUT ENTRY CARRIES `checkout: False`, entry zero alone
+    `checkout: True` — not "the account named `lead`" and not "the account
+    whose provider matches its own name", either of which a NAMED account can
+    coincidentally satisfy (a bare agent named the same as its own vendor, or
+    the same as `lead` before this function stopped revisiting `lead`). The
+    renderers key the "is this the checkout's own reading" question off this
+    flag, never off comparing strings.
 
     AN `ENV` LINE THAT PARSES TO NOTHING IS REPORTED, never dropped. Writing
     `ENV=~/.spare` instead of `ENV=VAR=~/.spare` would otherwise collapse that
@@ -659,15 +680,18 @@ def fuel_accounts() -> list[dict]:
     """
     settings = agent_conf()
     lead = settings.get("AGENT", "").strip()
-    out: list[dict] = [{"account": lead, "provider": None, "env": {}, "problem": None}]
+    checkout_env = agent_settings.account_env(lead, settings)
+    out: list[dict] = [
+        {"account": lead, "provider": None, "env": checkout_env, "problem": None, "checkout": True}
+    ]
     seen: set = set()
-    for agent in [lead, *agent_settings.agents(settings)]:
-        if not agent or not agent_settings.value("ENV", agent, settings):
+    for agent in agent_settings.agents(settings):
+        if agent == lead or not agent_settings.value("ENV", agent, settings):
             continue
         provider = fleetqueue.fuel_agent(agent) or agent
         env = agent_settings.account_env(agent, settings)
         if not env:
-            out.append({"account": agent, "provider": provider, "env": {}, "problem": (
+            out.append({"account": agent, "provider": provider, "env": {}, "checkout": False, "problem": (
                 f"{agent}.ENV names no NAME=VALUE pair, so fleet cannot tell this "
                 "account from the checkout's own")})
             continue
@@ -675,7 +699,7 @@ def fuel_accounts() -> list[dict]:
         if key in seen:
             continue
         seen.add(key)
-        out.append({"account": agent, "provider": provider, "env": env, "problem": None})
+        out.append({"account": agent, "provider": provider, "env": env, "problem": None, "checkout": False})
     return out
 
 
@@ -869,13 +893,34 @@ def probe_fuel_all() -> dict:
     THE COST IS ONE FETCH PER ACCOUNT, never one per provider. Each account's
     providers go in one `--provider a,b,c` invocation, so a second subscription
     on an account fleet already reads costs nothing and a second ACCOUNT costs
-    exactly one more call — the environment differs, so there is no comma list
-    that would ask for both.
+    exactly one more `auth`-and-fetch PAIR — the environment differs, so there
+    is no comma list that would ask for both and no `auth` call answers for two
+    environments at once.
+
+    A NAMED ACCOUNT WITH NO CREDENTIAL STAYS ON SCREEN, as an `unavailable`
+    record rather than a silent absence — the whole point of naming an account
+    is that its silence is now visible instead of collapsing into "the fleet
+    has one account", which is the failure this section exists to end. No
+    `fuel_read` is spent finding that out: `account_providers()` already
+    decided nothing is probed, so this is `auth`'s own answer restated, never a
+    second round trip.
+
+    `discovery_fallback` ON A RECORD MARKS A READING TAKEN ON A GUESS — this
+    account's own `auth` could not be read, so its provider came from the
+    operator's checkout-wide setting rather than from what this account is
+    actually signed in to. `render_fuel`'s "not discovered" line names only
+    these records, never an account whose own `auth` succeeded: attributing
+    every reading in the section to one account's failed discovery blamed
+    readings the failure never touched.
 
     `unavailable` here is the WHOLE reading failing, which is now every account
     failing: one account's fetch failing leaves that account's providers
     carrying their own reason and the other accounts' readings intact, exactly
-    as one provider's failure always did.
+    as one provider's failure always did. Every account contributes to either
+    `records` or `failures` (a named account with nothing to probe still adds
+    one placeholder to both), so `len(failures) == len(accounts)` below is a
+    true "every account failed" and not an undercount from an account skipped
+    without a trace.
     """
     read_at = int(time.time())
     accounts = fuel_accounts()
@@ -886,11 +931,12 @@ def probe_fuel_all() -> dict:
     }
     records, failures = [], []
     for acc in accounts:
-        account, provider, env, problem = (
-            acc["account"], acc["provider"], acc["env"], acc["problem"])
+        account, provider, env, problem, checkout = (
+            acc["account"], acc["provider"], acc["env"], acc["problem"], acc["checkout"])
         if problem:
             failures.append(problem)
-            records.append(fuel_blank(provider, read_at, account) | {"unavailable": problem})
+            records.append(fuel_blank(provider, read_at, account)
+                            | {"unavailable": problem, "checkout": checkout})
             continue
         # The account's environment laid over this process's, or None for the
         # checkout's own — which is what `run_json` inherits, and what every
@@ -906,17 +952,25 @@ def probe_fuel_all() -> dict:
         if provider is not None and not names:
             # `auth` already said this account has no credential to read, and
             # that is obeyed rather than probed — same fact, same silence the
-            # checkout's own account keeps when it has nothing either.
+            # checkout's own account keeps when it has nothing either. Still
+            # ON SCREEN, though: a record that names the reason rather than an
+            # account that simply never appears.
+            reason = why or f"quota-axi named no {provider} credential for this account"
+            failures.append(reason)
+            records.append(fuel_blank(provider, read_at, account)
+                            | {"unavailable": reason, "checkout": checkout})
             continue
-        doc, why = fuel_read(names, env=child)
-        if why:
-            failures.append(why)
-            records += [fuel_blank(name, read_at, account) | {"unavailable": why}
+        doc, fetch_why = fuel_read(names, env=child)
+        if fetch_why:
+            failures.append(fetch_why)
+            records += [fuel_blank(name, read_at, account)
+                        | {"unavailable": fetch_why, "checkout": checkout, "discovery_fallback": why}
                         for name in names]
             continue
         if isinstance(doc, dict) and sec["schema_version"] is None:
             sec["schema_version"] = doc.get("schemaVersion")
-        records += [fuel_record(doc, name, read_at, account) for name in names]
+        records += [fuel_record(doc, name, read_at, account) | {"checkout": checkout, "discovery_fallback": why}
+                    for name in names]
     if failures and len(failures) == len(accounts):
         sec["unavailable"] = failures[0]
         return sec
@@ -1152,12 +1206,20 @@ def render_checkout(sec: dict) -> list:
 def fuel_label(rec: dict, named: bool) -> str:
     """How one reading names itself: the provider, and whose account when there
     is more than one. `refuel`'s account lines are phrased the same way, so the
-    two commands name one account one way."""
+    two commands name one account one way.
+
+    THE CHECKOUT'S OWN READING IS `checkout: True` ON THE RECORD, never
+    inferred by comparing `account` against `provider` — a named account whose
+    agent happens to be called the same as its own vendor (or, before
+    `fuel_accounts()` stopped revisiting `lead`, the same as the checkout's own
+    agent) satisfies that comparison too, which suppressed its label exactly
+    when a second reading of one vendor most needed one.
+    """
     provider = str(rec.get("provider") or "?")
+    if not named or rec.get("checkout", True):
+        return provider
     account = str(rec.get("account") or "")
-    if named and account and account != provider:
-        return f"{provider} ({account})"
-    return provider
+    return f"{provider} ({account})" if account else provider
 
 
 def fuel_provider_lines(rec: dict, named: bool = False) -> list:
@@ -1211,9 +1273,16 @@ def render_fuel(sec: dict) -> list:
         summary = f"{count} provider(s)"
     lines = [head("FUEL", f"{summary} — account windows, every session spends them at once")]
     if sec.get("discovery"):
-        read = ", ".join(fuel_label(r, named) for r in sec["providers"])
-        lines.append(cont(f"providers not discovered ({sec['discovery']}) — "
-                          f"read {read} alone"))
+        # Only the records taken on a GUESS — this account's own `auth` failed
+        # and its provider came from the checkout-wide setting rather than
+        # from what it is actually signed in to. An account whose own
+        # discovery succeeded is not "read alone" just because another
+        # account's did not.
+        guessed = [r for r in sec["providers"] if r.get("discovery_fallback")]
+        if guessed:
+            read = ", ".join(fuel_label(r, named) for r in guessed)
+            lines.append(cont(f"providers not discovered ({sec['discovery']}) — "
+                              f"read {read} alone"))
     for rec in sec["providers"]:
         lines += fuel_provider_lines(rec, named)
     return lines
@@ -1221,7 +1290,8 @@ def render_fuel(sec: dict) -> list:
 
 RECORD_FIELDS = (
     "read_at", "unavailable", "reserve", "remaining", "below_reserve",
-    "limited_by", "resets_at", "stale", "state", "provider", "account", "scope",
+    "limited_by", "resets_at", "stale", "state", "provider", "account",
+    "checkout", "scope",
 )
 
 
@@ -1243,12 +1313,16 @@ def render_fuel_record(sec: dict) -> str:
     and no provider, which is exactly what a single-provider reading that
     failed used to look like.
 
-    `account` IS DRAWN ONLY WHEN THERE IS MORE THAN ONE, for the reason
-    `fuel_named()` argues: two records of one provider under two logins are
-    told apart by nothing else, and a fleet with a single account would
-    otherwise gain a field it has no second reading to distinguish from. So a
-    checkout whose `agent.conf` names no second account emits exactly the
-    record it always did.
+    `account` AND `checkout` ARE DRAWN ONLY WHEN THERE IS MORE THAN ONE, for
+    the reason `fuel_named()` argues: two records of one provider under two
+    logins are told apart by nothing else, and a fleet with a single account
+    would otherwise gain fields it has no second reading to distinguish from.
+    So a checkout whose `agent.conf` names no second account emits exactly the
+    record it always did. `checkout` is `1` for the checkout's own reading and
+    `0` for a named account — `interface/fleet_queue.lua` reads it to decide
+    whether to draw the account in parentheses, the same flag `fuel_label()`
+    reads here, so neither has to compare `account` against `provider` to
+    guess which reading is the checkout's own.
 
     IT IS NOT A SECOND READING. Every field here is `probe_fuel_all()`'s own,
     under its own name, so the record and the FUEL section on the screen cannot
@@ -1270,7 +1344,7 @@ def render_fuel_record(sec: dict) -> str:
         "reserve": sec.get("reserve"),
         "unavailable": sec.get("unavailable") or "no provider has a credential to read",
     }]
-    drop = set() if fuel_named(sec) else {"account"}
+    drop = set() if fuel_named(sec) else {"account", "checkout"}
     blocks = []
     for rec in records:
         lines = []

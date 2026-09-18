@@ -469,6 +469,7 @@ if FUEL_ACCOUNTS then
   FUEL = table.concat({
     "provider\tclaude",
     "account\tclaude",
+    "checkout\t1",
     "remaining\t18",
     "reserve\t20",
     "limited_by\tseven_day",
@@ -478,6 +479,7 @@ if FUEL_ACCOUNTS then
     "",
     "provider\tclaude",
     "account\tclaude-spare",
+    "checkout\t0",
     "remaining\t70",
     "reserve\t20",
     "limited_by\tfive_hour",

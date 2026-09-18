@@ -660,6 +660,12 @@ end
 --- by nothing else. A fleet with one account sends no `account` field at all
 --- and this draws exactly what it drew before there was a second.
 ---
+--- `checkout` says which record is the checkout's OWN reading — `1` for it,
+--- `0` for a named account — and travels beside `account` for the same reason:
+--- a named account can be called the same as its own vendor, so comparing
+--- `account` against `provider` to guess "is this the checkout's own" reads a
+--- coincidence as a fact. `fuel_name` below reads this flag instead.
+---
 --- `window` is the one field that repeats: one line per window, as
 --- `id<TAB>percent<TAB>reset epoch<TAB>label`, already in the order to draw.
 local function build_fuel(stdout)
@@ -670,6 +676,7 @@ local function build_fuel(stdout)
       out[#out + 1] = {
         provider = fields.provider,
         account = fields.account,
+        checkout = fields.checkout,
         unavailable = fields.unavailable,
         remaining = tonumber(fields.remaining),
         reserve = tonumber(fields.reserve),
@@ -1864,10 +1871,17 @@ end
 --- How one reading names itself: the provider, and whose account when the
 --- record carries one. `fleet status` phrases its own blocks the same way, so
 --- the screen and the column name one account one way.
+---
+--- `checkout` DECIDES THE PARENTHESES, never a comparison between `account`
+--- and `provider`: a named account whose agent happens to share its vendor's
+--- name (or, before `fleet_status.fuel_accounts()` stopped revisiting the
+--- checkout's own agent, the checkout's own name) would satisfy that
+--- comparison too and lose the one thing telling its bar apart from the
+--- checkout's own.
 local function fuel_name(rec)
   local provider = rec.provider or ""
   local account = rec.account or ""
-  if account ~= "" and account ~= provider then
+  if account ~= "" and rec.checkout ~= "1" then
     return provider .. " (" .. account .. ")"
   end
   return provider
