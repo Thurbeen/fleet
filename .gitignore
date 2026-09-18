@@ -38,7 +38,7 @@
 # WORKING STATE. What you want the lead to call you, and what it answers to.
 # orchestration/voice.example.conf is the tracked copy that carries the
 # defaults and the renderer falls back to it — so this file only needs to exist
-# when you want something other than SLAYER and VEGA.
+# when you want something other than Slayer and VEGA.
 /orchestration/voice.conf
 
 # WORKING STATE. The repositories fleet may MERGE in unattended. This is the

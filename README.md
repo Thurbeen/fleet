@@ -232,9 +232,12 @@ because this repository is public; back up your clone if that content matters.
   [fleet-queue](.agents/skills/fleet-queue/SKILL.md) (run the queue),
   [thurbox-session](.agents/skills/thurbox-session/SKILL.md) (drive one
   worker),
-  [fleet-pane](.agents/skills/fleet-pane/SKILL.md) (the pane) and
-  [update-fleet](.agents/skills/update-fleet/SKILL.md) (catch up with
-  `main`).
+  [fleet-pane](.agents/skills/fleet-pane/SKILL.md) (the pane),
+  [update-fleet](.agents/skills/update-fleet/SKILL.md) (catch up with `main`),
+  [diagnose-machine](.agents/skills/diagnose-machine/SKILL.md) (what is eating
+  this machine, and the project that made the debris) and
+  [review-prs](.agents/skills/review-prs/SKILL.md) (standing review over a
+  repository's open change requests).
 
 ## License
 

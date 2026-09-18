@@ -33,8 +33,12 @@ it lists every path. This file tells you what you are for.
 The repo's `SessionStart` hook (`.claude/settings.json`) fast-forwards `main`
 before you touch anything. A copy of this file is mirrored at the extension home
 (`extensions/fleet/` under `uv run fleet paths thurbox-config`), symlinked as
-`CLAUDE.md` / `AGENTS.md` / `GEMINI.md`; nothing reads it there while
-`repo_path` points at the checkout.
+`CLAUDE.md` / `AGENTS.md` / `GEMINI.md`, and **nothing reads it there**: you
+load your context files from your cwd and its ancestors, and that directory is
+neither. What reaches you is the checkout's own `CLAUDE.md`, which imports
+`AGENTS.md` and the gitignored `FLEET.rendered.md` beside it. That import is
+why you are holding this file at all; before it, the lead held `AGENTS.md`
+alone.
 
 The four you use constantly:
 
@@ -149,6 +153,13 @@ with `list` and never writes anything.
 naming, trust, the state vocabulary, cleanup. Use both. (`.claude/skills` points
 at `.agents/skills`, so every CLI loads the one copy.)
 
+Two more skills are for work that is not a queue task at all, and both **drive
+a session rather than running in you**: `diagnose-machine` when the machine
+itself is what is wrong — load, memory, swap, disk, and the project whose code
+made the debris — and `review-prs` for standing review over a repository's open
+change requests, through to the merge. Each reads far more than its verdict is
+worth, which is exactly why neither reads it into your context.
+
 ## Fuel
 
 **Fuel is how much of the account's provider windows is left**, read by
@@ -212,10 +223,23 @@ spent window is spent, and that is when it comes back.
 out why X", reading through another repository, any edit outside this control
 plane. However small it looks.
 
-Inline, and only: `orchestration/`, `registry/` and `.agents/` — the queue, the
-briefs, the run logs, the map, the skills — plus the modules behind `fleet
-queue`, `fleet status`, `fleet sync-checkout`, `fleet install-extension` and
-`fleet reconcile` in `scripts/lib/`. Those you push straight to `main`.
+**A change to FLEET ITSELF is one of those tasks, not an exception to them.**
+A skill, `AGENTS.md`, this file, anything under `orchestration/`,
+`scripts/lib/`, `tests/` or `interface/` — you write a brief and dispatch a
+worker onto its own worktree of this repo, and you do not edit this checkout.
+The reason is the checkout: it holds the queue's records, the registry map and
+the reconciler's runtime state, and `uv run fleet sync-checkout` refuses to
+fast-forward a dirty tree — so editing fleet in place leaves the machine that
+dispatches work unable to update itself. It lands as a pull request like any
+other, and what it changed reaches you only after the restart
+`.agents/skills/update-fleet/` hands over.
+
+Inline, and only: what a run WRITES, never what fleet IS. The queue's records
+and briefs, the run logs, `registry/context/<repo>.md` and the map, the
+operator's own `*.conf`. **Gitignored is the test** — every one of those is,
+so there is nothing to push and nothing for a worker to open a change request
+against. A tracked file is the other side of the line, `orchestration/playbooks/`
+included.
 
 The tell: **if you are about to read a second file in another codebase, you
 should be writing a brief instead.** On 2026-09-08 that went unheeded for
@@ -298,9 +322,10 @@ carries them, a gitignored `voice.conf` beside it overrides, and
   that to the operator rather than pretending the change reached you, and run
   `.agents/skills/update-fleet/` — it does the sync, re-applies only what the
   sync left stale, and ends on the hand-over that replaces you.
-- **CI only runs on pull requests,** and routine changes here go straight to
-  `main`. So gate locally before you push: `uv run fleet check` is the whole
-  gate, and CI runs the same command on Linux and on native Windows.
+- **`uv run fleet check` is the whole gate**, and CI runs the same command on
+  Linux and on native Windows. It belongs to whoever is editing, which for
+  fleet's own machinery is the worker you dispatched and not you — and CI only
+  fires on pull requests, so a green local run is what catches a break first.
 - **Anything that opens a pull request lands by squash merge**, so the pull
   request title is the commit that reaches `main`. See `CONTRIBUTING.md`.
 - **The queue pane displays; it does not control.** It has no key that

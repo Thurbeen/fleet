@@ -49,7 +49,7 @@ def test_render_only_writes_both_files_and_installs_nothing(stubs, tmp_path):
     assert lead["agent"] == "claude"
     assert Path(lead["repo_path"]).resolve() == REPO.resolve()
     payload = (tmp_path / "FLEET.rendered.md").read_text(encoding="utf-8")
-    expect(payload, "SLAYER", "VEGA")
+    expect(payload, "Slayer", "VEGA")
     refute(payload, "@OPERATOR_NAME@", "@ASSISTANT_NAME@")
 
 

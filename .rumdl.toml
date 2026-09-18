@@ -7,8 +7,8 @@
 # The agent-tooling trees. A SKILL.md opens with YAML frontmatter rather than
 # an h1, which MD041 rejects without anything being wrong with it — the file
 # follows the skill convention, not the document convention.
-# CLAUDE.md is the two-line `@AGENTS.md` pointer, not prose — it has no h1
-# and is not meant to grow one.
+# CLAUDE.md is the `@AGENTS.md` / `@FLEET.rendered.md` pointer, not prose — it
+# has no h1 and is not meant to grow one.
 exclude = [".git", ".agents", ".claude", "CLAUDE.md"]
 
 [MD013]
