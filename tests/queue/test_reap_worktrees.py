@@ -188,6 +188,23 @@ def test_remote_session_is_kept_when_the_host_lists_an_occupant(landed, stubs):
     assert_kept(stubs, task)
 
 
+def test_host_list_without_this_sessions_id_is_not_an_occupant(landed, stubs):
+    """A host row in the worktree with a different id is not proof of occupancy.
+
+    Excluding the target by id only works when the host lists that same id. If
+    it does not, treating the other row as an occupant keeps the session
+    forever under the occupancy line — the shape this revision exists to close.
+    """
+    task = _remote_target(stubs, landed[0])
+    write(stubs.root / "ssh-state" / "me@devbox.session-list.json", json.dumps([
+        {"id": OTHER, "cwd": REMOTE_TREE, "backend_type": "local-tmux"},
+    ]))
+    out = ok(q("reap")).out
+    expect(out, "kept", "has no row", S1)
+    refute(out, f"session {OTHER} uses worktree")
+    assert_kept(stubs, task)
+
+
 def test_unlistable_host_session_list_keeps_the_remote_session(landed, stubs):
     task = _remote_target(stubs, landed[0])
     write(stubs.root / "ssh-state" / "me@devbox.session-list.json", "Welcome\nnot json")

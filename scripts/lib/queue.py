@@ -4608,7 +4608,13 @@ def sessions_from_rows(doc, source: str) -> tuple[dict | None, str]:
 
 
 def sessions_from_json_text(text: str, source: str) -> tuple[dict | None, str]:
-    """A session list, including one a login-shell banner glued itself in front of."""
+    """A session list, including one a login-shell banner glued itself in front of.
+
+    Seeking the first `[` after a failed parse is a heuristic: a banner that
+    contains `[` can make the slice unparseable, and that is a keep, not a
+    delete. Fail-closed is what makes the guess acceptable on a path that
+    decides deletions.
+    """
     raw = text or ""
     try:
         doc = json.loads(raw)
@@ -4745,6 +4751,15 @@ def worktree_release_blocker(sid: str) -> str:
         remote, entry, why = host_session_snapshot(host)
         if remote is None:
             return why
+        # Occupancy skips the target by id. That only holds when the host
+        # lists this session under the same id the local mirror does. A
+        # non-empty list without that row cannot tell an occupant from the
+        # target itself, so this is a named keep rather than a silent one.
+        if remote and sid not in remote:
+            return (
+                f"host session list has no row {sid}; "
+                "cannot tell an occupant from this session"
+            )
         posix = str(entry.get("multiplexer") or "tmux") == "tmux"
         common = posixpath.commonpath if posix else ntpath.commonpath
 
