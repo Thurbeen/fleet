@@ -468,6 +468,58 @@ def test_the_leads_own_agent_naming_its_own_env_is_one_account_not_two(tmp_path,
     assert len(fetches(stubs)) == 1, fetches(stubs)
 
 
+def test_a_like_alias_of_the_leads_own_account_is_not_a_second_one(tmp_path, stubs):
+    """A `LIKE` chain that ends at `lead`'s own `ENV` line reaches the checkout's
+    account by a different name, not a different account. Deduping only
+    `agent == lead` by literal name misses this: `claude-alt.LIKE=claude` with
+    no `ENV` of its own resolves, through the chain, to the exact same
+    environment as the checkout's entry, and used to draw it a second time —
+    a second `auth` and `--provider` call, and a false second account on the
+    screen for one credential."""
+    spare = tmp_path / "spare-config"
+    conf = tmp_path / "agentconf"
+    write(conf / "orchestration" / "agent.conf",
+          "AGENT=claude\n"
+          f"claude.ENV=CLAUDE_CONFIG_DIR={spare}\n"
+          "claude-alt.LIKE=claude\n")
+    stubs.tool("quota-axi", per_account(
+        "CLAUDE_CONFIG_DIR", str(spare),
+        (auth(("claude", "available")), fetch(claude(64))),
+        (auth(("claude", "available")), fetch(claude(7))),
+    ))
+    blocks = records(status("--fuel", FLEET_AGENT_ROOT=str(conf)).stdout)
+    assert len(blocks) == 1, blocks
+    assert blocks[0]["remaining"] == "7", blocks
+    assert len(fetches(stubs)) == 1, fetches(stubs)
+    assert len(stubs.calls("quota-axi", "auth")) == 1, stubs.calls("quota-axi")
+
+
+def test_a_checkout_wide_env_line_does_not_hand_every_mentioned_agent_an_account(tmp_path, stubs):
+    """A bare `ENV=` line is the checkout's own default, and `agent_settings.value()`
+    falls back to it for ANY agent `agent.conf` mentions — even one named only
+    for an unrelated setting like `LIMIT_BANNER`. `fuel_accounts()`'s loop has
+    to tell "this agent names its own account" from "this agent inherits the
+    checkout's default like everyone else" using `named()`, never `value()`:
+    the latter would turn a checkout-wide `ENV=` line into one phantom account
+    per unrelated agent name, each paying its own `quota-axi auth` call and,
+    once unmatched, showing a false failed account nobody configured."""
+    spare = tmp_path / "spare-config"
+    conf = tmp_path / "agentconf"
+    write(conf / "orchestration" / "agent.conf",
+          "AGENT=claude\n"
+          f"ENV=CLAUDE_CONFIG_DIR={spare}\n"
+          "opencode.LIMIT_BANNER=out of tokens\n")
+    stubs.tool("quota-axi", per_account(
+        "CLAUDE_CONFIG_DIR", str(spare),
+        (auth(("claude", "available")), fetch(claude(64))),
+        (auth(("claude", "available")), fetch(claude(7))),
+    ))
+    blocks = records(status("--fuel", FLEET_AGENT_ROOT=str(conf)).stdout)
+    assert len(blocks) == 1, blocks
+    assert len(fetches(stubs)) == 1, fetches(stubs)
+    refute(status(FLEET_AGENT_ROOT=str(conf)).out, "opencode")
+
+
 def test_a_named_account_whose_agent_equals_its_own_provider_still_gets_a_label(tmp_path, stubs):
     """`claude.ENV=...` with no `AGENT=` line gives the agent named `claude`
     a provider ALSO named `claude` — `fuel_agent()`'s own fallback makes an
@@ -526,6 +578,42 @@ def test_a_named_account_with_no_credential_stays_visible(tmp_path, stubs):
            "claude (claude-spare)  unavailable")
 
 
+def test_the_checkouts_own_account_having_no_credential_does_not_hide_behind_anothers_reading(tmp_path, stubs):
+    """`fuel_read([])` used to run anyway for the checkout's OWN account
+    whenever discovery found no credential there, and the call contributed to
+    neither `records` nor `failures` — an extra empty quota-axi process, and,
+    with a second account that DID have a reading, that reading rendered as
+    if it were the checkout's own: one record reaching the section, so
+    `fuel_named()` saw one distinct account and dropped the very field that
+    would have named it. The checkout's own account with nothing to read has
+    to stay on screen as its own unavailable line, exactly like a named
+    account with no credential does."""
+    spare = tmp_path / "spare-config"
+    conf = tmp_path / "agentconf"
+    write(conf / "orchestration" / "agent.conf",
+          "AGENT=claude\n"
+          "claude-spare.LIKE=claude\n"
+          f"claude-spare.ENV=CLAUDE_CONFIG_DIR={spare}\n")
+    stubs.tool("quota-axi", per_account(
+        "CLAUDE_CONFIG_DIR", str(spare),
+        (auth(), fetch()),
+        (auth(("claude", "available")), fetch(claude(70))),
+    ))
+    blocks = records(status("--fuel", FLEET_AGENT_ROOT=str(conf)).stdout)
+    assert len(blocks) == 2, blocks
+    by_account = {b.get("account", ""): b for b in blocks}
+    assert "claude" in by_account and "claude-spare" in by_account, blocks
+    assert "unavailable" in by_account["claude"] and "remaining" not in by_account["claude"], blocks
+    assert by_account["claude-spare"]["remaining"] == "70", blocks
+    # The checkout's own account had nothing to probe: an `auth` call, no fetch.
+    assert len(stubs.calls("quota-axi", "auth")) == 2, stubs.calls("quota-axi")
+    assert len(fetches(stubs)) == 1, fetches(stubs)
+    done = status(FLEET_AGENT_ROOT=str(conf))
+    expect(done.out, "2 reading(s) over 2 account(s)",
+           "unavailable — no provider has a credential to read",
+           "claude (claude-spare)  70% remaining")
+
+
 def test_the_not_discovered_hint_names_only_the_account_whose_auth_failed(tmp_path, stubs):
     """One account's `quota-axi auth` being unreadable is a fact about THAT
     account. `sec['discovery']` records only the first such failure across all
@@ -566,3 +654,4 @@ def test_not_a_byte_of_the_queue_is_touched(queue, stubbed):
     status()
     status("--json")
     assert snapshot(queue) == before
+

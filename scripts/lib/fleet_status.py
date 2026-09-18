@@ -656,13 +656,28 @@ def fuel_accounts() -> list[dict]:
     for a checkout that set only that one line.
 
     AN AGENT WITH NO `ENV` ADDS NOTHING: it runs on the checkout's own account,
-    which is already first in the list. `lead` ITSELF IS NEVER RE-ASKED IN THE
-    LOOP — its account is entry zero, resolved above; asking again would add a
-    second entry under the same name for the same environment, and dedup
-    cannot save it because the two entries have no key in common to dedup on
-    (`provider=None` a "every provider" entry, `provider=<vendor>` a one-provider
-    entry). Two agents whose `ENV` and provider resolve alike are ONE account
-    and get one reading — that dedup governs any two names other than `lead`.
+    which is already first in the list. THE MEMBERSHIP CHECK IS `named()`, NEVER
+    `value()` — `value()` falls back to the checkout-wide setting for ANY agent
+    the file mentions, for ANY reason (a bare `LIMIT_BANNER` line is enough), so
+    it would hand a checkout-wide `ENV=` line to every such agent as if each
+    named its own account. `named()` answers only what the agent's OWN line or
+    its `LIKE`'s says, which is exactly "does this agent name an account of its
+    own" — an agent with nothing there truly adds nothing.
+
+    `lead` ITSELF IS NEVER RE-ASKED IN THE LOOP — its account is entry zero,
+    resolved above; asking again would add a second entry under the same name
+    for the same environment, and the `(provider, env)` dedup below cannot save
+    it because the two entries have no key in common (`provider=None` a "every
+    provider" entry, `provider=<vendor>` a one-provider entry). BUT A NAME OTHER
+    THAN `lead` CAN STILL REACH `lead`'s OWN ENVIRONMENT — a `LIKE` chain ending
+    at the agent `AGENT=` already names, with no `ENV` of its own along the way,
+    resolves through `named()`'s chain to that same `ENV` line. So every named
+    agent's resolved `env` is checked against `checkout_env` directly, ahead of
+    the `(provider, env)` dedup: equal means this is the checkout's own account
+    under an alias, not a second one, whatever name or provider it carries.
+    Two OTHER agents whose `ENV` and provider resolve alike are ONE account too
+    — the `(provider, env)` dedup below governs any two names other than a
+    `checkout_env` match.
 
     EVERY NON-CHECKOUT ENTRY CARRIES `checkout: False`, entry zero alone
     `checkout: True` — not "the account named `lead`" and not "the account
@@ -686,7 +701,16 @@ def fuel_accounts() -> list[dict]:
     ]
     seen: set = set()
     for agent in agent_settings.agents(settings):
-        if agent == lead or not agent_settings.value("ENV", agent, settings):
+        # `named()`, NEVER `value()`: an agent with no `ENV` of its own or its
+        # `LIKE`'s is not a second account just because the CHECKOUT-WIDE
+        # fallback happens to answer something — `value()` would apply that
+        # fallback to every agent `agent.conf` mentions for ANY reason (a
+        # `LIMIT_BANNER` line is enough), turning a checkout-wide `ENV=` line
+        # into a phantom account per unrelated agent name, each an extra
+        # `quota-axi auth` call and, once a no-credential account renders
+        # visibly, a false failure on the screen for an account that was
+        # never distinct from the checkout's own.
+        if agent == lead or not agent_settings.named("ENV", agent, settings):
             continue
         provider = fleetqueue.fuel_agent(agent) or agent
         env = agent_settings.account_env(agent, settings)
@@ -694,6 +718,15 @@ def fuel_accounts() -> list[dict]:
             out.append({"account": agent, "provider": provider, "env": {}, "checkout": False, "problem": (
                 f"{agent}.ENV names no NAME=VALUE pair, so fleet cannot tell this "
                 "account from the checkout's own")})
+            continue
+        # An agent named only through `agent == lead` above misses an agent
+        # that reaches the SAME environment a different way — a `LIKE` chain
+        # ending at `lead`'s own `ENV` line, most directly. Two agents whose
+        # resolved environment is byte-identical to the checkout's own are
+        # not a second account; `refuel`'s `account_key()` has no notion of
+        # "the lead" at all and buckets by `(provider, env)` alone, so this
+        # is the same equality it applies.
+        if env == checkout_env:
             continue
         key = (provider, tuple(sorted(env.items())))
         if key in seen:
@@ -948,16 +981,41 @@ def probe_fuel_all() -> dict:
         # The checkout's own account (provider is None) reads every provider
         # discovery found; a named account reads its own provider alone, per
         # `account_providers()` — never what discovery found for the others.
-        names = discovered if provider is None else account_providers(provider, discovered, why)
-        if provider is not None and not names:
-            # `auth` already said this account has no credential to read, and
-            # that is obeyed rather than probed — same fact, same silence the
-            # checkout's own account keeps when it has nothing either. Still
-            # ON SCREEN, though: a record that names the reason rather than an
-            # account that simply never appears.
-            reason = why or f"quota-axi named no {provider} credential for this account"
+        # `NO_CREDENTIAL` GETS NO FALLBACK EITHER WAY: `auth` was read and
+        # named nothing available, which is obeyed for the checkout's own
+        # account exactly as `account_providers()` already obeys it for a
+        # named one — the difference is only which provider that leaves
+        # nothing to read for. Reading the fallback name anyway spent a fetch
+        # `auth` had already answered for, and the empty `providers[]` a real
+        # vendor would answer for a missing credential came back indistinguishable
+        # from one this repo never asked about.
+        names = ([] if why == NO_CREDENTIAL else discovered) if provider is None \
+            else account_providers(provider, discovered, why)
+        if not names:
+            # NO `provider is not None` GUARD HERE: the checkout's own account
+            # naming zero providers is exactly as much "nothing to read" as a
+            # named account naming zero, and skipping the guard for it used to
+            # call `fuel_read([])` anyway — an extra quota-axi process asked
+            # for no provider at all — and then add this account to NEITHER
+            # `records` NOR `failures`. With another account in the list that
+            # DID have a reading, that silent drop is not a blank line — it is
+            # the survivor's reading rendered as if the checkout were the only
+            # account, unlabelled: `fuel_named()` counts one distinct account
+            # in `records` and drops the very field that would have told them
+            # apart. Still ON SCREEN, though: a record that names the reason
+            # rather than an account that simply never appears.
+            #
+            # `why == NO_CREDENTIAL` GETS THE FRIENDLY DEFAULT, NOT THE RAW
+            # SENTENCE: `authenticated_providers()`'s own wording is written for
+            # a caller distinguishing "read and empty" from "unreadable", which
+            # this reason line does not need to repeat — a real discovery
+            # failure (`why` truthy and not that constant) is still surfaced
+            # verbatim, because that one names what actually went wrong.
+            reason = (why if why and why != NO_CREDENTIAL else
+                      (f"quota-axi named no {provider} credential for this account"
+                       if provider is not None else "no provider has a credential to read"))
             failures.append(reason)
-            records.append(fuel_blank(provider, read_at, account)
+            records.append(fuel_blank(provider or "", read_at, account)
                             | {"unavailable": reason, "checkout": checkout})
             continue
         doc, fetch_why = fuel_read(names, env=child)
