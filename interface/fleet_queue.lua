@@ -654,6 +654,12 @@ end
 --- credential anywhere — arrives as a single record with `unavailable` and no
 --- provider, which is what a failed single-provider reading always looked like.
 ---
+--- `account` is the OTHER half of that identity, and it arrives only when the
+--- fleet has more than one: an account is a provider plus the login that
+--- selects it, so two records reading `claude` under two logins are told apart
+--- by nothing else. A fleet with one account sends no `account` field at all
+--- and this draws exactly what it drew before there was a second.
+---
 --- `window` is the one field that repeats: one line per window, as
 --- `id<TAB>percent<TAB>reset epoch<TAB>label`, already in the order to draw.
 local function build_fuel(stdout)
@@ -663,6 +669,7 @@ local function build_fuel(stdout)
     if fields then
       out[#out + 1] = {
         provider = fields.provider,
+        account = fields.account,
         unavailable = fields.unavailable,
         remaining = tonumber(fields.remaining),
         reserve = tonumber(fields.reserve),
@@ -1820,10 +1827,13 @@ end
 --- The fuel block: every window of every subscription, above everything
 --- competing for it.
 ---
---- ONE NAME ROW PER PROVIDER THAT HAS A NUMBER, then ONE ROW PER WINDOW with
+--- ONE NAME ROW PER READING THAT HAS A NUMBER, then ONE ROW PER WINDOW with
 --- its label, a bar, its percentage and when it resets. The name is not
 --- decoration: three subscriptions drawn without one are three numbers that
---- read as one reading with two mistakes in it.
+--- read as one reading with two mistakes in it. A reading that carries an
+--- `account` is named `provider (account)`, because on a fleet with two logins
+--- of one vendor the provider alone is the ambiguity the name row exists to
+--- remove.
 ---
 --- EVERY WINDOW, ALWAYS, IN THE RECORD'S ORDER. Drawing only the binding one
 --- made the row change meaning whenever two windows' percentages crossed.
@@ -1851,6 +1861,18 @@ end
 --- TWO READINGS ARE NOT BARS. No record yet is the spinner, and a stale
 --- reading is hatched and flagged, so a remembered number never looks like a
 --- freshly measured one.
+--- How one reading names itself: the provider, and whose account when the
+--- record carries one. `fleet status` phrases its own blocks the same way, so
+--- the screen and the column name one account one way.
+local function fuel_name(rec)
+  local provider = rec.provider or ""
+  local account = rec.account or ""
+  if account ~= "" and account ~= provider then
+    return provider .. " (" .. account .. ")"
+  end
+  return provider
+end
+
 local function fuel_rows(fuel, width, spinner)
   -- Measured, never counted: the glyph is two columns and not one, and every
   -- budget below is taken from what it leaves. Clamped to `width` itself,
@@ -1913,8 +1935,8 @@ local function fuel_rows(fuel, width, spinner)
     -- so this is the one whose failure matters most to what runs below.
     local first = fuel[1]
     local why = first.unavailable or "no reading"
-    if (first.provider or "") ~= "" then
-      why = first.provider .. " — " .. why
+    if fuel_name(first) ~= "" then
+      why = fuel_name(first) .. " — " .. why
     end
     return { line(head:spans_list()), detail(why) }
   end
@@ -1958,7 +1980,7 @@ local function fuel_rows(fuel, width, spinner)
 
   for _, rec in ipairs(shown) do
     local name = ui.row({ width = width })
-    name:add(" " .. widgets.truncate(rec.provider or "", math.max(1, width - 1)), { fg = theme.muted })
+    name:add(" " .. widgets.truncate(fuel_name(rec), math.max(1, width - 1)), { fg = theme.muted })
     -- quota-axi's own word for its reading, passed through rather than
     -- interpreted: it means the numbers are remembered, not just observed.
     -- Dropped rather than overflowed; the hatched bars say the same thing.

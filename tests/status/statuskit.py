@@ -54,6 +54,22 @@ def quota_axi(auth: dict, fetch: dict) -> str:
     )
 
 
+def per_account(var: str, value: str, here: tuple[dict, dict], there: tuple[dict, dict]) -> str:
+    """quota-axi that answers a DIFFERENT account when `var=value` is in its own
+    environment: `here` is the credential read and the reading for the account
+    this process is signed in to, `there` the pair for the one the agent's `ENV`
+    selects. Two readings that cannot be confused is the whole point — a screen
+    that read the wrong account would otherwise pass every assertion about
+    numbers."""
+    pairs = json.dumps({"here": list(here), "there": list(there)})
+    return (
+        "import json, os, sys\n"
+        f"PAIRS = json.loads({pairs!r})\n"
+        f"pair = PAIRS['there'] if os.environ.get({var!r}) == {value!r} else PAIRS['here']\n"
+        "sys.stdout.write(json.dumps(pair[0 if sys.argv[1:2] == ['auth'] else 1]))\n"
+    )
+
+
 def auth(*providers: tuple[str, str], at: str = "2026-03-15T16:42:00.000Z") -> dict:
     return {"generatedAt": at, "schemaVersion": 1, "auth": [
         {"provider": p, "sources": [{"source": "oauth-file", "status": status}]} for p, status in providers

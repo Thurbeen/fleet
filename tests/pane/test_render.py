@@ -226,6 +226,28 @@ def test_a_long_label_gives_way_before_the_reset(tmp_path):
     assert widest <= 30, f"a row is {widest} columns wide with a long label\n{out}"
 
 
+def test_two_accounts_of_one_provider_get_two_labelled_bars(tmp_path):
+    """A fleet whose `agent.conf` names a second login spends two windows of one
+    vendor, and `fleet status --fuel` sends two records naming the same
+    provider. Drawn without the account they are one reading with a mistake in
+    it: two name rows that both read `claude`, four window rows under them, and
+    no way to tell which 70% belongs to the account the workers run on."""
+    for width in ("44", "30"):
+        out = render(width, "--fuel-accounts")
+        expect(out, "claude (claude-spare)")
+        # The checkout's own account keeps the bare provider — there is nothing
+        # to disambiguate it from until a second account exists, and `refuel`
+        # names one account the same way.
+        assert out.splitlines()[1].strip() == "claude", out
+        # Each account keeps its own binding window and its own verdict: the
+        # first is under the reserve and the second is not.
+        rows = [line for line in out.splitlines() if " week " in line]
+        assert len(rows) == 2, out
+        assert "low" in rows[0] and "low" not in rows[1], out
+        widest = max(cells(line) for line in out.splitlines())
+        assert widest <= int(width), f"a row is {widest} columns wide at {width}\n{out}"
+
+
 def test_an_overdue_reading_says_how_old_it_is():
     """A reading older than the TTL means the refresh is not happening, and then
     its age is the most important thing on the row, said in words."""

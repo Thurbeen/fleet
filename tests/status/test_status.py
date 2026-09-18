@@ -34,8 +34,12 @@ from statuskit import (
     SESSIONS,
     STALE,
     answer,
+    auth,
     build_queue,
+    claude,
+    fetch,
     fuel_of,
+    per_account,
     records,
 )
 
@@ -322,6 +326,94 @@ def test_the_sole_credential_is_read_by_discovery_whatever_its_name(tmp_path, st
     stubs.tool("quota-axi", GLORBNAK)
     (tmp_path / "agentconf" / "orchestration").mkdir(parents=True)
     expect(status("--fuel", FLEET_AGENT_ROOT=str(tmp_path / "agentconf")).out, "provider\tglorbnak")
+
+
+# --- 6e. one reading per ACCOUNT, never per checkout --------------------------
+#
+# An account is a provider PLUS the environment that selects the credential.
+# The screen read one account per provider — whichever the command itself ran
+# under — while the workers drew on another, and the two numbers were measured
+# an hour apart on 2026-09-18: the screen said 6% remaining and the account
+# fleet dispatches on had 70%. The lead read the screen and dispatched nothing.
+#
+# So these run `fleet status` END TO END against an `agent.conf` carrying a
+# dotted `ENV` line, and the stand-in answers a different window per
+# environment: a test that called `probe_fuel_all()` itself would prove the
+# function works and nothing about whether the command reads the setting.
+
+
+def two_accounts(tmp_path: Path, stubs, here: int = 64, there: int = 7, extra: str = "") -> Path:
+    """An agent.conf naming the checkout's own account and a second login of the
+    same agent, and a quota-axi that answers a different window under each."""
+    spare = tmp_path / "spare-config"
+    conf = tmp_path / "agentconf"
+    write(conf / "orchestration" / "agent.conf",
+          "AGENT=claude\n"
+          "claude-spare.LIKE=claude\n"
+          f"claude-spare.ENV=CLAUDE_CONFIG_DIR={spare}\n" + extra)
+    stubs.tool("quota-axi", per_account(
+        "CLAUDE_CONFIG_DIR", str(spare),
+        (auth(("claude", "available")), fetch(claude(here))),
+        (auth(("claude", "available")), fetch(claude(there))),
+    ))
+    return conf
+
+
+def test_the_screen_reads_every_account_agent_conf_names(tmp_path, stubs):
+    """Both accounts, each with its own windows, its own binding window and its
+    own reserve verdict — and the identity that tells two readings of one
+    provider apart."""
+    conf = two_accounts(tmp_path, stubs)
+    done = status(FLEET_AGENT_ROOT=str(conf))
+    expect(done.out, "2 reading(s) over 2 account(s)",
+           "claude  64% remaining", "binding seven_day",
+           "claude (claude-spare)  7% remaining", "under the 20% reserve")
+
+
+def test_an_account_costs_one_quota_axi_call_and_never_one_per_provider(tmp_path, stubs):
+    """The pane redraws on a timer, so the reading may not cost a process per
+    provider. A second ACCOUNT costs one more call because the environment
+    differs, and nothing else multiplies — and the read stays a read."""
+    conf = two_accounts(tmp_path, stubs)
+    status(FLEET_AGENT_ROOT=str(conf))
+    asked = fetches(stubs)
+    assert len(asked) == 2, asked
+    for call in asked:
+        expect(call, "--provider claude", "--no-credential-refresh")
+    # The credential is on disk PER ACCOUNT, so discovery is asked per account too.
+    assert len(stubs.calls("quota-axi", "auth")) == 2, stubs.calls("quota-axi")
+
+
+def test_the_record_and_the_json_say_which_account_each_reading_is_for(tmp_path, stubs):
+    """`interface/fleet_queue.lua` parses this record and labels its bars from
+    it, so the identity has to be on the wire and not only on the screen."""
+    conf = two_accounts(tmp_path, stubs)
+    blocks = records(status("--fuel", FLEET_AGENT_ROOT=str(conf)).stdout)
+    assert [(b["provider"], b["account"], b["remaining"]) for b in blocks] == [
+        ("claude", "claude", "64"), ("claude", "claude-spare", "7")], blocks
+    doc = json.loads(status("--json", FLEET_AGENT_ROOT=str(conf)).stdout)
+    assert [p["account"] for p in doc["fuel"]["providers"]] == ["claude", "claude-spare"]
+
+
+def test_two_agents_on_one_login_are_one_account(tmp_path, stubs):
+    """The account is the ENVIRONMENT, not the agent: an agent that is `LIKE` a
+    second-account agent resolves to that same `ENV` and shares its reading
+    rather than paying for a second one."""
+    conf = two_accounts(tmp_path, stubs, extra="claude-twin.LIKE=claude-spare\n")
+    blocks = records(status("--fuel", FLEET_AGENT_ROOT=str(conf)).stdout)
+    assert [b["account"] for b in blocks] == ["claude", "claude-spare"], blocks
+    assert len(fetches(stubs)) == 2, fetches(stubs)
+
+
+def test_a_checkout_naming_no_second_account_prints_what_it_always_did(stubs):
+    """The tracked `agent.example.conf` names nothing, so a fresh clone has one
+    account and nothing to tell it apart from: no `account` field reaches the
+    record the pane parses, and the screen's head row is the one it had."""
+    stubs.tool("quota-axi", fuel_of(64))
+    done = status("--fuel")
+    refute(done.out, "account\t")
+    assert len(fetches(stubs)) == 1, fetches(stubs)
+    expect(status().out, "1 provider(s) — account windows", "  claude  64% remaining")
 
 
 # --- 7. it reads, and only reads ----------------------------------------------

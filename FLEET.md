@@ -171,21 +171,27 @@ at once, so six workers dispatched together spend them six ways. There is no
 per-worker reading to be had — `thurbox-cli session get` carries no token,
 usage, cost or limit field at all.
 
-**One reading per subscription you actually have.** `quota-axi auth` says which
-providers hold a working credential, and those, in one call, are what gets
-read; a provider with no credential is never probed. Each is its OWN reading,
-on its own clock, and nothing is summed or averaged across them: the screen
-prints a block per provider and the pane draws a labelled bar beside each
-percentage. A provider whose fetch failed says so on the screen and carries no
-number at all, never a zero; the pane leaves it out entirely, and says
-`unavailable` only when nothing read.
+**One reading per account you actually spend**, where an account is a provider
+plus the login that selects it. Which accounts exist is
+`orchestration/agent.conf` — the checkout's own `AGENT`, plus every agent
+carrying an `ENV` line, deduplicated by that environment — and for each,
+`quota-axi auth` says which providers hold a working credential under it;
+those, in one call per account, are what gets read. A provider with no
+credential there is never probed. Each reading is its OWN, on its own clock,
+and nothing is summed or averaged across them: the screen prints a block per
+reading and the pane draws a labelled bar beside each percentage. Where you
+spend more than one account, both name themselves — `claude` for the
+checkout's own and `claude (claude-spare)` for the second login — so two
+readings of one vendor can never be mistaken for one. A reading whose fetch
+failed says so on the screen and carries no number at all, never a zero; the
+pane leaves it out entirely, and says `unavailable` only when nothing read.
 
 A provider's windows reset independently — a session window, a week, a
 per-model week. That provider's reading is the lowest of them, the screen names
 which one binds and prints them all with their own resets, and a reading served
 from cache says `stale` and how old it is.
 
-**The reserve is 20%, per provider. Below it you dispatch nothing new.** That
+**The reserve is 20%, per account. Below it you dispatch nothing new.** That
 is the rule, and it is checkable rather than a feeling: the screen prints the
 reading and the reserve on one line, and the pane's bar marks where the floor
 falls across it. It is fleet's own floor and not `quota-axi`'s `reserve`
@@ -194,11 +200,13 @@ for every window whose fetch failed. Nothing enforces the floor for
 you — `fleet queue dispatch` does not read fuel and must not, because a queue
 that stops on a bad parse is worse than one that spends. `fleet queue refuel`
 does read it, and reads ONE WINDOW PER ACCOUNT the tasks in hand draw on: the
-provider comes from your agent or from `FUEL_PROVIDER`, and which of that
-provider's accounts from the agent's own `ENV` line in
-`orchestration/agent.conf`. A spent window on a provider fleet does not
-dispatch is no reason to leave a worker sitting at its limit, and a task whose
-account cannot be worked out is `undetermined`, which restarts nothing.
+provider comes from that task's agent or from `FUEL_PROVIDER`, and which of
+that provider's accounts from the agent's own `ENV` line in
+`orchestration/agent.conf` — the same records `status` reads, so the screen
+and the gate cannot disagree about which window a worker is sitting on. A
+spent window on a provider fleet does not dispatch is no reason to leave a
+worker sitting at its limit, and a task whose account cannot be worked out is
+`undetermined`, which restarts nothing.
 
 Near the floor you spend fuel on dispatching and on nothing else:
 
@@ -214,7 +222,9 @@ Near the floor you spend fuel on dispatching and on nothing else:
 
 **The reading is a fact you report**, in the same register as every other state
 word here: `fuel claude 74% remaining, reserve 20%, binding seven_day`, or
-`fuel codex unavailable — auth_required`. Never a zero, never a guess.
+`fuel codex unavailable — auth_required`. Where the fleet spends more than one
+account, the account is part of that fact and never left off:
+`fuel claude (claude-spare) 70% remaining`. Never a zero, never a guess.
 quota-axi also publishes `pace`, `runway` and `projectedExhaustedAt`; those are
 its projections and you do not restate them as yours. `resetsAt` is the fact — a
 spent window is spent, and that is when it comes back.

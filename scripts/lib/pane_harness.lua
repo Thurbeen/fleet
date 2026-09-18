@@ -54,6 +54,9 @@
 -- `--chord <key>` is what the key registry answers for the toggle, so a rebind
 -- can be rendered. `--fuel-read <seconds>` is how long ago the fuel reading
 -- was taken; the default is two minutes, inside the pane's own TTL.
+-- `--fuel-accounts` replaces the one reading with two: the same provider under
+-- two logins, which is what a fleet whose `agent.conf` names a second account
+-- draws.
 --
 -- Scrolling, applied in this order before anything is printed:
 --   `--long <n>`    adds a topic of n running tasks, a queue longer than a pane
@@ -70,9 +73,15 @@ local SELECTED = {}
 -- `--long-label` adds a third fuel window whose label is as long as the pane
 -- lets a label be, the shape a per-model window takes.
 local LONG_LABEL = false
+-- `--fuel-accounts` is a fleet spending TWO LOGINS of one provider, which is
+-- the reading `fleet status` takes when `agent.conf` carries an `ENV` line:
+-- two records naming the same provider, told apart by `account` alone.
+local FUEL_ACCOUNTS = false
 for i, a in ipairs(arg) do
   if a == "--long-label" then
     LONG_LABEL = true
+  elseif a == "--fuel-accounts" then
+    FUEL_ACCOUNTS = true
   elseif a == "--long" then
     LONG = tonumber(arg[i + 1]) or 0
   elseif a == "--height" then
@@ -451,6 +460,31 @@ local FUEL = table.concat({
 }, "\n")
 if LONG_LABEL then
   FUEL = FUEL .. "\nwindow\tmodel_week\t40\t" .. (NOW + 2 * 86400) .. "\tModel week"
+end
+
+-- The same provider read under two accounts: the first is the checkout's own
+-- and the second the login an agent's `ENV` selects. The numbers are far apart
+-- on purpose — a pane that drew one reading twice would still look right.
+if FUEL_ACCOUNTS then
+  FUEL = table.concat({
+    "provider\tclaude",
+    "account\tclaude",
+    "remaining\t18",
+    "reserve\t20",
+    "limited_by\tseven_day",
+    "read_at\t" .. (NOW - FUEL_READ),
+    "window\tfive_hour\t62\t" .. (NOW + 3 * 3600 + 600) .. "\tsession",
+    "window\tseven_day\t18\t" .. (NOW + 4 * 86400 + 7200) .. "\tweek",
+    "",
+    "provider\tclaude",
+    "account\tclaude-spare",
+    "remaining\t70",
+    "reserve\t20",
+    "limited_by\tfive_hour",
+    "read_at\t" .. (NOW - FUEL_READ),
+    "window\tfive_hour\t70\t" .. (NOW + 2 * 3600) .. "\tsession",
+    "window\tseven_day\t95\t" .. (NOW + 5 * 86400) .. "\tweek",
+  }, "\n")
 end
 
 local LEAD = { id = "s1", name = "⌖ Mission Control", cwd = "/home/operator/fleet", status = "ok" }
