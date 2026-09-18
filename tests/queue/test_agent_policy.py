@@ -980,6 +980,7 @@ def test_dispatch_announces_an_uncovered_command_profile(checkout, forge_store, 
         "id": sid, "agent": "cursor-agent", "reports_as": None,
         "detected_agent": None, "hook_reported": False, "state": "uncovered",
         "hook_coverage": "none",
+        "foreground_command": "cursor-agent --trust",
     }) + "\n")
     stubs.tool("thurbox-cli", ANSWERING_KEYS)
     out = ok(q("dispatch", **env)).out

@@ -154,19 +154,67 @@ def test_the_trust_command_keeps_its_cli():
 
 def test_a_command_stem_that_takes_a_launch_flag_is_ready_without_a_keystroke(stubs):
     """thurbox names a `--command cursor-agent` session `cursor-agent`, not
-    `cursor`. Measured 2026-09-18: session create returns agent cursor-agent,
-    reports_as null, hook_reported false, coverage none. The launch flag
-    already answered trust, so this must be ready — exit 0, no keys — or
-    dispatch creates the session and never sends the brief."""
+    `cursor`. Measured 2026-09-18: session get --json has no args array; the
+    pane probe puts the launch line in foreground_command, including --trust.
+    That flag already answered trust, so this must be ready — exit 0, no
+    keys — or dispatch creates the session and never sends the brief."""
     sid = "d1a10900-0000-0000-0000-0000000000ca"
     write(stubs.root / "sessions" / f"{sid}.json", json.dumps({
         "id": sid, "agent": "cursor-agent", "reports_as": None,
         "detected_agent": None, "hook_reported": False, "state": "uncovered",
         "hook_coverage": "none",
+        "foreground_command": "cursor-agent --trust",
     }) + "\n")
     done = trust(sid, "--timeout", "5", "--json")
     assert done.code == 0, done.out
     report = json.loads(done.stdout)
     assert report["outcome"] == "ready", done.out
     assert report["agent"] == "cursor-agent", done.out
+    assert keys(stubs) == []
+
+
+def test_cursor_without_trust_on_the_launch_stays_flag_required(stubs):
+    """A hand session create without --trust is what thurbox-session documents.
+    Ready without looking at the launch line would send the brief into the
+    dialog."""
+    sid = "d1a10900-0000-0000-0000-0000000000cb"
+    write(stubs.root / "sessions" / f"{sid}.json", json.dumps({
+        "id": sid, "agent": "cursor-agent", "reports_as": None,
+        "hook_reported": False, "state": "uncovered",
+        "foreground_command": "cursor-agent",
+    }) + "\n")
+    done = trust(sid, "--timeout", "5", "--json")
+    assert done.code == 3, done.out
+    report = json.loads(done.stdout)
+    assert report["outcome"] == "flag-required", done.out
+    assert keys(stubs) == []
+
+
+def test_cursor_without_a_launch_line_stays_flag_required(stubs):
+    """Missing foreground_command is the same as a line without --trust:
+    nothing asserts the dialog was answered."""
+    sid = "d1a10900-0000-0000-0000-0000000000cd"
+    write(stubs.root / "sessions" / f"{sid}.json", json.dumps({
+        "id": sid, "agent": "cursor-agent", "reports_as": None,
+        "hook_reported": False, "state": "uncovered",
+    }) + "\n")
+    done = trust(sid, "--timeout", "5", "--json")
+    assert done.code == 3, done.out
+    assert json.loads(done.stdout)["outcome"] == "flag-required", done.out
+    assert keys(stubs) == []
+
+
+def test_muse_stays_flag_required(stubs):
+    """--yolo is not a trust flag, and no muse session has been watched to
+    start. Ready here would send the brief into whatever is on the pane."""
+    sid = "d1a10900-0000-0000-0000-0000000000cc"
+    write(stubs.root / "sessions" / f"{sid}.json", json.dumps({
+        "id": sid, "agent": "muse", "reports_as": None,
+        "hook_reported": False, "state": "uncovered",
+        "foreground_command": "muse --yolo",
+    }) + "\n")
+    done = trust(sid, "--timeout", "5", "--json")
+    assert done.code == 3, done.out
+    report = json.loads(done.stdout)
+    assert report["outcome"] == "flag-required", done.out
     assert keys(stubs) == []
