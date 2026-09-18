@@ -105,8 +105,11 @@ follow from how the name is used:
   of the name it builds from the task title, under the one setting in
   `orchestration/session-glyphs.example.conf` that also decides the lead's. The
   convention above is unchanged — the name is still an imperative sentence, now
-  with a glyph before it — and a session you spawn by hand wears nothing unless
-  you type one.
+  with a glyph before it. A session you spawn BY HAND wears nothing unless its
+  name was rendered: `uv run fleet session-name <kind> '<title>'` is how one
+  gets the mark its kind wears without any file spelling a glyph, and it is
+  what `diagnose-machine` and `review-prs` call. Never type a glyph into a
+  `--name`; `GLYPHS=off` would never take it back off.
 
 ## 1a. Remote hosts (`--host`)
 

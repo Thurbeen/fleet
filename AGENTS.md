@@ -110,15 +110,26 @@ names every path and the reason for each.
   whose repository cannot be read from `origin`, is refused when any policy is
   in force.
 - `orchestration/session-glyphs.example.conf` — the mark fleet's sessions wear
-  in the thurbox session list: `📡` on the lead, `🚀` on every worker, under ONE
-  `GLYPHS=on|off` setting whose `off` is the one-cell `⌖` and no worker prefix.
-  Tracked defaults; copy it to a gitignored `session-glyphs.conf` beside it to
-  change anything, since editing a tracked file would leave
-  `fleet sync-checkout` a dirty tree. Two readers and no third:
-  `fleet install-extension` renders the lead's mark into the manifest, and
-  `scripts/lib/queue.py` puts the worker's on at dispatch. **Changing it is a
-  RENAME of the lead, and installing is not applying one** — see
-  `extension.toml.in`'s RENAMING header.
+  in the thurbox session list: `📡` on the lead and one word per KIND of session
+  fleet spawns — a queue worker, the `diagnose-machine` sweep, the `review-prs`
+  reviewer — under ONE `GLYPHS=on|off` setting whose `off` is the one-cell `⌖`
+  and no prefix on anything else. Tracked defaults; copy it to a gitignored
+  `session-glyphs.conf` beside it to change anything, since editing a tracked
+  file would leave `fleet sync-checkout` a dirty tree. TWO MODULES read it and
+  no third: `fleet install-extension` renders the lead's mark into the
+  manifest, and `scripts/lib/queue.py` holds the map from a kind to its word —
+  which `dispatch` uses in-process for a worker and which
+  `uv run fleet session-name <kind> '<title>'` (`scripts/lib/session_name.py`)
+  renders for the two skills whose own `session create` line spawns a session,
+  since prose can read no setting. `tests/pane/test_agreement.py` fails the
+  pane, or either of those two skills, spelling one. **Changing any word is a
+  RENAME, and installing is not applying one** — see `extension.toml.in`'s
+  RENAMING header for the lead's, which is the expensive one. None of the other
+  three is free either: every session fleet spawns is looked up by the name it
+  was given (`adopt` in both skills and in the fixer, `fail` in `dispatch`), so
+  the one running under the old word is no longer found and the next spawn
+  makes a second beside it. `thurbox-cli session rename` applies a new word to
+  a live session, and only before that second one exists.
 - `orchestration/fleet.example.conf` — THIS FLEET'S NAME, which is what lets
   one machine run more than one. A fleet is a CHECKOUT — queue, registry, run
   logs, reconciler runtime and first-run answers all live in it — so two clones

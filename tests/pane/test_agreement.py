@@ -6,7 +6,9 @@ given a block that places a slot nothing fills: the pane loads, lists, and
 draws nothing, and every message they have says it should work. The same goes
 for the F-key, the name `plugin remove` takes, the fuel reading's one source,
 its field names and threshold, the lead's name, the mark that names its
-fleet, and the glyphs.
+fleet, and the glyphs — including the two a skill's own `session create` line
+wears, which it gets by calling `fleet session-name` rather than by spelling
+one.
 
 Not a Lua linter, deliberately: the pane's own gate is `thurbox-cli plugin
 check`, which needs a thurbox install and belongs at install time.
@@ -29,6 +31,22 @@ ONBOARDING = REPO / ".agents" / "skills" / "fleet-onboarding" / "SKILL.md"
 PANE_SKILL = REPO / ".agents" / "skills" / "fleet-pane" / "SKILL.md"
 STATUS = REPO / "scripts" / "lib" / "fleet_status.py"
 GLYPHS = REPO / "orchestration" / "session-glyphs.example.conf"
+
+# Every name the one `GLYPHS` setting chooses between, READ OFF THE SETTING —
+# a hand-written list here would exempt the next word somebody adds from every
+# rule below, which is the failure these tests exist to prevent. A reader that
+# spells a glyph instead of reading it is a second copy of the setting, which
+# `off` never reaches.
+# EVERY assignment in the file except the switch, rather than the ones whose
+# name happens to contain GLYPH: a word renamed to something without that
+# substring would drop out of the list and every rule below would stop covering
+# it, green. `GLYPHS` is the switch — its value is `on`, ordinary prose
+# everywhere — and the file holds nothing else.
+GLYPH_KEYS = tuple(k for k in re.findall(r"^([A-Z_]+)=", GLYPHS.read_text(encoding="utf-8"), re.M)
+                   if k != "GLYPHS")
+
+# The skills that spawn a session of their own, and the kind each one renders.
+SPAWNING_SKILLS = {"diagnose-machine": "diagnose", "review-prs": "review"}
 
 # Chords the KERNEL owns (help, theme, settings, reload, perf). A plugin-scoped
 # binding does not outrank one: F6 once shipped reading "F6 hides" in the
@@ -113,10 +131,28 @@ def test_the_pane_reads_a_fleets_name_back_the_way_the_renderer_wrote_it():
     assert one(r'^local FLEET_MARK = "(.*)"$', PANE_TEXT) == lib("install_extension.py").FLEET_SEPARATOR
 
 
+def test_the_setting_carries_a_word_for_every_kind_queue_py_maps():
+    """A kind with no word renders a mark-less session and fails nothing else."""
+    assert len(GLYPH_KEYS) > 2, f"the setting reads as {len(GLYPH_KEYS)} words — is it still KEY=value?"
+    missing = [k for k in lib("queue.py").GLYPH_KEYS.values() if k not in GLYPH_KEYS]
+    assert missing == [], f"queue.py maps a kind to a word the setting does not carry: {missing}"
+
+
 def test_no_glyph_setting_is_spelled_in_the_panes_code():
-    for key in ("LEAD_GLYPH_ON", "LEAD_GLYPH_OFF", "WORKER_GLYPH_ON"):
+    for key in GLYPH_KEYS:
         glyph = one(rf"^{key}=(.*)$", read(GLYPHS))
         assert glyph not in PANE_CODE, f"the pane spells the {key} glyph in code"
+
+
+@pytest.mark.parametrize("skill", sorted(SPAWNING_SKILLS), ids=sorted(SPAWNING_SKILLS))
+def test_each_spawning_skill_renders_its_session_name_through_the_setting(skill):
+    """A skill naming its session in plain text spawns an unmarked session, and
+    one spelling the mark instead is a copy of a setting `GLYPHS=off` cannot
+    reach. `fleet session-name <kind> '<title>'` is the only way in."""
+    text = read(REPO / ".agents" / "skills" / skill / "SKILL.md")
+    expect(text, f"fleet session-name {SPAWNING_SKILLS[skill]} ")
+    for key in GLYPH_KEYS:
+        assert one(rf"^{key}=(.*)$", read(GLYPHS)) not in text, f"{skill} spells the {key} glyph"
 
 
 @pytest.mark.parametrize("path", [GLYPHS, PANE], ids=["session-glyphs", "pane"])

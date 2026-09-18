@@ -47,10 +47,29 @@ play.
 ## 1. Give it its own session, and its own worktree
 
 ```bash
-thurbox-cli session create --name 'Review open change requests on <repo>' \
+thurbox-cli session create \
+  --name "$(uv run fleet session-name review 'Review open change requests on <project>')" \
   --repo-path <the repo> --worktree-branch review-prs --base-branch main \
   --on-existing adopt --parent <the lead's uuid> --json
 ```
+
+**The name is rendered, never typed.** The reviewer wears a mark in the session
+list the way the lead and every worker do, and which mark is a setting
+(`orchestration/session-glyphs.example.conf`) — so no file spells it and
+`GLYPHS=off` leaves this session the plain title above. Run that substitution
+from the control-plane checkout, which is where `uv run fleet` resolves.
+
+It REFUSES a title thurbox would reject and one the 64-byte cap would cut,
+rather than handing over a name that is wrong in a way nobody sees. `$(...)`
+swallows the exit code, so a `--name ''` refusal from thurbox means read the
+stderr above it: that is this command's message, not a thurbox bug.
+
+**`<project>` is the bare project name, and it is the one place this skill does
+NOT identify a repository by host plus path.** A session name becomes a path
+segment in thurbox, so a `/` in it is refused — `github.com/owner/repo` in that
+title spawns nothing. The full identity is already on `--repo-path`, and every
+forge call below takes it in its own form; the name only has to tell one
+reviewer from another in the session list.
 
 **Its own worktree is not optional.** A reviewer checks out other people's head
 commits to try things. Doing that in the main checkout leaves the operator's
@@ -59,10 +78,23 @@ cannot recognise.
 
 `adopt` because this recurs; **read `created` before you send anything** —
 `false` means the reviewer is already running and a prompt would interrupt it
-mid-pass. A hand-spawned session still has its agent's trust dialog in front of
-it: `uv run fleet session-trust <uuid>` answers it, and `session send` before
-that types the prompt into the dialog. `.agents/skills/thurbox-session/` owns
-both.
+mid-pass. **`adopt` matches on the NAME, so a reviewer created before the mark
+existed is not the one it finds.** The first spawn after that tries to make a
+SECOND reviewer, which asks for the `review-prs` worktree the first one is
+holding, and git refuses it. Rename the old one rather than deleting it — it
+keeps both its conversation and that worktree, and rename takes the name, the
+uuid or an id prefix:
+
+```bash
+thurbox-cli session rename '<its current name>' \
+  "$(uv run fleet session-name review 'Review open change requests on <project>')"
+```
+
+`--on-existing replace` is NOT the way out: it matches the same name `adopt`
+does, so it tears down nothing and the worktree still blocks the spawn.
+A hand-spawned session still has its agent's trust dialog in front of it:
+`uv run fleet session-trust <uuid>` answers it, and `session send` before that
+types the prompt into the dialog. `.agents/skills/thurbox-session/` owns both.
 
 Three rules the session lives under, all three from getting them wrong:
 

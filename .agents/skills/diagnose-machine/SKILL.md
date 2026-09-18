@@ -36,18 +36,49 @@ does not belong in the lead's context, and a lead that has to stay responsive
 should not be the thing running `pkill`.
 
 ```bash
-thurbox-cli session create --name 'Diagnose this machine and free what is dead' \
+thurbox-cli session create \
+  --name "$(uv run fleet session-name diagnose 'Diagnose this machine and free what is dead')" \
   --repo-path <the repo whose leak you suspect, or the control plane> \
   --on-existing adopt --parent <the lead's uuid> --json
 ```
 
+**The name is rendered, never typed.** The sweep's session wears a mark in the
+session list the way the lead and every worker do, and which mark is a setting
+(`orchestration/session-glyphs.example.conf`) — so no file spells it and
+`GLYPHS=off` leaves this session the plain title above. Run that substitution
+from the control-plane checkout, which is where `uv run fleet` resolves.
+
+It REFUSES a title thurbox would reject and one the 64-byte cap would cut,
+rather than handing over a name that is wrong in a way nobody sees. `$(...)`
+swallows the exit code, so a `--name ''` refusal from thurbox means read the
+stderr above it: that is this command's message, not a thurbox bug.
+
 `adopt` rather than `fail`: this is a recurring chore and one long-lived
-session for it is correct. **Read `created` before you send anything** — on
-`false` the session was already there and may be mid-sweep, so read its state
-instead of typing over it. `.agents/skills/thurbox-session/` owns all of that,
-and §1b in particular: a session spawned by hand asks its agent's trust
-question, and `uv run fleet session-trust <uuid>` is what answers it. Sending a
-prompt into that dialog types the prompt into the dialog.
+session for it is correct. **`adopt` matches on the NAME, so a sweep session
+created before the mark existed is not the one it finds** — the first spawn
+after that returns `created: true` and you have two sweeps, both willing to run
+`pkill`. **Rename the old one BEFORE you spawn**, from
+`thurbox-cli session list`; it keeps its conversation, and rename takes the
+name, the uuid or an id prefix:
+
+```bash
+thurbox-cli session rename '<its current name>' \
+  "$(uv run fleet session-name diagnose 'Diagnose this machine and free what is dead')"
+```
+
+Order matters: rename refuses a name another active session already holds, so
+once the second sweep exists it is holding the marked name and this command
+fails. From that state, delete the new empty sweep first
+(`thurbox-cli session delete --force <uuid>`), then rename the old one.
+`--on-existing replace` is not the way out either: it matches the same name
+`adopt` does, so it finds nothing to replace and creates the second session
+anyway.
+**Read `created` before you send anything** — on `false` the session was
+already there and may be mid-sweep, so read its state instead of typing over
+it. `.agents/skills/thurbox-session/` owns all of that, and §1b in particular:
+a session spawned by hand asks its agent's trust question, and
+`uv run fleet session-trust <uuid>` is what answers it. Sending a prompt into
+that dialog types the prompt into the dialog.
 
 No worktree and no branch: the sweep changes no code, and a worktree would be
 one more directory to account for in §7.
