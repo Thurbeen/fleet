@@ -153,3 +153,20 @@ def test_a_holder_that_survives_stop_is_never_resumed_on_top_of(dead, stubs, que
     assert len(doc["refuels"]) == 1
     assert doc["refuels"][0]["prompted"] is False
     assert doc["state"] == "dispatched"
+    expect(doc["refuels"][0]["park"], "session parked", "still in use")
+
+
+def test_a_parked_restart_is_reported_as_refuel_not_a_person(dead, stubs, queue_dir):
+    """The park is the one state this design hands to a human: it has to stay
+    on the receipt, or the next pass calls it a deliberate stop."""
+    process_census(stubs, f'rows = ["agent --resume agent-{SID}"]')
+    expect(ok(q("refuel", dead)).out, "NOT RESTARTED", "session parked")
+    path = stubs.root / "sessions" / f"{SID}.json"
+    session = json.loads(path.read_text(encoding="utf-8"))
+    session.update(stopped=True, state="stopped")
+    write(path, json.dumps(session))
+    out = ok(q("refuel", dead)).out
+    expect(out, "session parked", "still in use")
+    refute(out, "deliberately stopped")
+    assert stubs.calls("thurbox-cli", "session start") == []
+    assert len(stubs.calls("thurbox-cli", "session stop")) == 1

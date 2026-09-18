@@ -5336,15 +5336,19 @@ def session_doc(sid: str) -> tuple[dict | None, str]:
     return doc, ""
 
 
-def record_refuel(task: Task, sid: str, why: str, prompted: bool) -> None:
+def record_refuel(task: Task, sid: str, why: str, prompted: bool,
+                  park: str | None = None) -> None:
     """The receipt, and the cap's only memory.
 
     Appended, never replaced: a session that keeps running dry is a fact about
     the task, and one that is invisible if each pass overwrites the last.
+    `park` is why a stop that ran did not start — the next pass reads it
+    instead of calling that a person parked the session.
     """
-    task.doc.setdefault("refuels", []).append(
-        {"at": now(), "session": sid, "why": why, "prompted": prompted}
-    )
+    rec = {"at": now(), "session": sid, "why": why, "prompted": prompted}
+    if park:
+        rec["park"] = park
+    task.doc.setdefault("refuels", []).append(rec)
     task.save()
 
 
@@ -5593,7 +5597,10 @@ def refuel(q: Queue, ref: str | None = None, dry: bool = False) -> int:
 
         history = task.doc.get("refuels") or []
         if doc.get("stopped") or doc.get("state") == "stopped":
-            print(f"    {task.ref:<46} kept          the session is deliberately stopped")
+            last = history[-1] if history else {}
+            park = last.get("park") if last.get("session") == sid else None
+            print(f"    {task.ref:<46} kept          "
+                  f"{park or 'the session is deliberately stopped'}")
             kept += 1
             continue
         # `get` probes the multiplexer. Its corroboration is the pane's actual
@@ -5667,7 +5674,7 @@ def refuel(q: Queue, ref: str | None = None, dry: bool = False) -> int:
         # could not be read never issued stop, and must not.
         ok, note, issued_stop = restart_session(sid, doc)
         if issued_stop:
-            record_refuel(task, sid, detail, False)
+            record_refuel(task, sid, detail, False, park=None if ok else note)
         if not ok:
             print(f"    {task.ref:<46} NOT RESTARTED {note}", file=sys.stderr)
             kept += 1

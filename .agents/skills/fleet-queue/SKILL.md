@@ -885,8 +885,10 @@ conversation id, then `session start`. `session start` resumes the same way
 the old process may still hold the conversation, and the agent then exits 1
 (`Session ID … is already in use`), leaving `hook_corroboration: dead`. Text
 from `ps` selects only what we wait for, never what we kill. A holder that
-survives the wait leaves the session parked for a human rather than launching
-on top of it. Then dispatch's own handoff: `session_trust.py` first, because a
+survives the wait, or a `session start` that fails after stop, leaves the
+session parked. That reason is written onto the `refuels` receipt as `park`
+and printed on later passes — calling it a deliberate stop would assert a
+person did it. Then dispatch's own handoff: `session_trust.py` first, because a
 re-spawned agent in a worktree can ask the trust question again and sending
 into that dialog types the prompt INTO it.
 Every restart is recorded on the task and **capped at three** — a session that
