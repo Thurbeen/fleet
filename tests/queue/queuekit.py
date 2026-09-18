@@ -62,6 +62,17 @@ def deletions(stubs) -> str:
     return "\n".join(stubs.calls("thurbox-cli", "session delete"))
 
 
+def result_artifacts(task_dir: Path, outcome: str, note: str, artifacts: dict) -> None:
+    """The result.md a worker writes for a task that SPANS repositories.
+
+    `artifacts:` keyed by repository path, which is how the brief writes it, as
+    opposed to `result`'s single `artifact:` scalar above. Both shapes are the
+    contract, and a task with one repository still writes the scalar.
+    """
+    block = "".join(f"  {repo}: {url}\n" for repo, url in artifacts.items())
+    write(task_dir / "result.md", f"---\noutcome: {outcome}\nartifacts:\n{block}---\n{note}\n")
+
+
 def fill_brief(path: Path) -> None:
     body = path.read_text(encoding="utf-8").replace(
         PLACEHOLDER, "Make the change, open a pull request, and write the result file below."

@@ -119,7 +119,18 @@ made explicit.
 Usage:
   uv run fleet queue topic add <slug> --title T --prompt 'the ask'   # or --prompt-file F|-
   uv run fleet queue add <topic> <slug> --title T --repo P --branch B [--base main]
-                       [--host H] [--profile default] [--touches a,b] [--brief-file F]
+                       [--add-dir P] [--add-repo P[@BASE]] [--host H]
+                       [--profile default] [--touches a,b] [--brief-file F]
+                       # --add-dir, repeatable, attaches another directory to
+                       # the worker's session exactly as it is: no worktree, no
+                       # branch, nothing to publish. It is how a worker reads a
+                       # sibling repository or a docs tree while it works.
+                       # --add-repo, repeatable, is a second repository the
+                       # task also COMMITS in — its own worktree, the same
+                       # --branch, off BASE or off --base. The task then leaves
+                       # one artifact PER REPOSITORY: `collect` holds it open
+                       # unless every one verifies, `reap` lands it only once
+                       # every one has landed, and `shepherd` watches them all.
                        [--publish attested|pr|push|note|none] [--target U]
                        [--how 'run `/publish`']
                        # --brief-file fills whichever of the brief's four
@@ -553,6 +564,14 @@ PUBLISH_DEFAULT = "pr"
 # the task's would make somebody else's pull request look like this task's
 # work: to the landing check, and to the shepherd's merge gate.
 CHANGE_METHODS = ("attested", "pr")
+
+# The methods whose artifact belongs to a REPOSITORY, and so goes plural when a
+# task spans several. `note` and `none` are not here and that is deliberate: a
+# note sits on the one `--target` a task names, and `none` names nothing fleet
+# checks — neither becomes one-per-repository however many repositories the
+# worker had open, and inventing a second target for one would be fleet making
+# up a deliverable the operator never asked for.
+PER_REPO_METHODS = ("attested", "pr", "push")
 
 # Accepted wherever a method is read, so a record written before the rename
 # still loads and `--publish no-mistakes` still works. New records say
@@ -1358,6 +1377,145 @@ class Task:
         write_yaml(self.file("task.yaml"), self.doc, TASK_HEADER)
 
 
+
+
+# --- a task that spans several repositories ----------------------------------
+#
+# thurbox's `session create` has always taken `--add-dir` (a directory attached
+# exactly as it is) and `--add-repo PATH[@BASE]` (a second repository, its own
+# worktree, on the SAME `--worktree-branch`). The queue reached for neither, so
+# a task could name one repository and `.agents/skills/thurbox-session/` taught
+# the lead a capability the queue could not express.
+#
+# THE TWO ARE DIFFERENT WEIGHTS, and that is the whole shape of this. An
+# `--add-dir` is READ: it stops at `spawn_commands` and nothing below it —
+# verification, landing, reaping, the shepherd — has anything to say about one.
+# An `--add-repo` is COMMITTED IN, and a commit fleet does not verify is the
+# exact failure verification exists to stop. So the artifact model goes plural
+# with it: one artifact per repository, each with its own verdict.
+#
+# ONE PUBLISH METHOD FOR THE WHOLE TASK. A task is one unit of intent, and
+# `--publish attested` means every repository it touches leaves an attested
+# change request behind. There are no per-repository methods.
+#
+# BOTH SHAPES OF `artifact:` LOAD, the way the retired `no-mistakes` method is
+# still read as `attested`. A scalar is ONE artifact, the primary repository's
+# — which is what every record written before this carries, and what a
+# single-repo task still writes, so those records load, list, verify and reap
+# unchanged. A list is the plural shape and nothing writes one for a task with
+# one repository.
+
+
+def split_add_repo(spec: str) -> tuple[str, str]:
+    """(path, base) for one `--add-repo` value — `PATH` or `PATH@BASE`.
+
+    thurbox owns that syntax and gets the operator's string VERBATIM;
+    `spawn_commands` passes it through without reading it. This split is
+    fleet's own reading of it, for the two questions fleet has to answer about
+    the repository itself: which checkout is it, and what does its worktree
+    branch off. No `@` means the task's own `--base`, which is thurbox's
+    default too.
+    """
+    path, sep, base = spec.rpartition("@")
+    return (path, base) if sep and path else (spec, "")
+
+
+def task_repos(task) -> list[dict]:
+    """Every repository this task spans: {path, base, spec, primary}.
+
+    The primary first, then each `--add-repo` in the order the operator gave
+    it. A task that names none returns exactly ONE entry, which is what keeps
+    every reader below a single code path rather than two.
+    """
+    d = task.doc
+    primary = {
+        "path": str(d.get("repo") or ""),
+        "base": str(d.get("base") or "main"),
+        "spec": str(d.get("repo") or ""),
+        "primary": True,
+    }
+    repos = [primary]
+    for spec in d.get("add_repos") or []:
+        path, base = split_add_repo(str(spec))
+        repos.append(
+            {"path": path, "base": base or primary["base"], "spec": str(spec), "primary": False}
+        )
+    return repos
+
+
+def same_path(a: str, b: str) -> bool:
+    """Whether two written paths name the same checkout — as text, and no more.
+
+    Nothing here touches the filesystem: a task's repositories may be on
+    another machine (`--host`), and a check that resolved them would be
+    answering about this one. `os.path.normcase` is the standard library's own
+    answer to "is this OS case-sensitive", so this grows no second branch of
+    fleet's own about which OS it is on.
+    """
+    return os.path.normcase(os.path.normpath(a or ".")) == os.path.normcase(
+        os.path.normpath(b or ".")
+    )
+
+
+def artifact_entries(value, primary: str) -> list[dict]:
+    """`artifact:` in EITHER shape, as [{repo, url}].
+
+    A scalar — a URL, or nothing at all — is one artifact, the primary
+    repository's. A list is the plural shape, one mapping per repository.
+    Reading both is what lets a record written before a task could span
+    repositories keep loading, showing, verifying and reaping as it did.
+    """
+    if not isinstance(value, list):
+        return [{"repo": primary, "url": value}]
+    out = []
+    for item in value:
+        if isinstance(item, dict):
+            out.append({"repo": str(item.get("repo") or primary), "url": item.get("url")})
+        else:
+            out.append({"repo": primary, "url": item})
+    return out
+
+
+def recorded_artifacts(task) -> list[dict]:
+    """What this task's RECORD claims it left behind, one entry per repository."""
+    return artifact_entries(task.doc.get("artifact"), str(task.doc.get("repo") or ""))
+
+
+def artifact_repos(task) -> list[dict]:
+    """The repositories an artifact is expected FOR.
+
+    Every repository the task spans for the methods whose artifact belongs to
+    one (PER_REPO_METHODS); the primary alone for `note` and `none`, which are
+    left single deliberately and said out loud rather than faked.
+    """
+    repos = task_repos(task)
+    return repos if task_publish(task)[0] in PER_REPO_METHODS else repos[:1]
+
+
+def artifact_text(task) -> str:
+    """Every artifact this task recorded, as ONE line for a log or a table cell.
+
+    A task with one repository is exactly its URL, so nothing a reader has ever
+    seen changes; a task that spans them names each, space-separated, rather
+    than printing the list the record holds.
+    """
+    return " ".join(str(a["url"]) for a in recorded_artifacts(task) if a["url"])
+
+
+def artifact_value(rows: list[dict]):
+    """What goes onto the record as `artifact:`.
+
+    A SCALAR for a task with one repository — the shape every reader of a
+    record already speaks, from the TUI pane to `fleet status` to every record
+    written before this existed. A list of {repo, url} only for a task that
+    actually spans repositories, which is the one case anything has to learn a
+    second shape for.
+    """
+    if len(rows) == 1:
+        return rows[0]["url"]
+    return [{"repo": r["repo"], "url": r["url"]} for r in rows]
+
+
 # What a Queue loads. The default is the operator's default view, and it is
 # the reason `archived` is worth having at all: a topic marked archived costs
 # ONE read of its topic.yaml and its task directories are never opened, so
@@ -1977,6 +2135,18 @@ def cmd_add(args) -> int:
     if refusal:
         raise QueueError(refusal)
 
+    # And once per --add-repo, for exactly the same reason: thurbox cuts a
+    # worktree on the same branch in every one of them, so a branch that
+    # already exists in the SECOND repository fails the same spawn just as
+    # dead. Each is asked about its own base, which `PATH@BASE` may name.
+    add_dirs = [d.strip() for d in (args.add_dir or []) if d.strip()]
+    add_repos = [r.strip() for r in (args.add_repo or []) if r.strip()]
+    for spec in add_repos:
+        also, also_base = split_add_repo(spec)
+        refusal = branch_refusal(also, args.branch, also_base or args.base, args.host)
+        if refusal:
+            raise QueueError(f"--add-repo {spec}: {refusal}")
+
     # And one layer down again: the title becomes the worker's session NAME,
     # and thurbox refuses a name it could not make a path segment of. Asked
     # here for the branch's own reason, only harder — a title that gets past
@@ -1993,10 +2163,17 @@ def cmd_add(args) -> int:
     if args.agent:
         policy = agent_policy()
         if policy:
-            repo = repo_from_checkout(args.repo) if not args.host else None
-            matched = agents_for_repo(repo, policy)
+            paths = [] if args.host else [args.repo, *(split_add_repo(r)[0] for r in add_repos)]
+            matched = repos_policy(paths, policy)
             if matched:
                 allowed, prefix = matched
+                if not allowed:
+                    raise QueueError(
+                        f"agent policy covers this task's repositories with "
+                        f"{prefix!r} and no one agent is allowed in all of them. "
+                        "A task that spans repositories runs one agent in every "
+                        "one of them."
+                    )
                 if args.agent not in allowed:
                     raise QueueError(
                         f"--agent {args.agent!r} contradicts policy for "
@@ -2036,6 +2213,16 @@ def cmd_add(args) -> int:
         "target": target,
         "profile": args.profile,
         "agent": args.agent,
+        # Directories attached to the worker's session as they are — no
+        # worktree, no branch, nothing to publish. `spawn_commands` passes each
+        # to thurbox verbatim; everything else here ignores them, which is the
+        # whole of what `--add-dir` means.
+        "add_dirs": add_dirs,
+        # Repositories this task also COMMITS in, each in its own worktree on
+        # `branch` above. `PATH` or `PATH@BASE`, kept as the operator wrote it
+        # because thurbox owns that syntax. Everything that verifies, lands or
+        # shepherds this task reads these too — one artifact per repository.
+        "add_repos": add_repos,
         "touches": [s.strip() for s in (args.touches or "").split(",") if s.strip()],
         # What this task must PRODUCE, and — as free text nothing ever parses —
         # what the operator calls the tool that produces it.
@@ -2158,6 +2345,53 @@ def render_brief(task: Task, topic: dict, body: str | None) -> str:
     )
     where = f" on host `{host}`" if host else ""
     target_line = f"\n- **Target.** {d['target']}" if d.get("target") else ""
+    spans = task_repos(task)[1:]
+    spans_line = (
+        "\n"
+        + textwrap.fill(
+            "- **Also on this branch.** "
+            + ", ".join(f"`{u['path']}` off `{u['base']}`" for u in spans)
+            + f" — each in its own worktree on `{d['branch']}`. Your session"
+            " opens in a workspace holding one symlink per repository, so each"
+            " is a subdirectory there and the absolute paths above resolve"
+            " too. What you commit in each is published and verified exactly"
+            " as this repository's is, so your result must name one artifact"
+            " PER REPOSITORY (see Reporting back).",
+            width=78,
+            subsequent_indent="  ",
+        )
+        if spans
+        else ""
+    )
+    attached = d.get("add_dirs") or []
+    attached_line = (
+        "\n"
+        + textwrap.fill(
+            "- **Also attached.** "
+            + ", ".join(f"`{p}`" for p in attached)
+            + " — on whatever branch each was already on. Nothing cut a"
+            " worktree there and nothing publishes or verifies them: read"
+            " them, and do not commit in them.",
+            width=78,
+            subsequent_indent="  ",
+        )
+        if attached
+        else ""
+    )
+    # The `artifact:` line, or the `artifacts:` block a task that spans
+    # repositories writes instead. POLICY.md carries the same pair, and the two
+    # have to move together: every brief points its worker there rather than
+    # restating the contract, so a change in one place and not the other is how
+    # they drift.
+    if spans and method in PER_REPO_METHODS:
+        artifact_contract = "artifacts:\n" + "\n".join(
+            f"  {u['path']}: <{spec['artifact']}>" for u in task_repos(task)
+        )
+    else:
+        artifact_contract = (
+            "artifact: <PR URL, commit URL for a `push` task, note URL for a "
+            "`note` task, or omit>"
+        )
     if host:
         result_target = (
             "    result.md — in the root of this worktree, beside the BRIEF.md\n"
@@ -2187,7 +2421,7 @@ Task `{task.ref}` of topic **{topic.get("title", task.topic)}**.
 The prompt this came from is at {prompt_ref}; read it if the goal here is unclear.
 
 - **Repo.** `{d["repo"]}`{where}
-- **Branch.** `{d["branch"]}` off `{d["base"]}`{target_line}
+- **Branch.** `{d["branch"]}` off `{d["base"]}`{spans_line}{attached_line}{target_line}
 {publish_line}
 - **Expected to touch.** {", ".join(f"`{p}`" for p in d["touches"]) or "not recorded"}
 - **Standing policy.** {policy_ref}{operator_line}
@@ -2210,7 +2444,7 @@ with exactly this shape:
 ```markdown
 ---
 outcome: shipped | stuck | failed | not-applicable
-artifact: <PR URL, commit URL for a `push` task, note URL for a `note` task, or omit>
+{artifact_contract}
 ---
 A short paragraph: what you actually did, and anything the lead must know.
 ```
@@ -3341,6 +3575,16 @@ def spawn_commands(task: Task) -> tuple[list, str, str]:
         # addressing for both of them permanently.
         "--on-existing", "fail",
     ]
+    # Attached as they are, in the order the operator named them. thurbox
+    # cuts no worktree and creates no branch for these, so nothing downstream
+    # — verification, landing, reaping — has anything to say about them.
+    for extra in d.get("add_dirs") or []:
+        create += ["--add-dir", extra]
+    # Verbatim, `PATH@BASE` included: thurbox owns that syntax, and fleet
+    # reinterpreting the operator's string is how a second repository ends up
+    # branched off something nobody asked for.
+    for extra in d.get("add_repos") or []:
+        create += ["--add-repo", extra]
     # The whole of what moves a worker to another machine. `--repo-path` above
     # is then a path on THAT machine, which is why nothing here looks for it
     # locally — see `probe_host`, which asks the host instead.
@@ -3996,8 +4240,8 @@ def task_publish(task: Task) -> tuple[str, str | None]:
     return method, text or None
 
 
-def publish_verdict(task: Task, outcome, url) -> tuple[str, str, dict]:
-    """Does this task's artifact prove it published? Four answers, per method.
+def publish_verdict(task: Task, outcome, url, unit: dict | None = None) -> tuple[str, str, dict]:
+    """Does this artifact prove this REPOSITORY published? Four answers, per method.
 
         skipped   nothing to check — the outcome does not require an artifact
                   (`not-applicable` or `stuck`), and none, or one of the wrong
@@ -4024,10 +4268,15 @@ def publish_verdict(task: Task, outcome, url) -> tuple[str, str, dict]:
 
     The third value is fields `collect` writes onto the publish block beside
     the verdict. Only a pull request ever has any; see `pull_request_verdict`.
+
+    `unit` is the repository being asked about — one of `task_repos`. It
+    defaults to the primary, so every caller that has only ever had one
+    repository to ask about reads exactly as it did.
     """
+    unit = unit or task_repos(task)[0]
     method, _how = task_publish(task)
     if method == "push":
-        return (*commit_verdict(task, outcome, url), {})
+        return (*commit_verdict(task, outcome, url, unit), {})
     if method == "note":
         return (*note_verdict(task, outcome, url), {})
     if method == "none":
@@ -4035,10 +4284,12 @@ def publish_verdict(task: Task, outcome, url) -> tuple[str, str, dict]:
             "a `none` task names nothing fleet can check; its artifact is "
             "recorded as given"
         ), {}
-    return pull_request_verdict(task, method, outcome, url)
+    return pull_request_verdict(task, method, outcome, url, unit)
 
 
-def pull_request_verdict(task: Task, method: str, outcome, url) -> tuple[str, str, dict]:
+def pull_request_verdict(
+    task: Task, method: str, outcome, url, unit: dict | None = None
+) -> tuple[str, str, dict]:
     """The forge as witness, for the two methods that end in a pull request.
 
     THE HEAD BRANCH IS CHECKED FOR BOTH, and it costs nothing — the field
@@ -4086,7 +4337,12 @@ def pull_request_verdict(task: Task, method: str, outcome, url) -> tuple[str, st
     if why:
         return "unknown", why, {}
 
-    named, target, why = task_target(task)
+    # A `--target` names ONE change request, and it is the primary
+    # repository's by construction: a task that works on somebody else's pull
+    # request works on that one. Every other repository a task spans opens its
+    # own change request from the task's branch and is compared against it,
+    # exactly as a task with no target always was.
+    named, target, why = task_target(task) if (unit or {}).get("primary", True) else ("", None, "")
     if named:
         if target is None:
             return "unknown", why, {}
@@ -4262,7 +4518,7 @@ def note_verdict(task: Task, outcome, url) -> tuple[str, str]:
     return "passed", f"{me} wrote it, on {named}"
 
 
-def commit_verdict(task: Task, outcome, url) -> tuple[str, str]:
+def commit_verdict(task: Task, outcome, url, unit: dict | None = None) -> tuple[str, str]:
     """git as witness, for the method that ends on the base branch and not in a PR.
 
     The ancestry question is asked in two halves rather than one, because
@@ -4289,8 +4545,8 @@ def commit_verdict(task: Task, outcome, url) -> tuple[str, str]:
     host = task.doc.get("host")
     if host:
         return "unknown", f"the base branch is on host {host}; not checked from here"
-    repo = str(task.doc.get("repo") or "")
-    base = str(task.doc.get("base") or "main")
+    unit = unit or task_repos(task)[0]
+    repo, base = unit["path"], unit["base"]
 
     git_out(repo, ["fetch", "--quiet", "origin", base], timeout=60)
     head = git_out(repo, ["rev-parse", "--verify", "--quiet", f"origin/{base}^{{commit}}"]).strip()
@@ -4305,6 +4561,71 @@ def commit_verdict(task: Task, outcome, url) -> tuple[str, str]:
     if mb == commit:
         return "passed", f"{sha[:8]} is on origin/{base}"
     return "missing", f"{sha[:8]} is not on origin/{base} — it never reached the base branch"
+
+
+def reported_artifacts(task: Task, meta: dict) -> list[dict]:
+    """What result.md claims, lined up against the repositories fleet expects.
+
+    `artifacts:` is a mapping from repository path to URL — the shape a task
+    that spans repositories writes. `artifact:` is the scalar every result has
+    always written, and it is read as the PRIMARY repository's, so a
+    single-repository result is read by the same two lines it always was.
+
+    A repository the file names nothing for gets None, which for a `shipped`
+    task is `missing` exactly as an absent scalar has always been: the worker
+    claimed an artifact and there is none to check. Keys are matched as PATHS,
+    and the `PATH@BASE` the operator typed is accepted as itself.
+    """
+    plural = meta.get("artifacts")
+    rows = []
+    for unit in artifact_repos(task):
+        url = None
+        if isinstance(plural, dict):
+            for key, value in plural.items():
+                if str(key) == unit["spec"] or same_path(str(key), unit["path"]):
+                    url = value
+                    break
+        if url is None and unit["primary"]:
+            url = meta.get("artifact")
+        rows.append({"repo": unit["path"], "url": url, "unit": unit})
+    return rows
+
+
+def fold_verdicts(rows: list[dict]) -> tuple[str, str]:
+    """One verdict for the task, out of one per repository.
+
+    A single-repository task folds to exactly its own row — same word, same
+    sentence — which is what keeps every message and every field `collect`
+    writes byte-identical to what it wrote before.
+
+    `missing` wins, because ONE UNVERIFIED REPOSITORY HOLDS THE WHOLE TASK
+    OPEN: a task is one unit of intent, and half of it published is not it.
+    `unknown` comes next and stays the fourth word it has always been — it
+    holds nothing open and never collapses into either verdict. Then `passed`,
+    and `skipped` is what is left when nothing was asked at all.
+    """
+    if len(rows) == 1:
+        return rows[0]["verdict"], rows[0]["detail"]
+    joined = "; ".join(f"{r['repo']}: {r['detail']}" for r in rows)
+    for word in ("missing", "unknown", "passed"):
+        if any(r["verdict"] == word for r in rows):
+            return word, joined
+    return "skipped", joined
+
+
+def fold_seen(rows: list[dict]) -> dict:
+    """The publish-block fields `collect` writes beside the verdict.
+
+    Only `pull_request_verdict` produces any, and the only one that is a claim
+    about the TASK is `state`. So it survives a fold only when every repository
+    said the same thing: a task with one change request merged and one still
+    open has not merged, and writing `merged` onto its publish block would say
+    it had.
+    """
+    if len(rows) == 1:
+        return dict(rows[0].get("seen") or {})
+    states = {(r.get("seen") or {}).get("state") for r in rows}
+    return {"state": states.pop()} if len(states) == 1 and None not in states else {}
 
 
 def collect_publish_state(verdict: str, method: str) -> str:
@@ -4343,16 +4664,37 @@ def record_publish(task: Task, state: str, detail: str, by: str, extra: dict | N
     )
 
 
-def report_unverified(task: Task, url, detail: str) -> None:
-    """The loud half of the check: the lead sees this AT COLLECT TIME."""
+def report_unverified(task: Task, rows: list[dict]) -> None:
+    """The loud half of the check: the lead sees this AT COLLECT TIME.
+
+    ONE MESSAGE, not two. A task that spans repositories names each of them and
+    marks the ones that did not hold up, between the same header and the same
+    remedy a single-repository task has always got — because "which repository
+    is unverified" is a detail of this refusal and not a different refusal.
+    """
     method, how = task_publish(task)
     spec = PUBLISH_METHODS[method]
     told = f"\n        Its brief said: {how}." if how else ""
+    if len(rows) == 1:
+        middle = (
+            f"        {rows[0]['url'] or '(no artifact given)'}\n"
+            f"        {rows[0]['detail']}\n"
+        )
+        every = ""
+    else:
+        held = sum(1 for r in rows if r["verdict"] == "missing")
+        middle = f"        {held} of {len(rows)} repositories did not verify:\n"
+        for r in rows:
+            mark = "NOT VERIFIED" if r["verdict"] == "missing" else r["verdict"]
+            middle += (
+                f"          {r['repo']}  {r['url'] or '(no artifact given)'}\n"
+                f"            {mark}: {r['detail']}\n"
+            )
+        every = " in EVERY repository it spans"
     print(
         f"    {task.ref}: NOT CLOSED — nothing proves this task published\n"
-        f"        {url or '(no artifact given)'}\n"
-        f"        {detail}\n"
-        f"        A `{method}` task is proven when {spec['proof']}.{told}\n"
+        f"{middle}"
+        f"        A `{method}` task is proven when {spec['proof']}{every}.{told}\n"
         "        Send the worker back to publish again, then collect again.\n"
         "        If you have read the artifact yourself and judged it good as\n"
         "        it stands, close it deliberately with\n"
@@ -4431,9 +4773,17 @@ def cmd_collect(args) -> int:
                 file=sys.stderr,
             )
             continue
-        artifact = meta.get("artifact")
         method, _how = task_publish(task)
-        verdict, detail, seen = publish_verdict(task, outcome, artifact)
+        # ONE ROW PER REPOSITORY THIS TASK SPANS, and exactly one for the task
+        # that spans none — which is why everything below reads the same for a
+        # single-repository task as it did before a task could span any.
+        rows = reported_artifacts(task, meta)
+        for row in rows:
+            row["verdict"], row["detail"], row["seen"] = publish_verdict(
+                task, outcome, row["url"], row["unit"]
+            )
+        verdict, detail = fold_verdicts(rows)
+        artifact = artifact_value(rows)
         # Recorded before the branch below, so a held-back task carries the
         # reason in its record and not only in the terminal that saw it. The
         # METHOD is recorded with it because a verdict is only readable beside
@@ -4441,14 +4791,23 @@ def cmd_collect(args) -> int:
         task.doc["artifact_check"] = {
             "verdict": verdict, "detail": detail, "at": now(), "method": method,
         }
-        seen = dict(seen)
+        if len(rows) > 1:
+            # The per-repository verdicts, kept beside the folded one: the fold
+            # says the task is held and this says which repository held it,
+            # after the terminal that printed it has scrolled away.
+            task.doc["artifact_check"]["repos"] = [
+                {"repo": r["repo"], "url": r["url"], "verdict": r["verdict"],
+                 "detail": r["detail"]}
+                for r in rows
+            ]
+        seen = fold_seen(rows)
         state = seen.pop("state", "") or collect_publish_state(verdict, method)
         if state:
             record_publish(task, state, detail, "collect", seen)
 
         if verdict == "missing" and not args.allow_unverified:
             task.save()
-            report_unverified(task, artifact, detail)
+            report_unverified(task, rows)
             held += 1
             continue
 
@@ -4458,10 +4817,16 @@ def cmd_collect(args) -> int:
         task.doc["concluded_at"] = now()
         task.save()
         concluded += 1
-        artifacts += 1 if method in CHANGE_METHODS and pr_ref(task.doc.get("artifact")) else 0
+        artifacts += (
+            1 if method in CHANGE_METHODS and any(pr_ref(r["url"]) for r in rows) else 0
+        )
         line = f"    {task.ref}  {outcome}"
-        if artifact:
-            line += f"  {artifact}"
+        if len(rows) == 1:
+            if artifact:
+                line += f"  {artifact}"
+        else:
+            named = ", ".join(str(r["url"]) for r in rows if r["url"])
+            line += f"  {len(rows)} repositories: {named or '(none reported)'}"
         if verdict == "passed":
             line += f"  [publish verified: {method}]"
             if seen.get("attestation"):
@@ -4617,6 +4982,41 @@ def artifact_landing(artifact, method: str | None = None) -> tuple[str, str]:
     return "open", f"{url} is still open — work awaiting review"
 
 
+# The order a task's own landing folds in, most-blocking first. `unknown` is
+# still the word that never collapses into another, so a forge nobody could ask
+# leaves the task where it is. `open` holds it for the ordinary reason. `closed`
+# is the forge saying THAT change request will never land, and a task holding
+# one can never reach `landed` whatever the others do. `merged` and `none` are
+# what is left.
+LANDING_ORDER = ("unknown", "open", "closed", "merged", "none")
+
+
+def task_landing(task: Task) -> tuple[str, str]:
+    """Has EVERY one of this task's artifacts reached main?
+
+    THE REASON IT IS ASKED PER TASK AND NOT PER ARTIFACT. `landed` is what
+    clears a blocker, so a task promoted on half its repositories would release
+    its dependents while the other half sat unmerged — which is the bug
+    AGENTS.md already records in its single-repository form ("a task collected
+    `shipped` once released its dependents while its change request sat
+    unreviewed"), one size larger. A task with one repository merged and one
+    open is not landed.
+
+    A task with one repository is exactly `artifact_landing` of its one
+    artifact: same word, same sentence, same reap.
+    """
+    method = task_publish(task)[0]
+    rows = []
+    for entry in recorded_artifacts(task):
+        kind, detail = artifact_landing(entry["url"], method)
+        rows.append({"repo": entry["repo"], "kind": kind, "detail": detail})
+    if len(rows) == 1:
+        return rows[0]["kind"], rows[0]["detail"]
+    kinds = {r["kind"] for r in rows}
+    kind = next((w for w in LANDING_ORDER if w in kinds), "unknown")
+    return kind, "; ".join(f"{r['repo']}: {r['detail']}" for r in rows)
+
+
 def sweep_landings(q: Queue, dry: bool) -> dict:
     """Ask the forge about every `done` task and promote the ones that landed.
 
@@ -4631,7 +5031,7 @@ def sweep_landings(q: Queue, dry: bool) -> dict:
     for task in sorted(q.tasks.values(), key=lambda t: t.ref):
         if task.state != "done":
             continue
-        kind, detail = artifact_landing(task.doc.get("artifact"), task_publish(task)[0])
+        kind, detail = task_landing(task)
         seen[task.ref] = (kind, detail)
         nxt = LANDED_STATE.get(kind)
         if dry:
@@ -4953,10 +5353,17 @@ def release_fixer_checkouts(q: Queue, state_of, dry: bool) -> int:
             if dry:
                 print(f"    {task.ref:<46} would remove fixer checkout {path}")
                 continue
-            proc = subprocess.run(
-                ["git", "-C", task.doc["repo"], "worktree", "remove", path],
-                capture_output=True, text=True, encoding="utf-8",
-            )
+            # Asked of each repository the task spans, because `shepherd` cuts
+            # the checkout off whichever one the change request was in and only
+            # that one's git knows about the worktree. A task with one
+            # repository asks exactly the one it always asked.
+            for unit in task_repos(task):
+                proc = subprocess.run(
+                    ["git", "-C", unit["path"], "worktree", "remove", path],
+                    capture_output=True, text=True, encoding="utf-8",
+                )
+                if proc.returncode == 0:
+                    break
             if proc.returncode != 0:
                 err = (proc.stderr or proc.stdout).strip().splitlines()
                 print(
@@ -5363,6 +5770,12 @@ def task_agent_reason(task) -> tuple[str, str]:
     through to the checkout's `AGENT` there is precisely the silent wrong
     answer this function exists to stop, and it is what `dispatch` already
     refuses to do: `agent_policy_refusal` fails closed on this same state.
+
+    EVERY REPOSITORY THE TASK SPANS, since one session runs one agent in all of
+    them: the middle step is the INTERSECTION of what each allows, in the first
+    matching repository's order so the default is still its first agent. An
+    empty intersection is not knowable either — there is no agent to name — and
+    a task with one repository asks exactly what it always asked.
     """
     recorded = (task.doc.get("agent") or "").strip()
     if recorded:
@@ -5372,14 +5785,19 @@ def task_agent_reason(task) -> tuple[str, str]:
         if task.doc.get("host"):
             return "", (f"agent policy is in force and this task's checkout is on "
                         f"{task.doc['host']}, so which agent it runs cannot be read here")
-        repo = repo_from_checkout(task.doc["repo"])
-        if repo is None:
-            return "", (f"agent policy is in force and no repository can be read from "
-                        f"`origin` in {task.doc['repo']!r}, so which agent it runs "
-                        "is not knowable")
-        matched = agents_for_repo(repo, policy)
+        for unit in task_repos(task):
+            if repo_from_checkout(unit["path"]) is None:
+                return "", (f"agent policy is in force and no repository can be read from "
+                            f"`origin` in {unit['path']!r}, so which agent it runs "
+                            "is not knowable")
+        matched = task_policy(task, policy)
         if matched:
-            return matched[0][0], ""
+            allowed, prefix = matched
+            if not allowed:
+                return "", (f"agent policy covers this task's repositories with {prefix!r} "
+                            "and no one agent is allowed in all of them, so which agent "
+                            "it runs is not knowable")
+            return allowed[0], ""
     return configured_agent() or "", ""
 
 
@@ -6345,25 +6763,66 @@ def agents_for_repo(
     return best_agents, best_prefix
 
 
+def repos_policy(paths: list[str], policy: dict[str, list[str]]) -> tuple[list[str], str] | None:
+    """The agents EVERY one of these repositories allows, and the prefixes that said so.
+
+    A task is ONE session running ONE agent, and `--add-repo` is a second
+    repository that agent COMMITS in — so an agent has to be allowed in all of
+    them. The answer is the INTERSECTION, kept in the order the first matching
+    repository lists them so the default is still that repository's first
+    agent. An empty intersection is a task no agent may serve, and that is a
+    refusal rather than a silent pick.
+
+    One repository answers exactly as `agents_for_repo` does: same agents, same
+    order, same prefix, same None. A repository whose `origin` cannot be read
+    contributes nothing here; refusing that is the caller's, because only the
+    caller knows whether an unreadable checkout is a `--host` task.
+    """
+    if not policy:
+        return None
+    matched = [
+        hit for hit in (agents_for_repo(repo_from_checkout(p), policy) for p in paths) if hit
+    ]
+    if not matched:
+        return None
+    allowed = [a for a in matched[0][0] if all(a in rest for rest, _ in matched[1:])]
+    return allowed, ", ".join(dict.fromkeys(prefix for _, prefix in matched))
+
+
+def task_policy(task: Task, policy: dict[str, list[str]]) -> tuple[list[str], str] | None:
+    """`repos_policy` over every repository this task spans; None for a remote one."""
+    if task.doc.get("host"):
+        return None
+    return repos_policy([unit["path"] for unit in task_repos(task)], policy)
+
+
 def agent_policy_refusal(task: Task) -> str | None:
     """Why this task cannot be dispatched under the current policy, or None."""
     policy = agent_policy()
     d = task.doc
-    repo = None if d.get("host") else repo_from_checkout(d["repo"])
-    if policy and repo is None:
-        if d.get("host"):
+    if policy:
+        for unit in task_repos(task):
+            if (None if d.get("host") else repo_from_checkout(unit["path"])) is not None:
+                continue
+            if d.get("host"):
+                return (
+                    "--host task cannot be checked against agent policy "
+                    "because its checkout is on another machine."
+                )
             return (
-                "--host task cannot be checked against agent policy "
-                "because its checkout is on another machine."
+                f"cannot read origin for {unit['path']!r}, so agent policy "
+                "cannot be checked."
             )
-        return (
-            f"cannot read origin for {d['repo']!r}, so agent policy "
-            "cannot be checked."
-        )
-    matched = agents_for_repo(repo, policy)
+    matched = task_policy(task, policy)
     if matched is None:
         return None
     allowed, prefix = matched
+    if not allowed:
+        return (
+            f"agent policy covers this task's repositories with {prefix!r} and no "
+            "one agent is allowed in all of them. A task that spans repositories "
+            "runs one agent in every one of them, so there is nothing to dispatch."
+        )
     flags = profile_flags(d.get("profile") or "default")
     if "--command" in flags:
         return (
@@ -7067,12 +7526,18 @@ def trust_and_send(
     return True, report
 
 
-def spawn_fixer(task: Task, name: str, brief_path: str, branch: str) -> tuple[str, str]:
+def spawn_fixer(
+    task: Task, name: str, brief_path: str, branch: str, repo_path: str | None = None
+) -> tuple[str, str]:
     """A session on the branch that already exists. (session id, note).
 
     `branch` is the pull request's own head branch and not the task's record of
     it: a task can carry a second pull request on a different branch, and the
     fix has to land on the branch the pull request is actually open from.
+
+    `repo_path` is the checkout that pull request is IN, for the same reason —
+    a task may span repositories, and the fix has to be made in the one the
+    change request is open on. It defaults to the primary.
     """
     # A remote task's `repo` is a path on its host, and `branch_checkout` below
     # is local git. Said plainly rather than left to that function, which would
@@ -7088,7 +7553,7 @@ def spawn_fixer(task: Task, name: str, brief_path: str, branch: str) -> tuple[st
         )
 
     slug = f"{task.topic}__{task.id}"
-    path, note = branch_checkout(task.doc["repo"], branch, slug)
+    path, note = branch_checkout(repo_path or task.doc["repo"], branch, slug)
     if not path:
         return "", note
     create = [
@@ -7455,7 +7920,8 @@ def shepherd_pr(cr: forge.ChangeRequest, task, args) -> dict:
         row["note"] = f"{title} ({how})"
         return row
 
-    drift = base_drift(task.doc["repo"], base, branch) if condition == "conflicting" else ""
+    checkout = task_checkout(task, cr.repo)
+    drift = base_drift(checkout, base, branch) if condition == "conflicting" else ""
     path = next_fix_file(task, condition)
     fleet_platform.write_record(path, fixer_brief(task, cr, condition, detail, drift))
 
@@ -7466,7 +7932,7 @@ def shepherd_pr(cr: forge.ChangeRequest, task, args) -> dict:
         session = reuse if ok else ""
         note = report if not ok else "reused its own worker"
     else:
-        session, note = spawn_fixer(task, title, path, branch)
+        session, note = spawn_fixer(task, title, path, branch, checkout)
 
     if not session:
         row["action"] = "not-dispatched"
@@ -7504,34 +7970,69 @@ def repo_from_checkout(repo_path: str) -> forge.RepoId | None:
 
 
 def shepherd_targets(tasks: list) -> dict:
-    """task.ref -> RepoId, derived and never hardcoded.
+    """task.ref -> [RepoId], derived and never hardcoded.
 
     The queue's tasks name their repositories: an artifact URL gives the
-    repository — host and path — outright, and a task that has not reported one
-    yet inherits the repository of the other tasks sharing its local checkout.
-    Merging stays limited to `auto_merge_repos()` whatever comes out of here:
-    knowing about a repository and being allowed to merge in it are different
-    questions.
+    repository — host and path — outright, and a repository that has reported
+    nothing yet inherits the answer of the other tasks sharing its local
+    checkout, or is read off that checkout's `origin`. Merging stays limited to
+    `auto_merge_repos()` whatever comes out of here: knowing about a repository
+    and being allowed to merge in it are different questions.
+
+    EVERY REPOSITORY THE TASK NAMES, not just the one its artifact happens to
+    be on. A task that spans repositories has a change request in each, and a
+    shepherd that enumerated the primary alone would stop watching the rest —
+    which is exactly the "a pull request nobody is watching goes bad" case this
+    command exists for.
     """
-    repo_of: dict[str, forge.RepoId] = {}
+    repo_of: dict[str, list] = {}
     by_path: dict[str, forge.RepoId] = {}
     for task in tasks:
-        ref = pr_ref(task.doc.get("artifact"))
-        if ref:
-            repo_of[task.ref] = ref.repo
-            by_path.setdefault(str(task.doc.get("repo") or ""), ref.repo)
+        for entry in recorded_artifacts(task):
+            ref = pr_ref(entry.get("url"))
+            if ref:
+                by_path.setdefault(str(entry.get("repo") or ""), ref.repo)
     for task in tasks:
-        if task.ref in repo_of:
-            continue
-        path = str(task.doc.get("repo") or "")
-        repo = by_path.get(path)
-        if repo is None:
-            repo = repo_from_checkout(path)
-            if repo is not None:
-                by_path[path] = repo
-        if repo is not None:
-            repo_of[task.ref] = repo
+        found: list = []
+        for unit in task_repos(task):
+            repo = by_path.get(unit["path"])
+            if repo is None:
+                repo = repo_from_checkout(unit["path"])
+                if repo is not None:
+                    by_path[unit["path"]] = repo
+            if repo is not None and repo not in found:
+                found.append(repo)
+        # An artifact on a repository none of this task's checkouts resolve to
+        # is still this task's — a worker that pushed to a fork, a checkout
+        # that has since moved — and dropping it would stop watching a pull
+        # request the records name outright.
+        for entry in recorded_artifacts(task):
+            ref = pr_ref(entry.get("url"))
+            if ref and ref.repo not in found:
+                found.append(ref.repo)
+        if found:
+            repo_of[task.ref] = found
     return repo_of
+
+
+def task_checkout(task: Task, repo: forge.RepoId) -> str:
+    """The local checkout of `repo`, among the ones this task spans.
+
+    A task that spans repositories has a change request in more than one of
+    them, and a fixer sent into the primary's checkout would rebase the wrong
+    tree and push the wrong branch. A task with ONE repository answers without
+    asking git anything, so it costs what it always cost and cannot start
+    behaving differently. So does a repository none of the checkouts resolve
+    to: the primary is the fallback, which is what this was before there was
+    more than one.
+    """
+    units = task_repos(task)
+    if len(units) == 1:
+        return units[0]["path"]
+    for unit in units:
+        if repo_from_checkout(unit["path"]) == repo:
+            return unit["path"]
+    return units[0]["path"]
 
 
 def link_task(cr: forge.ChangeRequest, tasks: list) -> object:
@@ -7550,9 +8051,10 @@ def link_task(cr: forge.ChangeRequest, tasks: list) -> object:
     for task in tasks:
         if task_publish(task)[0] not in CHANGE_METHODS:
             continue
-        ref = pr_ref(task.doc.get("artifact"))
-        if ref and ref.number == cr.number and ref.repo == cr.repo:
-            return task
+        for entry in recorded_artifacts(task):
+            ref = pr_ref(entry.get("url"))
+            if ref and ref.number == cr.number and ref.repo == cr.repo:
+                return task
     if cr.head_branch:
         for task in tasks:
             if str(task.doc.get("branch") or "") == cr.head_branch:
@@ -7581,12 +8083,12 @@ def cmd_shepherd(args) -> int:
         tasks.append(task)
 
     repo_of = shepherd_targets(tasks)
-    repos = sorted(set(repo_of.values()), key=lambda r: r.qualified)
+    repos = sorted({r for named in repo_of.values() for r in named}, key=lambda r: r.qualified)
     named = [str(r) for r in repos]
 
     rows, unreadable = [], []
     for repo in repos:
-        here = [t for t in tasks if repo_of.get(t.ref) == repo]
+        here = [t for t in tasks if repo in repo_of.get(t.ref, ())]
         crs, err = open_prs(repo)
         if err:
             # A repository that could not be listed contributes nothing. An
@@ -7774,7 +8276,7 @@ def run_events(tasks: list) -> list:
             check = (d.get("artifact_check") or {}).get("verdict") or ""
             said = f"`{t.id}` concluded `{d.get('outcome')}`"
             if d.get("artifact"):
-                said += f" — {cell(d['artifact'])}"
+                said += f" — {cell(artifact_text(t))}"
             out.append((d["concluded_at"], said + (f" [pipeline {check}]" if check else "")))
         landing = d.get("landing") or {}
         if landing.get("at") and landing.get("state") in LANDED_STATE:
@@ -7825,7 +8327,7 @@ def run_facts(q: Queue, slug: str) -> str:
             state = "waiting" if t.state == "queued" and not q.is_ready(t) else t.state
             lines.append(
                 f"| `{t.id}` — {cell(d.get('title'))} | `{cell(where_it_runs(t))}` "
-                f"| `{cell(d.get('branch'))}` | {state} | {cell(d.get('artifact'))} |"
+                f"| `{cell(d.get('branch'))}` | {state} | {cell(artifact_text(t))} |"
             )
         held = sorted({(t.id, blocker_condition(bl) or bl.get("task") or "",
                         bool(blocker_condition(bl)), bl["kind"], bl["why"])
@@ -8299,8 +8801,21 @@ def cmd_show(args) -> int:
     d = task.doc
     print(f"{task.ref} — {d['title']}")
     for key in ("state", "repo", "host", "branch", "base", "agent", "profile", "session",
-                "prompted", "outcome", "artifact"):
+                "prompted", "outcome"):
         print(f"    {key + ':':<12} {d.get(key)}")
+    for unit in task_repos(task)[1:]:
+        print(f"    {'also:':<12} {unit['path']} off {unit['base']}")
+    for extra in d.get("add_dirs") or []:
+        print(f"    {'attached:':<12} {extra}")
+    # A scalar prints as itself, which is every record written before a task
+    # could span repositories and every single-repository task since. A plural
+    # one prints a line per repository rather than a Python list.
+    entries = recorded_artifacts(task)
+    if len(entries) == 1:
+        print(f"    {'artifact:':<12} {entries[0]['url']}")
+    else:
+        for entry in entries:
+            print(f"    {'artifact:':<12} {entry['repo']}  {entry['url']}")
     remote = d.get("remote") or {}
     if remote.get("worktree"):
         # Named in full because it is the only place the worker's actual
@@ -8314,6 +8829,8 @@ def cmd_show(args) -> int:
     check = d.get("artifact_check") or {}
     if check.get("verdict"):
         print(f"    {'checked:':<12} {check['verdict']} — {check.get('detail', '')}")
+    for row in check.get("repos") or []:
+        print(f"    {'':<12}   {row.get('repo')}: {row.get('verdict')} — {row.get('detail', '')}")
     pub = d.get("publish") or {}
     if pub.get("state"):
         print(
@@ -8473,6 +8990,23 @@ def record_problems(root: str) -> tuple["Queue", list]:
             problems.append(f"{ref}: host {d.get('host')!r} is not a name")
         if (d.get("remote") or {}) and not d.get("host"):
             problems.append(f"{ref}: carries a remote worktree but names no host")
+        for key in ("add_dirs", "add_repos"):
+            extra = d.get(key)
+            if extra is not None and not (
+                isinstance(extra, list) and all(isinstance(x, str) and x for x in extra)
+            ):
+                problems.append(f"{ref}: {key} {extra!r} is not a list of paths")
+        # Both shapes are valid, so the check is that it IS one of them: a
+        # plural entry that names no url is a record nothing can verify, and a
+        # scalar is whatever a worker reported, which `collect` judges and this
+        # does not second-guess.
+        art = d.get("artifact")
+        if isinstance(art, list) and not all(
+            isinstance(x, dict) and isinstance(x.get("repo"), str) for x in art
+        ):
+            problems.append(
+                f"{ref}: artifact {art!r} is a list but not one of {{repo, url}} mappings"
+            )
 
     cycle = find_cycle(q)
     if cycle:
@@ -8568,6 +9102,25 @@ def build_parser() -> argparse.ArgumentParser:
         "(\"run `/publish`\", \"use `make release`\"). Free text: it is rendered "
         "into the brief and nothing ever parses it, which is what lets it name "
         "a tool fleet knows nothing about",
+    )
+    a.add_argument(
+        "--add-dir",
+        action="append",
+        metavar="PATH",
+        help="attach another directory to the worker's session, as it is: no "
+        "worktree, no branch, nothing to publish. Repeatable. It is how a "
+        "worker reads a sibling repository or a docs tree while it works; a "
+        "second repository it must COMMIT in is --add-repo",
+    )
+    a.add_argument(
+        "--add-repo",
+        action="append",
+        metavar="PATH[@BASE]",
+        help="a second repository this task also commits in: its own worktree, "
+        "on the SAME --branch, off BASE or off --base. Repeatable. The task "
+        "then leaves one artifact PER REPOSITORY, each verified on its own, "
+        "and lands only when every one of them has. A directory the worker "
+        "only reads is --add-dir",
     )
     a.add_argument("--touches", help="comma-separated paths this task expects to change")
     a.add_argument("--brief-file")

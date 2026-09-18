@@ -44,10 +44,12 @@ Each box in the diagram:
   where it stands), `BRIEF.md` (the worker's instructions), `progress.jsonl`
   (what happened) and `result.md` (what the worker concluded).
 - **Workers.** `dispatch` starts one thurbox session per task, each in its own
-  git worktree on a new branch of the target repository. A task can name a
-  `--host`, and its session then runs on that machine over ssh. Workers share
-  no context with the lead or with each other. Each one reads its brief,
-  publishes its work, and writes `result.md`.
+  git worktree on a new branch of the target repository. A task can span
+  several repositories (`--add-repo`) and then leaves one artifact in each,
+  verified and landed on its own. It can also name a `--host`, and its session
+  then runs on that machine over ssh. Workers share no context with the lead or
+  with each other. Each one reads its brief, publishes its work, and writes
+  `result.md`.
 - **Forge.** Every question about a change request goes through
   [`scripts/lib/forge.py`](scripts/lib/forge.py): GitHub through `gh`, GitLab
   through `glab`. A repository is named by host and path, such as
@@ -183,7 +185,7 @@ row each.](media/fleet-queue-pane.gif)
 | Term | Meaning |
 | --- | --- |
 | topic | One prompt, stored word for word, and the tasks it became. |
-| task | One repository, one branch, one piece of work a single worker can finish and check. |
+| task | One branch, one piece of work a single worker can finish and check. It may span several repositories, and then leaves one artifact in each. |
 | brief | A task's `BRIEF.md`: goal, constraints and what "done" means, written for a worker that knows nothing else. |
 | result | A task's `result.md`, written by its worker: an outcome (`shipped`, `stuck`, `failed` or `not-applicable`), the artifact, and a short note. |
 | shipped / landed | `shipped` is the worker saying the artifact exists; once `collect` has checked that artifact, the task is `done` and its session is kept for review fixes. `landed` means the forge reports the change merged. Tasks blocked on it are released only then. |

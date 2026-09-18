@@ -54,6 +54,11 @@ Your brief's **Publish** line names one method, what it must leave behind, and
 what proves it. It is the authority: where it names a tool, use that tool. Do
 not switch methods.
 
+**One method, every repository.** If your brief names more than one repository
+— an **Also on this branch** line — that method applies to each of them. Your
+branch is the same in all of them, and each one produces its own artifact of
+that shape. There is no per-repository method to pick.
+
 `fleet queue collect` then goes and looks for that artifact: the forge for a
 change request — a pull request on GitHub, a merge request on GitLab — or for a
 review or comment on one, and git for a commit on the base branch. A task whose
@@ -86,6 +91,10 @@ glab mr view <number> -R https://<host>/<group>/<project> -F json --jq \
    | $head + " is the head; the attestation names "
      + ($attested | if . then .[0:8] else "no attestation found in the description" end)'
 ```
+
+Run that check once **per repository** your brief names. `collect` holds the
+whole task open unless every one of them verifies, and names the ones that did
+not — a task is one unit of intent, and half of it published is not it.
 
 **Those two must be the same commit.** An attestation is a verdict about the
 code the pipeline saw, so one naming any other commit proves nothing about
@@ -133,6 +142,23 @@ artifact: <PR URL, commit URL for a `push` task, note URL for a `note` task, or 
 ---
 A short paragraph: what you actually did, and anything the lead must know.
 ```
+
+**If your brief names more than one repository**, write `artifacts:` instead —
+one line per repository, keyed by the repository path exactly as the brief
+writes it. Your brief's own **Reporting back** section spells the block out
+with your paths already in it; copy that.
+
+```markdown
+---
+outcome: shipped
+artifacts:
+  /home/you/code/thurbox: https://github.com/owner/thurbox/pull/41
+  /home/you/code/fleet: https://github.com/owner/fleet/pull/12
+---
+```
+
+A repository you name nothing for is one nothing proves, so a `shipped` task
+that leaves one out is held open exactly as one with no artifact at all is.
 
 `outcome` is one of those four words and nothing else. `artifact` is whatever
 your brief's Publish line says it is — a change request URL for `pr` and

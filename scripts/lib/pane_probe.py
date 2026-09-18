@@ -87,6 +87,21 @@ def blockers(doc: dict) -> str:
     return ",".join(edges)
 
 
+def artifact(doc: dict) -> str:
+    """The URL the pane draws a link to.
+
+    A task that spans repositories records one artifact per repository, and a
+    row is ONE line: it names the first and the pane's `url:` verb opens that
+    one. `fleet queue show` is where all of them are, and it says so.
+    """
+    urls = [
+        a["url"]
+        for a in fleetqueue.artifact_entries(doc.get("artifact"), str(doc.get("repo") or ""))
+        if a["url"]
+    ]
+    return urls[0] if urls else ""
+
+
 def task_record(task_dir: str, doc: dict) -> str:
     moved = next((doc[k] for k in ("concluded_at", "dispatched_at", "created") if doc.get(k)), None)
     publish = doc.get("publish") if isinstance(doc.get("publish"), dict) else {}
@@ -97,7 +112,7 @@ def task_record(task_dir: str, doc: dict) -> str:
             events = sum(1 for _ in fh)
     return "\t".join([
         "K", flat(doc.get("id")), flat(doc.get("state")), flat(doc.get("title")), flat(doc.get("outcome")),
-        flat(doc.get("artifact")), blockers(doc),
+        flat(artifact(doc)), blockers(doc),
         "1" if os.path.isfile(os.path.join(task_dir, "BRIEF.md")) else "0",
         str(events),
         "1" if os.path.isfile(os.path.join(task_dir, "result.md")) else "0",
