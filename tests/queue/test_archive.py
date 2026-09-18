@@ -182,3 +182,76 @@ def test_check_catches_a_topic_archived_over_live_work(archived, queue_dir):
     out = q("check")
     assert out.code != 0, out.out
     expect(out.out, "half-live", "02-running-part", "unarchive")
+
+
+# --- and the one reader archiving must not hide a topic from ------------------
+#
+# Three landed tasks with live sessions had accumulated behind the flag, every
+# one of them `idle` or `done` and reapable for hours, with `reap --dry-run`
+# reporting `would release 0 session(s)`. Releasing them took that machine's
+# disk from 83% to 51% — 67 GB, because each session holds a git worktree.
+
+LATE = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+
+
+def deletions(stubs) -> str:
+    return "\n".join(stubs.calls("thurbox-cli", "session delete"))
+
+
+@pytest.fixture
+def stranded(stubs, queue_dir) -> str:
+    """A topic whose only task landed while its worker was still `working`.
+
+    Both halves are right and they happen in the SAME pass: `collect` closes
+    the task, the landing sweep promotes it, the topic has nothing unfinished
+    left in it so it archives, and the session is not at rest yet so it is
+    kept. A worker that has just written `result.md` is exactly a worker that
+    is `working` for a moment longer, which makes this the common case.
+    """
+    topic = topic_add("late-worker", "Merged before its worker went quiet",
+                      "the window between a result being written and the agent going idle")
+    landed_task(stubs, queue_dir, topic, "01", "wrote-and-kept-working", 2101)
+    ok(q("attach", f"{topic}/01-wrote-and-kept-working", LATE))
+    stubs.session_is(LATE, "working")
+    out = ok(q("collect")).out
+    expect(out, "01-wrote-and-kept-working", "kept", "archived")
+    refute(deletions(stubs), LATE)
+    return topic
+
+
+def test_reap_revisits_a_session_it_kept_after_the_topic_archived(stranded, stubs):
+    """A keep is a promise to look again, and archiving used to guarantee there
+    was no later pass: the session, and the worktree under it, were stranded
+    for good."""
+    stubs.session_is(LATE, "idle")
+    expect(q("reap", "--dry-run").out, "01-wrote-and-kept-working", "would reap")
+    refute(deletions(stubs), LATE)
+
+    expect(q("reap").out, "01-wrote-and-kept-working", "reaped")
+    expect(deletions(stubs), "--force", LATE)
+
+    # The operator's view of a finished queue is untouched by any of it.
+    out = q("list").out
+    expect(out, "1 archived topic(s)")
+    refute(out, "late-worker")
+
+    # Idempotent: the record no longer names a session, so there is nothing left
+    # to say about it.
+    refute(q("reap").out, "01-wrote-and-kept-working")
+
+
+def test_a_worker_still_holding_an_archived_topic_is_still_kept(stranded, stubs):
+    """Widening what `reap` can SEE must not widen what it will ACT on. The
+    keep is the behaviour being preserved, not the one being traded away."""
+    out = q("reap").out
+    expect(out, "01-wrote-and-kept-working", "kept", "working")
+    refute(deletions(stubs), LATE)
+
+
+def test_the_collect_the_loop_actually_runs_revisits_it_too(stranded, stubs):
+    """`reap` is wired into `collect`, and `collect` is what the reconciler runs
+    on a timer. A fix that only reached the hand-run command would still need
+    somebody to remember it."""
+    stubs.session_is(LATE, "idle")
+    expect(ok(q("collect")).out, "01-wrote-and-kept-working", "reaped")
+    expect(deletions(stubs), "--force", LATE)

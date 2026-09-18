@@ -4311,7 +4311,14 @@ def reopen_unfinished_archives(root: str) -> None:
 def cmd_collect(args) -> int:
     root = queue_root()
     reopen_unfinished_archives(root)
-    q = Queue(root)
+    # `all`, because this command ends by running `reap`, whose view must be —
+    # see `reap` below. ONE view for the whole pass rather than a second one
+    # built halfway through it, so the run log refreshed at the end renders the
+    # records `reap` just wrote and not the ones this loop read. It costs
+    # nothing: `reopen_unfinished_archives` above has already read every
+    # archived record, and every task in an archived topic is terminal, so the
+    # loop below skips all of them exactly as it skips a concluded live one.
+    q = Queue(root, scope="all")
     concluded = 0
     held = 0
     artifacts = 0
@@ -4690,6 +4697,34 @@ def reap(q: Queue, dry: bool = False, release: bool = True) -> int:
     the lead's is additionally named and refused, because a task attached to it
     by mistake would otherwise be a deletion.
 
+    ITS VIEW IS `all`, AND BOTH CALLERS BUILD IT THAT WAY. A task that lands
+    while its worker is not yet at rest is KEPT — correctly — and a keep is a
+    promise to look again on a later pass. In the SAME pass the topic has
+    nothing unfinished left in it and archives, also correctly, and archived
+    topics leave the default view: there is no later pass, and the session and
+    the git worktree under it are stranded for good. Three of them had
+    accumulated on one machine, every one `idle` or `done` and reapable for
+    hours while `reap --dry-run` reported `would release 0 session(s)`;
+    releasing them took that disk from 83% to 51%. The window is the common
+    case rather than an edge one, because a worker that has just written
+    `result.md` is exactly a worker that is `working` for a moment longer.
+
+    So the view built to hide finished topics from a PERSON is the wrong input
+    for the one command whose whole job is work that is already terminal —
+    the same reading `cmd_shepherd` makes, and for the same reason. `list`,
+    `list --archived`, `fleet status` and the pane go on hiding them: nothing
+    here reads the flag, and `sweep_archives` below still skips a topic that
+    already carries it.
+
+    WIDENING WHAT IT SEES DOES NOT WIDEN WHAT IT ACTS ON. The gate is
+    untouched and is the only thing that decides a deletion:
+    REAPABLE_SESSION_STATES only, a remote session's host probed first, and the
+    lead's own session refused by name. It costs no extra forge call either —
+    a topic archives only once every task in it is terminal, so an archived
+    task is never `done` and `sweep_landings` asks about none of them — and it
+    stays idempotent, because the pass that releases a session clears the id
+    off the record and finds no holder on the next one.
+
     Returns how many tasks it had something to say about, so a caller can stay
     silent when there was nothing.
     """
@@ -4825,7 +4860,8 @@ def reap(q: Queue, dry: bool = False, release: bool = True) -> int:
 
 
 def cmd_reap(args) -> int:
-    if reap(Queue(queue_root()), dry=args.dry_run) == 0:
+    # `all`, and deliberately not the default view — see `reap` above.
+    if reap(Queue(queue_root(), scope="all"), dry=args.dry_run) == 0:
         print("reap: nothing has landed and no finished task is still holding a session")
     return 0
 
