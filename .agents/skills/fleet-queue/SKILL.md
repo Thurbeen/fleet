@@ -782,10 +782,7 @@ It only ever considers sessions THIS QUEUE recorded. Your own session and
 anything spawned by hand are not in the records; the lead's is refused by name
 as well.
 
-**A keep is a promise to look again, so `reap` reads archived topics too.** A
-task that lands while its worker is still `working` archives its own topic in
-the same pass, and a `reap` that honoured that flag would never come back to
-it (§6).
+**A keep is a promise to look again, so `reap` reads archived topics too** (§6).
 
 **A remote session is asked about its HOST before its state**, and this is the
 one place where reading thurbox's word is not enough. thurbox has an
@@ -977,13 +974,11 @@ evidence (§5b) and the operator has to see them, so one of either keeps the
 whole topic in view.
 
 **`reap` is not a default view, and archiving does not hide a topic from it.**
-A task that lands while its worker is still `working` is kept for a later pass
-— and its topic archives in that same pass, because every task in it is now
-terminal. If archiving took it out of `reap`'s sight there would be no later
-pass, and the session, with the git worktree under it, would be stranded for
-good; three of them accumulated that way, `idle` and reapable for hours, and
-releasing them gave one machine 67 GB back. So `reap` and the `collect` that
-runs it read every topic. They still only DELETE a session on the gate in §5b.
+A task that lands while its worker is still `working` is kept for a later pass,
+and its topic archives in that same pass — so `reap`, and the `collect` that
+runs it, read every topic, or that keep would never be revisited. They still
+only DELETE a session on the gate in §5b. `reap`'s own docstring in
+`scripts/lib/queue.py` owns why.
 
 ```bash
 uv run fleet queue archive <topic>    # early — refuses if any task is live

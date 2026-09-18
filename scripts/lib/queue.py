@@ -4713,8 +4713,8 @@ def reap(q: Queue, dry: bool = False, release: bool = True) -> int:
     for the one command whose whole job is work that is already terminal —
     the same reading `cmd_shepherd` makes, and for the same reason. `list`,
     `list --archived`, `fleet status` and the pane go on hiding them: nothing
-    here reads the flag, and `sweep_archives` below still skips a topic that
-    already carries it.
+    here reads the flag, and the `sweep_archives` call below still skips a
+    topic that already carries it.
 
     WIDENING WHAT IT SEES DOES NOT WIDEN WHAT IT ACTS ON. The gate is
     untouched and is the only thing that decides a deletion:
@@ -7426,6 +7426,17 @@ def refresh_run_log(q: Queue, slug: str) -> tuple[str, str]:
             old = fh.read()
         verb = "updated"
     else:
+        # A topic that was ALREADY archived when this view loaded is REFRESHED
+        # and never OPENED. `shepherd` has always read every topic and `collect`
+        # now does too — see `reap` — and scaffolding a finished topic's history
+        # would hand an operator who deleted one a fresh copy of it on the very
+        # next pass, and a checkout that gained a FLEET_RUNS_DIR after the fact
+        # one template per topic it has ever finished. The flag is read off the
+        # load and `sweep_archives` writes it to disk without touching that, so
+        # a topic that archived during THIS pass is still live here and opens
+        # its log exactly as it always did.
+        if q.topics.get(slug, {}).get("archived"):
+            return path, ""
         try:
             with open(run_template_path(), encoding="utf-8") as fh:
                 old = fh.read()

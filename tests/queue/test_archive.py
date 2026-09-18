@@ -13,9 +13,12 @@ question, and every reader answers it out of the topic file alone.
 """
 
 
+import os
+from pathlib import Path
+
 import pytest
 from kit_display import set_state_line
-from queuekit import ok, result
+from queuekit import deletions, ok, result
 
 from harness import PYTHON, REPO, expect, refute, run, run_fleet, write
 from harness import run_queue as q
@@ -194,10 +197,6 @@ def test_check_catches_a_topic_archived_over_live_work(archived, queue_dir):
 LATE = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 
 
-def deletions(stubs) -> str:
-    return "\n".join(stubs.calls("thurbox-cli", "session delete"))
-
-
 @pytest.fixture
 def stranded(stubs, queue_dir) -> str:
     """A topic whose only task landed while its worker was still `working`.
@@ -255,3 +254,21 @@ def test_the_collect_the_loop_actually_runs_revisits_it_too(stranded, stubs):
     stubs.session_is(LATE, "idle")
     expect(ok(q("collect")).out, "01-wrote-and-kept-working", "reaped")
     expect(deletions(stubs), "--force", LATE)
+
+
+def test_a_finished_topics_run_log_is_refreshed_and_never_reopened(stranded, stubs):
+    """A finished topic's log is history. `collect` reads every topic now, as
+    `shepherd` always has, so one the operator deleted must not come back from
+    the template on the next pass — and a checkout that gains a
+    `FLEET_RUNS_DIR` late must not fill it with a template per topic it has
+    ever finished."""
+    log = next(Path(os.environ["FLEET_RUNS_DIR"]).glob(f"*-{stranded}.md"))
+    # It carries the keep, written while the topic was still live.
+    expect(log.read_text(encoding="utf-8"), "01-wrote-and-kept-working")
+    log.unlink()
+
+    stubs.session_is(LATE, "idle")
+    out = ok(q("collect")).out
+    expect(out, "reaped")
+    refute(out, "run log")
+    assert not log.exists(), f"{log.name} was scaffolded again for an archived topic"
