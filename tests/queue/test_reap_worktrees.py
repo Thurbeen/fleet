@@ -159,10 +159,49 @@ def test_absent_created_by_thurbox_is_owned(landed, stubs):
     assert_kept(stubs, task)
 
 
-def test_remote_owned_worktree_needs_more_than_a_mirror_snapshot(landed, stubs):
+REMOTE_TREE = "/srv/worktrees/app-1234/fix-build-on-devbox"
+
+
+def _remote_target(stubs, task):
+    (stubs.root / "sessions" / f"{OTHER}.json").unlink()
+    session(stubs, S1, backend_type="ssh:devbox", cwd=REMOTE_TREE, worktrees=[{
+        "worktree_path": REMOTE_TREE, "created_by_thurbox": True,
+    }])
+    return task
+
+
+def test_remote_session_is_reaped_when_the_host_lists_no_occupant(landed, stubs):
+    _remote_target(stubs, landed[0])
+    expect(ok(q("reap")).out, "reaped", S1)
+    expect("\n".join(stubs.calls("thurbox-cli", "session delete")), S1, "--force")
+
+
+def test_remote_session_is_kept_when_the_host_lists_an_occupant(landed, stubs):
+    task = _remote_target(stubs, landed[0])
+    write(stubs.root / "ssh-state" / "me@devbox.session-list.json", json.dumps([
+        {"id": S1, "cwd": REMOTE_TREE, "backend_type": "local-tmux",
+         "worktrees": [{"worktree_path": REMOTE_TREE, "created_by_thurbox": True}]},
+        {"id": OTHER, "cwd": REMOTE_TREE + "/src", "backend_type": "local-tmux"},
+    ]))
+    out = ok(q("reap")).out
+    expect(out, "kept", S1, OTHER, REMOTE_TREE)
+    assert_kept(stubs, task)
+
+
+def test_unlistable_host_session_list_keeps_the_remote_session(landed, stubs):
+    task = _remote_target(stubs, landed[0])
+    write(stubs.root / "ssh-state" / "me@devbox.session-list.json", "Welcome\nnot json")
+    expect(ok(q("reap")).out, "kept", "session list on host", S1)
+    assert_kept(stubs, task)
+
+
+def test_unknown_backend_does_not_promise_a_later_pass(landed, stubs):
     task, _ = landed
-    session(stubs, S1, backend_type="ssh:build-host")
-    expect(ok(q("reap")).out, "kept", S1, "non-local")
+    (stubs.root / "sessions" / f"{OTHER}.json").unlink()
+    session(stubs, S1, backend_type="mystery")
+    out = ok(q("reap")).out
+    expect(out, "kept", "cannot judge backend", S1)
+    refute(out, "next pass", "retry")
     assert_kept(stubs, task)
 
 

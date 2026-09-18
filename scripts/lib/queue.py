@@ -209,7 +209,9 @@ import base64
 import glob
 import importlib.util
 import json
+import ntpath
 import os
+import posixpath
 import re
 import shlex
 import shutil
@@ -4478,9 +4480,11 @@ def cmd_collect(args) -> int:
 # worktrees thurbox created for that session; a session made by hand is not in
 # the queue, so the live `session list` is the only set that can answer. If
 # that list cannot be read, or a path on it cannot be resolved, the session
-# stays — a guess here is someone else's uncommitted work. A mirrored remote
-# row cannot prove the host has no unmirrored session in the same worktree,
-# so those stay too.
+# stays — a guess here is someone else's uncommitted work. A remote session
+# is asked about its HOST first (`host_reachable`) and then for that host's
+# own `session list` over the same ssh path; an occupant there keeps the
+# session and the next pass retries, and a host that does not answer is the
+# existing unreachable keep.
 REAPABLE_SESSION_STATES = ("idle", "done", "stopped")
 
 # The task states that still hold a session worth reporting on. `queued` never
@@ -4583,24 +4587,122 @@ def session_snapshot() -> tuple[dict | None, str]:
         return None, f"thurbox-cli session list could not run: {exc}"
     if proc.returncode != 0:
         return None, "thurbox-cli session list failed"
-    try:
-        doc = json.loads(proc.stdout)
-    except ValueError:
-        return None, "thurbox-cli session list did not answer JSON"
-    if not isinstance(doc, list):
-        return None, "thurbox-cli session list did not answer a list"
-    sessions = {}
-    for row in doc:
-        sid = row.get("id") if isinstance(row, dict) else None
-        if not isinstance(sid, str) or not sid or sid in sessions:
-            return None, "thurbox-cli session list answered invalid or duplicate session ids"
-        sessions[sid] = row
-    return sessions, ""
+    return sessions_from_json_text(proc.stdout, "thurbox-cli session list")
 
 
 def live_sessions() -> tuple[set | None, str]:
     sessions, why = session_snapshot()
     return (set(sessions) if sessions is not None else None), why
+
+
+def sessions_from_rows(doc, source: str) -> tuple[dict | None, str]:
+    if not isinstance(doc, list):
+        return None, f"{source} did not answer a list"
+    sessions = {}
+    for row in doc:
+        sid = row.get("id") if isinstance(row, dict) else None
+        if not isinstance(sid, str) or not sid or sid in sessions:
+            return None, f"{source} answered invalid or duplicate session ids"
+        sessions[sid] = row
+    return sessions, ""
+
+
+def sessions_from_json_text(text: str, source: str) -> tuple[dict | None, str]:
+    """A session list, including one a login-shell banner glued itself in front of."""
+    raw = text or ""
+    try:
+        doc = json.loads(raw)
+    except ValueError:
+        start = raw.find("[")
+        if start < 0:
+            return None, f"{source} did not answer JSON"
+        try:
+            doc = json.loads(raw[start:])
+        except ValueError:
+            return None, f"{source} did not answer JSON"
+    return sessions_from_rows(doc, source)
+
+
+def host_session_snapshot(name: str) -> tuple[dict | None, dict | None, str]:
+    """The host's own `session list --json`, over the same ssh path `host_reachable` uses."""
+    entry, why = host_entry(name)
+    if not entry:
+        return None, None, why
+    proc = ssh_run(entry, "thurbox-cli session list --json")
+    if proc.returncode != 0:
+        return None, entry, first_line(proc) or f"thurbox-cli session list on host {name} failed"
+    sessions, why = sessions_from_json_text(
+        proc.stdout, f"thurbox-cli session list on host {name}",
+    )
+    return sessions, entry, why
+
+
+def owned_worktree_paths(target) -> tuple[list | None, str]:
+    worktrees = target.get("worktrees")
+    if not isinstance(worktrees, list):
+        return None, "cannot read session worktrees"
+    owned = []
+    for tree in worktrees:
+        if not isinstance(tree, dict):
+            return None, "cannot read worktree ownership"
+        flag = tree.get("created_by_thurbox")
+        if flag is None:
+            owned.append(tree.get("worktree_path"))
+        elif type(flag) is not bool:
+            return None, "cannot read worktree ownership"
+        elif flag:
+            owned.append(tree.get("worktree_path"))
+    return owned, ""
+
+
+def local_resolved_path(value) -> str:
+    # Path.resolve(strict=True), not os.path.realpath(..., strict=True):
+    # the latter's strict= is 3.13 and this file's floor is 3.11.
+    if not isinstance(value, str) or not value or "\0" in value or not os.path.isabs(value):
+        raise ValueError("missing or non-absolute path")
+    return os.path.normcase(str(Path(value).resolve(strict=True)))
+
+
+def documented_path(value, posix: bool) -> str:
+    """A path as the multiplexer spells it, not as this machine would resolve it."""
+    if not isinstance(value, str) or not value or "\0" in value:
+        raise ValueError("missing or non-absolute path")
+    mod = posixpath if posix else ntpath
+    if not mod.isabs(value):
+        raise ValueError("missing or non-absolute path")
+    return mod.normcase(mod.normpath(value))
+
+
+def occupant_in_worktrees(sessions, sid, roots, path_of, common, skip_offbox=False):
+    for other_id, other in sessions.items():
+        if other_id == sid:
+            continue
+        backend = other.get("backend_type")
+        if not isinstance(backend, str) or not backend:
+            return f"cannot read backend of session {other_id} for worktree check"
+        off_box = backend.startswith(("ssh:", "wsl:"))
+        if not off_box and backend != "local-tmux":
+            return f"cannot judge backend of session {other_id} for worktree check"
+        try:
+            cwd = path_of(other.get("cwd"))
+        except (OSError, ValueError, RuntimeError) as exc:
+            # An ssh/wsl cwd that does not resolve here is a path on another
+            # machine, not a refusal to judge this one. A wsl row whose cwd
+            # *does* resolve is on this filesystem and is checked below.
+            if skip_offbox and off_box:
+                continue
+            return f"cannot resolve cwd of session {other_id}: {exc}"
+        for path, root in roots:
+            # commonpath compares components, unlike a prefix check which
+            # confuses worktree and worktree-other. Separate Windows drives
+            # cannot contain one another.
+            try:
+                inside = common((root, cwd)) == root
+            except ValueError:
+                inside = False
+            if inside:
+                return f"session {other_id} uses worktree {path} (cwd {other['cwd']})"
+    return ""
 
 
 def worktree_release_blocker(sid: str) -> str:
@@ -4612,9 +4714,9 @@ def worktree_release_blocker(sid: str) -> str:
     is treated as owned. Read a fresh list before each deletion: a session
     made by hand is not in the queue, and even an idle or stopped session can
     still hold work worth keeping. Missing data is not permission to destroy
-    it. A remote row cannot prove the host has no unmirrored session in that
-    worktree, and this machine cannot resolve that host's paths, so those
-    stay for the next pass.
+    it. A remote target is judged on the host's own session list, over the
+    same ssh path `host_reachable` uses; a backend this file has no occupancy
+    rule for is the operator's to delete.
     """
     sessions, why = session_snapshot()
     if sessions is None:
@@ -4622,67 +4724,50 @@ def worktree_release_blocker(sid: str) -> str:
     target = sessions.get(sid)
     if target is None:
         return "session disappeared during the worktree check; retry next pass"
-    # Asked before the worktree list: a mirrored ssh/wsl row is not a local
-    # filesystem answer, however complete its document looks.
-    if target.get("backend_type") != "local-tmux":
-        return "cannot verify worktree use on a non-local or unknown backend"
-    worktrees = target.get("worktrees")
-    if not isinstance(worktrees, list):
-        return "cannot read session worktrees"
-
-    def local_path(value):
-        # Path.resolve(strict=True), not os.path.realpath(..., strict=True):
-        # the latter's strict= is 3.13 and this file's floor is 3.11.
-        if not isinstance(value, str) or not value or "\0" in value or not os.path.isabs(value):
-            raise ValueError("missing or non-absolute path")
-        return os.path.normcase(str(Path(value).resolve(strict=True)))
-
-    owned = []
-    for tree in worktrees:
-        if not isinstance(tree, dict):
-            return "cannot read worktree ownership"
-        flag = tree.get("created_by_thurbox")
-        if flag is None:
-            owned.append(tree.get("worktree_path"))
-        elif type(flag) is not bool:
-            return "cannot read worktree ownership"
-        elif flag:
-            owned.append(tree.get("worktree_path"))
+    owned, why = owned_worktree_paths(target)
+    if why:
+        return why
     if not owned:
         return ""
-    try:
-        roots = [(path, local_path(path)) for path in owned]
-    except (OSError, ValueError, RuntimeError) as exc:
-        return f"cannot resolve session worktree: {exc}"
-    for other_id, other in sessions.items():
-        if other_id == sid:
-            continue
-        backend = other.get("backend_type")
-        if not isinstance(backend, str) or not backend:
-            return f"cannot read backend of session {other_id} for worktree check"
-        off_box = backend.startswith(("ssh:", "wsl:"))
-        if not off_box and backend != "local-tmux":
-            return f"cannot judge backend of session {other_id} for worktree check"
+    backend = target.get("backend_type")
+    if backend == "local-tmux":
         try:
-            cwd = local_path(other.get("cwd"))
+            roots = [(path, local_resolved_path(path)) for path in owned]
         except (OSError, ValueError, RuntimeError) as exc:
-            # An ssh/wsl cwd that does not resolve here is a path on another
-            # machine, not a refusal to judge this one. A wsl row whose cwd
-            # *does* resolve is on this filesystem and is checked below.
-            if off_box:
-                continue
-            return f"cannot resolve cwd of session {other_id}: {exc}"
-        for path, root in roots:
-            # commonpath compares components, unlike a prefix check which
-            # confuses worktree and worktree-other. Separate Windows drives
-            # cannot contain one another.
-            try:
-                inside = os.path.commonpath((root, cwd)) == root
-            except ValueError:
-                inside = False
-            if inside:
-                return f"session {other_id} uses worktree {path} (cwd {other['cwd']})"
-    return ""
+            return f"cannot resolve session worktree: {exc}"
+        return occupant_in_worktrees(
+            sessions, sid, roots, local_resolved_path, os.path.commonpath, skip_offbox=True,
+        )
+    if isinstance(backend, str) and backend.startswith("ssh:"):
+        host = backend[4:]
+        if not host:
+            return f"cannot read host of session {sid}"
+        remote, entry, why = host_session_snapshot(host)
+        if remote is None:
+            return why
+        posix = str(entry.get("multiplexer") or "tmux") == "tmux"
+        common = posixpath.commonpath if posix else ntpath.commonpath
+
+        def host_path(value):
+            return documented_path(value, posix)
+
+        try:
+            roots = [(path, host_path(path)) for path in owned]
+        except (OSError, ValueError, RuntimeError) as exc:
+            return f"cannot resolve session worktree: {exc}"
+        return occupant_in_worktrees(remote, sid, roots, host_path, common)
+    if isinstance(backend, str) and backend.startswith("wsl:"):
+        def wsl_path(value):
+            return documented_path(value, True)
+
+        try:
+            roots = [(path, wsl_path(path)) for path in owned]
+        except (OSError, ValueError, RuntimeError) as exc:
+            return f"cannot resolve session worktree: {exc}"
+        return occupant_in_worktrees(
+            sessions, sid, roots, wsl_path, posixpath.commonpath,
+        )
+    return f"cannot judge backend {backend!r} of session {sid}"
 
 
 def session_state(sid: str) -> tuple[str | None, str]:

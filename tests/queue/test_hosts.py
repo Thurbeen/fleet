@@ -192,10 +192,18 @@ def test_a_remote_result_comes_back_and_its_session_outlives_a_down_host(
     expect((stubs.root / "sessions" / f"{RSESSION}.json").read_text(encoding="utf-8"), '"state": "idle"')
 
     hosts.unflag("me@devbox", "down")
-    # A mirrored remote row cannot prove the host has no unmirrored session
-    # in that worktree, so reachability alone is not permission to delete.
-    expect(q("reap").out, "kept", "cannot verify worktree use on a non-local")
+    # Reachability is not permission to delete: the host is asked for its own
+    # session list, the same ssh path host_reachable just used. An occupant
+    # there keeps the session; an empty list is a real absence and is reaped.
+    write(stubs.root / "ssh-state" / "me@devbox.session-list.json", json.dumps([
+        {"id": RSESSION, "cwd": WORKTREE, "backend_type": "local-tmux"},
+        {"id": "manual-on-host", "cwd": WORKTREE + "/src", "backend_type": "local-tmux"},
+    ]))
+    expect(q("reap").out, "kept", RSESSION, "manual-on-host", WORKTREE)
     refute(deletions(stubs), RSESSION)
+    (stubs.root / "ssh-state" / "me@devbox.session-list.json").unlink()
+    expect(q("reap").out, "reaped", RSESSION)
+    expect(deletions(stubs), RSESSION)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="the fake host's login shell is a real /bin/sh, which Windows has not got")
@@ -294,8 +302,15 @@ def test_a_windows_host_is_spoken_to_in_powershell_and_the_bytes_survive(hosts, 
     hosts.flag("me@winbox", "down")
     expect(q("reap").out, "unreachable: host winbox")
     hosts.unflag("me@winbox", "down")
-    expect(q("reap").out, "kept", "cannot verify worktree use on a non-local")
+    write(stubs.root / "ssh-state" / "me@winbox.session-list.json", json.dumps([
+        {"id": WSESSION, "cwd": WWORKTREE, "backend_type": "local-tmux"},
+        {"id": "manual-on-winbox", "cwd": WWORKTREE + "\\src", "backend_type": "local-tmux"},
+    ]))
+    expect(q("reap").out, "kept", WSESSION, "manual-on-winbox", WWORKTREE)
     refute(deletions(stubs), WSESSION)
+    (stubs.root / "ssh-state" / "me@winbox.session-list.json").unlink()
+    expect(q("reap").out, "reaped", WSESSION)
+    expect(deletions(stubs), WSESSION)
 
     assert hosts.read_flag("me@winbox", "posix") == "", "no POSIX command ever reached the Windows host"
     # And it was spoken to throughout, so that silence means something.
