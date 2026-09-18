@@ -736,6 +736,28 @@ def test_a_command_profile_gets_no_fixer_on_a_covered_repository(
     assert shep.creates("01-conflicting") == [], out + "\n----\n" + shep.tbx_log()
 
 
+def test_a_working_worker_still_reports_the_fixer_policy_refusal(
+    tmp_path, stubs, queue_dir
+):
+    """A busy worker must not hide why policy would refuse its fixer."""
+    wide = {"FLEET_AGENT_POLICY": "github.com/Thurbeen/fleet=alpha"}
+    shep, _, topic = conflicting_task(
+        tmp_path, stubs, queue_dir, "fixer-busy", wide, agent="alpha")
+    worker = "busy-worker"
+    shep.session(worker, "working")
+    task_file = queue_dir / topic / "01-conflicting" / "task.yaml"
+    doc = yaml.safe_load(task_file.read_text(encoding="utf-8"))
+    doc["session"] = worker
+    task_file.write_text(yaml.safe_dump(doc), encoding="utf-8")
+    narrowed = {"FLEET_AGENT_POLICY": "github.com/Thurbeen/fleet=beta"}
+
+    out = ok(q("shepherd", "--topic", topic, **narrowed)).out
+    expect(out, "policy-refused", "no fixer sent", "'alpha'", "beta")
+    refute(out, "left-alone")
+    assert shep.creates("01-conflicting") == [], shep.tbx_log()
+    assert not stubs.calls("thurbox-cli", "session send"), shep.tbx_log()
+
+
 def test_a_refusal_never_overwrites_the_record_of_a_fixer_in_flight(
     tmp_path, stubs, queue_dir
 ):
