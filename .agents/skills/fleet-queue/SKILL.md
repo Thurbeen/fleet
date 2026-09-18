@@ -854,7 +854,18 @@ vendor's own quota endpoint rate-limits, and quota-axi says `stale` rather than
 serving old numbers as current. Read the `retry after` it prints and run it
 again; do not work around it.
 
-**With fuel in the account, one wedged session is a conjunction**, because
+**A dead pane is recovered even when that conjunction does not hold.**
+`session get --json` probes the multiplexer and reports `hook_corroboration`;
+`dead` means the pane's command has exited (`#{pane_dead}`) while
+`remain-on-exit` kept the frame. The last hook can be `uncovered` or absent —
+that is what a failed `--resume` leaves — and waiting on a stale `working` is
+what left those tasks sitting. The report names it `dead pane`, not a stale
+working state. Do not parse `session capture` for `Pane is dead`: that string
+is rendered, wraps with the terminal, and survives in scrollback after the
+pane has come back. `session list` does not probe, so `hook_corroboration`
+there is `null` ("not checked"), not "alive".
+
+**With fuel in the account, one wedged *live* session is a conjunction**, because
 either half alone gets it wrong:
 
 | half | read from | on its own it means |
@@ -867,16 +878,23 @@ The transcript outranks the pane wherever it can be read: keyed by
 names the window that rejected the turn and when that window resets. `session
 get --json` carries no usage field at all — do not look for one.
 
-The restart is `session restart` (kills the window, re-spawns with `--resume`,
-so the conversation and the brief survive) followed by dispatch's own handoff:
-`session_trust.py` first, because a re-spawned agent in a worktree can ask the
-trust question again and sending into that dialog types the prompt INTO it.
+The restart is `session stop`, a wait until no process still holds the
+conversation id, then `session start`. `session start` resumes the same way
+`session restart` does (the conversation and the brief survive). The in-place
+`session restart` kills the window and immediately re-spawns with `--resume`;
+the old process may still hold the conversation, and the agent then exits 1
+(`Session ID … is already in use`), leaving `hook_corroboration: dead`. Text
+from `ps` selects only what we wait for, never what we kill. A holder that
+survives the wait leaves the session parked for a human rather than launching
+on top of it. Then dispatch's own handoff: `session_trust.py` first, because a
+re-spawned agent in a worktree can ask the trust question again and sending
+into that dialog types the prompt INTO it.
 Every restart is recorded on the task and **capped at three** — a session that
-runs dry, resumes and runs dry again is a task too big for its window, and a
-fourth restart is a loop rather than a recovery. A `working` state that was
-reported BEFORE the last restart is evidence from before it, so a second pass
-minutes later gives the re-spawned agent a moment instead of spending the cap
-on one wedge.
+runs dry, resumes and runs dry again, or a pane that dies each time, is a loop
+rather than a recovery. A `working` state that was reported BEFORE the last
+restart is evidence from before it, so a second pass minutes later gives the
+re-spawned agent a moment instead of spending the cap on one wedge; a dead
+pane does not get that pause, because the process is already gone.
 
 **A restart is neither a completion nor a failure.** `refuel` writes no `state`
 and no `outcome`; `collect` stays the only thing that closes a task. The lead's

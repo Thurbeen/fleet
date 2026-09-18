@@ -12,6 +12,7 @@ sys.path, where that name would shadow the standard library's module.
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import shlex
 import signal
@@ -338,6 +339,45 @@ def alive(pid: int) -> bool:
     except PermissionError:
         return True  # it exists; it is somebody else's
     return True
+
+
+def process_commands() -> dict[int, str] | None:
+    """Current pids and command lines, or None when the OS cannot answer.
+
+    A window disappearing does not prove its process has exited. Refuel uses
+    this read-only census to wait out the old conversation holder before it
+    asks thurbox to resume; it never signals a process selected by text.
+    """
+    argv = (["powershell", "-NoProfile", "-NonInteractive", "-Command",
+             "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(); "
+             "$ErrorActionPreference = 'Stop'; "
+             "ConvertTo-Json -Compress -InputObject "
+             "@(Get-CimInstance Win32_Process | Select-Object ProcessId, CommandLine)"]
+            if WINDOWS else ["ps", "-ww", "-eo", "pid=,args="])
+    try:
+        proc = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", timeout=10)
+        if proc.returncode:
+            return None
+        if not WINDOWS:
+            commands = {}
+            for line in proc.stdout.splitlines():
+                parts = line.strip().split(None, 1)
+                if len(parts) != 2:
+                    continue
+                try:
+                    commands[int(parts[0])] = parts[1]
+                except ValueError:
+                    continue
+            return commands
+        rows = json.loads(proc.stdout.lstrip("\ufeff"))
+        if isinstance(rows, dict):
+            rows = [rows]
+        if isinstance(rows, list):
+            return {int(row["ProcessId"]): row["CommandLine"] for row in rows
+                    if isinstance(row, dict) and isinstance(row.get("CommandLine"), str)}
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError):
+        pass
+    return None
 
 
 def process_ids() -> list[int]:

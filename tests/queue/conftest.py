@@ -20,7 +20,10 @@ from harness import stream_event, write
 
 
 @pytest.fixture(autouse=True)
-def settings(isolated_env) -> None:
+def settings(isolated_env, stubs) -> None:
+    # Refuel's process census must never inspect the machine running the gate.
+    stubs.tool("ps", "print('')")
+    stubs.tool("powershell", "print('[]')")
     orchestration = isolated_env / "settings" / "orchestration"
     write(orchestration / "publish.conf", PUBLISH_CONF)
     write(orchestration / "agent.conf", AGENT_CONF)

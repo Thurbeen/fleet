@@ -601,8 +601,10 @@ for. With fuel in the account, `session restart <uuid>` re-spawns with
 again (§1b) before you send anything into the new pane.
 
 **For a session the queue dispatched, `uv run fleet queue refuel` is all of the
-above in one verb** — the account first, the conjunction, the trusted handoff,
-a cap and a record. Do not hand-restart those; see `fleet-queue` §5c.
+above in one verb** — the account first, a dead pane
+(`hook_corroboration: dead`) or the stale-working conjunction, a stop / wait /
+start so `--resume` does not land on a conversation still held, the trusted
+handoff, a cap and a record. Do not hand-restart those; see `fleet-queue` §5c.
 
 ### 4c. "I sent it a message — did it land?"
 

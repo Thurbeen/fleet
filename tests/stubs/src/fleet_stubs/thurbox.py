@@ -27,7 +27,7 @@ def main() -> int:
         print(read(root / "next-session.json").strip() or '{"id":"stub","created":true}')
     elif verb == "session capture":
         print(json.dumps({"output": read(root / "panes" / f"{ident}.txt")}))
-    elif verb == "session restart":
+    elif verb in ("session stop", "session start", "session restart"):
         print(json.dumps({"id": ident, "restarted": True}))
     elif verb == "session list":
         sessions = sorted((root / "sessions").glob("*.json"))
