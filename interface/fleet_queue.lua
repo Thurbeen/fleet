@@ -1992,9 +1992,23 @@ local function fuel_rows(fuel, width, spinner)
   label_width = math.min(label_width, FUEL_LABEL_MAX, math.max(1, width - fixed),
     math.max(FUEL_LABEL_MIN, width - fixed - FUEL_RESET - 2))
 
-  for _, rec in ipairs(shown) do
+  for _, rec in ipairs(fuel) do
     local name = ui.row({ width = width })
     name:add(" " .. widgets.truncate(fuel_name(rec), math.max(1, width - 1)), { fg = theme.muted })
+    -- A NAMED ACCOUNT WITH NOTHING TO READ STILL DRAWS A ROW, its own bar
+    -- replaced by its reason: `shown` above exists to size the bar layout
+    -- against the accounts that HAVE one, never to decide which accounts
+    -- appear at all. Filtering this loop the same way `shown` was built used
+    -- to drop an unavailable account's row outright whenever a sibling
+    -- account had a real reading — invisible rather than an `unavailable`
+    -- line, exactly the silent loss naming an account exists to end, just
+    -- reached through the pane instead of the `--fuel` text it parses.
+    if not (rec.remaining and not rec.unavailable) then
+      flush_right(name, "unavailable", { fg = theme.warn })
+      rows[#rows + 1] = line(name:spans_list())
+      rows[#rows + 1] = detail(rec.unavailable or "no reading")
+      goto continue
+    end
     -- quota-axi's own word for its reading, passed through rather than
     -- interpreted: it means the numbers are remembered, not just observed.
     -- Dropped rather than overflowed; the hatched bars say the same thing.
@@ -2041,6 +2055,7 @@ local function fuel_rows(fuel, width, spinner)
       end
       rows[#rows + 1] = line(row:spans_list())
     end
+    ::continue::
   end
   return rows
 end

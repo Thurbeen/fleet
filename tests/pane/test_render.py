@@ -266,6 +266,24 @@ def test_the_checkout_flag_decides_the_parentheses_not_a_name_coincidence():
         assert widest <= int(width), f"a row is {widest} columns wide at {width}\n{out}"
 
 
+def test_an_unavailable_account_still_draws_its_own_row_beside_a_reading_one():
+    """The row loop used to filter itself down to the same `shown` set the bar
+    layout is sized against — records with a `remaining` and no `unavailable`
+    — so an account with neither simply never appeared: not a blank line, no
+    row at all, invisible beside a sibling account's bar. The `--fuel` text
+    this pane parses already names such an account `unavailable`; the pane
+    has to say the same thing, not fewer accounts than it read."""
+    for width in ("44", "30"):
+        out = render(width, "--fuel-mixed-availability")
+        # The `unavailable` word itself is a flush-right note, dropped under
+        # the same "fewer than four columns left, so drop it" rule `stale`
+        # already follows — the reason line beneath it is what proves the
+        # account's row survived at every width, narrow ones included.
+        expect(out, "claude", "64", "claude (claude-spare)", "quota-axi named no claude")
+        widest = max(cells(line) for line in out.splitlines())
+        assert widest <= int(width), f"a row is {widest} columns wide at {width}\n{out}"
+
+
 def test_an_overdue_reading_says_how_old_it_is():
     """A reading older than the TTL means the refresh is not happening, and then
     its age is the most important thing on the row, said in words."""

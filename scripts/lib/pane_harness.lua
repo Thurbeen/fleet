@@ -83,6 +83,7 @@ local LONG_LABEL = false
 -- two records naming the same provider, told apart by `account` alone.
 local FUEL_ACCOUNTS = false
 local FUEL_NAME_COLLISION = false
+local FUEL_MIXED_AVAILABILITY = false
 for i, a in ipairs(arg) do
   if a == "--long-label" then
     LONG_LABEL = true
@@ -90,6 +91,8 @@ for i, a in ipairs(arg) do
     FUEL_ACCOUNTS = true
   elseif a == "--fuel-name-collision" then
     FUEL_NAME_COLLISION = true
+  elseif a == "--fuel-mixed-availability" then
+    FUEL_MIXED_AVAILABILITY = true
   elseif a == "--long" then
     LONG = tonumber(arg[i + 1]) or 0
   elseif a == "--height" then
@@ -522,6 +525,31 @@ if FUEL_NAME_COLLISION then
     "limited_by\tseven_day",
     "read_at\t" .. (NOW - FUEL_READ),
     "window\tseven_day\t85\t" .. (NOW + 4 * 86400) .. "\tweek",
+  }, "\n")
+end
+
+-- One account with a real reading beside one with none at all: the pane's
+-- own `shown` filter used to decide which rows this loop draws, so an
+-- unavailable account's row vanished outright whenever a sibling account had
+-- a reading, rather than drawing as its own labelled `unavailable` line the
+-- way the `--fuel` text this pane parses already does.
+if FUEL_MIXED_AVAILABILITY then
+  FUEL = table.concat({
+    "provider\tclaude",
+    "account\tclaude",
+    "checkout\t1",
+    "remaining\t64",
+    "reserve\t20",
+    "limited_by\tseven_day",
+    "read_at\t" .. (NOW - FUEL_READ),
+    "window\tseven_day\t64\t" .. (NOW + 4 * 86400) .. "\tweek",
+    "",
+    "provider\tclaude",
+    "account\tclaude-spare",
+    "checkout\t0",
+    "unavailable\tquota-axi named no claude credential for this account",
+    "reserve\t20",
+    "read_at\t" .. (NOW - FUEL_READ),
   }, "\n")
 end
 
