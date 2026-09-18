@@ -671,13 +671,22 @@ def fuel_accounts() -> list[dict]:
     provider" entry, `provider=<vendor>` a one-provider entry). BUT A NAME OTHER
     THAN `lead` CAN STILL REACH `lead`'s OWN ENVIRONMENT — a `LIKE` chain ending
     at the agent `AGENT=` already names, with no `ENV` of its own along the way,
-    resolves through `named()`'s chain to that same `ENV` line. So every named
-    agent's resolved `env` is checked against `checkout_env` directly, ahead of
-    the `(provider, env)` dedup: equal means this is the checkout's own account
-    under an alias, not a second one, whatever name or provider it carries.
-    Two OTHER agents whose `ENV` and provider resolve alike are ONE account too
-    — the `(provider, env)` dedup below governs any two names other than a
-    `checkout_env` match.
+    resolves through `named()`'s chain to that same `ENV` line, and
+    `fleetqueue.fuel_agent()` follows that same chain for the PROVIDER, so such
+    an entry's `env` AND `provider` both come out identical to the checkout's
+    own. Both have to match, never `env` alone: `refuel`'s `account_key()`
+    buckets by `(provider, env)`, and a named entry sharing the checkout's
+    login for a DIFFERENT vendor — two agents under one broad `HOME=` line,
+    most directly — is a different key by that same rule, whatever env it
+    coincides with. Treating `env` alone as "the checkout's own account" would
+    drop that account from the screen entirely rather than reading it: its
+    provider is not among what the checkout's own "every discovered provider"
+    entry asks for unless discovery happens to find it too, so a genuinely
+    unrelated account with no credential would vanish with no record at all —
+    the same silent loss this whole section exists to end, reached through the
+    checkout's env instead of a distinct one. Two OTHER agents whose `ENV` and
+    provider resolve alike are one account too — the `(provider, env)` dedup
+    below governs any two names other than a `checkout_env`-and-provider match.
 
     EVERY NON-CHECKOUT ENTRY CARRIES `checkout: False`, entry zero alone
     `checkout: True` — not "the account named `lead`" and not "the account
@@ -696,6 +705,7 @@ def fuel_accounts() -> list[dict]:
     settings = agent_conf()
     lead = settings.get("AGENT", "").strip()
     checkout_env = agent_settings.account_env(lead, settings)
+    checkout_provider = fleetqueue.fuel_agent(lead) or lead
     out: list[dict] = [
         {"account": lead, "provider": None, "env": checkout_env, "problem": None, "checkout": True}
     ]
@@ -721,12 +731,18 @@ def fuel_accounts() -> list[dict]:
             continue
         # An agent named only through `agent == lead` above misses an agent
         # that reaches the SAME environment a different way — a `LIKE` chain
-        # ending at `lead`'s own `ENV` line, most directly. Two agents whose
-        # resolved environment is byte-identical to the checkout's own are
-        # not a second account; `refuel`'s `account_key()` has no notion of
-        # "the lead" at all and buckets by `(provider, env)` alone, so this
-        # is the same equality it applies.
-        if env == checkout_env:
+        # ending at `lead`'s own `ENV` line, most directly. Byte-identical env
+        # AND the SAME vendor `lead` itself resolves to is the checkout's own
+        # account under an alias, not a second one — `refuel`'s `account_key()`
+        # buckets by `(provider, env)`, never env alone, and a named account
+        # whose PROVIDER differs from `lead`'s (a genuinely different vendor
+        # sharing the checkout's login, such as two agents sharing one broad
+        # `HOME=` line) is a DIFFERENT account by that same key, whatever its
+        # env coincides with. Dropping it here on env alone used to silence a
+        # no-credential account exactly like the one this whole section exists
+        # to keep visible, just reached through the checkout's own env instead
+        # of a distinct one.
+        if env == checkout_env and provider == checkout_provider:
             continue
         key = (provider, tuple(sorted(env.items())))
         if key in seen:
@@ -954,14 +970,16 @@ def probe_fuel_all() -> dict:
     simply named nothing available — and blaming every guess on whichever
     reason was seen first misnames the other.
 
-    `unavailable` here is the WHOLE reading failing, which is now every account
-    failing: one account's fetch failing leaves that account's providers
-    carrying their own reason and the other accounts' readings intact, exactly
-    as one provider's failure always did. Every account contributes to either
-    `records` or `failures` (a named account with nothing to probe still adds
-    one placeholder to both), so `len(failures) == len(accounts)` below is a
-    true "every account failed" and not an undercount from an account skipped
-    without a trace.
+    `unavailable` here is the WHOLE reading failing FOR A SINGLE-ACCOUNT FLEET
+    — the one case this feature must render byte-identically to before it
+    existed, so a checkout naming no dotted `ENV` key still gets the one line
+    `probe_fuel_all()` always printed. A fleet with two or more accounts never
+    collapses this way, however many of them failed: one account's fetch
+    failing leaves that account's own labelled, reasoned record in `records`
+    beside the other accounts' readings, exactly as one PROVIDER's failure
+    always did inside a single fetch — collapsing every account's own reason
+    down to the first one found would be the same silent loss naming an
+    account exists to end, just moved from "provider" to "account".
 
     THE CHECKOUT'S OWN ACCOUNT TAKES THE SAME FALLBACK `authenticated_providers()`
     ALWAYS HAS, never a special case that skips the fetch when discovery reads
@@ -1073,7 +1091,16 @@ def probe_fuel_all() -> dict:
             continue
         records += [fuel_record(doc, name, read_at, account) | {"checkout": checkout, "discovery_fallback": why}
                     for name in names]
-    if failures and len(failures) == len(accounts):
+    # A SINGLE account failing collapses to the one line `probe_fuel_all()`
+    # always rendered before this feature existed — the hard constraint that a
+    # checkout naming no dotted `ENV` key prints byte-identically to before.
+    # TWO OR MORE ACCOUNTS NEVER COLLAPSE, even when every one of them failed:
+    # each already has its own labelled, reasoned record in `records`, and
+    # discarding that detail down to `failures[0]` would report only the FIRST
+    # account's reason for a fleet where a second account failed for a
+    # completely different one — the same silent loss this whole feature
+    # exists to end for a single account with no credential.
+    if len(accounts) == 1 and failures:
         sec["unavailable"] = failures[0]
         return sec
     sec["providers"] = records

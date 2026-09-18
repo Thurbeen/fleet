@@ -40,6 +40,7 @@ from statuskit import (
     fetch,
     fuel_of,
     per_account,
+    quota_axi,
     records,
     window,
 )
@@ -495,6 +496,39 @@ def test_a_like_alias_of_the_leads_own_account_is_not_a_second_one(tmp_path, stu
     assert len(stubs.calls("quota-axi", "auth")) == 1, stubs.calls("quota-axi")
 
 
+def test_a_different_provider_sharing_the_checkouts_own_env_still_gets_its_own_account(tmp_path, stubs):
+    """Byte-identical `env` is not enough to call a named entry "the checkout's
+    own account under an alias" — `refuel`'s `account_key()` buckets by
+    `(provider, env)`, and a DIFFERENT vendor sharing the checkout's own login
+    (two agents under one broad line, `codex.ENV=` copying `claude`'s own
+    `CLAUDE_CONFIG_DIR` here) is a different key by that same rule, whatever
+    login it shares. Skipping it on env alone used to drop this account with no
+    record at all whenever it had no credential: the checkout's own "every
+    discovered provider" entry never asks about a provider discovery did not
+    find, so nothing here ever named `codex` unavailable — the exact silent
+    loss naming an account exists to end, reached through the checkout's own
+    env instead of a distinct one."""
+    spare = tmp_path / "spare-config"
+    conf = tmp_path / "agentconf"
+    write(conf / "orchestration" / "agent.conf",
+          "AGENT=claude\n"
+          f"ENV=CLAUDE_CONFIG_DIR={spare}\n"
+          f"codex.ENV=CLAUDE_CONFIG_DIR={spare}\n")
+    stubs.tool("quota-axi", quota_axi(auth(("claude", "available")), fetch(claude(64))))
+    blocks = records(status("--fuel", FLEET_AGENT_ROOT=str(conf)).stdout)
+    assert len(blocks) == 2, blocks
+    by_account = {b.get("account", ""): b for b in blocks}
+    assert "claude" in by_account and "codex" in by_account, blocks
+    assert by_account["claude"]["remaining"] == "64", blocks
+    assert "unavailable" in by_account["codex"] and "remaining" not in by_account["codex"], blocks
+    # One shared environment, so one `auth` call between the two accounts —
+    # never a second one just because a second entry now reaches the screen.
+    assert len(stubs.calls("quota-axi", "auth")) == 1, stubs.calls("quota-axi")
+    done = status(FLEET_AGENT_ROOT=str(conf))
+    expect(done.out, "2 reading(s) over 2 account(s)",
+           "claude  64% remaining", "codex (codex)  unavailable")
+
+
 def test_a_checkout_wide_env_line_does_not_hand_every_mentioned_agent_an_account(tmp_path, stubs):
     """A bare `ENV=` line is the checkout's own default, and `agent_settings.value()`
     falls back to it for ANY agent `agent.conf` mentions — even one named only
@@ -672,6 +706,56 @@ def test_two_providers_under_one_shared_environment_cost_one_auth_and_fetch_pair
     # ONE fetch between them, never two.
     assert len(fetch_calls) == 2, calls
     assert any("claude,codex" in c or "codex,claude" in c for c in fetch_calls), fetch_calls
+
+
+def test_every_account_failing_for_a_different_reason_keeps_every_reason(tmp_path, stubs):
+    """A single-account fleet collapsing its one failure to the section's own
+    `unavailable` line is the exact rendering this feature must never disturb
+    — the hard constraint that a checkout naming no dotted `ENV` key prints
+    byte-identically to before. Generalising that collapse to "every account
+    failed" reintroduces the same silent loss naming an account exists to
+    end, just moved up a level: with two accounts failing for two DIFFERENT
+    reasons, reporting only the first would hide the second's reason behind
+    the first's, exactly as an unlabelled second reading used to hide behind
+    the first's numbers. Two or more accounts must always keep every one of
+    their own records, however many of them failed."""
+    broken = tmp_path / "broken-config"
+    conf = tmp_path / "agentconf"
+    write(conf / "orchestration" / "agent.conf",
+          "AGENT=claude\n"
+          "claude-broken.LIKE=claude\n"
+          f"claude-broken.ENV=CLAUDE_CONFIG_DIR={broken}\n")
+    # BOTH environments' `auth` reads fine and names a real credential — the
+    # fetch itself is what fails, and fails for a DIFFERENT reason each time,
+    # so both readings land in the top-level `failures` list rather than one
+    # of them going through `fuel_record()`'s own "provider not in the doc"
+    # branch, which never touches `failures` at all.
+    stubs.tool("quota-axi", (
+        "import os, sys\n"
+        f"BROKEN = {str(broken)!r}\n"
+        "there = os.environ.get('CLAUDE_CONFIG_DIR') == BROKEN\n"
+        "auth_mode = sys.argv[1:2] == ['auth']\n"
+        "if auth_mode:\n"
+        "    sys.stdout.write("
+        "'{\"generatedAt\": \"2026-03-15T16:42:00.000Z\", \"schemaVersion\": 1, "
+        "\"auth\": [{\"provider\": \"claude\", \"sources\": "
+        "[{\"source\": \"oauth-file\", \"status\": \"available\"}]}]}')\n"
+        "else:\n"
+        "    sys.stderr.write('quota-axi: rate limited\\n' if there else "
+        "'quota-axi: network unreachable\\n')\n"
+        "    sys.exit(1)\n"
+    ))
+    blocks = records(status("--fuel", FLEET_AGENT_ROOT=str(conf)).stdout)
+    assert len(blocks) == 2, blocks
+    by_account = {b.get("account", ""): b for b in blocks}
+    assert "claude" in by_account and "claude-broken" in by_account, blocks
+    assert "network unreachable" in by_account["claude"]["unavailable"], blocks
+    assert "rate limited" in by_account["claude-broken"]["unavailable"], blocks
+    done = status(FLEET_AGENT_ROOT=str(conf))
+    assert "unavailable —" not in done.out.split("FUEL", 1)[1].splitlines()[0], done.out
+    expect(done.out, "2 reading(s) over 2 account(s)",
+           "claude  unavailable — quota-axi exited 1: quota-axi: network unreachable",
+           "claude (claude-broken)  unavailable — quota-axi exited 1: quota-axi: rate limited")
 
 
 def test_the_not_discovered_hint_names_only_the_account_whose_auth_failed(tmp_path, stubs):
