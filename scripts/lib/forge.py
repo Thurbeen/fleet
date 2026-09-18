@@ -505,6 +505,18 @@ GH_CHECK_CANCELLED = {"CANCELLED"}
 GH_URL_RE = re.compile(
     r"^https?://([^/\s]+)/([^/\s]+/[^/\s]+?)(?:\.git)?/pull/(\d+)(?:[/?#].*)?$"
 )
+# `https://host/owner/repo.git`, `ssh://git@host:2222/owner/repo.git`. A scheme
+# is the ordinary shape here and not an exotic one: `install.sh` clones this
+# repository over https, so the checkout a control plane serves first is
+# spelled this way. It went unread for as long as this adapter had only the
+# scp pattern below, and everything that identifies a repository from its
+# CHECKOUT rather than from an artifact URL — the agent policy above all —
+# silently did not cover it.
+GH_REMOTE_URL_RE = re.compile(
+    r"^(?:https?|ssh|git)://(?:[^@/\s]+@)?([^/\s]+)/([^/\s]+/[^/\s]+?)(?:\.git)?/?$"
+)
+# `git@host:owner/repo.git`, and the bare `host/owner/repo` — scp syntax, which
+# carries no port and no scheme.
 GH_REMOTE_RE = re.compile(r"^(?:[^@/\s]+@)?([^:/\s]+)[:/]([^/\s]+/[^/\s]+?)(?:\.git)?/?$")
 
 # GitHub's own state words, mapped onto fleet's three. Anything else is not
@@ -569,7 +581,11 @@ class GitHubForge(Forge):
         )
 
     def repo_from_remote(self, remote_url: str) -> RepoId | None:
-        m = GH_REMOTE_RE.match((remote_url or "").strip())
+        text = (remote_url or "").strip()
+        # The scheme-bearing form FIRST, because the scp pattern would read
+        # `https` as the host and then fail on the `//` — which is exactly how
+        # an ordinary `https://` clone used to resolve to nothing at all.
+        m = GH_REMOTE_URL_RE.match(text) or GH_REMOTE_RE.match(text)
         if not m:
             return None
         host = m.group(1).lower()

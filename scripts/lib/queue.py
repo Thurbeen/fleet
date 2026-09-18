@@ -3193,7 +3193,18 @@ def brief_target(task: Task) -> str:
     return os.path.abspath(task.file("BRIEF.md"))
 
 
-def spawn_commands(task: Task) -> tuple[list, str]:
+def spawn_commands(task: Task) -> tuple[list, str, str]:
+    """The `session create` argv, the prompt to send, and THE AGENT IT NAMES.
+
+    The third value is the whole of what `dispatch` records, and it is returned
+    rather than re-derived because the two are not the same answer. A profile
+    carrying `command` names no agent at all, so the honest record for it is
+    `""` and not whatever `task_agent` would have said; and even where they
+    agree, a second resolution reads `agent-policy.conf` off the disk and runs
+    `git remote get-url origin` again, on the far side of a `session create`
+    that takes seconds — so it is a second measurement of a moving thing, not
+    the same pure answer a moment later.
+    """
     d = task.doc
     create = [
         "thurbox-cli", "session", "create",
@@ -3218,15 +3229,18 @@ def spawn_commands(task: Task) -> tuple[list, str]:
         # (dispatch's "NOT SPAWNED", prompt's own per-task line), and a
         # prefix here duplicated it in the printed message.
         raise QueueError(refusal)
-    policy = agent_policy()
-    repo = None if d.get("host") else repo_from_checkout(d["repo"])
-    matched = agents_for_repo(repo, policy)
     # A profile carrying `command` replaces `--agent`; thurbox refuses both.
+    # `named` stays "" in that case, and a "" is what the record then gets:
+    # fleet cannot tell which agent a free command launches, which is the same
+    # thing `agent_policy_refusal` says just above.
+    named = ""
     if "--command" not in flags:
-        recorded = d.get("agent")
-        agent = recorded or (matched[0][0] if matched else configured_agent())
-        if agent:
-            create += ["--agent", agent]
+        # `task_agent` and nothing else: the answer this names is the one
+        # `refuel` later judges the worker by, and the two coming apart is the
+        # defect this call closes (#117).
+        named = task_agent(task)
+        if named:
+            create += ["--agent", named]
     # NOT ON A REMOTE SPAWN, and there is no way to ask for it there. thurbox
     # validates a parent against the HOST's own backend and refuses one that
     # lives anywhere else ("a session's parent must be on the same host",
@@ -3242,7 +3256,7 @@ def spawn_commands(task: Task) -> tuple[list, str]:
         create += ["--parent", parent]
     create += flags + ["--json"]
     send = f"Read {brief_target(task)} and do what it says."
-    return create, send
+    return create, send, named
 
 
 def spawn_failure(exc, proc=None) -> str:
@@ -3378,7 +3392,7 @@ def cmd_dispatch(args) -> int:
         dry_failures = 0
         for t in ready:
             try:
-                create, send = spawn_commands(t)
+                create, send, _agent = spawn_commands(t)
             except QueueError as exc:
                 print(f"    {t.ref}: NOT SPAWNED — {exc}", file=sys.stderr)
                 dry_failures += 1
@@ -3434,7 +3448,7 @@ def cmd_dispatch(args) -> int:
                 continue
 
         try:
-            create, _send = spawn_commands(t)
+            create, _send, spawned_as = spawn_commands(t)
         except QueueError as exc:
             print(f"    {t.ref}: NOT SPAWNED — {exc}", file=sys.stderr)
             failures += 1
@@ -3447,7 +3461,11 @@ def cmd_dispatch(args) -> int:
             print(f"    {t.ref}: spawn failed: {spawn_failure(exc, proc)}", file=sys.stderr)
             failures += 1
             continue
-        attach(t, session)
+        # What the spawn ACTUALLY named, carried out of `spawn_commands` and
+        # never resolved a second time: the record is a claim about a session
+        # that now exists, and a second reading of the policy and of `origin`
+        # on the far side of `session create` can answer differently.
+        attach(t, session, spawned_as)
 
         # The remote worker is about to be told to read a file that is not on
         # its filesystem. Put it there first, and record where — `collect`
@@ -3487,7 +3505,23 @@ def cmd_dispatch(args) -> int:
     return 1 if failures else 0
 
 
-def attach(task: Task, session: str) -> None:
+def attach(task: Task, session: str, agent: str = "") -> None:
+    """Bind a session to a task, and record the agent that session runs.
+
+    `agent` is the string that actually reached `session create`'s `--agent`,
+    carried out of `spawn_commands` rather than resolved again here. It is
+    EMPTY in two cases and neither is an omission: `fleet queue attach` binds a
+    session fleet did not create and has nothing to say about one, and a
+    profile carrying `command` names no agent at all — fleet cannot tell what a
+    free command launches, so "" is the honest record and a guess would be a
+    claim about a process nobody identified.
+
+    Writing it at all is what makes the record the one answer both sides read
+    (#117): before it, `add` recorded only an agent the operator had NAMED, and
+    a task that named none left every later reader to re-derive its own.
+    """
+    if agent:
+        task.doc["agent"] = agent
     task.doc["session"] = session
     task.doc["state"] = "dispatched"
     task.doc["dispatched_at"] = now()
@@ -3529,7 +3563,7 @@ def prompt_session(task: Task, timeout: int = 20) -> tuple[bool, str]:
             return False, f"the brief is not on the host: {note}"
 
     try:
-        _, send = spawn_commands(task)
+        _, send, _agent = spawn_commands(task)
     except QueueError as exc:
         # A policy refusal here is not a spawn failure to crash the whole
         # retry batch over: the task stays `dispatched, prompted: false`, and
@@ -4923,9 +4957,55 @@ def agent_providers() -> dict[str, str]:
     return out
 
 
+def task_agent_reason(task) -> tuple[str, str]:
+    """The agent a task runs, and why it is NOT KNOWABLE when it is not.
+
+    Exactly one of the two is ever non-empty. The second is what keeps this
+    honest: a caller that cannot be told "fleet does not know" gets told a
+    guess instead, and a guess here is another account's quota window.
+
+    The record first: `dispatch` writes the agent it actually spawned the
+    worker as, so what a later pass reads is EVIDENCE about a running session
+    rather than a second derivation of it — which is what keeps the answer
+    right after the operator edits the policy under a worker already at work.
+
+    A record with no agent is a task dispatched before that writing existed,
+    or one not dispatched yet, so the resolution below is the spawn's own, in
+    the spawn's order: the policy covering the repository, then the checkout's
+    `AGENT`. It used to stop at the last of those, and `refuel` then judged
+    every policy-covered task by an agent it was not spawned as.
+
+    THE MIDDLE STEP CAN FAIL, and failing it is not the same as no rule
+    covering the repository. A policy is in force and the repository behind
+    the checkout cannot be read — the checkout was moved or deleted, its
+    `origin` names a forge no adapter claims, the task runs on another machine
+    — and then which agent the policy would have named is unknown. Falling
+    through to the checkout's `AGENT` there is precisely the silent wrong
+    answer this function exists to stop, and it is what `dispatch` already
+    refuses to do: `agent_policy_refusal` fails closed on this same state.
+    """
+    recorded = (task.doc.get("agent") or "").strip()
+    if recorded:
+        return recorded, ""
+    policy = agent_policy()
+    if policy:
+        if task.doc.get("host"):
+            return "", (f"agent policy is in force and this task's checkout is on "
+                        f"{task.doc['host']}, so which agent it runs cannot be read here")
+        repo = repo_from_checkout(task.doc["repo"])
+        if repo is None:
+            return "", (f"agent policy is in force and no repository can be read from "
+                        f"`origin` in {task.doc['repo']!r}, so which agent it runs "
+                        "is not knowable")
+        matched = agents_for_repo(repo, policy)
+        if matched:
+            return matched[0][0], ""
+    return configured_agent() or "", ""
+
+
 def task_agent(task) -> str:
-    """The agent a task runs, or the one every spawn names when it named none."""
-    return (task.doc.get("agent") or "").strip() or (configured_agent() or "")
+    """The agent a task runs, or "" when fleet cannot tell — see `task_agent_reason`."""
+    return task_agent_reason(task)[0]
 
 
 def fuel_agent(agent: str | None = None) -> str | None:
@@ -5154,6 +5234,16 @@ def exhaustion(doc: dict) -> tuple[str, str]:
     The transcript outranks the pane wherever it can be read: it is the same
     event, recorded rather than rendered, and it says which window rejected the
     turn. The pane is what answers for an agent that keeps no transcript here.
+
+    THE AGENT HERE IS A DIFFERENT QUESTION from `account_key`'s, which is why
+    it is read from a different place. That one asks which agent fleet SPAWNED
+    the task as, and answers from the task's record; this one asks what the
+    LIVE session is running, and the session document is the direct evidence
+    for it — a profile's `command` launches something no record could name.
+    For a dispatched worker the two agree, and they agree because `dispatch`
+    now records the agent it actually named (#117). Where they can still part
+    is a session bound by hand with `fleet queue attach`: there the session
+    document is the fact and the record holds no answer at all.
     """
     agent = doc.get("detected_agent") or doc.get("reports_as") or doc.get("agent")
     seen, detail = transcript_exhaustion(doc.get("agent_session_id") or "", agent)
@@ -5264,8 +5354,15 @@ def account_key(task) -> tuple | None:
     The provider AND the account: a pass may hold two agents that are the same
     vendor under different logins, and their windows are not each other's.
     Tasks whose agents resolve to the same pair share one reading.
+
+    A task whose agent is not knowable keys nothing, and that is the whole
+    point of asking for the reason: `FUEL_PROVIDER` pins a provider whatever
+    the agent is, so reading the agent alone would have grouped such a task
+    onto somebody else's window and judged it there.
     """
-    agent = task_agent(task)
+    agent, why = task_agent_reason(task)
+    if why:
+        return None
     provider = fuel_agent(agent)
     if not provider:
         return None
@@ -5358,9 +5455,16 @@ def refuel(q: Queue, ref: str | None = None, dry: bool = False) -> int:
             continue
         account = accounts.get(account_key(task))
         if account is None:
-            runs = task_agent(task) or "thurbox's own default"
-            print(f"    {task.ref:<46} undetermined  no provider to read for `{runs}`: "
-                  f"name one with FUEL_PROVIDER or AGENT_PROVIDERS in {AGENT_CONF}")
+            runs, why = task_agent_reason(task)
+            if why:
+                # Which AGENT is unknown, which is a different sentence from
+                # which PROVIDER — and saying the provider one here sent a
+                # reader to `agent.conf` to fix something that was never wrong.
+                print(f"    {task.ref:<46} undetermined  {why}")
+            else:
+                runs = runs or "thurbox's own default"
+                print(f"    {task.ref:<46} undetermined  no provider to read for `{runs}`: "
+                      f"name one with FUEL_PROVIDER or AGENT_PROVIDERS in {AGENT_CONF}")
             kept += 1
             continue
         if account.verdict != "fuel":
@@ -5816,6 +5920,20 @@ def agent_policy_refusal(task: Task) -> str | None:
         )
     recorded = d.get("agent")
     if recorded and recorded not in allowed:
+        # WHO put that value there decides what the operator can do about it.
+        # Before `dispatch` recorded the agent it resolved, this field could
+        # only hold an `add --agent`, and the message said so. It now also
+        # holds a dispatch's own answer, and telling an operator that they
+        # named an agent they never typed sent them to edit a record that is
+        # no longer the live fact — the session is already running as it.
+        if d.get("session"):
+            return (
+                f"dispatch resolved agent {recorded!r} for this task and its "
+                f"session is already running as that agent, but policy for "
+                f"{prefix!r} now allows only {', '.join(allowed)}. Editing the "
+                "record would not change what is running: cancel the session, "
+                "or widen the policy."
+            )
         return (
             f"task records agent {recorded!r}, but policy "
             f"for {prefix!r} allows only {', '.join(allowed)}."
@@ -6449,7 +6567,11 @@ def spawn_fixer(task: Task, name: str, brief_path: str, branch: str) -> tuple[st
     ]
     flags = profile_flags(task.doc.get("profile") or "default")
     if "--command" not in flags:
-        agent = task.doc.get("agent") or configured_agent()
+        # The third site that used to open-code this, and the second door into
+        # a policy-covered repository (#116): a fixer is a worker fleet spawns,
+        # so it runs the agent the task runs. It still does not REFUSE the way
+        # `spawn_commands` does — see the pull request that narrowed this.
+        agent = task_agent(task)
         if agent:
             create += ["--agent", agent]
     parent = os.environ.get("THURBOX_SESSION")

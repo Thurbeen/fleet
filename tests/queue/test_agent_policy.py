@@ -12,11 +12,16 @@ import os
 from pathlib import Path
 
 import pytest
+import yaml
 from kit_dispatch import ANSWERING_KEYS, next_session
 from kit_forges import FakeForgeStore
+from kit_refuel import ACCOUNT_QUOTA, CLAUDE_BANNER, account_quota, pane, restarts, teach
+from kit_shepherd import Shep, repo
+from kit_shepherd import result as shipped
 from queuekit import ok
 
-from harness import git, run_queue as q
+from harness import expect, git, refute
+from harness import run_queue as q
 
 FORGE = "forge.test:8443"
 OWNER = "acme"
@@ -476,3 +481,366 @@ def test_isolation_from_checkout_agent_policy_conf(checkout, forge_store):
         "--agent", "anything",
         **env,
     ))
+
+
+# --- #117: the policy is one answer, and every reader takes the same one -------
+#
+# `spawn_commands` resolved the policy's default agent and `task_agent` did
+# not, so a task with no `--agent` on a covered repository was SPAWNED as one
+# agent and JUDGED as another. Everything downstream of `task_agent` — the
+# quota window, the limit-banner row, the transcript directory — was then
+# another account's. The fix is the maintainer's second option: dispatch
+# records the agent it resolved, and `task_agent` falls back to the policy for
+# a record written before it did.
+
+
+def covered(store: FakeForgeStore, agents: str = "alpha") -> dict[str, str]:
+    return policy_env(store, f"{QUALIFIED_REPO}={agents}")
+
+
+def test_dispatch_records_the_agent_it_resolved(checkout, forge_store, stubs, queue_dir):
+    """The record, and not each reader's own derivation, is where the answer lives.
+
+    `add` wrote only an agent the operator had NAMED, so a task that named
+    none left `agent: null` behind and every later pass re-derived one. The
+    spawn's answer is now on the record, which is what makes it EVIDENCE about
+    a session that is running rather than a guess about one.
+    """
+    topic = ok(q(
+        "topic", "add", "record-agent", "--title", "Record the resolved agent",
+        "--prompt", "dispatch writes what it spawned",
+    )).stdout.strip()
+    env = covered(forge_store, "alpha, beta")
+    ok(q(
+        "add", topic, "no-agent", "--title", "No agent named",
+        "--repo", str(checkout), "--branch", "fix/no-agent", "--number", "01",
+        **env,
+    ))
+    task_file = queue_dir / topic / "01-no-agent" / "task.yaml"
+    assert yaml.safe_load(task_file.read_text(encoding="utf-8"))["agent"] is None
+    fill_brief(queue_dir / topic / "01-no-agent" / "BRIEF.md")
+
+    next_session(stubs, "aa111111-1111-1111-1111-111111111111")
+    stubs.tool("thurbox-cli", ANSWERING_KEYS)
+    q("dispatch", **env)
+
+    create = [c for c in stubs.calls("thurbox-cli", "session create") if "fix/no-agent" in c][0]
+    assert "--agent alpha" in create, create
+    assert yaml.safe_load(task_file.read_text(encoding="utf-8"))["agent"] == "alpha", task_file
+
+
+def test_refuel_reads_the_account_of_the_agent_the_policy_names(
+    checkout, forge_store, stubs, isolated_env, tmp_path, queue_dir
+):
+    """The ordering trap: a task dispatched BEFORE the recording existed.
+
+    Its record carries no agent at all, so the answer has to come from the
+    policy — the same place the spawn took it from. The two accounts here are
+    the evidence that it did: one window has fuel and the other is spent, and
+    `refuel` reads whichever belongs to the agent it thinks the task runs.
+    Before this change it read the checkout's `AGENT` and restarted a worker
+    whose own window was empty.
+    """
+    topic = ok(q(
+        "topic", "add", "old-record", "--title", "A record written before the fix",
+        "--prompt", "judged by the agent it was spawned as",
+    )).stdout.strip()
+    env = covered(forge_store, "spare")
+    ok(q(
+        "add", topic, "in-flight", "--title", "Already in flight",
+        "--repo", str(checkout), "--branch", "fix/in-flight", "--number", "01",
+        **env,
+    ))
+    # `attach` and not `dispatch`: the session was bound to the task by the
+    # code that wrote no agent, which is exactly the record this has to answer
+    # for. Nothing repairs it, so the fallback is the whole of the answer.
+    sid = "bb222222-2222-2222-2222-222222222222"
+    ok(q("attach", f"{topic}/01-in-flight", sid))
+    task_file = queue_dir / topic / "01-in-flight" / "task.yaml"
+    assert yaml.safe_load(task_file.read_text(encoding="utf-8"))["agent"] is None
+
+    stubs.session_is(sid, "working", 7200, agent="spare")
+    pane(stubs, sid, f"● Now I will run the gate.\n\n{CLAUDE_BANNER}\n")
+    teach(isolated_env, "spare.LIKE=claude",
+          f"spare.ENV=CLAUDE_CONFIG_DIR={tmp_path / 'spare-account'}")
+    stubs.tool("quota-axi", ACCOUNT_QUOTA)
+    # THE TRIPWIRE: the account the LEAD is signed in to has fuel. Reading it
+    # for this worker is the wrong answer arrived at from the wrong account,
+    # and it is the answer the old code gave.
+    lead_home = tmp_path / "lead-account"
+    account_quota(stubs, "lead-account", 62, "2026-09-10T02:10:00+00:00")
+    account_quota(stubs, "spare-account", 0, "2026-09-10T02:10:00+00:00")
+
+    out = q("refuel", "--dry-run", CLAUDE_CONFIG_DIR=str(lead_home), **env).out
+    expect(out, "claude (spare)", "0% remaining", "window is spent")
+    refute(out, "would restart", "62% remaining")
+    assert restarts(stubs) == [], stubs.calls("thurbox-cli", "session restart")
+
+
+def test_the_fixer_spawns_the_agent_the_policy_names(tmp_path, stubs, queue_dir):
+    """#116's half of it: `shepherd`'s fixer is a worker, so it runs the task's agent.
+
+    It open-coded `task.doc.get("agent") or configured_agent()` and asked the
+    policy nothing, so a repository whose policy `dispatch` enforces had a
+    second door that `shepherd` walked through unattended. This narrows that
+    to the agent it SPAWNS; refusing a fixer the policy cannot clear is a
+    behaviour choice #116 leaves open and this does not make.
+    """
+    shep = Shep(stubs)
+    srepo = repo(tmp_path / "fixer-policy-repo")
+    # `https://`, which is the form `install.sh` clones by and therefore the
+    # form the checkout a control plane serves first actually carries. The
+    # GitHub adapter could not read it at all, so this line is half the test.
+    git("remote", "add", "origin", "https://github.com/Thurbeen/fleet.git", cwd=srepo)
+    env = {"FLEET_AGENT_POLICY": "github.com/Thurbeen/fleet=alpha"}
+
+    topic = ok(q(
+        "topic", "add", "fixer-policy", "--title", "A fixer under a policy",
+        "--prompt", "the fixer runs the agent the task runs",
+    )).stdout.strip()
+    ok(q(
+        "add", topic, "conflicting", "--title", "A PR that conflicts",
+        "--repo", str(srepo), "--branch", "fix/conflicting", "--number", "01",
+        **env,
+    ))
+    shipped(queue_dir / topic / "01-conflicting", "https://github.com/Thurbeen/fleet/pull/101")
+    git("branch", "fix/conflicting", cwd=srepo)
+    ok(q("collect", **env))
+
+    shep.perm("maintainer", "admin")
+    shep.pr(101, mergeable="CONFLICTING", headRefName="fix/conflicting")
+    out = q("shepherd", "--topic", topic, **env).out
+
+    created = "\n".join(shep.creates("01-conflicting"))
+    assert created, out + shep.tbx_log()
+    assert "--agent alpha" in created, created + "\n----\n" + out
+
+
+def github_checkout(path: Path) -> Path:
+    """A checkout of a GitHub repository, cloned the way `install.sh` clones."""
+    repo = path / "gh-repo"
+    git("init", "-q", "-b", "main", str(repo))
+    git("commit", "-q", "--allow-empty", "-m", "base", cwd=repo)
+    git("remote", "add", "origin", "https://github.com/Thurbeen/fleet.git", cwd=repo)
+    return repo
+
+
+def test_policy_covers_a_github_checkout_cloned_over_https(tmp_path, stubs, queue_dir):
+    """The one remote form this control plane's own checkout carries (#119).
+
+    Every rule here is matched against a repository read out of a CHECKOUT,
+    and the GitHub adapter parsed only the scp spelling — so a policy covering
+    a repository cloned by `install.sh` covered nothing, silently on the read
+    path and loudly at dispatch. Driven through `add` and `dispatch` rather
+    than through the parser, because the parser was never the thing in doubt:
+    what was in doubt is whether the policy reaches a real checkout.
+    """
+    srepo = github_checkout(tmp_path)
+    env = {"FLEET_AGENT_POLICY": "github.com/Thurbeen/fleet=alpha"}
+    topic = ok(q(
+        "topic", "add", "https-origin", "--title", "An https origin",
+        "--prompt", "the policy covers an https checkout",
+    )).stdout.strip()
+
+    # The louder half is `add`, which took an agent the policy forbids and
+    # said nothing: the rule was never found, so there was nothing to break.
+    done = q(
+        "add", topic, "forbidden", "--title", "Forbidden agent",
+        "--repo", str(srepo), "--branch", "fix/forbidden", "--number", "01",
+        "--agent", "forbidden-agent", **env,
+    )
+    assert done.code != 0, done.out
+    expect(done.out, "forbidden-agent", "alpha")
+
+    ok(q(
+        "add", topic, "covered", "--title", "Covered by the policy",
+        "--repo", str(srepo), "--branch", "fix/covered", "--number", "02",
+        **env,
+    ))
+    fill_brief(queue_dir / topic / "02-covered" / "BRIEF.md")
+    sid = "c1111111-cccc-cccc-cccc-cccccccccccc"
+    next_session(stubs, sid)
+    stubs.session_is(sid, "idle")
+    stubs.tool("thurbox-cli", ANSWERING_KEYS)
+    # And the quieter half, which used to refuse outright: `NOT SPAWNED —
+    # cannot read origin for '…', so agent policy cannot be checked.`
+    ok(q("dispatch", **env))
+    create = [c for c in stubs.calls("thurbox-cli", "session create") if "fix/covered" in c][0]
+    assert "--agent alpha" in create, create
+
+
+def test_refuel_says_undetermined_when_the_policy_cannot_name_an_agent(
+    checkout, forge_store, stubs, isolated_env, tmp_path, queue_dir
+):
+    """Failing to READ the policy is not the same as no policy covering the repo.
+
+    `dispatch` has always failed closed here. The read path fell through to
+    the checkout's own `AGENT` instead and said nothing about it, so `refuel`
+    measured a window belonging to an account this worker never drew on and
+    would have restarted it against that reading.
+    """
+    topic = ok(q(
+        "topic", "add", "unreadable", "--title", "An unreadable origin",
+        "--prompt", "the policy cannot be resolved",
+    )).stdout.strip()
+    env = covered(forge_store, "spare")
+    ok(q(
+        "add", topic, "orphan", "--title", "Orphaned checkout",
+        "--repo", str(checkout), "--branch", "fix/orphan", "--number", "01",
+        **env,
+    ))
+    sid = "0a111111-0000-0000-0000-000000000001"
+    ok(q("attach", f"{topic}/01-orphan", sid))
+    # The checkout moves out from under the task — or its `origin` is a URL no
+    # adapter claims, which is the same state and the commoner one.
+    git("remote", "remove", "origin", cwd=checkout)
+
+    stubs.session_is(sid, "working", 7200, agent="spare")
+    pane(stubs, sid, f"● Working.\n\n{CLAUDE_BANNER}\n")
+    teach(isolated_env, "spare.LIKE=claude",
+          f"spare.ENV=CLAUDE_CONFIG_DIR={tmp_path / 'spare-account'}")
+    stubs.tool("quota-axi", ACCOUNT_QUOTA)
+    # The lead's own account has fuel. Reading it here is the old answer.
+    account_quota(stubs, "lead-account", 75, "2026-09-10T02:10:00+00:00")
+    out = q("refuel", "--dry-run",
+            CLAUDE_CONFIG_DIR=str(tmp_path / "lead-account"), **env).out
+
+    expect(out, "undetermined", "no repository can be read from `origin`")
+    refute(out, "75% remaining", "would restart", "(claude)")
+    assert restarts(stubs) == [], stubs.calls("thurbox-cli", "session restart")
+
+
+def test_a_command_profile_records_no_agent(checkout, forge_store, stubs, queue_dir):
+    """"" is a record and not an omission, so nothing writes a guess over it.
+
+    A profile carrying `command` replaces `--agent` — thurbox refuses both —
+    so the spawn names no agent at all. `dispatch` recorded one anyway, taken
+    from a resolution the command line never saw, and `show` then stated it,
+    `refuel` took that agent's account for a session that is something else,
+    and a later edit to `AGENT=` could no longer reach the task.
+    """
+    topic = ok(q(
+        "topic", "add", "command-record", "--title", "A command profile",
+        "--prompt", "a free command names no agent",
+    )).stdout.strip()
+    # No policy: one covering the repository refuses a `--command` profile
+    # outright, which is a different (and already tested) answer.
+    env = policy_env(forge_store, "")
+    ok(q(
+        "add", topic, "commanded", "--title", "Commanded",
+        "--repo", str(checkout), "--branch", "fix/commanded", "--number", "01",
+        "--profile", "cursor-trusted", **env,
+    ))
+    fill_brief(queue_dir / topic / "01-commanded" / "BRIEF.md")
+    sid = "0b222222-0000-0000-0000-000000000002"
+    next_session(stubs, sid)
+    stubs.session_is(sid, "idle")
+    stubs.tool("thurbox-cli", ANSWERING_KEYS)
+    ok(q("dispatch", **env))
+
+    create = [c for c in stubs.calls("thurbox-cli", "session create") if "fix/commanded" in c][0]
+    assert "--command cursor-agent" in create, create
+    assert "--agent" not in create, create
+    task_file = queue_dir / topic / "01-commanded" / "task.yaml"
+    assert yaml.safe_load(task_file.read_text(encoding="utf-8"))["agent"] is None, task_file
+
+
+def test_a_refusal_names_dispatch_rather_than_the_operator(
+    checkout, forge_store, stubs, queue_dir
+):
+    """The same field, two writers, and only one of them the operator.
+
+    `agent: alpha` used to be sayable only by `add --agent`, so the refusal
+    told the operator what they had asked for and left them to change it. A
+    dispatch's own answer now lands in the same field, and the old sentence
+    then blamed them for a word they never typed and pointed at a record that
+    is no longer the live fact: the session is already running as that agent.
+    """
+    topic = ok(q(
+        "topic", "add", "narrowed", "--title", "A narrowed policy",
+        "--prompt", "the refusal says who chose the agent",
+    )).stdout.strip()
+    at_dispatch = covered(forge_store, "alpha, beta")
+    ok(q(
+        "add", topic, "running", "--title", "Already running",
+        "--repo", str(checkout), "--branch", "fix/running", "--number", "01",
+        **at_dispatch,
+    ))
+    fill_brief(queue_dir / topic / "01-running" / "BRIEF.md")
+    sid = "0c333333-0000-0000-0000-000000000003"
+    next_session(stubs, sid)
+    stubs.session_is(sid, "idle")
+    stubs.tool("thurbox-cli", ANSWERING_KEYS)
+    ok(q("dispatch", **at_dispatch))
+    task_file = queue_dir / topic / "01-running" / "task.yaml"
+    assert yaml.safe_load(task_file.read_text(encoding="utf-8"))["agent"] == "alpha"
+
+    # The session is up and stuck behind its trust dialog, which is the state
+    # `fleet queue prompt` exists to retry — and the state in which a refusal
+    # is read by a person deciding what to do next.
+    task_file.write_text(
+        task_file.read_text(encoding="utf-8").replace("prompted: true", "prompted: false"),
+        encoding="utf-8",
+    )
+    stubs.session_is(sid, "idle")
+
+    done = q("prompt", **covered(forge_store, "beta"))
+    assert done.code != 0, done.out
+    expect(done.out, "NOT PROMPTED", "dispatch resolved agent 'alpha'",
+           "already running as that agent", "cancel the session")
+    refute(done.out, "task records agent")
+
+
+def test_refuel_judges_by_the_policy_the_spawn_ran_under(
+    checkout, forge_store, stubs, isolated_env, tmp_path, queue_dir
+):
+    """The whole reason the record exists, and the one thing re-derivation cannot do.
+
+    A policy is a file an operator edits, and editing it does not reach back
+    into a session that is already running. Re-resolving the policy on every
+    read answers with TODAY's rule about a worker started under yesterday's,
+    so `refuel` reads the wrong account's window and restarts — or declines to
+    restart — on a measurement of somebody else's quota.
+
+    Both agents resolve to the same provider and differ only in the account
+    they draw on, so the single line this asserts on is decided by nothing
+    except which of the two `refuel` believes the task runs.
+    """
+    topic = ok(q(
+        "topic", "add", "policy-edited", "--title", "A policy edited mid-flight",
+        "--prompt", "the record outlives the rule that made it",
+    )).stdout.strip()
+    at_dispatch = covered(forge_store, "alpha")
+    ok(q(
+        "add", topic, "in-flight", "--title", "Dispatched under alpha",
+        "--repo", str(checkout), "--branch", "fix/in-flight", "--number", "01",
+        **at_dispatch,
+    ))
+    fill_brief(queue_dir / topic / "01-in-flight" / "BRIEF.md")
+    sid = "0d444444-0000-0000-0000-000000000004"
+    next_session(stubs, sid)
+    stubs.session_is(sid, "idle")
+    stubs.tool("thurbox-cli", ANSWERING_KEYS)
+    ok(q("dispatch", **at_dispatch))
+    create = [c for c in stubs.calls("thurbox-cli", "session create") if "fix/in-flight" in c][0]
+    assert "--agent alpha" in create, create
+
+    stubs.session_is(sid, "working", 7200, agent="alpha")
+    pane(stubs, sid, f"● Working.\n\n{CLAUDE_BANNER}\n")
+    teach(isolated_env,
+          "alpha.LIKE=claude", f"alpha.ENV=CLAUDE_CONFIG_DIR={tmp_path / 'alpha-account'}",
+          "beta.LIKE=claude", f"beta.ENV=CLAUDE_CONFIG_DIR={tmp_path / 'beta-account'}")
+    stubs.tool("quota-axi", ACCOUNT_QUOTA)
+    # `alpha`, which this worker is running as, is out of fuel; `beta`, which
+    # the policy would name if it were asked again, has plenty.
+    account_quota(stubs, "alpha-account", 0, "2026-09-10T02:10:00+00:00")
+    account_quota(stubs, "beta-account", 62, "2026-09-10T02:10:00+00:00")
+
+    # THE EDIT: the operator narrows the policy while the worker is at work.
+    out = q("refuel", "--dry-run",
+            CLAUDE_CONFIG_DIR=str(tmp_path / "lead-account"),
+            **covered(forge_store, "beta")).out
+
+    expect(out, "claude (alpha)", "0% remaining", "window is spent")
+    refute(out, "(beta)", "62% remaining", "would restart")
+    assert restarts(stubs) == [], stubs.calls("thurbox-cli", "session restart")

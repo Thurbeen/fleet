@@ -108,7 +108,21 @@ names every path and the reason for each.
   set anything. `add` and `dispatch` read it on every call, so an edit takes
   effect on the next one. A task whose checkout is on another machine, or
   whose repository cannot be read from `origin`, is refused when any policy is
-  in force.
+  in force. **`dispatch` RECORDS the agent it actually named**, carried out of
+  `spawn_commands` rather than resolved a second time, and `""` where a
+  profile's `command` means no agent was named at all. `task_agent()` answers
+  which agent fleet SPAWNED a task as — the record, else the policy's default,
+  else the checkout's `AGENT` — and every spawn takes that one answer, because
+  a `refuel` that derived its own judged a worker by an agent it was not
+  spawned as: another account's quota window, another agent's limit banner,
+  another account's transcripts. **It answers `""` rather than guessing** when
+  a policy is in force and the repository behind the checkout cannot be read,
+  which is the same state `dispatch` already fails closed on; `refuel` reports
+  such a task `undetermined` and reads no window for it. What a LIVE SESSION
+  is running is a second and different question, and `exhaustion` reads it off
+  the session document rather than the record — for a dispatched worker the
+  two agree, and a session bound by hand with `fleet queue attach` is where
+  they part, the document being the fact there.
 - `orchestration/session-glyphs.example.conf` — the mark fleet's sessions wear
   in the thurbox session list: `📡` on the lead, `🚀` on every worker, under ONE
   `GLYPHS=on|off` setting whose `off` is the one-cell `⌖` and no worker prefix.
