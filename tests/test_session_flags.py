@@ -60,3 +60,93 @@ def test_the_two_argument_form_the_gate_calls_still_works():
     done = run([*PYTHON, "scripts/lib/session_profiles.py", "orchestration/session-profiles.yaml", "--check"], cwd=REPO)
     assert done.code == 0, done.out
     assert done.stdout.startswith("profiles ok: "), done.out
+
+
+def _profiles(tmp_path, body: str):
+    path = tmp_path / "profiles.yaml"
+    path.write_text("profiles:\n" + body, encoding="utf-8")
+    return path
+
+
+def _flags_of(path, name: str):
+    return run([*PYTHON, "scripts/lib/session_profiles.py", str(path), name], cwd=REPO)
+
+
+def _check_of(path):
+    return run([*PYTHON, "scripts/lib/session_profiles.py", str(path), "--check"], cwd=REPO)
+
+
+def test_command_with_uncovered_renders_without_reports_as(tmp_path):
+    """The declaration that the session will be uncovered, instead of a family
+    thurbox does not ship hooks for. Silence is still refused; this is not it."""
+    path = _profiles(tmp_path, """
+  raw:
+    command: cursor-agent
+    args: ["--trust"]
+    uncovered: true
+""")
+    checked = _check_of(path)
+    assert checked.code == 0, checked.out
+    done = _flags_of(path, "raw")
+    assert done.code == 0, done.out
+    rendered = flags(done.stdout)
+    assert rendered == ["--command", "cursor-agent", "--arg", "--trust"], rendered
+    assert "--reports-as" not in rendered
+    assert "uncovered" in done.stderr
+    assert "watch" in done.stderr and "refuel" in done.stderr and "reap" in done.stderr
+
+
+def test_command_without_reports_as_or_uncovered_is_still_refused(tmp_path):
+    """Rule 2 still catches silence. Dropping reports_as is not how a command
+    profile becomes valid."""
+    path = _profiles(tmp_path, """
+  silent:
+    command: cursor-agent
+""")
+    done = _check_of(path)
+    assert done.code == 1, done.out
+    assert "command needs reports_as or uncovered" in done.stderr, done.out
+
+
+def test_command_cannot_carry_both_reports_as_and_uncovered(tmp_path):
+    path = _profiles(tmp_path, """
+  both:
+    command: cursor-agent
+    reports_as: cursor
+    uncovered: true
+""")
+    done = _check_of(path)
+    assert done.code == 1, done.out
+    assert "both reports_as and uncovered" in done.stderr, done.out
+
+
+def test_uncovered_without_command_is_refused(tmp_path):
+    path = _profiles(tmp_path, """
+  empty:
+    uncovered: true
+""")
+    done = _check_of(path)
+    assert done.code == 1, done.out
+    assert "uncovered without command" in done.stderr, done.out
+
+
+def test_uncovered_must_be_the_boolean_true(tmp_path):
+    path = _profiles(tmp_path, """
+  denied:
+    command: cursor-agent
+    uncovered: false
+""")
+    done = _check_of(path)
+    assert done.code == 1, done.out
+    assert "uncovered: expected true" in done.stderr, done.out
+
+
+def test_cursor_trusted_is_an_uncovered_command_profile(tmp_path):
+    """The live profile that thurbox refuses --reports-as for: no family, so
+    no flag, and the renderer says so on stderr."""
+    done = run_fleet("session-flags", "cursor-trusted", cwd=tmp_path)
+    assert done.code == 0, done.out
+    rendered = flags(done.stdout)
+    assert rendered == ["--command", "cursor-agent", "--arg", "--trust"], rendered
+    assert "--reports-as" not in rendered
+    assert "uncovered" in done.stderr

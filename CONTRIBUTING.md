@@ -143,9 +143,10 @@ judge a command line. It is committed and this repo is public, so a credential
 in it is a finding regardless of how it is spelled. Two further rules are
 machine-enforced by `uv run fleet check profiles` — a `THURBOX_*` key (thurbox's
 identity vars always win over `--env`, so it would look applied and do nothing)
-and a `command` without a `reports_as` (thurbox reads hook coverage against the
-command's file stem, so an undeclared session reports nothing and renders as
-`uncovered` while it works). If a diff weakens either assertion in
+and a `command` without `reports_as` or `uncovered` (thurbox reads hook coverage
+against the command's file stem, so an undeclared session reports nothing and
+renders as `uncovered` while it works; `uncovered: true` is the explicit
+acceptance of that, not silence). If a diff weakens either assertion in
 `scripts/lib/session_profiles.py`, that is the finding, not the profile that
 would then pass.
 
@@ -300,9 +301,11 @@ credential belongs wherever that process gets its own.
 to catch by eye — and only those two. A `THURBOX_*`
 key is refused, because thurbox's own identity variables always win over
 `--env` and such a setting would look applied while doing nothing. And
-`command` without `reports_as` is refused, because thurbox reads hook coverage
-against the command rather than the agent in the pane, and an undeclared
-session reports nothing and renders as `uncovered` while it works.
+`command` without `reports_as` or `uncovered` is refused, because thurbox reads
+hook coverage against the command rather than the agent in the pane, and an
+undeclared session reports nothing and renders as `uncovered` while it works.
+`uncovered: true` is the other declaration: this command has no hook family,
+and that is accepted. Silence is still the trap.
 
 ### The extension manifest
 

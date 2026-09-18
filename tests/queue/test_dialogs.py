@@ -150,3 +150,23 @@ def test_the_trust_command_keeps_its_cli():
     on a session it cannot read."""
     expect(fleet("session-trust", "--help").out, "Exit codes")
     assert fleet("session-trust", "no-such-session").code == 2
+
+
+def test_a_command_stem_that_takes_a_launch_flag_is_ready_without_a_keystroke(stubs):
+    """thurbox names a `--command cursor-agent` session `cursor-agent`, not
+    `cursor`. Measured 2026-09-18: session create returns agent cursor-agent,
+    reports_as null, hook_reported false, coverage none. The launch flag
+    already answered trust, so this must be ready — exit 0, no keys — or
+    dispatch creates the session and never sends the brief."""
+    sid = "d1a10900-0000-0000-0000-0000000000ca"
+    write(stubs.root / "sessions" / f"{sid}.json", json.dumps({
+        "id": sid, "agent": "cursor-agent", "reports_as": None,
+        "detected_agent": None, "hook_reported": False, "state": "uncovered",
+        "hook_coverage": "none",
+    }) + "\n")
+    done = trust(sid, "--timeout", "5", "--json")
+    assert done.code == 0, done.out
+    report = json.loads(done.stdout)
+    assert report["outcome"] == "ready", done.out
+    assert report["agent"] == "cursor-agent", done.out
+    assert keys(stubs) == []

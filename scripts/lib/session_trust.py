@@ -64,9 +64,14 @@ PER-AGENT, and the differences are real (see GATES below):
                   worktrees of the same project never show it.
   pi, pi-signed   a dialog; Enter accepts. Persists per path.
   grok, kimi      no dialog in a git worktree. Nothing to do.
-  cursor, muse    NOT a keystroke — a launch flag (`--trust`, `--yolo`).
-                  This refuses them and says where the flag goes: a profile
-                  in orchestration/session-profiles.yaml.
+  cursor          NOT a keystroke — `--trust` answers the folder dialog.
+                  The pane is already ready: send no keys, report success.
+                  `--command cursor-agent` is named `cursor-agent` on the
+                  session document, not `cursor`; both names are this row.
+  muse            NOT a keystroke either, but `--yolo` is not a trust flag.
+                  It aliases `--disable-approval` and drops confirmations
+                  and the sandbox together. Vendor: a one-off isolated
+                  container only. This still sends no keys.
 
 AN AGENT THAT IS NOT IN THE TABLE is the operator's to teach, not fleet's to
 guess: `TRUST_SIGNATURE` and `TRUST_KEYS` in orchestration/agent.conf, with
@@ -181,7 +186,10 @@ GATES = {
     "grok": [],
     "kimi": [],
 }
-FLAG_ONLY = {"cursor", "muse"}
+# Agents whose pane is ready without a keystroke. The flags are not the
+# same kind: cursor's --trust answers a dialog; muse's --yolo is
+# --disable-approval (confirmations and sandbox together).
+FLAG_ONLY = {"cursor", "cursor-agent", "muse"}
 
 # WHERE THE SELECTOR ALREADY IS, and it outranks the table. The
 # folder-trust dialog above defaults to "No, exit"; the one Claude Code 2.1.247
@@ -354,12 +362,11 @@ def answer_dialogs(session: str, timeout: int = 20, as_json: bool = False) -> tu
     elif table is not None:
         gates = table
     elif any(name in FLAG_ONLY for name in agent_settings.chain(agent, conf)):
-        return 3, say(
-            f"'{agent}' is not answered by a keystroke — it takes a launch flag\n"
-            "             (cursor: --trust, muse: --yolo). Put it in a profile in\n"
-            "             orchestration/session-profiles.yaml and spawn under that profile.\n"
-            "             Nothing was sent.",
-            "flag-required",
+        return 0, say(
+            f"'{agent}' is not answered by a keystroke; nothing was typed "
+            "(cursor: --trust answers the dialog; muse: --yolo is "
+            "--disable-approval, not a trust flag)",
+            "ready",
         )
     elif not agent:
         return 3, say("could not tell which agent holds the pane; sending nothing", "unconfirmed")

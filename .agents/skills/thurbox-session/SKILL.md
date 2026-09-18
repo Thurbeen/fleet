@@ -204,7 +204,8 @@ The per-agent differences, one of which is a trap:
 | `codex` | a dialog; Enter accepts. Persists per repo root. |
 | `pi`, `pi-signed` | a dialog; Enter accepts. Persists per path. |
 | `grok`, `kimi` | no dialog inside a git repo, which a worktree always is. |
-| `cursor`, `muse` | **not a keystroke** — a launch flag (`--trust`, `--yolo`). Use the `cursor-trusted` / `muse-trusted` profiles in `orchestration/session-profiles.yaml` (§1d). |
+| `cursor` | **not a keystroke** — `--trust` answers the folder dialog. Use the `cursor-trusted` profile in `orchestration/session-profiles.yaml` (§1d). |
+| `muse` | **not a keystroke** either, but `--yolo` is not that: it aliases `--disable-approval` and drops confirmations and the sandbox together. Vendor: a one-off isolated container only. The `muse-trusted` profile exists; read its comment before using it. |
 
 **An agent not in this table is refused, not guessed at** — a wrong keystroke
 can exit the agent instead of dismissing a dialog. Teach it one with
@@ -309,7 +310,9 @@ Two rules the gate enforces, so a profile breaking either never reaches `main`:
   over `--env`. Passing `THURBOX_SESSION=x` does not fail; the session simply
   still sees its real id, which makes it the worst kind of setting — one that
   looks applied and is not. The renderer refuses the key.
-- **`--command` never ships without `--reports-as`.** This is the trap.
+- **`--command` never ships silent.** This is the trap. Either
+  `reports_as` names the hook family, or `uncovered: true` accepts that
+  there is none. Dropping the key is still refused.
 
 And one **convention**, which the gate does not check and does not pretend to:
 the file is committed to a public repo, so nothing environment-specific goes in
@@ -343,10 +346,18 @@ idle while it works — §4a has why `uncovered` is not `idle`. The second is th
 same launch, declared: `--reports-as` changes nothing about what runs, it tells
 thurbox which agent's hooks the pane speaks.
 
-So the two ship together or not at all, and `fleet session-flags` refuses a
-profile with `command` and no `reports_as`. `thurbox-cli session reports-as
-<session> <agent>` makes the same declaration after the fact, with `--clear` to
-undo it.
+A third shape exists for a command whose agent has no family thurbox ships
+hooks for. `--reports-as cursor` is then a flag thurbox refuses (declaring
+it would change nothing). `uncovered: true` is the declaration that
+replaces it: the session will be uncovered, and that is accepted.
+`dispatch` prints this on the spawn; `session-flags` prints it on stderr.
+`refuel` will not touch that session, `watch` will not read its state,
+`reap` is by hand. `collect` is unchanged — it reads `result.md`.
+
+Silence — `command` with neither key — is still refused. Both keys
+together are refused: pick one. `thurbox-cli session reports-as
+<session> <agent>` makes the family declaration after the fact, with
+`--clear` to undo it.
 
 ## 2. Multi-repo mode
 
