@@ -5682,6 +5682,13 @@ def cmd_refuel(args) -> int:
 #                a fixer — because a stranger cannot create a branch inside
 #                this repository, so that is the one claim a pull request
 #                cannot make for itself.
+#   One agent    A fixer is a worker fleet puts to work, so the operator's
+#   policy.      per-repository agent policy governs it exactly as it governs
+#                `dispatch` — same question, same function, no second reading
+#                of the rules. A repository whose policy no longer clears the
+#                task's agent, or one a policy covers and nothing can read,
+#                gets a `policy-refused` row and no fixer; it is still
+#                classified and still merged like any other.
 
 # §4a of .agents/skills/thurbox-session/SKILL.md, as code. These two groups are
 # the AGENT SPEAKING about itself. Every other word in that table is an
@@ -6618,8 +6625,10 @@ def spawn_fixer(task: Task, name: str, brief_path: str, branch: str) -> tuple[st
     if "--command" not in flags:
         # The third site that used to open-code this, and the second door into
         # a policy-covered repository (#116): a fixer is a worker fleet spawns,
-        # so it runs the agent the task runs. It still does not REFUSE the way
-        # `spawn_commands` does — see the pull request that narrowed this.
+        # so it runs the agent the task runs. Whether the policy still clears
+        # that agent is asked by the caller, before a dry run answers — see
+        # `shepherd_pr`'s `policy-refused` row — because a refusal here would
+        # reach nobody until a real pass had already decided to spawn.
         agent = task_agent(task)
         if agent:
             create += ["--agent", agent]
@@ -6827,6 +6836,68 @@ def shepherd_pr(cr: forge.ChangeRequest, task, args) -> dict:
             "no task records this pull request, so there is no session to send a "
             "fixer into; it is classified and left for you"
         )
+        return row
+
+    # The second door into a policy-covered repository (#116), and the half of
+    # it that stayed open: the fixer already runs the agent the task runs, and
+    # now it asks whether that agent may still serve this repository. The same
+    # question `dispatch` asks, put to the same function, so nothing here reads
+    # a policy for itself. A refusal has no dispatch to fail — this fixer is
+    # the reconciler's, not a person's — so it is a row and a record, and the
+    # pull request is still classified and still merged like any other.
+    #
+    # BOTH ROUTES, not only the spawn. Typing a fix brief into the task's own
+    # worker puts the same agent back to work on the same repository, so a
+    # policy that no longer clears it refuses that too.
+    #
+    # A `--command` profile is the case with no agent to judge: thurbox refuses
+    # `--agent` beside it, so the fixer names none and `task_agent` says "".
+    # `agent_policy_refusal` refuses it on a covered repository, and that
+    # answer is taken here rather than softened: fleet cannot tell which agent
+    # a free command launches, so it cannot tell the policy is kept, and "no
+    # agent named" is not the same claim as "no rule to break". On a
+    # repository no rule covers it stays silent, so nothing changes for an
+    # operator with no policy at all.
+    #
+    # NOT for a `--host` task, which is the one case where a better refusal
+    # already exists: a fixer never goes out for one at all, and `spawn_fixer`
+    # says why in terms that help ("its checkout is there, so a fixer would
+    # have to be spawned there too"). The policy's own sentence about a host is
+    # true and vaguer, and letting it win here would blunt a precise refusal
+    # the moment an operator writes their first rule.
+    refusal = None if task.doc.get("host") else agent_policy_refusal(task)
+    if refusal:
+        row["action"] = "policy-refused"
+        row["note"] = f"no fixer sent — {refusal}"
+        if not args.dry_run:
+            entry = {
+                "condition": condition,
+                "detail": detail,
+                # No `session`: nothing was spawned, and a record that named
+                # one would read as a fixer in flight on the next pass.
+                "refused": refusal,
+                "pr": url,
+                "at": now(),
+            }
+            # Two things this must not do. It must not overwrite a record that
+            # NAMES a fixer — policy is checked before liveness so even a
+            # busy worker reports the refusal — because that id is the only handle a
+            # later pass has on a session that is out there working, and
+            # dropping it is how a second fixer gets sent at a pull request
+            # that already has one. The row still reports the refusal; the
+            # record keeps the more important fact.
+            #
+            # And it must not rewrite an unchanged refusal on every pass: the
+            # reconciler comes round every fifteen minutes and the same
+            # sentence would grow progress.jsonl forever. Compared on
+            # everything except `at`, so a pull request that drifts from
+            # `conflicting` to `checks-failed` under a standing refusal still
+            # updates the record — the alternative freezes the condition, the
+            # detail and the time at whatever the FIRST refusal saw.
+            unchanged = ({k: v for k, v in rec.items() if k != "at"}
+                         == {k: v for k, v in entry.items() if k != "at"})
+            if not rec.get("session") and not unchanged:
+                record_shepherd(task, entry)
         return row
 
     # Everything below here needs a fixer. Both liveness checks below share
@@ -7235,6 +7306,8 @@ def run_events(tasks: list) -> list:
                     f"`{shep.get('condition')}`")
             if shep.get("session"):
                 said += f" — fixer `{shep['session']}`"
+            elif shep.get("refused"):
+                said += f" — no fixer sent: {shep['refused']}"
             out.append((shep["at"], said))
     return sorted(out, key=lambda e: e[0])
 
@@ -7777,8 +7850,14 @@ def cmd_show(args) -> int:
         print(f"    {'touches:':<12} {', '.join(task.touches)}")
     rec = d.get("shepherd")
     if rec:
-        print(f"    {'shepherd:':<12} {rec.get('condition')} — fixer {rec.get('session')} "
-              f"sent {rec.get('at')}")
+        # A record does not always name a fixer, and `fixer None sent` was
+        # this line's answer whenever it did not — for a merge, which has
+        # never written a session, and now for a policy refusal, which is the
+        # opposite claim to the one that sentence made.
+        sent = f"fixer {rec['session']} sent" if rec.get("session") else "no fixer sent"
+        print(f"    {'shepherd:':<12} {rec.get('condition')} — {sent} {rec.get('at')}")
+        if rec.get("refused"):
+            print(f"    {'':<12} {rec['refused']}")
     conflict = state_conflict(task)
     if conflict:
         print(f"    {'conflict:':<12} {conflict}")
