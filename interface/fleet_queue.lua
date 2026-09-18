@@ -1831,6 +1831,38 @@ local function bar_spans(fuel, cells)
   return spans
 end
 
+--- How one reading names itself: the provider, and whose account when the
+--- record carries one. `fleet status` phrases its own blocks the same way, so
+--- the screen and the column name one account one way.
+---
+--- `checkout` DECIDES THE PARENTHESES, never a comparison between `account`
+--- and `provider`: a named account whose agent happens to share its vendor's
+--- name (or, before `fleet_status.fuel_accounts()` stopped revisiting the
+--- checkout's own agent, the checkout's own name) would satisfy that
+--- comparison too and lose the one thing telling its bar apart from the
+--- checkout's own.
+---
+--- THE CHECKOUT'S OWN AGENT NAME IS THE FALLBACK LABEL, never a bare blank —
+--- `fleet_status.fuel_label()` documents the same fallback for a checkout
+--- account with no provider at all, and the two must name that one account
+--- the same word rather than the screen naming it and the pane drawing it
+--- with nothing in front of `unavailable`.
+local function fuel_name(rec)
+  local provider = rec.provider or ""
+  if rec.account == nil or rec.checkout == "1" then
+    if provider ~= "" then
+      return provider
+    end
+    return rec.account or "?"
+  end
+  local account = rec.account or ""
+  local named_provider = provider ~= "" and provider or "?"
+  if account ~= "" then
+    return named_provider .. " (" .. account .. ")"
+  end
+  return named_provider
+end
+
 --- The fuel block: every window of every subscription, above everything
 --- competing for it.
 ---
@@ -1848,16 +1880,22 @@ end
 --- rows never move. A record from an older `fleet status` carries no
 --- windows, and draws its binding reading as the one row it had.
 ---
---- A PROVIDER THAT COULD NOT BE READ IS NOT DRAWN. It has no bar to draw and
---- no number to compare, and a standing `unavailable` row for a provider the
---- operator is not spending is a row the queue below could have used. What it
---- could not say is still said in full by `uv run fleet status`, which
---- prints every provider with the reason its fetch failed.
+--- A PROVIDER THAT COULD NOT BE READ IS NOT DRAWN BESIDE A SIBLING UNDER ITS
+--- OWN ACCOUNT THAT WAS. It has no bar to draw and no number to compare, and a
+--- standing `unavailable` row for a provider whose own account already has a
+--- reading on screen is a row the queue below could have used. What it could
+--- not say is still said in full by `uv run fleet status`, which prints every
+--- provider with the reason its fetch failed.
 ---
---- UNLESS NOTHING READ AT ALL. Then the head row itself says `unavailable`
---- with the reason under it, because a fuel block that quietly disappeared
---- would read as "nothing to report" when it means "nobody could tell" — and
---- that is the one failure this pane must not commit silently.
+--- AN ACCOUNT WITH NOTHING READ AT ALL DRAWS ITS OWN ROW INSTEAD, one per
+--- account rather than one for the whole block — a fleet spending two
+--- accounts with only one of them readable still shows the other's reading
+--- beside it. `shown_accounts` below is what decides which rule a failed
+--- record follows: dropped when its own account is already shown by a
+--- sibling, drawn with `unavailable` and the reason under it when it is not,
+--- because a fuel block that quietly disappeared would read as "nothing to
+--- report" when it means "nobody could tell" — and that is the one failure
+--- this pane must not commit silently.
 ---
 --- WHAT A NARROW COLUMN DROPS, and this column is routinely thirty cells wide.
 --- The bar first — under FUEL_BAR_MIN cells it is a decoration and the number
@@ -1868,24 +1906,6 @@ end
 --- TWO READINGS ARE NOT BARS. No record yet is the spinner, and a stale
 --- reading is hatched and flagged, so a remembered number never looks like a
 --- freshly measured one.
---- How one reading names itself: the provider, and whose account when the
---- record carries one. `fleet status` phrases its own blocks the same way, so
---- the screen and the column name one account one way.
----
---- `checkout` DECIDES THE PARENTHESES, never a comparison between `account`
---- and `provider`: a named account whose agent happens to share its vendor's
---- name (or, before `fleet_status.fuel_accounts()` stopped revisiting the
---- checkout's own agent, the checkout's own name) would satisfy that
---- comparison too and lose the one thing telling its bar apart from the
---- checkout's own.
-local function fuel_name(rec)
-  local provider = rec.provider or ""
-  local account = rec.account or ""
-  if account ~= "" and rec.checkout ~= "1" then
-    return provider .. " (" .. account .. ")"
-  end
-  return provider
-end
 
 local function fuel_rows(fuel, width, spinner)
   -- Measured, never counted: the glyph is two columns and not one, and every

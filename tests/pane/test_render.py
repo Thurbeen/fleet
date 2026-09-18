@@ -296,6 +296,20 @@ def test_a_failed_provider_beside_its_own_accounts_reading_still_stays_dropped()
         refute(out, "auth_required", "Codex sign-in required", "codex")
 
 
+def test_the_checkouts_own_account_with_no_credential_is_named_by_its_agent_not_left_blank():
+    """`fuel_label` (`fleet_status.py`) makes the checkout's own agent name the
+    fallback label when there is no provider at all, never a bare blank in
+    front of `unavailable`. `fuel_name` has to fall back the same way, since
+    the screen and the pane must name that one account the same word."""
+    for width in ("44", "30"):
+        out = render(width, "--fuel-checkout-no-credential")
+        expect(out, "claude (claude-spare)", "70")
+        row = row_with("unavailable", out)
+        assert row.strip().startswith("claude"), (
+            f"the checkout's own unavailable row has no name at width {width}:\n{row!r}"
+        )
+
+
 def test_an_overdue_reading_says_how_old_it_is():
     """A reading older than the TTL means the refresh is not happening, and then
     its age is the most important thing on the row, said in words."""

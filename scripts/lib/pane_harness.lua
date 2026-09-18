@@ -62,6 +62,10 @@
 -- the named account's agent is called the same as its own vendor — the one
 -- shape where deciding the parentheses by comparing `account` against
 -- `provider` disagrees with deciding it by the `checkout` flag.
+-- `--fuel-checkout-no-credential` is a two-account fleet whose CHECKOUT'S OWN
+-- account has no credential at all — `render_fuel_record` writes no
+-- `provider` line for it, exactly as `fleet_status.fuel_label()` reads it, so
+-- the row is named by the checkout's own agent name and never blank.
 --
 -- Scrolling, applied in this order before anything is printed:
 --   `--long <n>`    adds a topic of n running tasks, a queue longer than a pane
@@ -85,6 +89,7 @@ local FUEL_ACCOUNTS = false
 local FUEL_NAME_COLLISION = false
 local FUEL_MIXED_AVAILABILITY = false
 local FUEL_PARTIAL_PROVIDER = false
+local FUEL_CHECKOUT_NO_CREDENTIAL = false
 for i, a in ipairs(arg) do
   if a == "--long-label" then
     LONG_LABEL = true
@@ -96,6 +101,8 @@ for i, a in ipairs(arg) do
     FUEL_MIXED_AVAILABILITY = true
   elseif a == "--fuel-partial-provider" then
     FUEL_PARTIAL_PROVIDER = true
+  elseif a == "--fuel-checkout-no-credential" then
+    FUEL_CHECKOUT_NO_CREDENTIAL = true
   elseif a == "--long" then
     LONG = tonumber(arg[i + 1]) or 0
   elseif a == "--height" then
@@ -576,6 +583,31 @@ if FUEL_PARTIAL_PROVIDER then
     "unavailable\tauth_required; Codex sign-in required",
     "reserve\t20",
     "read_at\t" .. (NOW - FUEL_READ),
+  }, "\n")
+end
+
+-- The checkout's own account (`checkout\t1`) with no `provider` line at all —
+-- what `render_fuel_record` writes when `quota-axi auth` names no credential
+-- under this environment and the checkout's own agent guessed no vendor
+-- either. `fuel_name` has no provider to fall back on and must still name
+-- the row, by the account (the checkout's own agent name) rather than a
+-- blank string in front of `unavailable`.
+if FUEL_CHECKOUT_NO_CREDENTIAL then
+  FUEL = table.concat({
+    "account\tclaude",
+    "checkout\t1",
+    "unavailable\tno provider has a credential to read",
+    "reserve\t20",
+    "read_at\t" .. (NOW - FUEL_READ),
+    "",
+    "provider\tclaude",
+    "account\tclaude-spare",
+    "checkout\t0",
+    "remaining\t70",
+    "reserve\t20",
+    "limited_by\tseven_day",
+    "read_at\t" .. (NOW - FUEL_READ),
+    "window\tseven_day\t70\t" .. (NOW + 4 * 86400) .. "\tweek",
   }, "\n")
 end
 
