@@ -1974,17 +1974,16 @@ local function fuel_rows(fuel, width, spinner)
     head:add(widgets.truncate_hard("unavailable", math.max(0, width - head.used)),
       { fg = theme.warn })
     flush_right(head, age, { fg = theme.warn })
-    -- The first record's reason, named by its PROVIDER when it has one.
-    -- `fuel_name` falls back to `?` for a nameless checkout — the placeholder
-    -- that helper exists to keep off the screen — so prefixing by it made
-    -- this guard tautological and painted `? — ` onto the one whole-block
-    -- failure that is meant to look exactly as it did before accounts were
-    -- named. A single-account fleet whose reading failed has no provider
-    -- (and no account: `render_fuel_record` drops both).
+    -- Guard on the PROVIDER, print `fuel_name`. That helper's nameless
+    -- fallback is `?`, so prefixing whenever `fuel_name ~= ""` painted
+    -- `? — ` onto a single-account fleet with nothing to read. A multi-account
+    -- fleet whose every account failed also lands here (`#shown == 0`) and
+    -- still draws one reason from `fuel[1]`: printing the provider alone
+    -- drops `(account)`, printing `fuel_name` keeps it.
     local first = fuel[1]
     local why = first.unavailable or "no reading"
     if (first.provider or "") ~= "" then
-      why = first.provider .. " — " .. why
+      why = fuel_name(first) .. " — " .. why
     end
     return { line(head:spans_list()), detail(why) }
   end

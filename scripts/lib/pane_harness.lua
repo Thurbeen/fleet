@@ -69,6 +69,9 @@
 -- `--fuel-unreadable` is a SINGLE-ACCOUNT fleet whose whole reading failed —
 -- quota-axi missing, one record, `unavailable` and no provider. That is the
 -- one case the pane must render exactly as it did before accounts were named.
+-- `--fuel-accounts-unreadable` is a MULTI-account fleet whose every account
+-- failed — the other way into `#shown == 0`. The named account leads, so the
+-- one reason line is where `fuel_name` and a bare `provider` disagree.
 --
 -- Scrolling, applied in this order before anything is printed:
 --   `--long <n>`    adds a topic of n running tasks, a queue longer than a pane
@@ -94,6 +97,7 @@ local FUEL_MIXED_AVAILABILITY = false
 local FUEL_PARTIAL_PROVIDER = false
 local FUEL_CHECKOUT_NO_CREDENTIAL = false
 local FUEL_UNREADABLE = false
+local FUEL_ACCOUNTS_UNREADABLE = false
 for i, a in ipairs(arg) do
   if a == "--long-label" then
     LONG_LABEL = true
@@ -109,6 +113,8 @@ for i, a in ipairs(arg) do
     FUEL_CHECKOUT_NO_CREDENTIAL = true
   elseif a == "--fuel-unreadable" then
     FUEL_UNREADABLE = true
+  elseif a == "--fuel-accounts-unreadable" then
+    FUEL_ACCOUNTS_UNREADABLE = true
   elseif a == "--long" then
     LONG = tonumber(arg[i + 1]) or 0
   elseif a == "--height" then
@@ -626,6 +632,29 @@ end
 if FUEL_UNREADABLE then
   FUEL = table.concat({
     "unavailable\tquota-axi is not installed",
+    "reserve\t20",
+    "read_at\t" .. (NOW - FUEL_READ),
+  }, "\n")
+end
+
+-- Two accounts, neither readable: `#shown == 0` still draws one reason, from
+-- `fuel[1]`. The named account (`checkout\t0`) leads because that is the
+-- shape where prefixing by `provider` alone drops `(account)` and prefixing
+-- by `fuel_name` keeps it. The checkout's own record is there so this is a
+-- two-account fleet, not a collapsed single-account one.
+if FUEL_ACCOUNTS_UNREADABLE then
+  FUEL = table.concat({
+    "provider\tclaude",
+    "account\tclaude-spare",
+    "checkout\t0",
+    "unavailable\tquota-axi named no claude credential for this account",
+    "reserve\t20",
+    "read_at\t" .. (NOW - FUEL_READ),
+    "",
+    "provider\tclaude",
+    "account\tclaude",
+    "checkout\t1",
+    "unavailable\tauth_required; Claude sign-in required",
     "reserve\t20",
     "read_at\t" .. (NOW - FUEL_READ),
   }, "\n")
