@@ -531,6 +531,22 @@ thurbox 2.19.0 that includes `grok` and `kimi` alongside the agents covered
 before). `state_source` says whether the answer came from a hook or the
 process.
 
+**`cursor-agent` reports without a family thurbox ships.** `--reports-as
+cursor` is refused (`thurbox ships no status hooks for agent 'cursor'`), so
+`hook_coverage` stays `none`. The agent's own user hooks file
+(`~/.cursor/hooks.json`) can still call `thurbox-cli session signal`, and
+`list.state` then follows those words. Measured on cursor-agent 2026.09.15
+against the events that binary loads from user scope (confirmed in
+`cursor.com/docs/hooks` and the installed CLI's hook enum): `sessionStart` →
+`idle`, `beforeSubmitPrompt` / `preToolUse` / `postToolUse` → `working`,
+`stop` → `done`. There is no permission-wait event — a shell approval
+prompt stays `working`. Trust is still the `--trust` flag (§1b), not a
+keystroke. Until thurbox merges that file the way it already merges
+`~/.codex/hooks.json`, the operator's user hooks are what turn
+`list.state` from `uncovered` into `idle` / `working` / `done` — the
+words `reap` already accepts. `refuel` still has no cursor limit
+banner, so a spent cursor worker stays `undetermined` (§4b).
+
 Three names, three fields: `agent` is what the row was created as, `reports_as`
 what a driver declared, and `detected_agent` what is observably running — a live
 reading, never written back. `detected_agent` is `null` when the observation
