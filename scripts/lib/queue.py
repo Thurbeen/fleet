@@ -4886,16 +4886,16 @@ def fuel_agent(agent: str | None = None) -> str | None:
     as its own provider name, which is the identity quota-axi's naming makes
     right most of the time.
     """
-    pinned = agent_conf().get("FUEL_PROVIDER", "").strip()
+    conf = agent_conf()
+    pinned = conf.get("FUEL_PROVIDER", "").strip()
     if pinned:
         return pinned
-    conf = agent_conf()
     named = agent_providers()
-    for name in agent_settings.chain(agent, conf):
+    chain = agent_settings.chain(agent, conf)
+    for name in chain:
         if name in named:
             return named[name]
-    names = agent_settings.chain(agent, conf)
-    return names[-1] if names else None
+    return chain[-1] if chain else None
 
 
 def provider_is_known(provider: str, env: dict | None = None) -> tuple[bool, str]:
