@@ -543,8 +543,8 @@ against the events that binary loads from user scope (confirmed in
 prompt stays `working`. Trust is still the `--trust` flag (§1b), not a
 keystroke. Until thurbox merges that file the way it already merges
 `~/.codex/hooks.json`, the operator's user hooks are what turn
-`list.state` from `uncovered` into `idle` / `working` / `done` — the
-words `reap` already accepts. `refuel` still has no cursor limit
+`list.state` from `uncovered` into `idle` / `working` / `done` —
+`idle` and `done` being the words `reap` already accepts. `refuel` still has no cursor limit
 banner, so a spent cursor worker stays `undetermined` (§4b).
 
 Three names, three fields: `agent` is what the row was created as, `reports_as`
