@@ -144,7 +144,8 @@ def check_workflow(fix: bool) -> str | None:
 
 def check_profiles(fix: bool) -> str | None:
     # The two rules that keep a profile safe — no THURBOX_* key thurbox would
-    # discard, no `command` without `reports_as` — held where a commit meets them.
+    # discard, no `command` without `reports_as` or `uncovered` — held where a
+    # commit meets them.
     argv = [sys.executable, "scripts/lib/session_profiles.py", "orchestration/session-profiles.yaml", "--check"]
     return "session_profiles.py --check" if run(argv) else None
 

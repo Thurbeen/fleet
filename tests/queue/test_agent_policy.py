@@ -8,6 +8,7 @@ in force.
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -20,7 +21,7 @@ from kit_shepherd import Shep, repo
 from kit_shepherd import result as shipped
 from queuekit import ok
 
-from harness import expect, git, refute
+from harness import expect, git, refute, write
 from harness import run_queue as q
 
 FORGE = "forge.test:8443"
@@ -951,8 +952,45 @@ def test_a_command_profile_records_no_agent(checkout, forge_store, stubs, queue_
     create = [c for c in stubs.calls("thurbox-cli", "session create") if "fix/commanded" in c][0]
     assert "--command cursor-agent" in create, create
     assert "--agent" not in create, create
+    assert "--reports-as" not in create, create
     task_file = queue_dir / topic / "01-commanded" / "task.yaml"
     assert yaml.safe_load(task_file.read_text(encoding="utf-8"))["agent"] is None, task_file
+
+
+def test_dispatch_announces_an_uncovered_command_profile(checkout, forge_store, stubs, queue_dir):
+    """A command with no hook family is a declared uncovered session, and the
+    operator hears that from the spawn, not an hour later from a stuck watch."""
+    topic = ok(q(
+        "topic", "add", "uncovered-spawn", "--title", "An uncovered command",
+        "--prompt", "dispatch says the session will be uncovered",
+    )).stdout.strip()
+    env = policy_env(forge_store, "")
+    ok(q(
+        "add", topic, "commanded", "--title", "Commanded",
+        "--repo", str(checkout), "--branch", "fix/uncovered", "--number", "01",
+        "--profile", "cursor-trusted", **env,
+    ))
+    fill_brief(queue_dir / topic / "01-commanded" / "BRIEF.md")
+    sid = "0b222222-0000-0000-0000-00000000000c"
+    next_session(stubs, sid)
+    # The document thurbox actually writes for this spawn — not the harness
+    # default of agent=claude / hook_reported=true, which would skip trust
+    # for the wrong reason and hide a dispatch that never sends the brief.
+    write(stubs.root / "sessions" / f"{sid}.json", json.dumps({
+        "id": sid, "agent": "cursor-agent", "reports_as": None,
+        "detected_agent": None, "hook_reported": False, "state": "uncovered",
+        "hook_coverage": "none",
+        "foreground_command": "cursor-agent --trust",
+    }) + "\n")
+    stubs.tool("thurbox-cli", ANSWERING_KEYS)
+    out = ok(q("dispatch", **env)).out
+    create = [c for c in stubs.calls("thurbox-cli", "session create") if "fix/uncovered" in c][0]
+    assert "--reports-as" not in create, create
+    assert "uncovered" in out, out
+    assert "watch" in out and "refuel" in out and "reap" in out, out
+    refute(out, "NOT PROMPTED")
+    sends = [c for c in stubs.calls("thurbox-cli", "session send") if sid in c]
+    assert sends, out
 
 
 def test_a_refusal_names_dispatch_rather_than_the_operator(

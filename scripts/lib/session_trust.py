@@ -64,9 +64,18 @@ PER-AGENT, and the differences are real (see GATES below):
                   worktrees of the same project never show it.
   pi, pi-signed   a dialog; Enter accepts. Persists per path.
   grok, kimi      no dialog in a git worktree. Nothing to do.
-  cursor, muse    NOT a keystroke — a launch flag (`--trust`, `--yolo`).
-                  This refuses them and says where the flag goes: a profile
-                  in orchestration/session-profiles.yaml.
+  cursor          NOT a keystroke — `--trust` answers the folder dialog.
+                  Ready only when the session document's
+                  `foreground_command` carries `--trust` (there is no
+                  `args` array on `session get`). A hand spawn without
+                  that flag stays flag-required.
+                  `--command cursor-agent` is named `cursor-agent` on the
+                  session document, not `cursor`; both names are this row.
+  muse            NOT a keystroke either, but `--yolo` is not a trust flag.
+                  It aliases `--disable-approval` and drops confirmations
+                  and the sandbox together. Vendor: a one-off isolated
+                  container only. Flag-required until a session has been
+                  watched to start. Nothing is typed.
 
 AN AGENT THAT IS NOT IN THE TABLE is the operator's to teach, not fleet's to
 guess: `TRUST_SIGNATURE` and `TRUST_KEYS` in orchestration/agent.conf, with
@@ -181,7 +190,11 @@ GATES = {
     "grok": [],
     "kimi": [],
 }
-FLAG_ONLY = {"cursor", "muse"}
+# Agents with no keystroke gate. Only cursor's --trust answers a dialog;
+# muse's --yolo is --disable-approval and does not. TRUST_LAUNCH is the
+# subset that is ready when that flag is on the launch line.
+FLAG_ONLY = {"cursor", "cursor-agent", "muse"}
+TRUST_LAUNCH = {"cursor", "cursor-agent"}
 
 # WHERE THE SELECTOR ALREADY IS, and it outranks the table. The
 # folder-trust dialog above defaults to "No, exit"; the one Claude Code 2.1.247
@@ -225,6 +238,22 @@ def session_info(session: str) -> dict:
     """`session get --json`, or {} when thurbox could not answer it."""
     proc = _run(["session", "get", session, "--json"])
     return _json(proc) if proc is not None and proc.returncode == 0 else {}
+
+
+def launch_tokens(info: dict) -> list[str]:
+    """Argv tokens from the session document.
+
+    `session get --json` has no `args` array (measured 2026-09-18). The
+    pane probe puts the launch line in `foreground_command`. A stored
+    `args` list is still accepted if a later thurbox starts writing one.
+    """
+    raw = info.get("foreground_command")
+    if isinstance(raw, str) and raw.strip():
+        return raw.split()
+    extra = info.get("args")
+    if isinstance(extra, list):
+        return [str(a) for a in extra]
+    return []
 
 
 def squeeze(text: str) -> str:
@@ -354,11 +383,24 @@ def answer_dialogs(session: str, timeout: int = 20, as_json: bool = False) -> tu
     elif table is not None:
         gates = table
     elif any(name in FLAG_ONLY for name in agent_settings.chain(agent, conf)):
+        names = agent_settings.chain(agent, conf)
+        if any(name in TRUST_LAUNCH for name in names):
+            if "--trust" in launch_tokens(info):
+                return 0, say(
+                    f"'{agent}' is not answered by a keystroke; nothing was "
+                    "typed (--trust on the launch already answered the dialog)",
+                    "ready",
+                )
+            return 3, say(
+                f"'{agent}' is not answered by a keystroke — it takes --trust "
+                "on the launch. This session's pane does not show that flag; "
+                "nothing was typed.",
+                "flag-required",
+            )
         return 3, say(
-            f"'{agent}' is not answered by a keystroke — it takes a launch flag\n"
-            "             (cursor: --trust, muse: --yolo). Put it in a profile in\n"
-            "             orchestration/session-profiles.yaml and spawn under that profile.\n"
-            "             Nothing was sent.",
+            f"'{agent}' is not answered by a keystroke. muse's --yolo is "
+            "--disable-approval, not a trust flag, and nothing here has "
+            "watched a session start; nothing was typed.",
             "flag-required",
         )
     elif not agent:

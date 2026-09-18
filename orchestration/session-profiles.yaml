@@ -34,18 +34,25 @@
 #    worst kind of setting, one that looks applied and is not. The renderer
 #    refuses the key rather than emitting a flag that does nothing.
 #
-# 2. `command` REQUIRES `reports_as`. thurbox reads hook coverage against a
-#    `--command` session's file stem, so a session launched as
-#    `/bin/sh -c 'exec claude'` reports coverage `none` and renders as
-#    `uncovered` while the agent inside it is working. `--reports-as` is the
-#    declaration that fixes it. The renderer refuses one without the other.
+# 2. `command` REQUIRES `reports_as` OR `uncovered`. thurbox reads hook
+#    coverage against a `--command` session's file stem, so a session
+#    launched as `/bin/sh -c 'exec claude'` reports coverage `none` and
+#    renders as `uncovered` while the agent inside it is working.
+#    `--reports-as` is the declaration that names the family and fixes it.
+#    `uncovered: true` is the other declaration: this command has no hook
+#    family, the session will be uncovered, and that is accepted. Silence
+#    — neither key — is still refused. That is the setting that looks
+#    applied and is not. Both keys together are refused: pick one.
 #
 # Schema, per profile — every key optional:
 #
 #   env:         KEY: VALUE map          -> --env KEY=VALUE (repeated)
 #   command:     an executable           -> --command
 #   args:        list, in order          -> --arg (repeated); needs command
-#   reports_as:  the agent in the pane   -> --reports-as; required by command
+#   reports_as:  the agent in the pane   -> --reports-as; with command,
+#                                          unless uncovered
+#   uncovered:   true                    -> no --reports-as; with command,
+#                                          instead of reports_as
 #
 # A profile carrying `command` replaces `--agent`; thurbox refuses both.
 
@@ -80,22 +87,39 @@ profiles:
     env:
       ANTHROPIC_MODEL: "claude-opus-5"
 
-  # THE FLAG HALF OF TRUST. Most agents ask about a directory they have not
-  # seen with a DIALOG, which `fleet session-trust` answers with a
-  # keystroke as part of every dispatch. Two do not: they take a launch flag,
-  # and a launch flag is exactly what a profile is for.
+  # A LAUNCH FLAG INSTEAD OF A DIALOG. Most agents ask about a directory
+  # they have not seen with a DIALOG, which `fleet session-trust` answers
+  # with a keystroke as part of every dispatch. Two take a flag on the
+  # command line instead, and a flag is exactly what a profile is for.
+  # They are not the same flag: `--trust` answers cursor's dialog;
+  # `--yolo` is something else (see muse-trusted).
   #
-  # NOT EXERCISED HERE — neither binary is installed on the machine this was
-  # written on, so these are wired from the flag names and thurbox's own
-  # `cursor-agent` command, not from a session anyone watched start. Check the
-  # flag against your installed version before trusting a wave to it.
-  # `reports_as` is mandatory beside `command` and the gate enforces it.
+  # cursor-agent, measured 2026-09-18 on 2026.09.08-6caf4ff: `--trust`
+  # answers the dialog, so `fleet session-trust` is not needed. The binary
+  # has no `--settings` flag. thurbox ships no status hooks for `cursor`,
+  # and `hook_schema` can only name a foreign family (practically
+  # `claude`), which would wire `--settings` the binary does not take.
+  # `uncovered: true` is the declaration that replaces `reports_as` here.
+  #
+  # An uncovered session: `refuel` will not touch it, `watch` will not
+  # read its state, `reap` is by hand. `collect` is unchanged — it reads
+  # `result.md`, not the session state. `dispatch` says this on the spawn.
+  #
+  # Manual recipe if dispatch is not the path: `session create --command
+  # cursor-agent --arg --trust` (no `--reports-as`), then
+  # `fleet queue attach` and `session send`.
   cursor-trusted:
     command: cursor-agent
     args: ["--trust"]
-    reports_as: cursor
+    uncovered: true
 
+  # Same uncovered shape for Muse Code (Meta's terminal agent; beta since
+  # 2026-08-05), which thurbox also does not cover. `--yolo` is NOT the
+  # analogue of cursor's `--trust`: it is an alias of `--disable-approval`
+  # and drops both confirmations and the sandbox at once. The vendor's
+  # recommendation is a one-off isolated container only. The binary was
+  # not run here, so these flags have not been watched to start a session.
   muse-trusted:
     command: muse
     args: ["--yolo"]
-    reports_as: muse
+    uncovered: true

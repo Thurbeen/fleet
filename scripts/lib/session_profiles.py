@@ -39,7 +39,10 @@ import sys
 import yaml
 
 ENV_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-PROFILE_KEYS = ("env", "command", "args", "reports_as")
+PROFILE_KEYS = ("env", "command", "args", "reports_as", "uncovered")
+UNCOVERED_NOTICE = (
+    "uncovered — no hook family; watch, refuel and reap will not see this session"
+)
 
 
 def scalar(value, where, errors):
@@ -89,15 +92,41 @@ def check_profile(name, profile, errors):
     command = profile.get("command")
     if command is not None:
         scalar(command, f"{where}.command", errors)
+
+    # `uncovered: true` is the other declaration beside reports_as: this
+    # command has no hook family, the session will be uncovered, and that
+    # is accepted. Silence — neither key — is still the trap rule 2 exists
+    # to catch. YAML `true` only; a string or a false is not a declaration.
+    declared = False
+    if "uncovered" in profile:
+        if profile["uncovered"] is True:
+            declared = True
+        else:
+            errors.append(
+                f"{where}.uncovered: expected true — this is the declaration "
+                "that the session will be uncovered"
+            )
+    if declared and command is None:
+        errors.append(f"{where}: uncovered without command has nothing to uncover")
+
+    if command is not None:
         # A --command session is named after the command's file stem, so
         # thurbox reads hook coverage against `sh` rather than against the
         # agent in the pane: coverage `none`, no reportable states, and a
-        # working session rendering as `uncovered`. --reports-as is the
-        # declaration that fixes it, which is why one never ships without it.
-        if not profile.get("reports_as"):
+        # working session rendering as `uncovered`. --reports-as names the
+        # family that fixes it; uncovered: true accepts that there is none.
+        has_reports = profile.get("reports_as") is not None
+        if declared and has_reports:
             errors.append(
-                f"{where}: command needs reports_as — without it thurbox reads "
-                "hook coverage against the command, not the agent in the pane"
+                f"{where}: command has both reports_as and uncovered — pick "
+                "one: declare the hook family, or accept that the session "
+                "will be uncovered"
+            )
+        elif not declared and not has_reports:
+            errors.append(
+                f"{where}: command needs reports_as or uncovered — without "
+                "one, thurbox reads hook coverage against the command, not "
+                "the agent in the pane"
             )
 
     args = profile.get("args") or []
@@ -125,6 +154,18 @@ def render(profile):
     if profile.get("reports_as") is not None:
         flags += ["--reports-as", str(profile["reports_as"])]
     return flags
+
+
+def uncovered_notice(flags):
+    """What dispatch (and session-flags stderr) say about a spawn with no family.
+
+    Derived from the flags that actually reach `session create`, not from the
+    YAML key: after the gate, `--command` without `--reports-as` is the
+    declared uncovered session.
+    """
+    if "--command" in flags and "--reports-as" not in flags:
+        return UNCOVERED_NOTICE
+    return None
 
 
 def load_profiles(path, errors):
@@ -208,7 +249,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{path}: no profile {wanted!r} (have: {known})", file=sys.stderr)
         return 1
 
-    sys.stdout.write("".join(f"{flag}\0" for flag in render(profiles[wanted])))
+    rendered = render(profiles[wanted])
+    sys.stdout.write("".join(f"{flag}\0" for flag in rendered))
+    if notice := uncovered_notice(rendered):
+        print(notice, file=sys.stderr)
     return 0
 
 

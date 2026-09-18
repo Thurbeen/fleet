@@ -3227,6 +3227,16 @@ def profile_flags(profile: str) -> list:
     return profiles_mod.render(profiles[profile])
 
 
+def spawn_uncovered_notice(create: list) -> str | None:
+    """What dispatch prints when this spawn has no hook family.
+
+    Same words `session-flags` writes on stderr, derived from the argv that
+    actually reaches `session create`.
+    """
+    profiles_mod = _load_sibling("fleet_session_profiles", "session_profiles.py")
+    return profiles_mod.uncovered_notice(create)
+
+
 def brief_target(task: Task) -> str:
     """The path the worker is told to read.
 
@@ -3454,6 +3464,8 @@ def cmd_dispatch(args) -> int:
                 print(f"        reachable and speaking {shell.label} / the repo is there"
                       " / it has its own credentials for that repo's forge")
             print(f"      {shell_quote(create)}")
+            if notice := spawn_uncovered_notice(create):
+                print(f"      {notice}")
             if shell is POSIX:
                 print("      ssh <host> 'cat > <worktree>/BRIEF.md'   # the worker's"
                       " filesystem is not this one")
@@ -3515,6 +3527,8 @@ def cmd_dispatch(args) -> int:
         # that now exists, and a second reading of the policy and of `origin`
         # on the far side of `session create` can answer differently.
         attach(t, session, spawned_as)
+        if notice := spawn_uncovered_notice(create):
+            print(f"    {t.ref}: {notice}")
 
         # The remote worker is about to be told to read a file that is not on
         # its filesystem. Put it there first, and record where — `collect`

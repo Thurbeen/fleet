@@ -437,9 +437,12 @@ handoff — nothing was typed into them:
 ```
 
 Look at the pane (`thurbox-cli session capture <uuid>`), then `fleet queue
-prompt` to retry the handoff. `cursor` and `muse` are not answered by a
-keystroke at all — they take a launch flag, so spawn them under the
-`cursor-trusted` / `muse-trusted` profiles instead.
+prompt` to retry the handoff. `cursor` is not answered by a keystroke —
+`--trust` on the `cursor-trusted` profile answers its dialog. `muse` is
+also not a keystroke, but `--yolo` is not that: it aliases
+`--disable-approval` and drops confirmations and the sandbox together
+(vendor: a one-off isolated container). Spawn either under its profile;
+read `muse-trusted`'s comment before using it.
 
 ### 4a. Course-correcting a worker — `send`, and never `session send`
 
