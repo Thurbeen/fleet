@@ -577,43 +577,231 @@ def test_refuel_reads_the_account_of_the_agent_the_policy_names(
     assert restarts(stubs) == [], stubs.calls("thurbox-cli", "session restart")
 
 
+FIXER_PR = "https://github.com/Thurbeen/fleet/pull/101"
+
+
+def conflicting_task(tmp_path, stubs, queue_dir, slug: str, env: dict,
+                     agent: str = "", profile: str = "") -> tuple[Shep, Path, str]:
+    """A shipped task on a GitHub checkout whose pull request has gone CONFLICTING.
+
+    The state every fixer question starts from: the worker finished, the task
+    closed, and the next shepherd pass is the one that decides whether an
+    agent is put back on that branch. The origin is spelled `https://`, the
+    form `install.sh` clones by and therefore the form the checkout a control
+    plane serves actually carries — the GitHub adapter could not read it at
+    all (#119), so no rule here would match a checkout without it.
+    """
+    shep = Shep(stubs)
+    srepo = repo(tmp_path / f"{slug}-repo")
+    git("remote", "add", "origin", "https://github.com/Thurbeen/fleet.git", cwd=srepo)
+    topic = ok(q(
+        "topic", "add", slug, "--title", "A fixer under a policy",
+        "--prompt", "the fixer is a worker and the policy governs it",
+    )).stdout.strip()
+    named = ["--agent", agent] if agent else []
+    named += ["--profile", profile] if profile else []
+    ok(q(
+        "add", topic, "conflicting", "--title", "A PR that conflicts",
+        "--repo", str(srepo), "--branch", "fix/conflicting", "--number", "01",
+        *named, **env,
+    ))
+    shipped(queue_dir / topic / "01-conflicting", FIXER_PR)
+    git("branch", "fix/conflicting", cwd=srepo)
+    ok(q("collect", **env))
+    shep.perm("maintainer", "admin")
+    shep.pr(101, mergeable="CONFLICTING", headRefName="fix/conflicting")
+    return shep, srepo, topic
+
+
 def test_the_fixer_spawns_the_agent_the_policy_names(tmp_path, stubs, queue_dir):
     """#116's half of it: `shepherd`'s fixer is a worker, so it runs the task's agent.
 
     It open-coded `task.doc.get("agent") or configured_agent()` and asked the
     policy nothing, so a repository whose policy `dispatch` enforces had a
     second door that `shepherd` walked through unattended. This narrows that
-    to the agent it SPAWNS; refusing a fixer the policy cannot clear is a
-    behaviour choice #116 leaves open and this does not make.
+    to the agent it SPAWNS; the refusal is the test below.
     """
-    shep = Shep(stubs)
-    srepo = repo(tmp_path / "fixer-policy-repo")
-    # `https://`, which is the form `install.sh` clones by and therefore the
-    # form the checkout a control plane serves first actually carries. The
-    # GitHub adapter could not read it at all, so this line is half the test.
-    git("remote", "add", "origin", "https://github.com/Thurbeen/fleet.git", cwd=srepo)
     env = {"FLEET_AGENT_POLICY": "github.com/Thurbeen/fleet=alpha"}
-
-    topic = ok(q(
-        "topic", "add", "fixer-policy", "--title", "A fixer under a policy",
-        "--prompt", "the fixer runs the agent the task runs",
-    )).stdout.strip()
-    ok(q(
-        "add", topic, "conflicting", "--title", "A PR that conflicts",
-        "--repo", str(srepo), "--branch", "fix/conflicting", "--number", "01",
-        **env,
-    ))
-    shipped(queue_dir / topic / "01-conflicting", "https://github.com/Thurbeen/fleet/pull/101")
-    git("branch", "fix/conflicting", cwd=srepo)
-    ok(q("collect", **env))
-
-    shep.perm("maintainer", "admin")
-    shep.pr(101, mergeable="CONFLICTING", headRefName="fix/conflicting")
+    shep, _, topic = conflicting_task(tmp_path, stubs, queue_dir, "fixer-policy", env)
     out = q("shepherd", "--topic", topic, **env).out
 
     created = "\n".join(shep.creates("01-conflicting"))
     assert created, out + shep.tbx_log()
     assert "--agent alpha" in created, created + "\n----\n" + out
+
+
+def test_the_fixer_is_refused_when_the_policy_no_longer_clears_its_agent(
+    tmp_path, stubs, queue_dir
+):
+    """#116's other half, and the one with no dispatch to fail.
+
+    The policy is a file an operator edits, and narrowing it after a task was
+    dispatched leaves a record naming an agent that may no longer serve this
+    repository. `dispatch` refuses that outright; the fixer used to spawn it
+    anyway, unattended, because nobody is watching a reconciler's pass. So the
+    refusal has to be READABLE — a row in the report and a record on the task
+    — and it has to survive a dry run, which is where an operator looks first.
+    """
+    dispatched = {"FLEET_AGENT_POLICY": "github.com/Thurbeen/fleet=alpha"}
+    shep, _, topic = conflicting_task(
+        tmp_path, stubs, queue_dir, "fixer-narrowed", dispatched, agent="alpha")
+    # THE EDIT: `alpha` is no longer allowed to serve this repository.
+    narrowed = {"FLEET_AGENT_POLICY": "github.com/Thurbeen/fleet=beta"}
+
+    task_file = queue_dir / topic / "01-conflicting" / "task.yaml"
+    was = yaml.safe_load(task_file.read_text(encoding="utf-8"))["state"]
+
+    dry = q("shepherd", "--topic", topic, "--dry-run", **narrowed).out
+    expect(dry, "policy-refused", "no fixer sent", "'alpha'", "beta")
+    refute(dry, "would-dispatch")
+    # A dry run writes nothing, including this.
+    assert "shepherd" not in yaml.safe_load(task_file.read_text(encoding="utf-8"))
+
+    out = q("shepherd", "--topic", topic, **narrowed).out
+    expect(out, "policy-refused", "conflicting")
+    # THE WIRING: no session was created, by either route.
+    assert shep.creates("01-conflicting") == [], out + "\n----\n" + shep.tbx_log()
+    refute(shep.tbx_log(), "session send")
+    # And the record a person reads afterwards says which agent and which rule.
+    rec = yaml.safe_load(task_file.read_text(encoding="utf-8"))["shepherd"]
+    assert "alpha" in rec["refused"] and "beta" in rec["refused"], rec
+    assert rec["pr"] == FIXER_PR and "session" not in rec, rec
+    # The refusal is not an outcome: `collect` closes tasks and `shepherd`
+    # watches, so the state this leaves behind is the one it found.
+    assert yaml.safe_load(task_file.read_text(encoding="utf-8"))["state"] == was
+    # And a person asking about the task is told the refusal, not told that a
+    # fixer went out: `fixer None sent` was this line's old answer.
+    shown = ok(q("show", f"{topic}/01-conflicting", **narrowed)).stdout
+    expect(shown, "no fixer sent", "allows only beta")
+    refute(shown, "fixer None")
+
+    # TOLD ONCE. The reconciler comes round every fifteen minutes, and a
+    # refusal that stands is not news on the second pass.
+    q("shepherd", "--topic", topic, **narrowed)
+    events = (queue_dir / topic / "01-conflicting" / "progress.jsonl").read_text(encoding="utf-8")
+    assert events.count('"refused"') == 1, events
+
+    # A pull request that drifts underneath a standing refusal is news, and
+    # the record follows it rather than freezing on what the first pass saw.
+    shep.update(101, mergeable="MERGEABLE", statusCheckRollup=[
+        {"__typename": "CheckRun", "name": "CI", "status": "COMPLETED", "conclusion": "FAILURE"}])
+    out = q("shepherd", "--topic", topic, **narrowed).out
+    expect(out, "policy-refused", "checks-failed")
+    rec = yaml.safe_load(task_file.read_text(encoding="utf-8"))["shepherd"]
+    assert rec["condition"] == "checks-failed", rec
+
+
+def test_the_fixer_fails_closed_when_the_policy_cannot_reach_the_repository(
+    tmp_path, stubs, queue_dir
+):
+    """The second state `dispatch` already refuses on, and the fixer did not.
+
+    A policy is in force and the repository behind the checkout cannot be
+    read, so which agents may serve it is unknown — not "none of them apply".
+    Falling through to the checkout's own `AGENT` there is the silent wrong
+    answer `task_agent_reason` exists to stop, and spawning on it would be
+    that answer acted upon.
+    """
+    env = {"FLEET_AGENT_POLICY": "github.com/Thurbeen/fleet=alpha"}
+    shep, srepo, topic = conflicting_task(
+        tmp_path, stubs, queue_dir, "fixer-unreadable", env)
+    # The checkout loses the remote the rule is matched against. The forge
+    # still lists the pull request — the artifact names the repository — so
+    # this is a shepherd pass that sees the PR and cannot see the rule.
+    git("remote", "remove", "origin", cwd=srepo)
+
+    out = q("shepherd", "--topic", topic, **env).out
+    expect(out, "policy-refused", "agent policy", "cannot be checked")
+    assert shep.creates("01-conflicting") == [], out + "\n----\n" + shep.tbx_log()
+
+
+def test_a_command_profile_gets_no_fixer_on_a_covered_repository(
+    tmp_path, stubs, queue_dir
+):
+    """The case with no agent to judge, and it is refused rather than waved past.
+
+    thurbox refuses `--agent` beside a profile's own `command`, so this spawn
+    names no agent and `task_agent` says "". That is not "no agent, no rule to
+    break": fleet cannot tell which agent a free command launches, so it
+    cannot tell the policy is kept. `dispatch` has always said so, and the
+    fixer now says the same thing rather than reading the empty answer as
+    permission.
+    """
+    env = {"FLEET_AGENT_POLICY": "github.com/Thurbeen/fleet=alpha"}
+    shep, _, topic = conflicting_task(
+        tmp_path, stubs, queue_dir, "fixer-commanded", env, profile="cursor-trusted")
+
+    out = q("shepherd", "--topic", topic, **env).out
+    expect(out, "policy-refused", "custom `command`", "alpha")
+    assert shep.creates("01-conflicting") == [], out + "\n----\n" + shep.tbx_log()
+
+
+def test_a_refusal_never_overwrites_the_record_of_a_fixer_in_flight(
+    tmp_path, stubs, queue_dir
+):
+    """`--force` is the door, and the record is the only handle on a live fixer.
+
+    `--force` skips the in-flight check on purpose, so a refusal reached under
+    it would be the one thing allowed to write over a record naming a session
+    that is out there working. That id is how every later pass finds it; drop
+    it and the next unforced pass reads "nothing is outstanding" and sends a
+    second fixer at the same pull request.
+    """
+    wide = {"FLEET_AGENT_POLICY": "github.com/Thurbeen/fleet=alpha"}
+    shep, _, topic = conflicting_task(
+        tmp_path, stubs, queue_dir, "fixer-forced", wide, agent="alpha")
+    ok(q("shepherd", "--topic", topic, **wide))
+    task_file = queue_dir / topic / "01-conflicting" / "task.yaml"
+    sent = yaml.safe_load(task_file.read_text(encoding="utf-8"))["shepherd"]["session"]
+    assert sent, task_file.read_text(encoding="utf-8")
+
+    narrowed = {"FLEET_AGENT_POLICY": "github.com/Thurbeen/fleet=beta"}
+    out = q("shepherd", "--topic", topic, "--force", **narrowed).out
+    expect(out, "policy-refused")
+    rec = yaml.safe_load(task_file.read_text(encoding="utf-8"))["shepherd"]
+    assert rec["session"] == sent, rec
+
+    # And the proof of what keeping it is for: with the policy widened again,
+    # the pass that follows sees the fixer it already has, not a vacancy.
+    again = q("shepherd", "--topic", topic, **wide).out
+    expect(again, "in-flight")
+    assert len(shep.creates("01-conflicting")) == 1, shep.tbx_log()
+
+
+def test_a_host_task_keeps_the_refusal_that_says_where_its_checkout_is(
+    tmp_path, stubs, queue_dir
+):
+    """A policy must not blunt a refusal that was already more precise.
+
+    A fixer never goes out for a `--host` task — its checkout is on the other
+    machine and spawning there is not implemented — and that sentence is the
+    one an operator can act on. The policy's own answer for a host is true and
+    vaguer, and it would have replaced the better one the moment anybody wrote
+    a first rule, for tasks no rule covers.
+    """
+    topic = ok(q(
+        "topic", "add", "host-fixer", "--title", "A fixer for a remote task",
+        "--prompt", "the checkout is on another machine",
+    )).stdout.strip()
+    # Before the shepherd's own thurbox stub takes over: `add --host` asks
+    # thurbox where its hosts.toml is, and that stub answers only the calls a
+    # shepherd pass makes.
+    ok(q(
+        "add", topic, "remote", "--title", "A PR from a remote worker",
+        "--repo", "/remote/repo", "--branch", "fix/remote", "--number", "01",
+        "--host", "devbox",
+    ))
+    shep = Shep(stubs)
+    shipped(queue_dir / topic / "01-remote", FIXER_PR)
+    ok(q("collect"))
+    shep.perm("maintainer", "admin")
+    shep.pr(101, mergeable="CONFLICTING", headRefName="fix/remote")
+
+    out = q("shepherd", "--topic", topic,
+            FLEET_AGENT_POLICY="github.com/Thurbeen/fleet=alpha").out
+    expect(out, "not-dispatched", "host devbox", "spawned there too")
+    refute(out, "policy-refused")
+    assert shep.creates("01-remote") == [], out + "\n----\n" + shep.tbx_log()
 
 
 def github_checkout(path: Path) -> Path:
