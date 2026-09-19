@@ -207,6 +207,14 @@ def probe_queue() -> dict:
                     "session": t.doc.get("session"),
                     "outcome": t.doc.get("outcome"),
                     "artifact": t.doc.get("artifact"),
+                    # Every artifact this task recorded, flat. A task that
+                    # spans repositories carries one per repository and
+                    # `artifact` above is then a list, so a reader that wants
+                    # URLs reads this and never has to know which shape the
+                    # record is in.
+                    "artifacts": [
+                        a["url"] for a in fleetqueue.recorded_artifacts(t) if a["url"]
+                    ],
                     "touches": list(t.touches),
                     "blockers": [
                         fleetqueue.blocker_view(q, t, b) for b in t.blockers
@@ -372,7 +380,11 @@ def probe_prs(tasks: list) -> dict:
         for cr in crs:
             url, head = cr.url, cr.head_branch
             owner = next(
-                (t for t in owners if t.get("artifact") and str(t["artifact"]).rstrip("/") == url.rstrip("/")),
+                (
+                    t
+                    for t in owners
+                    if any(str(a).rstrip("/") == url.rstrip("/") for a in t.get("artifacts") or [])
+                ),
                 None,
             ) or next((t for t in owners if head and t.get("branch") == head), None)
             if owner is None:
@@ -1226,8 +1238,8 @@ def render_queue(sec: dict) -> list:
     for topic in topics:
         lines.append(f"  {topic['slug']} — {topic['title']}")
         for t in topic["tasks"]:
-            if t["artifact"]:
-                extra = f"{t['outcome'] or ''} {t['artifact']}".strip()
+            if t["artifacts"]:
+                extra = f"{t['outcome'] or ''} {' '.join(t['artifacts'])}".strip()
             elif t["display_state"] == "dispatched" and t["session"]:
                 extra = t["session"][:8]
             else:

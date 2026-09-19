@@ -96,8 +96,10 @@ task's own branch or its recorded `target` (carrying an attestation for its
 head, for that method), the forge again for a note on that target written by
 the account fleet runs as, git for a commit that reached the base branch, and
 nowhere at all for `none`. A change request the forge reports merged closes its
-task whatever its attestation said, and keeps that as a note. A task whose
-artifact is not
+task whatever its attestation said, and keeps that as a note. **A task that
+spans repositories — `add --add-repo` — is asked once per repository**, records
+one artifact for each, and is closed only when every one of them verifies; the
+report names the ones that did not. A task whose artifact is not
 there is reported and left OPEN, because "use the pipeline" is an instruction
 about a method and a method leaves no trace anyone can read. A check that could
 not run — no forge CLI, no network, a base branch this machine cannot see — says
@@ -110,6 +112,9 @@ renders into the brief and never parses.
 **`done` is not the end of the record.** `fleet queue reap` — which `collect`
 runs for you — asks the forge whether a `done` task's change request merged and
 moves it to `landed` (or, if it closed unmerged, `abandoned`); a task with no
-change-request artifact goes straight to `landed`. Landing releases the
+change-request artifact goes straight to `landed`. A task that spans
+repositories reaches `landed` only when EVERY one of its change requests
+merged, because a blocker clears on `landed` and half a task on `main` would
+release a dependent onto code that is not there. Landing releases the
 task's session and worktree and stamps `task.yaml` with a `reaped: {session,
 how, at}` receipt, because the id it names no longer resolves to anything.

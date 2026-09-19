@@ -302,7 +302,12 @@ The loop, driven by `uv run fleet queue`, whose module docstring
 a second copy — read the skill before you run any of it:
 
 1. **Intake.** A prompt becomes a topic, kept verbatim, decomposed into tasks —
-   one repo, one branch, one thing a single worker can finish and validate.
+   one branch, one thing a single worker can finish and validate. A task is one
+   unit of work; it MAY SPAN REPOSITORIES. `add --add-dir PATH` attaches a
+   directory the worker only reads, and `add --add-repo PATH[@BASE]` a second
+   repository it also commits in — its own worktree, the same branch. Both are
+   repeatable, and both are thurbox capabilities the queue never reached for.
+   The second one is what makes the artifact model plural; see step 5.
 2. **Write each `BRIEF.md`.** Workers share no context with you and none with
    each other, so each brief states the goal, the constraints, and what "done"
    looks like, from scratch. `dispatch` refuses a brief that is still the
@@ -314,8 +319,9 @@ a second copy — read the skill before you run any of it:
    CONDITION**, and only a person clears the second kind — nothing releases a
    task on a guess. A queue that runs one task at a time is slower than no
    queue at all.
-4. Each worker targets a real repo and its own git worktree — the control plane
-   holds the plan and the log, never the workers' branches. `dispatch` gets each
+4. Each worker targets a real repo and its own git worktree, one per
+   repository the task spans — the control plane holds the plan and the log,
+   never the workers' branches. `dispatch` gets each
    new session past its agent's trust dialog before it sends the brief, calling
    `scripts/lib/session_trust.py` in-process (`uv run fleet session-trust` runs
    the same module by hand), because sending one into that dialog is how every
@@ -325,24 +331,32 @@ a second copy — read the skill before you run any of it:
 5. **Completion is two things you read, never something that interrupts you.**
    `fleet queue watch` folds thurbox's event stream into each task's record and
    closes nothing; `fleet queue collect` reads the `result.md` the worker wrote,
-   and only that closes a task. A turn ending is not a task finishing. The run
-   log refreshes its own facts as this happens, which leaves you the half no
-   record can hold: the goal in your words, the decisions, what went wrong.
+   and only that closes a task. **The publish method is one per task and the
+   ARTIFACT IS ONE PER REPOSITORY**: a task that spans repositories records one
+   for each, with its own verdict, and `collect` holds the whole task open
+   unless every one verifies, naming the ones that did not. A record written
+   before this carries a scalar `artifact:` and loads, lists and reaps
+   unchanged, the way `no-mistakes` still reads as `attested`. A turn ending is
+   not a task finishing. The run log refreshes its own facts as this happens,
+   which leaves you the half no record can hold: the goal in your words, the
+   decisions, what went wrong.
    Write those in while you still know them.
 6. **Release is a third thing, and it is not manual.** `shipped` means the
    artifact exists and the session is kept, because it is the cheap way to fix
-   what review finds. Only the FORGE saying it merged moves a task to `landed`,
-   and `fleet queue reap` — which `collect` runs itself — deletes the session
-   then. It never touches one that is working, blocked, or was given up in:
-   that session is the evidence. Blockers clear on `landed`, and a topic whose
-   every task is terminal archives itself.
+   what review finds. Only the FORGE saying EVERY one of its artifacts
+   merged moves a task to `landed` — one repository merged and one still open
+   is not landed, or a dependent would be released while half its upstream sat
+   unmerged — and `fleet queue reap`, which `collect` runs itself, deletes the
+   session then. It never touches one that is working, blocked, or was given
+   up in: that session is the evidence. Blockers clear on `landed`, and a
+   topic whose every task is terminal archives itself.
 7. **The change request outlives the task, so `fleet queue shepherd` is a fourth
    thing, run as reflexively as `collect`.** It asks the FORGE for every open
-   change request on the repos the queue names, not the tasks' recorded
-   artifacts, and merges only where the operator's own
-   `orchestration/auto-merge.conf` says it may — the tracked example names
-   NONE, so a fresh clone of this public repo merges nowhere. Squash is the
-   only method it merges by. `--dry-run` first.
+   change request on every repo the queue's tasks name — each `--add-repo`
+   included — and not the tasks' recorded artifacts, and merges only where the
+   operator's own `orchestration/auto-merge.conf` says it may — the tracked
+   example names NONE, so a fresh clone of this public repo merges nowhere.
+   Squash is the only method it merges by. `--dry-run` first.
 8. **A worker that hits its agent's token limit does not fail — it sits, and
    nothing above ever notices.** `fleet queue refuel` is a fifth thing: the
    account's shared quota window first, and a restart only when a stale
