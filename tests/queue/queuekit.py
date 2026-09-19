@@ -53,6 +53,15 @@ def result(task_dir: Path, outcome: str, note: str, artifact: str | None = None)
     write(task_dir / "result.md", f"---\n{front}---\n{note}\n")
 
 
+def deletions(stubs) -> str:
+    """Every session thurbox was actually told to delete, as one blob to search.
+
+    The one probe for "was this session released": a test asserts a deletion by
+    finding the id in here and a keep by not finding it.
+    """
+    return "\n".join(stubs.calls("thurbox-cli", "session delete"))
+
+
 def fill_brief(path: Path) -> None:
     body = path.read_text(encoding="utf-8").replace(
         PLACEHOLDER, "Make the change, open a pull request, and write the result file below."

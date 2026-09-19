@@ -9,7 +9,7 @@ evidence of a failure.
 """
 
 import pytest
-from queuekit import S2, ok, result
+from queuekit import S2, deletions, ok, result
 
 from harness import expect, refute
 from harness import run_queue as q
@@ -23,10 +23,6 @@ def second_collected(first_landed, stubs, queue_dir) -> str:
            "https://github.com/Thurbeen/thurbox/pull/1001")
     ok(q("collect"))
     return first_landed
-
-
-def deletions(stubs) -> str:
-    return "\n".join(stubs.calls("thurbox-cli", "session delete"))
 
 
 def worker(topic: str, number: str, slug: str, title: str, sid: str, state: str, outcome: str, note: str,
