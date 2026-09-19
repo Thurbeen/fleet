@@ -60,14 +60,25 @@ list the way the lead and every worker do, and which mark is a setting
 from the control-plane checkout, which is where `uv run fleet` resolves.
 
 It REFUSES a title thurbox would reject and one the 64-byte cap would cut,
-rather than handing over a name that is wrong in a way nobody sees. `$(...)`
-swallows the exit code, so a `--name ''` refusal from thurbox means read the
-stderr above it: that is this command's message, not a thurbox bug.
+rather than handing over a name that is wrong in a way nobody sees. The refusal
+ends with a `Try this title:` line carrying one that does render — take that
+rather than inventing another — or, where none can be derived from what you
+typed, with `Reword the title.` A title over the cap usually gets the second:
+no WORD is ever dropped to fit it, because what runs over is the end, and the
+end is what tells two sessions apart. `$(...)` swallows the exit code, so a
+`--name ''` refusal from thurbox means read the stderr above it: that is this
+command's message, not a thurbox bug.
 
 **`<project>` is the bare project name, and it is the one place this skill does
 NOT identify a repository by host plus path.** A session name becomes a path
 segment in thurbox, so a `/` in it is refused — `github.com/owner/repo` in that
-title spawns nothing. The full identity is already on `--repo-path`, and every
+title spawns nothing. It is also what keeps the title inside the cap: the mark
+and the words before `<project>` cost 36 of the 64 bytes, so a project name
+over 28 characters is refused, or 33 with `GLYPHS=off`, which drops the mark.
+Shorten the TITLE then
+(`Review requests on <project>`), never the project, which is the part that
+tells two reviewers apart.
+The full identity is already on `--repo-path`, and every
 forge call below takes it in its own form; the name only has to tell one
 reviewer from another in the session list.
 

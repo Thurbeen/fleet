@@ -13,6 +13,8 @@ setting exists to prevent, and `GLYPHS=off` would not reach it.
 
 import re
 
+import pytest
+
 from harness import REPO, expect, run_fleet, write
 
 GLYPHS = REPO / "orchestration" / "session-glyphs.example.conf"
@@ -172,3 +174,188 @@ def test_a_setting_missing_this_kinds_word_names_the_gap(tmp_path):
     assert done.code == 0, done.out
     assert done.stdout.rstrip("\n") == TITLE
     expect(done.stderr, "DIAGNOSE_GLYPH_ON", "session-glyphs")
+
+
+# Every shape `unsafe_name` knows, one title each, plus the cap — asked with
+# the marks OFF so that the rendered name IS the title: a leading '.' is unsafe
+# exactly when no mark precedes it, and this table is about thurbox's rule
+# rather than about the mark.
+SHAPES = {
+    "slash": "Review open change requests on host.example/owner/repo",
+    "backslash": "Review open change requests on host.example\\owner\\repo",
+    "dot dot": "Review .. and the change requests under it",
+    "leading dot": ".hidden sweep of this machine",
+    "empty": "",
+    "over the cap": "Review every open change request on every project this operator runs",
+}
+
+TRY = re.compile(r"^Try this title: (.*)$", re.M)
+
+# A title only the CAP refuses gets no suggestion: what runs over is what comes
+# last, which is where the identity is, so shortening it from the end hands two
+# projects one name — the `--on-existing adopt` collision the refusal exists to
+# prevent.
+NO_SUGGESTION = ("empty", "over the cap")
+
+
+def suggested(stderr: str) -> str:
+    """The title the refusal's last line offers, which is a title and not a
+    command: `fleet` is not on PATH here, and a command line would have to be
+    quoted for one shell on POSIX and another on Windows.
+
+    Read exactly as it is printed, because that is what an operator retypes:
+    nothing quotes or escapes it, and `safe_name_title` suggests nothing that
+    would need it."""
+    found = TRY.search(stderr)
+    assert found, stderr
+    return found.group(1)
+
+
+@pytest.mark.parametrize("shape", sorted(SHAPES), ids=sorted(SHAPES))
+def test_every_shape_thurbox_refuses_is_refused_when_fleet_renders_it(shape, tmp_path):
+    """The rule is thurbox's `validate_safe_name`, mirrored in one place, and
+    the cap beside it. Each of these spawned nothing; each now fails here, with
+    a way out — a title that works, or the plain instruction when no title can
+    be derived from what was typed."""
+    off = glyphs_off(tmp_path)
+    done = run_fleet("session-name", "review", SHAPES[shape], FLEET_GLYPH_ROOT=off)
+    assert done.code == 1, done.out
+    if shape in NO_SUGGESTION:
+        assert not TRY.search(done.stderr), done.stderr
+        expect(done.stderr, "Reword the title.")
+        return
+    title = suggested(done.stderr)
+    assert name("review", title, FLEET_GLYPH_ROOT=off) == title
+
+
+def test_the_refusal_hands_back_a_name_that_works():
+    """The case this was written from: a reviewer titled the way this repo
+    identifies a repository everywhere else — host plus path — and the operator
+    invented the working name by hand."""
+    done = run_fleet(
+        "session-name", "review", "Review open change requests on github.com/Thurbeen/fleet")
+    assert done.code == 1, done.out
+    title = suggested(done.stderr)
+    assert title == "Review open change requests on github.com Thurbeen fleet"
+    assert name("review", title).endswith(title)
+
+
+def test_an_empty_title_is_not_handed_an_invented_name():
+    """There is nothing to suggest, and a name nobody typed is not an answer."""
+    done = run_fleet("session-name", "diagnose", "   ")
+    assert done.code == 1, done.out
+    assert not TRY.search(done.stderr), done.stderr
+    expect(done.stderr, "Reword the title.")
+
+
+def test_a_title_only_the_cap_refuses_is_not_handed_a_shortened_one():
+    """What runs over the cap is the END of the title, and `review-prs` titles a
+    reviewer `... on <project>` — so a suggestion made by dropping words from
+    there is the SAME name for two projects, which is the `adopt` collision the
+    refusal exists to prevent. Two long titles, one suggestion, would be the bug
+    shipped as the remedy."""
+    for project in ("enterprise-data-platform-ingestion", "customer-identity-access-service"):
+        done = run_fleet("session-name", "review", f"Review open change requests on {project}")
+        assert done.code == 1, done.out
+        assert not TRY.search(done.stderr), done.stderr
+        expect(done.stderr, "Reword the title.")
+
+
+def test_a_slash_that_is_not_a_path_keeps_what_stands_on_both_sides_of_it():
+    """`CI/CD`, `A/B`, `and/or`: thurbox refuses the character, not the words
+    around it. A repair that read every slash as a path would suggest a title
+    saying something else — and `add` was refused over exactly this title once,
+    which `session_name_refusal` records."""
+    done = run_fleet("session-name", "worker", "Rust crate, CI/CD and the profile model")
+    assert done.code == 1, done.out
+    assert suggested(done.stderr) == "Rust crate, CI CD and the profile model"
+
+
+def test_two_repositories_of_the_same_name_are_not_suggested_one_title():
+    """Keeping only the last segment of a path would drop the host and the
+    owner, which is the part that tells them apart — and `--on-existing adopt`
+    matches on the name, so the second reviewer would adopt the first's
+    session."""
+    titles = {
+        suggested(run_fleet("session-name", "review", f"Review requests on {repo}").stderr)
+        for repo in ("github.com/Thurbeen/fleet", "gitlab.example.com/team/fleet")
+    }
+    assert len(titles) == 2, titles
+
+
+def test_a_title_the_repair_cannot_bring_under_the_cap_gets_no_suggestion():
+    """The two halves have to agree: a suggestion this command would itself
+    refuse is the one thing `safe_name_title` promises never to hand back."""
+    done = run_fleet(
+        "session-name", "review",
+        "Review open change requests on github.com/some-long-owner-name/repository")
+    assert done.code == 1, done.out
+    assert not TRY.search(done.stderr), done.stderr
+    expect(done.stderr, "Reword the title.")
+
+
+def test_redundant_whitespace_is_what_a_cap_only_refusal_may_be_repaired_by():
+    """No WORD is dropped to fit the cap, but a run of spaces is bytes like any
+    other, and collapsing it drops nothing that tells two sessions apart."""
+    done = run_fleet("session-name", "review",
+                     "Review open change requests on      enterprise-data-platform")
+    assert done.code == 1, done.out
+    expect(done.stderr, "cap")
+    assert suggested(done.stderr) == "Review open change requests on enterprise-data-platform"
+
+
+def test_a_leading_dot_is_kept_where_the_mark_stands_in_front_of_it():
+    """The mark is what makes such a name safe, so dropping the dot under one
+    would edit a title thurbox never objected to."""
+    done = run_fleet("session-name", "review", ".hidden sweep of a/b")
+    assert done.code == 1, done.out
+    assert suggested(done.stderr) == ".hidden sweep of a b"
+
+
+def test_a_suggestion_never_begins_with_the_space_a_removal_left():
+    """A title nobody can copy by eye is not a suggestion."""
+    done = run_fleet("session-name", "review", "/x on a/b")
+    assert done.code == 1, done.out
+    assert suggested(done.stderr) == "x on a b"
+
+
+def test_no_suggestion_is_made_that_the_same_command_would_refuse(tmp_path):
+    """The last guard, asked of `unsafe_name`: a second leading dot survives
+    the first one being dropped, and what is left is a name thurbox refuses."""
+    done = run_fleet("session-name", "review", ". . foo",
+                     FLEET_GLYPH_ROOT=glyphs_off(tmp_path))
+    assert done.code == 1, done.out
+    assert not TRY.search(done.stderr), done.stderr
+    expect(done.stderr, "Reword the title.")
+
+
+def test_a_title_that_cannot_be_typed_back_is_not_suggested_at_all():
+    """An escape sequence or a zero-width space survives no route to the
+    operator: printed as itself it colours the terminal or vanishes, and
+    escaped it grows a backslash — one of the characters thurbox refuses, so
+    the title read back off the screen is refused in its turn."""
+    for title in ("Review \x1b[31mred\x1b[0m on a/b", "Review PRs\u200b on a/b"):
+        done = run_fleet("session-name", "review", title)
+        assert done.code == 1, done.out
+        assert not TRY.search(done.stderr), done.stderr
+        expect(done.stderr, "Reword the title.")
+
+
+def test_a_suggestion_is_printed_as_itself_and_never_escaped():
+    """`repr` would quote a title holding an apostrophe with backslashes, and a
+    backslash is a character thurbox refuses: the title typed back off the
+    screen would be refused, and suggest itself again."""
+    done = run_fleet("session-name", "review", "Don\'t ship \"beta\" on a/b")
+    assert done.code == 1, done.out
+    title = suggested(done.stderr)
+    assert title == "Don\'t ship \"beta\" on a b", title
+    assert "\\" not in title
+    assert name("review", title).endswith(title)
+
+
+def test_a_merely_unusual_title_is_rendered_rather_than_refused():
+    """Everything thurbox accepts, fleet accepts. Narrowing the rule would be a
+    defect of its own: a title is human-facing text, and spaces, punctuation,
+    non-ASCII and emoji are all names thurbox creates."""
+    title = "Révision : « PRs » — 100 % ✨"
+    assert name("review", title).endswith(title)

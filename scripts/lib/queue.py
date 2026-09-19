@@ -830,6 +830,16 @@ def missing_glyph_word(kind: str, root: str | None = None) -> str:
     return "" if glyph_conf(root).get("GLYPHS", "on") == "off" else GLYPH_KEYS[kind]
 
 
+def rendered_name(title: str, glyph: str) -> str:
+    """The whole name a title renders to, mark and all, before the cap.
+
+    One spelling of "the mark goes in front, with a space": `session_name` cuts
+    this, and the callers that must judge what the cut would hide ask it
+    directly rather than laying the name out a second time.
+    """
+    return f"{glyph} {title}" if glyph else title
+
+
 def session_name(title: str, glyph: str) -> str:
     """A spawned session's name: its title, wearing the mark, within the cap.
 
@@ -838,10 +848,7 @@ def session_name(title: str, glyph: str) -> str:
     codepoint boundary — thurbox counts bytes (see SESSION_NAME_BYTES) and a
     name cut through the middle of a character is not a name it accepts either.
     """
-    name = f"{glyph} {title}" if glyph else title
-    encoded = name.encode()
-    if len(encoded) <= SESSION_NAME_BYTES:
-        return name
+    encoded = rendered_name(title, glyph).encode()
     return encoded[:SESSION_NAME_BYTES].decode(errors="ignore")
 
 
@@ -868,6 +875,60 @@ def unsafe_name(name: str) -> str:
         if bad in name:
             return f"and it contains {bad!r}, which thurbox refuses"
     return ""
+
+
+def safe_name_title(title: str, glyph: str) -> str:
+    """The nearest title to this one thurbox WOULD accept, or "".
+
+    A refusal that only says no leaves the operator inventing the working name
+    themselves, which is what happened on 2026-09-18: a reviewer titled the way
+    this repo identifies a repository everywhere else — host plus path — was
+    refused by thurbox, and the name it ran under was typed by hand.
+
+    IT ONLY EVER REMOVES WHAT THURBOX REFUSES — a `/`, a `\\`, the extra dots of
+    a `..`, a leading `.` where no mark precedes it — plus redundant
+    whitespace, which a removal leaves behind and which costs bytes of its own.
+    NO WORD IS EVER DROPPED, and a separator becomes a space rather than
+    taking what stands beside it: `CI/CD` is not a path, and a repair that read
+    it as one would suggest a title saying something else, while one that kept
+    only the last segment of `github.com/owner/repo` would hand two
+    repositories of the same name one suggestion — and `--on-existing adopt`
+    matches on the name.
+
+    NO WORD IS DROPPED TO FIT THE CAP either, for that same reason. A title
+    runs over in what comes LAST, which is where the identity sits —
+    `review-prs` titles a reviewer `... on <project>` — so shortening it from
+    the end is the collision this whole command exists to prevent. Removing
+    what thurbox refuses can bring a title under the cap, and collapsing a run
+    of spaces can too; when neither does, there is no suggestion, and the
+    person who knows what distinguishes their session shortens it themselves.
+
+    It is a SUGGESTION and not a rewrite: nothing renders it, and the caller
+    prints it for a person to accept, edit or ignore. Returns "" rather than a
+    guess when what falls out is empty, unchanged, over the cap, or still
+    refused — the last asked of `unsafe_name`, so that the suggestion and the
+    refusal cannot disagree about thurbox's rule.
+
+    AND "" FOR ANYTHING NOT PRINTABLE, because a suggestion is text somebody
+    types back. A title carrying an escape sequence, a zero-width space or a
+    control byte cannot be handed over under any quoting: printed as itself it
+    colours the terminal or vanishes, and escaped it grows a `\\`, which is one
+    of the characters thurbox refuses — so the title typed back off the screen
+    is refused in its turn, and suggests the same thing again.
+    """
+    candidate = re.sub(r"[/\\]", " ", title)
+    candidate = re.sub(r"\.{2,}", ".", candidate)
+    candidate = " ".join(candidate.split())
+    if not glyph:
+        # Only where the name starts with it: the mark is what makes a title
+        # beginning `.` safe, and dropping the dot under a mark would edit a
+        # title thurbox never objected to.
+        candidate = candidate.lstrip(".").strip()
+    whole = rendered_name(candidate, glyph)
+    if (not candidate or candidate == title or not candidate.isprintable()
+            or len(whole.encode()) > SESSION_NAME_BYTES or unsafe_name(whole)):
+        return ""
+    return candidate
 
 
 def session_name_refusal(title: str, glyph: str) -> str:
