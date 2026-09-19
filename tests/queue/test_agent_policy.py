@@ -1092,3 +1092,59 @@ def test_refuel_judges_by_the_policy_the_spawn_ran_under(
     expect(out, "claude (alpha)", "0% remaining", "window is spent")
     refute(out, "(beta)", "62% remaining", "would restart")
     assert restarts(stubs) == [], stubs.calls("thurbox-cli", "session start")
+
+
+# --- a task that spans repositories runs one agent in all of them -------------
+#
+# `--add-repo` is a second repository the worker COMMITS in, so a policy that
+# covers it and not the primary would otherwise be reached around entirely: one
+# session, one agent, and the gate asked about one repository.
+
+
+@pytest.fixture
+def second_checkout(tmp_path) -> Path:
+    repo = tmp_path / "second"
+    git("init", "-q", "-b", "main", str(repo))
+    git("commit", "-q", "--allow-empty", "-m", "base", cwd=repo)
+    git("remote", "add", "origin", f"https://{FORGE}/{OWNER}/other.git", cwd=repo)
+    return repo
+
+
+def spanning_topic(name: str) -> str:
+    return q("topic", "add", name, "--title", name, "--prompt", "span two repos").stdout.strip()
+
+
+def test_a_rule_on_the_add_repo_refuses_an_agent_the_primary_would_allow(
+    checkout, second_checkout, forge_store
+):
+    topic = spanning_topic("agent-policy-span")
+    done = q(
+        "add", topic, "spans-two", "--title", "Spans two",
+        "--repo", str(checkout), "--branch", "fix/spans", "--number", "01",
+        "--add-repo", str(second_checkout), "--agent", "alpha",
+        **policy_env(forge_store, f"{QUALIFIED_REPO}=alpha  {FORGE}/{OWNER}/other=beta"),
+    )
+    assert done.code != 0, done.out
+    assert "no one agent is allowed in all of them" in done.out, done.out
+
+
+def test_the_default_agent_is_the_one_both_repositories_allow(
+    checkout, second_checkout, forge_store, stubs
+):
+    topic = spanning_topic("agent-policy-span-ok")
+    env = policy_env(forge_store, f"{QUALIFIED_REPO}=alpha,beta  {FORGE}/{OWNER}/other=beta")
+    ok(q(
+        "add", topic, "spans-two", "--title", "Spans two",
+        "--repo", str(checkout), "--branch", "fix/spans", "--number", "01",
+        "--add-repo", str(second_checkout),
+        **env,
+    ))
+    fill_brief(Path(os.environ["FLEET_QUEUE_DIR"]) / topic / "01-spans-two" / "BRIEF.md")
+    sid = "c3333333-3333-3333-3333-333333333333"
+    next_session(stubs, sid)
+    stubs.session_is(sid, "idle")
+    stubs.tool("thurbox-cli", ANSWERING_KEYS)
+
+    q("dispatch", **env)
+    create = [c for c in stubs.calls("thurbox-cli", "session create") if "fix/spans" in c][0]
+    assert "--agent beta" in create, create

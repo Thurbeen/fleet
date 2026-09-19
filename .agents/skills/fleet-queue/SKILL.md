@@ -75,8 +75,10 @@ have to make one, and you should not make a second — see **The run
 log** below.
 
 Then decompose. A topic is the unit of **intent**; a task is the unit of
-**work** — one repo, one branch, one thing a single worker can finish and
-validate on its own. The decomposition is yours.
+**work** — one branch, one thing a single worker can finish and validate on its
+own. The decomposition is yours. A task is still one unit of work when it
+**spans repositories**: one branch, cut in each of them, and one artifact from
+each — see `--add-repo` below.
 
 ```bash
 uv run fleet queue add report-status-honestly drop-idle-default \
@@ -101,6 +103,81 @@ instead — leaving a task `queued` and needing a hand-edit of `task.yaml`:
   cap — `Rust crate, CI/CD and the profile model` is a title `add` used to take
   and `dispatch` could never spawn. Judged on the RENDERED name, glyph and cut
   included; every character thurbox accepts is still accepted.
+
+### `--add-dir` — a directory the worker only reads
+
+`add --add-dir <path>` attaches another directory to the worker's session
+exactly as it is: **no worktree, no branch, nothing to publish.** Repeatable,
+and the order you write them in is the order thurbox attaches them.
+
+```bash
+uv run fleet queue add report-status-honestly drop-idle-default \
+  --title 'Stop defaulting an unreported session to idle' \
+  --repo /home/you/code/thurbox \
+  --branch fix/drop-idle-default \
+  --add-dir /home/you/code/fleet          # read it; do not commit in it
+```
+
+Use it when the work needs a sibling repository or a docs tree **in view** —
+an interface the task has to match, a spec, the control plane's own briefs.
+Nothing below `dispatch` has anything to say about one: it is not verified, it
+does not land, and it is not reaped. The brief tells the worker so.
+
+A second repository the worker must **commit** in is `--add-repo`, below —
+different flag, different weight, because a commit fleet does not verify is the
+failure verification exists to stop.
+
+### `--add-repo` — a second repository the worker commits in
+
+`add --add-repo <path>` or `--add-repo <path>@<base>` gives the task a second
+repository with **its own worktree, on the same `--branch`**, off that base or
+off `--base`. Repeatable. thurbox owns that `PATH@BASE` syntax and gets your
+string verbatim.
+
+```bash
+uv run fleet queue add report-status-honestly rename-the-state \
+  --title 'Rename the state across both sides' \
+  --repo /home/you/code/thurbox \
+  --branch fix/rename-the-state \
+  --add-repo /home/you/code/fleet          # commits here too
+```
+
+**The artifact model goes plural with it, and that is the whole cost of this
+flag.** The publish method stays one per task — `--publish attested` means
+every repository it touches produces an attested change request — and
+everything downstream handles N:
+
+| | with one repository | with N |
+|---|---|---|
+| the record | `artifact:` is a URL | `artifact:` is a list of `{repo, url}` |
+| `result.md` | `artifact: <url>` | `artifacts:` — one line per repository path |
+| `collect` | closes when the artifact verifies | closes only when **every** one does, and names the ones that did not |
+| `reap` | `landed` when the artifact merged | `landed` only when **every** one merged; one merged and one open is not landed |
+| `shepherd` | watches that repository | watches every repository the task names |
+
+**A blocker still clears on `landed` only**, which is why the reap rule matters:
+a task promoted on half its repositories would release a dependent while the
+other half sat unmerged. One repository still open holds the whole task.
+
+**What the worker sees** is thurbox's business and worth knowing anyway: with
+two or more repositories it launches the agent in a per-session symlink
+workspace, so each repository is a subdirectory there. The brief says so, and
+says the absolute paths it names resolve too — which is what the worker keys
+its `artifacts:` block by.
+
+**A task may span two different forges** — a GitHub primary with a GitLab
+`--add-repo` is an ordinary task. `scripts/lib/forge.py` identifies a repository
+by host plus path, so each artifact is verified by the forge that actually holds
+it.
+
+**`note` and `none` stay single on purpose.** A note sits on the one `--target`
+the task names and `none` names nothing fleet checks, so neither becomes
+one-per-repository however many repositories the worker had open.
+
+**Records written before this still load.** A scalar `artifact:` is read as one
+artifact, the primary repository's — the same way `no-mistakes` still reads as
+`attested` — and a single-repository task still writes one, so nothing about a
+task that spans none changed.
 
 ### `--host` — running a task on another machine
 
@@ -584,6 +661,13 @@ a pass or a fail — CI and an offline laptop both still have to collect.
 `fleet queue show <ref>` prints the method and the verdict, so both survive the
 scrollback.
 
+**A task that spans repositories is verified once per repository, and one
+unverified repository holds the whole task open.** The same `NOT CLOSED` report
+names each repository, its URL and its verdict, so you can see which one is
+missing rather than which task is. The worker writes `artifacts:` in its
+`result.md` — one line per repository path — and a repository it names nothing
+for is held exactly as an absent artifact always was.
+
 **The head-branch check is the one a worker cannot write for itself.** Whatever
 the body says, "this change request comes from this task's branch" is a fact of
 the forge — which closes the hole that reading prose never could: a worker
@@ -626,7 +710,8 @@ task whose artifact still pointed at the already-merged #23, so a shepherd
 reading artifacts could not see it and the unattended pass would never have
 merged it; a PR opened outside the queue was invisible the same way. So it asks
 the forge for every open change request against every repo the queue's tasks
-name, and each open pull request gets exactly one of these:
+name — each `--add-repo` included, not just each task's primary — and each open
+pull request gets exactly one of these:
 
 | What the forge says | What happens |
 |---|---|
@@ -750,6 +835,13 @@ long after the session is gone. **Blockers clear on `landed`**, not on `done`
 — a dependent task waits for the code to actually be on `main`, which is the
 same bug in its other form: a task collected `shipped` once released its
 dependents while its change request sat unreviewed.
+
+**For a task that spans repositories the forge is asked about every one of
+them**, and the words fold most-blocking first: one it could not read leaves the
+task where it is, one still open holds it, one closed unmerged makes the task
+`abandoned` however many others merged, and `landed` needs all of them. Half a
+task merged is not a task that landed, and a blocker that cleared there would
+release a dependent onto code that is not on `main`.
 
 ```text
     topic/01-drop-idle-default   landed     https://…/pull/999 is merged
