@@ -3637,7 +3637,9 @@ def prompt_session(task: Task, timeout: int = 20) -> tuple[bool, str]:
         # `fleet queue prompt` picks it up again once the policy or the
         # task's recorded agent changes.
         return False, str(exc)
-    ok, report = trust_and_send(session, send, timeout)
+    ok, report = trust_and_send(
+        session, send, timeout, verify=needs_verified_submit(task)
+    )
     if not ok:
         if task.doc.get("host"):
             report += (
@@ -5948,7 +5950,9 @@ def refuel(q: Queue, ref: str | None = None, dry: bool = False) -> int:
             "conversation above is yours: continue from where you stopped rather "
             "than starting over."
         )
-        prompted, report = trust_and_send(sid, send)
+        prompted, report = trust_and_send(
+            sid, send, verify=needs_verified_submit(task)
+        )
         task.doc["refuels"][-1]["prompted"] = prompted
         task.save()
         print(f"    {task.ref:<46} restarted     {sid}"
@@ -6893,13 +6897,74 @@ def branch_checkout(repo: str, branch: str, slug: str) -> tuple[str, str]:
     return dest, "new worktree on the existing branch"
 
 
-def trust_and_send(session: str, text: str, timeout: int = 20) -> tuple[bool, str]:
+def command_stem(task: Task) -> str:
+    """The file stem of a profile's `--command`, or "" when there is none."""
+    flags = profile_flags(task.doc.get("profile") or "default")
+    try:
+        raw = flags[flags.index("--command") + 1]
+    except (ValueError, IndexError):
+        return ""
+    return os.path.basename(raw)
+
+
+def needs_verified_submit(task: Task) -> bool:
+    """Whether the first send after spawn must type, then look, then Enter.
+
+    cursor-agent's composer does not exist when `session create` returns —
+    the tmux window is live, the TUI is not. `session send`'s 200ms pause
+    between paste and Enter is not enough; Enter lands in cooked mode and
+    is gone by the time the line appears next to `→`. `--agent` sessions
+    (claude, codex) do not do this. muse was not measured.
+    """
+    return command_stem(task) in {"cursor-agent", "cursor"}
+
+
+def composer_holds(output: str, text: str) -> bool:
+    """The brief is sitting unsubmitted: `→` and the text as one run.
+
+    Whitespace is stripped so a pane wrap cannot hide a match, and the
+    arrow is required immediately before the text so a leftover paste
+    plus the idle `→ Plan, search…` placeholder does not count.
+    """
+    blob = re.sub(r"\s+", "", output)
+    return "→" + re.sub(r"\s+", "", text) in blob
+
+
+def wait_for_composer(session: str, text: str, timeout: int) -> bool:
+    """Poll `session capture` until `composer_holds`, or the timeout."""
+    deadline = time.monotonic() + timeout
+    while True:
+        cap = subprocess.run(
+            ["thurbox-cli", "session", "capture", session, "--json"],
+            capture_output=True,
+            check=False,
+        )
+        if cap.returncode == 0:
+            try:
+                doc = json.loads(cap.stdout.decode())
+            except ValueError:
+                doc = {}
+            output = doc.get("output") if isinstance(doc, dict) else ""
+            if isinstance(output, str) and composer_holds(output, text):
+                return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.25)
+
+
+def trust_and_send(
+    session: str, text: str, timeout: int = 20, *, verify: bool = False
+) -> tuple[bool, str]:
     """Answer the trust dialog, then type. The order is the whole point (§1b).
 
     The dialog is answered in-process by `session_trust.py`, the module
     `fleet session-trust` runs too: a machine with no bash could not run
     the old shell script, and dispatch then failed after `session create`, leaving a
     session that was never sent its brief.
+
+    `verify` is the type-then-look-then-Enter path for a spawn whose first
+    Enter would otherwise be swallowed. `fleet queue send` and a fixer
+    reused into a live session leave it off: those panes are already up.
     """
     trust = _load_sibling("fleet_session_trust", "session_trust.py")
     code, report = trust.answer_dialogs(session, timeout)
@@ -6909,14 +6974,29 @@ def trust_and_send(session: str, text: str, timeout: int = 20) -> tuple[bool, st
     # session that had gone away returned `True` and every caller reported a
     # prompt it had not delivered — the same silence, one layer down, that
     # `sends` exists to end.
-    sent = subprocess.run(
-        ["thurbox-cli", "session", "send", session, text],
-        capture_output=True,
-        check=False,
-    )
+    send = ["thurbox-cli", "session", "send", session, text]
+    if verify:
+        send.append("--no-enter")
+    sent = subprocess.run(send, capture_output=True, check=False)
     if sent.returncode != 0:
         detail = (sent.stderr + sent.stdout).decode().strip().splitlines()
         return False, "session send failed: " + (detail[-1] if detail else "no output")
+    if not verify:
+        return True, report
+    if not wait_for_composer(session, text, timeout):
+        return False, (
+            "typed the brief but it did not appear in the composer; not submitting"
+        )
+    keyed = subprocess.run(
+        ["thurbox-cli", "session", "key", session, "enter"],
+        capture_output=True,
+        check=False,
+    )
+    if keyed.returncode != 0:
+        detail = (keyed.stderr + keyed.stdout).decode().strip().splitlines()
+        return False, "session key enter failed: " + (
+            detail[-1] if detail else "no output"
+        )
     return True, report
 
 
@@ -6984,7 +7064,9 @@ def spawn_fixer(task: Task, name: str, brief_path: str, branch: str) -> tuple[st
         if state not in SESSION_AT_REST:
             return "", f"adopted an existing session in state {state or 'unknown'}; not typing into it"
     send = f"Read {os.path.abspath(brief_path)} and do what it says."
-    ok, report = trust_and_send(session, send)
+    ok, report = trust_and_send(
+        session, send, verify=needs_verified_submit(task)
+    )
     if not ok:
         return "", f"session {session} exists but was NOT prompted: {report}"
     return session, f"{note}; session {session}"

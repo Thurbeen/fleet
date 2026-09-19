@@ -107,7 +107,11 @@ profiles:
   #
   # Manual recipe if dispatch is not the path: `session create --command
   # cursor-agent --arg --trust` (no `--reports-as`), then
-  # `fleet queue attach` and `session send`.
+  # `fleet queue attach` and `session send`. Do not put the brief on
+  # `--arg`: `session create` stores the command line and replayed it
+  # on restart, so the task would start over. The first Enter after
+  # spawn is lost (the TUI is not up when create returns); `dispatch`
+  # types with `--no-enter`, waits for the composer, then submits.
   cursor-trusted:
     command: cursor-agent
     args: ["--trust"]
