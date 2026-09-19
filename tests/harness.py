@@ -287,6 +287,7 @@ class Stubs:
             "id": sid, "name": f"worker {sid}", "state": state, "agent": agent,
             "hook_reported": True, "hook_state": state, "hook_state_age_secs": age,
             "agent_session_id": f"agent-{sid}",
+            "cwd": str(self.root), "backend_type": "local-tmux", "worktrees": [],
         }) + "\n")
 
     def stream(self, *events: dict) -> None:

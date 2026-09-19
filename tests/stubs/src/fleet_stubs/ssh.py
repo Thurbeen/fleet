@@ -70,4 +70,10 @@ def main() -> int:
             sys.stderr.write(f"cat: {path}: No such file or directory\n")
             return 1
         sys.stdout.buffer.write(target.read_bytes())
+    elif "thurbox-cli session list" in script:
+        listing = state / f"{dest}.session-list.json"
+        if listing.is_file():
+            sys.stdout.write(listing.read_text(encoding="utf-8"))
+        else:
+            sys.stdout.write("[]")
     return 0

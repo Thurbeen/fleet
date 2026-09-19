@@ -174,7 +174,10 @@ def test_a_remote_result_comes_back_and_its_session_outlives_a_down_host(
           "---\noutcome: shipped\nartifact: https://github.com/remote-owner/app/pull/4242\n---\n"
           "Built it on devbox and opened the pull request.\n")
     stubs.pipeline_pr(4242, "fix/build-on-devbox")
-    hosts.session(RSESSION, name="Build it on devbox", state="idle", agent="claude")
+    hosts.session(RSESSION, name="Build it on devbox", state="idle", agent="claude",
+                  backend_type="ssh:devbox", cwd=WORKTREE,
+                  worktrees=[{"repo_path": "/srv/code/app", "worktree_path": WORKTREE,
+                              "branch": "fix/build-on-devbox", "created_by_thurbox": True}])
 
     # The worker writes a file and collect reads a file; ssh is only how it gets here.
     expect(q("collect").out, "result fetched from me@devbox", "shipped", "[publish verified: attested]")
@@ -189,7 +192,17 @@ def test_a_remote_result_comes_back_and_its_session_outlives_a_down_host(
     expect((stubs.root / "sessions" / f"{RSESSION}.json").read_text(encoding="utf-8"), '"state": "idle"')
 
     hosts.unflag("me@devbox", "down")
-    expect(q("reap").out, "reaped")
+    # Reachability is not permission to delete: the host is asked for its own
+    # session list, the same ssh path host_reachable just used. An occupant
+    # there keeps the session; an empty list is a real absence and is reaped.
+    write(stubs.root / "ssh-state" / "me@devbox.session-list.json", json.dumps([
+        {"id": RSESSION, "cwd": WORKTREE, "backend_type": "local-tmux"},
+        {"id": "manual-on-host", "cwd": WORKTREE + "/src", "backend_type": "local-tmux"},
+    ]))
+    expect(q("reap").out, "kept", RSESSION, "manual-on-host", WORKTREE)
+    refute(deletions(stubs), RSESSION)
+    (stubs.root / "ssh-state" / "me@devbox.session-list.json").unlink()
+    expect(q("reap").out, "reaped", RSESSION)
     expect(deletions(stubs), RSESSION)
 
 
@@ -278,7 +291,10 @@ def test_a_windows_host_is_spoken_to_in_powershell_and_the_bytes_survive(hosts, 
                "Built it on winbox \u2014 caf\u00e9 \u2713.\r\nWritten by Windows.\r\n").encode()
     (there / "result.md").write_bytes(written)
     stubs.pipeline_pr(4343, "fix/build-on-winbox")
-    hosts.session(WSESSION, name="Build it on winbox", state="idle", agent="claude")
+    hosts.session(WSESSION, name="Build it on winbox", state="idle", agent="claude",
+                  backend_type="ssh:winbox", cwd=WWORKTREE,
+                  worktrees=[{"repo_path": WINREPO, "worktree_path": WWORKTREE,
+                              "branch": "fix/build-on-winbox", "created_by_thurbox": True}])
     expect(q("collect").out, "result fetched from me@winbox", "shipped")
     assert (task / "result.md").read_bytes() == written, "the fetched result is the bytes the worker wrote, CRLF and all"
 
@@ -286,7 +302,15 @@ def test_a_windows_host_is_spoken_to_in_powershell_and_the_bytes_survive(hosts, 
     hosts.flag("me@winbox", "down")
     expect(q("reap").out, "unreachable: host winbox")
     hosts.unflag("me@winbox", "down")
-    expect(q("reap").out, "reaped")
+    write(stubs.root / "ssh-state" / "me@winbox.session-list.json", json.dumps([
+        {"id": WSESSION, "cwd": WWORKTREE, "backend_type": "local-tmux"},
+        {"id": "manual-on-winbox", "cwd": WWORKTREE + "\\src", "backend_type": "local-tmux"},
+    ]))
+    expect(q("reap").out, "kept", WSESSION, "manual-on-winbox", WWORKTREE)
+    refute(deletions(stubs), WSESSION)
+    (stubs.root / "ssh-state" / "me@winbox.session-list.json").unlink()
+    expect(q("reap").out, "reaped", WSESSION)
+    expect(deletions(stubs), WSESSION)
 
     assert hosts.read_flag("me@winbox", "posix") == "", "no POSIX command ever reached the Windows host"
     # And it was spoken to throughout, so that silence means something.
