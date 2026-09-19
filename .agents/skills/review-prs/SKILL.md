@@ -1,6 +1,6 @@
 ---
 name: review-prs
-description: Stand up and drive a maintainer's review session over a repository's open change requests — find what is unreviewed, wait for CI, read the diff against the repo's own house rules, post approve / request-changes / comment to the forge, and squash-merge what is genuinely clean. Covers the head-SHA marker that stops re-reviewing the same commit, the skip rules for drafts and bots, verifying a claim on real hardware before approving it, and the merge gate. Use when asked to review open PRs or MRs, to review a repository's pull requests continuously, or when invoked as /review-prs.
+description: Stand up and drive a maintainer's review session over a repository's open change requests — find what is unreviewed, wait for CI, read the diff against the repo's own house rules, post approve / request-changes / comment to the forge, squash-merge what is genuinely clean, and reconcile the issue tracker behind it — what the merge actually closed, what it only narrowed, what nobody linked. Covers the head-SHA marker that stops re-reviewing the same commit, the skip rules for drafts and bots, verifying a claim on real hardware before approving it, the merge gate, and never closing an issue on a guess. Use when asked to review open PRs or MRs, to review a repository's pull requests continuously, to tidy up or close out the issues after a merge, or when invoked as /review-prs.
 user-invocable: true
 allowed-tools: Read, Bash, Glob, Grep
 ---
@@ -227,11 +227,86 @@ set. Anything failing one of them gets the review and no merge.
 the checks immediately before merging, not at the top of the pass: a run can go
 red between reading the diff and pressing the button.
 
-## 8. Report the tick
+## 8. Reconcile the tracker
+
+A merge changes the issue tracker, and the forge does only the part it was
+asked for in exactly the syntax it wanted. This section is the pass that
+follows every merge — yours, or one that landed between ticks — because every
+case below is something a merge caused.
+
+**Scope: the issues the change requests in front of you touch** — the ones a
+body names, and the ones you can see a merged change fixed. Not a triage sweep
+over every open issue. That is a different job on a different cadence, and on a
+public repository a reviewer forming opinions about strangers' unrelated
+reports is a way to be wrong in public. The boundary is a decision, not an
+omission.
+
+An issue comment is writing you publish, so §6's first paragraph governs it
+exactly as it governs a review.
+
+| Ask | GitHub | GitLab |
+|---|---|---|
+| what the forge actually linked | `gh pr view <n> --repo <owner/repo> --json closingIssuesReferences` | `glab api projects/:fullpath/merge_requests/<n>/closes_issues` |
+| the issue's state | `gh issue view <n> --repo <owner/repo> --json state,stateReason,title` | `glab issue view <n> -R <project url> -F json` |
+| say something on it | `gh issue comment <n> --repo <owner/repo> -b …` | `glab issue note <n> -R <project url> -m …` |
+| close it, with the reason | `gh issue close <n> --repo <owner/repo> -c …` | `glab issue note <n> …`, then `glab issue close <n> -R <project url>` |
+| narrow it | `gh issue edit <n> --repo <owner/repo> --title …` | `glab issue update <n> -R <project url> -t …` |
+
+`glab api` reads the project out of the worktree the session is in, which §1
+guarantees; `glab issue close` carries no comment, so the note goes first and
+the close second, never the other way round.
+
+**Never close an issue on a guess, and never close one no merged change
+addressed.** That rule outranks all four cases below. It is §6's "post nothing
+when you are genuinely uncertain", applied to the tracker: an open issue is a
+known state, and a wrongly closed one is a bug nobody is looking for any more.
+Where you are unsure, comment and leave it open — a comment is always the safe
+move and a close never is. **Reopening is not yours either.** An issue somebody
+closed is a decision you did not make.
+
+Four things go wrong, all four measured on the repositories this skill already
+reviews:
+
+**1. The forge linked less than the body claimed.** Pull request #118 said
+`Closes #117 and #119`. GitHub linked only #117, and #119 — a bug that was
+fixed and merged — stayed open until a person closed it by hand. GitHub wants
+its own keyword per number, `Closes #117, closes #119`, and "and #119" is not
+one. GitLab's pattern is its own — one keyword takes a list — which is why the
+lesson is "ask what the forge did", not "learn GitHub's syntax". **So after a
+merge, ask the forge which issues it actually closed rather than reading the
+body and believing it.** Where one did not close and the fix really is in,
+close it with a comment naming the change request that fixed it and why it did
+not close itself. A fixed bug left open is read as a live bug.
+
+**2. A change request that narrows rather than closes.** That same pull request
+said "#116 is narrowed, not closed" and named the half it left behind. Read
+that and leave #116 open: comment with what is now done and what remains, and
+close nothing. Treating "narrows" as "closes" loses the remainder silently, and
+the remainder is the part nobody notices is missing.
+
+**3. An issue an earlier merge already half-answered.** thurbox #1175 described
+two families of one leak, and #1163 had killed one of them before anybody
+picked the issue up. The move then was a comment saying which half was already
+fixed and a retitle to the remainder, not a close. **Narrow by comment and
+title; leave the original body alone**, because its measurements are the
+evidence somebody gathered and a rewrite is not a replacement for them.
+
+**4. Nobody linked it at all.** A change request can fix an issue without ever
+mentioning it. When you can see that a merged change closes an open one, say so
+on the issue with the evidence — the change request, and the part of it that
+does the work — and close it. When you only suspect it, comment and leave it
+open.
+
+## 9. Report the tick
 
 One line per change request with its verdict, or a plain statement that there
 was nothing new. Name anything you deliberately left: one waiting on CI, one
 you were not confident about, one whose merge gate failed and on which gate.
+
+**Say what moved on the tracker in the same shape**: one line per issue — its
+number, what you did to it (commented, closed, retitled) and why. An issue you
+looked at and deliberately left open is a line too, naming what you were not
+sure about. A tick that touched no issue needs no tracker line.
 
 **A tick that reviewed nothing is a normal tick.** Say so in one line and stop;
 do not manufacture a finding to justify the pass.
@@ -246,4 +321,7 @@ do not manufacture a finding to justify the pass.
 5. Verify the load-bearing claims, on real hardware where that is what it takes.
 6. Post approve / request-changes / comment, opening with the next step.
 7. Merge the approved ones that clear every gate in §7 — squash only.
-8. Report one line per change request, and say plainly when there was nothing new.
+8. Reconcile the tracker against what the forge actually closed — comment where
+   you are unsure, and close nothing on a guess.
+9. Report one line per change request and per issue you touched, and say plainly
+   when there was nothing new.
