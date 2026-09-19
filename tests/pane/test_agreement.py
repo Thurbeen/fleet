@@ -155,6 +155,46 @@ def test_each_spawning_skill_renders_its_session_name_through_the_setting(skill)
         assert one(rf"^{key}=(.*)$", read(GLYPHS)) not in text, f"{skill} spells the {key} glyph"
 
 
+# The placeholders a session title may carry, and nothing else: this repository
+# identifies a repository by HOST plus PATH — `github.com/owner/repo` — and a
+# title filled with one spawns nothing, because the name becomes a path segment
+# in thurbox. `review-prs` §1 held `on <repo>` and the operator hit exactly that
+# on 2026-09-18. An ALLOWLIST rather than a list of the spellings that bite,
+# because the next `<the repo>` somebody writes is not on such a list and the
+# guard would pass green over it.
+TITLE_PLACEHOLDERS = {"<project>"}  # the bare project name: no host, no path
+
+
+# Every file that SHOWS somebody a session title: the two skills whose
+# `session create` line spawns one, and the command's own usage, which
+# `--help` prints and a reader copies exactly as the skills are copied.
+TITLE_SURFACES = {
+    **{s: REPO / ".agents" / "skills" / s / "SKILL.md" for s in SPAWNING_SKILLS},
+    "session-name usage": REPO / "scripts" / "lib" / "session_name.py",
+}
+
+
+@pytest.mark.parametrize("surface", sorted(TITLE_SURFACES), ids=sorted(TITLE_SURFACES))
+def test_nothing_shows_a_session_title_with_something_that_holds_a_path(surface):
+    """A title that names a repository the way the rest of this repo does is
+    refused for EVERY repository, so the refusal never reaches a state anybody
+    can fix by choosing another project. The usage example is on this list
+    because it showed `on <repo>` while the skill beside it no longer did."""
+    unsafe_name = lib("queue.py").unsafe_name
+    # Either quote: a title inside a `$( )` may be double-quoted legally, and a
+    # guard that only saw the single-quoted spelling would pass over it.
+    titles = [t for _, t in re.findall(r"""fleet session-name \w+ +(['"])(.*?)\1""",
+                                       read(TITLE_SURFACES[surface]))]
+    assert titles, f"{surface} renders no session name"
+    for title in titles:
+        assert not unsafe_name(title), f"{surface} titles a session {title!r}"
+        held = [f for f in re.findall(r"<[^>]+>", title) if f not in TITLE_PLACEHOLDERS]
+        assert not held, (
+            f"{surface} fills {held} into a session title. A placeholder there is "
+            f"filled with a path unless it says otherwise; add it to "
+            f"TITLE_PLACEHOLDERS once it cannot be.")
+
+
 @pytest.mark.parametrize("path", [GLYPHS, PANE], ids=["session-glyphs", "pane"])
 def test_no_variation_selector_or_joiner(path):
     text = read(path)

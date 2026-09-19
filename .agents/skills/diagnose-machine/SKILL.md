@@ -49,9 +49,14 @@ session list the way the lead and every worker do, and which mark is a setting
 from the control-plane checkout, which is where `uv run fleet` resolves.
 
 It REFUSES a title thurbox would reject and one the 64-byte cap would cut,
-rather than handing over a name that is wrong in a way nobody sees. `$(...)`
-swallows the exit code, so a `--name ''` refusal from thurbox means read the
-stderr above it: that is this command's message, not a thurbox bug.
+rather than handing over a name that is wrong in a way nobody sees. The refusal
+ends with a `Try this title:` line carrying one that does render — take that
+rather than inventing another — or, where none can be derived from what you
+typed, with `Reword the title.` A title over the cap usually gets the second:
+no WORD is ever dropped to fit it, because what runs over is the end, and the
+end is what tells two sessions apart. `$(...)` swallows the exit code, so a
+`--name ''` refusal from thurbox means read the stderr above it: that is this
+command's message, not a thurbox bug.
 
 `adopt` rather than `fail`: this is a recurring chore and one long-lived
 session for it is correct. **`adopt` matches on the NAME, so a sweep session

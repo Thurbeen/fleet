@@ -2,7 +2,7 @@
 r"""Render the name one session fleet spawns is created under.
 
     fleet session-name diagnose 'Diagnose this machine and free what is dead'
-    fleet session-name review   'Review open change requests on <repo>'
+    fleet session-name review   'Review open change requests on <project>'
     fleet session-name worker   'Fix the thing'
 
 Written to be interpolated into the `thurbox-cli session create` line a SKILL
@@ -35,7 +35,13 @@ cut — or that thurbox would reject outright — is an error with the reason on
 stderr. Silently cutting is worse than it sounds: the mark costs 5 of the 64
 bytes, so two long titles differing only past the cut render the SAME name, and
 `--on-existing adopt` matches on the name. A reviewer spawned for one project
-would adopt another's session.
+would adopt another's session. A refusal ends with a `Try this title:` line
+carrying one that WOULD render, derived from the one that was typed by the same
+rule that refused it, so that being told no does not also mean inventing the
+name — or, where no title can be derived from what was typed, with `Reword the
+title.` The CAP is the usual way to reach that second ending: no WORD is ever
+dropped to fit it, because what runs over is the end of the title, which is
+where the identity is.
 
 Exit codes: 0 and the name on stdout, 2 for a usage error — an unknown kind is
 one, because the kinds are fleet's and not the operator's — and 1 for a title
@@ -84,8 +90,15 @@ def refuse(title: str, glyph: str) -> str:
     past byte 64 is still a `/` in the title somebody has to edit, and quoting
     a name back at them that they did not type and that this would never hand
     over is its own small lie.
+
+    It ends with a title that WOULD render — `queue.py`'s `safe_name_title`,
+    from the same rule that produced the refusal — because a reviewer session
+    for `github.com/Thurbeen/fleet` still needs a name, and the operator who
+    was refused one should not also have to invent the other. Or, where that
+    rule can derive none, with `Reword the title.`: a suggestion nobody can
+    type back is worse than none.
     """
-    whole = f"{glyph} {title}" if glyph else title
+    whole = fleetqueue.rendered_name(title, glyph)
     reasons = []
 
     # thurbox's rule, from `queue.py`'s `unsafe_name` — stated once, there, and
@@ -110,7 +123,24 @@ def refuse(title: str, glyph: str) -> str:
             "become one name, and\n`--on-existing adopt` would then adopt the "
             "wrong session."
         )
-    return "\n".join(reasons) + ("\nReword the title." if reasons else "")
+    if not reasons:
+        return ""
+    # A suggestion only where one falls out of what was typed: an empty title
+    # leaves nothing to suggest, and a name nobody typed is not an answer.
+    suggestion = fleetqueue.safe_name_title(title, glyph)
+    # A TITLE and not a command line. `fleet` is not on PATH — this repo is
+    # `uv run fleet …` — and a command would have to be quoted for a shell,
+    # which is POSIX on this operator's machine and neither on the Windows one
+    # the same checkout runs on. The title is the thing they edit anyway.
+    #
+    # Printed as itself, with no quoting at all. `repr` escapes with `\`, which
+    # is one of the characters thurbox refuses, so a quoted suggestion holding
+    # an apostrophe is refused when it is typed back — and suggests itself
+    # again. `safe_name_title` is what makes bare printing safe: it suggests
+    # nothing unprintable, and nothing holding a newline, so there is neither
+    # anything to escape nor a second line to mistake for another message.
+    way_out = f"Try this title: {suggestion}" if suggestion else "Reword the title."
+    return "\n".join([*reasons, way_out])
 
 
 def main(argv: list[str] | None = None) -> int:
