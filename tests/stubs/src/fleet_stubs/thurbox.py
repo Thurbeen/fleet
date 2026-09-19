@@ -27,6 +27,16 @@ def main() -> int:
         print(read(root / "next-session.json").strip() or '{"id":"stub","created":true}')
     elif verb == "session capture":
         print(json.dumps({"output": read(root / "panes" / f"{ident}.txt")}))
+    elif verb == "session send":
+        # `--no-enter` leaves the text in the composer. The real CLI types it
+        # into the pane; the stub writes the same `→ <text>` line capture
+        # reads, so a type-then-verify-then-submit loop can see it.
+        if "--no-enter" in args:
+            pos = [a for a in args[2:] if not a.startswith("-")]
+            if len(pos) >= 2:
+                pane = root / "panes" / f"{pos[0]}.txt"
+                pane.parent.mkdir(parents=True, exist_ok=True)
+                pane.write_text(f"→ {pos[1]}\n", encoding="utf-8", newline="\n")
     elif verb in ("session stop", "session start", "session restart"):
         print(json.dumps({"id": ident, "restarted": True}))
     elif verb == "session list":
