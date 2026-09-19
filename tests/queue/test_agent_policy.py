@@ -575,7 +575,7 @@ def test_refuel_reads_the_account_of_the_agent_the_policy_names(
     out = q("refuel", "--dry-run", CLAUDE_CONFIG_DIR=str(lead_home), **env).out
     expect(out, "claude (spare)", "0% remaining", "window is spent")
     refute(out, "would restart", "62% remaining")
-    assert restarts(stubs) == [], stubs.calls("thurbox-cli", "session restart")
+    assert restarts(stubs) == [], stubs.calls("thurbox-cli", "session start")
 
 
 FIXER_PR = "https://github.com/Thurbeen/fleet/pull/101"
@@ -918,7 +918,7 @@ def test_refuel_says_undetermined_when_the_policy_cannot_name_an_agent(
 
     expect(out, "undetermined", "no repository can be read from `origin`")
     refute(out, "75% remaining", "would restart", "(claude)")
-    assert restarts(stubs) == [], stubs.calls("thurbox-cli", "session restart")
+    assert restarts(stubs) == [], stubs.calls("thurbox-cli", "session start")
 
 
 def test_a_command_profile_records_no_agent(checkout, forge_store, stubs, queue_dir):
@@ -1091,4 +1091,4 @@ def test_refuel_judges_by_the_policy_the_spawn_ran_under(
 
     expect(out, "claude (alpha)", "0% remaining", "window is spent")
     refute(out, "(beta)", "62% remaining", "would restart")
-    assert restarts(stubs) == [], stubs.calls("thurbox-cli", "session restart")
+    assert restarts(stubs) == [], stubs.calls("thurbox-cli", "session start")

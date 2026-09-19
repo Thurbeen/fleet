@@ -565,5 +565,34 @@ class OtherProcesses(TempDirCase):
         self.assertIsNone(fp.process_argv_cwd(os.getpid()))
 
 
+class ProcessCensus(TempDirCase):
+    """Refuel waits on conversation holders by reading every pid's command line."""
+
+    def test_process_commands_names_a_running_command_line(self):
+        marker = f"fleet-census-{os.getpid()}-{time.time_ns()}"
+        proc = subprocess.Popen(
+            [sys.executable, "-c", f"import time; time.sleep(60); {marker!r}"],
+            cwd=self.tmp,
+        )
+        try:
+            commands = fp.process_commands()
+            self.assertIsNotNone(commands, "the OS could not list processes")
+            self.assertIn(proc.pid, commands)
+            self.assertIn(marker, commands[proc.pid])
+        finally:
+            proc.kill()
+            proc.wait(timeout=30)
+
+    @unittest.skipIf(WINDOWS, "POSIX ps format")
+    def test_a_pid_with_no_command_does_not_poison_the_census(self):
+        fake = mock.Mock(returncode=0, stdout="  1 /sbin/init\n  2\n  42 vim file\nnot-a-pid x\n")
+        with mock.patch.object(fp.subprocess, "run", return_value=fake):
+            self.assertEqual(fp.process_commands(), {1: "/sbin/init", 42: "vim file"})
+
+    def test_a_missing_lister_is_none_not_empty(self):
+        with environ(PATH=str(self.tmp)):
+            self.assertIsNone(fp.process_commands())
+
+
 if __name__ == "__main__":
     unittest.main()

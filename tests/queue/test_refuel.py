@@ -82,6 +82,8 @@ def test_with_fuel_only_the_session_on_its_limit_banner_is_restarted(ran_dry, st
     out = q("refuel").out
     expect(out, "restarted")
     assert restarts(stubs, DRY), "the session that ran dry was not restarted"
+    calls = stubs.calls("thurbox-cli")
+    assert calls.index(f"thurbox-cli session stop {DRY}") < calls.index(f"thurbox-cli session start {DRY}")
     # A stale working state on its own is a SLOW worker, not a dry one.
     expect(out, "02-just-slow")
     assert restarts(stubs, SLOW) == [], "a slow worker was restarted"
@@ -130,7 +132,7 @@ def test_the_cap_holds_and_a_restart_moments_ago_is_given_a_moment(ran_dry, stub
         rewind_refuels(record)
     out = q("refuel").out
     expect(out, "the cap is 3", "ran dry again")
-    assert len(restarts(stubs, DRY)) == 3, stubs.calls("thurbox-cli", "session restart")
+    assert len(restarts(stubs, DRY)) == 3, stubs.calls("thurbox-cli", "session start")
 
     # The same session, with one receipt stamped just now, is left to come back up.
     one_refuel_just_now(record)

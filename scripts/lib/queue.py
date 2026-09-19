@@ -218,6 +218,7 @@ import shutil
 import subprocess
 import sys
 import textwrap
+import time
 import tomllib
 from pathlib import Path
 from datetime import datetime, timezone
@@ -5080,7 +5081,8 @@ def cmd_reap(args) -> int:
 #   2. only with fuel in the account, look for the individual session that is
 #      wedged anyway — which is the only case a restart recovers anything.
 #
-# And detection of ONE wedged session is a conjunction, because either half
+# A dead pane (`hook_corroboration=dead`) needs recovery regardless of hooks.
+# For a live pane, detection is a conjunction, because either half
 # alone is wrong:
 #
 #   the state is STALE   `hook_state` says `working` and its age has grown past
@@ -5108,6 +5110,14 @@ STALE_WORKING_SECS = 30 * 60
 # too big for the window it is drawing on; a fourth restart is a loop, not a
 # recovery.
 REFUEL_CAP = 3
+
+# How long to wait, after parking, for the old conversation holder to exit
+# before `session start` resumes. The pane disappearing is not that proof:
+# `session restart` used to spawn into an id Claude Code still held, and the
+# new process exited 1 (`Session ID … is already in use`). Ten seconds is
+# longer than a killed agent takes to drop the lock; past that the session
+# stays parked for a human rather than launching on top of a survivor.
+HOLDER_WAIT_SECS = 10
 
 # HOW EACH AGENT SAYS IT RAN OUT, one entry per agent fleet has actually
 # WATCHED do it — the same shape as `scripts/lib/session_trust.py`'s per-agent
@@ -5549,34 +5559,79 @@ def session_doc(sid: str) -> tuple[dict | None, str]:
     return doc, ""
 
 
-def record_refuel(task: Task, sid: str, why: str, prompted: bool) -> None:
+def record_refuel(task: Task, sid: str, why: str, prompted: bool,
+                  park: str | None = None) -> None:
     """The receipt, and the cap's only memory.
 
     Appended, never replaced: a session that keeps running dry is a fact about
     the task, and one that is invisible if each pass overwrites the last.
+    `park` is why a stop that ran did not start — the next pass reads it
+    instead of calling that a person parked the session.
     """
-    task.doc.setdefault("refuels", []).append(
-        {"at": now(), "session": sid, "why": why, "prompted": prompted}
-    )
+    rec = {"at": now(), "session": sid, "why": why, "prompted": prompted}
+    if park:
+        rec["park"] = park
+    task.doc.setdefault("refuels", []).append(rec)
     task.save()
 
 
-def restart_session(sid: str) -> tuple[bool, str]:
-    """`session restart`: kill the window, re-spawn with `--resume`.
+def restart_session(sid: str, doc: dict) -> tuple[bool, str, bool]:
+    """Park, wait for the old conversation holder to exit, then resume.
 
-    The conversation survives, so the worker still holds its brief and whatever
-    it had already worked out — which is why this and not a fresh spawn.
+    Returns (ok, note, issued_stop). `issued_stop` is whether `session stop`
+    actually ran: a census that cannot be read, or a session with nothing to
+    wait for, never touches the pane and must not spend the restart cap.
+
+    thurbox's in-place restart kills a window and immediately spawns its
+    replacement: the old process may still hold the conversation id. A sleep
+    guesses when that lock is free; a fresh conversation loses the worker's
+    context. Instead keep the row, worktree, launch environment and conversation
+    with stop/start, and wait for the id's holders to exit. If a live agent's
+    command carries no id, pin its observed command to a unique pid BEFORE
+    stopping; a generic command after the stop could belong to another worker.
+    Text selects only what we WAIT for, never what we kill.
+    A surviving orphan or an unreadable census after stop leaves the session
+    parked and reported for a human, rather than launching into an occupied
+    conversation.
     """
-    try:
-        proc = subprocess.run(
-            ["thurbox-cli", "session", "restart", sid], capture_output=True, text=True, encoding="utf-8", timeout=120
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        return False, f"session restart could not run: {exc}"
-    if proc.returncode != 0:
-        detail = (proc.stderr or proc.stdout).strip().splitlines()
-        return False, "session restart failed: " + (detail[-1] if detail else "no output")
-    return True, ""
+    ident = str(doc.get("agent_session_id") or "")
+    command = str(doc.get("foreground_command") or "").strip()
+    if not ident and not command:
+        return False, "no conversation id or foreground command to wait for", False
+    commands = fleet_platform.process_commands()
+    if commands is None:
+        return False, "cannot read processes before stopping the session", False
+    holders = {pid for pid, row in commands.items() if ident and ident in row}
+    if not holders and command and doc.get("hook_corroboration") != "dead":
+        holders = {pid for pid, row in commands.items() if command == row.strip()}
+        if len(holders) > 1:
+            return False, "foreground command belongs to several processes; cannot identify the old holder", False
+    issued_stop = False
+    for verb in ("stop", "start"):
+        try:
+            proc = subprocess.run(
+                ["thurbox-cli", "session", verb, sid],
+                capture_output=True, text=True, encoding="utf-8", timeout=120,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            return False, f"session {verb} could not run: {exc}", issued_stop
+        if verb == "stop":
+            issued_stop = True
+        if proc.returncode != 0:
+            detail = (proc.stderr or proc.stdout).strip().splitlines()
+            return False, f"session {verb} failed: " + (detail[-1] if detail else "no output"), issued_stop
+        if verb == "stop":
+            deadline = time.monotonic() + HOLDER_WAIT_SECS
+            while True:
+                commands = fleet_platform.process_commands()
+                if commands is None:
+                    return False, "session parked: cannot confirm the old process exited; inspect before starting", True
+                if not any(pid in holders or (ident and ident in row) for pid, row in commands.items()):
+                    break
+                if time.monotonic() >= deadline:
+                    return False, "session parked: the old conversation is still in use; inspect before starting", True
+                time.sleep(0.2)
+    return True, "", True
 
 
 def stale_since(age: float) -> float:
@@ -5763,57 +5818,71 @@ def refuel(q: Queue, ref: str | None = None, dry: bool = False) -> int:
             kept += 1
             continue
 
-        # The agent's own word, and only that. `running`, `uncovered` and
-        # `unreported` are observations about a pane, not a claim by the agent
-        # about itself (`thurbox-session` §4a), and a worker that is genuinely
-        # at rest is `collect`'s business, not this command's.
-        hook = doc.get("hook_state")
-        age = doc.get("hook_state_age_secs")
-        if hook != "working":
-            print(f"    {task.ref:<46} kept          its hook says `{hook or doc.get('state')}`, "
-                  "which is not a stale working state")
-            kept += 1
-            continue
-        if not isinstance(age, (int, float)) or isinstance(age, bool):
-            print(f"    {task.ref:<46} undetermined  thurbox reports no age for that "
-                  "`working` state")
-            kept += 1
-            continue
-        if age < STALE_WORKING_SECS:
-            print(f"    {task.ref:<46} kept          working for {age / 60:.0f}m, under the "
-                  f"{STALE_WORKING_SECS // 60}m staleness threshold")
-            kept += 1
-            continue
-
-        seen, detail = exhaustion(doc)
-        if seen == "undetermined":
-            print(f"    {task.ref:<46} undetermined  {detail}")
-            kept += 1
-            continue
-        if seen != "exhausted":
-            # The whole reason detection is a conjunction: this worker has been
-            # in one turn for a long time and its agent has said nothing about
-            # a limit. Slow is not dry.
-            print(f"    {task.ref:<46} kept          working for {age / 60:.0f}m and quiet "
-                  f"about it — slow, not dry ({detail})")
-            kept += 1
-            continue
-
-        # A `working` state REPORTED BEFORE the last restart is evidence from
-        # before that restart: the re-spawned agent has simply not reported yet.
-        # Without this, two passes a minute apart spend the cap on one wedge and
-        # kill a window that was coming back up.
         history = task.doc.get("refuels") or []
-        if history and stale_since(age) < record_time(history[-1].get("at")):
-            print(f"    {task.ref:<46} kept          restarted at "
-                  f"{history[-1].get('at')}, and this `working` was reported before "
-                  "that — give it a moment")
+        if doc.get("stopped") or doc.get("state") == "stopped":
+            last = history[-1] if history else {}
+            park = last.get("park") if last.get("session") == sid else None
+            print(f"    {task.ref:<46} kept          "
+                  f"{park or 'the session is deliberately stopped'}")
             kept += 1
             continue
+        # `get` probes the multiplexer. Its corroboration is the pane's actual
+        # liveness even when the last hook was fresh, absent, or contradicted.
+        # It is independent of terminal width, locale and old scrollback text.
+        dead = doc.get("hook_corroboration") == "dead"
+        if dead:
+            detail = "dead pane: thurbox reports hook_corroboration=dead"
+        else:
+            # The agent's own word, and only that. `running`, `uncovered` and
+            # `unreported` are observations about a pane, not a claim by the agent
+            # about itself (`thurbox-session` §4a), and a worker that is genuinely
+            # at rest is `collect`'s business, not this command's.
+            hook = doc.get("hook_state")
+            age = doc.get("hook_state_age_secs")
+            if hook != "working":
+                print(f"    {task.ref:<46} kept          its hook says `{hook or doc.get('state')}`, "
+                      "which is not a stale working state")
+                kept += 1
+                continue
+            if not isinstance(age, (int, float)) or isinstance(age, bool):
+                print(f"    {task.ref:<46} undetermined  thurbox reports no age for that "
+                      "`working` state")
+                kept += 1
+                continue
+            if age < STALE_WORKING_SECS:
+                print(f"    {task.ref:<46} kept          working for {age / 60:.0f}m, under the "
+                      f"{STALE_WORKING_SECS // 60}m staleness threshold")
+                kept += 1
+                continue
+
+            seen, detail = exhaustion(doc)
+            if seen == "undetermined":
+                print(f"    {task.ref:<46} undetermined  {detail}")
+                kept += 1
+                continue
+            if seen != "exhausted":
+                # The whole reason detection is a conjunction: this worker has been
+                # in one turn for a long time and its agent has said nothing about
+                # a limit. Slow is not dry.
+                print(f"    {task.ref:<46} kept          working for {age / 60:.0f}m and quiet "
+                      f"about it — slow, not dry ({detail})")
+                kept += 1
+                continue
+
+            # A `working` state REPORTED BEFORE the last restart is evidence from
+            # before that restart: the re-spawned agent has simply not reported yet.
+            # Without this, two passes a minute apart spend the cap on one wedge and
+            # kill a window that was coming back up.
+            if history and stale_since(age) < record_time(history[-1].get("at")):
+                print(f"    {task.ref:<46} kept          restarted at "
+                      f"{history[-1].get('at')}, and this `working` was reported before "
+                      "that — give it a moment")
+                kept += 1
+                continue
 
         already = len(history)
         if already >= REFUEL_CAP:
-            print(f"    {task.ref:<46} kept          ran dry again after {already} restart(s); "
+            print(f"    {task.ref:<46} kept          {'dead pane' if dead else 'ran dry again'} after {already} restart(s); "
                   f"the cap is {REFUEL_CAP} — a human decides now")
             kept += 1
             continue
@@ -5823,7 +5892,12 @@ def refuel(q: Queue, ref: str | None = None, dry: bool = False) -> int:
             fired += 1
             continue
 
-        ok, note = restart_session(sid)
+        # A stop that ran — even one that then failed to start — spends the
+        # cap, so a pane that dies on every launch cannot loop. A census that
+        # could not be read never issued stop, and must not.
+        ok, note, issued_stop = restart_session(sid, doc)
+        if issued_stop:
+            record_refuel(task, sid, detail, False, park=None if ok else note)
         if not ok:
             print(f"    {task.ref:<46} NOT RESTARTED {note}", file=sys.stderr)
             kept += 1
@@ -5834,12 +5908,13 @@ def refuel(q: Queue, ref: str | None = None, dry: bool = False) -> int:
         # `session send` into that dialog types the prompt INTO it.
         send = (
             f"Read {brief_target(task)} and do what it says. Your session was "
-            "restarted after your agent ran out of quota mid-task, so the "
+            "restarted to recover a dead pane or a quota limit mid-task, so the "
             "conversation above is yours: continue from where you stopped rather "
             "than starting over."
         )
         prompted, report = trust_and_send(sid, send)
-        record_refuel(task, sid, detail, prompted)
+        task.doc["refuels"][-1]["prompted"] = prompted
+        task.save()
         print(f"    {task.ref:<46} restarted     {sid}"
               f"{'' if prompted else '  NOT PROMPTED'}")
         print(f"        {detail}")

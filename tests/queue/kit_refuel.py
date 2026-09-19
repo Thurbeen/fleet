@@ -79,7 +79,7 @@ def attach_task(topic: str, slug: str, number: str, sid: str, branch: str | None
 
 
 def restarts(stubs: Stubs, sid: str = "") -> list[str]:
-    return [c for c in stubs.calls("thurbox-cli", "session restart") if sid in c]
+    return [c for c in stubs.calls("thurbox-cli", "session start") if sid in c]
 
 
 def sends(stubs: Stubs) -> str:
