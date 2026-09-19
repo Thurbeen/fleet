@@ -1252,6 +1252,11 @@ end
 --- flattened: `#` is a pull request on GitHub and `!` is a merge request on
 --- GitLab, and an operator reading a queue that spans both wants to know which
 --- one a row points at without opening it.
+---
+--- ONE ARTIFACT, because a row is one line. A task that spans repositories
+--- records one per repository and the probe hands this the first of them, so
+--- the label and the link are that one's. `fleet queue show` is where all of
+--- them are named, and it names each beside its repository.
 local function artifact_ref(artifact)
   if artifact == "" then
     return nil

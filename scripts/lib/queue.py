@@ -2135,12 +2135,13 @@ def cmd_add(args) -> int:
     if refusal:
         raise QueueError(refusal)
 
+    add_dirs = [d.strip() for d in (args.add_dir or []) if d.strip()]
+    add_repos = [r.strip() for r in (args.add_repo or []) if r.strip()]
+
     # And once per --add-repo, for exactly the same reason: thurbox cuts a
     # worktree on the same branch in every one of them, so a branch that
     # already exists in the SECOND repository fails the same spawn just as
     # dead. Each is asked about its own base, which `PATH@BASE` may name.
-    add_dirs = [d.strip() for d in (args.add_dir or []) if d.strip()]
-    add_repos = [r.strip() for r in (args.add_repo or []) if r.strip()]
     for spec in add_repos:
         also, also_base = split_add_repo(spec)
         refusal = branch_refusal(also, args.branch, also_base or args.base, args.host)

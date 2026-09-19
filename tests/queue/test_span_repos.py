@@ -528,3 +528,20 @@ def test_a_fixer_is_cut_from_the_repository_the_change_request_is_in(cross_forge
     cut = f"{cf.topic}__01-both-forges"
     assert cut in git("worktree", "list", cwd=cf.gl), "the fixer's worktree is off the GitLab checkout"
     assert cut not in git("worktree", "list", cwd=cf.gh), "and not off the primary"
+
+
+def test_a_note_task_stays_single_however_many_repositories_it_spans(topic, queue_dir, stubs):
+    """24e. A note sits on the ONE `--target` the task names, so it does not
+    become one-per-repository — there is no second target to invent. Pinned
+    here because it is a decision and not an oversight: the brief still asks for
+    the scalar, and `collect` still checks exactly one note."""
+    target = "https://github.com/Thurbeen/thurbox/pull/1107"
+    ok(q("add", topic, "reviews-one-pr", "--title", "Reviews one PR",
+         "--repo", "/tmp/repo-a", "--branch", "review/pr-1107", "--number", "01",
+         "--add-repo", "/tmp/repo-b", "--publish", "note", "--target", target))
+    raw = (queue_dir / topic / "01-reviews-one-pr" / "BRIEF.md").read_text(encoding="utf-8")
+    # The second repository is still named — the worker works in it — but the
+    # result contract is the scalar one.
+    expect(" ".join(raw.split()), "Also on this branch", "/tmp/repo-b")
+    expect(raw, "artifact: <PR URL, commit URL for a `push` task")
+    refute(raw, "artifacts:")
