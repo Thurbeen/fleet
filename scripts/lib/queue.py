@@ -3643,10 +3643,9 @@ def prompt_session(task: Task, timeout: int = 20) -> tuple[bool, str]:
     if not ok:
         if task.doc.get("host"):
             report += (
-                f"\n(this worker is on host {task.doc['host']}: `session capture` and "
-                "`session key` reach it by delegation to the thurbox-cli there, so the "
-                "pane is answerable — but `fleet trust-thurbox-dir` seeds THIS "
-                "machine's ~/.claude.json and would do nothing for it.)"
+                f"\n(this worker is on host {task.doc['host']}: "
+                "`fleet trust-thurbox-dir` seeds THIS machine's ~/.claude.json "
+                "and would do nothing for it.)"
             )
         return False, report
     task.doc["prompted"] = True
@@ -6915,7 +6914,14 @@ def needs_verified_submit(task: Task) -> bool:
     between paste and Enter is not enough; Enter lands in cooked mode and
     is gone by the time the line appears next to `→`. `--agent` sessions
     (claude, codex) do not do this. muse was not measured.
+
+    A `--host` task is excluded: `session capture` has no pane on this
+    machine for one, so the wait would time out and report that the brief
+    never appeared — about a composer that is not here. Those keep the
+    one-shot send, which is what they had before this path existed.
     """
+    if task.doc.get("host"):
+        return False
     return command_stem(task) in {"cursor-agent", "cursor"}
 
 
