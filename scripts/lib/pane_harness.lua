@@ -51,6 +51,12 @@
 -- a render after each, so a pane that stays on the fleet you chose while you
 -- work in a worker session can be asserted.
 --
+-- `--queue <shape>` empties the fixture queue, which is the state the fuel
+-- block used to vanish in: `empty` is a queue that read fine and holds
+-- nothing at all, `archived` one whose every topic has finished. The fuel
+-- reading is untouched in both, so what the render answers is whether the
+-- block survives a queue with no live topic.
+--
 -- `--chord <key>` is what the key registry answers for the toggle, so a rebind
 -- can be rendered. `--fuel-read <seconds>` is how long ago the fuel reading
 -- was taken; the default is two minutes, inside the pane's own TTL.
@@ -98,6 +104,7 @@ local FUEL_PARTIAL_PROVIDER = false
 local FUEL_CHECKOUT_NO_CREDENTIAL = false
 local FUEL_UNREADABLE = false
 local FUEL_ACCOUNTS_UNREADABLE = false
+local QUEUE = nil
 for i, a in ipairs(arg) do
   if a == "--long-label" then
     LONG_LABEL = true
@@ -123,6 +130,8 @@ for i, a in ipairs(arg) do
     WHEEL[#WHEEL + 1] = tonumber(arg[i + 1]) or 0
   elseif a == "--action" then
     ACTION = arg[i + 1]
+  elseif a == "--queue" then
+    QUEUE = arg[i + 1]
   end
   if a == "--marks" then
     MARKS = true
@@ -475,6 +484,15 @@ for _, topic in ipairs(TOPICS) do
   end
 end
 out[#out + 1] = "A\t7"
+
+-- The probe read fine and named no live topic: the queue's root, and the
+-- archived tally alone. `empty` counts none, `archived` counts the fixture's
+-- seven — the two shapes the pane says different sentences for.
+if QUEUE == "empty" then
+  out = { out[1], "A\t0" }
+elseif QUEUE == "archived" then
+  out = { out[1], "A\t7" }
+end
 
 -- Two windows on two clocks, and the LONGER one binds. That is the reading
 -- the block used to flip on: it drew only the binding window, so the row
