@@ -18,9 +18,11 @@ from kit_refuel import (
     CLAUDE_BANNER, attach_task, no_quota, one_refuel_just_now, pane, quota_is, restarts, rewind_refuels, sends,
     teach, transcript,
 )
+import json
+
 from queuekit import ok
 
-from harness import expect, refute
+from harness import expect, refute, write
 from harness import run_queue as q
 
 DRY = "aaaaaaa1-0000-0000-0000-000000000001"
@@ -233,3 +235,46 @@ def test_the_transcript_is_read_where_the_operator_said_it_is(nova_dry, nova_roo
     out = q("refuel", f"{nova_dry}/03-from-transcript", "--dry-run").out
     expect(out, "undetermined")
     refute(out, "would restart")
+
+
+CURSOR = "aaaaaaa5-0000-0000-0000-000000000005"
+
+# Observed on the pane of a cursor-agent worker's own hooks wiring; the operator
+# teaches fleet this sentence, because fleet has watched no cursor limit itself.
+CURSOR_BANNER = "You've run out of Cursor credits"
+
+
+def test_a_declared_uncovered_session_that_reports_is_refuelled_like_any_other(
+    stubs, isolated_env, queue_dir
+):
+    """`refuel` reads `hook_state` off the session document and never the
+    profile that spawned it.
+
+    `cursor-trusted` declares `uncovered: true` because fleet can wire that
+    binary no hook family — it takes its hooks from a config file rather than
+    a flag. An operator who wired that file has a worker publishing
+    `state_source: hook` with `hook_coverage: none`, and a stale `working`
+    there is the same evidence as anywhere else: with fuel in the account and
+    the agent's own taught banner on the pane, it is restarted.
+    """
+    topic = ok(q("topic", "add", "cursor-ran-dry", "--title", "A cursor worker that ran dry",
+                 "--prompt", "refuel reads the session, not the declaration")).stdout.strip()
+    ok(q("add", topic, "ran-dry-on-cursor", "--title", "Ran dry on cursor", "--repo", "/tmp/repo-a",
+         "--branch", "fix/ran-dry-on-cursor", "--number", "01", "--profile", "cursor-trusted"))
+    ok(q("attach", f"{topic}/01-ran-dry-on-cursor", CURSOR))
+    teach(isolated_env, f"cursor-agent.LIMIT_BANNER={CURSOR_BANNER}")
+    pane(stubs, CURSOR, f"● Now I will run the gate.\n\n{CURSOR_BANNER}\n")
+    write(stubs.root / "sessions" / f"{CURSOR}.json", json.dumps({
+        "id": CURSOR, "name": "a cursor worker", "agent": "cursor-agent",
+        "reports_as": None, "detected_agent": None,
+        "hook_reported": True, "hook_coverage": "none",
+        "hook_state": "working", "hook_state_age_secs": 7200,
+        "state": "working", "state_source": "hook",
+        "agent_session_id": f"agent-{CURSOR}",
+        "cwd": str(stubs.root), "backend_type": "local-tmux", "worktrees": [],
+    }) + "\n")
+    quota_is(stubs, 62, RESETS)
+
+    out = q("refuel", "--dry-run").out
+    expect(out, "would restart", "01-ran-dry-on-cursor", CURSOR)
+    refute(out, "uncovered")

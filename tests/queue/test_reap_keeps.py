@@ -8,10 +8,12 @@ it", and getting any of them wrong kills live work or throws away the only
 evidence of a failure.
 """
 
+import json
+
 import pytest
 from queuekit import S2, deletions, ok, result
 
-from harness import expect, refute
+from harness import expect, refute, write
 from harness import run_queue as q
 
 
@@ -76,6 +78,37 @@ def test_uncovered_is_not_idle_and_the_lead_is_never_a_candidate(first_landed, s
 
     # The lead's own session is refused by name, even if a record names it.
     expect(q("reap", "--dry-run", THURBOX_SESSION=sid).out, "lead")
+
+
+def test_a_declared_uncovered_session_that_reports_is_reaped_like_any_other(
+    first_landed, stubs, queue_dir
+):
+    """The mirror of the test above, and the other half of the same rule: the
+    reap reads the WORD thurbox publishes, and a profile's `uncovered: true`
+    is not one of its inputs.
+
+    An operator who wires their agent's own hooks — cursor takes them from a
+    config file rather than a flag — gets a session that says `done` through
+    `state_source: hook` with `hook_coverage: none`. That is the agent saying
+    it is at rest, so the session is released rather than left for a hand.
+    """
+    sid = "99999999-9999-9999-9999-999999999999"
+    ok(q("add", first_landed, "port-the-hooks", "--title", "Port the hooks",
+         "--repo", "/tmp/repo-a", "--branch", "fix/port-the-hooks", "--number", "09",
+         "--profile", "cursor-trusted"))
+    ok(q("attach", f"{first_landed}/09-port-the-hooks", sid))
+    write(stubs.root / "sessions" / f"{sid}.json", json.dumps({
+        "id": sid, "name": f"worker {sid}", "agent": "cursor-agent",
+        "reports_as": None, "hook_reported": True, "hook_coverage": "none",
+        "hook_state": "done", "hook_state_age_secs": 12,
+        "state": "done", "state_source": "hook",
+        "cwd": str(stubs.root), "backend_type": "local-tmux", "worktrees": [],
+    }) + "\n")
+    result(queue_dir / first_landed / "09-port-the-hooks", "not-applicable",
+           "The hooks were already wired.")
+
+    expect(q("collect").out, "09-port-the-hooks", "reaped")
+    expect(deletions(stubs), "--force", sid)
 
 
 def test_collect_can_be_told_to_leave_every_session_alone(first_landed):

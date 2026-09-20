@@ -57,3 +57,25 @@ def test_a_genuine_zero_floor_is_not_treated_as_no_floor(stubs, queue_dir):
     assert floors(queue_dir / topic / "01-only-task" / "task.yaml") == ["watch_from: 0"]
     watched = [c for c in stubs.calls("thurbox-cli", "watch") if "--initial" not in c]
     expect("\n".join(watched), "--since 0")
+
+
+def test_a_declared_uncovered_session_that_reports_is_folded_like_any_other(briefed, stubs, queue_dir):
+    """`watch` folds by SESSION ID off thurbox's own stream, and reads no
+    profile at all.
+
+    A `cursor-trusted` worker declares `uncovered: true` because fleet can
+    wire it no hook family — but an operator whose agent takes its hooks from
+    a config file rather than a flag has one reaching the stream all the same,
+    with `state_source: hook` beside a `hook_coverage: none`. Its transitions
+    land in the record exactly as a covered agent's do.
+    """
+    sid = "44444444-4444-4444-4444-444444444444"
+    ok(q("add", briefed, "port-the-hooks", "--title", "Port the hooks", "--repo", "/tmp/repo-a",
+         "--branch", "fix/port-the-hooks", "--number", "05", "--profile", "cursor-trusted"))
+    stubs.stream(stream_event(200, sid, "working", event="present"))
+    ok(q("attach", f"{briefed}/05-port-the-hooks", sid))
+
+    reported = stream_event(201, sid, "done")
+    stubs.stream({**reported, "state_source": "hook", "hook_coverage": "none"})
+    expect(q("watch", "--for-secs", "1").out, "05-port-the-hooks", "seq 201")
+    assert (queue_dir / briefed / "05-port-the-hooks" / "progress.jsonl").stat().st_size > 0

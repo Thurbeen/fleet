@@ -993,6 +993,114 @@ def test_dispatch_announces_an_uncovered_command_profile(checkout, forge_store, 
     assert sends, out
 
 
+def test_a_session_that_reports_outranks_the_profile_that_declared_it_uncovered(
+    checkout, forge_store, stubs, queue_dir
+):
+    """The declaration is what fleet could WIRE; the document is what the
+    session SAID, and the second outranks the first.
+
+    cursor takes its hooks from `~/.cursor/hooks.json` and not from a flag, so
+    an operator who wired that file has a `cursor-trusted` worker publishing
+    `state_source: hook` while the profile still declares `uncovered: true` —
+    measured 2026-09-20 on a live worker. `watch`, `refuel` and `reap` all
+    read that document and none of them reads the profile, so the spawn must
+    not tell the operator they are blind and leave them reaping by hand.
+    """
+    topic = ok(q(
+        "topic", "add", "reporting-spawn", "--title", "A command that reports anyway",
+        "--prompt", "dispatch reads the session, not the declaration",
+    )).stdout.strip()
+    env = policy_env(forge_store, "")
+    ok(q(
+        "add", topic, "commanded", "--title", "Commanded",
+        "--repo", str(checkout), "--branch", "fix/reporting", "--number", "01",
+        "--profile", "cursor-trusted", **env,
+    ))
+    fill_brief(queue_dir / topic / "01-commanded" / "BRIEF.md")
+    sid = "0b222222-0000-0000-0000-00000000000d"
+    next_session(stubs, sid)
+    # The live shape, field for field: coverage is still `none` — thurbox knows
+    # no `cursor` hook family and none was wired — and the state is the hook's
+    # all the same.
+    write(stubs.root / "sessions" / f"{sid}.json", json.dumps({
+        "id": sid, "agent": "cursor-agent", "reports_as": None,
+        "detected_agent": None, "hook_reported": True, "hook_coverage": "none",
+        "hook_state": "working", "hook_state_age_secs": 8,
+        "state": "working", "state_source": "hook",
+        "foreground_command": "cursor-agent --trust",
+    }) + "\n")
+    stubs.tool("thurbox-cli", ANSWERING_KEYS)
+    out = ok(q("dispatch", **env)).out
+
+    # The declaration still renders no family — this changes what is SAID about
+    # the session, never how it was spawned.
+    create = [c for c in stubs.calls("thurbox-cli", "session create") if "fix/reporting" in c][0]
+    assert "--reports-as" not in create, create
+    expect(out, "REPORTS", "state_source=hook")
+    refute(out, "will not see this session")
+
+
+# A thurbox whose session starts reporting when its brief is typed, and not
+# before. cursor's own first hook is `sessionStart`, so a real one reports
+# earlier than this — the point of the fixture is the WORST case, which is the
+# only one that can tell phase 1 from phase 2.
+REPORTS_ON_SEND = ANSWERING_KEYS[:ANSWERING_KEYS.rindex("delegate()")] + """
+if ARGS[:2] == ["session", "send"]:
+    import json
+    doc = ROOT / "sessions" / f"{ARGS[2]}.json"
+    if doc.is_file():
+        row = json.loads(doc.read_text(encoding="utf-8"))
+        row.update({"hook_reported": True, "hook_state": "working",
+                    "hook_state_age_secs": 1, "state": "working",
+                    "state_source": "hook"})
+        doc.write_text(json.dumps(row) + "\\n", encoding="utf-8")
+delegate()
+"""
+
+
+def test_coverage_is_read_after_the_brief_goes_out_and_not_at_session_create(
+    checkout, forge_store, stubs, queue_dir
+):
+    """WHEN the document is read is the whole of this, and nothing else pins it.
+
+    `session create` returns before the agent inside the window has started —
+    thurbox's own note is that the tmux window is live and the TUI is not — so
+    a coverage verdict taken there reads every session as silent, including
+    one whose hooks are wired. Asking after the brief is typed is the latest
+    point `dispatch` holds the session.
+
+    The stub here reports nothing until its brief is sent, which is the only
+    shape that can tell the two moments apart: read at `session create` this
+    prints the declaration's warning, read after the send it prints the
+    measurement.
+    """
+    topic = ok(q(
+        "topic", "add", "late-report", "--title", "A command that reports late",
+        "--prompt", "coverage is read after the brief goes out",
+    )).stdout.strip()
+    env = policy_env(forge_store, "")
+    ok(q(
+        "add", topic, "commanded", "--title", "Commanded",
+        "--repo", str(checkout), "--branch", "fix/late-report", "--number", "01",
+        "--profile", "cursor-trusted", **env,
+    ))
+    fill_brief(queue_dir / topic / "01-commanded" / "BRIEF.md")
+    sid = "0b222222-0000-0000-0000-00000000000e"
+    next_session(stubs, sid)
+    write(stubs.root / "sessions" / f"{sid}.json", json.dumps({
+        "id": sid, "agent": "cursor-agent", "reports_as": None,
+        "detected_agent": None, "hook_reported": False, "hook_coverage": "none",
+        "state": "uncovered", "state_source": None,
+        "foreground_command": "cursor-agent --trust",
+    }) + "\n")
+    stubs.tool("thurbox-cli", REPORTS_ON_SEND)
+
+    out = ok(q("dispatch", **env)).out
+    assert [c for c in stubs.calls("thurbox-cli", "session send") if sid in c], out
+    expect(out, "REPORTS", "state_source=hook")
+    refute(out, "will not see this session")
+
+
 def test_a_refusal_names_dispatch_rather_than_the_operator(
     checkout, forge_store, stubs, queue_dir
 ):

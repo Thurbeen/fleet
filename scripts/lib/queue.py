@@ -3531,10 +3531,83 @@ def spawn_uncovered_notice(create: list) -> str | None:
     """What dispatch prints when this spawn has no hook family.
 
     Same words `session-flags` writes on stderr, derived from the argv that
-    actually reaches `session create`.
+    actually reaches `session create`. This is the DECLARATION's own sentence,
+    and it is what a dry run prints, because a dry run has no session to ask.
     """
     profiles_mod = _load_sibling("fleet_session_profiles", "session_profiles.py")
     return profiles_mod.uncovered_notice(create)
+
+
+def session_reports(doc: dict) -> bool:
+    """Is this session's state the agent's own hook talking?
+
+    THE ONE MEASUREMENT THAT OUTRANKS `uncovered: true`. A profile's
+    declaration is written when the profile is authored and says what fleet
+    expected of an agent; this reads what thurbox is publishing about the
+    session that actually started. Where they disagree the live document is
+    the fact, because `watch`, `refuel` and `reap` each read that document and
+    never the profile — so a session thurbox reports on is one they see,
+    whatever the profile declared.
+
+    Measured 2026-09-20 on a cursor-agent worker (2026.09.18-9a7762b) spawned
+    by this fleet's own `cursor-trusted` profile:
+
+        hook_reported: true   hook_coverage: none   hook_state: done
+        state: done           state_source: hook
+
+    `hook_coverage` is still `none` — thurbox reads coverage against the
+    `--command` file stem and knows no `cursor` hook family — and it is
+    deliberately NOT read here. Coverage is what thurbox SHIPS; these two
+    fields are what the session SAID. An agent whose hooks the operator wired
+    themselves is exactly the case where those come apart.
+
+    BOTH fields, and neither alone — but NOT because thurbox routinely
+    disagrees with itself. It does not: `hook_reported` is "a hook state was
+    stored" and the `hook` source is chosen only when one was, so `true` beside
+    `state_source: process` is not a shape thurbox produces. The one place they
+    part is a PARKED session, which clears the source and leaves the flag
+    standing — and a parked session is not one to announce as reporting. The
+    conjunction is also the cheap guard on a document fleet does not control:
+    this is another program's JSON, and a field that stops being written must
+    fail towards the declaration rather than away from it.
+    """
+    if not isinstance(doc, dict):
+        return False
+    return doc.get("hook_reported") is True and str(doc.get("state_source") or "") == "hook"
+
+
+def spawn_coverage_notice(create: list, session: str) -> str | None:
+    """What dispatch prints about coverage once the session EXISTS.
+
+    None when the spawn declared no `uncovered: true` — there is nothing to
+    say about a session that named its hook family.
+
+    Otherwise the declaration is checked against the session document, and
+    there are THREE answers rather than two, because "fleet could not ask"
+    must never read as "fleet measured coverage" and neither may "it has said
+    nothing yet" read as "it never will".
+
+    The declaration's own sentence is what an operator acts on — it is why
+    they reap by hand — so the one thing it may not do is state as settled
+    something fleet has only observed for an instant. A session is asked
+    AFTER its brief went out, which is the latest point dispatch holds it and
+    later than every hook cursor fires at session start; but an agent whose
+    first hook is its first turn would still be silent here, and the sentence
+    says which of the two fleet saw.
+    """
+    declared = spawn_uncovered_notice(create)
+    if not declared:
+        return None
+    doc, why = session_doc(session) if session else (None, "it has no session id")
+    if doc is None:
+        return f"{declared} — though fleet could not read the session to check: {why}"
+    if not session_reports(doc):
+        return f"{declared}; it had reported nothing by the time its brief went out"
+    return (
+        "declared uncovered, but this session REPORTS: thurbox says "
+        f"state_source=hook with hook_reported=true (state `{doc.get('state') or '-'}`), "
+        "so watch, refuel and reap read it like any covered session"
+    )
 
 
 def brief_target(task: Task) -> str:
@@ -3791,6 +3864,11 @@ def cmd_dispatch(args) -> int:
     # a whole wave against one repo draws its dialogs simultaneously only if
     # session creation for task 2 does not wait on task 1's trust confirmation.
     attached: list[Task] = []
+    # Every task that HAS a session, whether or not it was prompted: coverage
+    # is reported off these at the end of phase 2 rather than here, because
+    # `session create` returns before the agent's own first hook has fired and
+    # a document read now would call a reporting session silent.
+    spawned: list[tuple[Task, list]] = []
     failures = 0
     for t in ready:
         # A remote task is probed BEFORE it is spawned, in §1a's order, and one
@@ -3837,8 +3915,7 @@ def cmd_dispatch(args) -> int:
         # that now exists, and a second reading of the policy and of `origin`
         # on the far side of `session create` can answer differently.
         attach(t, session, spawned_as)
-        if notice := spawn_uncovered_notice(create):
-            print(f"    {t.ref}: {notice}")
+        spawned.append((t, create))
 
         # The remote worker is about to be told to read a file that is not on
         # its filesystem. Put it there first, and record where — `collect`
@@ -3866,6 +3943,14 @@ def cmd_dispatch(args) -> int:
             print(f"        {report}", file=None if ok else sys.stderr)
         if not ok:
             unprompted.append(t.ref)
+
+    # Coverage, last: the declaration is only half the answer, and the other
+    # half is a session that has now had its trust dialog answered and its
+    # brief typed — which is the latest point dispatch holds it.
+    for t, create in spawned:
+        if notice := spawn_coverage_notice(create, t.doc.get("session") or ""):
+            print(f"    {t.ref}: {notice}")
+
     if unprompted:
         failures += len(unprompted)
         print(

@@ -96,14 +96,39 @@ profiles:
   #
   # cursor-agent, measured 2026-09-18 on 2026.09.08-6caf4ff: `--trust`
   # answers the dialog, so `fleet session-trust` is not needed. The binary
-  # has no `--settings` flag. thurbox ships no status hooks for `cursor`,
-  # and `hook_schema` can only name a foreign family (practically
+  # has no `--settings` flag, and thurbox ships no status hooks for
+  # `cursor`: `hook_schema` can only name a foreign family (practically
   # `claude`), which would wire `--settings` the binary does not take.
-  # `uncovered: true` is the declaration that replaces `reports_as` here.
+  # `uncovered: true` is the declaration that replaces `reports_as` here,
+  # and it is about what FLEET can wire, not about what the agent can do.
   #
-  # An uncovered session: `refuel` will not touch it, `watch` will not
-  # read its state, `reap` is by hand. `collect` is unchanged — it reads
-  # `result.md`, not the session state. `dispatch` says this on the spawn.
+  # THE DECLARATION IS NOT THE MEASUREMENT, and on this point the earlier
+  # comment here was wrong. cursor takes its hooks from a CONFIG FILE
+  # (`~/.cursor/hooks.json`) and not from a flag, which is why probing the
+  # binary's flags found none — an operator who wires that file has a
+  # cursor session that reports, with no `--reports-as` and no thurbox hook
+  # family involved. Measured 2026-09-20 on a worker this fleet dispatched
+  # under this profile (cursor-agent 2026.09.18-9a7762b), through
+  # `thurbox-cli session get`:
+  #
+  #     hook_reported: true   hook_coverage: none   hook_state: done
+  #     state: done           state_source: hook
+  #
+  # `state_source: hook` is thurbox naming the hook as the source, and the
+  # same session appears on `thurbox-cli watch --json` with
+  # `to_state: done`. So `watch` folds its transitions, `refuel` reads its
+  # `hook_state`, and `reap` sees a reapable `done` — each of them reads
+  # the session document, and none of them reads this file. `collect` is
+  # unchanged either way: it reads `result.md`, not the session state.
+  #
+  # What this declaration still does, therefore, is exactly two things:
+  # no `--reports-as` is rendered, and `dispatch` says something about
+  # coverage on the spawn. That second sentence is now RESOLVED against
+  # the session document once it exists — a session that reports is
+  # announced as reporting, and only one that says nothing gets the old
+  # warning that watch, refuel and reap will not see it. An operator who
+  # has not wired `~/.cursor/hooks.json` is that second case and gets
+  # exactly the behaviour this profile always had.
   #
   # Manual recipe if dispatch is not the path: `session create --command
   # cursor-agent --arg --trust` (no `--reports-as`), then
