@@ -348,6 +348,36 @@ def test_an_overdue_reading_says_how_old_it_is():
     expect(fuel_head(render("30", "--fuel-read", "900")), "read 15m ago")
 
 
+@pytest.mark.parametrize(
+    ("shape", "sentence", "anchor"),
+    [
+        ("empty", "the queue is empty", "the queue is empty"),
+        ("archived", "7 archived topic(s), nothing live", "archived topic(s)"),
+    ],
+)
+def test_a_queue_with_nothing_live_still_draws_the_fuel_block(shape, sentence, anchor):
+    """Both states that say the queue holds no live topic returned before the
+    fuel rows were ever built, so the reading — already taken, already parsed —
+    was thrown away and the block vanished. That is the same "nothing to
+    report" the pane's own header refuses, and an empty queue is exactly when
+    the number decides whether to dispatch. It is drawn above the sentence, the
+    order the `FUEL FIRST` comment states.
+
+    At 44 and again at 30, because these two states now cost five rows more
+    than they did and the narrow column is where a block that outgrew it
+    shows. `anchor` rather than the whole sentence below, since at 30 the
+    archived one wraps — which is `saying` working, not the block failing."""
+    expect(render("44", "--queue", shape), sentence)
+    for width in ("44", "30"):
+        out = render(width, "--queue", shape)
+        expect(out, anchor, "⛽ fuel left", " session ", " week ", "62%", "18%")
+        block, said = row_of("fuel left", out), row_of(anchor, out)
+        assert block is not None and said is not None and block < said, \
+            f"the fuel block is drawn above the sentence at {width}\n{out}"
+        widest = max(cells(line) for line in out.splitlines())
+        assert widest <= int(width), f"a row is {widest} columns wide at {width}\n{out}"
+
+
 # --- the hide hint is a button, and the pane has a way back -----------------
 
 

@@ -198,6 +198,14 @@
 -- disappeared would read as "nothing to report" when it means "nobody could
 -- tell". Every failure is named in full by `uv run fleet status` either way.
 --
+-- THAT ARGUMENT IS ABOUT THE BLOCK AND NOT ABOUT THE QUEUE, so an EMPTY queue
+-- draws it too — above `the queue is empty` and above `N archived topic(s),
+-- nothing live` alike. The reading is what decides whether anything should be
+-- dispatched, and a queue with nothing live is precisely when that is the
+-- question being asked; the probe has already run by then and its answer was
+-- being thrown away. Nothing is fetched for it: the same cached record the
+-- full pane draws.
+--
 -- THE ⛽ ON THE HEAD ROW IS A SETTING, AND IT IS `FUEL_GLYPH` BELOW. Set it to
 -- nil and this pane draws exactly what it drew before the glyph existed. It is
 -- a switch because U+26FD is East_Asian_Width WIDE — two terminal cells, not
@@ -811,9 +819,17 @@ end
 ---
 --- A blank pane and a broken pane look identical, so every state that has no
 --- rows still says which state it is.
-local function saying(lines, width)
+---
+--- `above` is rows drawn before the sentence, already built by the caller —
+--- the fuel block, in the states that draw one. It is the caller's because
+--- that block is built well below this function; the states that return
+--- before it is built pass nothing and are drawn exactly as they were.
+local function saying(lines, width, above)
   local room = math.max(1, (width or 40) - 2)
   local children = {}
+  for _, row in ipairs(above or {}) do
+    children[#children + 1] = row
+  end
   for _, sentence in ipairs(lines) do
     -- Wrapped rather than cut: these sentences are the pane's whole content in
     -- the states that have no rows, and half of "settings → Interface → t" is
@@ -2302,15 +2318,24 @@ return {
     end
     local archived = model.archived or 0
     if #model.topics == 0 then
+      -- FUEL FIRST here too, for the reason the header gives: the reading was
+      -- already taken above and a queue with nothing live is exactly when the
+      -- operator is deciding whether to dispatch into it. Built here and handed
+      -- to `saying` rather than drawn by it, because `fuel_rows` is defined a
+      -- long way below it. `fuel` may still be nil at this point — a probe that
+      -- has not answered yet — and that is the block's own `reading` row, the
+      -- same one the full pane draws; there is no second path for it here.
+      local above = fuel_rows(fuel, width, spinner)
+      above[#above + 1] = widgets.divider(width)
       if archived > 0 then
         -- Not an empty queue: a queue whose every topic has finished. Saying
         -- "empty" here would be the one lie this pane is able to tell.
         return saying({
           archived .. " archived topic(s), nothing live",
           "uv run fleet queue list --archived",
-        }, width)
+        }, width, above)
       end
-      return saying({ "the queue is empty", model.root or lead.cwd }, width)
+      return saying({ "the queue is empty", model.root or lead.cwd }, width, above)
     end
 
     -- FUEL FIRST, above the counters and the topics both: it is the account
