@@ -351,8 +351,16 @@ hooks for. `--reports-as cursor` is then a flag thurbox refuses (declaring
 it would change nothing). `uncovered: true` is the declaration that
 replaces it: the session will be uncovered, and that is accepted.
 `dispatch` prints this on the spawn; `session-flags` prints it on stderr.
-`refuel` will not touch that session, `watch` will not read its state,
-`reap` is by hand. `collect` is unchanged — it reads `result.md`.
+
+**The declaration is about what FLEET can wire, not about what the agent
+can do**, and the two come apart wherever an agent takes its own hooks from
+a config file — cursor does, and §4a below has the measurement. So
+`dispatch` RESOLVES that sentence against the session document once the
+session exists: one that reports gets told it reports, and only one silent
+at hand-off gets the warning that `refuel` will not touch it, `watch` will
+not read its state and `reap` is by hand. Judge a live session by
+`state_source` and `hook_reported`, never by the profile that spawned it.
+`collect` is unchanged either way — it reads `result.md`.
 
 Silence — `command` with neither key — is still refused. Both keys
 together are refused: pick one. `thurbox-cli session reports-as
