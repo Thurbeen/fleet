@@ -87,17 +87,20 @@ operator has not authorized a task yet. That is a fact about this moment, so it
 records nothing: the task stays queued and the next bare `dispatch` sends it.
 
 WHAT `collect` CHECKS. A task declares a PUBLISH METHOD — `attested`, `pr`,
-`push`, `note` or `none` — which names what the work must LEAVE BEHIND rather
-than which tool made it. `collect` asks the forge for a change request from the
-task's own branch or its recorded `--target` (and, for `attested`, an
-attestation for the commit that would merge, unless the forge already reports
-it merged), the forge again for a `note` task's review or comment on its
-`--target`, or git whether a `push` task's commit reached the base branch. An
-artifact that is not there leaves the task OPEN; a check that could not run
-says so and is never read as either verdict. The TOOL is `--how`: free text
-rendered into the brief and never parsed, which is what lets a task name a
-publisher fleet has never heard of. A `stuck` or `failed` task is read again,
-and acted on only when the outcome in its result.md CHANGED.
+`push`, `note`, `served` or `none` — which names what the work must LEAVE
+BEHIND rather than which tool made it. `collect` asks the forge for a change
+request from the task's own branch or its recorded `--target` (and, for
+`attested`, an attestation for the commit that would merge, unless the forge
+already reports it merged), the forge again for a `note` task's review or
+comment on its `--target`, or git whether a `push` task's commit reached the
+base branch. An artifact that is not there leaves the task OPEN; a check that
+could not run says so and is never read as either verdict. The last two are
+checked nowhere, and they differ in what happens AFTER: a `none` task is
+finished, and a `served` one is a document waiting on a READER, so it holds
+its session until a person runs `fleet queue reviewed <ref>`. The TOOL is
+`--how`: free text rendered into the brief and never parsed, which is what lets
+a task name a publisher fleet has never heard of. A `stuck` or `failed` task
+is read again, and acted on only when the outcome in its result.md CHANGED.
 
 `send` IS NOT A SIXTH THING. It is how the lead course-corrects a worker
 mid-flight, and it belongs here rather than in `thurbox-cli session send`
@@ -131,7 +134,8 @@ Usage:
                        # one artifact PER REPOSITORY: `collect` holds it open
                        # unless every one verifies, `reap` lands it only once
                        # every one has landed, and `shepherd` watches them all.
-                       [--publish attested|pr|push|note|none] [--target U]
+                       [--publish attested|pr|push|note|served|none]
+                       [--target U]
                        [--how 'run `/publish`']
                        # --brief-file fills whichever of the brief's four
                        # sections its own `## ` headings name; a body with no
@@ -167,6 +171,9 @@ Usage:
                        judged that artifact; --no-reap leaves every session
                        alone
   uv run fleet queue reap [--dry-run]     # land what merged, release its session
+  uv run fleet queue reviewed <ref> [--why W]  # a `served` task's document is no
+                       longer waiting on a reader: the next reap lands it and
+                       releases the session kept to answer them
   uv run fleet queue refuel [<ref>] [--dry-run]  # the account's fuel first, then
                        restart the workers that ran dry against it
   uv run fleet queue shepherd [--dry-run] # every open change request on the repo: fix or merge
@@ -557,6 +564,24 @@ def brief_shortfall(path: str) -> str:
 # with no remote. It records the URL and checks nothing, and says so; a word
 # that claimed to verify a link to somebody's laptop would be a verdict on
 # nothing.
+#
+# THE SIXTH IS A WAIT, NOT A CHECK. `none` also closed five tasks whose
+# deliverable was a document SERVED TO A READER, and closed each one the
+# instant it was served: nothing was left to wait on, so `reap` deleted the
+# session, and every reader who annotated one of those documents and sent it
+# back was answered by "No agent is listening right now". The document
+# existed; the REVIEW had not started. `served` is `none` plus the single fact
+# `none` cannot hold — somebody is expected to ANSWER this — and it verifies
+# no more than `none` does, because fleet cannot ask a server it did not start
+# whether a reader is finished. What it changes is the LANDING: a served
+# document stands `open`, which is the state that already keeps a session, and
+# only `fleet queue reviewed` moves it. A person clears it the way a person
+# clears a condition blocker, and for the same reason — nothing here can
+# observe the event.
+#
+# IT IS A SHAPE LIKE THE OTHER FIVE. A document served by a review tool, by a
+# preview server, by `python -m http.server` in a worktree: one artifact, one
+# wait, no tool named.
 PUBLISH_DEFAULT = "pr"
 
 # The methods whose artifact is the task's OWN change request. A `note` task's
@@ -566,11 +591,12 @@ PUBLISH_DEFAULT = "pr"
 CHANGE_METHODS = ("attested", "pr")
 
 # The methods whose artifact belongs to a REPOSITORY, and so goes plural when a
-# task spans several. `note` and `none` are not here and that is deliberate: a
-# note sits on the one `--target` a task names, and `none` names nothing fleet
-# checks — neither becomes one-per-repository however many repositories the
-# worker had open, and inventing a second target for one would be fleet making
-# up a deliverable the operator never asked for.
+# task spans several. `note`, `none` and `served` are not here and that is
+# deliberate: a note sits on the one `--target` a task names, `none` names
+# nothing fleet checks, and a served document is ONE document however many
+# repositories it was written from — none becomes one-per-repository however
+# many repositories the worker had open, and inventing a second target for one
+# would be fleet making up a deliverable the operator never asked for.
 PER_REPO_METHODS = ("attested", "pr", "push")
 
 # Accepted wherever a method is read, so a record written before the rename
@@ -626,6 +652,20 @@ PUBLISH_METHODS = {
         "proof": (
             "the forge says that note exists, was written by the account fleet "
             "runs as, and sits on this task's target"
+        ),
+    },
+    "served": {
+        "brief": (
+            "serve the document where its reader will open it, and leave it "
+            "served — there is nothing to commit and no pull request to open. "
+            "Your session is kept up so the reader has somebody to answer them"
+        ),
+        "artifact": "the URL the document is served at",
+        "proof": (
+            "a URL for the reader to open was recorded — the document behind "
+            "it is off any forge and is never checked — and the task then "
+            "WAITS, holding its session, until a person records the review "
+            "closed with `fleet queue reviewed`"
         ),
     },
     "none": {
@@ -1485,8 +1525,8 @@ def artifact_repos(task) -> list[dict]:
     """The repositories an artifact is expected FOR.
 
     Every repository the task spans for the methods whose artifact belongs to
-    one (PER_REPO_METHODS); the primary alone for `note` and `none`, which are
-    left single deliberately and said out loud rather than faked.
+    one (PER_REPO_METHODS); the primary alone for `note`, `none` and `served`,
+    which are left single deliberately and said out loud rather than faked.
     """
     repos = task_repos(task)
     return repos if task_publish(task)[0] in PER_REPO_METHODS else repos[:1]
@@ -2078,7 +2118,7 @@ def target_refusal(method: str, target: str | None) -> str:
             f"--target {target!r} is not a change request or issue URL "
             "(…/pull/<n>, …/-/merge_requests/<n>, …/issues/<n>)"
         )
-    if method in ("push", "none"):
+    if method in ("push", "none", "served"):
         return (
             f"--publish {method} has no use for --target {target}: nothing a "
             f"`{method}` task leaves behind is checked against one. A task that "
@@ -2391,7 +2431,7 @@ def render_brief(task: Task, topic: dict, body: str | None) -> str:
     else:
         artifact_contract = (
             "artifact: <PR URL, commit URL for a `push` task, note URL for a "
-            "`note` task, or omit>"
+            "`note` task, the document's URL for a `served` task, or omit>"
         )
     if host:
         result_target = (
@@ -4383,6 +4423,21 @@ def publish_verdict(task: Task, outcome, url, unit: dict | None = None) -> tuple
         return (*commit_verdict(task, outcome, url, unit), {})
     if method == "note":
         return (*note_verdict(task, outcome, url), {})
+    if method == "served":
+        # Checked no more than `none` is — and the ONE thing that can be
+        # checked without asking anybody is whether a reader was handed an
+        # address at all. `shipped` claims a document somebody is expected to
+        # answer; without a URL there is nothing to open, and closing it would
+        # leave a session held for a reader who was never given the document.
+        if not url and outcome == "shipped":
+            return "missing", (
+                "shipped with no URL for the reader to open; a `served` task's "
+                "artifact is where its document is being served"
+            ), {}
+        return "skipped", (
+            "a `served` task names nothing fleet can check; its artifact is "
+            "recorded as given"
+        ), {}
     if method == "none":
         return "skipped", (
             "a `none` task names nothing fleet can check; its artifact is "
@@ -4741,9 +4796,21 @@ def collect_publish_state(verdict: str, method: str) -> str:
     this same run and there is nothing left for the shepherd to watch. `posted`
     is terminal for the same reason: the note is on the forge, and nothing about
     it waits for a merge.
+
+    `served` IS THE ONE `skipped` THAT MUST STILL WRITE. Every other method
+    that can come back `missing` overwrites that `unverified` on its next clean
+    pass, because its clean verdict is `passed` and `passed` always writes.
+    `served`'s clean verdict is `skipped`, so a task held open once for a
+    missing URL and then collected properly kept `unverified` for good — on the
+    record, in progress.jsonl, and drawn `UNVERIFIED` in the pane over a
+    document that was served exactly as asked. The word is the method's own:
+    the pane draws a state it does not know verbatim and muted, which is what
+    this shape wants said about it.
     """
     if verdict == "passed":
         return {"push": "pushed", "note": "posted"}.get(method, "open")
+    if verdict == "skipped" and method == "served":
+        return "served"
     return {"missing": "unverified", "unknown": "unknown"}.get(verdict, "")
 
 
@@ -4935,8 +5002,8 @@ def cmd_collect(args) -> int:
             line += f"  [publish verified: {method}]"
             if seen.get("attestation"):
                 line += "  [merged; its attestation did not hold — noted, not held]"
-        elif verdict == "skipped" and method == "none":
-            line += "  [publish not checked: none]"
+        elif verdict == "skipped" and method in ("none", "served"):
+            line += f"  [publish not checked: {method}]"
         elif verdict == "missing":
             line += "  [publish NOT verified — closed by --allow-unverified]"
         elif verdict == "unknown":
@@ -5049,7 +5116,9 @@ HOLDING_STATES = ("done", "landed", "abandoned", "stuck", "failed")
 LANDED_STATE = {"merged": "landed", "none": "landed", "closed": "abandoned"}
 
 
-def artifact_landing(artifact, method: str | None = None) -> tuple[str, str]:
+def artifact_landing(
+    artifact, method: str | None = None, reviewed: bool = False, ref: str = "<ref>"
+) -> tuple[str, str]:
     """Has this task's artifact reached main? Asked of the forge, never of a worker.
 
         none      nothing to wait for — `not-applicable` produced no artifact,
@@ -5068,6 +5137,26 @@ def artifact_landing(artifact, method: str | None = None) -> tuple[str, str]:
                   a timeout must not be able to manufacture a merge, and a
                   merge is what authorises a deletion.
     """
+    if method == "served":
+        # The one wait no forge and no git can answer, so it is read off the
+        # record a PERSON writes (`reviewed` below) and nothing else. `open`
+        # rather than a word of its own: "work awaiting review" is exactly
+        # what this is, and every reader of a landing — the reap gate, the
+        # blockers, the pane — already knows that word.
+        #
+        # NO DOCUMENT IS NO WAIT. A `not-applicable` task concludes having
+        # produced nothing, and a wait on a reader who was handed no address
+        # is one nothing could ever end: the task would sit `done` for good,
+        # holding a session and holding every task blocked on it, until
+        # somebody closed a review of a document that was never served.
+        if not artifact:
+            return "none", "no document was served, so there is no reader to wait for"
+        if reviewed:
+            return "none", "the reader's review was recorded closed"
+        return "open", (
+            "a served document is awaiting its reader; nothing but "
+            f"`fleet queue reviewed {ref}` closes that"
+        )
     if method in ("note", "none"):
         return "none", f"a `{method}` task has no pull request of its own to wait for"
     url = forge.change_url(artifact)
@@ -5110,15 +5199,29 @@ def task_landing(task: Task) -> tuple[str, str]:
     artifact: same word, same sentence, same reap.
     """
     method = task_publish(task)[0]
+    closed = review_closed(task)
     rows = []
     for entry in recorded_artifacts(task):
-        kind, detail = artifact_landing(entry["url"], method)
+        kind, detail = artifact_landing(entry["url"], method, closed, task.ref)
         rows.append({"repo": entry["repo"], "kind": kind, "detail": detail})
     if len(rows) == 1:
         return rows[0]["kind"], rows[0]["detail"]
     kinds = {r["kind"] for r in rows}
     kind = next((w for w in LANDING_ORDER if w in kinds), "unknown")
     return kind, "; ".join(f"{r['repo']}: {r['detail']}" for r in rows)
+
+
+def review_closed(task: Task) -> bool:
+    """Has a person said the reader is done with this task's served document?
+
+    THE ONLY WITNESS IS A PERSON. Fleet cannot poll a server it did not start,
+    a reader who closed the browser tab leaves no trace anywhere fleet can
+    read, and an idle session proves nothing — the agent being at rest is what
+    waiting for feedback LOOKS like. So this reads a record `cmd_reviewed`
+    writes and derives nothing, the way a condition blocker is cleared by the
+    hand that recorded it and by nothing else.
+    """
+    return bool((task.doc.get("review") or {}).get("closed"))
 
 
 def sweep_landings(q: Queue, dry: bool) -> dict:
@@ -5660,6 +5763,79 @@ def cmd_reap(args) -> int:
     # `all`, and deliberately not the default view — see `reap` above.
     if reap(Queue(queue_root(), scope="all"), dry=args.dry_run) == 0:
         print("reap: nothing has landed and no finished task is still holding a session")
+    return 0
+
+
+# Why a task in each state is not one waiting on a reader — and, where there is
+# one, the command that moves it on. A sentence that named `collect` for every
+# state sent the operator to a command that skips `landed` and `abandoned`
+# entirely, which is worse than saying nothing.
+REVIEWED_REFUSALS = {
+    "queued": "Nothing is waiting yet: it has not been dispatched.",
+    "dispatched": (
+        "Nothing is waiting yet: its worker has not finished. "
+        "`fleet queue collect` is what concludes it."
+    ),
+    "landed": "It has already landed, so there is nothing left for a reader to hold.",
+    "abandoned": "Its artifact was given up on, so nothing is waiting on a reader.",
+    "stuck": (
+        "Its worker gave up: that session is the evidence and a human decides, "
+        "which is a different keep from a reader's."
+    ),
+    "failed": (
+        "Its worker gave up: that session is the evidence and a human decides, "
+        "which is a different keep from a reader's."
+    ),
+}
+
+
+def cmd_reviewed(args) -> int:
+    """Record that the reader is done with a served document, and release it.
+
+    THE HONEST HALF OF `served`. A kept session is a held machine, so a shape
+    that keeps one needs an END, and a document served off any forge has no
+    event fleet can observe: no merge, no comment API, no server fleet started.
+    So this is a person, saying so, exactly as `block --clear --condition` is.
+    It is the sentence `reap` prints under every task it keeps for this reason,
+    so the operator never has to remember the command — only to decide.
+
+    IT WRITES THE READER'S ANSWER AND NOTHING ELSE — no `state`, no `outcome`.
+    The landing sweep still asks the same question on the next pass and still
+    promotes the task itself, which keeps one answer to "has this landed"
+    instead of two that can disagree.
+    """
+    q = Queue(queue_root())
+    task = q.get(args.ref)
+    method = task_publish(task)[0]
+    if method != "served":
+        raise QueueError(
+            f"{task.ref} publishes `{method}`, and only a `served` task waits on a "
+            "reader. Nothing else here is held for one."
+        )
+    if review_closed(task):
+        was = (task.doc.get("review") or {}).get("closed")
+        raise QueueError(f"{task.ref}: its review was already recorded closed at {was}")
+    # ONLY A TASK THAT HAS CONCLUDED. Recorded on one still running, the answer
+    # sits there until `collect` reads its result — and that same pass lands it
+    # and reaps the session, so the document is served and its worker is gone in
+    # one command. That is the failure `served` exists to prevent, arrived at
+    # from the other end.
+    if task.state != "done":
+        raise QueueError(
+            f"{task.ref} is `{task.state}`, and a review is closed on a task "
+            "that has concluded and is waiting on its reader. "
+            + REVIEWED_REFUSALS.get(
+                task.state, "Nothing about this task is waiting on a reader."
+            )
+        )
+    why = (args.why or "").strip()
+    task.doc["review"] = {"closed": now(), **({"why": why} if why else {})}
+    task.save()
+    print(
+        f"{task.ref}: review closed — the document is no longer waiting on a reader.\n"
+        "    `fleet queue reap` lands it and releases the session that was "
+        "kept to answer them."
+    )
     return 0
 
 
@@ -8954,6 +9130,12 @@ def cmd_show(args) -> int:
     landing = d.get("landing") or {}
     if landing.get("state"):
         print(f"    {'landing:':<12} {landing['state']} — {landing.get('detail', '')}")
+    review = d.get("review") or {}
+    if review.get("closed"):
+        print(
+            f"    {'reviewed:':<12} closed at {review['closed']}"
+            + (f" — {review['why']}" if review.get("why") else "")
+        )
     refuels = d.get("refuels") or []
     if refuels:
         print(f"    {'refuelled:':<12} {len(refuels)} restart(s) of {REFUEL_CAP}, last "
@@ -9193,7 +9375,9 @@ def build_parser() -> argparse.ArgumentParser:
         choices=sorted(PUBLISH_METHODS),
         help="what this task must PRODUCE: `pr` or `attested`, a pull request "
         "from its branch; `push`, a commit on its base; `note`, a review or "
-        "comment on its --target; `none`, nothing fleet can check. Defaults to "
+        "comment on its --target; `served`, a document served to a reader, "
+        "whose session is kept to answer them until `fleet queue reviewed`; "
+        "`none`, nothing fleet can check and nobody waiting. Defaults to "
         "orchestration/publish.conf, and to `pr` when there is none",
     )
     a.add_argument(
@@ -9338,6 +9522,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="say what would land and what would be released, and write nothing",
     )
     rp.set_defaults(func=cmd_reap)
+
+    rv = sub.add_parser(
+        "reviewed",
+        help="record that the reader is done with a `served` task's document",
+    )
+    rv.add_argument("ref")
+    rv.add_argument("--why", help="what the reader said, or how you know they are done")
+    rv.set_defaults(func=cmd_reviewed)
 
     rf = sub.add_parser("refuel", help="restart the workers that ran out of quota")
     rf.add_argument("ref", nargs="?",

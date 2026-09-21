@@ -91,21 +91,24 @@ names every path and the reason for each.
 - `orchestration/publish.example.conf` and `agent.example.conf` — the two
   settings that keep fleet agnostic about YOUR tools. The first holds the
   default publish method and the free-text command that produces it, plus the
-  attestation marker your pipeline emits; `scripts/lib/queue.py` models five
-  ARTIFACT SHAPES (`attested`, `pr`, `push`, `note`, `none`) and no tool
-  names, so a publisher fleet has never heard of still works. `note` is a
+  attestation marker your pipeline emits; `scripts/lib/queue.py` models six
+  ARTIFACT SHAPES (`attested`, `pr`, `push`, `note`, `served`, `none`) and no
+  tool names, so a publisher fleet has never heard of still works. `note` is a
   review or comment on the change request or issue a task records as its
-  `target` (`fleet queue add --target`), and `none` is a deliverable no forge
-  holds; both words, and `target`, are part of `task.yaml`'s contract. The
-  second holds which agent your workers run, which provider `refuel` gates on,
-  and how that agent says it hit a limit. **Both tracked copies name nothing**
-  — `uv run fleet check automerge` fails one that does — so a fresh clone
-  inherits no operator's pipeline, vendor or agent. Copy either to a gitignored
-  `*.conf` beside it to set anything. The marker is read in TWO SHAPES — the
-  JSON inside the comment, or the marker alone with the JSON in a fenced block
-  after it — because a publisher that writes the second is a different SHAPE
-  and not a different
-  string, which no value of the setting would have reached. The retired word
+  `target` (`fleet queue add --target`); `served` is a document served to a
+  READER, which is `none` plus the one fact `none` cannot hold — somebody is
+  expected to answer it — so it lands, and releases its session, only when a
+  person runs `fleet queue reviewed`; and `none` is a deliverable no forge
+  holds and nobody is waiting on. All three words, and `target`, are part of
+  `task.yaml`'s contract. The second holds which agent your workers run, which
+  provider `refuel` gates on, and how that agent says it hit a limit. **Both
+  tracked copies name nothing** — `uv run fleet check automerge` fails one that
+  does — so a fresh clone inherits no operator's pipeline, vendor or agent.
+  Copy either to a gitignored `*.conf` beside it to set anything. The marker
+  is read in TWO SHAPES — the JSON inside the comment, or the marker alone with
+  the JSON in a fenced block after it — because a publisher that writes the
+  second is a different SHAPE and not a different string, which no value of the
+  setting would have reached. The retired word
   `no-mistakes` is still accepted wherever a method is read and means
   `attested`, so a record written before the rename still loads.
 - `orchestration/agent-policy.example.conf` — the per-repository agent policy:
@@ -358,7 +361,13 @@ a second copy — read the skill before you run any of it:
    unmerged — and `fleet queue reap`, which `collect` runs itself, deletes the
    session then. It never touches one that is working, blocked, or was given
    up in: that session is the evidence. Blockers clear on `landed`, and a
-   topic whose every task is terminal archives itself.
+   topic whose every task is terminal archives itself. **A `served` task is
+   that same wait with no forge in it**: fleet cannot ask a server it did not
+   start whether a reader is done, so the task stands `open` — session kept,
+   ready to answer them — until `fleet queue reviewed <ref>` says a person is,
+   which is the same hand that clears a condition blocker. Five documents were
+   served, landed and reaped on one pass before that word existed, and every
+   reader who annotated one and sent it back was told nobody was listening.
 7. **The change request outlives the task, so `fleet queue shepherd` is a fourth
    thing, run as reflexively as `collect`.** It asks the FORGE for every open
    change request on every repo the queue's tasks name — each `--add-repo`

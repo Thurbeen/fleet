@@ -66,9 +66,12 @@ artifact is not there, or is not from your branch — or is not on the
 **Target** your brief names, when it names one — **is not closed**: the lead
 sees it at collect time and sends you back. A `note` must also be written by
 the account this machine's forge CLI is logged in as, so post it yourself and
-never link somebody else's. A `none` task is not checked at all. So verify
-your own artifact before you report done. For an `attested` task that is one
-command, in the CLI your forge has.
+never link somebody else's. A `none` task is not checked at all, and neither
+is a `served` one — but a `served` task is not FINISHED either: its session is
+kept up deliberately so that whoever reads your document has somebody to answer
+them. Leave it serving, and stay available until the lead records the review
+closed. So verify your own artifact before you report done. For an `attested`
+task that is one command, in the CLI your forge has.
 
 On GitHub:
 
@@ -138,7 +141,7 @@ this shape:
 ```markdown
 ---
 outcome: shipped | stuck | failed | not-applicable
-artifact: <PR URL, commit URL for a `push` task, note URL for a `note` task, or omit>
+artifact: <PR URL, commit URL for a `push` task, note URL for a `note` task, the document's URL for a `served` task, or omit>
 ---
 A short paragraph: what you actually did, and anything the lead must know.
 ```
@@ -162,8 +165,9 @@ that leaves one out is held open exactly as one with no artifact at all is.
 
 `outcome` is one of those four words and nothing else. `artifact` is whatever
 your brief's Publish line says it is — a change request URL for `pr` and
-`attested`, a commit URL for `push`, the note's own URL for `note`, and what you
-produced, if anything, for `none`; `not-applicable` and `stuck` usually have
+`attested`, a commit URL for `push`, the note's own URL for `note`, the URL the
+document is served at for `served`, and what you produced, if anything, for
+`none`; `not-applicable` and `stuck` usually have
 none, and that is fine. `shipped` is a claim that the artifact exists, so
 report it without one, or with something of the wrong shape, and the lead's
 `collect` holds your task open rather than trusting the word alone.

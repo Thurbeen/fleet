@@ -206,6 +206,11 @@ def probe_queue() -> dict:
                     "branch": t.doc.get("branch"),
                     "session": t.doc.get("session"),
                     "outcome": t.doc.get("outcome"),
+                    # What the last sweep found when it asked whether this
+                    # task's artifact had landed. `open` is the one word that
+                    # means something is still waiting on it, and the session
+                    # section below is the reader that needs it.
+                    "landing": t.doc.get("landing") or {},
                     "artifact": t.doc.get("artifact"),
                     # Every artifact this task recorded, flat. A task that
                     # spans repositories carries one per repository and
@@ -281,17 +286,30 @@ def probe_sessions(tasks: list) -> dict:
         sid = t["session"]
         s = live.get(sid)
         concluded = t["state"] in CONCLUDED
+        # CONCLUDED IS NOT THE SAME AS FINISHED WITH, and only the second is an
+        # orphan. A task whose landing still reads `open` is waiting on
+        # somebody — a change request nobody has merged, a served document
+        # nobody has answered — and `reap` keeps its session for exactly that.
+        # Printing "delete the session" over it advised undoing the keep; for a
+        # served document that is the bug the shape was added to end.
+        waiting = (t.get("landing") or {}).get("state") == "open"
         if s is None:
             # A concluded task's session is MEANT to be gone — the loop's last
             # step deletes it — so that pairing is not news and is not printed.
             # The same absence under an OPEN task is: the worker went away
             # without concluding anything.
-            if concluded:
+            #
+            # AND UNDER A WAITING ONE IT IS THE WORST NEWS THIS SECTION HAS.
+            # `reap` kept that session on purpose and clears the id when it
+            # releases one, so an id still on the record with nothing behind it
+            # means the keep failed: for a served document, that is precisely
+            # the reader being told nobody is listening.
+            if concluded and not waiting:
                 continue
             sec["sessions"].append(
                 {"ref": t["ref"], "session": sid, "listed": False, "orphan": False,
-                 "name": None, "state": None, "state_source": None,
-                 "age_secs": None, "stopped": None}
+                 "waiting": waiting, "name": None, "state": None,
+                 "state_source": None, "age_secs": None, "stopped": None}
             )
             continue
         sec["sessions"].append(
@@ -299,9 +317,10 @@ def probe_sessions(tasks: list) -> dict:
                 "ref": t["ref"],
                 "session": sid,
                 "listed": True,
-                # Concluded, and still holding a session: the one thing the
-                # lead has left to do about this task.
-                "orphan": concluded,
+                # Concluded, nothing waiting on it, and still holding a
+                # session: the one thing the lead has left to do about it.
+                "orphan": concluded and not waiting,
+                "waiting": waiting,
                 "name": s.get("name"),
                 "state": s.get("state"),
                 "state_source": s.get("state_source"),
@@ -1281,9 +1300,17 @@ def render_sessions(sec: dict) -> list:
     lines = [head("SESSIONS", f"{len(rows)} still attached to a task")]
     for s in rows:
         if not s["listed"]:
+            # Two different absences, and they ask for different things. An
+            # open task's worker went away without concluding; a WAITING task's
+            # session was kept on purpose and is not there to be waited on.
+            why = (
+                "was kept for whoever is still waiting on this task, and is gone"
+                if s.get("waiting")
+                else "is gone, and the task is still open"
+            )
             lines.append(
                 f"    {'not listed':<11} {'-':>5}  {'-':<8} {s['ref']}"
-                f"  (session {s['session'][:8]} is gone, and the task is still open)"
+                f"  (session {s['session'][:8]} {why})"
             )
             continue
         note = "  stopped" if s.get("stopped") else ""
