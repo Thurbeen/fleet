@@ -1,6 +1,10 @@
 # Install fleet on Windows: uv, git and the checkout, then `fleet install` for everything else.
 #
-#     powershell -c "irm https://raw.githubusercontent.com/Thurbeen/fleet/main/install.ps1 | iex"
+#     irm https://raw.githubusercontent.com/Thurbeen/fleet/main/install.ps1 | iex
+#
+# At the PowerShell prompt, as it stands. `powershell -c "irm ... | iex"` puts
+# the download-and-run on a new process's command line, which Microsoft
+# Defender flags and removes mid-run (#137).
 #
 # Or read it before running it:
 #

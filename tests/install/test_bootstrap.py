@@ -1,7 +1,8 @@
 """The one-liners: `install.sh` under `sh` and `install.ps1` under PowerShell, end to end.
 
 Each bootstrap is run the way an operator meets it — the script on stdin of
-`sh`, or `irm | iex`'s shape — in a throwaway HOME against a local clone of
+`sh`, or the README's own Windows line, fetching install.ps1 from a local
+server — in a throwaway HOME against a local clone of
 this tree, with `uv` and `git` as stand-ins. The same claims hold for both:
 
   - a fresh machine gets uv (from an installer the test stands in), a clone at
@@ -21,11 +22,15 @@ names a local script to run instead, and nothing reads it unless it is set.
 
 from __future__ import annotations
 
+import http.server
 import json
 import os
 import shutil
 import subprocess
 import sys
+import tempfile
+import threading
+from functools import cache
 from pathlib import Path
 
 import pytest
@@ -39,6 +44,35 @@ SH = shutil.which("sh")
 # install.ps1 is the Windows bootstrap. A Linux runner that ships pwsh (GitHub's
 # ubuntu image does) is not a machine it is for: it finds no uv.exe and no winget.
 POWERSHELL = (shutil.which("powershell") or shutil.which("pwsh")) if WINDOWS else None
+
+URL = "https://raw.githubusercontent.com/Thurbeen/fleet/main/install.ps1"
+
+
+def published(path: Path) -> list[str]:
+    """Every line of `path` that fetches install.ps1 and runs it: the one-liner as published."""
+    lines = (line.strip().lstrip("#").strip() for line in path.read_text(encoding="utf-8").splitlines())
+    return [line for line in lines if URL in line and "iex" in line]
+
+
+@cache
+def served() -> str:
+    """This tree's install.ps1 over HTTP, the way raw.githubusercontent.com serves it."""
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = (REPO / "install.ps1").read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return f"http://127.0.0.1:{server.server_port}/install.ps1"
 
 
 class Sh:
@@ -83,13 +117,17 @@ class PowerShell:
 
     def run(self, env: dict, *args: str, piped: bool = True) -> Run:
         script = REPO / "install.ps1"
-        if piped and not args:
-            # `irm | iex`'s shape: the script's TEXT, evaluated, with no file and no param().
-            argv = [POWERSHELL, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
-                    f"Get-Content -Raw -LiteralPath '{script}' | Invoke-Expression; exit $FleetInstallExit"]
-        else:
-            argv = [POWERSHELL, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script), *args]
-        done = subprocess.run(argv, input=b"", env=env, capture_output=True)
+        with tempfile.TemporaryDirectory() as scratch:
+            if piped and not args:
+                # The README's own line, typed into the operator's session, with only
+                # its URL pointed at this tree. A file carries it so that no process's
+                # command line does, as none does when an operator types it.
+                typed = Path(scratch) / "typed.ps1"
+                write(typed, published(REPO / "README.md")[0].replace(URL, served()) + "\nexit $FleetInstallExit\n")
+                argv = [POWERSHELL, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(typed)]
+            else:
+                argv = [POWERSHELL, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script), *args]
+            done = subprocess.run(argv, input=b"", env=env, capture_output=True)
         return Run(done.returncode, done.stdout.decode("utf-8", "replace"), done.stderr.decode("utf-8", "replace"))
 
     def uv_installer(self, where: Path) -> Path:
@@ -187,6 +225,20 @@ def test_a_uv_installer_that_installs_nothing_stops_the_bootstrap_before_the_clo
     assert done.code != 0, done.out
     assert not box.clone.exists(), f"the bootstrap cloned after its uv step refused:\n{done.out}"
     refute(done.out, "Cloned ")
+
+
+def test_every_published_windows_one_liner_is_irm_piped_to_iex_in_the_operators_own_session():
+    """#137. `powershell -c "irm <url> | iex"` puts the download-and-run on a
+    new process's command line, which Microsoft Defender's command-line
+    detection (Trojan:Win32/Commando.A!ml) flags and removes: removed
+    mid-run, the child fails with an empty-string `Invoke-Expression` and a
+    closing brace that is "missing". Typed at the prompt, the same `irm | iex`
+    is on no command line at all. One line, and every copy of it."""
+    places = [REPO / "README.md", REPO / "install.ps1", REPO / "AGENTS.md",
+              *sorted((REPO / ".agents" / "skills").glob("*/SKILL.md"))]
+    found = {f"{path.relative_to(REPO)}: {line}" for path in places for line in published(path)}
+    assert found, "nothing publishes the Windows one-liner"
+    assert all(entry.endswith(f": irm {URL} | iex") for entry in found), sorted(found)
 
 
 @pytest.mark.parametrize("name", ["install.ps1", "install.sh"])
