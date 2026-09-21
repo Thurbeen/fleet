@@ -31,6 +31,7 @@ from statuskit import (
     MUTE,
     PRS,
     SEAM,
+    REVIEWER,
     SERVER,
     SESSIONS,
     STALE,
@@ -44,6 +45,7 @@ from statuskit import (
     per_account,
     quota_axi,
     records,
+    reviewer_session,
     served_session,
     window,
 )
@@ -91,6 +93,32 @@ def serve_a_document(queue: Path, tmp: Path) -> None:
           "---\noutcome: shipped\nartifact: http://localhost:8123/review/the-document\n"
           "---\nServed it; nobody has answered yet.\n")
     ok(run_queue("collect", "--no-reap"))
+
+
+def open_a_change_request(queue: Path, tmp: Path) -> None:
+    """A `pr` task, concluded, with its change request still open.
+
+    The ordinary case, and the FOIL: its landing reads `open` too, and `reap`
+    keeps its session for the same reason, so it is what proves the rows below
+    are about the served shape rather than about the word `open`.
+
+    Written as a record rather than driven, unlike the served task beside it.
+    Reaching `landing: open` honestly means a forge answering `OPEN` for this
+    task's pull request, and the `gh` stub here answers one fixed document to
+    every question. The foil is a SHAPE this module must ignore; where its
+    landing came from is not what is under test.
+    """
+    ok(run_queue("add", "selftest", "open-a-pr", "--title", "Open a pull request",
+                 "--repo", str(tmp / "repo"), "--branch", "t/dispatched",
+                 "--publish", "pr", "--brief-file", str(tmp / "brief.md")))
+    ok(run_queue("attach", "selftest/05-open-a-pr", REVIEWER))
+    task = queue / "selftest" / "05-open-a-pr" / "task.yaml"
+    body = task.read_text(encoding="utf-8")
+    assert "state: dispatched" in body, body
+    write(task, body.replace(
+        "state: dispatched",
+        "state: done\nlanding:\n  state: open\n  detail: pull/13 is still open",
+    ))
 
 
 # --- 1. every probe missing, and it still answers -----------------------------
@@ -219,11 +247,46 @@ def test_a_session_kept_for_a_reader_and_then_gone_is_the_loudest_row_there_is(
     stubs.tool("thurbox-cli", answer(json.dumps(SESSIONS + [served_session()])))
     serve_a_document(queue, tmp_path)
 
-    # thurbox no longer has it.
+    # An ordinary `done` task with an open change request, whose session was
+    # tidied away: the same `landing: open`, and NOT this row. That pairing has
+    # always been silent, and a claim about a reader is false of it.
+    open_a_change_request(queue, tmp_path)
+    # While its session is still live, it is not the lead's to delete either:
+    # `reap` is keeping it to fix what review finds, and this screen may not
+    # advise undoing a keep the reaper enforces.
+    stubs.tool("thurbox-cli",
+               answer(json.dumps(SESSIONS + [served_session(), reviewer_session()])))
+    out = status().out
+    expect(out, "05-open-a-pr")
+    refute(out, "delete the session")
+
+    # thurbox no longer has either of them.
     stubs.tool("thurbox-cli", answer("[]"))
     done = status()
     expect(done.out, "04-serve-a-document", "not listed", "kept for whoever is still waiting")
     refute(done.out, "none dispatched by this queue")
+    kept = [ln for ln in done.out.splitlines() if "kept for whoever is still waiting" in ln]
+    assert len(kept) == 1, f"one waiting row, not {len(kept)}:\n" + "\n".join(kept)
+    assert "05-open-a-pr" not in kept[0], kept[0]
+
+
+def test_a_publish_setting_this_machine_cannot_parse_still_draws_every_section(
+    queue, stubbed, tmp_path
+):
+    """The first thing this file exists to prevent: one probe taking the screen.
+
+    Which shape a task publishes is resolved through the operator's own
+    `publish.conf`, and a one-character slip in that gitignored file is a
+    refusal everywhere a task is about to be dispatched or verified under it.
+    Here it is one field of one row, and a traceback instead of the fuel, the
+    queue, the sessions and the checkout is the worst trade this screen makes.
+    """
+    write(Path(os.environ["FLEET_PUBLISH_ROOT"]) / "orchestration" / "publish.conf",
+          "METHOD=typo\n")
+    done = status()
+    assert done.code == 0, done.out
+    expect(done.out, *SECTIONS)
+    expect(done.out, "01-dispatched-task")
 
 
 # --- 5. it reports the artifact, with its checks ------------------------------

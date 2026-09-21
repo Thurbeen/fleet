@@ -122,7 +122,11 @@ to run them. What is here is what is YOURS in each.
    either way, so a task's record says `checks-running` or `unattested` and not
    just `shipped`.
 7. Review them; the operator merges every one `shepherd` did not. Sessions
-   release themselves once their artifact lands, and `collect` reaps them.
+   release themselves once their artifact lands, and `collect` reaps them —
+   except a `served` one, whose document is waiting on a READER and whose
+   session is kept to answer them until you run
+   `uv run fleet queue reviewed <ref>`. A served task that served no document
+   is no wait and lands on the next pass like anything else.
 8. **`refuel` a worker that hit its agent's token limit and never reported —
    thurbox keeps saying `working` because the idle hook never fires.** It asks
    the account's own quota window (below) before it looks at any session.

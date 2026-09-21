@@ -18,6 +18,9 @@ S1 = "11111111-1111-1111-1111-111111111111"
 # deliberately absent from SESSIONS below, so a test decides whether thurbox
 # still has it.
 SERVER = "55555555-5555-5555-5555-555555555555"
+# The worker of an ordinary task whose change request is open — the session
+# `reap` also keeps, and the one a claim about a READER must not be made about.
+REVIEWER = "66666666-6666-6666-6666-666666666666"
 
 
 def ok(done):
@@ -94,6 +97,13 @@ SESSIONS = [
 def served_session(state: str = "idle") -> dict:
     """The row thurbox answers for a worker kept up to answer a reader."""
     return {"id": SERVER, "name": "Serve a document", "state": state,
+            "state_source": "hook", "hook_state_age_secs": 12, "stopped": False,
+            "hook_reported": True}
+
+
+def reviewer_session(state: str = "idle") -> dict:
+    """And for the worker of an ordinary task whose change request is open."""
+    return {"id": REVIEWER, "name": "Open a pull request", "state": state,
             "state_source": "hook", "hook_state_age_secs": 12, "stopped": False,
             "hook_reported": True}
 

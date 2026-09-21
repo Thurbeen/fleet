@@ -147,8 +147,10 @@ def test_a_served_document_keeps_its_session_until_a_person_closes_the_review(
     refute(out, "reaped")
     refute(deletions(stubs), sid)
 
-    # Every later pass keeps it for the same reason, and names what ends it.
-    expect(q("reap").out, "10-serve-the-explainer", "kept", "reviewed")
+    # Every later pass keeps it for the same reason, and names what ends it —
+    # the command with this task's own ref in it, which is what makes the line
+    # something the operator can run rather than a form to fill in.
+    expect(q("reap").out, "10-serve-the-explainer", "kept", f"reviewed {ref}")
     refute(deletions(stubs), sid)
     expect(q("show", ref).out, "publish:     served", "reader")
 
@@ -190,6 +192,12 @@ def test_a_served_task_that_served_nothing_waits_on_nobody(first_landed, stubs, 
            publish="served")
     expect(q("collect").out, "12-serve-nothing", "reaped")
     expect(deletions(stubs), "--force", sid)
+
+    # AND IT CLAIMS NO PUBLISH. The word `served` on the publish block exists to
+    # overwrite the `unverified` a held-open pass leaves, which is reachable
+    # only with a URL — written here it would say a document was served, and
+    # the pane draws an artifact row for any task carrying one.
+    refute(q("show", f"{first_landed}/12-serve-nothing").out, "published:")
 
 
 def test_a_served_task_shipped_without_a_url_is_held_like_any_unproven_claim(
@@ -252,7 +260,52 @@ def test_a_review_cannot_be_closed_before_the_worker_has_concluded(
     expect(out.out, "landed", "already landed")
     refute(out.out, "collect")
 
+    # A task nothing has dispatched is refused for its own reason.
+    ok(q("add", first_landed, "serve-one-day", "--title", "Serve one day",
+         "--repo", "/tmp/repo-a", "--branch", "fix/serve-one-day", "--number", "16",
+         "--publish", "served"))
+    out = q("reviewed", f"{first_landed}/16-serve-one-day")
+    assert out.code != 0, out.out
+    expect(out.out, "queued", "not been dispatched")
+
+    # And one whose worker gave up keeps its session as evidence, which is a
+    # different keep from a reader's.
+    worker(first_landed, "17", "serve-a-failure", "Serve a failure",
+           "00000000-0000-0000-0000-000000000001", "idle", "stuck",
+           "Could not serve it.", stubs, queue_dir, publish="served")
+    ok(q("collect"))
+    out = q("reviewed", f"{first_landed}/17-serve-a-failure")
+    assert out.code != 0, out.out
+    expect(out.out, "stuck", "evidence")
+
     # And a task that publishes something else is not held for a reader at all.
     out = q("reviewed", f"{first_landed}/02-document-the-states")
     assert out.code != 0, out.out
     expect(out.out, "attested")
+
+
+def test_a_worker_that_withdraws_its_claim_takes_the_refusal_with_it(
+    first_landed, stubs, queue_dir
+):
+    """The refusal outlived the claim it refused.
+
+    A task held open for an artifact it did not give, whose worker comes back
+    claiming none at all, is not the task that was refused. `unverified` is a
+    verdict about an artifact this pass was never handed, and left on the
+    record it is drawn red in the pane over a task that landed having
+    correctly produced nothing.
+    """
+    sid = "00000000-0000-0000-0000-000000000002"
+    ref = f"{first_landed}/18-serve-then-think-again"
+    worker(first_landed, "18", "serve-then-think-again", "Serve, then think again", sid,
+           "idle", "shipped", "Served it, and forgot to say where.", stubs, queue_dir,
+           publish="served")
+    expect(q("collect").out, "18-serve-then-think-again", "NOT CLOSED")
+    expect(q("show", ref).out, "unverified")
+
+    result(queue_dir / first_landed / "18-serve-then-think-again", "not-applicable",
+           "On reflection there was nothing to serve.")
+    expect(q("collect").out, "18-serve-then-think-again", "reaped")
+    show = q("show", ref).out
+    expect(show, "state:       landed")
+    refute(show, "unverified")

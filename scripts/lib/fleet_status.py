@@ -181,6 +181,22 @@ def probe_queue() -> dict:
             return task.state
         return "ready" if q.is_ready(task) else "waiting"
 
+    def method_of(task) -> str:
+        """Which shape this task publishes, or "" when the answer cannot be read.
+
+        `task_publish` resolves the operator's default, and a `publish.conf`
+        with a typo in `METHOD=` raises rather than guessing — correctly, where
+        a task is about to be dispatched or verified under it. Here it is one
+        FIELD of one row, and the section's own rule is that a record it cannot
+        read costs that record and not the screen. Uncaught, a one-character
+        slip in a gitignored file exited this command non-zero with a traceback
+        and printed no fuel, no queue, no sessions and no checkout either.
+        """
+        try:
+            return fleetqueue.task_publish(task)[0]
+        except Exception:
+            return ""
+
     counts: dict = {}
     for topic, tasks in sorted(q.by_topic().items()):
         entry = {
@@ -207,10 +223,11 @@ def probe_queue() -> dict:
                     "session": t.doc.get("session"),
                     "outcome": t.doc.get("outcome"),
                     # What the last sweep found when it asked whether this
-                    # task's artifact had landed. `open` is the one word that
-                    # means something is still waiting on it, and the session
-                    # section below is the reader that needs it.
+                    # task's artifact had landed, and which shape it was asked
+                    # about. The session section below needs both: `open`
+                    # alone is true of every change request nobody has merged.
                     "landing": t.doc.get("landing") or {},
+                    "publish_method": method_of(t),
                     "artifact": t.doc.get("artifact"),
                     # Every artifact this task recorded, flat. A task that
                     # spans repositories carries one per repository and
@@ -286,13 +303,21 @@ def probe_sessions(tasks: list) -> dict:
         sid = t["session"]
         s = live.get(sid)
         concluded = t["state"] in CONCLUDED
-        # CONCLUDED IS NOT THE SAME AS FINISHED WITH, and only the second is an
-        # orphan. A task whose landing still reads `open` is waiting on
-        # somebody — a change request nobody has merged, a served document
-        # nobody has answered — and `reap` keeps its session for exactly that.
-        # Printing "delete the session" over it advised undoing the keep; for a
-        # served document that is the bug the shape was added to end.
-        waiting = (t.get("landing") or {}).get("state") == "open"
+        # TWO CLAIMS, AND THEY ARE NOT THE SAME SHAPE OF THING.
+        #
+        # `held` is "`reap` is keeping this session on purpose" — true of any
+        # concluded task whose artifact has not landed, a change request under
+        # review as much as a document awaiting its reader. Telling the lead to
+        # delete one of those is advising them to undo the keep the reaper
+        # enforces, and for a served document it is the bug the shape exists to
+        # end, offered as a remedy.
+        #
+        # `waiting_for_reader` is the narrower one, and it is the only thing
+        # the row's WORDING may be built on: "somebody is still waiting on
+        # this" is a sentence about a reader, and it is false of a pull
+        # request nobody has merged.
+        held = (t.get("landing") or {}).get("state") == "open"
+        waiting_for_reader = held and t.get("publish_method") == "served"
         if s is None:
             # A concluded task's session is MEANT to be gone — the loop's last
             # step deletes it — so that pairing is not news and is not printed.
@@ -304,11 +329,11 @@ def probe_sessions(tasks: list) -> dict:
             # releases one, so an id still on the record with nothing behind it
             # means the keep failed: for a served document, that is precisely
             # the reader being told nobody is listening.
-            if concluded and not waiting:
+            if concluded and not waiting_for_reader:
                 continue
             sec["sessions"].append(
                 {"ref": t["ref"], "session": sid, "listed": False, "orphan": False,
-                 "waiting": waiting, "name": None, "state": None,
+                 "waiting": waiting_for_reader, "name": None, "state": None,
                  "state_source": None, "age_secs": None, "stopped": None}
             )
             continue
@@ -317,10 +342,10 @@ def probe_sessions(tasks: list) -> dict:
                 "ref": t["ref"],
                 "session": sid,
                 "listed": True,
-                # Concluded, nothing waiting on it, and still holding a
+                # Concluded, nothing still waiting on it, and holding a
                 # session: the one thing the lead has left to do about it.
-                "orphan": concluded and not waiting,
-                "waiting": waiting,
+                "orphan": concluded and not held,
+                "waiting": waiting_for_reader,
                 "name": s.get("name"),
                 "state": s.get("state"),
                 "state_source": s.get("state_source"),

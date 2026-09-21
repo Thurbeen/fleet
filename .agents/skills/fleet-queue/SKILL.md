@@ -857,9 +857,7 @@ with its session kept, `reap` prints the remedy under it on every pass, and
 **you** close it once the reader is done:
 
 ```text
-    topic/10-serve-the-explainer kept       a served document is awaiting its
-                                            reader; nothing but `fleet queue
-                                            reviewed <ref>` closes that
+    topic/10-serve-the-explainer  kept  a served document is awaiting its reader; nothing but `fleet queue reviewed topic/10-serve-the-explainer` closes that
 ```
 
 `uv run fleet queue reviewed <ref> [--why …]` records that, and the next reap
