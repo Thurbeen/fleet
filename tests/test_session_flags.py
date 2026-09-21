@@ -8,6 +8,8 @@ directory is. The two-argument form the gate calls,
 `session_profiles.py <path> --check|<profile>`, still works.
 """
 
+import os
+
 import yaml
 
 from harness import PYTHON, REPO, expect, run, run_fleet, write
@@ -202,7 +204,8 @@ def test_no_overlay_renders_exactly_what_the_tracked_file_alone_does(tmp_path):
         default = run_fleet("session-flags", name, cwd=tmp_path, FLEET_PROFILES_ROOT=str(tmp_path))
         assert (default.code, default.stdout) == (alone.code, alone.stdout), name
     check = run_fleet("session-flags", "--check", cwd=tmp_path, FLEET_PROFILES_ROOT=str(tmp_path))
-    assert check.stdout == f"profiles ok: {len(names)} in orchestration/session-profiles.yaml\n", check.out
+    shown = os.path.join("orchestration", "session-profiles.yaml")
+    assert check.stdout == f"profiles ok: {len(names)} in {shown}\n", check.out
 
 
 def test_the_gate_form_reads_the_named_file_and_never_the_overlay(tmp_path):
