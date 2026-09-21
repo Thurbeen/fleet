@@ -108,7 +108,8 @@ checks each step as it goes.
 
    Type it at the PowerShell prompt as it stands: wrapped in
    `powershell -c "…"` it is flagged by Microsoft Defender. To read the script
-   before it runs, download it and run it as a file instead:
+   before it runs, or if the line above is blocked all the same, download it
+   and run it as a file instead:
 
    ```powershell
    irm https://raw.githubusercontent.com/Thurbeen/fleet/main/install.ps1 -OutFile install.ps1
