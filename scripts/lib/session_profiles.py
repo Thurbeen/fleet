@@ -10,17 +10,26 @@ between a task and its profile:
     fleet session-flags --check          validate every profile
 
 `orchestration/session-profiles.yaml` is read from this checkout whatever the
-caller's directory is. The gate's older form names the file itself:
+caller's directory is, and so is the operator's `session-profiles.local.yaml`
+beside it when it exists. The gate's older form names ONE file and reads only
+that one:
 
     session_profiles.py <path> --check|<profile>
 
 A profile carrying `command` renders `--command`, so drop `--agent` from that
 `session create` call: thurbox refuses both together.
 
-ONE FILE, ONE LAYER. `<path>` holds every profile there is. There used to be a
-gitignored `.local.yaml` overlay beside it, so a profile could be tuned without
-touching a tracked file; that only mattered while this repo was a template
-somebody pulled from, and the file is now simply the operator's to edit.
+TWO LAYERS, MERGED BY NAME. The tracked file is fleet's; the gitignored
+`session-profiles.local.yaml` beside it is the operator's, and a profile there
+replaces the tracked profile of the same name WHOLE — no key-by-key merge, so
+what a profile renders is always readable in one place. The overlay exists
+because the tracked file is out of an operator's reach: `fleet sync-checkout`
+refuses to fast-forward a dirty tree, so a profile written into it stops the
+checkout updating itself — and a clone that follows this public repo is the
+ordinary case, not a special one. No overlay renders exactly what the tracked
+file alone renders. `FLEET_PROFILES_ROOT` relocates the overlay (a directory
+holding `orchestration/session-profiles.local.yaml`), which is how the gate
+keeps an operator's copy out of every test.
 
 Flags are written NUL-separated so a value may contain anything execve
 accepts — a `--arg` is frequently a whole command line, and a line-based
@@ -198,10 +207,27 @@ def load_profiles(path, errors):
     return doc["profiles"]
 
 
-PROFILES = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    "orchestration", "session-profiles.yaml",
-)
+CHECKOUT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+PROFILES = os.path.join(CHECKOUT, "orchestration", "session-profiles.yaml")
+OVERLAY = os.path.join("orchestration", "session-profiles.local.yaml")
+
+
+def overlay_path() -> str:
+    """The operator's gitignored overlay, whether or not it exists."""
+    return os.path.join(os.environ.get("FLEET_PROFILES_ROOT") or CHECKOUT, OVERLAY)
+
+
+def load_layers(errors):
+    """The tracked profiles with the operator's overlay on top, by name.
+
+    None when either file will not parse, exactly as `load_profiles` answers
+    for one; a missing overlay is not an error, it is the ordinary checkout.
+    """
+    profiles = load_profiles(PROFILES, errors)
+    if profiles is None or not os.path.exists(overlay_path()):
+        return profiles
+    mine = load_profiles(overlay_path(), errors)
+    return None if mine is None else {**profiles, **mine}
 
 
 def parse_args(argv: list[str]) -> tuple[str, str] | int:
@@ -230,7 +256,7 @@ def main(argv: list[str] | None = None) -> int:
     path, wanted = parsed
 
     errors: list[str] = []
-    profiles = load_profiles(path, errors)
+    profiles = load_layers(errors) if path == PROFILES else load_profiles(path, errors)
     if profiles is None:
         return 1
 
@@ -240,7 +266,9 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     if wanted == "--check":
-        shown = os.path.relpath(path, os.path.dirname(os.path.dirname(PROFILES))) if path == PROFILES else path
+        shown = os.path.relpath(path, CHECKOUT) if path == PROFILES else path
+        if path == PROFILES and os.path.exists(overlay_path()):
+            shown += f" and {overlay_path()}"
         print(f"profiles ok: {len(profiles)} in {shown}")
         return 0
 

@@ -433,7 +433,10 @@ $THURBOX_SESSION` so `session list --parent` enumerates your workers — **excep
 on a task that names a `--host`**, where thurbox refuses a parent living on
 another machine and there is no way to spell one, so a remote worker has no
 parent and is enumerated by its task record instead — and the
-task's session profile from `orchestration/session-profiles.yaml`. Each worker is sent
+task's session profile from `orchestration/session-profiles.yaml`, or from the
+operator's gitignored `session-profiles.local.yaml` beside it — where a task
+that wants another model or thinking budget gets a profile of its own, since
+the tracked file is not the operator's to edit. Each worker is sent
 one line pointing at the absolute path of its own brief — nothing is copied into
 its worktree, so nothing can land in its PR.
 

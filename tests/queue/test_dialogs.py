@@ -218,3 +218,23 @@ def test_muse_stays_flag_required(stubs):
     report = json.loads(done.stdout)
     assert report["outcome"] == "flag-required", done.out
     assert keys(stubs) == []
+
+
+def test_dispatch_renders_a_profile_from_the_operators_overlay(stubs, queue_dir, tmp_path):
+    """#135: a worker's model set in the gitignored overlay, not the tracked file."""
+    write(tmp_path / "orchestration" / "session-profiles.local.yaml",
+          "profiles:\n  deep:\n    env:\n      ANTHROPIC_MODEL: some-model\n")
+    root = str(tmp_path)
+    topic = ok(q("topic", "add", "overlay", "--title", "Overlay profile",
+                 "--prompt", "a profile of the operator's own", FLEET_PROFILES_ROOT=root)).stdout.strip()
+    ok(q("add", topic, "deep", "--title", "Deep", "--repo", "/tmp/repo-overlay", "--branch", "fix/overlay",
+         "--number", "01", "--profile", "deep", FLEET_PROFILES_ROOT=root))
+    write(queue_dir / topic / "01-deep" / "BRIEF.md", "Think hard about it.\n")
+    sid = "d1a10900-0000-0000-0000-00000000000c"
+    next_session(stubs, sid)
+    behind_dialog(stubs, sid, FOLDER_DIALOG)
+
+    out = q("dispatch", FLEET_PROFILES_ROOT=root).out
+    create = [c for c in stubs.calls("thurbox-cli", "session create") if "--repo-path /tmp/repo-overlay" in c]
+    assert create, out
+    expect(create[-1], "--env ANTHROPIC_MODEL=some-model")

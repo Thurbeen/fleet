@@ -20,7 +20,7 @@ what keeps all of that out, held to these guarantees by
             the account they are signed in to. FLEET_RECONCILE_PARENT_PID is
             this test run, so a loop a test starts ends with the run even when
             no teardown does.
-  settings  FLEET_{AUTO_MERGE,PUBLISH,AGENT,GLYPH,NAME}_ROOT and FLEET_VOICE_CONF at
+  settings  FLEET_{AUTO_MERGE,PUBLISH,AGENT,GLYPH,NAME,PROFILES}_ROOT and FLEET_VOICE_CONF at
             a copy of the TRACKED *.example.conf only; FLEET_QUEUE_DIR,
             FLEET_RUNS_DIR and FLEET_RECONCILE_DIR at empty directories; and
             FLEET_REGISTRY_FILE at a registry map that does not exist.
@@ -160,6 +160,7 @@ def isolate(environ: dict, root: Path, stub_bin: Path) -> dict:
         FLEET_AGENT_POLICY_ROOT=settings,
         FLEET_GLYPH_ROOT=settings,
         FLEET_NAME_ROOT=settings,
+        FLEET_PROFILES_ROOT=settings,
         FLEET_VOICE_CONF=str(root / "settings" / "orchestration" / "voice.example.conf"),
         FLEET_QUEUE_DIR=str(root / "queue"),
         FLEET_RUNS_DIR=str(root / "runs"),

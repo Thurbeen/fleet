@@ -217,12 +217,13 @@ Verify before moving on; the sync refuses a file with no active entries, and it
 is better to catch that here: read `registry/owners.txt` back, and see at least
 one line that is neither blank nor a `#` comment.
 
-Nothing else needs seeding. Playbooks and session profiles are tracked files
-the operator edits directly — `orchestration/playbooks/<name>.md` from
-`_TEMPLATE.md`, and `orchestration/session-profiles.yaml` in place. The one
-thing worth saying about the latter: it is committed to a **public** repo, so
-nothing environment-specific goes in it, and a credential should reach a worker
-by inheriting the thurbox server's environment rather than by living in a file.
+Nothing else needs seeding. Playbooks are tracked files the operator edits
+directly, `orchestration/playbooks/<name>.md` from `_TEMPLATE.md`. Session
+profiles of their own go in the gitignored
+`orchestration/session-profiles.local.yaml`, never in the tracked
+`session-profiles.yaml`, whose edit would stop `fleet sync-checkout`. Gitignored
+is not secret: a credential should reach a worker by inheriting the thurbox
+server's environment rather than by living in either file.
 
 ## Step 4/7 — Registry
 

@@ -3510,7 +3510,7 @@ def read_text(path: str) -> str:
 
 
 def profile_flags(profile: str) -> list:
-    """The agent settings for this task, from orchestration/session-profiles.yaml.
+    """The agent settings for this task: session-profiles.yaml, and the overlay.
 
     In-process, and not through a child process: on a machine with no bash
     the old shell call failed, the failure was swallowed here, and the worker
@@ -3520,8 +3520,7 @@ def profile_flags(profile: str) -> list:
     """
     profiles_mod = _load_sibling("fleet_session_profiles", "session_profiles.py")
     errors: list[str] = []
-    path = os.path.join(checkout_root(), "orchestration", "session-profiles.yaml")
-    profiles = profiles_mod.load_profiles(path, errors)
+    profiles = profiles_mod.load_layers(errors)
     if profiles is None or errors or profile not in profiles:
         return []
     return profiles_mod.render(profiles[profile])

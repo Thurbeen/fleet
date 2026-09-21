@@ -8,7 +8,9 @@ directory is. The two-argument form the gate calls,
 `session_profiles.py <path> --check|<profile>`, still works.
 """
 
-from harness import PYTHON, REPO, run, run_fleet
+import yaml
+
+from harness import PYTHON, REPO, expect, run, run_fleet, write
 
 
 def flags(out: str) -> list[str]:
@@ -150,3 +152,61 @@ def test_cursor_trusted_is_an_uncovered_command_profile(tmp_path):
     assert rendered == ["--command", "cursor-agent", "--arg", "--trust"], rendered
     assert "--reports-as" not in rendered
     assert "uncovered" in done.stderr
+
+
+# --- the operator's overlay: a profile of their own, in no tracked file --------
+#
+# `session-profiles.yaml` is tracked, and `fleet sync-checkout` refuses to
+# fast-forward a dirty tree, so a profile written THERE stops the checkout
+# updating itself. `session-profiles.local.yaml` beside it is gitignored and
+# adds to it by profile name. `FLEET_PROFILES_ROOT` relocates it, which is how
+# the harness keeps the operator's own copy out of every test.
+
+
+def _overlay(root, body: str):
+    write(root / "orchestration" / "session-profiles.local.yaml", "profiles:\n" + body)
+    return str(root)
+
+
+def test_the_overlay_adds_a_profile_of_the_operators_own(tmp_path):
+    root = _overlay(tmp_path, "  deep:\n    env:\n      ANTHROPIC_MODEL: some-model\n")
+    done = run_fleet("session-flags", "deep", cwd=tmp_path, FLEET_PROFILES_ROOT=root)
+    assert done.code == 0, done.out
+    assert flags(done.stdout) == ["--env", "ANTHROPIC_MODEL=some-model"]
+    # The tracked profiles are all still there beside it.
+    sweep = run_fleet("session-flags", "sweep", cwd=tmp_path, FLEET_PROFILES_ROOT=root)
+    assert "MAX_THINKING_TOKENS=8000" in flags(sweep.stdout), sweep.out
+
+
+def test_an_overlay_profile_replaces_the_tracked_one_of_the_same_name_whole(tmp_path):
+    root = _overlay(tmp_path, "  sweep:\n    env:\n      MAX_THINKING_TOKENS: \"2000\"\n")
+    done = run_fleet("session-flags", "sweep", cwd=tmp_path, FLEET_PROFILES_ROOT=root)
+    assert done.code == 0, done.out
+    # Whole, not merged key by key: the tracked BASH_DEFAULT_TIMEOUT_MS is gone.
+    assert flags(done.stdout) == ["--env", "MAX_THINKING_TOKENS=2000"]
+
+
+def test_check_validates_the_overlay_and_names_it(tmp_path):
+    root = _overlay(tmp_path, "  bad:\n    env:\n      THURBOX_SESSION: x\n")
+    done = run_fleet("session-flags", "--check", cwd=tmp_path, FLEET_PROFILES_ROOT=root)
+    assert done.code == 1, done.out
+    expect(done.stderr, "session-profiles.local.yaml", "THURBOX_SESSION")
+
+
+def test_no_overlay_renders_exactly_what_the_tracked_file_alone_does(tmp_path):
+    """The compatibility promise: a checkout without the new file is unchanged."""
+    tracked = REPO / "orchestration" / "session-profiles.yaml"
+    names = list(yaml.safe_load(tracked.read_text(encoding="utf-8"))["profiles"])
+    for name in names:
+        alone = _flags_of(tracked, name)
+        default = run_fleet("session-flags", name, cwd=tmp_path, FLEET_PROFILES_ROOT=str(tmp_path))
+        assert (default.code, default.stdout) == (alone.code, alone.stdout), name
+    check = run_fleet("session-flags", "--check", cwd=tmp_path, FLEET_PROFILES_ROOT=str(tmp_path))
+    assert check.stdout == f"profiles ok: {len(names)} in orchestration/session-profiles.yaml\n", check.out
+
+
+def test_the_gate_form_reads_the_named_file_and_never_the_overlay(tmp_path):
+    root = _overlay(tmp_path, "  bad:\n    env:\n      THURBOX_SESSION: x\n")
+    done = run([*PYTHON, "scripts/lib/session_profiles.py", "orchestration/session-profiles.yaml", "--check"],
+               cwd=REPO, FLEET_PROFILES_ROOT=root)
+    assert done.code == 0, done.out

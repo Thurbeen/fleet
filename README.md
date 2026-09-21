@@ -215,6 +215,7 @@ because this repository is public; back up your clone if that content matters.
 | `orchestration/runs/` | [`_TEMPLATE.md`](orchestration/runs/_TEMPLATE.md) only | One log per topic. |
 | [`orchestration/playbooks/`](orchestration/playbooks/) | yes | Reusable recipes for running thurbox. |
 | [`orchestration/session-profiles.yaml`](orchestration/session-profiles.yaml) | yes | Named settings a worker session starts with. |
+| `orchestration/session-profiles.local.yaml` | no | Profiles of your own — a model, a thinking budget; one here replaces the tracked profile of the same name. |
 | `orchestration/reconcile/` | no | The reconciler's pid, heartbeat, log and flags. |
 | `orchestration/publish.conf` | no | How tasks publish; [`publish.example.conf`](orchestration/publish.example.conf) is the form. |
 | `orchestration/auto-merge.conf` | no | Repositories fleet may merge in; [`auto-merge.example.conf`](orchestration/auto-merge.example.conf) names none. |

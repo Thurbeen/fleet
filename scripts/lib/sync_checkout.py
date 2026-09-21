@@ -166,7 +166,7 @@ def sync() -> str | None:
     # Only TRACKED modifications block a fast-forward. An untracked file, a
     # worker's BRIEF.md or a stray note, would otherwise wedge every sync; one
     # that genuinely collides makes `merge --ff-only` refuse on its own.
-    dirty = bool(git(root, "status", "--porcelain", "--untracked-files=no").stdout.strip())
+    dirty = git(root, "status", "--porcelain", "--untracked-files=no").stdout
 
     if branch != default:
         behind_base = count(root, f"HEAD..{remote_ref}")
@@ -185,9 +185,13 @@ def sync() -> str | None:
                 f"({ahead} ahead, {behind} behind). Left alone — reconcile by hand.")
     if ahead > 0:
         return f"control-plane sync: '{branch}' is {ahead} commit(s) ahead of {remote_ref} and not pushed."
-    if dirty:
+    if dirty.strip():
+        # The one tracked file an operator was once told to edit. A profile of
+        # their own goes in the gitignored overlay, which frees the sync.
+        hint = (" Move your own profiles into orchestration/session-profiles.local.yaml "
+                "and restore the tracked file." if " orchestration/session-profiles.yaml" in dirty else "")
         return (f"control-plane sync: '{branch}' is {behind} commit(s) behind {remote_ref}, "
-                "but the tree is dirty. Not fast-forwarding.")
+                f"but the tree is dirty. Not fast-forwarding.{hint}")
 
     before = git(root, "rev-parse", "HEAD").stdout.strip()
     if git(root, "merge", "--ff-only", "--quiet", remote_ref).returncode != 0:
