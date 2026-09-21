@@ -14,6 +14,10 @@ from harness import run_queue, write
 
 BRIEF = "## What to do\n\nDo the thing.\n\n## Hard constraints\n\nNone.\n\n## Coordination\n\nNone.\n\n## Done means\n\nIt is done.\n"
 S1 = "11111111-1111-1111-1111-111111111111"
+# The worker of a task whose document is served and waiting on its reader —
+# deliberately absent from SESSIONS below, so a test decides whether thurbox
+# still has it.
+SERVER = "55555555-5555-5555-5555-555555555555"
 
 
 def ok(done):
@@ -86,6 +90,13 @@ SESSIONS = [
     {"id": "22222222-2222-2222-2222-222222222222", "name": "Someone else's session", "state": "unreported",
      "state_source": "process", "hook_state_age_secs": None, "stopped": False, "hook_reported": False},
 ]
+
+def served_session(state: str = "idle") -> dict:
+    """The row thurbox answers for a worker kept up to answer a reader."""
+    return {"id": SERVER, "name": "Serve a document", "state": state,
+            "state_source": "hook", "hook_state_age_secs": 12, "stopped": False,
+            "hook_reported": True}
+
 
 PRS = [{"number": 13, "url": "https://github.com/Thurbeen/fleet/pull/13", "title": "Add one-call fleet status",
         "headRefName": "t/dispatched", "state": "OPEN",

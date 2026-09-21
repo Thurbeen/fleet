@@ -77,4 +77,4 @@ def test_the_tracked_agent_settings_name_no_agent_in_front_of_a_key():
 
 def test_every_publish_method_is_an_artifact_shape():
     out = queue_module("print(' '.join(sorted(q.PUBLISH_METHODS)))\n")
-    assert out.strip() == "attested none note pr push"
+    assert out.strip() == "attested none note pr push served"

@@ -287,7 +287,7 @@ def test_a_fresh_clone_defaults_to_pr_and_names_no_tool(tmp_path):
         'print("how=" + (conf.get("HOW") or "none"))\n'
         'print("methods=" + " ".join(sorted(q.PUBLISH_METHODS)))\n'
     )
-    expect(shipped, "method=pr", "how=none", "methods=attested none note pr push")
+    expect(shipped, "method=pr", "how=none", "methods=attested none note pr push served")
 
     # The retired spelling still loads, and leaves every other method alone.
     aliases = queue_module('print("alias=" + str(q.publish_method("no-mistakes")))\n'

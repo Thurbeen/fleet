@@ -24,13 +24,14 @@ import time
 from pathlib import Path
 
 import pytest
-from harness import expect, lib, refute, run_fleet, write
+from harness import expect, lib, refute, run_fleet, run_queue, write
 from statuskit import (
     GLORBNAK,
     MANY,
     MUTE,
     PRS,
     SEAM,
+    SERVER,
     SESSIONS,
     STALE,
     answer,
@@ -39,9 +40,11 @@ from statuskit import (
     claude,
     fetch,
     fuel_of,
+    ok,
     per_account,
     quota_axi,
     records,
+    served_session,
     window,
 )
 
@@ -72,6 +75,22 @@ def stubbed(stubs) -> None:
     stubs.tool("thurbox-cli", answer(json.dumps(SESSIONS)))
     stubs.tool("gh", answer(json.dumps(PRS)))
     stubs.tool("quota-axi", fuel_of(64))
+
+
+def serve_a_document(queue: Path, tmp: Path) -> None:
+    """A served task, concluded and waiting on its reader — through the real loop.
+
+    `collect` writes the `landing` block `fleet status` reads, so this drives
+    the producer rather than typing its answer into the record.
+    """
+    ok(run_queue("add", "selftest", "serve-a-document", "--title", "Serve a document",
+                 "--repo", str(tmp / "repo"), "--branch", "t/serve",
+                 "--publish", "served", "--brief-file", str(tmp / "brief.md")))
+    ok(run_queue("attach", "selftest/04-serve-a-document", SERVER))
+    write(queue / "selftest" / "04-serve-a-document" / "result.md",
+          "---\noutcome: shipped\nartifact: http://localhost:8123/review/the-document\n"
+          "---\nServed it; nobody has answered yet.\n")
+    ok(run_queue("collect", "--no-reap"))
 
 
 # --- 1. every probe missing, and it still answers -----------------------------
@@ -158,6 +177,53 @@ def test_thurboxs_own_word_for_a_session_survives_the_trip(queue, stubbed):
     done = status()
     expect(done.out, "uncovered")
     refute(done.out, "idle", "unknown")
+
+
+def test_a_session_kept_for_something_still_open_is_not_called_an_orphan(
+    queue, stubbed, stubs, tmp_path
+):
+    """CONCLUDED IS NOT FINISHED WITH, and only the second is the lead's to delete.
+
+    `reap` keeps the session of a task whose artifact has not landed — a change
+    request nobody merged, a served document nobody answered. Advising the
+    delete over that row talks the lead into undoing the keep, which for a
+    served document reproduces the "No agent is listening" it exists to end.
+
+    The landing is written by `collect`, not by this test: it is the one field
+    two modules now share, so the producer drives it or nothing proves they
+    still agree.
+    """
+    # thurbox still has that worker, which is the whole point of the keep.
+    stubs.tool("thurbox-cli", answer(json.dumps(SESSIONS + [served_session()])))
+    serve_a_document(queue, tmp_path)
+    refute(status().out, "delete the session")
+
+    # The same row once nothing is waiting on it: that session IS the lead's.
+    ok(run_queue("reviewed", "selftest/04-serve-a-document"))
+    ok(run_queue("collect", "--no-reap"))
+    expect(status().out, "delete the session")
+
+
+def test_a_session_kept_for_a_reader_and_then_gone_is_the_loudest_row_there_is(
+    queue, stubs, tmp_path
+):
+    """The keep failing is the bug itself: a document up, and nobody behind it.
+
+    `reap` clears the id when IT releases a session, so an id still on the
+    record with nothing behind it in thurbox is not the ordinary post-reap
+    absence — it is the reader with nobody to answer them, and the status
+    screen used to say nothing at all about it.
+    """
+    stubs.tool("gh", answer(json.dumps(PRS)))
+    stubs.tool("quota-axi", fuel_of(64))
+    stubs.tool("thurbox-cli", answer(json.dumps(SESSIONS + [served_session()])))
+    serve_a_document(queue, tmp_path)
+
+    # thurbox no longer has it.
+    stubs.tool("thurbox-cli", answer("[]"))
+    done = status()
+    expect(done.out, "04-serve-a-document", "not listed", "kept for whoever is still waiting")
+    refute(done.out, "none dispatched by this queue")
 
 
 # --- 5. it reports the artifact, with its checks ------------------------------

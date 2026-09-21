@@ -1,6 +1,6 @@
 ---
 name: fleet-queue
-description: Turn a prompt into durable task records, dispatch every independent task at once, and learn what finished by reading a stream and a file instead of being interrupted. Use whenever the control plane is given work — especially work spanning several projects, several tasks, or several merges at the same time — whenever you are asked what is in flight, blocked or waiting, and for any of the queue's own verbs: topic add, add, plan, block, dispatch, send, watch, collect, shepherd, reap, refuel, list, show, archive, or the reconcile loop that runs them.
+description: Turn a prompt into durable task records, dispatch every independent task at once, and learn what finished by reading a stream and a file instead of being interrupted. Use whenever the control plane is given work — especially work spanning several projects, several tasks, or several merges at the same time — whenever you are asked what is in flight, blocked or waiting, and for any of the queue's own verbs: topic add, add, plan, block, dispatch, send, watch, collect, shepherd, reap, reviewed, refuel, list, show, archive, or the reconcile loop that runs them.
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Glob, Grep
 ---
@@ -170,9 +170,11 @@ its `artifacts:` block by.
 by host plus path, so each artifact is verified by the forge that actually holds
 it.
 
-**`note` and `none` stay single on purpose.** A note sits on the one `--target`
-the task names and `none` names nothing fleet checks, so neither becomes
-one-per-repository however many repositories the worker had open.
+**`note`, `served` and `none` stay single on purpose.** A note sits on the one
+`--target` the task names, a served document is one document however many
+repositories it was written from, and `none` names nothing fleet checks — so
+none of them becomes one-per-repository however many repositories the worker
+had open.
 
 **Records written before this still load.** A scalar `artifact:` is read as one
 artifact, the primary repository's — the same way `no-mistakes` still reads as
@@ -591,6 +593,11 @@ RELEASE uv run fleet queue reap [--dry-run]
         their worktrees. A `push` task has nothing left to ask — its commit
         was already confirmed on the base branch before `collect` closed it —
         so it lands in this same pass. `collect` runs it for you — see §5b.
+
+        uv run fleet queue reviewed <ref>
+        The one release no forge can authorise: a `served` task's document is
+        waiting on a READER, so you record that they are done and the next
+        reap lands it — see §5b.
 ```
 
 **A remote task completes the same way.** `collect` fetches that worker's
@@ -612,7 +619,8 @@ LEAVE BEHIND, and `collect` goes and looks for that:
 | `pr` | a PR by any means at all | the forge: a PR from this task's branch, open or merged |
 | `push` | a commit on the base branch | git: that commit is an ancestor of `origin/<base>` |
 | `note` | a review or comment on the task's `--target` | the forge: the note exists, was written by the account fleet runs as, and sits on that target |
-| `none` | nothing fleet can check — a document off the forge, a commit with no remote | nothing: the URL is recorded, the task closes, and nothing calls it verified |
+| `served` | a document served to a READER who is expected to answer it | nothing about the document — but the task does not finish: it stands `open`, holding the session that can answer, until `fleet queue reviewed <ref>` |
+| `none` | nothing fleet can check and nobody waiting — an issue filed, a machine swept, a commit with no remote | nothing: the URL is recorded, the task closes, and nothing calls it verified |
 
 **Pick the shape of the deliverable, not the nearest one that exists.** A task
 that reviews or comments on a change request is `--publish note --target <its
@@ -622,6 +630,15 @@ request it did not open — a contributor's, from a fork — is `--publish pr
 --target <that pull request>`, and is checked against that pull request rather
 than its own scaffolding branch. `add` refuses a `note` with no target, a `push`
 with one, and a pull-request method aimed at an issue.
+
+**A task whose deliverable is a document somebody will READ is `--publish
+served`, never `none`.** The two look alike — neither is on a forge, neither is
+checked — and the difference is that a reader is expected to ANSWER a served
+document, which means the worker's session has to still be there when they do.
+`none` closed five such tasks the moment the document was served and reaped
+every session, so every reader who annotated one and sent it back was answered
+by "No agent is listening right now". `served` is a shape and not a tool: a
+review document, an explainer, a rendered page, whatever serves it.
 
 **Those words are SHAPES and none of them is a tool.** A pipeline, an
 in-house script, `make release`, a slash command — every one of them ends in a
@@ -825,10 +842,36 @@ So a task gets a state AFTER `done`:
 
 | state | means | its session |
 |---|---|---|
-| `done` | the worker concluded; its change request is open, or its already-confirmed `push` commit is about to be promoted by this same `collect` run | **kept** — the cheap way to fix what review finds |
+| `done` | the worker concluded; its change request is open, its served document is awaiting its reader, or its already-confirmed `push` commit is about to be promoted by this same `collect` run | **kept** — the cheap way to fix what review finds, and the only thing a reader has to talk to |
 | `landed` | the change request merged, the pushed commit reached the base branch, or there was never an artifact | released |
 | `abandoned` | the change request was closed unmerged | released; the work is NOT on main |
 | `stuck` / `failed` | the worker gave up | **kept** — that session is the evidence, and you decide, unless the worker rewrites its `result.md` with an outcome that `collect` then proves (§5) |
+
+**A `served` task is the one `landed` cannot be asked of.** Fleet cannot poll a
+server it did not start, and an idle session proves nothing — waiting for
+feedback is exactly what an agent at rest looks like. So the task stands `open`
+with its session kept, `reap` prints the remedy under it on every pass, and
+**you** close it once the reader is done:
+
+```text
+    topic/10-serve-the-explainer kept       a served document is awaiting its
+                                            reader; nothing but `fleet queue
+                                            reviewed <ref>` closes that
+```
+
+`uv run fleet queue reviewed <ref> [--why …]` records that, and the next reap
+lands the task and releases the session. It is the same hand that clears a
+condition blocker, for the same reason: nothing here can observe the event.
+**It is refused on a task that has not concluded** — recorded on a worker
+still running, it would land and reap in the pass that first reads the result,
+which is the failure the shape exists to prevent reached from the other end.
+
+Two things `collect` does for this shape and no other. A `served` task that
+reports `shipped` with **no URL** is held open like any unproven claim: the
+address is the one thing a reader cannot do without, and closing it would keep
+a session for somebody who was never handed the document. And a `served` task
+that produced **nothing at all** (`not-applicable`) lands at once — a wait on a
+reader who was given no document is a wait nothing could ever end.
 
 `landed` comes from asking the forge, never from a worker claiming it, so it works
 long after the session is gone. **Blockers clear on `landed`**, not on `done`

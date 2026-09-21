@@ -90,13 +90,16 @@ task finished — only the worker's own `result.md`, read by `fleet queue
 collect`, closes anything.
 
 **`collect` checks the artifact it is handed.** Each task declares a publish
-METHOD — `attested`, `pr`, `push`, `note` or `none` — naming what it must
-produce, and `collect` goes and looks: the forge for a change request from that
-task's own branch or its recorded `target` (carrying an attestation for its
-head, for that method), the forge again for a note on that target written by
-the account fleet runs as, git for a commit that reached the base branch, and
-nowhere at all for `none`. A change request the forge reports merged closes its
-task whatever its attestation said, and keeps that as a note. **A task that
+METHOD — `attested`, `pr`, `push`, `note`, `served` or `none` — naming what it
+must produce, and `collect` goes and looks: the forge for a change request from
+that task's own branch or its recorded `target` (carrying an attestation for
+its head, for that method), the forge again for a note on that target written
+by the account fleet runs as, git for a commit that reached the base branch,
+and nowhere at all for `served` or `none`. A `served` task is the one that does
+not then finish: its document is waiting on a reader, so the task stands `open`
+and keeps its session until `fleet queue reviewed <ref>` says a person is
+done. A change request the forge reports merged closes its task whatever its
+attestation said, and keeps that as a note. **A task that
 spans repositories — `add --add-repo` — is asked once per repository**, records
 one artifact for each, and is closed only when every one of them verifies; the
 report names the ones that did not. A task whose artifact is not
