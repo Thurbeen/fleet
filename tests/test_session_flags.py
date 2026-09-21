@@ -213,3 +213,14 @@ def test_the_gate_form_reads_the_named_file_and_never_the_overlay(tmp_path):
     done = run([*PYTHON, "scripts/lib/session_profiles.py", "orchestration/session-profiles.yaml", "--check"],
                cwd=REPO, FLEET_PROFILES_ROOT=root)
     assert done.code == 0, done.out
+
+
+def test_the_gate_form_never_layers_the_overlay_even_given_the_tracked_file_by_absolute_path(tmp_path):
+    """A named file is exactly that file: whether the overlay is layered in is
+    decided by the form of the call, never by the path happening to match."""
+    root = _overlay(tmp_path, "  bad:\n    env:\n      THURBOX_SESSION: x\n")
+    tracked = str(REPO / "orchestration" / "session-profiles.yaml")
+    done = run([*PYTHON, "scripts/lib/session_profiles.py", tracked, "--check"], cwd=REPO, FLEET_PROFILES_ROOT=root)
+    assert done.code == 0, done.out
+    rendered = run([*PYTHON, "scripts/lib/session_profiles.py", tracked, "bad"], cwd=REPO, FLEET_PROFILES_ROOT=root)
+    assert rendered.code == 1 and "no profile 'bad'" in rendered.stderr, rendered.out

@@ -12,7 +12,7 @@ between a task and its profile:
 `orchestration/session-profiles.yaml` is read from this checkout whatever the
 caller's directory is, and so is the operator's `session-profiles.local.yaml`
 beside it when it exists. The gate's older form names ONE file and reads only
-that one:
+that one — whatever path it is given, the tracked file's own included:
 
     session_profiles.py <path> --check|<profile>
 
@@ -230,10 +230,16 @@ def load_layers(errors):
     return None if mine is None else {**profiles, **mine}
 
 
-def parse_args(argv: list[str]) -> tuple[str, str] | int:
-    """(path, wanted), or an exit code once the usage is dealt with."""
+def parse_args(argv: list[str]) -> tuple[str, str, bool] | int:
+    """(path, wanted, layered), or an exit code once the usage is dealt with.
+
+    `layered` is the rule for the overlay, and it is decided by the FORM of the
+    call, never by what the path resolves to: a call that names a file reads
+    that file and nothing else, which is what keeps the gate off the
+    operator's overlay however it spells the tracked file's path.
+    """
     if len(argv) == 2 and not argv[0].startswith("-") and argv[0].endswith((".yaml", ".yml")):
-        return argv[0], argv[1]
+        return argv[0], argv[1], False
     wanted = "default"
     for arg in argv:
         if arg in ("-h", "--help"):
@@ -246,17 +252,17 @@ def parse_args(argv: list[str]) -> tuple[str, str] | int:
             return 2
         else:
             wanted = arg
-    return PROFILES, wanted
+    return PROFILES, wanted, True
 
 
 def main(argv: list[str] | None = None) -> int:
     parsed = parse_args(sys.argv[1:] if argv is None else argv)
     if isinstance(parsed, int):
         return parsed
-    path, wanted = parsed
+    path, wanted, layered = parsed
 
     errors: list[str] = []
-    profiles = load_layers(errors) if path == PROFILES else load_profiles(path, errors)
+    profiles = load_layers(errors) if layered else load_profiles(path, errors)
     if profiles is None:
         return 1
 
@@ -266,8 +272,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     if wanted == "--check":
-        shown = os.path.relpath(path, CHECKOUT) if path == PROFILES else path
-        if path == PROFILES and os.path.exists(overlay_path()):
+        shown = os.path.relpath(path, CHECKOUT) if layered else path
+        if layered and os.path.exists(overlay_path()):
             shown += f" and {overlay_path()}"
         print(f"profiles ok: {len(profiles)} in {shown}")
         return 0
