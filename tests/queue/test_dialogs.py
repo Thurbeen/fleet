@@ -238,3 +238,20 @@ def test_dispatch_renders_a_profile_from_the_operators_overlay(stubs, queue_dir,
     create = [c for c in stubs.calls("thurbox-cli", "session create") if "--repo-path /tmp/repo-overlay" in c]
     assert create, out
     expect(create[-1], "--env ANTHROPIC_MODEL=some-model")
+
+
+def test_a_broken_overlay_refuses_the_spawn_rather_than_dropping_the_profile(stubs, queue_dir, tmp_path):
+    """The gate never reads the overlay, so a rule it breaks must stop dispatch
+    here: rendering no flags would start the worker as some other agent."""
+    write(tmp_path / "orchestration" / "session-profiles.local.yaml",
+          "profiles:\n  deep:\n    env:\n      THURBOX_SESSION: x\n")
+    root = str(tmp_path)
+    topic = ok(q("topic", "add", "broken", "--title", "Broken overlay",
+                 "--prompt", "a broken overlay", FLEET_PROFILES_ROOT=root)).stdout.strip()
+    ok(q("add", topic, "cursor", "--title", "Cursor", "--repo", "/tmp/repo-broken", "--branch", "fix/broken",
+         "--number", "01", "--profile", "cursor-trusted", FLEET_PROFILES_ROOT=root))
+    write(queue_dir / topic / "01-cursor" / "BRIEF.md", "Do it in cursor.\n")
+
+    out = q("dispatch", FLEET_PROFILES_ROOT=root).out
+    expect(out, "session-profiles.local.yaml", "THURBOX_SESSION")
+    assert not stubs.calls("thurbox-cli", "session create"), out

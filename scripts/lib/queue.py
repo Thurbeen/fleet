@@ -3526,6 +3526,22 @@ def profile_flags(profile: str) -> list:
     return profiles_mod.render(profiles[profile])
 
 
+def profile_problem() -> str | None:
+    """Why no task's profile can be rendered right now, or None.
+
+    The gate validates the tracked file, so on a checkout without the
+    operator's gitignored overlay this is always None. The overlay is read by
+    no gate, and a rule it breaks would otherwise make `profile_flags` render
+    nothing — a `cursor-trusted` task spawned as the default agent — so the
+    spawn refuses instead and names the file.
+    """
+    profiles_mod = _load_sibling("fleet_session_profiles", "session_profiles.py")
+    errors: list[str] = []
+    if profiles_mod.load_layers(errors) is None:
+        return "the session profiles do not load — run `uv run fleet session-flags --check`"
+    return "; ".join(errors) or None
+
+
 def spawn_uncovered_notice(create: list) -> str | None:
     """What dispatch prints when this spawn has no hook family.
 
@@ -3663,6 +3679,9 @@ def spawn_commands(task: Task) -> tuple[list, str, str]:
     # locally — see `probe_host`, which asks the host instead.
     if d.get("host"):
         create += ["--host", d["host"]]
+    problem = profile_problem()
+    if problem:
+        raise QueueError(problem)
     flags = profile_flags(d.get("profile") or "default")
     refusal = agent_policy_refusal(task)
     if refusal:
@@ -7637,6 +7656,9 @@ def spawn_fixer(
             "withheld. Send the fix into that worker's own session, or fix it by hand."
         )
 
+    problem = profile_problem()
+    if problem:
+        return "", problem
     slug = f"{task.topic}__{task.id}"
     path, note = branch_checkout(repo_path or task.doc["repo"], branch, slug)
     if not path:

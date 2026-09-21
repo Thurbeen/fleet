@@ -17,7 +17,9 @@
 # rules, and replaces the profile of the same name here WHOLE. Do not edit this
 # file to tune a worker: `fleet sync-checkout` refuses to fast-forward a dirty
 # tree, so an edit here stops your checkout updating itself. Without the local
-# file, what renders is exactly what this file says.
+# file, what renders is exactly what this file says. With a local file that
+# breaks a rule, dispatch spawns nothing and names it; the gate never reads it,
+# so `uv run fleet session-flags --check` is how you check it yourself.
 #
 # ONE CONVENTION, then TWO RULES THE GATE ENFORCES. The distinction is real:
 # `uv run fleet check` cannot detect a secret and does not try, so only the two
