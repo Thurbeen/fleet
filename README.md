@@ -103,11 +103,12 @@ checks each step as it goes.
    On Windows, from PowerShell:
 
    ```powershell
-   powershell -c "irm https://raw.githubusercontent.com/Thurbeen/fleet/main/install.ps1 | iex"
+   irm https://raw.githubusercontent.com/Thurbeen/fleet/main/install.ps1 | iex
    ```
 
-   If Microsoft Defender blocks that launch, download the script and run it
-   as a file instead:
+   Type it at the PowerShell prompt as it stands: wrapped in
+   `powershell -c "…"` it is flagged by Microsoft Defender. To read the script
+   before it runs, download it and run it as a file instead:
 
    ```powershell
    irm https://raw.githubusercontent.com/Thurbeen/fleet/main/install.ps1 -OutFile install.ps1
