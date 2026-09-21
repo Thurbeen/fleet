@@ -287,8 +287,11 @@ machinery, not the operator's content.
 
 `orchestration/session-profiles.yaml` holds the settings a worker session
 starts under, and `uv run fleet session-flags` renders one profile into
-`thurbox-cli session create` flags. **One file, one layer**, committed so a
-change to it is reviewed in a diff — which is the point.
+`thurbox-cli session create` flags. The tracked file holds fleet's own
+profiles, committed so a change to it is reviewed in a diff. An operator's own
+go in the gitignored `session-profiles.local.yaml` beside it, which replaces a
+tracked profile by name and is held to the same rules by
+`uv run fleet session-flags --check`; the gate never reads it.
 
 Every profile is held to the two enforced rules below. **No-secrets is not one
 of them** — the gate does not read YAML for secrets and does not claim to. It

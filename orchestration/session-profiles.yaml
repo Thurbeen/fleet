@@ -11,10 +11,15 @@
 # takes, and `fleet queue dispatch` renders a task's profile in-process.
 # `.agents/skills/thurbox-session/SKILL.md` shows the call.
 #
-# ONE FILE, ONE LAYER. Every profile there is lives here, and this file is
-# yours to edit. There used to be a gitignored `.local.yaml` overlay beside it;
-# it existed so a profile could be tuned without touching a tracked file, which
-# stopped mattering when this stopped being a template anyone pulls from.
+# TWO LAYERS, MERGED BY NAME. This file is fleet's and is tracked. A profile of
+# your own — a model, a thinking budget, another agent's command line — goes in
+# the gitignored `session-profiles.local.yaml` beside it, same schema, same
+# rules, and replaces the profile of the same name here WHOLE. Do not edit this
+# file to tune a worker: `fleet sync-checkout` refuses to fast-forward a dirty
+# tree, so an edit here stops your checkout updating itself. Without the local
+# file, what renders is exactly what this file says. With a local file that
+# breaks a rule, dispatch spawns nothing and names it; the gate never reads it,
+# so `uv run fleet session-flags --check` is how you check it yourself.
 #
 # ONE CONVENTION, then TWO RULES THE GATE ENFORCES. The distinction is real:
 # `uv run fleet check` cannot detect a secret and does not try, so only the two

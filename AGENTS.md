@@ -77,8 +77,17 @@ names every path and the reason for each.
 - `orchestration/session-profiles.yaml` — named default settings a worker
   session STARTS under (`--env`, and `--command` for a setting that is a flag),
   as opposed to where its work goes. `uv run fleet session-flags <profile>`
-  renders one into `session create` flags. One file, one layer — edit it
-  directly. The file's own header owns the rules that keep a profile safe.
+  renders one into `session create` flags, and `add --profile` names one per
+  task. **Two layers, merged by name**: the tracked file is fleet's, and a
+  profile of the operator's own — a model, a thinking budget — goes in the
+  gitignored `session-profiles.local.yaml` beside it, where it replaces the
+  tracked profile of that name whole. Never edit the tracked file to tune a
+  worker: that dirties the tree `fleet sync-checkout` has to fast-forward, and
+  the sync says so when it finds it. No gate reads the overlay, so a rule it
+  breaks refuses every spawn and names the file, rather than starting workers
+  without their profile. No overlay renders exactly what the tracked file
+  alone does. The file's own header owns the rules that keep a
+  profile safe.
 - `orchestration/publish.example.conf` and `agent.example.conf` — the two
   settings that keep fleet agnostic about YOUR tools. The first holds the
   default publish method and the free-text command that produces it, plus the

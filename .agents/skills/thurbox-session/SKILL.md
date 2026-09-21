@@ -302,7 +302,11 @@ command line: split the output on NUL and pass each piece to `session create`
 as its own argument. `uv run fleet queue dispatch` does not go through that
 output at all — it renders the task's profile in-process, so no shell stands
 between a task and its settings. `--check` validates every profile in
-`session-profiles.yaml`, which is the one file there is.
+`session-profiles.yaml` and in the operator's gitignored
+`session-profiles.local.yaml` beside it, where a profile replaces the tracked
+one of the same name. A setting of the operator's own — a model, a thinking
+budget — goes in the second: editing the tracked file dirties the tree
+`fleet sync-checkout` has to fast-forward.
 
 Two rules the gate enforces, so a profile breaking either never reaches `main`:
 

@@ -1256,3 +1256,16 @@ def test_the_default_agent_is_the_one_both_repositories_allow(
     q("dispatch", **env)
     create = [c for c in stubs.calls("thurbox-cli", "session create") if "fix/spans" in c][0]
     assert "--agent beta" in create, create
+
+
+def test_a_broken_profile_overlay_spawns_no_fixer(tmp_path, stubs, queue_dir):
+    """The fixer is the second spawn door: a broken overlay must stop it too,
+    not start it without the task's profile (#135)."""
+    overlay = tmp_path / "overlay"
+    write(overlay / "orchestration" / "session-profiles.local.yaml",
+          "profiles:\n  deep:\n    env:\n      THURBOX_SESSION: x\n")
+    env = {"FLEET_PROFILES_ROOT": str(overlay)}
+    shep, _, topic = conflicting_task(tmp_path, stubs, queue_dir, "fixer-overlay", env)
+    out = q("shepherd", "--topic", topic, **env).out
+    expect(out, "session-profiles.local.yaml", "THURBOX_SESSION")
+    assert shep.creates("01-conflicting") == [], out + "\n----\n" + shep.tbx_log()

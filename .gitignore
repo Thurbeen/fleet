@@ -69,6 +69,14 @@
 # otherwise.
 /orchestration/agent-policy.conf
 
+# WORKING STATE. Session profiles of the operator's own — a model, a thinking
+# budget, an agent's command line. orchestration/session-profiles.yaml is the
+# tracked file and the reader starts from it; a profile here replaces the one of
+# the same name there, and a checkout without this file renders exactly what the
+# tracked one does. Tracked, a profile of your own dirtied the tree
+# `uv run fleet sync-checkout` has to fast-forward.
+/orchestration/session-profiles.local.yaml
+
 # MACHINE. Whether this terminal's font draws a two-cell emoji at two cells is
 # true of one machine, so the glyph setting is one machine's answer.
 # orchestration/session-glyphs.example.conf is the tracked copy that carries the

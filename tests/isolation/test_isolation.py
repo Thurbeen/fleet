@@ -9,7 +9,7 @@ run. So this builds that worst case on purpose:
 
   A POISONED COPY of the tree under test: a malformed queue record and an
   OPERATOR.md, an auto-merge.conf naming a repository, publish, agent,
-  agent-policy, glyph, fleet-name and voice settings with odd values, a
+  agent-policy, glyph, fleet-name, voice and session-profile settings with odd values, a
   rendered extension.toml, a reconciler runtime directory, and a registry map
   of the wrong shape. All of it is made up here; nothing is copied from a real
   control plane.
@@ -76,6 +76,8 @@ def poison(copy: Path) -> None:
     write(o / "session-glyphs.conf", "GLYPHS=sideways\nLEAD_GLYPH_ON=@@\n")
     write(o / "fleet.conf", "NAME=operator-private-fleet\n")
     write(o / "voice.conf", "OPERATOR_NAME=Operator Private\nASSISTANT_NAME=Private Lead\n")
+    write(o / "session-profiles.local.yaml",
+          "profiles:\n  default:\n    env:\n      THURBOX_SESSION: operator-private\n")
     write(o / "agent-policy.conf", "forge.test:8443/operator-private/private-repo=operator-private-agent\n")
     write(o / "reconcile" / "pid", "1\n")
     write(o / "reconcile" / "down", "asked down by the operator\n")

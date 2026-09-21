@@ -119,6 +119,28 @@ def test_a_dirty_tree_is_reported_and_not_fast_forwarded(tmp_path):
     assert head_of(work) == before
 
 
+def test_a_dirty_tracked_profiles_file_names_the_overlay_that_frees_it(tmp_path):
+    """#135: an operator who wrote a profile into the tracked file is told where it goes."""
+    work = new_repo(tmp_path)
+    profiles = work / "orchestration" / "session-profiles.yaml"
+    write(profiles, "profiles:\n  default:\n    env: {}\n")
+    git("add", "orchestration/session-profiles.yaml", cwd=work)
+    git("commit", "--quiet", "-m", "profiles", cwd=work)
+    git("push", "--quiet", "origin", "main", cwd=work)
+    advance_origin(tmp_path)
+    with open(profiles, "a", encoding="utf-8", newline="\n") as fh:
+        fh.write("  mine:\n    env: {ANTHROPIC_MODEL: some-model}\n")
+
+    done = sync(work)
+
+    expect(done.out, "the tree is dirty. Not fast-forwarding.", "orchestration/session-profiles.local.yaml")
+    # Any other dirty file is not told about profiles.
+    git("checkout", "--", "orchestration/session-profiles.yaml", cwd=work)
+    with open(work / "README.md", "a", encoding="utf-8", newline="\n") as fh:
+        fh.write("local edit\n")
+    refute(sync(work).out, "session-profiles.local.yaml")
+
+
 def test_an_untracked_file_does_not_block_a_fast_forward(tmp_path):
     """Only tracked modifications block: a stray note would otherwise wedge every sync."""
     work = new_repo(tmp_path)
