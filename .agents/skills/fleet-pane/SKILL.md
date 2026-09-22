@@ -42,9 +42,9 @@ task in full; the pane is for noticing a task changed state without asking.
 
 **`interface/fleet_queue.lua`'s header owns what it draws and why** — the fuel
 rows above the counters, the `⇡` artifact row under a task (its declared
-`publish.method` — `attested`, `pr`, `push`, `note`, `served` or `none` — what
-that turned out to be, and what fleet last saw), and what a narrow column drops first (`PUBLISH_WORD`,
-`PUBLISH_LADDER`).
+`publish.method` — `attested`, `pr`, `push`, `note`, `served` or `none` —
+what that turned out to be, and what fleet last saw), and what a narrow
+column drops first (`PUBLISH_WORD`, `PUBLISH_LADDER`).
 
 **It calls nothing itself.** Fuel comes from `uv run fleet status --fuel` on a
 five-minute TTL, never from `quota-axi` directly; FLEET.md's `## Fuel` section

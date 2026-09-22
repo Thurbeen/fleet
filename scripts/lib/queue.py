@@ -673,11 +673,15 @@ PUBLISH_METHODS = {
             "Your session is kept up so the reader has somebody to answer them"
         ),
         "artifact": "the URL the document is served at",
+        # Quoted in TWO frames — the brief's "`collect` closes this task only
+        # once …" and the refusal's "A `served` task is proven when …" — so it
+        # is the provable half and nothing else. The WAIT that follows closing
+        # is the shape's, not `collect`'s, and `brief` above is where a worker
+        # reads it; a `proof` that described the wait told every served worker
+        # its task would not close until a person acted.
         "proof": (
-            "a URL for the reader to open was recorded — the document behind "
-            "it is off any forge and is never checked — and the task then "
-            "WAITS, holding its session, until a person records the review "
-            "closed with `fleet queue reviewed`"
+            "a URL for the reader to open was recorded, the document behind it "
+            "being off any forge and never checked"
         ),
     },
     "none": {
@@ -4453,10 +4457,15 @@ def publish_verdict(task: Task, outcome, url, unit: dict | None = None) -> tuple
                 "shipped with no URL for the reader to open; a `served` task's "
                 "artifact is where its document is being served"
             ), {}
+        # The publish block's own word, and only for a task that recorded an
+        # address. It exists to overwrite the `unverified` a held-open pass
+        # left behind — which is reachable only WITH a URL — so a task that
+        # served nothing writes nothing here and draws no artifact row, exactly
+        # as a `none` one does.
         return "skipped", (
             "a `served` task names nothing fleet can check; its artifact is "
             "recorded as given"
-        ), {}
+        ), ({"state": "served"} if url else {})
     if method == "none":
         return "skipped", (
             "a `none` task names nothing fleet can check; its artifact is "
@@ -4794,7 +4803,10 @@ def fold_verdicts(rows: list[dict]) -> tuple[str, str]:
 def fold_seen(rows: list[dict]) -> dict:
     """The publish-block fields `collect` writes beside the verdict.
 
-    Only `pull_request_verdict` produces any, and the only one that is a claim
+    `pull_request_verdict` produces most of them, and `publish_verdict`'s own
+    `served` branch produces `{"state": "served"}` — which never meets the
+    multi-row branch below, because `artifact_repos` pins a served task to its
+    primary repository the way it pins a `note`. The only field that is a claim
     about the TASK is `state`. So it survives a fold only when every repository
     said the same thing: a task with one change request merged and one still
     open has not merged, and writing `merged` onto its publish block would say
@@ -4816,20 +4828,18 @@ def collect_publish_state(verdict: str, method: str) -> str:
     is terminal for the same reason: the note is on the forge, and nothing about
     it waits for a merge.
 
-    `served` IS THE ONE `skipped` THAT MUST STILL WRITE. Every other method
-    that can come back `missing` overwrites that `unverified` on its next clean
-    pass, because its clean verdict is `passed` and `passed` always writes.
-    `served`'s clean verdict is `skipped`, so a task held open once for a
-    missing URL and then collected properly kept `unverified` for good — on the
-    record, in progress.jsonl, and drawn `UNVERIFIED` in the pane over a
-    document that was served exactly as asked. The word is the method's own:
-    the pane draws a state it does not know verbatim and muted, which is what
-    this shape wants said about it.
+    `served` IS THE ONE `skipped` THAT STILL WRITES, and it writes from
+    `publish_verdict` rather than from here. Every other method that can come
+    back `missing` overwrites that `unverified` on its next clean pass, because
+    its clean verdict is `passed` and `passed` always writes. `served`'s clean
+    verdict is `skipped`, so a task held open once for a missing URL and then
+    collected properly kept `unverified` for good — on the record, in
+    progress.jsonl, and drawn `UNVERIFIED` in the pane over a document served
+    exactly as asked. The word rides on the verdict because only the verdict
+    knows whether there is an address to say it about.
     """
     if verdict == "passed":
         return {"push": "pushed", "note": "posted"}.get(method, "open")
-    if verdict == "skipped" and method == "served":
-        return "served"
     return {"missing": "unverified", "unknown": "unknown"}.get(verdict, "")
 
 
@@ -4994,6 +5004,16 @@ def cmd_collect(args) -> int:
         state = seen.pop("state", "") or collect_publish_state(verdict, method)
         if state:
             record_publish(task, state, detail, "collect", seen)
+        elif (task.doc.get("publish") or {}).get("state") == "unverified":
+            # A WORKER THAT WITHDREW ITS CLAIM LEAVES THE REFUSAL BEHIND IT. A
+            # held-open task whose worker comes back with a result claiming no
+            # artifact at all is not the task that was refused: `unverified` is
+            # a verdict about an artifact this pass was not given, and left
+            # standing it is drawn red in the pane over a task that landed
+            # having correctly produced nothing. Cleared rather than
+            # overwritten with a fresh word, because "nothing has looked" is
+            # exactly where such a record stands.
+            record_publish(task, "", "this result claims no artifact to check", "collect")
 
         if verdict == "missing" and not args.allow_unverified:
             task.save()
@@ -5136,7 +5156,8 @@ LANDED_STATE = {"merged": "landed", "none": "landed", "closed": "abandoned"}
 
 
 def artifact_landing(
-    artifact, method: str | None = None, reviewed: bool = False, ref: str = "<ref>"
+    artifact, method: str | None = None, reviewed: bool = False,
+    task_ref: str = "<ref>",
 ) -> tuple[str, str]:
     """Has this task's artifact reached main? Asked of the forge, never of a worker.
 
@@ -5174,7 +5195,7 @@ def artifact_landing(
             return "none", "the reader's review was recorded closed"
         return "open", (
             "a served document is awaiting its reader; nothing but "
-            f"`fleet queue reviewed {ref}` closes that"
+            f"`fleet queue reviewed {task_ref}` closes that"
         )
     if method in ("note", "none"):
         return "none", f"a `{method}` task has no pull request of its own to wait for"
