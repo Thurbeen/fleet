@@ -1844,6 +1844,10 @@ def state_conflict(task: Task) -> str | None:
     outcome = task.doc.get("outcome")
     if not outcome:
         return None
+    # Given up on by hand, the recorded reason IS the explanation for the two
+    # disagreeing, so there is nothing contradictory left to flag.
+    if task.state == "abandoned" and task.doc.get("abandoned"):
+        return None
     agree = OUTCOME_STATES.get(outcome)
     if agree is None:
         return f"outcome {outcome!r} is not one of: {', '.join(sorted(OUTCOMES))}"

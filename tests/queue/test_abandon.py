@@ -169,3 +169,17 @@ def test_dependants_are_reported_and_stay_blocked(split, queue_dir):
     assert consumer["state"] == "queued"
     assert consumer["blocked_by"][0]["task"] == f"{split}/02-second-step"
     expect(q("plan").out, "UNCLEARABLE", "which is abandoned")
+
+
+def test_a_done_task_abandoned_by_hand_is_not_drawn_as_a_contradiction(split, queue_dir):
+    """`abandoned` beside `shipped` is flagged when the FORGE closed a pull request
+    the worker said it opened. Given up on by hand, the reason is the explanation."""
+    ref = f"{split}/02-second-step"
+    set_state_line(queue_dir / ref / "task.yaml", "done")
+    record_path = queue_dir / ref / "task.yaml"
+    record_path.write_text(record_path.read_text(encoding="utf-8").replace("outcome: null", "outcome: shipped"),
+                           encoding="utf-8")
+    ok(q("abandon", ref, "--why", SUPERSEDED))
+    out = q("list", "--all").out
+    expect(out, SUPERSEDED)
+    refute(out, "disagrees")
