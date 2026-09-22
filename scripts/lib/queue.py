@@ -651,7 +651,7 @@ PUBLISH_METHODS = {
         "brief": (
             "commit onto the base branch and push it; there is no pull request"
         ),
-        "artifact": "that commit's URL",
+        "artifact": "that commit's URL, or its full sha when `origin` is on no forge",
         "proof": "the commit is an ancestor of the base branch on `origin`",
     },
     "note": {
@@ -714,6 +714,10 @@ PUBLISH_METHODS = {
 COMMIT_URL_RE = re.compile(
     r"^(https?://[^/\s]+/[^/\s]+/[^/\s]+/commit/([0-9a-f]{7,40}))(?:[/?#].*)?$", re.I
 )
+# The same artifact with no forge to link it on: a local-only fleet pushes to a
+# bare repository or a remote no forge owns, and git proves the sha exactly as
+# it proves one read out of a URL. Same groups as COMMIT_URL_RE.
+COMMIT_SHA_RE = re.compile(r"^(([0-9a-f]{7,40}))$", re.I)
 
 # Standing policy for every worker, tracked beside the otherwise-gitignored
 # queue. Anchored to the CHECKOUT, not to FLEET_QUEUE_DIR: it lives with the
@@ -4715,7 +4719,8 @@ def commit_verdict(task: Task, outcome, url, unit: dict | None = None) -> tuple[
     as an unreachable `gh` is; then ask for their merge base, where the answer
     IS the ancestry and an empty one means histories that do not meet.
     """
-    match = COMMIT_URL_RE.match((url or "").strip())
+    text = str(url or "").strip()
+    match = COMMIT_URL_RE.match(text) or COMMIT_SHA_RE.match(text)
     if not match:
         if outcome == "shipped" and forge.NOTE_URL_RE.match(str(url or "").strip()):
             # The workaround this used to be, said out loud where it is seen.
@@ -8492,6 +8497,17 @@ def link_task(cr: forge.ChangeRequest, tasks: list) -> object:
 
 def cmd_shepherd(args) -> int:
     """The fourth thing: the pull requests, after `watch` and after `collect`."""
+    # No forge CLI on this machine, which is a local-only fleet and not a
+    # fault: nothing to list and nothing to merge, said once rather than once
+    # per repository the queue names.
+    if not forge.available():
+        why = forge.no_forge_reason()
+        if args.json:
+            print(json.dumps({"queue": os.path.abspath(queue_root()), "repos": [], "unreadable": [],
+                              "prs": [], "unavailable": why}, indent=2))
+        else:
+            print(f"shepherd: {why}")
+        return 0
     # `all`, and deliberately not the default view. This does not act on the
     # tasks it loads — it derives the REPOSITORIES they name and then asks the
     # forge for every open pull request in each, including ones no task ever

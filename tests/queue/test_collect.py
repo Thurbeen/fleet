@@ -121,7 +121,7 @@ def test_the_declared_method_reaches_the_brief(ptopic, queue_dir):
     refute(b, "`attested`")
 
     b = squeezed(queue_dir / ptopic / "03-push-task" / "BRIEF.md")
-    expect(b, "**Publish.** `push`", "commit URL for a")
+    expect(b, "**Publish.** `push`", "commit URL for a", "its full sha when `origin` is on no forge")
     refute(b, "Here that means")
 
 

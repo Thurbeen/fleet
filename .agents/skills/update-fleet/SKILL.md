@@ -240,7 +240,9 @@ uv run fleet sync-registry
 
 **Only when `registry/owners.txt` moved in the range, or the operator asks for
 it.** It is a full GitHub crawl over every owner; running it on every invocation
-turns a no-op update into a minutes-long one. Both `registry/owners.txt` and
+turns a no-op update into a minutes-long one. A local-only fleet has no owners
+file or no `gh`: the command then says the map is optional and exits 0, so skip
+this section. Both `registry/owners.txt` and
 `registry/repos.generated.yaml` are gitignored, so there is nothing to commit
 and nothing to push afterwards.
 

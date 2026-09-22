@@ -12,11 +12,14 @@ can act on exactly what this one reports.
 IT WRITES NOTHING AND INSTALLS NOTHING. It probes, and prints the command that
 would fix each gap. `--commands` hands those lines to whoever said yes.
 
-THREE TIERS, because "missing" does not mean one thing:
+FOUR TIERS, because "missing" does not mean one thing:
 
   required     fleet cannot run. Missing one is a non-zero exit.
   recommended  a named capability degrades and the rest still works —
                so it is reported, never fatal.
+  forge        OPTIONAL. Each row names what it adds: the repo map, publish
+               checks on change requests, shepherd merges. A local-only fleet
+               — no forge CLI, no login — runs everything else.
   gate         only `uv run fleet check` needs it. A control plane that
                never pushes a change never needs these.
 
@@ -24,12 +27,13 @@ Usage:
   uv run fleet preflight                  # the table, grouped by tier
   uv run fleet preflight --commands       # just the install lines for what is missing
   uv run fleet preflight --tier required  # only that tier (repeatable)
+  uv run fleet preflight --tier forge     # what a forge would add, and how
 
 `--tier` is what makes "install the required ones only" a command rather than
 a judgement call about which lines to copy out of a longer list.
 
-Exit: 0 when every REQUIRED dependency is present and authenticated, 1 when
-one is not, 2 on a usage error. Recommended and gate gaps never fail it.
+Exit: 0 when every REQUIRED dependency is present, 1 when one is not, 2 on a
+usage error. Recommended, forge and gate gaps never fail it.
 """
 
 from __future__ import annotations
@@ -68,7 +72,7 @@ fleet_platform = _load_sibling("fleet_platform", "fleet_platform.py")
 gh_accounts = _load_sibling("fleet_gh_accounts", "gh_accounts.py")
 glab_hosts = _load_sibling("fleet_glab_hosts", "glab_hosts.py")
 
-TIERS = ("required", "recommended", "gate")
+TIERS = ("required", "recommended", "forge", "gate")
 
 # --- package managers ---------------------------------------------------------
 #
@@ -176,16 +180,6 @@ def dependencies(family: str | None = None) -> list[Dependency]:
             see="https://git-scm.com/downloads",
         ),
         Dependency(
-            "gh", "required", "builds the repo map from registry/owners.txt, and is fleet's GitHub forge adapter",
-            tool="gh",
-            packages={"winget": "GitHub.cli", "apt": "gh", "dnf": "gh", "pacman": "github-cli", "brew": "gh"},
-            see="https://cli.github.com",
-        ),
-        Dependency(
-            "gh auth", "required", "the registry sync reads GitHub as you — EVERY account, no PAT, no CI secret",
-            needs="gh", check=_gh_auth, manual="gh auth login",
-        ),
-        Dependency(
             "uv", "required",
             "runs `fleet`, with the Python and PyYAML uv.lock pins and the gate's rumdl, ruff and pytest",
             tool="uv", packages={"winget": "astral-sh.uv", "pacman": "uv", "brew": "uv"},
@@ -227,14 +221,28 @@ def dependencies(family: str | None = None) -> list[Dependency]:
             installer={"posix": command("npm", "install", "-g", "quota-axi"),
                        "windows": command("npm", "install", "-g", "quota-axi")},
         ),
+        # The forge tier: nothing here is needed to run fleet. A local-only
+        # fleet dispatches against local repos and proves `push` and `none`
+        # tasks with git alone; each row says what that forge adds.
         Dependency(
-            "glab", "recommended", "fleet's GitLab forge adapter; nothing needs it until a task's repo lives on GitLab",
+            "gh", "forge",
+            "adds GitHub: the repo map from registry/owners.txt, pull request publish checks, and shepherd merges",
+            tool="gh",
+            packages={"winget": "GitHub.cli", "apt": "gh", "dnf": "gh", "pacman": "github-cli", "brew": "gh"},
+            see="https://cli.github.com",
+        ),
+        Dependency(
+            "gh auth", "forge", "lets gh read GitHub as you — EVERY account, no PAT, no CI secret",
+            needs="gh", check=_gh_auth, manual="gh auth login",
+        ),
+        Dependency(
+            "glab", "forge", "adds GitLab: merge request publish checks and shepherd merges for a repo that lives there",
             tool="glab",
             packages={"winget": "GLab.GLab", "apt": "glab", "dnf": "glab", "pacman": "glab", "brew": "glab"},
             see="https://gitlab.com/gitlab-org/cli",
         ),
         Dependency(
-            "glab auth", "recommended",
+            "glab auth", "forge",
             "a merge request is read with a credential for ITS host, not for every host glab knows",
             needs="glab", check=_glab_auth, manual="glab auth login   # it asks which instance",
         ),
@@ -428,9 +436,10 @@ def remedy(finding: Finding, manager: str | None) -> str:
 HEADINGS = {
     "required": "REQUIRED — fleet cannot run without these",
     "recommended": "RECOMMENDED — each one names what degrades without it",
+    "forge": "FORGE — optional: each one names what it adds, and a local-only fleet needs none",
     "gate": "GATE — only `uv run fleet check` needs these",
 }
-USAGE = "usage: uv run fleet preflight [--commands] [--tier required|recommended|gate]...\n"
+USAGE = "usage: uv run fleet preflight [--commands] [--tier required|recommended|forge|gate]...\n"
 
 
 def main(argv: list[str]) -> int:
@@ -443,7 +452,7 @@ def main(argv: list[str]) -> int:
         elif arg == "--tier":
             tier = args.pop(0) if args else ""
             if tier not in TIERS:
-                sys.stderr.write("usage: --tier required|recommended|gate\n")
+                sys.stderr.write("usage: --tier required|recommended|forge|gate\n")
                 return 2
             tiers.append(tier)
         elif arg in ("-h", "--help"):

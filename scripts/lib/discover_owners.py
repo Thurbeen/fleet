@@ -312,9 +312,10 @@ def main(argv: list[str]) -> int:
             "  Nothing on this machine names a GitHub owner: no gh session, no\n"
             "  github.user, and no clone with a github.com remote under the roots\n"
             "  scanned. Name a root to scan, or write registry/owners.txt by hand\n"
-            "  from registry/owners.example.txt.\n"
+            "  from registry/owners.example.txt.\n\n"
+            "  The repo map is optional: a local-only fleet needs no owner at all.\n"
         )
-        return 1
+        return 0
 
     configured = configured_owners()
     print("CANDIDATE OWNERS — for registry/owners.txt, which is a list of GITHUB owners\n")

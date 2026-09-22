@@ -32,7 +32,7 @@ def test_every_check_is_listed_and_every_test_area_exists():
     checks = listed()
     for name in ("lock", "lint", "markdown", "docs", "yaml", "workflow", "profiles", "cli", "queue", "reconcile", "status",
                  "sync", "onboarding", "pane", "extension", "install", "skills", "automerge", "isolation",
-                 "architecture"):
+                 "architecture", "local"):
         assert name in checks, f"no {name} check: {sorted(checks)}"
     for name, (kind, targets) in checks.items():
         assert kind in ("static", "tests"), (name, kind)

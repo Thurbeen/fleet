@@ -1,6 +1,6 @@
 ---
 name: fleet-onboarding
-description: Take a fresh clone of this control plane to a working fleet — check and install the dependencies, discover the GitHub owners from the machine itself, sync the registry, install the thurbox extension, place the TUI queue pane on the operator's screen, and bring the reconciler up. Use when someone has just cloned the repo, asks how to set the control plane up, asks to install fleet's dependencies or the queue pane, asks to start or restart the fleet reconciler, or invokes /fleet-onboarding.
+description: Take a fresh clone of this control plane to a working fleet — check and install the dependencies, discover the GitHub owners and sync the registry when the fleet works on a forge (a local-only fleet skips both), install the thurbox extension, place the TUI queue pane on the operator's screen, and bring the reconciler up. Use when someone has just cloned the repo, asks how to set the control plane up, asks to install fleet's dependencies or the queue pane, asks to start or restart the fleet reconciler, or invokes /fleet-onboarding.
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Glob, Grep, AskUserQuestion
 ---
@@ -8,8 +8,8 @@ allowed-tools: Read, Edit, Write, Bash, Glob, Grep, AskUserQuestion
 ## fleet-onboarding
 
 Takes a fresh clone of fleet to a control plane that actually runs: dependencies
-installed, owners known, registry synced, thurbox extension installed, the queue
-pane **on screen**, and the reconciler up.
+installed, owners known and registry synced if the fleet works on a forge,
+thurbox extension installed, the queue pane **on screen**, and the reconciler up.
 
 **Do the work, don't narrate it — but keep the operator oriented while you do.**
 Every step is a `uv run fleet` command, and running them is yours. What the
@@ -23,12 +23,36 @@ Seven steps, in this order, each announced in one line before you do it:
 ```text
 Step 1/7  Dependencies      fleet install: the plan, one answer          [ask]
 Step 2/7  This checkout     is this the clone to keep?
-Step 3/7  Owners            fleet discover-owners, then confirm           [ask]
-Step 4/7  Registry          fleet sync-registry
+Step 3/7  Owners            fleet discover-owners, then confirm   [ask, forge only]
+Step 4/7  Registry          fleet sync-registry                         [forge only]
 Step 5/7  Extension         fleet voice-ask, then fleet install-extension [ask]
 Step 6/7  Queue pane        place it on screen — right by default         [ask]
 Step 7/7  Reconciler        fleet reconcile ensure                        [ask]
 ```
+
+### A local-only fleet
+
+**No forge CLI and no forge login is a supported setup, not a degraded one.**
+Step 1's ask decides it: an operator who installs no forge there skips steps 3
+and 4 and says so in one line each — there are no owners and no map, and
+nothing downstream needs either. What changes:
+
+- `uv run fleet preflight` exits 0 with every forge row missing; its FORGE tier
+  says what each would add.
+- Tasks target local checkouts: `fleet queue add --repo <path>`. Publish with
+  `push` — the worker pushes to `origin`, which may be a bare repository or any
+  remote no forge owns, and reports the commit's full sha as its artifact, which
+  git alone proves — or with `none`, which closes on the worker's word.
+  `pr`, `attested` and `note` need a forge: without one `collect` closes them as
+  `unchecked` and names `uv run fleet preflight --tier forge`.
+- `fleet queue shepherd` says "no forge configured" once and exits 0, and the
+  reconciler skips it while no forge CLI is on PATH, logging that once — and
+  picks it up at the next pass once one is installed, with no restart.
+- `sync-registry`, `discover-owners` and a bare `add-owner` say the map is
+  optional and exit 0.
+
+A forge can be added at any time: `uv run fleet install --forge github` (or
+`gitlab`), then steps 3 and 4.
 
 **Five asks, and no more than five.** Everything else is discoverable or
 has one correct answer. Ask each one at the step it belongs to and not before —
@@ -54,15 +78,17 @@ each remains the supported manual path.
 uv run fleet preflight
 ```
 
-One pass over everything fleet needs, in three tiers, each row carrying what
-breaks without it and the command that installs it. **Read the table; do not
-re-probe it tool by tool.** It exits non-zero when a REQUIRED dependency is
-missing or a `thurbox-cli` is below the manifest's floor.
+One pass over everything fleet needs, in four tiers, each row carrying what
+breaks without it — or, for a forge, what it adds — and the command that
+installs it. **Read the table; do not re-probe it tool by tool.** It exits
+non-zero when a REQUIRED dependency is missing or a `thurbox-cli` is below the
+manifest's floor, and never for anything else.
 
 | Tier | What it means |
 |---|---|
-| required | fleet cannot run — `git`, `gh` (authenticated), `uv`, `thurbox-cli`, and the multiplexer thurbox runs sessions in: `tmux` 3.2 or newer, or `psmux` on native Windows |
-| recommended | a named capability degrades — `quota-axi` for fuel and `refuel`, `glab` (authenticated) for GitLab |
+| required | fleet cannot run — `git`, `uv`, `thurbox-cli`, and the multiplexer thurbox runs sessions in: `tmux` 3.2 or newer, or `psmux` on native Windows |
+| recommended | a named capability degrades — `quota-axi` for fuel and `refuel` |
+| forge | optional — `gh` and `gh auth` add GitHub, `glab` and `glab auth` add GitLab: the repo map, publish checks on change requests, shepherd merges. A local-only fleet needs none |
 | gate | only `uv run fleet check` needs it — `lua`, `prek`, plus the git commit-signing configuration, which is not a tool |
 
 There is no Python row. `uv` is the one runtime dependency that carries the
@@ -80,9 +106,10 @@ because neither CLI's own status command answers the question fleet has.
 enough. An operator authenticated to their company's GitLab and not to
 gitlab.com has a working setup, and this row says so.
 
-`gh` is required even on a fleet whose work is entirely on GitLab: it is what
-builds the repo map from `registry/owners.txt`, which is a list of GITHUB
-owners. `quota-axi` is the one most often missed, and it is not decorative —
+No forge is required. `gh` is what builds the repo map from
+`registry/owners.txt`, which is a list of GITHUB owners, so a GitLab-only fleet
+that wants a map still needs `gh` — and a fleet that wants no map needs neither.
+`quota-axi` is the one most often missed, and it is not decorative —
 without it the pane's fuel rows and `uv run fleet status` have nothing to
 read, and `fleet queue refuel` cannot tell a spent account window from a live
 one before it restarts a worker.
@@ -102,20 +129,29 @@ installed unasked. `uv run fleet install` prints the whole plan — every missin
 dependency with THIS machine's command (`winget` on native Windows; `apt-get`,
 `dnf`, `pacman` or `brew` elsewhere, or a tool's own installer where that is the
 recommended route), the `.claude/skills` link and the reconciler's nudge hook —
-and asks once. Show that plan and ask:
+and asks once. It plans no forge unless one is named. Show that plan and ask
+both halves in one go:
 
 - **Install the plan** (recommended) — required and recommended
 - **The plan and the gate's tools** — for an operator who will run
   `uv run fleet check`
 - **Skip** — nothing is installed
 
+and **which forge, if any** — **GitHub**, **GitLab**, both, or **none: a
+local-only fleet**. None is a complete answer: steps 3 and 4 are then skipped
+(see *A local-only fleet* above).
+
 Then run it with their answer, so what gets installed is never your judgement
 call:
 
 ```bash
-uv run fleet install --yes          # the plan
-uv run fleet install --yes --dev    # the plan and the gate tier
+uv run fleet install --yes                  # the plan, no forge
+uv run fleet install --yes --forge github   # and gh, and its login to run
+uv run fleet install --yes --dev            # the plan and the gate tier
 ```
+
+`--forge` repeats (`--forge github --forge gitlab`). A forge's login is a
+`you run` row: it is interactive and the operator's.
 
 On Linux several routes need `sudo`, and an operator watching a sudo prompt
 should know which command asked for it; the output names each as it runs. An
@@ -153,7 +189,10 @@ pull left the running lead session holding stale instructions.
 
 ## Step 3/7 — Owners
 
-`registry/owners.txt` is the one input that genuinely needs the operator, and
+**Only for a fleet that works on a forge.** A local-only operator has no owners
+file and needs none: say "Owners: skipped — local-only" and go to step 5.
+
+`registry/owners.txt` is the one input the map needs from the operator, and
 nearly all of it is already on the machine. Ask the machine first:
 
 ```bash
@@ -191,10 +230,11 @@ evidence and ask which the map should cover:
   fuller list
 
 An account with no orgs and no other evidence has nothing to ask about — write
-the username and move on. Discovery exiting 1 means the machine said nothing at
-all: no `gh` session, no `github.user`, no GitHub remote under the roots it
-scanned. Then, and only then, ask them to type their username, and offer the
-directory scan as the alternative.
+the username and move on. `No candidate owners found` (still exit 0: the map is
+optional) means the machine said nothing at all: no `gh` session, no
+`github.user`, no GitHub remote under the roots it scanned. Then, and only
+then, ask them to type their username, and offer the directory scan as the
+alternative.
 
 Then write the file. It is **gitignored** and will not exist in a fresh clone,
 so start from the tracked example rather than from memory:
@@ -213,9 +253,9 @@ so start from the tracked example rather than from memory:
   reshuffling it churns the generated map for nothing — and refuses a
   duplicate. **What the operator gains afterwards**, below, is the fuller path.
 
-Verify before moving on; the sync refuses a file with no active entries, and it
-is better to catch that here: read `registry/owners.txt` back, and see at least
-one line that is neither blank nor a `#` comment.
+Verify before moving on; the sync writes nothing for a file with no active
+entries, and it is better to catch that here: read `registry/owners.txt` back,
+and see at least one line that is neither blank nor a `#` comment.
 
 Nothing else needs seeding. Playbooks are tracked files the operator edits
 directly, `orchestration/playbooks/<name>.md` from `_TEMPLATE.md`. Session
@@ -226,6 +266,10 @@ is not secret: a credential should reach a worker by inheriting the thurbox
 server's environment rather than by living in either file.
 
 ## Step 4/7 — Registry
+
+**Only when step 3 wrote owners.** With no owners file, no owner in it, or no
+`gh`, the command says the map is optional, writes nothing and exits 0 — so a
+local-only run says "Registry: skipped — no map" and moves on.
 
 ```bash
 uv run fleet sync-registry
@@ -464,7 +508,9 @@ uv run fleet reconcile status
 
 Without it, one session ended with 19 of 20 progress timelines empty and three
 merged pull requests unnoticed for forty minutes. That is what the recommended
-answer is buying.
+answer is buying. On a local-only fleet it is just as worth running: it skips
+`shepherd` while no forge CLI is on PATH, says so once, and resumes by itself
+at the next pass once `fleet install --forge …` adds one.
 
 **`ensure`, never `start`, for exactly that reason.** It has the same `down`
 flag with the same durability, in `orchestration/reconcile/down`, and the same
@@ -499,8 +545,9 @@ never the mechanism: a worker that ran out of quota fires no hook at all.
 ## Hand over
 
 Close with a short recap: the seven steps, one line each, and what each landed —
-dependencies installed, owners written, N repos across M owners, the two names
-recorded and the extension healthy, pane placed on the right, reconciler up.
+dependencies installed, owners written, N repos across M owners (or: local-only,
+no forge and no map), the two names recorded and the extension healthy, pane
+placed on the right, reconciler up.
 
 **Nothing this skill wrote to the repo is tracked.** `registry/owners.txt`,
 `registry/repos.generated.yaml`, `extension.toml` and `FLEET.rendered.md` are
@@ -521,8 +568,10 @@ Say that too.
 `agent.conf` are the operator's, gitignored, and the tracked examples beside
 them name no tool, no vendor and no agent — so a fresh clone publishes by the
 one shape that needs no setup (`pr`: a pull request from the task's branch) and
-leaves `session create` thurbox's own default agent. Offer them, and say what
-each buys: a default publish command so the lead never retypes `--publish`, an
+leaves `session create` thurbox's own default agent. A local-only fleet wants
+`METHOD=push` or `METHOD=none` there, since `pr` needs a forge to prove it.
+Offer them, and say what each buys: a default publish command so the lead never
+retypes `--publish`, an
 `ATTESTATION_MARKER` if their pipeline attests, and `FUEL_PROVIDER` so `refuel`
 knows whose quota window to gate on. Without that last one `refuel` derives the
 provider from each task's agent and reports `undetermined` where it cannot,
@@ -666,9 +715,9 @@ Three things it does not do, each deliberate:
   `gh`. Authenticating one changes two other things and the report says so: the
   `glab auth` row in `fleet preflight` starts naming that host, and a task can
   target a repository there through the forge seam in `scripts/lib/forge.py`.
-- **It does not onboard a fresh clone.** With no `registry/owners.txt` it
-  refuses and points back at step 3, where the candidates come from three
-  sources rather than one.
+- **It does not onboard a fresh clone.** With no `registry/owners.txt` a bare
+  report says so and points back at step 3, where the candidates come from
+  three sources rather than one; `--all` or a named owner is refused there.
 
 Two preflight rows answer the same incremental question, so re-read them rather
 than the exit code alone when an operator says a credential is fine and fleet

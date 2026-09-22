@@ -87,13 +87,16 @@ def test_no_gh_at_all_still_discovers_from_the_git_config_and_says_so(stubs, hom
     expect(done.out, "octo", "gh auth login")
 
 
-def test_a_machine_that_names_nothing_exits_1_rather_than_invent_an_owner(stubs, tmp_path):
+def test_a_machine_that_names_nothing_invents_no_owner_and_is_not_a_failure(stubs, tmp_path):
+    """The map is optional, so a local-only machine with no forge anywhere is an
+    answer: nothing is offered, the remedy is named, and it exits 0."""
     bare = tmp_path / "emptyhome"
     (tmp_path / "noclones").mkdir()
     bare.mkdir()
     done = discover(machine(stubs, {"git": GIT}), bare, tmp_path / "noclones")
-    assert done.code == 1, done.out
-    expect(done.out, "owners.example.txt")
+    assert done.code == 0, done.out
+    expect(done.out, "No candidate owners found", "owners.example.txt", "optional")
+    refute(done.out, "CANDIDATE OWNERS")
 
 
 def test_a_usage_error_exits_2(stubs, home):

@@ -192,7 +192,9 @@ names every path and the reason for each.
   asks this module for; `scripts/lib/queue.py` runs no forge CLI itself and
   builds no forge URL. TWO implementations ship — GitHub through `gh`, GitLab
   through `glab` — and each is a CONFIGURATION and not an assumption, so a
-  self-hosted instance is the ordinary case and not a special one. **Which
+  self-hosted instance is the ordinary case and not a special one. A forge
+  whose CLI is not on PATH answers nothing, and `forge.available()` is how a
+  caller says "no forge configured" once instead of failing per call. **Which
   hosts the GitLab adapter owns is READ OFF THE MACHINE**, from `glab auth
   status`; `configured_hosts`' own docstring owns that rule and its two
   overrides, and the module's docstring owns the interface and how to add a
@@ -252,9 +254,15 @@ names every path and the reason for each.
   `tests/extension/` drives `fleet pane-ask` and `fleet voice-ask` —
   onboarding's ask for the two names, before the extension renders them.
 - `uv run fleet preflight` — every dependency fleet needs, in one pass, in
-  three tiers (required / recommended / gate), each row carrying what breaks
-  without it and the command that installs it with this machine's package
-  manager (winget on Windows). **The table is data**: `scripts/lib/preflight.py`
+  four tiers (required / recommended / forge / gate), each row carrying what
+  breaks without it and the command that installs it with this machine's
+  package manager (winget on Windows). **No forge is required**: `gh`, `glab`
+  and both logins sit in the optional forge tier, each naming what it adds, and
+  `uv run fleet install` plans one only when `--forge github|gitlab` asks. A
+  LOCAL-ONLY fleet — no forge CLI, no login, no owners and no map — dispatches
+  against local repos, proves `push` (a commit URL or its full sha) and `none`
+  with git alone, and no group fails for want of a forge; `tests/local/`
+  drives that machine with neither CLI on PATH. **The table is data**: `scripts/lib/preflight.py`
   holds it as records, so another module acts on exactly what preflight
   reports. It probes and prints; installing is the operator's, which is what
   `--commands` is for. `uv run fleet discover-owners` is its counterpart for

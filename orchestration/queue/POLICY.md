@@ -165,7 +165,8 @@ that leaves one out is held open exactly as one with no artifact at all is.
 
 `outcome` is one of those four words and nothing else. `artifact` is whatever
 your brief's Publish line says it is — a change request URL for `pr` and
-`attested`, a commit URL for `push`, the note's own URL for `note`, the URL the
+`attested`, a commit URL for `push` — or the commit's full sha when `origin` is
+on no forge — the note's own URL for `note`, the URL the
 document is served at for `served`, and what you produced, if anything, for
 `none`; `not-applicable` and `stuck` usually have
 none, and that is fine. `shipped` is a claim that the artifact exists, so

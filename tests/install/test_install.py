@@ -61,7 +61,10 @@ def gap_machine(stubs, family):
 @pytest.mark.parametrize("family", FAMILIES)
 def test_the_plan_names_every_gap_with_the_command_that_closes_it(stubs, checkout, family):
     gap_machine(stubs, family)
-    done = run_install(checkout, stubs, family)
+    # No forge unless asked: a local-only fleet is planned no gh, no glab and no login.
+    bare = plain(run_install(checkout, stubs, family).out)
+    refute(bare, "GLab.GLab", "install -y glab", "gh auth login")
+    done = run_install(checkout, stubs, family, "--forge", "github", "--forge", "gitlab")
     out = plain(done.out)
     if family == "windows":
         expect(out, "winget install --id GLab.GLab -e --accept-source-agreements --accept-package-agreements",
@@ -86,8 +89,11 @@ def test_no_terminal_and_no_yes_prints_the_plan_installs_nothing_and_says_yes(st
 @pytest.mark.parametrize("family", FAMILIES)
 def test_yes_runs_every_route_exactly_then_the_extension_then_preflight(stubs, checkout, family):
     gap_machine(stubs, family)
-    done = run_install(checkout, stubs, family, "--yes")
-    assert done.code == 1, "gh auth is still missing, and it is required"
+    # thurbox-cli's installer runs through a shell this machine does not have,
+    # so a required row is still missing once every route has run.
+    machine(stubs, {}, without=("thurbox-cli",))
+    done = run_install(checkout, stubs, family, "--yes", "--forge", "github", "--forge", "gitlab")
+    assert done.code == 1, "thurbox-cli is still missing, and it is required"
     calls = manager_calls(stubs)
     npm = "npm install -g quota-axi"
     if family == "windows":
@@ -104,7 +110,7 @@ def test_yes_runs_every_route_exactly_then_the_extension_then_preflight(stubs, c
         ], calls
     out = plain(done.stdout)
     refute(out, "gh auth login\n  running")
-    expect(out, "REQUIRED", "Stopped before the extension", "gh auth")
+    expect(out, "REQUIRED", "Stopped before the extension", "thurbox-cli", "gh auth")
     assert stubs.calls("extension") == [], "the extension ran with a required row missing"
 
 
@@ -137,7 +143,7 @@ def test_one_failed_install_is_reported_and_the_rest_still_run(stubs, checkout, 
         place(stubs, "apt-get", installs({}, fail=("glab",)))
         place(stubs, "sudo", SUDO)
     place(stubs, "npm", installs({"quota-axi": "quota-axi"}))
-    done = run_install(checkout, stubs, family, "--yes")
+    done = run_install(checkout, stubs, family, "--yes", "--forge", "gitlab")
     assert done.code == 1, done.out
     expect(plain(done.out), "failed: glab")
     assert stubs.calls("npm") == ["npm install -g quota-axi"], "the install after the failed one never ran"
@@ -171,7 +177,7 @@ def test_each_posix_manager_gets_its_own_argv(stubs, checkout, manager, want):
     machine(stubs, full_machine("posix"), without=("glab",))
     place(stubs, manager, installs({"glab": "glab"}))
     place(stubs, "sudo", SUDO)
-    done = run_install(checkout, stubs, "posix", "--yes")
+    done = run_install(checkout, stubs, "posix", "--yes", "--forge", "gitlab")
     assert done.code == 0, done.out
     assert stubs.calls(want.split()[0]) [:1] == [want], manager_calls(stubs)
 
@@ -208,7 +214,9 @@ def test_usage(stubs, checkout):
     assert run_install(checkout, stubs, "posix", "--bogus").code == 2
     done = run_install(checkout, stubs, "posix", "--help")
     assert done.code == 0
-    expect(done.stdout, "--yes", "--dev")
+    expect(done.stdout, "--yes", "--dev", "--forge")
+    assert run_install(checkout, stubs, "posix", "--forge").code == 2
+    assert run_install(checkout, stubs, "posix", "--forge", "sourcehut").code == 2
 
 
 # --- in-process: the terminal, root, and the argv rules ------------------------
@@ -229,7 +237,7 @@ def test_path_is_read_again_before_the_plan(checkout, monkeypatch):
     class Planned(Exception):
         pass
 
-    def plan(dev, root):
+    def plan(dev, root, forges=()):
         order.append("plan")
         raise Planned
 
@@ -248,7 +256,7 @@ def test_a_terminal_is_asked_once_and_the_answer_decides(stubs, checkout, monkey
     monkeypatch.setenv("FLEET_INSTALL_FAMILY", "posix")
     monkeypatch.setattr(sys, "stdin", Terminal(answer))
     install = load_install()
-    assert install.main([], checkout=str(checkout)) == code
+    assert install.main(["--forge", "gitlab"], checkout=str(checkout)) == code
     out = plain(capsys.readouterr().out)
     assert out.count("[y/N]") == 1, out
     if code == 0:

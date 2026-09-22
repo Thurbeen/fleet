@@ -62,6 +62,7 @@ TESTS = {
     "architecture": (["tests/architecture"], [], "the seams hold in the source, including the branch this run never takes"),
     "automerge": (["tests/settings"], [], "no tracked setting names a repository, a tool or an agent"),
     "isolation": (["tests/isolation"], ["uv", "git"], "a poisoned checkout under a hostile host gets the same verdict"),
+    "local": (["tests/local"], ["uv", "git"], "a fleet with no forge CLI and no login: preflight, the loop, the reconciler"),
 }
 
 

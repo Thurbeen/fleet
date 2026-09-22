@@ -6,7 +6,8 @@ written on and costs a new operator the whole setup. So it is driven here
 against machines built from stand-ins, where "missing" means missing:
 
   - every missing REQUIRED dependency is named in one pass and exits 1; a
-    recommended or gate gap is reported and never fatal;
+    recommended, forge or gate gap is reported and never fatal, because a
+    local-only fleet runs with no forge CLI and no login at all;
   - a thurbox below the manifest's floor is `stale`, and the floor is read
     from extension.toml.in, which owns it;
   - `--commands` hands over exactly the runnable install lines, for the package
@@ -48,11 +49,11 @@ def test_a_fully_equipped_machine_exits_0_and_has_nothing_to_install(stubs):
 def test_every_missing_required_tool_is_named_in_the_same_pass(stubs):
     """Not the first one it tripped over: an operator should not learn about a
     missing tool one restart at a time."""
-    path = machine(stubs, full_machine(), without=("gh", "uv"))
+    path = machine(stubs, full_machine(), without=("thurbox-cli", "uv"))
     done = preflight(path)
     out = plain(done.out)
     assert done.code == 1, out
-    expect(out, "missing  gh ", "missing  uv ", "2 required dependencies missing", "install:")
+    expect(out, "missing  thurbox-cli ", "missing  uv ", "2 required dependencies missing", "install:")
 
     cmds = preflight(path, "--commands")
     assert cmds.stdout.strip(), "--commands hands over the lines to run"
@@ -61,8 +62,9 @@ def test_every_missing_required_tool_is_named_in_the_same_pass(stubs):
 
 def test_tier_makes_install_the_required_ones_a_command_and_never_hides_a_required_gap(stubs):
     """A required gap is one whatever the caller asked to see."""
-    path = machine(stubs, full_machine(), without=("gh", "quota-axi"))
-    refute(preflight(path, "--commands", "--tier", "required").out, "quota-axi")
+    path = machine(stubs, full_machine(), without=("uv", "quota-axi", "gh"))
+    required = preflight(path, "--commands", "--tier", "required").out
+    refute(required, "quota-axi", "GitHub.cli", "apt-get install -y gh")
 
     done = preflight(path, "--tier", "gate")
     assert done.code == 1, done.out
@@ -148,14 +150,14 @@ def glab_machine(stubs) -> str:
     return machine(stubs, full_machine() | {"glab": GLAB_PER_HOST})
 
 
-def recommended(path: str, **env: str | None) -> str:
-    return plain(preflight(path, "--tier", "recommended", **env).out)
+def forge_tier(path: str, **env: str | None) -> str:
+    return plain(preflight(path, "--tier", "forge", **env).out)
 
 
 def test_a_credential_on_one_configured_host_is_not_reported_missing(glab_machine):
     """The case from the field: a credential for the self-hosted instance, none
     for gitlab.com, and no GITLAB_HOST naming either."""
-    out = recommended(glab_machine, GLAB_HOSTS=f"gitlab.com {SELF_HOSTED}", GLAB_OK=SELF_HOSTED)
+    out = forge_tier(glab_machine, GLAB_HOSTS=f"gitlab.com {SELF_HOSTED}", GLAB_OK=SELF_HOSTED)
     refute(out, "missing  glab auth")
     expect(out, SELF_HOSTED)
 
@@ -164,17 +166,17 @@ def test_gitlab_host_decides_which_instance_has_to_work_in_both_directions(glab_
     """GITLAB_HOST is glab's own variable for which instance to talk to, so a
     credential for some OTHER instance is not the one the forge seam uses."""
     hosts = f"gitlab.com {SELF_HOSTED}"
-    out = recommended(glab_machine, GITLAB_HOST="gitlab.com", GLAB_HOSTS=hosts, GLAB_OK=SELF_HOSTED)
+    out = forge_tier(glab_machine, GITLAB_HOST="gitlab.com", GLAB_HOSTS=hosts, GLAB_OK=SELF_HOSTED)
     expect(out, "missing  glab auth", "glab auth login --hostname gitlab.com")
 
-    out = recommended(glab_machine, GITLAB_HOST=SELF_HOSTED, GLAB_HOSTS=hosts, GLAB_OK=SELF_HOSTED)
+    out = forge_tier(glab_machine, GITLAB_HOST=SELF_HOSTED, GLAB_HOSTS=hosts, GLAB_OK=SELF_HOSTED)
     refute(out, "missing  glab auth")
 
 
 def test_no_gitlab_credential_anywhere_is_missing_and_never_fatal(glab_machine):
-    """Per host must not make the row unfailable, and glab is RECOMMENDED: a
-    fleet whose work is all on GitHub needs no GitLab credential."""
-    expect(recommended(glab_machine, GLAB_HOSTS="gitlab.com", GLAB_OK=""), "missing  glab auth")
+    """Per host must not make the row unfailable, and glab is a FORGE row: a
+    fleet whose work is all on GitHub, or on no forge, needs no GitLab credential."""
+    expect(forge_tier(glab_machine, GLAB_HOSTS="gitlab.com", GLAB_OK=""), "missing  glab auth")
     assert preflight(glab_machine, GLAB_HOSTS="gitlab.com", GLAB_OK="").code == 0
 
 
@@ -218,18 +220,19 @@ def test_one_expired_token_among_working_logins_is_not_a_failed_preflight(stubs)
     logins(stubs, ("octo", "success"), ("client", "success"), ("worky", "success"), ("expired", "timeout"))
     path = machine(stubs, full_machine() | {"gh": GH_PER_ACCOUNT})
     assert preflight(path).code == 0
-    out = plain(preflight(path, "--tier", "required").out)
+    out = plain(preflight(path, "--tier", "forge").out)
     refute(out, "missing  gh auth")
     expect(out, "3 of 4 accounts", "octo")
     # The login that did not authenticate is named, so a thinner answer is never silent.
     expect(out, "expired")
 
 
-def test_not_one_account_authenticating_is_still_a_required_gap(stubs):
+def test_not_one_account_authenticating_is_a_forge_gap_and_never_fatal(stubs):
+    """Still reported with its remedy — just not a reason fleet cannot run."""
     logins(stubs, ("octo", "timeout"), ("worky", "timeout"))
     path = machine(stubs, full_machine() | {"gh": GH_PER_ACCOUNT})
-    expect(plain(preflight(path, "--tier", "required").out), "missing  gh auth", "gh auth login")
-    assert preflight(path).code == 1
+    expect(plain(preflight(path, "--tier", "forge").out), "missing  gh auth", "gh auth login")
+    assert preflight(path).code == 0
 
 
 def test_a_gh_too_old_for_json_passes_on_the_active_session(stubs):
@@ -237,7 +240,7 @@ def test_a_gh_too_old_for_json_passes_on_the_active_session(stubs):
     session is asked alone."""
     path = machine(stubs, full_machine() | {"gh": GH_PER_ACCOUNT})
     assert preflight(path, GH_ACTIVE_OK="1").code == 0
-    out = plain(preflight(path, "--tier", "required", GH_ACTIVE_OK="1").out)
+    out = plain(preflight(path, "--tier", "forge", GH_ACTIVE_OK="1").out)
     refute(out, "missing  gh auth")
     expect(out, "octo")
 
@@ -269,8 +272,10 @@ def test_the_table_is_one_record_per_dependency_with_a_route_for_each(pf, monkey
             assert not d.packages and not d.installer, d
         else:
             assert d.packages or d.installer.get(name) or d.see, d
-    assert {"git", "gh", "gh auth", "uv", "thurbox-cli"} <= {d.name for d in table if d.tier == "required"}
-    assert {"glab", "glab auth", "quota-axi"} <= {d.name for d in table if d.tier == "recommended"}
+    assert {"git", "uv", "thurbox-cli"} <= {d.name for d in table if d.tier == "required"}
+    assert {"quota-axi"} <= {d.name for d in table if d.tier == "recommended"}
+    # No forge is required: each is its own optional row, CLI and login alike.
+    assert {d.name for d in table if d.tier == "forge"} == {"gh", "gh auth", "glab", "glab auth"}
     assert {"lua", "commit signing"} <= {d.name for d in table if d.tier == "gate"}
     # Retired by the port: Python and PyYAML come with uv, and nothing runs bash, jq or shellcheck.
     assert not {"python3", "PyYAML", "jq", "shellcheck", "bash"} & set(names)
@@ -341,7 +346,8 @@ def test_no_manager_falls_back_to_the_tools_own_installer_or_to_nothing(pf, monk
 def test_commands_prints_the_install_line_for_that_family(pf, monkeypatch, stubs, capsys, name, manager, want):
     monkeypatch.setenv("PATH", machine(stubs, full_machine() | {manager: says("")}, without=("gh",)))
     family(monkeypatch, pf, name)
-    assert pf.main(["--commands"]) == 1
+    # A forge gap is a line to run and never a failed preflight.
+    assert pf.main(["--commands"]) == 0
     assert want in capsys.readouterr().out.splitlines()
 
 
@@ -352,4 +358,5 @@ def test_missing_returns_the_failing_records_limited_to_tiers(pf, monkeypatch, s
     assert {"gh", "lua", "tmux"} <= set(gaps), gaps
     assert gaps["tmux"].state == "stale"
     assert "gh auth" not in gaps, "a login is only probed once its tool is there"
-    assert {f.dependency.name for f in pf.missing(["required"])} == {"gh", "tmux"}
+    assert {f.dependency.name for f in pf.missing(["required"])} == {"tmux"}
+    assert {f.dependency.name for f in pf.missing(["forge"])} == {"gh"}

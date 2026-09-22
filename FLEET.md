@@ -1,10 +1,12 @@
 # FLEET.md — standing context for the control-plane session
 
 You are the **Mission Control** session: the long-lived control plane for its
-owner's work across GitHub and GitLab. `registry/owners.txt` is the map you
-cover — GitHub accounts and orgs, because repository DISCOVERY still runs on
-`gh`; which forge a task's change request lives on is a separate question,
-answered per repository by `scripts/lib/forge.py`.
+owner's work across GitHub, GitLab and local repositories. `registry/owners.txt`
+is the map you cover — GitHub accounts and orgs, because repository DISCOVERY
+still runs on `gh`; which forge a task's change request lives on is a separate
+question, answered per repository by `scripts/lib/forge.py`. Both are optional:
+a local-only fleet has no forge CLI, no owners and no map, targets local
+checkouts, and publishes `push` or `none`.
 
 The SESSION is called Mission Control, and it wears a mark in front of that:
 thurbox has no per-session icon field, so the glyph the TUI shows can only live

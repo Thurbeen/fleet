@@ -115,9 +115,11 @@ Environment:
   FLEET_LEAD_SESSION            the lead session to wake; read by notify_lead.py
 
 Requires: uv and whatever the pass needs: thurbox-cli for `watch`, `refuel` and
-the notification, `gh` for `collect` and `shepherd`, `quota-axi` for fuel. Each
-degrades to "could not check" inside the queue, so a missing tool costs its own
-pass and never the loop.
+the notification, `gh` or `glab` for `collect` and `shepherd`, `quota-axi` for
+fuel. Each degrades to "could not check" inside the queue, so a missing tool
+costs its own pass and never the loop. With no forge CLI at all, shepherd is
+skipped while none is on PATH — asked every pass, logged only when that
+changes — so a forge installed while the loop runs is picked up with no restart.
 """
 
 from __future__ import annotations
@@ -508,6 +510,14 @@ def tick(cfg: Config) -> int:
         log(cfg, f"cannot run {cfg.queue_label} — nothing to reconcile")
         return 2
 
+    # With no forge CLI on this machine a shepherd pass has nothing to ask.
+    # Asked EVERY pass — `available()` is a PATH lookup, so a forge installed
+    # while the loop runs (`fleet install --forge …`) is shepherded at the next
+    # pass with no restart — and said only when the answer CHANGES, so a
+    # local-only machine logs one line rather than one per pass.
+    forge = _load_sibling("fleet_forge", "forge.py")
+    has_forge = None
+
     last = {"collect": float("-inf"), "shepherd": float("-inf"), "refuel": float("-inf")}
     while True:
         # Checked at the top of every pass, so a stop is honoured at the next boundary.
@@ -527,7 +537,16 @@ def tick(cfg: Config) -> int:
         # collect first: it is the one that CLOSES tasks, and shepherd's view of
         # which pull requests still matter is better for running after it.
         did_collect = nudged or stamp - last["collect"] >= cfg.collect
+        now_forge = bool(forge.available())
+        if now_forge != has_forge:
+            if not now_forge:
+                log(cfg, f"shepherd: skipped while no forge is available — {forge.no_forge_reason()}")
+            elif has_forge is not None:
+                log(cfg, "shepherd: resumed — a forge CLI is on PATH now")
+            has_forge = now_forge
         for verb, every in (("collect", cfg.collect), ("shepherd", cfg.shepherd), ("refuel", cfg.refuel)):
+            if verb == "shepherd" and not has_forge:
+                continue
             if (verb == "collect" and did_collect) or (verb != "collect" and stamp - last[verb] >= every):
                 run_pass(cfg, verb, [verb])
                 last[verb] = stamp

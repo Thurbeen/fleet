@@ -111,17 +111,22 @@ def test_every_account_failing_refuses_and_leaves_the_map_untouched(root, stubs)
     refute(done.out, "wrote ")
 
 
-def test_a_missing_or_empty_owners_file_is_refused_with_the_remedy(tmp_path, stubs):
+def test_a_missing_or_empty_owners_file_names_the_remedy_and_writes_no_map(tmp_path, stubs):
+    """The map is optional: no owners is a local-only fleet, not a failure, and
+    nothing is written for it."""
     stubs.tool("gh", GH)
     bare = sandbox(tmp_path / "bare", None)
     done = run_module(bare, "sync_registry.py")
-    assert done.code == 1
-    expect(done.out, "cp registry/owners.example.txt registry/owners.txt")
+    assert done.code == 0, done.out
+    expect(done.out, "cp registry/owners.example.txt registry/owners.txt", "optional")
+    assert not (bare / "registry" / "repos.generated.yaml").exists()
 
     empty = sandbox(tmp_path / "empty", "# nothing yet\n\n")
     done = run_module(empty, "sync_registry.py")
-    assert done.code == 1
+    assert done.code == 0, done.out
     expect(done.out, "no owners configured")
+    assert not (empty / "registry" / "repos.generated.yaml").exists()
+    assert stubs.calls("gh") == [], "nothing to sync asked GitHub anyway"
 
 
 def test_the_fleet_group_is_wired_to_it():

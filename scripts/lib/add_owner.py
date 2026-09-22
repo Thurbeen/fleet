@@ -205,10 +205,15 @@ def main(argv: list[str]) -> int:
     # here would be a first run done badly: which owners the map should cover is
     # a question somebody has to be asked.
     if not os.path.isfile(OWNERS_FILE):
-        return fail(f"no {OWNERS_FILE} yet — this is the path for a map that already exists.\n"
-                    "       A first run belongs to the fleet-onboarding skill, which asks:\n"
-                    "         uv run fleet discover-owners\n"
-                    "         cp registry/owners.example.txt registry/owners.txt")
+        message = (f"no {OWNERS_FILE} yet — this is the path for a map that already exists.\n"
+                   "       A first run belongs to the fleet-onboarding skill, which asks:\n"
+                   "         uv run fleet discover-owners\n"
+                   "         cp registry/owners.example.txt registry/owners.txt")
+        if add_all or wanted:
+            return fail(message)
+        # Only a report was asked for, and no map is a fleet that works: a local-only one.
+        sys.stdout.write(f"note: {message}\n       The repo map is optional; a local-only fleet has none.\n")
+        return 0
 
     sync_registry = _load_sibling("fleet_sync_registry", "sync_registry.py")
     configured = set(sync_registry.read_owners(OWNERS_FILE))
@@ -256,6 +261,13 @@ def main(argv: list[str]) -> int:
             fh.write("\n")
         fh.write("".join(f"{o}\n" for o in wanted))
     sys.stdout.write(f"added to registry/owners.txt: {list_some(wanted)}\n")
+
+    # No gh, so nothing can sync, and the sync says so and exits 0: reporting
+    # MAP CHANGED after it would describe a map nobody wrote.
+    if not shutil.which("gh"):
+        sys.stdout.write("\nThe map was NOT synced: gh not found, and the map is read from GitHub with it.\n"
+                         "  uv run fleet preflight --tier forge   installs it; then uv run fleet sync-registry\n")
+        return 0
 
     had_map = os.path.isfile(MAP)
     before_pairs, before_totals = map_pairs(), map_totals()

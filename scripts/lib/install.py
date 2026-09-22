@@ -4,7 +4,9 @@ The bootstraps (`install.sh`, `install.ps1`) get uv, git and the checkout,
 then hand over here. This owns the rest, in this order:
 
   1. THE PLAN. Every missing dependency preflight reports — the required and
-     recommended tiers, the gate tier too with `--dev` — each with the command
+     recommended tiers, the gate tier too with `--dev`, and a forge's CLI and
+     login only with `--forge github` or `--forge gitlab`, because a
+     local-only fleet needs neither — each with the command
      `preflight.install_plan` gives for this machine's package manager. A row
      with no plan is listed and never run: "you run" for a login only the
      operator can do, "no route" for a tool nothing here can install, "needs"
@@ -41,7 +43,7 @@ then hand over here. This owns the rest, in this order:
 Idempotent: a second run on a complete machine asks nothing, installs nothing,
 and writes no file.
 
-Usage: uv run fleet install [--yes] [--dev]
+Usage: uv run fleet install [--yes] [--dev] [--forge github|gitlab]...
 Exit: 0 installed, 1 a required dependency still missing, a step failed or the
 plan was declined, 2 usage.
 """
@@ -75,7 +77,9 @@ fleet_platform = _load_sibling("fleet_platform", "fleet_platform.py")
 preflight = _load_sibling("fleet_preflight", "preflight.py")
 reconcile = _load_sibling("fleet_reconcile", "reconcile.py")
 
-USAGE = "usage: uv run fleet install [--yes] [--dev]\n"
+USAGE = "usage: uv run fleet install [--yes] [--dev] [--forge github|gitlab]...\n"
+# Each forge's rows in preflight's forge tier: the CLI, then its login.
+FORGES = {"github": ("gh", "gh auth"), "gitlab": ("glab", "glab auth")}
 LINK, TARGET = ".claude/skills", ".agents/skills"
 NUDGE = " fleet reconcile nudge"
 WINGET_ACCEPT = ("--accept-source-agreements", "--accept-package-agreements")
@@ -114,11 +118,19 @@ def prepare(argv: tuple[str, ...], root: bool) -> list[str]:
 APT_UPDATE = ("sudo", "apt-get", "update")
 
 
-def plan_rows(dev: bool, root: bool) -> list[Row]:
-    tiers = ["required", "recommended"] + (["gate"] if dev else [])
+def plan_rows(dev: bool, root: bool, forges: tuple[str, ...] = ()) -> list[Row]:
+    tiers = ["required", "recommended"] + (["forge"] if forges else []) + (["gate"] if dev else [])
+    wanted = {name for forge in forges for name in FORGES[forge]}
     manager = preflight.package_manager()
     rows = []
-    for finding in preflight.missing(tiers):
+    found = [f for f in preflight.missing(tiers) if f.dependency.tier != "forge" or f.dependency.name in wanted]
+    # A login is only probed once its CLI is there, so on a machine the plan is
+    # about to install that CLI on, the login the operator asked for is still theirs to run.
+    named = {f.dependency.name for f in found}
+    for dep in preflight.dependencies():
+        if dep.name in wanted and dep.manual and dep.needs in named and dep.name not in named:
+            found.append(preflight.Finding(dep, "missing", manual=dep.manual))
+    for finding in found:
         dep = finding.dependency
         if finding.manual:
             rows.append(Row(dep.name, "you run", finding.manual))
@@ -368,11 +380,16 @@ def extension_step(checkout: str) -> int:
 def main(argv: list[str], checkout: str | None = None) -> int:
     checkout = checkout or CHECKOUT
     yes = dev = False
-    for arg in argv:
+    forges: list[str] = []
+    args = list(argv)
+    while args:
+        arg = args.pop(0)
         if arg in ("--yes", "-y"):
             yes = True
         elif arg == "--dev":
             dev = True
+        elif arg == "--forge" and args and args[0] in FORGES:
+            forges.append(args.pop(0))
         elif arg in ("-h", "--help"):
             sys.stdout.write(__doc__)
             return 0
@@ -385,7 +402,7 @@ def main(argv: list[str], checkout: str | None = None) -> int:
     # What an earlier run installed is on the registry's PATH and not yet on
     # this window's: without this, a second run plans it and asks again.
     fleet_platform.refresh_path()
-    rows = plan_rows(dev, root)
+    rows = plan_rows(dev, root, tuple(dict.fromkeys(forges)))
     link, link_why = link_state(checkout)
     settings, command = claude_settings_file(), reconcile.hook_command(checkout)
     hook, hook_why = hook_state(settings, command)
@@ -460,8 +477,9 @@ session it asks you, once, whether to put the queue pane on your screen.
 
   thurbox
 
-Then run /fleet-onboarding in it for what this did not do: the GitHub owners
-your map covers, the map itself, and the reconciler.""")
+Then run /fleet-onboarding in it for what this did not do: the reconciler and,
+if you work on a forge, the owners your map covers. A local-only fleet needs no
+forge at all; `--forge github` or `--forge gitlab` installs one's CLI.""")
     return 0
 
 
