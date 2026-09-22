@@ -1,6 +1,6 @@
 ---
 name: fleet-queue
-description: Turn a prompt into durable task records, dispatch every independent task at once, and learn what finished by reading a stream and a file instead of being interrupted. Use whenever the control plane is given work — especially work spanning several projects, several tasks, or several merges at the same time — whenever you are asked what is in flight, blocked or waiting, and for any of the queue's own verbs: topic add, add, plan, block, dispatch, send, watch, collect, shepherd, reap, reviewed, refuel, list, show, archive, or the reconcile loop that runs them.
+description: Turn a prompt into durable task records, dispatch every independent task at once, and learn what finished by reading a stream and a file instead of being interrupted. Use whenever the control plane is given work — especially work spanning several projects, several tasks, or several merges at the same time — whenever you are asked what is in flight, blocked or waiting, and for any of the queue's own verbs: topic add, add, plan, block, dispatch, send, watch, collect, shepherd, reap, reviewed, abandon, refuel, list, show, archive, or the reconcile loop that runs them.
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Glob, Grep
 ---
@@ -421,6 +421,30 @@ to break. The cost is that a stale one holds a task forever, which is why
 `--why` is required and why `plan`, `list`, `show`, `fleet status` and the
 TUI pane all carry it in front of you — the pane draws it `⊘` rather than `↳`,
 because the wait it marks has no actor but you.
+
+### When a task will never run — `abandon`
+
+A condition that will never be true — the work shipped some other way, the
+plan changed — is not a wait, and clearing it would make the task
+dispatchable. Retire the task instead:
+
+```bash
+uv run fleet queue abandon <ref>... --why 'superseded: shipped as one PR'
+uv run fleet queue abandon --topic <topic> --why '...'   # every task not landed or abandoned
+```
+
+It moves each task to `abandoned` — the terminal state a pull request closed
+unmerged already reaches (§5b) — and records `--why` in `task.yaml` and
+`progress.jsonl`; `list`, `show`, the pane and the run log carry it. Once every
+task in a topic is terminal, the topic archives. **All or nothing**: it refuses
+`landed` always, and a `dispatched` task whose session thurbox still lists
+unless you pass `--force`. It never touches a session — `reap` releases that one
+once its agent is at rest.
+
+A blocker naming an abandoned task **stays blocked**, because only `landed`
+clears one. `abandon` prints every such dependant with both ways out — `block
+--clear --on` if it can run without the work, `abandon` if it cannot — and the
+choice is yours.
 
 ## 4. Dispatch — the whole ready set, in one go
 
@@ -847,7 +871,7 @@ So a task gets a state AFTER `done`:
 |---|---|---|
 | `done` | the worker concluded; its change request is open, its served document is awaiting its reader, or its already-confirmed `push` commit is about to be promoted by this same `collect` run | **kept** — the cheap way to fix what review finds, and the only thing a reader has to talk to |
 | `landed` | the change request merged, the pushed commit reached the base branch, or there was never an artifact | released |
-| `abandoned` | the change request was closed unmerged | released; the work is NOT on main |
+| `abandoned` | the change request was closed unmerged, or you retired the task with `abandon` (§3) | released once at rest; the work is NOT on main |
 | `stuck` / `failed` | the worker gave up | **kept** — that session is the evidence, and you decide, unless the worker rewrites its `result.md` with an outcome that `collect` then proves (§5) |
 
 **A `served` task is the one `landed` cannot be asked of.** Fleet cannot poll a

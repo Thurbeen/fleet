@@ -114,7 +114,9 @@ renders into the brief and never parses.
 
 **`done` is not the end of the record.** `fleet queue reap` — which `collect`
 runs for you — asks the forge whether a `done` task's change request merged and
-moves it to `landed` (or, if it closed unmerged, `abandoned`); a task with no
+moves it to `landed` (or, if it closed unmerged, `abandoned`) — the same
+`abandoned` `fleet queue abandon <ref> --why …` writes by hand for a task that
+will never run; a task with no
 change-request artifact goes straight to `landed`. A task that spans
 repositories reaches `landed` only when EVERY one of its change requests
 merged, because a blocker clears on `landed` and half a task on `main` would
