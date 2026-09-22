@@ -268,6 +268,50 @@ def test_a_task_that_needs_a_forge_says_it_cannot_be_verified_and_how_to_add_one
     assert state_of(queue / "01-reviewed") == "done", out
 
 
+def test_a_note_task_with_no_forge_is_unchecked_and_never_held_open(no_forge, tmp_path):
+    """The `note` half of "a missing CLI must not manufacture `missing`": the
+    forge that owns the note's host is configured and cannot be asked, which is
+    a question nobody could put and not an answer."""
+    repo = local_repo(tmp_path / "local")
+    brief = tmp_path / "brief.md"
+    write(brief, BRIEF)
+    topic = clean(q("topic", "add", "local-only", "--title", "Work with no forge", "--prompt", "p")).stdout.strip()
+    clean(q("add", topic, "reviewed", "--title", "Review change 7", "--repo", str(repo), "--branch", "review/7",
+            "--number", "01", "--publish", "note", "--target", "https://github.com/acme/widgets/pull/7",
+            "--brief-file", str(brief)))
+    queue = Path(os.environ["FLEET_QUEUE_DIR"]) / topic
+    result(queue / "01-reviewed", "shipped", "Reviewed it.",
+           "https://github.com/acme/widgets/pull/7#pullrequestreview-1")
+
+    out = clean(q("collect")).out
+    expect(out, "publish unchecked", "no forge configured", "preflight --tier forge")
+    refute(out, "HELD OPEN", "NOT CLOSED")
+    assert state_of(queue / "01-reviewed") in ("done", "landed"), out
+
+
+def test_a_note_on_a_forge_whose_cli_is_absent_is_unchecked_while_another_forge_answers(no_forge, tmp_path, stubs):
+    """`gh` here, `glab` not: the target resolves on GitHub, and the note sits on
+    GitLab, which nobody here can ask. That is `unknown`, as it was before the
+    seam could say "not available" — never `missing` out of a missing CLI."""
+    shutil.copy2(stubs.bin / ("thurbox-cli" + EXE), stubs.bin / ("gh" + EXE))
+    write(stubs.root / "scripts" / "gh.py", "raise SystemExit(1)\n")
+    repo = local_repo(tmp_path / "local")
+    brief = tmp_path / "brief.md"
+    write(brief, BRIEF)
+    topic = clean(q("topic", "add", "mixed", "--title", "One forge of two", "--prompt", "p")).stdout.strip()
+    clean(q("add", topic, "reviewed", "--title", "Review change 7", "--repo", str(repo), "--branch", "review/7",
+            "--number", "01", "--publish", "note", "--target", "https://github.com/acme/widgets/pull/7",
+            "--brief-file", str(brief)))
+    queue = Path(os.environ["FLEET_QUEUE_DIR"]) / topic
+    result(queue / "01-reviewed", "shipped", "Reviewed it.",
+           "https://gitlab.com/acme/widgets/-/merge_requests/7#note_1")
+
+    out = clean(q("collect")).out
+    expect(out, "publish unchecked", "glab not found on PATH")
+    refute(out, "HELD OPEN", "NOT CLOSED")
+    assert state_of(queue / "01-reviewed") in ("done", "landed"), out
+
+
 # --- the reconciler -------------------------------------------------------------------
 
 
@@ -308,6 +352,44 @@ def test_the_reconciler_runs_with_no_forge_and_logs_no_error(no_forge, tmp_path,
     refute(out, "Traceback", "raised")
     assert not re.search(r"\b(collect|shepherd|refuel|watch): exit \d", out), out
     assert out.count("no forge configured") == 1, out
+
+
+def test_the_reconciler_notices_a_forge_installed_while_it_runs(no_forge, tmp_path, stubs, monkeypatch):
+    """`fleet install --forge github` on a machine whose loop is already up: the
+    next pass runs shepherd again, with no restart, and says so once."""
+    for var in ("WATCH", "COLLECT", "REFUEL", "SHEPHERD"):
+        monkeypatch.setenv(f"FLEET_RECONCILE_{var}_SECS", "1")
+    monkeypatch.setenv("FLEET_LEAD_SESSION", "Mission Control")
+    repo = local_repo(tmp_path / "local")
+    brief = tmp_path / "brief.md"
+    write(brief, BRIEF)
+    topic = clean(q("topic", "add", "local-only", "--title", "Work with no forge", "--prompt", "p")).stdout.strip()
+    add(topic, "pushed", "01", repo, "push", brief)
+
+    log = Path(os.environ["FLEET_RECONCILE_DIR"]) / "reconcile.log"
+
+    def text() -> str:
+        try:
+            return log.read_text(encoding="utf-8")
+        except OSError:
+            return ""
+
+    try:
+        clean(run_fleet("reconcile", "start"))
+        assert wait_for(lambda: text().count("result(s) read") >= 2), text()
+        assert "no task names a repository" not in text(), "shepherd ran with no forge"
+        # The forge arrives: a `gh` on the loop's own PATH, answering an empty list.
+        write(stubs.root / "scripts" / "gh.py", "print('[]')\n")
+        shutil.copy2(stubs.bin / ("thurbox-cli" + EXE), stubs.bin / ("gh" + EXE))
+        assert wait_for(lambda: "no task names a repository" in text()), text()
+    finally:
+        run_fleet("reconcile", "stop")
+
+    out = text()
+    refute(out, "Traceback", "raised")
+    assert not re.search(r"\b(collect|shepherd|refuel|watch): exit \d", out), out
+    assert out.count("no forge configured") == 1, out
+    assert out.count("shepherd: resumed") == 1, out
 
 
 # --- status, the pane probe and the registry ---------------------------------------------

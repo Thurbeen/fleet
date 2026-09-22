@@ -46,7 +46,8 @@ nothing downstream needs either. What changes:
   `pr`, `attested` and `note` need a forge: without one `collect` closes them as
   `unchecked` and names `uv run fleet preflight --tier forge`.
 - `fleet queue shepherd` says "no forge configured" once and exits 0, and the
-  reconciler skips it and logs that once per start.
+  reconciler skips it while no forge CLI is on PATH, logging that once — and
+  picks it up at the next pass once one is installed, with no restart.
 - `sync-registry`, `discover-owners` and a bare `add-owner` say the map is
   optional and exit 0.
 
@@ -508,7 +509,8 @@ uv run fleet reconcile status
 Without it, one session ended with 19 of 20 progress timelines empty and three
 merged pull requests unnoticed for forty minutes. That is what the recommended
 answer is buying. On a local-only fleet it is just as worth running: it skips
-`shepherd` for the whole start and its log says so once.
+`shepherd` while no forge CLI is on PATH, says so once, and resumes by itself
+at the next pass once `fleet install --forge …` adds one.
 
 **`ensure`, never `start`, for exactly that reason.** It has the same `down`
 flag with the same durability, in `orchestration/reconcile/down`, and the same

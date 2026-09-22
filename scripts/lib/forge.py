@@ -1617,7 +1617,16 @@ def for_repo(repo: RepoId) -> tuple:
 
 
 def owner(url: str) -> Forge | None:
-    """The configured forge whose host this URL is on and that can be asked, or None."""
+    """The configured forge whose host this URL is on and that can be asked, or None.
+
+    ASKED, because `note_verdict` reads "a forge owns this host" as an answer
+    (`missing`) and "none does" as a question nobody could put (`unknown`). A
+    forge whose CLI is absent has answered nothing, so it must read as the
+    second. It bites where the task's target resolves on one forge and the note
+    sits on another whose CLI is not here — `gh` present, `glab` absent — which
+    was `unknown` before this seam learned to say "not available" and has to
+    stay so; `tests/local/test_no_forge.py` pins it.
+    """
     m = re.match(r"^https?://([^/\s]+)/", (url or "").strip())
     if not m:
         return None
