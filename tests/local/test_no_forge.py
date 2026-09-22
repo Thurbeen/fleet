@@ -348,6 +348,12 @@ def test_status_the_pane_probe_and_the_registry_tools_degrade_cleanly(no_forge, 
     expect(clean(module("sync_registry.py")).out, "optional")
     assert not (sandbox / "registry" / "repos.generated.yaml").exists()
     clean(module("add_owner.py"))
+    # Adding an owner by name still writes the owners file, and says the map was
+    # not synced rather than reporting a change to a map nobody wrote.
+    done = clean(module("add_owner.py", "acme"))
+    expect(done.out, "NOT synced", "preflight --tier forge")
+    refute(done.out, "MAP CHANGED")
+    assert (sandbox / "registry" / "owners.txt").read_text(encoding="utf-8").splitlines() == ["octo", "acme"]
 
     empty = tmp_path / "no-clones"
     empty.mkdir()

@@ -262,6 +262,13 @@ def main(argv: list[str]) -> int:
         fh.write("".join(f"{o}\n" for o in wanted))
     sys.stdout.write(f"added to registry/owners.txt: {list_some(wanted)}\n")
 
+    # No gh, so nothing can sync, and the sync says so and exits 0: reporting
+    # MAP CHANGED after it would describe a map nobody wrote.
+    if not shutil.which("gh"):
+        sys.stdout.write("\nThe map was NOT synced: gh not found, and the map is read from GitHub with it.\n"
+                         "  uv run fleet preflight --tier forge   installs it; then uv run fleet sync-registry\n")
+        return 0
+
     had_map = os.path.isfile(MAP)
     before_pairs, before_totals = map_pairs(), map_totals()
 

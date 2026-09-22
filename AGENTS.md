@@ -261,8 +261,8 @@ names every path and the reason for each.
   `uv run fleet install` plans one only when `--forge github|gitlab` asks. A
   LOCAL-ONLY fleet — no forge CLI, no login, no owners and no map — dispatches
   against local repos, proves `push` (a commit URL or its full sha) and `none`
-  with git alone, and every group exits 0; `tests/local/` drives that machine
-  with neither CLI on PATH. **The table is data**: `scripts/lib/preflight.py`
+  with git alone, and no group fails for want of a forge; `tests/local/`
+  drives that machine with neither CLI on PATH. **The table is data**: `scripts/lib/preflight.py`
   holds it as records, so another module acts on exactly what preflight
   reports. It probes and prints; installing is the operator's, which is what
   `--commands` is for. `uv run fleet discover-owners` is its counterpart for
