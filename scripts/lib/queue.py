@@ -102,6 +102,13 @@ its session until a person runs `fleet queue reviewed <ref>`. The TOOL is
 a task name a publisher fleet has never heard of. A `stuck` or `failed` task
 is read again, and acted on only when the outcome in its result.md CHANGED.
 
+`abandon` IS THE ONE HAND-MADE WAY INTO A TERMINAL STATE. A task that will
+never run — superseded, or held by a condition nobody will clear — would
+otherwise read `waiting` forever and hold its topic open. It reaches the same
+`abandoned` a pull request closed unmerged does, with the reason recorded, so
+nothing downstream learns a new word; a blocker naming it stays blocked, and
+the verb names those dependants for the lead to decide.
+
 `send` IS NOT A SIXTH THING. It is how the lead course-corrects a worker
 mid-flight, and it belongs here rather than in `thurbox-cli session send`
 because it WRITES THE INSTANT DOWN, plus a BASELINE (the branch head). `list`
@@ -174,6 +181,11 @@ Usage:
   uv run fleet queue reviewed <ref> [--why W]  # a `served` task's document is no
                        longer waiting on a reader: the next reap lands it and
                        releases the session kept to answer them
+  uv run fleet queue abandon <ref>... --why W [--force]  # retire tasks that
+                       will never run; or --topic T for every task in it not
+                       landed or abandoned. Refuses `landed`, and a dispatched
+                       task whose session is listed unless --force; names every
+                       task still blocked on one; never touches a session
   uv run fleet queue refuel [<ref>] [--dry-run]  # the account's fuel first, then
                        restart the workers that ran dry against it
   uv run fleet queue shepherd [--dry-run] # every open change request on the repo: fix or merge
@@ -1862,6 +1874,9 @@ def task_notes(q: Queue, task: Task) -> list:
     a task that concluded is the contradiction this whole section exists for.
     """
     notes = []
+    given_up = task.doc.get("abandoned") or {}
+    if task.state == "abandoned" and given_up.get("why"):
+        notes.append(f"abandoned by hand: {given_up['why']}")
     conflict = state_conflict(task)
     if conflict:
         notes.append(f"! {conflict}")
@@ -5839,6 +5854,111 @@ def cmd_reviewed(args) -> int:
     return 0
 
 
+def abandon_refusal(task: Task, live: set | None, live_why: str, force: bool) -> str:
+    """Why this task may not be abandoned, or "" when it may.
+
+    `landed` is refused whatever the flags: the work is on main, and calling it
+    given up would be a false record. A DISPATCHED task whose session thurbox
+    still lists is a worker mid-flight, so giving up on it is the lead's call
+    to make out loud with `--force`. A session that could not be looked up
+    counts as live — a probe hiccup must not read as a worker that is gone.
+    """
+    if task.state == "landed":
+        return f"{task.ref} has landed; its work is on main and cannot be given up"
+    sid = task.doc.get("session")
+    if force or task.state != "dispatched" or not sid:
+        return ""
+    if task.doc.get("host"):
+        status = "on host " + task.doc["host"] + ", which this command does not ask"
+    elif live is None:
+        status = f"not checked — {live_why}"
+    elif sid not in live:
+        return ""
+    else:
+        status, _ = session_state(sid)
+        status = status or "listed by thurbox"
+    return (
+        f"{task.ref} is dispatched to session {sid} ({status}). Its worker may "
+        "still be running;\n       `--force` abandons it anyway, and leaves the "
+        "session to `fleet queue reap`"
+    )
+
+
+def cmd_abandon(args) -> int:
+    """Retire tasks that will never run — the one hand-made way into `abandoned`.
+
+    THE SAME TERMINAL STATE THE FORGE ALREADY WRITES for a pull request closed
+    unmerged, so nothing downstream learns a new word: `unfinished()` stops
+    counting the task and the topic archives, `collect` skips it, a blocker
+    naming it reads UNCLEARABLE, and `reap` releases its session once thurbox
+    says the agent is at rest. This verb never touches a session itself.
+
+    ALL OR NOTHING. Every task is checked before any is written, so one refusal
+    leaves every record as it was.
+    """
+    why = (args.why or "").strip()
+    if not why:
+        raise QueueError("--why is required: the reason is the whole record of an abandon")
+    if bool(args.refs) == bool(args.topic):
+        raise QueueError("name the tasks to abandon, or --topic T — one or the other")
+    q = Queue(queue_root(), scope="all")
+    if args.topic:
+        if args.topic not in q.topics:
+            raise QueueError(f"no such topic: {args.topic}")
+        tasks = [t for t in q.by_topic().get(args.topic, []) if t.state not in TERMINAL_STATES]
+    else:
+        tasks = list({t.ref: t for t in (q.get(r) for r in args.refs)}.values())
+
+    todo = [t for t in tasks if t.state != "abandoned"]
+    live, live_why = (None, "")
+    if not args.force and any(t.state == "dispatched" and t.doc.get("session") for t in todo):
+        live, live_why = live_sessions()
+    refusals = [r for r in (abandon_refusal(t, live, live_why, args.force) for t in todo) if r]
+    if refusals:
+        raise QueueError("nothing abandoned:\n       " + "\n       ".join(refusals))
+
+    for task in tasks:
+        if task.state == "abandoned":
+            print(f"    {task.ref:<46} already abandoned")
+            continue
+        entry = {"at": now(), "why": why, "was": task.state, "forced": bool(args.force)}
+        task.doc["abandoned"] = entry
+        task.doc["state"] = "abandoned"
+        task.save()
+        fleet_platform.append_record(
+            task.file("progress.jsonl"), json.dumps({"abandoned": entry, "observed": now()}) + "\n"
+        )
+        held = " — its session is `reap`'s to release" if task.doc.get("session") else ""
+        print(f"    {task.ref:<46} abandoned  (was {entry['was']}){held}")
+    if not todo:
+        print("abandon: nothing to do")
+        return 0
+
+    # A blocker on an abandoned task never clears — only `landed` releases one
+    # — so every task still waiting on these is named, with both ways out.
+    # Which one is right is the lead's decision, not this command's.
+    gone = {t.ref for t in todo}
+    for dep in sorted(q.tasks.values(), key=lambda t: t.ref):
+        if dep.state in CONCLUDED_STATES or dep.ref in gone:
+            continue
+        for b in dep.blockers:
+            if b.get("task") in gone:
+                print(
+                    f"    {dep.ref} waits on {b['task']} and stays blocked: an abandoned "
+                    "task never lands.\n"
+                    f"      uv run fleet queue block {dep.ref} --clear --on {b['task']}"
+                    "   # it can run without it\n"
+                    f"      uv run fleet queue abandon {dep.ref} --why '...'"
+                    "   # it cannot"
+                )
+
+    touched = {t.topic for t in todo}
+    for slug in sorted(touched):
+        refresh_run_logs(q, only=slug)
+    sweep_archives(Queue(queue_root(), scope="live"), lambda t: t.state, dry=False)
+    return 0
+
+
 # --- refuel: the fuel, and the sessions that ran dry -------------------------
 #
 # WHY THIS EXISTS. A worker that hits its agent's token limit does not fail —
@@ -8564,6 +8684,9 @@ def run_events(tasks: list) -> list:
         landing = d.get("landing") or {}
         if landing.get("at") and landing.get("state") in LANDED_STATE:
             out.append((landing["at"], f"`{t.id}` {landing['state']} — {landing.get('detail', '')}"))
+        given_up = d.get("abandoned") or {}
+        if given_up.get("at"):
+            out.append((given_up["at"], f"`{t.id}` abandoned by hand — {cell(given_up.get('why'))}"))
         reaped = d.get("reaped") or {}
         if reaped.get("at"):
             out.append((reaped["at"], f"released `{t.id}`'s session "
@@ -9136,6 +9259,11 @@ def cmd_show(args) -> int:
             f"    {'reviewed:':<12} closed at {review['closed']}"
             + (f" — {review['why']}" if review.get("why") else "")
         )
+    given_up = d.get("abandoned") or {}
+    if given_up.get("at"):
+        forced = ", forced" if given_up.get("forced") else ""
+        print(f"    {'abandoned:':<12} at {given_up['at']} (was {given_up.get('was')}{forced}) "
+              f"— {given_up.get('why', '')}")
     refuels = d.get("refuels") or []
     if refuels:
         print(f"    {'refuelled:':<12} {len(refuels)} restart(s) of {REFUEL_CAP}, last "
@@ -9530,6 +9658,17 @@ def build_parser() -> argparse.ArgumentParser:
     rv.add_argument("ref")
     rv.add_argument("--why", help="what the reader said, or how you know they are done")
     rv.set_defaults(func=cmd_reviewed)
+
+    ab = sub.add_parser("abandon", help="retire tasks that will never run")
+    ab.add_argument("refs", nargs="*", help="the tasks to abandon")
+    ab.add_argument("--topic", help="every task in this topic that has not landed or been abandoned")
+    ab.add_argument("--why", help="why it will never run; recorded on the task")
+    ab.add_argument(
+        "--force",
+        action="store_true",
+        help="abandon a dispatched task even though its session is still listed",
+    )
+    ab.set_defaults(func=cmd_abandon)
 
     rf = sub.add_parser("refuel", help="restart the workers that ran out of quota")
     rf.add_argument("ref", nargs="?",
