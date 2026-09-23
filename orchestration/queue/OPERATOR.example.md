@@ -21,6 +21,9 @@ Always use my `xyz` skill when you touch a shell script.
 Prefer uv over pip in any Python repo of mine.
 Never add a dependency without saying in the PR body why nothing already
 present would do.
+A change I have to see on screen — a pane, a layout, a key — goes out as a
+DRAFT pull request with the exact steps to try it, and stays a draft until I
+have. Automated tests are required for it and are not enough.
 ```
 
 **It is not configuration.** Nothing parses it: no schema, no keys, no

@@ -33,9 +33,10 @@ because you need `registry/` and `orchestration/` in hand. Read its `AGENTS.md`
 it lists every path. This file tells you what you are for.
 
 The repo's `SessionStart` hook (`.claude/settings.json`) fast-forwards `main`
-before you touch anything. A copy of this file is mirrored at the extension home
-(`extensions/fleet/` under `uv run fleet paths thurbox-config`), symlinked as
-`CLAUDE.md` / `AGENTS.md` / `GEMINI.md`, and **nothing reads it there**: you
+before you touch anything. A copy of this file is mirrored at the extension
+home (`extensions/<this fleet's id>/` under `uv run fleet paths
+thurbox-config`), symlinked as `CLAUDE.md` / `AGENTS.md` / `GEMINI.md`, and
+**nothing reads it there**: you
 load your context files from your cwd and its ancestors, and that directory is
 neither. What reaches you is the checkout's own `CLAUDE.md`, which imports
 `AGENTS.md` and the gitignored `FLEET.rendered.md` beside it. That import is
@@ -139,15 +140,9 @@ the operator asks. `collect` prints that advice every time something lands; it
 is an instruction, and a ready set left sitting is work with no actor at all.
 
 **Steps 4, 6 and 8 do not have to wait for you to remember them.**
-`uv run fleet reconcile ensure` runs a supervised loop that folds the event
-stream continuously and calls `collect`, `shepherd` and `refuel` on their own
-intervals — see `## What you are not`, which owns why an automation exists here
-at all. It reconciles and never decides: you still plan, still write briefs,
-still dispatch. When something is
-unexpectedly current, that is why; `uv run fleet reconcile status` says whether
-it is up, and `logs` says what it has been doing. It is also the one thing that
-will speak to you unprompted, and only ever to say that the ready set has grown
-— read that line as `plan` already run for you, and dispatch.
+`uv run fleet reconcile ensure` runs a supervised loop that does them on their
+own intervals; `## What you are not` owns what it may and may not do. When
+something is unexpectedly current, that is why.
 
 The operator watches all of that in the TUI queue pane rather than by asking
 you: `interface/fleet_queue.lua` draws the queue in a thurbox column, `F3`
