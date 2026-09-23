@@ -1,62 +1,65 @@
 ---
 name: fleet-queue
-description: Turn a prompt into durable task records, dispatch every independent task at once, and learn what finished by reading a stream and a file instead of being interrupted. Use whenever the control plane is given work — especially work spanning several projects, several tasks, or several merges at the same time — whenever you are asked what is in flight, blocked or waiting, and for any of the queue's own verbs: topic add, add, plan, block, dispatch, send, watch, collect, shepherd, reap, reviewed, abandon, refuel, list, show, archive, or the reconcile loop that runs them.
+description: Turn a prompt into durable task records, dispatch every independent task at once, and learn what finished by reading a stream and a file instead of being interrupted. Use whenever the control plane is given work — especially work spanning several projects, several tasks, or several merges at the same time — whenever you are asked what is in flight, blocked or waiting, and for any of the queue's own verbs: topic add, add, plan, block, dispatch, prompt, send, attach, watch, collect, shepherd, reap, reviewed, abandon, refuel, list, show, archive, or the reconcile loop that runs them.
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Glob, Grep
 ---
 
 ## fleet-queue
 
-A prompt is not a turn in this conversation. It is a **topic** on disk, which
-becomes **tasks** on disk, each carrying its own instructions in its own file.
-`uv run fleet queue` owns all of it — `scripts/lib/queue.py`'s docstring is its
-model and its usage, and `--help` on any verb gives that verb's flags; this
-skill is how to think
-while driving it. Three things it buys: nothing is lost to a
-context reset, independent work goes out all at once, and your context stays
-clean — you read a line per task, and each worker reads one brief.
-
-### Where it sits next to `thurbox-session`
+A prompt is not a turn in this conversation. It is a **topic** on disk that
+becomes **tasks** on disk, each with its own brief. `uv run fleet queue` owns
+all of it: `scripts/lib/queue.py`'s docstring is the model, and `--help` on any
+verb is that verb's flags. This skill is how to think while driving it.
 
 `thurbox-session` is how ONE session is spawned, prompted and cleaned up, and
-all of it still applies — `--on-existing`, session profiles, trust, multi-repo,
-the state vocabulary. This skill is the layer above: what work exists, what
-order it goes in, and how you find out it finished. When the two disagree about
-completion, this one wins: **workers write result files, they do not send mail.**
+all of it still applies. This skill is the layer above: what work exists, what
+order it goes in, and how you find out it finished. Where they disagree about
+completion, this one wins: **workers write result files; they do not send mail.**
 
-### Which checkout you are in
+## The loop
 
-**The queue lives in the CONTROL PLANE's checkout** — the clone the `mission
-control` session opens — and nowhere else. A second clone of this repo is
-normal: a control plane with no `origin` of its own needs one that workers can
-branch and push from. Opening a topic there gives you a whole second queue the
-TUI pane is right not to show.
+1. `topic add` — the prompt, verbatim.
+2. `add` one task per unit of work; `--touches` what each expects to change.
+3. Write each `BRIEF.md`.
+4. `block` only what a concrete condition makes unsafe to run in parallel.
+5. `plan`, read the ready set, then `dispatch` — all of it, at once. Check the
+   report for any session spawned but NOT prompted.
+6. `watch` on your own cadence; `collect` when a result is waiting.
+7. `shepherd` — as reflexively as `collect`, which tells you to. A pull
+   request goes bad long after the worker that wrote it stopped.
+8. `refuel` when a worker has been `working` far too long, or the operator
+   says the fleet hit a limit. It reads the account's fuel first.
+9. Or run none of 6–8 by hand: `uv run fleet reconcile ensure` keeps them
+   ticking (§5d).
+10. `plan` again. Review the pull requests; the operator merges every one
+    `shepherd` did not. Sessions release themselves once their pull requests
+    land. Write your judgement into the run log.
 
-"The control plane" means YOURS. One machine may run several fleets, each a
-checkout with a Mission Control and a queue of its own
-(`orchestration/fleet.example.conf`), and the guard below reads THIS checkout's
-own manifest — so another fleet's queue is not yours to write, read or reason
-about, and nothing you run here reaches it.
+## Which checkout you are in
 
-Ask the tooling rather than the shell prompt:
+**The queue lives in the CONTROL PLANE's checkout** — the clone the Mission
+Control session opens — and nowhere else. A second clone is normal (a control
+plane with no `origin` of its own needs one workers can push from), and a
+topic opened there is a second queue the TUI pane is right not to show. One
+machine may also run several fleets, each a checkout with a Mission Control and
+a queue of its own (`orchestration/fleet.example.conf`); another fleet's queue
+is not yours to write, read or reason about.
 
 ```bash
 uv run fleet queue root      # the queue this invocation would use, absolute
 ```
 
-If that is not the control plane's checkout, go there and work there. `topic
-add` and
-`add` refuse outside it anyway, naming both paths, and every other command
-warns — but the two lines above answer it before you type anything.
-`FLEET_QUEUE_DIR` overrides all of it, verbatim and unguarded, for a harness
-pointing at a throwaway queue.
+If that is not the control plane's checkout, go there. `topic add` and `add`
+refuse elsewhere, naming both paths; everything else warns. `FLEET_QUEUE_DIR`
+overrides all of it, verbatim, for a harness pointing at a throwaway queue.
 
 ## 1. Intake — a prompt becomes a topic
 
-Do this before doing anything else with a new ask, including one that looks
-like a single task, and including one phrased as a question rather than a
-change — *find out why X* is a brief, not an investigation you run here. A
-topic with one task costs nothing; a task with no topic costs you the prompt.
+Do this before anything else with a new ask, including one that looks like a
+single task and one phrased as a question — *find out why X* is a brief, not
+an investigation you run here. A topic with one task costs nothing; a task
+with no topic costs you the prompt.
 
 ```bash
 uv run fleet queue topic add report-status-honestly \
@@ -66,19 +69,13 @@ uv run fleet queue topic add report-status-honestly \
 EOF
 ```
 
-Store the prompt verbatim: your summary of it is a lossy copy made at the moment
-you understood it least.
-
-`topic add` also opens this run's log at
-`orchestration/runs/<opened>-<topic>.md` and names it on stderr. You do not
-have to make one, and you should not make a second — see **The run
-log** below.
+Store the prompt verbatim: your summary is a lossy copy made when you
+understood it least. `topic add` also opens this run's log (**The run log**,
+below); do not make a second one.
 
 Then decompose. A topic is the unit of **intent**; a task is the unit of
 **work** — one branch, one thing a single worker can finish and validate on its
-own. The decomposition is yours. A task is still one unit of work when it
-**spans repositories**: one branch, cut in each of them, and one artifact from
-each — see `--add-repo` below.
+own. A task is still one unit when it **spans repositories** (`--add-repo`).
 
 ```bash
 uv run fleet queue add report-status-honestly drop-idle-default \
@@ -88,106 +85,60 @@ uv run fleet queue add report-status-honestly drop-idle-default \
   --touches src/state.rs,src/session.rs
 ```
 
-`--touches` is the paths you expect the task to change. It is a **risk signal
-that gets reported**, never a reason to hold anything back — see §3.
+`--touches` is the paths you expect the task to change: a **risk signal that
+gets reported**, never a reason to hold anything back (§3).
 
 Two things `add` refuses up front, because both used to fail at `dispatch`
-instead — leaving a task `queued` and needing a hand-edit of `task.yaml`:
+and leave a task `queued` with a `task.yaml` to hand-edit:
 
 - **`--branch` must not exist yet.** thurbox's `--worktree-branch` only ever
-  CREATES a branch, so `main` itself or one left behind by an earlier run
-  cannot have a worktree cut for it. A repo this machine cannot read is not
-  asked, so a `--host` task still finds out at dispatch.
-- **`--title` becomes the worker's session NAME.** thurbox makes a path segment
-  of it, refusing `/`, `\`, `..`, a leading `.`, and anything over its 64-byte
-  cap — `Rust crate, CI/CD and the profile model` is a title `add` used to take
-  and `dispatch` could never spawn. Judged on the RENDERED name, glyph and cut
-  included; every character thurbox accepts is still accepted.
+  CREATES a branch. A repo this machine cannot read is not asked, so a
+  `--host` task still finds out at dispatch.
+- **`--title` becomes the worker's session NAME.** thurbox makes a path
+  segment of it: no `/`, `\`, `..`, leading `.`, and a 64-byte cap, judged on
+  the RENDERED name with its glyph.
 
 ### `--add-dir` — a directory the worker only reads
 
-`add --add-dir <path>` attaches another directory to the worker's session
-exactly as it is: **no worktree, no branch, nothing to publish.** Repeatable,
-and the order you write them in is the order thurbox attaches them.
-
-```bash
-uv run fleet queue add report-status-honestly drop-idle-default \
-  --title 'Stop defaulting an unreported session to idle' \
-  --repo /home/you/code/thurbox \
-  --branch fix/drop-idle-default \
-  --add-dir /home/you/code/fleet          # read it; do not commit in it
-```
-
-Use it when the work needs a sibling repository or a docs tree **in view** —
-an interface the task has to match, a spec, the control plane's own briefs.
-Nothing below `dispatch` has anything to say about one: it is not verified, it
-does not land, and it is not reaped. The brief tells the worker so.
-
-A second repository the worker must **commit** in is `--add-repo`, below —
-different flag, different weight, because a commit fleet does not verify is the
-failure verification exists to stop.
+`add --add-dir <path>` attaches another directory to the session as it is:
+**no worktree, no branch, nothing to publish.** Repeatable, attached in the
+order written. Use it for a sibling repository or docs tree the work has to
+match. Nothing below `dispatch` verifies, lands or reaps one; the brief tells
+the worker so. A second repository the worker must **commit** in is
+`--add-repo`, because a commit fleet does not verify is the failure
+verification exists to stop.
 
 ### `--add-repo` — a second repository the worker commits in
 
 `add --add-repo <path>` or `--add-repo <path>@<base>` gives the task a second
-repository with **its own worktree, on the same `--branch`**, off that base or
-off `--base`. Repeatable. thurbox owns that `PATH@BASE` syntax and gets your
-string verbatim.
+repository with **its own worktree, on the same `--branch`**. Repeatable;
+thurbox owns the `PATH@BASE` syntax and gets your string verbatim.
 
-```bash
-uv run fleet queue add report-status-honestly rename-the-state \
-  --title 'Rename the state across both sides' \
-  --repo /home/you/code/thurbox \
-  --branch fix/rename-the-state \
-  --add-repo /home/you/code/fleet          # commits here too
-```
-
-**The artifact model goes plural with it, and that is the whole cost of this
-flag.** The publish method stays one per task — `--publish attested` means
-every repository it touches produces an attested change request — and
-everything downstream handles N:
+**The artifact model goes plural with it, and that is the whole cost.** The
+publish method stays one per task, and everything downstream handles N:
 
 | | with one repository | with N |
 |---|---|---|
 | the record | `artifact:` is a URL | `artifact:` is a list of `{repo, url}` |
 | `result.md` | `artifact: <url>` | `artifacts:` — one line per repository path |
-| `collect` | closes when the artifact verifies | closes only when **every** one does, and names the ones that did not |
-| `reap` | `landed` when the artifact merged | `landed` only when **every** one merged; one merged and one open is not landed |
+| `collect` | closes when the artifact verifies | closes only when **every** one does, naming the ones that did not |
+| `reap` | `landed` when the artifact merged | `landed` only when **every** one merged |
 | `shepherd` | watches that repository | watches every repository the task names |
 
-**A blocker still clears on `landed` only**, which is why the reap rule matters:
-a task promoted on half its repositories would release a dependent while the
-other half sat unmerged. One repository still open holds the whole task.
-
-**What the worker sees** is thurbox's business and worth knowing anyway: with
-two or more repositories it launches the agent in a per-session symlink
-workspace, so each repository is a subdirectory there. The brief says so, and
-says the absolute paths it names resolve too — which is what the worker keys
-its `artifacts:` block by.
-
-**A task may span two different forges** — a GitHub primary with a GitLab
-`--add-repo` is an ordinary task. `scripts/lib/forge.py` identifies a repository
-by host plus path, so each artifact is verified by the forge that actually holds
-it.
-
-**`note`, `served` and `none` stay single on purpose.** A note sits on the one
-`--target` the task names, a served document is one document however many
-repositories it was written from, and `none` names nothing fleet checks — so
-none of them becomes one-per-repository however many repositories the worker
-had open.
-
-**Records written before this still load.** A scalar `artifact:` is read as one
-artifact, the primary repository's — the same way `no-mistakes` still reads as
-`attested` — and a single-repository task still writes one, so nothing about a
-task that spans none changed.
+A blocker still clears on `landed` only, so half a task merged releases no
+dependent. The worker is launched in a per-session symlink workspace with
+each repository a subdirectory, which the brief says; it keys its `artifacts:`
+block by the absolute paths. A GitHub primary with a GitLab `--add-repo` is an
+ordinary task: `scripts/lib/forge.py` verifies each artifact by the forge that
+holds it. `note`, `served` and `none` stay single however many repositories
+the worker had open.
 
 ### `--host` — running a task on another machine
 
-`add --host <name>` takes a name from thurbox's `hosts.toml` (in the
-directory `uv run fleet paths thurbox-config` prints) and moves the worker
-there: the agent, its multiplexer window and its git worktree all live on that
-machine, and only the TUI stays here. **Omit it and nothing changes** — a task
-with no host takes the same path it always did.
+`add --host <name>` takes a name from thurbox's `hosts.toml` (in the directory
+`uv run fleet paths thurbox-config` prints) and moves the worker there: the
+agent, its multiplexer window and its worktree all live on that machine, and
+only the TUI stays here. Omit it and nothing changes.
 
 ```bash
 uv run fleet queue add report-status-honestly build-the-arm-image \
@@ -197,121 +148,74 @@ uv run fleet queue add report-status-honestly build-the-arm-image \
   --branch fix/build-the-arm-image
 ```
 
-**`--repo` is a path on the host.** Nothing local reads it, so a path that
-happens to exist on your machine tells you nothing about whether it exists on
-theirs — `dispatch` asks the host, and refuses when the answer is no.
+**`--repo` is a path on the host.** Nothing local reads it; `dispatch` asks
+the host. `add` refuses a host that is not in `hosts.toml` (listing the ones
+that are), one whose `multiplexer` fleet cannot speak (`tmux` is POSIX,
+`psmux` is native Windows spoken to in PowerShell), and one with
+`share_sessions = false`, since that switches off the delegation that lets
+the trust dialog be answered.
 
-Three things follow, and each of them is a refusal you will meet rather than a
-rule to remember:
-
-| what | when | what you get |
-|---|---|---|
-| the host must be known | `add` | the name is checked against `hosts.toml`, and the refusal lists the hosts that do exist |
-| a shell fleet can speak | `add` | the `multiplexer` says which: `tmux` is a POSIX host, `psmux` is native Windows and is spoken to in PowerShell. Any other is refused by name |
-| session sharing must be on | `add` | `share_sessions = false` switches off the delegation that lets `session capture` see that pane, so the trust dialog could not be answered and the worker would stall unread |
-
-**Credentials are never moved.** The host needs its OWN credentials for the forge
-that repository lives on — GitHub or GitLab — to clone, fetch and push; yours are
-not inherited and nothing sends them. The `forge` probe below asks whether the
-host has any and refuses the dispatch when it does not.
-Forwarding your SSH agent also fixes it and forwards every key that agent holds
-— your call to make on that machine, not something a dispatch makes for you.
+**Credentials are never moved.** The host needs its OWN credentials for the
+forge that repository lives on; the `forge` probe (§4) refuses a dispatch when
+it has none. Forwarding your SSH agent fixes it and forwards every key the
+agent holds — your call on that machine, never a dispatch's.
 
 ## 2. Write the brief
 
-`add` scaffolds `BRIEF.md` with the repo, the branch, the pointer back to
-PROMPT.md, the pointer to standing policy and the result contract already
-filled in, plus four empty sections. That outline is the whole structure of a
-brief; you supply content for it.
+`add` scaffolds `BRIEF.md` with the repo, the branch, the pointers to
+`PROMPT.md`, the standing policy and the result contract already filled in,
+plus four sections:
 
 | section | what goes in it |
 |---|---|
 | `What to do` | the goal, and every task-specific detail the worker cannot read off the repo |
 | `Hard constraints` | what it must not do, and the concrete failure each constraint prevents |
-| `Coordination` | the other tasks in flight it has to know about — write `None.` when there are none |
+| `Coordination` | the other tasks in flight it has to know about — `None.` when there are none |
 | `Done means` | the checks that pass and the artifact that exists when the task is over |
 
-Each arrives as the same placeholder:
+Each arrives as `<!-- WRITE THE INSTRUCTIONS HERE -->`. Replace every one:
+**`dispatch` refuses a task that still carries one**, naming the sections. The
+check compares each section against what the scaffold wrote, so a brief that
+quotes the placeholder while talking about it goes out.
 
-```markdown
-<!-- WRITE THE INSTRUCTIONS HERE -->
-```
-
-Replace every one of them. **`dispatch` refuses a task that still carries one**,
-naming the sections, so a half-written brief is stopped as firmly as a blank
-one. The check compares each section against what the scaffold wrote there, so
-a brief that QUOTES the placeholder while talking about it is a written brief
-and goes out.
-
-`add --brief-file <file>` fills them from a file instead. It reads the file's
-own `## ` headings and fills the section each one names; a heading that is not
-one of the four is kept where it is, as content, and a body with no headings at
-all goes into `What to do`. **Write the file with all four headings.** Handing
-in a file is a claim to have written the brief, so `add` refuses one that
-leaves a section unwritten, names which, and creates nothing — fix the file and
-run the same command again. `None.` is a complete section.
+`add --brief-file <file>` fills them from a file: its `## ` headings fill the
+section each names, a heading that is not one of the four is kept as content,
+and a body with no headings goes into `What to do`. **Write all four
+headings**: `add` refuses a file that leaves one unwritten and creates
+nothing. `None.` is a complete section.
 
 Write it as if the reader knows nothing, because it does: workers share no
-context with you and none with each other. State the goal, the constraints, and
-what "done" looks like, from scratch.
+context with you and none with each other.
 
 ### The style contract
 
-A brief is read once, by a worker with no context and a token budget. Two
-kinds of writing inflate one without informing it, and a third looks like
-padding and is the reason the worker gets it right on the first pass.
+A brief is read once, by a worker with no context and a token budget.
 
-**Cut invented headings and rhetorical contrast.** A fifth heading means
-content that belongs under one of the four. Inside a section, `X, not Y` — and
-`is not`, `That is …`, `deliberately`, `on purpose` — earns its place only
-where the reader would otherwise believe Y. Seven briefs written before this
-rule carried 33 `X, not Y`s, 18 bare `is not`s and 20 invented headings, and
-none of it told a worker anything.
-
-**Cut persuasion.** The worker follows the brief; it does not have to be
-convinced. Drop the sentence explaining why the task is worth doing, the one
-saying a decision was weighed carefully, and the one reassuring the reader that
-something is settled. "Serialize with `fleet queue block`" carries everything
-"Serialize with `fleet queue block` — this is deliberate and the right call"
-does.
-
-**Keep every measured fact.** Counts, file paths, sizes, exact token and
-version values, command names, and the specific past failure a constraint
-exists to prevent. One brief carries a `20G` figure and the failure it came
-from, and those two facts are why its worker chooses the correct gate over the
-obvious wrong one. **Deleting evidence to shorten a brief is the failure to
-fear here**: it spends the thing that buys one-pass quality in order to buy
-tokens. A brief is too long when it repeats itself or argues. It is never too
-long for being specific.
-
-Applied while writing: after each sentence, ask whether it states a fact the
-worker will act on. If it names a number, a path, a command or a failure, keep
-it. If it exists to frame, justify or reassure, delete it.
-
-**Do not restate standing policy in a brief.** The scaffold already points the
-worker at `orchestration/queue/POLICY.md`, by absolute path, and that file
-holds everything true of every task: publish the way the brief's Publish line
-says and verify your own artifact, squash merge, the operator merges and you
-do not, gate
-locally first, one brief per worker, and the result contract. Retyping any of
-it is how it drifts — it measurably did, across five briefs written by hand.
-Task-specific detail still belongs here in full; long briefs are why workers
-get it right on the first pass. Only the repetition moved.
-
-If a rule turns out to be standing after all, put it in POLICY.md rather than
-in the brief you happen to be writing.
-
-**And do not restate the operator's preferences either.** If
-`orchestration/queue/OPERATOR.md` exists, the scaffold points every brief at it
-as well — that file is the operator's, not yours, so a preference they have
-already written there is already delivered. When they tell you a preference
-that is true of every task rather than this one, the answer is to offer to put
-it in that file, not to copy it into the brief in hand.
+- **Cut invented headings and rhetorical contrast.** A fifth heading is
+  content that belongs under one of the four. `X, not Y` earns its place only
+  where the reader would otherwise believe Y. Seven briefs written before this
+  rule carried 33 of those and 20 invented headings, and none of it told a
+  worker anything.
+- **Cut persuasion.** The worker follows the brief; it does not have to be
+  convinced that the task matters, that a decision was weighed, or that
+  something is settled.
+- **Keep every measured fact.** Counts, paths, sizes, exact values, command
+  names, and the specific past failure a constraint exists to prevent. One
+  brief carries a `20G` figure and the failure it came from, and those two
+  facts are why its worker chooses the right gate. A brief is too long when it
+  repeats itself or argues, never for being specific.
+- **Do not restate standing policy.** The scaffold points the worker at
+  `orchestration/queue/POLICY.md` — publish and verify, squash merge, who
+  merges, the gate, one brief per worker, the result contract. Retyping it is
+  how it drifts, and it measurably did across five hand-written briefs. A rule
+  that turns out to be standing goes in POLICY.md, not in the brief in hand.
+- **Nor the operator's preferences.** If `orchestration/queue/OPERATOR.md`
+  exists, every brief already points at it. A preference true of every task
+  belongs there — offer to put it there, do not copy it into a brief.
 
 ## 3. Order — the part that is counterintuitive
 
-Run `uv run fleet queue plan`. It answers two questions and refuses to blur
-them.
+`uv run fleet queue plan` answers two questions and refuses to blur them:
 
 ```text
 ready: 3 task(s) — every one of them goes out now, there is no concurrency cap
@@ -332,16 +236,14 @@ waiting: 2 task(s) — each held by a durable, recorded blocker
         instruction reads Azure and `az account show` fails
 ```
 
-The upstream's own state rides along in that line — `(queued)` here — because a
-blocker on a `stuck`, `failed` or `abandoned` upstream can never clear, and the
-line says so as `UNCLEARABLE` instead of reading like an ordinary wait.
-`scripts/lib/queue.py`'s `blocker_line` is what every surface prints this from.
+The upstream's state rides along (`(queued)`) because a blocker on a `stuck`,
+`failed` or `abandoned` upstream can never clear, and the line then says
+`UNCLEARABLE`.
 
-**The value is in that first block being big.** Most work needs no ordering; the
-job is finding the small set that does and letting everything else go at once. A
-queue that runs one task at a time is slower than no queue, because it adds
-bookkeeping and removes nothing. So **serialize only for a concrete condition
-that makes independent progress unsafe.**
+**The value is in that first block being big.** Most work needs no ordering;
+the job is finding the small set that does. A queue that runs one task at a
+time is slower than no queue. So **serialize only for a concrete condition
+that makes independent progress unsafe:**
 
 ```bash
 uv run fleet queue block report-status-honestly/03-render-detected-agent \
@@ -350,36 +252,24 @@ uv run fleet queue block report-status-honestly/03-render-detected-agent \
   --why 'reads the detected_agent field 01 introduces'
 ```
 
-`--kind` is a closed set, and `fleet queue block --help` lists it:
+`--kind` is a closed set (`block --help`): `semantic-dependency` (this task
+consumes what the other introduces), `shared-external-state`,
+`incompatible-migration`, `other`. "They edit the same file" is **not on it**:
+`block` refuses it and points at `--touches`; two agents editing one file in
+two worktrees is an ordinary rebase. `block <ref> --on <ref> --clear` removes
+one blocker; a task can carry several, so clearing names which.
 
-| kind | when |
-|---|---|
-| `semantic-dependency` | this task consumes something the other introduces |
-| `shared-external-state` | both mutate the same external state |
-| `incompatible-migration` | the two migrations cannot be in flight together |
-| `other` | another concrete condition — say what it is in `--why` |
-
-"They edit the same file" is **not on that list** and cannot be spelled as one.
-`block` refuses it and points you at `--touches`; two agents editing one file in
-two worktrees is an ordinary rebase.
-
-`block <ref> --on <ref> --clear` removes one blocker. It still needs `--on`
-because a task can carry several, and clearing has to say which.
-
-A blocker clears only when the task it names has **landed** — concluded AND its
-artifact merged (§5b). A session that stopped does not clear it, `done` with an
-open pull request does not, and neither does an abandoned task.
+A blocker clears only when the task it names has **landed** — concluded AND
+merged (§5b). A stopped session does not clear it, `done` with an open pull
+request does not, and neither does an abandoned task.
 
 ### When the thing holding a task is not a task — `--condition`
 
-Sometimes a task is ready by every record and unrunnable in fact. On 2026-09-11
-a task whose brief's first instruction read Azure sat with `az` unauthenticated:
-nothing could be written down, so `plan` called it ready, the reconciler woke
-the lead to dispatch it, and the only honest answer was to refuse in
-conversation and leave the record silent.
-
-**That is what the second form of blocker is for.** It names a CONDITION rather
-than a task:
+On 2026-09-11 a task whose brief's first instruction read Azure sat with `az`
+unauthenticated: nothing could be written down, so `plan` called it ready, the
+reconciler woke the lead to dispatch it, and the only honest answer was to
+refuse in conversation and leave the record silent. A condition blocker is
+what that needed:
 
 ```bash
 uv run fleet queue block vending-machine-egress-resume/01-vm-identity-reconciliation \
@@ -388,63 +278,44 @@ uv run fleet queue block vending-machine-egress-resume/01-vm-identity-reconcilia
   --why 'the first instruction in the brief reads Azure, and az account show fails'
 ```
 
-Its kinds are their own closed set, for the same reason the four above are one —
-and a separate set because those four all describe a relationship *between
-tasks*, which no condition is:
+Its kinds are their own closed set — `missing-credential`,
+`awaiting-approval`, `closed-window`, `broken-dependency`, `undecided`,
+`other` — because the four above describe a relationship between tasks and a
+condition is not one. Reach for it when the reason is durable and nameable.
+"I have not authorized this yet" is a fact about this moment: leave that task
+out of the dispatch by naming refs (§4), which records nothing.
 
-| kind | when |
-|---|---|
-| `missing-credential` | a login, secret or session the work needs is not present |
-| `awaiting-approval` | a person or a process has to say yes before this can run |
-| `closed-window` | it may only run inside a window that is not open |
-| `broken-dependency` | something outside the queue is broken and has to be fixed |
-| `undecided` | the operator has not made a decision this task turns on |
-| `other` | another durable thing outside the queue — name it in `--why` |
-
-**Reach for it when the reason is durable and nameable, and not otherwise.**
-"I have not authorized this yet" is a fact about this moment, not a property of
-the task — leave that one out of the dispatch by naming refs (§4), which records
-nothing. "They edit the same file" is still not a blocker of any kind, and
-`--condition` is not a way to spell it: use `add --touches`.
-
-**Nothing clears a condition but you.** A task blocker clears when the task it
-names lands, which is an event the forge reports. A condition has nothing to
-observe, so no timer, no `collect`, no `reap` and no later dispatch appearing to
-work will release it:
+**Nothing clears a condition but you.** No timer, no `collect`, no `reap` and
+no later dispatch releases it — a condition that expired on its own would put
+back the silence it was recorded to break:
 
 ```bash
 uv run fleet queue block <ref> --clear --condition 'az is authenticated for the billing tenant'
 ```
 
-A condition that expired on its own would put back the silence it was recorded
-to break. The cost is that a stale one holds a task forever, which is why
-`--why` is required and why `plan`, `list`, `show`, `fleet status` and the
-TUI pane all carry it in front of you — the pane draws it `⊘` rather than `↳`,
-because the wait it marks has no actor but you.
+The cost is that a stale one holds a task forever, which is why `--why` is
+required and why `plan`, `list`, `show`, `fleet status` and the pane all show
+it — the pane draws it `⊘` rather than `↳`, because the wait has no actor but
+you.
 
 ### When a task will never run — `abandon`
 
 A condition that will never be true — the work shipped some other way, the
 plan changed — is not a wait, and clearing it would make the task
-dispatchable. Retire the task instead:
+dispatchable. Retire it:
 
 ```bash
 uv run fleet queue abandon <ref>... --why 'superseded: shipped as one PR'
 uv run fleet queue abandon --topic <topic> --why '...'   # every task not landed or abandoned
 ```
 
-It moves each task to `abandoned` — the terminal state a pull request closed
-unmerged already reaches (§5b) — and records `--why` in `task.yaml` and
-`progress.jsonl`; `list`, `show`, the pane and the run log carry it. Once every
-task in a topic is terminal, the topic archives. **All or nothing**: it refuses
-`landed` always, and a `dispatched` task whose session thurbox still lists
-unless you pass `--force`. It never touches a session — `reap` releases that one
-once its agent is at rest.
-
-A blocker naming an abandoned task **stays blocked**, because only `landed`
-clears one. `abandon` prints every such dependant with both ways out — `block
---clear --on` if it can run without the work, `abandon` if it cannot — and the
-choice is yours.
+`abandoned` is the terminal state a pull request closed unmerged already
+reaches (§5b); `--why` goes on the record. All or nothing: it refuses `landed`
+always, and a `dispatched` task whose session thurbox still lists unless you
+pass `--force`. It never touches a session; `reap` releases that one once its
+agent is at rest. A blocker naming an abandoned task **stays blocked**;
+`abandon` prints every dependant with both ways out — `block --clear --on` if
+it can run without the work, `abandon` if it cannot.
 
 ## 4. Dispatch — the whole ready set, in one go
 
@@ -453,21 +324,19 @@ uv run fleet queue dispatch --dry-run   # read the spawn commands first
 uv run fleet queue dispatch
 ```
 
-One invocation spawns every ready task. It passes `--on-existing fail` (a twin
-would break by-name addressing for both, permanently), `--parent
-$THURBOX_SESSION` so `session list --parent` enumerates your workers — **except
-on a task that names a `--host`**, where thurbox refuses a parent living on
-another machine and there is no way to spell one, so a remote worker has no
-parent and is enumerated by its task record instead — and the
-task's session profile from `orchestration/session-profiles.yaml`, or from the
-operator's gitignored `session-profiles.local.yaml` beside it — where a task
-that wants another model or thinking budget gets a profile of its own, since
-the tracked file is not the operator's to edit. Each worker is sent
-one line pointing at the absolute path of its own brief — nothing is copied into
-its worktree, so nothing can land in its PR.
+One invocation spawns every ready task with `--on-existing fail` (a twin would
+break by-name addressing for both, permanently), `--parent $THURBOX_SESSION`
+(except a `--host` task: thurbox refuses a parent on another machine, so a
+remote worker is enumerated by its task record instead), and the task's
+profile from `orchestration/session-profiles.yaml` or the operator's
+gitignored `session-profiles.local.yaml` beside it — where a task that wants
+another model or thinking budget gets a profile of its own. Each worker is
+sent one line pointing at the absolute path of its brief; nothing is copied
+into its worktree, so nothing lands in its pull request.
 
 If a spawn fails, the others still go. Re-run `dispatch`; the ones already out
-are no longer `queued` and are not spawned twice.
+are not spawned twice. A session you spawned by hand for a task is bound to it
+with `fleet queue attach`.
 
 ### Naming refs, and the one thing they are for
 
@@ -475,24 +344,19 @@ are no longer `queued` and are not spawned twice.
 uv run fleet queue dispatch report-status-honestly/01-drop-idle-default
 ```
 
-Refs launch exactly those tasks and refuse, by name and with the blocker, one
-that is not ready. **Bare `dispatch` stays the default and the norm.** Refs are
-for the case that is neither ready nor blocked: the operator has not authorized
-a task yet. That is not a dependency, and writing it into the record as one is
-what this exists to stop — a blocker was once recorded with the reason
-"Operator has not been asked whether to run it at all", which held that task
-until someone deleted it by hand.
-
-So refs record nothing. A task left out is still `queued`, still in the ready
-set, and the next bare `dispatch` sends it. Do not use them to drip-feed:
-holding work back for any reason you could write down belongs in `block`
-instead.
+Refs launch exactly those tasks and refuse one that is not ready. **Bare
+`dispatch` is the norm.** Refs are for the case that is neither ready nor
+blocked: the operator has not authorized a task yet. Writing that into the
+record as a blocker is what this exists to stop — one was once recorded as
+"Operator has not been asked whether to run it at all" and held its task until
+someone deleted it by hand. Refs record nothing; a task left out is still
+`queued` and the next bare `dispatch` sends it. Do not drip-feed: anything you
+could write down belongs in `block`.
 
 ### A remote task is probed before it is spawned
 
-A task with a `--host` gets three questions asked of that host first, in this
-order, and one NO stops that task where it stands — still `queued`, so fixing
-the host and re-running `dispatch` sends it:
+Three questions of the host, in order; one NO leaves that task `queued` with
+the probe named, so fixing the host and re-running `dispatch` sends it:
 
 ```text
     reachable   it answers ssh, in the shell its multiplexer says it speaks
@@ -501,37 +365,26 @@ the host and re-running `dispatch` sends it:
                 names — an ssh key, or a `gh` / `glab` login
 ```
 
-The repo is asked about before its forge because which forge to prove a
-credential against is a fact about that checkout's `origin`: a GitLab repository
-needs a GitLab credential, and a probe that named github.com flatly would pass a
-host that then fails at its first `git push`.
+The repo comes before its forge because which forge to prove a credential
+against is a fact about that checkout's `origin`. A remote worker that starts
+and then fails at its first `git` call looks exactly like an agent bug.
 
-The report names the probe that failed. A remote worker that starts and then
-fails at its first `git` call looks exactly like an agent bug and is not one.
-
-Then the brief, PROMPT.md, POLICY.md and (when the operator has one) OPERATOR.md
-are each **copied to the host**, into the worktree thurbox made there, because
-the absolute paths a local worker is handed are not on that filesystem. Each
-canonical copy stays here and is still what `check` validates and what
-`dispatch` refuses when unwritten. A remote worker is told to write `result.md`
-beside the brief it is reading, and to delete all of these copies before it
-commits.
+Then the brief, `PROMPT.md`, `POLICY.md` and (when it exists) `OPERATOR.md`
+are copied into the worktree thurbox made there, since the absolute paths a
+local worker is handed are not on that filesystem. The canonical copies stay
+here. A remote worker writes `result.md` beside the brief it is reading and
+deletes all of these copies before it commits.
 
 ### The trust dialog, handled here rather than remembered
 
-Every spawn runs `scripts/lib/session_trust.py` in-process (dispatch calls it
-directly rather than shelling out) between `session create` and the first
-`session send`. An agent started in a fresh worktree asks whether it may
-work there, and sending the brief while that dialog is up types the brief INTO
-the dialog — which is how every fleet-spawned worker used to break. It
-confirms the dialog is really there before sending a key, answers with the
-sequence that agent needs (Claude's default selection is **`No, exit`**, so a
-bare Enter dismisses it), and confirms the dialog is gone. A dialog queued
-behind it — Claude's external `CLAUDE.md` imports prompt, answered `No` — is
-answered the same way before the send. `thurbox-session` §1b has the per-agent
-table and the config-seeding fallback.
-
-When it cannot confirm, **nothing is typed and the task is left unprompted**:
+Every spawn runs `scripts/lib/session_trust.py` in-process between `session
+create` and the first `session send`. An agent started in a fresh worktree asks
+whether it may work there, and sending the brief while that dialog is up types
+the brief INTO it — which is how every fleet-spawned worker used to break. It
+confirms the dialog is there, answers with that agent's keys, and confirms it
+is gone; `thurbox-session` §1b has the per-agent table and the two agents
+whose trust is a launch flag rather than a keystroke. When it cannot confirm,
+**nothing is typed and the task is left unprompted**:
 
 ```text
     prove-the-queue/01-write-alpha  -> 31b68505-…  NOT PROMPTED
@@ -543,39 +396,27 @@ handoff — nothing was typed into them:
 ```
 
 Look at the pane (`thurbox-cli session capture <uuid>`), then `fleet queue
-prompt` to retry the handoff. `cursor` is not answered by a keystroke —
-`--trust` on the `cursor-trusted` profile answers its dialog. `muse` is
-also not a keystroke, but `--yolo` is not that: it aliases
-`--disable-approval` and drops confirmations and the sandbox together
-(vendor: a one-off isolated container). Spawn either under its profile;
-read `muse-trusted`'s comment before using it.
+prompt`.
 
 ### 4a. Course-correcting a worker — `send`, and never `session send`
-
-New scope for a worker that is already running goes through the queue:
 
 ```bash
 uv run fleet queue send <ref> 'Also update the changelog before you open the PR.'
 ```
 
-**One line.** `session send` types the text and presses Enter, so a second line
-fires the agent on the first and lands in a half-started turn; `send` refuses a
-message with a newline in it and tells you to point at a file instead. It
-answers the trust dialog first, exactly as dispatch does, and reads the
-returncode — a send into a session that has gone away is `NOT DELIVERED`, on
-the record, rather than a success nobody checked.
+**One line.** `session send` types the text and presses Enter, so a second
+line fires the agent on the first; `send` refuses a newline and tells you to
+point at a file. It answers the trust dialog first, exactly as dispatch does,
+and a send into a session that has gone away is `NOT DELIVERED`, on the
+record.
 
-`thurbox-cli session send` leaves no trace, and the one honest signal you have
-is that you know WHEN YOU SENT — `thurbox-session` §4c is the observation that
-established that.
-
-So `send` writes the instant down with a baseline of the branch head, and
-`list` and `show` compare it against two things a worker cannot fake:
-
-| source | what moving means | when it is `not checked` |
-|---|---|---|
-| the branch head | a commit landed after your message. Read from the task's own `repo` — a worktree shares that object store, so this works with the session already reaped | the task runs on a `--host`, the repo is not on this machine, or git cannot read the branch |
-| `progress.jsonl` | a transition DATED after your message. `watch` folds these; the event's own time is what counts, so a catch-up fold of old events is not movement | the file cannot be read |
+`thurbox-cli session send` leaves no trace, and the one honest signal is that
+you know WHEN YOU SENT (`thurbox-session` §4c). So `send` writes the instant
+down with the branch head as a baseline, and `list` and `show` compare against
+two things a worker cannot fake: the branch head (read from the task's own
+`repo`, so it works with the session reaped; `not checked` for a `--host`
+task or a repo git cannot read) and a transition in `progress.jsonl` DATED
+after the message.
 
 ```text
     02-worker-liveness  dispatched  /home/…/fleet  cccccccc-…
@@ -584,21 +425,18 @@ So `send` writes the instant down with a baseline of the branch head, and
         messaged 12m ago — NOT DELIVERED: session-trust: no such session
 ```
 
-**Read the middle line as a fact and nothing more.** "Nothing has moved since"
-is an observation; "the worker is stuck" is a guess, and the queue does not
-make guesses about sessions (§5, and `thurbox-session` §4a). A worker that has
-not answered yet and one that never got the message read exactly the same from
-here — which is why `NOT DELIVERED` is a separate line and not an inference.
-
-A task nobody messaged prints nothing at all, and a task that has concluded
-drops the line from `list` and keeps it in `show`: `collect` answered the
-question with a result file. Nothing here writes `state` or `outcome`.
+**Read the middle line as a fact and nothing more.** "Nothing has moved" is an
+observation; "the worker is stuck" is a guess, and the queue makes no guesses
+about sessions. A worker that has not answered yet and one that never got the
+message read the same, which is why `NOT DELIVERED` is a separate line. A
+concluded task drops the line from `list` and keeps it in `show`. Nothing here
+writes `state` or `outcome`.
 
 ## 5. Learn what happened — read, do not be interrupted
 
-`thurbox-cli message send` is exact, but it **wakes** the recipient: an arriving
-worker message injects into your terminal and interrupts whoever is talking to
-you. So the queue splits completion into two things you READ:
+`thurbox-cli message send` **wakes** the recipient: an arriving worker message
+injects into your terminal and interrupts whoever is talking to you. So
+completion is two things you READ:
 
 ```text
 WHEN   uv run fleet queue watch --for-secs 60
@@ -611,151 +449,114 @@ WHAT   uv run fleet queue collect
        it verifies that task's artifact before it does.
 ```
 
-And then a third thing, which happens LATER and is not a completion at all:
+And a third thing, which happens LATER and is not a completion:
 
 ```text
 RELEASE uv run fleet queue reap [--dry-run]
         Asks the forge whether each concluded task's pull request merged,
         moves the ones that did to `landed`, and deletes those sessions and
-        their worktrees. A `push` task has nothing left to ask — its commit
-        was already confirmed on the base branch before `collect` closed it —
-        so it lands in this same pass. `collect` runs it for you — see §5b.
+        their worktrees. `collect` runs it for you — §5b.
 
         uv run fleet queue reviewed <ref>
-        The one release no forge can authorise: a `served` task's document is
-        waiting on a READER, so you record that they are done and the next
-        reap lands it — see §5b.
+        The one release no forge can authorise: a `served` task's document
+        is waiting on a READER — §5b.
 ```
 
-**A remote task completes the same way.** `collect` fetches that worker's
-`result.md` off its host over ssh and writes it into the task's own, then reads
-it like any other. Everything downstream sees a local file and never learns
-which machine wrote it, so a remote worker still does not send mail.
+A remote task completes the same way: `collect` fetches its `result.md` over
+ssh into the task's own, and everything downstream sees a local file.
 
 ### `collect` verifies the artifact — you do not have to take the worker on trust
 
-A worker that reports `shipped` with a URL is making two claims, and the second
-is that it published the way it was told to. Twice it had not, and both were
-reported to the operator as shipped. "Use the pipeline" describes a METHOD, and
-a method leaves no trace — so a task declares instead what its publish must
-LEAVE BEHIND, and `collect` goes and looks for that:
+A worker reporting `shipped` claims two things, and the second is that it
+published the way it was told. Twice it had not, and both were reported to
+the operator as shipped. A method leaves no trace, so a task declares what its
+publish must LEAVE BEHIND, and `collect` goes and looks:
 
 | `--publish` | the worker produces | what collect asks |
 |---|---|---|
-| `attested` | a PR carrying an attestation | the forge: a PR from this task's branch, its body carrying an attestation for the commit that would merge |
-| `pr` | a PR by any means at all | the forge: a PR from this task's branch, open or merged |
+| `attested` | a PR carrying an attestation | the forge: a PR from this task's branch, its body attesting the commit that would merge |
+| `pr` | a PR by any means | the forge: a PR from this task's branch, open or merged |
 | `push` | a commit on the base branch | git: that commit is an ancestor of `origin/<base>` |
 | `note` | a review or comment on the task's `--target` | the forge: the note exists, was written by the account fleet runs as, and sits on that target |
-| `served` | a document served to a READER who is expected to answer it | nothing about the document — but the task does not finish: it stands `open`, holding the session that can answer, until `fleet queue reviewed <ref>` |
-| `none` | nothing fleet can check and nobody waiting — an issue filed, a machine swept, a commit with no remote | nothing: the URL is recorded, the task closes, and nothing calls it verified |
+| `served` | a document served to a READER expected to answer it | nothing about the document — but the task stands `open`, holding the session that can answer, until `fleet queue reviewed <ref>` |
+| `none` | nothing fleet can check and nobody waiting — an issue filed, a machine swept | nothing: the URL is recorded, the task closes, nothing calls it verified |
 
 **Pick the shape of the deliverable, not the nearest one that exists.** A task
-that reviews or comments on a change request is `--publish note --target <its
-URL>` — never `push` with "nothing to commit", which no commit URL can prove and
-which ten tasks once had to be closed by hand for. A task that pushes to a pull
-request it did not open — a contributor's, from a fork — is `--publish pr
---target <that pull request>`, and is checked against that pull request rather
-than its own scaffolding branch. `add` refuses a `note` with no target, a `push`
-with one, and a pull-request method aimed at an issue.
+that reviews or comments on a change request is `--publish note --target
+<url>` — never `push` with "nothing to commit", which ten tasks once had to be
+closed by hand for. A task that pushes to a pull request it did not open is
+`--publish pr --target <that pull request>`. `add` refuses a `note` with no
+target, a `push` with one, and a pull-request method aimed at an issue.
 
-**A task whose deliverable is a document somebody will READ is `--publish
-served`, never `none`.** The two look alike — neither is on a forge, neither is
-checked — and the difference is that a reader is expected to ANSWER a served
-document, which means the worker's session has to still be there when they do.
-`none` closed five such tasks the moment the document was served and reaped
-every session, so every reader who annotated one and sent it back was answered
-by "No agent is listening right now". `served` is a shape and not a tool: a
-review document, an explainer, a rendered page, whatever serves it.
+**A deliverable somebody will READ is `served`, never `none`.** The two look
+alike, and the difference is that a reader is expected to ANSWER a served
+document, so the worker's session has to still be there when they do. `none`
+closed five such tasks the moment the document was served and reaped every
+session, and every reader who sent one back was told nobody was listening.
 
-**Those words are SHAPES and none of them is a tool.** A pipeline, an
-in-house script, `make release`, a slash command — every one of them ends in a
-pull request or a commit on the base branch. `--how` is the other half and it is
-FREE TEXT — "run `/publish`", "use `make release`". It is rendered into the
-brief's Publish line and **nothing ever parses it**, which is what lets a task
-name a publisher fleet has never heard of. Fleet knows the artifact's shape;
-your words tell the worker how to make one.
-
-`no-mistakes` was a fourth method until it was recognised as one operator's tool
-name in tracked code. It still means `attested` wherever a method is read, so old
-records load; new ones say `attested`.
-
-You rarely type either. `orchestration/publish.conf` holds the operator's
-default — gitignored, with a tracked `publish.example.conf` that ships `pr` and
-names no tool — and every task takes it unless `add` says otherwise, because a
-`--publish` forgotten on one task would downgrade that task's verification in
-silence. **What an attestation LOOKS like is theirs too**: `ATTESTATION_MARKER`
-in that file, so fleet reads their pipeline's format rather than dictating one.
+**Those words are SHAPES and none is a tool.** `--how` is free text ("run
+`/publish`", "use `make release`"), rendered into the brief's Publish line and
+never parsed, which is what lets a task name a publisher fleet has never
+heard of. `no-mistakes` was once a fourth word and still reads as `attested`.
+You rarely type either: `orchestration/publish.conf` holds the operator's
+default (the tracked `publish.example.conf` ships `pr`), and every task takes
+it unless `add` says otherwise, because a `--publish` forgotten on one task
+would downgrade its verification in silence. What an attestation LOOKS like
+is theirs too: `ATTESTATION_MARKER` in that file.
 
 ```text
     topic/02-document-the-states  shipped  https://…/pull/1001  [publish verified: attested]
     topic/03-render-detected-agent: NOT CLOSED — nothing proves this task published
 ```
 
-Three answers, and the third is not the second:
-
 | the check says | what collect does |
 |---|---|
 | the artifact is there | closes the task, marked verified |
-| it is not, or not from this branch | **leaves the task OPEN** and says so, loudly |
+| it is not, or not from this branch | **leaves the task OPEN** and says so |
 | could not run | closes the task, and says the check could not run |
 
 "Could not run" is the forge CLI absent, no network, a change request it
-cannot read, or a base branch this machine cannot see. That must never read as
-a pass or a fail — CI and an offline laptop both still have to collect.
-`fleet queue show <ref>` prints the method and the verdict, so both survive the
-scrollback.
+cannot read, or a base branch this machine cannot see; it must never read as a
+pass or a fail, because an offline laptop still has to collect. `show <ref>`
+prints the method and the verdict. A task spanning repositories is verified
+once per repository, and one unverified repository holds the whole task open,
+named.
 
-**A task that spans repositories is verified once per repository, and one
-unverified repository holds the whole task open.** The same `NOT CLOSED` report
-names each repository, its URL and its verdict, so you can see which one is
-missing rather than which task is. The worker writes `artifacts:` in its
-`result.md` — one line per repository path — and a repository it names nothing
-for is held exactly as an absent artifact always was.
+The head-branch check is the one a worker cannot write for itself: "this
+change request comes from this task's branch" is the forge's fact, which
+closes the hole a worker pasting somebody else's good pull request would
+open. A change request the forge reports **merged** closes its task even with
+a stale attestation — whoever merged it answered "may this merge" — and the
+stale one is kept on the record as a note, never a hold.
 
-**The head-branch check is the one a worker cannot write for itself.** Whatever
-the body says, "this change request comes from this task's branch" is a fact of
-the forge — which closes the hole that reading prose never could: a worker
-pasting somebody else's good pull request.
+**A worker's `stuck` or `failed` is not the last word.** `collect` keeps
+reading those tasks' `result.md` and acts when the outcome CHANGES: a worker
+whose shell died mid-pipeline wrote `stuck`, recovered, and rewrote it
+`shipped` with a pull request that had merged all along. The rewrite is read
+like any first result.
 
-**A change request the forge reports merged closes its task**, even when its
-attestation went stale. The attestation answered "may this merge", and whoever
-merged it answered that; the stale one is kept on the record's publish block as
-`attestation`, a note and never a hold. Nothing about it loosens the shepherd's
-merge gate, which still merges no unattested pull request.
-
-**A worker's `stuck` or `failed` is not the last word the worker gets.**
-`collect` keeps reading those tasks' `result.md` and acts only when the outcome
-in it has CHANGED — a worker whose shell died mid-pipeline wrote `stuck`,
-recovered, and rewrote it `shipped` with a pull request that had merged all
-along. That rewrite is read like any first result: a `shipped` that the check
-proves closes, lands and is reaped; one it does not is held, still `stuck`, and
-you decide. The same verdict written again is nothing new and moves nothing.
-
-When a task is held open: read the artifact, then send that worker back to
-publish again and collect again. If you have read it yourself and judged it good
-as it stands, `collect --allow-unverified` closes it and records that you did.
-It should be rare: a task that keeps needing it was declared the wrong shape.
+When a task is held open: read the artifact, then send the worker back to
+publish again. If you have read it and judged it good as it stands, `collect
+--allow-unverified` closes it and records that you did. A task that keeps
+needing it was declared the wrong shape.
 
 ### 5a. Shepherd the pull requests — the fourth thing
 
-A task closes when its worker writes `result.md`. **The pull request it named
-goes on living** — it turns `CONFLICTING` when the one under it merges, its
-checks fail, a review lands on it, and none of that reaches the task that
-opened it.
+A task closes when its worker writes `result.md`. **The pull request goes on
+living**: it turns `CONFLICTING` when the one under it merges, its checks
+fail, a review lands, and none of that reaches the task.
 
 ```bash
 uv run fleet queue shepherd --dry-run   # what it would dispatch and merge
-uv run fleet queue shepherd             # do it
+uv run fleet queue shepherd             # do it; --topic / --ref narrow the repos, --no-merge holds the merge
 ```
 
-**It asks the forge, not the records.** A task records ONE `artifact` — the
-first pull request its worker reported. #25 was a *second* pull request from a
-task whose artifact still pointed at the already-merged #23, so a shepherd
-reading artifacts could not see it and the unattended pass would never have
-merged it; a PR opened outside the queue was invisible the same way. So it asks
-the forge for every open change request against every repo the queue's tasks
-name — each `--add-repo` included, not just each task's primary — and each open
-pull request gets exactly one of these:
+**It asks the forge, not the records.** A task records ONE `artifact`, the
+first pull request its worker reported; #25 was a *second* pull request from a
+task whose artifact still pointed at the merged #23, and a shepherd reading
+artifacts could never have seen it. So it asks for every open change request
+on every repo the queue's tasks name — each `--add-repo` included — and each
+gets exactly one of these:
 
 | What the forge says | What happens |
 |---|---|
@@ -763,153 +564,87 @@ pull request gets exactly one of these:
 | `mergeable: CONFLICTING` | a fixer is dispatched to rebase |
 | a check failed | a fixer is dispatched to fix it |
 | `reviewDecision: CHANGES_REQUESTED` | a fixer is dispatched to address it |
-| an `attested` task's PR with no attestation for this head commit | a fixer is dispatched to publish it again, naming that task's own command |
+| an `attested` task's PR with no attestation for this head | a fixer is dispatched to publish again, naming that task's own command |
 | attested, checks green, `MERGEABLE`, ours | **squash-merged**, in the allowlisted repos only |
-| checks green, `MERGEABLE`, ours, and nothing attested it | recorded `green` and reported `ready to merge — not attested; yours`, **never merged by fleet** |
-| anything it could not read | reported, and otherwise left alone |
+| checks green, `MERGEABLE`, ours, nothing attested it | recorded `green`, reported `ready to merge — not attested; yours`, never merged by fleet |
+| anything it could not read | reported, left alone |
 
-A PR is tied back to a task by its recorded `artifact` — for a `pr` or
-`attested` task only, since a `note` task's artifact names the pull request it
-reviewed, not one of its own, and linking that would hand it a method that asks
-for no attestation — or by its **head branch** matching the task's. One that
-matches neither is still classified and still merged — it simply has no
-session to send a fixer into, and the output names it as belonging to no task
-rather than passing over it in silence.
+A PR is tied to a task by its recorded `artifact` (for `pr` and `attested`
+tasks only) or by its head branch; one matching neither is still classified
+and merged, and named as belonging to no task. A remote task's PR is
+classified and merged like any other, and its fixer is withheld, because the
+fixer needs a checkout of the head branch and that one is on the host — send
+the fix into that worker's own session, which §5b keeps alive for this.
 
-**A remote task's pull request is classified and merged like any other, and its
-fixer is withheld.** The fixer needs a checkout of the PR's head branch, and a
-remote task's checkout is on its host; spawning there is not yet built. The
-shepherd says so by name rather than reporting the host's repo as "not a git
-checkout", which is true and sends you looking in the wrong place. Send the fix
-into that worker's own session while it is still alive — which is exactly what
-§5b keeps it alive for.
+**Dispatching the fixer is the point.** It gets a brief of its own — the
+condition, which PR merged underneath it and what that deleted, and that the
+fix updates the PR **in place** — on a checkout of the branch that already
+exists. Three things it will not do:
 
-**Dispatching the fixer is the point**, not the report: noticing was never the
-expensive part. The fixer gets a written brief of its own — the condition, which
-PR merged underneath it and what that deleted, and that the fix updates the PR
-**in place** — and it lands on a checkout of the branch that already exists, so
-the push reaches the pull request that is already open.
+- **Dispatch twice for one pull request.** The fixer is recorded on the task
+  under `shepherd`; a second pass checks that session's liveness, not whether
+  the condition still matches, since a PR can drift to another condition while
+  the fixer is mid-fix. `--force` overrides once you have decided the first
+  one is not coming back.
+- **Interrupt a working session.** A PR whose own worker is `working` or
+  `blocked` is left alone, and so is one merely *observed* (`running`,
+  `uncovered`, `unreported` — `thurbox-session` §4a).
+- **Guess.** No forge, no network, no thurbox: it says what it could not
+  determine and carries on.
 
-Three things it will not do, and they are what make it safe to run:
+**Merging, the part that runs unattended.** A public repo has forks, so
+"merge every open PR on a timer" has to survive a stranger opening one. Fleet
+merges only in the repositories the operator named in
+`orchestration/auto-merge.conf` — gitignored, absent by default, read every
+pass; the tracked `auto-merge.example.conf` names NOTHING and owns the gates a
+merge still clears (head branch in the repository, the opener can push there,
+an attestation naming the CURRENT head, every check concluded and passed,
+`MERGEABLE`). Entries are host-qualified. `FLEET_AUTO_MERGE_REPOS` in the
+environment REPLACES the file. Everywhere outside the list it reports `ready
+to merge` and stops.
 
-- **It will not dispatch twice for one pull request.** The fixer it sent is
-  recorded on the task under `shepherd`; a second pass checks that session's
-  liveness, not whether the condition still matches — a PR can drift to a
-  different condition while the fixer is mid-fix, and that drift never reads
-  as nobody being on it. A liveness check that comes back unknown is left
-  alone rather than guessed. `--force` overrides, once you have decided the
-  first one is not coming back.
-- **It will not interrupt a working session.** A PR whose own worker is
-  `working` or `blocked` is left alone. So is one whose state is merely
-  *observed* — `running`, `uncovered`, `unreported` are not the agent saying it
-  is at rest (`thurbox-session` §4a).
-- **It will not guess.** No forge, no network, no thurbox: it says what it
-  could not determine and carries on. A PR it could not read is never called broken
-  and never called ready.
-
-**On merging, which is the part that runs unattended.** A repo can be public
-and have forks, so "merge every open PR on a timer" has to survive a stranger
-opening one. Fleet merges only in the repositories **the operator named in
-`orchestration/auto-merge.conf`** — their own file, gitignored, absent by
-default, and read on every pass — and only when **all** of these hold. This
-repo ships `orchestration/auto-merge.example.conf`, which names NOTHING, so a
-fresh clone merges nowhere until somebody writes that file; `shepherd` says so
-by name rather than reporting the same silence a repo nobody listed produces.
-Entries are HOST-QUALIFIED and one that names no forge is refused rather than
-matched: `Thurbeen/fleet` on github.com and `Thurbeen/fleet` on a self-hosted
-instance are not the same repository. `FLEET_AUTO_MERGE_REPOS` in the
-environment REPLACES the file rather than adding to it.
-
-- **The head branch is in that repository**, not a fork. A stranger cannot
-  create a branch here, so this is the one claim about a pull request that
-  whoever opened it cannot write for themselves.
-- **Whoever opened it can push there.** Anyone with read access can open a
-  pull request between two branches that already exist, and the body would
-  then be theirs to write.
-- **An attestation naming its CURRENT head commit.** Not the `## ` headings a
-  pipeline prints — those are text anyone can paste, so counting them let a
-  body authorise its own merge. The attestation is JSON naming the commit the
-  pipeline ran on and a status per step, either inside an HTML comment or in a
-  fenced block under one, and its marker is the operator's
-  (`ATTESTATION_MARKER`); one from an earlier push is refused, because a
-  verdict is about the code it saw. A PR whose task declared another
-  method carries none, is recorded `green` rather than `ready`, and is handed
-  back: the checks it passed are whatever checks that repo happens to have, and
-  nothing says review, tests and lint ran on the head that would land.
-- **Every check concluded and passed, and GitHub says `MERGEABLE`.**
-
-A PR failing any of them is not merged, and one that is not ours is not given
-an agent either. Only the attestation gate is method-aware, and only in the one
-direction: a task that was declared `attested` and carries none
-gets the fixer it always got, and a task that was never asked for one gets
-neither the fixer nor the merge. Everywhere outside the allowlist it reports
-`ready to merge` and stops, which is what every repo did before that list
-existed.
-
-**Run it the way you run `collect`.** It is a sibling and not part of it —
-`collect` reads local files and works with the network down, and folding a
-session-spawning, GitHub-calling side effect into it would make it fail for
-reasons unrelated to what it was asked. So `collect` names it whenever it
-closed a task that left a PR open, and `shepherd --json` is the seam anything
-else reads it through.
+`shepherd` is a sibling of `collect`, not part of it: `collect` reads local
+files and works offline, and folding a session-spawning, forge-calling side
+effect into it would make it fail for unrelated reasons. `collect` names it
+whenever it closed a task that left a PR open; `shepherd --json` is the seam.
 
 ### 5b. `reap` — a session lives until its work lands, and not one turn longer
 
-**The gate is the merge, not the conclusion.** For the two methods that end in a
-change request, `outcome: shipped` only means one is OPEN, and the session that
-opened it is the cheap way to fix what review finds — reaping at collect time
-makes that fix cost a re-spawn: a new worktree, a cold agent, the brief read
-from nothing. A `push` task has no such gap — `collect` refuses to conclude it
-`shipped` until it has already asked git whether the commit reached the base
-branch (above, "`collect` verifies the artifact"), so by the time one sits in
-`done` its work is already confirmed on `main`, and reap's own pass promotes it
-to `landed` in that same run with nothing left to ask the forge.
-
-So a task gets a state AFTER `done`:
+**The gate is the merge, not the conclusion.** `outcome: shipped` means a
+change request is OPEN, and the session that opened it is the cheap way to
+fix what review finds — reaping at collect time makes that fix cost a
+re-spawn, a cold agent and the brief read from nothing. A `push` task has no
+such gap: `collect` already asked git whether the commit reached the base
+branch, so reap promotes it in the same pass.
 
 | state | means | its session |
 |---|---|---|
-| `done` | the worker concluded; its change request is open, its served document is awaiting its reader, or its already-confirmed `push` commit is about to be promoted by this same `collect` run | **kept** — the cheap way to fix what review finds, and the only thing a reader has to talk to |
-| `landed` | the change request merged, the pushed commit reached the base branch, or there was never an artifact | released |
-| `abandoned` | the change request was closed unmerged, or you retired the task with `abandon` (§3) | released once at rest; the work is NOT on main |
-| `stuck` / `failed` | the worker gave up | **kept** — that session is the evidence, and you decide, unless the worker rewrites its `result.md` with an outcome that `collect` then proves (§5) |
+| `done` | the worker concluded; its change request is open, its served document awaits its reader, or its confirmed `push` commit is about to be promoted | **kept** |
+| `landed` | the change request merged, the commit reached the base branch, or there was never an artifact | released |
+| `abandoned` | the change request was closed unmerged, or you ran `abandon` (§3) | released once at rest; the work is NOT on main |
+| `stuck` / `failed` | the worker gave up | **kept** — the session is the evidence, unless the worker rewrites its `result.md` with an outcome `collect` proves (§5) |
 
-**A `served` task is the one `landed` cannot be asked of.** Fleet cannot poll a
-server it did not start, and an idle session proves nothing — waiting for
-feedback is exactly what an agent at rest looks like. So the task stands `open`
-with its session kept, `reap` prints the remedy under it on every pass, and
-**you** close it once the reader is done:
+**A `served` task is the one `landed` cannot be asked of.** Fleet cannot poll
+a server it did not start, and an idle session proves nothing — waiting for
+feedback is what an agent at rest looks like. So it stands `open` with its
+session kept, `reap` prints the remedy under it on every pass, and you close
+it once the reader is done:
 
-```text
-    topic/10-serve-the-explainer  kept  a served document is awaiting its reader; nothing but `fleet queue reviewed topic/10-serve-the-explainer` closes that
+```bash
+uv run fleet queue reviewed <ref> [--why …]
 ```
 
-`uv run fleet queue reviewed <ref> [--why …]` records that, and the next reap
-lands the task and releases the session. It is the same hand that clears a
-condition blocker, for the same reason: nothing here can observe the event.
-**It is refused on a task that has not concluded** — recorded on a worker
-still running, it would land and reap in the pass that first reads the result,
-which is the failure the shape exists to prevent reached from the other end.
+It is refused on a task that has not concluded. A `served` task that reports
+`shipped` with no URL is held open like any unproven claim, and one that
+produced nothing (`not-applicable`) lands at once — a wait on a reader who was
+given no document is a wait nothing could end.
 
-Two things `collect` does for this shape and no other. A `served` task that
-reports `shipped` with **no URL** is held open like any unproven claim: the
-address is the one thing a reader cannot do without, and closing it would keep
-a session for somebody who was never handed the document. And a `served` task
-that produced **nothing at all** (`not-applicable`) lands at once — a wait on a
-reader who was given no document is a wait nothing could ever end.
-
-`landed` comes from asking the forge, never from a worker claiming it, so it works
-long after the session is gone. **Blockers clear on `landed`**, not on `done`
-— a dependent task waits for the code to actually be on `main`, which is the
-same bug in its other form: a task collected `shipped` once released its
-dependents while its change request sat unreviewed.
-
-**For a task that spans repositories the forge is asked about every one of
-them**, and the words fold most-blocking first: one it could not read leaves the
-task where it is, one still open holds it, one closed unmerged makes the task
-`abandoned` however many others merged, and `landed` needs all of them. Half a
-task merged is not a task that landed, and a blocker that cleared there would
-release a dependent onto code that is not on `main`.
+`landed` comes from asking the forge, never from a worker claiming it.
+**Blockers clear on `landed`, not on `done`**: a task collected `shipped` once
+released its dependents while its change request sat unreviewed. For a task
+spanning repositories the words fold most-blocking first: one unreadable
+leaves the task where it is, one open holds it, one closed unmerged makes the
+task `abandoned`, and `landed` needs all of them.
 
 ```text
     topic/01-drop-idle-default   landed     https://…/pull/999 is merged
@@ -918,69 +653,47 @@ release a dependent onto code that is not on `main`.
     topic/06-investigate-crash   kept       the worker's own verdict is `failed` — its session is the evidence
 ```
 
-Before it deletes anything it asks `thurbox-cli session get --json` and reads
-the word. `idle`, `done` and `stopped` are the only three it acts on:
-`running`, `uncovered` and `unreported` are not the agent saying it is at rest
-(`thurbox-session` §4a), and treating them as `idle` kills live work. Deletion
-is `session delete <id> --force`, because a plain delete only soft-deletes the
-row and leaves the TUI to reap the window and worktrees on a sync that, run
-headless, never comes, leaving the disk unfreed. The record
-keeps a receipt, so `list` and `show` stop naming an id that no longer
-resolves.
+Before deleting anything it asks `thurbox-cli session get --json`. `idle`,
+`done` and `stopped` are the only words it acts on: `running`, `uncovered`
+and `unreported` are not the agent saying it is at rest, and treating them as
+`idle` kills live work. Deletion is `session delete --force`
+(`thurbox-session` §5 has why); the record keeps a receipt. A fixer's
+checkout is git's, not thurbox's, so it is removed separately with `git
+worktree remove` and no `--force` — one holding uncommitted work is kept and
+reported.
 
-**A fixer's checkout is git's, not thurbox's, so `session delete` never frees
-it.** A landed or abandoned task's fixer checkout is removed separately, with
-`git worktree remove` and no `--force` — one still holding uncommitted work is
-kept and reported rather than thrown away. Checked at both its current
-location and the legacy one, so an older checkout still gets cleaned up.
+**`collect` runs the reap itself.** Its gate is not collect's — nothing
+collected a moment ago has merged — so it only acts on earlier work. `collect
+--no-reap` records what landed and touches no session; `reap --dry-run`
+writes nothing. It only considers sessions THIS QUEUE recorded, refuses the
+lead's by name, and reads archived topics too (§6), because a keep is a
+promise to look again.
 
-**`collect` runs the reap itself**, so the release belongs to the command you
-already run rather than to one more you have to remember. Its gate is not
-collect's — nothing collected a moment ago has a merged pull request — so it can
-only ever act on work from an earlier pass. `collect --no-reap` records what
-landed and touches no session; `fleet queue reap --dry-run` says what it would
-do and writes nothing. Reach for the dry run first whenever you are unsure.
-
-It only ever considers sessions THIS QUEUE recorded. Your own session and
-anything spawned by hand are not in the records; the lead's is refused by name
-as well.
-
-**A keep is a promise to look again, so `reap` reads archived topics too** (§6).
-
-**A remote session is asked about its HOST before its state**, and this is the
-one place where reading thurbox's word is not enough. thurbox has an
-`unreachable` state and its CLI never says it — that word reaches the interface
-and nothing else. `session get --json` on a session whose machine has gone away
-answers with the state that was LATCHED before it went, so a worker that last
-reported `idle` still reads `idle` hours later, and `idle` is reapable. So the
-host is probed first, and a session it cannot reach is kept:
+**A remote session is asked about its HOST before its state.** thurbox has an
+`unreachable` state its CLI never prints: `session get --json` on a session
+whose machine has gone away answers with the state LATCHED before it went, so
+a worker that last reported `idle` still reads `idle` hours later. The host is
+probed first, and a session it cannot reach is kept:
 
 ```text
     topic/22-build-on-devbox     kept       unreachable: host devbox — No route to host
 ```
 
-That is a temporary outage, not a finished worker. Nothing is deleted, nothing
-is recorded, and the next pass reaps it if the host comes back.
-
-**Never treat a transition as a completion.** `watch` will tell you a task's
-turn ended with no result file — a worker that stopped, hit an approval, or
+**Never treat a transition as a completion.** `watch` will tell you a turn
+ended with no result file — a worker that stopped, hit an approval, or
 crashed. Closing it would mark failed work as shipped. Look at the pane
-(`thurbox-cli session capture`) or read `thurbox-session`'s state table first.
+(`thurbox-cli session capture`) or `thurbox-session`'s state table first.
 
-Run `watch` when you choose: between turns, when the operator asks, before a
-`plan`. Each task resumes from its own record, so a long gap — or a run that
-died half way, or a task dispatched while the stream was already open — costs
-you nothing but the wait.
-
-After `collect`, run `plan` again. A blocker may have cleared, and the tasks it
-was holding go out immediately.
+Run `watch` when you choose; each task resumes from its own record, so a long
+gap costs nothing but the wait. After `collect`, run `plan` again: a blocker
+may have cleared.
 
 ### 5c. `refuel` — the account's fuel first, then the workers that ran dry
 
-A worker that hits its agent's token limit **does not fail — it sits.** The hook
-that would have said `idle` never fires, so thurbox reports `working` for as
-long as you leave it there: `watch` folds no transition, `collect` finds no
-result, `reap` sees a task that is not finished. Nothing in the loop notices.
+A worker that hits its agent's token limit **does not fail — it sits.** The
+hook that would have said `idle` never fires, so thurbox reports `working`
+for as long as you leave it: `watch` folds no transition, `collect` finds no
+result, `reap` sees an unfinished task.
 
 ```bash
 uv run fleet queue refuel --dry-run     # what it would restart, writing nothing
@@ -988,91 +701,56 @@ uv run fleet queue refuel               # every recorded session
 uv run fleet queue refuel <ref>         # just that task's
 ```
 
-**It asks the ACCOUNT before it looks at a single session.** That window is a
-subscription every session on the account draws on: while it is spent those
-sessions are stuck for the same reason, and restarting them is worse than
-useless — each resumes, hits the same wall within seconds, and burns the reset
-it was waiting for. Three concurrent pipeline runs did that on 2026-08-29 and
-lost every step in flight.
+**It asks the ACCOUNT before it looks at a single session.** That window is
+a subscription every session on the account draws on: while it is spent,
+restarting is worse than useless — each resumes, hits the same wall within
+seconds, and burns the reset it was waiting for. Three concurrent pipeline
+runs did that on 2026-08-29 and lost every step in flight.
 
-It reads ONE WINDOW PER ACCOUNT the pass touches, through
-`fleet_status.probe_fuel`. An account is a PROVIDER — from the task's agent, or
-pinned by `FUEL_PROVIDER` in `orchestration/agent.conf` — PLUS the environment
-that selects it, from that agent's own `ENV` line there. So two workers on one
-provider and two logins get two readings and are judged one each; tasks sharing
-an account share one reading, and a task whose provider cannot be worked out is
-`undetermined` rather than guessed at. `fleet status`'s `FUEL` section reads
-every authenticated provider (`probe_fuel_all`), **so the two can legitimately
-disagree** — the screen may show one provider fine while `refuel` reports the
-account a worker actually spends as spent.
+It reads ONE WINDOW PER ACCOUNT the pass touches (`fleet_status.probe_fuel`).
+An account is a PROVIDER — from the task's agent, or pinned by `FUEL_PROVIDER`
+in `orchestration/agent.conf` — plus the environment that selects it, from
+that agent's `ENV` line there. Two workers on one provider and two logins get
+two readings; a task whose provider cannot be worked out is `undetermined`.
+`fleet status`'s `FUEL` section reads every authenticated provider, so the two
+can legitimately disagree. A quota that could not be read is `undetermined`
+and nothing is acted on — the common case, since the vendor's endpoint
+rate-limits and quota-axi says `stale` rather than serving old numbers; read
+the `retry after` it prints and run it again.
 
-```text
-    account claude                     fuel         62% remaining, resets 2026-09-09T02:10:00+00:00
-    account claude (spare)             spent        0% remaining, resets 2026-09-09T02:10:00+00:00
-      That window is SPENT … The fleet is waiting on the window, not on any
-      session … Nothing on that account is touched until it comes back.
-```
+**A dead pane is recovered outright.** `session get --json` reports
+`hook_corroboration: dead` when the pane's command exited while
+`remain-on-exit` kept the frame — what a failed `--resume` leaves. Do not
+parse `session capture` for `Pane is dead`: that string wraps and survives in
+scrollback. `session list` does not probe, so its `hook_corroboration` is
+`null` ("not checked").
 
-A quota that could not be read is `undetermined` — never a pass, never a
-failure, and nothing is acted on. That is the common case, not an edge one: the
-vendor's own quota endpoint rate-limits, and quota-axi says `stale` rather than
-serving old numbers as current. Read the `retry after` it prints and run it
-again; do not work around it.
+**With fuel in the account, one wedged live session is a conjunction**,
+because either half alone gets it wrong: `hook_state: working` with
+`hook_state_age_secs` past 30 min (alone: a SLOW worker) AND the agent's own
+limit signal — its banner on the pane, or the `rate_limit` record in its
+transcript, which outranks the pane wherever it can be read (alone: a limit it
+may have come back from). `session get --json` carries no usage field.
 
-**A dead pane is recovered even when that conjunction does not hold.**
-`session get --json` probes the multiplexer and reports `hook_corroboration`;
-`dead` means the pane's command has exited (`#{pane_dead}`) while
-`remain-on-exit` kept the frame. The last hook can be `uncovered` or absent —
-that is what a failed `--resume` leaves — and waiting on a stale `working` is
-what left those tasks sitting. The report names it `dead pane`, not a stale
-working state. Do not parse `session capture` for `Pane is dead`: that string
-is rendered, wraps with the terminal, and survives in scrollback after the
-pane has come back. `session list` does not probe, so `hook_corroboration`
-there is `null` ("not checked"), not "alive".
+The restart is `session stop`, a wait until no process holds the conversation
+id, then `session start` (an in-place `session restart` re-spawns while the
+old process may still hold the conversation, and the agent exits 1 with
+`Session ID … is already in use`). A holder that survives the wait leaves the
+session parked, recorded as `park` on the `refuels` receipt. Then dispatch's
+own handoff, `session_trust.py` first. Every restart is recorded and **capped
+at three**: a session that runs dry, resumes and runs dry again is a loop. A
+`working` reported BEFORE the last restart is evidence from before it, so the
+next pass gives the re-spawned agent a moment instead of spending the cap.
 
-**With fuel in the account, one wedged *live* session is a conjunction**, because
-either half alone gets it wrong:
-
-| half | read from | on its own it means |
-|---|---|---|
-| the state is stale | `hook_state: working` with `hook_state_age_secs` past 30 min | a SLOW worker — and slow is not dry |
-| the agent says so | its limit banner on the pane, or the `rate_limit` record in its transcript | a limit it may already have come back from |
-
-The transcript outranks the pane wherever it can be read: keyed by
-`agent_session_id`, it is the same event recorded rather than rendered, and it
-names the window that rejected the turn and when that window resets. `session
-get --json` carries no usage field at all — do not look for one.
-
-The restart is `session stop`, a wait until no process still holds the
-conversation id, then `session start`. `session start` resumes the same way
-`session restart` does (the conversation and the brief survive). The in-place
-`session restart` kills the window and immediately re-spawns with `--resume`;
-the old process may still hold the conversation, and the agent then exits 1
-(`Session ID … is already in use`), leaving `hook_corroboration: dead`. Text
-from `ps` selects only what we wait for, never what we kill. A holder that
-survives the wait, or a `session start` that fails after stop, leaves the
-session parked. That reason is written onto the `refuels` receipt as `park`
-and printed on later passes — calling it a deliberate stop would assert a
-person did it. Then dispatch's own handoff: `session_trust.py` first, because a
-re-spawned agent in a worktree can ask the trust question again and sending
-into that dialog types the prompt INTO it.
-Every restart is recorded on the task and **capped at three** — a session that
-runs dry, resumes and runs dry again, or a pane that dies each time, is a loop
-rather than a recovery. A `working` state that was reported BEFORE the last
-restart is evidence from before it, so a second pass minutes later gives the
-re-spawned agent a moment instead of spending the cap on one wedge; a dead
-pane does not get that pause, because the process is already gone.
-
-**A restart is neither a completion nor a failure.** `refuel` writes no `state`
-and no `outcome`; `collect` stays the only thing that closes a task. The lead's
-own session is refused by name, and a remote task's pane and transcript are on
-its host, so that one is reported `undetermined` rather than guessed at.
+**A restart is neither a completion nor a failure.** `refuel` writes no
+`state` and no `outcome`. The lead's own session is refused by name, and a
+remote task's pane and transcript are on its host, so it is `undetermined`.
 
 ### 5d. `fleet reconcile` — the loop that runs 5, 5a and 5c for you
 
 Everything in §5 is something you have to remember. On 2026-09-08 nobody did,
-for one session: 19 of 20 progress timelines empty, three merges unnoticed for
-forty minutes, and six workers sitting at a token limit that the OPERATOR
+for one session: 19 of 20 progress timelines empty, three merges unnoticed
+for forty minutes, and six workers sitting at a token limit that the OPERATOR
 spotted.
 
 ```sh
@@ -1082,28 +760,22 @@ uv run fleet reconcile logs       # what it has been doing
 uv run fleet reconcile stop       # durably down; only `start` brings it back
 ```
 
-It folds `watch` continuously and runs `collect`, `shepherd` and `refuel` on
-their own intervals. **AGENTS.md's reconciler section owns what it may and may
-not do**, and `scripts/lib/reconcile.py`'s docstring argues each interval.
-Two things belong here, because they are about you rather than about it:
+`AGENTS.md`'s reconciler section owns what it may and may not do, and
+`scripts/lib/reconcile.py`'s docstring argues each interval. Two things are
+about you:
 
 - **It will type one line at you, and only ever this one:** that N tasks are
   ready and nothing will dispatch them. Treat it as `plan` already run —
-  `dispatch`. It arrives once per transition and never mid-turn, so a second
-  line means the ready set grew again. An unprompted line there is this, not a
-  bug.
+  `dispatch`. Once per transition, never mid-turn.
 - **Run the commands anyway when you want an answer NOW.** `collect` is
-  idempotent; the loop only means you are rarely the first to notice. It
-  changes nothing about how you plan, write briefs or dispatch — it has no verb
-  for any of that.
+  idempotent; the loop only means you are rarely the first to notice.
 
 ## The run log — the queue writes the facts, you write the judgement
 
 One log per topic, opened by `topic add`, refreshed by `dispatch`, `collect`
-and `shepherd` as they go. It exists because it used to not: two consecutive
-runs went unrecorded, one file surviving only because its lead was being
-migrated and the other reconstructed from chat history at the end. The
-instruction was there both times, so the gap was the tool's.
+and `shepherd`. It exists because it used to not: two consecutive runs went
+unrecorded while the instruction to keep one was there both times, so the gap
+was the tool's.
 
 ```text
 <!-- fleet:facts -->     everything between the fences is GENERATED — the task
@@ -1111,20 +783,12 @@ instruction was there both times, so the gap was the tool's.
 <!-- fleet:facts:end -->  and a timeline from the records' own timestamps
 ```
 
-Outside the fence is yours and nothing ever rewrites it: **Goal** in your own
-words, **Decisions worth keeping**, **What went wrong**, **Outcome**. That is
-the half no record can produce, and it is the half worth having — write into it
-while you still know it, not at the end from scrollback.
-
-- The block is **rewritten, not appended to**, so refreshing three times leaves
-  one file rather than three copies of a timeline. A refresh that changes
-  nothing prints nothing.
-- `uv run fleet queue run [<topic>]` is that refresh made explicit — for a
-  topic older than this feature, or when you just want the path.
-- Delete the fence and the log is yours entirely: the queue reports it as
-  `left alone` and never writes into it again.
-- Run logs are gitignored, so machine paths and session ids are fine in them.
-  `_TEMPLATE.md` beside them is tracked; keep that one generic.
+Outside the fence is yours and nothing rewrites it: **Goal** in your own
+words, **Decisions worth keeping**, **What went wrong**, **Outcome**. Write
+into it while you still know it. The block is rewritten, not appended;
+`uv run fleet queue run [<topic>]` is that refresh made explicit; delete the
+fence and the log is yours entirely. Run logs are gitignored, so machine paths
+and session ids are fine in them; `_TEMPLATE.md` beside them is tracked.
 
 ## 6. The views, and keeping your context clean
 
@@ -1136,92 +800,44 @@ uv run fleet queue list --all        # both
 uv run fleet queue show <ref>        # one task's whole record, archived or not
 ```
 
-`list` is what you read when someone asks what is in flight. **Do not read the
-briefs.** Each is written for one worker, and reading five of them is exactly
-the mixing-up the queue exists to prevent. `show` when you need one.
-
-A ref is `<topic>/<task>`, or a bare task id when only one topic has it.
+`list` is what you read when someone asks what is in flight. **Do not read
+the briefs.** Each is written for one worker, and reading five is the
+mixing-up the queue exists to prevent. A ref is `<topic>/<task>`, or a bare
+task id when only one topic has it.
 
 ### Finished topics archive themselves
 
 A topic whose every task reached `landed` or `abandoned` gets an `archived`
-timestamp in its `topic.yaml`, written by the landing sweep `collect` and
-`reap` run. Archived topics **leave every default view** — `list`,
-`fleet status` and the TUI pane — and each of those still
-prints how many it is hiding, so a short queue is never mistaken for an idle
-one. Nothing is moved or deleted: it is a flag and a filter, and `show <ref>`
-reaches an archived task with no unarchiving first.
-
-`stuck` and `failed` are **not** terminal for this. Those sessions are kept as
-evidence (§5b) and the operator has to see them, so one of either keeps the
-whole topic in view.
-
-**`reap` is not a default view, and archiving does not hide a topic from it.**
-A task that lands while its worker is still `working` is kept for a later pass,
-and its topic archives in that same pass — so `reap`, and the `collect` that
-runs it, read every topic, or that keep would never be revisited. They still
-only DELETE a session on the gate in §5b. `reap`'s own docstring in
-`scripts/lib/queue.py` owns why.
+timestamp in `topic.yaml`, written by the landing sweep. Archived topics leave
+`list`, `fleet status` and the pane, each of which still prints how many it
+hides. Nothing is moved: `show <ref>` reaches an archived task. `stuck` and
+`failed` are not terminal for this — those sessions are evidence the operator
+has to see. `reap` reads archived topics regardless, because a task that
+lands while its worker is still `working` is kept for a later pass.
 
 ```bash
 uv run fleet queue archive <topic>    # early — refuses if any task is live
 uv run fleet queue unarchive <topic>  # put it back in every view
 ```
 
-`fleet queue add` onto an archived topic un-archives it, so you can never
-dispatch into a topic no view draws. `collect` does the same for a topic that
-holds a task that is not finished, and names the task when it does: a record
-written back over a landing can reopen a task inside an archived topic, and
-nothing reading only the live view would ever see it again.
+`add` onto an archived topic un-archives it, and so does `collect` when a
+record written back over a landing reopens a task there.
 
-**The operator has their own view: point them at it rather than narrating into
-it.** The TUI queue pane (`F3`) draws the same records — topics classified by
-what their tasks are doing, each with its plan, progress and outcome. It is a
-reader over these files, so it never disagrees with `list`, and it lets someone
-watch a run without interrupting you. When they ask "what is in flight" for the
-third time, point at the pane.
-
-It **displays and does not control** — no key dispatches, cancels or reorders,
-and you remain the only thing that writes here.
+**The operator has their own view: point them at it.** The TUI queue pane
+(`F3`) draws the same records, so it never disagrees with `list`, and it lets
+someone watch a run without interrupting you. It displays and does not
+control: no key dispatches, cancels or reorders, and you remain the only
+writer.
 
 ## 7. Where this lives, and what that costs
 
-Everything under `orchestration/queue/` is gitignored working state — your
-prompts, your briefs, your results — because this repo is public. `README.md`,
-`POLICY.md` and `OPERATOR.example.md` are the three exceptions: standing
-documentation rather than one operator's data, which is why every brief can
-point at the policy instead of carrying a copy. The operator's own `OPERATOR.md`
-is ignored with the rest, read by every worker whose brief was scaffolded while
-it existed.
-
-So **the repo does not back your queue up.** Say that plainly when someone
-assumes otherwise; `.gitignore`'s header owns the reasoning.
+Everything under `orchestration/queue/` is gitignored working state, because
+this repo is public. `README.md`, `POLICY.md` and `OPERATOR.example.md` are
+the exceptions: standing documentation, which is why every brief can point at
+the policy instead of carrying a copy. **The repo does not back your queue
+up**; say so when someone assumes otherwise.
 
 `uv run fleet check queue` re-proves the ordering and wake claims against a
-throwaway queue — the pytest area `tests/queue/`. It runs in the gate, so a
-change that quietly makes the queue serialize by default fails there rather
-than in a run six weeks later. It does
-**not** read your records — the gate reads no operator state, so one commit gets
-one verdict in every checkout. `uv run fleet status --records` validates
-them, and `uv run fleet queue check` lists every problem.
-
-## The loop
-
-1. `topic add` — the prompt, verbatim.
-2. `add` one task per unit of work; `--touches` what each expects to change.
-3. Write each `BRIEF.md`.
-4. `block` only what a concrete condition makes unsafe to run in parallel.
-5. `plan`, read the ready set, then `dispatch` — all of it, at once. Check the
-   report for any session that was spawned but NOT prompted.
-6. `watch` on your own cadence; `collect` when a result is waiting.
-7. `shepherd` — as reflexively as `collect`, and it is what `collect` tells you
-   to do. A PR goes bad long after the worker that wrote it stopped.
-8. `refuel` when a worker has been `working` far too long, or when the operator
-   says the fleet has hit a limit. It reads the account's fuel first and
-   restarts nothing while that is spent.
-9. Or run none of 6, 7 and 8 by hand: `uv run fleet reconcile ensure` keeps
-   them ticking, and §5d says what that does and does not change.
-10. `plan` again. Review the PRs; the operator merges every one `shepherd` did
-    not. Sessions release themselves once their pull requests land — `collect`
-    reaps, `reap --dry-run` shows you what it would do. The run log has been
-    recording itself since step 1; write your judgement into it.
+throwaway queue, and reads none of your records — the gate reads no operator
+state. `uv run fleet status --records` validates them, and `uv run fleet queue
+check` lists every problem.
