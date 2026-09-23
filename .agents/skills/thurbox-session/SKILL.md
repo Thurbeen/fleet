@@ -7,36 +7,40 @@ allowed-tools: Read, Edit, Write, Bash, Glob, Grep
 
 ## thurbox-session
 
-FLEET.md's **What you delegate** section owns whether a task runs inline or
-here. This skill is the reference for driving the session once you've decided
-to spawn one — naming, prompting, completion detection, cleanup. The control
-plane holds the plan and the run log; workers hold the branches.
+FLEET.md's **What you delegate** owns whether a task runs inline or here. This
+skill is the reference for driving one session once you have decided to spawn
+it. The control plane holds the plan and the run log; workers hold the
+branches. For more than one unit of work, drive it through `uv run fleet
+queue` and the `fleet-queue` skill, which owns the records, the ordering and
+both halves of completion; the commands here are what it runs underneath, and
+what you run for a session you spawn by hand.
+
+## Run loop
+
+1. Sync the base branch (§1). `uv run fleet queue topic add` opens the run log.
+2. `session create` with an `--on-existing` mode (§1c) and the run's profile
+   flags (§1d); `uv run fleet session-trust <uuid>` (§1b).
+3. `session send` one line (§3) — unless `created` came back `false`.
+4. Read the result file the worker writes (§4); supervise with the state
+   table (§4a).
+5. Review the pull request. `session delete --force` when it closes out (§5).
 
 ## Interface: use the CLI
 
 `thurbox-cli` is the reliable surface. The thurbox **MCP** tools
-(`create_session`, `send_prompt`, `capture_session_output`, …) are frequently
-**not registered**. Check once with ToolSearch; if absent, don't retry — use the
-CLI. Every subcommand takes `--json` (and `--pretty`) for machine-readable
-output, which is what you should parse.
+(`create_session`, `send_prompt`, …) are frequently not registered: check
+once with ToolSearch, and if absent use the CLI. Every subcommand takes
+`--json` (and `--pretty`); parse that.
 
 ## 1. Spawn
 
 **Sync the base branch first.** A worktree inherits whatever the local base
-branch points at. A stale local `main` produces a worker that does correct work
-and opens a CONFLICTING PR. Fixing that afterwards costs a force-push.
+branch points at, and a stale `main` produces a worker that does correct work
+and opens a CONFLICTING pull request. This repo's `SessionStart` hook runs
+`uv run fleet sync-checkout`; other repos have no such hook, so for those:
+`git -C <repo> fetch origin && git -C <repo> merge --ff-only origin/main`.
 
-```bash
-uv run fleet sync-checkout   # fast-forwards main when clean; reports otherwise
-```
-
-This repo's `SessionStart` hook (`.claude/settings.json`) runs that, so the
-control plane is current the moment a session opens. **Other repos have no such
-hook** — for those, `git -C <repo> fetch origin && git -C <repo> merge --ff-only
-origin/main` before `session create`, or check that
-`git rev-list --count main..origin/main` is 0.
-
-`session create` is **synchronous** — the tmux window is live when it returns.
+`session create` is synchronous — the window is live when it returns.
 
 ```bash
 thurbox-cli session create --name 'Run exec automations off the TUI thread' \
@@ -48,338 +52,200 @@ thurbox-cli session create --name 'Run exec automations off the TUI thread' \
 
 | Flag | Meaning |
 |---|---|
-| `--name` | 1–64 **bytes**, no slashes, no leading `.`; spaces are fine — write an imperative sentence, not a slug |
+| `--name` | 1–64 **bytes**, no slashes, no leading `.`; an imperative sentence, not a slug |
 | `--repo-path` | absolute path to the **primary** repo |
 | `--worktree-branch` | create a git worktree on this branch |
 | `--base-branch` | base for the worktree (default `main`) |
 | `--agent` | `claude`, `codex`, … (default from `agents.toml`) |
-| `--parent` | lead session UUID, for lead/worker trees — **same host only**: thurbox refuses a parent on another machine, so leave it off whenever you pass `--host` |
-| `--host` | remote host from `hosts.toml`; worktree + tmux live there |
-| `--on-existing` | what a name collision means — never leave it defaulted, see §1c |
-| `--env` / `--command` / `--arg` / `--reports-as` | how the agent starts; render them from a profile, see §1d |
+| `--parent` | lead session UUID, so `session list --parent` enumerates workers — **same host only**: leave it off with `--host` |
+| `--host` | remote host from `hosts.toml`; worktree and window live there (§1a) |
+| `--on-existing` | what a name collision means — never leave it defaulted (§1c) |
+| `--env` / `--command` / `--arg` / `--reports-as` | how the agent starts; render them from a profile (§1d) |
 
-The first seven rows place the work. Leave the last two undefaulted: the
-defaults silently make a second session under the same name (§1c), and give the
-new session whatever ambient environment the thurbox server has (§1d).
-
-Capture the returned UUID — every later command keys off it. `create --json`
-also returns **`created`**, which is `false` when `--on-existing adopt`
-handed back a session that was already there; §1c is what to do with that.
+Capture the returned UUID; every later command keys off it. `create --json`
+also returns `created`, which is `false` when `--on-existing adopt` handed
+back a session that was already there (§1c).
 
 ### Naming a session
 
-A session name is an **imperative summary of the work, in sentence case**: what
-the worker is being asked to do, not an identifier for it.
+An **imperative summary of the work, in sentence case**: `Run exec
+automations off the TUI thread`, not `thurbox-automation-nonblocking` (reads
+as an id) and not `Fix stuff`. Spaces are fine and round-trip through every
+by-name command.
 
-```
-Run exec automations off the TUI thread     good
-Document the customization surface          good
-thurbox-automation-nonblocking              bad — a kebab slug, reads as an id
-Fix stuff                                   bad — says nothing
-```
-
-Spaces are allowed: `session create`, `session get --json`, and
-`message send --to` all round-trip a spaced name intact. The rest of the rules
-follow from how the name is used:
-
-- **Imperative mood, sentence case.** Capitalize the first word only. Leave
-  identifiers in the casing they already have — `gh`, `TUI`, `extension.toml`.
-- **No repo prefix.** The repo is already on the session (`session get --json`,
-  field `cwd`) and in the run log. Repeating it spends the 64-byte cap twice.
-- **Quote it.** The name is a mailbox address — `message send --to 'Run exec
-  automations off the TUI thread'`. Unquoted, the shell splits it on spaces and
-  the send addresses something that isn't there.
-- **The branch is not the name.** `--worktree-branch` stays kebab-case and may
-  contain slashes (`fix/automation-exec-nonblocking`); `--name` may not.
-- **Keep it short.** The TUI's window list truncates. Two names that only differ
-  past the cut are the same name as far as the operator can see.
+- **No repo prefix.** The repo is on the session (`cwd`) and in the run log.
+- **Quote it.** The name is a mailbox address, and unquoted the shell splits
+  it.
+- **Keep it short.** The TUI's window list truncates, and two names that only
+  differ past the cut are the same name to the operator.
 - **The cap is 64 BYTES, whatever the error says.** `session create` refuses
-  with *"Name too long (max 64 characters)"*, but it counts bytes: measured
-  against thurbox 2.19.5, a 61-character name wearing a 5-byte `🚀 ` is
-  accepted at 64 bytes and refused at 65. So a name that fits in characters can
-  still fail at spawn the moment it carries anything non-ASCII, and a spawn that
-  fails leaves that task `queued` while the rest of the set still goes out.
-  `scripts/lib/queue.py`'s `session_name()` cuts by byte, on a codepoint
-  boundary, for exactly that reason.
-- **fleet's own workers wear a mark.** `fleet queue dispatch` puts `🚀 ` in front
-  of the name it builds from the task title, under the one setting in
-  `orchestration/session-glyphs.example.conf` that also decides the lead's. The
-  convention above is unchanged — the name is still an imperative sentence, now
-  with a glyph before it. A session you spawn BY HAND wears nothing unless its
-  name was rendered: `uv run fleet session-name <kind> '<title>'` is how one
-  gets the mark its kind wears without any file spelling a glyph, and it is
-  what `diagnose-machine` and `review-prs` call. Never type a glyph into a
-  `--name`; `GLYPHS=off` would never take it back off.
+  with *"Name too long (max 64 characters)"* but counts bytes: on thurbox
+  2.19.5 a 61-character name wearing a 5-byte `🚀 ` was accepted at 64 bytes
+  and refused at 65. A spawn that fails leaves that task `queued`.
+- **Fleet's own sessions wear a mark**, under the one setting in
+  `orchestration/session-glyphs.example.conf`. `fleet queue dispatch` puts it
+  on a worker's name in-process; a session you spawn by hand gets it from
+  `uv run fleet session-name <kind> '<title>'`, which is what
+  `diagnose-machine` and `review-prs` call. Never type a glyph into a
+  `--name`: `GLYPHS=off` could never take it back off.
 
 ## 1a. Remote hosts (`--host`)
 
 Hosts come from thurbox's `hosts.toml`, in the directory `uv run fleet paths
-thurbox-config` prints — thurbox keeps it under `%APPDATA%` on native Windows.
-A host `foo` registers the backend `ssh:foo`.
+thurbox-config` prints. With `--host`, **everything runs on the remote** — the
+agent, the window, the worktrees — and only the TUI is local. So
+`--repo-path` is a path on that host, a `BRIEF.md` you `Write` lands on YOUR
+machine and has to be copied over, and the host needs its own credentials for
+that repository's forge (forwarding your SSH agent fixes it and forwards every
+key the agent holds).
 
-With `--host`, **everything runs on the remote**: the agent process, the tmux
-window, and the git worktrees. Only the TUI is local. Three consequences:
+**`uv run fleet queue add --host <name>` is the driven version of all of it**:
+it refuses an unknown, unspeakable or unshared host at `add` time, probes
+reachability, the repo and the forge credential before it spawns, copies the
+brief over, and fetches `result.md` back — `fleet-queue` §1 and §4. Spawning
+remotely by hand, check the same three things first; until they pass, spawn
+locally. A remote worker that fails at its first `git` call looks exactly like
+an agent bug.
 
-- **`--repo-path` is a path on the remote host**, not locally. A local absolute
-  path that happens to exist on your machine will simply not be found there.
-- **The `BRIEF.md` trick needs the file on the remote.** `Write` puts it on your
-  machine. Copy it over (`scp` / `ssh 'cat >'`) into the remote worktree, or the
-  worker reads nothing.
-- **The remote needs its own credentials for that repository's forge** — GitHub
-  or GitLab — to clone, fetch, and push. Yours are not inherited. Forwarding
-  your SSH agent fixes it, but forwards every key the agent holds — decide that
-  before reaching for it.
+A Windows/PowerShell host (`multiplexer = "psmux"` in `hosts.toml`) is not a
+POSIX shell: `command -v` and `2>/dev/null` misfire, so use `Get-Command`, and
+send a script as `powershell -NoProfile -EncodedCommand <UTF-16LE base64>`
+rather than `-Command "..."`, whose quoting the host's shell rewrites. It also
+turns off remote hook status — a Windows worker sits at `unreported` and you
+read the pane — and psmux captures a pane with its spaces gone
+(`Yes,Itrustthisfolder`), so match with whitespace stripped.
 
-Before spawning remotely, check all three, in this order:
-
-```bash
-ssh <host> true                                   # reachable?
-ssh <host> 'ls -d <repo-path>'                    # does the repo exist there?
-ssh <host> 'ssh -T git@$(...origin's host...)'    # can it reach THAT forge?
-```
-
-The third one asks the host named by that checkout's `origin`, not github.com:
-a GitLab repository needs a GitLab credential, and GitLab's welcome banner reads
-`Welcome to GitLab, @you!` where GitHub's says `successfully authenticated`.
-
-Until all three pass, **spawn locally**. A remote worker will start and then
-fail at its first `git` call, which looks like an agent bug and is not one.
-
-A Windows/PowerShell host is not a POSIX shell: probes like `command -v` and
-`2>/dev/null` misfire there; use `Get-Command`, and send a script as
-`powershell -NoProfile -EncodedCommand <UTF-16LE base64>` rather than
-`-Command "..."`, whose quoting the host's own default shell rewrites.
-`hosts.toml` spells such a host by giving it the `psmux` `multiplexer`, which
-is what fleet reads to speak PowerShell to it, and that also turns off its
-remote hook status — a Windows worker never reports `working`/`done` on its
-own, so its `state` sits at `unreported` and you read the pane instead. psmux
-also captures a pane with its spaces gone (`Yes,Itrustthisfolder`), so match a
-pane with whitespace stripped.
-
-**The pane IS reachable on a remote host.** `session get`, `session capture`,
-`session key` and `session send` each delegate the whole verb to the thurbox-cli
-on that machine, so `uv run fleet session-trust` answers a remote trust dialog
-exactly as it answers a local one. The config-seeding fallback does not travel:
-`uv run fleet trust-thurbox-dir` writes THIS machine's `~/.claude.json`, and a
-remote agent reads the remote one. Run it on the host if you need it. The one
-host where delegation is unavailable is one whose `hosts.toml` entry sets
-`share_sessions = false`; there, nothing can see the pane and nothing can answer
-the dialog.
-
-**`uv run fleet queue add --host <name>` is the driven version of all of it**,
-and is what the control plane should use rather than a hand-rolled spawn: it
-refuses an unknown host, one whose shell it cannot speak, or an unshared one at
-`add` time, runs the three probes above before it spawns, copies the brief into
-the remote worktree, and fetches the worker's `result.md` back over ssh.
-`fleet-queue` §1 and §4 own it.
+**The pane IS reachable on a remote host.** `session get`, `capture`, `key`
+and `send` each delegate to the thurbox-cli on that machine, so `uv run fleet
+session-trust` answers a remote dialog as it answers a local one. The
+config-seeding fallback (`fleet trust-thurbox-dir`) writes THIS machine's
+`~/.claude.json` and does not travel. A host with `share_sessions = false` is
+the one where nothing can see the pane.
 
 ## 1b. Get past the trust dialog — as part of the spawn, not after it
 
 An agent started in a directory it has not seen asks whether it may work
-there, and thurbox mints a **fresh worktree path per session**. So a worker
-sits on that dialog — the session exists, the pane is live, the agent has not
-started — and `session send` then types the brief INTO the dialog. This broke
+there, and thurbox mints a fresh worktree path per session. So a new worker
+sits on that dialog, and `session send` types the brief INTO it. This broke
 every worker fleet spawned.
-
-**`uv run fleet session-trust <uuid>` is the answer, and `uv run fleet queue
-dispatch` runs it for you** between `session create` and the first `session
-send`. Run it yourself only for a session you spawned by hand, and only in that
-same window — before anything has been typed into the pane.
 
 ```bash
 uv run fleet session-trust <uuid>          # confirm → answer → confirm
 uv run fleet session-trust <uuid> --json   # for a driver
 ```
 
-It **confirms the dialog is on the pane before sending anything**, answers with
-the keys that agent needs, then confirms the dialog is gone. If it cannot
-confirm either, it sends nothing and exits 3 — a session waiting on a dialog is
-visible and fixable; a session that has been typed into randomly is neither.
+`fleet queue dispatch` runs it for you. Run it yourself only for a session you
+spawned by hand, before anything has been typed into the pane. It confirms the
+dialog is there, answers with that agent's keys, and confirms it is gone; if
+it cannot confirm either, it sends nothing and exits 3.
 
-The per-agent differences, one of which is a trap:
+`uv run fleet session-trust --help` carries the per-agent table. The trap in
+it: **`claude`'s default selection is `No, exit`**, so a bare Enter exits the
+agent — the answer is Down, then Enter — and under a directory whose
+`CLAUDE.md` imports a file outside it a second dialog follows (`Allow external
+CLAUDE.md file imports?`), answered with its default `No`. `cursor` and `muse`
+are not keystrokes at all: their trust is a launch flag, carried by the
+`cursor-trusted` and `muse-trusted` profiles in
+`orchestration/session-profiles.yaml` (read `muse-trusted`'s comment first —
+`--yolo` drops the sandbox too). An agent not in the table is refused, not
+guessed at; `TRUST_SIGNATURE` and `TRUST_KEYS` in `orchestration/agent.conf`
+teach it one.
 
-| agent | gate |
-|---|---|
-| `claude` | a dialog whose default selection is **`No, exit`**. A bare Enter DISMISSES it and the agent exits. Down, then Enter. Under a directory whose `CLAUDE.md` imports a file outside it, a second one follows: `Allow external CLAUDE.md file imports?`, answered with its default **`No`** (Enter), so a worker never loads a guide written for someone else. |
-| `codex` | a dialog; Enter accepts. Persists per repo root. |
-| `pi`, `pi-signed` | a dialog; Enter accepts. Persists per path. |
-| `grok`, `kimi` | no dialog inside a git repo, which a worktree always is. |
-| `cursor` | **not a keystroke** — `--trust` answers the folder dialog. Use the `cursor-trusted` profile in `orchestration/session-profiles.yaml` (§1d). |
-| `muse` | **not a keystroke** either, but `--yolo` is not that: it aliases `--disable-approval` and drops confirmations and the sandbox together. Vendor: a one-off isolated container only. The `muse-trusted` profile exists; read its comment before using it. |
+Answering inside a worktree records trust against the **repository's main
+worktree path** (Claude Code, observed 2026-09-07), so the first worker in a
+repo meets the dialog and later ones do not — but a ready set dispatched at
+once against one repo draws it on every one of them.
 
-**An agent not in this table is refused, not guessed at** — a wrong keystroke
-can exit the agent instead of dismissing a dialog. Teach it one with
-`TRUST_SIGNATURE` and `TRUST_KEYS` in `orchestration/agent.conf`
-(`TRUST_KEYS=none` for an agent with no dialog at all);
-`scripts/lib/session_trust.py`, which `fleet session-trust` runs, owns the
-mechanics.
-
-**Which path the trust is recorded against** (observed 2026-09-07, Claude Code):
-answering inside a worktree records it against the **repository's main worktree
-path**, not the worktree's own. So the first worker in a repo meets the dialog
-and later ones do not — but a whole ready set dispatched at once against one
-repo draws the dialog on every one of them simultaneously, because none has
-been answered yet when they start.
-
-**The config-seeding fallback.** `uv run fleet trust-thurbox-dir` writes Claude
-Code's trust into `~/.claude.json` directly:
-
-```bash
-uv run fleet trust-thurbox-dir /abs/path/to/worktree   # one path
-uv run fleet trust-thurbox-dir --all-worktrees         # every existing one
-```
-
-Use it when a dialog cannot be answered, or to pre-seed before an unattended
-run. It is **not** the default: it writes to a file the operator owns, for a
-tool fleet did not install, it needs a different format per agent, and
-`~/.claude.json` is rewritten by every live Claude Code process, so a concurrent
-write can clobber a seed. Prefer answering.
-
-Trust is a real guard either way — accepting it vouches for the code in that
-directory, so only ever point either tool at worktrees of repos you trust.
+**The fallback.** `uv run fleet trust-thurbox-dir <path>` (or
+`--all-worktrees`) writes Claude Code's trust into `~/.claude.json` directly,
+for a dialog that cannot be answered or to pre-seed an unattended run. Not the
+default: it writes to a file the operator owns, needs a format per agent, and
+every live Claude Code process rewrites that file, so a concurrent write can
+clobber a seed. Trust is a real guard either way — only point either tool at
+worktrees of repos you trust.
 
 ## 1c. Re-running a spawn (`--on-existing`)
 
-`session create` defaults to `--on-existing allow`: a second create under a name
-already in use makes a **second session** carrying that name. In this control
-plane that is a one-way door.
-
-A worker's name is an imperative sentence describing the work, and it is also
-its **mailbox address**. Once two sessions share one, every by-name command
-refuses rather than guesses — `session get`, `message send --to`, and
-`--on-existing adopt` and `replace` too, because there is no single session
-for them to act on:
-
-```text
-'Ship the registry cache' matches 2 active sessions on local-tmux, so there is
-no single one to adopt. Address them by id, or pick another name
-```
-
-Nothing recovers from that except deleting one by id. So decide what a
-collision means, every time:
+`session create` defaults to `--on-existing allow`: a second create under a
+name already in use makes a **second session** with that name, and every
+by-name command then refuses rather than guesses — `session get`, `message
+send --to`, `adopt` and `replace` too. Nothing recovers from that except
+deleting one by id. So decide what a collision means, every time:
 
 | Mode | Choose it when | What you get |
 |---|---|---|
-| `adopt` | re-running a playbook — reconciling desired state | the session that is already there, `created: false`. Creation becomes idempotent |
+| `adopt` | re-running a playbook — reconciling desired state | the session already there, `created: false` |
 | `fail` | a one-off spawn, where a collision is news | exit 1, nothing created, the session in the way named |
 | `replace` | you have decided to start this work over | the old session **and its worktree** torn down, then a fresh one |
 | `allow` | never, here | a twin, and by-name addressing broken for both |
 
-`replace` deletes uncommitted work in the old worktree. It is the answer for a
-worker that is wedged and whose branch you do not want, and wrong for anything
-else — reach for `session restart` first.
+`replace` deletes uncommitted work; reach for `session restart` first.
 
-**The rule that goes with `adopt`: read `created` before you send.**
-
-```text
-thurbox-cli session create --name '<name>' ... --on-existing adopt --json
-  "id":      every later command keys off it
-  "created": true   brand new — write the brief and send it (§3)
-             false  adopted — send nothing, read its state (§4a)
-```
-
-`session send` types its text into the pane and presses Enter. Sending a brief
-to a session that was adopted mid-turn does not restart it: it interrupts a
-worker that is already doing the job and prepends a stale instruction to
-whatever it was in the middle of. `created: false` means *the work is already
-running* — go and read its state (§4a) instead.
+**With `adopt`, read `created` before you send.** `created: false` means the
+work is already running: sending a brief interrupts a worker mid-turn and
+prepends a stale instruction to whatever it was doing. Go and read its state
+(§4a) instead.
 
 ## 1d. How the agent starts (`--env`, `--command`)
 
-Everything so far is about the session. These are about the **agent** inside it:
-model, effort, feature flags, and the command line itself. Do not write them on
-the spawn command line — they live in `orchestration/session-profiles.yaml`, one
-named profile per set of settings, and `uv run fleet session-flags` renders
-one into flags:
+Model, effort, feature flags and the command line live in
+`orchestration/session-profiles.yaml`, one named profile per set, and
+`uv run fleet session-flags <profile>` renders one into flags — NUL-separated,
+because a `--arg` is often a whole command line; split on NUL and pass each
+piece. `fleet queue dispatch` renders the task's profile in-process. A
+profile of the operator's own — a model, a thinking budget — goes in the
+gitignored `session-profiles.local.yaml` beside it, where it replaces the
+tracked profile of that name whole; editing the tracked file dirties the tree
+`fleet sync-checkout` has to fast-forward. `--check` validates both files.
 
-```bash
-uv run fleet session-flags sweep     # the `sweep` profile's flags
-uv run fleet session-flags --check   # validate every profile
-```
+Two rules the gate enforces:
 
-The flags come out NUL-separated, because a `--arg` value is often a whole
-command line: split the output on NUL and pass each piece to `session create`
-as its own argument. `uv run fleet queue dispatch` does not go through that
-output at all — it renders the task's profile in-process, so no shell stands
-between a task and its settings. `--check` validates every profile in
-`session-profiles.yaml` and in the operator's gitignored
-`session-profiles.local.yaml` beside it, where a profile replaces the tracked
-one of the same name. A setting of the operator's own — a model, a thinking
-budget — goes in the second: editing the tracked file dirties the tree
-`fleet sync-checkout` has to fast-forward.
+- **`THURBOX_*` is not yours to set.** thurbox's identity variables win over
+  `--env`; `THURBOX_SESSION=x` does not fail, it is silently ignored, which is
+  the worst kind of setting. The renderer refuses the key.
+- **`--command` never ships silent.** Either `reports_as` names the hook
+  family or `uncovered: true` accepts that there is none; dropping both, or
+  writing both, is refused.
 
-Two rules the gate enforces, so a profile breaking either never reaches `main`:
-
-- **`THURBOX_*` is not yours to set.** thurbox's identity variables always win
-  over `--env`. Passing `THURBOX_SESSION=x` does not fail; the session simply
-  still sees its real id, which makes it the worst kind of setting — one that
-  looks applied and is not. The renderer refuses the key.
-- **`--command` never ships silent.** This is the trap. Either
-  `reports_as` names the hook family, or `uncovered: true` accepts that
-  there is none. Dropping the key is still refused.
-
-And one **convention**, which the gate does not check and does not pretend to:
-the file is committed to a public repo, so nothing environment-specific goes in
-it. A worker inherits the environment of the thurbox server that spawns it, so a
-real credential belongs where that process gets its own (your shell profile,
-your keyring, the agent's own login) and never lands in a file at all.
+And one convention the gate cannot check: the file is public, so a credential
+reaches a worker by inheriting the thurbox server's environment and never
+lands in a file.
 
 ### The `--command` trap
 
-`--command` launches any executable — a shell, a REPL, an agent with flags
-thurbox has never heard of. It is how a profile expresses a setting that is a
-*flag* rather than an environment variable. It is mutually exclusive with
-`--agent` (thurbox refuses both), and `--resume` is refused for it too: a raw
-command has no conversation to attach to.
-
-The trap is that thurbox reads hook coverage against the **command's file
-stem**, not against whatever is really in the pane:
+`--command` launches any executable and is how a profile expresses a setting
+that is a *flag*. It is mutually exclusive with `--agent`, and `--resume` is
+refused for it. The trap is that thurbox reads hook coverage against the
+**command's file stem**:
 
 ```text
 --command /bin/sh --arg -c --arg 'exec claude'
   agent: "sh"  reports_as: null      hook_coverage: "none"  state: "uncovered"
-  hook_states_reportable: []
 
 … --reports-as claude
   agent: "sh"  reports_as: "claude"  hook_coverage: "full"  state: "unreported"
-  hook_states_reportable: ["working","blocked","done","idle"]
 ```
 
-The first row is a session that reports nothing, forever, and therefore reads as
-idle while it works — §4a has why `uncovered` is not `idle`. The second is the
-same launch, declared: `--reports-as` changes nothing about what runs, it tells
-thurbox which agent's hooks the pane speaks.
+The first reports nothing, forever, and reads as idle while it works (§4a).
+`--reports-as` changes nothing about what runs; it tells thurbox which agent's
+hooks the pane speaks. For an agent thurbox ships no hooks for,
+`--reports-as` is refused and `uncovered: true` is the declaration instead.
+`thurbox-cli session reports-as <session> <agent>` makes the declaration after
+the fact, `--clear` undoes it.
 
-A third shape exists for a command whose agent has no family thurbox ships
-hooks for. `--reports-as cursor` is then a flag thurbox refuses (declaring
-it would change nothing). `uncovered: true` is the declaration that
-replaces it: the session will be uncovered, and that is accepted.
-`dispatch` prints this on the spawn; `session-flags` prints it on stderr.
-
-**The declaration is about what FLEET can wire, not about what the agent
-can do**, and the two come apart wherever an agent takes its own hooks from
-a config file — cursor does, and §4a below has the measurement. So
-`dispatch` RESOLVES that sentence against the session document once the
-session exists: one that reports gets told it reports, and only one silent
-at hand-off gets the warning that `refuel` will not touch it, `watch` will
-not read its state and `reap` is by hand. Judge a live session by
-`state_source` and `hook_reported`, never by the profile that spawned it.
-`collect` is unchanged either way — it reads `result.md`.
-
-Silence — `command` with neither key — is still refused. Both keys
-together are refused: pick one. `thurbox-cli session reports-as
-<session> <agent>` makes the family declaration after the fact, with
-`--clear` to undo it.
+The declaration is about what FLEET can wire, not what the agent can do, and
+`dispatch` resolves it against the live session document: a session that
+reports gets told it reports, and only one silent at hand-off gets the warning
+that `refuel` will not touch it and `reap` is by hand. Judge a live session
+by `state_source` and `hook_reported`, never by the profile that spawned it.
 
 ## 2. Multi-repo mode
 
-One session can span several repos. Two repeatable flags:
-
-- `--add-repo PATH[@BASE]` — the repo gets its **own isolated worktree** on the
-  spawn's shared `--worktree-branch`, off `BASE` (default: the primary's
-  `--base-branch`). This is the per-repo-PR shape.
-- `--add-dir PATH` — attached **as-is**: no worktree, no branch. For reference
-  material the worker should read but not modify.
+- `--add-repo PATH[@BASE]` — its **own isolated worktree** on the shared
+  `--worktree-branch`, off `BASE` (default: the primary's base). The
+  per-repo-PR shape.
+- `--add-dir PATH` — attached **as-is**: no worktree, no branch. Reference
+  material.
 
 ```bash
 thurbox-cli session create --name 'Add a license header to every source file' \
@@ -390,24 +256,15 @@ thurbox-cli session create --name 'Add a license header to every source file' \
   --json
 ```
 
-**What the worker actually sees.** With two or more members, thurbox launches
-the agent in a per-session **symlink workspace**
-(`workspaces/<agent_session_id>/` under thurbox's data directory) holding one
-symlink per repo, with the agent's cwd set there, so every repo appears as a
-subdirectory. Symlinks only, rebuilt on each launch, removed on delete without
-touching the repos. The consequences:
-
-- The session's `cwd` field still points at the **primary** repo (display,
-  editor, git context). The workspace is a spawn-time process-cwd detail, never
-  stored.
-- Single-repo sessions are unchanged — cwd is the repo directly.
-- A multi-repo **fork** of a cwd-scoped agent lands in a fresh workspace, so
-  `--last` / `--continue` finds no parent. Multi-repo **restart** keeps the same
-  workspace and does resume.
-- `task create` takes the same `--add-repo` / `--add-dir` flags.
-
-Say so in the prompt: tell the worker it is in a symlink workspace, that each
-repo is a subdirectory, and that it should open **one PR per repo**.
+With two or more members thurbox launches the agent in a per-session
+**symlink workspace** (`workspaces/<agent_session_id>/` under thurbox's data
+directory), one symlink per repo, rebuilt on each launch and removed on
+delete. The session's `cwd` still points at the primary repo. A multi-repo
+**fork** lands in a fresh workspace, so `--last` / `--continue` finds no
+parent; a **restart** keeps the workspace and resumes. Tell the worker it is
+in a symlink workspace, that each repo is a subdirectory, and that it opens
+**one PR per repo**. `worktrees[]` on `session get` enumerates the members,
+each with `repo_path`, `worktree_path` and `branch`.
 
 ## 3. Prompt
 
@@ -415,99 +272,55 @@ repo is a subdirectory, and that it should open **one PR per repo**.
 thurbox-cli session send <uuid> '<single-line prompt>'
 ```
 
-Two traps:
-
-- **`send` takes a UUID, not a name.** Capture it from `create --json`.
-- **`send` types the text and presses Enter**, so a multi-line prompt fires the
-  agent on its first line and dumps the rest into a half-started turn. For
-  anything longer than a sentence, write the prompt to a `BRIEF.md` in the
-  worker's worktree and send a one-liner pointing at it:
-
-```bash
-# after `session create`, resolve the worktree path from `get --json`:
-#   .worktrees[0].worktree_path
-printf '%s\n' "$PROMPT" > "$WORKTREE/BRIEF.md"
-thurbox-cli session send <uuid> 'Read BRIEF.md and do what it says. Delete it before committing.'
-```
-
-Tell the worker to delete `BRIEF.md` before committing, or it lands in the PR.
+- **`send` takes a UUID, not a name.**
+- **`send` types the text and presses Enter**, so a multi-line prompt fires
+  the agent on its first line. For anything longer than a sentence, write a
+  `BRIEF.md` into the worktree (`.worktrees[0].worktree_path` from `get
+  --json`) and send `Read BRIEF.md and do what it says. Delete it before
+  committing.` — or it lands in the pull request.
+- **Do not send at all** when the spawn returned `created: false` (§1c).
+- **`sent: true, submitted: true` is a claim about the keystrokes**, not the
+  worker (§4c). A worker with a queue record is messaged with `uv run fleet
+  queue send <ref> '<one line>'`, which writes down WHEN.
 
 Workers share no context with the control plane and none with each other, so
-each prompt states the goal, the constraints, and what "done" looks like, from
-scratch.
-
-**Do not send at all** when the spawn returned `created: false` — that session
-was adopted, not created, and is already working on this (§1c).
-
-**`send` tells you it typed, and nothing more.** `sent: true, submitted: true`
-is a claim about the keystrokes, not about the worker — the agent may take the
-message and work for an hour while every field in `session get` stands still
-(§4c). If the worker has a queue record, message it with `uv run fleet queue
-send <ref> '<one line>'` instead: same handoff, and it writes down WHEN, which
-is the only thing that makes a later observation mean anything.
+each prompt states the goal, the constraints, and what "done" looks like.
 
 ## 4. Detect completion
 
 **A worker writes a FILE. It does not send mail.** `thurbox-cli message send`
-**wakes** its recipient — it injects into the lead's terminal, so a worker
-reporting in interrupts whoever is talking to the lead at that moment.
-
-So completion arrives as two things the lead READS, on its own cadence:
+wakes its recipient — it injects into the lead's terminal and interrupts
+whoever is talking to it. Completion arrives as two things the lead READS:
 
 ```text
 the WHEN   thurbox-cli watch --json [--since <seq>]
-           One line per transition, resumable by sequence number. The lead
-           reads it when it chooses and is never interrupted. It carries the
-           honest state vocabulary of §4a.
+           One line per transition, resumable by sequence number.
 
 the WHAT   a result file the worker wrote when it knew what it had concluded.
 ```
 
-**The stream alone is not enough.** A transition says a turn ended, and an
-agent reports `done` at the end of every turn — including the one where it gave
-up. A lead that treats "turn ended" as "task done" closes tasks that failed.
+**The stream alone is not enough.** An agent reports `done` at the end of
+every turn, including the one where it gave up; a lead that treats "turn
+ended" as "task done" closes tasks that failed. `uv run fleet queue` is
+exactly this pair (`watch` closes nothing; `collect` reads the result file).
+`orchestration/queue/POLICY.md`'s **Reporting back** is the result contract
+the queue scaffolds; for a hand-spawned worker, end the brief with it
+yourself. `not-applicable` is why a file beats polling `gh pr list`: the
+absence of a pull request cannot be told from "still working", but a worker
+saying so can.
 
-`uv run fleet queue` implements exactly this pair: `watch` folds transitions
-into each task's record and closes nothing; `collect` reads the worker's own
-result file and only then does a task close. See
-`.agents/skills/fleet-queue/SKILL.md`. Put the result contract at the end of
-every brief:
+The mailbox is still right for something genuinely urgent that a human should
+see now, and wrong for routine completion.
 
-```markdown
-Write <absolute path>/result.md when you finish or conclude you cannot:
-
----
-outcome: shipped | stuck | failed | not-applicable
-artifact: <PR url, or a commit url for a plain push, or omit>
----
-What you actually did, and anything the lead must know.
-```
-
-`not-applicable` is why a file beats polling `gh pr list`: the absence of a PR
-cannot be distinguished from "still working", but a worker saying so can.
-
-**The mailbox still exists**, and `thurbox-cli message send --to <lead>` is
-still the right tool for something genuinely urgent that a human should see
-now. It is the wrong tool for routine completion, which is most of it.
-
-**Fallback — sentinel + capture.** For a one-off worker with no queue record
-behind it, have the worker print a `===RESULT===` JSON sentinel and poll:
-
-```bash
-thurbox-cli session capture <uuid> --lines 400 --json   # default 200, max 10000
-```
-
-Back off between polls. Treat a missing sentinel as "still working", not as
-failure. Pane-scraping is the last resort in any case: agent CLIs are TUIs, and
-box chrome, prefixes and line-wrapping make grepping a captured pane fragile.
-
-`worktrees[]` is how you enumerate a multi-repo session's members: one entry per
-repo, each with `repo_path`, `worktree_path`, and `branch`.
+**Fallback — sentinel + capture.** For a one-off worker with no record, have
+it print a `===RESULT===` JSON sentinel and poll `thurbox-cli session capture
+<uuid> --lines 400 --json` (default 200, max 10000), backing off. A missing
+sentinel means "still working". Pane-scraping is the last resort: agent CLIs
+are TUIs, and box chrome and wrapping make grepping a pane fragile.
 
 ## 4a. Session state: supervision, not completion
 
-`session get`/`list --json` carry the session's state. Read `state` — one word,
-always present:
+`session get`/`list --json` carry `state` — one word, always present:
 
 | `state` | What it means |
 |---|---|
@@ -515,204 +328,116 @@ always present:
 | `blocked` | the agent's own hook says it needs input or approval |
 | `done` | the agent's own hook says a turn just finished |
 | `idle` | **the agent said it is at rest** |
-| `running` | an agent holds the pane and nothing has signalled — an observation, not a claim about what it is doing |
+| `running` | an agent holds the pane and nothing has signalled — an observation, not a claim |
 | `uncovered` | this agent is wired to report nothing, so its silence means nothing |
 | `unreported` | the agent *can* report and has not yet |
-| `unreachable` | a remote session whose host cannot be reached — **the TUI's word, and not one the CLI ever prints** |
+| `unreachable` | a remote session whose host cannot be reached — **the TUI's word, never printed by the CLI** |
 | `stopped` | parked by `session stop`; also `stopped: true` |
 
 **The trap this table exists to prevent:** `idle` is not "no news". The last
-five words above are *not* the agent saying it is at rest, and treating any of
-them as `idle` reports a worker mid-turn as finished. Read the word, never the
+five words are *not* the agent saying it is at rest, and treating any of them
+as `idle` reports a worker mid-turn as finished. Read the word, never the
 absence of one.
 
-**And `unreachable` has a trap of its own, which is that you will not be told
-it.** It reaches the interface's session rows and stops there; `session get`
-and `session list` cannot produce it. A session whose host has gone away
-answers with the state that was LATCHED before it went — so a worker that last
-reported `idle` still reads `idle` an hour after its machine died, and nothing
-in the JSON says otherwise. For a remote session, ask the HOST (`ssh <host>
-true`) before you believe a resting state. `fleet queue reap` does exactly that
-before it deletes anything.
+**`unreachable` you will not be told.** `session get` on a session whose host
+has gone away answers with the state LATCHED before it went, so a worker that
+last reported `idle` still reads `idle` an hour after its machine died. For a
+remote session, ask the HOST (`ssh <host> true`) before you believe a resting
+state; `fleet queue reap` does.
 
-`get` and `list` answer differently, and the difference is intended:
+`get` and `list` answer differently, on purpose: **`session get --json` probes
+the pane** (`--no-verify` skips it), which is the only way to see an agent
+thurbox did not launch, so `get` answers `running` where `list` answers
+`uncovered`. **`session list --json` does not probe** (a multiplexer query and
+a `ps` per session), so `hook_corroboration`, `detected_agent`,
+`hook_state_contradicted` and `foreground_process` are `null` — **"not
+checked", not "nothing found"**. `session list --verify` buys `get`'s answer
+per session.
 
-- **`session get <uuid> --json` probes the pane** (pass `--no-verify` to skip).
-  Only the probe can see an agent thurbox did not launch, which is why `get`
-  answers `running` where `list` answers `uncovered`.
-- **`session list --json` does not probe**, because that costs a multiplexer
-  query and a `ps` *per session*. `hook_corroboration`, `detected_agent`,
-  `hook_state_contradicted` and `foreground_process` / `foreground_command`
-  are therefore `null` — **`null` means "not checked", not "nothing found"**.
-  `session list --verify` buys `get`'s answer at `get`'s cost, per session.
+Judge a state with the fields beside it: `hook_state_age_secs` (a `working`
+from twenty minutes ago is a different fact from one from two seconds ago),
+`hook_reported`, `hook_coverage` / `hook_states_reportable` (which words this
+agent can produce — as of thurbox 2.19.0 that includes `grok` and `kimi`), and
+`state_source`. Three names, three fields: `agent` is what the row was created
+as, `reports_as` what a driver declared, `detected_agent` what is observably
+running — `null` when several registered agents share an executable, which
+answers `hook_corroboration: "foreign-agent"` with `state: "running"`. A remote
+session answers `hook_corroboration: "unavailable"`.
 
-Judge a state with the fields shipped beside it: `hook_state_age_secs` (a
-`working` from twenty minutes ago is a different fact from one from two
-seconds ago), `hook_reported` (silence is not `idle`), and `hook_coverage` /
-`hook_states_reportable` (which words this agent can produce at all — as of
-thurbox 2.19.0 that includes `grok` and `kimi` alongside the agents covered
-before). `state_source` says whether the answer came from a hook or the
-process.
+**`cursor-agent` reports without a family thurbox ships**, so `hook_coverage`
+stays `none`; its own user hooks file (`~/.cursor/hooks.json`) can call
+`thurbox-cli session signal`, and `list.state` then follows those words —
+measured on cursor-agent 2026.09.15: `sessionStart` → `idle`,
+`beforeSubmitPrompt` / `preToolUse` / `postToolUse` → `working`, `stop` →
+`done`, no permission-wait event. `refuel` still has no cursor limit banner,
+so a spent cursor worker stays `undetermined`.
 
-**`cursor-agent` reports without a family thurbox ships.** `--reports-as
-cursor` is refused (`thurbox ships no status hooks for agent 'cursor'`), so
-`hook_coverage` stays `none`. The agent's own user hooks file
-(`~/.cursor/hooks.json`) can still call `thurbox-cli session signal`, and
-`list.state` then follows those words. Measured on cursor-agent 2026.09.15
-against the events that binary loads from user scope (confirmed in
-`cursor.com/docs/hooks` and the installed CLI's hook enum): `sessionStart` →
-`idle`, `beforeSubmitPrompt` / `preToolUse` / `postToolUse` → `working`,
-`stop` → `done`. There is no permission-wait event — a shell approval
-prompt stays `working`. Trust is still the `--trust` flag (§1b), not a
-keystroke. Until thurbox merges that file the way it already merges
-`~/.codex/hooks.json`, the operator's user hooks are what turn
-`list.state` from `uncovered` into `idle` / `working` / `done` —
-`idle` and `done` being the words `reap` already accepts. `refuel` still has no cursor limit
-banner, so a spent cursor worker stays `undetermined` (§4b).
-
-Three names, three fields: `agent` is what the row was created as, `reports_as`
-what a driver declared, and `detected_agent` what is observably running — a live
-reading, never written back. `detected_agent` is `null` when the observation
-cannot pick one profile (several registered agents can share an executable), and
-that case answers `hook_corroboration: "foreign-agent"` with `state: "running"`:
-an agent is there, and which one is not knowable from a process listing. A
-remote session has no pane to look at from here and answers
-`hook_corroboration: "unavailable"`.
-
-A worked reading of a control-plane session created as a bare shell, which a
-harness then launched Claude into:
-
-```text
-thurbox-cli session get <uuid> --json, six of its fields:
-  {"agent":"zsh","detected_agent":"claude","state":"running",
-   "state_source":"process","hook_coverage":"none",
-   "hook_corroboration":"foreign-agent"}
-```
-
-`uncovered` from `list` and `running` from `get`, for the same session at the
-same moment, and both are true.
-
-**None of this is a completion signal.** Use state to SUPERVISE — to spot a
-`blocked` worker waiting on an approval nobody will give, or a `working` one
-whose report has aged past anything plausible. Completion arrives as §4's result
-file, because only the worker knows whether it is done.
+**None of this is a completion signal.** Use state to SUPERVISE — a `blocked`
+worker waiting on an approval nobody will give, a `working` one whose report
+has aged past anything plausible. Completion is §4's result file.
 
 ### 4b. A `working` that never ends — the session that ran out of fuel
 
 An agent that hits its token limit **does not exit and does not report.** It
-prints its own limit line and sits, so the last hook state stands forever: the
-session reads `working` hours later and nothing about it changes. `session get`
-carries **no token, usage, cost or limit field** — do not look for one. Two
-readings tell it apart from a genuinely slow turn:
+prints its own limit line and sits, so the session reads `working` hours
+later. `session get` carries **no token, usage, cost or limit field**. Two
+readings tell it from a slow turn:
 
 | where | what it says |
 |---|---|
-| `session capture <uuid> --lines 200 --json` | the agent's own banner, as rendered — `claude`'s reads `You've hit your session limit · resets 11:30pm (Europe/Paris)` |
-| that agent's transcript (`claude`: `~/.claude/projects/**/<agent_session_id>.jsonl`) | the same event recorded, and more precisely: `"error": "rate_limit"`, `"apiErrorStatus": 429`, and the `quotaLimits` window that rejected the turn — `rateLimitType` and `resetsAt` |
+| `session capture <uuid> --lines 200 --json` | the agent's banner, as rendered — `claude`'s reads `You've hit your session limit · resets 11:30pm (Europe/Paris)` |
+| that agent's transcript (`claude`: `~/.claude/projects/**/<agent_session_id>.jsonl`) | the same event recorded: `"error": "rate_limit"`, `"apiErrorStatus": 429`, and the `quotaLimits` window with `rateLimitType` and `resetsAt` |
 
-`agent_session_id` from `session get --json` is what names that transcript, and
-the record has to be the LAST conversational entry: what follows a rejection in
-a wedged session is bookkeeping, and a session that came back has an ordinary
-turn after it.
+`agent_session_id` from `session get --json` names the transcript, and the
+record has to be the LAST conversational entry. Neither reading is hardcoded:
+`scripts/lib/queue.py` keeps one entry per agent fleet has WATCHED hit a
+limit (`claude` today), an agent with no entry is `undetermined`, and
+`LIMIT_BANNER` / `TRANSCRIPT_DIR` in `orchestration/agent.conf` teach it one.
+Where the transcript is, is the AGENT's answer: read from its own `ENV` line
+there, never from the lead's environment — the lead sits on one account and
+the worker may be on another, and reading the lead's was how a second
+account's transcripts went unread.
 
-**Neither reading is hardcoded to one agent.** `scripts/lib/queue.py` keeps one
-entry per agent fleet has actually WATCHED hit a limit — `claude` today — the
-same way §1b's table keeps one per trust dialog. An agent with no entry is
-reported `undetermined`, which restarts nothing, and `LIMIT_BANNER` /
-`TRANSCRIPT_DIR` in `orchestration/agent.conf` teach it one without a code
-change. Both are sayable about ONE agent there (`<agent>.LIMIT_BANNER=`), and a
-second account of an agent already in the table takes the watched row with
-`<agent>.LIKE=`. Nothing is matched that nobody observed: a guessed pattern
-restarts a live worker mid-turn.
-
-**Where the transcript is, is the AGENT's answer and not yours.** The reader
-resolves that agent's config-directory variable out of its own `ENV` line in
-`orchestration/agent.conf`, never out of the environment the lead happens to be
-running in — the lead sits on one account and the worker may be on another, and
-reading the lead's was how a second account's transcripts went unread.
-
-**Ask the account before you restart anything.** The limit is not the session's,
-it is the operator's subscription window, shared by every session on this
-machine — `quota-axi` reads it. While it is spent, a `session restart` resumes
-the worker straight into the same wall and burns the reset everyone is waiting
-for. With fuel in the account, `session restart <uuid>` re-spawns with
-`--resume`, so the conversation and the brief survive; answer the trust dialog
-again (§1b) before you send anything into the new pane.
-
-**For a session the queue dispatched, `uv run fleet queue refuel` is all of the
-above in one verb** — the account first, a dead pane
-(`hook_corroboration: dead`) or the stale-working conjunction, a stop / wait /
-start so `--resume` does not land on a conversation still held, the trusted
-handoff, a cap and a record. Do not hand-restart those; see `fleet-queue` §5c.
+**Ask the account before you restart anything.** The limit is the operator's
+subscription window, shared by every session on the machine; `quota-axi`
+reads it. While it is spent, a restart resumes the worker straight into the
+same wall. With fuel in the account, `session restart <uuid>` re-spawns with
+`--resume`; answer the trust dialog again before you send anything. **For a
+session the queue dispatched, `uv run fleet queue refuel` is all of the above
+in one verb** — do not hand-restart those (`fleet-queue` §5c).
 
 ### 4c. "I sent it a message — did it land?"
 
 `session get` cannot answer this, and the trap is that it looks like it can.
-Observed on 2026-09-09: a parked worker was sent new scope, `session send`
-reported success, and ten minutes later the session read
-
-```text
-state: done | hook: done | age(s): 3043
-```
-
-Fifty-one minutes of "no change", from a state latched **before** the message
-was sent. The worker was neither dead nor unreachable: it had taken the
-message, done the work and committed it.
-
-Nothing in `session get` moves when an agent accepts a queued message and
-starts thinking, and a `done` that predates your send is not evidence of
-anything. Reading a foreign worktree's `git log` is what is left, and it does
-not scale.
+On 2026-09-09 a parked worker was sent new scope, `session send` reported
+success, and ten minutes later the session read `state: done | hook: done |
+age(s): 3043` — a state latched BEFORE the message, while the worker had
+taken it, done the work and committed. Nothing in `session get` moves when an
+agent accepts a queued message, and a `done` that predates your send is not
+evidence of anything.
 
 So compare against something the worker cannot fake, from an instant you
-recorded:
-
-| ask | what a change after your send means |
-|---|---|
-| the head of its branch, in the repo the worktree came from | it committed |
-| `thurbox-cli watch --json --since <seq>` | its session transitioned |
-
-`uv run fleet queue send` records the instant and the branch head for you,
-and `fleet queue list` / `fleet queue show` print the comparison — see
-`fleet-queue` §4a.
-None of it is a verdict about the worker: "nothing has moved since" is a fact,
-and a worker that has not answered yet reads exactly like one that never got
-the message.
+recorded: the head of its branch (it committed) and `thurbox-cli watch --json
+--since <seq>` (it transitioned). `uv run fleet queue send` records the
+instant and the branch head, and `list` / `show` print the comparison
+(`fleet-queue` §4a). "Nothing has moved since" is a fact, not a verdict.
 
 ## 5. Collect and clean up
 
 For a session the queue dispatched, its facts refresh themselves in the run
-log — see `fleet-queue`'s **The run log**. For one you spawned by hand, note
-it there yourself; the judgement — goal, decisions, outcome — is always yours
-to write.
+log; for one you spawned by hand, note it there yourself.
 
 ```bash
 thurbox-cli session restart <uuid>          # kill window, re-spawn with --resume
 thurbox-cli session delete <uuid> --force   # headless cleanup
 ```
 
-Plain `delete` only soft-deletes the DB row and leaves the TUI to reap the tmux
-window and worktrees on its next sync. **When the TUI isn't running, pass
-`--force`** — it kills the window, removes the worktrees (and the symlink
-workspace), and cancels pending scheduled commands. `session restore <uuid>`
+Plain `delete` only soft-deletes the row and leaves the TUI to reap the
+window and worktrees on its next sync, which never comes when the TUI is not
+running. `--force` kills the window, removes the worktrees and the symlink
+workspace, and cancels pending scheduled commands. `session restore <uuid>`
 undoes a soft delete.
 
-**A session the queue dispatched is not yours to delete by hand.**
-`uv run fleet queue reap` releases those itself once the forge says their pull
-requests merged, and it reads this section's state table before it does — see
-`fleet-queue` §5b. The commands here are for sessions you spawned yourself.
-
-## Run loop
-
-1. Clarify the goal. Pick or write a playbook in `orchestration/playbooks/`.
-2. `uv run fleet queue topic add` opens this run's log — see `fleet-queue`'s
-   **The run log**.
-3. Per unit of work: `session create` — with an `--on-existing` mode (§1c) and
-   the run's profile flags (§1d) — → `session send`, unless `created` came back
-   `false` → read the result file it writes → record.
-4. Review PRs. `session delete --force` as each closes out — for a session
-   the queue dispatched, `fleet queue reap` does this once the PR merges.
-
-For more than one unit of work, drive it through `uv run fleet queue` and the
-`fleet-queue` skill instead of by hand: it owns the records, the ordering, and
-both halves of step 3's completion.
+**A session the queue dispatched is not yours to delete by hand.** `uv run
+fleet queue reap` releases those once the forge says their pull requests
+merged, reading the state table above first (`fleet-queue` §5b).
