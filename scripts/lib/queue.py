@@ -296,6 +296,13 @@ fleet_platform = _load_sibling("fleet_platform", "fleet_platform.py")
 # agent; nothing here parses that file itself.
 agent_settings = _load_sibling("fleet_agent_settings", "agent_settings.py")
 
+# So that a sibling loading THIS file back — `fleet_status.py`, which the fuel
+# gauge below loads lazily — finds this copy under the key every loader uses,
+# whichever name this one was run under: `queue` off sys.path, `__main__` from
+# the command line. The same line `forge.py` ends with, for the same reason:
+# one module object, one `_STREAM_HIGH`, one forge registry.
+sys.modules.setdefault("fleet_queue", sys.modules[__name__])
+
 # The four conditions that justify making one task wait for another. They are
 # firstmate's, and they are a closed set on purpose: "these edit the same file"
 # is not among them and cannot be spelled here.
@@ -1080,7 +1087,7 @@ def policy_publish_block() -> dict | None:
     if len(parts) != 3:
         return None
     try:
-        doc = yaml.safe_load(parts[1])
+        doc = load_yaml(parts[1])
     except yaml.YAMLError as exc:
         raise QueueError(f"{policy_path()}: its frontmatter is not YAML: {exc}")
     if not isinstance(doc, dict) or "publish" not in doc:
@@ -1373,9 +1380,48 @@ def age_of(stamp) -> str:
     return f"{secs // 86400}d"
 
 
+# THE LOADER EVERY RECORD IS READ WITH. PyYAML's pure-Python parser took 93% of
+# a `fleet queue list` — 1.1 ms per record against 0.13 ms through libyaml,
+# measured over 150 records — and the pane probe pays that on every redraw. The
+# C loader is the same SafeConstructor over the same resolver, so it answers
+# the same document, and a YAMLError with the same `problem` and mark; the
+# pure one is the fallback for a Python built without it. Dumping stays with
+# `safe_dump`: what reaches the disk must not change by a byte.
+YAML_LOADER = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+
+
+def load_yaml(stream):
+    """`yaml.safe_load`, through the fastest safe loader this interpreter has."""
+    return yaml.load(stream, Loader=YAML_LOADER)
+
+
+def one_line(exc: BaseException) -> str:
+    """An exception's message on one line.
+
+    PyYAML's carry the file name twice, a caret and the offending line; the
+    caller already names the file, so a marked error is reduced to what was
+    wrong and where.
+    """
+    mark = getattr(exc, "problem_mark", None)
+    problem = getattr(exc, "problem", None)
+    if problem and mark is not None:
+        return f"{problem} (line {mark.line + 1}, column {mark.column + 1})"
+    return " ".join(str(exc).split())
+
+
 def read_yaml(path: str) -> dict:
-    with open(path, encoding="utf-8") as fh:
-        doc = yaml.safe_load(fh)
+    """One record, as a mapping. A file that is not one NAMES ITSELF and stops.
+
+    A QueueError rather than the parser's own exception: every reader opens
+    every record, so a task.yaml saved mid-edit ended `list`, `plan` and
+    `check` — the command whose whole job is to name a broken record — with a
+    traceback that named the file three lines from the bottom.
+    """
+    try:
+        with open(path, encoding="utf-8") as fh:
+            doc = load_yaml(fh)
+    except yaml.YAMLError as exc:
+        raise QueueError(f"{path} is not a record fleet can read: {one_line(exc)}") from exc
     if not isinstance(doc, dict):
         raise QueueError(f"{path}: expected a mapping")
     return doc
@@ -1629,6 +1675,11 @@ class Queue:
                     self.tasks[t.ref] = t
 
     def get(self, ref: str) -> Task:
+        # A blocker entry a hand left without its `task:` key asks for None.
+        # That is "no such task", and it has to read as one: a TypeError out of
+        # `_fetch` below was the whole of `list` and `plan` for that queue.
+        if not isinstance(ref, str) or not ref:
+            raise QueueError(f"no such task: {ref!r}")
         if ref in self.tasks:
             return self.tasks[ref]
         # A bare task id is unambiguous when only one topic carries it.
@@ -1714,7 +1765,7 @@ class Queue:
         if blocker_condition(blocker):
             return False
         try:
-            return self.get(blocker["task"]).state == "landed"
+            return self.get(blocker.get("task")).state == "landed"
         except QueueError:
             return False
 
@@ -1831,6 +1882,13 @@ def blocker_line(view: dict) -> str:
         return f"was held by {what}; this task concluded, so it holds nothing"
     if view["status"] == "cleared":
         return f"cleared: {what} has landed"
+    if view["status"] == "unknown" and not view["task"]:
+        # An entry that names NEITHER — a hand edit that lost the key. Nothing
+        # can ever clear it, and `check` is what names it as the defect it is.
+        return (
+            f"UNCLEARABLE: a blocker ({view['kind']}) that names neither a task nor "
+            f"a condition: {why}"
+        )
     if view["status"] == "unknown":
         return f"UNCLEARABLE: {what}, which is not in this queue: {why}"
     if view["status"] == "unclearable":
@@ -3444,20 +3502,10 @@ def session_worktree(sid: str) -> tuple[str, str]:
     For a remote session this is a path on the HOST — thurbox mints it there —
     which is exactly what the brief copy and the result fetch need.
     """
-    try:
-        proc = subprocess.run(
-            ["thurbox-cli", "session", "get", sid, "--json"],
-            capture_output=True, text=True, encoding="utf-8", timeout=30,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        return "", f"thurbox-cli session get could not run: {exc}"
-    if proc.returncode != 0:
-        return "", "thurbox-cli session get failed"
-    try:
-        doc = json.loads(proc.stdout)
-    except ValueError:
-        return "", "thurbox-cli session get did not answer JSON"
-    trees = (doc or {}).get("worktrees") or []
+    doc, why = session_doc(sid)
+    if doc is None:
+        return "", why
+    trees = doc.get("worktrees") or []
     path = str((trees[0] or {}).get("worktree_path") or "") if trees else ""
     return (path, "") if path else ("", "thurbox reported no worktree for that session")
 
@@ -4382,7 +4430,7 @@ def parse_result(text: str) -> tuple[dict, str]:
     if text.startswith("---"):
         parts = text.split("---", 2)
         if len(parts) == 3:
-            meta = yaml.safe_load(parts[1]) or {}
+            meta = load_yaml(parts[1]) or {}
             body = parts[2]
     if not isinstance(meta, dict):
         meta = {}
@@ -4967,7 +5015,26 @@ def cmd_collect(args) -> int:
 
         if not os.path.exists(path):
             continue
-        meta, body = parse_result(open(path, encoding="utf-8").read())
+        # ONE WORKER'S FILE HOLDS ONE TASK. A frontmatter the worker mangled
+        # used to end this whole pass with the parser's traceback, and the
+        # reconciler ran that pass every two minutes: nothing else was
+        # collected until somebody found the file. Bytes that are not UTF-8 —
+        # a Windows console writing in its own code page — are read with a
+        # replacement character rather than refused, since the frontmatter is
+        # ASCII and the body is only ever quoted.
+        try:
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                meta, body = parse_result(fh.read())
+        except (OSError, yaml.YAMLError) as exc:
+            why = (
+                f"its frontmatter is not YAML: {one_line(exc)}"
+                if isinstance(exc, yaml.YAMLError) else str(exc)
+            )
+            print(
+                f"    {task.ref}: result.md could not be read — {why}; the task is left as it is",
+                file=sys.stderr,
+            )
+            continue
         outcome = str(meta.get("outcome", "")).strip()
         if task.state in REREAD_STATES and outcome == task.doc.get("outcome"):
             continue  # the verdict it concluded on; nothing new to read
@@ -5530,20 +5597,10 @@ def session_state(sid: str) -> tuple[str | None, str]:
     holding the pane right now. A reap that read the cheaper answer would
     delete both.
     """
-    try:
-        proc = subprocess.run(
-            ["thurbox-cli", "session", "get", sid, "--json"],
-            capture_output=True, text=True, encoding="utf-8", timeout=30,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        return None, f"thurbox-cli session get could not run: {exc}"
-    if proc.returncode != 0:
-        return None, "thurbox-cli session get failed"
-    try:
-        doc = json.loads(proc.stdout)
-    except ValueError:
-        return None, "thurbox-cli session get did not answer JSON"
-    state = doc.get("state") if isinstance(doc, dict) else None
+    doc, why = session_doc(sid)
+    if doc is None:
+        return None, why
+    state = doc.get("state")
     if not state:
         return None, "thurbox-cli session get answered no state"
     return str(state), ""
@@ -6281,12 +6338,14 @@ def provider_is_known(provider: str, env: dict | None = None) -> tuple[bool, str
 
 
 def fuel_gauge():
-    """The `fleet_status` module, loaded from beside this file."""
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fleet_status.py")
-    spec = importlib.util.spec_from_file_location("fleet_status_for_queue", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    """The `fleet_status` module, loaded from beside this file — once.
+
+    Through `_load_sibling`, under the key `fleet/cli.py` gives it, so a
+    process that already holds it — `fleet status` itself — hands back that
+    copy. It used to execute the file on every call, and fleet_status.py loads
+    this file back, so each reading of the fuel ran a second queue.py too.
+    """
+    return _load_sibling("fleet_status", "fleet_status.py")
 
 
 def account_fuel(provider: str, env: dict | None = None) -> tuple[str, str]:
@@ -6484,7 +6543,12 @@ def exhaustion(doc: dict) -> tuple[str, str]:
 
 
 def session_doc(sid: str) -> tuple[dict | None, str]:
-    """`session get --json` in full — the hook fields are the whole point here."""
+    """`session get --json` in full — the hook fields are the whole point here.
+
+    THE ONE READER of `session get`. `session_state` and `session_worktree`
+    each take one field out of this answer; they used to run the command
+    themselves, three copies of the same four failure branches.
+    """
     if not shutil.which("thurbox-cli"):
         return None, "thurbox-cli not found on PATH"
     try:
@@ -7039,10 +7103,7 @@ def auto_merge_conf_path(root: str | None = None) -> str:
     auto-merge.conf says.
     """
     root = root or os.environ.get("FLEET_AUTO_MERGE_ROOT") or checkout_root()
-    path = os.path.join(root, AUTO_MERGE_CONF)
-    if not os.path.exists(path):
-        path = os.path.join(root, AUTO_MERGE_CONF_DEFAULTS)
-    return path
+    return conf_path(AUTO_MERGE_CONF, AUTO_MERGE_CONF_DEFAULTS, root)
 
 
 def auto_merge_repos(root: str | None = None) -> set:
@@ -7126,10 +7187,7 @@ def parse_agent_policy(entries: list[str], source: str) -> dict[str, list[str]]:
 def agent_policy_path(root: str | None = None) -> str:
     """The agent-policy file in force: the operator's copy, or the tracked one."""
     root = root or os.environ.get(AGENT_POLICY_ROOT_ENV) or checkout_root()
-    path = os.path.join(root, AGENT_POLICY_CONF)
-    if not os.path.exists(path):
-        path = os.path.join(root, AGENT_POLICY_CONF_DEFAULTS)
-    return path
+    return conf_path(AGENT_POLICY_CONF, AGENT_POLICY_CONF_DEFAULTS, root)
 
 
 def agent_policy(root: str | None = None) -> dict[str, list[str]]:

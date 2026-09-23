@@ -103,6 +103,10 @@ def _load_sibling(name: str, filename: str):
 
 
 fleet_platform = _load_sibling("fleet_platform", "fleet_platform.py")
+# The one reader of every `orchestration/*.conf`: the queue resolves `AGENT`
+# through it for every spawn, so the lead's manifest has to read the same file
+# to the same answer.
+agent_settings = _load_sibling("fleet_agent_settings", "agent_settings.py")
 
 
 class Refused(Exception):
@@ -124,12 +128,14 @@ def read(path: str) -> str:
 
 
 def setting(path: str, key: str) -> str:
-    """The first `KEY=value` line's value, or ''."""
-    with open(path, encoding="utf-8") as fh:
-        for line in fh:
-            if line.startswith(key + "="):
-                return line[len(key) + 1:].rstrip("\n")
-    return ""
+    """One `KEY=value` from a conf, or '' — by the grammar every reader shares.
+
+    `agent_settings.read_conf` and not a loop of this file's own: the last
+    occurrence of a key wins and spaces around `=` are not part of it there,
+    and a reader here that took the FIRST line rendered the lead as one agent
+    while `fleet queue` spawned every worker as the other, off one file.
+    """
+    return agent_settings.read_conf(path).get(key, "")
 
 
 def pick(root: str, name: str) -> str:

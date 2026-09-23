@@ -64,9 +64,12 @@ def epoch(stamp) -> int:
 
 
 def load(path: str) -> dict | None:
+    # queue.py's loader, which is libyaml where the interpreter has it: this
+    # probe runs on every redraw of the pane, and the pure-Python parser was
+    # nine tenths of what a redraw cost.
     try:
         with open(path, encoding="utf-8") as fh:
-            doc = yaml.safe_load(fh)
+            doc = fleetqueue.load_yaml(fh)
     except (OSError, yaml.YAMLError):
         return None
     return doc if isinstance(doc, dict) else None
