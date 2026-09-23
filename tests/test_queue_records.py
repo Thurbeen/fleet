@@ -102,6 +102,26 @@ class QueueRecords(unittest.TestCase):
         out = self.queue("show", ref)
         self.assertEqual(out.returncode, 0, out.stderr)
 
+    def test_a_record_reads_the_same_through_the_fast_loader(self):
+        """The C loader answers the document `safe_load` answers, glyphs and all.
+
+        It is libyaml wherever the interpreter has it — which this asserts, so
+        a wheel built without it is noticed rather than silently nine times
+        slower — and the pure-Python loader is the fallback."""
+        import yaml
+
+        ref = self.topic_with_a_task(title="Task — one ◐ 🚀")
+        topic = ref.split("/")[0]
+        for name in ("topic.yaml", f"{ref.split('/')[1]}/task.yaml"):
+            path = self.tmp / "queue" / topic / name
+            with open(path, encoding="utf-8") as fh:
+                plain = yaml.safe_load(fh)
+            self.assertEqual(queue.read_yaml(str(path)), plain)
+        if yaml.__with_libyaml__:
+            self.assertIs(queue.YAML_LOADER, yaml.CSafeLoader)
+        else:
+            self.assertIs(queue.YAML_LOADER, yaml.SafeLoader)
+
     def test_a_crlf_result_parses(self):
         meta, body = queue.parse_result(
             "---\r\noutcome: shipped\r\nartifact: https://example.com/pr/1\r\n---\r\nDone.\r\n"

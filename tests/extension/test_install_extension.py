@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 from panekit import STOCK, clone, sessions, thurbox
 
-from harness import PYTHON, REPO, expect, refute, run, run_fleet, write
+from harness import PYTHON, REPO, expect, queue_module, refute, run, run_fleet, write
 
 
 def render_only(dest: Path, **env):
@@ -98,6 +98,20 @@ def test_the_agent_setting_is_rendered_and_a_name_that_is_not_bare_is_refused(tm
     done = render_only(tmp_path)
     assert done.code == 1, done.out
     expect(done.out, "not a bare agent name")
+
+
+def test_the_manifest_reads_a_conf_by_the_rule_every_other_reader_uses(tmp_path):
+    """One grammar for every `orchestration/*.conf`, and it is `agent_settings.read_conf`:
+    the LAST occurrence of a key wins, spaces around `=` are not part of it. The
+    installer kept a reader of its own that took the FIRST line, so a line
+    appended below a stale one — the edit a first-match read waves through —
+    spawned every worker as one agent and rendered the lead as another."""
+    write(settings("agent.conf"), "AGENT=claude\n# the line above is stale\nAGENT = opencode\n")
+    assert render_only(tmp_path).code == 0
+    manifest = tomllib.loads((tmp_path / "extension.toml").read_text(encoding="utf-8"))
+    assert manifest["sessions"][0]["agent"] == "opencode"
+    # The same file, read by the queue for every spawn, gives the same answer.
+    assert queue_module("print(q.configured_agent())").strip() == "opencode"
 
 
 def test_usage_errors_exit_1(tmp_path):

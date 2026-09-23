@@ -44,6 +44,11 @@ def test_a_module_is_executed_once_per_process():
     assert queue.fleet_platform is platform, "queue.py holds a second copy of the platform seam"
     assert queue.forge is status.forge, "two forge registries in one process"
     assert lib("reconcile.py") is lib("reconcile.py"), "loading a group twice executes it twice"
+    # The one load queue.py makes LAZILY — the fuel gauge, inside `refuel` —
+    # is held to the same rule: it executed fleet_status.py, and through it a
+    # second queue.py, on every call.
+    assert queue.fuel_gauge() is status, "refuel's fuel gauge is a second copy of fleet_status.py"
+    assert queue.fuel_gauge() is queue.fuel_gauge(), "the fuel gauge is executed again on every call"
 
 
 def test_every_sibling_is_keyed_the_way_fleet_cli_keys_it():
