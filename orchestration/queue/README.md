@@ -8,9 +8,10 @@ workers' results are not a thing to publish.
 
 `POLICY.md` is the standing policy every worker runs under — publish the way
 your brief says and verify your own artifact, squash-merge, who merges, the
-gate, one-brief-one-worker, and the result contract. Its YAML frontmatter holds
-this operator's default publish method, the one thing in the file fleet parses.
-Every `BRIEF.md` the scaffold writes points at it — by absolute path, or, for a
+gate, one-brief-one-worker, and the result contract. The default publish
+method is not in it — that is the operator's `orchestration/publish.conf`,
+because a tracked file must name no tool. Every `BRIEF.md` the scaffold
+writes points at it — by absolute path, or, for a
 task running on a remote host, by a path relative to the brief itself — rather
 than restating it, so it is written once and cannot drift between briefs.
 **Task-specific detail still belongs in the brief**; only the repetition

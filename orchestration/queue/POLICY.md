@@ -38,6 +38,15 @@ measured on. Search your diff and your text for such details before you push
 or post. The operator's `OPERATOR.md`, when your brief names one, lists the
 concrete terms.
 
+## You share the machine
+
+Other workers run beside you on one machine, and its temporary space is
+shared with all of them and with RAM. Put anything large — a clone, build
+output, an image, a cache, a mutation-test copy — under a gitignored path in
+your worktree or under `~/.cache/<task>/`, never in the system temp
+directory, and delete what you did create there before you write
+`result.md`. Leave no test temp trees behind.
+
 ## Gate locally before you push
 
 Run the repo's own gate and make it green first. In this control plane that is
@@ -117,6 +126,15 @@ Your brief's Publish line is the authority on the method and the tool. The
 default behind it is the operator's, in `orchestration/publish.conf`, and this
 file no longer carries one — it is tracked, and a tool name here would be one
 operator's pipeline shipped to every clone.
+
+## Every review gets an answer
+
+Before you write `result.md`, and again after every push, read every review,
+inline thread and bot summary on each change request you own. For each one:
+fix it — test first when it is behaviour — or reply with the evidence why
+not, then resolve the thread. A change request with an unanswered thread or
+a failing review check is not done. Say in `result.md` how many threads you
+answered.
 
 ## Do not merge
 
