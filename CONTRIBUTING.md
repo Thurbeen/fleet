@@ -127,8 +127,8 @@ Codex discovers this tree directly while working in the fleet checkout.
 `uv run fleet install` points `.claude/skills` at it for Claude Code and
 opencode, and links each skill under the user-scoped `~/.agents/skills` for
 Codex workers launched in other repositories. Do not add parallel copies under
-`.claude/`, `.codex/` or `.opencode/skills`; duplicate discovery registers the
-same skill twice.
+`.claude/`, `.codex/` or `.opencode/skills`; every agent-specific path must
+keep pointing at the canonical tree.
 
 ### `orchestration/**`
 
@@ -251,8 +251,8 @@ reads `.agents/skills` in this repository and its user-scoped
 `~/.agents/skills` from every repository. The installer puts one link per fleet
 skill in that user directory so unrelated user skills remain, and refuses a
 user-owned directory with the same name. Do not mirror the tree under
-`.codex/`, `.opencode/skills` or `.claude/`; duplicate discovery would register
-the same skill twice.
+`.codex/`, `.opencode/skills` or `.claude/`; keep every agent-specific path
+pointing at the canonical tree.
 
 `uv run fleet check skills` guards the layout: that `.claude/skills` is untracked
 and ignored, resolves to `.agents/skills` where it exists, and that every skill

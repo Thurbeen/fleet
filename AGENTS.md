@@ -288,8 +288,8 @@ names every path and the reason for each.
   launched in another repository still sees it. All are relative symlinks on
   POSIX and junctions on Windows; a user-owned skill with the same name is
   refused and left untouched. Never add a second copy under `.claude/`,
-  `.codex/` or `.opencode/skills` — duplicate discovery registers the same
-  skill twice. Seven skills live there: `fleet-queue` (the
+  `.codex/` or `.opencode/skills`: every agent-specific path must keep pointing
+  at the canonical tree. Seven skills live there: `fleet-queue` (the
   queue: intake, ordering, dispatch, and the two halves of completion),
   `thurbox-session` (driving one worker session), `fleet-onboarding` (a fresh
   clone to a working control plane: dependencies, owners, registry, extension,
