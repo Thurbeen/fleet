@@ -1,10 +1,15 @@
-"""The two pieces of wiring `fleet install` owns: the skills link and the worker Stop nudge.
+"""The two pieces of wiring `fleet install` owns: skill discovery and the worker Stop nudge.
 
 THE SKILLS LINK. `.claude/skills` is not tracked, because a default Windows
 clone checks a tracked link out as a text file holding its target, and Claude
 Code then found no skills. So the install makes it: a symlink on POSIX, a
 junction on Windows. It replaces that text file, leaves a correct link alone,
 and never touches a real directory with something in it.
+
+CODEX DISCOVERY. Codex reads `.agents/skills` in the fleet checkout, but a
+worker's current repository is its target project. The install therefore links
+each canonical fleet skill into the user-scoped `~/.agents/skills`, beside any
+unrelated skill already there. A same-name user directory is never replaced.
 
 THE STOP NUDGE. thurbox rewrites its own hooks file from its embedded payload
 at every TUI start and every automation tick (its docs/CONFIG.md, and
@@ -30,6 +35,10 @@ TEXT_LINK = "../.agents/skills"
 
 def settings_file(isolated_env):
     return isolated_env / "home" / ".claude" / "settings.json"
+
+
+def codex_skills(isolated_env):
+    return isolated_env / "home" / ".agents" / "skills"
 
 
 # --- the skills link ------------------------------------------------------------
@@ -127,6 +136,78 @@ def test_on_windows_the_link_is_a_junction(checkout):
     install = load_install()
     install.make_link(str(checkout))
     assert os.lstat(checkout / ".claude" / "skills").st_reparse_tag == stat.IO_REPARSE_TAG_MOUNT_POINT
+
+
+# --- Codex user-scoped skill links --------------------------------------------
+
+
+def test_codex_links_every_canonical_skill_beside_the_operators_own_skills(checkout, isolated_env):
+    mine = codex_skills(isolated_env) / "mine" / "SKILL.md"
+    write(mine, "the operator's own skill\n")
+    install = load_install()
+
+    ok, _ = install.make_codex_links(str(checkout))
+
+    assert ok
+    assert mine.read_text(encoding="utf-8") == "the operator's own skill\n"
+    canonical = checkout / ".agents" / "skills"
+    names = sorted(path.name for path in canonical.iterdir() if (path / "SKILL.md").is_file())
+    assert all(os.path.samefile(codex_skills(isolated_env) / name, canonical / name) for name in names)
+    assert install.codex_links_state(str(checkout))[0] == "ok"
+
+
+def test_codex_refuses_a_user_owned_skill_name_without_linking_anything(checkout, isolated_env):
+    collision = codex_skills(isolated_env) / "fleet-queue" / "SKILL.md"
+    write(collision, "the operator's fleet-queue skill\n")
+    install = load_install()
+
+    ok, message = install.make_codex_links(str(checkout))
+
+    assert not ok and "fleet-queue" in message
+    assert collision.read_text(encoding="utf-8") == "the operator's fleet-queue skill\n"
+    assert not (codex_skills(isolated_env) / "fleet-pane").exists()
+
+
+def test_codex_refuses_a_user_owned_skill_link_without_repointing_it(checkout, isolated_env, tmp_path):
+    mine = tmp_path / "mine"
+    write(mine / "SKILL.md", "mine\n")
+    link = codex_skills(isolated_env) / "fleet-queue"
+    link.parent.mkdir(parents=True)
+    install = load_install()
+    install.fleet_platform.make_dir_link(str(link), str(mine))
+
+    ok, message = install.make_codex_links(str(checkout))
+
+    assert not ok and "fleet-queue" in message
+    assert os.path.samefile(link, mine)
+    assert not (codex_skills(isolated_env) / "fleet-pane").exists()
+
+
+def test_codex_repoints_a_skill_link_from_another_fleet_checkout(checkout, isolated_env, tmp_path):
+    old_checkout = tmp_path / "old"
+    old = old_checkout / ".agents" / "skills" / "fleet-queue"
+    write(old / "SKILL.md", "old\n")
+    write(old_checkout / "scripts" / "lib" / "install.py", "# identifies a fleet checkout\n")
+    link = codex_skills(isolated_env) / "fleet-queue"
+    link.parent.mkdir(parents=True)
+    install = load_install()
+    install.fleet_platform.make_dir_link(str(link), str(old))
+
+    assert install.make_codex_links(str(checkout))[0]
+    assert os.path.samefile(link, checkout / ".agents" / "skills" / "fleet-queue")
+
+
+@pytest.mark.skipif(not WINDOWS, reason="the junction branch")
+def test_on_windows_codex_skill_links_are_junctions(checkout, isolated_env):
+    import stat
+
+    install = load_install()
+    assert install.make_codex_links(str(checkout))[0]
+    links = codex_skills(isolated_env)
+    assert all(
+        os.lstat(path).st_reparse_tag == stat.IO_REPARSE_TAG_MOUNT_POINT
+        for path in links.iterdir()
+    )
 
 
 # --- the Stop nudge -------------------------------------------------------------

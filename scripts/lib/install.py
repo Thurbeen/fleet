@@ -23,9 +23,12 @@ then hand over here. This owns the rest, in this order:
      dropped when already root; `npm` is found as `npm.cmd` on Windows. On
      Windows this process then re-reads PATH from the registry, where an
      installer wrote the new directory.
-  4. THE SKILLS LINK. `.claude/skills` -> `.agents/skills`, a symlink on POSIX
-     and a junction on Windows. It is not tracked: a default Windows clone
-     checks a tracked link out as a text file, and Claude Code found no skills.
+  4. THE SKILLS LINKS. `.claude/skills` -> `.agents/skills` for Claude Code and
+     opencode, plus one user-scoped link per skill under `~/.agents/skills` for
+     Codex workers launched in any repository. Each is a symlink on POSIX and
+     a junction on Windows, and every one points at the single tracked tree.
+     A populated user-owned path is left untouched and reported rather than
+     overwritten.
   5. THE STOP NUDGE. A Claude Code `Stop` hook that runs
      `fleet reconcile nudge`, merged into Claude Code's USER settings. Not
      into thurbox's hooks file: thurbox rewrites that from its embedded payload
@@ -81,6 +84,7 @@ USAGE = "usage: uv run fleet install [--yes] [--dev] [--forge github|gitlab]...\
 # Each forge's rows in preflight's forge tier: the CLI, then its login.
 FORGES = {"github": ("gh", "gh auth"), "gitlab": ("glab", "glab auth")}
 LINK, TARGET = ".claude/skills", ".agents/skills"
+CODEX_SKILLS = ".agents/skills"
 NUDGE = " fleet reconcile nudge"
 WINGET_ACCEPT = ("--accept-source-agreements", "--accept-package-agreements")
 
@@ -176,39 +180,42 @@ def execute(row: Row, root: bool) -> bool:
     return True
 
 
-# --- the skills link ----------------------------------------------------------------
+# --- the skills links ---------------------------------------------------------------
 
 
-def link_state(checkout: str) -> tuple[str, str]:
-    """"ok", "create", "replace" or "refuse", and why."""
-    link, target = os.path.join(checkout, *LINK.split("/")), os.path.join(checkout, *TARGET.split("/"))
+def _dir_link_state(link: str, target: str, label: str, text_target: str | None = None,
+                    replace_other_link: bool = True) -> tuple[str, str]:
+    """"ok", "create", "replace" or "refuse", and why, for one directory link."""
     if fleet_platform.is_dir_link(link):
         try:
             if os.path.samefile(link, target):
                 return "ok", "already in place"
         except OSError:
             pass
-        return "replace", "it points somewhere else"
+        if replace_other_link:
+            return "replace", "it points somewhere else"
+        return "refuse", f"{label} is a link fleet did not write; move it aside and run this again"
     if os.path.isfile(link):
-        with open(link, encoding="utf-8", errors="replace") as fh:
-            text = fh.read().strip().replace("\\", "/")
-        if text == "../" + TARGET:
-            return "replace", "a clone without symlinks left the link as a text file"
-        return "refuse", f"{LINK} is a file fleet did not write; move it aside and run this again"
+        if text_target is not None:
+            with open(link, encoding="utf-8", errors="replace") as fh:
+                text = fh.read().strip().replace("\\", "/")
+            if text == text_target:
+                return "replace", "a clone without symlinks left the link as a text file"
+        return "refuse", f"{label} is a file fleet did not write; move it aside and run this again"
     if os.path.isdir(link):
         if not os.listdir(link):
             return "replace", "an empty directory"
-        return "refuse", f"{LINK} is a directory with something in it; move it aside and run this again"
+        return "refuse", f"{label} is a directory with something in it; move it aside and run this again"
     return "create", "not there yet"
 
 
-def make_link(checkout: str) -> tuple[bool, str]:
-    state, why = link_state(checkout)
+def _make_dir_link(link: str, target: str, label: str, text_target: str | None = None,
+                   replace_other_link: bool = True) -> tuple[bool, str]:
+    state, why = _dir_link_state(link, target, label, text_target, replace_other_link)
     if state == "ok":
         return True, why
     if state == "refuse":
         return False, why
-    link = os.path.join(checkout, *LINK.split("/"))
     try:
         if not fleet_platform.is_dir_link(link):
             if os.path.isfile(link):
@@ -216,11 +223,88 @@ def make_link(checkout: str) -> tuple[bool, str]:
             elif os.path.isdir(link):
                 os.rmdir(link)
         os.makedirs(os.path.dirname(link), exist_ok=True)
-        fleet_platform.make_dir_link(link, os.path.join(checkout, *TARGET.split("/")))
+        fleet_platform.make_dir_link(link, target)
     except OSError as exc:
         # A volume with no symlinks or junctions: reported, and the rest still runs.
-        return False, f"could not link {LINK} -> {TARGET} ({exc})"
-    return True, f"{LINK} -> {TARGET}"
+        return False, f"could not link {label} ({exc})"
+    return True, f"{label} linked"
+
+
+def link_state(checkout: str) -> tuple[str, str]:
+    """"ok", "create", "replace" or "refuse", and why."""
+    link, target = os.path.join(checkout, *LINK.split("/")), os.path.join(checkout, *TARGET.split("/"))
+    return _dir_link_state(link, target, LINK, "../" + TARGET)
+
+
+def make_link(checkout: str) -> tuple[bool, str]:
+    link = os.path.join(checkout, *LINK.split("/"))
+    target = os.path.join(checkout, *TARGET.split("/"))
+    ok, why = _make_dir_link(link, target, LINK, "../" + TARGET)
+    return (ok, f"{LINK} -> {TARGET}" if ok and why.endswith(" linked") else why)
+
+
+def _codex_link_specs(checkout: str) -> list[tuple[str, str, str]]:
+    """(name, user-scoped link, canonical target) for every tracked fleet skill."""
+    canonical = os.path.join(checkout, *TARGET.split("/"))
+    user = os.path.join(os.path.expanduser("~"), *CODEX_SKILLS.split("/"))
+    try:
+        names = sorted(
+            entry.name for entry in os.scandir(canonical)
+            if entry.is_dir() and os.path.isfile(os.path.join(entry.path, "SKILL.md"))
+        )
+    except OSError:
+        return []
+    return [(name, os.path.join(user, name), os.path.join(canonical, name)) for name in names]
+
+
+def _fleet_owned_skill_link(link: str, name: str) -> bool:
+    """Whether an existing user-scoped link names this skill in another fleet checkout."""
+    resolved = os.path.realpath(link)
+    skills = os.path.dirname(resolved)
+    agents = os.path.dirname(skills)
+    checkout = os.path.dirname(agents)
+    return (
+        os.path.basename(resolved) == name
+        and os.path.basename(skills) == "skills"
+        and os.path.basename(agents) == ".agents"
+        and os.path.isfile(os.path.join(checkout, "scripts", "lib", "install.py"))
+    )
+
+
+def codex_links_state(checkout: str) -> tuple[str, str]:
+    """The aggregate state of fleet's user-scoped Codex skill links."""
+    specs = _codex_link_specs(checkout)
+    if not specs:
+        return "refuse", f"{TARGET} has no skills to expose"
+    states = [(name, *_dir_link_state(link, target, f"~/{CODEX_SKILLS}/{name}",
+                                     replace_other_link=_fleet_owned_skill_link(link, name)))
+              for name, link, target in specs]
+    refused = [(name, why) for name, state, why in states if state == "refuse"]
+    if refused:
+        name, why = refused[0]
+        return "refuse", f"{name}: {why}"
+    pending = [name for name, state, _ in states if state != "ok"]
+    if pending:
+        return "create", f"{len(pending)} skill link{'s' if len(pending) != 1 else ''} not in place"
+    return "ok", "already in place"
+
+
+def make_codex_links(checkout: str) -> tuple[bool, str]:
+    """Expose every fleet skill at Codex's user scope without replacing user-owned skills."""
+    state, why = codex_links_state(checkout)
+    if state == "ok":
+        return True, why
+    if state == "refuse":
+        return False, why
+    specs = _codex_link_specs(checkout)
+    for name, link, target in specs:
+        ok, message = _make_dir_link(
+            link, target, f"~/{CODEX_SKILLS}/{name}",
+            replace_other_link=_fleet_owned_skill_link(link, name),
+        )
+        if not ok:
+            return False, message
+    return True, f"{len(specs)} skills linked in ~/{CODEX_SKILLS}"
 
 
 # --- the Stop nudge ----------------------------------------------------------------------
@@ -404,6 +488,7 @@ def main(argv: list[str], checkout: str | None = None) -> int:
     fleet_platform.refresh_path()
     rows = plan_rows(dev, root, tuple(dict.fromkeys(forges)))
     link, link_why = link_state(checkout)
+    codex, codex_why = codex_links_state(checkout)
     settings, command = claude_settings_file(), reconcile.hook_command(checkout)
     hook, hook_why = hook_state(settings, command)
 
@@ -413,12 +498,14 @@ def main(argv: list[str], checkout: str | None = None) -> int:
         say(f"  {row.action:<9} {row.name:<14} {row.text}")
     if link != "ok":
         say(f"  {'link':<9} {LINK:<14} -> {TARGET} ({link_why})")
+    if codex != "ok":
+        say(f"  {'link':<9} {'Codex skills':<14} ~/{CODEX_SKILLS} ({codex_why})")
     if hook != "ok":
         say(f"  {'hook':<9} {'Stop nudge':<14} {settings} ({hook_why})")
     say(f"  {'then':<9} {'':<14} the thurbox extension and queue pane, then preflight")
 
     runs = [row for row in rows if row.argv]
-    if not runs and link == "ok" and hook == "ok":
+    if not runs and link == "ok" and codex == "ok" and hook == "ok":
         say()
         say("Nothing to install.")
     elif not yes:
@@ -446,7 +533,10 @@ def main(argv: list[str], checkout: str | None = None) -> int:
     ok, message = make_link(checkout)
     failed += not ok
     say()
-    say(f"Skills link: {message}")
+    say(f"Claude skills: {message}")
+    ok, message = make_codex_links(checkout)
+    failed += not ok
+    say(f"Codex skills: {message}")
     ok, message = apply_hook(settings, command)
     failed += not ok
     say(f"Stop nudge: {message}")

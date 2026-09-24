@@ -94,9 +94,10 @@ with a one-line fix.
 **ASK — installing is the operator's call.** A package manager touches the
 machine outside the checkout. `uv run fleet install` prints the whole plan —
 every missing dependency with THIS machine's command (`winget`, `apt-get`,
-`dnf`, `pacman`, `brew`, or a tool's own installer), the `.claude/skills` link
-and the reconciler's nudge hook — and asks once. It plans no forge unless one
-is named, so ask both halves in one go:
+`dnf`, `pacman`, `brew`, or a tool's own installer), the `.claude/skills` link,
+Codex's user-scoped `~/.agents/skills` links and the reconciler's nudge hook —
+and asks once. It plans no forge unless one is named, so ask both halves in one
+go:
 
 - **Install the plan** (recommended) — required and recommended
 - **The plan and the gate's tools** — for an operator who will run `fleet check`

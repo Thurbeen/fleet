@@ -237,9 +237,11 @@ names every path and the reason for each.
   checkout, and hand over to `uv run fleet install` (`scripts/lib/install.py`).
   That prints every missing dependency with this machine's command, asks once
   (`--yes` skips), installs through the package manager, links
-  `.claude/skills`, merges the reconciler's Stop nudge into Claude Code's user
-  settings, installs the extension and ends with preflight; a second run
-  changes nothing. It places no pane, and refuses rather than overwrites an
+  `.claude/skills` for Claude-compatible agents and each fleet skill under
+  `~/.agents/skills` for Codex workers in any repository, merges the
+  reconciler's Stop nudge into Claude Code's user settings, installs the
+  extension and ends with preflight; a second run changes nothing. It places
+  no pane, and refuses rather than overwrites an
   existing checkout; `install.sh`'s header owns where the clone goes and why
   that choice is sticky. `tests/install/` drives both bootstraps, and
   `tests/extension/` drives `fleet pane-ask` and `fleet voice-ask` —
@@ -280,12 +282,14 @@ names every path and the reason for each.
   host is reported as evidence and never as an owner. The fleet-onboarding
   skill's **Re-running** section owns the ask that goes with it.
 - `.agents/skills/<name>/SKILL.md` — agent skills, in one agent-agnostic tree.
-  `.claude/skills` points at it — made by `uv run fleet install`, a symlink on
-  POSIX and a junction on Windows, untracked and gitignored — so Claude Code
-  and opencode (which
-  auto-discovers `.claude/skills`) both load the same copy. Never add a second
-  copy under `.claude/`, and do not mirror into `.opencode/skills` — that
-  registers the same skill twice. Seven skills live there: `fleet-queue` (the
+  Codex discovers that path directly in this checkout. `uv run fleet install`
+  also points `.claude/skills` at the tree for Claude Code and opencode, and
+  links each child into Codex's user-scoped `~/.agents/skills` so a worker
+  launched in another repository still sees it. All are relative symlinks on
+  POSIX and junctions on Windows; a user-owned skill with the same name is
+  refused and left untouched. Never add a second copy under `.claude/`,
+  `.codex/` or `.opencode/skills` — duplicate discovery registers the same
+  skill twice. Seven skills live there: `fleet-queue` (the
   queue: intake, ordering, dispatch, and the two halves of completion),
   `thurbox-session` (driving one worker session), `fleet-onboarding` (a fresh
   clone to a working control plane: dependencies, owners, registry, extension,

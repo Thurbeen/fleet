@@ -128,10 +128,13 @@
 !/orchestration/queue/POLICY.md
 !/orchestration/queue/OPERATOR.example.md
 
-# MACHINE. The link that lets Claude Code and opencode load .agents/skills/,
-# made by `uv run fleet install`: a symlink on POSIX, a junction on Windows. It
-# is not tracked because a default Windows clone checks a tracked link out as a
-# text file holding its target, and then no agent found a single skill.
+# MACHINE. The checkout-local link that lets Claude Code and opencode load
+# .agents/skills/, made by `uv run fleet install`: a symlink on POSIX, a
+# junction on Windows. Codex reads .agents/skills directly here and uses the
+# installer's per-skill links under the user's ~/.agents/skills elsewhere. This
+# link is not tracked because a default Windows clone checks a tracked link out
+# as a text file holding its target, and then no Claude-compatible agent found
+# a single skill.
 /.claude/skills
 
 # GENERATED. Python's bytecode cache. scripts/lib/fleet_status.py loads

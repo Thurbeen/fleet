@@ -83,6 +83,7 @@ def test_no_terminal_and_no_yes_prints_the_plan_installs_nothing_and_says_yes(st
     assert manager_calls(stubs) == [], manager_calls(stubs)
     assert "extension install" not in stubs.calls("extension")
     assert not os.path.lexists(checkout / ".claude" / "skills"), "a refused install still linked the skills"
+    assert not (stubs.root.parent / "home" / ".agents" / "skills").exists()
     assert not (stubs.root.parent / "home" / ".claude" / "settings.json").exists()
 
 
@@ -132,6 +133,35 @@ def test_a_complete_machine_asks_nothing_installs_nothing_and_changes_nothing(st
     assert manager_calls(stubs) == []
     assert (tree_snapshot(checkout), settings.read_bytes()) == before
     assert stubs.calls("extension") == [f"extension install {checkout}"], "the extension step is re-applied"
+
+
+def test_a_fresh_install_exposes_every_skill_to_codex_from_any_repository_and_is_idempotent(
+    stubs, checkout,
+):
+    family = "windows" if WINDOWS else "posix"
+    machine(stubs, full_machine(family))
+    place(stubs, "winget" if WINDOWS else "apt-get", installs({}))
+
+    first = run_install(checkout, stubs, family, "--yes")
+    assert first.code == 0, first.out
+
+    canonical = checkout / ".agents" / "skills"
+    discovered = stubs.root.parent / "home" / ".agents" / "skills"
+    names = sorted(path.name for path in canonical.iterdir() if (path / "SKILL.md").is_file())
+    assert names
+    assert sorted(path.name for path in discovered.iterdir() if (path / "SKILL.md").is_file()) == names
+    assert all(os.path.samefile(discovered / name, canonical / name) for name in names)
+    before = {name: os.lstat(discovered / name) for name in names}
+
+    again = run_install(checkout, stubs, family)
+    assert again.code == 0, again.out
+    assert "Nothing to install" in again.stdout
+    after = {name: os.lstat(discovered / name) for name in names}
+    assert {
+        name: (value.st_ino, value.st_mtime_ns) for name, value in after.items()
+    } == {
+        name: (value.st_ino, value.st_mtime_ns) for name, value in before.items()
+    }
 
 
 @pytest.mark.parametrize("family", FAMILIES)
