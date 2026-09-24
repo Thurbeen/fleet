@@ -193,8 +193,11 @@ def test_an_installer_one_liner_runs_through_its_familys_shell(stubs, checkout, 
     run_install(checkout, stubs, family, "--yes")
     calls = stubs.calls(shell)
     if family == "windows":
-        assert calls == ["powershell -ExecutionPolicy ByPass -c irm "
-                         "https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex"], calls
+        assert len(calls) == 1, calls
+        assert calls[0].startswith("powershell -NoProfile -ExecutionPolicy Bypass -File "), calls
+        assert "run_installer.ps1 " in calls[0], calls
+        assert calls[0].endswith(
+            "https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1"), calls
     else:
         assert calls == ["sh -c curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh"
                          " | sh"], calls

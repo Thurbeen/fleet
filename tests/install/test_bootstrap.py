@@ -30,6 +30,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+from contextlib import contextmanager
 from functools import cache
 from pathlib import Path
 
@@ -73,6 +74,32 @@ def served() -> str:
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return f"http://127.0.0.1:{server.server_port}/install.ps1"
+
+
+@contextmanager
+def served_payload(payload: bytes):
+    """A harmless local installer body for the native PowerShell download path."""
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}/uv-installer.ps1"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
 
 
 class Sh:
@@ -225,6 +252,72 @@ def test_a_uv_installer_that_installs_nothing_stops_the_bootstrap_before_the_clo
     assert done.code != 0, done.out
     assert not box.clone.exists(), f"the bootstrap cloned after its uv step refused:\n{done.out}"
     refute(done.out, "Cloned ")
+
+
+@pytest.mark.skipif(POWERSHELL is None, reason="the child command line needs native Windows PowerShell")
+def test_downloaded_uv_installer_is_not_evaluated_on_a_child_command_line(box, stubs, origin, tmp_path):
+    """#137: mimic Defender's command-line rule with a local, harmless uv installer.
+
+    The old child `-Command 'irm ... | iex'` trips the rule. A downloaded file
+    run with `-File` does not, and the whole bootstrap can finish normally.
+    """
+    (stubs.bin / "uv.exe").unlink()
+    uv_home = tmp_path / "uv-home"
+    uv_home.mkdir()
+    installer = PowerShell().uv_installer(tmp_path).read_text(encoding="utf-8")
+    payload = ("if ([Environment]::CommandLine -match '(?i)\\b(iex|Invoke-Expression)\\b') {\n"
+               "    [Console]::Error.WriteLine('simulated Defender: child iex command blocked')\n"
+               "    exit 23\n"
+               "}\n" + installer).encode("ascii")
+    with served_payload(payload) as url:
+        script = tmp_path / "install-local.ps1"
+        script.write_text((REPO / "install.ps1").read_text(encoding="utf-8").replace(
+            "https://astral.sh/uv/install.ps1", url), encoding="utf-8", newline="\n")
+        env = dict(os.environ, PATH=box.path, FLEET_REPO=str(origin), FLEET_INSTALL_FAMILY="windows",
+                   FLEET_YES="1", UV_INSTALL_DIR=str(uv_home), UV_NO_MODIFY_PATH="1")
+        env.pop("FLEET_TEST_UV_INSTALLER", None)
+        env.pop("FLEET_DIR", None)
+        done = subprocess.run([POWERSHELL, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)],
+                              input=b"", env=env, capture_output=True)
+    out = done.stdout.decode("utf-8", "replace") + done.stderr.decode("utf-8", "replace")
+    assert done.returncode == 0, out
+    assert (uv_home / "uv.exe").is_file(), out
+    assert (box.clone / "extension.toml.in").is_file(), out
+
+
+@pytest.mark.skipif(POWERSHELL is None, reason="the command must run in native Windows PowerShell")
+@pytest.mark.parametrize(("dependency", "source_url"), [
+    ("uv", "https://astral.sh/uv/install.ps1"),
+    ("thurbox-cli", "https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1"),
+])
+def test_windows_install_plan_runs_a_local_payload_without_child_iex(dependency, source_url, tmp_path):
+    """The install command fleet runs also gets printed for an operator to copy."""
+    from fleet.cli import load
+
+    preflight = load("preflight.py")
+    dep = next(item for item in preflight.dependencies("windows") if item.name == dependency)
+    plan = preflight.install_plan(dep, None, "windows")
+    marker = tmp_path / "installer-ran.txt"
+    payload = ("if ([Environment]::CommandLine -match '(?i)\\b(iex|Invoke-Expression)\\b') {\n"
+               "    [Console]::Error.WriteLine('simulated Defender: child iex command blocked')\n"
+               "    exit 23\n"
+               "}\n"
+               "Set-Content -LiteralPath $env:FLEET_TEST_MARKER -Value 'ran'\n").encode("ascii")
+    with served_payload(payload) as url:
+        argv = [part.replace(source_url, url) for part in plan.argv]
+        published_line = plan.text.replace(source_url, url)
+        cmd_file = tmp_path / "published.cmd"
+        cmd_file.write_text(published_line + "\r\n", encoding="ascii")
+        ps_file = tmp_path / "published.ps1"
+        ps_file.write_text(published_line + "\n", encoding="ascii")
+        env = dict(os.environ, FLEET_TEST_MARKER=str(marker))
+        for command in (argv, ["cmd", "/d", "/c", str(cmd_file)],
+                        [POWERSHELL, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ps_file)]):
+            marker.unlink(missing_ok=True)
+            done = subprocess.run(command, input=b"", env=env, capture_output=True)
+            out = done.stdout.decode("utf-8", "replace") + done.stderr.decode("utf-8", "replace")
+            assert done.returncode == 0, out
+            assert marker.read_text(encoding="utf-8").strip() == "ran", out
 
 
 def test_every_published_windows_one_liner_is_irm_piped_to_iex_in_the_operators_own_session():

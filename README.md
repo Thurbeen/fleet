@@ -120,6 +120,10 @@ checks each step as it goes.
    powershell -ExecutionPolicy Bypass -File install.ps1
    ```
 
+   When uv is missing, the bootstrap also downloads its installer to a
+   temporary file before starting a child PowerShell. The PowerShell download
+   commands printed by `uv run fleet preflight --commands` use the same approach.
+
    Pick a clone location you will keep: the extension records the path.
    Re-running is safe, and `uv run fleet preflight` lists what is still missing.
    No forge CLI is installed unless you ask: `uv run fleet install --forge github`

@@ -104,10 +104,11 @@ def shell(line: str) -> Plan:
     return Plan(("sh", "-c", line), line)
 
 
-def powershell(expr: str) -> Plan:
-    """A Windows installer expression, runnable from cmd and PowerShell alike."""
-    return Plan(("powershell", "-ExecutionPolicy", "ByPass", "-c", expr),
-                f'powershell -ExecutionPolicy ByPass -c "{expr}"')
+def powershell(url: str) -> Plan:
+    """Download an installer, then run its file in a child PowerShell."""
+    helper = REPO / "scripts" / "lib" / "run_installer.ps1"
+    argv = ("powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(helper), url)
+    return Plan(argv, f'powershell -NoProfile -ExecutionPolicy Bypass -File "{helper}" "{url}"')
 
 
 def command(*argv: str) -> Plan:
@@ -184,7 +185,7 @@ def dependencies(family: str | None = None) -> list[Dependency]:
             "runs `fleet`, with the Python and PyYAML uv.lock pins and the gate's rumdl, ruff and pytest",
             tool="uv", packages={"winget": "astral-sh.uv", "pacman": "uv", "brew": "uv"},
             installer={"posix": shell("curl -LsSf https://astral.sh/uv/install.sh | sh"),
-                       "windows": powershell("irm https://astral.sh/uv/install.ps1 | iex")},
+                       "windows": powershell("https://astral.sh/uv/install.ps1")},
         ),
         # thurbox's own docs make its installer the recommended route on both
         # families, because the winget package trails releases: winget's is
@@ -195,7 +196,7 @@ def dependencies(family: str | None = None) -> list[Dependency]:
             packages={"brew": "thurbeen/thurbox/thurbox"}, alternatives={"winget": "Thurbeen.thurbox"},
             installer={
                 "posix": shell("curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh"),
-                "windows": powershell("irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex"),
+                "windows": powershell("https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1"),
             },
             see="https://github.com/Thurbeen/thurbox",
         ),
