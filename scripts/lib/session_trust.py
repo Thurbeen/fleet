@@ -295,7 +295,7 @@ def codex_composer_ready(uuid: str) -> bool:
     """
     tail = [line.strip() for line in pane_text(uuid).splitlines() if line.strip()]
     return (len(tail) >= 2 and tail[-2] == "› Ask Codex to do anything"
-            and tail[-1].count(" · ") >= 2)
+            and " · " in tail[-1])
 
 
 def shows(signature: str, text: str) -> bool:
