@@ -238,7 +238,7 @@ function Sync-FleetCheckout([string]$Dir, [string]$Repo, [string]$Branch) {
         }
         & git clone --quiet --branch $Branch $Repo $Dir | Out-Host
         if ($LASTEXITCODE -ne 0) {
-            Write-FleetRefusal "git clone of $Repo failed; its error is above."
+            Write-FleetRefusal "git clone of $Repo failed (exit code $LASTEXITCODE); its error, if git printed one, is above."
             return $false
         }
         Write-Host "Cloned $Repo ($Branch)."
@@ -282,7 +282,7 @@ function Sync-FleetCheckout([string]$Dir, [string]$Repo, [string]$Branch) {
     if ($behind -gt 0) {
         & git -C $Dir merge --ff-only --quiet "origin/$Branch" | Out-Host
         if ($LASTEXITCODE -ne 0) {
-            Write-FleetRefusal "the fast-forward of $Dir failed; its error is above."
+            Write-FleetRefusal "the fast-forward of $Dir failed (exit code $LASTEXITCODE); its error, if git printed one, is above."
             return $false
         }
         $short = & git -C $Dir rev-parse --short HEAD
