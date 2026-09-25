@@ -890,6 +890,9 @@ class GitHubForge(Forge):
             argv.append("--delete-branch")
         _, why = self._run(argv, timeout=120)
         if why:
+            state, _ = self.state(cr.ref)
+            if state == "merged":
+                return True, f"{method}-merged (remote confirmed; gh reported: {why})"
             return False, why
         return True, f"{method}-merged" + (", branch deleted" if delete_branch else "")
 
