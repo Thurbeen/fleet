@@ -8,7 +8,7 @@ dependencies = ["pyyaml>=6.0.3"]
 # Gate tools, pinned here so every runner installs the same ones. `uv run`
 # syncs this group by default, so `uv run fleet check` finds rumdl on PATH.
 [dependency-groups]
-dev = ["pytest==9.1.1", "rumdl==0.2.73", "ruff==0.16.7"]
+dev = ["pytest==9.1.1", "rumdl==0.2.73", "ruff==0.16.8"]
 
 [project.scripts]
 fleet = "fleet.cli:main"
