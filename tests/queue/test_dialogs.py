@@ -38,6 +38,25 @@ from harness import run_queue as q
 
 TRUST = REPO / "scripts" / "lib" / "session_trust.py"
 
+# Reveal the menu after the captures an early-ready handoff makes. A ninth
+# capture requires the trust step to keep watching after seeing the composer.
+DELAYED_CODEX_HOOKS = ANSWERING_KEYS.replace(
+    'if ARGS[:2] == ["session", "key"]:',
+    '''if ARGS[:2] == ["session", "capture"]:
+    count = ROOT / "capture-after-enter.txt"
+    if count.is_file():
+        seen = int(count.read_text(encoding="utf-8")) + 1
+        count.write_text(str(seen), encoding="utf-8")
+        later = ROOT / "panes" / f"{ARGS[2]}.later.txt"
+        if seen >= 9 and later.is_file():
+            later.replace(ROOT / "panes" / f"{ARGS[2]}.txt")
+if ARGS[:2] == ["session", "key"]:''',
+).replace(
+    'if ARGS[3:4] == ["enter"] and pane.is_file():',
+    'if ARGS[3:4] == ["enter"] and pane.is_file():\n'
+    '        (ROOT / "capture-after-enter.txt").write_text("0", encoding="utf-8")',
+)
+
 
 def trust(*args: str, **env: str | None) -> Run:
     return run([*PYTHON, str(TRUST), *args], **env)
@@ -139,7 +158,8 @@ def test_current_codex_folder_dialog_stops_at_hook_review_before_prompting(stubs
 
     blocked = q("prompt", ref, "--timeout", "5")
     assert blocked.code == 1, blocked.out
-    expect(blocked.out, "NOT PROMPTED", "Hooks need review", "thurbox-cli session capture")
+    expect(blocked.out, "NOT PROMPTED", "Hooks need review", "thurbox-cli session capture",
+           "retry the queue prompt")
     assert keys(stubs) == [f"session key {sid} enter"], blocked.out
     assert not stubs.calls("thurbox-cli", f"session send {sid}"), blocked.out
 
@@ -150,6 +170,22 @@ def test_current_codex_folder_dialog_stops_at_hook_review_before_prompting(stubs
     assert ready.code == 0, ready.out
     assert keys(stubs) == [f"session key {sid} enter"], ready.out
     expect("\n".join(stubs.calls("thurbox-cli", "session send")), f"session send {sid} Read")
+
+
+def test_codex_waits_through_a_transient_composer_for_hook_review(stubs, queue_dir):
+    stubs.tool("thurbox-cli", DELAYED_CODEX_HOOKS)
+    ref, sid = codex_task(stubs, queue_dir,
+                          "Trust this folder? Codex can read, edit, and run files here.\n"
+                          "› 1. Trust and continue\n  2. Cancel")
+    write(stubs.root / "panes" / f"{sid}.next.txt", CODEX_READY + "\n")
+    write(stubs.root / "panes" / f"{sid}.later.txt",
+          "Hooks need review\n  1. Review hooks\n  2. Trust all\n" + CODEX_READY)
+
+    blocked = q("prompt", ref, "--timeout", "5")
+    assert blocked.code == 1, blocked.out
+    expect(blocked.out, "NOT PROMPTED", "Hooks need review")
+    assert keys(stubs) == [f"session key {sid} enter"], blocked.out
+    assert not stubs.calls("thurbox-cli", f"session send {sid}"), blocked.out
 
 
 def test_current_codex_folder_dialog_requires_selected_accept_option(stubs, queue_dir):

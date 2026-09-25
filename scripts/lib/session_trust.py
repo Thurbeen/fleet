@@ -443,6 +443,8 @@ def answer_dialogs(session: str, timeout: int = 20, as_json: bool = False) -> tu
                 "unknown-agent",
             )
 
+    is_codex = "codex" in agent_settings.chain(agent, conf)
+
     def gate_on_pane() -> int | None:
         """The index of the gate the pane shows right now, if any."""
         if not gates:
@@ -454,29 +456,29 @@ def answer_dialogs(session: str, timeout: int = 20, as_json: bool = False) -> tu
         return None
 
     def hook_review_on_pane() -> bool:
-        return "codex" in agent_settings.chain(agent, conf) and shows("hooks need review", pane(uuid))
+        return is_codex and shows("hooks need review", pane(uuid))
 
     def unanswerable_codex_folder_on_pane() -> bool:
         # A folder screen may leave the composer visible below it. A changed
         # selector or wording must block the brief, even though no gate matches.
-        return ("codex" in agent_settings.chain(agent, conf)
-                and shows(r"trust this folder\?", pane(uuid)))
+        return is_codex and shows(r"trust this folder\?", pane(uuid))
 
     def hook_review_blocked() -> tuple[int, str]:
         return 3, say(
-            "Codex shows 'Hooks need review'; inspect the hooks in the pane and "
-            "choose how to continue yourself. Nothing was typed into this menu "
-            "and the brief was not sent. Then retry the prompt:\n"
-            f"               thurbox-cli session capture {uuid}",
+            "Codex shows 'Hooks need review'. Inspect the hooks in the pane:\n"
+            f"               thurbox-cli session capture {uuid}\n"
+            "             Choose how to continue yourself, then retry the queue "
+            "prompt. Nothing was typed into this menu and the brief was not sent.",
             "hooks-review-required",
         )
 
     def folder_blocked() -> tuple[int, str]:
         return 3, say(
             "Codex's folder trust dialog is visible, but the accepting option "
-            "could not be confirmed. Nothing was typed; inspect the pane and "
-            "answer it yourself before retrying the prompt:\n"
-            f"               thurbox-cli session capture {uuid}",
+            "could not be confirmed. Inspect the pane:\n"
+            f"               thurbox-cli session capture {uuid}\n"
+            "             Answer it yourself, then retry the queue prompt. "
+            "Nothing was typed into this dialog and the brief was not sent.",
             "unconfirmed",
         )
 
@@ -515,7 +517,8 @@ def answer_dialogs(session: str, timeout: int = 20, as_json: bool = False) -> tu
     # Another dialog can come up BEHIND the one just answered — Claude Code
     # shows folder trust, then external imports — and returning after the first
     # would hand the send to the second. So after each answer the pane is
-    # watched for SETTLE more seconds, cut short by the agent reporting.
+    # watched for SETTLE more seconds. Codex keeps that watch even when a
+    # composer or hook report appears first: its hook-review menu may follow.
     answered: list[str] = []
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -539,7 +542,10 @@ def answer_dialogs(session: str, timeout: int = 20, as_json: bool = False) -> tu
             continue
         if unanswerable_codex_folder_on_pane():
             return folder_blocked()
-        if "codex" in agent_settings.chain(agent, conf) and codex_composer_ready(uuid):
+        if answered and is_codex:
+            time.sleep(1)
+            continue
+        if is_codex and codex_composer_ready(uuid):
             break
         if agent_reported(uuid):
             break
@@ -559,7 +565,7 @@ def answer_dialogs(session: str, timeout: int = 20, as_json: bool = False) -> tu
                       "none is left on the pane", "answered")
     if agent_reported(uuid):
         return 0, say(f"no dialog: {agent} is already reporting; nothing sent", "ready")
-    if "codex" in agent_settings.chain(agent, conf) and codex_composer_ready(uuid):
+    if is_codex and codex_composer_ready(uuid):
         return 0, say(f"no dialog: {agent}'s composer is ready; nothing sent", "ready")
     if not gates:
         return 0, say(f"{agent} shows no trust dialog in a git worktree; nothing sent", "ready")
