@@ -51,6 +51,9 @@ if args[:2] == ["pr", "list"]:
     raise SystemExit(0)
 n = args[2].rstrip("/").rsplit("/", 1)[-1] if len(args) > 2 else ""
 if args[:2] == ["pr", "view"]:
+    if os.environ.get("SHEP_VIEW_DOWN") == n:
+        sys.stderr.write("gh: could not read pull request state\n")
+        raise SystemExit(1)
     doc = shep / "gh" / f"{n}.json"
     if not doc.is_file():
         sys.stderr.write(f"gh: no pull request {n}\n")
@@ -63,8 +66,18 @@ if args[:2] == ["pr", "view"]:
     else:
         sys.stdout.write(doc.read_text(encoding="utf-8"))
 elif args[:2] == ["pr", "merge"]:
+    if os.environ.get("SHEP_MERGE_REJECTED") == n:
+        sys.stderr.write("gh: merge rejected\n")
+        raise SystemExit(1)
+    doc = shep / "gh" / f"{n}.json"
+    d = json.loads(doc.read_text(encoding="utf-8"))
+    d["state"] = "MERGED"
+    doc.write_text(json.dumps(d), encoding="utf-8")
     with open(shep / "merged", "a", encoding="utf-8") as fh:
         fh.write(n + "\n")
+    if os.environ.get("SHEP_MERGE_CLEANUP_ERROR") == n:
+        sys.stderr.write("gh: could not delete local branch checked out in a worktree\n")
+        raise SystemExit(1)
     print("merged")
 else:
     sys.stderr.write(f"gh: the shepherd is not allowed to run '{' '.join(args[:2])}'\n")

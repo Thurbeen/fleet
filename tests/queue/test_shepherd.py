@@ -105,6 +105,39 @@ def test_a_green_attested_pr_in_an_allowlisted_repo_is_squash_merged(first_pass,
     expect(shep.gh_log(), "pr merge https://github.com/Thurbeen/fleet/pull/102 --squash --delete-branch")
 
 
+def test_remote_merge_is_reported_after_local_branch_cleanup_fails(stopic, shep, queue_dir):
+    run = q("shepherd", "--topic", stopic, "--json", SHEP_MERGE_CLEANUP_ERROR="102")
+    assert run.code == 0, run.out
+    row = next(pr for pr in json.loads(run.stdout)["prs"] if pr["pr"].endswith("/pull/102"))
+    assert row["action"] == "merged", row
+    expect(row["note"], "remote confirmed", "could not delete local branch")
+    refute(row["note"], "branch deleted")
+    assert 102 in shep.merged()
+    expect(shep.gh_log(), "pr merge https://github.com/Thurbeen/fleet/pull/102 --squash --delete-branch",
+           "pr view https://github.com/Thurbeen/fleet/pull/102 --json state")
+    task = yaml.safe_load((queue_dir / stopic / "02-green" / "task.yaml").read_text(encoding="utf-8"))
+    assert task["shepherd"]["condition"] == "merged", task
+    expect(task["shepherd"]["detail"], "could not delete local branch")
+
+
+@pytest.mark.parametrize("env,reason,remote_merged", [
+    ({"SHEP_MERGE_REJECTED": "102"}, "merge rejected", False),
+    ({"SHEP_MERGE_REJECTED": "102", "SHEP_VIEW_DOWN": "102"}, "merge rejected", False),
+    ({"SHEP_MERGE_CLEANUP_ERROR": "102", "SHEP_VIEW_DOWN": "102"},
+     "could not delete local branch", True),
+])
+def test_a_failed_or_unconfirmed_merge_is_not_reported_as_merged(stopic, shep, queue_dir,
+                                                                 env, reason, remote_merged):
+    run = q("shepherd", "--topic", stopic, "--json", **env)
+    assert run.code == 0, run.out
+    row = next(pr for pr in json.loads(run.stdout)["prs"] if pr["pr"].endswith("/pull/102"))
+    assert row["action"] == "merge-failed", row
+    expect(row["note"], reason)
+    assert (102 in shep.merged()) == remote_merged
+    task = yaml.safe_load((queue_dir / stopic / "02-green" / "task.yaml").read_text(encoding="utf-8"))
+    assert task.get("shepherd", {}).get("condition") != "merged", task
+
+
 def test_what_is_never_merged_is_named_and_not_passed_over(first_pass, shep):
     merged = shep.merged()
     # 103 skipped the pipeline, however green, and gets a fixer's condition instead.
