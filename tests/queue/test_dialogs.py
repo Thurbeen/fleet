@@ -128,6 +128,57 @@ def test_codex_trust_dialog_is_answered_before_the_brief(stubs, queue_dir):
     assert key < sent, calls
 
 
+def test_current_codex_folder_dialog_stops_at_hook_review_before_prompting(stubs, queue_dir):
+    folder = ("Trust this folder? Codex can read, edit, and run files here.\n"
+              "\n› 1. Trust and continue\n  2. Cancel")
+    hooks = ("Hooks need review\n\n"
+             "  1. Review hooks\n  2. Trust all\n  3. Continue without trusting hooks\n"
+             + CODEX_READY)
+    ref, sid = codex_task(stubs, queue_dir, folder + "\n" + CODEX_READY)
+    write(stubs.root / "panes" / f"{sid}.next.txt", hooks)
+
+    blocked = q("prompt", ref, "--timeout", "5")
+    assert blocked.code == 1, blocked.out
+    expect(blocked.out, "NOT PROMPTED", "Hooks need review", "thurbox-cli session capture")
+    assert keys(stubs) == [f"session key {sid} enter"], blocked.out
+    assert not stubs.calls("thurbox-cli", f"session send {sid}"), blocked.out
+
+    # A person has inspected the hooks and left their trust unchanged. Only a
+    # ready composer may receive the same brief on the next prompt attempt.
+    write(stubs.root / "panes" / f"{sid}.txt", CODEX_READY + "\n")
+    ready = q("prompt", ref, "--timeout", "5")
+    assert ready.code == 0, ready.out
+    assert keys(stubs) == [f"session key {sid} enter"], ready.out
+    expect("\n".join(stubs.calls("thurbox-cli", "session send")), f"session send {sid} Read")
+
+
+def test_current_codex_folder_dialog_requires_selected_accept_option(stubs, queue_dir):
+    ref, sid = codex_task(stubs, queue_dir,
+                          "Trust this folder? Codex can read, edit, and run files here.\n"
+                          "  1. Trust and continue\n› 2. Cancel\n" + CODEX_READY)
+
+    blocked = q("prompt", ref, "--timeout", "1")
+    assert blocked.code == 1, blocked.out
+    expect(blocked.out, "NOT PROMPTED")
+    assert keys(stubs) == [], blocked.out
+    assert not stubs.calls("thurbox-cli", f"session send {sid}"), blocked.out
+
+
+def test_codex_hook_review_blocks_even_with_composer_and_startup_hook(stubs, queue_dir):
+    ref, sid = codex_task(stubs, queue_dir,
+                          "Hooks need review\n  1. Review hooks\n  2. Trust all\n" + CODEX_READY)
+    session = stubs.root / "sessions" / f"{sid}.json"
+    info = json.loads(session.read_text(encoding="utf-8"))
+    info["hook_reported"] = True
+    write(session, json.dumps(info) + "\n")
+
+    blocked = q("prompt", ref, "--timeout", "1")
+    assert blocked.code == 1, blocked.out
+    expect(blocked.out, "NOT PROMPTED", "Hooks need review")
+    assert keys(stubs) == [], blocked.out
+    assert not stubs.calls("thurbox-cli", f"session send {sid}"), blocked.out
+
+
 @pytest.mark.parametrize("pane", [
     "Codex is starting...",
     "› Ask Codex to do anything",
