@@ -277,14 +277,15 @@ def squeeze(text: str) -> str:
     return re.sub(r"\s+", "", text)
 
 
-def pane_text(uuid: str) -> str:
+def pane_text(uuid: str, lines: int = 60) -> str:
     """Only the captured pane text, without thurbox's metadata.
 
     `--json` and `.output`, not the plain capture: the human format wraps the
     pane in metadata lines, and a signature could in principle match one of
-    those instead of the pane itself.
+    those instead of the pane itself. Zero lines excludes scrollback while
+    retaining the visible pane.
     """
-    output = _json(_run(["session", "capture", uuid, "--lines", "60", "--json"])).get("output")
+    output = _json(_run(["session", "capture", uuid, "--lines", str(lines), "--json"])).get("output")
     return output if isinstance(output, str) else ""
 
 
@@ -456,7 +457,7 @@ def answer_dialogs(session: str, timeout: int = 20, as_json: bool = False) -> tu
         return None
 
     def hook_review_on_pane() -> bool:
-        return is_codex and shows("hooks need review", pane(uuid))
+        return is_codex and shows("hooks need review", squeeze(pane_text(uuid, lines=0)))
 
     def unanswerable_codex_folder_on_pane() -> bool:
         # A folder screen may leave the composer visible below it. A changed
