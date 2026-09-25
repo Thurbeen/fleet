@@ -86,6 +86,24 @@ def test_dispatch_prompts_a_confirmed_codex_composer_without_a_startup_hook(stub
     assert keys(stubs) == [], done.out
 
 
+def test_dispatch_prompts_a_codex_composer_with_one_footer_separator(stubs, queue_dir):
+    topic = ok(q("topic", "add", "codex-one-separator", "--title", "Ready Codex",
+                 "--prompt", "send the brief to a ready Codex composer")).stdout.strip()
+    ok(q("add", topic, "composer", "--title", "Ready composer", "--repo", "/tmp/repo-codex",
+         "--branch", "fix/codex-composer", "--number", "01", "--agent", "codex"))
+    write(queue_dir / topic / "01-composer" / "BRIEF.md", "Do the Codex task.\n")
+
+    sid = "d1a10900-0000-0000-0000-0000000000ce"
+    next_session(stubs, sid)
+    codex_pane(stubs, sid, "OpenAI Codex\n\n› Ask Codex to do anything\nGPT-6-Sol xhigh · ~/worktrees/example")
+
+    done = q("dispatch")
+    assert done.code == 0, done.out
+    refute(done.out, "NOT PROMPTED")
+    expect("\n".join(stubs.calls("thurbox-cli", "session send")), f"session send {sid} Read")
+    assert keys(stubs) == [], done.out
+
+
 def codex_task(stubs, queue_dir, pane: str) -> tuple[str, str]:
     topic = ok(q("topic", "add", "codex-pane", "--title", "Codex pane",
                  "--prompt", "confirm the pane before sending a brief")).stdout.strip()
