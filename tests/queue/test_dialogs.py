@@ -38,6 +38,20 @@ from harness import run_queue as q
 
 TRUST = REPO / "scripts" / "lib" / "session_trust.py"
 
+# A visible-only capture omits tmux scrollback, as `session capture --lines 0`
+# does. Other captures keep the historical text for the stale-menu regression.
+VISIBLE_CODEX_CAPTURE = ANSWERING_KEYS.replace(
+    'if ARGS[:2] == ["session", "key"]:',
+    '''if ARGS[:2] == ["session", "capture"] and "--lines" in ARGS:
+    if ARGS[ARGS.index("--lines") + 1] == "0":
+        import json
+        visible = ROOT / "panes" / f"{ARGS[2]}.visible.txt"
+        if visible.is_file():
+            print(json.dumps({"output": visible.read_text(encoding="utf-8")}))
+            raise SystemExit(0)
+if ARGS[:2] == ["session", "key"]:''',
+)
+
 # Reveal the menu after the captures an early-ready handoff makes. A ninth
 # capture requires the trust step to keep watching after seeing the composer.
 DELAYED_CODEX_HOOKS = ANSWERING_KEYS.replace(
@@ -201,8 +215,10 @@ def test_current_codex_folder_dialog_requires_selected_accept_option(stubs, queu
 
 
 def test_codex_hook_review_blocks_even_with_composer_and_startup_hook(stubs, queue_dir):
-    ref, sid = codex_task(stubs, queue_dir,
-                          "Hooks need review\n  1. Review hooks\n  2. Trust all\n" + CODEX_READY)
+    stubs.tool("thurbox-cli", VISIBLE_CODEX_CAPTURE)
+    active_menu = "Hooks need review\n  1. Review hooks\n  2. Trust all\n" + CODEX_READY
+    ref, sid = codex_task(stubs, queue_dir, active_menu)
+    write(stubs.root / "panes" / f"{sid}.visible.txt", active_menu + "\n")
     session = stubs.root / "sessions" / f"{sid}.json"
     info = json.loads(session.read_text(encoding="utf-8"))
     info["hook_reported"] = True
@@ -212,7 +228,24 @@ def test_codex_hook_review_blocks_even_with_composer_and_startup_hook(stubs, que
     assert blocked.code == 1, blocked.out
     expect(blocked.out, "NOT PROMPTED", "Hooks need review")
     assert keys(stubs) == [], blocked.out
+    assert stubs.calls("thurbox-cli", f"session capture {sid} --lines 0"), blocked.out
     assert not stubs.calls("thurbox-cli", f"session send {sid}"), blocked.out
+
+
+def test_dismissed_codex_hook_review_in_scrollback_does_not_block_prompt(stubs, queue_dir):
+    stubs.tool("thurbox-cli", VISIBLE_CODEX_CAPTURE)
+    old_menu = ("Hooks need review\n"
+                "  1. Review hooks\n  2. Trust all\n"
+                "  3. Continue without trusting hooks\n")
+    ref, sid = codex_task(stubs, queue_dir, old_menu + CODEX_READY)
+    write(stubs.root / "panes" / f"{sid}.visible.txt", CODEX_READY + "\n")
+
+    prompted = q("prompt", ref, "--timeout", "1")
+    assert prompted.code == 0, prompted.out
+    refute(prompted.out, "NOT PROMPTED")
+    assert keys(stubs) == [], prompted.out
+    assert stubs.calls("thurbox-cli", f"session capture {sid} --lines 0"), prompted.out
+    expect("\n".join(stubs.calls("thurbox-cli", "session send")), f"session send {sid} Read")
 
 
 @pytest.mark.parametrize("pane", [
