@@ -12,6 +12,7 @@ clone for this purpose) and a rendered `extension.toml` deciding whether that
 clone IS the control plane.
 """
 
+import os
 import re
 import shutil
 from pathlib import Path
@@ -32,9 +33,22 @@ def clone(tmp_path) -> Path:
     return fake
 
 
-def declare_control_plane(fake: Path, repo_path: Path) -> None:
+def toml_string(value: str) -> str:
+    """`value` as a TOML basic string, escaped the way `fleet install-extension` renders `repo_path`."""
+    return '"' + value.replace("\\", "\\\\") + '"'
+
+
+def declare_control_plane(fake: Path, repo_path: Path | str) -> None:
     """The manifest `fleet install-extension` would have rendered, naming the control plane."""
-    write(fake / "extension.toml", f'[[sessions]]\nname = "fleet"\nrepo_path = "{repo_path}"\n')
+    write(fake / "extension.toml", f'[[sessions]]\nname = "fleet"\nrepo_path = {toml_string(str(repo_path))}\n')
+
+
+def guard_verdict(fake: Path) -> list[str]:
+    """[checkout_root(), control_plane(), foreign_checkout()] of the clone at `fake`."""
+    return queue_module(
+        "print(q.checkout_root()); print(q.control_plane()); print(q.foreign_checkout())\n",
+        cwd=fake,
+    ).splitlines()
 
 
 def fq(fake: Path, *args: str, cwd: Path, **env) -> Run:
@@ -120,3 +134,64 @@ def test_the_leads_glyph_is_rendered_and_the_words_still_agree_with_the_pane():
         assert value and value.group(1), f"{key} has a value in session-glyphs.example.conf"
         glyph = value.group(1)
         assert template.replace("__LEAD_GLYPH__", glyph) == f"{glyph} {pane_name}"
+
+
+# A BACKSLASH IN THE CHECKOUT'S PATH is the whole native Windows bug, and it is
+# not Windows-only: a POSIX directory name may hold one too. So the clone below
+# has one on every OS — a separator on Windows, a character on Linux — and its
+# manifest carries it escaped, as the installer renders it. Matched as text,
+# the escaped spelling never equalled the checkout, and the guard judged the
+# control plane foreign to ITSELF.
+@pytest.fixture
+def backslashed_clone(tmp_path, monkeypatch) -> Path:
+    # `guard_verdict` runs in a child that inherits this environment, and a
+    # named queue directory switches the guard off.
+    monkeypatch.delenv("FLEET_QUEUE_DIR", raising=False)
+    fake = tmp_path / "back\\slash" / "clone"
+    (fake / "scripts" / "lib").mkdir(parents=True)
+    for lib in (REPO / "scripts" / "lib").glob("*.py"):
+        shutil.copy(lib, fake / "scripts" / "lib" / lib.name)
+    return fake
+
+
+def test_a_manifest_session_is_decoded_as_toml(tmp_path):
+    manifest = tmp_path / "extension.toml"
+    # Exactly the bytes the installer renders for a native Windows checkout,
+    # plus a `\u` escape in the name, which TOML allows and a regex kept raw.
+    write(manifest, r'''[[sessions]]
+name = "\u2316 Mission Control"
+repo_path = "C:\\Users\\you\\fleet"
+''')
+    out = queue_module("print(repr(q.manifest_session(sys.argv[1])))\n", str(manifest))
+    assert out.strip() == repr(("\u2316 Mission Control", r"C:\Users\you\fleet"))
+
+
+def test_a_control_plane_whose_path_holds_a_backslash_is_its_own(backslashed_clone):
+    declare_control_plane(backslashed_clone, backslashed_clone)
+    root, owner, foreign = guard_verdict(backslashed_clone)
+    assert "\\" in root
+    assert owner == root
+    assert foreign == "None"
+
+    out = fq(backslashed_clone, "topic", "add", "at-home", "--prompt", "the control plane is this checkout",
+             cwd=backslashed_clone).out
+    assert (backslashed_clone / "orchestration" / "queue" / "at-home").is_dir(), out
+    refute(out, "control plane")
+
+
+def test_a_trailing_separator_does_not_make_the_control_plane_foreign(backslashed_clone):
+    declare_control_plane(backslashed_clone, str(backslashed_clone) + os.sep)
+    assert guard_verdict(backslashed_clone)[2] == "None"
+
+
+def test_a_different_checkout_with_a_backslash_is_still_foreign(backslashed_clone, tmp_path):
+    real = tmp_path / "back\\slash" / "the-real-control-plane"
+    declare_control_plane(backslashed_clone, real)
+    _root, owner, foreign = guard_verdict(backslashed_clone)
+    assert owner == str(real)
+    assert foreign == str(real)
+
+    forked = fq(backslashed_clone, "topic", "add", "forked", "--prompt", "this would fork the queue",
+                cwd=backslashed_clone)
+    assert forked.code != 0, forked.out
+    expect(forked.out, str(backslashed_clone), str(real))
