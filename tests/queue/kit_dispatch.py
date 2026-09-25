@@ -71,6 +71,26 @@ FOLDER_DIALOG = """Quick safety check: Is this a project you created or one you 
 
 Enter to confirm · Esc to cancel"""
 
+CODEX_READY = """OpenAI Codex
+
+› Ask Codex to do anything
+
+  model · repository · branch"""
+
+CODEX_DIALOG = """Do you trust the contents of this directory?
+
+› Yes, continue
+  No, exit"""
+
+
+def codex_pane(stubs: Stubs, sid: str, pane: str = CODEX_READY) -> None:
+    """A running Codex pane whose startup hook has not reported."""
+    write(stubs.root / "sessions" / f"{sid}.json", json.dumps({
+        "id": sid, "name": f"worker {sid}", "agent": "codex",
+        "foreground_command": "codex", "state": "running", "hook_reported": False,
+    }) + "\n")
+    write(stubs.root / "panes" / f"{sid}.txt", pane + "\n")
+
 
 def behind_dialog(stubs: Stubs, sid: str, pane: str, queued: str | None = None,
                   agent: str = "claude") -> None:

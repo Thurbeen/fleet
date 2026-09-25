@@ -61,7 +61,8 @@ PER-AGENT, and the differences are real (see GATES below):
                   whose CLAUDE.md imports a file outside it, a second dialog
                   follows, and ITS default — No — is the answer. Enter.
   codex           a dialog; Enter accepts. Persists per repo root, so later
-                  worktrees of the same project never show it.
+                  worktrees of the same project never show it. Its visible
+                  composer confirms readiness before the first hook reports.
   pi, pi-signed   a dialog; Enter accepts. Persists per path.
   grok, kimi      no dialog in a git worktree. Nothing to do.
   cursor          NOT a keystroke — `--trust` answers the folder dialog.
@@ -269,15 +270,32 @@ def squeeze(text: str) -> str:
     return re.sub(r"\s+", "", text)
 
 
-def pane(uuid: str) -> str:
-    """The pane, squeezed.
+def pane_text(uuid: str) -> str:
+    """Only the captured pane text, without thurbox's metadata.
 
     `--json` and `.output`, not the plain capture: the human format wraps the
     pane in metadata lines, and a signature could in principle match one of
     those instead of the pane itself.
     """
     output = _json(_run(["session", "capture", uuid, "--lines", "60", "--json"])).get("output")
-    return squeeze(output) if isinstance(output, str) else ""
+    return output if isinstance(output, str) else ""
+
+
+def pane(uuid: str) -> str:
+    """The captured pane squeezed for signatures that may wrap or lose spaces."""
+    return squeeze(pane_text(uuid))
+
+
+def codex_composer_ready(uuid: str) -> bool:
+    """The Codex input prompt is visible at the foot of the captured pane.
+
+    Codex can be running before its startup hook reports. Its composer is the
+    pane's own evidence that the trust gate is behind it. A mention of the
+    placeholder in older transcript text is not that evidence.
+    """
+    tail = [line.strip() for line in pane_text(uuid).splitlines() if line.strip()]
+    return (len(tail) >= 2 and tail[-2] == "› Ask Codex to do anything"
+            and tail[-1].count(" · ") >= 2)
 
 
 def shows(signature: str, text: str) -> bool:
@@ -483,15 +501,24 @@ def answer_dialogs(session: str, timeout: int = 20, as_json: bool = False) -> tu
             answered.append(f"'{sent}'")
             deadline = time.monotonic() + SETTLE
             continue
+        if "codex" in agent_settings.chain(agent, conf) and codex_composer_ready(uuid):
+            break
         if agent_reported(uuid):
             break
         time.sleep(1)
 
+    if gate_on_pane() is not None:
+        return 3, say(
+            f"{agent}'s trust dialog is still on the pane; nothing was sent",
+            "unconfirmed",
+        )
     if answered:
         return 0, say(f"answered {agent}'s dialog(s) with {', '.join(answered)}; "
                       "none is left on the pane", "answered")
     if agent_reported(uuid):
         return 0, say(f"no dialog: {agent} is already reporting; nothing sent", "ready")
+    if "codex" in agent_settings.chain(agent, conf) and codex_composer_ready(uuid):
+        return 0, say(f"no dialog: {agent}'s composer is ready; nothing sent", "ready")
     if not gates:
         return 0, say(f"{agent} shows no trust dialog in a git worktree; nothing sent", "ready")
     return 3, say(

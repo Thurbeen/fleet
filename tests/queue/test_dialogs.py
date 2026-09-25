@@ -26,7 +26,10 @@ import sys
 from pathlib import Path
 
 import pytest
-from kit_dispatch import ANSWERING_KEYS, FOLDER_DIALOG, IMPORTS_DIALOG, behind_dialog, keys, next_session
+from kit_dispatch import (
+    ANSWERING_KEYS, CODEX_DIALOG, CODEX_READY, FOLDER_DIALOG, IMPORTS_DIALOG, behind_dialog, codex_pane, keys,
+    next_session,
+)
 from queuekit import ok
 
 from harness import PYTHON, REPO, Run, expect, refute, run, write
@@ -63,6 +66,63 @@ def test_a_dialog_queued_behind_the_folder_trust_one_is_answered_too(stubs):
     done = trust(sid, "--timeout", "5")
     assert done.code == 0, done.out
     assert keys(stubs) == [f"session key {sid} down", f"session key {sid} enter", f"session key {sid} enter"]
+
+
+def test_dispatch_prompts_a_confirmed_codex_composer_without_a_startup_hook(stubs, queue_dir):
+    topic = ok(q("topic", "add", "codex-ready", "--title", "Ready Codex",
+                 "--prompt", "send the brief to a ready Codex composer")).stdout.strip()
+    ok(q("add", topic, "composer", "--title", "Ready composer", "--repo", "/tmp/repo-codex",
+         "--branch", "fix/codex-composer", "--number", "01", "--agent", "codex"))
+    write(queue_dir / topic / "01-composer" / "BRIEF.md", "Do the Codex task.\n")
+
+    sid = "d1a10900-0000-0000-0000-0000000000ce"
+    next_session(stubs, sid)
+    codex_pane(stubs, sid, CODEX_READY)
+
+    done = q("dispatch")
+    assert done.code == 0, done.out
+    refute(done.out, "NOT PROMPTED")
+    expect("\n".join(stubs.calls("thurbox-cli", "session send")), f"session send {sid} Read")
+    assert keys(stubs) == [], done.out
+
+
+def codex_task(stubs, queue_dir, pane: str) -> tuple[str, str]:
+    topic = ok(q("topic", "add", "codex-pane", "--title", "Codex pane",
+                 "--prompt", "confirm the pane before sending a brief")).stdout.strip()
+    ok(q("add", topic, "worker", "--title", "Codex worker", "--repo", "/tmp/repo-codex",
+         "--branch", "fix/codex-pane", "--number", "01", "--agent", "codex"))
+    write(queue_dir / topic / "01-worker" / "BRIEF.md", "Do the Codex task.\n")
+    sid = "d1a10900-0000-0000-0000-0000000000ce"
+    ok(q("attach", f"{topic}/01-worker", sid))
+    codex_pane(stubs, sid, pane)
+    return f"{topic}/01-worker", sid
+
+
+def test_codex_trust_dialog_is_answered_before_the_brief(stubs, queue_dir):
+    ref, sid = codex_task(stubs, queue_dir, CODEX_DIALOG + "\n" + CODEX_READY)
+    write(stubs.root / "panes" / f"{sid}.next.txt", CODEX_READY + "\n")
+
+    done = q("prompt", ref, "--timeout", "5")
+    assert done.code == 0, done.out
+    calls = stubs.calls("thurbox-cli")
+    key = next(i for i, call in enumerate(calls) if call == f"thurbox-cli session key {sid} enter")
+    sent = next(i for i, call in enumerate(calls) if call.startswith(f"thurbox-cli session send {sid} Read"))
+    assert key < sent, calls
+
+
+@pytest.mark.parametrize("pane", [
+    "Codex is starting...",
+    "› Ask Codex to do anything",
+    "Transcript excerpt:\n› Ask Codex to do anything\nMore output followed after this line.\nStill starting.",
+])
+def test_ambiguous_codex_pane_keeps_the_brief_unsent(stubs, queue_dir, pane):
+    ref, sid = codex_task(stubs, queue_dir, pane)
+
+    done = q("prompt", ref, "--timeout", "1")
+    assert done.code == 1, done.out
+    expect(done.out, "NOT PROMPTED")
+    assert not stubs.calls("thurbox-cli", f"session send {sid}"), done.out
+    assert keys(stubs) == [], done.out
 
 
 # --- 21b. dispatch runs with no bash on the machine --------------------------------
