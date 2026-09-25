@@ -93,16 +93,30 @@ function Install-FleetUv {
     if (Test-FleetCommand 'uv') { return $true }
     Write-Host "uv is not installed; installing it with astral's installer (no admin needed)."
     # A child PowerShell, so the installer's own `exit` cannot end this session.
+    # Download first: `-Command 'irm ... | iex'` is the command-line shape
+    # Defender removed for the fleet installer (#137). The child runs a file.
     # Its output goes to the screen and never into this function's return
     # value: what a child prints would otherwise make a failed install read as
     # success and walk on into the clone.
     $shell = [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
-    if ($env:FLEET_TEST_UV_INSTALLER) {
-        & $shell -NoProfile -ExecutionPolicy Bypass -File $env:FLEET_TEST_UV_INSTALLER | Out-Host
-    } else {
-        & $shell -NoProfile -ExecutionPolicy Bypass -Command 'irm https://astral.sh/uv/install.ps1 | iex' | Out-Host
+    $download = $null
+    try {
+        if ($env:FLEET_TEST_UV_INSTALLER) {
+            $installer = $env:FLEET_TEST_UV_INSTALLER
+        } else {
+            $download = Join-Path ([IO.Path]::GetTempPath()) ("fleet-uv-$([guid]::NewGuid().ToString('N')).ps1")
+            Invoke-RestMethod -Uri 'https://astral.sh/uv/install.ps1' -OutFile $download -ErrorAction Stop
+            $installer = $download
+        }
+        & $shell -NoProfile -ExecutionPolicy Bypass -File $installer | Out-Host
+        $installCode = $LASTEXITCODE
+    } catch {
+        Write-FleetRefusal "downloading the uv installer failed: $_"
+        return $false
+    } finally {
+        if ($download) { Remove-Item -LiteralPath $download -ErrorAction SilentlyContinue }
     }
-    if ($LASTEXITCODE -ne 0) {
+    if ($installCode -ne 0) {
         Write-FleetRefusal "the uv installer failed; its error is above."
         return $false
     }
