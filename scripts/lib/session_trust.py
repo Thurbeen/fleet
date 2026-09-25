@@ -60,8 +60,9 @@ PER-AGENT, and the differences are real (see GATES below):
                   Enter DISMISSES it. Down, then Enter. Under a directory
                   whose CLAUDE.md imports a file outside it, a second dialog
                   follows, and ITS default — No — is the answer. Enter.
-  codex           a dialog; Enter accepts. Persists per repo root, so later
-                  worktrees of the same project never show it. Its visible
+  codex           a folder dialog; Enter accepts only when the accepting
+                  option is selected. A following hook-review menu needs a
+                  person; fleet never accepts unknown hooks. Its visible
                   composer confirms readiness before the first hook reports.
   pi, pi-signed   a dialog; Enter accepts. Persists per path.
   grok, kimi      no dialog in a git worktree. Nothing to do.
@@ -183,7 +184,13 @@ GATES = {
         # into a worker.
         (r"allow external claude\.md file imports|no, disable external imports", "enter"),
     ],
-    "codex": [("do you trust the contents of this directory|do you trust this directory", "enter")],
+    "codex": [
+        ("do you trust the contents of this directory|do you trust this directory", "enter"),
+        # Observed on Codex v0.156.1. Match the folder question, its permission
+        # text and the selected accepting option before sending Enter.
+        (r"trust this folder\?codex can read, edit, and run files here.{0,500}[›❯]1\.trust and continue",
+         "enter"),
+    ],
     "pi": [("trust this project|do you trust", "enter")],
     "pi-signed": [("trust this project|do you trust", "enter")],
     # No dialog when launched inside a git repo root, which a thurbox worktree
@@ -436,6 +443,8 @@ def answer_dialogs(session: str, timeout: int = 20, as_json: bool = False) -> tu
                 "unknown-agent",
             )
 
+    is_codex = "codex" in agent_settings.chain(agent, conf)
+
     def gate_on_pane() -> int | None:
         """The index of the gate the pane shows right now, if any."""
         if not gates:
@@ -445,6 +454,33 @@ def answer_dialogs(session: str, timeout: int = 20, as_json: bool = False) -> tu
             if shows(signature, text):
                 return i
         return None
+
+    def hook_review_on_pane() -> bool:
+        return is_codex and shows("hooks need review", pane(uuid))
+
+    def unanswerable_codex_folder_on_pane() -> bool:
+        # A folder screen may leave the composer visible below it. A changed
+        # selector or wording must block the brief, even though no gate matches.
+        return is_codex and shows(r"trust this folder\?", pane(uuid))
+
+    def hook_review_blocked() -> tuple[int, str]:
+        return 3, say(
+            "Codex shows 'Hooks need review'. Inspect the hooks in the pane:\n"
+            f"               thurbox-cli session capture {uuid}\n"
+            "             Choose how to continue yourself, then retry the queue "
+            "prompt. Nothing was typed into this menu and the brief was not sent.",
+            "hooks-review-required",
+        )
+
+    def folder_blocked() -> tuple[int, str]:
+        return 3, say(
+            "Codex's folder trust dialog is visible, but the accepting option "
+            "could not be confirmed. Inspect the pane:\n"
+            f"               thurbox-cli session capture {uuid}\n"
+            "             Answer it yourself, then retry the queue prompt. "
+            "Nothing was typed into this dialog and the brief was not sent.",
+            "unconfirmed",
+        )
 
     def answer(i: int) -> tuple[tuple[int, str] | None, str]:
         """Answer one gate, then confirm it took: (the failure or None, the keys sent).
@@ -481,10 +517,13 @@ def answer_dialogs(session: str, timeout: int = 20, as_json: bool = False) -> tu
     # Another dialog can come up BEHIND the one just answered — Claude Code
     # shows folder trust, then external imports — and returning after the first
     # would hand the send to the second. So after each answer the pane is
-    # watched for SETTLE more seconds, cut short by the agent reporting.
+    # watched for SETTLE more seconds. Codex keeps that watch even when a
+    # composer or hook report appears first: its hook-review menu may follow.
     answered: list[str] = []
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
+        if hook_review_on_pane():
+            return hook_review_blocked()
         i = gate_on_pane()
         if i is not None:
             if len(answered) >= MAX_ANSWERS:
@@ -501,23 +540,32 @@ def answer_dialogs(session: str, timeout: int = 20, as_json: bool = False) -> tu
             answered.append(f"'{sent}'")
             deadline = time.monotonic() + SETTLE
             continue
-        if "codex" in agent_settings.chain(agent, conf) and codex_composer_ready(uuid):
+        if unanswerable_codex_folder_on_pane():
+            return folder_blocked()
+        if answered and is_codex:
+            time.sleep(1)
+            continue
+        if is_codex and codex_composer_ready(uuid):
             break
         if agent_reported(uuid):
             break
         time.sleep(1)
 
+    if hook_review_on_pane():
+        return hook_review_blocked()
     if gate_on_pane() is not None:
         return 3, say(
             f"{agent}'s trust dialog is still on the pane; nothing was sent",
             "unconfirmed",
         )
+    if unanswerable_codex_folder_on_pane():
+        return folder_blocked()
     if answered:
         return 0, say(f"answered {agent}'s dialog(s) with {', '.join(answered)}; "
                       "none is left on the pane", "answered")
     if agent_reported(uuid):
         return 0, say(f"no dialog: {agent} is already reporting; nothing sent", "ready")
-    if "codex" in agent_settings.chain(agent, conf) and codex_composer_ready(uuid):
+    if is_codex and codex_composer_ready(uuid):
         return 0, say(f"no dialog: {agent}'s composer is ready; nothing sent", "ready")
     if not gates:
         return 0, say(f"{agent} shows no trust dialog in a git worktree; nothing sent", "ready")
