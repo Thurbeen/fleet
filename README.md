@@ -98,7 +98,8 @@ checks each step as it goes.
 
 1. Install. One command installs uv if it is missing, clones fleet, shows
    every missing dependency with the command that installs it, asks once, and
-   sets up the thurbox extension, the skills link and the reconciler's hook:
+   sets up the thurbox extension, shared skill discovery and the reconciler's
+   hook:
 
    ```bash
    curl -LsSf https://raw.githubusercontent.com/Thurbeen/fleet/main/install.sh | sh
@@ -216,7 +217,7 @@ because this repository is public; back up your clone if that content matters.
 | [`extension.toml.in`](extension.toml.in) | yes | The thurbox extension manifest, rendered to a gitignored `extension.toml` by `uv run fleet install-extension`. |
 | [`scripts/lib/`](scripts/lib/) | yes | The module behind every `uv run fleet` command; each docstring is its full usage. [`check.py`](scripts/lib/check.py) is the gate, `uv run fleet check`. |
 | [`interface/fleet_queue.lua`](interface/fleet_queue.lua) | yes | The queue pane. |
-| [`.agents/skills/`](.agents/skills/) | yes | Agent skills; `uv run fleet install` links `.claude/skills` to this directory. |
+| [`.agents/skills/`](.agents/skills/) | yes | The one agent-skill tree. Codex discovers it directly in this checkout; `uv run fleet install` links it into `.claude/skills` for Claude-compatible agents and links each skill into `~/.agents/skills` so Codex workers discover it from any repository. |
 | [`orchestration/queue/`](orchestration/queue/README.md) | README, `POLICY.md` and `OPERATOR.example.md` only | Topics and tasks. |
 | `orchestration/queue/OPERATOR.md` | no | Your standing instructions to every worker; [`OPERATOR.example.md`](orchestration/queue/OPERATOR.example.md) is the form. |
 | `orchestration/runs/` | [`_TEMPLATE.md`](orchestration/runs/_TEMPLATE.md) only | One log per topic. |

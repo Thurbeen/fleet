@@ -6,6 +6,10 @@ clone has `core.symlinks=false` and checks a tracked link out as a text file
 holding its target, so Claude Code found no skills at all. `fleet install`
 creates it instead — a symlink on POSIX, a junction on Windows, which needs no
 privilege — and `.gitignore` lists it so a sync never sees a dirty tree.
+
+Codex reads `.agents/skills` directly in this checkout. The install tests own
+its other-repository case: each child is linked under the user's
+`~/.agents/skills`, still pointing at this one tracked tree.
 """
 
 import os

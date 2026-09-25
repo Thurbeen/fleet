@@ -123,10 +123,12 @@ it sends an agent down a fallback path forever. Check it against `thurbox-cli
 <cmd> --help`, which is version-matched to the installed binary, before
 asserting an absence.
 
-`.claude/skills` points at this tree (`uv run fleet install` makes it). Do not
-add a parallel copy under `.claude/`, and do not mirror into `.opencode/skills`
-— opencode auto-discovers `.claude/skills`, so the link already serves it and a
-mirror would register the same skill twice.
+Codex discovers this tree directly while working in the fleet checkout.
+`uv run fleet install` points `.claude/skills` at it for Claude Code and
+opencode, and links each skill under the user-scoped `~/.agents/skills` for
+Codex workers launched in other repositories. Do not add parallel copies under
+`.claude/`, `.codex/` or `.opencode/skills`; every agent-specific path must
+keep pointing at the canonical tree.
 
 ### `orchestration/**`
 
@@ -237,16 +239,20 @@ pull request.
 
 ### Skills live in `.agents/`
 
-`.agents/skills/<name>/SKILL.md` holds the real files. `.claude/skills` points
-at that directory and is **not tracked**: `uv run fleet install` makes it — a
-relative symlink on POSIX, a junction on Windows, which needs no privilege —
-and `.gitignore` lists it. A tracked link broke on Windows, where a default
-clone has `core.symlinks=false` and checked it out as a text file.
+`.agents/skills/<name>/SKILL.md` holds the real files. Codex reads that
+repository-scoped path directly. `.claude/skills` points at the directory and
+is **not tracked**: `uv run fleet install` makes it — a relative symlink on
+POSIX, a junction on Windows, which needs no privilege — and `.gitignore`
+lists it. A tracked link broke on Windows, where a default clone has
+`core.symlinks=false` and checked it out as a text file.
 
-One tree, every CLI: Claude Code reads `.claude/skills` and opencode
-auto-discovers the same path, so the link already serves both. Do not mirror
-the tree into `.opencode/skills`, which would register the same skill twice, and
-do not add a second copy under `.claude/`.
+One tree, every CLI: Claude Code and opencode read `.claude/skills`; Codex
+reads `.agents/skills` in this repository and its user-scoped
+`~/.agents/skills` from every repository. The installer puts one link per fleet
+skill in that user directory so unrelated user skills remain, and refuses a
+user-owned directory with the same name. Do not mirror the tree under
+`.codex/`, `.opencode/skills` or `.claude/`; keep every agent-specific path
+pointing at the canonical tree.
 
 `uv run fleet check skills` guards the layout: that `.claude/skills` is untracked
 and ignored, resolves to `.agents/skills` where it exists, and that every skill
@@ -375,8 +381,9 @@ root-level config file's rationale belongs here, not in `README.md`.
 `thurbox-cli`: spawning, prompting, completion detection, cleanup. Detail an
 agent needs only while launching a worker belongs there rather than in
 `AGENTS.md`. It is a reference, not an owner — the rationale still lives in the
-documents above. `.claude/skills` points at `.agents/skills`, so the skill
-has exactly one copy; never write a second one under `.claude/`.
+documents above. `.claude/skills` and the user-scoped Codex links point at
+`.agents/skills`, so the skill has exactly one copy; never write a second one
+under an agent-specific directory.
 
 `scripts/lib/queue.py`'s docstring owns the task queue: the layout, the
 ordering rule, and why completion is a stream plus a file rather than a
