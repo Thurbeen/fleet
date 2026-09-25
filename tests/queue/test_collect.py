@@ -125,6 +125,34 @@ def test_the_declared_method_reaches_the_brief(ptopic, queue_dir):
     refute(b, "Here that means")
 
 
+def test_explicit_publish_method_inherits_only_its_matching_default_how(isolated_env, queue_dir):
+    write(isolated_env / "settings" / "orchestration" / "publish.conf",
+          "METHOD=attested\nHOW=run the `publish` skill\nATTESTATION_MARKER=publish-attestation/v1\n")
+    ok(q("topic", "add", "publish-how", "--prompt", "Use the configured publishing command"))
+
+    def add(number, slug, *options):
+        ok(q("add", "publish-how", slug, "--repo", "/tmp/repo-a",
+             "--branch", f"fix/{slug}", "--number", number, *options))
+        task = queue_dir / "publish-how" / f"{number}-{slug}"
+        record = yaml.safe_load((task / "task.yaml").read_text(encoding="utf-8"))
+        return record["publish"], squeezed(task / "BRIEF.md")
+
+    publish, brief = add("01", "same-method", "--publish", "attested")
+    command = "run the `publish` skill"
+    assert (publish["method"], publish["how"], f"Here that means: {command}." in brief) == (
+        "attested", command, True,
+    )
+
+    publish, brief = add("02", "custom-how", "--publish", "attested", "--how", "run the project release command")
+    assert publish == {"method": "attested", "how": "run the project release command"}
+    expect(brief, "Here that means: run the project release command.")
+    refute(brief, command)
+
+    publish, brief = add("03", "other-method", "--publish", "push")
+    assert publish == {"method": "push", "how": None}
+    refute(brief, "Here that means", command)
+
+
 def test_each_method_is_proven_where_its_artifact_lives(ptopic, push_repo, stubs, queue_dir):
     # A `pr` task: a pull request from ITS OWN branch — the one claim about a
     # pull request a worker cannot write into its own result.md.

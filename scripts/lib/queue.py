@@ -2306,15 +2306,13 @@ def cmd_add(args) -> int:
                         f"{prefix!r}, which allows only {', '.join(allowed)}."
                     )
 
-    # Resolution, first hit wins and per FIELD. A stated method with no stated
-    # tool drops the operator's global one rather than inheriting it: "run
-    # attesting pipeline" is the wrong sentence to hand a `push` task. A
-    # stated `how` alone keeps the operator's method, because a lead adding a
-    # note about the tool must not be able to downgrade the check by accident.
+    # A stated method keeps the default command when it names the same shape.
+    # Another shape drops it: an attesting command is wrong for a `push` task.
+    # A stated command always wins, with or without a stated method.
     method, how = policy_publish_default()
-    if args.publish:
-        method, how = args.publish, args.how
-    elif args.how:
+    if args.publish and args.publish != method:
+        method, how = args.publish, None
+    if args.how is not None:
         how = args.how
     target = (args.target or "").strip() or None
     refusal = target_refusal(method, target)
