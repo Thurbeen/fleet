@@ -113,6 +113,12 @@ def no_forge(tmp_path, stubs, monkeypatch) -> str:
         (alone / ("git" + EXE)).symlink_to(real_git)
         git_dir = str(alone)
     dirs.append(git_dir)
+    # A clone of a local path spawns `sh -c git-upload-pack`. Git for Windows'
+    # Git\mingw64\bin\git.exe, which a Git Bash PATH finds first, does not put
+    # its own `sh` on PATH, and without it dies of an access violation.
+    real_sh = shutil.which("sh")
+    if real_sh and forge_free(str(Path(real_sh).parent)):
+        dirs.append(str(Path(real_sh).parent))
     if forge_free(str(Path(sys.executable).parent)):
         dirs.append(str(Path(sys.executable).parent))
     if os.name == "nt":

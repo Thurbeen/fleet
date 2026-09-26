@@ -86,7 +86,18 @@ def says(line: str) -> str:
     return f"print({line!r})\n"
 
 
-GIT = f"import subprocess, sys\nraise SystemExit(subprocess.call([{REAL_GIT!r}, *sys.argv[1:]]))\n"
+# The real git, run on the test's PATH with the directories of git and `sh` from
+# this process's PATH after it. A clone of a local path, which is every clone
+# here, spawns `sh -c git-upload-pack`, and neither is on a PATH narrowed to the
+# stubs. Git for Windows' own launcher (Git\cmd\git.exe) adds both itself, but
+# the binary under Git\mingw64\bin — the one a Git Bash PATH finds first — does
+# not, and dies of an access violation (0xC0000005) printing nothing. A real
+# install never meets this: it clones over https, which spawns no shell.
+GIT_COMPANIONS = os.pathsep.join(dict.fromkeys(os.path.dirname(p) for p in (REAL_GIT, shutil.which("sh")) if p))
+GIT = f"""import os, subprocess, sys
+env = dict(os.environ, PATH=os.environ.get("PATH", "") + os.pathsep + {GIT_COMPANIONS!r})
+raise SystemExit(subprocess.call([{REAL_GIT!r}, *sys.argv[1:]], env=env))
+"""
 
 GH = """
 import sys
