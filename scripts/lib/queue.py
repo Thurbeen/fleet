@@ -1210,31 +1210,14 @@ def operator_instructions() -> str:
 # the extension installed is a legitimate setup and may not be made unusable by
 # a guard that cannot tell whether it is even warranted.
 
-SESSION_REPO_PATH_RE = re.compile(r'^\s*repo_path\s*=\s*"([^"]*)"', re.M)
-SESSION_NAME_RE = re.compile(r'^\s*name\s*=\s*"([^"]*)"', re.M)
-# The TABLE HEADER, anchored at the start of a line — the same thing the
-# extension installer matches when it reads the manifest back. A plain
-# substring search finds the manifest header's own PROSE about `[[sessions]]`
-# first and reads the top-level extension name as the session's. That was
-# invisible for as long as the two were the same word, and stopped being
-# invisible the day the session was renamed to `⌖ Mission Control`.
-SESSION_TABLE_RE = re.compile(r"^\[\[sessions\]\]", re.M)
-
-
 def manifest_session(path: str) -> tuple[str | None, str | None]:
-    """(session name, repo_path) from the first [[sessions]] block of a manifest."""
-    try:
-        with open(path, encoding="utf-8") as fh:
-            text = fh.read()
-    except OSError:
-        return None, None
-    table = SESSION_TABLE_RE.search(text)
-    if not table:
-        return None, None
-    sessions = text[table.end():]
-    name = SESSION_NAME_RE.search(sessions)
-    repo = SESSION_REPO_PATH_RE.search(sessions)
-    return (name.group(1) if name else None, repo.group(1) if repo else None)
+    """(session name, repo_path) from the first [[sessions]] table of a manifest.
+
+    Decoded as TOML by `manifest.py`, the one reader of that table: the
+    rendered `repo_path` escapes every backslash, so a native Windows path
+    matched as text never equalled the checkout it names.
+    """
+    return _load_sibling("fleet_manifest", "manifest.py").read_lead_session(path)
 
 
 def live_session_cwd(name: str) -> str | None:
@@ -1289,7 +1272,7 @@ def foreign_checkout() -> str | None:
     if os.environ.get("FLEET_QUEUE_DIR"):
         return None  # someone named the directory they meant. Honour it, verbatim.
     owner = control_plane()
-    if owner and owner != checkout_root().rstrip("/"):
+    if owner and not same_path(owner, checkout_root()):
         return owner
     return None
 

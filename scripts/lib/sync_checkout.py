@@ -42,12 +42,24 @@ of its own, so tolerating failure is this module's job.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
-import re
 import shutil
 import subprocess
 import sys
+
+
+def _load_sibling(name: str, filename: str):
+    if name in sys.modules:
+        return sys.modules[name]
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
 
 # How long the fetch may take before the hook gives up and works from the local
 # checkout. A session start is the wrong place to wait on a network.
@@ -115,18 +127,10 @@ def lead_name(root: str) -> str:
     (orchestration/session-glyphs.conf), so a name written here would be one
     setting's value pretending to be the answer.
     """
-    try:
-        with open(os.path.join(root, "extension.toml"), encoding="utf-8") as fh:
-            lines = fh.read().splitlines()
-    except OSError:
-        return ""
-    in_sessions = False
-    for line in lines:
-        if line.startswith("[[sessions]]"):
-            in_sessions = True
-        if in_sessions and (m := re.match(r'name *= *"(.*)"', line)):
-            return m.group(1)
-    return ""
+    name, _repo = _load_sibling("fleet_manifest", "manifest.py").read_lead_session(
+        os.path.join(root, "extension.toml")
+    )
+    return name or ""
 
 
 def changed(root: str, before: str, paths: tuple[str, ...]) -> str:

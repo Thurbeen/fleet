@@ -107,6 +107,9 @@ fleet_platform = _load_sibling("fleet_platform", "fleet_platform.py")
 # through it for every spawn, so the lead's manifest has to read the same file
 # to the same answer.
 agent_settings = _load_sibling("fleet_agent_settings", "agent_settings.py")
+# The one reader of the rendered `[[sessions]]` table, so the session this
+# checks for is the one the queue's guard and the reconciler look up.
+fleet_manifest = _load_sibling("fleet_manifest", "manifest.py")
 
 
 class Refused(Exception):
@@ -324,9 +327,7 @@ def install(cli: str, rendered: Rendered) -> int:
     if not ext:
         return die("could not read the extension name from the rendered manifest")
     ext_name = ext.group(1)
-    sessions_part = rendered.manifest.split("\n[[sessions]]", 1)
-    found = re.search(r'^name *= *"(.*)"', sessions_part[1], re.M) if len(sessions_part) == 2 else None
-    session_name = found.group(1) if found else ""
+    session_name = fleet_manifest.lead_session(rendered.manifest)[0] or ""
 
     code = subprocess.run([cli, "extension", "install", REPO_ROOT]).returncode
     if code:
