@@ -27,6 +27,24 @@ def retag(task_yaml, method: str) -> None:
     write(task_yaml, yaml.safe_dump(doc, sort_keys=False))
 
 
+def test_new_pr_default_collects_clean_body_while_legacy_attested_stays_strict(
+    isolated_env, queue_dir, stubs,
+):
+    write(isolated_env / "settings" / "orchestration" / "publish.conf", "METHOD=pr\nHOW=\n")
+    ok(q("topic", "add", "clean-pr-transition", "--prompt", "Publish clean PRs"))
+    for number, name, options in (("01", "new", ()), ("02", "old", ("--publish", "attested"))):
+        ok(q("add", "clean-pr-transition", name, "--title", f"Publish {name}",
+             "--repo", "/tmp/repo-a", "--branch", f"fix/{name}", "--number", number, *options))
+        task = queue_dir / "clean-pr-transition" / f"{number}-{name}"
+        record = yaml.safe_load((task / "task.yaml").read_text(encoding="utf-8"))
+        assert record["publish"]["method"] == ("pr" if name == "new" else "attested")
+        result(task, "shipped", "Opened a clean PR.", "https://github.com/Thurbeen/thurbox/pull/" + str(int(number)))
+        stubs.plain_pr(int(number), f"fix/{name}", "## Intent\nClean body.\n")
+
+    expect(q("collect").out, "01-new", "[publish verified: pr]", "02-old", "NOT CLOSED")
+    expect(q("show", "clean-pr-transition/02-old").out, "publish:     attested", "attestation")
+
+
 def test_collect_verifies_the_artifact_instead_of_trusting_the_worker(first_landed, stubs, queue_dir):
     tasks = queue_dir / first_landed
     stubs.pipeline_pr(1001, "fix/document-the-states")

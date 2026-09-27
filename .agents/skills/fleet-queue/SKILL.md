@@ -498,12 +498,21 @@ session, and every reader who sent one back was told nobody was listening.
 `/publish`", "use `make release`"), rendered into the brief's Publish line and
 never parsed, which is what lets a task name a publisher fleet has never
 heard of. The retired `no-mistakes` spelling still reads as `attested` for old
-records; use `attested` for new tasks. `orchestration/publish.conf` holds the
+records. Use `pr` for new tasks using the clean-body publish skill.
+`orchestration/publish.conf` holds the
 operator's default (the tracked `publish.example.conf` ships `pr`). An explicit
 `--publish` matching that default keeps its `HOW` command, so a code task can
 name its required artifact shape without losing the command its worker must
 run. A different method drops that command unless `--how` supplies one. What
 an attestation LOOKS like is theirs too: `ATTESTATION_MARKER` in that file.
+An operator config still set to `METHOD=attested` overrides the tracked
+`pr` default. Change that operator setting to `METHOD=pr` for future tasks;
+existing task records keep their explicit method. In-flight RMUX, Herdr and
+psmux tasks that request `attested` still need their existing publishing
+pipeline to write a current body attestation, or an explicit operator decision
+to reclassify each task and review it manually. Never rewrite those records
+or their PR bodies as part of a default change. Clean PRs remain outside
+Fleet auto-merge even where a repository is allowlisted.
 
 ```text
     topic/02-document-the-states  shipped  https://…/pull/1001  [publish verified: attested]

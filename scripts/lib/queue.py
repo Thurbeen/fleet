@@ -601,6 +601,8 @@ def brief_shortfall(path: str) -> str:
 # IT IS A SHAPE LIKE THE OTHER FIVE. A document served by a review tool, by a
 # preview server, by `python -m http.server` in a worktree: one artifact, one
 # wait, no tool named.
+# New records default to a plain PR. Existing records with an explicit
+# `attested` method keep their body check through task_publish and collect.
 PUBLISH_DEFAULT = "pr"
 
 # The methods whose artifact is the task's OWN change request. A `note` task's

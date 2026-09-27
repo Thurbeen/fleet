@@ -80,7 +80,18 @@ is a `served` one — but a `served` task is not FINISHED either: its session is
 kept up deliberately so that whoever reads your document has somebody to answer
 them. Leave it serving, and stay available until the lead records the review
 closed. So verify your own artifact before you report done. For an `attested`
-task that is one command, in the CLI your forge has.
+task the command below checks the body against the current head.
+
+For a `pr` task, verify that each URL is an open or merged change request
+from this task's branch on its stated base. The body needs no attestation.
+`collect` makes this artifact check independently; `shepherd` checks CI and
+review state before any merge decision. A clean PR does not qualify for the
+existing attestation-only auto-merge gate.
+
+For an `attested` task, retain the current-head body check below. This includes
+in-flight tasks: keep their existing publisher until the operator explicitly
+changes each task's method and assumes its manual merge review. Do not
+retroactively change their records or rewrite existing PR bodies.
 
 On GitHub:
 
