@@ -90,8 +90,9 @@ names every path and the reason for each.
   profile safe.
 - `orchestration/publish.example.conf` and `agent.example.conf` — the two
   settings that keep fleet agnostic about YOUR tools. The first holds the
-  default publish method and the free-text command that produces it, plus the
-  attestation marker your pipeline emits; `scripts/lib/queue.py` models six
+  default publish method (`pr` in the tracked example) and the free-text
+  command that produces it, plus the legacy attestation marker;
+  `scripts/lib/queue.py` models six
   ARTIFACT SHAPES (`attested`, `pr`, `push`, `note`, `served`, `none`) and no
   tool names, so a publisher fleet has never heard of still works. `note` is a
   review or comment on the change request or issue a task records as its

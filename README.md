@@ -206,7 +206,7 @@ row each.](media/fleet-queue-pane.gif)
 | shepherd | The pass that keeps open change requests moving: fixers for broken ones, merges where allowed. |
 | refuel | The pass that restarts workers stopped at a token limit, once quota allows. |
 | reconciler | The supervised loop that runs `watch`, `collect`, `shepherd` and `refuel` so nobody has to remember to. |
-| attestation | A JSON block in a change request's body that names the commit a publish pipeline checked. It counts only when it names the current head. fleet publishes its own changes with the [`publish`](https://github.com/LeTuR/publish) skill. |
+| attestation | A legacy `attested` task checks a body block against the current head. New tasks use `pr` with a clean body; shepherd still checks CI and reviews, and never auto-merges a clean PR under the attested-only gate. |
 | forge | Where change requests live: GitHub or GitLab, reached through `scripts/lib/forge.py`. |
 
 ## Where things live
