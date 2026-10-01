@@ -5465,6 +5465,42 @@ def documented_path(value, posix: bool) -> str:
     return mod.normcase(mod.normpath(value))
 
 
+# thurbox's `backend_type` is a ROUTE: a machine plus, since thurbox began
+# naming it, the multiplexer — `local:psmux` on native Windows, `local:tmux`,
+# `ssh:devbox:tmux`. Rows written before that keep their old spelling:
+# `local-tmux` (the platform default, which is psmux on native Windows), the
+# older `local-<mux>`, and a bare `ssh:<host>` or `wsl:<distro>`. A comparison
+# against the one legacy word refused every session the newer spelling names.
+LOCAL_MULTIPLEXERS = ("tmux", "psmux")
+JUDGED_ROUTES = (
+    "local-tmux, local:tmux, local:psmux, ssh:<host>[:<mux>] or wsl:<distro>[:<mux>]"
+)
+
+
+def session_route(backend) -> tuple[str, str, str] | None:
+    """`(machine, name, multiplexer)` for a route this file can judge, else None.
+
+    `machine` is `local`, `ssh` or `wsl`; `name` is the host or distro, empty
+    for local; `multiplexer` is empty where the route does not name one. A
+    local route naming a multiplexer this file has never judged is None: the
+    occupancy rule below is about this machine's filesystem, but a reap is
+    not the place to learn what a new multiplexer means.
+    """
+    if not isinstance(backend, str) or not backend:
+        return None
+    if backend in ("tmux", "local-tmux"):
+        return "local", "", ""
+    for prefix in ("local:", "local-"):
+        if backend.startswith(prefix):
+            mux = backend[len(prefix):]
+            return ("local", "", mux) if mux in LOCAL_MULTIPLEXERS else None
+    for machine in ("ssh", "wsl"):
+        if backend.startswith(machine + ":"):
+            name, _, mux = backend[len(machine) + 1:].partition(":")
+            return machine, name, mux
+    return None
+
+
 def occupant_in_worktrees(sessions, sid, roots, path_of, common, skip_offbox=False):
     for other_id, other in sessions.items():
         if other_id == sid:
@@ -5472,9 +5508,13 @@ def occupant_in_worktrees(sessions, sid, roots, path_of, common, skip_offbox=Fal
         backend = other.get("backend_type")
         if not isinstance(backend, str) or not backend:
             return f"cannot read backend of session {other_id} for worktree check"
-        off_box = backend.startswith(("ssh:", "wsl:"))
-        if not off_box and backend != "local-tmux":
-            return f"cannot judge backend of session {other_id} for worktree check"
+        route = session_route(backend)
+        if route is None:
+            return (
+                f"cannot judge backend {backend!r} of session {other_id} "
+                f"for worktree check; expected {JUDGED_ROUTES}"
+            )
+        off_box = route[0] != "local"
         try:
             cwd = path_of(other.get("cwd"))
         except (OSError, ValueError, RuntimeError) as exc:
@@ -5522,7 +5562,11 @@ def worktree_release_blocker(sid: str) -> str:
     if not owned:
         return ""
     backend = target.get("backend_type")
-    if backend == "local-tmux":
+    route = session_route(backend)
+    if route is None:
+        return f"cannot judge backend {backend!r} of session {sid}; expected {JUDGED_ROUTES}"
+    machine, name, mux = route
+    if machine == "local":
         try:
             roots = [(path, local_resolved_path(path)) for path in owned]
         except (OSError, ValueError, RuntimeError) as exc:
@@ -5530,8 +5574,8 @@ def worktree_release_blocker(sid: str) -> str:
         return occupant_in_worktrees(
             sessions, sid, roots, local_resolved_path, os.path.commonpath, skip_offbox=True,
         )
-    if isinstance(backend, str) and backend.startswith("ssh:"):
-        host = backend[4:]
+    if machine == "ssh":
+        host = name
         if not host:
             return f"cannot read host of session {sid}"
         remote, entry, why = host_session_snapshot(host)
@@ -5546,7 +5590,9 @@ def worktree_release_blocker(sid: str) -> str:
                 f"host session list has no row {sid}; "
                 "cannot tell an occupant from this session"
             )
-        posix = str(entry.get("multiplexer") or "tmux") == "tmux"
+        # The route's own multiplexer, where it names one, is the one this
+        # session runs under; the host's setting is only today's preference.
+        posix = str(mux or entry.get("multiplexer") or "tmux") == "tmux"
         common = posixpath.commonpath if posix else ntpath.commonpath
 
         def host_path(value):
@@ -5557,18 +5603,17 @@ def worktree_release_blocker(sid: str) -> str:
         except (OSError, ValueError, RuntimeError) as exc:
             return f"cannot resolve session worktree: {exc}"
         return occupant_in_worktrees(remote, sid, roots, host_path, common)
-    if isinstance(backend, str) and backend.startswith("wsl:"):
-        def wsl_path(value):
-            return documented_path(value, True)
+    # machine == "wsl": `session_route` answers no fourth machine.
+    def wsl_path(value):
+        return documented_path(value, True)
 
-        try:
-            roots = [(path, wsl_path(path)) for path in owned]
-        except (OSError, ValueError, RuntimeError) as exc:
-            return f"cannot resolve session worktree: {exc}"
-        return occupant_in_worktrees(
-            sessions, sid, roots, wsl_path, posixpath.commonpath,
-        )
-    return f"cannot judge backend {backend!r} of session {sid}"
+    try:
+        roots = [(path, wsl_path(path)) for path in owned]
+    except (OSError, ValueError, RuntimeError) as exc:
+        return f"cannot resolve session worktree: {exc}"
+    return occupant_in_worktrees(
+        sessions, sid, roots, wsl_path, posixpath.commonpath,
+    )
 
 
 def session_state(sid: str) -> tuple[str | None, str]:
