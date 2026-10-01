@@ -282,3 +282,98 @@ elif args[:2] == ["session", "get"]:
         expect(out, OTHER, str(tree))
     else:
         expect(out, "session list did not answer a list")
+
+
+# thurbox now writes every route qualified — `<machine>:<mux>` — and still
+# reads the older spellings; `src/session/route.rs` in thurbox is the grammar.
+# A reap that knew only `local-tmux` kept every newly spawned session forever.
+
+@pytest.fixture
+def abandoned_typed(attached, stubs, queue_dir, tmp_path):
+    """An abandoned task whose stopped worker owns a worktree, on a typed local route."""
+    task = queue_dir / attached / "01-drop-idle-default"
+    stubs.session_is(S1, "stopped")
+    stubs.session_is(S2, "working")
+    ok(q("abandon", f"{attached}/01-drop-idle-default", "--why", "moot", "--force"))
+    tree = tmp_path / "typed"
+    (tree / "src").mkdir(parents=True)
+    (tmp_path / "elsewhere").mkdir()
+    session(stubs, S1, cwd=str(tree), backend_type="local:tmux", worktrees=[{
+        "worktree_path": str(tree), "created_by_thurbox": True,
+    }])
+    session(stubs, S2, cwd=str(tmp_path / "elsewhere"), backend_type="local:tmux")
+    return task, tree
+
+
+def assert_abandoned_kept(stubs, task):
+    assert not stubs.calls("thurbox-cli", "session delete")
+    doc = yaml.safe_load((task / "task.yaml").read_text(encoding="utf-8"))
+    assert doc["state"] == "abandoned"
+    assert doc["session"] == S1
+
+
+def test_typed_local_route_is_reaped_when_nothing_else_uses_its_worktree(abandoned_typed, stubs):
+    out = ok(q("reap")).out
+    refute(out, "cannot judge backend")
+    expect(out, "reaped", S1)
+    expect("\n".join(stubs.calls("thurbox-cli", "session delete")), S1, "--force")
+
+
+@pytest.mark.parametrize("route", ["local:tmux", "local:psmux", "local-tmux", "tmux", ""])
+def test_typed_local_route_is_kept_while_another_session_uses_its_worktree(
+        abandoned_typed, stubs, route):
+    task, tree = abandoned_typed
+    stubs.session_is(OTHER, "working")
+    session(stubs, OTHER, cwd=str(tree / "src"), backend_type=route)
+    out = ok(q("reap")).out
+    expect(out, "kept", S1, OTHER, str(tree))
+    assert_abandoned_kept(stubs, task)
+
+
+@pytest.mark.parametrize("route", ["local:screen", "local:", "ssh:", "wsl:", "ssh::tmux", "local-mystery"])
+def test_a_route_naming_nothing_still_refuses(abandoned_typed, stubs, route):
+    task, _ = abandoned_typed
+    stubs.session_is(OTHER, "working")
+    session(stubs, OTHER, backend_type=route)
+    expect(ok(q("reap")).out, "kept", "cannot judge backend", OTHER)
+    assert_abandoned_kept(stubs, task)
+
+
+@pytest.mark.parametrize("route", ["ssh:devbox:tmux", "wsl:Ubuntu:tmux"])
+def test_a_typed_remote_occupant_off_this_filesystem_does_not_block(abandoned_typed, stubs, route):
+    stubs.session_is(OTHER, "working")
+    session(stubs, OTHER, backend_type=route, cwd="/no-such-host/worktree")
+    expect(ok(q("reap")).out, "reaped", S1)
+
+
+def test_a_typed_wsl_occupant_inside_the_worktree_is_protected(abandoned_typed, stubs):
+    task, tree = abandoned_typed
+    stubs.session_is(OTHER, "working")
+    session(stubs, OTHER, backend_type="wsl:Ubuntu:tmux", cwd=str(tree / "src"))
+    expect(ok(q("reap")).out, "kept", S1, OTHER, str(tree))
+    assert_abandoned_kept(stubs, task)
+
+
+def test_typed_ssh_route_is_judged_on_its_own_host(landed, stubs):
+    """`ssh:devbox:tmux` is host `devbox`, not a host called `devbox:tmux`."""
+    task = _remote_target(stubs, landed[0])
+    session(stubs, S1, backend_type="ssh:devbox:tmux")
+    write(stubs.root / "ssh-state" / "me@devbox.session-list.json", json.dumps([
+        {"id": S1, "cwd": REMOTE_TREE, "backend_type": "local:tmux",
+         "worktrees": [{"worktree_path": REMOTE_TREE, "created_by_thurbox": True}]},
+        {"id": OTHER, "cwd": REMOTE_TREE + "/src", "backend_type": "local:tmux"},
+    ]))
+    out = ok(q("reap")).out
+    expect(out, "kept", S1, OTHER, REMOTE_TREE)
+    refute(out, "devbox:tmux")
+    assert_kept(stubs, task)
+    (stubs.root / "ssh-state" / "me@devbox.session-list.json").unlink()
+    expect(ok(q("reap")).out, "reaped", S1)
+
+
+def test_typed_wsl_target_is_reaped_when_unoccupied(landed, stubs):
+    (stubs.root / "sessions" / f"{OTHER}.json").unlink()
+    session(stubs, S1, backend_type="wsl:Ubuntu:tmux", cwd="/home/user/tree", worktrees=[{
+        "worktree_path": "/home/user/tree", "created_by_thurbox": True,
+    }])
+    expect(ok(q("reap")).out, "reaped", S1)

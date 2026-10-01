@@ -5465,16 +5465,48 @@ def documented_path(value, posix: bool) -> str:
     return mod.normcase(mod.normpath(value))
 
 
+# thurbox's `backend_type` grammar, as `src/session/route.rs` there parses it:
+# a PLACE and a MULTIPLEXER, independent, and neither says what OS the machine
+# runs. Old rows are unqualified (`""`, `tmux`, `local-tmux`, `local-<mux>`,
+# `ssh:<host>`, `wsl:<host>`); new ones are `local:<mux>`, `ssh:<host>:<mux>`,
+# `wsl:<host>:<mux>`. Mirrored and not imported, and a key it cannot place is
+# None — refused, never guessed local.
+ROUTE_MULTIPLEXERS = ("tmux", "psmux", "rmux", "herdr")
+
+
+def session_place(key) -> tuple[str, str] | None:
+    """Where a route runs: ("local", ""), ("ssh", host) or ("wsl", host)."""
+    if not isinstance(key, str):
+        return None
+    for via in ("ssh", "wsl"):
+        rest = key.removeprefix(via + ":")
+        if rest == key:
+            continue
+        # A host name holds no `:`, so a known multiplexer after the last one
+        # is the route's; anything else is kept as the host, as thurbox does.
+        host, sep, mux = rest.rpartition(":")
+        if not sep or mux not in ROUTE_MULTIPLEXERS:
+            host = rest
+        return (via, host) if host else None
+    if key in ("", "tmux", "local-tmux"):
+        return ("local", "")
+    for prefix in ("local:", "local-"):
+        if key.startswith(prefix) and key[len(prefix):] in ROUTE_MULTIPLEXERS:
+            return ("local", "")
+    return None
+
+
 def occupant_in_worktrees(sessions, sid, roots, path_of, common, skip_offbox=False):
     for other_id, other in sessions.items():
         if other_id == sid:
             continue
         backend = other.get("backend_type")
-        if not isinstance(backend, str) or not backend:
+        if not isinstance(backend, str):
             return f"cannot read backend of session {other_id} for worktree check"
-        off_box = backend.startswith(("ssh:", "wsl:"))
-        if not off_box and backend != "local-tmux":
-            return f"cannot judge backend of session {other_id} for worktree check"
+        place = session_place(backend)
+        if place is None:
+            return f"cannot judge backend {backend!r} of session {other_id} for worktree check"
+        off_box = place[0] != "local"
         try:
             cwd = path_of(other.get("cwd"))
         except (OSError, ValueError, RuntimeError) as exc:
@@ -5522,7 +5554,11 @@ def worktree_release_blocker(sid: str) -> str:
     if not owned:
         return ""
     backend = target.get("backend_type")
-    if backend == "local-tmux":
+    place = session_place(backend)
+    if place is None:
+        return f"cannot judge backend {backend!r} of session {sid}"
+    via, host = place
+    if via == "local":
         try:
             roots = [(path, local_resolved_path(path)) for path in owned]
         except (OSError, ValueError, RuntimeError) as exc:
@@ -5530,10 +5566,7 @@ def worktree_release_blocker(sid: str) -> str:
         return occupant_in_worktrees(
             sessions, sid, roots, local_resolved_path, os.path.commonpath, skip_offbox=True,
         )
-    if isinstance(backend, str) and backend.startswith("ssh:"):
-        host = backend[4:]
-        if not host:
-            return f"cannot read host of session {sid}"
+    if via == "ssh":
         remote, entry, why = host_session_snapshot(host)
         if remote is None:
             return why
@@ -5557,18 +5590,18 @@ def worktree_release_blocker(sid: str) -> str:
         except (OSError, ValueError, RuntimeError) as exc:
             return f"cannot resolve session worktree: {exc}"
         return occupant_in_worktrees(remote, sid, roots, host_path, common)
-    if isinstance(backend, str) and backend.startswith("wsl:"):
-        def wsl_path(value):
-            return documented_path(value, True)
 
-        try:
-            roots = [(path, wsl_path(path)) for path in owned]
-        except (OSError, ValueError, RuntimeError) as exc:
-            return f"cannot resolve session worktree: {exc}"
-        return occupant_in_worktrees(
-            sessions, sid, roots, wsl_path, posixpath.commonpath,
-        )
-    return f"cannot judge backend {backend!r} of session {sid}"
+    # A WSL distro: on this filesystem, spelled as POSIX paths.
+    def wsl_path(value):
+        return documented_path(value, True)
+
+    try:
+        roots = [(path, wsl_path(path)) for path in owned]
+    except (OSError, ValueError, RuntimeError) as exc:
+        return f"cannot resolve session worktree: {exc}"
+    return occupant_in_worktrees(
+        sessions, sid, roots, wsl_path, posixpath.commonpath,
+    )
 
 
 def session_state(sid: str) -> tuple[str | None, str]:
