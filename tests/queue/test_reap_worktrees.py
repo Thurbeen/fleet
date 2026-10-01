@@ -371,12 +371,28 @@ def test_typed_ssh_route_is_judged_on_its_own_host(landed, stubs):
     expect(ok(q("reap")).out, "reaped", S1)
 
 
-def test_typed_wsl_target_is_reaped_when_unoccupied(landed, stubs):
-    (stubs.root / "sessions" / f"{OTHER}.json").unlink()
+def _wsl_target(stubs):
     session(stubs, S1, backend_type="wsl:Ubuntu:tmux", cwd="/home/user/tree", worktrees=[{
         "worktree_path": "/home/user/tree", "created_by_thurbox": True,
     }])
+
+
+def test_typed_wsl_target_is_reaped_when_unoccupied(landed, stubs):
+    # Only POSIX cwds beside it: the next test is what a native one does.
+    (stubs.root / "sessions" / f"{OTHER}.json").unlink()
+    (stubs.root / "sessions" / f"{S2}.json").unlink()
+    _wsl_target(stubs)
     expect(ok(q("reap")).out, "reaped", S1)
+
+
+def test_a_native_windows_cwd_beside_a_wsl_target_keeps_it(landed, stubs):
+    """`\\wsl$\\Ubuntu\\...` is the distro's own filesystem, so a cwd the
+    distro's POSIX rules cannot read is a keep, not a session elsewhere."""
+    task = landed[0]
+    _wsl_target(stubs)
+    session(stubs, OTHER, backend_type="local:psmux", cwd="C:\\w\\elsewhere")
+    expect(ok(q("reap")).out, "kept", S1, "cwd", OTHER)
+    assert_kept(stubs, task)
 
 
 # A host's OS is `hosts.toml`'s `platform`, independent of its multiplexer;
