@@ -377,3 +377,90 @@ def test_typed_wsl_target_is_reaped_when_unoccupied(landed, stubs):
         "worktree_path": "/home/user/tree", "created_by_thurbox": True,
     }])
     expect(ok(q("reap")).out, "reaped", S1)
+
+
+# A host's OS is `hosts.toml`'s `platform`, independent of its multiplexer;
+# only when it is unset does `multiplexer = "psmux"` mean Windows (thurbox's
+# `host_config.rs`). The route's own multiplexer never says it: thurbox serves
+# psmux on a POSIX host and tmux on a Windows one alike.
+PLATFORM_HOSTS = (
+    '[[hosts]]\nname = "pxbox"\ndestination = "me@pxbox"\n'
+    'multiplexer = "psmux"\nplatform = "posix"\n'
+    '[[hosts]]\nname = "wtbox"\ndestination = "me@wtbox"\n'
+    'multiplexer = "tmux"\nplatform = "windows"\n'
+    '[[hosts]]\nname = "oddbox"\ndestination = "me@oddbox"\nplatform = "beos"\n'
+)
+POSIX_TREE = "/srv/Tree"
+WINDOWS_TREE = "C:\\w\\Tree"
+
+
+def _platform_target(stubs, host, route, tree, occupant_cwd=None):
+    write(stubs.root / "hosts.toml", PLATFORM_HOSTS)
+    (stubs.root / "sessions" / f"{OTHER}.json").unlink()
+    session(stubs, S1, backend_type=route, cwd=tree, worktrees=[{
+        "worktree_path": tree, "created_by_thurbox": True,
+    }])
+    rows = [{"id": S1, "cwd": tree, "backend_type": "local:tmux"}]
+    if occupant_cwd:
+        rows.append({"id": OTHER, "cwd": occupant_cwd, "backend_type": "local:tmux"})
+    write(stubs.root / "ssh-state" / f"me@{host}.session-list.json", json.dumps(rows))
+    if host == "wtbox":
+        # A host that answers only what a PowerShell sshd answers.
+        write(stubs.root / "ssh-state" / "me@wtbox.windows", "")
+
+
+@pytest.mark.parametrize("route", ["ssh:pxbox:psmux", "ssh:pxbox:tmux", "ssh:pxbox"])
+def test_a_posix_host_running_psmux_is_judged_by_posix_paths(landed, stubs, route):
+    """POSIX paths are case-sensitive: `/srv/tree` is not inside `/srv/Tree`."""
+    _platform_target(stubs, "pxbox", route, POSIX_TREE, "/srv/tree/src")
+    expect(ok(q("reap")).out, "reaped", S1)
+
+
+@pytest.mark.parametrize("route", ["ssh:pxbox:psmux", "ssh:pxbox"])
+def test_a_posix_host_running_psmux_still_protects_its_occupant(landed, stubs, route):
+    task = landed[0]
+    _platform_target(stubs, "pxbox", route, POSIX_TREE, POSIX_TREE + "/src")
+    expect(ok(q("reap")).out, "kept", S1, OTHER, POSIX_TREE)
+    assert_kept(stubs, task)
+
+
+@pytest.mark.parametrize("route", ["ssh:wtbox:tmux", "ssh:wtbox:psmux", "ssh:wtbox"])
+def test_a_windows_host_running_tmux_is_judged_by_windows_paths(landed, stubs, route):
+    _platform_target(stubs, "wtbox", route, WINDOWS_TREE)
+    expect(ok(q("reap")).out, "reaped", S1)
+
+
+@pytest.mark.parametrize("route", ["ssh:wtbox:tmux", "ssh:wtbox"])
+def test_a_windows_host_running_tmux_protects_an_occupant_spelled_in_another_case(landed, stubs, route):
+    task = landed[0]
+    _platform_target(stubs, "wtbox", route, WINDOWS_TREE, "c:\\w\\tree\\src")
+    expect(ok(q("reap")).out, "kept", S1, OTHER, WINDOWS_TREE)
+    assert_kept(stubs, task)
+
+
+def test_a_host_platform_fleet_cannot_name_is_refused(landed, stubs):
+    task = landed[0]
+    _platform_target(stubs, "oddbox", "ssh:oddbox:tmux", POSIX_TREE)
+    expect(ok(q("reap")).out, "kept", S1, "beos")
+    assert_kept(stubs, task)
+
+
+# The same rule with no `platform` key at all: a route whose multiplexer is
+# not the host's still lives on the host's platform.
+MUX_HOSTS = (
+    '[[hosts]]\nname = "devbox"\ndestination = "me@devbox"\n'
+    '[[hosts]]\nname = "winbox"\ndestination = "me@winbox"\nmultiplexer = "psmux"\n'
+)
+
+
+def test_a_tmux_route_on_a_psmux_host_is_judged_by_windows_paths(landed, stubs):
+    _platform_target(stubs, "winbox", "ssh:winbox:tmux", WINDOWS_TREE)
+    write(stubs.root / "hosts.toml", MUX_HOSTS)
+    write(stubs.root / "ssh-state" / "me@winbox.windows", "")
+    expect(ok(q("reap")).out, "reaped", S1)
+
+
+def test_a_psmux_route_on_a_tmux_host_is_judged_by_posix_paths(landed, stubs):
+    _platform_target(stubs, "devbox", "ssh:devbox:psmux", POSIX_TREE, "/srv/tree/src")
+    write(stubs.root / "hosts.toml", MUX_HOSTS)
+    expect(ok(q("reap")).out, "reaped", S1)

@@ -2827,10 +2827,12 @@ def cmd_plan(args) -> int:
 #
 # TWO SHELLS, ONE LINE PROTOCOL. Every remote command here is written twice:
 # once for a POSIX shell and once for Windows PowerShell 5, which is what sshd
-# on a native-Windows host hands a command to. hosts.toml has no "platform"
-# field, so the multiplexer is the proxy for it, exactly as it is in thurbox
-# (`HostDef::is_windows`): `psmux` is a native-Windows host, and anything that
-# is neither `tmux` nor `psmux` is refused by name. `HostShell` below is the
+# on a native-Windows host hands a command to. Which one is the host's
+# `platform` in hosts.toml (`posix` or `windows`), independent of its
+# multiplexer, exactly as in thurbox: psmux runs on a POSIX host and tmux on a
+# Windows one. Only an entry that sets no `platform` falls back to the older
+# proxy, `psmux` meaning Windows and `tmux` POSIX; any other multiplexer, or a
+# platform fleet cannot name, is refused by name. `HostShell` below is the
 # seam, and each pair of scripts prints the same words, so every caller reads
 # one answer and never learns which machine gave it.
 #
@@ -2997,16 +2999,21 @@ def host_entry(name: str) -> tuple[dict | None, str]:
     if not entry.get("destination"):
         return None, f"host {name!r} in {path} has no `destination` to ssh to"
 
-    # The multiplexer is how hosts.toml says which shell a host speaks — see
-    # this section's header. One fleet has no shell for is refused by name here
-    # rather than discovered by a worker that cannot run its first command.
-    mux = str(entry.get("multiplexer") or "tmux")
-    if mux not in MULTIPLEXER_SHELLS:
+    # The platform is which shell a host speaks — see this section's header.
+    # One fleet has no shell for is refused by name here rather than
+    # discovered by a worker that cannot run its first command.
+    if host_platform(entry) is None:
+        if entry.get("platform") is not None:
+            return None, (
+                f"host {name!r} sets platform {entry.get('platform')!r}, which fleet "
+                "has no shell for: it knows `posix` and `windows`."
+            )
+        mux = str(entry.get("multiplexer") or "tmux")
         return None, (
-            f"host {name!r} runs the {mux!r} multiplexer, which fleet has no shell "
-            "for: it speaks POSIX shell to a `tmux` host and PowerShell to a `psmux` "
-            "one, and the multiplexer is the only thing in hosts.toml that says "
-            "which a host is. Run this task locally, or name a host fleet can speak to."
+            f"host {name!r} runs the {mux!r} multiplexer and sets no `platform`, so "
+            "fleet has no shell for it: without one it reads a `tmux` host as POSIX "
+            "and a `psmux` one as Windows. Set `platform` on that host, run this "
+            "task locally, or name a host fleet can speak to."
         )
 
     # THE TRUST DIALOG, decided here. `session capture`, `key` and `send` all
@@ -3238,13 +3245,23 @@ class PowerShell:
 POSIX = PosixShell()
 POWERSHELL = PowerShell()
 
-# Which shell a multiplexer means. A name not in here is refused by
+# Which shell a platform means, and the platform an entry that names none
+# has always meant by its multiplexer. Anything else is refused by
 # `host_entry` rather than guessed at.
-MULTIPLEXER_SHELLS = {"tmux": POSIX, "psmux": POWERSHELL}
+PLATFORM_SHELLS = {"posix": POSIX, "windows": POWERSHELL}
+MULTIPLEXER_PLATFORMS = {"tmux": "posix", "psmux": "windows"}
+
+
+def host_platform(entry: dict) -> str | None:
+    """`posix` or `windows` for a hosts.toml entry, or None when it says neither."""
+    platform = entry.get("platform")
+    if platform is not None:
+        return platform if platform in PLATFORM_SHELLS else None
+    return MULTIPLEXER_PLATFORMS.get(str(entry.get("multiplexer") or "tmux"))
 
 
 def host_shell(entry: dict):
-    return MULTIPLEXER_SHELLS.get(str(entry.get("multiplexer") or "tmux"), POSIX)
+    return PLATFORM_SHELLS.get(host_platform(entry) or "posix")
 
 
 def ssh_text(data: bytes) -> str:
@@ -5579,7 +5596,9 @@ def worktree_release_blocker(sid: str) -> str:
                 f"host session list has no row {sid}; "
                 "cannot tell an occupant from this session"
             )
-        posix = str(entry.get("multiplexer") or "tmux") == "tmux"
+        # The host's platform, never the route's multiplexer: thurbox serves
+        # psmux on a POSIX host and tmux on a Windows one.
+        posix = host_platform(entry) == "posix"
         common = posixpath.commonpath if posix else ntpath.commonpath
 
         def host_path(value):
