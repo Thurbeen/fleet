@@ -389,6 +389,7 @@ def test_a_native_windows_cwd_beside_a_wsl_target_keeps_it(landed, stubs):
     """`\\wsl$\\Ubuntu\\...` is the distro's own filesystem, so a cwd the
     distro's POSIX rules cannot read is a keep, not a session elsewhere."""
     task = landed[0]
+    (stubs.root / "sessions" / f"{S2}.json").unlink()
     _wsl_target(stubs)
     session(stubs, OTHER, backend_type="local:psmux", cwd="C:\\w\\elsewhere")
     expect(ok(q("reap")).out, "kept", S1, "cwd", OTHER)
