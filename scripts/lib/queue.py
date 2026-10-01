@@ -3256,7 +3256,7 @@ def host_platform(entry: dict) -> str | None:
     """`posix` or `windows` for a hosts.toml entry, or None when it says neither."""
     platform = entry.get("platform")
     if platform is not None:
-        return platform if platform in PLATFORM_SHELLS else None
+        return platform if isinstance(platform, str) and platform in PLATFORM_SHELLS else None
     return MULTIPLEXER_PLATFORMS.get(str(entry.get("multiplexer") or "tmux"))
 
 

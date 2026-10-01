@@ -438,10 +438,14 @@ def test_a_windows_host_running_tmux_protects_an_occupant_spelled_in_another_cas
     assert_kept(stubs, task)
 
 
-def test_a_host_platform_fleet_cannot_name_is_refused(landed, stubs):
+@pytest.mark.parametrize("platform,want", [('"beos"', "beos"), ('["posix"]', "['posix']")])
+def test_a_host_platform_fleet_cannot_name_is_refused(landed, stubs, platform, want):
     task = landed[0]
     _platform_target(stubs, "oddbox", "ssh:oddbox:tmux", POSIX_TREE)
-    expect(ok(q("reap")).out, "kept", S1, "beos")
+    write(stubs.root / "hosts.toml", PLATFORM_HOSTS.replace('"beos"', platform))
+    out = ok(q("reap")).out
+    expect(out, "kept", S1, want)
+    refute(out, "Traceback")
     assert_kept(stubs, task)
 
 
