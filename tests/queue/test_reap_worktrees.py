@@ -282,3 +282,206 @@ elif args[:2] == ["session", "get"]:
         expect(out, OTHER, str(tree))
     else:
         expect(out, "session list did not answer a list")
+
+
+# thurbox now writes every route qualified — `<machine>:<mux>` — and still
+# reads the older spellings; `src/session/route.rs` in thurbox is the grammar.
+# A reap that knew only `local-tmux` kept every newly spawned session forever.
+
+@pytest.fixture
+def abandoned_typed(attached, stubs, queue_dir, tmp_path):
+    """An abandoned task whose stopped worker owns a worktree, on a typed local route."""
+    task = queue_dir / attached / "01-drop-idle-default"
+    stubs.session_is(S1, "stopped")
+    stubs.session_is(S2, "working")
+    ok(q("abandon", f"{attached}/01-drop-idle-default", "--why", "moot", "--force"))
+    tree = tmp_path / "typed"
+    (tree / "src").mkdir(parents=True)
+    (tmp_path / "elsewhere").mkdir()
+    session(stubs, S1, cwd=str(tree), backend_type="local:tmux", worktrees=[{
+        "worktree_path": str(tree), "created_by_thurbox": True,
+    }])
+    session(stubs, S2, cwd=str(tmp_path / "elsewhere"), backend_type="local:tmux")
+    return task, tree
+
+
+def assert_abandoned_kept(stubs, task):
+    assert not stubs.calls("thurbox-cli", "session delete")
+    doc = yaml.safe_load((task / "task.yaml").read_text(encoding="utf-8"))
+    assert doc["state"] == "abandoned"
+    assert doc["session"] == S1
+
+
+def test_typed_local_route_is_reaped_when_nothing_else_uses_its_worktree(abandoned_typed, stubs):
+    out = ok(q("reap")).out
+    refute(out, "cannot judge backend")
+    expect(out, "reaped", S1)
+    expect("\n".join(stubs.calls("thurbox-cli", "session delete")), S1, "--force")
+
+
+@pytest.mark.parametrize("route", ["local:tmux", "local:psmux", "local-tmux", "tmux", ""])
+def test_typed_local_route_is_kept_while_another_session_uses_its_worktree(
+        abandoned_typed, stubs, route):
+    task, tree = abandoned_typed
+    stubs.session_is(OTHER, "working")
+    session(stubs, OTHER, cwd=str(tree / "src"), backend_type=route)
+    out = ok(q("reap")).out
+    expect(out, "kept", S1, OTHER, str(tree))
+    assert_abandoned_kept(stubs, task)
+
+
+@pytest.mark.parametrize("route", ["local:screen", "local:", "ssh:", "wsl:", "ssh::tmux", "local-mystery"])
+def test_a_route_naming_nothing_still_refuses(abandoned_typed, stubs, route):
+    task, _ = abandoned_typed
+    stubs.session_is(OTHER, "working")
+    session(stubs, OTHER, backend_type=route)
+    expect(ok(q("reap")).out, "kept", "cannot judge backend", OTHER)
+    assert_abandoned_kept(stubs, task)
+
+
+@pytest.mark.parametrize("route", ["ssh:devbox:tmux", "wsl:Ubuntu:tmux"])
+def test_a_typed_remote_occupant_off_this_filesystem_does_not_block(abandoned_typed, stubs, route):
+    stubs.session_is(OTHER, "working")
+    session(stubs, OTHER, backend_type=route, cwd="/no-such-host/worktree")
+    expect(ok(q("reap")).out, "reaped", S1)
+
+
+def test_a_typed_wsl_occupant_inside_the_worktree_is_protected(abandoned_typed, stubs):
+    task, tree = abandoned_typed
+    stubs.session_is(OTHER, "working")
+    session(stubs, OTHER, backend_type="wsl:Ubuntu:tmux", cwd=str(tree / "src"))
+    expect(ok(q("reap")).out, "kept", S1, OTHER, str(tree))
+    assert_abandoned_kept(stubs, task)
+
+
+def test_typed_ssh_route_is_judged_on_its_own_host(landed, stubs):
+    """`ssh:devbox:tmux` is host `devbox`, not a host called `devbox:tmux`."""
+    task = _remote_target(stubs, landed[0])
+    session(stubs, S1, backend_type="ssh:devbox:tmux")
+    write(stubs.root / "ssh-state" / "me@devbox.session-list.json", json.dumps([
+        {"id": S1, "cwd": REMOTE_TREE, "backend_type": "local:tmux",
+         "worktrees": [{"worktree_path": REMOTE_TREE, "created_by_thurbox": True}]},
+        {"id": OTHER, "cwd": REMOTE_TREE + "/src", "backend_type": "local:tmux"},
+    ]))
+    out = ok(q("reap")).out
+    expect(out, "kept", S1, OTHER, REMOTE_TREE)
+    refute(out, "devbox:tmux")
+    assert_kept(stubs, task)
+    (stubs.root / "ssh-state" / "me@devbox.session-list.json").unlink()
+    expect(ok(q("reap")).out, "reaped", S1)
+
+
+def _wsl_target(stubs):
+    session(stubs, S1, backend_type="wsl:Ubuntu:tmux", cwd="/home/user/tree", worktrees=[{
+        "worktree_path": "/home/user/tree", "created_by_thurbox": True,
+    }])
+
+
+def test_typed_wsl_target_is_reaped_when_unoccupied(landed, stubs):
+    # Only POSIX cwds beside it: the next test is what a native one does.
+    (stubs.root / "sessions" / f"{OTHER}.json").unlink()
+    (stubs.root / "sessions" / f"{S2}.json").unlink()
+    _wsl_target(stubs)
+    expect(ok(q("reap")).out, "reaped", S1)
+
+
+def test_a_native_windows_cwd_beside_a_wsl_target_keeps_it(landed, stubs):
+    """`\\wsl$\\Ubuntu\\...` is the distro's own filesystem, so a cwd the
+    distro's POSIX rules cannot read is a keep, not a session elsewhere."""
+    task = landed[0]
+    (stubs.root / "sessions" / f"{S2}.json").unlink()
+    _wsl_target(stubs)
+    session(stubs, OTHER, backend_type="local:psmux", cwd="C:\\w\\elsewhere")
+    expect(ok(q("reap")).out, "kept", S1, "cwd", OTHER)
+    assert_kept(stubs, task)
+
+
+# A host's OS is `hosts.toml`'s `platform`, independent of its multiplexer;
+# only when it is unset does `multiplexer = "psmux"` mean Windows (thurbox's
+# `host_config.rs`). The route's own multiplexer never says it: thurbox serves
+# psmux on a POSIX host and tmux on a Windows one alike.
+PLATFORM_HOSTS = (
+    '[[hosts]]\nname = "pxbox"\ndestination = "me@pxbox"\n'
+    'multiplexer = "psmux"\nplatform = "posix"\n'
+    '[[hosts]]\nname = "wtbox"\ndestination = "me@wtbox"\n'
+    'multiplexer = "tmux"\nplatform = "windows"\n'
+    '[[hosts]]\nname = "oddbox"\ndestination = "me@oddbox"\nplatform = "beos"\n'
+)
+POSIX_TREE = "/srv/Tree"
+WINDOWS_TREE = "C:\\w\\Tree"
+
+
+def _platform_target(stubs, host, route, tree, occupant_cwd=None):
+    write(stubs.root / "hosts.toml", PLATFORM_HOSTS)
+    (stubs.root / "sessions" / f"{OTHER}.json").unlink()
+    session(stubs, S1, backend_type=route, cwd=tree, worktrees=[{
+        "worktree_path": tree, "created_by_thurbox": True,
+    }])
+    rows = [{"id": S1, "cwd": tree, "backend_type": "local:tmux"}]
+    if occupant_cwd:
+        rows.append({"id": OTHER, "cwd": occupant_cwd, "backend_type": "local:tmux"})
+    write(stubs.root / "ssh-state" / f"me@{host}.session-list.json", json.dumps(rows))
+    if host == "wtbox":
+        # A host that answers only what a PowerShell sshd answers.
+        write(stubs.root / "ssh-state" / "me@wtbox.windows", "")
+
+
+@pytest.mark.parametrize("route", ["ssh:pxbox:psmux", "ssh:pxbox:tmux", "ssh:pxbox"])
+def test_a_posix_host_running_psmux_is_judged_by_posix_paths(landed, stubs, route):
+    """POSIX paths are case-sensitive: `/srv/tree` is not inside `/srv/Tree`."""
+    _platform_target(stubs, "pxbox", route, POSIX_TREE, "/srv/tree/src")
+    expect(ok(q("reap")).out, "reaped", S1)
+
+
+@pytest.mark.parametrize("route", ["ssh:pxbox:psmux", "ssh:pxbox"])
+def test_a_posix_host_running_psmux_still_protects_its_occupant(landed, stubs, route):
+    task = landed[0]
+    _platform_target(stubs, "pxbox", route, POSIX_TREE, POSIX_TREE + "/src")
+    expect(ok(q("reap")).out, "kept", S1, OTHER, POSIX_TREE)
+    assert_kept(stubs, task)
+
+
+@pytest.mark.parametrize("route", ["ssh:wtbox:tmux", "ssh:wtbox:psmux", "ssh:wtbox"])
+def test_a_windows_host_running_tmux_is_judged_by_windows_paths(landed, stubs, route):
+    _platform_target(stubs, "wtbox", route, WINDOWS_TREE)
+    expect(ok(q("reap")).out, "reaped", S1)
+
+
+@pytest.mark.parametrize("route", ["ssh:wtbox:tmux", "ssh:wtbox"])
+def test_a_windows_host_running_tmux_protects_an_occupant_spelled_in_another_case(landed, stubs, route):
+    task = landed[0]
+    _platform_target(stubs, "wtbox", route, WINDOWS_TREE, "c:\\w\\tree\\src")
+    expect(ok(q("reap")).out, "kept", S1, OTHER, WINDOWS_TREE)
+    assert_kept(stubs, task)
+
+
+@pytest.mark.parametrize("platform,want", [('"beos"', "beos"), ('["posix"]', "['posix']")])
+def test_a_host_platform_fleet_cannot_name_is_refused(landed, stubs, platform, want):
+    task = landed[0]
+    _platform_target(stubs, "oddbox", "ssh:oddbox:tmux", POSIX_TREE)
+    write(stubs.root / "hosts.toml", PLATFORM_HOSTS.replace('"beos"', platform))
+    out = ok(q("reap")).out
+    expect(out, "kept", S1, want)
+    refute(out, "Traceback")
+    assert_kept(stubs, task)
+
+
+# The same rule with no `platform` key at all: a route whose multiplexer is
+# not the host's still lives on the host's platform.
+MUX_HOSTS = (
+    '[[hosts]]\nname = "devbox"\ndestination = "me@devbox"\n'
+    '[[hosts]]\nname = "winbox"\ndestination = "me@winbox"\nmultiplexer = "psmux"\n'
+)
+
+
+def test_a_tmux_route_on_a_psmux_host_is_judged_by_windows_paths(landed, stubs):
+    _platform_target(stubs, "winbox", "ssh:winbox:tmux", WINDOWS_TREE)
+    write(stubs.root / "hosts.toml", MUX_HOSTS)
+    write(stubs.root / "ssh-state" / "me@winbox.windows", "")
+    expect(ok(q("reap")).out, "reaped", S1)
+
+
+def test_a_psmux_route_on_a_tmux_host_is_judged_by_posix_paths(landed, stubs):
+    _platform_target(stubs, "devbox", "ssh:devbox:psmux", POSIX_TREE, "/srv/tree/src")
+    write(stubs.root / "hosts.toml", MUX_HOSTS)
+    expect(ok(q("reap")).out, "reaped", S1)
