@@ -282,3 +282,59 @@ elif args[:2] == ["session", "get"]:
         expect(out, OTHER, str(tree))
     else:
         expect(out, "session list did not answer a list")
+
+
+# thurbox writes a session's route as `<machine>[:<mux>]` since it began
+# naming the multiplexer (`local:psmux` on native Windows, `local:tmux`,
+# `ssh:devbox:tmux`); `local-tmux` is the legacy unqualified spelling, and
+# `local-<mux>` an older qualified one. Each is one local machine to fleet.
+LOCAL_ROUTES = ["local:psmux", "local:tmux", "local-psmux", "tmux"]
+
+
+@pytest.mark.parametrize("route", LOCAL_ROUTES)
+@pytest.mark.parametrize("state", ["idle", "done", "stopped"])
+def test_local_route_at_rest_is_reaped(landed, stubs, route, state):
+    (stubs.root / "sessions" / f"{OTHER}.json").unlink()
+    session(stubs, S1, backend_type=route, state=state)
+    out = ok(q("reap")).out
+    refute(out, "cannot judge backend")
+    expect(out, "reaped", S1)
+    expect("\n".join(stubs.calls("thurbox-cli", "session delete")), S1)
+
+
+@pytest.mark.parametrize("route", LOCAL_ROUTES)
+def test_local_route_occupant_is_protected(landed, stubs, route):
+    task, tree = landed
+    session(stubs, OTHER, backend_type=route)
+    expect(ok(q("reap")).out, "kept", S1, OTHER, str(tree))
+    assert_kept(stubs, task)
+
+
+def test_local_route_target_is_kept_for_its_occupant(landed, stubs):
+    task, tree = landed
+    session(stubs, S1, backend_type="local:psmux")
+    session(stubs, OTHER, backend_type="local:psmux")
+    expect(ok(q("reap")).out, "kept", S1, OTHER, str(tree))
+    assert_kept(stubs, task)
+
+
+def test_remote_route_naming_its_multiplexer_is_judged_on_the_host(landed, stubs):
+    _remote_target(stubs, landed[0])
+    session(stubs, S1, backend_type="ssh:devbox:tmux")
+    expect(ok(q("reap")).out, "reaped", S1)
+
+
+@pytest.mark.parametrize("route", ["mystery", "local:rmux", "carrier:pigeon"])
+def test_unjudgeable_route_names_what_was_expected(landed, stubs, route):
+    task, _ = landed
+    (stubs.root / "sessions" / f"{OTHER}.json").unlink()
+    session(stubs, S1, backend_type=route)
+    expect(ok(q("reap")).out, "kept", "cannot judge backend", repr(route), "local:psmux")
+    assert_kept(stubs, task)
+
+
+def test_unjudgeable_occupant_route_names_what_was_expected(landed, stubs):
+    task, _ = landed
+    session(stubs, OTHER, backend_type="local:rmux")
+    expect(ok(q("reap")).out, "kept", "cannot judge backend 'local:rmux'", OTHER, "local:psmux")
+    assert_kept(stubs, task)
