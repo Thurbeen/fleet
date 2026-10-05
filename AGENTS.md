@@ -201,7 +201,8 @@ names every path and the reason for each.
   supervisor holds for its whole life, the heartbeat proving its loop is
   ticking, a pidfile for people, its log, the advisory `nudge` flag, the `down`
   flag, and `notified.json` — which ready tasks the lead has
-  already been woken about, so a transition is told once. That last one is
+  already been woken about, and which were left in its thurbox mailbox while
+  it was mid-turn, so a transition is told once. That last one is
   runtime state and not a record for the same reason as all the others: "the
   lead has been told" is true of one machine's loop and one conversation, and
   writing it onto a task would make the loop a second writer over the queue.
@@ -412,7 +413,10 @@ load-bearing:
   cost six and a half hours. So after `collect` it reads `plan` and, when the
   ready set has grown, types one line into the lead's terminal naming what is
   ready and the command that sends it. Once per transition, never into a lead
-  mid-turn, and silent when no lead session is running.
+  mid-turn, and silent when no lead session is running. A lead mid-turn gets
+  the same line in its thurbox mailbox instead, posted with
+  `message send --no-wake`, which enqueues and delivers nothing; a thurbox
+  with no mailbox leaves it at the wait.
   `scripts/lib/notify_lead.py` owns those three rules. Notifying is not
   deciding: nothing moves, and the choice is still the lead's. **It says
   exactly what `plan` says is ready and derives nothing**, which is how a

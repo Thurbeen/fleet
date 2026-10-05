@@ -37,9 +37,12 @@ long after the worker is gone — the task moves to `landed` and its session and
 worktree are released. `reap` below owns that, and argues it.
 
 The pair replaces `thurbox-cli message send`, which is exact but WAKES the
-recipient: an arriving worker message injects into the lead's terminal and
+recipient: an arriving worker message pushes into the lead's conversation and
 interrupts whoever is talking to it. A stream that is read and a file that is
-read interrupt nobody.
+read interrupt nobody. `--no-wake` would not interrupt either, and it is still
+not the completion: `watch` already says WHEN with nothing sent, `collect`
+verifies the WHAT, and a third signal is one more thing to drain. The one
+fleet use of the mailbox is the reconciler's ready notice, in notify_lead.py.
 
 WHICH CHECKOUT. The queue belongs to the CONTROL PLANE's clone — the one the
 Mission Control session opens — and never to the process cwd. A second clone
@@ -2815,7 +2818,7 @@ def cmd_plan(args) -> int:
 #   message send    the worker reports through thurbox's own database, which
 #                   needs no shared filesystem and almost no code here.
 #
-# The second was refused. `message send` INJECTS into the lead's terminal and
+# The second was refused. `message send` INJECTS into the lead's conversation and
 # interrupts whoever is talking to it — that is why this file's header says
 # workers write files and do not send mail, and it is as true of a remote worker
 # as of a local one. It would also make completion arrive by two mechanisms
@@ -4335,8 +4338,8 @@ def cmd_watch(args) -> int:
 
     This is the non-disruptive half of the wake: the lead runs it when it
     chooses, for as long as it chooses, and reads the result. Compare
-    `thurbox-cli message send`, which pushes into the recipient's terminal the
-    moment a worker calls it.
+    `thurbox-cli message send`, which pushes into the recipient's conversation
+    the moment a worker calls it.
     """
     root = queue_root()
     q = Queue(root)
@@ -9222,6 +9225,14 @@ LIVENESS_CAVEAT = (
 
 
 def cmd_send(args) -> int:
+    """Type one line into a worker's session, and record whether it landed.
+
+    Typed, not mailed. thurbox's mailbox delivers only to a local Claude or
+    Codex session it has proven; a worker on a host, or one thurbox has not
+    proven yet, keeps the message in a mailbox it never reads, and `sends`
+    would then record a delivery that was not one. A worker is meant to act on
+    this now, so the interruption the lead is spared is the point here.
+    """
     q = Queue(queue_root(), scope="all")
     task = q.get(args.ref)
     text = args.message

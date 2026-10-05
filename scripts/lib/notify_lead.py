@@ -31,7 +31,10 @@ than silence:
       middle of somebody's work — `shepherd` declines to touch a working
       session for exactly this reason. Only a lead that has SAID it is at rest
       is woken; anything else and the wake waits, which is not the same as
-      being dropped.
+      being dropped. What a lead mid-turn gets instead is the same line in
+      its thurbox mailbox, posted with `--no-wake`: that enqueues and nothing
+      else, so nothing is typed and nothing is pushed into its conversation.
+      The lead, or the operator looking at thurbox, reads it when they choose.
   IT IS ONE LINE.  The lead is a token budget. Which tasks, and the command
       that sends them. No table, no narration.
   IT SURVIVES THE LEAD NOT EXISTING.  No lead session is an ordinary fleet —
@@ -72,7 +75,9 @@ Environment:
                       something a test may write.
 
 Requires: python3. `thurbox-cli` for the send itself — without it there is
-nothing to wake and this says so once.
+nothing to wake and this says so once. A thurbox with no mailbox refuses the
+`--no-wake` post, and the lead mid-turn then gets what it got before the
+mailbox existed: the wait.
 """
 
 from __future__ import annotations
@@ -138,7 +143,7 @@ def read_state(state_dir: str) -> dict:
     return doc if isinstance(doc, dict) else {}
 
 
-def write_state(state_dir: str, told: list, note: str) -> None:
+def write_state(state_dir: str, told: list, note: str, posted: list | None = None) -> None:
     """Remember what the lead has been told, and what was last logged about it.
 
     Best effort on purpose: a runtime directory that cannot be written is worth
@@ -150,12 +155,12 @@ def write_state(state_dir: str, told: list, note: str) -> None:
     """
     try:
         with open(os.path.join(state_dir, STATE_FILE), "w", encoding="utf-8") as fh:
-            json.dump({"told": told, "note": note}, fh)
+            json.dump({"told": told, "note": note, "posted": posted or []}, fh)
     except OSError:
         pass
 
 
-def say(state_dir: str, told: list, note: str) -> int:
+def say(state_dir: str, told: list, note: str, posted: list | None = None) -> int:
     """Print `note` only if it is not the one already standing.
 
     The deduplication is the difference between a diagnosis and a wall. A lead
@@ -164,7 +169,7 @@ def say(state_dir: str, told: list, note: str) -> int:
     """
     if note and read_state(state_dir).get("note") != note:
         print(note)
-    write_state(state_dir, told, note)
+    write_state(state_dir, told, note, posted)
     return 0
 
 
@@ -247,6 +252,29 @@ def wake(sid: str, text: str) -> tuple[bool, str]:
     return True, ""
 
 
+def post(sid: str, text: str) -> tuple[bool, str]:
+    """Leave one line in the lead's thurbox mailbox, and wake nothing.
+
+    `message send --no-wake` only enqueues. Without the flag thurbox pushes
+    the body into the recipient's conversation between tool calls, which is
+    exactly the interruption POLICY.md forbids, so the flag is not optional
+    and a thurbox that does not know it fails here rather than waking anyone.
+    """
+    try:
+        out = subprocess.run(
+            ["thurbox-cli", "message", "send", "--to", sid, "--kind", "fleet-ready",
+             "--body", text, "--no-wake", "--json"],
+            capture_output=True,
+            text=True, encoding="utf-8",
+            timeout=20,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, f"message send failed: {exc}"
+    if out.returncode != 0:
+        return False, "this thurbox has no mailbox"
+    return True, ""
+
+
 def message(ready: list) -> str:
     """One line: what is ready, and the command that sends it."""
     shown = ", ".join(ready[:NAMED])
@@ -283,7 +311,9 @@ def main(argv: list) -> int:
     # that leaves the ready set — dispatched, blocked again, abandoned — is
     # forgotten, so if it comes back it is a transition again rather than
     # something the lead was already told about weeks ago.
-    told = [r for r in read_state(args.state_dir).get("told", []) if r in ready]
+    state = read_state(args.state_dir)
+    told = [r for r in state.get("told", []) if r in ready]
+    posted = [r for r in state.get("posted", []) if r in ready]
     fresh = [r for r in ready if r not in told]
     if not fresh:
         return say(args.state_dir, told, "")
@@ -291,11 +321,20 @@ def main(argv: list) -> int:
     name = lead_name()
     if not name:
         return say(args.state_dir, told, "ready work, but no lead session is configured")
-    sid, state = lead_session(name)
+    sid, status = lead_session(name)
     if not sid:
-        return say(args.state_dir, told, f"ready work, but {state}")
-    if state not in AT_REST:
-        return say(args.state_dir, told, f"ready work; {name} is {state} — the wake waits")
+        return say(args.state_dir, told, f"ready work, but {status}")
+    if status not in AT_REST:
+        # The note is posted on its own transition, so a lead busy for an hour
+        # finds one line per change in its mailbox and not one per pass.
+        if [r for r in fresh if r not in posted]:
+            sent, _why = post(sid, message(ready))
+            posted = ready if sent else posted
+        noted = all(r in posted for r in fresh)
+        where = " — noted in its inbox" if noted else ""
+        return say(
+            args.state_dir, told, f"ready work; {name} is {status}{where}; the wake waits", posted
+        )
 
     sent, why = wake(sid, message(ready))
     if not sent:

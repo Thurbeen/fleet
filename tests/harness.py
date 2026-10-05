@@ -291,6 +291,14 @@ class Stubs:
             "cwd": str(self.root), "backend_type": "local-tmux", "worktrees": [],
         }) + "\n")
 
+    def inbox(self, sid: str) -> list[dict]:
+        """Every message `message send` left for `sid`, read or not."""
+        try:
+            lines = (self.root / "inbox" / f"{sid}.jsonl").read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return []
+        return [json.loads(line) for line in lines if line]
+
     def stream(self, *events: dict) -> None:
         """Append events to what `thurbox-cli watch --json` replays."""
         with open(self.root / "watch.jsonl", "a", newline="\n") as fh:

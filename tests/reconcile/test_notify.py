@@ -6,6 +6,10 @@ shape that makes the fix survivable: one line when the ready set becomes
 non-empty or grows, silence while it stays the same, no typing into a lead
 mid-turn (the wake waits, it is not lost), and no send and no error storm when
 there is no lead session at all.
+
+A lead mid-turn is not left with nothing, though: the same line goes into its
+thurbox mailbox with `--no-wake`, which nothing types and nothing pushes into
+its conversation, so the lead or the operator reads it whenever they look.
 """
 
 from __future__ import annotations
@@ -59,6 +63,50 @@ def test_the_lead_is_woken_once_per_transition(recon, stubs):
     assert len(sends()) == held, "no lead session means no send"
     assert recon.count("watch") > watched, "and the loop keeps folding regardless"
     assert recon.log().count("no session named") <= 1, "an absent lead is reported once, not once per pass"
+
+
+def test_a_lead_mid_turn_finds_the_notice_in_its_inbox(recon, stubs):
+    def posts() -> list[str]:
+        return stubs.calls("thurbox-cli", "message send")
+
+    def inbox() -> list[dict]:
+        return stubs.inbox("lead-uuid")
+
+    def collects_pass(n: int) -> None:
+        start = recon.count("collect")
+        assert wait_for(lambda: recon.count("collect") >= start + n, 30)
+
+    recon.lead("working")
+    recon("ensure")
+    recon.ready("alpha/01-first")
+    assert wait_for(lambda: len(inbox()) >= 1), f"the busy lead's inbox stayed empty\n{recon.log()}"
+    note = inbox()[0]
+    expect(note["body"], "alpha/01-first", "uv run fleet queue dispatch")
+    assert not note["woke"], "a note to a lead mid-turn must not wake it"
+    assert all("--no-wake" in p for p in posts()), f"every post is silent: {posts()}"
+    assert stubs.calls("thurbox-cli", "session send") == [], "nothing is typed mid-turn"
+
+    collects_pass(3)
+    assert len(inbox()) == 1, "the same ready set is posted once, not once per pass"
+
+    recon.ready("alpha/01-first", "beta/02-second")
+    assert wait_for(lambda: len(inbox()) >= 2), "a growing ready set is a fresh note"
+    expect(inbox()[-1]["body"], "beta/02-second")
+
+    recon.lead("idle")
+    assert wait_for(lambda: stubs.calls("thurbox-cli", "session send")), "the wake still lands at rest"
+
+
+def test_a_thurbox_without_an_inbox_keeps_todays_wait(recon, stubs):
+    (stubs.root / "no-inbox").write_text("", encoding="utf-8")
+    recon.lead("working")
+    recon("ensure")
+    recon.ready("alpha/01-first")
+    assert wait_for(lambda: "the wake waits" in recon.log()), recon.log()
+    assert stubs.calls("thurbox-cli", "session send") == [], "nothing is typed mid-turn"
+
+    recon.lead("idle")
+    assert wait_for(lambda: stubs.calls("thurbox-cli", "session send")), "the wake lands at rest"
 
 
 def test_remembering_what_was_said_never_makes_the_runtime_directory(isolated_env):

@@ -350,8 +350,10 @@ carries them, a gitignored `voice.conf` beside it overrides, and
   every later run. Do not clear it on the operator's behalf; `start` is theirs
   to type.
 - **Workers write files; they do not mail you.** `thurbox-cli message send`
-  WAKES its recipient — it injects into your terminal and interrupts whoever is
-  talking to you. So a worker writes `result.md` into its task directory and you
+  WAKES its recipient — it pushes into your conversation and interrupts whoever
+  is talking to you. Only `--no-wake` leaves a message in the mailbox and
+  nothing else, and the reconciler's ready notice is the one fleet path that
+  uses it. So a worker writes `result.md` into its task directory and you
   read it when you choose, alongside `thurbox-cli watch`'s event stream for the
   timing. `uv run fleet queue watch` and `collect` are the two halves. The
   mailbox is still right for something genuinely urgent and wrong for routine
@@ -377,8 +379,11 @@ the rule protects is still true of it —
   task whose blocker clears has no actor — the loop may not dispatch it and you
   are not looking — so it reads `plan` and types one line into your terminal
   naming what is ready and the command that sends it. Once per transition, and
-  never while you are mid-turn. The decision it hands you is still yours to
-  make; what it took away was the six hours before you knew there was one.
+  never while you are mid-turn: then the same line goes into your thurbox
+  mailbox with `--no-wake` instead, and the typed line waits until you are at
+  rest. `thurbox-cli message inbox --claim` reads it. The decision it hands
+  you is still yours to make; what it took away was the six hours before you
+  knew there was one.
 - **It writes no record.** Every effect goes through `uv run fleet queue`,
   which stays the only writer, exactly as the pane stays a pure reader.
 - **It is stoppable, and a stop stays stopped.** `orchestration/reconcile/down`
