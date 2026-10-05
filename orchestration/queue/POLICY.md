@@ -177,8 +177,9 @@ sealed revisions in its user-level store and starts a detached shared server.
 Session release removes neither. Live code peeks still read the source
 worktree, which fleet keeps until landing. Do not remove that worktree, stop
 the server or delete the review while the change is open. Use a persistent
-THURVIEW_HOME outside the worker worktree; on a remote worker, keep that host and its server reachable through
-landing. A restart of the host still needs the operator to restart the server.
+THURVIEW_HOME outside the worker worktree; on a remote worker, keep that host
+and its server reachable through landing. A restart of the host still needs
+the operator to restart the server.
 
 ## Post one maintained review summary
 
