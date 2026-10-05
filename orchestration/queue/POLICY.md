@@ -201,8 +201,9 @@ the operator's writing rules and include their sign-off as `signature` where
 required. Publish and verify the thurview page before posting its URL.
 
 The command maintains one summary carrying `<!-- fleet-review -->` per
-change request and current author. On a new head, edit it in place with the
-new head, review timestamp, findings and re-published URL. Inline comments
+change request. It edits only the current author's comment and refuses to
+create a second when another author owns it. On a new head, edit it in place
+with the new head, review timestamp, findings and re-published URL. Inline comments
 belong only to concrete findings, one per line: GitHub sends new findings in
 one review batch; GitLab stages positioned draft notes and publishes them
 in one batch. Keep finding ids stable; remove an id

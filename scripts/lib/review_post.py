@@ -13,8 +13,9 @@ resolved. Keep ids stable across heads; unrelated human threads are never touche
 The forge seam owns every API call. GitHub posts new findings in one review
 batch; GitLab stages draft notes and publishes them together.
 Neither writes an empty inline review or casts an approval vote. The maintainer
-skill owns those decisions separately. Review summaries are edited by marker and
-current author. Failed reads and stale pins stop before any mutation.
+skill owns those decisions separately. A marked summary from another author
+refuses publication rather than creating a duplicate. Failed reads and stale
+pins stop before any mutation.
 
 PUBLIC_REVIEW_LINKS=off in orchestration/review.example.conf is the default.
 Only the operator's ignored review.conf may enable public links. An explicit
@@ -89,9 +90,11 @@ def post(adapter, ref, doc, public_links=False):
     login, why = adapter.whoami(ref.repo.host)
     if why or not login:
         raise ValueError(why or "review author could not be determined")
-    notes = [n for n in snapshot["notes"] if MARKER in n["body"] and n["author"] == login]
+    notes = [n for n in snapshot["notes"] if MARKER in n["body"]]
     if len(notes) > 1:
         raise ValueError("multiple fleet summaries already exist; reconcile them before posting")
+    if notes and notes[0]["author"] != login:
+        raise ValueError("fleet summary belongs to another author; refusing to create a second summary")
     findings = sorted(doc["findings"], key=lambda f: SEVERITY.index(f["severity"]))
     link = doc["review"] if snapshot["private"] or public_links else "thurview review available to the operator"
     stamp = datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds")

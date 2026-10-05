@@ -233,3 +233,17 @@ def test_renamed_file_finding_uses_its_base_path_on_gitlab(publisher):
                      if call[0] == 'POST' and call[1].endswith('/draft_notes'))
         assert draft['position']['old_path'] == 'fleet/old.py'
         assert draft['position']['new_path'] == 'fleet/new.py'
+
+
+def test_summary_from_another_account_never_creates_a_duplicate(publisher):
+    post, store, _, cli = publisher
+    state = read(store)
+    note = {'id': 41, 'body': '<!-- fleet-review -->\nAn existing review.'}
+    note['user' if cli == 'gh' else 'author'] = {'login' if cli == 'gh' else 'username': 'another-reviewer'}
+    state['notes'] = [note]
+    write(store, json.dumps(state))
+    done = post()
+    assert done.code == 1
+    assert 'another author' in done.out
+    assert read(store)['notes'] == [note]
+    assert not any(call[0] != 'GET' and call[1] != 'graphql' for call in read(store)['calls'])
