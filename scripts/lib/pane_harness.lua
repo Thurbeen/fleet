@@ -105,6 +105,8 @@ local FUEL_CHECKOUT_NO_CREDENTIAL = false
 local FUEL_UNREADABLE = false
 local FUEL_ACCOUNTS_UNREADABLE = false
 local QUEUE = nil
+local REVIEW = ""
+local ROLES = false
 for i, a in ipairs(arg) do
   if a == "--long-label" then
     LONG_LABEL = true
@@ -130,6 +132,10 @@ for i, a in ipairs(arg) do
     WHEEL[#WHEEL + 1] = tonumber(arg[i + 1]) or 0
   elseif a == "--action" then
     ACTION = arg[i + 1]
+  elseif a == "--review" then
+    REVIEW = arg[i + 1]
+  elseif a == "--roles" then
+    ROLES = true
   elseif a == "--queue" then
     QUEUE = arg[i + 1]
   end
@@ -479,7 +485,7 @@ for _, topic in ipairs(TOPICS) do
     out[#out + 1] = table.concat({
       "K", t.id, t.state, t.title, t.outcome or "", t.artifact or "", t.blockers or "",
       tostring(t.brief or 0), tostring(t.events or 0), tostring(t.result or 0),
-      "feat/" .. t.id, tostring(t.moved or 0), pub[1], pub[2], tostring(pub[3]),
+      "feat/" .. t.id, tostring(t.moved or 0), pub[1], pub[2], tostring(pub[3]), t.artifact and REVIEW or "",
     }, "\t")
   end
 end
@@ -895,4 +901,12 @@ for _, row in ipairs(lines_of(tree, {})) do
   else
     print(text)
   end
+end
+
+if ROLES then
+  local function print_roles(node)
+    if node.role then print(node.role) end
+    for _, child in ipairs(node.children or {}) do print_roles(child) end
+  end
+  print_roles(tree)
 end

@@ -179,3 +179,6 @@ __pycache__/
 # about is one machine's, and the lead's conversation is disposable, so it lives
 # here.
 /orchestration/first-run/
+
+# Review-link publication is the operator's privacy setting, never tracked.
+/orchestration/review.conf

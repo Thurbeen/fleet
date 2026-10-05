@@ -10,7 +10,8 @@ workers' results are not a thing to publish.
 your brief says and verify your own artifact, squash-merge, who merges, the
 gate, one-brief-one-worker, and the result contract. The default publish
 method is not in it — that is the operator's `orchestration/publish.conf`,
-because a tracked file must name no tool. Every `BRIEF.md` the scaffold
+because publishing tools are operator settings. The standing review policy
+names the thurview skill explicitly. Every `BRIEF.md` the scaffold
 writes points at it — by absolute path, or, for a
 task running on a remote host, by a path relative to the brief itself — rather
 than restating it, so it is written once and cannot drift between briefs.
@@ -124,3 +125,20 @@ merged, because a blocker clears on `landed` and half a task on `main` would
 release a dependent onto code that is not there. Landing releases the
 task's session and worktree and stamps `task.yaml` with a `reaped: {session,
 how, at}` receipt, because the id it names no longer resolves to anything.
+
+## Review evidence
+
+Workers publishing changes report `review: <served URL>` beside `artifact:`
+in result.md. `collect` records this as optional `task.yaml.review_url`;
+`review` already holds a served task's closure, so that field is preserved.
+Old records still load and the CLI, pane and run-log facts report
+`review: missing`. Review evidence never changes artifact verification or
+landing. A `reviews:` mapping beside `artifacts:` records a URL per repository
+as a list of `{repo, url}` under `review_url`; `show` and the run log name all
+of them and the pane links the first, as it does for artifacts.
+
+`fleet review-post` maintains a marked summary and finding threads through the
+forge seam. See [POLICY.md](POLICY.md) for review lifetime, publication and the
+public-link opt-in in `orchestration/review.conf` (`PUBLIC_REVIEW_LINKS=off`
+by default). Private review addresses belong to the ignored records; public
+summaries omit them unless the operator explicitly enables that setting.

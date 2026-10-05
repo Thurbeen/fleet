@@ -693,6 +693,9 @@ local function task_rows(out, task)
   elseif task.artifact ~= "" then
     out[#out + 1] = { kind = "artifact", task = task }
   end
+  if task.review ~= "" or task.artifact ~= "" then
+    out[#out + 1] = { kind = "review", task = task }
+  end
 end
 
 --- The rows the pane would draw, as descriptors rather than spans.
@@ -1110,6 +1113,16 @@ local function draw(entry, width, spinner)
   -- an artifact: the kernel re-prints the drawn cells wrapped in OSC 8, so the
   -- whole row answers a Ctrl+Click and the pull request needs no line of its
   -- own to be reachable.
+  if entry.kind == "review" then
+    local linked = task.review ~= ""
+    local text = "review: " .. (linked and task.review or "missing")
+    return line({
+      { text = "   " },
+      { text = widgets.truncate(text, math.max(1, width - 3)),
+        style = { fg = linked and theme.accent or theme.muted, underline = linked } },
+    }, linked and ("url:" .. task.review) or nil)
+  end
+
   if entry.kind == "publish" then
     local role = task.artifact ~= "" and ("url:" .. task.artifact) or nil
     return line(publish_spans(task, width), role)

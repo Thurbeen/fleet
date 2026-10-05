@@ -164,6 +164,19 @@ so `request-changes` means one thing; **three to five lines**.
 report.** An unreviewed change request is a known state; a confidently wrong
 approval is the one failure here that costs more than doing nothing.
 
+### Maintain the review summary and thurview page
+
+After studying the change, follow `orchestration/queue/POLICY.md`'s
+**Serve a review of the published head** and **Post one maintained review
+summary** sections. They own the page, the `fleet review-post` command, the
+summary and finding-thread lifecycle, and the public-link privacy setting.
+Read them before posting. The command uses `scripts/lib/forge.py` for both
+forges; do not post a second summary or duplicate its inline findings.
+
+A summary verdict does not cast a forge approval. Post the maintainer's
+approval or request-changes separately, with the next step and the evidence
+for that decision, then apply the merge gates below.
+
 ## 7. Merge what is clean
 
 The operator's ask to review a named repository is the authorisation to merge

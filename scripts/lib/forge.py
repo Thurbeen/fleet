@@ -551,6 +551,52 @@ class Forge:
         return "", f"{self.name} cannot read a job's log"
 
 
+    def review_snapshot(self, ref: ChangeRef) -> tuple:
+        return None, f"{self.name} cannot read review publication state"
+
+    def review_summary(self, ref: ChangeRef, body: str, note_id=None) -> tuple:
+        return False, f"{self.name} cannot write a review summary"
+
+    def review_findings(self, ref: ChangeRef, head: str, findings: list, pins: dict) -> tuple:
+        return False, f"{self.name} cannot post inline findings"
+
+    def resolve_finding(self, ref: ChangeRef, thread_id: str) -> tuple:
+        return False, f"{self.name} cannot resolve a finding"
+
+    def _review_api(self, ref: ChangeRef, endpoint: str, method="GET", payload=None) -> tuple:
+        """JSON travels on stdin, so review text never becomes shell syntax."""
+        argv = [self.cli, "api", endpoint, "--hostname", ref.repo.host, "--method", method]
+        if payload is not None:
+            argv += ["--input", "-"]
+        try:
+            out = subprocess.run(
+                argv, input=json.dumps(payload) if payload is not None else None,
+                capture_output=True, text=True, encoding="utf-8", timeout=60,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            return None, str(exc)
+        if out.returncode:
+            return None, (out.stderr or out.stdout or f"{self.cli} failed").strip()
+        try:
+            doc = json.loads(out.stdout) if out.stdout.strip() else {}
+        except ValueError:
+            return None, f"{self.cli} returned non-JSON review data"
+        if isinstance(doc, dict) and doc.get("errors"):
+            return None, str(doc["errors"])
+        return doc, ""
+
+    def _review_pages(self, ref: ChangeRef, endpoint: str) -> tuple:
+        rows = []
+        for page in range(1, 11):
+            docs, why = self._review_api(ref, f"{endpoint}?per_page=100&page={page}")
+            if why or not isinstance(docs, list):
+                return None, why or "review listing is not an array"
+            rows.extend(docs)
+            if len(docs) < 100:
+                return rows, ""
+        return None, "review listing reached its cap; nothing posted"
+
+
 # --- GitHub, the first implementation ----------------------------------------
 
 
@@ -683,6 +729,64 @@ class GitHubForge(Forge):
         self._push: dict = {}
         # And one login per host, for the same reason: every note asks it.
         self._me: dict = {}
+
+    def review_snapshot(self, ref: ChangeRef) -> tuple:
+        root = f"repos/{ref.repo.path}"
+        repo, why = self._review_api(ref, root)
+        if why or not isinstance(repo, dict) or not isinstance(repo.get("private"), bool):
+            return None, why or "repository visibility could not be read"
+        change, why = self._review_api(ref, f"{root}/pulls/{ref.number}")
+        if why or not isinstance(change, dict) or not (change.get("head") or {}).get("sha"):
+            return None, why or "change request head could not be read"
+        notes, why = self._review_pages(ref, f"{root}/issues/{ref.number}/comments")
+        if why:
+            return None, why
+        owner, name = ref.repo.path.split("/", 1)
+        query = """query($owner:String!, $name:String!, $number:Int!) {
+          repository(owner:$owner, name:$name) { pullRequest(number:$number) {
+            reviewThreads(first:100) { pageInfo { hasNextPage } nodes { id isResolved
+              comments(first:100) { nodes { body author { login } } } } } } } }"""
+        doc, why = self._review_api(ref, "graphql", "POST", {
+            "query": query, "variables": {"owner": owner, "name": name, "number": ref.number},
+        })
+        if why:
+            return None, why
+        try:
+            threads = doc["data"]["repository"]["pullRequest"]["reviewThreads"]
+            if threads["pageInfo"]["hasNextPage"]:
+                return None, "review threads reached their cap; nothing posted"
+            inline = [{"id": t["id"], "resolved": t["isResolved"],
+                       "body": t["comments"]["nodes"][0]["body"],
+                       "author": (t["comments"]["nodes"][0].get("author") or {}).get("login")}
+                      for t in threads["nodes"] if t["comments"]["nodes"]]
+        except (KeyError, TypeError):
+            return None, "review thread response is incomplete"
+        return {"private": repo["private"], "head": change["head"]["sha"], "pins": {},
+                "notes": [{"id": n["id"], "body": n.get("body", ""),
+                           "author": (n.get("user") or {}).get("login")} for n in notes],
+                "threads": inline}, ""
+
+    def review_summary(self, ref: ChangeRef, body: str, note_id=None) -> tuple:
+        root = f"repos/{ref.repo.path}"
+        endpoint = (f"{root}/issues/comments/{note_id}" if note_id is not None
+                    else f"{root}/issues/{ref.number}/comments")
+        _, why = self._review_api(ref, endpoint, "PATCH" if note_id is not None else "POST", {"body": body})
+        return not why, why
+
+    def review_findings(self, ref: ChangeRef, head: str, findings: list, pins: dict) -> tuple:
+        comments = [{"path": f["path"], "line": f["line"], "side": "RIGHT", "body": f["body"]}
+                    for f in findings]
+        _, why = self._review_api(ref, f"repos/{ref.repo.path}/pulls/{ref.number}/reviews", "POST", {
+            "commit_id": head, "event": "COMMENT", "comments": comments,
+        })
+        return not why, why
+
+    def resolve_finding(self, ref: ChangeRef, thread_id: str) -> tuple:
+        _, why = self._review_api(ref, "graphql", "POST", {
+            "query": "mutation($id:ID!) { resolveReviewThread(input:{threadId:$id}) { thread { isResolved } } }",
+            "variables": {"id": thread_id},
+        })
+        return not why, why
 
     # --- naming ---
 
@@ -1251,6 +1355,79 @@ class GitLabForge(Forge):
         self._push: dict = {}
         self._squash: dict = {}
         self._me: dict = {}
+
+    def _review_root(self, ref: ChangeRef) -> str:
+        return f"projects/{urllib.parse.quote(ref.repo.path, safe='')}/merge_requests/{ref.number}"
+
+    def review_snapshot(self, ref: ChangeRef) -> tuple:
+        project = f"projects/{urllib.parse.quote(ref.repo.path, safe='')}"
+        repo, why = self._review_api(ref, project)
+        if why or not isinstance(repo, dict) or repo.get("visibility") not in ("private", "internal", "public"):
+            return None, why or "repository visibility could not be read"
+        root = self._review_root(ref)
+        change, why = self._review_api(ref, root)
+        if why or not isinstance(change, dict) or not change.get("sha"):
+            return None, why or "change request head could not be read"
+        notes, why = self._review_pages(ref, root + "/notes")
+        if why:
+            return None, why
+        threads, why = self._review_pages(ref, root + "/discussions")
+        if why:
+            return None, why
+        return {"private": repo["visibility"] == "private", "head": change["sha"],
+                "pins": change.get("diff_refs") or {},
+                "notes": [{"id": n["id"], "body": n.get("body", ""),
+                           "author": (n.get("author") or {}).get("username")} for n in notes],
+                "threads": [{"id": t["id"], "resolved": t["notes"][0].get("resolved", False),
+                             "body": t["notes"][0].get("body", ""),
+                             "author": (t["notes"][0].get("author") or {}).get("username")}
+                            for t in threads if t.get("notes") and t["notes"][0].get("resolvable") ]}, ""
+
+    def review_summary(self, ref: ChangeRef, body: str, note_id=None) -> tuple:
+        root = self._review_root(ref) + "/notes"
+        endpoint = root + f"/{note_id}" if note_id is not None else root
+        _, why = self._review_api(ref, endpoint, "PUT" if note_id is not None else "POST", {"body": body})
+        return not why, why
+
+    def review_findings(self, ref: ChangeRef, head: str, findings: list, pins: dict) -> tuple:
+        if not pins.get("base_sha") or not pins.get("start_sha") or pins.get("head_sha") != head:
+            return False, "merge request diff refs do not match the reviewed head"
+        root = self._review_root(ref) + "/draft_notes"
+        drafts, why = self._review_pages(ref, root)
+        if why:
+            return False, why
+        if any(not re.search(r"<!-- fleet-finding:[a-zA-Z0-9_-]+ -->", d.get("note", "")) for d in drafts):
+            return False, "unrelated draft notes exist; refusing to publish someone else's pending review"
+        # Retry a partially staged batch by replacing only our marked drafts.
+        for draft in drafts:
+            _, why = self._review_api(ref, root + f"/{draft['id']}", "DELETE")
+            if why:
+                return False, why
+        created = set()
+        for finding in findings:
+            doc, why = self._review_api(ref, root, "POST", {
+                "note": finding["body"], "position": {
+                    "position_type": "text", **pins, "old_path": finding["path"],
+                    "new_path": finding["path"], "new_line": finding["line"],
+                },
+            })
+            if why or not isinstance(doc, dict) or "id" not in doc:
+                return False, why or "draft creation did not return its id"
+            created.add(doc["id"])
+        pending, why = self._review_pages(ref, root)
+        if why:
+            return False, why
+        if {d["id"] for d in pending} != created:
+            return False, "draft notes changed during staging; nothing published"
+        change, why = self._review_api(ref, self._review_root(ref))
+        if why or not isinstance(change, dict) or change.get("sha") != head:
+            return False, why or "change request head moved during staging; nothing published"
+        _, why = self._review_api(ref, root + "/bulk_publish", "POST")
+        return not why, why
+
+    def resolve_finding(self, ref: ChangeRef, thread_id: str) -> tuple:
+        _, why = self._review_api(ref, self._review_root(ref) + f"/discussions/{thread_id}", "PUT", {"resolved": True})
+        return not why, why
 
     @staticmethod
     def _host(text: str) -> str:

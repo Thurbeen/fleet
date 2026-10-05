@@ -58,7 +58,7 @@ def test_every_live_task_is_one_record_and_an_archived_topic_only_a_count(tmp_pa
     assert records[-1] == ["A", "1"]
 
     tasks = {r[1]: r for r in records if r[0] == "K"}
-    assert all(len(r) == 15 for r in tasks.values())
+    assert all(len(r) == 16 for r in tasks.values())
     one = tasks["01-first"]
     assert one[2:4] == ["queued", "The first task"]
     assert one[6:10] == ["", "1", "2", "1"]
@@ -71,3 +71,14 @@ def test_every_live_task_is_one_record_and_an_archived_topic_only_a_count(tmp_pa
 
 def test_a_queue_that_is_not_there_is_an_E_record_and_exit_0(tmp_path):
     assert probe(FLEET_QUEUE_DIR=str(tmp_path / "nowhere"))[0][0] == "E"
+
+
+def test_review_is_appended_to_the_probe_record(tmp_path):
+    topic = ok(q("topic", "add", "reviews", "--prompt", "p")).stdout.strip()
+    ok(q("add", topic, "linked", "--title", "Linked review", "--repo", str(tmp_path / "repo"),
+         "--branch", "fix/linked"))
+    task = Path(os.environ["FLEET_QUEUE_DIR"]) / topic / "01-linked"
+    with open(task / "task.yaml", "a", encoding="utf-8") as fh:
+        fh.write("review_url: https://review.example/reviews/change\n")
+    record = next(r for r in probe() if r[0] == "K")
+    assert record[15] == "https://review.example/reviews/change"

@@ -36,7 +36,8 @@ local evidence paths, or anything read from the control plane's own records
 and configuration. Describe what was measured, not which machine it was
 measured on. Search your diff and your text for such details before you push
 or post. The operator's `OPERATOR.md`, when your brief names one, lists the
-concrete terms.
+concrete terms. The review-summary section below defines the narrow
+operator-controlled exception for served review URLs.
 
 ## You share the machine
 
@@ -151,6 +152,65 @@ default behind it is the operator's, in `orchestration/publish.conf`, and this
 file no longer carries one — it is tracked, and a tool name here would be one
 operator's pipeline shipped to every clone.
 
+## Serve a review of the published head
+
+A task published as `pr`, `attested` or `push` also authors and serves a
+thurview review with the installed `thurview` skill. Open the change request
+first when the method produces one; for a direct push, review the published
+commit range. Pin the final head. After every later push, re-pin with
+`thurview scaffold --update --review <id>`, update the document and anchors,
+and publish again. Write its served address beside `artifact:` in result.md:
+
+```yaml
+review: <thurview review URL>
+```
+
+For a task spanning repositories, author one review per repository and use a
+`reviews:` mapping keyed by each repository path, alongside `artifacts:`.
+Missing reviews are visible as `review: missing`; they do not block collect.
+Keep result.md current after publication: collect refreshes review addresses
+on concluded tasks too. When the reader's Markdown export is available, they
+can export the review for another agent; that export is not required here.
+
+The review must remain reachable until the task lands. thurview publishes
+sealed revisions in its user-level store and starts a detached shared server.
+Session release removes neither. Live code peeks still read the source
+worktree, which fleet keeps until landing. Do not remove that worktree, stop
+the server or delete the review while the change is open. Use a persistent
+THURVIEW_HOME outside the worker worktree; on a remote worker, keep that host and its server reachable through
+landing. A restart of the host still needs the operator to restart the server.
+
+## Post one maintained review summary
+
+A worker or the `review-prs` reviewer posting a review uses
+`uv run fleet review-post <change-request-url> --file <review.yaml>`.
+`scripts/lib/review_post.py`'s docstring and `--help` own the input contract.
+The payload names the reviewed head, verdict, short summary, confidence score,
+served review URL, and concrete findings with severity and stable ids. Read
+the operator's writing rules and include their sign-off as `signature` where
+required. Publish and verify the thurview page before posting its URL.
+
+The command maintains one summary carrying `<!-- fleet-review -->` per
+change request and current author. On a new head, edit it in place with the
+new head, review timestamp, findings and re-published URL. Inline comments
+belong only to concrete findings, one per line: GitHub sends new findings in
+one review batch; GitLab stages positioned draft notes and publishes them
+in one batch. Keep finding ids stable; remove an id
+only after verifying its defect is fixed, which resolves that thread. Leave
+unrelated threads alone. The summary's verdict does not cast a forge approval:
+the maintainer's review skill still owns approval and merge decisions.
+
+**Never put the served address in a public PR body.** For review comments,
+`orchestration/review.example.conf` defaults `PUBLIC_REVIEW_LINKS=off`. The
+operator can copy it to the ignored `orchestration/review.conf` and explicitly
+set `PUBLIC_REVIEW_LINKS=on` to publish the address on public repositories.
+An explicit `--config` can name that operator-owned file on a remote worker.
+With the default, a public summary says "thurview review available to the
+operator" without a URL. Private repositories always get the link; GitLab
+internal repositories follow the public rule. This setting permits only the
+review URL: all other private details remain forbidden. result.md, task
+records and run logs stay ignored and carry the URL for the operator.
+
 ## Every review gets an answer
 
 Before you write `result.md`, and again after every push, read every review,
@@ -184,6 +244,7 @@ this shape:
 ---
 outcome: shipped | stuck | failed | not-applicable
 artifact: <PR URL, commit URL for a `push` task, note URL for a `note` task, the document's URL for a `served` task, or omit>
+review: <thurview review URL for pr, attested or push; otherwise omit>
 ---
 A short paragraph: what you actually did, and anything the lead must know.
 ```
@@ -199,6 +260,9 @@ outcome: shipped
 artifacts:
   /home/you/code/thurbox: https://github.com/owner/thurbox/pull/41
   /home/you/code/fleet: https://github.com/owner/fleet/pull/12
+reviews:
+  /home/you/code/thurbox: <thurview review URL>
+  /home/you/code/fleet: <thurview review URL>
 ---
 ```
 

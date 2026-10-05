@@ -112,7 +112,7 @@ local FUEL_TIMEOUT = 30
 ---   T <topic slug> <topic title>
 ---   K <id> <state> <title> <outcome> <artifact> <blockers> <brief> <events>
 ---     <result> <branch> <moved-at, epoch seconds> <publish-method>
----     <publish-state> <publish-at, epoch seconds>
+---     <publish-state> <publish-at, epoch seconds> <review>
 ---
 --- `<blockers>` is `ref|kind` pairs, comma separated. The KIND travels with the
 --- ref because it is the whole reason the edge exists: `fleet queue block`
@@ -332,6 +332,7 @@ local function build_model(stdout)
         title = scalar(f[4]),
         outcome = scalar(f[5]),
         artifact = scalar(f[6]),
+        review = scalar(f[16]),
         topic = topic.slug,
         blocked_by = edges(f[7] or ""),
         brief = f[8] == "1",
