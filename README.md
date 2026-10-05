@@ -48,8 +48,9 @@ the installer again is safe.
 ## First use
 
 1. Open thurbox and start the Mission Control session.
-2. Run `/fleet-onboarding`. It finds your repositories, puts the queue pane on
-   screen and starts the reconciler, and asks where the choice is yours.
+2. Run `/fleet-onboarding`. It builds the repository map if you work on a
+   forge, puts the queue pane on screen and starts the reconciler. Where the
+   choice is yours, it asks.
 3. Type a goal into Mission Control in plain words.
 
 `F3` shows and hides the queue pane.
