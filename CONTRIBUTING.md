@@ -355,8 +355,9 @@ is one fact restated in all four and updated in one. **Every fact has exactly
 one owner; reduce a duplicate to a pointer rather than synchronizing it.** This
 section is the map, and `.publish.yaml` names this file so a review reads it.
 
-`README.md` is the human-facing guide: what the control plane is, the
-quickstart, the customization surface, and the layout. It owns the setup story.
+`README.md` is first contact for a person: what fleet is, the requirements,
+the install one-liners and the first steps. Nothing else goes there. The setup
+story belongs to the `fleet-onboarding` skill, and the layout to `AGENTS.md`.
 
 `AGENTS.md` is the agent-facing operating guide for working INSIDE this repo —
 what the trees are, the run loop, and the local gates. It is an index into the
@@ -391,19 +392,17 @@ message. `orchestration/queue/README.md` owns the on-disk record shape, and
 `.agents/skills/fleet-queue/SKILL.md` is the working reference for driving it —
 a reference, not an owner. `scripts/lib/session_trust.py` owns the
 trust-dialog mechanics and the per-agent table, and
-`scripts/lib/trust_thurbox_dir.py` owns the config-seeding fallback. `README.md`
-owns the human-facing version of all of it. Point at one of those rather than
-restating the doctrine in a fifth place.
+`scripts/lib/trust_thurbox_dir.py` owns the config-seeding fallback. Point at
+one of those rather than restating the doctrine in a fifth place.
 
 `orchestration/playbooks/<name>.md` owns a repeatable recipe for a class of
 work; `orchestration/runs/<date>-<slug>.md` owns what happened in one run and is
 append-only history, never edited to match a later decision.
 `registry/context/<repo>.md` owns the human truth about one project.
 `orchestration/session-profiles.yaml` owns the settings a worker session starts
-under, and its own header comment owns the schema and the three rules;
-`README.md` owns it as a customization surface and this file the rationale for
-the gate check over it. Point at one of those rather than restating a rule in a
-fourth place.
+under, and its own header comment owns the schema and the three rules; this
+file owns the rationale for the gate check over it. Point at one of those
+rather than restating a rule in a fourth place.
 
 This repository has no `CHANGELOG.md` and does not need one. Do not add a new
 documentation file to close a perceived gap when an owner above already covers
