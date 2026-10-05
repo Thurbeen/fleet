@@ -183,8 +183,17 @@ the operator to restart the server.
 
 ## Post one maintained review summary
 
-A worker or the `review-prs` reviewer posting a review uses
-`uv run fleet review-post <change-request-url> --file <review.yaml>`.
+A worker or the `review-prs` reviewer posting a review uses:
+
+```text
+uv run --project <fleet-checkout> fleet review-post <change-request-url> \
+  --file <review.yaml>
+```
+
+Use the fleet checkout containing this policy as `<fleet-checkout>`, so a
+worker in another repository uses fleet's environment and the operator's
+settings. A worker testing fleet changes may use its own fleet worktree and
+`--config` to name the operator's configuration explicitly.
 `scripts/lib/review_post.py`'s docstring and `--help` own the input contract.
 The payload names the reviewed head, verdict, short summary, confidence score,
 served review URL, and concrete findings with severity and stable ids. Read
