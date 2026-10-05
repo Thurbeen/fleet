@@ -43,6 +43,10 @@ it:
     note                    one note, as the forge answers for it: who wrote it
                             and what it sits on. What `collect` checks a `note`
                             publish against, and never what its URL claims
+    review_snapshot         visibility, current head, summary notes and finding threads
+    review_summary          create or edit the one marked summary
+    review_findings         publish new head-side findings in one review batch
+    resolve_finding         resolve a verified fixed finding
     whoami                  which account this machine's CLI runs as on a host
                             — the account every worker here posts as
     threads                 how many review threads on a change request are
