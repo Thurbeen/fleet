@@ -1109,10 +1109,6 @@ local function draw(entry, width, spinner)
     return line(note_spans(task, width))
   end
 
-  -- The publish row, carrying the artifact row's own click verb when there is
-  -- an artifact: the kernel re-prints the drawn cells wrapped in OSC 8, so the
-  -- whole row answers a Ctrl+Click and the pull request needs no line of its
-  -- own to be reachable.
   if entry.kind == "review" then
     local linked = task.review ~= ""
     local text = "review: " .. (linked and task.review or "missing")
@@ -1123,6 +1119,10 @@ local function draw(entry, width, spinner)
     }, linked and ("url:" .. task.review) or nil)
   end
 
+  -- The publish row, carrying the artifact row's own click verb when there is
+  -- an artifact: the kernel re-prints the drawn cells wrapped in OSC 8, so the
+  -- whole row answers a Ctrl+Click and the pull request needs no line of its
+  -- own to be reachable.
   if entry.kind == "publish" then
     local role = task.artifact ~= "" and ("url:" .. task.artifact) or nil
     return line(publish_spans(task, width), role)

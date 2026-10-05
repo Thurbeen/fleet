@@ -7,7 +7,7 @@ said nothing, as a failure.
 
     R <root>   E <what went wrong>   A <archived topics>   T <slug> <title>
     K <id> <state> <title> <outcome> <artifact> <blockers> <brief> <events>
-      <result> <branch> <moved-at> <publish-method> <publish-state> <publish-at>
+      <result> <branch> <moved-at> <publish-method> <publish-state> <publish-at> <review>
 """
 
 from __future__ import annotations
