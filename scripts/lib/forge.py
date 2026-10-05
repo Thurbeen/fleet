@@ -1411,7 +1411,7 @@ class GitLabForge(Forge):
         for finding in findings:
             doc, why = self._review_api(ref, root, "POST", {
                 "note": finding["body"], "position": {
-                    "position_type": "text", **pins, "old_path": finding["path"],
+                    "position_type": "text", **pins, "old_path": finding.get("old_path", finding["path"]),
                     "new_path": finding["path"], "new_line": finding["line"],
                 },
             })

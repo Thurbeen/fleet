@@ -7,7 +7,7 @@ The input is an authored verdict about one pinned head, not an automatic
 approval. Required keys: head (full SHA), verdict (approve/request-changes/comment),
 summary, confidence (0..1), review (served URL), findings (a list, possibly empty).
 Each finding has a stable id, severity (critical/high/medium/low), body, path and
-head-side line. Removing an id asserts its finding was fixed: its thread is
+head-side line; old_path names the base path for a renamed file. Removing an id asserts its finding was fixed: its thread is
 resolved. Keep ids stable across heads; unrelated human threads are never touched.
 
 The forge seam owns every API call. GitHub posts new findings in one review
@@ -73,6 +73,8 @@ def validate(doc):
             raise ValueError("finding line must be a positive head-side line")
         if not all(isinstance(f.get(k), str) and f[k].strip() for k in ("body", "path")):
             raise ValueError("finding body and path must be nonempty text")
+        if "old_path" in f and (not isinstance(f["old_path"], str) or not f["old_path"].strip()):
+            raise ValueError("old_path must be nonempty text when supplied")
         if MARKER in f["body"] or FINDING.search(f["body"]):
             raise ValueError("finding body must not contain fleet markers")
     return doc

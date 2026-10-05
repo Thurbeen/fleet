@@ -221,3 +221,15 @@ def test_numeric_finding_id_is_rejected_before_mutation(publisher):
                           'path': 'fleet/cli.py', 'line': 20}])
     assert done.code == 1
     assert not read(store)['calls']
+
+
+def test_renamed_file_finding_uses_its_base_path_on_gitlab(publisher):
+    post, store, _, cli = publisher
+    done = post(findings=[{'id': 'renamed', 'severity': 'medium', 'body': 'Concrete defect.',
+                          'path': 'fleet/new.py', 'old_path': 'fleet/old.py', 'line': 20}])
+    assert done.code == 0, done.out
+    if cli == 'glab':
+        draft = next(call[2] for call in read(store)['calls']
+                     if call[0] == 'POST' and call[1].endswith('/draft_notes'))
+        assert draft['position']['old_path'] == 'fleet/old.py'
+        assert draft['position']['new_path'] == 'fleet/new.py'
