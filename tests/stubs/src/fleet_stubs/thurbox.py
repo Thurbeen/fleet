@@ -7,6 +7,12 @@ or killed — including that nothing was. `watch --json` replays `watch.jsonl`
 whole, whatever `--since` says, which is what a recorded stream does: the floor
 is the queue's to apply. `config show` is only ever read to LOCATE hosts.toml,
 and points at the fixture's, so no run can read the operator's own.
+
+`message send|inbox` model the mailbox: a send appends to `inbox/<to>.jsonl`
+and `inbox` reads it back, `--claim` marking what it returns read. A send
+without `--no-wake` is recorded as `woke`, which is the real CLI pushing the
+body into the recipient's conversation. A `no-inbox` file makes `message` the
+unknown subcommand it is on a thurbox that predates the mailbox.
 """
 
 import json
@@ -52,6 +58,50 @@ def main() -> int:
             sys.stderr.write(f"no such session: {ident}\n")
             return 1
         sys.stdout.write(read(record))
+    elif args[:1] == ["message"]:
+        return mailbox(root, args[1:])
     elif args[:1] == ["watch"]:
         sys.stdout.write(read(root / "watch.jsonl"))
+    return 0
+
+
+def flag(args: list, name: str) -> str:
+    return args[args.index(name) + 1] if name in args[:-1] else ""
+
+
+def mailbox(root, args: list) -> int:
+    if (root / "no-inbox").exists():
+        sys.stderr.write("error: unrecognized subcommand 'message'\n")
+        return 2
+    verb = args[0] if args else ""
+    if verb == "send":
+        to = flag(args, "--to")
+        box = root / "inbox" / f"{to}.jsonl"
+        box.parent.mkdir(parents=True, exist_ok=True)
+        rows = [json.loads(line) for line in read(box).splitlines() if line]
+        row = {
+            "id": len(rows) + 1,
+            "kind": flag(args, "--kind"),
+            "body": flag(args, "--body"),
+            "woke": "--no-wake" not in args,
+            "read_at": None,
+        }
+        with open(box, "a", encoding="utf-8", newline="\n") as fh:
+            fh.write(json.dumps(row) + "\n")
+        via = "mailbox" if "--no-wake" in args else "claude-socket"
+        print(json.dumps({"enqueued": True, "message_id": row["id"], "delivered_via": via}))
+    elif verb == "inbox":
+        box = root / "inbox" / f"{flag(args, '--for')}.jsonl"
+        rows = [json.loads(line) for line in read(box).splitlines() if line]
+        shown = rows if "--all" in args and "--claim" not in args else [
+            r for r in rows if r["read_at"] is None
+        ]
+        if "--claim" in args:
+            for r in shown:
+                r["read_at"] = 1
+            box.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+        print(json.dumps(shown))
+    else:
+        sys.stderr.write(f"error: unrecognized subcommand {verb!r}\n")
+        return 2
     return 0

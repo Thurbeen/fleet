@@ -435,7 +435,7 @@ writes `state` or `outcome`.
 ## 5. Learn what happened — read, do not be interrupted
 
 `thurbox-cli message send` **wakes** the recipient: an arriving worker message
-injects into your terminal and interrupts whoever is talking to you. So
+pushes into your conversation and interrupts whoever is talking to you. So
 completion is two things you READ:
 
 ```text
@@ -464,6 +464,11 @@ RELEASE uv run fleet queue reap [--dry-run]
 
 A remote task completes the same way: `collect` fetches its `result.md` over
 ssh into the task's own, and everything downstream sees a local file.
+
+Your own thurbox mailbox holds one kind of fleet mail: the reconciler's
+`fleet-ready` notice, posted with `--no-wake` when the ready set grew while you
+were mid-turn. Nothing delivers it; `thurbox-cli message inbox --claim` reads
+it, and `uv run fleet queue plan` is the current answer it was a snapshot of.
 
 ### `collect` verifies the artifact — you do not have to take the worker on trust
 

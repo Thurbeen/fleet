@@ -289,8 +289,8 @@ each prompt states the goal, the constraints, and what "done" looks like.
 ## 4. Detect completion
 
 **A worker writes a FILE. It does not send mail.** `thurbox-cli message send`
-wakes its recipient — it injects into the lead's terminal and interrupts
-whoever is talking to it. Completion arrives as two things the lead READS:
+wakes its recipient — it pushes the body into the lead's conversation and
+interrupts whoever is talking to it. Completion arrives as two things the lead READS:
 
 ```text
 the WHEN   thurbox-cli watch --json [--since <seq>]
@@ -310,7 +310,11 @@ absence of a pull request cannot be told from "still working", but a worker
 saying so can.
 
 The mailbox is still right for something genuinely urgent that a human should
-see now, and wrong for routine completion.
+see now, and wrong for routine completion. `--no-wake` is the one form that
+interrupts nobody: it enqueues, delivers nothing, and waits for
+`thurbox-cli message inbox` (peek) or `--claim` (drain, exactly once). The
+reconciler uses it for the ready notice to a lead mid-turn; a thurbox without
+a mailbox refuses the flag, and the caller has to fall back.
 
 **Fallback — sentinel + capture.** For a one-off worker with no record, have
 it print a `===RESULT===` JSON sentinel and poll `thurbox-cli session capture
