@@ -381,8 +381,9 @@ the rule protects is still true of it —
   naming what is ready and the command that sends it. Once per transition, and
   never while you are mid-turn: then the same line goes into your thurbox
   mailbox with `--no-wake` instead, and the typed line waits until you are at
-  rest. `thurbox-cli message inbox --claim` reads it. The decision it hands you is still yours to
-  make; what it took away was the six hours before you knew there was one.
+  rest. `thurbox-cli message inbox --claim` reads it. The decision it hands
+  you is still yours to make; what it took away was the six hours before you
+  knew there was one.
 - **It writes no record.** Every effect goes through `uv run fleet queue`,
   which stays the only writer, exactly as the pane stays a pure reader.
 - **It is stoppable, and a stop stays stopped.** `orchestration/reconcile/down`
