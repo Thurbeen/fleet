@@ -330,7 +330,8 @@ def main(argv: list) -> int:
         if [r for r in fresh if r not in posted]:
             sent, _why = post(sid, message(ready))
             posted = ready if sent else posted
-        where = " — noted in its inbox" if posted else ""
+        noted = all(r in posted for r in fresh)
+        where = " — noted in its inbox" if noted else ""
         return say(
             args.state_dir, told, f"ready work; {name} is {status}{where}; the wake waits", posted
         )

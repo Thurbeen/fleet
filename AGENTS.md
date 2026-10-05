@@ -201,7 +201,8 @@ names every path and the reason for each.
   supervisor holds for its whole life, the heartbeat proving its loop is
   ticking, a pidfile for people, its log, the advisory `nudge` flag, the `down`
   flag, and `notified.json` — which ready tasks the lead has
-  already been woken about, so a transition is told once. That last one is
+  already been woken about, and which were left in its thurbox mailbox while
+  it was mid-turn, so a transition is told once. That last one is
   runtime state and not a record for the same reason as all the others: "the
   lead has been told" is true of one machine's loop and one conversation, and
   writing it onto a task would make the loop a second writer over the queue.
