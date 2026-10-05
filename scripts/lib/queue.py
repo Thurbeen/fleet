@@ -102,8 +102,10 @@ checked nowhere, and they differ in what happens AFTER: a `none` task is
 finished, and a `served` one is a document waiting on a READER, so it holds
 its session until a person runs `fleet queue reviewed <ref>`. The TOOL is
 `--how`: free text rendered into the brief and never parsed, which is what lets
-a task name a publisher fleet has never heard of. A `stuck` or `failed` task
-is read again, and acted on only when the outcome in its result.md CHANGED.
+a task name a publisher fleet has never heard of; a `served` task with none
+takes the operator's `SERVE` line from publish.conf, which says where pages
+are hosted. A `stuck` or `failed` task is read again, and acted on only when
+the outcome in its result.md CHANGED.
 
 `abandon` IS THE ONE HAND-MADE WAY INTO A TERMINAL STATE. A task that will
 never run — superseded, or held by a condition nobody will clear — would
@@ -680,8 +682,9 @@ PUBLISH_METHODS = {
     },
     "served": {
         "brief": (
-            "serve the document where its reader will open it, and leave it "
-            "served — there is nothing to commit and no pull request to open. "
+            "serve the document at a URL its reader can open from their own "
+            "machine, and leave it served — a page dies with the machine "
+            "serving it. There is nothing to commit and no pull request to open. "
             "Your session is kept up so the reader has somebody to answer them"
         ),
         "artifact": "the URL the document is served at",
@@ -2302,6 +2305,10 @@ def cmd_add(args) -> int:
         method, how = args.publish, None
     if args.how is not None:
         how = args.how
+    # A served document's HOW is where it is hosted, which is the operator's
+    # `SERVE` line — the publishing HOW names a tool for another shape.
+    if method == "served" and not how:
+        how = publish_conf().get("SERVE", "").strip() or None
     target = (args.target or "").strip() or None
     refusal = target_refusal(method, target)
     if refusal:

@@ -82,6 +82,13 @@ them. Leave it serving, and stay available until the lead records the review
 closed. So verify your own artifact before you report done. For an `attested`
 task the command below checks the body against the current head.
 
+For a `served` task, host the page the way your Publish line says — the
+operator's `SERVE` setting in `orchestration/publish.conf` puts it there — or,
+where it says nothing, however you can. Put the URL in `result.md`'s
+`artifact:` and keep answering the reader until `fleet queue reviewed`. A page
+dies with the machine serving it, so the URL must be one the reader can open
+from theirs — over a private network such as a tailnet, not `localhost`.
+
 For a `pr` task, verify that each URL is an open or merged change request
 from this task's branch on its stated base. The body needs no attestation.
 `collect` makes this artifact check independently; `shepherd` checks CI and

@@ -7,7 +7,10 @@ by absolute path, is what a scaffolded brief hands a worker — and, when the
 operator has written one, their own OPERATOR.md beside it.
 """
 
-from queuekit import ok
+import os
+from pathlib import Path
+
+from queuekit import PUBLISH_CONF, ok
 
 from harness import REPO, expect, git_ignored, queue_module, refute, write
 from harness import run_queue as q
@@ -59,3 +62,25 @@ def test_the_example_is_tracked_and_the_operators_copy_is_not():
     example = REPO / "orchestration" / "queue" / "OPERATOR.example.md"
     assert example.is_file() and not git_ignored(example)
     assert git_ignored(REPO / "orchestration" / "queue" / "OPERATOR.md")
+
+
+def test_a_served_brief_says_how_to_host_only_when_the_operator_said_so(topic, queue_dir):
+    # A served page's URL was lost once because nobody said where to host it.
+    # The operator's SERVE line is that sentence; without one, the brief names
+    # no tool, and never the publishing HOW meant for another shape.
+    ok(q("add", topic, "serve-plainly", "--title", "Serve plainly", "--publish", "served",
+         "--repo", "/tmp/x", "--branch", "fix/serve-plainly", "--base", "main"))
+    plain = brief(queue_dir, topic, "serve-plainly")
+    expect(plain, "`served`")
+    refute(plain, "Here that means", "/publish")
+
+    conf = Path(os.environ["FLEET_PUBLISH_ROOT"]) / "orchestration" / "publish.conf"
+    write(conf, PUBLISH_CONF + "SERVE=run `my-review-server <file>` on the tailnet\n")
+    ok(q("add", topic, "serve-hosted", "--title", "Serve hosted", "--publish", "served",
+         "--repo", "/tmp/x", "--branch", "fix/serve-hosted", "--base", "main"))
+    expect(brief(queue_dir, topic, "serve-hosted"), "my-review-server")
+
+    # Another shape never inherits the serving sentence.
+    ok(q("add", topic, "push-plainly", "--title", "Push plainly", "--publish", "push",
+         "--repo", "/tmp/x", "--branch", "fix/push-plainly", "--base", "main"))
+    refute(brief(queue_dir, topic, "push-plainly"), "my-review-server")
