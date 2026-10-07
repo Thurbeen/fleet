@@ -61,7 +61,7 @@ It runs inside the thurbox interface, which knows nothing about fleet, so it
 finds the control plane by **probing the lead session by NAME** and running
 its queue probe in that session's checkout. Hence most of §7: the lead must
 exist under the name the pane expects, and the pane needs thurbox's `run`
-capability. The name is `CONTROL_PLANE` at the top of the pane, **without the
+capability. The name is `CONTROL_PLANE` in `interface/fleet_reader.lua`, **without the
 glyph** — which glyph the lead wears is a setting
 (`orchestration/session-glyphs.example.conf`) that `fleet install-extension`
 renders into the manifest, and `uv run fleet check pane` holds the two files

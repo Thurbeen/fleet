@@ -205,7 +205,7 @@
 #
 #   [[sessions]] name                (1) here — the only place that decides
 #                                        what thurbox spawns
-#   interface/fleet_queue.lua        (2) CONTROL_PLANE: the TUI pane probes the
+#   interface/fleet_reader.lua       (2) CONTROL_PLANE: the TUI pane probes the
 #                                        lead to find the checkout. It holds
 #                                        the name WITHOUT the glyph and accepts
 #                                        either mark in front of it, so the
