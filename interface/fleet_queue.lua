@@ -1727,7 +1727,7 @@ return {
   render = function(ctx)
     local width = math.max(4, (ctx.width or 30) - 2)
 
-    local reading = reader.read(ctx)
+    local reading = reader.read(ctx, "column")
     if reading.error then
       return saying(reading.error, width)
     end

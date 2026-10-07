@@ -1,5 +1,5 @@
 -- Shared live record and fuel reader for the legacy column and Kanban overlay.
--- Both views use the same parser and memo; neither writes queue records.
+-- Both views share parsers with per-view memos; neither writes queue records.
 local theme = require("lib.theme")
 local M = {}
 --- The thurbox session that opens the control-plane checkout, WITHOUT its mark.
@@ -382,8 +382,18 @@ end
 --- The kernel keeps the previous answer readable while a refresh is in flight,
 --- so most frames are handed a string this has already parsed — and this pane is
 --- not `pure`, so most frames are frames it is asked on.
-local parsed = { src = nil, model = nil }
-local function model_for(stdout)
+-- Each plugin has its own namespaced run answers. They can differ during a
+-- refresh, so one view must not evict the other's unchanged snapshot.
+local memos = {}
+local function memo_for(view)
+  view = view or "default"
+  if not memos[view] then
+    memos[view] = { queue = {}, fuel = {} }
+  end
+  return memos[view]
+end
+local function model_for(stdout, view)
+  local parsed = memo_for(view).queue
   if parsed.raw == stdout then
     return parsed.model
   end
@@ -483,8 +493,8 @@ end
 --- `build_fuel`, done again only when the record actually changed. The queue
 --- probe's memo, for the same reason: this pane is not `pure`, so it is asked
 --- on frames where nothing has been refetched.
-local fuel_parsed = { src = nil, fuel = nil }
-local function fuel_for(stdout)
+local function fuel_for(stdout, view)
+  local fuel_parsed = memo_for(view).fuel
   if fuel_parsed.src ~= stdout then
     fuel_parsed.src = stdout
     fuel_parsed.fuel = build_fuel(stdout)
@@ -493,7 +503,7 @@ local function fuel_for(stdout)
 end
 
 local selected_fleet
-function M.read(ctx)
+function M.read(ctx, view)
   if not run then
     return { error = {
       "not trusted yet",
@@ -605,7 +615,7 @@ function M.read(ctx)
     if (fuel_answer.stdout or "") == "" then
       fuel = { { unavailable = "the fuel probe did not run" } }
     else
-      fuel = fuel_for(fuel_answer.stdout)
+      fuel = fuel_for(fuel_answer.stdout, view)
     end
   end
 
@@ -621,13 +631,15 @@ function M.read(ctx)
     return { error = { "the queue probe did not run", "in " .. lead.cwd }, lead = lead, fleet = fleet }
   end
 
-  local model = model_for(answer.stdout or "")
+  local model = model_for(answer.stdout or "", view)
   if model.error then
     return { error = { model.error, lead.cwd }, lead = lead, fleet = fleet }
   end
   return { model = model, fuel = fuel, lead = lead, fleet = fleet, spinner = spinner }
 end
-M.model_for = model_for
+M.model_for = function(stdout)
+  return model_for(stdout)
+end
 M.FLEET_MARK = FLEET_MARK
 M.FUEL_TTL, M.FUEL_TIMEOUT = FUEL_TTL, FUEL_TIMEOUT
 return M

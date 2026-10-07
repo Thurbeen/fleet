@@ -37,6 +37,9 @@ local widgets = {
   truncate = function(s, w)
     return len(s) > w and cut(s, math.max(0, w - 1)) .. "…" or s
   end,
+  time_ago = function()
+    return "50m ago"
+  end,
   now_ms = function()
     return 2000000000000
   end,
@@ -276,8 +279,8 @@ if scenario == "topic-picker" then
     task("01-work", "queued", "Picker task " .. i)
   end
 end
-if scenario == "large" then
-  for i = 1, 5000 do
+if scenario == "large" or scenario == "independent-probes" then
+  for i = 1, scenario == "large" and 5000 or 500 do
     task("many-" .. i, "queued", "Large " .. i)
   end
 end
@@ -312,6 +315,59 @@ elseif scenario == "float-contract" then
   assert(floating.render({ width = 200, height = 50, elapsed = 0 }).float, "open board is not floating")
   assert(column.on_action("fleetqueue.board") == false, "column still owns the board toggle")
   print("float-contract passed")
+  return
+elseif scenario == "independent-probes" then
+  local reader = require("lib.fleet_reader")
+  local read = reader.read
+  local phase, readings = nil, {}
+  reader.read = function(...)
+    local reading = read(...)
+    readings[phase] = reading
+    return reading
+  end
+  local ctx = { width = 200, height = 50, elapsed = 0 }
+  local column_state, board_state = {}, { board_open = true }
+  local original = thurbox.runs["fleetqueue:lead"].stdout
+  local updated = original:gsub("Ready", "Updated task")
+  local original_fuel = thurbox.runs["fleetfuel:lead"].stdout
+  local updated_fuel = original_fuel:gsub("remaining\t62", "remaining\t61")
+  local first = {}
+  for frame = 1, 20 do
+    for _, view in ipairs({ "column", "board" }) do
+      phase = view
+      state = view == "column" and column_state or board_state
+      thurbox.runs["fleetqueue:lead"].stdout = view == "column" and original or updated
+      thurbox.runs["fleetfuel:lead"].stdout = view == "column" and original_fuel or updated_fuel
+      local node = (view == "column" and column or pane).render(ctx)
+      assert(node, view .. " stopped drawing")
+      local reading = readings[view]
+      assert(reading and reading.model, view .. " stopped reading records")
+      if frame == 1 then
+        first[view] = reading
+      else
+        assert(reading.model == first[view].model, view .. " reparsed its unchanged probe answer")
+        assert(reading.fuel == first[view].fuel, view .. " reparsed its unchanged fuel answer")
+      end
+    end
+  end
+  assert(first.column.model ~= first.board.model, "different snapshots shared stale task tables")
+  assert(first.column.fuel[1].remaining == 62 and first.board.fuel[1].remaining == 61, "fuel snapshots crossed views")
+  phase, state = "board", board_state
+  thurbox.runs["fleetqueue:lead"].stdout = updated:gsub("H\tticking\t2000000000", "H\tbehind\t2000000010")
+  pane.render(ctx)
+  assert(readings.board.model == first.board.model, "health-only update rebuilt board records")
+  assert(readings.board.model.health == "behind", "board health stopped refreshing")
+  assert(first.column.model.health == "ticking", "board health leaked into column snapshot")
+  thurbox.runs["fleetqueue:lead"].stdout = updated:gsub("Updated task", "Newest task")
+  pane.render(ctx)
+  assert(readings.board.model ~= first.board.model, "board reused outdated tasks")
+  phase, state = "column", column_state
+  thurbox.runs["fleetqueue:lead"].stdout = original
+  thurbox.runs["fleetfuel:lead"].stdout = original_fuel
+  column.render(ctx)
+  assert(readings.column.model == first.column.model, "board refresh evicted the column model")
+  assert(readings.column.fuel == first.column.fuel, "board refresh evicted the column fuel")
+  print("independent-probes passed: 20 alternating frames preserve both snapshots")
   return
 elseif scenario == "health-memo" then
   local model_for

@@ -36,7 +36,7 @@ return {
     if not state.board_open then
       return nil
     end
-    local reading = reader.read(ctx)
+    local reading = reader.read(ctx, "board")
     if
       reading.error
       and last_reading
