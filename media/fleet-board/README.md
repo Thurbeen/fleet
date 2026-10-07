@@ -10,5 +10,8 @@ the plain `.txt` files preserve the full screen. PNGs are raster previews of
 those ANSI captures, using local font fallback rather than a terminal emulator
 screenshot. The native TUI was also exercised with mouse card selection,
 selected-column wheel scrolling, filter-chip clicks, hover and arrow keys in
-both themes. Native drag-selection was also exercised and is blocked by
+both themes, including topic search/selection/cancel/clear. Default board
+captures hide fuel; `-fuel` captures show its compact two-column gauges, and
+`-topics` captures show the searchable picker. Native drag-selection was also
+exercised and is blocked by
 thurbox 2.51.7’s float input routing; the board cannot enable copying itself.

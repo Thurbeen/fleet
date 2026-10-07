@@ -1,20 +1,18 @@
 ╭ Fleet board · alt+k ─────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ FLEET Kanban   reconciler ticking   refreshed 0s ago                                                                 │
-│ Codex 5h                     ███████████████████████████████████████████████████████████████████░░░░░░░░░░░░░░░ 82%  │
-│ Codex 7d                     ██████████████████████████████████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 61%  │
-│ Claude 5h                    ████████████████████████████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 54%  │
-│ Claude 7d                    ████████████████████████████████████████████████████████████░░░░░░░░░░░░░░░░░░░░░░ 73%  │
-│ topic: all   agent: all   needs me: off   landed: folded                                                             │
+│ topic: all   agent: all   needs me: off   landed: folded   fuel: hidden                                              │
 │┏ ▸ ◆ Queued / waiting · 3 ━━━━━━━━━━┓ ╭ ◐ Dispatched / working · 3 ────────╮ ╭ ● Shipped · 3 ───────────────────────╮│
 │┃ atlas/01  queued 40m               ┃ │ atlas/02  dispatched 40m           ┃ │ atlas/03  done 40m                   ┃│
-│┃ ○ Add audit export                 ┃ │ ⠙ Export worker                    ┃ │ ● Validate every exported record     ┃│
+│┃ ○ Add audit export                 ┃ │ ⠦ Export worker                    ┃ │ ● Validate every exported record     ┃│
 │┃ ⌂ codex — no session               ┃ │ ⌂ codex — no session               ┃ │ ⌂ codex — no session                 ┃│
 │┃ queued                             ┃ │ dispatched                         ┃ │ PR #204 failed checks: unit… review  ┃│
 │┃                                    ┃ │                                    ┃ │                                      ┃│
 │┃ beacon/03  waiting 40m             ┃ │ beacon/02  dispatched 40m          ┃ │ beacon/01  done 40m                  ┃│
-│┃ ◆ Wire search index                │ │ ⠙ Search service                   │ │ ● Schema migration                   ││
-│┃ ▣ remote claude — no session       │ │ ▣ remote claude — no session       │ │ ▣ remote claude — no session         ││
+│┃ ◆ Wire search index                ┃ │ ⠦ Search service                   ┃ │ ● Schema migration                   ┃│
+│┃ ▣ remote claude — no session       ┃ │ ▣ remote claude — no session       ┃ │ ▣ remote claude — no session         ┃│
 │┃ consumes: beacon/02                │ │ dispatched                         │ │ MR !81 checks-passed · revi… review  ││
+│┃                                    │ │                                    │ │                                      ││
+│┃                                    │ │                                    │ │                                      ││
 │┃                                    │ │                                    │ │                                      ││
 │┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛ ╰────────────────────────────────────╯ ╰──────────────────────────────────────╯│
 │╭ ◆ Served · 2 ──────────────────────╮ ╭ ✗ Stuck / abandoned · 2 ───────────╮ ╭ ● Landed · recent · 1 ───────────────╮│
@@ -27,6 +25,8 @@
 ││ ◆ Platform walkthrough             │ │ ✗ Legacy cleanup                   │ │                                      ││
 ││ ⌂ codex — no session               │ │ ⌂ claude — no session              │ │                                      ││
 ││ served                             │ │ abandoned                          │ │                                      ││
+││                                    │ │                                    │ │                                      ││
+││                                    │ │                                    │ │                                      ││
 ││                                    │ │                                    │ │                                      ││
 ││                                    │ │                                    │ │                                      ││
 │╰────────────────────────────────────╯ ╰────────────────────────────────────╯ ╰──────────────────────────────────────╯│

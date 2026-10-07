@@ -56,8 +56,11 @@ the installer again is safe.
 `F3` shows and hides the queue column. `Alt+K` opens the full-screen Kanban
 board over your layout. Arrow keys and clicks select cards; Enter focuses a
 live worker, or opens its queue record when no session remains. `d` always
-opens the record. The topic, agent, needs-me and landed chips filter or fold
-the view. Esc returns from the record, then closes the board.
+opens the record. Click the topic chip or press `t` to search topic names and
+slugs, then select with Enter or a click. Esc cancels; All topics clears the
+filter. Agent, needs-me and landed chips filter or fold the view. Fuel is
+hidden by default; click its chip or press `f` for compact gauges in two
+columns. Esc returns from the record, then closes the board.
 
 The board uses six columns, arranged in two bands below 180 terminal columns.
 Recent landed work (the last 24 hours) starts folded. Links
