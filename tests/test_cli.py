@@ -120,6 +120,14 @@ class EntryPointTest(unittest.TestCase):
         self.assertEqual(out.returncode, 2)
         self.assertIn("no-such-group", out.stderr)
 
+    def test_review_post_is_not_a_fleet_command(self) -> None:
+        """Forge review posting belongs to the installed thurview skill."""
+        self.assertIsNotNone(FLEET, "no `fleet` on PATH: run this through `uv run`")
+        out = subprocess.run([FLEET, "review-post", "--help"], capture_output=True,
+                             text=True, encoding="utf-8", timeout=60)
+        self.assertEqual(out.returncode, 2)
+        self.assertIn("review-post", out.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

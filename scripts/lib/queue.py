@@ -133,8 +133,8 @@ REVIEW LINKS ARE OPTIONAL RECORD EVIDENCE. `collect` copies the scalar
 `review:` URL (or per-repository `reviews:`) from result.md into `review_url`,
 including refreshed links on concluded tasks.
 Old records need no migration; views report `review: missing`. It never gates
-artifact verification or landing. The URL belongs to the operator's ignored
-records, not a public change request body.
+artifact verification or landing. Fleet stores the URL in ignored records;
+the installed review workflow owns any forge posting.
 
 THE RUN LOG IS PRODUCED, NOT REMEMBERED. `topic add` opens
 `orchestration/runs/<opened>-<topic>.md` from the tracked _TEMPLATE.md;
@@ -2570,10 +2570,10 @@ def render_brief(task: Task, topic: dict, body: str | None) -> str:
     # have to move together: every brief points its worker there rather than
     # restating the contract, so a change in one place and not the other is how
     # they drift.
-    review_contract = "review: <thurview review URL for pr, attested or push; otherwise omit>"
+    review_contract = "review: <published thurview page URL for pr, attested or push; otherwise omit>"
     if spans and method in PER_REPO_METHODS:
         review_contract = "reviews:\n" + "\n".join(
-            f"  {u['path']}: <thurview review URL>" for u in task_repos(task)
+            f"  {u['path']}: <published thurview page URL>" for u in task_repos(task)
         )
         artifact_contract = "artifacts:\n" + "\n".join(
             f"  {u['path']}: <{spec['artifact']}>" for u in task_repos(task)

@@ -19,7 +19,6 @@ import sys
 LIB = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts", "lib")
 
 GROUPS = {
-    "review-post": ("review_post.py", "post or update a review summary and concrete findings"),
     "queue": ("queue.py", "the task queue: topics, tasks, dispatch and completion"),
     "status": ("fleet_status.py", "one reading of the whole fleet"),
     "peers": ("peers.py", "every other fleet's queue, read-only, for the board"),
