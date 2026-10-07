@@ -1,6 +1,6 @@
 -- Full-screen, read-only projection of fleet_queue's already parsed records.
 -- This library shares its caller's trust, queue/fuel probes and fleet choice.
--- Node roles leave links and text selection to thurbox's native handlers.
+-- Node roles leave links to thurbox’s native handler.
 local ui = require("lib.ui")
 local widgets = require("lib.widgets")
 local theme = require("lib.theme")
@@ -327,7 +327,7 @@ local function detail(ctx)
   local room = math.max(1, ctx.height - 5)
   state.board_detail_offset = math.max(0, math.min(state.board_detail_offset or 0, math.max(0, #lines - room)))
   local children =
-    { text({ chip("Back", "close", false), span("  Drag to select · copy uses thurbox settings", theme.muted) }) }
+    { text({ chip("Back", "close", false), span("  Up/down scroll · Esc goes back", theme.muted) }) }
   for i = state.board_detail_offset + 1, math.min(#lines, state.board_detail_offset + room) do
     children[#children + 1] = text(lines[i])
   end
