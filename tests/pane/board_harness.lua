@@ -217,6 +217,14 @@ task("04-pr", "done", "Failing PR", nil, nil, nil, "pr", "checks-failed")
 task("05-served", "done", "Reader", nil, nil, nil, "served", "served")
 task("06-stuck", "stuck", "Stuck")
 task("07-landed", "landed", "Recent")
+if scenario == "planned-served" then
+  task("08-planned", "queued", "Planned page", nil, nil, nil, "served")
+elseif scenario == "landed-age" then
+  task("08-old", "landed", "Old landing")
+  records[#records - 1] = records[#records - 1]:gsub("1999999000", "1999900000")
+  task("09-undated", "landed", "Undated landing")
+  records[#records - 1] = records[#records - 1]:gsub("1999999000", "0")
+end
 if scenario == "large" then
   for i = 1, 5000 do
     task("many-" .. i, "queued", "Large " .. i)
@@ -236,7 +244,11 @@ _G.command = function(name, args)
 end
 local pane = dofile("interface/fleet_queue.lua")
 assert(pane.on_action("fleetqueue.board"), "the live pane has no board toggle")
-local ctx = { width = scenario == "narrow" and 120 or 200, height = scenario == "narrow" and 40 or 50, elapsed = 0 }
+local ctx = {
+  width = (scenario == "narrow" or scenario == "mouse-band") and 120 or 200,
+  height = (scenario == "narrow" or scenario == "mouse-band") and 40 or 50,
+  elapsed = 0,
+}
 local function tree()
   return pane.render(ctx)
 end
@@ -367,6 +379,24 @@ elseif scenario == "selection" then
   for _, n in ipairs(nodes(tree())) do
     assert(n.role ~= "drag", "text selection stolen by pane drag")
   end
+elseif scenario == "planned-served" then
+  action("needs")
+  assert(not strings(tree()):find("Planned page", 1, true), "a planned document is not awaiting a reader")
+  contains("Reader")
+elseif scenario == "landed-age" then
+  action("landed")
+  contains("Recent")
+  assert(not strings(tree()):find("Old landing", 1, true))
+  assert(not strings(tree()):find("Undated landing", 1, true), "undated work is not known to be recent")
+elseif scenario == "mouse-band" then
+  local root = tree()
+  local second_band_y = 1
+    + root.children[1].len
+    + root.children[2].len
+    + root.children[3].len
+    + root.children[4].children[1].len
+  assert(pane.on_scroll({ x = 5, y = second_band_y, up = false }))
+  assert(state.board_ref == "alpha/05-served", "wheel on the second band's frame scrolled the first band")
 elseif scenario == "glyphs" then
   local ready = false
   for _, node in ipairs(nodes(tree())) do

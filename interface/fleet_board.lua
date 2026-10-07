@@ -48,7 +48,7 @@ local function needs(task)
     task.state == "stuck"
     or task.state == "abandoned"
     or task.state == "failed"
-    or task.publish_method == "served" and task.state ~= "landed"
+    or task.publish_method == "served" and task.state == "done"
     or task.publish_state == "checks-failed"
     or task.publish_state == "changes-requested"
     or task.publish_state == "awaiting-approval"
@@ -66,7 +66,7 @@ local function needs(task)
 end
 local function category(task, now)
   if task.state == "landed" then
-    if task.moved_at == 0 or now - task.moved_at <= 86400 then
+    if task.moved_at > 0 and now - task.moved_at <= 86400 then
       return 6
     end
   elseif task.state == "stuck" or task.state == "abandoned" or task.state == "failed" then
@@ -403,7 +403,7 @@ function M.render(ctx, model, fuel, worker, fleet)
   local fuel_view = fuel_node(fuel, width)
   local board_height = ctx.height - 11 - fuel_view.len
   local per = ctx.width >= 180 and 6 or 3
-  geometry = { per = per, width = width, top = 4 + fuel_view.len, height = board_height, bands = 6 / per, now = now }
+  geometry = { per = per, width = width, top = 3 + fuel_view.len, height = board_height, bands = 6 / per, now = now }
   local bands = {}
   for band = 0, 6 / per - 1 do
     local height = math.floor(board_height / (6 / per))

@@ -35,7 +35,7 @@ def test_board_probe_keeps_navigation_and_attention_fields(tmp_path):
 @pytest.mark.skipif(not REAL_LUA, reason="requires lua")
 @pytest.mark.parametrize("scenario", [
     "columns", "enter-session", "enter-detail", "links", "filters",
-    "landed", "mouse", "selection", "fuel", "narrow", "large", "failure", "fuel-unavailable", "buttons", "missing-session", "reserved", "detail-links", "glyphs",
+    "landed", "mouse", "selection", "fuel", "narrow", "large", "failure", "fuel-unavailable", "buttons", "missing-session", "reserved", "detail-links", "glyphs", "planned-served", "landed-age", "mouse-band",
 ])
 def test_board_interactions(scenario):
     done = run([REAL_LUA, "tests/pane/board_harness.lua", scenario], cwd=REPO)
