@@ -149,3 +149,25 @@ def test_invalid_partition_is_a_usage_error(value):
     done = run_fleet("check", "--partition", *([] if value is None else [value]))
     assert done.code == 2, done.out
     assert "1 <= I <= N" in done.stderr, done.out
+
+
+def test_partition_membership_does_not_change_with_other_areas(tmp_path):
+    copy = tracked_copy(tmp_path / "copy")
+    for directory in ("skills", "settings"):
+        shutil.rmtree(copy / "tests" / directory)
+    write(copy / "tests" / "settings" / "test_extra.py", "def test_extra():\n    pass\n")
+    write(copy / "tests" / "skills" / "test_parts.py", '''from pathlib import Path
+import pytest
+
+
+@pytest.mark.parametrize("number", range(6))
+def test_part(number):
+    marker = Path(__file__).parent / f"{number}.seen"
+    assert not marker.exists(), "partition membership changed"
+    marker.touch()
+''')
+    for areas, part in ((["skills", "automerge"], "1/2"), (["skills"], "2/2")):
+        done = run([*PYTHON, str(copy / "scripts" / "lib" / "check.py"),
+                    *areas, "--jobs", "1", "--partition", part], cwd=copy)
+        assert done.code == 0, done.out
+    assert len(list((copy / "tests" / "skills").glob("*.seen"))) == 6

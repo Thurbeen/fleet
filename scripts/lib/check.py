@@ -29,7 +29,7 @@ workers. `markdown` and `lint` have fixers; `--fix` is a no-op for the rest, so
 it is always safe to pass.
 
 CI PARTITIONS. `--partition I/N` selects one of N deterministic slices of
-collected test node ids. The union is the complete area, including every
+collected test node ids within each area. The union is the complete area, including every
 parameter case; a full local gate uses no partition. Static checks always run
 in full. The workflow validator requires every slice on every runner before
 it counts an area as covered, so a missing job cannot silently weaken CI.
