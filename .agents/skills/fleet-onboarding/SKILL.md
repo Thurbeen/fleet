@@ -9,7 +9,7 @@ allowed-tools: Read, Edit, Write, Bash, Glob, Grep, AskUserQuestion
 
 A fresh clone of fleet to a control plane that runs: dependencies installed,
 owners known and registry synced if the fleet works on a forge, extension
-installed, the queue pane **on screen**, the reconciler up. Every step is a
+installed, Kanban available with `Alt+K`, the reconciler up. Every step is a
 `uv run fleet` command and running them is yours; what the operator needs is
 a sense of where they are and a real say at the five points where the answer
 is theirs.
@@ -283,7 +283,12 @@ operator which of the two situations it is — the clone moved, or this is a
 second fleet — and never guess: one answer deletes a conversation.
 `orchestration/fleet.example.conf` holds the grammar.
 
-## Step 6/7 — The queue pane, on screen
+## Step 6/7 — Kanban and the optional legacy column
+
+Step 5 installs the full-screen Kanban dashboard alongside the legacy column.
+`Alt+K` opens the dashboard without changing the layout. Recommend **Skip**
+in the column-placement choice below when the operator wants only Kanban.
+The following placement checks and ask apply to the optional F3 column.
 
 Step 5 installed the pane. This step is the half that **is not finished when
 that command exits 0**: a pane names a *slot*, the arrangement decides where
@@ -307,11 +312,11 @@ the answer — Mission Control asks the same question on its first session, so
 an answer not recorded is asked twice. Run it bare first: `skip` means it was
 already answered or the layout already places the pane. On `ask`:
 
-- **Place it on the right** (recommended) — a column right of the terminal,
+- **Place it on the right** — a column right of the terminal,
   `pct = 30, min = 34`
 - **Place it on the left** — between the session list and the terminal
 - **Show me the block, I will add it myself**
-- **Skip** — the pane stays installed and invisible; `fleet place-pane`
+- **Skip** (recommended for Kanban) — the column stays installed and invisible; `fleet place-pane`
   places it whenever they want it
 
 ```bash

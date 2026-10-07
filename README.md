@@ -89,8 +89,10 @@ kernel support. It reads records and focuses sessions; it never
 dispatches, merges or changes the queue. Ctrl+H/Ctrl+L remain thurbox’s native
 pane cycle; card navigation uses arrows until [thurbox #1358](https://github.com/Thurbeen/thurbox/issues/1358).
 
-If your existing layout still shows the legacy queue column, press **F3** to
-hide it. **Alt+K** is the dashboard shortcut.
+The optional legacy column is installed alongside the dashboard for
+compatibility. Onboarding still offers to place that column; choose **Skip**
+to use only Kanban, which needs no layout slot. If your layout shows the
+column, press **F3** to hide it. **Alt+K** is the dashboard shortcut.
 
 ## Read more
 
