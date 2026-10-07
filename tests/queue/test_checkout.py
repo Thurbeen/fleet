@@ -123,7 +123,10 @@ def test_the_leads_glyph_is_rendered_and_the_words_still_agree_with_the_pane():
     # keeps the words below comparable at all.
     template = template.replace("__FLEET_LABEL__", "")
 
-    pane = (REPO / "interface" / "fleet_queue.lua").read_text(encoding="utf-8")
+    for filename in ("fleet_queue.lua", "fleet_kanban.lua"):
+        pane = (REPO / "interface" / filename).read_text(encoding="utf-8")
+        assert 'require("lib.fleet_reader")' in pane
+    pane = (REPO / "interface" / "fleet_reader.lua").read_text(encoding="utf-8")
     found = re.search(r'^local CONTROL_PLANE = "(.*)"$', pane, re.MULTILINE)
     assert found, "the pane names the lead in a CONTROL_PLANE constant"
     pane_name = found.group(1)

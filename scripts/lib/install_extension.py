@@ -177,7 +177,7 @@ FLEET_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,23}")
 
 # What separates the lead from its fleet. One cell, no variation selector, and
 # not a character a worker's imperative title reaches for — extension.toml.in's
-# own header owns that argument, and interface/fleet_queue.lua matches it.
+# own header owns that argument, and interface/fleet_reader.lua matches it.
 FLEET_SEPARATOR = " · "
 
 

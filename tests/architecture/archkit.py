@@ -74,7 +74,7 @@ def text_constant(node: ast.expr | None) -> str | None:
 def runnable() -> tuple[tuple[str, str], ...]:
     """Every file that can RUN a module in scripts/lib, as (path, text).
 
-    Python is not the whole answer: `interface/fleet_queue.lua` runs
+    Python is not the whole answer: `interface/fleet_reader.lua` runs
     `pane_probe.py` in a child, and the two bootstraps run the installer.
     """
     files = [*(REPO / "fleet").glob("*.py"), *LIB.glob("*.py"), *LIB.glob("*.lua"),
