@@ -813,6 +813,20 @@ elseif scenario == "peers-none" then
   local function view()
     return table.concat(dump(tree()), " ")
   end
+  local function columns_table()
+    for i = 1, 200 do
+      local name, value = debug.getupvalue(require("lib.fleet_board").render, i)
+      if not name then
+        break
+      end
+      if name == "columns" then
+        return value
+      end
+    end
+  end
+  local first = columns_table()
+  tree()
+  assert(columns_table() == first, "a board with no peers rebuilt its cards on an unchanged frame")
   local baseline = view()
   assert(not baseline:find("fleet: ", 1, true), "a board with no peers grew a fleet filter")
   for _, answer in ipairs({
@@ -836,7 +850,7 @@ elseif scenario == "peers-default" or scenario == "peers-default-narrow" then
   assert(not strings(tree()):find("Elsewhere ready", 1, true), "the default view drew another fleet's tasks")
   contains("downbox/fleet: unreachable 3m")
   contains("local/acme: stale 10m")
-  assert(not strings(tree()):find("local/fleet", 1, true), "one fleet visible, and its cards name it")
+  assert(not strings(tree()):find("local/this", 1, true), "one fleet visible, and its cards name it")
 elseif scenario == "peers-scope" or scenario == "peers-scope-narrow" then
   action("scope")
   contains("fleet: all")
@@ -849,7 +863,7 @@ elseif scenario == "peers-scope" or scenario == "peers-scope-narrow" then
       labels[id] = (labels[id] or "") .. strings(node)
     end
   end
-  assert((labels["board:alpha/03-work"] or ""):find("local/fleet", 1, true), "a local card hides its fleet")
+  assert((labels["board:alpha/03-work"] or ""):find("local/this", 1, true), "a local card hides its fleet")
   assert((labels["board:devbox:/srv/fleet#far/01-far"] or ""):find("devbox/fleet", 1, true), "a peer card hides its fleet")
   if scenario == "peers-scope" then
     contains("Ready")

@@ -159,6 +159,16 @@ def test_a_peer_that_stops_answering_is_stale_and_keeps_its_last_reading(stubs, 
     assert line[4] == "stale"
 
 
+def test_thurbox_failing_to_answer_keeps_every_peer_it_found_before(stubs, tmp_path):
+    machine(stubs, tmp_path, [lead("self", str(REPO), "local-tmux"), lead("far", "/srv/fleet", "ssh:devbox")])
+    assert fleets(json.loads(peers("--json").stdout))["devbox:/srv/fleet"]["status"] == "ok"
+    stubs.tool("thurbox-cli", "import sys\nsys.exit(1)\n")
+    write(stubs.root / "ssh-state" / "me@devbox.down", "")
+    far = fleets(json.loads(peers("--json", "--refresh").stdout)).get("devbox:/srv/fleet")
+    assert far, "a session list that failed once forgot every peer it had found"
+    assert far["status"] == "stale" and [t["ref"] for t in far["tasks"]] == ["remote-topic/01-far"]
+
+
 def test_no_peers_is_this_fleet_alone_and_an_empty_wire(stubs, tmp_path):
     machine(stubs, tmp_path, [lead("self", str(REPO), "local-tmux")])
     doc = json.loads(peers("--json").stdout)
@@ -176,6 +186,14 @@ def test_the_operator_setting_adds_a_peer_and_can_turn_discovery_off(stubs, tmp_
     assert "devbox:/srv/fleet" not in found, "DISCOVER=off still read thurbox's leads"
     late = found["slowbox:/srv/fleet"]
     assert late["status"] == "ok" and late["fleet"] == "late" and late["source"] == "config"
+
+
+def test_two_unnamed_fleets_in_folders_of_one_name_keep_two_names(stubs, tmp_path):
+    machine(stubs, tmp_path, [lead("self", str(REPO), "local-tmux"), lead("a", "/srv/fleet", "ssh:devbox"),
+                              lead("b", "/opt/fleet", "ssh:devbox")])
+    found = fleets(json.loads(peers("--json").stdout))
+    assert found["local:" + str(REPO)]["label"] == "local/this"
+    assert found["devbox:/srv/fleet"]["label"] != found["devbox:/opt/fleet"]["label"]
 
 
 def test_an_unknown_host_is_unreachable_and_not_a_crash(stubs, tmp_path):

@@ -153,7 +153,9 @@ local FUEL_PROBE = "uv run --frozen --quiet fleet status --fuel"
 ---
 --- Asked for the BOARD only. The legacy column draws one fleet and always will.
 local PEERS_TTL = 30
-local PEERS_TIMEOUT = 45
+-- The command's own worst case: thurbox's session list (30s), then the peers
+-- at once (15s), and `uv run` around both.
+local PEERS_TIMEOUT = 60
 local PEERS_PROBE = "uv run --frozen --quiet fleet peers --records"
 
 -- ── Reading the probe ──────────────────────────────────────────────────────

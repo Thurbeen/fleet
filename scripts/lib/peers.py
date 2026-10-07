@@ -101,8 +101,10 @@ fleet_platform = _load_sibling("fleet_platform", "fleet_platform.py")
 CONTROL_PLANE = "Mission Control"
 FLEET_MARK = " · "
 
-# A peer read this recently is not read again: the board asks every 30s.
-TTL = 30
+# A peer read this recently is not read again. Under the board's 30s cadence,
+# because a reading is stamped after the session list and `uv run` start, and
+# a TTL equal to the cadence served every other ask from the cache.
+TTL = 25
 # ssh's own ConnectTimeout is 10s; a login shell and `uv run` sit on top.
 TIMEOUT = 15.0
 
@@ -172,9 +174,12 @@ def settings() -> tuple[bool, list[dict]]:
     return discover, declared
 
 
-def discovered() -> list[dict]:
-    """Every lead thurbox lists, this machine's and every host's."""
+def discovered() -> list[dict] | None:
+    """Every lead thurbox lists, this machine's and every host's — or None when
+    thurbox could not be asked, which is not the same as no lead anywhere."""
     sessions, _why = fleetqueue.session_snapshot()
+    if sessions is None:
+        return None
     found = []
     for row in (sessions or {}).values():
         fleet = lead_fleet(str(row.get("name") or ""))
@@ -196,14 +201,27 @@ def is_self(entry: dict) -> bool:
         return False
 
 
-def peers() -> list[dict]:
+def peers(cache: dict) -> list[dict]:
     discover, declared = settings()
+    found = discovered() if discover else []
+    if found is None:
+        # thurbox did not answer: the leads it listed last time are still the
+        # best answer, and dropping them would drop their last good reading.
+        found = [{k: v[k] for k in ("key", "host", "path", "fleet", "label", "source")}
+                 for v in cache.values() if isinstance(v, dict) and v.get("source") == "thurbox"]
     out, seen = [], set()
-    for entry in declared + (discovered() if discover else []):
+    for entry in declared + found:
         if entry["key"] in seen or is_self(entry):
             continue
         seen.add(entry["key"])
         out.append(entry)
+    # Two unnamed clones are both called after their folder, which is `fleet`
+    # more often than not: a name two fleets share names neither, so they are
+    # told apart by where they are instead.
+    taken = [e["label"] for e in out] + [SELF_LABEL]
+    for entry in out:
+        if taken.count(entry["label"]) > 1:
+            entry["label"] = f"{entry['host']}:{entry['path']}"
     return out
 
 
@@ -234,8 +252,12 @@ def host_entry(name: str) -> tuple[dict | None, str]:
 def remote_script(entry: dict, path: str) -> str:
     shell = fleetqueue.host_shell(entry)
     script = shell.join(shell.join(shell.join(path, "scripts"), "lib"), "pane_probe.py")
-    quote = shlex.quote if shell is fleetqueue.POSIX else fleetqueue.ps_quote
-    return f"uv run --project {quote(path)} --frozen --quiet python {quote(script)}"
+    if shell is fleetqueue.POSIX:
+        return f"uv run --project {shlex.quote(path)} --frozen --quiet python {shlex.quote(script)}"
+    # PowerShell 5 re-encodes a native command's output through the console
+    # code page, which turns every non-ASCII title into mojibake on the way.
+    return ("[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()\n"
+            f"& uv run --project {fleetqueue.ps_quote(path)} --frozen --quiet python {fleetqueue.ps_quote(script)}")
 
 
 def ask(entry: dict, timeout: float) -> tuple[list[str] | None, str]:
@@ -288,18 +310,22 @@ def load_cache() -> dict:
 
 
 def save_cache(doc: dict) -> None:
-    # A cache that cannot be written costs the next reading an ssh, never this one.
+    """One writer at a time: `write_record`'s temporary file has one name, so two
+    callers at once — the board's probe and a person — could publish half a file.
+    The one that finds the lock held leaves the write to the one holding it.
+    A cache that cannot be written costs the next reading an ssh, never this one.
+    """
     try:
         os.makedirs(os.path.dirname(cache_path()), exist_ok=True)
-        fleet_platform.write_record(cache_path(), json.dumps(doc, indent=1) + "\n")
-    except OSError:
+        with fleet_platform.exclusive_lock(cache_path() + ".lock"):
+            fleet_platform.write_record(cache_path(), json.dumps(doc, indent=1) + "\n")
+    except (OSError, fleet_platform.LockHeld):
         pass
 
 
-def read_all(entries: list[dict], refresh: bool, timeout: float) -> list[dict]:
+def read_all(entries: list[dict], old: dict, refresh: bool, timeout: float) -> list[dict]:
     """Every peer with its status, asking only those the cache cannot answer."""
     now = time.time()
-    old = load_cache()
     due = [e for e in entries if refresh or now - float((old.get(e["key"]) or {}).get("tried_at") or 0) >= TTL]
     answers = {}
     if due:
@@ -317,6 +343,7 @@ def read_all(entries: list[dict], refresh: bool, timeout: float) -> list[dict]:
             else:
                 seen["error"] = why
                 seen["failing_since"] = seen.get("failing_since") or now
+        seen.update({k: entry[k] for k in ("key", "host", "path", "fleet", "label", "source")})
         cache[entry["key"]] = seen
         error = seen.get("error") or ""
         if not error:
@@ -361,11 +388,15 @@ def tasks(records: list[str], fleet: str, host: str) -> list[dict]:
     return out
 
 
+# What the board calls this fleet when it is unnamed: `local/this`.
+SELF_LABEL = "local/this"
+
+
 def own() -> dict:
     root = fleetqueue.checkout_root()
     records = probe.records(fleetqueue.queue_root())
     error = next((line.split("\t", 1)[1] for line in records if line.startswith("E\t")), "")
-    return {**peer("local", root, "", "self"), "self": True, "status": "unreachable" if error else "ok",
+    return {**peer("local", root, "", "self"), "label": SELF_LABEL, "self": True, "status": "unreachable" if error else "ok",
             "reason": error, "age": 0, "read_at": int(time.time()), "records": records}
 
 
@@ -402,7 +433,8 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--timeout", type=float, default=TIMEOUT, help="seconds one peer may take")
     args = parser.parse_args(argv)
     sys.stdout.reconfigure(encoding="utf-8")
-    read = read_all(peers(), args.refresh, args.timeout)
+    cache = load_cache()
+    read = read_all(peers(cache), cache, args.refresh, args.timeout)
     if args.records:
         sys.stdout.write(wire(read))
     else:

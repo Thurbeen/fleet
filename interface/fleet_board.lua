@@ -545,9 +545,11 @@ local function in_scope(scope, peer)
   local host = peer and peer.host or "local"
   return scope == "host:" .. host or peer ~= nil and scope == "fleet:" .. peer.key
 end
+-- One empty table, so a board with no peers keeps its card cache between frames.
+local NO_PEERS = {}
 function M.render(ctx, model, fuel, worker, fleet, warning, peers)
   lead = worker
-  peers = peers or {}
+  peers = peers or NO_PEERS
   local now = (thurbox.taken_at_ms or widgets.now_ms()) / 1000
   -- A choice that names a peer no longer on the wire falls back to this fleet
   -- for the frame, without writing state: rendering is read-only.
@@ -570,8 +572,9 @@ function M.render(ctx, model, fuel, worker, fleet, warning, peers)
     locations = {}
     heights_by_column = { {}, {}, {}, {}, {}, {} }
     local seen = {}
-    local cwd = (worker and worker.cwd or ""):match("([^/\\]+)[/\\]*$")
-    local sources = { { model = model, label = "local/" .. (fleet ~= "" and fleet or cwd or "this") } }
+    -- "this", as the filter calls it and `fleet peers` labels it: a peer is
+    -- named by its checkout's basename, and two clones are both `fleet`.
+    local sources = { { model = model, label = "local/this" } }
     for _, peer in ipairs(peers) do
       if in_scope(scope, peer) and peer.model then
         sources[#sources + 1] = { model = peer.model, label = peer.label, peer = peer }
