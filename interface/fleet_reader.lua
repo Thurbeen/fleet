@@ -318,7 +318,11 @@ local function build_model(stdout)
       local task = topic.tasks[#topic.tasks]
       if f[2] == topic.slug .. "/" .. task.id then
         task.agent, task.host, task.session = f[3] or "", f[4] or "", f[5] or ""
-        task.review, task.publish_detail, task.threads = f[6] or "", f[7] or "", tonumber(f[8])
+        -- Collected evidence takes precedence over the board's legacy review field.
+        if task.review == "" then
+          task.review = f[6] or ""
+        end
+        task.publish_detail, task.threads = f[7] or "", tonumber(f[8])
       end
     elseif kind == "T" then
       local f = split_tabs(line)

@@ -15,6 +15,10 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import pytest
+import yaml
+from panekit import REAL_LUA
+
 from harness import PYTHON, REPO, run, write
 from harness import run_queue as q
 
@@ -82,3 +86,25 @@ def test_review_is_appended_to_the_probe_record(tmp_path):
         fh.write("review_url: https://review.example/reviews/change\n")
     record = next(r for r in probe() if r[0] == "K")
     assert record[15] == "https://review.example/reviews/change"
+
+
+@pytest.mark.skipif(not REAL_LUA, reason="requires lua")
+@pytest.mark.parametrize('legacy_review', ['', 'https://review.example/reviews/legacy'])
+def test_board_metadata_preserves_the_collected_review_link(tmp_path, legacy_review):
+    root = Path(os.environ['FLEET_QUEUE_DIR'])
+    write(root / 'sample' / 'topic.yaml', 'title: Sample\n')
+    review = 'https://review.example/reviews/published'
+    write(root / 'sample' / '01-work' / 'task.yaml', yaml.safe_dump({
+        'id': '01-work', 'state': 'done', 'title': 'Work',
+        'artifact': 'https://github.com/example/project/pull/2',
+        'review_url': review, 'review': legacy_review,
+    }))
+    records = ok(run([*PYTHON, str(PROBE)])).stdout
+    script = tmp_path / 'read.lua'
+    write(script, '''package.preload["lib.theme"] = function() return {} end
+local reader = dofile("interface/fleet_reader.lua")
+local model = reader.model_for(io.read("*a"))
+print(model.topics[1].tasks[1].review)
+''')
+    rendered = ok(run([REAL_LUA, str(script)], stdin=records))
+    assert rendered.stdout.strip() == review
