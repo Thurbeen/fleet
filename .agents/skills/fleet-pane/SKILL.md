@@ -160,7 +160,17 @@ check` came back unplaced.
 
 ## 5. The F-key
 
-`F3` hides and shows the column — the pane's only action, a **global** chord
+`Alt+K` toggles the full-screen, read-only Kanban board without a layout edit.
+It shares the column’s probes and trust. Arrows and clicks select cards; Enter
+focuses a live session or opens `fleet queue show` when there is none. `d`
+always opens the record. Esc goes back, then closes the board. The topic,
+agent, needs-me and landed chips are clickable; `t`, `a`, `n`, `l` reach the
+same actions. Wheel scrolling follows the pointed column or the detail view.
+Recent landed cards (24 hours) start folded. The board uses the active theme,
+native link roles and normal text selection/copy. Ctrl+H/Ctrl+L still belong
+to the kernel, pending [thurbox #1358](https://github.com/Thurbeen/thurbox/issues/1358).
+
+`F3` hides and shows the column — a **global** chord
 because an unfocusable pane can be reached no other way, and the way back
 since it resolves from the key registry rather than from what is on screen.
 The `Fleet · F3` button on the pane's top border and the `Fleet` pill in the

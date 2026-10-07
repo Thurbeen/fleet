@@ -53,7 +53,17 @@ the installer again is safe.
    choice is yours, it asks.
 3. Type a goal into Mission Control in plain words.
 
-`F3` shows and hides the queue pane.
+`F3` shows and hides the queue column. `Alt+K` opens the full-screen Kanban
+board over your layout. Arrow keys and clicks select cards; Enter focuses a
+live worker, or opens its queue record when no session remains. `d` always
+opens the record. The topic, agent, needs-me and landed chips filter or fold
+the view. Esc returns from the record, then closes the board.
+
+The board uses six columns, arranged in two bands below 180 terminal columns.
+Recent landed work (the last 24 hours) starts folded. Links and text selection
+use thurbox’s normal handling. It reads records and focuses sessions; it never
+dispatches, merges or changes the queue. Ctrl+H/Ctrl+L remain thurbox’s native
+pane cycle; card navigation uses arrows until [thurbox #1358](https://github.com/Thurbeen/thurbox/issues/1358).
 
 ![The queue pane in a thurbox column beside the session list: the account's
 remaining quota as a bar, then running tasks grouped under their topics, one
