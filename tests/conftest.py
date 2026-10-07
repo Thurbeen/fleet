@@ -33,3 +33,20 @@ def isolated_env(tmp_path, monkeypatch, stub_bin) -> Path:
 @pytest.fixture
 def stubs(isolated_env) -> Stubs:
     return Stubs(isolated_env / "stubs")
+
+
+def pytest_addoption(parser):
+    parser.addoption("--fleet-partition", help="one deterministic I/N slice of collected test node ids")
+
+
+def pytest_collection_modifyitems(config, items):
+    partition = config.getoption("--fleet-partition")
+    if not partition:
+        return
+    index, count = map(int, partition.split("/"))
+    positions = {item.nodeid: n for n, item in enumerate(sorted(items, key=lambda item: item.nodeid))}
+    selected, deselected = [], []
+    for item in items:
+        (selected if positions[item.nodeid] % count == index - 1 else deselected).append(item)
+    config.hook.pytest_deselected(items=deselected)
+    items[:] = selected

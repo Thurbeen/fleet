@@ -21,7 +21,9 @@ jobs:
   #
   # Shards keep the gate's area names. Inside each, fleet check uses up to
   # eight independent pytest workers (bounded by CPU count); isolation keeps its poisoned checkout
-  # and reruns the same areas with four child workers. No tests are omitted.
+  # and reruns the same areas with four child workers. Queue and isolation
+  # also partition collected node ids across jobs; the workflow check holds
+  # the complete set of partitions on both runners. No tests are omitted.
   #
   # The `areas` strings are a COPY of the names in scripts/lib/check.py, and a
   # copy goes stale: check_workflow.py fails a workflow whose shards do not
@@ -37,12 +39,22 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
         shard:
-          - name: queue
-            areas: queue
+          - name: queue-1
+            areas: queue --partition 1/3
+          - name: queue-2
+            areas: queue --partition 2/3
+          - name: queue-3
+            areas: queue --partition 3/3
           - name: install
             areas: install
-          - name: isolation
-            areas: isolation
+          - name: isolation-1
+            areas: isolation --partition 1/4
+          - name: isolation-2
+            areas: isolation --partition 2/4
+          - name: isolation-3
+            areas: isolation --partition 3/4
+          - name: isolation-4
+            areas: isolation --partition 4/4
           - name: rest
             areas: lock lint markdown docs yaml workflow profiles cli reconcile status sync onboarding pane extension skills automerge architecture local
     runs-on: ${{ matrix.os }}

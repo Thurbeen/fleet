@@ -27,7 +27,9 @@ against the same host, and `test_every_test_runs_isolated` holds every test to
 it. The queue area IS run here, because it is the one reader of
 `orchestration/agent-policy.conf` — a setting that sits at the checkout root
 rather than inside a fixture, so nothing but a real poisoned copy proves it
-cannot leak.
+cannot leak. Its three partitions together run every collected queue test;
+other settings areas run together in their own child gate. Each child has a
+separate poisoned checkout, and each keeps the same verdict and leak checks.
 """
 
 import re
@@ -130,10 +132,14 @@ def test_the_static_checks_read_no_record_and_no_setting(poisoned, hostile):
     assert_same_verdict(gate(poisoned, hostile, "lock", "yaml", "workflow", "profiles"), hostile)
 
 
-def test_the_areas_that_read_settings_give_the_same_verdict(poisoned, hostile):
-    areas = [a for a in ("automerge", "skills", "extension", "status", "sync", "onboarding", "install", "queue")
-             if (poisoned / "tests" / {"automerge": "settings"}.get(a, a)).is_dir()]
-    assert_same_verdict(gate(poisoned, hostile, *areas), hostile)
+@pytest.mark.parametrize("checks", [
+    ("automerge", "skills", "extension", "status", "sync", "onboarding", "install"),
+    ("queue", "--partition", "1/3"),
+    ("queue", "--partition", "2/3"),
+    ("queue", "--partition", "3/3"),
+])
+def test_the_areas_that_read_settings_give_the_same_verdict(poisoned, hostile, checks):
+    assert_same_verdict(gate(poisoned, hostile, *checks), hostile)
 
 
 def test_every_test_runs_isolated():

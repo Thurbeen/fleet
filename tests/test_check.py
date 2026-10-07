@@ -121,3 +121,31 @@ def test_invalid_worker_count_is_a_usage_error(value):
     done = run_fleet("check", "--jobs", *([] if value is None else [value]))
     assert done.code == 2, done.out
     assert "positive integer" in done.stderr, done.out
+
+
+def test_partitions_run_every_test_exactly_once(tmp_path):
+    copy = tracked_copy(tmp_path / "copy")
+    area = copy / "tests" / "skills"
+    shutil.rmtree(area)
+    write(area / "test_parts.py", '''from pathlib import Path
+import pytest
+
+
+@pytest.mark.parametrize("number", range(6))
+def test_part(number):
+    marker = Path(__file__).parent / f"{number}.seen"
+    assert not marker.exists(), "a test ran in two partitions"
+    marker.touch()
+''')
+    for part in (1, 2):
+        done = run([*PYTHON, str(copy / "scripts" / "lib" / "check.py"),
+                    "skills", "--jobs", "1", "--partition", f"{part}/2"], cwd=copy)
+        assert done.code == 0, done.out
+        assert len(list(area.glob("*.seen"))) == 3 * part, done.out
+
+
+@pytest.mark.parametrize("value", [None, "0/2", "3/2", "1/0", "1", "x/2"])
+def test_invalid_partition_is_a_usage_error(value):
+    done = run_fleet("check", "--partition", *([] if value is None else [value]))
+    assert done.code == 2, done.out
+    assert "1 <= I <= N" in done.stderr, done.out

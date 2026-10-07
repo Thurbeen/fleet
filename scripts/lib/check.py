@@ -5,6 +5,7 @@
     uv run fleet check yaml queue        only the named ones
     uv run fleet check --fix markdown    apply the fixes a check can apply
     uv run fleet check --jobs 1          serial diagnosis
+    uv run fleet check queue --partition 1/3  one CI slice
     uv run fleet check --list            every check: name, kind, what it runs
 
 CI runs it on a Linux and a Windows runner, the prek hooks run it, and
@@ -26,6 +27,12 @@ still gets a fresh isolated environment. `--jobs N` sets the worker count and
 to bound process creation; the poisoned isolation child explicitly uses four
 workers. `markdown` and `lint` have fixers; `--fix` is a no-op for the rest, so
 it is always safe to pass.
+
+CI PARTITIONS. `--partition I/N` selects one of N deterministic slices of
+collected test node ids. The union is the complete area, including every
+parameter case; a full local gate uses no partition. Static checks always run
+in full. The workflow validator requires every slice on every runner before
+it counts an area as covered, so a missing job cannot silently weaken CI.
 
 IT READS NO OPERATOR STATE. One commit gets one verdict — on CI, in a worker's
 worktree and in the control-plane checkout — so no check reads what a running
@@ -168,7 +175,7 @@ STATIC = {
 FIXERS = {"markdown", "lint"}
 
 
-def check_tests(names: list[str], jobs: int) -> str | None:
+def check_tests(names: list[str], jobs: int, partition: str | None = None) -> str | None:
     tools = sorted({tool for name in names for tool in TESTS[name][1]})
     if err := missing(*tools):
         return err
@@ -178,6 +185,8 @@ def check_tests(names: list[str], jobs: int) -> str | None:
     argv = [sys.executable, "-m", "pytest", "-q", "--durations=50"]
     if jobs > 1:
         argv += ["-n", str(jobs)]
+    if partition:
+        argv += ["--fleet-partition", partition]
     return "pytest" if run([*argv, *targets]) else None
 
 
@@ -191,7 +200,7 @@ def main(argv: list[str]) -> int:
     # Line-buffered, so each verdict lands after the tool output it judges.
     sys.stdout.reconfigure(line_buffering=True)
     everything = [*STATIC, *TESTS]
-    usage = f"usage: fleet check [--fix] [--list] [--jobs N] [check...]\nchecks: {' '.join(everything)}\n"
+    usage = f"usage: fleet check [--fix] [--list] [--jobs N] [--partition I/N] [check...]\nchecks: {' '.join(everything)}\n"
     if "-h" in argv or "--help" in argv:
         sys.stdout.write(__doc__.strip() + "\n\n" + usage)
         return 0
@@ -210,6 +219,18 @@ def main(argv: list[str]) -> int:
             sys.stderr.write("fleet check: --jobs wants a positive integer\n" + usage)
             return 2
         del argv[pos:pos + 2]
+    partition = None
+    if "--partition" in argv:
+        pos = argv.index("--partition")
+        try:
+            partition = argv[pos + 1]
+            index, count = map(int, partition.split("/"))
+            if not 1 <= index <= count:
+                raise ValueError
+        except (IndexError, ValueError):
+            sys.stderr.write("fleet check: --partition wants I/N with 1 <= I <= N\n" + usage)
+            return 2
+        del argv[pos:pos + 2]
     fix = "--fix" in argv
     names = [a for a in argv if a != "--fix"] or everything
     unknown = [n for n in names if n not in STATIC and n not in TESTS]
@@ -224,7 +245,7 @@ def main(argv: list[str]) -> int:
     areas = list(dict.fromkeys(n for n in names if n in TESTS))
     if areas:
         label = "tests" if len(areas) > 1 else areas[0]
-        verdicts.append((label, check_tests(areas, jobs)))
+        verdicts.append((label, check_tests(areas, jobs, partition)))
         report(*verdicts[-1])
     failed = [name for name, err in verdicts if err]
     if failed:
