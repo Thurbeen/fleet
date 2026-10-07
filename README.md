@@ -21,6 +21,21 @@ queue, checks and merges on the forge, and wakes the lead. Below, the loop:
 intake, brief, dispatch, watch, collect, shepherd, merge, reap, plus
 refuel.](docs/fleet-architecture.svg)
 
+## Kanban dashboard
+
+See the whole fleet without leaving thurbox. **Alt+K** opens six columns of
+live queue records, from waiting tasks to working sessions, open change
+requests, reader replies and work that needs your attention.
+
+![Animated Kanban demo: navigate cards, filter work that needs attention,
+search a topic while the board stays visible, clear the filter, and toggle
+optional fuel gauges.](media/fleet-board.gif)
+
+The board follows your light or dark theme and fits smaller terminals with
+two bands of columns. Click cards or use arrows; Enter takes you to a live
+worker or its queue record. Press **t** to search topics and **f** to show
+fuel, which stays hidden by default. Filters and navigation are read-only.
+
 ## Requirements
 
 - [thurbox](https://github.com/Thurbeen/thurbox), with tmux (psmux on Windows).

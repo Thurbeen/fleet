@@ -15,3 +15,9 @@ captures hide fuel; `-fuel` captures show its compact two-column gauges, and
 `-topics` captures show search inside the board’s detail area. Native
 drag-selection was also exercised and is blocked by thurbox 2.51.7’s float
 input routing; the board cannot enable copying itself.
+
+The README’s `../fleet-board.gif` animates 13 native 120×40 dark-theme captures
+of card selection, scrolling, the needs-me filter, topic search and selection,
+clearing the topic filter, and fuel visibility. It uses the same synthetic
+fixture and ANSI-to-image rendering described above; it contains no live
+operator records.
