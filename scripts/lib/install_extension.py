@@ -413,6 +413,12 @@ def install_pane(cli: str) -> None:
     if not os.path.isfile(source):
         print(f"\nwarning: {source} is missing; the TUI queue pane was not installed", file=sys.stderr)
         return
+    board = os.path.join(REPO_ROOT, "interface", "fleet_board.lua")
+    if not os.path.isfile(board) or subprocess.run(
+        [cli, "plugin", "install", board, "--as", "lib/fleet_board.lua", "--text"]
+    ).returncode:
+        print("\nwarning: could not install the fleet board library; the pane was not updated", file=sys.stderr)
+        return
     if subprocess.run([cli, "plugin", "install", source, "--as", PANE_DEST, "--text"]).returncode:
         print(f"\nwarning: could not install the TUI queue pane from {source}", file=sys.stderr)
         return
@@ -421,7 +427,7 @@ def install_pane(cli: str) -> None:
     # pane that loads and is placed by no arrangement — so its verdict is read.
     check = subprocess.run([cli, "plugin", "check", "--text"], capture_output=True, encoding="utf-8", errors="replace")
     if check.returncode == 0:
-        print("\nThe fleet queue pane is installed and placed. Press F3 in thurbox.")
+        print("\nThe fleet queue pane is installed and placed. Press F3 for the column or Alt+K for the board in thurbox.")
         return
     ui_lines = subprocess.run(
         [cli, "plugin", "dir", "--text"], capture_output=True, encoding="utf-8", errors="replace"

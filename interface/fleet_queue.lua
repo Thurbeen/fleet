@@ -239,6 +239,10 @@ local SLOT = "fleetqueue"
 local TOGGLE = "fleetqueue.toggle"
 local PAGE_UP = "fleetqueue.page_up"
 local PAGE_DOWN = "fleetqueue.page_down"
+local BOARD = "fleetqueue.board"
+local function board()
+  return require("lib.fleet_board")
+end
 
 --- The identities the scroll marks carry, which `on_click` answers.
 local SCROLL_UP, SCROLL_DOWN = "scroll-up", "scroll-down"
@@ -559,6 +563,16 @@ local function build_model(stdout)
       model.root = split_tabs(line)[2]
     elseif kind == "A" then
       model.archived = tonumber(split_tabs(line)[2]) or 0
+    elseif kind == "H" then
+      local f = split_tabs(line)
+      model.health, model.read_at = f[2], tonumber(f[3])
+    elseif kind == "B" and topic and #topic.tasks > 0 then
+      local f = split_tabs(line)
+      local task = topic.tasks[#topic.tasks]
+      if f[2] == topic.slug .. "/" .. task.id then
+        task.agent, task.host, task.session = f[3] or "", f[4] or "", f[5] or ""
+        task.review, task.publish_detail, task.threads = f[6] or "", f[7] or "", tonumber(f[8])
+      end
     elseif kind == "T" then
       local f = split_tabs(line)
       topic = { slug = f[2] or "", title = f[3] or "", tasks = {} }
@@ -825,6 +839,7 @@ end
 --- that block is built well below this function; the states that return
 --- before it is built pass nothing and are drawn exactly as they were.
 local function saying(lines, width, above)
+  if state.board_open then board().invalidate() end
   local room = math.max(1, (width or 40) - 2)
   local children = {}
   for _, row in ipairs(above or {}) do
@@ -860,7 +875,12 @@ local function saying(lines, width, above)
     end
     flush()
   end
-  return { type = "box", frame = frame(), children = children }
+  return {
+    type = "box",
+    frame = frame(),
+    children = children,
+    float = state.board_open and { width = 100, height = 100 } or nil,
+  }
 end
 
 --- Glyph and role for one display state.
@@ -2122,20 +2142,31 @@ end
 return {
   name = "fleetqueue",
 
-  -- Placed by `layout.lua` as a side column. Without that edit this file loads,
-  -- declares its key, and draws nothing — which is what `thurbox-cli plugin
-  -- check` fails on, and it prints the block to add.
+  -- The side column is placed by layout.lua; the board floats over any layout.
   slot = SLOT,
+  floats = true,
   order = 80,
 
-  -- The point of the pane: it is watched, never entered. There is no key here
-  -- that writes to the queue, and no focus to type one into.
+  -- The side column is watched, never entered. Its floating board supports
+  -- navigation, while neither view writes to the queue.
   focusable = false,
 
   -- Declaring it is not being granted it: settings (`Ctrl+,`) → `]` → `t`.
   capabilities = { "run" },
 
   keys = {
+    { key = "alt+k", action = BOARD, desc = "toggle the fleet Kanban board", scope = "global", group = "UI" },
+    { key = "up", action = "fleetqueue.board_up", desc = "previous card", group = "Kanban" },
+    { key = "down", action = "fleetqueue.board_down", desc = "next card", group = "Kanban" },
+    { key = "left", action = "fleetqueue.board_left", desc = "previous column", group = "Kanban" },
+    { key = "right", action = "fleetqueue.board_right", desc = "next column", group = "Kanban" },
+    { key = "enter", action = "fleetqueue.board_enter", desc = "focus worker or show record", group = "Kanban" },
+    { key = "esc", action = "fleetqueue.board_close", desc = "close board or detail", group = "Kanban" },
+    { key = "t", action = "fleetqueue.board_topic", desc = "cycle topic filter", group = "Kanban" },
+    { key = "a", action = "fleetqueue.board_agent", desc = "cycle agent filter", group = "Kanban" },
+    { key = "n", action = "fleetqueue.board_needs", desc = "toggle needs me filter", group = "Kanban" },
+    { key = "l", action = "fleetqueue.board_landed", desc = "fold recent landed cards", group = "Kanban" },
+    { key = "d", action = "fleetqueue.board_detail", desc = "show full queue record", group = "Kanban" },
     {
       -- F3, and NOT F4 or F6. The kernel binds F1 Help, F4 Theme, F6
       -- Settings, F10 reload and F12 the perf HUD, and advertises four of
@@ -2316,6 +2347,9 @@ return {
     if model.error then
       return saying({ model.error, lead.cwd }, width)
     end
+    if state.board_open then
+      return board().render(ctx, model, fuel, lead, fleet)
+    end
     local archived = model.archived or 0
     if #model.topics == 0 then
       -- FUEL FIRST here too, for the reason the header gives: the reading was
@@ -2441,6 +2475,9 @@ return {
   --
   -- Past the bottom is fine here: the next render clamps it.
   on_scroll = function(wheel)
+    if state.board_open then
+      return board().on_scroll(wheel)
+    end
     scroll_by(wheel.up and -SCROLL_STEP or SCROLL_STEP)
     return true
   end,
@@ -2449,6 +2486,9 @@ return {
   -- kernel verb, so the click comes here. Anything else — the pane's own root
   -- identity, a row with no link — is declined and left to the kernel.
   on_click = function(hit)
+    if state.board_open then
+      return board().on_click(hit)
+    end
     if hit.id == HIDE_BUTTON then
       panels.toggle(SLOT)
       return true
@@ -2462,7 +2502,21 @@ return {
     return false
   end,
 
+  on_key = function(key)
+    if state.board_open then
+      return board().on_key(key)
+    end
+    return false
+  end,
   on_action = function(action)
+    if action == BOARD then
+      state.board_open = not state.board_open
+      state.board_detail = nil
+      return true
+    end
+    if state.board_open and action:match("^fleetqueue%.board_") then
+      return board().on_action(action)
+    end
     if action == TOGGLE then
       panels.toggle(SLOT)
       return true

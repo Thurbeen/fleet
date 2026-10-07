@@ -138,6 +138,8 @@ def test_an_install_installs_the_extension_and_the_pane_and_places_nothing(stubs
     assert stubs.calls("thurbox-cli", f"extension install {fleet}")
     pane = fleet / "interface" / "fleet_queue.lua"
     assert stubs.calls("thurbox-cli", f"plugin install {pane} --as plugins/91_fleet_queue.lua --text")
+    board = fleet / "interface" / "fleet_board.lua"
+    assert stubs.calls("thurbox-cli", f"plugin install {board} --as lib/fleet_board.lua --text")
     assert ui.read_bytes() == STOCK.read_bytes()
     assert not list(ui.parent.glob("layout.lua.bak-*"))
     expect(done.out, "NOT PLACED", "uv run fleet place-pane", str(ui), "thurbox-cli extension status fleet")
