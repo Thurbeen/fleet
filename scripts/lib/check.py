@@ -184,7 +184,9 @@ def check_tests(names: list[str], jobs: int, partition: str | None = None) -> st
         return "no tests to run"
     argv = [sys.executable, "-m", "pytest", "-q", "--durations=50"]
     if jobs > 1:
-        argv += ["-n", str(jobs)]
+        # Consecutive isolation cases each launch a child gate: large default
+        # chunks strand them on one worker while the others finish.
+        argv += ["-n", str(jobs), "--maxschedchunk=1"]
     if partition:
         argv += ["--fleet-partition", partition]
     return "pytest" if run([*argv, *targets]) else None
