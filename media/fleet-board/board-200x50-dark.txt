@@ -7,7 +7,7 @@
 │ topic: all   agent: all   needs me: off   landed: folded                                                                                                                                             │
 │┏ ▸ ◆ Queued / waiting · 3 ━━━━┓ ╭ ◐ Dispatched / working · 3 ──╮ ╭ ● Shipped · 3 ───────────────╮ ╭ ◆ Served · 2 ────────────────╮ ╭ ✗ Stuck / abandoned · 2 ─────╮ ╭ ● Landed · recent · 1 ────────╮│
 │┃ atlas/01  queued 40m         ┃ │ atlas/02  dispatched 40m     │ │ atlas/03  done 40m           │ │ beacon/04  done 40m          │ │ atlas/04  stuck 40m          │ │ Show recent landed            ││
-│┃ ◆ Add audit export           ┃ │ ⠧ Export worker              │ │ ● Validate every exported r… │ │ ◆ Search architecture        │ │ ✗ Recover test database      │ │                               ││
+│┃ ○ Add audit export           ┃ │ ⠧ Export worker              │ │ ● Validate every exported r… │ │ ◆ Search architecture        │ │ ✗ Recover test database      │ │                               ││
 │┃ ⌂ codex — no session         ┃ │ ⌂ codex — no session         │ │ ⌂ codex — no session         │ │ ▣ remote claude — no session │ │ ⌂ codex — no session         │ │                               ││
 │┃ queued                       ┃ │ dispatched                   │ │ PR #204 failed chec… review  │ │ served                       │ │ stuck                        │ │                               ││
 │┃                              ┃ │                              │ │                              │ │                              │ │                              │ │                               ││

@@ -367,6 +367,14 @@ elseif scenario == "selection" then
   for _, n in ipairs(nodes(tree())) do
     assert(n.role ~= "drag", "text selection stolen by pane drag")
   end
+elseif scenario == "glyphs" then
+  local ready = false
+  for _, node in ipairs(nodes(tree())) do
+    if node.id == "board:alpha/01-ready" and strings(node):find("Ready", 1, true) then
+      ready = strings(node):find("○", 1, true) ~= nil
+    end
+  end
+  assert(ready, "a ready queued card wears the blocked glyph")
 elseif scenario == "fuel" then
   contains("62%")
 elseif scenario == "narrow" then
@@ -407,7 +415,7 @@ elseif scenario == "failure" then
   contains("probe did not run")
   assert(tree().float)
   action("enter")
-  assert(not state.board_detail,"failed probe retained an invisible selected card")
+  assert(not state.board_detail, "failed probe retained an invisible selected card")
 end
 for _, call in ipairs(calls) do
   assert(not call.cmd:find("dispatch", 1, true) and not call.cmd:find("merge", 1, true), "board writes queue")

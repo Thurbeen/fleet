@@ -126,7 +126,11 @@ local function card_spans(row, width)
       or math.floor(seconds / 86400) .. "d"
     b:trailing(task.display_state .. " " .. age, { fg = theme.muted })
   elseif row.line == 2 then
-    local spec = ui.status(task.state == "dispatched" and "working" or statuses[row.column], row.elapsed)
+    local status = task.display_state == "queued" and "idle"
+      or task.display_state == "waiting" and "blocked"
+      or task.state == "dispatched" and "working"
+      or statuses[row.column]
+    local spec = ui.status(status, row.elapsed)
     b:add(" " .. spec.glyph .. " ", { fg = spec.color or theme.accent })
     b:add(widgets.truncate(task.title, math.max(0, width - 4)), { fg = theme.text, bold = true })
   elseif row.line == 3 then
@@ -484,9 +488,9 @@ local function cycle(values, current)
   end
 end
 function M.invalidate()
-  selected=nil
-  geometry={}
-  state.board_detail=nil
+  selected = nil
+  geometry = {}
+  state.board_detail = nil
 end
 function M.on_action(action)
   local name = action:match("^fleetqueue%.board_(.+)$")
