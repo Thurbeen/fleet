@@ -107,7 +107,7 @@ naming the file and the block. `fleetqueue` in its `✓ loads — …` list, exi
 is the verification. Anything else, §4.
 
 `thurbox-cli plugin list --text` answers a different question — whether the
-FILE is installed (`plugins/91_fleet_queue.lua  pane  installed  hidden`).
+FILE is installed (`plugins/92_fleet_queue.lua  pane  installed  hidden`).
 **Do not read that row as working**: `hidden` is what a placed pane says while
 toggled off. `--json` adds `installed_from`, which names the checkout the pane
 came from, so a stale path there and a moved clone are the same bug.
@@ -161,7 +161,10 @@ check` came back unplaced.
 ## 5. The F-key
 
 `Alt+K` toggles the full-screen, read-only Kanban board without a layout edit.
-It shares the column’s probes and trust. Arrows and clicks select cards; Enter
+It shares the column’s reader library. The overlay installs at
+`plugins/91_fleet_queue.lua`, preserving the combined plugin’s existing run
+trust; the optional legacy column installs at `plugins/92_fleet_queue.lua`
+and needs its own run trust in Settings → Interface → t. Arrows and clicks select cards; Enter
 focuses a live session or opens `fleet queue show` when there is none. `d`
 always opens the record. Esc goes back, then closes the board. The topic,
 agent, needs-me and landed chips are clickable. `t` opens a searchable topic
@@ -193,11 +196,11 @@ never receiving the key. `uv run fleet check pane` refuses those.
 ## 6. Removing it
 
 ```sh
-thurbox-cli plugin remove plugins/91_fleet_queue.lua
+thurbox-cli plugin remove plugins/92_fleet_queue.lua
 ```
 
 The argument is the **destination path**, not the basename —
-`plugin remove 91_fleet_queue.lua` answers "not listed" and removes nothing.
+`plugin remove 92_fleet_queue.lua` answers "not listed" and removes nothing.
 That takes back the file, its `plugins.toml` entry and the lock. It leaves the
 `layout.lua` block behind, and `fleet place-pane` has no verb to take it out —
 a block it did not necessarily write is not one it should delete. Guarded by

@@ -1,5 +1,5 @@
 ╭ Fleet board · alt+k ─────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ FLEET Kanban   reconciler ticking   refreshed 0s ago                                                                 │
+│ FLEET Kanban   reconciler ticking   records updated 0s ago                                                           │
 │ topic: all   agent: all   needs me: off   landed: folded   fuel: hidden                                              │
 │┏ ▸ ◆ Queued / waiting · 3 ━━━━━━━━━━┓ ╭ ◐ Dispatched / working · 3 ────────╮ ╭ ● Shipped · 3 ───────────────────────╮│
 │┃ atlas/01  queued 40m               ┃ │ atlas/02  dispatched 40m           ┃ │ atlas/03  done 40m                   ┃│

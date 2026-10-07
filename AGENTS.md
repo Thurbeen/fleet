@@ -208,10 +208,13 @@ names every path and the reason for each.
   writing it onto a task would make the loop a second writer over the queue.
   Written by `uv run fleet reconcile` (`scripts/lib/reconcile.py`) and created
   on first start. The loop's code is tracked; nothing it writes is.
-- `interface/fleet_queue.lua` — the TUI queue pane, and the fleet's only live
-  view of the queue, drawn in a thurbox column over the same records
-  `fleet queue list` reads. `uv run fleet install-extension` installs it
-  with `thurbox-cli plugin install`; the file's own header owns the view.
+- `interface/fleet_kanban.lua` — the Alt+K full-screen queue dashboard;
+  `interface/fleet_queue.lua` remains the optional legacy column. Both use
+  `interface/fleet_reader.lua` over the same records `fleet queue list` reads.
+  The floating plugin returns nothing while closed; only the column owns a
+  layout slot, so `plugin check` still detects an unplaced column.
+  `uv run fleet install-extension` installs both plugins and their libraries
+  with `thurbox-cli plugin install`; each file's header owns its view.
   **Placing it is a guarded block in the user's `layout.lua`, and
   `uv run fleet place-pane` writes that block — only ever after the operator
   was ASKED and said yes** — because a pane no arrangement places loads, lists,
