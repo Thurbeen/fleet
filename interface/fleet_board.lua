@@ -670,6 +670,8 @@ local function cycle(values, current)
 end
 function M.invalidate()
   selected = nil
+  columns, locations, heights_by_column = { {}, {}, {}, {}, {}, {} }, {}, {}
+  cached_model, cached_filter = nil, nil
   geometry = {}
   state.board_detail = nil
   state.board_picker = nil

@@ -628,6 +628,16 @@ elseif scenario == "failure" then
   assert(tree().float)
   action("enter")
   assert(not state.board_detail, "failed probe retained an invisible selected card")
+  -- The kernel drains an input batch before repainting. No helper render here.
+  pane.on_action("fleetqueue.board_down")
+  pane.on_action("fleetqueue.board_down")
+  pane.on_action("fleetqueue.board_enter")
+  assert(state.board_open and not state.board_detail, "input batch revived invisible cards after a probe failure")
+  assert(not pane.on_click({ id = "board:alpha/03-work" }), "stale hit map survived a probe failure")
+  thurbox.runs["fleetqueue:lead"] = { state = "done", stdout = table.concat(records, "\n") .. "\n" }
+  contains("Ready")
+  pane.on_click({ id = "board:alpha/03-work" })
+  assert(state.board_ref == "alpha/03-work", "recovered queue did not rebuild card navigation")
 end
 for _, call in ipairs(calls) do
   assert(not call.cmd:find("dispatch", 1, true) and not call.cmd:find("merge", 1, true), "board writes queue")
