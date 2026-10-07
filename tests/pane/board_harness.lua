@@ -479,7 +479,6 @@ elseif scenario == "topic-picker" then
   action("topic")
   assert(pane.on_click({ id = "board-topic:topic-35" }))
   assert(state.board_topic == "topic-35", "click did not choose its topic")
-  action("topic")
   action("topic_all")
   assert(state.board_topic == nil, "All topics did not clear the filter")
   action("topic")

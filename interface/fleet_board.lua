@@ -687,6 +687,9 @@ function M.on_action(action)
     else
       state.board_open = false
     end
+  elseif name == "topic_all" then
+    state.board_topic = nil
+    state.board_ref = nil
   elseif name == "topic" then
     local field = require("lib.textinput").new("")
     local cursor = 1
