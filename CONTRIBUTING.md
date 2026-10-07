@@ -10,7 +10,8 @@ One command is the whole gate, the same on Linux and on native Windows:
 ```text
 uv run fleet check          # every check
 uv run fleet check --fix    # the same, applying the fixes a check can apply
-uv run fleet check lint     # just one check
+uv run fleet check queue    # one area while iterating
+uv run fleet check --jobs 1 # serial diagnosis
 uv run fleet check --list   # every check: name, kind, what it runs
 ```
 
@@ -31,6 +32,23 @@ for the pane.
 A missing tool fails the check rather than skipping it. `scripts/lib/check.py`'s
 docstring and `--list` hold the full list of checks, the tools they need, and
 the full usage — it is the one place that list lives.
+
+### Fast iteration
+
+Run `uv run fleet check <area>` while changing that area; `--list` maps tests
+back to their check. Batch fixes into one push, and run the full gate once
+before each push. Tests use up to eight pytest-xdist workers by default;
+`--jobs N` overrides that count, and `--jobs 1` is useful for diagnosis.
+Every worker keeps the same per-test isolation. The isolation check still
+reruns all eight areas in poisoned checkouts, with the queue split across
+three child gates and the other areas in a fourth. Each child uses four
+workers; ordinary nested gates default to serial execution.
+
+CI splits queue into three jobs and isolation into four per OS using
+`--partition I/N`. Every test node id belongs to exactly one slice, including
+parameter cases. The workflow check requires every slice on both runners.
+Use an unpartitioned area check locally; a single slice is only part of the
+gate. No job is skipped based on changed paths.
 
 ### Pre-commit hooks
 

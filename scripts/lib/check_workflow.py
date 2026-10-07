@@ -71,7 +71,8 @@ def problems(path: str) -> list[str]:
         found.append(f"{path}: no job runs on windows-latest")
 
     every = check_names()
-    named = gate_names(jobs, every)
+    named, partitions = gate_names(jobs, every)
+    found += [f"{path}: {error}" for error in partitions]
     if named is not None:
         for runner, names in sorted(named.items()):
             found += [f"{path}: nothing runs `fleet check {n}` on {runner}" for n in every if n not in names]
@@ -116,17 +117,20 @@ def matrix_values(matrix: dict, path: str) -> list[str]:
     return [str(e[field]) for e in entries if isinstance(e, dict) and field in e]
 
 
-def gate_names(jobs: dict, every: list[str]) -> dict[str, set] | None:
+def gate_names(jobs: dict, every: list[str]) -> tuple[dict[str, set] | None, list[str]]:
     """Every check name the workflow passes to `fleet check`, per runner it runs on.
 
     A bare `fleet check` is every check there is, so it contributes all of them
     to its job's runners rather than excusing the workflow: a bare run on one
     runner says nothing about what the other one skipped.
 
-    None when no step runs the gate at all, which is the one shape this promise
-    cannot apply to.
+    Partitioned calls cover an area only when every I/N is present for the
+    same N on that runner. A missing slice must fail All Checks, even if the
+    slices that remain pass. Return diagnostics alongside the covered names.
     """
     named: dict[str, set] = {}
+    slices: dict[tuple[str, str], dict[int, set[int]]] = {}
+    errors = []
     for job in jobs.values():
         matrix = (job.get("strategy") or {}).get("matrix") or {}
         for step in job.get("steps") or []:
@@ -136,10 +140,36 @@ def gate_names(jobs: dict, every: list[str]) -> dict[str, set] | None:
                 if not gate:
                     continue
                 for text in expand(CHAINED.split(rest)[0], matrix):
-                    words = [w for w in text.split() if not w.startswith("-")]
-                    for runner in runners(job):
-                        named.setdefault(runner, set()).update(words or every)
-    return named or None
+                    words = text.split()
+                    index, count = 1, 1
+                    for flag in ("--jobs", "--partition"):
+                        if flag not in words:
+                            continue
+                        pos = words.index(flag)
+                        try:
+                            value = words[pos + 1]
+                            if flag == "--partition":
+                                index, count = map(int, value.split("/"))
+                                if not 1 <= index <= count:
+                                    raise ValueError
+                            elif int(value) < 1:
+                                raise ValueError
+                        except (IndexError, ValueError):
+                            errors.append(f"invalid {flag} in `fleet check{text}`")
+                            break
+                        del words[pos:pos + 2]
+                    else:
+                        words = [w for w in words if not w.startswith("-")] or every
+                        for runner in runners(job):
+                            named.setdefault(runner, set())
+                            for area in words:
+                                slices.setdefault((runner, area), {}).setdefault(count, set()).add(index)
+    for (runner, area), counts in slices.items():
+        if any(indices == set(range(1, count + 1)) for count, indices in counts.items()):
+            named[runner].add(area)
+        else:
+            errors.append(f"incomplete partitions for `fleet check {area}` on {runner}")
+    return named or None, errors
 
 
 def runners(job: dict) -> list[str]:

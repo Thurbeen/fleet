@@ -115,3 +115,47 @@ def next_session(stubs: Stubs, sid: str) -> None:
 
 def keys(stubs: Stubs) -> list[str]:
     return [c.removeprefix("thurbox-cli ") for c in stubs.calls("thurbox-cli", "session key")]
+
+
+def clocked_fleet(*args: str, **env):
+    """Run the real CLI with a virtual clock only in its trust-dialog module.
+
+    Pane changes in these tests happen on stub calls, never on elapsed time.
+    Advancing the trust clock preserves polling and timeout paths without
+    waiting for a human-facing delay. Other modules keep their real clocks.
+    """
+    from harness import PYTHON, run
+
+    boot = '''import sys
+from fleet.cli import load, main
+
+
+class Clock:
+    now = 0.0
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+
+load("session_trust.py").time = Clock()
+sys.exit(main(sys.argv[1:]))
+'''
+    return run([*PYTHON, "-c", boot, *args], **env)
+
+
+def clocked_queue(*args: str, **env):
+    return clocked_fleet("queue", *args, **env)
+
+
+def clocked_run(argv, **env):
+    from pathlib import Path
+
+    from harness import PYTHON
+
+    assert tuple(argv[:len(PYTHON)]) == PYTHON, argv
+    script, *args = argv[len(PYTHON):]
+    assert Path(script).name == "session_trust.py", argv
+    return clocked_fleet("session-trust", *args, **env)

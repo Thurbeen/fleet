@@ -32,9 +32,10 @@ from kit_dispatch import (
 )
 from queuekit import ok
 
-from harness import PYTHON, REPO, Run, expect, refute, run, write
-from harness import run_fleet as fleet
-from harness import run_queue as q
+from harness import PYTHON, REPO, Run, expect, refute, write
+from kit_dispatch import clocked_fleet as fleet
+from kit_dispatch import clocked_queue as q
+from kit_dispatch import clocked_run as run
 
 TRUST = REPO / "scripts" / "lib" / "session_trust.py"
 

@@ -209,6 +209,23 @@ def run_queue(*args: str, cwd: Path = REPO, script: Path | None = None, **env: s
     return run([*PYTHON, str(script or REPO / "scripts" / "lib" / "queue.py"), *args], cwd=cwd, **env)
 
 
+def run_queue_batch(commands: list[list[str]]) -> Run:
+    """Build a fixture through the real queue CLI, sharing one child interpreter.
+
+    The commands still validate and write their own records. Only interpreter
+    startup is shared; nothing is cached between tests.
+    """
+    boot = """import json, sys
+from fleet.cli import load
+queue = load("queue.py")
+for args in json.loads(sys.argv[1]):
+    code = queue.main(args)
+    if code:
+        sys.exit(code)
+"""
+    return run([*PYTHON, "-c", boot, json.dumps(commands)])
+
+
 def run_fleet(*args: str, cwd: Path = REPO, stdin: str | None = None, **env: str | None) -> Run:
     """Run `fleet <args>` through the console script's own `main`, from any cwd."""
     boot = "import sys\nfrom fleet.cli import main\nsys.exit(main())"

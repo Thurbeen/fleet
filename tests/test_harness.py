@@ -176,3 +176,18 @@ def test_a_scripted_answer_replaces_a_built_in_stub(stubs):
     done = subprocess.run(["gh", "auth", "status"], capture_output=True, text=True)
     assert (done.returncode, done.stdout) == (0, "scripted auth status\n"), done.stderr
     assert stubs.calls("gh") == ["gh auth status"]
+
+
+def test_queue_batch_keeps_cli_validation_and_stops_at_first_failure(isolated_env):
+    from harness import run_queue_batch
+
+    done = run_queue_batch([
+        ["topic", "add", "batch", "--title", "A batch", "--prompt", "the prompt"],
+        ["add", "batch", "first", "--title", "First", "--repo", "/nowhere", "--branch", "fix/first"],
+        ["no-such-verb"],
+        ["topic", "add", "never", "--title", "Never", "--prompt", "the prompt"],
+    ])
+    assert done.code != 0, done.out
+    root = isolated_env / "queue"
+    assert (root / "batch" / "01-first" / "task.yaml").is_file(), done.out
+    assert not (root / "never").exists(), done.out

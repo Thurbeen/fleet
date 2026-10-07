@@ -15,6 +15,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from harness import PYTHON, REPO, run, run_fleet, write
 
 
@@ -87,3 +89,111 @@ def test_a_missing_tool_fails_its_check_rather_than_skipping(tmp_path):
     done = run([*PYTHON, str(REPO / "scripts" / "lib" / "check.py"), "markdown"], PATH=str(bare))
     assert done.code == 1, done.out
     assert "rumdl not found" in done.out, done.out
+
+
+def test_parallel_check_runs_independent_tests_and_propagates_failure(tmp_path):
+    copy = tracked_copy(tmp_path / "copy")
+    area = copy / "tests" / "skills"
+    shutil.rmtree(area)
+    for name, other in (("first", "second"), ("second", "first")):
+        write(area / f"test_{name}.py", f'''
+import time
+from pathlib import Path
+
+
+def test_{name}():
+    root = Path(__file__).parent
+    (root / "{name}.ready").touch()
+    deadline = time.monotonic() + 10
+    while not (root / "{other}.ready").exists():
+        assert time.monotonic() < deadline, "tests ran serially"
+        time.sleep(0.01)
+    assert "{name}" != "second", "deliberate worker failure"
+''')
+    done = run([*PYTHON, str(copy / "scripts" / "lib" / "check.py"), "--jobs", "2", "skills"], cwd=copy)
+    assert "AssertionError: tests ran serially" not in done.out, done.out
+    assert "deliberate worker failure" in done.out, done.out
+    assert done.code == 1 and "FAIL" in done.out, done.out
+
+
+@pytest.mark.parametrize("value", [None, "0", "-1", "many"])
+def test_invalid_worker_count_is_a_usage_error(value):
+    done = run_fleet("check", "--jobs", *([] if value is None else [value]))
+    assert done.code == 2, done.out
+    assert "positive integer" in done.stderr, done.out
+
+
+def test_partitions_run_every_test_exactly_once(tmp_path):
+    copy = tracked_copy(tmp_path / "copy")
+    area = copy / "tests" / "skills"
+    shutil.rmtree(area)
+    write(area / "test_parts.py", '''from pathlib import Path
+import pytest
+
+
+@pytest.mark.parametrize("number", range(6))
+def test_part(number):
+    marker = Path(__file__).parent / f"{number}.seen"
+    assert not marker.exists(), "a test ran in two partitions"
+    marker.touch()
+''')
+    for part in (1, 2):
+        done = run([*PYTHON, str(copy / "scripts" / "lib" / "check.py"),
+                    "skills", "--jobs", "1", "--partition", f"{part}/2"], cwd=copy)
+        assert done.code == 0, done.out
+        assert len(list(area.glob("*.seen"))) == 3 * part, done.out
+
+
+@pytest.mark.parametrize("value", [None, "0/2", "3/2", "1/0", "1", "x/2"])
+def test_invalid_partition_is_a_usage_error(value):
+    done = run_fleet("check", "--partition", *([] if value is None else [value]))
+    assert done.code == 2, done.out
+    assert "1 <= I <= N" in done.stderr, done.out
+
+
+def test_partition_membership_does_not_change_with_other_areas(tmp_path):
+    copy = tracked_copy(tmp_path / "copy")
+    for directory in ("skills", "settings"):
+        shutil.rmtree(copy / "tests" / directory)
+    write(copy / "tests" / "settings" / "test_extra.py", "def test_extra():\n    pass\n")
+    write(copy / "tests" / "skills" / "test_parts.py", '''from pathlib import Path
+import pytest
+
+
+@pytest.mark.parametrize("number", range(6))
+def test_part(number):
+    marker = Path(__file__).parent / f"{number}.seen"
+    assert not marker.exists(), "partition membership changed"
+    marker.touch()
+''')
+    for areas, part in ((["skills", "automerge"], "1/2"), (["skills"], "2/2")):
+        done = run([*PYTHON, str(copy / "scripts" / "lib" / "check.py"),
+                    *areas, "--jobs", "1", "--partition", part], cwd=copy)
+        assert done.code == 0, done.out
+    assert len(list((copy / "tests" / "skills").glob("*.seen"))) == 6
+
+
+@pytest.mark.parametrize("parent_jobs", [1, 2])
+def test_nested_gate_defaults_to_serial_under_every_parent(tmp_path, parent_jobs):
+    copy = tracked_copy(tmp_path / "copy")
+    for directory in ("skills", "settings"):
+        shutil.rmtree(copy / "tests" / directory)
+    write(copy / "tests" / "settings" / "test_nested.py", '''import pytest
+
+
+@pytest.mark.parametrize("number", range(2))
+def test_nested(number, pytestconfig):
+    assert not hasattr(pytestconfig, "workerinput"), "nested gate launched parallel workers"
+''')
+    write(copy / "tests" / "skills" / "test_parent.py", '''import subprocess
+import sys
+
+
+def test_parent():
+    done = subprocess.run([sys.executable, "scripts/lib/check.py", "automerge"],
+                          capture_output=True, encoding="utf-8")
+    assert done.returncode == 0, done.stdout + done.stderr
+''')
+    done = run([*PYTHON, str(copy / "scripts" / "lib" / "check.py"),
+                "skills", "--jobs", str(parent_jobs)], cwd=copy, PYTEST_XDIST_WORKER=None)
+    assert done.code == 0, done.out

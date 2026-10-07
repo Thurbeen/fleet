@@ -228,3 +228,16 @@ def test_two_runners_sharing_a_label_do_not_cover_for_each_other(tmp_path):
 
     assert any(only_linux in p and "windows-latest" in p for p in found), found
     assert not any(p.endswith("on linux") or p.endswith("on self-hosted") for p in found), found
+
+
+def test_missing_test_partition_is_reported_on_each_runner(tmp_path):
+    shards = '[{name: all, areas: "%s --partition 1/2"}]' % " ".join(every_check())
+    found = problems(tmp_path, SHARDED % shards)
+    assert any("partition" in p and "windows-latest" in p for p in found), found
+
+
+def test_complete_test_partitions_cover_the_gate(tmp_path):
+    areas = " ".join(every_check())
+    shards = ('[{name: first, areas: "%s --partition 1/2"}, '
+              '{name: second, areas: "%s --partition 2/2"}]') % (areas, areas)
+    assert problems(tmp_path, SHARDED % shards) == []
