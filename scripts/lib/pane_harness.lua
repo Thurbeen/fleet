@@ -761,6 +761,15 @@ local ctx = { width = WIDTH + 2, height = HEIGHT, elapsed = 0 }
 if SELECTED[1] then
   _G.store.selected = SELECTED[1]
 end
+for _, flag in ipairs(arg) do
+  if flag == "--readonly-state" then
+    local values = state
+    _G.state = setmetatable({}, {
+      __index = values,
+      __newindex = function(_, key) error("render wrote state: " .. key) end,
+    })
+  end
+end
 local tree = pane.render(ctx)
 -- Each later selection is a separate frame, the way the kernel re-renders when
 -- the session list publishes a new one.

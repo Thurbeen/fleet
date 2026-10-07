@@ -385,8 +385,54 @@ local function action(a)
     tree()
   end
 end
+if scenario == "render-readonly" then
+  local function readonly(value)
+    if type(value) ~= "table" then return value end
+    return setmetatable({}, {
+      __index = function(_, k) return readonly(value[k]) end,
+      __newindex = function(_, k) error("render wrote state: " .. k) end,
+      __len = function() return #value end,
+      __pairs = function() return pairs(value) end,
+    })
+  end
+  local writable = state
+  state = readonly(writable)
+  tree() -- First render, not just a warmed-up idle frame.
+  for _ = 1, 10 do tree() end
+  state = writable
+  action("topic")
+  state = readonly(writable)
+  for _ = 1, 10 do tree() end
+  state = writable
+  action("close")
+  action("detail")
+  state = readonly(writable)
+  for _ = 1, 10 do tree() end
+  print("render-readonly passed: board, topic search and record write no state")
+  return
+end
 tree()
-if scenario == "columns" then
+if scenario == "changed-fleet" then
+  thurbox.sessions[#thurbox.sessions + 1] = { id = "other", name = "Mission Control", cwd = "/other-fleet" }
+  store.selected = "other"
+  contains("reading the queue")
+  assert(not strings(tree()):find("Ready", 1, true), "a failed new fleet probe displayed another fleet's records")
+elseif scenario == "retain-search" then
+  action("topic")
+  assert(pane.on_key({ key = "a", char = "a" }))
+  local picker = state.board_picker
+  thurbox.runs["fleetqueue:lead"] = { state = "failed", stdout = "" }
+  contains("Choose topic")
+  assert(state.board_picker == picker and picker.field.value == "a", "failed probe cleared topic search")
+  contains("queue unavailable")
+elseif scenario == "retain-detail" then
+  action("detail")
+  local ref = state.board_detail
+  thurbox.runs["fleetqueue:lead"] = { state = "failed", stdout = "" }
+  contains("Detail")
+  assert(state.board_detail == ref, "failed probe closed the record")
+  contains("queue unavailable")
+elseif scenario == "columns" then
   for _, s in ipairs({ "Queued / waiting", "Dispatched / working", "Shipped", "Served", "Stuck / abandoned", "Landed" }) do
     contains(s)
   end
@@ -664,20 +710,16 @@ elseif scenario == "reserved" then
   assert(not pane.on_key({ key = "ctrl+h" }) and not pane.on_key({ key = "ctrl+l" }))
 elseif scenario == "failure" then
   thurbox.runs["fleetqueue:lead"] = { state = "failed", stdout = "" }
-  contains("probe did not run")
+  contains("queue unavailable")
+  contains("Ready")
   assert(tree().float)
   action("enter")
-  assert(not state.board_detail, "failed probe retained an invisible selected card")
-  -- The kernel drains an input batch before repainting. No helper render here.
-  pane.on_action("fleetqueue.board_down")
-  pane.on_action("fleetqueue.board_down")
-  pane.on_action("fleetqueue.board_enter")
-  assert(state.board_open and not state.board_detail, "input batch revived invisible cards after a probe failure")
-  assert(not pane.on_click({ id = "board:alpha/03-work" }), "stale hit map survived a probe failure")
+  contains("Detail")
+  action("close")
+  assert(pane.on_click({ id = "board:alpha/03-work" }), "visible cached cards lost navigation")
   thurbox.runs["fleetqueue:lead"] = { state = "done", stdout = table.concat(records, "\n") .. "\n" }
   contains("Ready")
-  pane.on_click({ id = "board:alpha/03-work" })
-  assert(state.board_ref == "alpha/03-work", "recovered queue did not rebuild card navigation")
+  assert(state.board_ref == "alpha/03-work", "recovered queue lost selection")
 end
 for _, call in ipairs(calls) do
   assert(not call.cmd:find("dispatch", 1, true) and not call.cmd:find("merge", 1, true), "board writes queue")

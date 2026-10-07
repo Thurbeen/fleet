@@ -34,7 +34,7 @@ def test_board_probe_keeps_navigation_and_attention_fields(tmp_path):
 
 @pytest.mark.skipif(not REAL_LUA, reason="requires lua")
 @pytest.mark.parametrize("scenario", [
-    "float-contract", "closed-float", "health-memo", "columns", "enter-session", "enter-detail", "links", "filters",
+    "float-contract", "closed-float", "health-memo", "render-readonly", "changed-fleet", "retain-search", "retain-detail", "columns", "enter-session", "enter-detail", "links", "filters",
     "landed", "mouse", "selection", "fuel", "narrow", "large", "failure", "fuel-unavailable", "buttons", "missing-session", "reserved", "detail-links", "glyphs", "planned-served", "landed-age", "mouse-band", "topic-picker", "topic-context", "fuel-default", "fuel-compact",
 ])
 def test_board_interactions(scenario):

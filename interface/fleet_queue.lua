@@ -267,11 +267,13 @@ local FUEL_GLYPH = "⛽"
 
 --- Rows the wheel moves.
 local SCROLL_STEP = 3
+local scroll_offset, scroll_limit, scroll_page = 0, 0, 1
 
 --- Move the scroll window, never above the top. The bottom is the render's to
 --- clamp, because only the render knows how many rows there are.
 local function scroll_by(rows)
-  state.offset = math.max(0, (state.offset or 0) + rows)
+  scroll_offset = math.max(0, math.min(scroll_limit, scroll_offset + rows))
+  state.offset = scroll_offset
 end
 
 -- ── Drawing ────────────────────────────────────────────────────────────────
@@ -1781,18 +1783,8 @@ return {
     -- the final two rows stayed under a "↓ 2 below" that never went away.
     local max_offset = (#rows <= room) and 0 or math.max(0, #rows - room + 1)
     local offset = math.min(math.max(0, state.offset or 0), max_offset)
-    if offset ~= state.offset then
-      -- Clamped rather than left past the end, so a wheel that ran off the
-      -- bottom does not have to be wound all the way back.
-      state.offset = offset
-    end
-    -- What one PAGE is, for the handlers that page rather than tick: the rows
-    -- a screenful shows between its two marks. A handler runs outside render
-    -- and has no height of its own to measure, so it reads this.
-    local page = math.max(1, room - 2)
-    if state.page ~= page then
-      state.page = page
-    end
+    -- Input handlers use the derived window; drawing never writes UI state.
+    scroll_offset, scroll_limit, scroll_page = offset, max_offset, math.max(1, room - 2)
 
     -- The marks carry identities, so a click on either pages the window — the
     -- way to scroll with no wheel and no chord taken from anything.
@@ -1867,10 +1859,10 @@ return {
       panels.toggle(SLOT)
       return true
     elseif hit.id == SCROLL_UP then
-      scroll_by(-(state.page or 1))
+      scroll_by(-scroll_page)
       return true
     elseif hit.id == SCROLL_DOWN then
-      scroll_by(state.page or 1)
+      scroll_by(scroll_page)
       return true
     end
     return false
@@ -1881,10 +1873,10 @@ return {
       panels.toggle(SLOT)
       return true
     elseif action == PAGE_UP then
-      scroll_by(-(state.page or 1))
+      scroll_by(-scroll_page)
       return true
     elseif action == PAGE_DOWN then
-      scroll_by(state.page or 1)
+      scroll_by(scroll_page)
       return true
     end
     return false

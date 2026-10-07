@@ -3,6 +3,7 @@ local reader = require("lib.fleet_reader")
 local board = require("lib.fleet_board")
 local ui = require("lib.ui")
 local theme = require("lib.theme")
+local last_reading
 return {
   name = "fleetkanban",
   floats = true,
@@ -36,6 +37,22 @@ return {
       return nil
     end
     local reading = reader.read(ctx)
+    if
+      reading.error
+      and last_reading
+      and reading.lead
+      and reading.lead.id == last_reading.lead.id
+      and reading.lead.cwd == last_reading.lead.cwd
+    then
+      return board.render(
+        ctx,
+        last_reading.model,
+        last_reading.fuel,
+        last_reading.lead,
+        last_reading.fleet,
+        "queue unavailable · showing last records"
+      )
+    end
     if reading.error then
       board.invalidate()
       local node = ui.panel({
@@ -49,6 +66,7 @@ return {
       node.frame.style = { fg = theme.text, bg = theme.role("app_bg") }
       return node
     end
+    last_reading = reading
     return board.render(ctx, reading.model, reading.fuel, reading.lead, reading.fleet)
   end,
   on_action = function(action)

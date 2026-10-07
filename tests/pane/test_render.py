@@ -469,3 +469,8 @@ def test_the_marks_and_the_page_actions_page_the_window():
         "page_up did not move"
     widest = max(cells(line) for line in long("--wheel", "5").splitlines())
     assert widest <= 44, f"a scrolled render is {widest} columns wide"
+
+
+def test_column_and_fleet_selection_render_without_state_writes():
+    render("44", "--readonly-state")
+    render("44", "--readonly-state", "--leads", "two-named", "--selected", "s2,w9")

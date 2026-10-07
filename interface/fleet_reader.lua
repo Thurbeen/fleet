@@ -492,6 +492,7 @@ local function fuel_for(stdout)
   return fuel_parsed.fuel
 end
 
+local selected_fleet
 function M.read(ctx)
   if not run then
     return { error = {
@@ -559,11 +560,11 @@ function M.read(ctx)
     for _, entry in ipairs(leads) do
       if selected and entry.session.id == selected then
         chosen = entry
-        state.fleet = entry.session.cwd
+        selected_fleet = entry.session.cwd
       end
     end
     for _, entry in ipairs(leads) do
-      if not chosen and entry.session.cwd == state.fleet then
+      if not chosen and entry.session.cwd == selected_fleet then
         chosen = entry
       end
     end
@@ -609,7 +610,7 @@ function M.read(ctx)
   end
 
   if not answer or answer.state == "pending" then
-    return { error = { spinner .. " reading the queue…" } }
+    return { error = { spinner .. " reading the queue…" }, lead = lead, fleet = fleet }
   end
   if answer.state == "failed" or (answer.stdout or "") == "" then
     -- NOT `not answer.ok`. The probe spells every condition it can tell apart
@@ -617,12 +618,12 @@ function M.read(ctx)
     -- reading it as a failure is how a queue with nothing in it gets reported
     -- as a broken pane. Only a probe the kernel could not RUN, or one that
     -- said nothing at all, is a failure.
-    return { error = { "the queue probe did not run", "in " .. lead.cwd } }
+    return { error = { "the queue probe did not run", "in " .. lead.cwd }, lead = lead, fleet = fleet }
   end
 
   local model = model_for(answer.stdout or "")
   if model.error then
-    return { error = { model.error, lead.cwd } }
+    return { error = { model.error, lead.cwd }, lead = lead, fleet = fleet }
   end
   return { model = model, fuel = fuel, lead = lead, fleet = fleet, spinner = spinner }
 end

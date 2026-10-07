@@ -215,3 +215,16 @@ def test_every_probe_is_one_command_line_both_platform_shells_run():
     for probe in probes:
         assert probe.startswith("uv run ")
         assert not re.search(r"[|&;<>$`'\\]", probe), probe
+
+
+def test_readme_describes_the_installed_legacy_column_as_optional():
+    text = read(REPO / "README.md")
+    expect(text, "installed alongside", "optional legacy column", "Skip")
+
+
+def test_architecture_board_uses_its_own_toggle():
+    import xml.etree.ElementTree as ET
+    root = ET.fromstring(read(REPO / "docs/fleet-architecture.svg"))
+    labels = [node.text for node in root if node.tag.endswith("text")]
+    index = labels.index("Kanban board")
+    assert "Alt+K" in labels[index + 1] and "F3" not in labels[index + 1]

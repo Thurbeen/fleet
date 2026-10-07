@@ -1,4 +1,4 @@
--- Full-screen, read-only projection of fleet_queue's already parsed records.
+-- Full-screen, read-only projection of fleet_reader's already parsed records.
 -- This library shares its caller's trust, queue/fuel probes and fleet choice.
 -- Node roles leave links to thurbox’s native handler.
 local ui = require("lib.ui")
@@ -12,6 +12,7 @@ local headings =
 local statuses = { "blocked", "working", "done", "blocked", "error", "done" }
 local columns, topics, agents, geometry, lead, selected = { {}, {}, {}, {}, {}, {} }, {}, {}, {}, nil, nil
 local cached_model, cached_filter, locations, heights_by_column = nil, nil, {}, {}
+local view_column, view_index, detail_offset = 1, 1, 0
 local function span(value, color, role)
   return { text = value, style = { fg = color or theme.text }, role = role }
 end
@@ -79,12 +80,14 @@ local function category(task, now)
     return 1
   end
 end
-local function choose(c, n)
-  c = math.max(1, math.min(6, c))
-  state.board_column = c
-  state.board_index = math.max(1, math.min(#columns[c], n or 1))
-  selected = columns[c][state.board_index]
-  state.board_ref = selected and selected.ref
+local function choose(c, n, persist)
+  view_column = math.max(1, math.min(6, c))
+  view_index = math.max(1, math.min(#columns[view_column], n or 1))
+  selected = columns[view_column][view_index]
+  if persist ~= false then
+    state.board_column, state.board_index = view_column, view_index
+    state.board_ref = selected and selected.ref
+  end
 end
 local function session(task)
   for _, s in ipairs(thurbox.sessions or {}) do
@@ -176,7 +179,7 @@ local function column_node(c, width, height, elapsed)
   local cards = columns[c]
   local inner = math.max(1, height - 2)
   local heights = heights_by_column[c] or {}
-  local index = state.board_column == c and state.board_index or 1
+  local index = view_column == c and view_index or 1
   local first, visible = 1, 0
   if #cards > 0 and (c ~= 6 or state.board_landed) then
     first, visible = scroll.window_variable(heights, 0, index, inner)
@@ -192,7 +195,7 @@ local function column_node(c, width, height, elapsed)
     width = width - 2,
     height = inner,
     pad = true,
-    cursor = state.board_column == c and ((index - first) * 5 + 1) or 0,
+    cursor = view_column == c and ((index - first) * 5 + 1) or 0,
     id_of = function(row)
       return "board:" .. row.task.ref
     end,
@@ -232,7 +235,7 @@ local function column_node(c, width, height, elapsed)
   end
   local panel = ui.panel({
     title = theme.status(statuses[c]).glyph .. " " .. headings[c] .. " · " .. #cards,
-    focused = state.board_column == c and not state.board_picker,
+    focused = view_column == c and not state.board_picker,
     body = body,
     right_column = bar,
   })
@@ -293,7 +296,7 @@ local function fuel_node(fuel, width)
   end
   return { type = "box", len = #children, children = children }
 end
-local function detail(ctx)
+local function detail(ctx, warning)
   local key = "fleetboard-detail:" .. lead.id .. ":" .. state.board_detail
   run(
     key,
@@ -341,9 +344,12 @@ local function detail(ctx)
     end
   end
   local room = math.max(1, ctx.height - 5)
-  state.board_detail_offset = math.max(0, math.min(state.board_detail_offset or 0, math.max(0, #lines - room)))
+  detail_offset = math.max(0, math.min(state.board_detail_offset or 0, math.max(0, #lines - room)))
   local children = { text({ chip("Back", "close", false), span("  Up/down scroll · Esc goes back", theme.muted) }) }
-  for i = state.board_detail_offset + 1, math.min(#lines, state.board_detail_offset + room) do
+  if warning then
+    children[#children + 1] = text({ span(" " .. warning, theme.warn) })
+  end
+  for i = detail_offset + 1, math.min(#lines, detail_offset + room) do
     children[#children + 1] = text(lines[i])
   end
   local root = ui.panel({ title = "Detail · " .. state.board_detail, body = children })
@@ -398,14 +404,13 @@ local function topic_picker(ctx)
   local controls_width = math.min(32, math.floor(ctx.width / 3))
   local width = math.max(1, ctx.width - controls_width - 5)
   local height = 6
-  picker.cursor = math.max(1, math.min(#rows, picker.cursor))
-  state.board_picker = picker
+  local cursor = math.max(1, math.min(#rows, picker.cursor))
   local list = ui.list({
     items = rows,
     width = width - 2,
     height = height,
     pad = true,
-    cursor = picker.cursor,
+    cursor = cursor,
     on_overflow = "border",
     id_of = function(row)
       return "board-topic:" .. row.slug
@@ -430,7 +435,7 @@ local function topic_picker(ctx)
         { label = "Search topics", placeholder = "Name or slug…", focused = true, id = "board-topic-search" }
       ),
       text({
-        span(#rows > 0 and (picker.cursor .. "/" .. #rows .. " · ↑/↓ or wheel") or "0 matches", theme.muted),
+        span(#rows > 0 and (cursor .. "/" .. #rows .. " · ↑/↓ or wheel") or "0 matches", theme.muted),
       }),
       text({ chip("All topics", "topic_all", false) }),
       text({
@@ -486,7 +491,7 @@ local function picker_action(name)
   end
   return true
 end
-function M.render(ctx, model, fuel, worker, fleet)
+function M.render(ctx, model, fuel, worker, fleet, warning)
   lead = worker
   local now = (thurbox.taken_at_ms or widgets.now_ms()) / 1000
   local filter = table.concat(
@@ -529,18 +534,18 @@ function M.render(ctx, model, fuel, worker, fleet)
   selected = nil
   local location = state.board_ref and locations[state.board_ref]
   if location and (location.column ~= 6 or state.board_landed) then
-    choose(location.column, location.index)
+    choose(location.column, location.index, false)
   end
   if not selected then
     for c, cards in ipairs(columns) do
       if #cards > 0 and (c ~= 6 or state.board_landed) then
-        choose(c, 1)
+        choose(c, 1, false)
         break
       end
     end
   end
   if state.board_detail then
-    return detail(ctx)
+    return detail(ctx, warning)
   end
   if ctx.width < 80 or ctx.height < 28 then
     return ui.modal({
@@ -576,6 +581,7 @@ function M.render(ctx, model, fuel, worker, fleet)
   local header = text({
     span(" FLEET " .. (fleet ~= "" and fleet .. " · " or "") .. "Kanban", theme.accent),
     span("   reconciler " .. health, health == "ticking" and theme.ok or theme.warn),
+    warning and span("   " .. warning, theme.warn) or span(""),
     span(
       "   records updated " .. (model.read_at and math.max(0, math.floor(now - model.read_at)) .. "s ago" or "unknown"),
       theme.muted
@@ -673,8 +679,6 @@ function M.invalidate()
   columns, locations, heights_by_column = { {}, {}, {}, {}, {}, {} }, {}, {}
   cached_model, cached_filter = nil, nil
   geometry = {}
-  state.board_detail = nil
-  state.board_picker = nil
 end
 function M.on_action(action)
   local name = action:match("^fleetqueue%.board_(.+)$")
@@ -723,12 +727,13 @@ function M.on_action(action)
     end
   elseif name == "up" or name == "down" then
     if state.board_detail then
-      state.board_detail_offset = math.max(0, (state.board_detail_offset or 0) + (name == "up" and -1 or 1))
+      detail_offset = math.max(0, detail_offset + (name == "up" and -1 or 1))
+      state.board_detail_offset = detail_offset
     else
-      choose(state.board_column or 1, (state.board_index or 1) + (name == "up" and -1 or 1))
+      choose(view_column or 1, (view_index or 1) + (name == "up" and -1 or 1))
     end
   elseif name == "left" or name == "right" then
-    local c = state.board_column or 1
+    local c = view_column or 1
     for _ = 1, 6 do
       c = (c - 1 + (name == "left" and -1 or 1)) % 6 + 1
       if #columns[c] > 0 and (c ~= 6 or state.board_landed) then
