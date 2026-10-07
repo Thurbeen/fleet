@@ -52,3 +52,13 @@ def test_a_transparent_diagram_without_a_dark_palette_fails(tmp_path):
         '<text x="10" y="50">fleet</text></svg>'))
     assert done.code == 1
     assert "no dark palette" in done.out
+
+
+def test_an_unfilled_frame_is_not_a_backdrop(tmp_path):
+    done = _readme_with_diagram(tmp_path, (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 100">'
+        '<style>.frame { stroke: #d1d9e0; }</style>'
+        '<rect class="frame" x="0.5" y="0.5" width="199" height="99" fill="none"/>'
+        '<text x="10" y="50">fleet</text></svg>'))
+    assert done.code == 1
+    assert "no dark palette" in done.out

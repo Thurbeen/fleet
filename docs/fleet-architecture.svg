@@ -2,40 +2,39 @@
   <title id="title">How fleet fits together</title>
   <desc id="desc">You prompt Mission Control, the lead session, which reads the registry and settings, opens a topic and adds its tasks to the queue. Dispatch starts one worker per task: a thurbox session in its own git worktree, on this machine or another one over ssh. Each worker gets a brief and writes back a result, and opens a pull or merge request on the forge, GitHub or GitLab, which is optional: a local-only fleet publishes a pushed commit or nothing. The Kanban board, Alt+K, shows the queue read-only, with fuel gauges from quota-axi. The reconciler loop watches, collects, shepherds and refuels, never dispatches, and tells the lead when the ready set grows: a typed line, or a mailbox message when the lead is mid-turn. The loop: prompt, topic, tasks, dispatch, watch, collect, shepherd, merge, reap, plus refuel after a token limit and reviewed for a served document.</desc>
   <!--
-    Palette: doom-one, from doom-themes' themes/doom-one-theme.el
-    https://github.com/doomemacs/themes/blob/053c14607c64dcde2b6ccb66b1817904965c82e9/themes/doom-one-theme.el
-    bg #282c34  bg-alt #21242b  base3 #23272e  base4 #3f444a  base5 #5B6268
-    base7 #9ca0a4  fg #bbc2cf  base8 #DFDFDF  red #ff6c6b  orange #da8548
-    green #98be65  yellow #ECBE7B  blue #51afef  magenta #c678dd  cyan #46D9FF
+    Palette: thurbox's built-in doom theme, doom_palette() in
+    https://github.com/Thurbeen/thurbox/blob/8f3ac9d185d6288221f6cf1acd05dacb2701b04b/src/session/theme_config/palettes.rs#L289
+    bg_dark #1A080A  surface #2A0F12  highlight #40151E  muted #606060
+    subtext #A0A0A0  text #E0E0E0  red #FF3B30  bright_red #FF5C54
+    bright_green #6EFF6E  cyan #00D9FF  amber #FFA500
+    Amber is thurbox's working colour, so it marks the workers.
     GitHub shows README images through its camo proxy as <img>: no scripts and
     no external fonts, so motion is SMIL plus CSS and text is generic monospace.
     Every animation runs on one 14s cycle; prefers-reduced-motion leaves the
     still diagram.
   -->
   <style>
-    text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; fill: #bbc2cf; font-size: 11.5px; }
-    .bg { fill: #282c34; stroke: #3f444a; }
-    .box { fill: #21242b; stroke-width: 1.5; }
+    text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; fill: #E0E0E0; font-size: 11.5px; }
+    .bg { fill: #1A080A; stroke: #40151E; }
+    .box { fill: #2A0F12; stroke-width: 1.5; }
     .t { font-size: 14px; font-weight: 700; }
-    .h { font-size: 15px; font-weight: 700; fill: #DFDFDF; }
-    .s { fill: #9ca0a4; }
-    .d { fill: #5B6268; }
-    .l { font-size: 11px; fill: #9ca0a4; }
+    .h { font-size: 15px; font-weight: 700; fill: #E0E0E0; }
+    .s { fill: #A0A0A0; }
+    .d { fill: #606060; }
+    .l { font-size: 11px; fill: #A0A0A0; }
     .c { text-anchor: middle; }
     .e { text-anchor: end; }
-    .ln { stroke: #5B6268; stroke-width: 1.25; fill: none; }
+    .ln { stroke: #606060; stroke-width: 1.25; fill: none; }
     .dash { stroke-dasharray: 4 3; }
-    .ah { fill: #5B6268; }
-    .pill { fill: #23272e; stroke: #3f444a; }
-    .side { fill: none; stroke: #3f444a; stroke-dasharray: 4 3; }
-    .yellow { stroke: #ECBE7B; } .yellow-t { fill: #ECBE7B; }
-    .blue { stroke: #51afef; } .blue-t { fill: #51afef; }
-    .cyan { stroke: #46D9FF; } .cyan-t { fill: #46D9FF; }
-    .green { stroke: #98be65; } .green-t { fill: #98be65; }
-    .magenta { stroke: #c678dd; } .magenta-t { fill: #c678dd; }
-    .orange { stroke: #da8548; } .orange-t { fill: #da8548; }
-    .red { stroke: #ff6c6b; } .red-t { fill: #ff6c6b; }
-    .grey { stroke: #9ca0a4; } .grey-t { fill: #9ca0a4; }
+    .ah { fill: #606060; }
+    .pill { fill: #2A0F12; stroke: #40151E; }
+    .side { fill: none; stroke: #606060; stroke-dasharray: 4 3; }
+    .grey { stroke: #A0A0A0; }
+    .accent { stroke: #FF5C54; } .accent-t { fill: #FF5C54; }
+    .green { stroke: #6EFF6E; } .green-t { fill: #6EFF6E; }
+    .cyan { stroke: #00D9FF; } .cyan-t { fill: #00D9FF; }
+    .amber { stroke: #FFA500; } .amber-t { fill: #FFA500; }
+    .red { stroke: #FF3B30; } .red-t { fill: #FF3B30; }
 
     /* the reconciler's tick: one eighth of a turn per step, forever */
     .tick { transform-box: fill-box; transform-origin: center; animation: tick 4s steps(8) infinite; }
@@ -53,7 +52,7 @@
     @keyframes merged { 0%, 69% { fill-opacity: 0; } 70%, 89% { fill-opacity: 1; } 90%, 100% { fill-opacity: 0; } }
     /* the loop strip: each step lit for 1.4s, in order */
     .step { animation: step 14s linear infinite; }
-    @keyframes step { 0%, 9% { fill: #3f444a; stroke: #51afef; } 10%, 100% { fill: #23272e; stroke: #3f444a; } }
+    @keyframes step { 0%, 9% { fill: #40151E; stroke: #FF5C54; } 10%, 100% { fill: #2A0F12; stroke: #40151E; } }
     .s1 { animation-delay: 1.4s; } .s2 { animation-delay: 2.8s; } .s3 { animation-delay: 4.2s; }
     .s4 { animation-delay: 5.6s; } .s5 { animation-delay: 7s; } .s6 { animation-delay: 8.4s; }
     .s7 { animation-delay: 9.8s; } .s8 { animation-delay: 11.2s; }
@@ -69,7 +68,7 @@
 
   <rect class="bg" x="0.5" y="0.5" width="999" height="587" rx="12"/>
   <text class="h" x="24" y="34">fleet · how it fits together</text>
-  <text class="d e" x="976" y="34">theme: doom-one</text>
+  <text class="d e" x="976" y="34">theme: thurbox doom</text>
 
   <!-- row 1 -->
   <rect class="box grey" x="24" y="56" width="280" height="76" rx="8"/>
@@ -77,8 +76,8 @@
   <text class="s" x="40.5" y="102">prompt · review · merge</text>
   <text class="s" x="40.5" y="118">reviewed: a served doc is read</text>
 
-  <rect class="box blue" x="360" y="56" width="280" height="76" rx="8"/>
-  <text class="t blue-t" x="376.5" y="82">Mission Control</text>
+  <rect class="box accent" x="360" y="56" width="280" height="76" rx="8"/>
+  <text class="t accent-t" x="376.5" y="82">Mission Control</text>
   <text class="s" x="376.5" y="102">the lead agent session</text>
   <text class="s" x="376.5" y="118">splits · writes briefs · orders</text>
 
@@ -88,44 +87,44 @@
   <text class="s" x="712.5" y="118">*.conf · session profiles</text>
 
   <!-- row 2 -->
-  <rect class="box cyan" x="24" y="196" width="280" height="88" rx="8"/>
-  <text class="t cyan-t" x="40.5" y="222">Kanban board</text>
+  <rect class="box grey" x="24" y="196" width="280" height="88" rx="8"/>
+  <text class="t" x="40.5" y="222">Kanban board</text>
   <text class="s" x="40.5" y="242">Alt+K · six columns · read-only</text>
   <text class="s" x="40.5" y="258">focus a worker · open a record</text>
   <text class="s" x="40.5" y="274">legacy column optional · F3</text>
 
   <rect class="box green" x="360" y="196" width="280" height="88" rx="8"/>
-  <rect class="glow" x="356.5" y="193" width="287" height="94" rx="10" fill="none" stroke="#98be65" stroke-width="3"/>
+  <rect class="glow" x="356.5" y="193" width="287" height="94" rx="10" fill="none" stroke="#6EFF6E" stroke-width="3"/>
   <text class="t green-t" x="376.5" y="222">Queue</text>
   <text class="s" x="376.5" y="242">PROMPT.md → topic → tasks</text>
   <text class="s" x="376.5" y="258">task.yaml · BRIEF.md · result.md</text>
   <text class="s" x="376.5" y="274">blockers · artifact per repo</text>
 
-  <rect class="box magenta" x="696" y="196" width="280" height="88" rx="8"/>
-  <text class="t magenta-t" x="712.5" y="222">Reconciler</text>
+  <rect class="box cyan" x="696" y="196" width="280" height="88" rx="8"/>
+  <text class="t cyan-t" x="712.5" y="222">Reconciler</text>
   <text class="s" x="712.5" y="242">watch · collect · shepherd</text>
   <text class="s" x="712.5" y="258">refuel · reap · reads plan</text>
   <text class="s" x="712.5" y="274">never dispatches · no records</text>
   <g class="tick">
-    <circle cx="949.2" cy="218" r="9" fill="none" stroke="#c678dd" stroke-width="2" stroke-dasharray="9.4 4.7"/>
-    <circle cx="949.2" cy="209" r="2.5" fill="#c678dd"/>
+    <circle cx="949.2" cy="218" r="9" fill="none" stroke="#00D9FF" stroke-width="2" stroke-dasharray="9.4 4.7"/>
+    <circle cx="949.2" cy="209" r="2.5" fill="#00D9FF"/>
   </g>
 
   <!-- row 3 -->
-  <rect class="box yellow" x="24" y="348" width="280" height="88" rx="8"/>
-  <text class="t yellow-t" x="40.5" y="374">Fuel</text>
+  <rect class="box grey" x="24" y="348" width="280" height="88" rx="8"/>
+  <text class="t amber-t" x="40.5" y="374">Fuel</text>
   <text class="s" x="40.5" y="394">quota-axi · the account's</text>
   <text class="s" x="40.5" y="410">quota window, not a session's</text>
   <text class="s" x="40.5" y="426">gauges on the board: f</text>
 
-  <rect class="box orange" x="360" y="348" width="280" height="88" rx="8"/>
-  <text class="t orange-t" x="376.5" y="374">Workers</text>
+  <rect class="box amber" x="360" y="348" width="280" height="88" rx="8"/>
+  <text class="t amber-t" x="376.5" y="374">Workers</text>
   <text class="s" x="376.5" y="394">one thurbox session per task</text>
   <text class="s" x="376.5" y="410">own git worktree per repo</text>
   <text class="s" x="376.5" y="426">this machine, or --host over ssh</text>
-  <rect class="cur" x="582.4" y="362" width="7.2" height="12" fill="#da8548"/>
-  <rect class="cur cur2" x="596.8" y="362" width="7.2" height="12" fill="#da8548"/>
-  <rect class="cur cur3" x="611.2" y="362" width="7.2" height="12" fill="#da8548"/>
+  <rect class="cur" x="582.4" y="362" width="7.2" height="12" fill="#FFA500"/>
+  <rect class="cur cur2" x="596.8" y="362" width="7.2" height="12" fill="#FFA500"/>
+  <rect class="cur cur3" x="611.2" y="362" width="7.2" height="12" fill="#FFA500"/>
 
   <rect class="box red" x="696" y="348" width="280" height="88" rx="8"/>
   <text class="t red-t" x="712.5" y="374">Forge (optional)</text>
@@ -133,8 +132,8 @@
   <text class="s" x="712.5" y="410">review-prs session gives verdicts</text>
   <text class="s" x="712.5" y="426">local-only: a pushed commit</text>
   <g class="merged">
-    <rect x="885.4" y="361" width="78.2" height="20" rx="10" fill="#98be65"/>
-    <text x="924.5" y="375" class="c" style="fill:#282c34;font-weight:700">merged</text>
+    <rect x="885.4" y="361" width="78.2" height="20" rx="10" fill="#6EFF6E"/>
+    <text x="924.5" y="375" class="c" style="fill:#1A080A;font-weight:700">merged</text>
   </g>
 
   <!-- arrows -->
@@ -175,43 +174,43 @@
 
   <!-- packets: each moves along its arrow inside its own slice of the 14s cycle -->
   <g class="pkt">
-    <circle r="4.5" fill="#ECBE7B" opacity="0">
+    <circle r="4.5" fill="#E0E0E0" opacity="0">
       <animateMotion dur="14s" repeatCount="indefinite" path="M304,94 H357.7" keyPoints="0;0;1;1" keyTimes="0;0.01;0.09;1" calcMode="linear"/>
       <animate attributeName="opacity" dur="14s" repeatCount="indefinite" values="0;1;0" keyTimes="0;0.01;0.09" calcMode="discrete"/>
     </circle>
-    <circle r="4.5" fill="#51afef" opacity="0">
+    <circle r="4.5" fill="#FF5C54" opacity="0">
       <animateMotion dur="14s" repeatCount="indefinite" path="M500,132 V194" keyPoints="0;0;1;1" keyTimes="0;0.11;0.19;1" calcMode="linear"/>
       <animate attributeName="opacity" dur="14s" repeatCount="indefinite" values="0;1;0" keyTimes="0;0.11;0.19" calcMode="discrete"/>
     </circle>
-    <circle r="4.5" fill="#98be65" opacity="0">
+    <circle r="4.5" fill="#6EFF6E" opacity="0">
       <animateMotion dur="14s" repeatCount="indefinite" path="M469.1,284 V346" keyPoints="0;0;1;1" keyTimes="0;0.31;0.37;1" calcMode="linear"/>
       <animate attributeName="opacity" dur="14s" repeatCount="indefinite" values="0;1;0" keyTimes="0;0.31;0.37" calcMode="discrete"/>
     </circle>
-    <circle r="4.5" fill="#98be65" opacity="0">
+    <circle r="4.5" fill="#6EFF6E" opacity="0">
       <animateMotion dur="14s" repeatCount="indefinite" path="M469.1,284 V346" keyPoints="0;0;1;1" keyTimes="0;0.335;0.395;1" calcMode="linear"/>
       <animate attributeName="opacity" dur="14s" repeatCount="indefinite" values="0;1;0" keyTimes="0;0.335;0.395" calcMode="discrete"/>
     </circle>
-    <circle r="4.5" fill="#98be65" opacity="0">
+    <circle r="4.5" fill="#6EFF6E" opacity="0">
       <animateMotion dur="14s" repeatCount="indefinite" path="M469.1,284 V346" keyPoints="0;0;1;1" keyTimes="0;0.36;0.42;1" calcMode="linear"/>
       <animate attributeName="opacity" dur="14s" repeatCount="indefinite" values="0;1;0" keyTimes="0;0.36;0.42" calcMode="discrete"/>
     </circle>
-    <circle r="4.5" fill="#da8548" opacity="0">
+    <circle r="4.5" fill="#FFA500" opacity="0">
       <animateMotion dur="14s" repeatCount="indefinite" path="M640,392 H693.7" keyPoints="0;0;1;1" keyTimes="0;0.43;0.49;1" calcMode="linear"/>
       <animate attributeName="opacity" dur="14s" repeatCount="indefinite" values="0;1;0" keyTimes="0;0.43;0.49" calcMode="discrete"/>
     </circle>
-    <circle r="4.5" fill="#da8548" opacity="0">
+    <circle r="4.5" fill="#FFA500" opacity="0">
       <animateMotion dur="14s" repeatCount="indefinite" path="M530.9,348 V286" keyPoints="0;0;1;1" keyTimes="0;0.5;0.56;1" calcMode="linear"/>
       <animate attributeName="opacity" dur="14s" repeatCount="indefinite" values="0;1;0" keyTimes="0;0.5;0.56" calcMode="discrete"/>
     </circle>
-    <circle r="4.5" fill="#c678dd" opacity="0">
+    <circle r="4.5" fill="#00D9FF" opacity="0">
       <animateMotion dur="14s" repeatCount="indefinite" path="M696,240 H642.3" keyPoints="0;0;1;1" keyTimes="0;0.53;0.59;1" calcMode="linear"/>
       <animate attributeName="opacity" dur="14s" repeatCount="indefinite" values="0;1;0" keyTimes="0;0.53;0.59" calcMode="discrete"/>
     </circle>
-    <circle r="4.5" fill="#c678dd" opacity="0">
+    <circle r="4.5" fill="#00D9FF" opacity="0">
       <animateMotion dur="14s" repeatCount="indefinite" path="M836,284 V346" keyPoints="0;0;1;1" keyTimes="0;0.61;0.69;1" calcMode="linear"/>
       <animate attributeName="opacity" dur="14s" repeatCount="indefinite" values="0;1;0" keyTimes="0;0.61;0.69" calcMode="discrete"/>
     </circle>
-    <circle r="4.5" fill="#c678dd" opacity="0">
+    <circle r="4.5" fill="#00D9FF" opacity="0">
       <animateMotion dur="14s" repeatCount="indefinite" path="M908.1,196 V164 H582.4 V134" keyPoints="0;0;1;1" keyTimes="0;0.8;0.9;1" calcMode="linear"/>
       <animate attributeName="opacity" dur="14s" repeatCount="indefinite" values="0;1;0" keyTimes="0;0.8;0.9" calcMode="discrete"/>
     </circle>
@@ -219,7 +218,7 @@
 
   <!-- the loop -->
   <text class="t" x="24" y="478">The loop</text>
-  <text class="d" x="115.9" y="478">every step is a `fleet queue` verb or its effect</text>
+  <text class="d" x="115.9" y="478">one task, start to finish</text>
   <rect class="pill step" x="24" y="492" width="89.8" height="26" rx="13"/>
   <text class="c" x="68.9" y="509">prompt</text>
   <rect class="pill step s1" x="130.5" y="492" width="89.8" height="26" rx="13"/>

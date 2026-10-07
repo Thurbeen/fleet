@@ -121,7 +121,7 @@ def check_svg(path: str) -> list[str]:
     if "@import" in css or re.search(r"url\(\s*['\"]?(?!#)", css):
         problems.append(f"{path}: its style loads an external resource")
     if "prefers-color-scheme" not in css and not paints_backdrop(root, name):
-        problems.append(f"{path}: no prefers-color-scheme style, so it has no dark palette")
+        problems.append(f"{path}: no prefers-color-scheme style and no backdrop, so it has no dark palette")
     return problems
 
 
@@ -135,7 +135,8 @@ def paints_backdrop(root: ET.Element, name) -> bool:
     for el in root:
         if name(el) in ("title", "desc", "style", "defs", "metadata"):
             continue
-        if name(el) != "rect" or el.get("fill") in (None, "none") and not el.get("class"):
+        fill = el.get("fill")
+        if name(el) != "rect" or fill == "none" or fill is None and not el.get("class"):
             return False
         try:
             x, y = float(el.get("x", "0")), float(el.get("y", "0"))
