@@ -403,7 +403,7 @@ function M.render(ctx, model, fuel, worker, fleet)
   local fuel_view = fuel_node(fuel, width)
   local board_height = ctx.height - 11 - fuel_view.len
   local per = ctx.width >= 180 and 6 or 3
-  geometry = { per = per, width = width, top = 3 + fuel_view.len, height = board_height, bands = 6 / per, now = now }
+  geometry = { now = now }
   local bands = {}
   for band = 0, 6 / per - 1 do
     local height = math.floor(board_height / (6 / per))
@@ -568,18 +568,9 @@ function M.on_click(hit)
   return false
 end
 function M.on_scroll(wheel)
-  if state.board_detail then
-    state.board_detail_offset = math.max(0, (state.board_detail_offset or 0) + (wheel.up and -3 or 3))
-    return true
-  end
-  if not geometry.per then
-    return false
-  end
-  local c = math.max(1, math.min(geometry.per, math.floor((wheel.x - 1) / (geometry.width / geometry.per)) + 1))
-  if geometry.bands > 1 and wheel.y >= geometry.top + math.floor(geometry.height / geometry.bands) then
-    c = c + geometry.per
-  end
-  choose(c, (state.board_column == c and state.board_index or 1) + (wheel.up and -1 or 1))
-  return true
+  -- Native floats synthesize arrow keys for wheel ticks. Addressed scroll
+  -- input follows the same selection, so the two paths cannot disagree.
+  return M.on_action("fleetqueue.board_" .. (wheel.up and "up" or "down"))
 end
+
 return M

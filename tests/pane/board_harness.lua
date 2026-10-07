@@ -353,8 +353,9 @@ elseif scenario == "landed" then
 elseif scenario == "mouse" then
   pane.on_click({ id = "board:alpha/04-pr" })
   contains("Failing PR")
-  assert(pane.on_scroll({ x = 5, y = 10, up = false }))
-  contains("Waiting")
+  pane.on_click({ id = "board:alpha/02-wait" })
+  assert(pane.on_scroll({ x = 90, y = 10, up = true }))
+  assert(state.board_ref == "alpha/01-ready", "native float wheel must move the selected column")
 elseif scenario == "detail-links" then
   action("enter")
   local link = "https://example.org/reviews/" .. string.rep("x", 260)
@@ -372,7 +373,7 @@ elseif scenario == "detail-links" then
   end
   assert(found, "wrapping broke the full review URL")
   assert(pane.on_scroll({ x = 1, y = 5, up = false }))
-  assert(state.board_detail_offset == 3)
+  assert(state.board_detail_offset == 1)
 elseif scenario == "selection" then
   action("enter")
   assert(pane.on_key({ key = "ctrl+c" }) == false, "copy key swallowed")
@@ -389,6 +390,7 @@ elseif scenario == "landed-age" then
   assert(not strings(tree()):find("Old landing", 1, true))
   assert(not strings(tree()):find("Undated landing", 1, true), "undated work is not known to be recent")
 elseif scenario == "mouse-band" then
+  pane.on_click({ id = "board:alpha/05-served" })
   local root = tree()
   local second_band_y = 1
     + root.children[1].len
@@ -396,7 +398,7 @@ elseif scenario == "mouse-band" then
     + root.children[3].len
     + root.children[4].children[1].len
   assert(pane.on_scroll({ x = 5, y = second_band_y, up = false }))
-  assert(state.board_ref == "alpha/05-served", "wheel on the second band's frame scrolled the first band")
+  assert(state.board_ref == "alpha/05-served", "native wheel left the selected lower-band column")
 elseif scenario == "glyphs" then
   local ready = false
   for _, node in ipairs(nodes(tree())) do
