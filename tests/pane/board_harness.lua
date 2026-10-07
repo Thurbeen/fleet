@@ -117,7 +117,7 @@ function ui.list(o)
   return { type = "box", children = c }
 end
 function ui.footer(o)
-  return { type = "text", len = 1, text = { { { text = "close" } } } }
+  return { type = "text", len = 1, text = { { { text = "close" } } }, actions = o.actions }
 end
 function ui.modal(o)
   local n = ui.panel({ title = o.title, body = o.children })
@@ -396,6 +396,47 @@ elseif scenario == "filters" then
   assert(not strings(tree()):find("Waiting", 1, true))
   action("agent")
   contains("Waiting")
+elseif scenario == "topic-context" then
+  action("topic")
+  contains("Choose topic")
+  contains("Fleet board")
+  for _, heading in ipairs({
+    "Queued / waiting",
+    "Dispatched / working",
+    "Shipped",
+    "Served",
+    "Stuck / abandoned",
+    "Landed",
+  }) do
+    contains(heading)
+  end
+  contains("Ready")
+  for _, run in ipairs(tree().children[3].text[1]) do
+    assert(
+      run.role ~= "action:fleetqueue.board_agent" and run.role ~= "action:fleetqueue.board_fuel",
+      "background filter chips still act as typing while choosing a topic"
+    )
+  end
+  assert(state.board_topic == nil, "opening the picker filtered the background")
+  for _, node in ipairs(nodes(tree())) do
+    for _, line in ipairs(type(node.text) == "table" and node.text or {}) do
+      for _, run in ipairs(line) do
+        assert(run.role ~= "action:fleetqueue.board_landed", "background landed button types into search")
+      end
+    end
+  end
+  assert(pane.on_click({ id = "board:alpha/03-work" }), "background cards became dead controls")
+  assert(
+    not state.board_picker and state.board_ref == "alpha/03-work",
+    "clicking a card did not dismiss search and select it"
+  )
+  action("topic")
+  action("close")
+  local advertised = false
+  for _, item in ipairs(tree().children[#tree().children].actions or {}) do
+    advertised = advertised or item[1] == "fleetqueue.board_topic" and item[2] == "topic"
+  end
+  assert(advertised, "topic shortcut is missing from the board footer description")
 elseif scenario == "topic-picker" then
   action("topic")
   contains("Choose topic")
@@ -406,7 +447,13 @@ elseif scenario == "topic-picker" then
     input = input or node.type == "input" and node.focused == true
   end
   assert(input, "picker has no native search input")
-  assert((tree().children[3].len or 0) > 0, "picker list has no measured height in the native modal")
+  local measured = false
+  for _, node in ipairs(nodes(tree())) do
+    if node.children and node.children[1] and (node.children[1].id or ""):find("board-topic:", 1, true) then
+      measured = (node.len or 0) > 0
+    end
+  end
+  assert(measured, "picker list has no measured height in the board")
   for char in ("rollout"):gmatch(".") do
     if char == "t" then
       action("topic")

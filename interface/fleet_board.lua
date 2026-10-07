@@ -223,11 +223,16 @@ local function column_node(c, width, height, elapsed)
     end
   end
   if c == 6 and not state.board_landed then
-    body = { text({ chip("Show recent landed", "landed", false) }) }
+    body = {
+      text({
+        state.board_picker and span(" Recent landed folded", theme.muted)
+          or chip("Show recent landed", "landed", false),
+      }),
+    }
   end
   local panel = ui.panel({
     title = theme.status(statuses[c]).glyph .. " " .. headings[c] .. " · " .. #cards,
-    focused = state.board_column == c,
+    focused = state.board_column == c and not state.board_picker,
     body = body,
     right_column = bar,
   })
@@ -390,8 +395,9 @@ local function topic_picker(ctx)
   local textinput = require("lib.textinput")
   local picker = state.board_picker
   local rows = picker_rows(picker.field)
-  local width = math.max(24, math.min(88, ctx.width - 4))
-  local height = math.max(1, math.min(18, ctx.height - 11, #rows))
+  local controls_width = math.min(32, math.floor(ctx.width / 3))
+  local width = math.max(1, ctx.width - controls_width - 5)
+  local height = 6
   picker.cursor = math.max(1, math.min(#rows, picker.cursor))
   state.board_picker = picker
   local list = ui.list({
@@ -415,22 +421,44 @@ local function topic_picker(ctx)
     end,
   })
   list.len = height
-  local children = {
-    textinput.node(
-      picker.field,
-      { label = "Search topics", placeholder = "Name or slug…", focused = true, id = "board-topic-search" }
-    ),
-    text({ chip("All topics", "topic_all", false), span("  Current: " .. (state.board_topic or "all"), theme.muted) }),
-    #rows > 0 and list or text({ span(" No matching topics · edit your search", theme.muted) }, height),
-    text({ span(#rows > 0 and (picker.cursor .. "/" .. #rows .. " · ↑/↓ or wheel") or "0 matches", theme.muted) }),
-    text({
-      chip("Select", "enter", false),
-      span(" "),
-      chip("Cancel", "close", false),
-      span("  Enter selects · Esc cancels", theme.muted),
-    }),
+  local controls = {
+    type = "box",
+    len = controls_width,
+    children = {
+      textinput.node(
+        picker.field,
+        { label = "Search topics", placeholder = "Name or slug…", focused = true, id = "board-topic-search" }
+      ),
+      text({
+        span(#rows > 0 and (picker.cursor .. "/" .. #rows .. " · ↑/↓ or wheel") or "0 matches", theme.muted),
+      }),
+      text({ chip("All topics", "topic_all", false) }),
+      text({
+        #rows > 0 and chip("Select", "enter", false) or span("No matches", theme.muted),
+        span(" "),
+        chip("Cancel", "close", false),
+      }),
+    },
   }
-  return ui.modal({ title = "Choose topic", cols = width, children = children })
+  local body = {
+    type = "box",
+    axis = "horizontal",
+    gap = 1,
+    len = height,
+    children = {
+      controls,
+      {
+        type = "box",
+        fill = 1,
+        children = {
+          #rows > 0 and list or text({ span(" No matching topics · edit your search", theme.muted) }, height),
+        },
+      },
+    },
+  }
+  local panel = ui.panel({ title = "Choose topic · type to search", focused = true, body = { body } })
+  panel.len = height + 2
+  return panel
 end
 local function picker_action(name)
   local textinput = require("lib.textinput")
@@ -511,9 +539,6 @@ function M.render(ctx, model, fuel, worker, fleet)
       end
     end
   end
-  if state.board_picker then
-    return topic_picker(ctx)
-  end
   if state.board_detail then
     return detail(ctx)
   end
@@ -527,7 +552,8 @@ function M.render(ctx, model, fuel, worker, fleet)
   end
   local width = ctx.width - 2
   local fuel_view = state.board_fuel and fuel_node(fuel, width) or { type = "box", len = 0, children = {} }
-  local board_height = ctx.height - 11 - fuel_view.len
+  local strip_height = state.board_picker and 8 or 6
+  local board_height = ctx.height - 5 - strip_height - fuel_view.len
   local per = ctx.width >= 180 and 6 or 3
   geometry = { now = now }
   local bands = {}
@@ -556,7 +582,11 @@ function M.render(ctx, model, fuel, worker, fleet)
     ),
   })
   local filters = text({
-    chip("topic: " .. (state.board_topic or "all"), "topic", state.board_topic ~= nil),
+    chip(
+      "topic: " .. (state.board_topic or "all"),
+      state.board_picker and "close" or "topic",
+      state.board_topic ~= nil or state.board_picker ~= nil
+    ),
     span(" "),
     chip("agent: " .. (state.board_agent or "all"), "agent", state.board_agent ~= nil),
     span(" "),
@@ -566,6 +596,14 @@ function M.render(ctx, model, fuel, worker, fleet)
     span(" "),
     chip("fuel: " .. (state.board_fuel and "shown" or "hidden"), "fuel", state.board_fuel),
   })
+  if state.board_picker then
+    for _, run in ipairs(filters.text[1]) do
+      if run.role and run.role ~= "action:fleetqueue.board_close" then
+        run.role = nil
+        run.style = { fg = theme.muted }
+      end
+    end
+  end
   local strip = { text({ span(selected and " " .. selected.title or " No matching cards", theme.text) }) }
   if selected then
     strip[#strip + 1] = { type = "text", len = 2, wrap = true, text = { linked(" " .. note(selected)) } }
@@ -578,7 +616,10 @@ function M.render(ctx, model, fuel, worker, fleet)
     })
   end
   local selected_panel = ui.panel({ title = selected and "Selected · " .. selected.ref or "Selected", body = strip })
-  selected_panel.len = 6
+  if state.board_picker then
+    selected_panel = topic_picker(ctx)
+  end
+  selected_panel.len = strip_height
   local footer = ui.footer({
     cancel = "Close",
     actions = {
@@ -586,9 +627,21 @@ function M.render(ctx, model, fuel, worker, fleet)
       { "fleetqueue.board_down", "card" },
       { "fleetqueue.board_enter", "focus / record" },
       { "fleetqueue.board_detail", "record" },
+      { "fleetqueue.board_topic", "topic" },
+      { "fleetqueue.board_fuel", "fuel" },
       { "fleetqueue.board_close", "close" },
     },
   })
+  if state.board_picker then
+    footer = ui.footer({
+      cancel = "Cancel",
+      actions = {
+        { "fleetqueue.board_down", "topic" },
+        { "fleetqueue.board_enter", "select" },
+        { "fleetqueue.board_close", "cancel" },
+      },
+    })
+  end
   footer.len = 1
   local root = ui.panel({
     title = "Fleet board · " .. ui.chord("fleetqueue.board"),
@@ -727,11 +780,11 @@ function M.on_click(hit)
         return true
       end
     end
-    return false
   end
   local ref = (hit.id or ""):match("^board:(.+)$")
   local location = ref and locations[ref]
   if location then
+    state.board_picker = nil
     choose(location.column, location.index)
     return true
   end
