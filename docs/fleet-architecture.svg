@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 464" width="880" height="464" role="img" aria-labelledby="title desc">
   <title id="title">How fleet fits together</title>
-  <desc id="desc">You prompt Mission Control, the lead session, which reads the registry and dispatches tasks into the queue. The queue gives each worker a brief and gets back a result; the queue pane shows it to you. Workers open pull or merge requests on the forge. The reconciler updates the queue, checks and merges on the forge, and wakes the lead. The loop: intake, brief, dispatch, watch, collect, shepherd, merge, reap, plus refuel.</desc>
+  <desc id="desc">You prompt Mission Control, the lead session, which reads the registry and dispatches tasks into the queue. The queue gives each worker a brief and gets back a result; the Kanban board shows it to you. Workers open pull or merge requests on the forge. The reconciler updates the queue, checks and merges on the forge, and wakes the lead. The loop: intake, brief, dispatch, watch, collect, shepherd, merge, reap, plus refuel.</desc>
   <style>
     .bg { fill: #ffffff; stroke: #d1d9e0; }
     .box { fill: #f6f8fa; stroke: #d1d9e0; }
@@ -49,7 +49,7 @@
 
   <!-- row 2 -->
   <rect class="box" x="24" y="152" width="240" height="64" rx="8"/>
-  <text class="t" x="40" y="180">Queue pane</text>
+  <text class="t" x="40" y="180">Kanban board</text>
   <text class="s" x="40" y="200">live view · read-only · F3</text>
 
   <rect class="box" x="320" y="152" width="240" height="64" rx="8"/>
