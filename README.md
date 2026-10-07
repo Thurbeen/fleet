@@ -73,8 +73,8 @@ the installer again is safe.
 3. Type a goal into Mission Control in plain words.
 
 `Alt+K` opens the full-screen Kanban board over your layout. Arrow keys and
-clicks select cards; Enter focuses a
-live worker, or opens its queue record when no session remains. `d` always
+clicks select cards; Enter focuses a live worker, or opens its queue record
+when no session remains. `d` always
 opens the record. Click the topic chip or press `t` to search topic names and
 slugs in the bottom detail area while the board stays visible. Select with
 Enter or a click. Esc cancels; All topics clears the
@@ -88,6 +88,9 @@ use thurbox’s normal handling. Drag-selection in the overlay awaits thurbox
 kernel support. It reads records and focuses sessions; it never
 dispatches, merges or changes the queue. Ctrl+H/Ctrl+L remain thurbox’s native
 pane cycle; card navigation uses arrows until [thurbox #1358](https://github.com/Thurbeen/thurbox/issues/1358).
+
+If your existing layout still shows the legacy queue column, press **F3** to
+hide it. **Alt+K** is the dashboard shortcut.
 
 ## Read more
 
