@@ -171,3 +171,29 @@ def test_part(number):
                     *areas, "--jobs", "1", "--partition", part], cwd=copy)
         assert done.code == 0, done.out
     assert len(list((copy / "tests" / "skills").glob("*.seen"))) == 6
+
+
+@pytest.mark.parametrize("parent_jobs", [1, 2])
+def test_nested_gate_defaults_to_serial_under_every_parent(tmp_path, parent_jobs):
+    copy = tracked_copy(tmp_path / "copy")
+    for directory in ("skills", "settings"):
+        shutil.rmtree(copy / "tests" / directory)
+    write(copy / "tests" / "settings" / "test_nested.py", '''import pytest
+
+
+@pytest.mark.parametrize("number", range(2))
+def test_nested(number, pytestconfig):
+    assert not hasattr(pytestconfig, "workerinput"), "nested gate launched parallel workers"
+''')
+    write(copy / "tests" / "skills" / "test_parent.py", '''import subprocess
+import sys
+
+
+def test_parent():
+    done = subprocess.run([sys.executable, "scripts/lib/check.py", "automerge"],
+                          capture_output=True, encoding="utf-8")
+    assert done.returncode == 0, done.stdout + done.stderr
+''')
+    done = run([*PYTHON, str(copy / "scripts" / "lib" / "check.py"),
+                "skills", "--jobs", str(parent_jobs)], cwd=copy, PYTEST_XDIST_WORKER=None)
+    assert done.code == 0, done.out

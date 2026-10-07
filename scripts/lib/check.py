@@ -83,8 +83,8 @@ def tracked(*patterns: str) -> list[str]:
     return [f for f in out.decode("utf-8").split("\0") if f]
 
 
-def run(argv: list[str]) -> int:
-    return subprocess.run(argv, cwd=REPO).returncode
+def run(argv: list[str], *, env: dict[str, str] | None = None) -> int:
+    return subprocess.run(argv, cwd=REPO, env=env).returncode
 
 
 def missing(*tools: str) -> str | None:
@@ -189,7 +189,10 @@ def check_tests(names: list[str], jobs: int, partition: str | None = None) -> st
         argv += ["-n", str(jobs), "--maxschedchunk=1"]
     if partition:
         argv += ["--fleet-partition", partition]
-    return "pytest" if run([*argv, *targets]) else None
+    # This survives the per-test isolation even under a serial pytest parent;
+    # PYTEST_XDIST_WORKER alone only identifies parallel ancestors.
+    env = {**os.environ, "PYTEST_FLEET_GATE_CHILD": "1"}
+    return "pytest" if run([*argv, *targets], env=env) else None
 
 
 def listing() -> str:
@@ -209,7 +212,8 @@ def main(argv: list[str]) -> int:
     if "--list" in argv:
         sys.stdout.write(listing())
         return 0
-    jobs = 1 if "PYTEST_XDIST_WORKER" in os.environ else min(8, os.cpu_count() or 1)
+    nested = "PYTEST_FLEET_GATE_CHILD" in os.environ or "PYTEST_XDIST_WORKER" in os.environ
+    jobs = 1 if nested else min(8, os.cpu_count() or 1)
     argv = list(argv)
     if "--jobs" in argv:
         pos = argv.index("--jobs")
