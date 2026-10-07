@@ -21,6 +21,7 @@ LIB = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 
 GROUPS = {
     "queue": ("queue.py", "the task queue: topics, tasks, dispatch and completion"),
     "status": ("fleet_status.py", "one reading of the whole fleet"),
+    "peers": ("peers.py", "every other fleet's queue, read-only, for the board"),
     "reconcile": ("reconcile.py", "the supervised loop that keeps the queue moving"),
     "check": ("check.py", "the gate: every check, or the named ones"),
     "install": ("install.py", "set this checkout up: dependencies, skills link, extension"),

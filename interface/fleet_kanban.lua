@@ -30,6 +30,7 @@ return {
     { key = "n", action = "fleetqueue.board_needs", desc = "toggle needs me filter", group = "Kanban" },
     { key = "l", action = "fleetqueue.board_landed", desc = "fold recent landed cards", group = "Kanban" },
     { key = "d", action = "fleetqueue.board_detail", desc = "show full queue record", group = "Kanban" },
+    { key = "h", action = "fleetqueue.board_scope", desc = "cycle host / fleet filter", group = "Kanban" },
   },
   commands = { { action = "fleetqueue.board_topic_all", desc = "show all topics", group = "Kanban" } },
   render = function(ctx)
@@ -50,7 +51,8 @@ return {
         last_reading.fuel,
         last_reading.lead,
         last_reading.fleet,
-        "queue unavailable · showing last records"
+        "queue unavailable · showing last records",
+        last_reading.peers
       )
     end
     if reading.error then
@@ -67,7 +69,7 @@ return {
       return node
     end
     last_reading = reading
-    return board.render(ctx, reading.model, reading.fuel, reading.lead, reading.fleet)
+    return board.render(ctx, reading.model, reading.fuel, reading.lead, reading.fleet, nil, reading.peers)
   end,
   on_action = function(action)
     if action == "fleetqueue.board" then

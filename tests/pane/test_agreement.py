@@ -131,6 +131,18 @@ def test_the_pane_reads_a_fleets_name_back_the_way_the_renderer_wrote_it():
     assert one(r'^local FLEET_MARK = "(.*)"$', PANE_TEXT) == lib("install_extension.py").FLEET_SEPARATOR
 
 
+def test_fleet_peers_finds_leads_by_the_pane_s_own_grammar():
+    """`fleet peers` reads the same session list the pane does, so a lead one of
+    them recognises and the other does not is a peer the board can never draw."""
+    peers = lib("peers.py")
+    assert peers.CONTROL_PLANE == one(r'^local CONTROL_PLANE = "(.*)"$', PANE_TEXT)
+    assert peers.FLEET_MARK == lib("install_extension.py").FLEET_SEPARATOR
+    for name, fleet in (("📡 Mission Control", ""), ("⌖ Mission Control · acme", "acme"),
+                        ("Mission Control", ""), ("🚀 Rename Mission Control", None),
+                        ("🚀 Fix Mission Control · then ship it", None)):
+        assert peers.lead_fleet(name) == fleet, name
+
+
 def test_the_setting_carries_a_word_for_every_kind_queue_py_maps():
     """A kind with no word renders a mark-less session and fails nothing else."""
     assert len(GLYPH_KEYS) > 2, f"the setting reads as {len(GLYPH_KEYS)} words — is it still KEY=value?"

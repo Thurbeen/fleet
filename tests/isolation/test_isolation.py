@@ -9,7 +9,8 @@ run. So this builds that worst case on purpose:
 
   A POISONED COPY of the tree under test: a malformed queue record and an
   OPERATOR.md, an auto-merge.conf naming a repository, publish, agent,
-  agent-policy, glyph, fleet-name, voice and session-profile settings with odd values, a
+  agent-policy, glyph, fleet-name, voice, peer and session-profile settings with odd values,
+  a peer cache, a
   rendered extension.toml, a reconciler runtime directory, and a registry map
   of the wrong shape. All of it is made up here; nothing is copied from a real
   control plane.
@@ -84,6 +85,8 @@ def poison(copy: Path) -> None:
     write(o / "reconcile" / "pid", "1\n")
     write(o / "reconcile" / "down", "asked down by the operator\n")
     write(o / "first-run" / "pane", "no\n")
+    write(o / "peers.conf", "DISCOVER=off\nPEER=operator-private-host /srv/operator-private operator-private\n")
+    write(o / "peers" / "cache.json", '{"operator-private-host:/srv": {"error": "Operator Private"}}\n')
     write(copy / "extension.toml", '[[sessions]]\nname = "Poisoned Lead"\nrepo_path = "/nowhere"\n')
     write(copy / "registry" / "repos.generated.yaml", "owners: not-a-list\n")
     write(copy / "registry" / "owners.txt", "operator-private-org\n")
@@ -140,6 +143,19 @@ def test_the_static_checks_read_no_record_and_no_setting(poisoned, hostile):
 ])
 def test_the_areas_that_read_settings_give_the_same_verdict(poisoned, hostile, checks):
     assert_same_verdict(gate(poisoned, hostile, *checks), hostile)
+
+
+def test_the_board_s_peers_read_no_peer_setting_or_cache(poisoned, hostile):
+    """`fleet peers` is the one reader of `peers.conf` and of the peer cache.
+
+    Its tests and the board's, not the whole pane area: that area also asks
+    the real thurbox kernel for its verdict on purpose, which a hostile host
+    reads as a real tool running.
+    """
+    done = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
+                           "tests/pane/test_peers.py", "tests/pane/test_board.py"],
+                          cwd=poisoned, env=hostile, capture_output=True, encoding="utf-8", errors="replace")
+    assert_same_verdict(done, hostile)
 
 
 def test_every_test_runs_isolated():
