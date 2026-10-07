@@ -19,7 +19,8 @@ WHAT IT HOLDS, for each markdown file named on the command line:
       - carries its words as real <text>, so they stay searchable and sharp
       - loads nothing: no <image>, <script> or <foreignObject>, no href that
         leaves the file, no @import and no url() but a local #fragment
-      - has a `prefers-color-scheme` style, so it reads on a dark theme
+      - reads on a dark theme: a `prefers-color-scheme` style, or a first
+        shape that is an opaque backdrop over the whole viewBox
       - stays small (MAX_SVG_BYTES)
 
 Links inside fenced code blocks and inline code spans are examples, not links,
@@ -119,9 +120,30 @@ def check_svg(path: str) -> list[str]:
     css = "\n".join(styles)
     if "@import" in css or re.search(r"url\(\s*['\"]?(?!#)", css):
         problems.append(f"{path}: its style loads an external resource")
-    if "prefers-color-scheme" not in css:
+    if "prefers-color-scheme" not in css and not paints_backdrop(root, name):
         problems.append(f"{path}: no prefers-color-scheme style, so it has no dark palette")
     return problems
+
+
+def paints_backdrop(root: ET.Element, name) -> bool:
+    """An SVG whose first shape covers its whole viewBox with a fill carries its
+    own theme, so it reads on a light page and a dark one alike."""
+    try:
+        _, _, vw, vh = (float(v) for v in root.get("viewBox", "").replace(",", " ").split())
+    except ValueError:
+        return False
+    for el in root:
+        if name(el) in ("title", "desc", "style", "defs", "metadata"):
+            continue
+        if name(el) != "rect" or el.get("fill") in (None, "none") and not el.get("class"):
+            return False
+        try:
+            x, y = float(el.get("x", "0")), float(el.get("y", "0"))
+            w, h = float(el.get("width", "0")), float(el.get("height", "0"))
+        except ValueError:
+            return False
+        return x <= 1 and y <= 1 and x + w >= vw - 1 and y + h >= vh - 1
+    return False
 
 
 def main(argv: list[str]) -> int:
