@@ -2154,6 +2154,7 @@ return {
   -- Declaring it is not being granted it: settings (`Ctrl+,`) → `]` → `t`.
   capabilities = { "run" },
 
+  commands = { { action = "fleetqueue.board_topic_all", desc = "show all topics", group = "Kanban" } },
   keys = {
     { key = "alt+k", action = BOARD, desc = "toggle the fleet Kanban board", scope = "global", group = "UI" },
     { key = "up", action = "fleetqueue.board_up", desc = "previous card", group = "Kanban" },
@@ -2162,7 +2163,8 @@ return {
     { key = "right", action = "fleetqueue.board_right", desc = "next column", group = "Kanban" },
     { key = "enter", action = "fleetqueue.board_enter", desc = "focus worker or show record", group = "Kanban" },
     { key = "esc", action = "fleetqueue.board_close", desc = "close board or detail", group = "Kanban" },
-    { key = "t", action = "fleetqueue.board_topic", desc = "cycle topic filter", group = "Kanban" },
+    { key = "f", action = "fleetqueue.board_fuel", desc = "show or hide fuel gauges", group = "Kanban" },
+    { key = "t", action = "fleetqueue.board_topic", desc = "search and choose a topic", group = "Kanban" },
     { key = "a", action = "fleetqueue.board_agent", desc = "cycle agent filter", group = "Kanban" },
     { key = "n", action = "fleetqueue.board_needs", desc = "toggle needs me filter", group = "Kanban" },
     { key = "l", action = "fleetqueue.board_landed", desc = "fold recent landed cards", group = "Kanban" },
@@ -2512,6 +2514,7 @@ return {
     if action == BOARD then
       state.board_open = not state.board_open
       state.board_detail = nil
+      state.board_picker = nil
       return true
     end
     if state.board_open and action:match("^fleetqueue%.board_") then

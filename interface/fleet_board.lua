@@ -236,6 +236,8 @@ local function column_node(c, width, height, elapsed)
   return panel
 end
 local function fuel_node(fuel, width)
+  local cell_width = math.floor((width - 1) / 2)
+  local label_width = math.min(24, math.floor(cell_width / 2))
   local rows = {}
   for _, rec in ipairs(fuel or {}) do
     local windows = rec.windows or {}
@@ -248,10 +250,11 @@ local function fuel_node(fuel, width)
       for _, window in ipairs(windows) do
         local pct = math.max(0, math.min(100, window.remaining))
         local name = (rec.provider or "Fuel") .. " " .. window.label .. (rec.stale and " · stale" or "")
+        local label = pct .. "%"
         local gauge = widgets.gauge(pct / 100, {
-          width = math.max(6, width - 36),
+          width = math.max(6, cell_width - label_width - widgets.len(label) - 1),
           style = { fg = pct <= (rec.reserve or 0) and theme.bad or theme.ok },
-          label = pct .. "%",
+          label = label,
         })
         if gauge.text and gauge.text[1] and gauge.text[1][2] then
           gauge.text[1][2].style = { fg = theme.muted }
@@ -261,9 +264,9 @@ local function fuel_node(fuel, width)
         rows[#rows + 1] = {
           type = "box",
           axis = "horizontal",
-          children = { text({ span(" " .. widgets.truncate(name, 27), theme.secondary) }, 1), gauge },
+          children = { text({ span(" " .. widgets.truncate(name, label_width - 2), theme.secondary) }, 1), gauge },
         }
-        rows[#rows].children[1].len = 30
+        rows[#rows].children[1].len = label_width
       end
     end
   end
@@ -272,8 +275,16 @@ local function fuel_node(fuel, width)
   end
   -- A bounded header; the shared narrow pane retains every provider/window.
   local children = {}
-  for i = 1, math.min(4, #rows) do
-    children[#children + 1] = rows[i]
+  for i = 1, math.min(4, #rows), 2 do
+    local cells = { rows[i] }
+    if rows[i + 1] then
+      cells[2] = rows[i + 1]
+    end
+    for _, cell in ipairs(cells) do
+      cell.len = nil
+      cell.fill = 1
+    end
+    children[#children + 1] = { type = "box", axis = "horizontal", len = 1, gap = 1, children = cells }
   end
   return { type = "box", len = #children, children = children }
 end
@@ -326,14 +337,126 @@ local function detail(ctx)
   end
   local room = math.max(1, ctx.height - 5)
   state.board_detail_offset = math.max(0, math.min(state.board_detail_offset or 0, math.max(0, #lines - room)))
-  local children =
-    { text({ chip("Back", "close", false), span("  Up/down scroll · Esc goes back", theme.muted) }) }
+  local children = { text({ chip("Back", "close", false), span("  Up/down scroll · Esc goes back", theme.muted) }) }
   for i = state.board_detail_offset + 1, math.min(#lines, state.board_detail_offset + room) do
     children[#children + 1] = text(lines[i])
   end
   local root = ui.panel({ title = "Detail · " .. state.board_detail, body = children })
   root.float = { width = 100, height = 100 }
   return root
+end
+local picker_cache = {}
+local function picker_rows(field)
+  local query = field.value or ""
+  if picker_cache.topics == topics and picker_cache.query == query then
+    return picker_cache.rows
+  end
+  local fuzzy = require("lib.fuzzy")
+  local needle = fuzzy.compile(query)
+  local rows = {}
+  if query == "" then
+    rows[1] = { slug = "*", title = "All topics", count = #topics }
+  end
+  for _, topic in ipairs(topics) do
+    if query == "" or fuzzy.match(needle, topic.title .. " " .. topic.slug) then
+      rows[#rows + 1] = topic
+    end
+  end
+  if query ~= "" then
+    local ranked = {}
+    for i, row in ipairs(rows) do
+      local exact = row.slug:lower() == query:lower() or row.title:lower() == query:lower()
+      ranked[row] = { exact = exact, order = i }
+    end
+    table.sort(rows, function(a, b)
+      if ranked[a].exact ~= ranked[b].exact then
+        return ranked[a].exact
+      end
+      return ranked[a].order < ranked[b].order
+    end)
+  end
+  picker_cache = { topics = topics, query = query, rows = rows }
+  return rows
+end
+local function pick_topic(row)
+  if not row then
+    return
+  end
+  state.board_topic = row.slug ~= "*" and row.slug or nil
+  state.board_ref = nil
+  state.board_picker = nil
+end
+local function topic_picker(ctx)
+  local textinput = require("lib.textinput")
+  local picker = state.board_picker
+  local rows = picker_rows(picker.field)
+  local width = math.max(24, math.min(88, ctx.width - 4))
+  local height = math.max(1, math.min(18, ctx.height - 11, #rows))
+  picker.cursor = math.max(1, math.min(#rows, picker.cursor))
+  state.board_picker = picker
+  local list = ui.list({
+    items = rows,
+    width = width - 2,
+    height = height,
+    pad = true,
+    cursor = picker.cursor,
+    on_overflow = "border",
+    id_of = function(row)
+      return "board-topic:" .. row.slug
+    end,
+    row = function(row)
+      local b = ui.row({ width = width - 2 })
+      b:add(" " .. widgets.truncate(row.title, math.max(1, width - 30)), { fg = theme.text, bold = true })
+      if row.slug ~= "*" then
+        b:add(" · " .. widgets.truncate(row.slug, 16), { fg = theme.muted })
+      end
+      b:trailing(row.count .. (row.slug == "*" and " topics" or " tasks"), { fg = theme.secondary })
+      return b:spans_list()
+    end,
+  })
+  list.len = height
+  local children = {
+    textinput.node(
+      picker.field,
+      { label = "Search topics", placeholder = "Name or slug…", focused = true, id = "board-topic-search" }
+    ),
+    text({ chip("All topics", "topic_all", false), span("  Current: " .. (state.board_topic or "all"), theme.muted) }),
+    #rows > 0 and list or text({ span(" No matching topics · edit your search", theme.muted) }, height),
+    text({ span(#rows > 0 and (picker.cursor .. "/" .. #rows .. " · ↑/↓ or wheel") or "0 matches", theme.muted) }),
+    text({
+      chip("Select", "enter", false),
+      span(" "),
+      chip("Cancel", "close", false),
+      span("  Enter selects · Esc cancels", theme.muted),
+    }),
+  }
+  return ui.modal({ title = "Choose topic", cols = width, children = children })
+end
+local function picker_action(name)
+  local textinput = require("lib.textinput")
+  local picker = state.board_picker
+  local rows = picker_rows(picker.field)
+  if name == "close" then
+    state.board_picker = nil
+  elseif name == "topic_all" then
+    pick_topic({ slug = "*" })
+  elseif name == "enter" then
+    pick_topic(rows[math.max(1, math.min(#rows, picker.cursor))])
+  elseif name == "up" or name == "down" then
+    picker.cursor = math.max(1, math.min(#rows, picker.cursor + (name == "up" and -1 or 1)))
+    state.board_picker = picker
+  else
+    -- Catalog-bound letters still type into the picker, like native search.
+    local char = ({ topic = "t", agent = "a", needs = "n", landed = "l", detail = "d", fuel = "f" })[name]
+    if not textinput.key(picker.field, { key = char or name, char = char }) then
+      return false
+    end
+    if char then
+      picker.cursor = 1
+    end
+    state.board_picker = picker
+  end
+  return true
 end
 function M.render(ctx, model, fuel, worker, fleet)
   lead = worker
@@ -351,7 +474,7 @@ function M.render(ctx, model, fuel, worker, fleet)
     heights_by_column = { {}, {}, {}, {}, {}, {} }
     local seen = {}
     for ti, topic in ipairs(model.topics) do
-      topics[#topics + 1] = topic.slug
+      topics[#topics + 1] = { slug = topic.slug, title = topic.title, count = #topic.tasks }
       for _, task in ipairs(topic.tasks) do
         task.ref = topic.slug .. "/" .. task.id
         task.topic_index = ti
@@ -388,6 +511,9 @@ function M.render(ctx, model, fuel, worker, fleet)
       end
     end
   end
+  if state.board_picker then
+    return topic_picker(ctx)
+  end
   if state.board_detail then
     return detail(ctx)
   end
@@ -400,7 +526,7 @@ function M.render(ctx, model, fuel, worker, fleet)
     })
   end
   local width = ctx.width - 2
-  local fuel_view = fuel_node(fuel, width)
+  local fuel_view = state.board_fuel and fuel_node(fuel, width) or { type = "box", len = 0, children = {} }
   local board_height = ctx.height - 11 - fuel_view.len
   local per = ctx.width >= 180 and 6 or 3
   geometry = { now = now }
@@ -437,6 +563,8 @@ function M.render(ctx, model, fuel, worker, fleet)
     chip("needs me: " .. (state.board_needs and "on" or "off"), "needs", state.board_needs),
     span(" "),
     chip("landed: " .. (state.board_landed and "open" or "folded"), "landed", state.board_landed),
+    span(" "),
+    chip("fuel: " .. (state.board_fuel and "shown" or "hidden"), "fuel", state.board_fuel),
   })
   local strip = { text({ span(selected and " " .. selected.title or " No matching cards", theme.text) }) }
   if selected then
@@ -491,9 +619,13 @@ function M.invalidate()
   selected = nil
   geometry = {}
   state.board_detail = nil
+  state.board_picker = nil
 end
 function M.on_action(action)
   local name = action:match("^fleetqueue%.board_(.+)$")
+  if state.board_picker then
+    return picker_action(name)
+  end
   if name == "close" then
     if state.board_detail then
       state.board_detail = nil
@@ -501,14 +633,23 @@ function M.on_action(action)
       state.board_open = false
     end
   elseif name == "topic" then
-    state.board_topic = cycle(topics, state.board_topic)
-    state.board_ref = nil
+    local field = require("lib.textinput").new("")
+    local cursor = 1
+    for i, topic in ipairs(topics) do
+      if topic.slug == state.board_topic then
+        cursor = i + 1
+        break
+      end
+    end
+    state.board_picker = { field = field, cursor = cursor }
   elseif name == "agent" then
     state.board_agent = cycle(agents, state.board_agent)
     state.board_ref = nil
   elseif name == "needs" then
     state.board_needs = not state.board_needs
     state.board_ref = nil
+  elseif name == "fuel" then
+    state.board_fuel = not state.board_fuel
   elseif name == "landed" then
     state.board_landed = not state.board_landed
   elseif name == "enter" or name == "detail" then
@@ -543,6 +684,21 @@ function M.on_action(action)
   return true
 end
 function M.on_key(key)
+  if state.board_picker then
+    if key.key == "esc" or key.key == "enter" or key.key == "up" or key.key == "down" then
+      return picker_action(key.key == "esc" and "close" or key.key)
+    end
+    local picker = state.board_picker
+    local before = picker.field.value
+    if not require("lib.textinput").key(picker.field, key) then
+      return false
+    end
+    if picker.field.value ~= before then
+      picker.cursor = 1
+    end
+    state.board_picker = picker
+    return true
+  end
   local name = ({
     esc = "close",
     enter = "enter",
@@ -555,10 +711,24 @@ function M.on_key(key)
     n = "needs",
     l = "landed",
     d = "detail",
+    f = "fuel",
   })[key.key]
   return name and M.on_action("fleetqueue.board_" .. name) or false
 end
 function M.on_click(hit)
+  if state.board_picker then
+    if hit.id == "board-topic-search" then
+      return true
+    end
+    local slug = (hit.id or ""):match("^board%-topic:(.+)$")
+    for _, row in ipairs(picker_rows(state.board_picker.field)) do
+      if row.slug == slug then
+        pick_topic(row)
+        return true
+      end
+    end
+    return false
+  end
   local ref = (hit.id or ""):match("^board:(.+)$")
   local location = ref and locations[ref]
   if location then

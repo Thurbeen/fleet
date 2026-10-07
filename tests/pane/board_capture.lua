@@ -114,6 +114,7 @@ for key, name in pairs({
   n = "needs",
   l = "landed",
   d = "detail",
+  f = "fuel",
 }) do
   keys[#keys + 1] = { key = key, action = "fleetqueue.board_" .. name, desc = name }
 end
@@ -123,6 +124,7 @@ return {
   floats = true,
   pure = false,
   keys = keys,
+  commands = { { action = "fleetqueue.board_topic_all", desc = "all topics" } },
   render = function(ctx)
     if not state.board_open then
       return { type = "text", text = "" }
@@ -138,6 +140,7 @@ return {
   on_action = function(action)
     if action == "fleetqueue.board" then
       state.board_open = not state.board_open
+      state.board_picker = nil
       return true
     end
     if state.board_open then

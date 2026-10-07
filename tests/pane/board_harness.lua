@@ -59,8 +59,8 @@ widgets.gauge = function(r, o)
     text = {
       {
         { text = string.rep("█", math.floor((o.width or 10) * r)), style = o.style },
-        { text = "░", style = { fg = "muted" } },
-        { text = o.label or "" },
+        { text = string.rep("░", (o.width or 10) - math.floor((o.width or 10) * r)), style = { fg = "muted" } },
+        { text = " " .. (o.label or "") },
       },
     },
   }
@@ -169,6 +169,47 @@ package.preload["lib.scroll"] = function()
     end,
   }
 end
+package.preload["lib.textinput"] = function()
+  return {
+    new = function(value)
+      return { value = value, cursor = len(value) }
+    end,
+    node = function(field, opts)
+      return { type = "input", len = 3, value = field.value, focused = opts.focused, id = opts.id }
+    end,
+    key = function(field, key)
+      if key.key == "backspace" then
+        field.value = field.value:sub(1, -2)
+      elseif key.char and not key.ctrl and not key.alt then
+        field.value = field.value .. key.char
+      elseif key.key == "left" or key.key == "right" then
+        return true
+      else
+        return false
+      end
+      field.cursor = len(field.value)
+      return true
+    end,
+  }
+end
+package.preload["lib.fuzzy"] = function()
+  return {
+    compile = function(q)
+      return q:lower()
+    end,
+    match = function(q, value)
+      local pos = 1
+      for c in q:gmatch(".") do
+        local at = value:lower():find(c, pos, true)
+        if not at then
+          return nil
+        end
+        pos = at + 1
+      end
+      return {}
+    end,
+  }
+end
 package.preload["lib.fleet_board"] = function()
   return dofile("interface/fleet_board.lua")
 end
@@ -224,6 +265,15 @@ elseif scenario == "landed-age" then
   records[#records - 1] = records[#records - 1]:gsub("1999999000", "1999900000")
   task("09-undated", "landed", "Undated landing")
   records[#records - 1] = records[#records - 1]:gsub("1999999000", "0")
+end
+if scenario == "topic-picker" then
+  for i = 1, 35 do
+    records[#records + 1] = "T\ttopic-"
+      .. i
+      .. "\t"
+      .. (i == 23 and "Observability rollout" or i == 1 and "topic-2 migration" or "Project " .. i)
+    task("01-work", "queued", "Picker task " .. i)
+  end
 end
 if scenario == "large" then
   for i = 1, 5000 do
@@ -346,6 +396,58 @@ elseif scenario == "filters" then
   assert(not strings(tree()):find("Waiting", 1, true))
   action("agent")
   contains("Waiting")
+elseif scenario == "topic-picker" then
+  action("topic")
+  contains("Choose topic")
+  assert(state.board_topic == nil, "opening the picker changed the filter")
+  contains("All topics")
+  local input = false
+  for _, node in ipairs(nodes(tree())) do
+    input = input or node.type == "input" and node.focused == true
+  end
+  assert(input, "picker has no native search input")
+  assert((tree().children[3].len or 0) > 0, "picker list has no measured height in the native modal")
+  for char in ("rollout"):gmatch(".") do
+    if char == "t" then
+      action("topic")
+    elseif char == "l" then
+      action("landed")
+    else
+      assert(pane.on_key({ key = char, char = char }))
+    end
+  end
+  contains("Observability rollout")
+  assert(not strings(tree()):find("Project 1", 1, true), "search did not narrow topics")
+  action("enter")
+  assert(state.board_topic == "topic-23", "Enter did not jump directly to the matching topic")
+  contains("Picker task 23")
+  assert(not strings(tree()):find("Picker task 22", 1, true))
+  action("topic")
+  assert(pane.on_key({ key = "z", char = "z" }))
+  contains("No matching topics")
+  action("enter")
+  contains("Choose topic")
+  action("close")
+  assert(state.board_topic == "topic-23" and state.board_open, "cancel lost the filter or closed the board")
+  action("topic")
+  assert(pane.on_click({ id = "board-topic:topic-35" }))
+  assert(state.board_topic == "topic-35", "click did not choose its topic")
+  action("topic")
+  action("topic_all")
+  assert(state.board_topic == nil, "All topics did not clear the filter")
+  action("topic")
+  for char in ("topic-2"):gmatch(".") do
+    assert(pane.on_key({ key = char, char = char }))
+  end
+  action("enter")
+  assert(state.board_topic == "topic-2", "an exact slug match was ranked below another topic's title")
+  action("topic")
+  action("topic_all")
+  action("topic")
+  action("down")
+  assert(pane.on_scroll({ up = false }))
+  action("enter")
+  assert(state.board_topic == "topic-1", "arrow and wheel navigation did not select the listed row")
 elseif scenario == "landed" then
   assert(not strings(tree()):find("Recent", 1, true))
   action("landed")
@@ -407,7 +509,34 @@ elseif scenario == "glyphs" then
     end
   end
   assert(ready, "a ready queued card wears the blocked glyph")
+elseif scenario == "fuel-compact" then
+  thurbox.runs["fleetfuel:lead"].stdout =
+    "provider\tfixture\nreserve\t20\nwindow\t5h\t62\t2000003000\nwindow\t7d\t40\t2000003000\n\nprovider\tother\nreserve\t20\nwindow\t5h\t15\t2000003000\nwindow\t7d\t73\t2000003000\n\n"
+  action("fuel")
+  contains("62%")
+  contains("15%")
+  local fuel = tree().children[2]
+  assert(fuel.len == 2 and #fuel.children == 2, "four gauges should occupy two rows")
+  assert(#fuel.children[1].children == 2, "fuel is not arranged in two columns")
+  for _, row in ipairs(fuel.children) do
+    for _, cell in ipairs(row.children) do
+      local label, gauge = cell.children[1], cell.children[2]
+      local used = label.len
+      for _, span in ipairs(gauge.text[1]) do
+        used = used + len(span.text)
+      end
+      assert(used <= math.floor((ctx.width - 3) / 2), "fuel percentage extends beyond its column")
+    end
+  end
+elseif scenario == "fuel-default" then
+  assert(not strings(tree()):find("62%%"), "fuel gauges dominate the board by default")
+  contains("fuel: hidden")
+  action("fuel")
+  contains("62%")
+  action("fuel")
+  assert(not strings(tree()):find("62%%"), "fuel toggle did not hide gauges again")
 elseif scenario == "fuel" then
+  action("fuel")
   contains("62%")
 elseif scenario == "narrow" then
   assert(tree().float)
@@ -415,8 +544,10 @@ elseif scenario == "narrow" then
 elseif scenario == "large" then
   assert(#nodes(tree()) < 300, "built nodes for the entire queue")
 elseif scenario == "fuel-unavailable" then
+  action("fuel")
   thurbox.runs["fleetfuel:lead"] = { state = "done", stdout = "provider\tfixture\nunavailable\tno credentials\n\n" }
   contains("unavailable")
+  assert(tree().children[2].children[1].children[1].len == nil, "unavailable fuel was clipped to one column")
 elseif scenario == "buttons" then
   local found = {}
   for _, n in ipairs(nodes(tree())) do
@@ -428,12 +559,14 @@ elseif scenario == "buttons" then
       end
     end
   end
-  for _, a in ipairs({ "topic", "agent", "needs", "landed", "detail" }) do
+  for _, a in ipairs({ "topic", "agent", "needs", "landed", "fuel", "detail" }) do
     assert(found["action:fleetqueue.board_" .. a], "button lacks native hover/click role: " .. a)
   end
   action("topic")
+  pane.on_click({ id = "board-topic:alpha" })
   contains("topic: alpha")
   action("topic")
+  action("topic_all")
   contains("topic: all")
 elseif scenario == "missing-session" then
   pane.on_click({ id = "board:alpha/03-work" })
