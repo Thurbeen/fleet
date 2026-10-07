@@ -36,5 +36,5 @@
 ││                                                                                                                    ││
 ││ Record                                                                                                             ││
 │╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯│
-│left column  down card  enter focus / record  d record  esc close                                            [ Close ]│
+│left column  down card  enter focus / record  d record  t topic  f fuel  esc close                           [ Close ]│
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯

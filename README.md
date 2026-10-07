@@ -57,7 +57,8 @@ the installer again is safe.
 board over your layout. Arrow keys and clicks select cards; Enter focuses a
 live worker, or opens its queue record when no session remains. `d` always
 opens the record. Click the topic chip or press `t` to search topic names and
-slugs, then select with Enter or a click. Esc cancels; All topics clears the
+slugs in the bottom detail area while the board stays visible. Select with
+Enter or a click. Esc cancels; All topics clears the
 filter. Agent, needs-me and landed chips filter or fold the view. Fuel is
 hidden by default; click its chip or press `f` for compact gauges in two
 columns. Esc returns from the record, then closes the board.
