@@ -20,7 +20,7 @@ stub tools — except `architecture`, which parses fleet's own source, because
 a rule like "only the platform seam reads the OS" is true of lines no run
 reaches and false on nobody's machine until the next operator's. A full run
 does every static check and then ONE pytest run over every area with up to
-four pytest-xdist workers. Each worker installs its own stub tools; every test
+eight pytest-xdist workers. Each worker installs its own stub tools; every test
 still gets a fresh isolated environment. `--jobs N` sets the worker count and
 `--jobs 1` runs serially. Ordinary nested gates default to serial execution
 to bound process creation; the poisoned isolation child explicitly uses four
@@ -198,7 +198,7 @@ def main(argv: list[str]) -> int:
     if "--list" in argv:
         sys.stdout.write(listing())
         return 0
-    jobs = 1 if "PYTEST_XDIST_WORKER" in os.environ else min(4, os.cpu_count() or 1)
+    jobs = 1 if "PYTEST_XDIST_WORKER" in os.environ else min(8, os.cpu_count() or 1)
     argv = list(argv)
     if "--jobs" in argv:
         pos = argv.index("--jobs")

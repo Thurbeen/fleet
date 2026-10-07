@@ -37,7 +37,7 @@ the full usage — it is the one place that list lives.
 
 Run `uv run fleet check <area>` while changing that area; `--list` maps tests
 back to their check. Batch fixes into one push, and run the full gate once
-before each push. Tests use up to four pytest-xdist workers by default;
+before each push. Tests use up to eight pytest-xdist workers by default;
 `--jobs N` overrides that count, and `--jobs 1` is useful for diagnosis.
 Every worker keeps the same per-test isolation. The isolation check still
 reruns all eight areas in a poisoned checkout, with four workers in that

@@ -20,7 +20,7 @@ jobs:
   # can say which change breaks it.
   #
   # Shards keep the gate's area names. Inside each, fleet check uses up to
-  # four independent pytest workers; isolation keeps its poisoned checkout
+  # eight independent pytest workers (bounded by CPU count); isolation keeps its poisoned checkout
   # and reruns the same areas with four child workers. No tests are omitted.
   #
   # The `areas` strings are a COPY of the names in scripts/lib/check.py, and a
