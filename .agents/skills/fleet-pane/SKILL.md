@@ -165,9 +165,11 @@ It shares the column’s probes and trust. Arrows and clicks select cards; Enter
 focuses a live session or opens `fleet queue show` when there is none. `d`
 always opens the record. Esc goes back, then closes the board. The topic,
 agent, needs-me and landed chips are clickable; `t`, `a`, `n`, `l` reach the
-same actions. Wheel scrolling follows the pointed column or the detail view.
+same actions. Wheel scrolling moves the selected column’s card (click another
+column first), or scrolls the detail view.
 Recent landed cards (24 hours) start folded. The board uses the active theme,
-native link roles and normal text selection/copy. Ctrl+H/Ctrl+L still belong
+native link roles. Thurbox 2.51.7 blocks drag-selection in floating panes;
+text copying awaits kernel support. Ctrl+H/Ctrl+L still belong
 to the kernel, pending [thurbox #1358](https://github.com/Thurbeen/thurbox/issues/1358).
 
 `F3` hides and shows the column — a **global** chord

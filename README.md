@@ -60,8 +60,9 @@ opens the record. The topic, agent, needs-me and landed chips filter or fold
 the view. Esc returns from the record, then closes the board.
 
 The board uses six columns, arranged in two bands below 180 terminal columns.
-Recent landed work (the last 24 hours) starts folded. Links and text selection
-use thurbox’s normal handling. It reads records and focuses sessions; it never
+Recent landed work (the last 24 hours) starts folded. Links
+use thurbox’s normal handling. Drag-selection in the overlay awaits thurbox
+kernel support. It reads records and focuses sessions; it never
 dispatches, merges or changes the queue. Ctrl+H/Ctrl+L remain thurbox’s native
 pane cycle; card navigation uses arrows until [thurbox #1358](https://github.com/Thurbeen/thurbox/issues/1358).
 

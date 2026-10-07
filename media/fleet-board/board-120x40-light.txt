@@ -7,12 +7,12 @@
 │ topic: all   agent: all   needs me: off   landed: folded                                                             │
 │┏ ▸ ◆ Queued / waiting · 3 ━━━━━━━━━━┓ ╭ ◐ Dispatched / working · 3 ────────╮ ╭ ● Shipped · 3 ───────────────────────╮│
 │┃ atlas/01  queued 40m               ┃ │ atlas/02  dispatched 40m           ┃ │ atlas/03  done 40m                   ┃│
-│┃ ○ Add audit export                 ┃ │ ⠹ Export worker                    ┃ │ ● Validate every exported record     ┃│
+│┃ ○ Add audit export                 ┃ │ ⠙ Export worker                    ┃ │ ● Validate every exported record     ┃│
 │┃ ⌂ codex — no session               ┃ │ ⌂ codex — no session               ┃ │ ⌂ codex — no session                 ┃│
 │┃ queued                             ┃ │ dispatched                         ┃ │ PR #204 failed checks: unit… review  ┃│
 │┃                                    ┃ │                                    ┃ │                                      ┃│
 │┃ beacon/03  waiting 40m             ┃ │ beacon/02  dispatched 40m          ┃ │ beacon/01  done 40m                  ┃│
-│┃ ◆ Wire search index                │ │ ⠹ Search service                   │ │ ● Schema migration                   ││
+│┃ ◆ Wire search index                │ │ ⠙ Search service                   │ │ ● Schema migration                   ││
 │┃ ▣ remote claude — no session       │ │ ▣ remote claude — no session       │ │ ▣ remote claude — no session         ││
 │┃ consumes: beacon/02                │ │ dispatched                         │ │ MR !81 checks-passed · revi… review  ││
 │┃                                    │ │                                    │ │                                      ││
