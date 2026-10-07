@@ -107,7 +107,7 @@ def hostile(tmp_path, poisoned) -> dict:
 
 
 def gate(copy: Path, env: dict, *checks: str) -> subprocess.CompletedProcess:
-    return subprocess.run([sys.executable, str(copy / "scripts" / "lib" / "check.py"), *checks],
+    return subprocess.run([sys.executable, str(copy / "scripts" / "lib" / "check.py"), "--jobs", "4", *checks],
                           cwd=copy, env=env, capture_output=True, encoding="utf-8", errors="replace")
 
 

@@ -4,6 +4,7 @@
     uv run fleet check                   every check
     uv run fleet check yaml queue        only the named ones
     uv run fleet check --fix markdown    apply the fixes a check can apply
+    uv run fleet check --jobs 1          serial diagnosis
     uv run fleet check --list            every check: name, kind, what it runs
 
 CI runs it on a Linux and a Windows runner, the prek hooks run it, and
@@ -18,9 +19,13 @@ pytest area under `tests/`, each driving fleet's real entry points against
 stub tools — except `architecture`, which parses fleet's own source, because
 a rule like "only the platform seam reads the OS" is true of lines no run
 reaches and false on nobody's machine until the next operator's. A full run
-does every static check and then ONE pytest run over every area, so the stub
-tools install once. `markdown` and `lint` have fixers; `--fix` is a no-op for
-the rest, so it is always safe to pass.
+does every static check and then ONE pytest run over every area with up to
+four pytest-xdist workers. Each worker installs its own stub tools; every test
+still gets a fresh isolated environment. `--jobs N` sets the worker count and
+`--jobs 1` runs serially. Ordinary nested gates default to serial execution
+to bound process creation; the poisoned isolation child explicitly uses four
+workers. `markdown` and `lint` have fixers; `--fix` is a no-op for the rest, so
+it is always safe to pass.
 
 IT READS NO OPERATOR STATE. One commit gets one verdict — on CI, in a worker's
 worktree and in the control-plane checkout — so no check reads what a running
@@ -163,14 +168,17 @@ STATIC = {
 FIXERS = {"markdown", "lint"}
 
 
-def check_tests(names: list[str]) -> str | None:
+def check_tests(names: list[str], jobs: int) -> str | None:
     tools = sorted({tool for name in names for tool in TESTS[name][1]})
     if err := missing(*tools):
         return err
     targets = expand([t for name in names for t in TESTS[name][0]])
     if not targets:
         return "no tests to run"
-    return "pytest" if run([sys.executable, "-m", "pytest", "-q", *targets]) else None
+    argv = [sys.executable, "-m", "pytest", "-q", "--durations=50"]
+    if jobs > 1:
+        argv += ["-n", str(jobs)]
+    return "pytest" if run([*argv, *targets]) else None
 
 
 def listing() -> str:
@@ -183,13 +191,25 @@ def main(argv: list[str]) -> int:
     # Line-buffered, so each verdict lands after the tool output it judges.
     sys.stdout.reconfigure(line_buffering=True)
     everything = [*STATIC, *TESTS]
-    usage = f"usage: fleet check [--fix] [--list] [check...]\nchecks: {' '.join(everything)}\n"
+    usage = f"usage: fleet check [--fix] [--list] [--jobs N] [check...]\nchecks: {' '.join(everything)}\n"
     if "-h" in argv or "--help" in argv:
         sys.stdout.write(__doc__.strip() + "\n\n" + usage)
         return 0
     if "--list" in argv:
         sys.stdout.write(listing())
         return 0
+    jobs = 1 if "PYTEST_XDIST_WORKER" in os.environ else min(4, os.cpu_count() or 1)
+    argv = list(argv)
+    if "--jobs" in argv:
+        pos = argv.index("--jobs")
+        try:
+            jobs = int(argv[pos + 1])
+            if jobs < 1:
+                raise ValueError
+        except (IndexError, ValueError):
+            sys.stderr.write("fleet check: --jobs wants a positive integer\n" + usage)
+            return 2
+        del argv[pos:pos + 2]
     fix = "--fix" in argv
     names = [a for a in argv if a != "--fix"] or everything
     unknown = [n for n in names if n not in STATIC and n not in TESTS]
@@ -204,7 +224,7 @@ def main(argv: list[str]) -> int:
     areas = list(dict.fromkeys(n for n in names if n in TESTS))
     if areas:
         label = "tests" if len(areas) > 1 else areas[0]
-        verdicts.append((label, check_tests(areas)))
+        verdicts.append((label, check_tests(areas, jobs)))
         report(*verdicts[-1])
     failed = [name for name, err in verdicts if err]
     if failed:

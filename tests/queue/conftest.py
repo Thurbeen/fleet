@@ -16,7 +16,7 @@ from queuekit import (
 )
 
 from harness import run_queue as q
-from harness import stream_event, write
+from harness import run_queue_batch, stream_event, write
 
 
 @pytest.fixture(autouse=True)
@@ -38,11 +38,12 @@ def queue_dir(isolated_env) -> Path:
 
 @pytest.fixture
 def topic() -> str:
-    topic = ok(q("topic", "add", TOPIC, "--title", TOPIC_TITLE, "--prompt", TOPIC_PROMPT)).stdout.strip()
+    commands = [["topic", "add", TOPIC, "--title", TOPIC_TITLE, "--prompt", TOPIC_PROMPT]]
     for n, slug, title, repo, touches in TASKS:
-        ok(q("add", topic, slug, "--title", title, "--repo", repo, "--branch", f"fix/{slug}",
-             "--touches", touches, "--number", n))
-    return topic
+        commands.append(["add", TOPIC, slug, "--title", title, "--repo", repo, "--branch", f"fix/{slug}",
+                         "--touches", touches, "--number", n])
+    ok(run_queue_batch(commands))
+    return TOPIC
 
 
 @pytest.fixture

@@ -49,7 +49,10 @@ directory, and delete what you did create there before you write
 
 ## Gate locally before you push
 
-Run the repo's own gate and make it green first. In this control plane that is
+While iterating, run the narrow check for the area you changed (`uv run fleet
+check <area>` here). Batch fixes into one push, then run the full gate once
+before each push. Run the repo's own gate and make it green first. In this
+control plane that is
 `uv run fleet check`, and `uv run fleet check --fix` applies the fixes a check
 can apply. Where a repo names a different gate in its `AGENTS.md` or
 `CONTRIBUTING.md`, that one is the gate.
