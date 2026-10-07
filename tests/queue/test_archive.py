@@ -128,7 +128,7 @@ def test_the_panes_probe_counts_the_archived_topic_the_same_way(unparseable):
     pane that disagreed with `list` would be a second opinion about a model it
     does not own. Its probe is the module the pane's command line runs, on
     POSIX and on Windows alike."""
-    pane = (REPO / "interface" / "fleet_queue.lua").read_text(encoding="utf-8")
+    pane = (REPO / "interface" / "fleet_reader.lua").read_text(encoding="utf-8")
     assert "scripts/lib/pane_probe.py" in pane, "the pane runs its queue probe from scripts/lib/pane_probe.py"
     out = run([*PYTHON, str(REPO / "scripts" / "lib" / "pane_probe.py")]).stdout
     expect(out, "A\t1", "half-live")

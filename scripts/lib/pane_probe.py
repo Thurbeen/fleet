@@ -24,6 +24,13 @@ emitted, because renumbering fourteen positional fields is the worse trade.
 `moved-at` is concluded, else dispatched, else created — a fact about the
 record, resolved beside it rather than in a renderer that has no clock.
 
+B <topic/id> <recorded agent> <host> <session> <review URL> <publish detail>
+  <unresolved threads, when recorded>
+H <reconciler health> <latest queue input modification epoch>
+
+These additive records leave the existing K positions unchanged. Session state
+comes from thurbox's snapshot in the renderer, not another process per task.
+
 IT NEVER RELIES ON AN EXIT STATUS. Every outcome it can tell apart is spelled
 on stdout and it exits 0; the pane reads only a probe that could not RUN, or
 said nothing, as a failure. Output is UTF-8 whatever the console's code page.
@@ -124,10 +131,47 @@ def task_record(task_dir: str, doc: dict) -> str:
     ])
 
 
+def board_record(topic: str, doc: dict) -> str:
+    """Navigation comes from the record; no session or forge probes here."""
+    publish = doc.get("publish") if isinstance(doc.get("publish"), dict) else {}
+    review = doc.get("review") or ""
+    if isinstance(review, dict):
+        review = review.get("url") or ""
+    threads = publish.get("unresolved_threads")
+    return "\t".join([
+        "B", flat(f"{topic}/{doc.get('id') or ''}"), flat(doc.get("agent")),
+        flat(doc.get("host")), flat(doc.get("session")), flat(review),
+        flat(publish.get("detail")), flat(threads),
+    ])
+
+
+def health_record(changed_at: float) -> str:
+    reconciler = _load_sibling("fleet_reconcile", "reconcile.py")
+    try:
+        cfg = reconciler.Config.from_env()
+        age = reconciler.beat_age(cfg)
+        health = "down"
+        if reconciler.running(cfg):
+            health = "behind" if age is None or age > cfg.stall else "ticking"
+    except (OSError, ValueError, SystemExit):
+        # Reconciler settings cannot make otherwise readable tasks disappear.
+        health = "unknown"
+    return f"H\t{health}\t{int(changed_at)}"
+
+
+def modified_at(path: str) -> float:
+    # A reconciler can archive/remove a record between loading and statting it.
+    try:
+        return os.stat(path).st_mtime
+    except OSError:
+        return 0
+
+
 def records(root: str) -> list[str]:
     if not os.path.isdir(root):
         return [f"E\tno queue directory at {root}"]
     out = [f"R\t{root}"]
+    changed_at = modified_at(root)
     archived = 0
     for topic in sorted(os.listdir(root)):
         topic_dir = os.path.join(root, topic)
@@ -135,6 +179,7 @@ def records(root: str) -> list[str]:
         if not os.path.isfile(topic_file):
             continue
         topic_doc = load(topic_file) or {}
+        changed_at = max(changed_at, modified_at(topic_file))
         # The flag lives on topic.yaml so the hidden case is the cheap one: its
         # task directories are never opened.
         if topic_doc.get("archived") not in (None, ""):
@@ -143,9 +188,13 @@ def records(root: str) -> list[str]:
         out.append(f"T\t{topic}\t{flat(topic_doc.get('title'))}")
         for task in sorted(os.listdir(topic_dir)):
             task_dir = os.path.join(topic_dir, task)
-            doc = load(os.path.join(task_dir, "task.yaml")) if os.path.isdir(task_dir) else None
+            task_file = os.path.join(task_dir, "task.yaml")
+            doc = load(task_file) if os.path.isdir(task_dir) else None
             if doc is not None:
+                changed_at = max(changed_at, modified_at(task_file))
                 out.append(task_record(task_dir, doc))
+                out.append(board_record(topic, doc))
+    out.insert(1, health_record(changed_at))
     out.append(f"A\t{archived}")
     return out
 

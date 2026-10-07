@@ -61,7 +61,7 @@ It runs inside the thurbox interface, which knows nothing about fleet, so it
 finds the control plane by **probing the lead session by NAME** and running
 its queue probe in that session's checkout. Hence most of §7: the lead must
 exist under the name the pane expects, and the pane needs thurbox's `run`
-capability. The name is `CONTROL_PLANE` at the top of the pane, **without the
+capability. The name is `CONTROL_PLANE` in `interface/fleet_reader.lua`, **without the
 glyph** — which glyph the lead wears is a setting
 (`orchestration/session-glyphs.example.conf`) that `fleet install-extension`
 renders into the manifest, and `uv run fleet check pane` holds the two files
@@ -107,7 +107,7 @@ naming the file and the block. `fleetqueue` in its `✓ loads — …` list, exi
 is the verification. Anything else, §4.
 
 `thurbox-cli plugin list --text` answers a different question — whether the
-FILE is installed (`plugins/91_fleet_queue.lua  pane  installed  hidden`).
+FILE is installed (`plugins/92_fleet_queue.lua  pane  installed  hidden`).
 **Do not read that row as working**: `hidden` is what a placed pane says while
 toggled off. `--json` adds `installed_from`, which names the checkout the pane
 came from, so a stale path there and a moved clone are the same bug.
@@ -160,7 +160,26 @@ check` came back unplaced.
 
 ## 5. The F-key
 
-`F3` hides and shows the column — the pane's only action, a **global** chord
+`Alt+K` toggles the full-screen, read-only Kanban board without a layout edit.
+It shares the column’s reader library. The overlay installs at
+`plugins/91_fleet_queue.lua`, preserving the combined plugin’s existing run
+trust; the optional legacy column installs at `plugins/92_fleet_queue.lua`
+and needs its own run trust in Settings → Interface → t. Arrows and clicks select cards; Enter
+focuses a live session or opens `fleet queue show` when there is none. `d`
+always opens the record. Esc goes back, then closes the board. The topic,
+agent, needs-me and landed chips are clickable. `t` opens a searchable topic
+picker in the bottom detail area, keeping the six columns visible. Type a
+name or slug, then Enter or click to apply. The board footer advertises `t`.
+Esc cancels, All topics clears the filter. `a`, `n`, `l` reach the
+other chips. Fuel starts hidden; its chip or `f` shows compact gauges in two
+columns. Wheel scrolling moves the selected column’s card (click another
+column first), or scrolls the detail view.
+Recent landed cards (24 hours) start folded. The board uses the active theme,
+native link roles. Thurbox 2.51.7 blocks drag-selection in floating panes;
+text copying awaits kernel support. Ctrl+H/Ctrl+L still belong
+to the kernel, pending [thurbox #1358](https://github.com/Thurbeen/thurbox/issues/1358).
+
+`F3` hides and shows the column — a **global** chord
 because an unfocusable pane can be reached no other way, and the way back
 since it resolves from the key registry rather than from what is on screen.
 The `Fleet · F3` button on the pane's top border and the `Fleet` pill in the
@@ -177,11 +196,11 @@ never receiving the key. `uv run fleet check pane` refuses those.
 ## 6. Removing it
 
 ```sh
-thurbox-cli plugin remove plugins/91_fleet_queue.lua
+thurbox-cli plugin remove plugins/92_fleet_queue.lua
 ```
 
 The argument is the **destination path**, not the basename —
-`plugin remove 91_fleet_queue.lua` answers "not listed" and removes nothing.
+`plugin remove 92_fleet_queue.lua` answers "not listed" and removes nothing.
 That takes back the file, its `plugins.toml` entry and the lock. It leaves the
 `layout.lua` block behind, and `fleet place-pane` has no verb to take it out —
 a block it did not necessarily write is not one it should delete. Guarded by

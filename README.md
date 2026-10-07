@@ -15,11 +15,30 @@ review.
 
 ![Architecture diagram. You prompt Mission Control, the lead session, which
 reads the registry and dispatches tasks into the queue. The queue gives each
-worker a brief and gets back a result, and the queue pane shows it to you.
+worker a brief and gets back a result, and the Kanban board shows it to you.
 Workers open pull or merge requests on the forge. The reconciler updates the
 queue, checks and merges on the forge, and wakes the lead. Below, the loop:
 intake, brief, dispatch, watch, collect, shepherd, merge, reap, plus
 refuel.](docs/fleet-architecture.svg)
+
+## Kanban dashboard
+
+See the whole fleet without leaving thurbox. **Alt+K** opens six columns of
+live queue records, from waiting tasks to working sessions, open change
+requests, reader replies and work that needs your attention.
+
+![Animated Kanban demo: navigate cards, filter work that needs attention,
+search a topic while the board stays visible, clear the filter, and toggle
+optional fuel gauges.](media/fleet-board.gif)
+
+The demo uses **Doom** at **200×50**, showing all six columns side by side.
+[Open the full-size animation](media/fleet-board.gif).
+
+Kanban replaces the narrow fleet pane as the main queue view. The board
+follows your light or dark theme and fits smaller terminals with
+two bands of columns. Click cards or use arrows; Enter takes you to a live
+worker or its queue record. Press **t** to search topics and **f** to show
+fuel, which stays hidden by default. Filters and navigation are read-only.
 
 ## Requirements
 
@@ -49,15 +68,31 @@ the installer again is safe.
 
 1. Open thurbox and start the Mission Control session.
 2. Run `/fleet-onboarding`. It builds the repository map if you work on a
-   forge, puts the queue pane on screen and starts the reconciler. Where the
+   forge, installs the Kanban dashboard and starts the reconciler. Where the
    choice is yours, it asks.
 3. Type a goal into Mission Control in plain words.
 
-`F3` shows and hides the queue pane.
+`Alt+K` opens the full-screen Kanban board over your layout. Arrow keys and
+clicks select cards; Enter focuses a live worker, or opens its queue record
+when no session remains. `d` always
+opens the record. Click the topic chip or press `t` to search topic names and
+slugs in the bottom detail area while the board stays visible. Select with
+Enter or a click. Esc cancels; All topics clears the
+filter. Agent, needs-me and landed chips filter or fold the view. Fuel is
+hidden by default; click its chip or press `f` for compact gauges in two
+columns. Esc returns from the record, then closes the board.
 
-![The queue pane in a thurbox column beside the session list: the account's
-remaining quota as a bar, then running tasks grouped under their topics, one
-row each.](media/fleet-queue-pane.gif)
+The board uses six columns, arranged in two bands below 180 terminal columns.
+Recent landed work (the last 24 hours) starts folded. Links
+use thurbox’s normal handling. Drag-selection in the overlay awaits thurbox
+kernel support. It reads records and focuses sessions; it never
+dispatches, merges or changes the queue. Ctrl+H/Ctrl+L remain thurbox’s native
+pane cycle; card navigation uses arrows until [thurbox #1358](https://github.com/Thurbeen/thurbox/issues/1358).
+
+The optional legacy column is installed alongside the dashboard for
+compatibility. Onboarding still offers to place that column; choose **Skip**
+to use only Kanban, which needs no layout slot. If your layout shows the
+column, press **F3** to hide it. **Alt+K** is the dashboard shortcut.
 
 ## Read more
 

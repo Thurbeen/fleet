@@ -23,7 +23,7 @@ from panekit import PANE, clone, slot, thurbox
 
 from harness import PYTHON, REPO, expect, lib, run
 
-PANE_TEXT = PANE.read_text(encoding="utf-8")
+PANE_TEXT = PANE.read_text(encoding="utf-8") + (REPO / "interface/fleet_reader.lua").read_text(encoding="utf-8")
 PANE_CODE = "\n".join(line for line in PANE_TEXT.splitlines() if not re.match(r"\s*--", line))
 SLOT = slot()
 INSTALLER = REPO / "scripts" / "lib" / "install_extension.py"
@@ -85,7 +85,7 @@ def test_the_installer_prints_a_block_naming_the_panes_slot_with_its_guard(stubs
 
 
 def test_plugin_remove_is_documented_with_the_destination_path():
-    """`plugin remove 91_fleet_queue.lua` answers "not listed" and removes nothing."""
+    """`plugin remove 92_fleet_queue.lua` answers "not listed" and removes nothing."""
     dest = lib("install_extension.py").PANE_DEST
     assert dest.startswith("plugins/")
     expect(read(INSTALLER), f"plugin remove {dest}")
@@ -215,3 +215,16 @@ def test_every_probe_is_one_command_line_both_platform_shells_run():
     for probe in probes:
         assert probe.startswith("uv run ")
         assert not re.search(r"[|&;<>$`'\\]", probe), probe
+
+
+def test_readme_describes_the_installed_legacy_column_as_optional():
+    text = read(REPO / "README.md")
+    expect(text, "installed alongside", "optional legacy column", "Skip")
+
+
+def test_architecture_board_uses_its_own_toggle():
+    import xml.etree.ElementTree as ET
+    root = ET.fromstring(read(REPO / "docs/fleet-architecture.svg"))
+    labels = [node.text for node in root if node.tag.endswith("text")]
+    index = labels.index("Kanban board")
+    assert "Alt+K" in labels[index + 1] and "F3" not in labels[index + 1]

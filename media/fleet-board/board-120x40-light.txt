@@ -1,0 +1,40 @@
+╭ Fleet board · alt+k ─────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ FLEET Kanban   reconciler ticking   records updated 0s ago                                                           │
+│ topic: all   agent: all   needs me: off   landed: folded   fuel: hidden                                              │
+│┏ ▸ ◆ Queued / waiting · 3 ━━━━━━━━━━┓ ╭ ◐ Dispatched / working · 3 ────────╮ ╭ ● Shipped · 3 ───────────────────────╮│
+│┃ atlas/01  queued 40m               ┃ │ atlas/02  dispatched 40m           ┃ │ atlas/03  done 40m                   ┃│
+│┃ ○ Add audit export                 ┃ │ ⠦ Export worker                    ┃ │ ● Validate every exported record     ┃│
+│┃ ⌂ codex — no session               ┃ │ ⌂ codex — no session               ┃ │ ⌂ codex — no session                 ┃│
+│┃ queued                             ┃ │ dispatched                         ┃ │ PR #204 failed checks: unit… review  ┃│
+│┃                                    ┃ │                                    ┃ │                                      ┃│
+│┃ beacon/03  waiting 40m             ┃ │ beacon/02  dispatched 40m          ┃ │ beacon/01  done 40m                  ┃│
+│┃ ◆ Wire search index                ┃ │ ⠦ Search service                   ┃ │ ● Schema migration                   ┃│
+│┃ ▣ remote claude — no session       ┃ │ ▣ remote claude — no session       ┃ │ ▣ remote claude — no session         ┃│
+│┃ consumes: beacon/02                │ │ dispatched                         │ │ MR !81 checks-passed · revi… review  ││
+│┃                                    │ │                                    │ │                                      ││
+│┃                                    │ │                                    │ │                                      ││
+│┃                                    │ │                                    │ │                                      ││
+│┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛ ╰────────────────────────────────────╯ ╰──────────────────────────────────────╯│
+│╭ ◆ Served · 2 ──────────────────────╮ ╭ ✗ Stuck / abandoned · 2 ───────────╮ ╭ ● Landed · recent · 1 ───────────────╮│
+││ beacon/04  done 40m                │ │ atlas/04  stuck 40m                │ │ Show recent landed                   ││
+││ ◆ Search architecture              │ │ ✗ Recover test database            │ │                                      ││
+││ ▣ remote claude — no session       │ │ ⌂ codex — no session               │ │                                      ││
+││ served                             │ │ stuck                              │ │                                      ││
+││                                    │ │                                    │ │                                      ││
+││ cedar/04  done 40m                 │ │ cedar/05  abandoned 40m            │ │                                      ││
+││ ◆ Platform walkthrough             │ │ ✗ Legacy cleanup                   │ │                                      ││
+││ ⌂ codex — no session               │ │ ⌂ claude — no session              │ │                                      ││
+││ served                             │ │ abandoned                          │ │                                      ││
+││                                    │ │                                    │ │                                      ││
+││                                    │ │                                    │ │                                      ││
+││                                    │ │                                    │ │                                      ││
+││                                    │ │                                    │ │                                      ││
+│╰────────────────────────────────────╯ ╰────────────────────────────────────╯ ╰──────────────────────────────────────╯│
+│╭ Selected · atlas/01 ───────────────────────────────────────────────────────────────────────────────────────────────╮│
+││ Add audit export                                                                                                   ││
+││ queued                                                                                                             ││
+││                                                                                                                    ││
+││ Record                                                                                                             ││
+│╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯│
+│left column  down card  enter focus / record  d record  t topic  f fuel  esc close                           [ Close ]│
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
