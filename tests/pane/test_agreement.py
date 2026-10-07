@@ -23,7 +23,7 @@ from panekit import PANE, clone, slot, thurbox
 
 from harness import PYTHON, REPO, expect, lib, run
 
-PANE_TEXT = PANE.read_text(encoding="utf-8")
+PANE_TEXT = PANE.read_text(encoding="utf-8") + (REPO / "interface/fleet_reader.lua").read_text(encoding="utf-8")
 PANE_CODE = "\n".join(line for line in PANE_TEXT.splitlines() if not re.match(r"\s*--", line))
 SLOT = slot()
 INSTALLER = REPO / "scripts" / "lib" / "install_extension.py"
@@ -85,7 +85,7 @@ def test_the_installer_prints_a_block_naming_the_panes_slot_with_its_guard(stubs
 
 
 def test_plugin_remove_is_documented_with_the_destination_path():
-    """`plugin remove 91_fleet_queue.lua` answers "not listed" and removes nothing."""
+    """`plugin remove 92_fleet_queue.lua` answers "not listed" and removes nothing."""
     dest = lib("install_extension.py").PANE_DEST
     assert dest.startswith("plugins/")
     expect(read(INSTALLER), f"plugin remove {dest}")

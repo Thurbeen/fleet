@@ -34,7 +34,7 @@ def test_board_probe_keeps_navigation_and_attention_fields(tmp_path):
 
 @pytest.mark.skipif(not REAL_LUA, reason="requires lua")
 @pytest.mark.parametrize("scenario", [
-    "columns", "enter-session", "enter-detail", "links", "filters",
+    "float-contract", "closed-float", "health-memo", "columns", "enter-session", "enter-detail", "links", "filters",
     "landed", "mouse", "selection", "fuel", "narrow", "large", "failure", "fuel-unavailable", "buttons", "missing-session", "reserved", "detail-links", "glyphs", "planned-served", "landed-age", "mouse-band", "topic-picker", "topic-context", "fuel-default", "fuel-compact",
 ])
 def test_board_interactions(scenario):
@@ -50,3 +50,33 @@ def test_bad_reconciler_settings_do_not_hide_the_queue():
     assert out.code == 0, out.out
     assert "K\t01-work\tqueued" in out.stdout
     assert "H\tunknown\t" in out.stdout
+
+
+def test_probe_health_epoch_does_not_follow_the_poll_clock():
+    root = Path(os.environ["FLEET_QUEUE_DIR"])
+    write(root / "sample" / "topic.yaml", "title: Sample\n")
+    task = root / "sample" / "01-work" / "task.yaml"
+    write(task, "id: 01-work\nstate: queued\ntitle: Work\n")
+    program = (
+        "import importlib.util, sys, time; "
+        "time.time=lambda:float(sys.argv[1]); "
+        "s=importlib.util.spec_from_file_location('probe',sys.argv[2]); "
+        "m=importlib.util.module_from_spec(s); s.loader.exec_module(m); "
+        "sys.exit(m.main([]))"
+    )
+    def probe(clock):
+        done = run([*PYTHON, "-c", program, str(clock), str(REPO / "scripts/lib/pane_probe.py")])
+        assert done.code == 0, done.out
+        return done.stdout
+    for path in (root, root / "sample" / "topic.yaml", task):
+        os.utime(path, (1_999_999_900, 1_999_999_900))
+    before = probe(2_000_000_000)
+    assert probe(2_000_000_010) == before, "an idle queue changes solely because the poll clock advances"
+    write(task, "id: 01-work\nstate: queued\ntitle: Changed\n")
+    os.utime(task, (2_000_000_020, 2_000_000_020))
+    after = probe(2_000_000_020)
+    assert after != before, "a changed input no longer updates the probe"
+    before_health = next(line for line in before.splitlines() if line.startswith("H\t"))
+    after_health = next(line for line in after.splitlines() if line.startswith("H\t"))
+    assert before_health.split("\t")[2] == "1999999900"
+    assert after_health.split("\t")[2] == "2000000020"

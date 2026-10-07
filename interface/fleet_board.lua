@@ -577,7 +577,7 @@ function M.render(ctx, model, fuel, worker, fleet)
     span(" FLEET " .. (fleet ~= "" and fleet .. " · " or "") .. "Kanban", theme.accent),
     span("   reconciler " .. health, health == "ticking" and theme.ok or theme.warn),
     span(
-      "   refreshed " .. (model.read_at and math.max(0, math.floor(now - model.read_at)) .. "s ago" or "unknown"),
+      "   records updated " .. (model.read_at and math.max(0, math.floor(now - model.read_at)) .. "s ago" or "unknown"),
       theme.muted
     ),
   })

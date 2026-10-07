@@ -210,6 +210,7 @@ package.preload["lib.fuzzy"] = function()
     end,
   }
 end
+package.preload["lib.fleet_reader"] = function() return dofile("interface/fleet_reader.lua") end
 package.preload["lib.fleet_board"] = function()
   return dofile("interface/fleet_board.lua")
 end
@@ -292,7 +293,47 @@ end
 _G.command = function(name, args)
   commands[#commands + 1] = { name = name, args = args }
 end
-local pane = dofile("interface/fleet_queue.lua")
+local column = dofile("interface/fleet_queue.lua")
+local pane = dofile("interface/fleet_kanban.lua")
+if scenario == "closed-float" then
+  for _ = 1, 20 do
+    assert(pane.render({ width = 200, height = 50, elapsed = 0 }) == nil, "closed float rendered a column")
+  end
+  assert(#calls == 0, "closed board requested queue or fuel probes")
+  print("closed-float passed: 20 frames, zero trees, zero probes")
+  return
+elseif scenario == "float-contract" then
+  assert(not column.floats, "a layout column cannot bypass native occupied_slots as a float")
+  local floating = dofile("interface/fleet_kanban.lua")
+  assert(floating.floats, "the board must own its floating surface")
+  assert(floating.render({ width = 200, height = 50, elapsed = 0 }) == nil, "closed float rendered a column")
+  assert(#calls == 0, "closed board requested queue or fuel probes")
+  assert(floating.on_action("fleetqueue.board"))
+  assert(floating.render({ width = 200, height = 50, elapsed = 0 }).float, "open board is not floating")
+  assert(column.on_action("fleetqueue.board") == false, "column still owns the board toggle")
+  print("float-contract passed")
+  return
+elseif scenario == "health-memo" then
+  local model_for
+  if package.preload["lib.fleet_reader"] then
+    model_for = require("lib.fleet_reader").model_for
+  else
+    for i = 1, 80 do
+      local name, value = debug.getupvalue(pane.render, i)
+      if name == "model_for" then model_for = value; break end
+    end
+  end
+  assert(model_for, "record reader unavailable")
+  local original = thurbox.runs["fleetqueue:lead"].stdout
+  local before = model_for(original)
+  local refreshed = model_for(original:gsub("H\tticking\t2000000000", "H\tbehind\t2000000010"))
+  assert(before == refreshed, "a health epoch rebuilt unchanged task tables")
+  assert(refreshed.health == "behind" and refreshed.read_at == 2000000010, "cached header stopped refreshing")
+  local changed = model_for(original:gsub("Ready", "Changed task"))
+  assert(changed ~= before, "changed task records reused stale data")
+  print("health-memo passed")
+  return
+end
 assert(pane.on_action("fleetqueue.board"), "the live pane has no board toggle")
 local ctx = {
   width = (scenario == "narrow" or scenario == "mouse-band") and 120 or 200,

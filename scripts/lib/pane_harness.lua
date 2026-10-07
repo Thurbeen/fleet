@@ -727,6 +727,7 @@ elseif LEADS == "two-named" then
 end
 
 local here = (arg[0]:match("^(.*)/scripts/lib/") or ".")
+package.preload["lib.fleet_reader"] = function() return assert(loadfile(here .. "/interface/fleet_reader.lua"))() end
 local pane = assert(loadfile(here .. "/interface/fleet_queue.lua"))()
 
 --- Every line a node carries, as `{ text, bold }`.

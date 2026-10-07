@@ -63,7 +63,7 @@ F3 opens and closes it.
 TAKING THE PANE BACK is `plugin remove`, and its argument is the DESTINATION
 PATH, not the file's basename:
 
-    thurbox-cli plugin remove plugins/91_fleet_queue.lua
+    thurbox-cli plugin remove plugins/92_fleet_queue.lua
 
 Usage:
   uv run fleet install-extension                     # render, then install
@@ -87,7 +87,10 @@ from dataclasses import dataclass
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(os.path.dirname(HERE))
-PANE_DEST = "plugins/91_fleet_queue.lua"
+PANE_DEST = "plugins/92_fleet_queue.lua"
+# Keep the board at the already trusted destination during migration: it uses
+# the same read-only run capability as the combined plugin it replaces.
+BOARD_DEST = "plugins/91_fleet_queue.lua"
 PLACEHOLDERS = ("__REPO_PATH__", "__LEAD_GLYPH__", "__LEAD_AGENT__", "__FLEET_SUFFIX__", "__FLEET_LABEL__")
 NAME_PLACEHOLDERS = ("@OPERATOR_NAME@", "@ASSISTANT_NAME@")
 
@@ -413,15 +416,19 @@ def install_pane(cli: str) -> None:
     if not os.path.isfile(source):
         print(f"\nwarning: {source} is missing; the TUI queue pane was not installed", file=sys.stderr)
         return
-    board = os.path.join(REPO_ROOT, "interface", "fleet_board.lua")
-    if not os.path.isfile(board) or subprocess.run(
-        [cli, "plugin", "install", board, "--as", "lib/fleet_board.lua", "--text"]
-    ).returncode:
-        print("\nwarning: could not install the fleet board library; the pane was not updated", file=sys.stderr)
-        return
-    if subprocess.run([cli, "plugin", "install", source, "--as", PANE_DEST, "--text"]).returncode:
-        print(f"\nwarning: could not install the TUI queue pane from {source}", file=sys.stderr)
-        return
+    for filename in ("fleet_reader.lua", "fleet_board.lua"):
+        library = os.path.join(REPO_ROOT, "interface", filename)
+        if not os.path.isfile(library) or subprocess.run(
+            [cli, "plugin", "install", library, "--as", f"lib/{filename}", "--text"]
+        ).returncode:
+            print(f"\nwarning: could not install {filename}; the panes were not updated", file=sys.stderr)
+            return
+    for filename, destination in (("fleet_queue.lua", PANE_DEST), ("fleet_kanban.lua", BOARD_DEST)):
+        plugin = os.path.join(REPO_ROOT, "interface", filename)
+        if subprocess.run([cli, "plugin", "install", plugin, "--as", destination, "--text"]).returncode:
+            print(f"\nwarning: could not install the TUI plugin from {plugin}", file=sys.stderr)
+            return
+    print("\nThe Kanban board is installed. Press Alt+K in thurbox; it needs no layout slot.")
 
     # `plugin check` exits non-zero on the failure that looks like success — a
     # pane that loads and is placed by no arrangement — so its verdict is read.

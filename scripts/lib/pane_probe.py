@@ -26,7 +26,7 @@ record, resolved beside it rather than in a renderer that has no clock.
 
 B <topic/id> <recorded agent> <host> <session> <review URL> <publish detail>
   <unresolved threads, when recorded>
-H <reconciler health> <reading epoch>
+H <reconciler health> <latest queue input modification epoch>
 
 These additive records leave the existing K positions unchanged. Session state
 comes from thurbox's snapshot in the renderer, not another process per task.
@@ -41,7 +41,6 @@ from __future__ import annotations
 import importlib.util
 import os
 import sys
-import time
 
 import yaml
 
@@ -146,7 +145,7 @@ def board_record(topic: str, doc: dict) -> str:
     ])
 
 
-def health_record() -> str:
+def health_record(changed_at: float) -> str:
     reconciler = _load_sibling("fleet_reconcile", "reconcile.py")
     try:
         cfg = reconciler.Config.from_env()
@@ -157,13 +156,22 @@ def health_record() -> str:
     except (OSError, ValueError, SystemExit):
         # Reconciler settings cannot make otherwise readable tasks disappear.
         health = "unknown"
-    return f"H\t{health}\t{int(time.time())}"
+    return f"H\t{health}\t{int(changed_at)}"
+
+
+def modified_at(path: str) -> float:
+    # A reconciler can archive/remove a record between loading and statting it.
+    try:
+        return os.stat(path).st_mtime
+    except OSError:
+        return 0
 
 
 def records(root: str) -> list[str]:
     if not os.path.isdir(root):
         return [f"E\tno queue directory at {root}"]
-    out = [f"R\t{root}", health_record()]
+    out = [f"R\t{root}"]
+    changed_at = modified_at(root)
     archived = 0
     for topic in sorted(os.listdir(root)):
         topic_dir = os.path.join(root, topic)
@@ -171,6 +179,7 @@ def records(root: str) -> list[str]:
         if not os.path.isfile(topic_file):
             continue
         topic_doc = load(topic_file) or {}
+        changed_at = max(changed_at, modified_at(topic_file))
         # The flag lives on topic.yaml so the hidden case is the cheap one: its
         # task directories are never opened.
         if topic_doc.get("archived") not in (None, ""):
@@ -179,10 +188,13 @@ def records(root: str) -> list[str]:
         out.append(f"T\t{topic}\t{flat(topic_doc.get('title'))}")
         for task in sorted(os.listdir(topic_dir)):
             task_dir = os.path.join(topic_dir, task)
-            doc = load(os.path.join(task_dir, "task.yaml")) if os.path.isdir(task_dir) else None
+            task_file = os.path.join(task_dir, "task.yaml")
+            doc = load(task_file) if os.path.isdir(task_dir) else None
             if doc is not None:
+                changed_at = max(changed_at, modified_at(task_file))
                 out.append(task_record(task_dir, doc))
                 out.append(board_record(topic, doc))
+    out.insert(1, health_record(changed_at))
     out.append(f"A\t{archived}")
     return out
 
