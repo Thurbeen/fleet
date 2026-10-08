@@ -53,6 +53,7 @@ def test_a_fresh_clone_merges_nowhere(tmp_path, monkeypatch):
 def test_the_tracked_publish_default_needs_no_tool():
     assert values("publish.example.conf", "METHOD") == ["pr"]
     assert all(v == "" for v in values("publish.example.conf", "HOW")), "HOW names a tool; that is the operator's"
+    assert values("publish.example.conf", "SERVE") == [""], "SERVE names a host; that is the operator's"
 
 
 def test_the_tracked_agent_settings_name_no_agent_or_vendor():

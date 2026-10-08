@@ -483,7 +483,7 @@ publish must LEAVE BEHIND, and `collect` goes and looks:
 | `pr` | a PR by any means | the forge: a PR from this task's branch, open or merged |
 | `push` | a commit on the base branch | git: that commit is an ancestor of `origin/<base>` |
 | `note` | a review or comment on the task's `--target` | the forge: the note exists, was written by the account fleet runs as, and sits on that target |
-| `served` | a document served to a READER expected to answer it | nothing about the document — but the task stands `open`, holding the session that can answer, until `fleet queue reviewed <ref>` |
+| `served` | a document served to a READER expected to answer it, hosted the way `SERVE` in `publish.conf` says | nothing about the document — but the task stands `open`, holding the session that can answer, until `fleet queue reviewed <ref>` |
 | `none` | nothing fleet can check and nobody waiting — an issue filed, a machine swept | nothing: the URL is recorded, the task closes, nothing calls it verified |
 
 **Pick the shape of the deliverable, not the nearest one that exists.** A task
