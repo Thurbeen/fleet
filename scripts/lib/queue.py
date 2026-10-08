@@ -7161,6 +7161,8 @@ AGENT_POLICY_ROOT_ENV = "FLEET_AGENT_POLICY_ROOT"
 # same root as publish.conf, because it is a fact about how work publishes.
 FLOW_CONF = "orchestration/flow.conf"
 FLOW_CONF_DEFAULTS = "orchestration/flow.example.conf"
+# The smallest page either forge answers a change request's commits in.
+INTEGRATION_LISTED_PAGE = 100
 
 # Squash because it is the only method fleet's own remotes allow, so the pull
 # request title becomes the commit on `main`; CONTRIBUTING.md owns that. A
@@ -7419,6 +7421,13 @@ def integration_verdict(task: Task, cr: forge.ChangeRequest, branch: str, unit: 
     head = f"{branch}'s head {tip[:8]}"
     if tip.lower() in oids:
         return "passed", f"is from integration branch {cr.head_branch} and contains {head}"
+    if len(cr.commits) >= INTEGRATION_LISTED_PAGE:
+        # Both forges answer one page of a long change request's commits, so a
+        # full page that lacks the head has not shown it is absent.
+        return "unknown", (
+            f"the forge listed {len(cr.commits)} commits for it, which may not be "
+            f"all of them, and {head} is not among them"
+        )
     return "missing", (
         f"the pull request is from integration branch {cr.head_branch} and does not "
         f"contain {head}"

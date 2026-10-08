@@ -87,6 +87,18 @@ def test_a_develop_pr_without_the_task_head_is_refused(worked, stubs, isolated_e
     assert record(queue_dir, worked["topic"], "01-vend")["state"] == "queued"
 
 
+def test_a_full_page_of_commits_without_the_head_is_unchecked_not_refused(
+    worked, stubs, isolated_env, queue_dir
+):
+    """A forge lists a long develop→main one page at a time, so a head missing
+    from a full page is not proven absent — the task closes as could-not-check."""
+    flow(isolated_env, "github.com/acme/app = develop\n")
+    develop_pr(stubs, 1207, *(f"{i:040x}" for i in range(100)))
+    result(worked["dir"], "shipped", "develop→main is open.", PR + "1207")
+    expect(ok(q("collect", "--no-reap")).out, "publish unchecked", "100 commits")
+    assert record(queue_dir, worked["topic"], "01-vend")["state"] == "done"
+
+
 def test_a_pr_from_a_branch_that_is_not_the_integration_one_is_refused(
     worked, stubs, isolated_env
 ):
