@@ -36,6 +36,7 @@ GROUPS = {
     "pane-ask": ("pane_ask.py", "ask once whether to place the queue pane"),
     "voice-ask": ("voice_ask.py", "ask once for the names the lead uses"),
     "trust-thurbox-dir": ("trust_thurbox_dir.py", "trust a directory for thurbox's agent"),
+    "sessions": ("sessions.py", "the lead's sessions that no live task holds"),
     "session-flags": ("session_profiles.py", "render a session profile into session create flags"),
     "session-name": ("session_name.py", "render the name a session fleet spawns wears"),
     "session-trust": ("session_trust.py", "answer a new session's trust dialog"),

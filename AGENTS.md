@@ -398,7 +398,16 @@ a second copy — read the skill before you run any of it:
    unmerged — and `fleet queue reap`, which `collect` runs itself, deletes the
    session then. It never touches one that is working, blocked, or was given
    up in: that session is the evidence. Blockers clear on `landed`, and a
-   topic whose every task is terminal archives itself. **A `served` task is
+   topic whose every task is terminal archives itself. Two ends nobody
+   declares are read as ends too: a change request **closed unmerged**, and a
+   session thurbox has **not listed for ten minutes** with no result written.
+   Each retires its task as `abandoned` in its own words — `closed unmerged`,
+   `session gone` — never "abandoned by hand". A session that goes without
+   `delete --force` leaves its worktree, so `reap` frees that worktree's
+   ignored build output (`target/`, `node_modules`, `.venv`) — never a link to
+   a shared store, never a tracked directory. `uv run fleet sessions orphans`
+   lists what `reap` cannot see: sessions parented to the lead that no live
+   task holds. It deletes nothing. **A `served` task is
    that same wait with no forge in it**: fleet cannot ask a server it did not
    start whether a reader is done, so the task stands `open` — session kept,
    ready to answer them — until `fleet queue reviewed <ref>` says a person is,
@@ -447,15 +456,15 @@ nothing asked it down". Four things about it are load-bearing:
   through `sync-checkout`, which only fast-forwards a clean default branch.
 - **It reconciles; it does not decide.** No dispatch, no cancel, no reorder,
   and it does not re-decide `refuel`'s rule about a spent quota window.
-- **It tells the lead when the ready set grows**, and once when a sync it ran
-  needs a hand (see **Pulling changes in**). A task whose blocker clears is
-  ready and has no actor: the loop may not dispatch, and the lead only acts
-  when spoken to — on 2026-09-10 that cost six and a half hours. So after
-  `collect` it reads `plan` and, when the ready set has grown, types one line
-  into the lead's terminal naming what is ready and the command that sends it.
-  Once per transition, never into a lead mid-turn or an input line it cannot
-  prove empty, and silent when no lead session is running. A lead it may not
-  type into gets the same line in its thurbox mailbox instead, posted with
+- **It tells the lead when the ready set grows, or a worker stalls**, and once
+  when a sync it ran needs a hand (see **Pulling changes in**). A task whose
+  blocker clears is ready and has no actor: the loop may not dispatch, and the
+  lead only acts when spoken to — on 2026-09-10 that cost six and a half hours.
+  So after `collect` it reads `plan` and, when the ready set has grown, types
+  one line into the lead's terminal naming what is ready and the command that
+  sends it. Once per transition, never into a lead mid-turn or an input line it
+  cannot prove empty, and silent when no lead session is running. A lead it may
+  not type into gets the same line in its thurbox mailbox instead, posted with
   `message send --no-wake`, which enqueues and delivers nothing; a thurbox
   with no mailbox leaves it at the wait.
   `scripts/lib/notify_lead.py` owns those rules. Notifying is not
@@ -463,7 +472,9 @@ nothing asked it down". Four things about it are load-bearing:
   exactly what `plan` says is ready and derives nothing**, which is how a
   condition-held task stays out of the line: `is_ready` never clears a
   condition, so the one reading carries the answer and there is no second
-  opinion here to keep in step.
+  opinion here to keep in step. `plan` also names the STALLED set —
+  dispatched, at rest past half an hour, no `result.md`, no new commit — and
+  that reaches the lead the same way, once per transition.
 - **`nudge` is the accelerator and never the guarantee.** A worker's Claude
   Code `Stop` hook can call `uv run --project <checkout> fleet reconcile nudge`
   to bring the periodic pass forward; a worker that died on a token limit fires

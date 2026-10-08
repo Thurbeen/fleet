@@ -444,4 +444,7 @@ undoes a soft delete.
 
 **A session the queue dispatched is not yours to delete by hand.** `uv run
 fleet queue reap` releases those once the forge says their pull requests
-merged, reading the state table above first (`fleet-queue` §5b).
+merged, reading the state table above first (`fleet-queue` §5b). The ones it
+cannot see — a session you spawned by hand under the lead, a skill's reviewer —
+`uv run fleet sessions orphans` lists, with the delete for each; it deletes
+nothing itself.

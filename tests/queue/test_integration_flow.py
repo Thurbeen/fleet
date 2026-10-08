@@ -192,3 +192,20 @@ def test_a_no_op_with_no_reason_is_held_open(spans, queue_dir):
     expect(q("collect", "--no-reap").out, "NOT CLOSED", "/tmp/repo-b", "give the reason")
     assert record(queue_dir, spans["topic"], "01-spans-two")["state"] == "queued"
 
+
+
+def test_a_closed_develop_pr_does_not_retire_the_task_as_closed_unmerged(
+    worked, stubs, isolated_env, queue_dir
+):
+    """A closed develop→main is not the task's own change request: its work is
+    already on develop, so the task is held NOT CLOSED, as before, and never
+    retired in the words that mean its own change request was given up."""
+    flow(isolated_env, "github.com/acme/app = develop\n")
+    develop_pr(stubs, 1210, worked["tip"])
+    stubs.pr_state(1210, "CLOSED")
+    result(worked["dir"], "shipped", "develop→main was closed.", PR + "1210")
+    out = q("collect", "--no-reap").out
+    expect(out, "NOT CLOSED")
+    doc = record(queue_dir, worked["topic"], "01-vend")
+    assert doc["state"] == "queued", doc
+    assert "abandoned" not in doc

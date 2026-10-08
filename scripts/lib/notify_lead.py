@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tell the lead that ready work exists which nothing will dispatch.
+"""Tell the lead that ready work exists which nothing will dispatch, or a worker stalled.
 
 WHY THIS EXISTS, measured. On 2026-09-10 at 01:37 a pull request merged,
 `forge-agnostic/01-01-forge-seam` landed, and the `semantic-dependency` blocker
@@ -59,6 +59,13 @@ one reading it takes. A rule about conditions written HERE as well would be the
 second opinion the single reading exists to prevent;
 `tests/queue/test_conditions.py` asserts the outcome instead, as the case it
 came from.
+
+A STALLED WORKER IS THE SAME SILENCE FROM THE OTHER END. Five workers on one
+machine stopped without a result and nobody noticed for two days. `plan --json`
+names them (`stalled`: dispatched, at rest past half an hour, no result.md, no
+new commit — `queue.py`'s `stalled_tasks` owns the judgement) and this carries
+them under the four rules above, remembered as their own set, so a stall is
+told once and fresh ready work is still news beside it.
 
 WHERE THE STATE LIVES. In the reconciler's own runtime directory, beside its
 pid, heartbeat and flags — never on the task. "The lead has been told" is a
@@ -124,6 +131,10 @@ STATE_FILE = "notified.json"
 # for a retry only while one waits.
 STALE_FILE = "stale.json"
 
+# What the loop remembers, per set: what was typed into the lead, and what was
+# left in its mailbox while it was mid-turn.
+MEMORY = ("told", "posted", "stalled", "stalled_posted")
+
 
 def _load_queue():
     """Load scripts/lib/queue.py under a name that is not `queue`.
@@ -134,6 +145,8 @@ def _load_queue():
     alias is what keeps this directory on sys.path from shadowing the standard
     library's `queue`, and it is the same load fleet_status.py does.
     """
+    if "fleet_queue" in sys.modules:
+        return sys.modules["fleet_queue"]
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "queue.py")
     spec = importlib.util.spec_from_file_location("fleet_queue", path)
     module = importlib.util.module_from_spec(spec)
@@ -157,8 +170,12 @@ def read_state(state_dir: str) -> dict:
     return doc if isinstance(doc, dict) else {}
 
 
-def write_state(state_dir: str, told: list, note: str, posted: list | None = None) -> None:
+def write_state(state_dir: str, memory: dict, note: str) -> None:
     """Remember what the lead has been told, and what was last logged about it.
+
+    `memory` holds four lists of refs: `told` and `posted` for the ready set,
+    `stalled` and `stalled_posted` for the stalled one — what was typed into the
+    lead, and what was left in its mailbox.
 
     Best effort on purpose: a runtime directory that cannot be written is worth
     a repeated notification, and is not worth failing a reconciler pass over.
@@ -169,12 +186,12 @@ def write_state(state_dir: str, told: list, note: str, posted: list | None = Non
     """
     try:
         with open(os.path.join(state_dir, STATE_FILE), "w", encoding="utf-8") as fh:
-            json.dump({"told": told, "note": note, "posted": posted or []}, fh)
+            json.dump({**{k: memory.get(k) or [] for k in MEMORY}, "note": note}, fh)
     except OSError:
         pass
 
 
-def say(state_dir: str, told: list, note: str, posted: list | None = None) -> int:
+def say(state_dir: str, memory: dict, note: str) -> int:
     """Print `note` only if it is not the one already standing.
 
     The deduplication is the difference between a diagnosis and a wall. A lead
@@ -183,7 +200,7 @@ def say(state_dir: str, told: list, note: str, posted: list | None = None) -> in
     """
     if note and read_state(state_dir).get("note") != note:
         print(note)
-    write_state(state_dir, told, note, posted)
+    write_state(state_dir, memory, note)
     return 0
 
 
@@ -328,6 +345,17 @@ def message(ready: list) -> str:
     )
 
 
+def stalled_message(stalled: list) -> str:
+    """One line: which workers are at rest with nothing to show, and where to look."""
+    shown = ", ".join(stalled[:NAMED])
+    more = "" if len(stalled) <= NAMED else f" and {len(stalled) - NAMED} more"
+    return (
+        f"fleet reconciler: {len(stalled)} worker(s) stalled — at rest with no result "
+        f"and no new commit — {shown}{more}. Look: uv run fleet queue show {stalled[0]}"
+    )
+
+
+
 # --- the stale lead ----------------------------------------------------------
 
 
@@ -446,7 +474,7 @@ def stale(state_dir: str, text: str) -> int:
 
 def main(argv: list) -> int:
     ap = argparse.ArgumentParser(
-        description="wake the lead when ready work has no actor",
+        description="wake the lead when ready work has no actor, or a worker has stalled",
     )
     ap.add_argument(
         "--state-dir",
@@ -469,49 +497,77 @@ def main(argv: list) -> int:
     if not isinstance(plan, dict):
         return 0
     ready = sorted(str(r) for r in (plan.get("ready") or []))
+    # `plan` writes a row per stalled task; a bare ref is read as one too.
+    stalled = sorted(
+        str(r.get("task") if isinstance(r, dict) else r) for r in (plan.get("stalled") or [])
+    )
+    now = {"told": ready, "posted": ready, "stalled": stalled, "stalled_posted": stalled}
 
     # PRUNE, THEN COMPARE, and the prune is what makes a re-entry news. A task
-    # that leaves the ready set — dispatched, blocked again, abandoned — is
-    # forgotten, so if it comes back it is a transition again rather than
-    # something the lead was already told about weeks ago.
+    # that leaves a set — dispatched, blocked again, abandoned, or a worker
+    # that came back to life — is forgotten, so if it comes back it is a
+    # transition again rather than something the lead was already told about
+    # weeks ago.
     state = read_state(args.state_dir)
-    told = [r for r in state.get("told", []) if r in ready]
-    posted = [r for r in state.get("posted", []) if r in ready]
-    fresh = [r for r in ready if r not in told]
-    if not fresh:
-        return say(args.state_dir, told, "")
+    memory = {k: [r for r in (state.get(k) or []) if r in now[k]] for k in MEMORY}
+    fresh = [r for r in ready if r not in memory["told"]]
+    fresh_stalled = [r for r in stalled if r not in memory["stalled"]]
+    if not fresh and not fresh_stalled:
+        return say(args.state_dir, memory, "")
 
+    what = "ready work" if fresh else "a stalled worker"
     name = lead_name()
     if not name:
-        return say(args.state_dir, told, "ready work, but no lead session is configured")
+        return say(args.state_dir, memory, f"{what}, but no lead session is configured")
     sid, status = lead_session(name)
     if not sid:
-        return say(args.state_dir, told, f"ready work, but {status}")
+        return say(args.state_dir, memory, f"{what}, but {status}")
+
+    # ONE LINE, carrying whichever set has news; a set with nothing new is not
+    # repeated just because the other one changed.
+    parts = []
+    if fresh:
+        parts.append(("told", "posted", message(ready)))
+    if fresh_stalled:
+        parts.append(("stalled", "stalled_posted", stalled_message(stalled)))
+    line = " ".join(text for _, _, text in parts)
+
     held = f"{name} is {status}" if status not in AT_REST else ""
     if not held and not composer_empty(sid):
         held = f"{name}'s input line is not provably empty"
     if held:
         # The note is posted on its own transition, so a lead busy for an hour
         # finds one line per change in its mailbox and not one per pass.
-        if [r for r in fresh if r not in posted]:
-            sent, _why = post(sid, message(ready))
-            posted = ready if sent else posted
-        noted = all(r in posted for r in fresh)
-        where = " — noted in its inbox" if noted else ""
-        return say(
-            args.state_dir, told, f"ready work; {held}{where}; the wake waits", posted
+        unposted = [
+            r for told, posted, _ in parts for r in now[told]
+            if r not in memory[told] and r not in memory[posted]
+        ]
+        if unposted:
+            sent, _why = post(sid, line)
+            if sent:
+                for _, posted, _text in parts:
+                    memory[posted] = now[posted]
+        noted = all(
+            r in memory[posted] for told, posted, _ in parts
+            for r in now[told] if r not in memory[told]
         )
+        where = " — noted in its inbox" if noted else ""
+        return say(args.state_dir, memory, f"{what}; {held}{where}; the wake waits")
 
-    sent, why = wake(sid, message(ready))
+    sent, why = wake(sid, line)
     if not sent:
-        return say(args.state_dir, told, f"could not wake {name}: {why}")
+        return say(args.state_dir, memory, f"could not wake {name}: {why}")
 
     # Only a delivered wake is remembered, so a send that failed is retried on
     # the next pass rather than swallowed.
+    for told, _, _text in parts:
+        memory[told] = now[told]
+    named = ready if fresh else stalled
     return say(
         args.state_dir,
-        ready,
-        f"woke {name}: {len(ready)} task(s) ready — {', '.join(ready[:NAMED])}",
+        memory,
+        f"woke {name}: {len(named)} task(s) {'ready' if fresh else 'stalled'} — "
+        f"{', '.join(named[:NAMED])}",
     )
 
 

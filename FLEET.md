@@ -402,16 +402,19 @@ the rule protects is still true of it —
 - **It observes; it does not decide.** It folds `watch`, and it runs `collect`,
   `shepherd` and `refuel` on their own clocks. It never dispatches, cancels or
   reorders anything. Choosing what runs is still yours.
-- **It wakes you when the ready set grows, and that is not it deciding.** A
+- **It wakes you when the ready set grows or a worker stalls, and that is not
+  it deciding.** A
   task whose blocker clears has no actor — the loop may not dispatch it and you
   are not looking — so it reads `plan` and types one line into your terminal
   naming what is ready and the command that sends it. Once per transition, and
   only into an input line that is provably empty: while you are mid-turn, or
   the operator has something typed, the same line goes into your thurbox
   mailbox with `--no-wake` instead, and the typed line waits until you are at
-  rest with an empty line. `thurbox-cli message inbox --claim` reads it. The
-  decision it hands you is still yours to make; what it took away was the six
-  hours before you knew there was one.
+  rest with an empty line. `thurbox-cli message inbox --claim` reads it. A
+  STALLED worker — dispatched, at rest past half an hour, no result, no new
+  commit — is told the same way; `fleet queue show <ref>` is where you start.
+  The decision it hands you is still yours to make; what it took away was the
+  six hours before you knew there was one.
 - **It writes no record.** Every effect goes through `uv run fleet queue`,
   which stays the only writer, exactly as the pane stays a pure reader.
 - **It keeps this checkout current, and nothing more.** It runs
