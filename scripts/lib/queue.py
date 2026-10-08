@@ -6096,8 +6096,11 @@ def reap(q: Queue, dry: bool = False, release: bool = True) -> int:
         return taken[0]
 
     # Before the archive sweep, because a retired task can be the last thing
-    # holding its topic open.
-    acted += sweep_vanished(q, dry, snapshot)
+    # holding its topic open. Not under `--no-reap`: retiring a vanished
+    # session drops its id and frees its worktree's build output, which is
+    # exactly the session work that flag promises to leave alone.
+    if release:
+        acted += sweep_vanished(q, dry, snapshot)
 
     # A topic can only become finished when one of its tasks moves into a
     # terminal state, and this is the pass that moves them — so the flag is
