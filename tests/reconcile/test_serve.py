@@ -32,6 +32,12 @@ def serve() -> subprocess.Popen:
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
+def serving(recon) -> bool:
+    """Up, with no `ensure` run. Not `proc.pid`: a Windows venv's python.exe is a
+    launcher, and the loop runs in the interpreter it starts."""
+    return bool(recon.pid()) and "up        reconciling" in recon("status").out
+
+
 def end(proc: subprocess.Popen) -> None:
     proc.kill()
     proc.wait(timeout=30)
@@ -40,7 +46,7 @@ def end(proc: subprocess.Popen) -> None:
 def test_serve_runs_the_loop_in_the_foreground_and_waits_out_a_stop(recon):
     proc = serve()
     try:
-        assert wait_for(lambda: recon.pid() == str(proc.pid)), f"serve did not run the loop itself\n{recon.log()}"
+        assert wait_for(lambda: serving(recon)), f"serve did not run the loop itself\n{recon.log()}"
         assert wait_for(lambda: recon.count("watch") >= 1)
 
         stopped = recon("stop")
@@ -65,8 +71,8 @@ def test_serve_takes_over_when_the_loop_it_waited_on_dies(recon):
         time.sleep(2)
         assert recon.pid() == first, "serve adopted the running loop rather than fighting it"
         os.kill(int(first), 9)
-        assert wait_for(lambda: recon.pid() == str(proc.pid), 30), f"nobody brought it back\n{recon.log()}"
-        expect(recon("status").out, "up        reconciling")
+        assert wait_for(lambda: recon.pid() not in ("", first) and serving(recon), 30), \
+            f"nobody brought it back\n{recon.log()}"
     finally:
         end(proc)
 

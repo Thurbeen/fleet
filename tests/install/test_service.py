@@ -40,6 +40,7 @@ def home(stubs):
     return stubs.root.parent / "home"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="systemd quotes a backslash path, and none ever reaches a unit")
 def test_systemd_gets_a_user_unit_that_serves_the_loop_and_restarts_it(stubs, checkout):
     complete(stubs)
     place(stubs, "systemctl", SYSTEMCTL)
