@@ -314,8 +314,9 @@ uv run fleet queue abandon <ref>... --why 'superseded: shipped as one PR'
 uv run fleet queue abandon --topic <topic> --why '...'   # every task not landed or abandoned
 ```
 
-`abandoned` is the terminal state a pull request closed unmerged already
-reaches (§5b); `--why` goes on the record. All or nothing: it refuses `landed`
+`abandoned` is the terminal state a pull request closed unmerged and a
+vanished session already reach on their own (§5b); `--why` goes on the record,
+and every view says `abandoned by hand` beside it. All or nothing: it refuses `landed`
 always, and a `dispatched` task whose session thurbox still lists unless you
 pass `--force`. It never touches a session; `reap` releases that one once its
 agent is at rest. A blocker naming an abandoned task **stays blocked**;
@@ -655,7 +656,7 @@ branch, so reap promotes it in the same pass.
 |---|---|---|
 | `done` | the worker concluded; its change request is open, its served document awaits its reader, or its confirmed `push` commit is about to be promoted | **kept** |
 | `landed` | the change request merged, the commit reached the base branch, or there was never an artifact | released |
-| `abandoned` | the change request was closed unmerged, or you ran `abandon` (§3) | released once at rest; the work is NOT on main |
+| `abandoned` | `closed unmerged` — the change request was closed, at `collect` or after; `session gone` — thurbox has not listed a dispatched task's session for ten minutes and no `result.md` came; or `abandoned by hand` (§3) | released once at rest; the work is NOT on main |
 | `stuck` / `failed` | the worker gave up | **kept** — the session is the evidence, unless the worker rewrites its `result.md` with an outcome `collect` proves (§5) |
 
 **A `served` task is the one `landed` cannot be asked of.** Fleet cannot poll
@@ -695,6 +696,18 @@ and `unreported` are not the agent saying it is at rest, and treating them as
 checkout is git's, not thurbox's, so it is removed separately with `git
 worktree remove` and no `--force` — one holding uncommitted work is kept and
 reported.
+
+**A session that went without `delete --force` leaves its worktree behind**,
+and with it gigabytes of build output. When `reap` drops such an id, and
+before it removes a fixer's checkout, it deletes the worktree's `target/`,
+`node_modules` and `.venv` — only directories git reports ignored with nothing
+under them tracked, and never a link (a shared store is somebody else's). The
+rest of the worktree, uncommitted work included, stays.
+
+**What `reap` cannot see, `fleet sessions orphans` lists**: every session
+parented to the lead that no live task holds — a skill's reviewer, a
+diagnosis sweep, a worker attached to nothing, a session whose task ended. It
+deletes nothing; each row carries the delete command for you to judge.
 
 **`collect` runs the reap itself.** Its gate is not collect's — nothing
 collected a moment ago has merged — so it only acts on earlier work. `collect
@@ -798,9 +811,11 @@ uv run fleet reconcile stop       # durably down; only `start` brings it back
 `scripts/lib/reconcile.py`'s docstring argues each interval. Two things are
 about you:
 
-- **It will type one line at you, and only ever one of two:** that N tasks
-  are ready and nothing will dispatch them — treat it as `plan` already run
-  and `dispatch` — or that it fast-forwarded this checkout and you need
+- **It will type one line at you, and only ever about three things:** that N
+  tasks are ready and nothing will dispatch them — treat it as `plan` already
+  run, and `dispatch`; that N workers are STALLED — dispatched, at rest past
+  half an hour, no `result.md`, no new commit: `show` the task, then `send` a
+  nudge or `abandon` it; or that it fast-forwarded this checkout and you need
   `/update-fleet <sha>`. Once each, never mid-turn, and never into an input
   line that holds anything: that waits in your mailbox instead.
 - **It comes back without you.** Your SessionStart hook runs `ensure --if-lead`,

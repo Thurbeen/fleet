@@ -194,6 +194,29 @@ def make_dir_link(link: str, target: str) -> None:
         os.symlink(os.path.relpath(os.path.abspath(target), os.path.dirname(os.path.abspath(link))), link)
 
 
+def remove_tree(path: str) -> None:
+    """Delete the directory `path` and everything under it — never through a link.
+
+    A link (a symlink, or a Windows junction) is refused rather than followed or
+    unlinked: a link is somebody else's directory, and whoever made it decides.
+    On Windows a read-only file — which every `node_modules` and `.git` has —
+    makes rmtree fail, so its bit is cleared and the removal tried once more.
+    """
+    if is_dir_link(path):
+        raise OSError(f"{path} is a link, not a directory to remove")
+
+    def retry(func, target, _exc) -> None:
+        import stat
+
+        os.chmod(target, stat.S_IWRITE)
+        func(target)
+
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=retry)
+    else:
+        shutil.rmtree(path, onerror=retry)
+
+
 # --- records ------------------------------------------------------------------
 
 # A reader holding a record open makes Windows refuse the replace until it lets

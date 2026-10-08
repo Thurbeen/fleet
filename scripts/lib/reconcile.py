@@ -81,8 +81,9 @@ second-guess `refuel`'s rule about a spent quota window.
 BUT IT SAYS WHEN THERE IS SOMETHING TO DECIDE. A task whose blocker clears is
 READY and has no actor: this loop may not dispatch, and the lead only acts when
 spoken to. So the pass after `collect` reads `plan` and, when the ready set has
-grown, wakes the lead: once per transition, never mid-turn, silently when there
-is no lead. `scripts/lib/notify_lead.py` owns those rules.
+grown — or `plan`'s stalled set has, workers at rest with nothing to show —
+wakes the lead: once per transition, never mid-turn, silently when there is no
+lead. `scripts/lib/notify_lead.py` owns those rules.
 
 AND IT KEEPS THE LEAD'S CHECKOUT CURRENT. `sync-checkout` ran only at
 SessionStart, and one lead conversation lasted sixteen days: a merged fix sat

@@ -110,9 +110,13 @@ the outcome in its result.md CHANGED.
 `abandon` IS THE ONE HAND-MADE WAY INTO A TERMINAL STATE. A task that will
 never run — superseded, or held by a condition nobody will clear — would
 otherwise read `waiting` forever and hold its topic open. It reaches the same
-`abandoned` a pull request closed unmerged does, with the reason recorded, so
-nothing downstream learns a new word; a blocker naming it stays blocked, and
-the verb names those dependants for the lead to decide.
+`abandoned` two ends nobody declares reach on their own: a change request
+closed unmerged, and a dispatched task whose session thurbox stopped listing
+with no result written (`sweep_vanished`). One state, so nothing downstream
+learns a new word; `abandoned.how` keeps the three apart in every view —
+`closed unmerged`, `session gone`, `abandoned by hand`. A blocker naming any
+of them stays blocked, and the verb names those dependants for the lead to
+decide.
 
 `send` IS NOT A SIXTH THING. It is how the lead course-corrects a worker
 mid-flight, and it belongs here rather than in `thurbox-cli session send`
@@ -168,7 +172,9 @@ Usage:
                        # the second form; clears only with
                        # `block <ref> --clear --condition 'what holds it'`.
                        # Its kinds are their own closed set, also in --help
-  uv run fleet queue plan [--json]        # what goes out now, what waits, and why
+  uv run fleet queue plan [--json]        # what goes out now, what waits, and why;
+                       and which dispatched workers are STALLED — at rest past
+                       half an hour with no result.md and no new commit
   uv run fleet queue dispatch [<ref>...] [--dry-run]  # the whole ready set at
                        once with no ref, which is the norm; refs launch
                        exactly those, refuse one that is not ready, and leave
@@ -184,7 +190,9 @@ Usage:
                        artifact failed the publish check, after you have
                        judged that artifact; --no-reap leaves every session
                        alone
-  uv run fleet queue reap [--dry-run]     # land what merged, release its session
+  uv run fleet queue reap [--dry-run]     # land what merged, release its session;
+                       retire what closed unmerged or whose session vanished,
+                       and free the build output a vanished session left
   uv run fleet queue reviewed <ref> [--why W]  # a `served` task's document is no
                        longer waiting on a reader: the next reap lands it and
                        releases the session kept to answer them
@@ -1918,8 +1926,9 @@ def state_conflict(task: Task) -> str | None:
     outcome = task.doc.get("outcome")
     if not outcome:
         return None
-    # Given up on by hand, the recorded reason IS the explanation for the two
-    # disagreeing, so there is nothing contradictory left to flag.
+    # Given up on — by hand, or retired in the forge's or thurbox's own words —
+    # the recorded reason IS the explanation for the two disagreeing, so there
+    # is nothing contradictory left to flag.
     if task.state == "abandoned" and task.doc.get("abandoned"):
         return None
     agree = OUTCOME_STATES.get(outcome)
@@ -1954,7 +1963,7 @@ def task_notes(q: Queue, task: Task) -> list:
     notes = []
     given_up = task.doc.get("abandoned") or {}
     if task.state == "abandoned" and given_up.get("why"):
-        notes.append(f"abandoned by hand: {given_up['why']}")
+        notes.append(f"{ABANDON_HOW.get(abandon_how(task), abandon_how(task))}: {given_up['why']}")
     conflict = state_conflict(task)
     if conflict:
         notes.append(f"! {conflict}")
@@ -2786,10 +2795,55 @@ def find_cycle(q: Queue) -> list | None:
     return None
 
 
+# How long a dispatched worker may sit at rest, with no result and no commit,
+# before `plan` calls it stalled. The same half hour refuel waits on a stale
+# `working`, and for the same measured reason: past 95% of real turns. A worker
+# at rest that long without a result ended its turn early, asked a question
+# nobody saw, or never got its brief — each of which only the lead can answer.
+STALLED_IDLE_SECS = 30 * 60
+
+# The session states that are the agent saying it is at rest; `notify_lead.py`
+# wakes into exactly these, and for the same reason reads nothing else.
+AT_REST_STATES = ("idle", "done")
+
+
+def stalled_tasks(q: Queue) -> list[dict]:
+    """Dispatched, at rest past STALLED_IDLE_SECS, no result.md, no commit in that window.
+
+    A JUDGEMENT AND NOT A STATE. Nothing is written and nothing moves: it is
+    what `plan` reports, and the reconciler carries it to the lead once, like
+    the ready set. A session list that cannot be read reports nothing.
+    """
+    todo = [
+        t for t in sorted(q.tasks.values(), key=lambda t: t.ref)
+        if t.state == "dispatched" and t.doc.get("session")
+        and not os.path.exists(t.file("result.md"))
+    ]
+    if not todo:
+        return []
+    sessions, _why = session_snapshot()
+    if sessions is None:
+        return []
+    out = []
+    for task in todo:
+        row = sessions.get(task.doc["session"]) or {}
+        age = row.get("hook_state_age_secs")
+        if row.get("state") not in AT_REST_STATES or isinstance(age, bool):
+            continue
+        if not isinstance(age, (int, float)) or age < STALLED_IDLE_SECS:
+            continue
+        _sha, at, _note = branch_head(task)
+        if at and time.time() - record_time(at) < STALLED_IDLE_SECS:
+            continue
+        out.append({"task": task.ref, "session": task.doc["session"], "idle_secs": int(age)})
+    return out
+
+
 def cmd_plan(args) -> int:
     q = Queue(queue_root())
     ready, waiting = q.ready(), q.waiting()
     overlaps = q.overlaps(ready)
+    stalled = stalled_tasks(q)
 
     if args.json:
         print(
@@ -2800,6 +2854,7 @@ def cmd_plan(args) -> int:
                         {"task": t.ref, "blocked_by": t.blockers} for t in waiting
                     ],
                     "overlaps": overlaps,
+                    "stalled": stalled,
                 },
                 indent=2,
             )
@@ -2828,6 +2883,15 @@ def cmd_plan(args) -> int:
             if view["status"] == "cleared":
                 continue
             print(f"        {view['line']}")
+    if stalled:
+        print()
+        print(
+            f"stalled: {len(stalled)} task(s) — at rest for over {STALLED_IDLE_SECS // 60}m "
+            "with no result.md and no new commit"
+        )
+        for row in stalled:
+            print(f"    {row['task']:<52} idle {row['idle_secs'] // 60}m  session {row['session']}")
+        print("          `fleet queue show <ref>` reads it; `fleet queue send <ref> '...'` nudges it.")
     return 0
 
 
@@ -4664,6 +4728,13 @@ def pull_request_verdict(
             if verdict != "passed":
                 return verdict, whose, {}
 
+    # CLOSED UNMERGED IS AN END, NOT A GAP. Nothing more will happen on that
+    # change request, so holding the task open for a publish that can never
+    # verify left it `dispatched` until somebody abandoned it by hand. The
+    # `closed` state is what `collect` reads to retire it in its own words.
+    if cr.state == "closed":
+        return "missing", f"{cr.url} was closed without merging", {"state": "closed"}
+
     if method == "attested":
         attested, why = attestation_verdict(cr.body, cr.head_sha)
         if attested:
@@ -5149,6 +5220,20 @@ def cmd_collect(args) -> int:
             # exactly where such a record stands.
             record_publish(task, "", "this result claims no artifact to check", "collect")
 
+        # A change request closed unmerged is the forge ending the task, and
+        # every repository that held it open is one: retired, never held.
+        closed = [r for r in rows if (r.get("seen") or {}).get("state") == "closed"]
+        if verdict == "missing" and closed and all(
+            r in closed for r in rows if r["verdict"] == "missing"
+        ):
+            task.doc["outcome"] = outcome
+            task.doc["artifact"] = artifact
+            task.doc["concluded_at"] = now()
+            retire(task, "closed-unmerged", "; ".join(r["detail"] for r in closed))
+            concluded += 1
+            print(f"    {task.ref}  {ABANDON_HOW['closed-unmerged']}  {closed[0]['detail']}")
+            continue
+
         if verdict == "missing" and not args.allow_unverified:
             task.save()
             report_unverified(task, rows)
@@ -5427,11 +5512,85 @@ def sweep_landings(q: Queue, dry: bool) -> dict:
             # has since merged. `open`, `none` and `unknown` write nothing:
             # they say the sweep looked and learned nothing new.
             record_publish(task, kind, detail, "reap")
-        if nxt:
+        if nxt == "abandoned":
+            retire(task, "closed-unmerged", detail)
+            print(f"    {task.ref:<46} {nxt:<10} {ABANDON_HOW['closed-unmerged']}: {detail}")
+        elif nxt:
             task.doc["state"] = nxt
             print(f"    {task.ref:<46} {nxt:<10} {detail}")
         task.save()
     return seen
+
+
+# How long a dispatched task's session has to stay missing from thurbox's
+# list before the task is retired as `session gone`. Two looks rather than one,
+# because one `session list` that answered without the id is a single reading,
+# and retiring live work on a hiccup is worse than a pass of delay. Ten minutes
+# is five collect passes of the reconciler: long past a blip, and still an end
+# the same afternoon for a worker a crashed multiplexer took with it.
+VANISHED_GRACE_SECS = 10 * 60
+
+
+def sweep_vanished(q: Queue, dry: bool, snapshot=None) -> int:
+    """Retire every dispatched task whose session thurbox no longer has.
+
+    A worker whose multiplexer crashed, or whose session somebody deleted by
+    hand, leaves a task `dispatched` with nobody behind it, and nothing else in
+    the loop will ever end it: no result.md is coming and `collect` waits for
+    one forever. So the absence is recorded on the first pass (`vanished`) and
+    the task is retired as `session gone` once it has lasted
+    VANISHED_GRACE_SECS. A session that comes back clears the first look.
+
+    It retires nothing on a guess. A session list that could not be read, a
+    result.md waiting for `collect`, the lead's own session, and a task whose
+    host cannot be reached all leave the task exactly where it is.
+    """
+    todo = [
+        t for t in sorted(q.tasks.values(), key=lambda t: t.ref)
+        if t.state == "dispatched" and t.doc.get("session")
+    ]
+    if not todo:
+        return 0
+    live, _why = (snapshot or live_sessions)()
+    if live is None:
+        return 0
+    lead = os.environ.get("THURBOX_SESSION")
+    acted = 0
+    for task in todo:
+        sid = task.doc["session"]
+        seen = task.doc.get("vanished") or {}
+        if sid in live or sid == lead or os.path.exists(task.file("result.md")):
+            if seen and not dry:
+                task.doc.pop("vanished", None)
+                task.save()
+            continue
+        if task.doc.get("host") and not host_reachable(task.doc["host"])[0]:
+            continue
+        acted += 1
+        since = record_time(seen.get("since")) if seen.get("session") == sid else 0.0
+        if not since:
+            if dry:
+                print(f"    {task.ref:<46} not listed {sid}  thurbox does not list its session")
+                continue
+            task.doc["vanished"] = {"session": sid, "since": now()}
+            task.save()
+            print(
+                f"    {task.ref:<46} not listed {sid}  thurbox no longer lists its session; "
+                f"`{ABANDON_HOW['session-gone']}` if it is still absent in "
+                f"{VANISHED_GRACE_SECS // 60}m"
+            )
+            continue
+        if time.time() - since < VANISHED_GRACE_SECS:
+            continue
+        why = f"thurbox has not listed session {sid} since {seen['since']}, and no result.md was written"
+        if dry:
+            print(f"    {task.ref:<46} would be abandoned  {ABANDON_HOW['session-gone']}: {why}")
+            continue
+        retire(task, "session-gone", why)
+        record_reaped(task, sid, "already gone")
+        print(f"    {task.ref:<46} abandoned  {ABANDON_HOW['session-gone']}: {why}")
+        free_build_output(task.ref, task_worktrees(task), dry)
+    return acted
 
 
 def session_snapshot() -> tuple[dict | None, str]:
@@ -5733,6 +5892,97 @@ def record_reaped(task: Task, sid: str, how: str) -> None:
     task.save()
 
 
+# What a build makes and the next build makes again, freed from a worktree the
+# queue lets go of. Rust's `target/` alone held 25-30 GB per worktree on one
+# machine, and a session that was already gone took none of it with it.
+BUILD_OUTPUT = ("target", "node_modules", ".venv")
+
+
+def task_worktrees(task: Task) -> list[str]:
+    """Where this task's branch is checked out on this machine, one per repository.
+
+    Asked of git and not of thurbox, because the case this serves is a session
+    thurbox no longer has. A `--host` task's worktrees are on that machine.
+    """
+    if task.doc.get("host") or not task.doc.get("branch"):
+        return []
+    want = f"branch refs/heads/{task.doc['branch']}"
+    found = []
+    for unit in task_repos(task):
+        here = None
+        for line in git_out(unit["path"], ["worktree", "list", "--porcelain"]).splitlines():
+            if line.startswith("worktree "):
+                here = line[len("worktree "):]
+            elif line == want and here and not same_path(here, unit["path"]):
+                found.append(here)
+    return found
+
+
+def build_output(tree: str) -> list[str]:
+    """Every BUILD_OUTPUT directory under `tree` that is safe to delete.
+
+    SAFE MEANS THREE THINGS, and each is a way a shared directory gets lost. It
+    is a real directory and not a link (or a junction) to a store something
+    else uses; nothing on the way to it is a link either, so it is inside this
+    worktree; and git says it is IGNORED with nothing under it TRACKED — a
+    directory that happens to be called `target` and holds source is source.
+    Anything git cannot answer about is kept.
+    """
+    found = []
+    for here, dirs, _files in os.walk(tree):
+        keep = []
+        for name in dirs:
+            full = os.path.join(here, name)
+            if name == ".git" or fleet_platform.is_dir_link(full):
+                continue
+            if name in BUILD_OUTPUT:
+                found.append(full)
+            else:
+                keep.append(name)
+        dirs[:] = keep
+    if not found:
+        return []
+    rel = [os.path.relpath(f, tree).replace(os.sep, "/") for f in found]
+    try:
+        ignored = subprocess.run(
+            ["git", "-C", tree, "check-ignore", "--", *(r + "/" for r in rel)],
+            capture_output=True, text=True, encoding="utf-8", timeout=30,
+        )
+        tracked = subprocess.run(
+            ["git", "-C", tree, "ls-files", "--", *rel],
+            capture_output=True, text=True, encoding="utf-8", timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if ignored.returncode not in (0, 1) or tracked.returncode != 0:
+        return []
+    said = {line.rstrip("/") for line in ignored.stdout.splitlines()}
+    held = tracked.stdout.splitlines()
+    return [
+        full for full, r in zip(found, rel)
+        if r in said and not any(t == r or t.startswith(r + "/") for t in held)
+    ]
+
+
+def free_build_output(ref: str, trees: list[str], dry: bool) -> int:
+    """Delete the build output in each worktree, saying what went. Returns how many."""
+    freed = 0
+    for tree in trees:
+        for path in build_output(tree):
+            if dry:
+                print(f"    {ref:<46} would free {path}")
+                freed += 1
+                continue
+            try:
+                fleet_platform.remove_tree(path)
+            except OSError as exc:
+                print(f"    {ref:<46} kept       {path}: {exc}", file=sys.stderr)
+                continue
+            print(f"    {ref:<46} freed      {path}")
+            freed += 1
+    return freed
+
+
 def release_fixer_checkouts(q: Queue, state_of, dry: bool) -> int:
     """Take back the checkout `branch_checkout` cut for a finished task's fixer.
 
@@ -5756,6 +6006,9 @@ def release_fixer_checkouts(q: Queue, state_of, dry: bool) -> int:
             if not os.path.isdir(path):
                 continue
             acted += 1
+            # Before the remove, which refuses a checkout holding files git
+            # does not track, and build output is exactly that.
+            free_build_output(task.ref, [path], dry)
             if dry:
                 print(f"    {task.ref:<46} would remove fixer checkout {path}")
                 continue
@@ -5833,6 +6086,19 @@ def reap(q: Queue, dry: bool = False, release: bool = True) -> int:
         kind = (landings.get(task.ref) or (None,))[0]
         return LANDED_STATE.get(kind, task.state) if dry else task.state
 
+    # ONE `session list` for the pass, taken when something first needs it:
+    # the vanished sweep and the holders below read the same answer.
+    taken: list = []
+
+    def snapshot() -> tuple[set | None, str]:
+        if not taken:
+            taken.append(live_sessions())
+        return taken[0]
+
+    # Before the archive sweep, because a retired task can be the last thing
+    # holding its topic open.
+    acted += sweep_vanished(q, dry, snapshot)
+
     # A topic can only become finished when one of its tasks moves into a
     # terminal state, and this is the pass that moves them — so the flag is
     # written here rather than left as something the lead has to remember.
@@ -5860,7 +6126,7 @@ def reap(q: Queue, dry: bool = False, release: bool = True) -> int:
     live: set | None = None
     live_detail = ""
     if any(state_of(t) in ("landed", "abandoned") for t in holders):
-        live, live_detail = live_sessions()
+        live, live_detail = snapshot()
 
     reaped = kept = dropped = 0
     for task in holders:
@@ -5904,6 +6170,9 @@ def reap(q: Queue, dry: bool = False, release: bool = True) -> int:
                 record_reaped(task, sid, "already gone")
                 print(f"    {task.ref:<46} gone       {sid}  thurbox no longer had it")
                 dropped += 1
+            # A session that went without `delete --force` left its worktree,
+            # and the worktree its build output.
+            free_build_output(task.ref, task_worktrees(task), dry)
             continue
 
         live_state, detail = session_state(sid)
@@ -6038,6 +6307,36 @@ def cmd_reviewed(args) -> int:
     return 0
 
 
+# HOW A TASK CAME TO BE `abandoned`, in the words every view prints. One state,
+# because everything downstream — blockers that never clear, topics that
+# archive, the reap that releases a session — is the same for all three; three
+# WORDS, because "abandoned by hand" on work the forge or the machine ended is a
+# claim about a person that nobody made. A record from before `how` existed
+# was always a hand's, and reads as one.
+ABANDON_HOW = {
+    "hand": "abandoned by hand",
+    "closed-unmerged": "closed unmerged",
+    "session-gone": "session gone",
+}
+
+
+def abandon_how(task: Task) -> str:
+    return str((task.doc.get("abandoned") or {}).get("how") or "hand")
+
+
+def retire(task: Task, how: str, why: str, **extra) -> dict:
+    """Move a task to `abandoned`, recording how and why, in the record and its progress."""
+    entry = {"at": now(), "why": why, "was": task.state, "how": how, **extra}
+    task.doc["abandoned"] = entry
+    task.doc["state"] = "abandoned"
+    task.doc.pop("vanished", None)
+    task.save()
+    fleet_platform.append_record(
+        task.file("progress.jsonl"), json.dumps({"abandoned": entry, "observed": now()}) + "\n"
+    )
+    return entry
+
+
 def abandon_refusal(task: Task, live: set | None, live_why: str, force: bool) -> str:
     """Why this task may not be abandoned, or "" when it may.
 
@@ -6105,13 +6404,7 @@ def cmd_abandon(args) -> int:
         if task.state == "abandoned":
             print(f"    {task.ref:<46} already abandoned")
             continue
-        entry = {"at": now(), "why": why, "was": task.state, "forced": bool(args.force)}
-        task.doc["abandoned"] = entry
-        task.doc["state"] = "abandoned"
-        task.save()
-        fleet_platform.append_record(
-            task.file("progress.jsonl"), json.dumps({"abandoned": entry, "observed": now()}) + "\n"
-        )
+        entry = retire(task, "hand", why, forced=bool(args.force))
         held = " — its session is `reap`'s to release" if task.doc.get("session") else ""
         print(f"    {task.ref:<46} abandoned  (was {entry['was']}){held}")
     if not todo:
@@ -9073,7 +9366,8 @@ def run_events(tasks: list) -> list:
             out.append((landing["at"], f"`{t.id}` {landing['state']} — {landing.get('detail', '')}"))
         given_up = d.get("abandoned") or {}
         if given_up.get("at"):
-            out.append((given_up["at"], f"`{t.id}` abandoned by hand — {cell(given_up.get('why'))}"))
+            out.append((given_up["at"], f"`{t.id}` {ABANDON_HOW.get(abandon_how(t), abandon_how(t))} — "
+                                         f"{cell(given_up.get('why'))}"))
         reaped = d.get("reaped") or {}
         if reaped.get("at"):
             out.append((reaped["at"], f"released `{t.id}`'s session "
@@ -9657,8 +9951,8 @@ def cmd_show(args) -> int:
     given_up = d.get("abandoned") or {}
     if given_up.get("at"):
         forced = ", forced" if given_up.get("forced") else ""
-        print(f"    {'abandoned:':<12} at {given_up['at']} (was {given_up.get('was')}{forced}) "
-              f"— {given_up.get('why', '')}")
+        print(f"    {'abandoned:':<12} {ABANDON_HOW.get(abandon_how(task), abandon_how(task))} "
+              f"at {given_up['at']} (was {given_up.get('was')}{forced}) — {given_up.get('why', '')}")
     refuels = d.get("refuels") or []
     if refuels:
         print(f"    {'refuelled:':<12} {len(refuels)} restart(s) of {REFUEL_CAP}, last "

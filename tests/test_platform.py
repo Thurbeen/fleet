@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 import shlex
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -253,6 +254,28 @@ class DirLinks(TempDirCase):
         link = self.tmp / ".claude" / "skills"
         fp.make_dir_link(str(link), str(target))
         self.assertEqual(os.lstat(link).st_reparse_tag, stat.IO_REPARSE_TAG_MOUNT_POINT)
+
+
+class RemoveTree(TempDirCase):
+    def test_it_removes_a_tree_holding_a_read_only_file(self):
+        # Every node_modules and .git has one, and on Windows rmtree alone fails on it.
+        tree = self.tmp / "target"
+        (tree / "deps").mkdir(parents=True)
+        locked = tree / "deps" / "lib.rlib"
+        locked.write_text("x\n", encoding="utf-8")
+        os.chmod(locked, stat.S_IREAD)
+        fp.remove_tree(str(tree))
+        self.assertFalse(tree.exists())
+
+    def test_it_refuses_a_link_and_leaves_what_it_points_at(self):
+        shared = self.tmp / "shared"
+        (shared / "pkg").mkdir(parents=True)
+        link = self.tmp / "node_modules"
+        fp.make_dir_link(str(link), str(shared))
+        with self.assertRaises(OSError):
+            fp.remove_tree(str(link))
+        self.assertTrue((shared / "pkg").is_dir())
+        self.assertTrue(fp.is_dir_link(str(link)))
 
 
 class Records(TempDirCase):
