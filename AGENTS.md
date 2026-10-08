@@ -429,14 +429,14 @@ nothing asked it down". Four things about it are load-bearing:
 - **It tells the lead when the ready set grows**, and once when a sync it ran
   needs a hand (see **Pulling changes in**). A task whose blocker clears is
   ready and has no actor: the loop may not dispatch, and the lead only acts
-  when spoken to — on 2026-09-10 that cost six and a half hours. So after `collect` it reads `plan` and, when the
-  ready set has grown, types one line into the lead's terminal naming what is
-  ready and the command that sends it. Once per transition, never into a lead
-  mid-turn or an input line it cannot prove empty, and silent when no lead
-  session is running. A lead it may not type into gets the same line in its
-  thurbox mailbox instead, posted with `message send --no-wake`, which
-  enqueues and delivers nothing; a thurbox with no mailbox leaves it at the
-  wait.
+  when spoken to — on 2026-09-10 that cost six and a half hours. So after
+  `collect` it reads `plan` and, when the ready set has grown, types one line
+  into the lead's terminal naming what is ready and the command that sends it.
+  Once per transition, never into a lead mid-turn or an input line it cannot
+  prove empty, and silent when no lead session is running. A lead it may not
+  type into gets the same line in its thurbox mailbox instead, posted with
+  `message send --no-wake`, which enqueues and delivers nothing; a thurbox
+  with no mailbox leaves it at the wait.
   `scripts/lib/notify_lead.py` owns those rules. Notifying is not
   deciding: nothing moves, and the choice is still the lead's. **It says
   exactly what `plan` says is ready and derives nothing**, which is how a
