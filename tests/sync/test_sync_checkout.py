@@ -219,6 +219,16 @@ def test_new_loop_code_says_to_restart_the_reconciler_too(tmp_path):
     expect(sync(work).out, "restart-reconciler: yes", "scripts/lib/reconcile.py")
 
 
+def test_a_new_lockfile_says_to_restart_the_reconciler(tmp_path):
+    """The loop runs its children on the interpreter it started with, so a
+    dependency that arrived with the sync reaches it only through a restart,
+    which `uv run` brings the environment up to date for."""
+    work = new_repo(tmp_path)
+    advance_origin(tmp_path, "uv.lock")
+
+    expect(sync(work).out, "restart-reconciler: yes", "uv.lock")
+
+
 def test_the_lead_is_named_as_the_installed_manifest_spells_it(tmp_path):
     """The glyph in front of the lead's name is a setting, so the name comes
     from the rendered manifest and never from a literal."""
@@ -293,3 +303,39 @@ def test_the_session_start_hook_is_one_command_every_shell_parses_the_same():
     assert [w[w.index("fleet"):] for w in words] == [
         ["fleet", "sync-checkout"], ["fleet", "reconcile", "ensure", "--if-lead"],
     ], commands
+
+
+# --- §7 the report the reconciler reads ----------------------------------------
+
+
+def test_the_json_report_names_the_range_and_every_action_it_raised(tmp_path):
+    """The reconciler syncs the checkout on its own clock, and what it tells the
+    lead is built from this, not from parsing the hook's prose."""
+    work = new_repo(tmp_path)
+    before = head_of(work)
+    advance_origin(tmp_path, "FLEET.md")
+    advance_origin(tmp_path, "scripts/lib/reconcile.py")
+
+    done = run_fleet("sync-checkout", "--json", cwd=work)
+
+    assert done.code == 0
+    report = json.loads(done.stdout)
+    assert report["before"] == before and report["after"] == head_of(work) == origin_main(tmp_path)
+    assert report["actions"] == {
+        "restart-lead": "FLEET.md",
+        "reinstall-extension": "FLEET.md",
+        "restart-reconciler": "scripts/lib/reconcile.py",
+    }
+    expect(report["message"], "fast-forwarded 'main' 2 commit(s)")
+
+
+def test_the_json_report_of_a_refusal_moves_nothing_and_raises_nothing(tmp_path):
+    work = new_repo(tmp_path)
+    advance_origin(tmp_path, "AGENTS.md")
+    with open(work / "README.md", "a", encoding="utf-8", newline="\n") as fh:
+        fh.write("local edit\n")
+
+    report = json.loads(run_fleet("sync-checkout", "--json", cwd=work).stdout)
+
+    expect(report["message"], "the tree is dirty")
+    assert report["actions"] == {} and report["before"] == report["after"] == ""

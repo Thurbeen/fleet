@@ -69,9 +69,11 @@ otherwise leak a detached loop ticking against a deleted temp directory.
 
 IT WRITES NO RECORD. Every effect on the queue goes through `fleet queue`, the
 only writer over the records. Its own runtime directory is not an exception: a
-pid, a heartbeat, a log, the flags and `notified.json` are facts about this loop
-on this machine, not about any task. It calls exactly `watch`, `collect`,
-`shepherd`, `refuel` and the read-only `plan` (plus `root`, to check it can).
+pid, a heartbeat, a log, the flags, `notified.json` and `stale.json` are facts
+about this loop on this machine, not about any task. It calls exactly `watch`,
+`collect`, `shepherd`, `refuel` and the read-only `plan` (plus `root`, to check
+it can). The one thing it changes outside the queue is the CHECKOUT, through
+`sync-checkout`, which only ever fast-forwards a clean default branch.
 
 IT DOES NOT DECIDE WHAT RUNS. No dispatch, no cancel, no reorder, and it does not
 second-guess `refuel`'s rule about a spent quota window.
@@ -81,6 +83,15 @@ READY and has no actor: this loop may not dispatch, and the lead only acts when
 spoken to. So the pass after `collect` reads `plan` and, when the ready set has
 grown, wakes the lead: once per transition, never mid-turn, silently when there
 is no lead. `scripts/lib/notify_lead.py` owns those rules.
+
+AND IT KEEPS THE LEAD'S CHECKOUT CURRENT. `sync-checkout` ran only at
+SessionStart, and one lead conversation lasted sixteen days: a merged fix sat
+unpulled for five of them while the lead kept hitting the bug. So the loop runs
+it on a clock of its own, honouring every refusal it has, and when what arrived
+needs a hand — new instructions, a manifest to re-render, its own code — it
+tells the lead once, with the `/update-fleet` that applies it
+(`notify_lead.py --stale`). Code the loop runs as a child, `queue.py` above
+all, needs nothing: the next pass runs the new bytes.
 
 Usage:
   uv run fleet reconcile ensure     # start unless running or asked down
@@ -114,6 +125,9 @@ THE CADENCES, and why each number is the number:
             checks, reviews and mergeability. CI does not change faster.
   notify    collect's clock. What makes a task ready is a landing `collect` has
             just recorded, so a clock of its own would ask at a worse moment.
+  sync      900s. A fetch, bounded by `sync-checkout`'s own timeout. A merge on
+            origin is a fact the lead can wait a quarter of an hour for, and it
+            had been waiting days. 0 turns it off.
 
 Environment:
   FLEET_RECONCILE_DIR           runtime state (default orchestration/reconcile)
@@ -127,6 +141,8 @@ Environment:
   FLEET_RECONCILE_COLLECT_SECS  seconds between collects   (default 120)
   FLEET_RECONCILE_REFUEL_SECS   seconds between refuels    (default 300)
   FLEET_RECONCILE_SHEPHERD_SECS seconds between shepherds  (default 900)
+  FLEET_RECONCILE_SYNC_SECS     seconds between syncs; 0 is off (default 900)
+  FLEET_RECONCILE_SYNC_DIR      the checkout it keeps current (default: this one)
   FLEET_RECONCILE_PARENT_PID    exit once this pid is gone (default: unset; tests set it)
   FLEET_QUEUE_DIR               the queue to reconcile (default: this checkout's)
   FLEET_LEAD_SESSION            the lead session to wake; read by notify_lead.py
@@ -170,6 +186,9 @@ fleet_platform = _load_sibling("fleet_platform", "fleet_platform.py")
 
 CHECKOUT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 NOTIFY = os.path.join(CHECKOUT, "scripts", "lib", "notify_lead.py")
+# Where notify_lead.py keeps a stale-lead notice it has not delivered yet, and
+# deletes it once it has: its presence is the whole question this loop asks.
+STALE_FILE = "stale.json"
 
 # How fleet runs itself as a child: this interpreter, `fleet.cli.main`, off this
 # checkout. No `uv` round trip per pass, and no shell on any OS.
@@ -216,6 +235,8 @@ class Config:
     refuel: int
     shepherd: int
     parent: int = 0
+    sync: int = 0
+    sync_dir: str = CHECKOUT
 
     @classmethod
     def from_env(cls) -> Config:
@@ -235,7 +256,8 @@ class Config:
             return int(os.environ.get(f"FLEET_RECONCILE_{name}_SECS") or default)
 
         return cls(rt, cmd, label, secs("WATCH", 20), secs("COLLECT", 120), secs("REFUEL", 300), secs("SHEPHERD", 900),
-                   int(os.environ.get("FLEET_RECONCILE_PARENT_PID") or 0))
+                   int(os.environ.get("FLEET_RECONCILE_PARENT_PID") or 0), secs("SYNC", 900),
+                   os.environ.get("FLEET_RECONCILE_SYNC_DIR") or CHECKOUT)
 
     def path(self, name: str) -> str:
         return os.path.join(self.rt, name)
@@ -482,7 +504,7 @@ def run_pass(cfg: Config, label: str, args: list, quiet: bool = False) -> int:
 
 
 def notify_lead(cfg: Config) -> None:
-    """The one thing this loop says out loud, and the one question it asks the queue.
+    """What this loop says out loud about the queue, and the one question it asks it.
 
     `plan` is a READ: it prints the ready set and moves nothing. It cannot fail
     the pass: a message is not worth the `collect` the loop just did.
@@ -494,6 +516,48 @@ def notify_lead(cfg: Config) -> None:
         done = subprocess.run(
             [sys.executable, NOTIFY, "--state-dir", cfg.rt], input=plan, cwd=CHECKOUT, env=child_env(),
             capture_output=True, encoding="utf-8", errors="replace",
+        )
+    except OSError:
+        return
+    out = (done.stdout + done.stderr).strip()
+    if out:
+        log(cfg, f"notify: {out}")
+
+
+def sync_checkout(cfg: Config, said: str) -> tuple[dict, str]:
+    """Fast-forward the checkout, as the SessionStart hook does: `sync-checkout`
+    itself, so every refusal it has — a dirty tree, a feature branch, a
+    divergence — is this loop's too, and nothing here forces anything.
+
+    A fresh child, never this process's copy: the sync is what brings new code
+    in. Its message is logged only when it differs from the last one, so a
+    standing refusal is one line and not one per pass. Returns the report and
+    the message now standing."""
+    try:
+        done = subprocess.run(
+            [sys.executable, "-c", BOOT, CHECKOUT, "sync-checkout", "--json"], cwd=cfg.sync_dir, env=child_env(),
+            stdin=subprocess.DEVNULL, capture_output=True, encoding="utf-8", errors="replace",
+        )
+        report = json.loads(done.stdout)
+    except (OSError, ValueError):
+        return {}, said
+    if not isinstance(report, dict):
+        return {}, said
+    msg = report.get("message") or ""
+    if msg and msg != said:
+        log(cfg, "sync:")
+        log_raw(cfg, indented(msg, "    "))
+    return report, msg
+
+
+def notify_stale(cfg: Config, report: dict) -> None:
+    """Hand what a fast-forward needs done to the lead, once: `notify_lead.py
+    --stale` owns who, when and how, and keeps it until it is delivered. An
+    empty report is a retry of one still waiting."""
+    try:
+        done = subprocess.run(
+            [sys.executable, NOTIFY, "--state-dir", cfg.rt, "--stale"], input=json.dumps(report), cwd=CHECKOUT,
+            env=child_env(), capture_output=True, encoding="utf-8", errors="replace",
         )
     except OSError:
         return
@@ -539,7 +603,8 @@ def tick(cfg: Config) -> int:
     forge = _load_sibling("fleet_forge", "forge.py")
     has_forge = None
 
-    last = {"collect": float("-inf"), "shepherd": float("-inf"), "refuel": float("-inf")}
+    last = {"collect": float("-inf"), "shepherd": float("-inf"), "refuel": float("-inf"), "sync": float("-inf")}
+    synced = ""
     while True:
         # Checked at the top of every pass, so a stop is honoured at the next boundary.
         if over(cfg):
@@ -577,6 +642,16 @@ def tick(cfg: Config) -> int:
         # LAST, on collect's clock: it sees the landings collect just recorded.
         if did_collect:
             notify_lead(cfg)
+
+        # The checkout itself, on a clock of its own. What a fast-forward needs a
+        # hand for is told on it, and a notice still waiting is retried on
+        # collect's.
+        report = {}
+        if cfg.sync > 0 and stamp - last["sync"] >= cfg.sync:
+            report, synced = sync_checkout(cfg, synced)
+            last["sync"] = stamp
+        if report.get("actions") or (did_collect and os.path.isfile(cfg.path(STALE_FILE))):
+            notify_stale(cfg, report if report.get("actions") else {})
 
         trim_log(cfg)
 
@@ -854,6 +929,7 @@ def cmd_status(cfg: Config) -> int:
     say(f"collect   every {cfg.collect}s")
     say(f"refuel    every {cfg.refuel}s")
     say(f"shepherd  every {cfg.shepherd}s")
+    say(f"sync      every {cfg.sync}s — fast-forwards a clean checkout" if cfg.sync > 0 else "sync      off")
     say(f"log       {cfg.log}")
     nudge = cfg.path("nudge")
     if os.path.isfile(nudge):

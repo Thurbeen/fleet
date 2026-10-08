@@ -470,10 +470,13 @@ RELEASE uv run fleet queue reap [--dry-run]
 A remote task completes the same way: `collect` fetches its `result.md` over
 ssh into the task's own, and everything downstream sees a local file.
 
-Your own thurbox mailbox holds one kind of fleet mail: the reconciler's
-`fleet-ready` notice, posted with `--no-wake` when the ready set grew while you
-were mid-turn or your input line was not empty. Nothing delivers it; `thurbox-cli message inbox --claim` reads
-it, and `uv run fleet queue plan` is the current answer it was a snapshot of.
+Your own thurbox mailbox holds two kinds of fleet mail, both posted with
+`--no-wake` when you were mid-turn or your input line was not empty: the
+reconciler's `fleet-ready` notice, when the ready set grew, and `fleet-stale`,
+when it fast-forwarded this checkout and what arrived needs
+`/update-fleet <sha>`. Nothing delivers either; `thurbox-cli message inbox
+--claim` reads them, and `uv run fleet queue plan` is the current answer the
+first was a snapshot of.
 
 ### `collect` verifies the artifact — you do not have to take the worker on trust
 
@@ -791,9 +794,10 @@ uv run fleet reconcile stop       # durably down; only `start` brings it back
 `scripts/lib/reconcile.py`'s docstring argues each interval. Two things are
 about you:
 
-- **It will type one line at you, and only ever this one:** that N tasks are
-  ready and nothing will dispatch them. Treat it as `plan` already run —
-  `dispatch`. Once per transition, never mid-turn, and never into an input
+- **It will type one line at you, and only ever one of two:** that N tasks
+  are ready and nothing will dispatch them — treat it as `plan` already run
+  and `dispatch` — or that it fast-forwarded this checkout and you need
+  `/update-fleet <sha>`. Once each, never mid-turn, and never into an input
   line that holds anything: that waits in your mailbox instead.
 - **It comes back without you.** Your SessionStart hook runs `ensure --if-lead`,
   and a machine where `fleet install` wrote the user service restarts it after

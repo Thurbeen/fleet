@@ -30,7 +30,14 @@ uv run fleet sync-checkout    # one JSON object, or nothing at all
 git rev-parse HEAD            # after
 ```
 
-Keep both SHAs; §2 diffs between them. `uv run fleet sync-checkout --help`
+Keep both SHAs; §2 diffs between them.
+
+**Invoked as `/update-fleet <sha>`, the sync already happened.** The
+reconciler fast-forwards a clean checkout on its own clock and tells you once,
+in a line naming `<sha>..<after>` and the actions it needs. Then this sync
+says nothing, and that is not "already current": `<sha>` is your *before*,
+`HEAD` your *after*, and the actions the line names are the action lines §2
+reads. `uv run fleet sync-checkout --help`
 owns the rules. It **always exits 0**, so the exit code tells you nothing;
 the object's `systemMessage` does, and **no output at all means nothing to
 say**.
@@ -72,7 +79,7 @@ git diff --name-only <before> <after>
 | `interface/fleet_queue.lua` | §4 |
 | `registry/owners.txt` | §5 |
 | any `orchestration/*.example.conf`, or `orchestration/queue/POLICY.md` | §5b |
-| a `restart-reconciler:` line — `scripts/lib/reconcile.py`, `scripts/lib/fleet_platform.py` | §6 |
+| a `restart-reconciler:` line — `scripts/lib/reconcile.py`, `scripts/lib/fleet_platform.py`, `uv.lock`, `pyproject.toml` | §6 |
 | a `restart-lead:` line — `FLEET.md`, `AGENTS.md`, `CLAUDE.md`, `.agents/skills`, `.claude/settings.json` | §8 |
 
 `FLEET.md` is in two rows: it is rendered into the extension's payload *and*
@@ -220,3 +227,8 @@ own words; each of §3–§6 you ran and what it said, and each you **skipped an
 why** ("registry untouched, not crawled" is information); the gate's verdict;
 the hand-over, if §8 applies, with the command to copy. If nothing was behind
 origin, that whole report is one line.
+
+**The hand-over is said in full once per conversation.** A later report that
+needs it again is one line — `restart-lead: still pending` and the command —
+not §8 re-explained: a 20-line block repeated in four reports is the
+boilerplate a reader learns to skip.

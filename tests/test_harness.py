@@ -115,6 +115,8 @@ def test_isolated_env_defeats_the_hostile_host(tmp_path, stub_bin):
         assert var not in env, f"leak: {var} reaches a test"
     # A loop a test starts goes with the run that started it, killed or not.
     assert env["FLEET_RECONCILE_PARENT_PID"] == str(os.getpid())
+    # And it never syncs the checkout under test: that fetches its real origin.
+    assert env["FLEET_RECONCILE_SYNC_SECS"] == "0"
     assert env.get("GIT_CONFIG_GLOBAL") != hostile["GIT_CONFIG_GLOBAL"]
 
     # Whatever a child resolves as HOME, thurbox's hosts.toml is not there.
