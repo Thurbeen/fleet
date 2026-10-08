@@ -13,6 +13,7 @@ every other queue test expects `gh` to answer and `glab` to hold no instance.
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 from harness import REPO, write
@@ -69,6 +70,16 @@ def _load(path):
         return json.load(fh)
 
 
+def _tick(name, count):
+    """How many times `name` has been read before, capped at its last step."""
+    path = os.path.join(_dir(), "ticks", name)
+    seen = int(open(path, encoding="utf-8").read()) if os.path.exists(path) else 0
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(str(seen + 1))
+    return min(seen, count - 1)
+
+
 def _docs():
     crs = os.path.join(_dir(), "crs")
     return [_load(os.path.join(crs, n)) for n in sorted(os.listdir(crs)) if n.endswith(".json")]
@@ -97,6 +108,11 @@ class FakeForge(fg.Forge):
             return None, "the fake forge is unreachable"
         for d in _docs():
             if d["number"] == ref.number and d["repo"] == ref.repo.path:
+                # A change request that MOVES: each read takes the next of its
+                # `seq` overrides and stays on the last, so a watch sees time pass.
+                steps = d.pop("seq", None)
+                if steps:
+                    d.update(steps[_tick("cr-%d" % ref.number, len(steps))])
                 return d, ""
         return None, f"no change request {ref.number} on {ref.repo}"
 
@@ -136,7 +152,43 @@ class FakeForge(fg.Forge):
             commits=[fg.Commit(c[0], c[1]) for c in d.get("commits", [])],
             head_is_ours=d.get("head_is_ours", True),
             head_location=d.get("head_location", ""),
+            merge_sha=d.get("merge_sha", ""),
         )
+
+    def threads(self, ref):
+        d, why = self._find(ref)
+        return (None, why) if why else (d.get("threads", 0), "")
+
+    def parse_pipeline_url(self, url):
+        m = re.match(r"^https://" + re.escape(HOST) + r"/(.+?)/-/pipelines/(\\d+)$", (url or "").strip())
+        if not m:
+            return None
+        return fg.PipelineRef(fg.RepoId(HOST, m.group(1)), int(m.group(2)), m.group(0))
+
+    def pipeline(self, ref):
+        if _down():
+            return None, "the fake forge is unreachable"
+        path = os.path.join(_dir(), "pipelines", "%d.json" % ref.id)
+        if not os.path.exists(path):
+            return None, f"no pipeline {ref.id} on {ref.repo}"
+        steps = _load(path)
+        d = steps[_tick("pipeline-%d" % ref.id, len(steps))]
+        jobs = [fg.Job(j[0], j[1], i + 1) for i, j in enumerate(d["jobs"])]
+        return fg.Pipeline(ref, d["verdict"], jobs, sha=d.get("sha", "")), ""
+
+    def pipelines_for_commit(self, repo, sha):
+        if _down():
+            return [], "the fake forge is unreachable"
+        path = os.path.join(_dir(), "commits", sha + ".json")
+        ids = _load(path) if os.path.exists(path) else []
+        return [fg.PipelineRef(repo, n, f"https://{HOST}/{repo.path}/-/pipelines/{n}") for n in ids], ""
+
+    def job_log(self, ref, job):
+        path = os.path.join(_dir(), "logs", "%d-%d.txt" % (ref.id, job.id))
+        if not os.path.exists(path):
+            return "", f"no log for job {job.id}"
+        with open(path, encoding="utf-8") as fh:
+            return fh.read(), ""
 
     def can_push(self, repo, login):
         if _down():
@@ -213,6 +265,21 @@ class FakeForgeStore:
                "author": "operator", "mergeable": "mergeable", "checks": [["gate", "passed"]]}
         doc.update(fields)
         write(self.root / "crs" / f"{n}.json", json.dumps(doc))
+
+    def pipeline(self, pid: int, *steps: dict) -> None:
+        """A pipeline that moves: one snapshot per read, staying on the last.
+        Each step is `{"verdict": ..., "jobs": [[name, verdict], ...]}`."""
+        write(self.root / "pipelines" / f"{pid}.json", json.dumps(list(steps)))
+
+    def rewind(self) -> None:
+        """Every moving change request and pipeline back to its first step."""
+        shutil.rmtree(self.root / "ticks", ignore_errors=True)
+
+    def commit_pipelines(self, sha: str, *ids: int) -> None:
+        write(self.root / "commits" / f"{sha}.json", json.dumps(list(ids)))
+
+    def job_log(self, pid: int, job: int, text: str) -> None:
+        write(self.root / "logs" / f"{pid}-{job}.txt", text)
 
     def note(self, note_id: int, on: int, author: str = "operator") -> None:
         write(self.root / "notes" / f"{note_id}.json", json.dumps({"author": author, "on": on}) + "\n")
@@ -320,6 +387,14 @@ if argv[:1] == ["api"]:
         name = "commits"
     elif path.endswith("/diffs"):
         name = "diffs"
+    elif path.endswith("/jobs"):
+        name = "jobs"
+    elif path.endswith("/discussions"):
+        name = "discussions"
+    elif path.endswith("/pipelines"):
+        name = "pipelines"
+    elif "/pipelines/" in path:
+        name = "pipeline"
     elif "/notes/" in path:
         name = "note"
     elif path == "user":

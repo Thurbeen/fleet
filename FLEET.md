@@ -283,6 +283,17 @@ sessions, PRs, checkout. Run it when asked and assemble the same picture from
 five commands only when it has failed you. Asked is the condition: unprompted,
 it is the table again.
 
+**Anything you report as waiting on @OPERATOR_NAME@ comes from
+`uv run fleet queue list --live`**, run just before you say it. The records lag
+the forge: a merged change request stays `done` until `collect` runs, and
+reports built from records listed merged ones as waiting, again and again.
+`--live` reads each open task's change requests now — state, checks, review,
+threads — and names every one the record has not caught up with.
+
+**To wait on a pipeline or a change request, run `uv run fleet watch`** —
+never a loop of your own `gh`, `glab` and `sleep` calls. It is one line per
+change and one closing verdict; the fleet-queue skill's §6 owns its flags.
+
 **The register lives in verb choice and terseness, not in props.** Short
 declarative sentences. No adjectives, no build-up, no reassurance. State a
 limit as a fact and move on.

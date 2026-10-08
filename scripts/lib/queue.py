@@ -198,8 +198,10 @@ Usage:
   uv run fleet queue shepherd [--dry-run] # every open change request on the repo: fix or merge
                        [--json] [--topic T] [--ref R] [--no-merge] [--force]
   uv run fleet queue run [<topic>]        # refresh the run log(s) by hand
-  uv run fleet queue list [--topic T] [--archived] [--all]  # the lead's view:
-                       a line per task; archived topics hidden by default
+  uv run fleet queue list [--topic T] [--archived] [--all] [--live]  # the
+                       lead's view: a line per task; archived topics hidden by
+                       default; --live re-reads each open task's change
+                       requests from the forge and names where the record lags
   uv run fleet queue archive <topic>      # hide a finished topic from every
                        default view; refuses one with a live task
   uv run fleet queue unarchive <topic>    # put it back in every view
@@ -9533,6 +9535,76 @@ def where_it_runs(task: Task) -> str:
     return f"{host}:{task.doc['repo']}" if host else str(task.doc["repo"])
 
 
+# --- live: the forge's answer now, beside the record's ----------------------
+#
+# A record is what the loop last SAW, and a "waiting on you" table built from
+# records listed change requests that had already merged as still waiting —
+# eleven times on one lead, three of them corrected by the operator. So
+# `list --live` asks the forge again, through the same `get` shepherd's
+# classification reads (state, checks, review, mergeable), plus the one thing
+# `get` leaves out on purpose: the unresolved review threads, a separate call
+# so `collect` never pays for it. It READS and writes nothing: the record
+# catches up when `collect` runs, and saying where it lags is the point.
+
+
+def live_summary(cr, threads=None) -> str:
+    """One change request as the forge answers for it now, as one line.
+
+    `fleet watch` prints the same words, so a watch line and a list line about
+    one change request can never disagree about what they saw.
+    """
+    parts = [cr.state or "state not said"]
+    if cr.draft:
+        parts.append("draft")
+    if cr.checks:
+        counts: dict = {}
+        for c in cr.checks:
+            counts[c.verdict] = counts.get(c.verdict, 0) + 1
+        parts.append("checks: " + ", ".join(
+            f"{counts[v]} {v}" for v in ("failed", "cancelled", "pending", "passed") if counts.get(v)
+        ))
+    elif cr.state == "open":
+        parts.append("no check reported")
+    if cr.review_decision:
+        parts.append(f"review: {cr.review_decision}")
+    if cr.state == "open" and cr.mergeable:
+        parts.append(cr.mergeable)
+    if threads:
+        parts.append(f"{threads} unresolved thread{'s' if threads != 1 else ''}")
+    return " · ".join(parts)
+
+
+def live_rows(task: Task) -> list[dict]:
+    """Every change request this task's record names, read from the forge now.
+
+    `{"name", "state", "line"}` per artifact: `state` is the forge's word, or
+    `unreadable` — which is never a verdict, only that nobody could ask.
+    """
+    rows = []
+    for entry in recorded_artifacts(task):
+        url = str(entry.get("url") or "")
+        if not forge.change_url(url):
+            continue
+        which, ref = forge.for_url(url)
+        if which is None:
+            rows.append({"name": url, "state": "unreadable", "line": f"could not be read — {ref}"})
+            continue
+        cr, why = which.get(ref)
+        if cr is None:
+            rows.append({"name": f"{ref.repo.path}#{ref.number}", "state": "unreadable",
+                         "line": f"could not be read — {why}"})
+            continue
+        threads, _why = which.threads(ref) if cr.state == "open" else (None, "")
+        line = live_summary(cr, threads)
+        if cr.state == "merged":
+            line = ("merged on the forge — the record has not caught up; "
+                    "`fleet queue collect` lands it")
+        elif cr.state == "closed":
+            line = "closed unmerged on the forge"
+        rows.append({"name": cr.name, "state": cr.state or "unreadable", "line": line})
+    return rows
+
+
 def cmd_list(args) -> int:
     root = queue_root()
     # The first line answers "which queue am I looking at?" without being asked.
@@ -9553,6 +9625,10 @@ def cmd_list(args) -> int:
         print("queue: empty")
         hidden(q)
         return 0
+    live_read = [] if args.live else None
+    if args.live and not forge.available():
+        print(f"live: {forge.no_forge_reason()} — every row below is the record")
+        live_read = None
     for topic, tasks in sorted(grouped.items()):
         meta = q.topics.get(topic, {})
         flag = "  [archived]" if meta.get("archived") else ""
@@ -9577,7 +9653,15 @@ def cmd_list(args) -> int:
             live = liveness(t)
             if live and live["status"] != "moot":
                 print(f"        {live['line']}")
+            if live_read is not None and t.state not in TERMINAL_STATES:
+                for row in live_rows(t):
+                    live_read.append(row["state"])
+                    print(f"        live: {row['name']}  {row['line']}")
         print()
+    if live_read is not None:
+        counts = {k: live_read.count(k) for k in ("merged", "closed", "open", "unreadable")}
+        said = ", ".join(f"{n} {k}" for k, n in counts.items() if n)
+        print(f"live: {len(live_read)} change request(s) read" + (f": {said}" if said else ""))
     hidden(q)
     return 0
 
@@ -10103,6 +10187,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="only the archived topics, which the default view hides")
     li.add_argument("--all", action="store_true", dest="all_topics",
                     help="archived topics as well as live ones")
+    li.add_argument("--live", action="store_true",
+                    help="re-read every open task's change requests from the forge — state, "
+                    "checks, review, threads — and say where the record lags")
     li.set_defaults(func=cmd_list)
 
     ar = sub.add_parser("archive", help="hide a finished topic from the default views")

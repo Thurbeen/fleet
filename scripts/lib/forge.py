@@ -45,6 +45,18 @@ it:
                             publish against, and never what its URL claims
     whoami                  which account this machine's CLI runs as on a host
                             — the account every worker here posts as
+    threads                 how many review threads on a change request are
+                            still unresolved — what `queue list --live` reports
+                            beside its state and checks, and a separate call so
+                            `collect` never pays for it
+    parse_pipeline_url      is this URL a pipeline (a GitHub Actions run, a
+                            GitLab pipeline), and which one
+    pipeline                one pipeline and its jobs, each in fleet's own
+                            verdict words — what `fleet watch` polls
+    pipelines_for_commit    the pipelines one commit started: how `watch
+                            --follow` gets from a merge to the base branch's run
+    job_log                 one job's log, read for the lines `watch --follow`
+                            prints (a Terraform apply's summary)
 
 REPOSITORY IDENTITY CARRIES A HOST. `Thurbeen/fleet` names two different
 repositories if two forges are configured, and self-hosted instances are the
@@ -254,6 +266,9 @@ class ChangeRequest:
     # every forge. `None` means the forge did not say.
     head_is_ours: bool | None = None
     head_location: str = ""  # a phrase naming where the head branch lives
+    # The commit a merge put on the base branch — the one the base branch's
+    # pipeline runs for. Empty until it merged, or when the forge did not say.
+    merge_sha: str = ""
 
     @property
     def repo(self) -> RepoId:
@@ -271,6 +286,47 @@ class ChangeRequest:
     def name(self) -> str:
         """`Thurbeen/fleet#13` — short enough for a status line."""
         return f"{self.repo.path}#{self.number}"
+
+
+@dataclass(frozen=True)
+class PipelineRef:
+    """A pipeline, named rather than fetched. GitHub calls it a workflow run."""
+
+    repo: RepoId
+    id: int
+    url: str
+
+    def __str__(self) -> str:
+        return self.url
+
+
+@dataclass(frozen=True)
+class Job:
+    """One job of a pipeline, latest attempt only.
+
+    `verdict` is `Check`'s four words plus two a job has and a check does not:
+    `skipped`, and `manual` — waiting for a person to press it, which no amount
+    of polling will change. `id` is the forge's own, for `job_log`.
+    """
+
+    name: str
+    verdict: str  # "passed" | "failed" | "pending" | "cancelled" | "skipped" | "manual"
+    id: int = 0
+
+
+@dataclass
+class Pipeline:
+    """One pipeline as the forge answers for it now.
+
+    `verdict` is `pending` while anything can still change, and one of
+    `passed`, `failed`, `cancelled` or `manual` once nothing will without a
+    person — the words `fleet watch` stops on.
+    """
+
+    ref: PipelineRef
+    verdict: str
+    jobs: list = field(default_factory=list)
+    sha: str = ""
 
 
 # The shape of a change request URL on any forge fleet has met: GitHub and
@@ -479,6 +535,21 @@ class Forge:
     def whoami(self, host: str) -> tuple:
         return "", f"{self.name} cannot say which account it runs as"
 
+    def threads(self, ref: ChangeRef) -> tuple:
+        return None, f"{self.name} cannot count review threads"
+
+    def parse_pipeline_url(self, url: str) -> PipelineRef | None:
+        return None
+
+    def pipeline(self, ref: PipelineRef) -> tuple:
+        return None, f"{self.name} cannot read a pipeline"
+
+    def pipelines_for_commit(self, repo: RepoId, sha: str) -> tuple:
+        return [], f"{self.name} cannot list a commit's pipelines"
+
+    def job_log(self, ref: PipelineRef, job: Job) -> tuple:
+        return "", f"{self.name} cannot read a job's log"
+
 
 # --- GitHub, the first implementation ----------------------------------------
 
@@ -510,7 +581,7 @@ GH_STATUS_FIELDS = "number,url,title,headRefName,state,statusCheckRollup"
 # What ONE change request costs when `collect` checks a publish claim. The head
 # branch is in there because it is the one claim about a pull request a worker
 # cannot write into its own result.md, and it arrives free with the body.
-GH_ONE_FIELDS = "body,headRefOid,headRefName,state,commits"
+GH_ONE_FIELDS = "body,headRefOid,headRefName,state,commits,mergeCommit"
 
 # A check that FAILED. Anything still running is NOT a failure. `CANCELLED` is
 # its own conclusion, mapped to the `cancelled` verdict rather than in here:
@@ -544,6 +615,25 @@ GH_REMOTE_RE = re.compile(r"^(?:[^@/\s]+@)?([^:/\s]+)[:/]([^/\s]+/[^/\s]+?)(?:\.
 GH_STATES = {"OPEN": "open", "MERGED": "merged", "CLOSED": "closed"}
 
 GH_PUSH_PERMISSIONS = {"admin", "maintain", "write"}
+
+# A workflow run: `https://github.com/owner/repo/actions/runs/<id>`, with or
+# without the `/attempts/<n>` or `/job/<id>` a link copied from the UI carries.
+# `gh run view` without `--attempt` reads the latest attempt, which is the one
+# a retried run is judged by.
+GH_RUN_URL_RE = re.compile(
+    r"^https?://([^/\s]+)/([^/\s]+/[^/\s]+?)/actions/runs/(\d+)(?:[/?#].*)?$"
+)
+# A run or job `status` that will not change until a person acts: an
+# environment awaiting approval. `manual` in fleet's words, as on GitLab.
+GH_RUN_WAITING = {"WAITING", "ACTION_REQUIRED"}
+
+# The unresolved review threads on one pull request. `gh pr view --json` has no
+# field for them, so this is the one GraphQL question the adapter asks.
+GH_THREADS_QUERY = (
+    "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name)"
+    "{pullRequest(number:$number){reviewThreads(first:100){pageInfo{hasNextPage}"
+    "nodes{isResolved}}}}}"
+)
 
 # A pull request or an issue, and a note on one. GitHub's three note fragments
 # are three different APIs: a review, a conversation comment — which GitHub
@@ -752,7 +842,96 @@ class GitHubForge(Forge):
             labels=[str(lb.get("name") or "") for lb in (d.get("labels") or []) if isinstance(lb, dict)],
             head_is_ours=ours,
             head_location=where,
+            merge_sha=str((d.get("mergeCommit") or {}).get("oid") or ""),
         )
+
+    # --- pipelines and threads ---
+
+    def _repo_flag(self, repo: RepoId) -> list:
+        """`-R host/owner/repo`: the host travels with every `gh run` call."""
+        return ["-R", repo.qualified]
+
+    def threads(self, ref: ChangeRef) -> tuple:
+        owner, _, name = ref.repo.path.partition("/")
+        doc, why = self._json(
+            ["api", "graphql", "--hostname", ref.repo.host, "-F", f"owner={owner}",
+             "-F", f"name={name}", "-F", f"number={ref.number}", "-f", f"query={GH_THREADS_QUERY}"],
+            timeout=30,
+        )
+        if why:
+            return None, f"gh api graphql could not read the review threads: {why}"
+        try:
+            threads = doc["data"]["repository"]["pullRequest"]["reviewThreads"]
+            nodes = [n for n in threads["nodes"] if isinstance(n, dict)]
+        except (KeyError, TypeError):
+            return None, "gh api graphql did not answer about review threads"
+        if (threads.get("pageInfo") or {}).get("hasNextPage"):
+            return None, "more than 100 review threads; not counted rather than undercounted"
+        return sum(1 for n in nodes if not n.get("isResolved")), ""
+
+    def parse_pipeline_url(self, url: str) -> PipelineRef | None:
+        m = GH_RUN_URL_RE.match((url or "").strip())
+        if not m or not self.owns_host(m.group(1)):
+            return None
+        host = m.group(1).lower()
+        return PipelineRef(RepoId(host, m.group(2)), int(m.group(3)),
+                           f"https://{host}/{m.group(2)}/actions/runs/{m.group(3)}")
+
+    @staticmethod
+    def _verdict(status, conclusion, job: bool) -> str:
+        """A run's or a job's two GitHub words, as fleet's one."""
+        status, said = str(status or "").upper(), str(conclusion or "").upper()
+        if status in GH_RUN_WAITING:
+            return "manual"
+        if status != "COMPLETED":
+            return "pending"
+        if job and said == "SKIPPED":
+            return "skipped"
+        if said in GH_CHECK_FAILED:
+            return "failed"
+        if said in GH_CHECK_PASSED:
+            return "passed"
+        if said in GH_CHECK_CANCELLED:
+            return "cancelled"
+        return "pending"
+
+    def pipeline(self, ref: PipelineRef) -> tuple:
+        doc, why = self._json(
+            ["run", "view", str(ref.id), *self._repo_flag(ref.repo),
+             "--json", "status,conclusion,headSha,jobs"], timeout=30,
+        )
+        if why:
+            return None, f"gh run view failed: {why}"
+        if not isinstance(doc, dict):
+            return None, "gh run view did not answer with an object"
+        jobs = [
+            Job(str(j.get("name") or ""), self._verdict(j.get("status"), j.get("conclusion"), True),
+                int(j.get("databaseId") or 0))
+            for j in doc.get("jobs") or [] if isinstance(j, dict)
+        ]
+        return Pipeline(ref, self._verdict(doc.get("status"), doc.get("conclusion"), False),
+                        jobs, str(doc.get("headSha") or "")), ""
+
+    def pipelines_for_commit(self, repo: RepoId, sha: str) -> tuple:
+        docs, why = self._json(
+            ["run", "list", *self._repo_flag(repo), "-c", sha, "--limit", "50",
+             "--json", "databaseId,url"], timeout=30,
+        )
+        if why:
+            return [], f"gh run list failed: {why}"
+        if not isinstance(docs, list):
+            return [], "gh run list did not answer with a list"
+        return [
+            PipelineRef(repo, int(d["databaseId"]), str(d.get("url") or "")
+                        or f"https://{repo.host}/{repo.path}/actions/runs/{d['databaseId']}")
+            for d in docs if isinstance(d, dict) and d.get("databaseId")
+        ], ""
+
+    def job_log(self, ref: PipelineRef, job: Job) -> tuple:
+        out, why = self._run(
+            ["run", "view", *self._repo_flag(ref.repo), "--job", str(job.id), "--log"], timeout=60,
+        )
+        return (out or "", "") if not why else ("", f"gh run view --log failed: {why}")
 
     @staticmethod
     def _latest_runs(rollup) -> list:
@@ -996,6 +1175,16 @@ GL_TARGET_RE = re.compile(r"^https?://([^/\s]+)/(.+?)/-/(merge_requests|issues)/
 # `noteable_type`, in fleet's two words. A note on a commit or a snippet sits
 # on neither, and is no note a task can target.
 GL_NOTEABLE = {"MergeRequest": "change", "Issue": "issue"}
+
+# A pipeline: `https://host/group/project/-/pipelines/<id>`.
+GL_PIPELINE_URL_RE = re.compile(r"^https?://([^/\s]+)/(.+?)/-/pipelines/(\d+)(?:[/?#].*)?$")
+# A job's or pipeline's GitLab status, in fleet's words. Anything else —
+# created, pending, running, preparing, waiting_for_resource, scheduled — can
+# still change on its own, which is `pending`. `manual` cannot.
+GL_JOB_VERDICTS = {
+    "success": "passed", "failed": "failed", "canceled": "cancelled",
+    "canceling": "cancelled", "cancelling": "cancelled", "skipped": "skipped", "manual": "manual",
+}
 
 # glab prints its own errors as a decorated block on stderr. These are the
 # decoration, not the message.
@@ -1355,7 +1544,88 @@ class GitLabForge(Forge):
             labels=[str(lb) for lb in (d.get("labels") or []) if isinstance(lb, str)],
             head_is_ours=ours,
             head_location=where,
+            # A merge commit when the project makes one, else the squash commit
+            # a fast-forward put on the base branch: either way the base
+            # branch's head, which is what its pipeline runs for.
+            merge_sha=str(d.get("merge_commit_sha") or d.get("squash_commit_sha") or ""),
         )
+
+    # --- pipelines and threads ---
+
+    def _pages(self, repo: RepoId, path: str) -> tuple:
+        """Every item of a paged API list, or ([], why) — never a short list."""
+        out: list = []
+        sep = "&" if "?" in path else "?"
+        for page in range(1, GL_LIST_LIMIT // GL_PAGE + 1):
+            docs, why = self._api(repo, f"{path}{sep}per_page={GL_PAGE}&page={page}", timeout=30)
+            if why:
+                return [], why
+            if not isinstance(docs, list):
+                return [], "glab api did not answer with a list"
+            out.extend(d for d in docs if isinstance(d, dict))
+            if len(docs) < GL_PAGE:
+                return out, ""
+        return [], f"more than {GL_LIST_LIMIT} items; not read rather than read short"
+
+    def threads(self, ref: ChangeRef) -> tuple:
+        docs, why = self._pages(
+            ref.repo, f"projects/{self._project(ref.repo)}/merge_requests/{ref.number}/discussions"
+        )
+        if why:
+            return None, f"glab api could not read the discussions: {why}"
+        return sum(
+            1 for d in docs
+            if any(isinstance(n, dict) and n.get("resolvable") and not n.get("resolved")
+                   for n in d.get("notes") or [])
+        ), ""
+
+    def parse_pipeline_url(self, url: str) -> PipelineRef | None:
+        m = GL_PIPELINE_URL_RE.match((url or "").strip())
+        if not m or not self.owns_host(m.group(1)) or "/" not in m.group(2):
+            return None
+        host, path = m.group(1).lower(), m.group(2)
+        return PipelineRef(RepoId(host, path), int(m.group(3)),
+                           f"https://{host}/{path}/-/pipelines/{m.group(3)}")
+
+    def pipeline(self, ref: PipelineRef) -> tuple:
+        base = f"projects/{self._project(ref.repo)}/pipelines/{ref.id}"
+        doc, why = self._api(ref.repo, base, timeout=30)
+        if why:
+            return None, f"glab api could not read the pipeline: {why}"
+        if not isinstance(doc, dict):
+            return None, "glab api did not answer with a pipeline"
+        # The jobs endpoint leaves retried jobs out unless asked, so each name
+        # is its latest attempt — a retry that passed reads as passed.
+        docs, why = self._pages(ref.repo, f"{base}/jobs")
+        if why:
+            return None, f"glab api could not read the pipeline's jobs: {why}"
+        jobs = [Job(str(j.get("name") or ""), GL_JOB_VERDICTS.get(str(j.get("status") or ""), "pending"),
+                    int(j.get("id") or 0)) for j in docs]
+        verdict = GL_JOB_VERDICTS.get(str(doc.get("status") or ""), "pending")
+        # A skipped PIPELINE ran nothing and failed nothing.
+        return Pipeline(ref, "passed" if verdict == "skipped" else verdict, jobs,
+                        str(doc.get("sha") or "")), ""
+
+    def pipelines_for_commit(self, repo: RepoId, sha: str) -> tuple:
+        docs, why = self._api(
+            repo, f"projects/{self._project(repo)}/pipelines?sha={sha}&per_page=20", timeout=30
+        )
+        if why:
+            return [], f"glab api could not list the commit's pipelines: {why}"
+        if not isinstance(docs, list):
+            return [], "glab api did not answer with a list of pipelines"
+        return [
+            PipelineRef(repo, int(d["id"]), str(d.get("web_url") or "")
+                        or f"https://{repo.host}/{repo.path}/-/pipelines/{d['id']}")
+            for d in docs if isinstance(d, dict) and d.get("id")
+        ], ""
+
+    def job_log(self, ref: PipelineRef, job: Job) -> tuple:
+        out, why = self._run(
+            ["api", f"projects/{self._project(ref.repo)}/jobs/{job.id}/trace",
+             "--hostname", ref.repo.host], timeout=60,
+        )
+        return (out or "", "") if not why else ("", f"glab api could not read the job log: {why}")
 
     @staticmethod
     def _checks(d: dict) -> list:
@@ -1664,6 +1934,16 @@ def for_url(url: str) -> tuple:
             return (f, ref) if f.available() else (None, _unavailable(f, ref.repo.host))
     host = canonical.split("/")[2] if "://" in canonical else canonical
     return None, f"no configured forge owns {host}"
+
+
+def for_pipeline(url: str) -> tuple:
+    """(forge, PipelineRef) for a pipeline URL, or (None, why-not)."""
+    text = (url or "").strip()
+    for f in forges():
+        ref = f.parse_pipeline_url(text)
+        if ref is not None:
+            return (f, ref) if f.available() else (None, _unavailable(f, ref.repo.host))
+    return None, "not a pipeline URL on any configured forge"
 
 
 def for_repo(repo: RepoId) -> tuple:
