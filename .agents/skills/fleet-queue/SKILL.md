@@ -852,8 +852,9 @@ not caught up` where `collect` has not run yet. It writes nothing.
 **Never write a poller.** `fleet watch` waits on a pipeline URL, a change
 request URL or a task ref and prints one line per change — job names whole,
 emoji included, each job its latest attempt — then one closing `watch:` line:
-exit 0 passed or merged, 1 failed, cancelled, closed or `manual`, 124 timed
-out (no verdict). `--until merged` waits for the merge; `--follow` then
+exit 0 passed or merged, 1 failed, cancelled, closed or `manual`, 3 no check
+appeared within `--grace` (a repository with no CI), 124 timed out (no
+verdict). `--until merged` waits for the merge; `--follow` then
 watches the pipeline the merge commit started on the base branch and prints
 its jobs' apply summaries (`--match` sets the pattern). It blocks for up to
 `--timeout` (default an hour), so run it in the background or give it a

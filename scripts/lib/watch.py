@@ -10,12 +10,15 @@
                               print the lines of its job logs that --match finds
       --match REGEX           what --follow prints from a job log (default: a
                               Terraform apply's or destroy's summary line)
+      --grace SECONDS         --until checks: stop once this long passes with
+                              no check reported at all (default 300)
       --interval SECONDS      between reads (default 30)
       --timeout SECONDS       give up after this long (default 3600)
 
     exit 0   passed, or merged
     exit 1   failed, cancelled, closed unmerged, or waiting on a person (manual)
     exit 2   nothing here to watch
+    exit 3   no check was reported within --grace: nothing to wait for
     exit 124 timed out, which is no verdict about the thing watched
 
 WHY THIS EXISTS. Every lead wrote its own poller out of `gh` and `glab` calls
@@ -66,6 +69,8 @@ forge = fleetqueue.forge
 PIPELINE_DONE = ("passed", "failed", "cancelled", "manual")
 SUCCESS = ("passed", "merged", "checks passed")
 TIMED_OUT = 124
+NO_CHECKS = "no check reported"
+NOTHING_TO_WAIT_FOR = 3
 DEFAULT_MATCH = r"Apply complete!|Destroy complete!"
 CONTROL = re.compile(r"[\x00-\x1f\x7f]+")
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
@@ -123,19 +128,26 @@ def watch_pipeline(which, ref, clock: Clock) -> tuple:
         clock.wait()
 
 
-def cr_outcome(cr, until: str) -> str:
-    """The word a change request's watch stops on, or '' to keep watching."""
+def cr_outcome(cr, until: str, graced: bool = False) -> str:
+    """The word a change request's watch stops on, or '' to keep watching.
+
+    `graced`: the grace for a first check has passed. A change request on a
+    repository with no CI never gets one, and waiting the full timeout for it
+    would end in a timeout that says nothing true.
+    """
     if cr.state in ("merged", "closed"):
         return cr.state
-    if until != "checks" or cr.state != "open" or not cr.checks:
+    if until != "checks" or cr.state != "open":
         return ""
+    if not cr.checks:
+        return NO_CHECKS if graced else ""
     verdicts = {c.verdict for c in cr.checks}
     if "pending" in verdicts:
         return ""
     return "checks passed" if verdicts == {"passed"} else "checks failed"
 
 
-def watch_changes(pairs: list, until: str, clock: Clock) -> dict:
+def watch_changes(pairs: list, until: str, clock: Clock, grace: float = 0.0) -> dict:
     """url -> (outcome | 'timeout', the last ChangeRequest read or None)."""
     seen: dict = {}
     done: dict = {}
@@ -149,7 +161,8 @@ def watch_changes(pairs: list, until: str, clock: Clock) -> dict:
             if seen.get(ref.url) != line:
                 say(f"{name}  {line}")
                 seen[ref.url] = line
-            outcome = cr_outcome(cr, until) if cr else ""
+            graced = time.monotonic() - clock.start >= grace
+            outcome = cr_outcome(cr, until, graced) if cr else ""
             if outcome:
                 done[ref.url] = (outcome, cr)
         if len(done) == len(pairs):
@@ -230,6 +243,7 @@ def main(argv: list) -> int:
     parser.add_argument("--until", choices=("checks", "merged"), default="checks")
     parser.add_argument("--follow", action="store_true")
     parser.add_argument("--match", default=DEFAULT_MATCH)
+    parser.add_argument("--grace", type=float, default=300.0)
     parser.add_argument("--interval", type=float, default=30.0)
     parser.add_argument("--timeout", type=float, default=3600.0)
     args = parser.parse_args(argv)
@@ -252,7 +266,7 @@ def main(argv: list) -> int:
             bad = [one_line(j.name) for j in (p.jobs if p else []) if j.verdict in ("failed", "cancelled", "manual")]
             return finish(ref.url, verdict, clock, last=p.verdict if p else "nothing read", bad=bad)
         until = "merged" if args.follow else args.until
-        results = watch_changes(pairs, until, clock)
+        results = watch_changes(pairs, until, clock, args.grace)
         outcomes = []
         for which, ref in pairs:
             outcome, cr = results[ref.url]
@@ -278,6 +292,8 @@ def finish(label: str, verdict: str, clock: Clock, last: str = "", bad: list | N
         return TIMED_OUT
     tail = f" — {', '.join(bad)}" if bad and verdict not in SUCCESS else ""
     print(f"watch: {label} {verdict} after {clock.elapsed()}{tail}", flush=True)
+    if verdict == NO_CHECKS:
+        return NOTHING_TO_WAIT_FOR
     return 0 if verdict in SUCCESS else 1
 
 

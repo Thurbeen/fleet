@@ -578,10 +578,17 @@ GH_FILES_LIMIT = 3000
 # and decides nothing, so it does not pay for the safety fields.
 GH_STATUS_FIELDS = "number,url,title,headRefName,state,statusCheckRollup"
 
-# What ONE change request costs when `collect` checks a publish claim. The head
-# branch is in there because it is the one claim about a pull request a worker
-# cannot write into its own result.md, and it arrives free with the body.
-GH_ONE_FIELDS = "body,headRefOid,headRefName,state,commits,mergeCommit"
+# What ONE change request costs when `collect` checks a publish claim, and
+# what `queue list --live` and `fleet watch` print about it. The head branch is
+# in there because it is the one claim about a pull request a worker cannot
+# write into its own result.md. The checks, draft, mergeable, review and base
+# are in there because those two print them: a field not requested here is a
+# field gh never sends, and a pull request read without its checks reads as
+# one no check has reported on, which `watch` waits on until it times out.
+GH_ONE_FIELDS = (
+    "title,body,headRefOid,headRefName,baseRefName,state,isDraft,mergeable,"
+    "reviewDecision,statusCheckRollup,commits,mergeCommit"
+)
 
 # A check that FAILED. Anything still running is NOT a failure. `CANCELLED` is
 # its own conclusion, mapped to the `cancelled` verdict rather than in here:

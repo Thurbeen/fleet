@@ -351,3 +351,62 @@ def test_watch_a_task_across_repositories_reports_a_verdict_over_a_timeout(world
     run = world.watch(f"{TOPIC}/01-two-repos", "--timeout", "0")
     assert run.code == 1, run.out
     expect(run.stdout.splitlines()[-1], "closed")
+
+
+# A `gh` that answers ONLY the `--json` fields it was asked for, the way gh does:
+# a field the adapter forgot to request is a field that never arrives.
+GH_ONE_PR = r'''
+import json, sys
+args = sys.argv[1:]
+FULL = {"number": 9, "url": "https://github.com/acme/widgets/pull/9", "title": "change 9", "state": "OPEN",
+        "isDraft": True, "mergeable": "CONFLICTING", "reviewDecision": "CHANGES_REQUESTED",
+        "body": "", "headRefName": "fix/x", "baseRefName": "main", "headRefOid": "9" * 40, "commits": [],
+        "mergeCommit": None,
+        "statusCheckRollup": [{"__typename": "CheckRun", "name": "CI", "status": "COMPLETED",
+                               "conclusion": "SUCCESS"}]}
+if args[:2] == ["pr", "view"]:
+    fields = args[args.index("--json") + 1].split(",")
+    print(json.dumps({k: FULL[k] for k in fields if k in FULL}))
+elif args[:2] == ["api", "graphql"]:
+    print(json.dumps({"data": {"repository": {"pullRequest": {"reviewThreads": {
+        "pageInfo": {"hasNextPage": False}, "nodes": []}}}}}))
+else:
+    sys.stderr.write("gh: not taught %r\n" % args)
+    raise SystemExit(1)
+'''
+
+
+def test_github_get_asks_gh_for_everything_a_live_reading_reports(forge_mod, stubs):
+    """15n. `get` is what `list --live` and `watch` read, so the fields they print
+    must be fields it requests: checks, draft, mergeable, review, base."""
+    stubs.tool("gh", GH_ONE_PR)
+    gh = forge_mod.GitHubForge()
+    cr, why = gh.get(gh.parse_change_url("https://github.com/acme/widgets/pull/9"))
+    assert not why, why
+    assert [(c.name, c.verdict) for c in cr.checks] == [("CI", "passed")]
+    assert (cr.draft, cr.mergeable, cr.review_decision, cr.base_branch) == (
+        True, "conflicting", "changes-requested", "main")
+
+
+def test_watch_a_green_github_pull_request_ends_on_its_checks(stubs):
+    """15o. The case the fake forge could not catch: a real adapter that never
+    asked for checks timed out on every green pull request."""
+    stubs.tool("gh", GH_ONE_PR)
+    run = run_fleet("watch", "https://github.com/acme/widgets/pull/9", "--interval", "0", "--timeout", "0",
+                    GH_HOST=None)
+    assert run.code == 0, run.out
+    expect(run.out, "acme/widgets#9", "draft", "checks: 1 passed", "review: changes-requested")
+    expect(run.stdout.splitlines()[-1], "checks passed")
+
+
+def test_watch_stops_when_no_check_appears_within_its_grace(world, stubs):
+    """15p. A change request with no CI has nothing to wait for: once `--grace`
+    passes with no check reported, the watch says so and exits 3 — neither a
+    pass nor a timeout."""
+    world.store.cr(371, head_branch="fix/no-ci-here", checks=[])
+    run = world.watch(f"{MR}371", "--grace", "0")
+    assert run.code == 3, run.out
+    expect(run.stdout.splitlines()[-1], "no check reported")
+    # `--until merged` waits for the merge, not for checks, so the grace is not its rule.
+    run = world.watch(f"{MR}371", "--until", "merged", "--grace", "0", "--timeout", "0")
+    assert run.code == 124, run.out
