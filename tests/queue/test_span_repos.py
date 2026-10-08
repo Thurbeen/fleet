@@ -545,3 +545,26 @@ def test_a_note_task_stays_single_however_many_repositories_it_spans(topic, queu
     expect(" ".join(raw.split()), "Also on this branch", "/tmp/repo-b")
     expect(raw, "artifact: <PR URL, commit URL for a `push` task")
     refute(raw, "artifacts:")
+
+
+def test_a_closed_change_request_beside_one_nobody_could_read_holds_the_task(
+    spans_and_dependent, queue_dir, stubs
+):
+    """`unknown` never collapses into another word at collect either: one change
+    request closed unmerged beside one whose forge could not be asked leaves the
+    task where it is, as landing does, rather than retiring it on half a reading."""
+    topic = spans_and_dependent["topic"]
+    stubs.pr_state(701, "CLOSED")
+    (Path(os.environ["FLEET_STUB_ROOT"]) / "pr-bodies" / "702.md").unlink()
+    expect(q("collect").out, "NOT CLOSED")
+    assert record(queue_dir, topic, "01-spans-two")["state"] == "queued"
+
+
+def test_a_closed_change_request_beside_an_open_one_retires_the_task_at_collect(
+    spans_and_dependent, queue_dir, stubs
+):
+    topic = spans_and_dependent["topic"]
+    stubs.pr_state(702, "CLOSED")
+    expect(ok(q("collect")).out, "01-spans-two", "closed unmerged")
+    doc = record(queue_dir, topic, "01-spans-two")
+    assert doc["state"] == "abandoned" and doc["abandoned"]["how"] == "closed-unmerged"

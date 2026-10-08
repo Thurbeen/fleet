@@ -5223,8 +5223,10 @@ def cmd_collect(args) -> int:
         # A change request closed unmerged is the forge ending the task, and
         # every repository that held it open is one: retired, never held.
         closed = [r for r in rows if (r.get("seen") or {}).get("state") == "closed"]
+        # `unknown` still never collapses into another word: a repository whose
+        # forge could not be asked leaves the task where it is, as at landing.
         if verdict == "missing" and closed and all(
-            r in closed for r in rows if r["verdict"] == "missing"
+            r in closed for r in rows if r["verdict"] in ("missing", "unknown")
         ):
             task.doc["outcome"] = outcome
             task.doc["artifact"] = artifact
@@ -5566,9 +5568,9 @@ def sweep_vanished(q: Queue, dry: bool, snapshot=None) -> int:
             continue
         if task.doc.get("host") and not host_reachable(task.doc["host"])[0]:
             continue
-        acted += 1
         since = record_time(seen.get("since")) if seen.get("session") == sid else 0.0
         if not since:
+            acted += 1
             if dry:
                 print(f"    {task.ref:<46} not listed {sid}  thurbox does not list its session")
                 continue
@@ -5583,6 +5585,7 @@ def sweep_vanished(q: Queue, dry: bool, snapshot=None) -> int:
         if time.time() - since < VANISHED_GRACE_SECS:
             continue
         why = f"thurbox has not listed session {sid} since {seen['since']}, and no result.md was written"
+        acted += 1
         if dry:
             print(f"    {task.ref:<46} would be abandoned  {ABANDON_HOW['session-gone']}: {why}")
             continue
@@ -5965,9 +5968,31 @@ def build_output(tree: str) -> list[str]:
 
 
 def free_build_output(ref: str, trees: list[str], dry: bool) -> int:
-    """Delete the build output in each worktree, saying what went. Returns how many."""
+    """Delete the build output in each worktree, saying what went. Returns how many.
+
+    A worktree another session sits in is kept whole: somebody carrying the
+    work on may be building in it right now. The same occupancy rule `reap`
+    applies before a release, and the same refusal when it cannot be judged.
+    """
     freed = 0
+    sessions = None
     for tree in trees:
+        if sessions is None:
+            sessions, why = session_snapshot()
+            if sessions is None:
+                print(f"    {ref:<46} kept       build output in {tree}: {why}")
+                return freed
+        try:
+            roots = [(tree, local_resolved_path(tree))]
+        except (OSError, ValueError, RuntimeError) as exc:
+            print(f"    {ref:<46} kept       build output in {tree}: {exc}")
+            continue
+        busy = occupant_in_worktrees(
+            sessions, None, roots, local_resolved_path, os.path.commonpath, skip_offbox=True,
+        )
+        if busy:
+            print(f"    {ref:<46} kept       build output: {busy}")
+            continue
         for path in build_output(tree):
             if dry:
                 print(f"    {ref:<46} would free {path}")

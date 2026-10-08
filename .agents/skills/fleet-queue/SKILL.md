@@ -701,8 +701,9 @@ reported.
 and with it gigabytes of build output. When `reap` drops such an id, and
 before it removes a fixer's checkout, it deletes the worktree's `target/`,
 `node_modules` and `.venv` — only directories git reports ignored with nothing
-under them tracked, and never a link (a shared store is somebody else's). The
-rest of the worktree, uncommitted work included, stays.
+under them tracked, never a link (a shared store is somebody else's), and
+nothing in a worktree another session sits in. The rest of the worktree,
+uncommitted work included, stays.
 
 **What `reap` cannot see, `fleet sessions orphans` lists**: every session
 parented to the lead that no live task holds — a skill's reviewer, a

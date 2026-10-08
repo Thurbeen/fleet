@@ -9,6 +9,7 @@ itself may hold uncommitted work, a tracked directory that happens to be called
 `target` is source, and a link to a shared store is somebody else's.
 """
 
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -94,3 +95,15 @@ def test_a_task_abandoned_by_hand_frees_it_when_reap_drops_the_session(worktree)
     assert (tree / "target").is_dir(), "a dry run deleted build output"
     expect(ok(q("reap")).out, "gone", "freed")
     assert_freed(tree, shared)
+
+
+def test_a_worktree_another_session_sits_in_keeps_its_build_output(worktree, stubs):
+    """Someone carrying on in that worktree may be building in it right now."""
+    tree, _shared = worktree
+    write(stubs.root / "sessions" / "by-hand.json", json.dumps({
+        "id": "by-hand", "name": "carrying on", "state": "working",
+        "cwd": str(tree / "web"), "backend_type": "local:tmux", "worktrees": [],
+    }))
+    ok(q("abandon", "disk/01-build", "--why", "superseded"))
+    expect(ok(q("reap")).out, "gone", "kept", "by-hand")
+    assert (tree / "target").is_dir(), "build output was freed under a live session"
