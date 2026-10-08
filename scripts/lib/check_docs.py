@@ -120,14 +120,26 @@ def check_svg(path: str) -> list[str]:
     css = "\n".join(styles)
     if "@import" in css or re.search(r"url\(\s*['\"]?(?!#)", css):
         problems.append(f"{path}: its style loads an external resource")
-    if "prefers-color-scheme" not in css and not paints_backdrop(root, name):
+    if "prefers-color-scheme" not in css and not paints_backdrop(root, name, css):
         problems.append(f"{path}: no prefers-color-scheme style and no backdrop, so it has no dark palette")
     return problems
 
 
-def paints_backdrop(root: ET.Element, name) -> bool:
-    """An SVG whose first shape covers its whole viewBox with a fill carries its
-    own theme, so it reads on a light page and a dark one alike."""
+def painted(el: ET.Element, css: str, prop: str) -> str | None:
+    """The value `prop` ends up with on `el`: its attribute, overridden by a rule
+    for one of its classes, overridden by its own style attribute."""
+    value = el.get(prop)
+    for cls in (el.get("class") or "").split():
+        for rule in re.finditer(r"\." + re.escape(cls) + r"(?![\w-])[^{}]*\{([^}]*)\}", css):
+            found = re.search(r"(?:^|;)\s*" + prop + r"\s*:\s*([^;]+)", rule.group(1))
+            value = found.group(1).strip() if found else value
+    found = re.search(r"(?:^|;)\s*" + prop + r"\s*:\s*([^;]+)", el.get("style") or "")
+    return found.group(1).strip() if found else value
+
+
+def paints_backdrop(root: ET.Element, name, css: str) -> bool:
+    """An SVG whose first shape covers its whole viewBox with an opaque fill
+    carries its own theme, so it reads on a light page and a dark one alike."""
     try:
         _, _, vw, vh = (float(v) for v in root.get("viewBox", "").replace(",", " ").split())
     except ValueError:
@@ -135,10 +147,11 @@ def paints_backdrop(root: ET.Element, name) -> bool:
     for el in root:
         if name(el) in ("title", "desc", "style", "defs", "metadata"):
             continue
-        fill = el.get("fill")
-        if name(el) != "rect" or fill == "none" or fill is None and not el.get("class"):
+        if name(el) != "rect" or (painted(el, css, "fill") or "none").lower() in ("none", "transparent"):
             return False
         try:
+            if any(float(painted(el, css, p) or "1") == 0 for p in ("opacity", "fill-opacity")):
+                return False
             x, y = float(el.get("x", "0")), float(el.get("y", "0"))
             w, h = float(el.get("width", "0")), float(el.get("height", "0"))
         except ValueError:

@@ -62,3 +62,32 @@ def test_an_unfilled_frame_is_not_a_backdrop(tmp_path):
         '<text x="10" y="50">fleet</text></svg>'))
     assert done.code == 1
     assert "no dark palette" in done.out
+
+
+def test_a_backdrop_whose_class_paints_nothing_is_not_a_backdrop(tmp_path):
+    done = _readme_with_diagram(tmp_path, (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 100">'
+        '<style>.frame { fill: none; stroke: #d1d9e0; } text { fill: #1f2328; }</style>'
+        '<rect class="frame" x="0.5" y="0.5" width="199" height="99"/>'
+        '<text x="10" y="50">fleet</text></svg>'))
+    assert done.code == 1
+    assert "no dark palette" in done.out
+
+
+def test_a_transparent_backdrop_is_not_a_backdrop(tmp_path):
+    done = _readme_with_diagram(tmp_path, (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 100">'
+        '<style>text { fill: #1f2328; }</style>'
+        '<rect x="0" y="0" width="200" height="100" fill="transparent"/>'
+        '<text x="10" y="50">fleet</text></svg>'))
+    assert done.code == 1
+    assert "no dark palette" in done.out
+
+
+def test_a_backdrop_painted_through_its_class_counts(tmp_path):
+    done = _readme_with_diagram(tmp_path, (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 100">'
+        '<style>.bg { fill: #282c34; } text { fill: #bbc2cf; }</style>'
+        '<rect class="bg" x="0.5" y="0.5" width="199" height="99"/>'
+        '<text x="10" y="50">fleet</text></svg>'))
+    assert done.code == 0, done.out
