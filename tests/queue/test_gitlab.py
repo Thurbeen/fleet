@@ -245,6 +245,31 @@ def test_a_project_that_forbids_squash_is_a_refusal_and_not_a_crash(gitlab_queue
     assert stubs.calls("gh") == []
 
 
+def test_a_needs_human_rule_reads_gitlabs_labels_and_changed_paths(gitlab_queue, glab, stubs, tmp_path):
+    """14c'. The guard asks GitLab, in GitLab's own shapes: labels are strings on the
+    merge request, and changed paths come from its `diffs`, old path and new."""
+    gq = gitlab_queue
+    ok(gq.q("collect"))
+    root = tmp_path / "automerge-guarded"
+    write(root / "orchestration" / "auto-merge.conf",
+          "gitlab.example.com/acme/group/widgets needs-human path:src/ui/* label:ui\n")
+    gq.env.update(FLEET_AUTO_MERGE_REPOS=None, FLEET_AUTO_MERGE_ROOT=str(root))
+
+    glab.mr(303, source_branch="fix/green", labels=[])
+    glab.api("diffs", [{"old_path": "src/ui/split.rs", "new_path": "docs/split.rs"}])
+    expect(gq.q("shepherd", "--topic", gq.topic).out, "needs a human: path:src/ui/* (src/ui/split.rs)")
+
+    glab.api("diffs", [{"old_path": "docs/a.md", "new_path": "docs/a.md"}])
+    glab.mr(303, source_branch="fix/green", labels=["UI"])
+    expect(gq.q("shepherd", "--topic", gq.topic).out, "needs a human: label:ui")
+    refute("\n".join(glab.merged()), "mr merge 303")
+
+    glab.mr(303, source_branch="fix/green", labels=["docs"])
+    gq.q("shepherd", "--topic", gq.topic)
+    expect("\n".join(glab.merged()), "mr merge 303")
+    assert stubs.calls("gh") == []
+
+
 # --- 14d. the remote-host probe asks the REPOSITORY's forge, not github.com -------
 
 PROBE_GIT = """
