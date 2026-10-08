@@ -631,7 +631,11 @@ merge still clears (head branch in the repository, the opener can push there,
 an attestation naming the CURRENT head, every check concluded and passed,
 `MERGEABLE`). Entries are host-qualified. `FLEET_AUTO_MERGE_REPOS` in the
 environment REPLACES the file. Everywhere outside the list it reports `ready
-to merge` and stops.
+to merge` and stops. A `needs-human` rule on a line — `path:<glob>` or
+`label:<name>`, for that line's repository or, on a line naming none, for
+every one — holds a change the gates would merge and reports `needs a human:
+<rule>`: that is how a repository merges unattended except its UI. Files the
+forge cannot list, and a rule fleet cannot read, hold the change too.
 
 `shepherd` is a sibling of `collect`, not part of it: `collect` reads local
 files and works offline, and folding a session-spawning, forge-calling side

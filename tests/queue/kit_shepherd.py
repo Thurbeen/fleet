@@ -33,6 +33,16 @@ if os.environ.get("SHEP_GH_DOWN"):
     raise SystemExit(1)
 # Who has push access, which is what "opened by the repository owner" means
 # once the owner is an organisation and the author is a person in it.
+# The files a pull request changes, one `path<TAB>previous path` line each, as
+# the shepherd's `--jq` prints them; no file under `files/` is a forge that
+# could not answer.
+if args[:1] == ["api"] and args[1].endswith("/files"):
+    served = shep / "files" / args[1].rsplit("/", 2)[-2]
+    if not served.is_file():
+        sys.stderr.write("gh: HTTP 502: could not list the files\n")
+        raise SystemExit(1)
+    sys.stdout.write(served.read_text(encoding="utf-8"))
+    raise SystemExit(0)
 if args[:1] == ["api"]:
     login = args[1].removesuffix("/permission").rsplit("/", 1)[-1]
     perm = shep / "perms" / login
@@ -174,6 +184,10 @@ class Shep:
         doc = json.loads(path.read_text(encoding="utf-8"))
         doc.update(kw)
         write(path, json.dumps(doc))
+
+    def files(self, n: int, *paths: str) -> None:
+        """What pull request `n` changes; `new<TAB>old` is a rename."""
+        write(self.root / "files" / str(n), "".join((p if "\t" in p else p + "\t") + "\n" for p in paths))
 
     def perm(self, login: str, level: str) -> None:
         write(self.root / "perms" / login, level + "\n")

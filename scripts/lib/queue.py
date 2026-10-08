@@ -244,6 +244,7 @@ from __future__ import annotations
 import argparse
 import base64
 import difflib
+import fnmatch
 import glob
 import importlib.util
 import json
@@ -7220,12 +7221,111 @@ def auto_merge_repos(root: str | None = None) -> set:
     if raw:
         return parse_auto_merge(re.split(r"[,\s]+", raw), AUTO_MERGE_ENV)
     path = auto_merge_conf_path(root)
+    # A line that carries rules names its repository first; a line that is
+    # ONLY rules names none and allows nothing.
+    return parse_auto_merge(
+        [NEEDS_HUMAN_RE.split(line, 1)[0] for line in auto_merge_lines(path)], path
+    )
+
+
+def auto_merge_lines(path: str) -> list:
     try:
         with open(path, encoding="utf-8") as fh:
-            lines = [line.partition("#")[0] for line in fh]
+            return [line.partition("#")[0] for line in fh]
     except OSError:
-        return set()
-    return parse_auto_merge(lines, path)
+        return []
+
+
+# WHAT STILL NEEDS A HUMAN IN A REPOSITORY FLEET MERGES IN. Every gate above
+# held for a UI change that was merged unattended and shipped broken in a
+# release, because a gate asks whether the change is VETTED and not whether a
+# person has to look at it. So a line in the same file can say so:
+#
+#   github.com/owner/repo  needs-human  path:src/ui/*  label:ui
+#   needs-human  label:needs-human
+#
+# The first allows the repository AND holds a change there that touches a
+# path matching the glob, or carries the label; the second names no
+# repository and holds every one. A held change is reported `needs-human`
+# naming the rule, never merged, and never sent a fixer — nothing is wrong
+# with it. A rule fleet cannot read, and files the forge cannot list, HOLD
+# the change: a guard that fails open is one nobody can trust.
+#
+# The environment names repositories and no rules, the same way it replaces
+# the file: a fleet driving somebody else's repositories is a different fleet.
+
+NEEDS_HUMAN = "needs-human"
+# The WORD, so a repository whose name contains it is still a repository.
+NEEDS_HUMAN_RE = re.compile(r"(?:^|\s)needs-human(?:\s|$)")
+MERGE_RULE_KINDS = ("path", "label")
+
+
+def auto_merge_rules(root: str | None = None) -> list:
+    """Every `needs-human` rule, as (repository or "", kind, value).
+
+    `kind` is "unreadable" for a rule fleet cannot parse, with the text as its
+    value: it holds what it covers rather than being skipped, and says why on
+    stderr the way a bare slug does.
+    """
+    if os.environ.get(AUTO_MERGE_ENV, "").strip():
+        return []
+    path = auto_merge_conf_path(root)
+    rules = []
+    for line in auto_merge_lines(path):
+        parts = NEEDS_HUMAN_RE.split(line, 1)
+        if len(parts) < 2:
+            continue
+        scope, rest = parts
+        repo = ""
+        if scope.strip():
+            parsed = forge.RepoId.parse(scope.strip())
+            if parsed is None:
+                continue  # parse_auto_merge has already refused it out loud
+            repo = parsed.qualified
+        try:
+            words = shlex.split(rest)
+        except ValueError:
+            words = [rest.strip()]
+        for word in words or [NEEDS_HUMAN]:
+            kind, sep, value = word.partition(":")
+            if not (sep and value and kind in MERGE_RULE_KINDS):
+                print(
+                    f"{path}: {word!r} is not a rule fleet can read — it must be "
+                    "path:<glob> or label:<name>, and until it is it holds "
+                    + (f"every merge in {repo}" if repo else "every merge"),
+                    file=sys.stderr,
+                )
+                kind, value = "unreadable", word
+            rules.append((repo, kind, value))
+    return rules
+
+
+def needs_human(cr: forge.ChangeRequest) -> str:
+    """The rule that holds this change for a person, or "" when none does.
+
+    Labels first, because they arrived with the listing; the changed files
+    are asked of the forge only when a path rule covers this repository.
+    """
+    rules = [r for r in auto_merge_rules() if r[0] in ("", cr.repo.qualified)]
+    for _repo, kind, value in rules:
+        if kind == "unreadable":
+            return f"an unreadable rule, {value!r}, in {auto_merge_conf_path()}"
+    labels = {label.lower() for label in cr.labels}
+    for _repo, kind, value in rules:
+        if kind == "label" and value.lower() in labels:
+            return f"label:{value}"
+    globs = [value for _repo, kind, value in rules if kind == "path"]
+    if not globs:
+        return ""
+    which, why = forge.for_repo(cr.repo)
+    paths, why = which.changed_paths(cr) if which else (None, why)
+    if paths is None:
+        return f"could not list the files it changes ({why})"
+    for glob_ in globs:
+        for path in paths:
+            if fnmatch.fnmatchcase(path, glob_):
+                return f"path:{glob_} ({path})"
+    return ""
 
 
 # --- agent policy by repository owner -----------------------------------------
@@ -8420,6 +8520,11 @@ def shepherd_pr(cr: forge.ChangeRequest, task, args) -> dict:
         if args.no_merge:
             row["action"] = "ready"
             row["note"] = "--no-merge"
+            return row
+        held = needs_human(cr)
+        if held:
+            row["action"] = "needs-human"
+            row["note"] = f"needs a human: {held}"
             return row
         # The last gate, and the one a pull request body cannot write for
         # itself. Asked before --dry-run answers, so a dry run is honest

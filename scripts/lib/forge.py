@@ -246,6 +246,7 @@ class ChangeRequest:
     review_decision: str = ""  # "changes-requested" | "approved" | "" (not said)
     checks: list = field(default_factory=list)
     commits: list = field(default_factory=list)
+    labels: list = field(default_factory=list)  # label names, as the forge spells them
     # Is the head branch inside the target repository? The one claim about a
     # change request that whoever opened it cannot write for themselves, and
     # the only forge-specific judgement fleet delegates rather than derives:
@@ -454,6 +455,11 @@ class Forge:
     def can_push(self, repo: RepoId, login: str) -> tuple:
         return False, f"{self.name} cannot say who may push to {repo}"
 
+    def changed_paths(self, cr: ChangeRequest) -> tuple:
+        """(every path the change touches, why-not). A rename names BOTH paths:
+        a change that moves a file out of a guarded directory still touched it."""
+        return None, f"{self.name} cannot list the files a change request touches"
+
     def describe_merge(self, method: str, delete_branch: bool) -> str:
         """What this forge would run, for a dry run to print."""
         return f"{self.name}: merge by {method}"
@@ -490,8 +496,12 @@ GH_LIST_LIMIT = 1000
 GH_FIELDS = (
     "number,state,url,title,isDraft,mergeable,reviewDecision,"
     "statusCheckRollup,body,headRefName,baseRefName,headRefOid,"
-    "author,headRepositoryOwner,isCrossRepository"
+    "author,headRepositoryOwner,isCrossRepository,labels"
 )
+
+# GitHub's REST files list stops here whatever the pagination, so a pull
+# request that reaches it may change files nobody was shown.
+GH_FILES_LIMIT = 3000
 
 # The narrower set `fleet status` needs: it prints a line per pull request
 # and decides nothing, so it does not pay for the safety fields.
@@ -739,6 +749,7 @@ class GitHubForge(Forge):
                 for c in (d.get("commits") or [])
                 if isinstance(c, dict)
             ],
+            labels=[str(lb.get("name") or "") for lb in (d.get("labels") or []) if isinstance(lb, dict)],
             head_is_ours=ours,
             head_location=where,
         )
@@ -813,6 +824,22 @@ class GitHubForge(Forge):
             answer = (perm in GH_PUSH_PERMISSIONS, f"{login} has {said} access to {repo}")
         self._push[key] = answer
         return answer
+
+    def changed_paths(self, cr: ChangeRequest) -> tuple:
+        """The REST files list rather than `gh pr view --json files`, which stops
+        at the first hundred: a path rule that saw a hundred files has not seen
+        the change. GitHub's own cap is the list's, and reaching it is said."""
+        out, why = self._run(
+            ["api", f"repos/{cr.repo.path}/pulls/{cr.number}/files", "--hostname", cr.repo.host,
+             "--paginate", "--jq", '.[] | .filename + "\\t" + (.previous_filename // "")'],
+            timeout=60,
+        )
+        if why:
+            return None, why
+        rows = [line.split("\t") for line in out.splitlines() if line]
+        if len(rows) >= GH_FILES_LIMIT:
+            return None, f"GitHub lists at most {GH_FILES_LIMIT} files of a pull request"
+        return [p for row in rows for p in row if p], ""
 
     def parse_target_url(self, url: str) -> Target | None:
         m = GH_TARGET_RE.match((url or "").strip())
@@ -906,6 +933,8 @@ class GitHubForge(Forge):
 # which the caller then treats as unreadable rather than as a short list.
 GL_PAGE = 100
 GL_LIST_LIMIT = 1000
+# The files a path rule reads, under the same promise as GitHub's own cap.
+GL_FILES_LIMIT = 3000
 
 # What `fleet status` reads out of a checkout. Lower than the shepherd's cap
 # because it decides nothing and one line per merge request is all it prints.
@@ -1323,6 +1352,7 @@ class GitLabForge(Forge):
             ),
             checks=self._checks(d),
             commits=list(commits or []),
+            labels=[str(lb) for lb in (d.get("labels") or []) if isinstance(lb, str)],
             head_is_ours=ours,
             head_location=where,
         )
@@ -1351,6 +1381,31 @@ class GitLabForge(Forge):
         if said in GL_PIPELINE_CANCELLED:
             return [Check(name, "cancelled")]
         return [Check(name, "pending")]
+
+    def changed_paths(self, cr: ChangeRequest) -> tuple:
+        """`diffs` rather than `changes`, which GitLab truncates past its diff
+        limits and flags with `overflow` — a path rule that saw part of a
+        change has not seen it. Paged like the list, and capped the same way."""
+        paths: list = []
+        page, seen = 1, 0
+        while seen < GL_FILES_LIMIT:
+            docs, why = self._api(
+                cr.repo,
+                f"projects/{self._project(cr.repo)}/merge_requests/{cr.number}/diffs"
+                f"?per_page={GL_PAGE}&page={page}",
+            )
+            if why:
+                return None, why
+            if not isinstance(docs, list):
+                return None, "glab returned something that is not a list of diffs"
+            for d in docs:
+                if isinstance(d, dict):
+                    paths += [str(d.get(k) or "") for k in ("new_path", "old_path") if d.get(k)]
+            seen += len(docs)
+            if len(docs) < GL_PAGE:
+                return list(dict.fromkeys(paths)), ""
+            page += 1
+        return None, f"the merge request changes at least {GL_FILES_LIMIT} files"
 
     def can_push(self, repo: RepoId, login: str) -> tuple:
         """May this account push here — asked of the members list, by username.

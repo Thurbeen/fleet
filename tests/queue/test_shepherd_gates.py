@@ -8,6 +8,10 @@
 9j. A check is judged by its LATEST run. GitHub's statusCheckRollup keeps
     superseded runs: a title edit re-ran `PR Title`, the rollup held a FAILURE
     under two later SUCCESSes, and the shepherd sent fixers at two healthy PRs.
+9l. A repository is not the only line a human draws. A UI change cleared every
+    gate, was merged unattended and shipped broken in a release, so a
+    `needs-human` rule — a path glob or a label, for one repository or for all
+    — holds a change the gates would merge, and says which rule held it.
 9k. The attestation has two shapes, JSON inside the HTML comment and a marker
     followed by a fenced block, and one rule over both: a verdict naming a
     commit that is not the head authorises nothing.
@@ -211,3 +215,83 @@ def test_the_older_inline_shape_is_still_read():
         "print(f\"inline={'yes' if ok else 'no'}: {why}\")\n"
     )
     expect(out, "inline=yes")
+
+
+GUARDED = "github.com/Thurbeen/thurbox  needs-human  path:src/ui/*  label:ui\n"
+
+
+def guarded(tmp_path, conf: str = GUARDED) -> str:
+    return settings_root(tmp_path / "automerge-guarded", conf)
+
+
+def test_a_path_rule_holds_a_change_the_gates_would_merge(ttopic, shep, tmp_path):
+    root = guarded(tmp_path)
+    shep.files(201, "README.md", "src/ui/split.rs")
+    dry = q("shepherd", "--topic", ttopic, "--dry-run", FLEET_AUTO_MERGE_ROOT=root).out
+    expect(dry, "needs a human: path:src/ui/* (src/ui/split.rs)")
+    refute(dry, "would-merge")
+    out = q("shepherd", "--topic", ttopic, FLEET_AUTO_MERGE_ROOT=root).out
+    expect(out, "needs a human: path:src/ui/*")
+    assert 201 not in shep.merged(), out
+
+
+def test_a_rename_out_of_a_guarded_path_is_still_held(ttopic, shep, tmp_path):
+    shep.files(201, "docs/split.rs\tsrc/ui/split.rs")
+    out = q("shepherd", "--topic", ttopic, FLEET_AUTO_MERGE_ROOT=guarded(tmp_path)).out
+    expect(out, "needs a human: path:src/ui/* (src/ui/split.rs)")
+    assert 201 not in shep.merged(), out
+
+
+def test_a_label_rule_holds_whatever_case_the_forge_spells_it(ttopic, shep, tmp_path):
+    shep.files(201, "docs/guide.md")
+    shep.update(201, labels=[{"name": "UI"}])
+    out = q("shepherd", "--topic", ttopic, FLEET_AUTO_MERGE_ROOT=guarded(tmp_path)).out
+    expect(out, "needs a human: label:ui")
+    assert 201 not in shep.merged(), out
+
+
+def test_a_change_no_rule_matches_still_merges(ttopic, shep, tmp_path):
+    shep.files(201, "docs/guide.md")
+    shep.update(201, labels=[{"name": "docs"}])
+    out = q("shepherd", "--topic", ttopic, FLEET_AUTO_MERGE_ROOT=guarded(tmp_path)).out
+    assert 201 in shep.merged(), out
+    refute(out, "needs a human")
+
+
+def test_files_the_forge_cannot_list_hold_the_change(ttopic, shep, tmp_path):
+    """A path rule nobody could check is not a rule that passed."""
+    out = q("shepherd", "--topic", ttopic, FLEET_AUTO_MERGE_ROOT=guarded(tmp_path)).out
+    expect(out, "needs a human: could not list the files it changes")
+    assert 201 not in shep.merged(), out
+
+
+def test_a_rule_names_one_repository_or_every_one(ttopic, shep, tmp_path):
+    conf = ("github.com/Thurbeen/thurbox\n"
+            "needs-human label:ui\n"
+            "github.com/Thurbeen/elsewhere needs-human path:*\n")
+    shep.update(201, labels=[{"name": "ui"}])
+    out = q("shepherd", "--topic", ttopic, "--dry-run", FLEET_AUTO_MERGE_ROOT=guarded(tmp_path, conf)).out
+    expect(out, "needs a human: label:ui")
+
+    # The other repository's `path:*` is not this one's, so its files are never even asked for.
+    shep.update(201, labels=[])
+    out = q("shepherd", "--topic", ttopic, FLEET_AUTO_MERGE_ROOT=str(tmp_path / "automerge-guarded")).out
+    assert 201 in shep.merged(), out
+    refute(shep.gh_log(), "/files")
+
+
+def test_a_rule_fleet_cannot_read_holds_rather_than_lets_through(ttopic, shep, tmp_path):
+    shep.files(201, "docs/guide.md")
+    out = q("shepherd", "--topic", ttopic,
+            FLEET_AUTO_MERGE_ROOT=guarded(tmp_path, "github.com/Thurbeen/thurbox needs-human colour:red\n")).out
+    expect(out, "colour:red", "needs a human: an unreadable rule")
+    assert 201 not in shep.merged(), out
+
+
+def test_the_rule_word_is_a_word_and_not_part_of_a_repository_name(tmp_path, monkeypatch):
+    root = guarded(tmp_path, "github.com/acme/needs-human-tools\n"
+                             "github.com/acme/needs-human-ui needs-human label:ui\n")
+    monkeypatch.setenv("FLEET_AUTO_MERGE_ROOT", root)
+    out = queue_module("print(sorted(q.auto_merge_repos()))\nprint(q.auto_merge_rules())\n")
+    expect(out, "['github.com/acme/needs-human-tools', 'github.com/acme/needs-human-ui']",
+           "[('github.com/acme/needs-human-ui', 'label', 'ui')]")

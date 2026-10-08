@@ -401,6 +401,8 @@ a second copy — read the skill before you run any of it:
    included — and not the tasks' recorded artifacts, and merges only where the
    operator's own `orchestration/auto-merge.conf` says it may — the tracked
    example names NONE, so a fresh clone of this public repo merges nowhere.
+   A `needs-human` rule there (a path glob or a label) holds a change the gates
+   would merge and reports `needs a human: <rule>` instead.
    Squash is the only method it merges by. `--dry-run` first.
 8. **A worker that hits its agent's token limit does not fail — it sits, and
    nothing above ever notices.** `fleet queue refuel` is a fifth thing: the
