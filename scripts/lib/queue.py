@@ -9594,8 +9594,11 @@ def live_rows(task: Task) -> list[dict]:
             rows.append({"name": f"{ref.repo.path}#{ref.number}", "state": "unreadable",
                          "line": f"could not be read — {why}"})
             continue
-        threads, _why = which.threads(ref) if cr.state == "open" else (None, "")
+        threads, twhy = which.threads(ref) if cr.state == "open" else (None, "")
         line = live_summary(cr, threads)
+        if twhy:
+            # Left out, a count nobody could read would read as none open.
+            line += f" · threads not read: {twhy}"
         if cr.state == "merged":
             line = ("merged on the forge — the record has not caught up; "
                     "`fleet queue collect` lands it")

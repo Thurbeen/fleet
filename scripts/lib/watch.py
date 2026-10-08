@@ -261,8 +261,10 @@ def main(argv: list) -> int:
             outcomes.append(outcome)
             if len(pairs) > 1:
                 say(f"{cr.name if cr else ref.url}  {outcome}")
-        overall = next((o for o in outcomes if o == "timeout"), None) or next(
-            (o for o in outcomes if o not in SUCCESS), outcomes[0])
+        # A verdict outranks a timeout: one change request closed while another
+        # was still running at the deadline is a failure, said as one.
+        overall = next((o for o in outcomes if o not in SUCCESS and o != "timeout"), None) or next(
+            (o for o in outcomes if o == "timeout"), outcomes[0])
         return finish(args.target, overall, clock)
     except KeyboardInterrupt:
         return 130

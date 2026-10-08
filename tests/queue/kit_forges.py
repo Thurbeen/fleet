@@ -157,7 +157,9 @@ class FakeForge(fg.Forge):
 
     def threads(self, ref):
         d, why = self._find(ref)
-        return (None, why) if why else (d.get("threads", 0), "")
+        if why or d.get("threads") == "down":
+            return None, why or "the threads are unreachable"
+        return d.get("threads", 0), ""
 
     def parse_pipeline_url(self, url):
         m = re.match(r"^https://" + re.escape(HOST) + r"/(.+?)/-/pipelines/(\\d+)$", (url or "").strip())

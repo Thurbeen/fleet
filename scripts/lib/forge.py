@@ -854,8 +854,10 @@ class GitHubForge(Forge):
     def threads(self, ref: ChangeRef) -> tuple:
         owner, _, name = ref.repo.path.partition("/")
         doc, why = self._json(
-            ["api", "graphql", "--hostname", ref.repo.host, "-F", f"owner={owner}",
-             "-F", f"name={name}", "-F", f"number={ref.number}", "-f", f"query={GH_THREADS_QUERY}"],
+            # `-f` for the strings: `-F` converts, and would send a repository
+            # named `2048` as a number GraphQL then refuses.
+            ["api", "graphql", "--hostname", ref.repo.host, "-f", f"owner={owner}",
+             "-f", f"name={name}", "-F", f"number={ref.number}", "-f", f"query={GH_THREADS_QUERY}"],
             timeout=30,
         )
         if why:

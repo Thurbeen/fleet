@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 from kit_forges import FAKE_GLAB, FakeForgeStore, GlabStore, tripwire
-from queuekit import ok, result
+from queuekit import ok, result, result_artifacts
 
 from harness import Run, expect, git, lib, refute, run_fleet
 from harness import run_queue as q
@@ -78,7 +78,7 @@ def test_list_live_says_what_the_forge_says_and_where_the_record_lags(world, stu
     """15a. The record says `done`; the forge says merged. The plain view is the
     record and keeps saying so; `--live` is the forge, and it names the lag."""
     for n, slug, number in (("01", "merged-since", 301), ("02", "red-and-argued", 302),
-                            ("03", "unreadable", 303)):
+                            ("03", "unreadable", 303), ("04", "threads-unreadable", 304)):
         shipped(world, n, slug, number)
         world.store.cr(number, head_branch=f"fix/{slug}")
     ok(world.q("collect"))
@@ -87,6 +87,7 @@ def test_list_live_says_what_the_forge_says_and_where_the_record_lags(world, stu
     world.store.cr(302, head_branch="fix/red-and-argued", checks=[["gate", "failed"], ["lint", "pending"]],
                    threads=2, mergeable="conflicting")
     (world.store.root / "crs" / "303.json").unlink()
+    world.store.cr(304, head_branch="fix/threads-unreadable", threads="down")
 
     plain = world.q("list").out
     refute(plain, "merged on the forge")
@@ -95,8 +96,10 @@ def test_list_live_says_what_the_forge_says_and_where_the_record_lags(world, stu
     expect(live, "acme/widgets#301", "merged on the forge", "the record has not caught up")
     expect(live, "acme/widgets#302", "open", "1 failed", "1 pending", "2 unresolved threads", "conflicting")
     expect(live, "acme/widgets#303", "could not be read", "no change request 303")
+    # A thread count nobody could read is said, never left out to read as zero.
+    expect(live, "acme/widgets#304", "threads not read: the threads are unreachable")
     # One closing line that a "waiting on you" table can be built from.
-    expect(live, "live: 3 change request(s) read: 1 merged, 1 open, 1 unreadable")
+    expect(live, "live: 4 change request(s) read: 1 merged, 2 open, 1 unreadable")
     no_gh(stubs)
 
 
@@ -273,6 +276,8 @@ def test_github_answers_the_new_questions_through_gh(forge_mod, stubs):
     calls = (Path(stubs.root) / "gh-watch.log").read_text(encoding="utf-8")
     # The host travels with every call, so GitHub Enterprise is asked and not github.com.
     assert "-R github.com/acme/widgets" in calls and "--hostname github.com" in calls, calls
+    # Strings go as strings: `-F` would send a repository named `2048` as a number.
+    assert "-f owner=acme" in calls and "-f name=widgets" in calls, calls
 
 
 @pytest.fixture
@@ -326,3 +331,23 @@ def test_watch_follow_says_when_the_merge_started_no_pipeline_yet(world, stubs):
     run = world.watch(f"{MR}351", "--follow", "--timeout", "0")
     assert run.code == 124, run.out
     expect(run.out, "no pipeline on beef yet")
+
+
+def test_watch_a_task_across_repositories_reports_a_verdict_over_a_timeout(world, stubs, tmp_path):
+    """15m. One change request closed unmerged while the other is still running at
+    the deadline: the close is a verdict and the timeout is not, so the close wins."""
+    other = tmp_path / "fake-forge" / "gadgets"
+    git("init", "-q", "-b", "main", str(other))
+    git("commit", "-q", "--allow-empty", "-m", "base", cwd=other)
+    git("remote", "add", "origin", "https://forge.test:8443/acme/gadgets.git", cwd=other)
+    ok(world.q("add", TOPIC, "two-repos", "--title", "Change two repositories", "--repo", str(world.repo),
+               "--add-repo", str(other), "--branch", "fix/two-repos", "--number", "01"))
+    gadgets = "https://forge.test:8443/acme/gadgets/-/merge_requests/"
+    result_artifacts(world.task("01-two-repos"), "shipped", "Shipped both.",
+                     {str(world.repo): f"{MR}361", str(other): f"{gadgets}362"})
+    world.store.cr(361, head_branch="fix/two-repos", state="closed")
+    world.store.cr(362, repo="acme/gadgets", head_branch="fix/two-repos", checks=[["gate", "pending"]])
+    ok(world.q("collect"))
+    run = world.watch(f"{TOPIC}/01-two-repos", "--timeout", "0")
+    assert run.code == 1, run.out
+    expect(run.stdout.splitlines()[-1], "closed")
