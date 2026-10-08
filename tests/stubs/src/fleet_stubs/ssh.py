@@ -7,6 +7,8 @@ what makes a brief push and a result fetch provable rather than asserted.
 A host is shaped by a flag file under `ssh-state/`: `<dest>.down` for an
 unreachable one, `.nonposix` for a Windows-shaped shell, `.noforge` for one with
 no GitHub credentials, `.norepo` for one where the repo is not there.
+`.pane-probe` is what a fleet on that host answers when its queue probe
+(`pane_probe.py`) is run there, and `.slow` holds the seconds it takes first.
 `.windows` hands the command to `windows_host`, which answers only what a
 PowerShell 5 sshd answers. `.realshell` RUNS the script with `sh -c`, the way
 sshd runs an account's login shell, with HOME at `<dest>.home` — POSIX only.
@@ -16,6 +18,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 
 from fleet_stubs import called, windows_host
 
@@ -44,7 +47,16 @@ def main() -> int:
         env = dict(os.environ, HOME=str(state / f"{dest}.home"))
         return subprocess.run(["/bin/sh", "-c", script], env=env).returncode
 
-    if "fleet-posix-ok" in script:
+    if "pane_probe.py" in script:
+        slow = state / f"{dest}.slow"
+        if slow.is_file():
+            time.sleep(float(slow.read_text(encoding="utf-8").strip() or 0))
+        answer = state / f"{dest}.pane-probe"
+        if not answer.is_file():
+            sys.stderr.write("uv: command not found\n")
+            return 127
+        sys.stdout.write(answer.read_text(encoding="utf-8"))
+    elif "fleet-posix-ok" in script:
         if flag("nonposix"):
             sys.stderr.write("printf : The term 'printf' is not recognized as a cmdlet.\n")
             return 1

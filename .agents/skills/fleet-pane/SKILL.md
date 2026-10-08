@@ -174,6 +174,17 @@ Esc cancels, All topics clears the filter. `a`, `n`, `l` reach the
 other chips. Fuel starts hidden; its chip or `f` shows compact gauges in two
 columns. Wheel scrolling moves the selected column’s card (click another
 column first), or scrolls the detail view.
+OTHER FLEETS — on this machine or on any host in thurbox's `hosts.toml` — come
+from `uv run fleet peers --records`, which the board probes every 30 seconds
+and which asks each peer only to run its own read-only queue probe
+(`scripts/lib/peers.py` owns discovery, the cache and the statuses). With a
+peer in sight the board grows a `fleet:` chip and `h` cycles it: this fleet
+(the default), all, each peer, then each host holding several. Cards name their
+fleet only while more than one is visible; a peer's card is read-only — Enter
+and `d` do nothing — and the header names every peer that is not answering
+(`<host>/<fleet>: unreachable 3m`, or `stale` with its last reading kept). No
+peer draws the board exactly as before. A peer the session list does not show
+goes in `orchestration/peers.conf` (`peers.example.conf` names the format).
 Recent landed cards (24 hours) start folded. The board uses the active theme,
 native link roles. Thurbox 2.51.7 blocks drag-selection in floating panes;
 text copying awaits kernel support. Ctrl+H/Ctrl+L still belong

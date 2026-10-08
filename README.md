@@ -85,6 +85,12 @@ filter. Agent, needs-me and landed chips filter or fold the view. Fuel is
 hidden by default; click its chip or press `f` for compact gauges in two
 columns. Esc returns from the record, then closes the board.
 
+Running several fleets, here or on other hosts? Press `h` to cycle the fleet
+filter: this fleet (the default), all of them, or one peer or host. Other
+fleets' cards are read-only, and the header names any host that stopped
+answering. thurbox's session list finds the other fleets; `uv run fleet peers`
+shows what the board sees.
+
 The board uses six columns, arranged in two bands below 180 terminal columns.
 Recent landed work (the last 24 hours) starts folded. Links
 use thurbox’s normal handling. Drag-selection in the overlay awaits thurbox

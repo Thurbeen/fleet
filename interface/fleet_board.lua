@@ -1,6 +1,8 @@
 -- Full-screen, read-only projection of fleet_reader's already parsed records.
 -- This library shares its caller's trust, queue/fuel probes and fleet choice.
 -- Node roles leave links to thurbox’s native handler.
+-- Other fleets' cards (`fleet peers`) are drawn only when the fleet filter asks
+-- for them, and are read-only: nothing here focuses, opens or acts on them.
 local ui = require("lib.ui")
 local widgets = require("lib.widgets")
 local theme = require("lib.theme")
@@ -12,6 +14,8 @@ local headings =
 local statuses = { "blocked", "working", "done", "blocked", "error", "done" }
 local columns, topics, agents, geometry, lead, selected = { {}, {}, {}, {}, {}, {} }, {}, {}, {}, nil, nil
 local cached_model, cached_filter, locations, heights_by_column = nil, nil, {}, {}
+-- The fleet filter's choices and whether more than one fleet is on screen.
+local cached_peers, scopes, multi = nil, {}, false
 local view_column, view_index, detail_offset = 1, 1, 0
 local function span(value, color, role)
   return { text = value, style = { fg = color or theme.text }, role = role }
@@ -86,10 +90,14 @@ local function choose(c, n, persist)
   selected = columns[view_column][view_index]
   if persist ~= false then
     state.board_column, state.board_index = view_column, view_index
-    state.board_ref = selected and selected.ref
+    state.board_ref = selected and selected.key
   end
 end
 local function session(task)
+  -- A peer's session ids are its host's, not this one's.
+  if task.peer then
+    return nil
+  end
   for _, s in ipairs(thurbox.sessions or {}) do
     if task.session ~= "" and s.id == task.session then
       return s
@@ -136,6 +144,13 @@ local function card_spans(row, width)
     local spec = ui.status(status, row.elapsed)
     b:add(" " .. spec.glyph .. " ", { fg = spec.color or theme.accent })
     b:add(widgets.truncate(task.title, math.max(0, width - 4)), { fg = theme.text, bold = true })
+  elseif row.line == 3 and task.peer then
+    local agent = widgets.truncate(task.agent ~= "" and task.agent or "unknown", math.max(6, math.floor(width / 3)))
+    b:add(" " .. agent .. " ", { fg = theme.muted })
+    b:add("read-only", { fg = theme.muted })
+  elseif row.line == 5 and multi then
+    -- Whose card this is, only once a second fleet shares the board.
+    b:add(" " .. widgets.truncate(task.fleet_label, math.max(1, width - 2)), { fg = theme.secondary })
   elseif row.line == 3 then
     local live = session(task)
     local host = task.host ~= ""
@@ -197,7 +212,7 @@ local function column_node(c, width, height, elapsed)
     pad = true,
     cursor = view_column == c and ((index - first) * 5 + 1) or 0,
     id_of = function(row)
-      return "board:" .. row.task.ref
+      return "board:" .. row.task.key
     end,
     row = function(row)
       return card_spans(row, width - 2)
@@ -210,7 +225,7 @@ local function column_node(c, width, height, elapsed)
     end
   end
   for _, node in ipairs(body.children or {}) do
-    if selected and node.id == "board:" .. selected.ref then
+    if selected and node.id == "board:" .. selected.key then
       node.style = selection
     end
   end
@@ -480,7 +495,7 @@ local function picker_action(name)
     state.board_picker = picker
   else
     -- Catalog-bound letters still type into the picker, like native search.
-    local char = ({ topic = "t", agent = "a", needs = "n", landed = "l", detail = "d", fuel = "f" })[name]
+    local char = ({ topic = "t", agent = "a", needs = "n", landed = "l", detail = "d", fuel = "f", scope = "h" })[name]
     if not textinput.key(picker.field, { key = char or name, char = char }) then
       return false
     end
@@ -491,25 +506,98 @@ local function picker_action(name)
   end
   return true
 end
-function M.render(ctx, model, fuel, worker, fleet, warning)
+--- How long ago, for a peer's status: seconds count while they are all there is.
+local function ago(seconds)
+  seconds = math.max(0, math.floor(seconds or 0))
+  return seconds < 60 and seconds .. "s"
+    or seconds < 3600 and math.floor(seconds / 60) .. "m"
+    or seconds < 86400 and math.floor(seconds / 3600) .. "h"
+    or math.floor(seconds / 86400) .. "d"
+end
+--- The fleet filter's choices: this fleet, all of them, each peer, then each
+--- host that holds more than one fleet. Nothing at all without a peer.
+local function scope_options(peers)
+  if #peers == 0 then
+    return {}
+  end
+  local out = { { name = "this" }, { id = "*", name = "all" } }
+  local hosts, count = { "local" }, { ["local"] = 1 }
+  for _, peer in ipairs(peers) do
+    out[#out + 1] = { id = "fleet:" .. peer.key, name = peer.label }
+    if not count[peer.host] then
+      hosts[#hosts + 1] = peer.host
+    end
+    count[peer.host] = (count[peer.host] or 0) + 1
+  end
+  for _, host in ipairs(hosts) do
+    if count[host] > 1 then
+      out[#out + 1] = { id = "host:" .. host, name = "host " .. host }
+    end
+  end
+  return out
+end
+local function in_scope(scope, peer)
+  if scope == nil then
+    return peer == nil
+  elseif scope == "*" then
+    return true
+  end
+  local host = peer and peer.host or "local"
+  return scope == "host:" .. host or peer ~= nil and scope == "fleet:" .. peer.key
+end
+-- One empty table, so a board with no peers keeps its card cache between frames.
+local NO_PEERS = {}
+function M.render(ctx, model, fuel, worker, fleet, warning, peers)
   lead = worker
+  peers = peers or NO_PEERS
   local now = (thurbox.taken_at_ms or widgets.now_ms()) / 1000
+  -- A choice that names a peer no longer on the wire falls back to this fleet
+  -- for the frame, without writing state: rendering is read-only.
+  scopes = scope_options(peers)
+  local scope, scope_name = nil, "this"
+  for _, option in ipairs(scopes) do
+    if option.id and option.id == state.board_scope then
+      scope, scope_name = option.id, option.name
+    end
+  end
   local filter = table.concat(
     { state.board_topic or "", state.board_agent or "", tostring(state.board_needs), tostring(math.floor(now / 60)) },
     "\t"
-  )
-  if cached_model ~= model or cached_filter ~= filter then
-    cached_model, cached_filter = model, filter
+  ) .. (scope and "\t" .. scope or "")
+  if cached_model ~= model or cached_filter ~= filter or cached_peers ~= peers then
+    cached_model, cached_filter, cached_peers = model, filter, peers
     columns = { {}, {}, {}, {}, {}, {} }
     topics = {}
     agents = {}
     locations = {}
     heights_by_column = { {}, {}, {}, {}, {}, {} }
     local seen = {}
-    for ti, topic in ipairs(model.topics) do
-      topics[#topics + 1] = { slug = topic.slug, title = topic.title, count = #topic.tasks }
+    -- "this", as the filter calls it and `fleet peers` labels it: a peer is
+    -- named by its checkout's basename, and two clones are both `fleet`.
+    local sources = { { model = model, label = "local/this" } }
+    for _, peer in ipairs(peers) do
+      if in_scope(scope, peer) and peer.model then
+        sources[#sources + 1] = { model = peer.model, label = peer.label, peer = peer }
+      end
+    end
+    if not in_scope(scope, nil) then
+      table.remove(sources, 1)
+    end
+    multi = #sources > 1
+    local listed, ti = {}, 0
+    for _, source in ipairs(sources) do
+    for _, topic in ipairs(source.model.topics) do
+      ti = ti + 1
+      if listed[topic.slug] then
+        listed[topic.slug].count = listed[topic.slug].count + #topic.tasks
+      else
+        topics[#topics + 1] = { slug = topic.slug, title = topic.title, count = #topic.tasks }
+        listed[topic.slug] = topics[#topics]
+      end
       for _, task in ipairs(topic.tasks) do
         task.ref = topic.slug .. "/" .. task.id
+        task.peer, task.fleet_label = source.peer, source.label
+        task.key = source.peer and source.peer.key .. "#" .. task.ref or task.ref
         task.topic_index = ti
         task.agent, task.host, task.session, task.review, task.publish_detail =
           task.agent or "", task.host or "", task.session or "", task.review or "", task.publish_detail or ""
@@ -525,10 +613,11 @@ function M.render(ctx, model, fuel, worker, fleet, warning)
           and (not state.board_needs or needs(task))
         then
           columns[c][#columns[c] + 1] = task
-          locations[task.ref] = { column = c, index = #columns[c] }
+          locations[task.key] = { column = c, index = #columns[c] }
           heights_by_column[c][#columns[c]] = 5
         end
       end
+    end
     end
   end
   selected = nil
@@ -587,6 +676,20 @@ function M.render(ctx, model, fuel, worker, fleet, warning)
       theme.muted
     ),
   })
+  -- Every peer that is not answering, by name; the rest are one count.
+  if #peers > 0 then
+    local fine = 0
+    for _, peer in ipairs(peers) do
+      if peer.status == "ok" then
+        fine = fine + 1
+      else
+        header.text[1][#header.text[1] + 1] = span("   " .. peer.label .. ": " .. peer.status .. " " .. ago(peer.age), theme.warn)
+      end
+    end
+    if fine > 0 then
+      header.text[1][#header.text[1] + 1] = span("   peers ok " .. fine .. "/" .. #peers, theme.muted)
+    end
+  end
   local filters = text({
     chip(
       "topic: " .. (state.board_topic or "all"),
@@ -602,6 +705,10 @@ function M.render(ctx, model, fuel, worker, fleet, warning)
     span(" "),
     chip("fuel: " .. (state.board_fuel and "shown" or "hidden"), "fuel", state.board_fuel),
   })
+  if #scopes > 0 then
+    table.insert(filters.text[1], 1, span(" "))
+    table.insert(filters.text[1], 1, chip("fleet: " .. scope_name, "scope", scope ~= nil))
+  end
   if state.board_picker then
     for _, run in ipairs(filters.text[1]) do
       if run.role and run.role ~= "action:fleetqueue.board_close" then
@@ -614,30 +721,35 @@ function M.render(ctx, model, fuel, worker, fleet, warning)
   if selected then
     strip[#strip + 1] = { type = "text", len = 2, wrap = true, text = { linked(" " .. note(selected)) } }
     strip[#strip + 1] = text({
-      chip("Record", "detail", false),
+      selected.peer and span(" read-only · " .. selected.fleet_label, theme.muted) or chip("Record", "detail", false),
       span(" "),
       url(selected.artifact) and span("artifact", theme.accent, "url:" .. selected.artifact) or span(""),
       span(" "),
       url(selected.review) and span("review", theme.accent, "url:" .. selected.review) or span(""),
     })
   end
-  local selected_panel = ui.panel({ title = selected and "Selected · " .. selected.ref or "Selected", body = strip })
+  local selected_panel = ui.panel({
+    title = selected and "Selected · " .. selected.ref .. (selected.peer and " · " .. selected.fleet_label or "")
+      or "Selected",
+    body = strip,
+  })
   if state.board_picker then
     selected_panel = topic_picker(ctx)
   end
   selected_panel.len = strip_height
-  local footer = ui.footer({
-    cancel = "Close",
-    actions = {
-      { "fleetqueue.board_left", "column" },
-      { "fleetqueue.board_down", "card" },
-      { "fleetqueue.board_enter", "focus / record" },
-      { "fleetqueue.board_detail", "record" },
-      { "fleetqueue.board_topic", "topic" },
-      { "fleetqueue.board_fuel", "fuel" },
-      { "fleetqueue.board_close", "close" },
-    },
-  })
+  local actions = {
+    { "fleetqueue.board_left", "column" },
+    { "fleetqueue.board_down", "card" },
+    { "fleetqueue.board_enter", "focus / record" },
+    { "fleetqueue.board_detail", "record" },
+    { "fleetqueue.board_topic", "topic" },
+    { "fleetqueue.board_fuel", "fuel" },
+    { "fleetqueue.board_close", "close" },
+  }
+  if #scopes > 0 then
+    table.insert(actions, #actions, { "fleetqueue.board_scope", "fleet" })
+  end
+  local footer = ui.footer({ cancel = "Close", actions = actions })
   if state.board_picker then
     footer = ui.footer({
       cancel = "Cancel",
@@ -704,6 +816,19 @@ function M.on_action(action)
       end
     end
     state.board_picker = { field = field, cursor = cursor }
+  elseif name == "scope" then
+    -- Cycles the choices the last frame drew; with no peer there are none.
+    if #scopes == 0 then
+      return false
+    end
+    local next_scope = scopes[1].id
+    for i, option in ipairs(scopes) do
+      if option.id == state.board_scope then
+        next_scope = scopes[i % #scopes + 1].id
+      end
+    end
+    state.board_scope = next_scope
+    state.board_ref = nil
   elseif name == "agent" then
     state.board_agent = cycle(agents, state.board_agent)
     state.board_ref = nil
@@ -715,7 +840,9 @@ function M.on_action(action)
   elseif name == "landed" then
     state.board_landed = not state.board_landed
   elseif name == "enter" or name == "detail" then
-    if selected then
+    -- Another fleet's card is read-only: its record and its worker are that
+    -- fleet's, and nothing here may reach them.
+    if selected and not selected.peer then
       local live = name == "enter" and session(selected)
       if live then
         command("action", { text = "session.focus", session = live.id })
@@ -775,6 +902,7 @@ function M.on_key(key)
     l = "landed",
     d = "detail",
     f = "fuel",
+    h = "scope",
   })[key.key]
   return name and M.on_action("fleetqueue.board_" .. name) or false
 end

@@ -211,6 +211,14 @@ names every path and the reason for each.
 - `interface/fleet_kanban.lua` — the Alt+K full-screen queue dashboard;
   `interface/fleet_queue.lua` remains the optional legacy column. Both use
   `interface/fleet_reader.lua` over the same records `fleet queue list` reads.
+  **Other fleets reach the board through `uv run fleet peers`**
+  (`scripts/lib/peers.py`): it finds every other Mission Control in thurbox's
+  session list — this machine's and every `hosts.toml` host's — and asks each
+  only to run its own read-only queue probe, locally or over ssh, cached and
+  bounded, so another fleet's lead stays a peer whose records are only ever
+  READ. The board's `fleet:` filter defaults to this fleet, and no peer draws
+  it exactly as before. `orchestration/peers.example.conf` names none; a
+  gitignored `peers.conf` adds a peer or turns discovery off.
   The floating plugin returns nothing while closed; only the column owns a
   layout slot, so `plugin check` still detects an unplaced column.
   `uv run fleet install-extension` installs both plugins and their libraries

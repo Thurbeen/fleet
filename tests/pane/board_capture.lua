@@ -115,6 +115,7 @@ for key, name in pairs({
   l = "landed",
   d = "detail",
   f = "fuel",
+  h = "scope",
 }) do
   keys[#keys + 1] = { key = key, action = "fleetqueue.board_" .. name, desc = name }
 end

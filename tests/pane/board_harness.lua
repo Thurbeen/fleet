@@ -289,6 +289,28 @@ thurbox.runs["fleetfuel:lead"] = {
   state = "done",
   stdout = "provider\tfixture\nremaining\t62\nreserve\t20\nwindow\tsession\t62\t2000003000\tsession\n\n",
 }
+-- Three peers on the board's wire: one read, one never reached, and one whose
+-- last reading is stale — and whose topic shares a slug with this fleet's, so
+-- two `alpha/01-ready` cards must stay two cards.
+local peer_wire = table.concat({
+  "P\tdevbox:/srv/fleet\tdevbox\tdevbox/fleet\tok\t0\t",
+  "R\t/srv/fleet/orchestration/queue",
+  "H\tticking\t2000000000",
+  "T\tfar\tFar topic",
+  "K\t01-far\tdispatched\tFar away task\t\t\t\t1\t0\t0\tfeat/far\t1999999000\tpr\t\t0",
+  "B\tfar/01-far\tclaude\t\tworker\t\t\t",
+  "A\t0",
+  "P\tdownbox:/srv/fleet\tdownbox\tdownbox/fleet\tunreachable\t180\tNo route to host",
+  "P\tlocal:/other\tlocal\tlocal/acme\tstale\t600\tno answer in 15s",
+  "R\t/other/orchestration/queue",
+  "T\talpha\tAlpha elsewhere",
+  "K\t01-ready\tqueued\tElsewhere ready\t\t\t\t1\t0\t0\tfeat/x\t1999999000\tpr\t\t0",
+  "B\talpha/01-ready\tcodex\t\t\t\t\t",
+  "A\t0",
+}, "\n") .. "\n"
+if scenario:match("^peers") and scenario ~= "peers-none" then
+  thurbox.runs["fleetpeers:lead"] = { state = "done", stdout = peer_wire }
+end
 local calls, commands = {}, {}
 _G.run = function(key, cmd, opts)
   calls[#calls + 1] = { key = key, cmd = cmd, opts = opts }
@@ -392,8 +414,8 @@ elseif scenario == "health-memo" then
 end
 assert(pane.on_action("fleetqueue.board"), "the live pane has no board toggle")
 local ctx = {
-  width = (scenario == "narrow" or scenario == "mouse-band") and 120 or 200,
-  height = (scenario == "narrow" or scenario == "mouse-band") and 40 or 50,
+  width = (scenario == "narrow" or scenario == "mouse-band" or scenario:match("%-narrow$")) and 120 or 200,
+  height = (scenario == "narrow" or scenario == "mouse-band" or scenario:match("%-narrow$")) and 40 or 50,
   elapsed = 0,
 }
 local function tree()
@@ -764,6 +786,149 @@ elseif scenario == "missing-session" then
   contains("Detail")
 elseif scenario == "reserved" then
   assert(not pane.on_key({ key = "ctrl+h" }) and not pane.on_key({ key = "ctrl+l" }))
+elseif scenario == "peers-none" then
+  -- No peer is the board as it always was: no answer, an empty answer and a
+  -- probe that failed all draw the identical tree, chip for chip.
+  local function dump(value, out)
+    out = out or {}
+    if type(value) ~= "table" then
+      out[#out + 1] = tostring(value)
+      return out
+    end
+    local keys = {}
+    for k in pairs(value) do
+      keys[#keys + 1] = k
+    end
+    table.sort(keys, function(a, b)
+      return tostring(a) < tostring(b)
+    end)
+    out[#out + 1] = "{"
+    for _, k in ipairs(keys) do
+      out[#out + 1] = tostring(k) .. "="
+      dump(value[k], out)
+    end
+    out[#out + 1] = "}"
+    return out
+  end
+  local function view()
+    return table.concat(dump(tree()), " ")
+  end
+  local function columns_table()
+    for i = 1, 200 do
+      local name, value = debug.getupvalue(require("lib.fleet_board").render, i)
+      if not name then
+        break
+      end
+      if name == "columns" then
+        return value
+      end
+    end
+  end
+  local first = columns_table()
+  tree()
+  assert(columns_table() == first, "a board with no peers rebuilt its cards on an unchanged frame")
+  local baseline = view()
+  assert(not baseline:find("fleet: ", 1, true), "a board with no peers grew a fleet filter")
+  for _, answer in ipairs({
+    { state = "done", stdout = "" },
+    { state = "failed", stdout = "" },
+    { state = "pending" },
+  }) do
+    thurbox.runs["fleetpeers:lead"] = answer
+    assert(view() == baseline, "no peers changed the board: " .. answer.state)
+  end
+  assert(not pane.on_action("fleetqueue.board_scope"), "the fleet key acts with no peer to show")
+  local asked = false
+  for _, call in ipairs(calls) do
+    asked = asked or call.cmd:find("fleet peers --records", 1, true) ~= nil
+  end
+  assert(asked, "the board never asks for its peers")
+elseif scenario == "peers-default" or scenario == "peers-default-narrow" then
+  contains("fleet: this")
+  contains("Ready")
+  assert(not strings(tree()):find("Far away task", 1, true), "the default view drew another fleet's tasks")
+  assert(not strings(tree()):find("Elsewhere ready", 1, true), "the default view drew another fleet's tasks")
+  contains("downbox/fleet: unreachable 3m")
+  contains("local/acme: stale 10m")
+  assert(not strings(tree()):find("local/this", 1, true), "one fleet visible, and its cards name it")
+elseif scenario == "peers-scope" or scenario == "peers-scope-narrow" then
+  action("scope")
+  contains("fleet: all")
+  contains("Far away task")
+  -- More than one fleet is visible, so every card says whose it is.
+  local labels = {}
+  for _, node in ipairs(nodes(tree())) do
+    local id = node.id or ""
+    if id:find("^board:") then
+      labels[id] = (labels[id] or "") .. strings(node)
+    end
+  end
+  assert((labels["board:alpha/03-work"] or ""):find("local/this", 1, true), "a local card hides its fleet")
+  assert((labels["board:devbox:/srv/fleet#far/01-far"] or ""):find("devbox/fleet", 1, true), "a peer card hides its fleet")
+  if scenario == "peers-scope" then
+    contains("Ready")
+    contains("Elsewhere ready")
+    assert(labels["board:local:/other#alpha/01-ready"] and labels["board:alpha/01-ready"], "two fleets' alpha/01-ready became one card")
+  end
+  assert(#nodes(tree()) < (scenario == "peers-scope" and 300 or 250))
+  local seen = { "all" }
+  for _ = 1, 4 do
+    action("scope")
+    seen[#seen + 1] = strings(tree()):match(" fleet: ([^ ]+)")
+  end
+  assert(
+    table.concat(seen, ",") == "all,devbox/fleet,downbox/fleet,local/acme,host",
+    "the fleet filter cycles " .. table.concat(seen, ",")
+  )
+  contains("Working")
+  assert(not strings(tree()):find("Far away task", 1, true), "the local host showed a remote fleet")
+  action("scope")
+  contains("fleet: this")
+  action("scope")
+  action("scope")
+  contains("Far away task")
+  assert(not strings(tree()):find("Ready", 1, true), "one peer's view drew this fleet")
+  for _, node in ipairs(nodes(tree())) do
+    if node.id == "board:devbox:/srv/fleet#far/01-far" then
+      assert(not strings(node):find("devbox/fleet", 1, true), "one fleet visible, and its cards name it")
+    end
+  end
+elseif scenario == "peers-readonly" then
+  action("scope")
+  assert(pane.on_click({ id = "board:devbox:/srv/fleet#far/01-far" }), "a peer card cannot be selected")
+  assert(state.board_ref == "devbox:/srv/fleet#far/01-far")
+  contains("read-only")
+  local before = #commands
+  action("enter")
+  action("detail")
+  assert(#commands == before, "a peer card focused a session here")
+  assert(not state.board_detail, "a peer card opened this fleet's record of it")
+  assert(state.board_open, "Enter on a peer card closed the board")
+  for _, call in ipairs(calls) do
+    assert(not call.cmd:find("queue show", 1, true), "a peer card asked this fleet's queue")
+  end
+  local chips = {}
+  for _, run in ipairs(tree().children[#tree().children - 1].children[3].text[1]) do
+    chips[#chips + 1] = run.role or ""
+  end
+  assert(not table.concat(chips, " "):find("board_detail", 1, true), "a peer card offers the record chip")
+  assert(pane.on_click({ id = "board:local:/other#alpha/01-ready" }))
+  contains("Elsewhere ready")
+  assert(pane.on_click({ id = "board:alpha/01-ready" }))
+  action("detail")
+  contains("Detail")
+elseif scenario == "peers-picker" then
+  action("scope")
+  action("topic")
+  local rows = {}
+  for _, node in ipairs(nodes(tree())) do
+    if (node.id or ""):find("^board%-topic:") then
+      rows[#rows + 1] = node.id
+    end
+  end
+  assert(table.concat(rows, ",") == "board-topic:*,board-topic:alpha,board-topic:far", table.concat(rows, ","))
+  assert(pane.on_key({ key = "h", char = "h" }), "the fleet key stopped typing into search")
+  assert(state.board_picker.field.value == "h")
 elseif scenario == "failure" then
   thurbox.runs["fleetqueue:lead"] = { state = "failed", stdout = "" }
   contains("queue unavailable")

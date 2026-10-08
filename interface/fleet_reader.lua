@@ -141,6 +141,23 @@ local PROBE = "uv run --frozen --quiet python scripts/lib/pane_probe.py"
 --- below draws as a reading nobody could take rather than as a blank.
 local FUEL_PROBE = "uv run --frozen --quiet fleet status --fuel"
 
+--- The board's peers: every OTHER fleet's queue, read on its lead's host.
+---
+--- `fleet peers --records` (`scripts/lib/peers.py`, whose docstring owns the
+--- wire) asks each peer to run its own queue probe and prints one `P` header
+--- per peer before that probe's records, verbatim, so each peer is parsed by
+--- `build_model` below and nothing else. The command caches each peer for its
+--- own TTL; this one only decides how often the board asks the command. A host
+--- that never answers costs the command its timeout, never this pane a frame,
+--- because the probe runs in the kernel like the other two.
+---
+--- Asked for the BOARD only. The legacy column draws one fleet and always will.
+local PEERS_TTL = 30
+-- The command's own worst case: thurbox's session list (30s), then the peers
+-- at once (15s), and `uv run` around both.
+local PEERS_TIMEOUT = 60
+local PEERS_PROBE = "uv run --frozen --quiet fleet peers --records"
+
 -- ── Reading the probe ──────────────────────────────────────────────────────
 
 --- A YAML scalar with its quoting off, and `null` read as the absence it is.
@@ -377,6 +394,37 @@ local function build_model(stdout)
   return model
 end
 
+--- Every peer on the wire, each with a model of its own: blockers resolve
+--- inside the fleet that recorded them, never across two queues.
+local function build_peers(stdout)
+  local out, current, lines = {}, nil, {}
+  local function close()
+    if current then
+      current.model = build_model(table.concat(lines, "\n"))
+      out[#out + 1] = current
+    end
+    lines = {}
+  end
+  for line in (stdout .. "\n"):gmatch("(.-)\n") do
+    if line:sub(1, 2) == "P\t" then
+      close()
+      local f = split_tabs(line)
+      current = {
+        key = f[2] or "",
+        host = f[3] or "",
+        label = f[4] or "",
+        status = f[5] or "",
+        age = tonumber(f[6]) or 0,
+        reason = f[7] or "",
+      }
+    elseif current and line ~= "" then
+      lines[#lines + 1] = line
+    end
+  end
+  close()
+  return out
+end
+
 --- `build_model`, done again only when the output actually changed.
 ---
 --- The kernel keeps the previous answer readable while a refresh is in flight,
@@ -388,7 +436,7 @@ local memos = {}
 local function memo_for(view)
   view = view or "default"
   if not memos[view] then
-    memos[view] = { queue = {}, fuel = {} }
+    memos[view] = { queue = {}, fuel = {}, peers = {} }
   end
   return memos[view]
 end
@@ -500,6 +548,17 @@ local function fuel_for(stdout, view)
     fuel_parsed.fuel = build_fuel(stdout)
   end
   return fuel_parsed.fuel
+end
+
+--- `build_peers`, done again only when the wire actually changed — so an
+--- unchanged answer hands the board the same tables, and its card cache holds.
+local function peers_for(stdout, view)
+  local parsed = memo_for(view).peers
+  if parsed.src ~= stdout then
+    parsed.src = stdout
+    parsed.peers = build_peers(stdout)
+  end
+  return parsed.peers
 end
 
 local selected_fleet
@@ -619,6 +678,18 @@ function M.read(ctx, view)
     end
   end
 
+  -- No answer, a failed one and an empty one are all "no peers": the board
+  -- then draws exactly what it drew before peers existed.
+  local peers
+  if view == "board" then
+    local peers_key = "fleetpeers:" .. lead.id
+    run(peers_key, PEERS_PROBE, { session = lead.id, ttl = PEERS_TTL, timeout = PEERS_TIMEOUT })
+    local peers_answer = (thurbox.runs or {})[peers_key]
+    if peers_answer and peers_answer.state ~= "failed" and (peers_answer.stdout or "") ~= "" then
+      peers = peers_for(peers_answer.stdout, view)
+    end
+  end
+
   if not answer or answer.state == "pending" then
     return { error = { spinner .. " reading the queue…" }, lead = lead, fleet = fleet }
   end
@@ -635,7 +706,7 @@ function M.read(ctx, view)
   if model.error then
     return { error = { model.error, lead.cwd }, lead = lead, fleet = fleet }
   end
-  return { model = model, fuel = fuel, lead = lead, fleet = fleet, spinner = spinner }
+  return { model = model, fuel = fuel, lead = lead, fleet = fleet, spinner = spinner, peers = peers }
 end
 M.model_for = function(stdout)
   return model_for(stdout)
