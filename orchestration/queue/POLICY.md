@@ -184,7 +184,9 @@ review: <published thurview page URL>
 For a task spanning repositories, run the flow per change request and use a
 `reviews:` mapping keyed by repository path, alongside `artifacts:`. Missing
 reviews show `review: missing` and never block collection. Collect refreshes
-review addresses on concluded tasks too. The reader can export the review
+completed live tasks when their local result changes; an explicit
+`fleet queue collect --refresh-reviews` also fetches completed remote results.
+Archived results are skipped. The reader can export the review
 for another agent when the installed workflow provides its Markdown export.
 
 A direct push with no change request is a commit-range review: use the

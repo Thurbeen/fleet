@@ -137,6 +137,12 @@ landing. A `reviews:` mapping beside `artifacts:` records a URL per repository
 as a list of `{repo, url}` under `review_url`; `show` and the run log name all
 of them and the pane links the first, as it does for artifacts.
 
+Completed live tasks refresh when their local result changes. The optional
+`review_result: [mtime_ns, size]` records which result was read; old records
+are read once to establish it. Archived results are skipped. Remote completed
+results are fetched only with `fleet queue collect --refresh-reviews`, after
+a worker changes its review, rather than on every reconciler pass.
+
 The installed `thurview-pr-review` skill owns PR/MR review and posting;
 fleet picks, waits, merges and records. See [POLICY.md](POLICY.md) for that
 handoff, missing-setup handling and review lifetime. The `review:` value is
