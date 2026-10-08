@@ -837,11 +837,31 @@ uv run fleet queue list              # a line per task, grouped by topic
 uv run fleet queue list --topic X    # one topic, archived or not
 uv run fleet queue list --archived   # only the topics the default view hides
 uv run fleet queue list --all        # both
+uv run fleet queue list --live       # and each open task's change requests, read from the forge now
 uv run fleet queue show <ref>        # one task's whole record, archived or not
+uv run fleet watch <pipeline-url | change-request-url | ref>  # block until it finishes
 ```
 
-`list` is what you read when someone asks what is in flight. **Do not read
-the briefs.** Each is written for one worker, and reading five is the
+`list` is what you read when someone asks what is in flight. **A record is
+what the loop last saw**, so anything you call *waiting on the operator* comes
+from `list --live`: it asks the forge for each open task's change requests —
+state, checks, review, mergeable and unresolved threads, through the same
+`get` the shepherd classifies — and says `merged on the forge — the record has
+not caught up` where `collect` has not run yet. It writes nothing.
+
+**Never write a poller.** `fleet watch` waits on a pipeline URL, a change
+request URL or a task ref and prints one line per change — job names whole,
+emoji included, each job its latest attempt — then one closing `watch:` line:
+exit 0 passed or merged, 1 failed, cancelled, closed or `manual`, 3 no check
+appeared within `--grace` (a repository with no CI), 124 timed out (no
+verdict). `--until merged` waits for the merge; `--follow` then
+watches the pipeline the merge commit started on the base branch and prints
+its jobs' apply summaries (`--match` sets the pattern). It blocks for up to
+`--timeout` (default an hour), so run it in the background or give it a
+timeout inside your tool's limit. `scripts/lib/watch.py`'s docstring is the
+full usage.
+
+**Do not read the briefs.** Each is written for one worker, and reading five is the
 mixing-up the queue exists to prevent. A ref is `<topic>/<task>`, or a bare
 task id when only one topic has it.
 

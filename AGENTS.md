@@ -197,9 +197,13 @@ names every path and the reason for each.
   hosts the GitLab adapter owns is READ OFF THE MACHINE**, from `glab auth
   status`; `configured_hosts`' own docstring owns that rule and its two
   overrides, and the module's docstring owns the interface and how to add a
-  third. Two things follow: a repository is identified by HOST plus path
-  (`github.com/Thurbeen/fleet`), because a bare `owner/repo` names two
-  different repositories once two forges exist; and **the seam is driven, not
+  third. Its questions include a PIPELINE's jobs, which `uv run fleet watch`
+  (`scripts/lib/watch.py`) polls so that no lead writes its own poller, and a
+  change request's unresolved threads, which `fleet queue list --live` reports
+  beside its state and checks. Two things follow: a repository is identified
+  by HOST plus path (`github.com/Thurbeen/fleet`), because a bare
+  `owner/repo` names two different repositories once two forges exist; and
+  **the seam is driven, not
   asserted** — `tests/queue/test_forge_seam.py` and `test_gitlab.py` run
   `collect`, the landing check and `shepherd` through a second forge with `gh`
   on PATH as a tripwire. That is the bar every other seam here is judged
