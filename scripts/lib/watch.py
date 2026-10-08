@@ -275,10 +275,12 @@ def main(argv: list) -> int:
             outcomes.append(outcome)
             if len(pairs) > 1:
                 say(f"{cr.name if cr else ref.url}  {outcome}")
-        # A verdict outranks a timeout: one change request closed while another
-        # was still running at the deadline is a failure, said as one.
-        overall = next((o for o in outcomes if o not in SUCCESS and o != "timeout"), None) or next(
-            (o for o in outcomes if o == "timeout"), outcomes[0])
+        # A real verdict first, then a timeout, then "no check reported": one
+        # change request closed or red beside one still running, or one with no
+        # CI at all, is a failure, said as one.
+        weak = ("timeout", NO_CHECKS)
+        overall = (next((o for o in outcomes if o not in SUCCESS and o not in weak), None)
+                   or next((o for w in weak for o in outcomes if o == w), outcomes[0]))
         return finish(args.target, overall, clock)
     except KeyboardInterrupt:
         return 130

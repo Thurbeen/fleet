@@ -333,9 +333,8 @@ def test_watch_follow_says_when_the_merge_started_no_pipeline_yet(world, stubs):
     expect(run.out, "no pipeline on beef yet")
 
 
-def test_watch_a_task_across_repositories_reports_a_verdict_over_a_timeout(world, stubs, tmp_path):
-    """15m. One change request closed unmerged while the other is still running at
-    the deadline: the close is a verdict and the timeout is not, so the close wins."""
+def two_repo_task(world: World, tmp_path: Path) -> None:
+    """Task 01 spans acme/widgets (!361) and acme/gadgets (!362), both recorded."""
     other = tmp_path / "fake-forge" / "gadgets"
     git("init", "-q", "-b", "main", str(other))
     git("commit", "-q", "--allow-empty", "-m", "base", cwd=other)
@@ -345,12 +344,30 @@ def test_watch_a_task_across_repositories_reports_a_verdict_over_a_timeout(world
     gadgets = "https://forge.test:8443/acme/gadgets/-/merge_requests/"
     result_artifacts(world.task("01-two-repos"), "shipped", "Shipped both.",
                      {str(world.repo): f"{MR}361", str(other): f"{gadgets}362"})
+
+
+def test_watch_a_task_across_repositories_reports_a_verdict_over_a_timeout(world, stubs, tmp_path):
+    """15m. One change request closed unmerged while the other is still running at
+    the deadline: the close is a verdict and the timeout is not, so the close wins."""
+    two_repo_task(world, tmp_path)
     world.store.cr(361, head_branch="fix/two-repos", state="closed")
     world.store.cr(362, repo="acme/gadgets", head_branch="fix/two-repos", checks=[["gate", "pending"]])
     ok(world.q("collect"))
     run = world.watch(f"{TOPIC}/01-two-repos", "--timeout", "0")
     assert run.code == 1, run.out
     expect(run.stdout.splitlines()[-1], "closed")
+
+
+def test_watch_a_task_across_repositories_reports_red_ci_over_no_ci(world, stubs, tmp_path):
+    """15q. One repository has no CI and the other's checks failed: the failure is
+    the verdict. `no check reported` is the weakest word, after a timeout."""
+    two_repo_task(world, tmp_path)
+    world.store.cr(361, head_branch="fix/two-repos", checks=[])
+    world.store.cr(362, repo="acme/gadgets", head_branch="fix/two-repos", checks=[["gate", "failed"]])
+    ok(world.q("collect"))
+    run = world.watch(f"{TOPIC}/01-two-repos", "--grace", "0")
+    assert run.code == 1, run.out
+    expect(run.stdout.splitlines()[-1], "checks failed")
 
 
 # A `gh` that answers ONLY the `--json` fields it was asked for, the way gh does:
