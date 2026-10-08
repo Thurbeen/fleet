@@ -88,8 +88,13 @@ uv run fleet queue add report-status-honestly drop-idle-default \
 `--touches` is the paths you expect the task to change: a **risk signal that
 gets reported**, never a reason to hold anything back (§3).
 
-Two things `add` refuses up front, because both used to fail at `dispatch`
-and leave a task `queued` with a `task.yaml` to hand-edit:
+**`add` numbers the task; the slug carries no ordinal.** `add` drops a leading
+`NN-` (`01-design` would become `01-01-design`) and prints the final ref on
+stdout. Use that ref from then on. A ref that matches no task is refused, by
+`block --on` and everything else, and the refusal names the close matches.
+
+Two things `add` refuses up front, writing nothing, because both used to fail
+at `dispatch` and leave a task `queued` with a `task.yaml` to hand-edit:
 
 - **`--branch` must not exist yet.** thurbox's `--worktree-branch` only ever
   CREATES a branch. A repo this machine cannot read is not asked, so a
