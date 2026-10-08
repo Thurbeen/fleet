@@ -551,7 +551,8 @@ the tracked `flow.example.conf` names none) also verifies a change request
 from THAT branch, when the commits the forge lists for it include the head of
 the task's branch, read from the task's checkout. A squash into `develop`
 rewrites that commit, so such a task is proven by its feat→develop change
-request instead. A change request the forge reports **merged** closes its task even with
+request instead. Only the branch check is replaced: an `attested` task still
+needs develop→main's own attestation, or its merge. A change request the forge reports **merged** closes its task even with
 a stale attestation — whoever merged it answered "may this merge" — and the
 stale one is kept on the record as a note, never a hold.
 

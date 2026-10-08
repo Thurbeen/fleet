@@ -87,6 +87,28 @@ def test_a_develop_pr_without_the_task_head_is_refused(worked, stubs, isolated_e
     assert record(queue_dir, worked["topic"], "01-vend")["state"] == "queued"
 
 
+def test_an_attested_task_still_needs_the_develop_pr_attested_or_merged(
+    tmp_path, topic, queue_dir, stubs, isolated_env
+):
+    """The flow replaces the branch check only: an attestation is still a verdict
+    about the head that would merge, so develop→main needs its own, or its merge."""
+    flow(isolated_env, "github.com/acme/app = develop\n")
+    work = tmp_path / "attested-app"
+    git("init", "-q", "-b", "main", str(work))
+    git("commit", "-q", "--allow-empty", "-m", "base", cwd=work)
+    ok(q("add", topic, "vend-attested", "--title", "Vend attested", "--repo", str(work),
+         "--branch", "feat/vend-attested", "--number", "02", "--publish", "attested"))
+    git("checkout", "-q", "-b", "feat/vend-attested", cwd=work)
+    git("commit", "-q", "--allow-empty", "-m", "feat: vend", cwd=work)
+    tip = git("rev-parse", "HEAD", cwd=work).strip()
+    develop_pr(stubs, 1210, tip)
+    result(queue_dir / topic / "02-vend-attested", "shipped", "develop→main is open.", PR + "1210")
+    expect(q("collect", "--no-reap").out, "NOT CLOSED", "attestation")
+
+    stubs.pr_state(1210, "MERGED")
+    expect(ok(q("collect", "--no-reap")).out, "[publish verified: attested]")
+
+
 def test_a_full_page_of_commits_without_the_head_is_unchecked_not_refused(
     worked, stubs, isolated_env, queue_dir
 ):

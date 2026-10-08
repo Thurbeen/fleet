@@ -129,9 +129,11 @@ names every path and the reason for each.
   it answers `""` rather than guessing.
 - `orchestration/flow.example.conf` — repositories whose work reaches `main`
   through an INTEGRATION BRANCH (`github.com/owner/repo = develop`). `collect`
-  then also verifies a `develop → main` change request that contains the task
-  branch's head. Tracked and naming none; copy it to a gitignored `flow.conf`.
-  `scripts/lib/queue.py`'s `integration_verdict` owns the rule.
+  then also accepts a `develop → main` change request that contains the task
+  branch's head, in place of the branch check only (an `attested` task still
+  needs its attestation or its merge). Tracked and naming none; copy it to a
+  gitignored `flow.conf`. `scripts/lib/queue.py`'s `integration_verdict` owns
+  the rule.
 - `orchestration/session-glyphs.example.conf` — the mark fleet's sessions wear
   in the thurbox session list: `📡` on the lead and one word per KIND of session
   fleet spawns — a queue worker, the `diagnose-machine` sweep, the `review-prs`

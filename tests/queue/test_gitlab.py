@@ -230,6 +230,29 @@ def test_the_whole_queue_runs_through_the_gitlab_adapter(gitlab_queue, glab, stu
     assert stubs.calls("gh") == [], "a code path ran `gh` against a GitLab merge request"
 
 
+def test_a_develop_merge_request_carrying_the_task_head_verifies(
+    gitlab_queue, glab, glrepo, stubs, isolated_env
+):
+    """The integration flow through the real adapter: the head is looked for in
+    the commits GitLab lists for the merge request, newest first as it answers."""
+    gq = gitlab_queue
+    write(isolated_env / "settings" / "orchestration" / "flow.conf",
+          "gitlab.example.com/acme/group = develop\n")
+    ok(gq.q("add", gq.topic, "vend", "--title", "Vend", "--repo", str(glrepo),
+            "--branch", "feat/vend", "--number", "05", "--publish", "pr"))
+    git("checkout", "-q", "-b", "feat/vend", cwd=glrepo)
+    git("commit", "-q", "--allow-empty", "-m", "feat: vend", cwd=glrepo)
+    tip = git("rev-parse", "HEAD", cwd=glrepo).strip()
+    git("checkout", "-q", "main", cwd=glrepo)
+    glab.mr(310, source_branch="develop")
+    glab.api("commits", [{"id": "e" * 40, "title": "later"}, {"id": tip, "title": "feat: vend"}])
+    result(gq.queue / gq.topic / "05-vend", "shipped", "develop→main is open.", f"{MR}310")
+
+    out = ok(gq.q("collect", "--no-reap")).out
+    expect(out, "05-vend  shipped", "[publish verified: pr]")
+    assert stubs.calls("gh") == []
+
+
 def test_a_project_that_forbids_squash_is_a_refusal_and_not_a_crash(gitlab_queue, glab, stubs):
     """14c. GitLab's `squash` is a flag on the merge, and `squash_option: never` is
     the PROJECT setting that forbids it: §13d's mismatch, per project, and still a
