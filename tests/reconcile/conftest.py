@@ -19,6 +19,7 @@ def recon(isolated_env, monkeypatch, stubs):
         monkeypatch.setenv(f"FLEET_RECONCILE_{var}_SECS", secs)
     r = Recon(root)
     r.lead("idle")
+    r.composer("")
     yield r
     # Unconditional: a leaked loop keeps running over a directory about to be deleted.
     r("stop")

@@ -1,7 +1,8 @@
 """`thurbox-cli`: sessions from files, and every mutation logged instead of performed.
 
 `session list|get` read one JSON file per session id under `sessions/`, so a
-test says what a session is doing. `session create|delete|restart|send` only
+test says what a session is doing, and `session capture` reads its pane from
+`panes/`. `session create|delete|restart|send` only
 land in `calls.log`, so a test asserts on exactly what would have been spawned
 or killed — including that nothing was. `watch --json` replays `watch.jsonl`
 whole, whatever `--since` says, which is what a recorded stream does: the floor
@@ -32,7 +33,10 @@ def main() -> int:
     elif verb == "session create":
         print(read(root / "next-session.json").strip() or '{"id":"stub","created":true}')
     elif verb == "session capture":
-        print(json.dumps({"output": read(root / "panes" / f"{ident}.txt")}))
+        # `panes/<id>.json` is the whole `--json` answer, cursor and all; a
+        # bare `<id>.txt` is the text alone, with no cursor to read.
+        shown = read(root / "panes" / f"{ident}.json")
+        print(shown.strip() or json.dumps({"output": read(root / "panes" / f"{ident}.txt")}))
     elif verb == "session send":
         # `--no-enter` leaves the text in the composer. The real CLI types it
         # into the pane; the stub writes the same `→ <text>` line capture

@@ -115,6 +115,32 @@ class InstallFamily(unittest.TestCase):
         self.assertFalse(fp.running_as_root())
 
 
+class ServiceManager(unittest.TestCase):
+    """What brings the reconciler back after a reboot, asked only here."""
+
+    def test_it_can_be_pinned_and_none_is_none(self):
+        for pinned, want in (("systemd", "systemd"), ("startup", "startup"), ("none", "")):
+            with environ(FLEET_SERVICE_MANAGER=pinned):
+                self.assertEqual(fp.service_manager(), want)
+
+    @unittest.skipUnless(WINDOWS, "the Startup folder branch")
+    def test_windows_uses_the_startup_folder(self):
+        with environ(FLEET_SERVICE_MANAGER=None):
+            self.assertEqual(fp.service_manager(), "startup")
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "the systemd branch")
+    def test_linux_has_systemd_only_where_a_user_manager_answers(self):
+        for code, want in ((0, "systemd"), (1, "")):
+            done = subprocess.CompletedProcess([], code)
+            with environ(FLEET_SERVICE_MANAGER=None), \
+                    mock.patch.object(fp.shutil, "which", return_value="/usr/bin/systemctl"), \
+                    mock.patch.object(fp.subprocess, "run", return_value=done) as ran:
+                self.assertEqual(fp.service_manager(), want)
+            self.assertEqual(ran.call_args.args[0], ["systemctl", "--user", "show-environment"])
+        with environ(FLEET_SERVICE_MANAGER=None), mock.patch.object(fp.shutil, "which", return_value=None):
+            self.assertEqual(fp.service_manager(), "")
+
+
 class RefreshPath(unittest.TestCase):
     def test_merged_path_keeps_what_is_there_first_and_adds_only_new_entries(self):
         sep = os.pathsep

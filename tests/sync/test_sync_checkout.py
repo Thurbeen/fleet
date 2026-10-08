@@ -281,10 +281,15 @@ def test_the_session_start_hook_is_one_command_every_shell_parses_the_same():
     command's job, proven above."""
     settings = json.loads((REPO / ".claude" / "settings.json").read_text(encoding="utf-8"))
     hooks = [h for entry in settings["hooks"]["SessionStart"] for h in entry["hooks"]]
-    assert len(hooks) == 1, hooks
-    command = hooks[0]["command"]
+    commands = [h["command"] for h in hooks]
 
     shell_syntax = set("$`()[]{}|&;<>\"'%\\*?!~")
-    assert not shell_syntax & set(command), f"shell syntax in the hook: {command}"
-    words = shlex.split(command)
-    assert words[:2] == ["uv", "run"] and words[-2:] == ["fleet", "sync-checkout"], command
+    for command in commands:
+        assert not shell_syntax & set(command), f"shell syntax in the hook: {command}"
+    words = [shlex.split(command) for command in commands]
+    assert all(w[:2] == ["uv", "run"] for w in words), commands
+    # `--if-lead` because every session in a fleet checkout runs this file, and
+    # a worker that started the loop would reap its own session.
+    assert [w[w.index("fleet"):] for w in words] == [
+        ["fleet", "sync-checkout"], ["fleet", "reconcile", "ensure", "--if-lead"],
+    ], commands

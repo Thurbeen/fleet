@@ -38,15 +38,20 @@ then hand over here. This owns the rest, in this order:
      machine shares and a worker does not know which fleet dispatched it: a
      second fleet's nudge is added beside the first's, and only a nudge whose
      checkout is GONE is repointed. `_stale` argues it.
-  6. THE EXTENSION AND QUEUE PANE, through this checkout's
+  6. THE RECONCILER SERVICE, where this machine has a user service manager:
+     the systemd user unit or Windows logon script `reconcile_service.py`
+     owns, so the loop comes back after a reboot without anyone running
+     `ensure`. A line of the plan like every other, so the one question covers
+     it; `--no-service` leaves it out, and a machine with none says so.
+  7. THE EXTENSION AND QUEUE PANE, through this checkout's
      `scripts/lib/install_extension.py` — never with a required row still
      missing, since the extension is what a missing tool breaks.
-  7. PREFLIGHT, last and printed: the verification, not the managers' exit codes.
+  8. PREFLIGHT, last and printed: the verification, not the managers' exit codes.
 
 Idempotent: a second run on a complete machine asks nothing, installs nothing,
 and writes no file.
 
-Usage: uv run fleet install [--yes] [--dev] [--forge github|gitlab]...
+Usage: uv run fleet install [--yes] [--dev] [--no-service] [--forge github|gitlab]...
 Exit: 0 installed, 1 a required dependency still missing, a step failed or the
 plan was declined, 2 usage.
 """
@@ -79,8 +84,9 @@ def _load_sibling(name: str, filename: str):
 fleet_platform = _load_sibling("fleet_platform", "fleet_platform.py")
 preflight = _load_sibling("fleet_preflight", "preflight.py")
 reconcile = _load_sibling("fleet_reconcile", "reconcile.py")
+reconcile_service = _load_sibling("fleet_reconcile_service", "reconcile_service.py")
 
-USAGE = "usage: uv run fleet install [--yes] [--dev] [--forge github|gitlab]...\n"
+USAGE = "usage: uv run fleet install [--yes] [--dev] [--no-service] [--forge github|gitlab]...\n"
 # Each forge's rows in preflight's forge tier: the CLI, then its login.
 FORGES = {"github": ("gh", "gh auth"), "gitlab": ("glab", "glab auth")}
 LINK, TARGET = ".claude/skills", ".agents/skills"
@@ -463,7 +469,7 @@ def extension_step(checkout: str) -> int:
 
 def main(argv: list[str], checkout: str | None = None) -> int:
     checkout = checkout or CHECKOUT
-    yes = dev = False
+    yes = dev = no_service = False
     forges: list[str] = []
     args = list(argv)
     while args:
@@ -472,6 +478,8 @@ def main(argv: list[str], checkout: str | None = None) -> int:
             yes = True
         elif arg == "--dev":
             dev = True
+        elif arg == "--no-service":
+            no_service = True
         elif arg == "--forge" and args and args[0] in FORGES:
             forges.append(args.pop(0))
         elif arg in ("-h", "--help"):
@@ -491,6 +499,8 @@ def main(argv: list[str], checkout: str | None = None) -> int:
     codex, codex_why = codex_links_state(checkout)
     settings, command = claude_settings_file(), reconcile.hook_command(checkout)
     hook, hook_why = hook_state(settings, command)
+    svc = None if no_service else reconcile_service.service(checkout)
+    service, service_why = reconcile_service.state(svc) if svc else ("ok", "")
 
     say()
     say("The plan")
@@ -502,10 +512,12 @@ def main(argv: list[str], checkout: str | None = None) -> int:
         say(f"  {'link':<9} {'Codex skills':<14} ~/{CODEX_SKILLS} ({codex_why})")
     if hook != "ok":
         say(f"  {'hook':<9} {'Stop nudge':<14} {settings} ({hook_why})")
+    if service != "ok":
+        say(f"  {'service':<9} {'reconciler':<14} {svc.path} ({service_why})")
     say(f"  {'then':<9} {'':<14} the thurbox extension and queue pane, then preflight")
 
     runs = [row for row in rows if row.argv]
-    if not runs and link == "ok" and codex == "ok" and hook == "ok":
+    if not runs and link == "ok" and codex == "ok" and hook == "ok" and service == "ok":
         say()
         say("Nothing to install.")
     elif not yes:
@@ -540,6 +552,13 @@ def main(argv: list[str], checkout: str | None = None) -> int:
     ok, message = apply_hook(settings, command)
     failed += not ok
     say(f"Stop nudge: {message}")
+    if svc:
+        ok, message = reconcile_service.apply(svc)
+        failed += not ok
+    else:
+        message = ("left out (--no-service)" if no_service else
+                   "no user service manager here; the lead's SessionStart hook is what brings it back")
+    say(f"Reconciler service: {message}")
 
     still = [f.dependency.name for f in preflight.missing(["required"])]
     say()
