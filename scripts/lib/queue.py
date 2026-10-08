@@ -156,7 +156,9 @@ Usage:
                        # and a --title thurbox could not make a session name
                        # of: that name is the title wearing the worker's mark
                        # and cut to thurbox's byte cap, and it carries no
-                       # `/`, no `\\`, no `..` and no leading `.`
+                       # `/`, no `\\`, no `..` and no leading `.`.
+                       # A leading `NN-` on the slug is dropped, since add
+                       # numbers the task itself; stdout is the final ref.
   uv run fleet queue block <ref> --on <ref> --kind KIND --why 'reason'   # or --clear,
                        which names the blocker to remove, since a task can
                        carry several; `block --help` lists the valid kinds
@@ -239,6 +241,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import difflib
 import glob
 import importlib.util
 import json
@@ -421,6 +424,8 @@ OUTCOME_STATES = {
 TERMINAL_STATES = ("landed", "abandoned")
 
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,60}$")
+# The ordinal `add` prefixes, which a slug must not carry a second time.
+ORDINAL_RE = re.compile(r"^(?:[0-9]{2}-)+")
 BRIEF_PLACEHOLDER = "<!-- WRITE THE INSTRUCTIONS HERE -->"
 
 # The sections every brief has, in order. The lead was designing a document per
@@ -1043,7 +1048,7 @@ def session_name_refusal(title: str, glyph: str) -> str:
         "That name becomes a path there, so it carries no '/', no '\\', no "
         "'..' and no\nleading '.'. The spawn fails with thurbox's own refusal "
         "and the task stays\nqueued.\n"
-        "Retitle the task; nothing else about it has to change."
+        "Pass a --title without them and run this again. Nothing was created."
     )
 
 
@@ -1681,7 +1686,12 @@ class Queue:
         fetched = self._fetch(ref)
         if fetched:
             return fetched
-        raise QueueError(f"no such task: {ref}")
+        # The ref the lead meant is usually one typo or one doubled ordinal
+        # away, so the miss names it rather than leaving it to `list`.
+        close = difflib.get_close_matches(ref, list(self.tasks), n=3, cutoff=0.6)
+        raise QueueError(
+            f"no such task: {ref}" + (f" (did you mean {', '.join(close)}?)" if close else "")
+        )
 
     def _fetch(self, ref: str) -> Task | None:
         """One task out of a topic this view skipped, read on demand.
@@ -2214,16 +2224,15 @@ def cmd_add(args) -> int:
     if not SLUG_RE.match(args.slug):
         raise QueueError(f"{args.slug!r} is not a slug (lowercase, digits, hyphens)")
 
-    # A topic that grows a new task is live again, whatever it was. Without
-    # this an operator who did not notice the flag would add and dispatch into
-    # a topic no default view draws — and would then be watching for progress
-    # on a screen that had already decided not to show it.
-    if read_yaml(os.path.join(tpath, "topic.yaml")).get("archived"):
-        set_archived(root, args.topic, None)
-        print(f"{args.topic} was archived; a new task un-archives it", file=sys.stderr)
-
+    # `add` numbers the task itself, so an ordinal the lead typed into the slug
+    # was a second one: `01-design` became `01-01-design`, and every ref typed
+    # from memory afterwards missed. It is dropped, and the ref is said.
+    slug = ORDINAL_RE.sub("", args.slug) or args.slug
     number = args.number or next_number(tpath)
-    tid = f"{number}-{args.slug}"
+    tid = f"{number}-{slug}"
+    if slug != args.slug:
+        print(f"{args.slug}: add numbers the task itself, so the ref is "
+              f"{args.topic}/{tid}", file=sys.stderr)
     path = os.path.join(tpath, tid)
     if os.path.exists(path):
         raise QueueError(f"task {args.topic}/{tid} already exists")
@@ -2266,7 +2275,7 @@ def cmd_add(args) -> int:
     # here for the branch's own reason, only harder — a title that gets past
     # `add` is repaired by hand-editing task.yaml and the brief's H1, because
     # nothing here retitles a task.
-    title = args.title or args.slug.replace("-", " ")
+    title = args.title or slug.replace("-", " ")
     refusal = session_name_refusal(title, worker_glyph())
     if refusal:
         raise QueueError(refusal)
@@ -2377,6 +2386,15 @@ def cmd_add(args) -> int:
                 "`dispatch` refuses it. Add the\nheading — `None.` is a "
                 "complete answer — and run this again. Nothing was created."
             )
+
+    # A topic that grows a new task is live again, whatever it was. Without
+    # this an operator who did not notice the flag would add and dispatch into
+    # a topic no default view draws — and would then be watching for progress
+    # on a screen that had already decided not to show it. Last of all, so a
+    # refusal above has written nothing.
+    if read_yaml(os.path.join(tpath, "topic.yaml")).get("archived"):
+        set_archived(root, args.topic, None)
+        print(f"{args.topic} was archived; a new task un-archives it", file=sys.stderr)
 
     os.makedirs(path)
     task.save()
@@ -9687,7 +9705,11 @@ def build_parser() -> argparse.ArgumentParser:
         "only reads is --add-dir",
     )
     a.add_argument("--touches", help="comma-separated paths this task expects to change")
-    a.add_argument("--brief-file")
+    a.add_argument(
+        "--brief-file",
+        help="the brief's body, refused unless it carries all four headings: "
+        + ", ".join(f"`## {h}`" for h in BRIEF_SECTIONS),
+    )
     a.add_argument("--number", help="two-digit ordinal; the next free one by default")
     a.set_defaults(func=cmd_add, creates=True)
 
