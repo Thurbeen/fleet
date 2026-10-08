@@ -69,6 +69,10 @@
 # otherwise.
 /orchestration/agent-policy.conf
 
+# WORKING STATE. Which repositories reach their base through an integration
+# branch (develop→main). The tracked flow.example.conf names none.
+/orchestration/flow.conf
+
 # WORKING STATE. Session profiles of the operator's own — a model, a thinking
 # budget, an agent's command line. orchestration/session-profiles.yaml is the
 # tracked file and the reader starts from it; a profile here replaces the one of

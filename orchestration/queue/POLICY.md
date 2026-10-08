@@ -94,6 +94,9 @@ from theirs — over a private network such as a tailnet, not `localhost`.
 
 For a `pr` task, verify that each URL is an open or merged change request
 from this task's branch on its stated base. The body needs no attestation.
+In a repository the operator's `orchestration/flow.conf` gives an integration
+branch, a change request from that branch (`develop` → `main`) counts too,
+once it contains your branch's head commit.
 `collect` makes this artifact check independently; `shepherd` checks CI and
 review state before any merge decision. A clean PR does not qualify for the
 existing attestation-only auto-merge gate.
@@ -201,6 +204,8 @@ artifacts:
 
 A repository you name nothing for is one nothing proves, so a `shipped` task
 that leaves one out is held open exactly as one with no artifact at all is.
+One that needed no change says so, with the reason:
+`/home/you/code/fleet: no change needed — it already reads the new field`.
 
 `outcome` is one of those four words and nothing else. `artifact` is whatever
 your brief's Publish line says it is — a change request URL for `pr` and
