@@ -252,10 +252,11 @@ names every path and the reason for each.
   (`--yes` skips), installs through the package manager, links
   `.claude/skills` for Claude-compatible agents and each fleet skill under
   `~/.agents/skills` for Codex workers in any repository, merges the
-  reconciler's Stop nudge into Claude Code's user settings, installs the
-  extension and ends with preflight; a second run changes nothing. It places
-  no pane, and refuses rather than overwrites an
-  existing checkout; `install.sh`'s header owns where the clone goes and why
+  reconciler's Stop nudge into Claude Code's user settings, writes the
+  reconciler's user service where the machine has one (`--no-service` skips
+  it), installs the extension and ends with preflight; a second run changes
+  nothing. It places no pane, and refuses rather than overwrites an existing
+  checkout; `install.sh`'s header owns where the clone goes and why
   that choice is sticky. `tests/install/` drives both bootstraps, and
   `tests/extension/` drives `fleet pane-ask` and `fleet voice-ask` —
   onboarding's ask for the two names, before the extension renders them.
@@ -407,8 +408,13 @@ whole life, the OS drops it however that process dies, so no stale pid is ever
 trusted or signalled, and a holder that never beats is never called healthy.
 It consumes `fleet queue watch` continuously and calls `collect`, `shepherd`
 and `refuel` on separate intervals; `scripts/lib/reconcile.py`'s docstring
-argues every number and is the full usage. Four things about it are
-load-bearing:
+argues every number and is the full usage. **It comes back by itself, and
+never through a down flag**: `fleet install` offers a user service
+(`scripts/lib/reconcile_service.py`: a systemd user unit running
+`reconcile serve`, or a Windows Startup-folder script running `ensure`), the
+SessionStart hook runs `reconcile ensure --if-lead`, which acts for this
+checkout's lead session and nobody else, and `status` exits 1 on "DOWN,
+nothing asked it down". Four things about it are load-bearing:
 
 - **It writes no record.** Every effect on the queue goes through
   `fleet queue`, which stays the only writer over the records; its own runtime
@@ -424,11 +430,12 @@ load-bearing:
   cost six and a half hours. So after `collect` it reads `plan` and, when the
   ready set has grown, types one line into the lead's terminal naming what is
   ready and the command that sends it. Once per transition, never into a lead
-  mid-turn, and silent when no lead session is running. A lead mid-turn gets
-  the same line in its thurbox mailbox instead, posted with
-  `message send --no-wake`, which enqueues and delivers nothing; a thurbox
-  with no mailbox leaves it at the wait.
-  `scripts/lib/notify_lead.py` owns those three rules. Notifying is not
+  mid-turn or an input line it cannot prove empty, and silent when no lead
+  session is running. A lead it may not type into gets the same line in its
+  thurbox mailbox instead, posted with `message send --no-wake`, which
+  enqueues and delivers nothing; a thurbox with no mailbox leaves it at the
+  wait.
+  `scripts/lib/notify_lead.py` owns those rules. Notifying is not
   deciding: nothing moves, and the choice is still the lead's. **It says
   exactly what `plan` says is ready and derives nothing**, which is how a
   condition-held task stays out of the line: `is_ready` never clears a

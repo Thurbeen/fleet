@@ -32,6 +32,21 @@ instance and no durable stop. This is a loop the OPERATOR starts and stops:
   `start`   the operator asking for it back. It CLEARS the flag. That is the
             whole difference between the two.
 
+WHAT BRINGS IT BACK. A lock proves it is up and nothing restarted it once it was
+not: three leads found it down with no down flag eighteen times, after a reboot
+or a lead restart. Two things now do, and neither clears a flag:
+
+  `serve`   what a service manager runs (`reconcile_service.py`, written by
+            `fleet install`): the loop in the FOREGROUND, for good. While the
+            down flag stands or another loop holds the lock it WAITS rather
+            than exits, so its manager never restarts it into a fight, and it
+            takes over the moment that other loop dies.
+  `ensure --if-lead`  the SessionStart hook in `.claude/settings.json`. Every
+            session in a fleet checkout runs that file, and a worker running
+            this loop would reap its own session, so it acts only for the
+            session this checkout's extension names as its lead, prints
+            nothing for any other, and exits 0 whatever happens.
+
 IS IT UP. The loop holds an exclusive lock on `lock` in its runtime directory for
 its whole life. The OS drops a lock when its holder dies however it died, so a
 dead loop holds no lock and no stale pid is ever trusted or signalled. Up means
@@ -69,10 +84,12 @@ is no lead. `scripts/lib/notify_lead.py` owns those rules.
 
 Usage:
   uv run fleet reconcile ensure     # start unless running or asked down
+  uv run fleet reconcile ensure --if-lead  # the same, from the lead's session only
+  uv run fleet reconcile serve      # the loop in the foreground, for a service
   uv run fleet reconcile start      # start, and clear a previous `stop`
   uv run fleet reconcile stop       # durably down: writes the flag, then stops
   uv run fleet reconcile restart    # stop and start, clearing the flag
-  uv run fleet reconcile status     # ticking? since when? on what queue?
+  uv run fleet reconcile status     # ticking? since when? exit 1: down, unasked
   uv run fleet reconcile nudge      # advisory: run the periodic pass NOW
   uv run fleet reconcile hook       # print the worker Stop hook that nudges
   uv run fleet reconcile logs [-f]  # the loop's log
@@ -158,7 +175,7 @@ NOTIFY = os.path.join(CHECKOUT, "scripts", "lib", "notify_lead.py")
 # checkout. No `uv` round trip per pass, and no shell on any OS.
 BOOT = "import sys\nsys.path.insert(0, sys.argv[1])\nfrom fleet.cli import main\nsys.exit(main(sys.argv[2:]))"
 
-COMMANDS = "ensure start stop restart status nudge hook logs"
+COMMANDS = "ensure start stop restart status serve nudge hook logs"
 
 # How long `start` waits for the first heartbeat. The beat is written before the
 # first pass, so this waits on the loop being alive, not on a forge round trip.
@@ -175,6 +192,10 @@ KILL_WAIT_SECS = 10
 # A supervisor starting at the instant a `status` probes the lock sees it held
 # for that instant; it retries this long before concluding a twin owns it.
 LOCK_RETRY_SECS = 2
+
+# How often `serve` looks again while a down flag stands or another loop holds
+# the lock. Its takeover after that loop dies is at most this late.
+SERVE_POLL_SECS = 5
 
 # A log a person can open: a pass every couple of minutes, forever, trims itself.
 LOG_MAX_BYTES = 4 * 1024 * 1024
@@ -720,6 +741,47 @@ def cmd_ensure(cfg: Config) -> int:
     return come_up(cfg)
 
 
+def is_lead() -> bool:
+    """Whether this process runs in the session this checkout's extension names as its lead.
+
+    notify_lead.py's two readings, so "who is the lead" has one answer: the
+    name from the rendered manifest, and that name's id in thurbox's list.
+    """
+    # THURBOX_SESSION is thurbox's id for it; THURBOX_SESSION_ID is the agent's
+    # conversation, which no `session list` row carries.
+    sid = os.environ.get("THURBOX_SESSION") or ""
+    if not sid:
+        return False
+    notify = _load_sibling("fleet_notify_lead", "notify_lead.py")
+    name = notify.lead_name()
+    return bool(name) and notify.lead_session(name)[0] == sid
+
+
+def cmd_ensure_if_lead(cfg: Config) -> int:
+    """`ensure`, from the lead's SessionStart hook: silent elsewhere, never a failure."""
+    try:
+        if is_lead():
+            cmd_ensure(cfg)
+    except Exception as exc:
+        say(f"fleet reconciler: could not ensure it is up ({exc}); uv run fleet reconcile ensure")
+    return 0
+
+
+def cmd_serve(cfg: Config) -> int:
+    """The loop in the foreground, for a service manager: waits, never fights.
+
+    It exits only when the control plane guard refuses, or — tests only — when
+    FLEET_RECONCILE_PARENT_PID is gone; everything else is a wait, because an
+    exit is what its manager restarts."""
+    if not guard_control_plane(cfg):
+        return 1
+    while not (cfg.parent and not fleet_platform.alive(cfg.parent)):
+        if not asked_down(cfg) and not lock_held(cfg) and stop_legacy(cfg):
+            with_lock(cfg, supervise)
+        time.sleep(SERVE_POLL_SECS)
+    return 0
+
+
 def cmd_start(cfg: Config) -> int:
     if asked_down(cfg):
         remove(cfg.path("down"))
@@ -757,6 +819,7 @@ def cmd_restart(cfg: Config) -> int:
 
 
 def cmd_status(cfg: Config) -> int:
+    """Exit 1 when it is down and nothing asked it down: that is a fault, not a reading."""
     # Asked of the queue itself, so this line and `fleet queue list` cannot disagree.
     rc, out = run_queue(cfg, ["root"], merge=False)
     queue = out.strip() if rc == 0 and out.strip() else os.environ.get("FLEET_QUEUE_DIR", "orchestration/queue")
@@ -777,7 +840,15 @@ def cmd_status(cfg: Config) -> int:
         sys.stdout.write(indented(read(cfg.path("down")), "          "))
         say("          uv run fleet reconcile start brings it back")
     else:
-        say("down      not running, and no down flag — uv run fleet reconcile ensure starts it")
+        say("DOWN      not running, and nothing asked it down: nothing is collecting,")
+        say("          shepherding or telling the lead what is ready.")
+        say("          uv run fleet reconcile ensure starts it")
+        service = _load_sibling("fleet_reconcile_service", "reconcile_service.py").installed(CHECKOUT)
+        if service:
+            say(f"          its service ({service}) did not keep it up: read its log first")
+        else:
+            say("          and nothing brings it back after a reboot but the lead's next session:")
+            say("          uv run fleet install installs a user service where this machine has one")
     say(f"queue     {queue}")
     say(f"watch     every {cfg.watch}s, back to back — the continuous fold")
     say(f"collect   every {cfg.collect}s")
@@ -787,7 +858,7 @@ def cmd_status(cfg: Config) -> int:
     nudge = cfg.path("nudge")
     if os.path.isfile(nudge):
         say("nudge     one is waiting: " + (read(nudge).splitlines() or [""])[0])
-    return 0
+    return 0 if running(cfg) or asked_down(cfg) else 1
 
 
 def cmd_nudge(cfg: Config) -> int:
@@ -895,9 +966,11 @@ def main(argv: list[str]) -> int:
         return with_lock(cfg, supervise)
     if cmd == "__loop":
         return with_lock(cfg, tick)
+    if cmd == "ensure" and "--if-lead" in argv[1:]:
+        return cmd_ensure_if_lead(cfg)
     handlers = {
         "ensure": cmd_ensure, "start": cmd_start, "stop": cmd_stop, "restart": cmd_restart,
-        "status": cmd_status, "hook": cmd_hook,
+        "status": cmd_status, "hook": cmd_hook, "serve": cmd_serve,
     }
     if cmd in handlers:
         return handlers[cmd](cfg)

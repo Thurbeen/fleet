@@ -15,6 +15,7 @@ import contextlib
 import json
 import os
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -76,6 +77,32 @@ def install_family() -> str:
     if pinned in ("windows", "posix"):
         return pinned
     return "windows" if WINDOWS else "posix"
+
+
+def service_manager() -> str:
+    """What brings a user's process back after a reboot: "systemd", "startup" or "".
+
+    POSIX: a systemd USER manager, and only one that answers — a container, or
+    WSL without systemd, has a `systemctl` that reaches nothing. Windows: the
+    user's Startup folder, which runs a script at logon and, unlike a
+    scheduled task at logon, needs no administrator. Anything else, macOS
+    included: none, and the lead's SessionStart `ensure` is what is left.
+
+    `FLEET_SERVICE_MANAGER` pins it ("none" for none), so the gate never
+    enables a unit on the machine running it.
+    """
+    pinned = os.environ.get("FLEET_SERVICE_MANAGER")
+    if pinned in ("systemd", "startup", "none"):
+        return "" if pinned == "none" else pinned
+    if WINDOWS:
+        return "startup"
+    if not sys.platform.startswith("linux") or not shutil.which("systemctl"):
+        return ""
+    try:
+        probe = subprocess.run(["systemctl", "--user", "show-environment"], capture_output=True, timeout=10, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return "systemd" if probe.returncode == 0 else ""
 
 
 def running_as_root() -> bool:

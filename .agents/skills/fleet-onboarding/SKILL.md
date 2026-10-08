@@ -365,6 +365,11 @@ uv run fleet reconcile ensure
 uv run fleet reconcile status
 ```
 
+`status` names whether a user service keeps it up across reboots. Step 1's
+`fleet install` offers one (a systemd user unit, or a Windows logon script)
+as a line of its plan; if it was declined with `--no-service`, or this machine
+has none, the lead's SessionStart hook is what brings the loop back.
+
 Without it, one session ended with 19 of 20 progress timelines empty and
 three merged pull requests unnoticed for forty minutes. On a local-only fleet
 it is just as worth running: it skips `shepherd` while no forge CLI is on

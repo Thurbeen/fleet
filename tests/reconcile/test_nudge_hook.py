@@ -48,8 +48,8 @@ def test_a_nudged_pass_collects_without_waiting_out_the_interval(recon, monkeypa
 
 def test_status_says_up_and_names_its_queue(recon):
     down = recon("status")
-    assert down.code == 0
-    expect(down.out, "not running, and no down flag")
+    assert down.code == 1, "down with nothing asking it down is a fault"
+    expect(down.out, "not running, and nothing asked it down")
 
     recon("ensure")
     up = recon("status")

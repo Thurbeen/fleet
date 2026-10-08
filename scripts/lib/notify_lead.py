@@ -19,7 +19,7 @@ moves no task and launches nothing. It reads the ready set and puts it in front
 of the one actor that may act on it, along with the command that acts. The loop
 keeps its constraint; the lead keeps the decision.
 
-FOUR THINGS MAKE IT SURVIVABLE, and each is a way this could have been worse
+FIVE THINGS MAKE IT SURVIVABLE, and each is a way this could have been worse
 than silence:
 
   IT FIRES ON THE TRANSITION.  A loop that says "one task is ready" every
@@ -35,6 +35,12 @@ than silence:
       its thurbox mailbox, posted with `--no-wake`: that enqueues and nothing
       else, so nothing is typed and nothing is pushed into its conversation.
       The lead, or the operator looking at thurbox, reads it when they choose.
+  IT DOES NOT TYPE INTO SOMEBODY'S LINE.  At rest is not enough: on
+      2026-10-07 the operator's "c" and the notice became one line, "cfleet
+      reconciler: …". So the wake is typed only when `session capture` shows
+      the cursor right after the agent's prompt glyph with nothing either side
+      of it. Anything else — text typed, a capture with no cursor, a pane this
+      cannot read — gets the mailbox note a busy lead gets, and the wake waits.
   IT IS ONE LINE.  The lead is a token budget. Which tasks, and the command
       that sends them. No table, no narration.
   IT SURVIVES THE LEAD NOT EXISTING.  No lead session is an ordinary fleet —
@@ -227,6 +233,35 @@ def lead_session(name: str) -> tuple[str | None, str]:
     return None, f"no session named {name!r} is running"
 
 
+def composer_empty(sid: str) -> bool:
+    """Whether the lead's input line is PROVABLY empty; False whenever it cannot tell.
+
+    `--lines 0` is the visible pane alone, which is what `cursor_row` counts
+    in. Empty is the cursor right after one prompt glyph — `❯`, `›`, `>`: a
+    word with no letter or digit in it — with nothing after it on the line.
+    A placeholder, a second line of a draft or a thurbox that reports no
+    cursor all read as not empty, and cost a mailbox note, not a garbled turn.
+    """
+    try:
+        out = subprocess.run(
+            ["thurbox-cli", "session", "capture", sid, "--json", "--lines", "0"],
+            capture_output=True,
+            text=True, encoding="utf-8",
+            timeout=10,
+        )
+        shown = json.loads(out.stdout) if out.returncode == 0 else {}
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+        return False
+    if not isinstance(shown, dict):
+        return False
+    row, col = shown.get("cursor_row"), shown.get("cursor_col")
+    lines = str(shown.get("output") or "").split("\n")
+    if not isinstance(row, int) or not isinstance(col, int) or not 0 <= row < len(lines):
+        return False
+    before, after = lines[row][:col].split(), lines[row][col:]
+    return len(before) == 1 and len(before[0]) <= 2 and not any(c.isalnum() for c in before[0]) and not after.strip()
+
+
 def wake(sid: str, text: str) -> tuple[bool, str]:
     """Type one line into the lead's terminal.
 
@@ -324,7 +359,10 @@ def main(argv: list) -> int:
     sid, status = lead_session(name)
     if not sid:
         return say(args.state_dir, told, f"ready work, but {status}")
-    if status not in AT_REST:
+    held = f"{name} is {status}" if status not in AT_REST else ""
+    if not held and not composer_empty(sid):
+        held = f"{name}'s input line is not provably empty"
+    if held:
         # The note is posted on its own transition, so a lead busy for an hour
         # finds one line per change in its mailbox and not one per pass.
         if [r for r in fresh if r not in posted]:
@@ -333,7 +371,7 @@ def main(argv: list) -> int:
         noted = all(r in posted for r in fresh)
         where = " — noted in its inbox" if noted else ""
         return say(
-            args.state_dir, told, f"ready work; {name} is {status}{where}; the wake waits", posted
+            args.state_dir, told, f"ready work; {held}{where}; the wake waits", posted
         )
 
     sent, why = wake(sid, message(ready))

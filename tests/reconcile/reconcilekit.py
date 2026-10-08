@@ -14,7 +14,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness import Run, run_fleet, write
+from harness import Run, Stubs, run_fleet, write
 
 STUB = Path(__file__).resolve().parent / "queue_stub.py"
 LEAD = "Gate Control"
@@ -75,6 +75,9 @@ class Recon:
             record.unlink(missing_ok=True)
         else:
             write(record, json.dumps({"id": "lead-uuid", "name": LEAD, "state": state}) + "\n")
+
+    def composer(self, typed: str | None) -> None:
+        Stubs(self.root / "stubs").composer("lead-uuid", typed)
 
     def pid(self) -> str:
         try:

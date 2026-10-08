@@ -293,7 +293,7 @@ def test_logs_reads_the_loop_log(recon):
 def test_an_unknown_verb_is_refused_and_help_is_the_header(recon):
     bad = recon("dispatch")
     assert bad.code == 2
-    expect(bad.out, "unknown command", "ensure start stop restart status nudge hook logs")
+    expect(bad.out, "unknown command", "ensure start stop restart status serve nudge hook logs")
     helped = recon("--help")
     assert helped.code == 0
     expect(helped.out, "ensure", "nudge", "FLEET_RECONCILE_QUEUE_CMD")

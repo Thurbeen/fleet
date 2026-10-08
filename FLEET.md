@@ -379,15 +379,20 @@ the rule protects is still true of it —
   task whose blocker clears has no actor — the loop may not dispatch it and you
   are not looking — so it reads `plan` and types one line into your terminal
   naming what is ready and the command that sends it. Once per transition, and
-  never while you are mid-turn: then the same line goes into your thurbox
+  only into an input line that is provably empty: while you are mid-turn, or
+  the operator has something typed, the same line goes into your thurbox
   mailbox with `--no-wake` instead, and the typed line waits until you are at
-  rest. `thurbox-cli message inbox --claim` reads it. The decision it hands
-  you is still yours to make; what it took away was the six hours before you
-  knew there was one.
+  rest with an empty line. `thurbox-cli message inbox --claim` reads it. The
+  decision it hands you is still yours to make; what it took away was the six
+  hours before you knew there was one.
 - **It writes no record.** Every effect goes through `uv run fleet queue`,
   which stays the only writer, exactly as the pane stays a pure reader.
 - **It is stoppable, and a stop stays stopped.** `orchestration/reconcile/down`
   is the operator's to clear with `start`, never yours.
+- **It comes back by itself, and nothing that brings it back clears that
+  flag.** Your SessionStart hook runs `fleet reconcile ensure --if-lead`, and
+  where `fleet install` wrote a user service the machine restarts it after a
+  reboot. `status` exiting 1 with `DOWN` is a fault to report, not a reading.
 - **It never restarts a worker into a spent quota window.** That rule lives in
   `refuel` and the loop calls the command rather than re-deciding it.
 

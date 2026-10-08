@@ -133,6 +133,7 @@ def test_nothing_but_a_hand_clears_a_condition(held, stubs, queue_dir, tmp_path)
     # condition, and the loop says ONE. `notify_lead` reads `plan --json`'s ready set
     # and nothing else, but the line is the claim that was false, so it is asserted.
     write(stubs.root / "sessions" / "lead-1.json", '{"id":"lead-1","name":"Gate Control","state":"idle"}\n')
+    stubs.composer("lead-1", "")
     log = run([*PYTHON, str(REPO / "scripts" / "lib" / "notify_lead.py"), "--state-dir", str(tmp_path / "notify")],
               stdin=q("plan", "--json").stdout, FLEET_LEAD_SESSION="Gate Control").out
     woke = "\n".join(stubs.calls("thurbox-cli", "session send"))

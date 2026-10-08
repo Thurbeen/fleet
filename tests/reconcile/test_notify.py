@@ -121,3 +121,32 @@ def test_remembering_what_was_said_never_makes_the_runtime_directory(isolated_en
     mod.write_state(str(gone), ["alpha/01-first"], "")
 
     assert not gone.exists(), "notify made the runtime directory again"
+
+
+def test_a_lead_with_something_typed_is_never_typed_into(recon, stubs):
+    """The operator's "c" and the notice became one line: "cfleet reconciler: …".
+    An at-rest lead whose input line holds anything gets the mailbox instead,
+    and the wake lands once the line is empty again."""
+    recon.composer("c")
+    recon("ensure")
+    recon.ready("alpha/01-first")
+    assert wait_for(lambda: len(stubs.inbox("lead-uuid")) >= 1), f"the notice went nowhere\n{recon.log()}"
+    assert not stubs.inbox("lead-uuid")[0]["woke"]
+    assert stubs.calls("thurbox-cli", "session send") == [], "typed into a line the operator was writing"
+    assert wait_for(lambda: "not provably empty" in recon.log()), recon.log()
+
+    recon.composer("")
+    assert wait_for(lambda: stubs.calls("thurbox-cli", "session send")), "the wake lands on an empty line"
+    expect(stubs.calls("thurbox-cli", "session send")[0], "alpha/01-first")
+
+
+def test_a_composer_nothing_can_read_gets_the_mailbox_and_never_the_keyboard(recon, stubs):
+    """A thurbox whose capture reports no cursor cannot say the line is empty."""
+    recon.composer(None)
+    recon("ensure")
+    recon.ready("alpha/01-first")
+    assert wait_for(lambda: len(stubs.inbox("lead-uuid")) >= 1), f"the notice went nowhere\n{recon.log()}"
+    start = recon.count("collect")
+    assert wait_for(lambda: recon.count("collect") >= start + 3, 30)
+    assert stubs.calls("thurbox-cli", "session send") == []
+    assert len(stubs.inbox("lead-uuid")) == 1, "posted once, not once per pass"

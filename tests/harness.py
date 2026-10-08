@@ -24,7 +24,8 @@ what keeps all of that out, held to these guarantees by
             at a copy of the TRACKED *.example.conf only; FLEET_QUEUE_DIR,
             FLEET_RUNS_DIR, FLEET_RECONCILE_DIR and FLEET_PEERS_DIR at empty
             directories; and
-            FLEET_REGISTRY_FILE at a registry map that does not exist.
+            FLEET_REGISTRY_FILE at a registry map that does not exist;
+            FLEET_SERVICE_MANAGER is "none", so no install enables a unit.
   keeps     PATH, PYTHONUSERBASE, and uv's cache and Python directories: where
             the tools are installed is not operator state.
 
@@ -155,6 +156,8 @@ def isolate(environ: dict, root: Path, stub_bin: Path) -> dict:
         # A machine a test builds from stand-ins stays that machine: a real
         # Windows registry's PATH would put the real tools back beside them.
         FLEET_NO_PATH_REFRESH="1",
+        # Nor may one enable a unit on the machine running the gate.
+        FLEET_SERVICE_MANAGER="none",
         FLEET_AUTO_MERGE_ROOT=settings,
         FLEET_PUBLISH_ROOT=settings,
         FLEET_AGENT_ROOT=settings,
@@ -310,6 +313,17 @@ class Stubs:
             "agent_session_id": f"agent-{sid}",
             "cwd": str(self.root), "backend_type": "local-tmux", "worktrees": [],
         }) + "\n")
+
+    def composer(self, sid: str, typed: str | None) -> None:
+        """What `sid`'s input line holds, as `session capture --json` shows it:
+        the prompt glyph, what is typed after it, and the cursor at its end.
+        None is a capture that reports no cursor, which nothing can read."""
+        rule = "\u2500" * 40
+        line = "\u276f\u00a0" + (typed or "")
+        shown = {"output": "\n".join(["", "\u25cf Done.", "", rule, line.ljust(40), rule, "  ? for shortcuts", ""])}
+        if typed is not None:
+            shown |= {"cursor_row": 4, "cursor_col": len(line)}
+        self._write(f"panes/{sid}.json", json.dumps(shown) + "\n")
 
     def inbox(self, sid: str) -> list[dict]:
         """Every message `message send` left for `sid`, read or not."""

@@ -9,6 +9,12 @@
             "command": "uv run --frozen --quiet fleet sync-checkout",
             "timeout": 25,
             "statusMessage": "Syncing the control plane with origin..."
+          },
+          {
+            "type": "command",
+            "command": "uv run --frozen --quiet fleet reconcile ensure --if-lead",
+            "timeout": 45,
+            "statusMessage": "Making sure the reconciler is up..."
           }
         ]
       }
