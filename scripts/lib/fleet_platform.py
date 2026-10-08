@@ -53,6 +53,16 @@ def thurbox_config_dir() -> str:
     )
 
 
+def thurbox_data_dir() -> str:
+    """Where thurbox keeps thurbox.db, by thurbox's own rule in `src/paths/mod.rs`:
+    `THURBOX_DATA_DIR` first, then `XDG_DATA_HOME` on every OS, then
+    `%LOCALAPPDATA%` on Windows and `~/.local/share` elsewhere.
+    """
+    return os.environ.get("THURBOX_DATA_DIR") or os.path.join(
+        _base("XDG_DATA_HOME", "LOCALAPPDATA", os.path.join(".local", "share")), "thurbox"
+    )
+
+
 def fleet_data_dir() -> str:
     """Fleet's own data: under `XDG_DATA_HOME`, else `%LOCALAPPDATA%` or `~/.local/share`."""
     return os.path.join(

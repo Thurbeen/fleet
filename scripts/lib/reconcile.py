@@ -206,6 +206,11 @@ LOG_KEEP_LINES = 2000
 QUIET = re.compile(r"(^|[^0-9])0 task\(s\) moved", re.MULTILINE)
 
 
+def runtime_dir() -> str:
+    """The loop's runtime state: its lock, heartbeat, log and flags."""
+    return os.path.join(CHECKOUT, os.environ.get("FLEET_RECONCILE_DIR") or os.path.join("orchestration", "reconcile"))
+
+
 @dataclass
 class Config:
     rt: str
@@ -219,7 +224,7 @@ class Config:
 
     @classmethod
     def from_env(cls) -> Config:
-        rt = os.path.join(CHECKOUT, os.environ.get("FLEET_RECONCILE_DIR") or os.path.join("orchestration", "reconcile"))
+        rt = runtime_dir()
         override = os.environ.get("FLEET_RECONCILE_QUEUE_CMD", "").strip()
         if not override:
             cmd, label = [sys.executable, "-c", BOOT, CHECKOUT, "queue"], "fleet queue"

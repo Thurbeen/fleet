@@ -309,8 +309,8 @@ def test_a_signing_key_its_agent_cannot_reach_is_reported_with_gits_own_words(st
 
 
 def test_refuel_with_no_agent_to_read_is_a_lead_gap_naming_agent_conf(stubs, tmp_path):
-    """No AGENT, no FUEL_PROVIDER and no policy: every worker dispatched under
-    thurbox's own default is `undetermined` to refuel, which restarts nothing."""
+    """No AGENT and no FUEL_PROVIDER: every worker dispatched under thurbox's
+    own default is `undetermined` to refuel, which restarts nothing."""
     path = machine(stubs, full_machine())
     out = lead_tier(path)
     expect(out, "missing  refuel agent", "agent.conf", "AGENT=")
@@ -318,7 +318,17 @@ def test_refuel_with_no_agent_to_read_is_a_lead_gap_naming_agent_conf(stubs, tmp
     named = tmp_path / "named"
     write(named / "orchestration" / "agent.conf", "AGENT=some-agent\n")
     refute(lead_tier(path, FLEET_AGENT_ROOT=str(named)), "missing  refuel agent")
-    refute(lead_tier(path, FLEET_AGENT_POLICY="github.com/acme=some-agent"), "missing  refuel agent")
+    pinned = tmp_path / "pinned"
+    write(pinned / "orchestration" / "agent.conf", "FUEL_PROVIDER=some-provider\n")
+    refute(lead_tier(path, FLEET_AGENT_ROOT=str(pinned)), "missing  refuel agent")
+
+
+def test_an_agent_policy_alone_still_leaves_refuel_blind_outside_its_rules(stubs, tmp_path):
+    """A policy names an agent only for the repositories its rules cover; a
+    task anywhere else falls back to the empty AGENT, so the gap is still one."""
+    path = machine(stubs, full_machine())
+    out = lead_tier(path, FLEET_AGENT_POLICY="github.com/acme=some-agent")
+    expect(out, "missing  refuel agent", "no rule covers", "AGENT=")
 
 
 def test_a_queue_fleet_cannot_write_is_a_lead_gap(stubs, tmp_path):
@@ -331,6 +341,17 @@ def test_a_queue_fleet_cannot_write_is_a_lead_gap(stubs, tmp_path):
     out = lead_tier(path, FLEET_QUEUE_DIR=str(blocked))
     expect(out, "missing  fleet writes", str(blocked))
     refute(lead_tier(path), "missing  fleet writes")
+
+
+@pytest.mark.parametrize("variable", ["FLEET_RECONCILE_DIR", "THURBOX_DATA_DIR"])
+def test_the_reconcilers_and_thurboxs_own_directories_are_probed_too(stubs, tmp_path, variable):
+    """A sandbox that denied writes to thurbox's database broke `dispatch` just
+    as one denying the queue did, and the reconciler's runtime is its lock and
+    heartbeat."""
+    path = machine(stubs, full_machine())
+    blocked = tmp_path / "not-a-directory"
+    write(blocked, "")
+    expect(lead_tier(path, **{variable: str(blocked)}), "missing  fleet writes", str(blocked))
 
 
 def test_the_write_probe_leaves_the_queue_looking_untouched(stubs, tmp_path):

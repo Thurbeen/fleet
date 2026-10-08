@@ -279,8 +279,8 @@ def dependencies(family: str | None = None) -> list[Dependency]:
         ),
         Dependency(
             "refuel agent", "lead",
-            "no AGENT, FUEL_PROVIDER or agent policy names an agent, so `fleet queue refuel` cannot "
-            "read a worker's quota window and restarts nothing",
+            "no AGENT or FUEL_PROVIDER names an agent, so `fleet queue refuel` cannot "
+            "read the quota window of a worker spawned under thurbox's default, and restarts nothing",
             check=_refuel_agent, manual="set AGENT=<the agent your workers run> in orchestration/agent.conf",
         ),
         Dependency(
@@ -291,9 +291,10 @@ def dependencies(family: str | None = None) -> list[Dependency]:
         ),
         Dependency(
             "fleet writes", "lead",
-            "this process cannot write where `fleet queue` keeps its records — `collect`, `dispatch` "
-            "and `add` fail one call at a time, as a sandbox that denies fleet's own writes makes them",
-            check=_fleet_writes, manual="allow writes to the queue in the sandbox this agent runs commands in",
+            "this process cannot write where fleet's commands write — the queue, its run logs, the "
+            "reconciler's runtime or thurbox's database — so `collect`, `dispatch` and `add` fail one "
+            "call at a time, as a sandbox that denies fleet's own writes makes them",
+            check=_fleet_writes, manual="allow writes to fleet's directories in the sandbox this agent runs commands in",
         ),
     ]
     return table
@@ -471,14 +472,17 @@ def _refuel_agent() -> tuple[str, str, str]:
     provider = settings.conf().get("FUEL_PROVIDER", "").strip()
     if provider:
         return "ok", f"FUEL_PROVIDER={provider}", ""
-    if queue.agent_policy():
-        return "ok", "the agent policy names each repository's agent", ""
+    # A policy is no answer on its own: it names an agent only where a rule
+    # matches, and a task anywhere else falls back to the empty AGENT.
+    detail = ("the agent policy names one only for the repositories its rules cover; "
+              "a task in a repository no rule covers still runs thurbox's default"
+              if queue.agent_policy() else "")
     root = settings.conf_root()
     conf = os.path.join(root, settings.AGENT_CONF)
     if os.path.exists(conf):
-        return "missing", "", f"set AGENT=<the agent your workers run> in {conf}"
+        return "missing", detail, f"set AGENT=<the agent your workers run> in {conf}"
     example = os.path.join(root, settings.AGENT_CONF_DEFAULTS)
-    return "missing", "", f'cp "{example}" "{conf}"   # then set AGENT=<the agent your workers run>'
+    return "missing", detail, f'cp "{example}" "{conf}"   # then set AGENT=<the agent your workers run>'
 
 
 def _glab_host() -> tuple[str, str, str]:
@@ -497,16 +501,20 @@ def _glab_host() -> tuple[str, str, str]:
 
 
 def _fleet_writes() -> tuple[str, str, str]:
-    """Write a file where the queue writes, and remove it.
+    """Write a file where fleet's commands write, and remove it: the queue and
+    its run logs, the reconciler's runtime, and thurbox's data directory,
+    where `thurbox.db` takes every session `dispatch` creates.
 
     Probed by writing, because only the write is the answer: a sandbox's rules
     live in an agent's own settings, which fleet does not read, and this
     process runs under them when the lead runs it. A directory not made yet is
-    not asked — `fleet queue` creates it.
+    not asked — the command that needs it creates it.
     """
     queue = _queue()
+    reconcile = _load_sibling("fleet_reconcile", "reconcile.py")
+    places = (queue.queue_root(), queue.runs_root(), reconcile.runtime_dir(), fleet_platform.thurbox_data_dir())
     denied = []
-    for where in dict.fromkeys((queue.queue_root(), queue.runs_root())):
+    for where in dict.fromkeys(places):
         if not os.path.lexists(where):
             continue
         try:

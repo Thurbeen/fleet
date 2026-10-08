@@ -72,6 +72,25 @@ class Directories(TempDirCase):
         with environ(THURBOX_CONFIG_DIR=None, XDG_CONFIG_HOME=None, HOME=str(self.tmp)):
             self.assertEqual(fp.thurbox_config_dir(), os.path.join(str(self.tmp), ".config", "thurbox"))
 
+    def test_thurbox_data_dir_honours_thurbox_own_pin(self):
+        with environ(THURBOX_DATA_DIR=str(self.tmp / "pinned"), XDG_DATA_HOME=str(self.tmp / "xdg")):
+            self.assertEqual(fp.thurbox_data_dir(), str(self.tmp / "pinned"))
+
+    def test_thurbox_data_dir_prefers_xdg_on_every_os(self):
+        with environ(THURBOX_DATA_DIR=None, XDG_DATA_HOME=str(self.tmp / "xdg"),
+                     LOCALAPPDATA=str(self.tmp / "local")):
+            self.assertEqual(fp.thurbox_data_dir(), os.path.join(str(self.tmp / "xdg"), "thurbox"))
+
+    @unittest.skipUnless(WINDOWS, "the %LOCALAPPDATA% branch")
+    def test_thurbox_data_dir_is_localappdata_on_windows(self):
+        with environ(THURBOX_DATA_DIR=None, XDG_DATA_HOME=None, LOCALAPPDATA=str(self.tmp)):
+            self.assertEqual(fp.thurbox_data_dir(), os.path.join(str(self.tmp), "thurbox"))
+
+    @unittest.skipIf(WINDOWS, "the ~/.local/share branch")
+    def test_thurbox_data_dir_is_local_share_elsewhere(self):
+        with environ(THURBOX_DATA_DIR=None, XDG_DATA_HOME=None, HOME=str(self.tmp)):
+            self.assertEqual(fp.thurbox_data_dir(), os.path.join(str(self.tmp), ".local", "share", "thurbox"))
+
     def test_fleet_data_dir_prefers_xdg_on_every_os(self):
         with environ(XDG_DATA_HOME=str(self.tmp / "xdg"), LOCALAPPDATA=str(self.tmp / "local")):
             self.assertEqual(fp.fleet_data_dir(), os.path.join(str(self.tmp / "xdg"), "fleet"))

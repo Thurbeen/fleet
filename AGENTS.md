@@ -272,8 +272,9 @@ names every path and the reason for each.
   what breaks without it and the command that installs it with this machine's
   package manager (winget on Windows). **The lead tier is this machine's
   environment**, which every worker inherits — a commit that can actually be
-  signed with no terminal, an agent `refuel` can read, glab's default host, a
-  queue this process can write — each probed by doing it, never fatal, never
+  signed with no terminal, an agent `refuel` can read, glab's default host,
+  and the queue, reconciler and thurbox directories this process can write —
+  each probed by doing it, never fatal, never
   installed, and printed by `fleet status` as its MACHINE section. **No forge
   is required**: `gh`, `glab` and both logins sit in the optional forge tier,
   each naming what it adds, and

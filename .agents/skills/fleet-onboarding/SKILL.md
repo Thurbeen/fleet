@@ -66,7 +66,7 @@ manifest's floor, and never for anything else.
 |---|---|
 | required | fleet cannot run — `git`, `uv`, `thurbox-cli`, and the multiplexer: `tmux` 3.2 or newer, or `psmux` on native Windows |
 | recommended | a named capability degrades — `quota-axi` for fuel and `refuel` |
-| lead | this machine's environment, which every worker inherits — a commit signed with no terminal, an agent `refuel` can read, glab's default host, a queue fleet can write; each row's `fix:` is the operator's own configuration |
+| lead | this machine's environment, which every worker inherits — a commit signed with no terminal, an agent `refuel` can read, glab's default host, and write access to the queue, the reconciler's runtime and thurbox's data directory; each row's `fix:` is the operator's own configuration |
 | forge | optional — `gh` and `gh auth` add GitHub, `glab` and `glab auth` add GitLab: the repo map, publish checks on change requests, shepherd merges |
 | gate | only `uv run fleet check` needs it — `lua` and `prek` |
 
