@@ -4703,6 +4703,7 @@ def pull_request_verdict(
     # own change request from the task's branch and is compared against it,
     # exactly as a task with no target always was.
     named, target, why = task_target(task) if (unit or {}).get("primary", True) else ("", None, "")
+    own = True
     if named:
         if target is None:
             return "unknown", why, {}
@@ -4724,6 +4725,7 @@ def pull_request_verdict(
                     f"is {branch}; a task that works on a change request it did not "
                     "open names it with `add --target`"
                 ), {}
+            own = False
             verdict, whose = integration_verdict(task, cr, branch, unit or task_repos(task)[0])
             if verdict != "passed":
                 return verdict, whose, {}
@@ -4732,7 +4734,10 @@ def pull_request_verdict(
     # change request, so holding the task open for a publish that can never
     # verify left it `dispatched` until somebody abandoned it by hand. The
     # `closed` state is what `collect` reads to retire it in its own words.
-    if cr.state == "closed":
+    # Only the task's OWN change request — its branch's, or its `--target`. A
+    # closed integration one (develop→main) carries work already on develop,
+    # so it keeps the plain refusal below rather than ending the task.
+    if cr.state == "closed" and own:
         return "missing", f"{cr.url} was closed without merging", {"state": "closed"}
 
     if method == "attested":
