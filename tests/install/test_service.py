@@ -13,6 +13,9 @@ from __future__ import annotations
 
 import hashlib
 import os
+import sys
+
+import pytest
 
 from harness import expect, refute
 from installkit import fleet, full_machine, installs, machine, place, plain, tree_snapshot
@@ -96,6 +99,7 @@ def test_a_machine_with_no_service_manager_fails_nothing(stubs, checkout):
     assert set(before) <= set(after)
 
 
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="the systemd branch")
 def test_systemd_detected_only_where_a_user_manager_answers(stubs, checkout):
     """Not pinned: a `systemctl` that cannot reach a user manager (a container,
     WSL without systemd) is no service manager, and the plan has no row for it."""

@@ -757,12 +757,12 @@ def is_lead() -> bool:
     return bool(name) and notify.lead_session(name)[0] == sid
 
 
-def cmd_ensure_if_lead(cfg: Config) -> int:
+def cmd_ensure_if_lead() -> int:
     """`ensure`, from the lead's SessionStart hook: silent elsewhere, never a failure."""
     try:
         if is_lead():
-            cmd_ensure(cfg)
-    except Exception as exc:
+            cmd_ensure(Config.from_env())
+    except (Exception, SystemExit) as exc:
         say(f"fleet reconciler: could not ensure it is up ({exc}); uv run fleet reconcile ensure")
     return 0
 
@@ -961,13 +961,14 @@ def main(argv: list[str]) -> int:
         except Exception as exc:
             say(f"fleet reconciler: could not nudge ({exc})")
             return 0
+    if cmd == "ensure" and "--if-lead" in argv[1:]:
+        # Before the settings are read: a SessionStart hook never fails, not even on a bad one.
+        return cmd_ensure_if_lead()
     cfg = Config.from_env()
     if cmd == "__supervise":
         return with_lock(cfg, supervise)
     if cmd == "__loop":
         return with_lock(cfg, tick)
-    if cmd == "ensure" and "--if-lead" in argv[1:]:
-        return cmd_ensure_if_lead(cfg)
     handlers = {
         "ensure": cmd_ensure, "start": cmd_start, "stop": cmd_stop, "restart": cmd_restart,
         "status": cmd_status, "hook": cmd_hook, "serve": cmd_serve,

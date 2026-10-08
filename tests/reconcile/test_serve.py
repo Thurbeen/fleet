@@ -124,3 +124,10 @@ def test_the_session_start_hook_never_fails_the_session(recon, monkeypatch, caps
     monkeypatch.setattr(mod, "START_WAIT_SECS", 3)
     assert mod.main(["ensure", "--if-lead"]) == 0
     expect(capsys.readouterr().err, "did not tick")
+
+
+def test_a_bad_setting_does_not_fail_the_session_start_either(recon):
+    """CONTRIBUTING: a SessionStart hook exits 0, whatever it finds."""
+    done = recon("ensure", "--if-lead", **lead_env("lead-uuid"), FLEET_RECONCILE_WATCH_SECS="soon")
+    assert done.code == 0, done.out
+    expect(done.out, "could not ensure")
