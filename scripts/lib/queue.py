@@ -2529,7 +2529,7 @@ def render_brief(task: Task, topic: dict, body: str | None) -> str:
     if spans and method in PER_REPO_METHODS:
         artifact_contract = "artifacts:\n" + "\n".join(
             f"  {u['path']}: <{spec['artifact']}>" for u in task_repos(task)
-        )
+        ) + "\n  # a repository that needed nothing: no change needed — <why>"
     else:
         artifact_contract = (
             "artifact: <PR URL, commit URL for a `push` task, note URL for a "
@@ -4493,6 +4493,21 @@ def task_publish(task: Task) -> tuple[str, str | None]:
     return method, text or None
 
 
+NO_CHANGE_RE = re.compile(r"^\s*no change needed\b\s*[:\u2014\u2013-]?\s*(.*)$", re.I | re.S)
+
+
+def no_change_reason(value) -> str | None:
+    """The reason a repository needed nothing, "" for none given, None for not a no-op.
+
+    The per-repository word in `artifacts:` for a task that spans
+    repositories: `no change needed — <why>` (a dash, or a quoted colon, since
+    an unquoted second colon is not YAML). It verifies on its own, and landing
+    never waits on it, since it is no change request.
+    """
+    match = NO_CHANGE_RE.match(value) if isinstance(value, str) else None
+    return match.group(1).strip() if match else None
+
+
 def publish_verdict(task: Task, outcome, url, unit: dict | None = None) -> tuple[str, str, dict]:
     """Does this artifact prove this REPOSITORY published? Four answers, per method.
 
@@ -4528,6 +4543,13 @@ def publish_verdict(task: Task, outcome, url, unit: dict | None = None) -> tuple
     """
     unit = unit or task_repos(task)[0]
     method, _how = task_publish(task)
+    reason = no_change_reason(url) if len(task_repos(task)) > 1 else None
+    if reason is not None and method in PER_REPO_METHODS:
+        if not reason:
+            return "missing", (
+                "`no change needed` must give the reason: `no change needed — <why>`"
+            ), {}
+        return "passed", f"no change needed in this repository: {reason}", {}
     if method == "push":
         return (*commit_verdict(task, outcome, url, unit), {})
     if method == "note":
@@ -4628,13 +4650,18 @@ def pull_request_verdict(
         branch = str(task.doc.get("branch") or "")
         if not cr.head_branch:
             return "unknown", "the forge did not say which branch this pull request is from", {}
-        if cr.head_branch != branch:
-            return "missing", (
-                f"the pull request is from branch {cr.head_branch}, and this task's "
-                f"is {branch}; a task that works on a change request it did not "
-                "open names it with `add --target`"
-            ), {}
         whose = f"is from {branch}"
+        if cr.head_branch != branch:
+            integration = longest_prefix_rule(cr.repo, integration_branches())
+            if integration is None or integration[0] != cr.head_branch:
+                return "missing", (
+                    f"the pull request is from branch {cr.head_branch}, and this task's "
+                    f"is {branch}; a task that works on a change request it did not "
+                    "open names it with `add --target`"
+                ), {}
+            verdict, whose = integration_verdict(task, cr, branch, unit or task_repos(task)[0])
+            if verdict != "passed":
+                return verdict, whose, {}
 
     if method == "attested":
         attested, why = attestation_verdict(cr.body, cr.head_sha)
@@ -7130,6 +7157,11 @@ AGENT_POLICY_CONF_DEFAULTS = "orchestration/agent-policy.example.conf"
 AGENT_POLICY_ENV = "FLEET_AGENT_POLICY"
 AGENT_POLICY_ROOT_ENV = "FLEET_AGENT_POLICY_ROOT"
 
+# Which repositories reach `main` through an integration branch. Read from the
+# same root as publish.conf, because it is a fact about how work publishes.
+FLOW_CONF = "orchestration/flow.conf"
+FLOW_CONF_DEFAULTS = "orchestration/flow.example.conf"
+
 # Squash because it is the only method fleet's own remotes allow, so the pull
 # request title becomes the commit on `main`; CONTRIBUTING.md owns that. A
 # forge that cannot perform it says so BEFORE anything is merged rather than
@@ -7301,12 +7333,17 @@ def agents_for_repo(
     for `github.com/owner/repo` beats a rule for `github.com/owner`. Returns
     None when the policy is empty or no prefix matches.
     """
-    if repo is None or not policy:
+    return longest_prefix_rule(repo, policy)
+
+
+def longest_prefix_rule(repo: forge.RepoId | None, rules: dict):
+    """(value, prefix) of the longest host-qualified prefix matching `repo`, or None."""
+    if repo is None or not rules:
         return None
     qualified = repo.qualified.casefold()
     best_prefix = ""
-    best_agents: list[str] = []
-    for prefix, agents in policy.items():
+    best = None
+    for prefix, value in rules.items():
         if not qualified.startswith(prefix):
             continue
         tail = qualified[len(prefix) :]
@@ -7314,10 +7351,78 @@ def agents_for_repo(
             continue
         if len(prefix) > len(best_prefix):
             best_prefix = prefix
-            best_agents = agents
+            best = value
     if not best_prefix:
         return None
-    return best_agents, best_prefix
+    return best, best_prefix
+
+
+# --- integration branches: repositories whose change request is develop→main --
+#
+# The operator's copy is `orchestration/flow.conf`; the tracked example names
+# none. Read on every `collect`, so a task already in flight is verified by the
+# rule as it stands when its result is read.
+
+
+def integration_branches(root: str | None = None) -> dict[str, str]:
+    """Host-qualified repository prefixes to their integration branch.
+
+    A line that names no forge, or no branch, is refused out loud: silence
+    would read as a repository fleet checks the ordinary way on purpose.
+    """
+    root = root or os.environ.get("FLEET_PUBLISH_ROOT") or checkout_root()
+    path = conf_path(FLOW_CONF, FLOW_CONF_DEFAULTS, root)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            lines = [line.partition("#")[0].strip() for line in fh]
+    except OSError:
+        return {}
+    out: dict[str, str] = {}
+    for entry in filter(None, lines):
+        repo_text, _, branch = (part.strip() for part in entry.partition("="))
+        prefix = _parse_policy_prefix(repo_text)
+        if prefix is None or not branch:
+            print(
+                f"{path}: ignoring {entry!r} — a flow entry must name its forge "
+                "and a branch, as in github.com/owner/repo = develop",
+                file=sys.stderr,
+            )
+            continue
+        out[prefix] = branch
+    return out
+
+
+def integration_verdict(task: Task, cr: forge.ChangeRequest, branch: str, unit: dict) -> tuple[str, str]:
+    """Does this change request from an integration branch carry the task's work?
+
+    "Carries" is the task branch's HEAD being among the commits the FORGE
+    lists for it: everything the branch holds is an ancestor of its head, and
+    a worker cannot write that list. The head is read from the task's own
+    checkout, where its worktree's branch lives. A squash into the
+    integration branch rewrites that commit, and is refused like any other
+    change request that does not carry it.
+    """
+    host = task.doc.get("host")
+    if host:
+        return "unknown", f"{branch} is on host {host}; not checked from here"
+    repo = unit["path"]
+    tip = ""
+    for ref in (f"refs/heads/{branch}", f"refs/remotes/origin/{branch}"):
+        tip = git_out(repo, ["rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"]).strip()
+        if tip:
+            break
+    if not tip:
+        return "unknown", f"{branch} could not be read in {repo}, so its head cannot be looked for"
+    oids = {c.sha.lower() for c in cr.commits}
+    if not oids:
+        return "unknown", "the forge did not list this pull request's commits"
+    head = f"{branch}'s head {tip[:8]}"
+    if tip.lower() in oids:
+        return "passed", f"is from integration branch {cr.head_branch} and contains {head}"
+    return "missing", (
+        f"the pull request is from integration branch {cr.head_branch} and does not "
+        f"contain {head}"
+    )
 
 
 def repos_policy(paths: list[str], policy: dict[str, list[str]]) -> tuple[list[str], str] | None:

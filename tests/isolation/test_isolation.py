@@ -81,6 +81,7 @@ def poison(copy: Path) -> None:
     write(o / "voice.conf", "OPERATOR_NAME=Operator Private\nASSISTANT_NAME=Private Lead\n")
     write(o / "session-profiles.local.yaml",
           "profiles:\n  default:\n    env:\n      THURBOX_SESSION: operator-private\n")
+    write(o / "flow.conf", "github.com/operator-private/secret-repo = operator-private-develop\n")
     write(o / "agent-policy.conf", "forge.test:8443/operator-private/private-repo=operator-private-agent\n")
     write(o / "reconcile" / "pid", "1\n")
     write(o / "reconcile" / "down", "asked down by the operator\n")

@@ -125,7 +125,7 @@ publish method stays one per task, and everything downstream handles N:
 | | with one repository | with N |
 |---|---|---|
 | the record | `artifact:` is a URL | `artifact:` is a list of `{repo, url}` |
-| `result.md` | `artifact: <url>` | `artifacts:` — one line per repository path |
+| `result.md` | `artifact: <url>` | `artifacts:` — one line per repository path, or `no change needed — <why>` for one that needed nothing |
 | `collect` | closes when the artifact verifies | closes only when **every** one does, naming the ones that did not |
 | `reap` | `landed` when the artifact merged | `landed` only when **every** one merged |
 | `shepherd` | watches that repository | watches every repository the task names |
@@ -545,7 +545,13 @@ named.
 The head-branch check is the one a worker cannot write for itself: "this
 change request comes from this task's branch" is the forge's fact, which
 closes the hole a worker pasting somebody else's good pull request would
-open. A change request the forge reports **merged** closes its task even with
+open. **An integration branch is the one exception**: a repository the
+operator's `orchestration/flow.conf` maps to one (`github.com/o/r = develop`;
+the tracked `flow.example.conf` names none) also verifies a change request
+from THAT branch, when the commits the forge lists for it include the head of
+the task's branch, read from the task's checkout. A squash into `develop`
+rewrites that commit, so such a task is proven by its feat→develop change
+request instead. A change request the forge reports **merged** closes its task even with
 a stale attestation — whoever merged it answered "may this merge" — and the
 stale one is kept on the record as a note, never a hold.
 

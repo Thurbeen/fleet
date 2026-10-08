@@ -127,6 +127,11 @@ names every path and the reason for each.
   was not spawned as: another account's quota window, another agent's limit
   banner. `task_agent` in `scripts/lib/queue.py` owns the resolution and why
   it answers `""` rather than guessing.
+- `orchestration/flow.example.conf` — repositories whose work reaches `main`
+  through an INTEGRATION BRANCH (`github.com/owner/repo = develop`). `collect`
+  then also verifies a `develop → main` change request that contains the task
+  branch's head. Tracked and naming none; copy it to a gitignored `flow.conf`.
+  `scripts/lib/queue.py`'s `integration_verdict` owns the rule.
 - `orchestration/session-glyphs.example.conf` — the mark fleet's sessions wear
   in the thurbox session list: `📡` on the lead and one word per KIND of session
   fleet spawns — a queue worker, the `diagnose-machine` sweep, the `review-prs`
@@ -362,10 +367,12 @@ a second copy — read the skill before you run any of it:
    and only that closes a task. **The publish method is one per task and the
    ARTIFACT IS ONE PER REPOSITORY**: a task that spans repositories records one
    for each, with its own verdict, and `collect` holds the whole task open
-   unless every one verifies, naming the ones that did not. A record written
-   before this carries a scalar `artifact:` and loads, lists and reaps
-   unchanged, the way `no-mistakes` still reads as `attested`. A turn ending is
-   not a task finishing. The run log refreshes its own facts as this happens,
+   unless every one verifies, naming the ones that did not; a repository that
+   needed nothing is written `no change needed — <why>`, which verifies and
+   is never waited on to land. A record written before this carries a
+   scalar `artifact:` and loads, lists and reaps unchanged, the way
+   `no-mistakes` still reads as `attested`. A turn ending is not a task
+   finishing. The run log refreshes its own facts as this happens,
    which leaves you the half no record can hold: the goal in your words, the
    decisions, what went wrong.
    Write those in while you still know them.
