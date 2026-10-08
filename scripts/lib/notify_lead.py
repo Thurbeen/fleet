@@ -70,6 +70,11 @@ Usage (it is `scripts/lib/reconcile.py`'s, and nothing else's):
 
     uv run fleet queue plan --json | uv run python scripts/lib/notify_lead.py --state-dir DIR
 
+    uv run fleet sync-checkout --json | uv run python scripts/lib/notify_lead.py --state-dir DIR --stale
+
+The second is the STALE LEAD: the loop fast-forwarded the checkout and what
+arrived needs a hand. `stale()` owns its one difference from the ready notice.
+
 It prints a line worth logging, or nothing, and it exits 0 whatever happens.
 A notifier that can fail the pass it rides on would cost the reconciler the
 `collect` it just did, which is a real loss traded for a message.
@@ -115,6 +120,9 @@ AT_REST = ("idle", "done")
 NAMED = 6
 
 STATE_FILE = "notified.json"
+# A stale-lead notice not delivered yet. Deleted once it is, so the loop asks
+# for a retry only while one waits.
+STALE_FILE = "stale.json"
 
 
 def _load_queue():
@@ -287,7 +295,7 @@ def wake(sid: str, text: str) -> tuple[bool, str]:
     return True, ""
 
 
-def post(sid: str, text: str) -> tuple[bool, str]:
+def post(sid: str, text: str, kind: str = "fleet-ready") -> tuple[bool, str]:
     """Leave one line in the lead's thurbox mailbox, and wake nothing.
 
     `message send --no-wake` only enqueues. Without the flag thurbox pushes
@@ -297,7 +305,7 @@ def post(sid: str, text: str) -> tuple[bool, str]:
     """
     try:
         out = subprocess.run(
-            ["thurbox-cli", "message", "send", "--to", sid, "--kind", "fleet-ready",
+            ["thurbox-cli", "message", "send", "--to", sid, "--kind", kind,
              "--body", text, "--no-wake", "--json"],
             capture_output=True,
             text=True, encoding="utf-8",
@@ -320,6 +328,110 @@ def message(ready: list) -> str:
     )
 
 
+# --- the stale lead ----------------------------------------------------------
+
+
+def read_stale(state_dir: str) -> dict:
+    try:
+        with open(os.path.join(state_dir, STALE_FILE), encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return doc if isinstance(doc, dict) else {}
+
+
+def write_stale(state_dir: str, pending: dict, note: str) -> None:
+    """Keep a notice still to deliver; with none, remove the file. Into the
+    runtime directory and never making it, for `write_state`'s reason."""
+    path = os.path.join(state_dir, STALE_FILE)
+    try:
+        if not pending:
+            os.remove(path)
+            return
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"pending": pending, "note": note}, fh)
+    except OSError:
+        pass
+
+
+def merge(pending: dict, report: dict) -> dict:
+    """Two fast-forwards before the lead heard of the first are one notice: the
+    earliest `before`, the latest `after`, and every action with every path."""
+    actions = dict(pending.get("actions") or {})
+    for action, paths in (report.get("actions") or {}).items():
+        have = actions.get(action, "").split()
+        actions[action] = " ".join(have + [p for p in str(paths).split() if p not in have])
+    return {
+        "before": pending.get("before") or report.get("before") or "",
+        "after": report.get("after") or pending.get("after") or "",
+        "actions": actions,
+    }
+
+
+def stale_message(pending: dict) -> str:
+    """One line: what moved, what it needs, and the one command that applies it.
+
+    `/update-fleet <before>` and not the sync's own report: the sync already
+    happened, so a lead that ran the skill bare would find nothing behind origin
+    and apply nothing. The sha is where the skill diffs from."""
+    before = pending.get("before", "")[:8]
+    paths = []
+    for value in pending.get("actions", {}).values():
+        paths += [p for p in value.split() if p not in paths]
+    shown = " ".join(paths[:NAMED]) + ("" if len(paths) <= NAMED else f" and {len(paths) - NAMED} more")
+    return (
+        f"fleet reconciler: fast-forwarded this checkout {before}..{pending.get('after', '')[:8]}; "
+        f"it needs {', '.join(pending.get('actions', {}))} ({shown}). "
+        f"Run /update-fleet {before} to apply it — its last step hands this lead over."
+    )
+
+
+def stale(state_dir: str, text: str) -> int:
+    """Tell the lead the checkout moved under it, once.
+
+    THE SAME RULES AS THE READY NOTICE, minus one. Typed into a lead at rest,
+    posted `--no-wake` into the inbox of one mid-turn, and waiting when neither
+    can be done. The difference is that the inbox COUNTS here: a ready set is a
+    decision the lead still has to make, so its wake follows the note; this is
+    a fact, and a fact said twice is the boilerplate a lead learns to skip.
+
+    Kept until delivered, across passes and restarts: by the next pass the sync
+    has nothing left to say, so a notice dropped here is lost for good. A fleet
+    with no lead configured has nobody to tell, and drops it.
+    """
+    try:
+        report = json.loads(text or "{}")
+    except ValueError:
+        report = {}
+    doc = read_stale(state_dir)
+    pending = doc.get("pending") or {}
+    if isinstance(report, dict) and report.get("actions"):
+        pending = merge(pending, report)
+    if not pending:
+        return 0
+
+    def wait(note: str) -> int:
+        if note != doc.get("note"):
+            print(note)
+        write_stale(state_dir, pending, note)
+        return 0
+
+    name = lead_name()
+    if not name:
+        write_stale(state_dir, {}, "")
+        return 0
+    sid, status = lead_session(name)
+    if not sid:
+        return wait(f"the checkout moved, but {status}; the notice waits")
+    line = stale_message(pending)
+    sent, why = wake(sid, line) if status in AT_REST else post(sid, line, kind="fleet-stale")
+    if not sent:
+        return wait(f"the checkout moved; {name} is {status} and {why}; the notice waits")
+    write_stale(state_dir, {}, "")
+    print(f"told {name} the checkout moved: {', '.join(pending['actions'])}")
+    return 0
+
+
 # --- the pass ----------------------------------------------------------------
 
 
@@ -332,7 +444,14 @@ def main(argv: list) -> int:
         required=True,
         help="the reconciler's runtime directory, where what-was-told lives",
     )
+    ap.add_argument(
+        "--stale",
+        action="store_true",
+        help="tell the lead what a fast-forward needs: sync-checkout's --json report on stdin, or none to retry",
+    )
     args = ap.parse_args(argv)
+    if args.stale:
+        return stale(args.state_dir, sys.stdin.read())
 
     try:
         plan = json.loads(sys.stdin.read() or "{}")

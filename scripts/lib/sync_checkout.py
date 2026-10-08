@@ -1,9 +1,12 @@
 """Keep this checkout current with origin, safely.
 
     uv run fleet sync-checkout
+    uv run fleet sync-checkout --json   # the same sync, as the reconciler reads it
 
 Wired to the SessionStart hook in .claude/settings.json, so every Claude Code
-session that opens the control plane starts from an up-to-date base. A stale
+session that opens the control plane starts from an up-to-date base, and run
+by the reconciler on its own clock (`--json`), so a lead that stays open for
+weeks is not left on the code it started with. A stale
 local `main` is silently inherited by every new thurbox worktree: the worker
 branches off it, does correct work, and its PR arrives CONFLICTING.
 
@@ -146,6 +149,20 @@ def changed(root: str, before: str, paths: tuple[str, ...]) -> str:
 
 def sync() -> str | None:
     """The message to show, or None to stay silent."""
+    return report()["message"]
+
+
+def report() -> dict:
+    """What `--json` prints: the message, the range a fast-forward moved, and
+    each action it raised as `{action: paths}` — `restart-lead`,
+    `reinstall-extension`, `restart-reconciler`. The reconciler builds its
+    notice from this rather than from the message's prose."""
+    facts = {"before": "", "after": "", "actions": {}}
+    facts["message"] = _sync(facts)
+    return facts
+
+
+def _sync(facts: dict) -> str | None:
     if not shutil.which("git"):
         return "control-plane sync: git not found; skipped."
 
@@ -203,10 +220,12 @@ def sync() -> str | None:
                 "and would not fast-forward. Left alone.")
 
     short = git(root, "rev-parse", "--short", "HEAD").stdout.strip()
+    facts["before"], facts["after"] = before, git(root, "rev-parse", "HEAD").stdout.strip()
     msg = f"control-plane sync: fast-forwarded '{branch}' {behind} commit(s) to {short}."
 
     instr = changed(root, before, INSTRUCTION_PATHS)
     if instr:
+        facts["actions"]["restart-lead"] = instr
         lead = lead_name(root) or "<the lead, from thurbox-cli session list>"
         msg += (
             f"\nrestart-lead: yes — {instr}\n"
@@ -221,6 +240,7 @@ def sync() -> str | None:
 
     wiring = changed(root, before, WIRING_PATHS)
     if wiring:
+        facts["actions"]["reinstall-extension"] = wiring
         msg += (
             f"\nreinstall-extension: yes — {wiring}\n"
             "That changed, so the installed extension no longer matches the manifest it was\n"
@@ -229,6 +249,7 @@ def sync() -> str | None:
 
     loop = changed(root, before, RECONCILER_PATHS)
     if loop:
+        facts["actions"]["restart-reconciler"] = loop
         msg += (
             f"\nrestart-reconciler: yes — {loop}\n"
             "A reconciler started before this sync still runs its old code, and fails every pass\n"
@@ -244,10 +265,15 @@ def main(argv: list[str]) -> int:
         sys.stdout.write(__doc__)
         return 0
     try:
-        msg = sync()
+        facts = report()
     except Exception as exc:  # noqa: BLE001 — the hook must never fail a session start
-        msg = (f"control-plane sync: failed unexpectedly ({type(exc).__name__}: {exc}). "
-               "Working from the local checkout.")
+        facts = {"before": "", "after": "", "actions": {}, "message": (
+            f"control-plane sync: failed unexpectedly ({type(exc).__name__}: {exc}). "
+            "Working from the local checkout.")}
+    if argv[:1] == ["--json"]:
+        sys.stdout.write(json.dumps(facts, ensure_ascii=False) + "\n")
+        return 0
+    msg = facts["message"]
     if msg:
         sys.stdout.write(json.dumps({"systemMessage": msg, "suppressOutput": True}, ensure_ascii=False) + "\n")
     return 0

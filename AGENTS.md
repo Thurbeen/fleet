@@ -202,8 +202,9 @@ names every path and the reason for each.
   ticking, a pidfile for people, its log, the advisory `nudge` flag, the `down`
   flag, and `notified.json` — which ready tasks the lead has
   already been woken about, and which were left in its thurbox mailbox while
-  it was mid-turn, so a transition is told once. That last one is
-  runtime state and not a record for the same reason as all the others: "the
+  it was mid-turn, so a transition is told once — and `stale.json`, a
+  stale-lead notice not yet delivered. Those last two are
+  runtime state and not records for the same reason as all the others: "the
   lead has been told" is true of one machine's loop and one conversation, and
   writing it onto a task would make the loop a second writer over the queue.
   Written by `uv run fleet reconcile` (`scripts/lib/reconcile.py`) and created
@@ -421,13 +422,14 @@ nothing asked it down". Four things about it are load-bearing:
   directory above holds the rest. It calls exactly `watch`, `collect`,
   `shepherd`, `refuel` and the read-only `plan`, and `tests/reconcile/` asserts
   that the set is those five and argues in place why a READ may join it while
-  `dispatch` never may.
+  `dispatch` never may. Outside the queue it touches one thing: the checkout,
+  through `sync-checkout`, which only fast-forwards a clean default branch.
 - **It reconciles; it does not decide.** No dispatch, no cancel, no reorder,
   and it does not re-decide `refuel`'s rule about a spent quota window.
-- **It tells the lead when the ready set grows, which is the one thing it says
-  out loud.** A task whose blocker clears is ready and has no actor: the loop
-  may not dispatch, and the lead only acts when spoken to — on 2026-09-10 that
-  cost six and a half hours. So after `collect` it reads `plan` and, when the
+- **It tells the lead when the ready set grows**, and once when a sync it ran
+  needs a hand (see **Pulling changes in**). A task whose blocker clears is
+  ready and has no actor: the loop may not dispatch, and the lead only acts
+  when spoken to — on 2026-09-10 that cost six and a half hours. So after `collect` it reads `plan` and, when the
   ready set has grown, types one line into the lead's terminal naming what is
   ready and the command that sends it. Once per transition, never into a lead
   mid-turn or an input line it cannot prove empty, and silent when no lead
@@ -536,9 +538,10 @@ consequences to know before you debug the extension:
 
 ## Pulling changes in
 
-`uv run fleet sync-checkout` fast-forwards this checkout from `origin`, and the
-`SessionStart` hook runs it (`uv run --frozen --quiet fleet sync-checkout`, one
-command every shell parses alike, which exits 0 itself). It only ever
+`uv run fleet sync-checkout` fast-forwards this checkout from `origin`. The
+reconciler runs it every 15 minutes, and the `SessionStart` hook runs it
+(`uv run --frozen --quiet fleet sync-checkout`, one command every shell parses
+alike, which exits 0 itself). It only ever
 fast-forwards and refuses rather than forces on a dirty tree, a feature branch,
 or a divergence.
 
@@ -546,7 +549,10 @@ or a divergence.
 running Mission Control session is holding stale instructions** — it froze
 them at launch and nothing reloads them from disk. This is equally true of a
 plain `git pull`. The sync says so when it happens; act on it rather
-than assuming the new instructions reached the lead.
+than assuming the new instructions reached the lead. A sync the reconciler
+ran says so ONCE, to the lead, by the ready notice's rules
+(`notify_lead.py --stale`): one line naming the range and
+`/update-fleet <before>`, since the sync itself has nothing left to say.
 
 `.agents/skills/update-fleet/` drives that whole update — the sync, then only
 the pieces it left stale (extension manifest, queue pane, registry,

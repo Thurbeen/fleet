@@ -107,7 +107,10 @@ to run them. What is here is what is YOURS in each.
 
 1. **A prompt becomes a topic**, not a turn in this conversation.
    `uv run fleet queue topic add` keeps it verbatim; `add` decomposes it into
-   tasks, one per unit of work.
+   tasks, one per unit of work. **When the tasks span several owners or
+   repositories and would start more than two workers, confirm the subset in
+   one line before the first dispatch** — which repos, which part. Five
+   workers started on the wrong half of a plan cost more than the question.
 2. **Write each task's BRIEF.md.** Workers share no context with you or each
    other, so each brief states the goal, the constraints and what "done" looks
    like, from scratch.
@@ -236,6 +239,11 @@ spent window is spent, and that is when it comes back.
 out why X", reading through another repository, any edit outside this control
 plane. However small it looks.
 
+**These are dispatch, every time:** changing infrastructure, a repository or
+the machine; and "why did job X fail" — a red pipeline, a CI log, a forge's
+error. Root-causing a job reads logs and code in another repository, which is
+the tell below; the worker brings back the cause in a paragraph.
+
 **A change to FLEET ITSELF is one of those tasks, not an exception to them.**
 A skill, `AGENTS.md`, this file, anything under `orchestration/`,
 `scripts/lib/`, `tests/` or `interface/` — you write a brief and dispatch a
@@ -317,6 +325,10 @@ fact wins:
   step reads as completion.
 - **One fact in one place.** Do not repeat in prose what the pane already
   shows, and never re-explain a settled decision — act on it.
+- **A question is asked once.** One the operator has not answered is parked,
+  and a later reply counts it — `2 decisions parked` — rather than asking it
+  again. The same goes for a long instruction, such as the lead hand-over:
+  in full the first time, one line after that.
 
 Both names are settings, not literals: `orchestration/voice.example.conf`
 carries them, a gitignored `voice.conf` beside it overrides, and
@@ -334,7 +346,11 @@ carries them, a gitignored `voice.conf` beside it overrides, and
   YOU are the stale one. It reports `restart-lead: yes` when that happens. Say
   that to the operator rather than pretending the change reached you, and run
   `.agents/skills/update-fleet/` — it does the sync, re-applies only what the
-  sync left stale, and ends on the hand-over that replaces you.
+  sync left stale, and ends on the hand-over that replaces you. **The
+  reconciler syncs a clean checkout on its own clock**, so this reaches you
+  as its one line — `fast-forwarded this checkout <sha>..<sha>; it needs …` —
+  and the command in it is `/update-fleet <sha>`, since by then the sync has
+  nothing left to say.
 - **`uv run fleet check` is the whole gate**, and CI runs the same command on
   Linux and on native Windows. It belongs to whoever is editing, which for
   fleet's own machinery is the worker you dispatched and not you — and CI only
@@ -387,6 +403,10 @@ the rule protects is still true of it —
   hours before you knew there was one.
 - **It writes no record.** Every effect goes through `uv run fleet queue`,
   which stays the only writer, exactly as the pane stays a pure reader.
+- **It keeps this checkout current, and nothing more.** It runs
+  `sync-checkout`, which only fast-forwards a clean `main` and refuses
+  everything else. What arrived and needs a hand, it tells you once, by the
+  same rules as the ready notice; applying it is still yours.
 - **It is stoppable, and a stop stays stopped.** `orchestration/reconcile/down`
   is the operator's to clear with `start`, never yours.
 - **It comes back by itself, and nothing that brings it back clears that
