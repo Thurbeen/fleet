@@ -302,6 +302,18 @@ def spawn_detached(argv: list[str], **popen) -> subprocess.Popen:
     return subprocess.Popen(argv, **popen)
 
 
+def no_terminal() -> dict:
+    """Popen arguments for a child that must not reach a terminal to prompt on.
+
+    POSIX: a new session, so it has no controlling terminal and a passphrase
+    prompt fails at once instead of waiting on the operator's keyboard — which
+    is what a worker with no terminal meets. Windows: no console window.
+    """
+    if WINDOWS:
+        return {"creationflags": subprocess.CREATE_NO_WINDOW}
+    return {"start_new_session": True}
+
+
 def terminate_tree(pid: int, force: bool = False) -> None:
     """End `pid` and what it is running, as a stop has to.
 

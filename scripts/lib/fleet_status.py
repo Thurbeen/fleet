@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """The lead's whole situational awareness, in one call — the fuel, the queue,
-the workers, the pull requests and this checkout, on one screen.
+the workers, the pull requests, this checkout and this machine's own
+prerequisites (preflight's lead tier), on one screen.
 
 Usage:
   uv run fleet status             # the screen
@@ -474,6 +475,27 @@ def probe_checkout() -> dict:
     # The COUNT of changes, never their names: this output goes in front of an
     # agent that is orienting, not reviewing, and a file list is not orientation.
     sec["dirty"] = None if why else len([ln for ln in (porcelain or "").splitlines() if ln.strip()])
+    return sec
+
+
+# --- machine -----------------------------------------------------------------
+
+# preflight's LEAD tier, read here because the lead runs this screen and not
+# preflight: a signing agent gone after a reboot used to surface as one blocked
+# worker at a time. The rows and their probes are preflight's; this only prints
+# the gaps, so the two can never disagree about what is wrong.
+
+
+def probe_machine() -> dict:
+    sec: dict = {"unavailable": None, "gaps": []}
+    try:
+        preflight = _load_lib("fleet_preflight", "preflight.py")
+        sec["gaps"] = [
+            {"name": f.dependency.name, "what": f.dependency.why, "detail": f.detail, "fix": f.manual}
+            for f in preflight.missing(["lead"])
+        ]
+    except Exception as exc:  # degrade, never fail
+        sec["unavailable"] = f"preflight could not run: {exc}"
     return sec
 
 
@@ -1196,15 +1218,20 @@ REGISTRY_FILE = os.path.join("registry", "repos.generated.yaml")
 RECORD_PROBLEMS_SHOWN = 8
 
 
-def _load_check_yaml():
-    if "fleet_check_yaml" in sys.modules:
-        return sys.modules["fleet_check_yaml"]
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "check_yaml.py")
-    spec = importlib.util.spec_from_file_location("fleet_check_yaml", path)
+def _load_lib(name: str, filename: str):
+    """A module beside this file, under the key every other loader uses."""
+    if name in sys.modules:
+        return sys.modules[name]
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
+    spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
-    sys.modules["fleet_check_yaml"] = module
+    sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def _load_check_yaml():
+    return _load_lib("fleet_check_yaml", "check_yaml.py")
 
 
 def probe_records() -> dict:
@@ -1394,6 +1421,19 @@ def render_checkout(sec: dict) -> list:
     else:
         tree = "clean"
     return [head("CHECKOUT", f"{sec['path']}  {sec['branch']} @ {sec['head'] or '?'}  {tree}")]
+
+
+def render_machine(sec: dict) -> list:
+    if sec["unavailable"]:
+        return [head("MACHINE", f"unavailable — {sec['unavailable']}")]
+    if not sec["gaps"]:
+        return [head("MACHINE", "ok — nothing in `uv run fleet preflight --tier lead`")]
+    out = [head("MACHINE", f"{len(sec['gaps'])} gap(s) — `uv run fleet preflight --tier lead`")]
+    for gap in sec["gaps"]:
+        out.append(cont(f"{gap['name']} — {gap['what']}" + (f" ({gap['detail']})" if gap["detail"] else "")))
+        if gap["fix"]:
+            out.append(cont(f"  fix: {gap['fix']}"))
+    return out
 
 
 def fuel_label(rec: dict, named: bool) -> str:
@@ -1587,6 +1627,7 @@ def render(doc: dict) -> str:
         render_sessions(doc["sessions"]),
         render_prs(doc["prs"]),
         render_checkout(doc["checkout"]),
+        render_machine(doc["machine"]),
     ]
     out = [f"fleet status  ·  {doc['generated']}", ""]
     for block in blocks:
@@ -1607,6 +1648,7 @@ def collect() -> dict:
         "sessions": probe_sessions(tasks),
         "prs": probe_prs(tasks),
         "checkout": probe_checkout(),
+        "machine": probe_machine(),
     }
 
 

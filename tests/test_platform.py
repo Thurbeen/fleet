@@ -362,6 +362,25 @@ class Lock(TempDirCase):
         self.assertEqual(lock_probe(lock), "got")
 
 
+class NoTerminal(unittest.TestCase):
+    """A child that must not prompt: preflight signs a commit through it, and a
+    passphrase prompt is exactly the failure a worker with no terminal meets."""
+
+    @unittest.skipIf(WINDOWS, "POSIX branch")
+    def test_the_child_leads_a_session_of_its_own_so_it_has_no_terminal(self):
+        probe = "import os; print(os.getsid(0) == os.getpid())"
+        done = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True,
+                              timeout=30, check=True, **fp.no_terminal())
+        self.assertEqual(done.stdout.strip(), "True")
+
+    @unittest.skipUnless(WINDOWS, "Windows branch")
+    def test_the_child_gets_no_console_window(self):
+        self.assertEqual(fp.no_terminal(), {"creationflags": subprocess.CREATE_NO_WINDOW})
+        done = subprocess.run([sys.executable, "-c", "print('ran')"], capture_output=True, text=True,
+                              timeout=30, check=True, **fp.no_terminal())
+        self.assertEqual(done.stdout.strip(), "ran")
+
+
 class Alive(unittest.TestCase):
     def test_alive_sees_this_process(self):
         self.assertTrue(fp.alive(os.getpid()))

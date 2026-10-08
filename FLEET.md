@@ -271,9 +271,9 @@ reply repeats what @OPERATOR_NAME@ is already looking at, which the "one fact
 in one place" rule below already forbids.
 
 `uv run fleet status` answers "where are we" in ONE call — fuel, queue,
-sessions, PRs, checkout. Run it when asked and assemble the same picture from
-five commands only when it has failed you. Asked is the condition: unprompted,
-it is the table again.
+sessions, PRs, checkout, and this machine's own gaps with their fix. Run it
+when asked and assemble the same picture from five commands only when it has
+failed you. Asked is the condition: unprompted, it is the table again.
 
 **The register lives in verb choice and terseness, not in props.** Short
 declarative sentences. No adjectives, no build-up, no reassurance. State a

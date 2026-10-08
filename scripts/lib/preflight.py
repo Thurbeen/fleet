@@ -9,14 +9,23 @@ probe fails, `package_manager()` the manager this machine has, and
 `install_plan()` the argv that installs a record with it — so a second module
 can act on exactly what this one reports.
 
-IT WRITES NOTHING AND INSTALLS NOTHING. It probes, and prints the command that
-would fix each gap. `--commands` hands those lines to whoever said yes.
+IT KEEPS NOTHING AND INSTALLS NOTHING. It probes, and prints the command that
+would fix each gap. The lead tier's probes make a throwaway commit and a
+throwaway file, and delete both. `--commands` hands those lines to whoever said yes.
 
-FOUR TIERS, because "missing" does not mean one thing:
+FIVE TIERS, because "missing" does not mean one thing:
 
   required     fleet cannot run. Missing one is a non-zero exit.
   recommended  a named capability degrades and the rest still works —
                so it is reported, never fatal.
+  lead         not a tool: this machine's own environment, which every
+               worker and the loop inherit — a signing agent that answers,
+               an agent `refuel` can read, the host glab talks to, and
+               directories fleet can write. Each one failed silently, one
+               blocked worker at a time, so each row is probed by DOING the
+               thing. Never fatal, never installed, and never in
+               `--commands`: the remedy is the operator's own configuration.
+               `uv run fleet status` prints this tier's gaps as MACHINE.
   forge        OPTIONAL. Each row names what it adds: the repo map, publish
                checks on change requests, shepherd merges. A local-only fleet
                — no forge CLI, no login — runs everything else.
@@ -28,12 +37,13 @@ Usage:
   uv run fleet preflight --commands       # just the install lines for what is missing
   uv run fleet preflight --tier required  # only that tier (repeatable)
   uv run fleet preflight --tier forge     # what a forge would add, and how
+  uv run fleet preflight --tier lead      # this machine's environment alone
 
 `--tier` is what makes "install the required ones only" a command rather than
 a judgement call about which lines to copy out of a longer list.
 
 Exit: 0 when every REQUIRED dependency is present, 1 when one is not, 2 on a
-usage error. Recommended, forge and gate gaps never fail it.
+usage error. Recommended, lead, forge and gate gaps never fail it.
 """
 
 from __future__ import annotations
@@ -72,7 +82,7 @@ fleet_platform = _load_sibling("fleet_platform", "fleet_platform.py")
 gh_accounts = _load_sibling("fleet_gh_accounts", "gh_accounts.py")
 glab_hosts = _load_sibling("fleet_glab_hosts", "glab_hosts.py")
 
-TIERS = ("required", "recommended", "forge", "gate")
+TIERS = ("required", "recommended", "lead", "forge", "gate")
 
 # --- package managers ---------------------------------------------------------
 #
@@ -258,12 +268,32 @@ def dependencies(family: str | None = None) -> list[Dependency]:
             installer={"posix": command("uv", "tool", "install", "prek"),
                        "windows": command("uv", "tool", "install", "prek")},
         ),
+        # The lead tier. Every row is a `check` with a `manual` remedy, and
+        # each one is probed by doing what a worker or the loop will do.
         Dependency(
-            "commit signing", "gate",
-            "git commit signing is on with no key outside this checkout, so every commit in a repo "
-            "that key does not cover fails — any sandbox or worktree",
+            "commit signing", "lead",
+            "git commit signing is on and a commit made outside this checkout, with no terminal, "
+            "cannot be signed — so every worker's commit fails, in any sandbox or worktree",
             needs="git", check=_signing,
             manual="git config --global user.signingkey <key>   # or: commit.gpgsign false",
+        ),
+        Dependency(
+            "refuel agent", "lead",
+            "no AGENT, FUEL_PROVIDER or agent policy names an agent, so `fleet queue refuel` cannot "
+            "read a worker's quota window and restarts nothing",
+            check=_refuel_agent, manual="set AGENT=<the agent your workers run> in orchestration/agent.conf",
+        ),
+        Dependency(
+            "glab host", "lead",
+            "outside a repository glab talks to its default host, and that host has no working "
+            "credential — every glab call there is a 401",
+            needs="glab", check=_glab_host, manual="glab config set host <your instance> --global",
+        ),
+        Dependency(
+            "fleet writes", "lead",
+            "this process cannot write where `fleet queue` keeps its records — `collect`, `dispatch` "
+            "and `add` fail one call at a time, as a sandbox that denies fleet's own writes makes them",
+            check=_fleet_writes, manual="allow writes to the queue in the sandbox this agent runs commands in",
         ),
     ]
     return table
@@ -363,19 +393,132 @@ def _glab_auth() -> tuple[str, str, str]:
     return "missing", "", ""
 
 
+SIGNING_SECONDS = 20
+
+# What fixes a signature that could not be made, per `gpg.format`. A worker has
+# no terminal, so a key that needs a passphrase typed is a key it cannot use.
+SIGNING_FIX = {
+    "ssh": "ssh-add -l   # must list your signing key; if not, export SSH_AUTH_SOCK=<the agent "
+           "holding it> in the environment thurbox starts its sessions with",
+    "openpgp": "gpg-connect-agent /bye   # the agent must hold the key unlocked: a worker has "
+               "no terminal to type its passphrase in",
+}
+
+
 def _signing() -> tuple[str, str, str]:
     """NOT A TOOL — the configuration whose failures name anything but itself.
 
-    Read from a directory OUTSIDE this checkout: an `includeIf gitdir:` block can
-    set the key for the operator's code tree and nowhere else, so asking git
-    from in here answers about the wrong place.
+    Asked in a throwaway repository OUTSIDE this checkout: an `includeIf
+    gitdir:` block can set the key for the operator's code tree and nowhere
+    else, so asking git from in here answers about the wrong place.
+
+    A key being configured is not the question. The agent holding it went away
+    on a crash or a reboot and every worker's commit failed while the
+    configuration read fine, so the probe SIGNS a commit — with no terminal, as
+    a worker has none, so a passphrase prompt fails here rather than waiting.
+    The throwaway repository is deleted with its commit; nothing else is written.
     """
     with tempfile.TemporaryDirectory() as probe:
         def get(key: str) -> str:
             return _output(["git", "-C", probe, "config", "--get", key])
 
-        on, key, key_command = get("commit.gpgsign"), get("user.signingkey"), get("gpg.ssh.defaultKeyCommand")
-    return ("missing" if on == "true" and not key and not key_command else "ok"), "", ""
+        if get("commit.gpgsign") != "true":
+            return "ok", "signing off", ""
+        if not get("user.signingkey") and not get("gpg.ssh.defaultKeyCommand"):
+            return "missing", "", ""
+        form = get("gpg.format") or "openpgp"
+        fix = SIGNING_FIX.get(form, "")
+        env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
+        try:
+            subprocess.run(["git", "-C", probe, "init", "-q"], stdin=subprocess.DEVNULL,
+                           capture_output=True, check=True, timeout=SIGNING_SECONDS)
+            done = subprocess.run(
+                ["git", "-C", probe, "-c", "user.name=fleet preflight", "-c", "user.email=preflight@localhost",
+                 "-c", f"core.hooksPath={os.path.join(probe, 'no-hooks')}",
+                 "commit", "--allow-empty", "--no-verify", "-q", "-m", "fleet preflight"],
+                stdin=subprocess.DEVNULL, capture_output=True, encoding="utf-8", errors="replace",
+                env=env, timeout=SIGNING_SECONDS, **fleet_platform.no_terminal(),
+            )
+        except subprocess.TimeoutExpired:
+            return "missing", f"signing did not finish in {SIGNING_SECONDS}s", fix
+        except (OSError, subprocess.CalledProcessError):
+            return "ok", "not probed: git could not make a repository to sign in", ""
+    if done.returncode == 0:
+        return "ok", f"a {form} signature made with no terminal", ""
+    said = [line.strip() for line in done.stderr.splitlines() if line.strip()]
+    useful = [line for line in said if "failed to write commit object" not in line]
+    return "missing", (useful or said or ["git commit failed"])[0], fix
+
+
+def _queue():
+    """queue.py, loaded on first use: the rows below ask it, and no other row needs it."""
+    return _load_sibling("fleet_queue", "queue.py")
+
+
+def _refuel_agent() -> tuple[str, str, str]:
+    """Which agent a worker runs is what `refuel` reads its quota window by.
+
+    `dispatch` records the agent it named, and names none when `AGENT` is empty
+    — thurbox's own default, which is fine for spawning and leaves `refuel`
+    with no provider to read. A pinned `FUEL_PROVIDER` or an agent policy
+    answers instead. Asked through queue.py, the same reads `refuel` makes.
+    """
+    queue = _queue()
+    settings = queue.agent_settings
+    agent = queue.configured_agent()
+    if agent:
+        return "ok", f"AGENT={agent}", ""
+    provider = settings.conf().get("FUEL_PROVIDER", "").strip()
+    if provider:
+        return "ok", f"FUEL_PROVIDER={provider}", ""
+    if queue.agent_policy():
+        return "ok", "the agent policy names each repository's agent", ""
+    root = settings.conf_root()
+    conf = os.path.join(root, settings.AGENT_CONF)
+    if os.path.exists(conf):
+        return "missing", "", f"set AGENT=<the agent your workers run> in {conf}"
+    example = os.path.join(root, settings.AGENT_CONF_DEFAULTS)
+    return "missing", "", f'cp "{example}" "{conf}"   # then set AGENT=<the agent your workers run>'
+
+
+def _glab_host() -> tuple[str, str, str]:
+    """The host glab falls back to outside a repository must be one it can log in to.
+
+    Only asked when some instance has a working credential: with none at all,
+    `glab auth` is the row that says so.
+    """
+    working = [h for h in glab_hosts.hosts() if glab_hosts.host_ok(h)]
+    default = glab_hosts.default_host()
+    if not working or not default or default in working:
+        return "ok", default, ""
+    if os.environ.get("GITLAB_HOST") or os.environ.get("GL_HOST"):
+        return "missing", f"it is {default}", f"export GITLAB_HOST={working[0]}"
+    return "missing", f"it is {default}", f"glab config set host {working[0]} --global"
+
+
+def _fleet_writes() -> tuple[str, str, str]:
+    """Write a file where the queue writes, and remove it.
+
+    Probed by writing, because only the write is the answer: a sandbox's rules
+    live in an agent's own settings, which fleet does not read, and this
+    process runs under them when the lead runs it. A directory not made yet is
+    not asked — `fleet queue` creates it.
+    """
+    queue = _queue()
+    denied = []
+    for where in dict.fromkeys((queue.queue_root(), queue.runs_root())):
+        if not os.path.lexists(where):
+            continue
+        try:
+            with tempfile.NamedTemporaryFile(dir=where, prefix=".fleet-preflight-"):
+                pass
+        except OSError as exc:
+            denied.append(f"{where} ({exc.strerror or exc})")
+    if not denied:
+        return "ok", "", ""
+    return "missing", "; ".join(denied), (
+        "allow writes to the directories above in the sandbox this agent runs commands in, "
+        "or run fleet outside it")
 
 
 def probe(dependency: Dependency) -> Finding | None:
@@ -438,9 +581,10 @@ HEADINGS = {
     "required": "REQUIRED — fleet cannot run without these",
     "recommended": "RECOMMENDED — each one names what degrades without it",
     "forge": "FORGE — optional: each one names what it adds, and a local-only fleet needs none",
+    "lead": "LEAD — this machine's environment, which every worker and the loop inherit",
     "gate": "GATE — only `uv run fleet check` needs these",
 }
-USAGE = "usage: uv run fleet preflight [--commands] [--tier required|recommended|forge|gate]...\n"
+USAGE = "usage: uv run fleet preflight [--commands] [--tier required|recommended|lead|forge|gate]...\n"
 
 
 def main(argv: list[str]) -> int:
@@ -453,7 +597,7 @@ def main(argv: list[str]) -> int:
         elif arg == "--tier":
             tier = args.pop(0) if args else ""
             if tier not in TIERS:
-                sys.stderr.write("usage: --tier required|recommended|forge|gate\n")
+                sys.stderr.write("usage: --tier required|recommended|lead|forge|gate\n")
                 return 2
             tiers.append(tier)
         elif arg in ("-h", "--help"):
@@ -473,10 +617,12 @@ def main(argv: list[str]) -> int:
     manager = package_manager()
 
     if commands:
-        # Only the lines that would change something, in table order, once each.
+        # Only the lines that would change something, in table order, once
+        # each. A lead row's remedy is the operator's configuration, with
+        # placeholders in it: one to read, never to run unread.
         printed: list[str] = []
         for f in shown:
-            line = "" if f.ok else remedy(f, manager)
+            line = "" if f.ok or f.dependency.tier == "lead" else remedy(f, manager)
             if line and not line.startswith("see ") and line not in printed:
                 printed.append(line)
                 print(line)
@@ -494,10 +640,11 @@ def main(argv: list[str]) -> int:
             elif f.state == "stale":
                 text = f"{f.detail} — {d.floor_why.format(floor=d.floor)}"
             else:
-                text = d.why
+                text = f"{d.why} ({f.detail})" if f.detail else d.why
             print(f"  {colour[f.state]} {d.name:<14} {text}".rstrip())
             if not f.ok and (line := remedy(f, manager)):
-                print(f"           {'':<14} install: {line}")
+                label = "fix" if d.tier == "lead" else "install"
+                print(f"           {'':<14} {label}: {line}")
     print()
     if required_missing == 0:
         print('Every required dependency is present. "--commands" lists the\n'

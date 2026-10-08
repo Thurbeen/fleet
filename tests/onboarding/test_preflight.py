@@ -23,7 +23,7 @@ import json
 import os
 
 import pytest
-from harness import expect, lib, refute, run_fleet
+from harness import expect, lib, refute, run_fleet, write
 from kit import FLOOR, full_machine, git_config, machine, plain, says
 
 WINDOWS = os.name == "nt"
@@ -82,7 +82,7 @@ def test_recommended_and_gate_gaps_are_reported_and_never_fatal(stubs):
     path = machine(stubs, full_machine(), without=("quota-axi", "glab", "prek", "lua"))
     done = preflight(path)
     assert done.code == 0, done.out
-    expect(done.out, "quota-axi", "refuel", "GATE")
+    expect(done.out, "quota-axi", "refuel", "GATE", "LEAD")
 
 
 def test_signing_on_with_no_key_is_reported_from_outside_the_checkout(stubs, tmp_path):
@@ -92,12 +92,8 @@ def test_signing_on_with_no_key_is_reported_from_outside_the_checkout(stubs, tmp
     GIT_CONFIG_GLOBAL."""
     path = machine(stubs, full_machine())
     nokey = git_config(tmp_path / "gitconfig-nokey", "[commit]\n\tgpgsign = true\n")
-    expect(preflight(path, GIT_CONFIG_GLOBAL=nokey).out, "commit signing", "sandbox", "commit.gpgsign false")
-
-    key = git_config(tmp_path / "gitconfig-key", "[commit]\n\tgpgsign = true\n[user]\n\tsigningkey = ~/.ssh/k.pub\n")
-    out = plain(preflight(path, "--tier", "gate", GIT_CONFIG_GLOBAL=key).out)
-    expect(out, "commit signing")
-    refute(out, "missing  commit signing")
+    expect(plain(preflight(path, GIT_CONFIG_GLOBAL=nokey).out),
+           "missing  commit signing", "sandbox", "commit.gpgsign false")
 
 
 def test_a_gap_is_the_install_line_for_this_machines_os_family(stubs):
@@ -123,6 +119,10 @@ def test_a_usage_error_exits_2(stubs):
 GLAB_PER_HOST = """
 import os, sys
 a = sys.argv[1:]
+if a[:3] == ["config", "get", "host"]:
+    # glab's own lookup: the environment, then the config, then gitlab.com.
+    print(os.environ.get("GITLAB_HOST") or os.environ.get("GLAB_DEFAULT") or "gitlab.com")
+    raise SystemExit(0)
 if a[:2] != ["auth", "status"]:
     print("glab 1.117.0")
     raise SystemExit(0)
@@ -178,6 +178,21 @@ def test_no_gitlab_credential_anywhere_is_missing_and_never_fatal(glab_machine):
     fleet whose work is all on GitHub, or on no forge, needs no GitLab credential."""
     expect(forge_tier(glab_machine, GLAB_HOSTS="gitlab.com", GLAB_OK=""), "missing  glab auth")
     assert preflight(glab_machine, GLAB_HOSTS="gitlab.com", GLAB_OK="").code == 0
+
+
+def test_glab_defaulting_to_a_host_with_no_credential_is_a_lead_gap_with_its_fix(glab_machine):
+    """Outside a repository glab talks to its DEFAULT host, which is gitlab.com
+    unless told otherwise — so a machine whose one credential is for a
+    self-hosted instance got a 401 from every glab call a lead made there."""
+    out = lead_tier(glab_machine, GLAB_HOSTS=SELF_HOSTED, GLAB_OK=SELF_HOSTED)
+    expect(out, "missing  glab host", "gitlab.com", f"glab config set host {SELF_HOSTED} --global")
+    assert preflight(glab_machine, GLAB_HOSTS=SELF_HOSTED, GLAB_OK=SELF_HOSTED).code == 0
+
+    for told in ({"GLAB_DEFAULT": SELF_HOSTED}, {"GITLAB_HOST": SELF_HOSTED}):
+        refute(lead_tier(glab_machine, GLAB_HOSTS=SELF_HOSTED, GLAB_OK=SELF_HOSTED, **told), "missing  glab host")
+    # Its own credential for the default host is the other way to be right.
+    hosts = f"gitlab.com {SELF_HOSTED}"
+    refute(lead_tier(glab_machine, GLAB_HOSTS=hosts, GLAB_OK=hosts), "missing  glab host")
 
 
 # --- 7. the gh row is per ACCOUNT, and one expired token is not the answer -----
@@ -245,6 +260,88 @@ def test_a_gh_too_old_for_json_passes_on_the_active_session(stubs):
     expect(out, "octo")
 
 
+# --- 8. the lead tier: what workers and the loop need from this machine -------
+
+# ssh-keygen's half of `git commit -S` with `gpg.format = ssh`: git hands it a
+# file to sign and reads `<file>.sig` back. The failing one says what an
+# unreachable agent says.
+SSH_KEYGEN_SIGNS = """
+import sys
+from pathlib import Path
+Path(sys.argv[-1] + ".sig").write_text(
+    "-----BEGIN SSH SIGNATURE-----\\nU1NIU0lH\\n-----END SSH SIGNATURE-----\\n", encoding="utf-8")
+"""
+SSH_KEYGEN_NO_AGENT = """
+import sys
+sys.stderr.write("Couldn't sign message: agent refused operation\\n")
+raise SystemExit(255)
+"""
+
+
+def lead_tier(path: str, **env: str | None) -> str:
+    return plain(preflight(path, "--tier", "lead", **env).out)
+
+
+def ssh_signing(tmp_path, path: str, name: str) -> str:
+    """A global git config that signs every commit through that ssh-keygen."""
+    keygen = os.path.join(path, "ssh-keygen" + (".exe" if WINDOWS else ""))
+    return git_config(tmp_path / f"gitconfig-{name}", (
+        "[commit]\n\tgpgsign = true\n[gpg]\n\tformat = ssh\n"
+        f"[gpg \"ssh\"]\n\tprogram = {keygen.replace(chr(92), '/')}\n"
+        "[user]\n\tsigningkey = ~/.ssh/k.pub\n"
+    ))
+
+
+def test_a_signing_key_its_agent_cannot_reach_is_reported_with_gits_own_words(stubs, tmp_path):
+    """The configuration was fine and every worker's commit still failed: the
+    agent holding the key was gone after a crash or a reboot. Only signing
+    something, with no terminal to prompt on, tells the two apart."""
+    path = machine(stubs, full_machine() | {"ssh-keygen": SSH_KEYGEN_NO_AGENT})
+    done = preflight(path, GIT_CONFIG_GLOBAL=ssh_signing(tmp_path, path, "no-agent"))
+    out = plain(done.out)
+    expect(out, "missing  commit signing", "agent refused operation", "SSH_AUTH_SOCK")
+    assert done.code == 0, "a lead gap is reported and never fatal"
+
+    path = machine(stubs, full_machine() | {"ssh-keygen": SSH_KEYGEN_SIGNS})
+    out = lead_tier(path, GIT_CONFIG_GLOBAL=ssh_signing(tmp_path, path, "signs"))
+    expect(out, "commit signing")
+    refute(out, "missing  commit signing")
+
+
+def test_refuel_with_no_agent_to_read_is_a_lead_gap_naming_agent_conf(stubs, tmp_path):
+    """No AGENT, no FUEL_PROVIDER and no policy: every worker dispatched under
+    thurbox's own default is `undetermined` to refuel, which restarts nothing."""
+    path = machine(stubs, full_machine())
+    out = lead_tier(path)
+    expect(out, "missing  refuel agent", "agent.conf", "AGENT=")
+
+    named = tmp_path / "named"
+    write(named / "orchestration" / "agent.conf", "AGENT=some-agent\n")
+    refute(lead_tier(path, FLEET_AGENT_ROOT=str(named)), "missing  refuel agent")
+    refute(lead_tier(path, FLEET_AGENT_POLICY="github.com/acme=some-agent"), "missing  refuel agent")
+
+
+def test_a_queue_fleet_cannot_write_is_a_lead_gap(stubs, tmp_path):
+    """A sandbox that denies fleet's own writes failed `collect` and `dispatch`
+    one call at a time. Probed by writing, since only the write is the answer;
+    a file standing where the directory should be denies it on every OS."""
+    path = machine(stubs, full_machine())
+    blocked = tmp_path / "not-a-directory"
+    write(blocked, "")
+    out = lead_tier(path, FLEET_QUEUE_DIR=str(blocked))
+    expect(out, "missing  fleet writes", str(blocked))
+    refute(lead_tier(path), "missing  fleet writes")
+
+
+def test_commands_never_prints_a_lead_rows_remedy(stubs):
+    """A lead row is the operator's own configuration, with placeholders in it:
+    a line for them to read, never one to hand to a shell unread."""
+    path = machine(stubs, full_machine())
+    expect(lead_tier(path), "missing  refuel agent")
+    done = preflight(path, "--commands")
+    assert (done.code, done.stdout) == (0, ""), done.out
+
+
 # --- the table is data a second module can act on -----------------------------
 
 
@@ -276,7 +373,9 @@ def test_the_table_is_one_record_per_dependency_with_a_route_for_each(pf, monkey
     assert {"quota-axi"} <= {d.name for d in table if d.tier == "recommended"}
     # No forge is required: each is its own optional row, CLI and login alike.
     assert {d.name for d in table if d.tier == "forge"} == {"gh", "gh auth", "glab", "glab auth"}
-    assert {"lua", "commit signing"} <= {d.name for d in table if d.tier == "gate"}
+    assert {"lua", "prek"} <= {d.name for d in table if d.tier == "gate"}
+    assert {"commit signing", "refuel agent", "glab host", "fleet writes"} == {
+        d.name for d in table if d.tier == "lead"}
     # Retired by the port: Python and PyYAML come with uv, and nothing runs bash, jq or shellcheck.
     assert not {"python3", "PyYAML", "jq", "shellcheck", "bash"} & set(names)
     assert next(d for d in table if d.name == "thurbox-cli").floor == FLOOR

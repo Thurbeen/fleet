@@ -50,7 +50,7 @@ from statuskit import (
     window,
 )
 
-SECTIONS = ("FUEL", "QUEUE", "SESSIONS", "PRS", "CHECKOUT")
+SECTIONS = ("FUEL", "QUEUE", "SESSIONS", "PRS", "CHECKOUT", "MACHINE")
 
 
 def status(*args: str, **env):
@@ -143,12 +143,30 @@ def test_json_has_every_section_and_marks_the_missing_ones(queue, bare):
     done = status("--json", PATH=bare)
     assert done.code == 0, done.out
     doc = json.loads(done.stdout)
-    for key in ("fuel", "queue", "sessions", "prs", "checkout"):
+    for key in ("fuel", "queue", "sessions", "prs", "checkout", "machine"):
         assert key in doc and "unavailable" in doc[key], key
     assert doc["sessions"]["unavailable"] and doc["prs"]["unavailable"] and doc["fuel"]["unavailable"]
     assert doc["fuel"]["providers"] == [], "an unreadable fuel section names no provider"
     assert doc["queue"]["unavailable"] is None, "the queue is on disk and readable"
     assert len(doc["queue"]["topics"][0]["tasks"]) == 3
+
+
+# --- 2b. the lead machine's own prerequisites --------------------------------
+
+
+def test_machine_names_each_lead_gap_with_its_fix_and_says_ok_when_there_is_none(queue, bare, tmp_path):
+    """The gaps preflight's lead tier finds, on the screen the lead runs
+    reflexively — a broken signing agent was found one blocked worker at a time."""
+    done = status(PATH=bare)
+    expect(done.out, "MACHINE", "refuel agent", "agent.conf")
+
+    named = tmp_path / "named"
+    write(named / "orchestration" / "agent.conf", "AGENT=some-agent\n")
+    done = status(PATH=bare, FLEET_AGENT_ROOT=str(named))
+    expect(done.out, "MACHINE")
+    refute(done.out, "refuel agent")
+    doc = json.loads(status("--json", PATH=bare, FLEET_AGENT_ROOT=str(named)).stdout)
+    assert doc["machine"] == {"unavailable": None, "gaps": []}, doc["machine"]
 
 
 # --- 3. a queue directory that is not there -----------------------------------
