@@ -275,7 +275,7 @@ def test_a_rule_names_one_repository_or_every_one(ttopic, shep, tmp_path):
 
     # The other repository's `path:*` is not this one's, so its files are never even asked for.
     shep.update(201, labels=[])
-    out = q("shepherd", "--topic", ttopic, FLEET_AUTO_MERGE_ROOT=tmp_path / "automerge-guarded").out
+    out = q("shepherd", "--topic", ttopic, FLEET_AUTO_MERGE_ROOT=str(tmp_path / "automerge-guarded")).out
     assert 201 in shep.merged(), out
     refute(shep.gh_log(), "/files")
 
