@@ -79,7 +79,7 @@ git diff --name-only <before> <after>
 | `interface/fleet_queue.lua` | §4 |
 | `registry/owners.txt` | §5 |
 | any `orchestration/*.example.conf`, or `orchestration/queue/POLICY.md` | §5b |
-| a `restart-reconciler:` line — `scripts/lib/reconcile.py`, `scripts/lib/fleet_platform.py` | §6 |
+| a `restart-reconciler:` line — `scripts/lib/reconcile.py`, `scripts/lib/fleet_platform.py`, `uv.lock`, `pyproject.toml` | §6 |
 | a `restart-lead:` line — `FLEET.md`, `AGENTS.md`, `CLAUDE.md`, `.agents/skills`, `.claude/settings.json` | §8 |
 
 `FLEET.md` is in two rows: it is rendered into the extension's payload *and*

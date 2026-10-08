@@ -84,8 +84,13 @@ WIRING_PATHS = (
 )
 
 # What a running reconciler loop executes: the bash script from before the uv
-# port, and the module and platform seam the supervisor holds in memory.
-RECONCILER_PATHS = ("scripts/reconcile.sh", "scripts/lib/reconcile.py", "scripts/lib/fleet_platform.py")
+# port, the module and platform seam the supervisor holds in memory, and the
+# environment its children run in, which only a restart through `uv run` brings
+# up to date with the lockfile.
+RECONCILER_PATHS = (
+    "scripts/reconcile.sh", "scripts/lib/reconcile.py", "scripts/lib/fleet_platform.py", "uv.lock",
+    "pyproject.toml",
+)
 
 OFFLINE = "control-plane sync: could not reach origin (offline?). Working from the local checkout."
 

@@ -389,11 +389,12 @@ def stale_message(pending: dict) -> str:
 def stale(state_dir: str, text: str) -> int:
     """Tell the lead the checkout moved under it, once.
 
-    THE SAME RULES AS THE READY NOTICE, minus one. Typed into a lead at rest,
-    posted `--no-wake` into the inbox of one mid-turn, and waiting when neither
-    can be done. The difference is that the inbox COUNTS here: a ready set is a
-    decision the lead still has to make, so its wake follows the note; this is
-    a fact, and a fact said twice is the boilerplate a lead learns to skip.
+    THE SAME RULES AS THE READY NOTICE. Typed only into a lead at rest whose
+    input line is provably empty; any other lead gets it posted `--no-wake`
+    into its inbox, ONCE, and the typed line waits for rest. The post does not
+    count as telling: `--no-wake` only enqueues, nothing delivers it, and a
+    notice deleted after one was a lead never told. A new fast-forward folded
+    in before the wake is news, and is posted again.
 
     Kept until delivered, across passes and restarts: by the next pass the sync
     has nothing left to say, so a notice dropped here is lost for good. A fleet
@@ -424,9 +425,17 @@ def stale(state_dir: str, text: str) -> int:
     if not sid:
         return wait(f"the checkout moved, but {status}; the notice waits")
     line = stale_message(pending)
-    sent, why = wake(sid, line) if status in AT_REST else post(sid, line, kind="fleet-stale")
+    held = f"{name} is {status}" if status not in AT_REST else ""
+    if not held and not composer_empty(sid):
+        held = f"{name}'s input line is not provably empty"
+    if held:
+        if not pending.get("posted"):
+            pending["posted"] = post(sid, line, kind="fleet-stale")[0]
+        where = " — noted in its inbox" if pending["posted"] else ""
+        return wait(f"the checkout moved; {held}{where}; the wake waits")
+    sent, why = wake(sid, line)
     if not sent:
-        return wait(f"the checkout moved; {name} is {status} and {why}; the notice waits")
+        return wait(f"the checkout moved; could not wake {name}: {why}")
     write_stale(state_dir, {}, "")
     print(f"told {name} the checkout moved: {', '.join(pending['actions'])}")
     return 0

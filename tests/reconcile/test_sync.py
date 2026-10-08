@@ -92,7 +92,13 @@ def test_new_instructions_are_pulled_and_the_lead_is_told_once(recon, stubs, mon
     expect(sends()[-1], ".agents/skills/fleet-queue/SKILL.md")
 
 
-def test_a_lead_mid_turn_finds_the_notice_in_its_inbox_and_is_not_told_twice(recon, stubs, monkeypatch, tmp_path):
+def test_a_lead_mid_turn_finds_the_notice_in_its_inbox_and_is_told_once_at_rest(recon, stubs, monkeypatch, tmp_path):
+    """`--no-wake` only enqueues: nothing delivers it. So the inbox note is where
+    a busy lead can look, and the notice still waits to be typed once it is at
+    rest — posted once, typed once, then forgotten."""
+    def typed() -> list[str]:
+        return [s for s in stubs.calls("thurbox-cli", "session send") if "update-fleet" in s]
+
     work = syncing(monkeypatch, tmp_path)
     recon.lead("working")
     after = land(tmp_path / "plane", "scripts/lib/reconcile.py")
@@ -103,13 +109,14 @@ def test_a_lead_mid_turn_finds_the_notice_in_its_inbox_and_is_not_told_twice(rec
     note = stubs.inbox("lead-uuid")[0]
     expect(note["body"], "restart-reconciler", "scripts/lib/reconcile.py", "/update-fleet")
     assert not note["woke"], "a note to a lead mid-turn must not wake it"
+    passes(recon, 2)
+    assert len(stubs.inbox("lead-uuid")) == 1 and not typed(), "posted once, and nothing typed mid-turn"
 
     recon.lead("idle")
+    assert wait_for(lambda: typed()), f"the notice was posted and then dropped\n{recon.log()}"
+    expect(typed()[0], "restart-reconciler", "/update-fleet")
     passes(recon, 3)
-    assert len(stubs.inbox("lead-uuid")) == 1, "posted once"
-    assert not [s for s in stubs.calls("thurbox-cli", "session send") if "update-fleet" in s], (
-        "a notice already in the inbox is not typed as well"
-    )
+    assert len(typed()) == 1 and len(stubs.inbox("lead-uuid")) == 1, "typed once, never posted again"
 
 
 def test_a_dirty_tree_is_left_alone_and_said_once(recon, stubs, monkeypatch, tmp_path):

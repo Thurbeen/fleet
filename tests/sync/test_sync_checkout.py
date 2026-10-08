@@ -219,6 +219,16 @@ def test_new_loop_code_says_to_restart_the_reconciler_too(tmp_path):
     expect(sync(work).out, "restart-reconciler: yes", "scripts/lib/reconcile.py")
 
 
+def test_a_new_lockfile_says_to_restart_the_reconciler(tmp_path):
+    """The loop runs its children on the interpreter it started with, so a
+    dependency that arrived with the sync reaches it only through a restart,
+    which `uv run` brings the environment up to date for."""
+    work = new_repo(tmp_path)
+    advance_origin(tmp_path, "uv.lock")
+
+    expect(sync(work).out, "restart-reconciler: yes", "uv.lock")
+
+
 def test_the_lead_is_named_as_the_installed_manifest_spells_it(tmp_path):
     """The glyph in front of the lead's name is a setting, so the name comes
     from the rendered manifest and never from a literal."""
