@@ -96,6 +96,24 @@ def devbox_task(rtopic, queue_dir) -> str:
     return f"{rtopic}/22-build-on-devbox"
 
 
+def test_completed_remote_reviews_refresh_only_when_requested(
+    devbox_dispatched, devbox_task, hosts, queue_dir
+):
+    result = hosts.remote("me@devbox", WORKTREE) / "result.md"
+    front = "outcome: shipped\nartifact: https://github.com/remote-owner/app/pull/4242\n"
+    write(result, f"---\n{front}---\nDone.\n")
+    hosts.stubs.pipeline_pr(4242, "fix/build-on-devbox")
+    ok(q("collect", "--no-reap"))
+    calls = hosts.stubs.calls("ssh")
+    write(result, f"---\n{front}review: https://review.example/updated\n---\nDone.\n")
+    ok(q("collect", "--no-reap"))
+    assert hosts.stubs.calls("ssh") == calls, "waiting for merge must not fetch results again"
+    ok(q("collect", "--no-reap", "--refresh-reviews"))
+    doc = yaml.safe_load((queue_dir / devbox_task / "task.yaml").read_text(encoding="utf-8"))
+    assert doc["state"] == "done"
+    assert doc["review_url"] == "https://review.example/updated"
+
+
 def test_a_remote_brief_names_nothing_the_worker_cannot_reach(devbox_task, rtopic, queue_dir):
     """Every control-plane path the brief would name is not on that filesystem,
     so each is stated relative to the brief itself."""

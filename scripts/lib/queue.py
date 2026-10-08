@@ -132,6 +132,8 @@ agent's token limit SITS rather than failing.
 REVIEW LINKS ARE OPTIONAL RECORD EVIDENCE. `collect` copies the scalar
 `review:` URL (or per-repository `reviews:`) from result.md into `review_url`,
 including refreshed links on concluded tasks.
+Unchanged completed results and archived results are not parsed again;
+`collect --refresh-reviews` fetches completed remote results on demand.
 Old records need no migration; views report `review: missing`. It never gates
 artifact verification or landing. Fleet stores the URL in ignored records;
 the installed review workflow owns any forge posting.
@@ -192,11 +194,11 @@ Usage:
   uv run fleet queue send <ref> 'one line'  # message a task's worker, and
                        RECORD that you did
   uv run fleet queue watch [--for-secs N] # fold transitions in; close nothing
-  uv run fleet queue collect [--allow-unverified] [--no-reap]  # read results,
+  uv run fleet queue collect [--allow-unverified] [--no-reap] [--refresh-reviews]
                        close what is done; --allow-unverified closes one whose
                        artifact failed the publish check, after you have
                        judged that artifact; --no-reap leaves every session
-                       alone
+                       alone; --refresh-reviews fetches completed remote results
   uv run fleet queue reap [--dry-run]     # land what merged, release its session;
                        retire what closed unmerged or whose session vanished,
                        and free the build output a vanished session left
@@ -5175,6 +5177,8 @@ def cmd_collect(args) -> int:
     held = 0
     artifacts = 0
     for task in sorted(q.tasks.values(), key=lambda t: t.ref):
+        if q.topics[task.topic].get("archived") or task.state in ("landed", "abandoned"):
+            continue
         path = task.file("result.md")
 
         # The remote transport, and the whole of it. A worker on another machine
@@ -5183,7 +5187,10 @@ def cmd_collect(args) -> int:
         # and neither knows nor cares which machine wrote it. Nothing is closed
         # here: a result that could not be fetched leaves the task exactly as a
         # missing local one does.
-        if task.doc.get("host") and task.state in ("dispatched", "done", *REREAD_STATES):
+        if task.doc.get("host") and (
+            task.state in ("dispatched", *REREAD_STATES)
+            or (task.state == "done" and args.refresh_reviews)
+        ):
             note = pull_remote_result(task)
             if note:
                 print(f"    {task.ref}  {note}")
@@ -5198,6 +5205,11 @@ def cmd_collect(args) -> int:
         # replacement character rather than refused, since the frontmatter is
         # ASCII and the body is only ever quoted.
         try:
+            stat = os.stat(path)
+            result_stamp = [stat.st_mtime_ns, stat.st_size]
+            # Waiting for the forge needs no repeated read of the same evidence.
+            if task.state == "done" and not args.refresh_reviews and task.doc.get("review_result") == result_stamp:
+                continue
             with open(path, encoding="utf-8", errors="replace") as fh:
                 meta, body = parse_result(fh.read())
         except (OSError, yaml.YAMLError) as exc:
@@ -5219,8 +5231,9 @@ def cmd_collect(args) -> int:
             )
             continue
         review = reported_reviews(task, meta)
-        if task.doc.get("review_url", "") != review:
+        if task.doc.get("review_url", "") != review or task.doc.get("review_result") != result_stamp:
             task.doc["review_url"] = review
+            task.doc["review_result"] = result_stamp
             task.save()
         if task.state in CONCLUDED_STATES and task.state not in REREAD_STATES:
             continue
@@ -10486,6 +10499,10 @@ def build_parser() -> argparse.ArgumentParser:
     w.set_defaults(func=cmd_watch)
 
     c = sub.add_parser("collect", help="read the results workers wrote")
+    c.add_argument(
+        "--refresh-reviews", action="store_true",
+        help="refresh completed live tasks' reviews, fetching remote results on demand",
+    )
     c.add_argument(
         "--no-reap",
         action="store_true",
