@@ -21,8 +21,10 @@ def notify(state_dir, ready=(), stalled=()):
 
 
 def lead(stubs, state: str) -> None:
+    """The lead in `state`, with an empty input line: a wake types into nothing else."""
     write(stubs.root / "sessions" / "lead-uuid.json",
           json.dumps({"id": "lead-uuid", "name": LEAD, "state": state}) + "\n")
+    stubs.composer("lead-uuid", "")
 
 
 def test_a_stalled_worker_is_told_once(stubs, tmp_path):
