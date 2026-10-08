@@ -1688,7 +1688,13 @@ class Queue:
             return fetched
         # The ref the lead meant is usually one typo or one doubled ordinal
         # away, so the miss names it rather than leaving it to `list`.
-        close = difflib.get_close_matches(ref, list(self.tasks), n=3, cutoff=0.6)
+        # A bare id is compared with ids and a full ref with refs, so the
+        # topic's own length never decides how close a typo is.
+        key = (lambda r, t: r) if "/" in ref else (lambda r, t: t.id)
+        hits = difflib.get_close_matches(
+            ref, {key(r, t) for r, t in self.tasks.items()}, n=3, cutoff=0.6
+        )
+        close = [r for h in hits for r, t in sorted(self.tasks.items()) if key(r, t) == h]
         raise QueueError(
             f"no such task: {ref}" + (f" (did you mean {', '.join(close)}?)" if close else "")
         )
@@ -2230,9 +2236,6 @@ def cmd_add(args) -> int:
     slug = ORDINAL_RE.sub("", args.slug) or args.slug
     number = args.number or next_number(tpath)
     tid = f"{number}-{slug}"
-    if slug != args.slug:
-        print(f"{args.slug}: add numbers the task itself, so the ref is "
-              f"{args.topic}/{tid}", file=sys.stderr)
     path = os.path.join(tpath, tid)
     if os.path.exists(path):
         raise QueueError(f"task {args.topic}/{tid} already exists")
@@ -2400,6 +2403,9 @@ def cmd_add(args) -> int:
     task.save()
     fleet_platform.write_record(task.file("BRIEF.md"), text)
 
+    if slug != args.slug:
+        print(f"{args.slug}: add numbers the task itself, so the ref is {task.ref}",
+              file=sys.stderr)
     print(task.ref)
     return 0
 

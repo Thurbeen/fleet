@@ -53,6 +53,17 @@ def test_block_on_an_unknown_ref_is_refused_naming_the_close_ones(gtopic):
     assert r.code != 0, r.out
     expect(r.out, "no such task", f"{gtopic}/01-01-design", f"{gtopic}/01-design")
     refute(q("show", f"{gtopic}/02-build").out, "01-01-design")
+    # A bare id is matched against ids, and the match is named by its full ref.
+    r = q("block", f"{gtopic}/02-build", "--on", "01-01-design",
+          "--kind", "semantic-dependency", "--why", "builds what design decides")
+    assert r.code != 0, r.out
+    expect(r.out, f"{gtopic}/01-design")
+
+
+def test_a_refused_add_announces_no_ref(gtopic):
+    r = add(gtopic, "01-ci-cd", "--title", "CI/CD")
+    assert r.code != 0, r.out
+    refute(r.out, "the ref is")
 
 
 def test_a_title_add_refuses_writes_nothing_first(gtopic, queue_dir):
