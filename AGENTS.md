@@ -269,10 +269,16 @@ names every path and the reason for each.
   `tests/extension/` drives `fleet pane-ask` and `fleet voice-ask` —
   onboarding's ask for the two names, before the extension renders them.
 - `uv run fleet preflight` — every dependency fleet needs, in one pass, in
-  four tiers (required / recommended / forge / gate), each row carrying what
-  breaks without it and the command that installs it with this machine's
-  package manager (winget on Windows). **No forge is required**: `gh`, `glab`
-  and both logins sit in the optional forge tier, each naming what it adds, and
+  five tiers (required / recommended / lead / forge / gate), each row carrying
+  what breaks without it and the command that installs it with this machine's
+  package manager (winget on Windows). **The lead tier is this machine's
+  environment**, which every worker inherits — a commit that can actually be
+  signed with no terminal, an agent `refuel` can read, glab's default host,
+  and the queue, reconciler and thurbox directories this process can write —
+  each probed by doing it, never fatal, never
+  installed, and printed by `fleet status` as its MACHINE section. **No forge
+  is required**: `gh`, `glab` and both logins sit in the optional forge tier,
+  each naming what it adds, and
   `uv run fleet install` plans one only when `--forge github|gitlab` asks. A
   LOCAL-ONLY fleet — no forge CLI, no login, no owners and no map — dispatches
   against local repos, proves `push` (a commit URL or its full sha) and `none`

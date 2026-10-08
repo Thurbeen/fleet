@@ -53,6 +53,16 @@ def thurbox_config_dir() -> str:
     )
 
 
+def thurbox_data_dir() -> str:
+    """Where thurbox keeps thurbox.db, by thurbox's own rule in `src/paths/mod.rs`:
+    `THURBOX_DATA_DIR` first, then `XDG_DATA_HOME` on every OS, then
+    `%LOCALAPPDATA%` on Windows and `~/.local/share` elsewhere.
+    """
+    return os.environ.get("THURBOX_DATA_DIR") or os.path.join(
+        _base("XDG_DATA_HOME", "LOCALAPPDATA", os.path.join(".local", "share")), "thurbox"
+    )
+
+
 def fleet_data_dir() -> str:
     """Fleet's own data: under `XDG_DATA_HOME`, else `%LOCALAPPDATA%` or `~/.local/share`."""
     return os.path.join(
@@ -300,6 +310,18 @@ def spawn_detached(argv: list[str], **popen) -> subprocess.Popen:
     else:
         popen["start_new_session"] = True
     return subprocess.Popen(argv, **popen)
+
+
+def no_terminal() -> dict:
+    """Popen arguments for a child that must not reach a terminal to prompt on.
+
+    POSIX: a new session, so it has no controlling terminal and a passphrase
+    prompt fails at once instead of waiting on the operator's keyboard — which
+    is what a worker with no terminal meets. Windows: no console window.
+    """
+    if WINDOWS:
+        return {"creationflags": subprocess.CREATE_NO_WINDOW}
+    return {"start_new_session": True}
 
 
 def terminate_tree(pid: int, force: bool = False) -> None:

@@ -72,6 +72,25 @@ class Directories(TempDirCase):
         with environ(THURBOX_CONFIG_DIR=None, XDG_CONFIG_HOME=None, HOME=str(self.tmp)):
             self.assertEqual(fp.thurbox_config_dir(), os.path.join(str(self.tmp), ".config", "thurbox"))
 
+    def test_thurbox_data_dir_honours_thurbox_own_pin(self):
+        with environ(THURBOX_DATA_DIR=str(self.tmp / "pinned"), XDG_DATA_HOME=str(self.tmp / "xdg")):
+            self.assertEqual(fp.thurbox_data_dir(), str(self.tmp / "pinned"))
+
+    def test_thurbox_data_dir_prefers_xdg_on_every_os(self):
+        with environ(THURBOX_DATA_DIR=None, XDG_DATA_HOME=str(self.tmp / "xdg"),
+                     LOCALAPPDATA=str(self.tmp / "local")):
+            self.assertEqual(fp.thurbox_data_dir(), os.path.join(str(self.tmp / "xdg"), "thurbox"))
+
+    @unittest.skipUnless(WINDOWS, "the %LOCALAPPDATA% branch")
+    def test_thurbox_data_dir_is_localappdata_on_windows(self):
+        with environ(THURBOX_DATA_DIR=None, XDG_DATA_HOME=None, LOCALAPPDATA=str(self.tmp)):
+            self.assertEqual(fp.thurbox_data_dir(), os.path.join(str(self.tmp), "thurbox"))
+
+    @unittest.skipIf(WINDOWS, "the ~/.local/share branch")
+    def test_thurbox_data_dir_is_local_share_elsewhere(self):
+        with environ(THURBOX_DATA_DIR=None, XDG_DATA_HOME=None, HOME=str(self.tmp)):
+            self.assertEqual(fp.thurbox_data_dir(), os.path.join(str(self.tmp), ".local", "share", "thurbox"))
+
     def test_fleet_data_dir_prefers_xdg_on_every_os(self):
         with environ(XDG_DATA_HOME=str(self.tmp / "xdg"), LOCALAPPDATA=str(self.tmp / "local")):
             self.assertEqual(fp.fleet_data_dir(), os.path.join(str(self.tmp / "xdg"), "fleet"))
@@ -360,6 +379,25 @@ class Lock(TempDirCase):
         while lock_probe(lock) != "got" and time.time() < deadline:
             time.sleep(0.2)
         self.assertEqual(lock_probe(lock), "got")
+
+
+class NoTerminal(unittest.TestCase):
+    """A child that must not prompt: preflight signs a commit through it, and a
+    passphrase prompt is exactly the failure a worker with no terminal meets."""
+
+    @unittest.skipIf(WINDOWS, "POSIX branch")
+    def test_the_child_leads_a_session_of_its_own_so_it_has_no_terminal(self):
+        probe = "import os; print(os.getsid(0) == os.getpid())"
+        done = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True,
+                              timeout=30, check=True, **fp.no_terminal())
+        self.assertEqual(done.stdout.strip(), "True")
+
+    @unittest.skipUnless(WINDOWS, "Windows branch")
+    def test_the_child_gets_no_console_window(self):
+        self.assertEqual(fp.no_terminal(), {"creationflags": subprocess.CREATE_NO_WINDOW})
+        done = subprocess.run([sys.executable, "-c", "print('ran')"], capture_output=True, text=True,
+                              timeout=30, check=True, **fp.no_terminal())
+        self.assertEqual(done.stdout.strip(), "ran")
 
 
 class Alive(unittest.TestCase):

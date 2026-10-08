@@ -56,7 +56,7 @@ steps 3 and 4.
 uv run fleet preflight
 ```
 
-One pass over everything fleet needs, in four tiers, each row with what
+One pass over everything fleet needs, in five tiers, each row with what
 breaks without it — or, for a forge, what it adds — and the command that
 installs it. **Read the table; do not re-probe tool by tool.** It exits
 non-zero when a REQUIRED dependency is missing or `thurbox-cli` is below the
@@ -66,8 +66,9 @@ manifest's floor, and never for anything else.
 |---|---|
 | required | fleet cannot run — `git`, `uv`, `thurbox-cli`, and the multiplexer: `tmux` 3.2 or newer, or `psmux` on native Windows |
 | recommended | a named capability degrades — `quota-axi` for fuel and `refuel` |
+| lead | this machine's environment, which every worker inherits — a commit signed with no terminal, an agent `refuel` can read, glab's default host, and write access to the queue, the reconciler's runtime and thurbox's data directory; each row's `fix:` is the operator's own configuration |
 | forge | optional — `gh` and `gh auth` add GitHub, `glab` and `glab auth` add GitLab: the repo map, publish checks on change requests, shepherd merges |
-| gate | only `uv run fleet check` needs it — `lua`, `prek`, and the git commit-signing configuration |
+| gate | only `uv run fleet check` needs it — `lua` and `prek` |
 
 There is no Python row: `uv` brings the Python, PyYAML and the gate's own
 `ruff`, `rumdl` and `pytest`. No forge is required; `gh` is what builds the
@@ -84,12 +85,13 @@ decides when set, otherwise one working credential is enough, so an operator
 authenticated to their company's GitLab and not to gitlab.com has a working
 setup.
 
-The commit-signing row is not a tool: signing turned on with no key outside
-this checkout fails every commit in a repo an `includeIf gitdir:` block does
-not cover — a sandbox, a worktree somewhere. The gate runs under
-`tests/harness.py`'s `isolated_env`, which turns signing off, so it never
-reports this as a dozen queue failures. Report it as a machine-config problem
-with a one-line fix.
+The lead rows are not tools, and each is probed by doing it. Commit signing
+signs a throwaway commit outside this checkout with no terminal, so an
+`includeIf gitdir:` block that misses a worktree, or a signing agent lost on a
+reboot, shows here instead of as a dozen blocked workers. The gate runs under
+`tests/harness.py`'s `isolated_env`, which turns signing off. Report each as a
+machine-config problem with its `fix:` line, and do not apply it: that line
+is the operator's configuration, which is why `--commands` never prints it.
 
 **ASK — installing is the operator's call.** A package manager touches the
 machine outside the checkout. `uv run fleet install` prints the whole plan —

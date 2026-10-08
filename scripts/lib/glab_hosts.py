@@ -24,6 +24,7 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+import tempfile
 
 # Hosts are the only lines `--all` puts at column 0; the per-instance findings,
 # and the error banner when one of them failed, are indented. The `.` keeps a
@@ -49,6 +50,26 @@ def hosts() -> list[str]:
     except OSError:
         return []
     return [m.group(1) for line in done.stdout.splitlines() if (m := HOST_LINE.match(line))]
+
+
+def default_host() -> str:
+    """The instance glab talks to OUTSIDE a repository, by glab's own lookup.
+
+    `glab config get host` reads the environment (`GITLAB_HOST`), then the
+    config, and prints nothing when neither sets it — and then glab uses
+    gitlab.com. Asked from a directory that is no repository, so a checkout's
+    own remote does not answer for it.
+    """
+    if not shutil.which("glab"):
+        return ""
+    try:
+        with tempfile.TemporaryDirectory() as nowhere:
+            done = subprocess.run(["glab", "config", "get", "host"], cwd=nowhere, stdin=subprocess.DEVNULL,
+                                  capture_output=True, encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    lines = done.stdout.split() if done.returncode == 0 else []
+    return lines[0] if lines else "gitlab.com"
 
 
 def host_ok(host: str) -> bool:
