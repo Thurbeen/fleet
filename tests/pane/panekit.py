@@ -93,7 +93,7 @@ def clone(where: Path) -> Path:
     Committed, so `git status` can say whether anything they wrote is tracked.
     """
     dest = where / "fleet"
-    for rel in (".gitignore", "FLEET.md", "extension.toml.in", "interface/fleet_queue.lua", "interface/fleet_board.lua", "interface/fleet_reader.lua", "interface/fleet_kanban.lua", "interface/fleet_lead.lua"):
+    for rel in (".gitignore", "AGENTS.md", "FLEET.md", "extension.toml.in", "interface/fleet_queue.lua", "interface/fleet_board.lua", "interface/fleet_reader.lua", "interface/fleet_kanban.lua", "interface/fleet_lead.lua"):
         (dest / rel).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(REPO / rel, dest / rel)
     for pattern, sub in (("*.example.conf", "orchestration"), ("*.py", "scripts/lib")):

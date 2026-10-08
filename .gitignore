@@ -36,6 +36,10 @@
 # `uv run fleet sync-checkout` has to fast-forward.
 /FLEET.rendered.md
 
+# GENERATED. Checkout-scoped Codex lead context and lifecycle hooks, rendered
+# only for a Codex lead. Workers' worktrees do not inherit this directory.
+/.codex/
+
 # WORKING STATE. Your GitHub owners. registry/owners.example.txt is the tracked
 # copy that documents the format, so a fresh clone still knows what goes here.
 /registry/owners.txt

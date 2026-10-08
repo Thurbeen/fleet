@@ -264,8 +264,8 @@ def composer_empty(sid: str) -> bool:
     `--lines 0` is the visible pane alone, which is what `cursor_row` counts
     in. Empty is the cursor right after one prompt glyph — `❯`, `›`, `>`: a
     word with no letter or digit in it — with nothing after it on the line.
-    A placeholder, a second line of a draft or a thurbox that reports no
-    cursor all read as not empty, and cost a mailbox note, not a garbled turn.
+    Only Codex's exact empty placeholder with its footer also counts. A draft
+    or a thurbox that reports no cursor costs a mailbox note.
     """
     try:
         out = subprocess.run(
@@ -284,6 +284,13 @@ def composer_empty(sid: str) -> bool:
     if not isinstance(row, int) or not isinstance(col, int) or not 0 <= row < len(lines):
         return False
     before, after = lines[row][:col].split(), lines[row][col:]
+    # Codex draws this placeholder after the cursor in its empty composer.
+    # Require the footer immediately below as well, so a multiline draft
+    # cannot be mistaken for the one-line placeholder.
+    tail = [line.strip() for line in lines[row + 1:] if line.strip()]
+    if (before == ["›"] and after.rstrip() == "Ask Codex to do anything"
+            and len(tail) == 1 and " · " in tail[0]):
+        return True
     return len(before) == 1 and len(before[0]) <= 2 and not any(c.isalnum() for c in before[0]) and not after.strip()
 
 

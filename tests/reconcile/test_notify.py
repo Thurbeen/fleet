@@ -14,8 +14,31 @@ its conversation, so the lead or the operator reads it whenever they look.
 
 from __future__ import annotations
 
-from harness import expect, lib
+import json
+
+from harness import expect, lib, write
 from reconcilekit import wait_for
+
+
+def test_codex_placeholder_is_an_empty_composer(recon, stubs):
+    write(stubs.root / "panes/lead-uuid.json", json.dumps({
+        "output": "Done.\n\n› Ask Codex to do anything\n  model · context left",
+        "cursor_row": 2, "cursor_col": 2,
+    }))
+    recon("ensure")
+    recon.ready("alpha/01-first")
+    assert wait_for(lambda: stubs.calls("thurbox-cli", "session send")), recon.log()
+
+
+def test_codex_draft_is_not_mistaken_for_the_placeholder(recon, stubs):
+    write(stubs.root / "panes/lead-uuid.json", json.dumps({
+        "output": "Done.\n\n› Ask Codex to do anything else\n  model · context left",
+        "cursor_row": 2, "cursor_col": 2,
+    }))
+    recon("ensure")
+    recon.ready("alpha/01-first")
+    assert wait_for(lambda: stubs.inbox("lead-uuid")), recon.log()
+    assert not stubs.calls("thurbox-cli", "session send")
 
 
 def test_the_lead_is_woken_once_per_transition(recon, stubs):

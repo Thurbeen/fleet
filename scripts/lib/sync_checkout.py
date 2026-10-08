@@ -78,6 +78,7 @@ INSTRUCTION_PATHS = ("FLEET.md", "AGENTS.md", "CLAUDE.md", ".agents/skills", ".c
 # in the second they change what the rendered FLEET payload calls the operator.
 WIRING_PATHS = (
     "extension.toml.in",
+    "scripts/lib/install_extension.py",
     "FLEET.md",
     "orchestration/session-glyphs.example.conf",
     "orchestration/voice.example.conf",
