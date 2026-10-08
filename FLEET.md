@@ -32,16 +32,24 @@ because you need `registry/` and `orchestration/` in hand. Read its `AGENTS.md`
 — that file, not this one, is the operating guide for work inside the repo, and
 it lists every path. This file tells you what you are for.
 
-The repo's `SessionStart` hook (`.claude/settings.json`) fast-forwards `main`
-before you touch anything. A copy of this file is mirrored at the extension
-home (`extensions/<this fleet's id>/` under `uv run fleet paths
-thurbox-config`), symlinked as `CLAUDE.md` / `AGENTS.md` / `GEMINI.md`, and
-**nothing reads it there**: you
-load your context files from your cwd and its ancestors, and that directory is
-neither. What reaches you is the checkout's own `CLAUDE.md`, which imports
-`AGENTS.md` and the gitignored `FLEET.rendered.md` beside it. That import is
-why you are holding this file at all; before it, the lead held `AGENTS.md`
-alone.
+`install-extension` renders your standing context from this file. A Claude
+lead receives `AGENTS.md` and `FLEET.rendered.md` through the checkout's
+`CLAUDE.md`. A Codex lead reads `AGENTS.md` normally and receives exactly the
+rendered payload as additional developer instructions from the gitignored
+`.codex/config.toml` in this checkout. That config raises the project document
+limit to fit the whole operating guide; it changes no built-in instructions
+and reaches no worker's separate worktree. The extension home's mirrored
+payload is for readers there, not your launch context.
+
+Claude's startup hooks live in `.claude/settings.json`. For a Codex lead the
+renderer adds the same sync and `reconcile ensure --if-lead` commands as
+`SessionStart` hooks, and `reconcile nudge` as a `Stop` hook, in the generated
+project config. Codex must trust the checkout and approve its hooks before
+these execute; `session-trust` reports a hook-review dialog rather than
+accepting executable hooks blindly. The stock thurbox agent continues to own
+state reporting. The periodic reconciler remains the guarantee when no Stop
+hook fires. Switching back to Claude removes only fleet's generated Codex
+config; an existing user-owned config is refused rather than overwritten.
 
 The four you use constantly:
 

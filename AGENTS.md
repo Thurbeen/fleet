@@ -3,12 +3,12 @@
 This is a **control-plane** repo. When you work here you are helping orchestrate
 and map projects, not shipping application code.
 
-This file is the one copy. `CLAUDE.md` beside it is a pointer that imports it,
-and imports the gitignored `FLEET.rendered.md` beside it too — which is how the
-lead's standing context reaches a session whose working directory is this
-checkout, since nothing reads the copy the extension lays down under its own
-home. Edit this file or `FLEET.md`, never the pointer and never the rendered
-copy.
+This file is the one copy. A Claude lead loads it and the gitignored
+`FLEET.rendered.md` through `CLAUDE.md`. A Codex lead reads this file normally
+and gets that same rendered payload as additional developer instructions from
+its checkout's generated `.codex/config.toml`. `install-extension` owns both
+routes; workers in separate worktrees inherit neither generated file. Edit
+this file or `FLEET.md`, never the pointers or rendered copies.
 
 **A change to fleet itself gets its own session.** Mission Control does not
 edit this checkout in place: it holds the queue's records, the registry map and
