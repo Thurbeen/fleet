@@ -333,6 +333,18 @@ def test_a_queue_fleet_cannot_write_is_a_lead_gap(stubs, tmp_path):
     refute(lead_tier(path), "missing  fleet writes")
 
 
+def test_the_write_probe_leaves_the_queue_looking_untouched(stubs, tmp_path):
+    """The queue root's mtime is when the pane says the records last changed,
+    and `fleet status` runs this probe on every call."""
+    path = machine(stubs, full_machine())
+    root = tmp_path / "queue"
+    root.mkdir()
+    os.utime(root, ns=(1_000_000_000_000_000_000, 1_000_000_000_000_000_000))
+    before = os.stat(root).st_mtime_ns
+    refute(lead_tier(path, FLEET_QUEUE_DIR=str(root)), "missing  fleet writes")
+    assert os.stat(root).st_mtime_ns == before
+
+
 def test_commands_never_prints_a_lead_rows_remedy(stubs):
     """A lead row is the operator's own configuration, with placeholders in it:
     a line for them to read, never one to hand to a shell unread."""

@@ -510,10 +510,17 @@ def _fleet_writes() -> tuple[str, str, str]:
         if not os.path.lexists(where):
             continue
         try:
+            seen = os.stat(where)
             with tempfile.NamedTemporaryFile(dir=where, prefix=".fleet-preflight-"):
                 pass
         except OSError as exc:
             denied.append(f"{where} ({exc.strerror or exc})")
+            continue
+        # The directory's times are put back: the queue root's mtime is when
+        # the pane says the records last changed. Setting them needs ownership,
+        # which a write does not, so failing here is not a denied write.
+        with contextlib.suppress(OSError):
+            os.utime(where, ns=(seen.st_atime_ns, seen.st_mtime_ns))
     if not denied:
         return "ok", "", ""
     return "missing", "; ".join(denied), (
