@@ -708,6 +708,57 @@ function M.read(ctx, view)
   end
   return { model = model, fuel = fuel, lead = lead, fleet = fleet, spinner = spinner, peers = peers }
 end
+--- A directory as `fleet install-extension` and thurbox may each spell it.
+local function same_dir(a, b)
+  local function plain(path)
+    return (path:gsub("\\", "/"):gsub("(.)/+$", "%1"))
+  end
+  return a ~= nil and b ~= nil and plain(a) == plain(b)
+end
+
+--- The Mission Control `Alt+Space` focuses, or nil and the sentence saying why.
+---
+--- `checkout` is the clone that last ran `fleet install-extension`, which
+--- renders it into `lib/fleet_home.lua`. The plugins are one set per machine
+--- and every fleet installs the same files, so the key belongs to whichever
+--- fleet installed LAST — and that fleet's lead is the one it reaches, by its
+--- cwd, which is the lead's identity here exactly as it is in `M.read`. Never
+--- its name: the glyph is a setting and a named fleet's suffix is another.
+---
+--- With no checkout to match — the file never rendered, or the clone moved
+--- since — a machine with ONE local lead still has an obvious answer. Several
+--- is a question this key will not answer by guessing, so it says so.
+function M.lead_for(sessions, checkout)
+  local local_leads, any = {}, {}
+  for _, session in ipairs(sessions or {}) do
+    if session.cwd and fleet_of(session.name or "") then
+      any[#any + 1] = session
+      if not session.host then
+        if same_dir(session.cwd, checkout) then
+          return session
+        end
+        local_leads[#local_leads + 1] = session
+      end
+    end
+  end
+  if #local_leads == 1 then
+    return local_leads[1]
+  end
+  if #local_leads == 0 and #any == 1 then
+    return any[1]
+  end
+  if #any == 0 then
+    return nil, "no " .. CONTROL_PLANE .. " session · uv run fleet install-extension in your fleet checkout"
+  end
+  return nil,
+    #any
+      .. " "
+      .. CONTROL_PLANE
+      .. " sessions and none opens "
+      .. (checkout or "the installing checkout")
+      .. " · run uv run fleet install-extension in the fleet Alt+Space should reach"
+end
+
 M.model_for = function(stdout)
   return model_for(stdout)
 end

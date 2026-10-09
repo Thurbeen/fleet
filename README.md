@@ -101,7 +101,10 @@ pane cycle; card navigation uses arrows until [thurbox #1358](https://github.com
 The optional legacy column is installed alongside the dashboard for
 compatibility. Onboarding still offers to place that column; choose **Skip**
 to use only Kanban, which needs no layout slot. If your layout shows the
-column, press **F3** to hide it. **Alt+K** is the dashboard shortcut.
+column, press **F3** to hide it. **Alt+K** is the dashboard shortcut, and
+**Alt+Space** takes you back to Mission Control from any session, a worker's
+terminal included. With several fleets on one machine it reaches the one that
+ran `uv run fleet install-extension` last.
 
 ## Read more
 

@@ -223,6 +223,9 @@ names every path and the reason for each.
 - `interface/fleet_kanban.lua` — the Alt+K full-screen queue dashboard;
   `interface/fleet_queue.lua` remains the optional legacy column. Both use
   `interface/fleet_reader.lua` over the same records `fleet queue list` reads.
+  `interface/fleet_lead.lua` is the Alt+Space key to Mission Control: it
+  reaches the lead of the fleet that installed last, by the cwd the installer
+  renders into the gitignored `interface/fleet_home.lua`.
   **Other fleets reach the board through `uv run fleet peers`**
   (`scripts/lib/peers.py`): it finds every other Mission Control in thurbox's
   session list — this machine's and every `hosts.toml` host's — and asks each

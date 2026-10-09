@@ -144,6 +144,12 @@ def test_an_install_installs_the_extension_and_the_pane_and_places_nothing(stubs
     overlay = fleet / "interface" / "fleet_kanban.lua"
     assert stubs.calls("thurbox-cli", f"plugin install {reader} --as lib/fleet_reader.lua --text")
     assert stubs.calls("thurbox-cli", f"plugin install {overlay} --as plugins/91_fleet_queue.lua --text")
+    key = fleet / "interface" / "fleet_lead.lua"
+    home = fleet / "interface" / "fleet_home.lua"
+    assert stubs.calls("thurbox-cli", f"plugin install {key} --as plugins/93_fleet_lead.lua --text")
+    assert stubs.calls("thurbox-cli", f"plugin install {home} --as lib/fleet_home.lua --text")
+    assert str(fleet).replace("\\", "\\\\") in home.read_text(encoding="utf-8")
+    expect(done.out, "Alt+Space focuses this fleet's Mission Control", "installed last")
     assert ui.read_bytes() == STOCK.read_bytes()
     assert not list(ui.parent.glob("layout.lua.bak-*"))
     expect(done.out, "NOT PLACED", "uv run fleet place-pane", str(ui), "thurbox-cli extension status fleet")

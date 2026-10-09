@@ -23,6 +23,11 @@
 # extension.toml.in's header says why the path cannot be a `~`.
 /extension.toml
 
+# MACHINE. Which checkout installed the thurbox plugins, rendered by
+# `uv run fleet install-extension` as an absolute path so Alt+Space reaches
+# this fleet's lead; interface/fleet_lead.lua says why.
+/interface/fleet_home.lua
+
 # GENERATED. FLEET.md with the two voice names substituted in, written by
 # `uv run fleet install-extension` and shipped as the extension's [[files]]
 # payload. FLEET.md is the tracked source and carries the placeholders;

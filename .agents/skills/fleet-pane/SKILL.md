@@ -190,6 +190,23 @@ native link roles. Thurbox 2.51.7 blocks drag-selection in floating panes;
 text copying awaits kernel support. Ctrl+H/Ctrl+L still belong
 to the kernel, pending [thurbox #1358](https://github.com/Thurbeen/thurbox/issues/1358).
 
+`Alt+Space` focuses Mission Control from anywhere in thurbox, a worker's
+focused terminal included: it selects the lead and puts the keyboard on its
+terminal. It is `interface/fleet_lead.lua` at `plugins/93_fleet_lead.lua`, a
+global plugin key with no slot and no trust, and nothing else — thurbox reads
+every keystroke before a session's pty does and leaves only passthrough
+`ctrl+<letter>` chords to a focused terminal, so there is no tmux binding to
+install. **Which lead**: the plugins are one set per machine, so with several
+fleets the key reaches the fleet that ran `uv run fleet install-extension`
+LAST — that run renders its checkout into the gitignored
+`interface/fleet_home.lua` (`lib/fleet_home.lua`) and the key matches the
+lead whose cwd it is. Run the installer in the other fleet to move the key
+there. With nothing rendered, or a clone that moved, one local lead is still
+found; several are reported in the message band rather than guessed. When it
+does nothing at all, the terminal is not sending Option as Alt: Ghostty does
+on a U.S. layout by default, and `macos-option-as-alt = true` makes it so
+elsewhere — Alt+K fails the same way.
+
 `F3` hides and shows the column — a **global** chord
 because an unfocusable pane can be reached no other way, and the way back
 since it resolves from the key registry rather than from what is on screen.
