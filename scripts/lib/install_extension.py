@@ -60,7 +60,7 @@ operator's own layout.lua, which `fleet place-pane` makes on their word. The
 first Mission Control session asks once, through `fleet pane-ask`. Once placed,
 F3 opens and closes it.
 
-AND THE Alt+Space KEY (`interface/fleet_lead.lua`), which focuses Mission
+AND THE Ctrl+X KEY (`interface/fleet_lead.lua`), which focuses Mission
 Control from anywhere in thurbox. The plugin files are one set per machine, so
 it reaches the lead of the fleet that installed LAST: this renders the checkout
 into the gitignored `interface/fleet_home.lua` and installs it as
@@ -97,7 +97,7 @@ PANE_DEST = "plugins/92_fleet_queue.lua"
 # Keep the board at the already trusted destination during migration: it uses
 # the same read-only run capability as the combined plugin it replaces.
 BOARD_DEST = "plugins/91_fleet_queue.lua"
-# Alt+Space. Its own file so the key needs none of the board's run trust.
+# Ctrl+X. Its own file so the key needs none of the board's run trust.
 LEAD_DEST = "plugins/93_fleet_lead.lua"
 # Which checkout installed the plugins, for the key above; gitignored.
 HOME_LIB = os.path.join("interface", "fleet_home.lua")
@@ -421,7 +421,7 @@ def install(cli: str, rendered: Rendered) -> int:
 
 
 def home_lib(checkout: str) -> str:
-    """`lib/fleet_home.lua`: the checkout Alt+Space reaches, as a Lua string.
+    """`lib/fleet_home.lua`: the checkout Ctrl+X reaches, as a Lua string.
 
     render() already refused a path with a quote or a control character, so
     doubling backslashes is all the escaping a Windows path needs.
@@ -445,7 +445,7 @@ def install_pane(cli: str) -> None:
     home = os.path.join(REPO_ROOT, HOME_LIB)
     write_in_place(home, home_lib(REPO_ROOT))
     if subprocess.run([cli, "plugin", "install", home, "--as", "lib/fleet_home.lua", "--text"]).returncode:
-        print("\nwarning: could not install fleet_home.lua; Alt+Space may reach another fleet's lead", file=sys.stderr)
+        print("\nwarning: could not install fleet_home.lua; Ctrl+X may reach another fleet's lead", file=sys.stderr)
     for filename, destination in (
         ("fleet_queue.lua", PANE_DEST),
         ("fleet_kanban.lua", BOARD_DEST),
@@ -457,7 +457,7 @@ def install_pane(cli: str) -> None:
             return
     print("\nThe Kanban board is installed. Press Alt+K in thurbox; it needs no layout slot.")
     print(
-        f"Alt+Space focuses this fleet's Mission Control (the lead opening {REPO_ROOT}).\n"
+        f"Ctrl+X focuses this fleet's Mission Control (the lead opening {REPO_ROOT}).\n"
         "With several fleets on this machine it reaches the one that installed last."
     )
 

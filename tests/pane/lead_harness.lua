@@ -1,4 +1,4 @@
--- Press Alt+Space in the real plugin, over a session list and a rendered home.
+-- Press Ctrl+X in the real plugin, over a session list and a rendered home.
 -- arg[1] is the scenario; arg[2], when given, is a rendered lib/fleet_home.lua.
 local scenario, home = arg[1], arg[2]
 package.preload["lib.theme"] = function()
@@ -54,7 +54,7 @@ end
 
 if scenario == "declared" then
   local key = plugin.keys[1]
-  assert(#plugin.keys == 1 and key.key == "alt+space" and key.action == "fleetlead.focus", "no Alt+Space key")
+  assert(#plugin.keys == 1 and key.key == "ctrl+x" and key.action == "fleetlead.focus", "no Ctrl+X key")
   assert(key.scope == "global", "a plugin-scoped key never fires from a focused terminal")
   assert(plugin.floats and not plugin.focusable and plugin.render() == nil, "the key plugin draws or takes a slot")
   assert(not plugin.capabilities, "the key plugin asks for trust it does not need")

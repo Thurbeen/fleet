@@ -24,7 +24,7 @@
 /extension.toml
 
 # MACHINE. Which checkout installed the thurbox plugins, rendered by
-# `uv run fleet install-extension` as an absolute path so Alt+Space reaches
+# `uv run fleet install-extension` as an absolute path so Ctrl+X reaches
 # this fleet's lead; interface/fleet_lead.lua says why.
 /interface/fleet_home.lua
 

@@ -1,4 +1,4 @@
-"""Alt+Space: the key's declaration, and which Mission Control it reaches.
+"""Ctrl+X: the key's declaration, and which Mission Control it reaches.
 
 The plugin is driven offline by `lead_harness.lua` over a session list, with
 the `lib/fleet_home.lua` the installer renders — so the rule that picks the
@@ -27,7 +27,7 @@ SCENARIOS = {
 
 @pytest.mark.skipif(not REAL_LUA, reason="requires lua")
 @pytest.mark.parametrize("scenario", SCENARIOS)
-def test_alt_space_focuses_the_installing_fleets_lead(scenario, tmp_path):
+def test_ctrl_x_focuses_the_installing_fleets_lead(scenario, tmp_path):
     argv = [REAL_LUA, "tests/pane/lead_harness.lua", scenario]
     checkout = SCENARIOS[scenario]
     if checkout is not None:

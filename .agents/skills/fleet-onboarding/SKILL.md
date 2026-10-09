@@ -9,7 +9,7 @@ allowed-tools: Read, Edit, Write, Bash, Glob, Grep, AskUserQuestion
 
 A fresh clone of fleet to a control plane that runs: dependencies installed,
 owners known and registry synced if the fleet works on a forge, extension
-installed, Kanban available with `Alt+K` and Mission Control one `Alt+Space`
+installed, Kanban available with `Alt+K` and Mission Control one `Ctrl+X`
 away, the reconciler up. Every step is a
 `uv run fleet` command and running them is yours; what the operator needs is
 a sense of where they are and a real say at the five points where the answer
@@ -289,7 +289,7 @@ second fleet — and never guess: one answer deletes a conversation.
 ## Step 6/7 — Kanban and the optional legacy column
 
 Step 5 installs the full-screen Kanban dashboard alongside the legacy column.
-`Alt+K` opens the dashboard without changing the layout, and `Alt+Space`
+`Alt+K` opens the dashboard without changing the layout, and `Ctrl+X`
 focuses Mission Control from any session (the fleet-pane skill's §5 owns
 which lead it reaches when a machine runs several fleets). Recommend **Skip**
 in the column-placement choice below when the operator wants only Kanban.
