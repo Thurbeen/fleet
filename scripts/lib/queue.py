@@ -5049,9 +5049,15 @@ def record_publish(task: Task, state: str, detail: str, by: str, extra: dict | N
     it is not a stream event and never moves a watch floor (`folded_through`).
     """
     block = dict(task.doc.get("publish") or {})
+    before = {k: block.get(k) for k in ("state", "detail", "by", *(extra or {}))}
     block.update({"state": state, "detail": detail, "at": now(), "by": by, **(extra or {})})
     task.doc["publish"] = block
     task.save()
+    # The story is the CHANGES. A shepherd every two minutes looks at an
+    # unchanged pull request 720 times a day, and a line per look would grow
+    # the log without telling it anything; the record's `at` still moves.
+    if before == {k: block.get(k) for k in before}:
+        return
     fleet_platform.append_record(
         task.file("progress.jsonl"), json.dumps({"publish": dict(block), "observed": now()}) + "\n"
     )
@@ -7406,8 +7412,16 @@ def cmd_refuel(args) -> int:
 # THE RULES THAT KEEP IT FROM BEING WORSE THAN NOTHING:
 #
 #   Idempotent.  A dispatched fixer is recorded on the task under `shepherd`,
-#                with the condition it went out for. A second pass over the
-#                same still-broken PR sees work in flight, not a second job.
+#                with the condition and the head commit it went out for. A
+#                second pass over the same still-broken PR sees work in flight,
+#                not a second job — however often the reconciler comes round.
+#                Only a fixer AT REST facing a new condition, or the same one
+#                on a new head, is sent again (`fixer_superseded`).
+#   Two ways to  `FIXER` in reconcile.conf: `message` types the fix brief into
+#   fix.         the task's own worker, at rest, and falls back to a new
+#                session only when that worker is gone or reaped; `session`
+#                always spawns one. A busy worker holds both, because the new
+#                session's checkout would be that worker's worktree.
 #   Never guess. "Could not check" is its own outcome and is never `broken`.
 #                No forge, no network, no thurbox: say what could not be
 #                determined and carry on. Spawning a fixer for a healthy PR is
@@ -7492,6 +7506,41 @@ FLOW_CONF = "orchestration/flow.conf"
 FLOW_CONF_DEFAULTS = "orchestration/flow.example.conf"
 # The smallest page either forge answers a change request's commits in.
 INTEGRATION_LISTED_PAGE = 100
+
+# WHAT A BROKEN PULL REQUEST GETS, and how often the reconciler asks — the
+# unattended loop's own settings, one file. `reconcile.py` reads its intervals
+# from it; this module reads `FIXER`. `FLEET_RECONCILE_CONF_ROOT` relocates it,
+# the way `FLEET_AUTO_MERGE_ROOT` relocates the merge list, so a test never
+# reads the operator's copy. The tracked example's header owns the rules.
+RECONCILE_CONF = "orchestration/reconcile.conf"
+RECONCILE_CONF_DEFAULTS = "orchestration/reconcile.example.conf"
+RECONCILE_CONF_ROOT_ENV = "FLEET_RECONCILE_CONF_ROOT"
+# `message` first, and the default: it is what shepherd did before this was a
+# setting — the task's own worker when it is at rest, a new session when it
+# is gone — so an operator with no copy sees no change.
+FIXER_MODES = ("message", "session")
+
+
+def reconcile_conf(root: str | None = None) -> dict[str, str]:
+    """The reconciler's settings in force: the operator's copy, or the tracked one."""
+    root = root or os.environ.get(RECONCILE_CONF_ROOT_ENV) or checkout_root()
+    return read_kv_conf(conf_path(RECONCILE_CONF, RECONCILE_CONF_DEFAULTS, root))
+
+
+def fixer_mode(root: str | None = None) -> tuple[str, str]:
+    """(mode, problem). A value that is neither word is a PROBLEM, never a guess:
+    the two modes are different side effects, so a typo sends no fixer at all
+    and the shepherd row says why."""
+    raw = reconcile_conf(root).get("FIXER", "").strip()
+    if not raw:
+        return FIXER_MODES[0], ""
+    if raw in FIXER_MODES:
+        return raw, ""
+    return "", (
+        f"no fixer sent — FIXER={raw} in {RECONCILE_CONF} is neither "
+        + " nor ".join(repr(m) for m in FIXER_MODES)
+    )
+
 
 # Squash because it is the only method fleet's own remotes allow, so the pull
 # request title becomes the commit on `main`; CONTRIBUTING.md owns that. A
@@ -8958,6 +9007,7 @@ def shepherd_pr(cr: forge.ChangeRequest, task, args) -> dict:
     # Everything below here needs a fixer. Both liveness checks below share
     # one `session list` snapshot, so a fixer and the task's own worker read
     # "gone" from the same evidence.
+    mode, mode_problem = getattr(args, "fixer", None) or fixer_mode()
     rec_session = str(rec["session"]) if rec.get("session") else ""
     worker = str(task.doc.get("session") or "")
     live, live_why = live_sessions() if (rec_session or worker) else (set(), "")
@@ -8965,7 +9015,12 @@ def shepherd_pr(cr: forge.ChangeRequest, task, args) -> dict:
     # A fixer already dispatched for THIS pull request is still the one
     # doing the work, whatever the PR now classifies as — the condition can
     # drift between passes while the fixer is mid-fix, and that drift must
-    # never look like nobody is on it.
+    # never look like nobody is on it. Once it is AT REST, though, it has
+    # finished its turn, and a pull request that is broken in a NEW way since
+    # — another condition, or the same one on a head it pushed — is a new job
+    # (`fixer_superseded`). The same condition on the same head is the job it
+    # was already given, and is never sent twice.
+    superseded = ""
     if not args.force and rec_session:
         status = session_status(rec_session, live)
         if status == "unknown":
@@ -8977,18 +9032,24 @@ def shepherd_pr(cr: forge.ChangeRequest, task, args) -> dict:
             )
             return row
         if status != "gone":
-            row["action"] = "in-flight"
-            row["note"] = (
-                f"a fixer went out for this at {rec.get('at')} "
-                f"(session {rec_session}, now {status}). "
-                "Nothing sent. `--force` overrides."
-            )
-            return row
+            if status in SESSION_AT_REST:
+                superseded = fixer_superseded(rec, condition, cr.head_sha)
+            if not superseded:
+                row["action"] = "in-flight"
+                row["note"] = (
+                    f"a fixer went out for this at {rec.get('at')} "
+                    f"(session {rec_session}, now {status}). "
+                    "Nothing sent. `--force` overrides."
+                )
+                return row
 
-    # The task's own session has the context and the worktree, so it is the
-    # first choice — but only its own word puts it at rest (§4a). A session
-    # that is gone reads as no session at all, which is the ordinary case once
-    # a run has been cleaned up.
+    # The task's own session has the context and the worktree. Whichever mode
+    # is set, only its own word puts it at rest (§4a), and a busy one is never
+    # worked AROUND either: a `session` fixer's checkout is the worktree that
+    # branch is already in, which is the worker's, so spawning beside a worker
+    # mid-turn would put two agents in one tree. A session that is gone reads
+    # as no session at all, which is the ordinary case once a run has been
+    # cleaned up.
     reuse = ""
     if worker:
         status = session_status(worker, live)
@@ -9003,7 +9064,8 @@ def shepherd_pr(cr: forge.ChangeRequest, task, args) -> dict:
             row["action"] = "left-alone"
             row["note"] = (
                 f"its own worker {worker} is {status} — probably already on it. "
-                "Interrupting a turn is how a fix gets half-applied."
+                "Interrupting a turn is how a fix gets half-applied; a later pass "
+                "sends it once the worker is at rest."
             )
             return row
         if status in SESSION_AT_REST:
@@ -9017,14 +9079,40 @@ def shepherd_pr(cr: forge.ChangeRequest, task, args) -> dict:
             )
             return row
 
+    if mode_problem:
+        # Never guess which of two side effects the operator meant. The pull
+        # request is still classified and still merged; only the fixer waits.
+        row["action"] = "not-dispatched"
+        row["note"] = mode_problem
+        return row
+
+    # `message` types into the worker when it can; `session` never does. The
+    # one case `message` cannot serve is a worker that is not there — gone, or
+    # reaped — and that falls back to a new session, said on the row.
+    fallback = ""
+    if mode == "session":
+        reuse = ""
+    elif not reuse:
+        if worker:
+            fallback = f"its own worker {worker} is gone"
+        elif (task.doc.get("reaped") or {}).get("session"):
+            fallback = f"its own worker {task.doc['reaped']['session']} was reaped"
+        else:
+            fallback = "no worker session is recorded"
+        fallback += "; FIXER=message fell back to a new session"
+
     base = cr.base_branch or task.doc.get("base") or "main"
     branch = cr.head_branch or task.doc["branch"]
     title = FIXER_TITLES[condition].format(n=cr.number, base=base)
+    why = f"; {superseded}" if superseded else ""
 
     if args.dry_run:
         row["action"] = "would-dispatch"
-        how = f"reusing its own worker {reuse}" if reuse else "a fresh session on the branch"
-        row["note"] = f"{title} ({how})"
+        if reuse:
+            how = f"messaging its own worker {reuse}"
+        else:
+            how = "a fresh session on the branch" + (f" — {fallback}" if fallback else "")
+        row["note"] = f"{title} ({how}{why})"
         return row
 
     checkout = task_checkout(task, cr.repo)
@@ -9033,32 +9121,60 @@ def shepherd_pr(cr: forge.ChangeRequest, task, args) -> dict:
     fleet_platform.write_record(path, fixer_brief(task, cr, condition, detail, drift))
 
     if reuse:
-        ok, report = trust_and_send(
-            reuse, f"Read {os.path.abspath(path)} and do what it says."
-        )
+        # `fleet queue send`'s own path: the dialog answered, one line typed,
+        # and the receipt kept under `sends` beside the ones a person sent.
+        text = f"Read {os.path.abspath(path)} and do what it says."
+        baseline = send_baseline(task)
+        ok, report = trust_and_send(reuse, text)
+        record_send(task, reuse, text, ok, "" if ok else report, baseline)
         session = reuse if ok else ""
-        note = report if not ok else "reused its own worker"
+        note = report if not ok else "messaged its own worker"
     else:
         session, note = spawn_fixer(task, title, path, branch, checkout)
 
     if not session:
         row["action"] = "not-dispatched"
-        row["note"] = note
+        row["note"] = note + (f" ({fallback})" if fallback else "")
         return row
     row["action"] = "dispatched"
-    row["note"] = f"{title} -> {session}"
-    record_shepherd(
-        task,
-        {
-            "condition": condition,
-            "detail": detail,
-            "session": session,
-            "pr": url,
-            "brief": os.path.basename(path),
-            "at": now(),
-        },
-    )
+    row["note"] = f"{title} -> {session}" + (
+        " (messaged its own worker)" if reuse else f" ({fallback})" if fallback else ""
+    ) + why
+    entry = {
+        "condition": condition,
+        "detail": detail,
+        "session": session,
+        "pr": url,
+        # The head the fixer was sent at: a later pass that finds the same
+        # condition on a NEW head, with this session at rest, sends again.
+        "head": cr.head_sha,
+        "via": "message" if reuse else "session",
+        "brief": os.path.basename(path),
+        "at": now(),
+    }
+    if fallback:
+        entry["fallback"] = fallback
+    record_shepherd(task, entry)
     return row
+
+
+def fixer_superseded(rec: dict, condition: str, head: str) -> str:
+    """Why a fixer now at rest no longer covers this pull request, or "".
+
+    THE IDEMPOTENCE RULE, both modes alike: one fixer per pull request,
+    condition and head commit. A record written before `head` was kept names
+    none, so only a new condition supersedes it — never "the head is unknown".
+    """
+    was = rec.get("condition")
+    if was in FIXABLE and was != condition:
+        return f"the fixer sent for {was} is at rest and it is {condition} now"
+    told = str(rec.get("head") or "")
+    if told and head and told != head:
+        return (
+            f"the fixer sent at {told[:8]} is at rest and {head[:8]} is still "
+            f"{condition}"
+        )
+    return ""
 
 
 def repo_from_checkout(repo_path: str) -> forge.RepoId | None:
@@ -9190,6 +9306,8 @@ def cmd_shepherd(args) -> int:
     # a pull request that goes bad after the last topic closed would be seen by
     # nobody. It is already a network pass over every repo; reading the
     # archived records costs it nothing it was not already paying.
+    # Read once a pass, so every pull request in it is fixed the same way.
+    args.fixer = fixer_mode()
     q = Queue(queue_root(), scope="all")
     only = q.get(args.ref).ref if args.ref else ""
     tasks = []

@@ -134,6 +134,18 @@ names every path and the reason for each.
   needs its attestation or its merge). Tracked and naming none; copy it to a
   gitignored `flow.conf`. `scripts/lib/queue.py`'s `integration_verdict` owns
   the rule.
+- `orchestration/reconcile.example.conf` — the unattended loop's own
+  settings, one file because the fixer is the one side effect its shepherd
+  pass has and the interval is how often it has it. `FIXER=message|session`
+  says what a broken pull request gets: the fix brief typed into the task's
+  own worker (the default, and what shepherd always did — a new session only
+  when that worker is gone, said on the row), or always a new session. Either
+  waits while the worker is busy and sends once per pull request, condition
+  and head commit. `<NAME>_SECS` sets each reconciler clock —
+  `SHEPHERD_SECS=120` is the usual one — re-read every pass, with
+  `FLEET_RECONCILE_<NAME>_SECS` still winning, and `fleet reconcile status`
+  prints what the running loop uses. Fleet's defaults only; copy it to a
+  gitignored `reconcile.conf`.
 - `orchestration/session-glyphs.example.conf` — the mark fleet's sessions wear
   in the thurbox session list: `📡` on the lead and one word per KIND of session
   fleet spawns — a queue worker, the `diagnose-machine` sweep, the `review-prs`

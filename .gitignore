@@ -72,6 +72,9 @@
 # WORKING STATE. Which repositories reach their base through an integration
 # branch (develop→main). The tracked flow.example.conf names none.
 /orchestration/flow.conf
+# How often the reconciler polls, and what shepherd sends at a broken pull
+# request. The tracked reconcile.example.conf carries fleet's defaults.
+/orchestration/reconcile.conf
 
 # WORKING STATE. Session profiles of the operator's own — a model, a thinking
 # budget, an agent's command line. orchestration/session-profiles.yaml is the

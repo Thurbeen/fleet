@@ -603,23 +603,38 @@ gets exactly one of these:
 A PR is tied to a task by its recorded `artifact` (for `pr` and `attested`
 tasks only) or by its head branch; one matching neither is still classified
 and merged, and named as belonging to no task. A remote task's PR is
-classified and merged like any other, and its fixer is withheld, because the
-fixer needs a checkout of the head branch and that one is on the host — send
-the fix into that worker's own session, which §5b keeps alive for this.
+classified and merged like any other; its worker is messaged while it is
+there, and no new session is ever spawned for it, because that would need a
+checkout of the head branch and that one is on the host.
 
 **Dispatching the fixer is the point.** It gets a brief of its own — the
 condition, which PR merged underneath it and what that deleted, and that the
-fix updates the PR **in place** — on a checkout of the branch that already
-exists. Three things it will not do:
+fix updates the PR **in place** — `fix-NN-<condition>.md` in the task's
+directory. **Who reads it is `FIXER`** in the operator's gitignored
+`orchestration/reconcile.conf` (the tracked `reconcile.example.conf` owns the
+rules):
+
+- `message`, the default — one line typed into the task's OWN worker, which
+  §5b keeps alive for this, by `send`'s path: trust dialog first, receipt
+  under `sends`. A worker that is gone or reaped falls back to a new session,
+  and the row says `FIXER=message fell back to a new session`.
+- `session` — always a new session on a checkout of the branch that already
+  exists; the worker is never typed into.
+
+Three things neither mode will do:
 
 - **Dispatch twice for one pull request.** The fixer is recorded on the task
-  under `shepherd`; a second pass checks that session's liveness, not whether
-  the condition still matches, since a PR can drift to another condition while
-  the fixer is mid-fix. `--force` overrides once you have decided the first
-  one is not coming back.
+  under `shepherd`, with the condition and the head commit it went out for. A
+  second pass sends nothing while that session works, or while it sits at
+  rest with the same condition on the same head — a PR can drift while the
+  fixer is mid-fix. At rest with a NEW condition, or the same one on a head it
+  pushed, is a new job and gets a new brief. `--force` overrides once you have
+  decided the first one is not coming back.
 - **Interrupt a working session.** A PR whose own worker is `working` or
-  `blocked` is left alone, and so is one merely *observed* (`running`,
-  `uncovered`, `unreported` — `thurbox-session` §4a).
+  `blocked` is left alone until a later pass finds it at rest — in `session`
+  mode too, since the new session's checkout would be that worker's worktree —
+  and so is one merely *observed* (`running`, `uncovered`, `unreported` —
+  `thurbox-session` §4a).
 - **Guess.** No forge, no network, no thurbox: it says what it could not
   determine and carries on.
 
@@ -809,8 +824,12 @@ uv run fleet reconcile stop       # durably down; only `start` brings it back
 ```
 
 `AGENTS.md`'s reconciler section owns what it may and may not do, and
-`scripts/lib/reconcile.py`'s docstring argues each interval. Two things are
-about you:
+`scripts/lib/reconcile.py`'s docstring argues each interval. **Every interval
+is a setting**: `SHEPHERD_SECS=120` (or `COLLECT_SECS`, `REFUEL_SECS`,
+`WATCH_SECS`, `SYNC_SECS`) in the operator's `orchestration/reconcile.conf`,
+re-read every pass; `FLEET_RECONCILE_<NAME>_SECS` in the loop's environment
+still wins. `status` prints the clocks the running loop uses and where each
+came from. Three things are about you:
 
 - **It will type one line at you, and only ever about three things:** that N
   tasks are ready and nothing will dispatch them — treat it as `plan` already

@@ -122,15 +122,33 @@ THE CADENCES, and why each number is the number:
             the TUI pane holds the same reading to FUEL_TTL = 300s. The condition
             it looks for stands for STALE_WORKING_SECS = 30 min, so five minutes
             is six looks at a half-hour fact.
-  shepherd  900s. The most expensive pass: a pull-request list per repo, then
-            checks, reviews and mergeability. CI does not change faster.
+  shepherd  900s by default; an operator who wants a broken pull request
+            answered sooner sets 120. The most expensive pass, and BOUNDED per
+            pass whatever the clock: one pull-request list per repository the
+            queue names, which already carries checks, reviews and
+            mergeability, plus a push-permission lookup cached for the pass and
+            a file list only for a merge candidate under a `needs-human` rule.
+            It is IDEMPOTENT, so a short clock buys latency and never a second
+            side effect: a fixer is recorded per pull request, condition and
+            head commit and is never re-sent for the same three, a standing
+            refusal is not rewritten, and an unchanged pull request appends
+            nothing to progress.jsonl. What a shorter clock does cost is forge
+            calls: one list per repository per pass, 30 an hour per repository
+            at 120s, against a forge's hourly limit in the thousands.
   notify    collect's clock. What makes a task ready is a landing `collect` has
             just recorded, so a clock of its own would ask at a worse moment.
   sync      900s. A fetch, bounded by `sync-checkout`'s own timeout. A merge on
             origin is a fact the lead can wait a quarter of an hour for, and it
             had been waiting days. 0 turns it off.
 
+Every clock above is a setting too: `<NAME>_SECS=` in orchestration/reconcile.conf,
+the gitignored copy of the tracked reconcile.example.conf, whose header owns the
+rules. The ENVIRONMENT WINS over the file, the file over the default, and the
+file is re-read every pass, so an edit takes effect with no restart. `status`
+prints the clocks the running loop is using and where each one came from.
+
 Environment:
+  FLEET_RECONCILE_CONF_ROOT     where orchestration/reconcile.conf is read (default: this checkout)
   FLEET_RECONCILE_DIR           runtime state (default orchestration/reconcile)
   FLEET_RECONCILE_QUEUE_CMD     the queue command it drives, as an argv: a JSON
                                 list, or a line split with shell quoting (on
@@ -138,7 +156,7 @@ Environment:
                                 and nothing else of a shell (default: `fleet
                                 queue` on this interpreter). The seam tests
                                 stub.
-  FLEET_RECONCILE_WATCH_SECS    seconds per `watch` call   (default 20)
+  FLEET_RECONCILE_WATCH_SECS    seconds per `watch` call   (default 20; each of these five beats the file)
   FLEET_RECONCILE_COLLECT_SECS  seconds between collects   (default 120)
   FLEET_RECONCILE_REFUEL_SECS   seconds between refuels    (default 300)
   FLEET_RECONCILE_SHEPHERD_SECS seconds between shepherds  (default 900)
@@ -168,7 +186,7 @@ import subprocess
 import sys
 import time
 import traceback
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 def _load_sibling(name: str, filename: str):
@@ -231,6 +249,55 @@ def runtime_dir() -> str:
     return os.path.join(CHECKOUT, os.environ.get("FLEET_RECONCILE_DIR") or os.path.join("orchestration", "reconcile"))
 
 
+# The operator's settings for this loop: the gitignored copy, or the tracked
+# example beside it. `FLEET_RECONCILE_CONF_ROOT` relocates both, so a test
+# never reads the operator's file. `queue.py` reads `FIXER` out of the same one.
+CONF = os.path.join("orchestration", "reconcile.conf")
+CONF_DEFAULTS = os.path.join("orchestration", "reconcile.example.conf")
+
+# The clocks: setting name, default, and the smallest value that means one.
+# SYNC alone may be 0, which turns it off.
+CADENCES = (("WATCH", 20, 1), ("COLLECT", 120, 1), ("REFUEL", 300, 1), ("SHEPHERD", 900, 1), ("SYNC", 900, 0))
+
+# What a running loop is ACTUALLY using, for `status`: a status in another
+# shell, or under another environment, would otherwise print its own reading.
+CADENCE_FILE = "cadence.json"
+
+
+def conf_file() -> str:
+    root = os.environ.get("FLEET_RECONCILE_CONF_ROOT") or CHECKOUT
+    path = os.path.join(root, CONF)
+    return path if os.path.exists(path) else os.path.join(root, CONF_DEFAULTS)
+
+
+def read_conf(path: str) -> dict[str, str]:
+    """`KEY=value`, as data — the grammar every `orchestration/*.conf` shares."""
+    return _load_sibling("fleet_agent_settings", "agent_settings.py").read_conf(path)
+
+
+def cadences() -> dict[str, tuple[int, str]]:
+    """NAME -> (seconds, where that came from). The environment, then the
+    conf file, then the default — and a value that is not a whole number of
+    seconds is the default, SAID, rather than a loop that will not start."""
+    path = conf_file()
+    conf = read_conf(path)
+    out = {}
+    for name, default, floor in CADENCES:
+        out[name] = (default, "default")
+        env = f"FLEET_RECONCILE_{name}_SECS"
+        for raw, where in ((os.environ.get(env), env), (conf.get(f"{name}_SECS"), f"{os.path.basename(path)}")):
+            if raw is None or not raw.strip():
+                continue
+            try:
+                value = int(raw.strip())
+            except ValueError:
+                value = -1
+            out[name] = ((value, where) if value >= floor else
+                         (default, f"default — {where} says {raw.strip()!r}, not a whole number ≥ {floor}"))
+            break
+    return out
+
+
 @dataclass
 class Config:
     rt: str
@@ -243,6 +310,7 @@ class Config:
     parent: int = 0
     sync: int = 0
     sync_dir: str = CHECKOUT
+    sources: dict = field(default_factory=dict)
 
     @classmethod
     def from_env(cls) -> Config:
@@ -258,12 +326,26 @@ class Config:
                 raise SystemExit(f"fleet reconciler: FLEET_RECONCILE_QUEUE_CMD: {exc}") from exc
             label = " ".join(cmd)
 
-        def secs(name: str, default: int) -> int:
-            return int(os.environ.get(f"FLEET_RECONCILE_{name}_SECS") or default)
+        cfg = cls(rt, cmd, label, 0, 0, 0, 0, int(os.environ.get("FLEET_RECONCILE_PARENT_PID") or 0), 0,
+                  os.environ.get("FLEET_RECONCILE_SYNC_DIR") or CHECKOUT)
+        cfg.refresh()
+        return cfg
 
-        return cls(rt, cmd, label, secs("WATCH", 20), secs("COLLECT", 120), secs("REFUEL", 300), secs("SHEPHERD", 900),
-                   int(os.environ.get("FLEET_RECONCILE_PARENT_PID") or 0), secs("SYNC", 900),
-                   os.environ.get("FLEET_RECONCILE_SYNC_DIR") or CHECKOUT)
+    def refresh(self) -> list[str]:
+        """Re-read the clocks; the ones that changed, as `name: old -> new` lines."""
+        changed = []
+        for name, (secs, where) in cadences().items():
+            attr = name.lower()
+            old = getattr(self, attr)
+            if self.sources and old != secs:
+                changed.append(f"{attr}: every {old}s -> every {secs}s ({where})")
+            setattr(self, attr, secs)
+            self.sources[attr] = where
+        return changed
+
+    def in_effect(self) -> dict:
+        return {name.lower(): {"secs": getattr(self, name.lower()), "from": self.sources.get(name.lower(), "")}
+                for name, _, _ in CADENCES}
 
     def path(self, name: str) -> str:
         return os.path.join(self.rt, name)
@@ -611,10 +693,18 @@ def tick(cfg: Config) -> int:
 
     last = {"collect": float("-inf"), "shepherd": float("-inf"), "refuel": float("-inf"), "sync": float("-inf")}
     synced = ""
+    fleet_platform.write_record(cfg.path(CADENCE_FILE), json.dumps(cfg.in_effect()) + "\n")
     while True:
         # Checked at the top of every pass, so a stop is honoured at the next boundary.
         if over(cfg):
             return 0
+        # The clocks are re-read every pass, so an edit to reconcile.conf takes
+        # effect without a restart — like every other conf the queue reads.
+        changed = cfg.refresh()
+        if changed:
+            for line in changed:
+                log(cfg, "cadence " + line)
+            fleet_platform.write_record(cfg.path(CADENCE_FILE), json.dumps(cfg.in_effect()) + "\n")
         stamp = time.monotonic()
         fleet_platform.write_record(cfg.path("heartbeat"), f"{int(time.time())}\n")
 
@@ -931,11 +1021,26 @@ def cmd_status(cfg: Config) -> int:
             say("          and nothing brings it back after a reboot but the lead's next session:")
             say("          uv run fleet install installs a user service where this machine has one")
     say(f"queue     {queue}")
-    say(f"watch     every {cfg.watch}s, back to back — the continuous fold")
-    say(f"collect   every {cfg.collect}s")
-    say(f"refuel    every {cfg.refuel}s")
-    say(f"shepherd  every {cfg.shepherd}s")
-    say(f"sync      every {cfg.sync}s — fast-forwards a clean checkout" if cfg.sync > 0 else "sync      off")
+    # The running loop's own clocks when it is up, since its environment is not
+    # this shell's; what a start would use when it is not.
+    clocks, whose = cfg.in_effect(), "a start would use"
+    if running(cfg):
+        try:
+            clocks, whose = {**clocks, **json.loads(read(cfg.path(CADENCE_FILE)))}, "the loop is using"
+        except ValueError:
+            pass
+
+    def every(name: str) -> str:
+        c = clocks[name]
+        return f"every {c['secs']}s ({c['from']})"
+
+    say(f"clocks    what {whose}:")
+    say(f"watch     {every('watch')}, back to back — the continuous fold")
+    say(f"collect   {every('collect')}")
+    say(f"refuel    {every('refuel')}")
+    say(f"shepherd  {every('shepherd')}")
+    say(f"sync      {every('sync')} — fast-forwards a clean checkout" if clocks["sync"]["secs"] > 0
+        else f"sync      off ({clocks['sync']['from']})")
     say(f"log       {cfg.log}")
     nudge = cfg.path("nudge")
     if os.path.isfile(nudge):

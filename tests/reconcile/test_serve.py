@@ -134,6 +134,8 @@ def test_the_session_start_hook_never_fails_the_session(recon, monkeypatch, caps
 
 def test_a_bad_setting_does_not_fail_the_session_start_either(recon):
     """CONTRIBUTING: a SessionStart hook exits 0, whatever it finds."""
-    done = recon("ensure", "--if-lead", **lead_env("lead-uuid"), FLEET_RECONCILE_WATCH_SECS="soon")
+    # A malformed queue command, which nothing can default: a clock that is not
+    # a number falls back to its default instead (test_settings.py).
+    done = recon("ensure", "--if-lead", **lead_env("lead-uuid"), FLEET_RECONCILE_QUEUE_CMD="[unterminated")
     assert done.code == 0, done.out
     expect(done.out, "could not ensure")
