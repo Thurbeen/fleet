@@ -390,7 +390,10 @@ min_thurbox_version = "2.19.0"
 # context files from its CWD and that directory's ancestors — which the
 # extension home is neither, since `repo_path` opens the checkout. So this ships
 # the payload and the checkout's own `CLAUDE.md` imports `FLEET.rendered.md`
-# beside it; that import is what reaches Mission Control, and
+# beside it for Claude. A Codex lead gets the same payload through the
+# checkout-scoped .codex/config.toml rendered by install-extension; neither
+# generated file reaches workers in other worktrees.
+# That is what reaches Mission Control, and
 # `tests/extension/test_lead_context.py` holds the two names together. The
 # symlinks stay: they cost nothing, they are what a reader looking in the
 # extension home expects to find, and an agent pointed at this directory would
@@ -426,8 +429,8 @@ target = "FLEET.rendered.md"
 name = "__LEAD_GLYPH__ Mission Control__FLEET_LABEL__"
 agent = "__LEAD_AGENT__"
 # The session opens your checkout, not the extension home: it needs registry/
-# and orchestration/ in hand, and the repo's SessionStart hook
-# (.claude/settings.json) fast-forwards main before any work starts.
+# and orchestration/ in hand. Startup hooks live in .claude/settings.json
+# for Claude and the generated .codex/config.toml for Codex.
 #
 # Rendered by `uv run fleet install-extension`. See the header for why this is
 # an absolute path and not a `~`.

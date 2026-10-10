@@ -229,6 +229,12 @@ def test_a_new_lockfile_says_to_restart_the_reconciler(tmp_path):
     expect(sync(work).out, "restart-reconciler: yes", "uv.lock")
 
 
+def test_new_context_renderer_requires_reinstalling_the_extension(tmp_path):
+    work = new_repo(tmp_path)
+    advance_origin(tmp_path, "scripts/lib/install_extension.py")
+    expect(sync(work).out, "reinstall-extension: yes", "scripts/lib/install_extension.py")
+
+
 def test_the_lead_is_named_as_the_installed_manifest_spells_it(tmp_path):
     """The glyph in front of the lead's name is a setting, so the name comes
     from the rendered manifest and never from a literal."""

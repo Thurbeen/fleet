@@ -387,8 +387,9 @@ It owns what that session is FOR, and defers to `AGENTS.md` for how to work in
 the repo. `extension.toml.in` lays the rendered copy down at the extension
 home, but that is not what the lead reads — an agent loads its context files
 from its working directory and that directory's ancestors, and the extension
-home is neither, so the checkout's `CLAUDE.md` imports `FLEET.rendered.md`
-beside it. `tests/extension/test_lead_context.py` holds that.
+home is neither. `FLEET.md`'s **Where things are** owns how each lead agent
+loads the rendered payload from the checkout; workers do not inherit it.
+`tests/extension/test_lead_context.py` holds those routes.
 
 `CONTRIBUTING.md` — this file — owns the contribution process: the
 branch-and-pull-request flow, the squash-only merge policy, the local gate, the

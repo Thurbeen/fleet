@@ -1,25 +1,19 @@
-"""FLEET.md reaching the lead, which shipping it as the payload never did.
+"""The checkout hands both lead agents the same rendered standing context.
 
-The extension lays `FLEET.rendered.md` down under its own home and symlinks
-`CLAUDE.md`, `AGENTS.md` and `GEMINI.md` at it there. All of that worked, and
-none of it was ever read: an agent loads its context files from its CWD and
-that directory's ancestors, and the lead's cwd is the CHECKOUT — which the
-extension home is neither. So the lead loaded the checkout's own `CLAUDE.md`,
-the pointer at `AGENTS.md`, and held no `FLEET.md` at all.
-
-The fix is in that pointer: the checkout root already holds the rendered
-payload, so importing it from there is what puts it on the lead's cwd chain.
-These tests resolve the chain the way an agent does, over a checkout with the
-payload and over a fresh clone without one.
+Claude follows CLAUDE.md's imports. Codex loads the generated project config
+alongside AGENTS.md. Neither route reaches a worker's separate worktree.
 """
 
 from __future__ import annotations
 
+import os
 import re
 import tomllib
 from pathlib import Path
 
-from harness import REPO, expect, refute, run_fleet
+from panekit import clone
+
+from harness import PYTHON, REPO, expect, refute, run, run_fleet, write
 
 IMPORT = re.compile(r"^@(\S+)\s*$", re.M)
 
@@ -85,3 +79,96 @@ def test_the_payload_the_manifest_ships_is_the_file_the_checkout_imports(tmp_pat
     shipped = [f["path"] for f in manifest["files"]]
     assert shipped == ["FLEET.rendered.md"]
     assert shipped[0] in imported((REPO / "CLAUDE.md").read_text(encoding="utf-8"))
+
+
+def test_codex_lead_loads_the_complete_payload_without_replacing_builtin_instructions(tmp_path):
+    write(Path(os.environ["FLEET_AGENT_ROOT"]) / "orchestration/agent.conf", "AGENT=codex\n")
+    assert run_render(tmp_path).code == 0
+    manifest = tomllib.loads((tmp_path / "extension.toml").read_text(encoding="utf-8"))
+    assert manifest["sessions"][0]["agent"] == "codex"
+    config = tomllib.loads((tmp_path / ".codex/config.toml").read_text(encoding="utf-8"))
+    assert config["developer_instructions"] == (tmp_path / "FLEET.rendered.md").read_text(encoding="utf-8")
+    assert config["project_doc_max_bytes"] >= 32768 + len((REPO / "AGENTS.md").read_bytes())
+    assert "model_instructions_file" not in config
+    assert "project_doc_fallback_filenames" not in config
+
+
+def test_claude_render_does_not_add_codex_context(tmp_path):
+    assert run_render(tmp_path).code == 0
+    assert not (tmp_path / ".codex/config.toml").exists()
+
+
+def test_codex_context_refreshes_and_is_removed_when_switching_back(tmp_path):
+    conf = Path(os.environ["FLEET_AGENT_ROOT"]) / "orchestration/agent.conf"
+    write(conf, "AGENT=codex\n")
+    assert run_render(tmp_path).code == 0
+    config_path = tmp_path / ".codex/config.toml"
+    config = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    start = config["hooks"]["SessionStart"][0]["hooks"]
+    assert [h["command"] for h in start] == [
+        "uv run --frozen --quiet fleet sync-checkout",
+        "uv run --frozen --quiet fleet reconcile ensure --if-lead",
+    ]
+    assert config["hooks"]["Stop"][0]["hooks"][0]["command"] == "uv run --frozen --quiet fleet reconcile nudge"
+    write(Path(os.environ["FLEET_VOICE_CONF"]), "OPERATOR_NAME=Reader\nASSISTANT_NAME=Guide\n")
+    assert run_render(tmp_path).code == 0
+    expect(config_path.read_text(encoding="utf-8"), "Reader", "Guide")
+    write(conf, "AGENT=claude\n")
+    assert run_render(tmp_path).code == 0
+    assert not config_path.exists()
+
+
+def test_codex_render_refuses_user_owned_config_before_writing(tmp_path):
+    write(Path(os.environ["FLEET_AGENT_ROOT"]) / "orchestration/agent.conf", "AGENT=codex\n")
+    config = tmp_path / ".codex/config.toml"
+    write(config, 'model = "operator-choice"\n')
+    done = run_render(tmp_path)
+    assert done.code == 1
+    expect(done.out, "user-owned", "refusing")
+    assert config.read_text(encoding="utf-8") == 'model = "operator-choice"\n'
+    assert not (tmp_path / "extension.toml").exists()
+
+
+def test_codex_context_is_at_the_lead_cwd_and_never_in_a_worker_worktree(tmp_path):
+    root = clone(tmp_path)
+    write(root / "orchestration/agent.conf", "AGENT=codex\n")
+    done = run([*PYTHON, str(root / "scripts/lib/install_extension.py"), "--render-only", str(root)],
+               FLEET_AGENT_ROOT=str(root))
+    assert done.code == 0, done.out
+    manifest = tomllib.loads((root / "extension.toml").read_text(encoding="utf-8"))
+    lead_cwd = Path(manifest["sessions"][0]["repo_path"])
+    assert (lead_cwd / ".codex/config.toml").is_file()
+    assert not run(["git", "status", "--porcelain"], cwd=root).stdout
+    worker = tmp_path / "worker"
+    assert run(["git", "worktree", "add", "--detach", str(worker)], cwd=root).code == 0
+    assert (worker / "AGENTS.md").is_file()
+    assert not (worker / ".codex/config.toml").exists()
+    assert not (worker / "FLEET.rendered.md").exists()
+
+
+def test_codex_alias_named_through_like_gets_the_codex_context(tmp_path):
+    """A second Codex account is `LIKE=codex`, maybe through another alias.
+    The lead still runs as the alias; its account ENV is the alias's own."""
+    write(
+        Path(os.environ["FLEET_AGENT_ROOT"]) / "orchestration/agent.conf",
+        "AGENT=codex-spare\n"
+        "codex-spare.LIKE=codex-work\n"
+        "codex-spare.ENV=CODEX_HOME=~/.codex-spare\n"
+        "codex-work.LIKE=codex\n",
+    )
+    done = run_render(tmp_path)
+    assert done.code == 0, done.out
+    manifest = tomllib.loads((tmp_path / "extension.toml").read_text(encoding="utf-8"))
+    assert manifest["sessions"][0]["agent"] == "codex-spare"
+    config = tomllib.loads((tmp_path / ".codex/config.toml").read_text(encoding="utf-8"))
+    assert config["developer_instructions"] == (tmp_path / "FLEET.rendered.md").read_text(encoding="utf-8")
+
+
+def test_a_like_cycle_that_never_reaches_codex_renders_no_codex_context(tmp_path):
+    write(
+        Path(os.environ["FLEET_AGENT_ROOT"]) / "orchestration/agent.conf",
+        "AGENT=loop-a\nloop-a.LIKE=loop-b\nloop-b.LIKE=loop-a\n",
+    )
+    done = run_render(tmp_path)
+    assert done.code == 0, done.out
+    assert not (tmp_path / ".codex/config.toml").exists()
