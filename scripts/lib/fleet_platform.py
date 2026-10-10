@@ -263,6 +263,27 @@ def write_record(path: str, text: str) -> None:
             wait *= 2
 
 
+def read_record(path: str) -> str:
+    """`path`'s text, waiting out a replace in flight.
+
+    Windows refuses an open that races `write_record`'s replace, for the same
+    milliseconds the replace waits out a reader; a caller that read that as
+    "no record" acted on nothing. A record that is not there still raises
+    FileNotFoundError, which is the caller's answer to give.
+    """
+    wait = REPLACE_FIRST_WAIT
+    for attempt in range(1, REPLACE_ATTEMPTS + 1):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                return fh.read()
+        except PermissionError:
+            if attempt == REPLACE_ATTEMPTS:
+                raise
+            time.sleep(wait)
+            wait *= 2
+    raise AssertionError("unreachable")
+
+
 def append_record(path: str, text: str) -> None:
     """Append `text` to `path`, with LF line endings on every OS."""
     with open(path, "a", encoding="utf-8", newline="\n") as fh:

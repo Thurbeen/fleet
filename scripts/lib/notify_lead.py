@@ -71,7 +71,19 @@ WHERE THE STATE LIVES. In the reconciler's own runtime directory, beside its
 pid, heartbeat and flags — never on the task. "The lead has been told" is a
 fact about one machine's loop and one conversation; it is not part of what a
 task IS, and writing it onto a record would make this the second writer over
-the queue. `scripts/lib/reconcile.py` still writes no record.
+the queue. `scripts/lib/reconcile.py` still writes no record. It is replaced in
+one step through `write_record`: written in place, a reader racing the writer
+read a torn file as "nothing was told", and the lead was told twice.
+
+AND IT SAYS WHICH CONVERSATION. The record's `lead` names the lead it is true
+of, as two ids `session list` carries: `session`, thurbox's id, which owns the
+mailbox; `conversation`, the agent's, which owns what was typed. `session
+delete` and the extension's self-heal mint both anew, and a fresh lead that
+inherited "already told" was never told. So a new conversation forgets what
+was typed, a new session also forgets what was posted, and `restart` or
+`refuel`, which resume the same conversation, forget nothing. A lead nobody
+can see this pass is not a new one: its record stands. A record from before
+the key names no lead, and resets once.
 
 Usage (it is `scripts/lib/reconcile.py`'s, and nothing else's):
 
@@ -134,6 +146,10 @@ STALE_FILE = "stale.json"
 # What the loop remembers, per set: what was typed into the lead, and what was
 # left in its mailbox while it was mid-turn.
 MEMORY = ("told", "posted", "stalled", "stalled_posted")
+# Which of those a new conversation forgets, and which only a new session does:
+# a mailbox note still waiting in the same session's inbox is not news twice.
+TYPED = ("told", "stalled")
+POSTED = ("posted", "stalled_posted")
 
 
 def _load_queue():
@@ -163,8 +179,7 @@ fleetqueue = _load_queue()
 
 def read_state(state_dir: str) -> dict:
     try:
-        with open(os.path.join(state_dir, STATE_FILE), encoding="utf-8") as fh:
-            doc = json.load(fh)
+        doc = json.loads(fleetqueue.fleet_platform.read_record(os.path.join(state_dir, STATE_FILE)))
     except (OSError, json.JSONDecodeError):
         return {}
     return doc if isinstance(doc, dict) else {}
@@ -175,7 +190,8 @@ def write_state(state_dir: str, memory: dict, note: str) -> None:
 
     `memory` holds four lists of refs: `told` and `posted` for the ready set,
     `stalled` and `stalled_posted` for the stalled one — what was typed into the
-    lead, and what was left in its mailbox.
+    lead, and what was left in its mailbox — and `lead`, which lead they are
+    true of (see WHERE THE STATE LIVES).
 
     Best effort on purpose: a runtime directory that cannot be written is worth
     a repeated notification, and is not worth failing a reconciler pass over.
@@ -184,9 +200,11 @@ def write_state(state_dir: str, memory: dict, note: str) -> None:
     being gone is how the loop knows it has nothing left to run for, and a
     notify that made it again mid-pass left an orphaned loop ticking forever.
     """
+    doc = {**{k: memory.get(k) or [] for k in MEMORY}, "note": note}
+    if memory.get("lead"):
+        doc["lead"] = memory["lead"]
     try:
-        with open(os.path.join(state_dir, STATE_FILE), "w", encoding="utf-8") as fh:
-            json.dump({**{k: memory.get(k) or [] for k in MEMORY}, "note": note}, fh)
+        fleetqueue.fleet_platform.write_record(os.path.join(state_dir, STATE_FILE), json.dumps(doc))
     except OSError:
         pass
 
@@ -227,11 +245,18 @@ def lead_name() -> str:
 
 
 def lead_session(name: str) -> tuple[str | None, str]:
-    """(session id, state) for the named session, or (None, why not).
+    """(session id, state) for the named session, or (None, why not)."""
+    row, why = lead_row(name)
+    return (str(row["id"]), str(row.get("state") or "unknown")) if row else (None, why)
 
-    `session list` and not `session get`: the list carries `id` and `state` for
-    every session in one call and probes no pane, which is the cheaper of the
-    two answers and the one that does not touch the lead to ask about it.
+
+def lead_row(name: str) -> tuple[dict | None, str]:
+    """The named session's `session list` row, or (None, why not).
+
+    `session list` and not `session get`: the list carries `id`, `state` and
+    `agent_session_id` for every session in one call and probes no pane, which
+    is the cheaper of the two answers and the one that does not touch the lead
+    to ask about it.
     """
     if not shutil.which("thurbox-cli"):
         return None, "no thurbox-cli here, so there is nothing to wake"
@@ -254,8 +279,29 @@ def lead_session(name: str) -> tuple[str | None, str]:
         return None, "thurbox-cli session list did not answer a list"
     for row in rows:
         if isinstance(row, dict) and row.get("name") == name and row.get("id"):
-            return str(row["id"]), str(row.get("state") or "unknown")
+            return row, ""
     return None, f"no session named {name!r} is running"
+
+
+def identity(row: dict) -> dict:
+    """Which lead a row is: thurbox's session id, and the agent's conversation.
+
+    A thurbox whose list carries no conversation leaves the session id to
+    stand for both, which is what a new session still changes."""
+    sid = str(row["id"])
+    return {"session": sid, "conversation": str(row.get("agent_session_id") or sid)}
+
+
+def forget_for(memory: dict, lead: dict) -> dict:
+    """`memory` as the lead `lead` knows it: what another conversation was told
+    is not what this one was, and another session's mailbox is not its own."""
+    was = memory.get("lead") if isinstance(memory.get("lead"), dict) else {}
+    kept = dict(memory, lead=lead)
+    if was.get("conversation") != lead["conversation"]:
+        kept.update({k: [] for k in TYPED})
+    if was.get("session") != lead["session"]:
+        kept.update({k: [] for k in POSTED})
+    return kept
 
 
 def composer_empty(sid: str) -> bool:
@@ -510,18 +556,27 @@ def main(argv: list) -> int:
     # weeks ago.
     state = read_state(args.state_dir)
     memory = {k: [r for r in (state.get(k) or []) if r in now[k]] for k in MEMORY}
+    memory["lead"] = state.get("lead")
+    if not ready and not stalled:
+        return say(args.state_dir, memory, "")
+
+    # WHO IS LISTENING, before what is news to them: only asked while a set
+    # holds something, so an idle fleet costs thurbox nothing.
+    name = lead_name()
+    row, status = lead_row(name) if name else (None, "")
+    if row:
+        memory = forget_for(memory, identity(row))
     fresh = [r for r in ready if r not in memory["told"]]
     fresh_stalled = [r for r in stalled if r not in memory["stalled"]]
     if not fresh and not fresh_stalled:
         return say(args.state_dir, memory, "")
 
     what = "ready work" if fresh else "a stalled worker"
-    name = lead_name()
     if not name:
         return say(args.state_dir, memory, f"{what}, but no lead session is configured")
-    sid, status = lead_session(name)
-    if not sid:
+    if not row:
         return say(args.state_dir, memory, f"{what}, but {status}")
+    sid, status = str(row["id"]), str(row.get("state") or "unknown")
 
     # ONE LINE, carrying whichever set has news; a set with nothing new is not
     # repeated just because the other one changed.
