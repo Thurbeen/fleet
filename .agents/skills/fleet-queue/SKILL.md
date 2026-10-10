@@ -645,6 +645,31 @@ every one — holds a change the gates would merge and reports `needs a human:
 <rule>`: that is how a repository merges unattended except its UI. Files the
 forge cannot list, and a rule fleet cannot read, hold the change too.
 
+**Sessions fleet did not spawn are shepherded too.** Each pass lists thurbox's
+sessions and adopts every LOCAL one that is not the lead (refused by name), is
+held by no task (as worker or fixer), and has a worktree on a branch with an
+open change request on a forge fleet reaches. Its PR is classified exactly as
+above, as a `pr`-method one; for a condition in the fixer table it gets a
+short brief under `orchestration/shepherd/briefs/` and ONE line pointing at
+it — only when the session is at rest by its own word, once per condition per
+PR head, kept in the store because no task exists. It is never sent a fixer
+and never merged on its behalf beyond what the main pass already merges in an
+allowlisted repo. A session on a `hosts.toml` host is not adopted. The first
+reconciler pass after fleet starts picks them up; there is no startup step.
+
+**Every watched PR's state, in one file.** Each non-dry pass rewrites
+`orchestration/shepherd/prs.json` (gitignored): per session — task workers and
+adopted ones — per PR, its state, checks and failing jobs, review decision,
+unresolved threads, mergeability, the condition, what shepherd did
+(`sent` / `left-alone` / `fixer` / `merged` / `none`) and when. A forge or
+thurbox it cannot read leaves the last entry marked `stale`, never dropped.
+The schema is `scripts/lib/shepherd_store.py`'s docstring, and the board's PR
+dots read it through:
+
+```bash
+uv run fleet queue prs [--json]   # read-only; prints what the last pass wrote
+```
+
 `shepherd` is a sibling of `collect`, not part of it: `collect` reads local
 files and works offline, and folding a session-spawning, forge-calling side
 effect into it would make it fail for unrelated reasons. `collect` names it

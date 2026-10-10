@@ -183,6 +183,14 @@ __pycache__/
 # same reason the queue's own records are not.
 /orchestration/reconcile/
 
+# MACHINE + WORKING STATE. Shepherd's runtime state: `prs.json`, the state of
+# every pull request it watches, per session — a fleet task's or one it adopted
+# — which the board's PR dots read through `fleet queue prs`, and `briefs/`, the
+# one-line messages' files for adopted sessions that have no task brief. Written
+# by `uv run fleet queue shepherd` (scripts/lib/shepherd_store.py), which is
+# tracked; nothing it writes is.
+/orchestration/shepherd/
+
 # MACHINE. The last reading of every peer fleet, written by `uv run fleet peers`
 # so the board's probe asks a host at most once per TTL and can draw a peer
 # that stopped answering as `stale` rather than blank.
