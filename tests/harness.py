@@ -21,7 +21,7 @@ what keeps all of that out, held to these guarantees by
             this test run, so a loop a test starts ends with the run even when
             no teardown does, and FLEET_RECONCILE_SYNC_SECS is 0, so it never
             fetches or fast-forwards the checkout under test.
-  settings  FLEET_{AUTO_MERGE,PUBLISH,AGENT,GLYPH,NAME,PROFILES,PEERS}_ROOT and FLEET_VOICE_CONF
+  settings  FLEET_{AUTO_MERGE,PUBLISH,AGENT,GLYPH,NAME,PROFILES,PEERS,RECONCILE_CONF}_ROOT and FLEET_VOICE_CONF
             at a copy of the TRACKED *.example.conf only; FLEET_QUEUE_DIR,
             FLEET_RUNS_DIR, FLEET_RECONCILE_DIR and FLEET_PEERS_DIR at empty
             directories; and
@@ -167,6 +167,7 @@ def isolate(environ: dict, root: Path, stub_bin: Path) -> dict:
         FLEET_NAME_ROOT=settings,
         FLEET_PROFILES_ROOT=settings,
         FLEET_PEERS_ROOT=settings,
+        FLEET_RECONCILE_CONF_ROOT=settings,
         FLEET_VOICE_CONF=str(root / "settings" / "orchestration" / "voice.example.conf"),
         FLEET_QUEUE_DIR=str(root / "queue"),
         FLEET_RUNS_DIR=str(root / "runs"),

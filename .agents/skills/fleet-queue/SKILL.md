@@ -607,6 +607,23 @@ gets exactly one of these:
 | checks green, `MERGEABLE`, ours, nothing attested it | recorded `green`, reported `ready to merge — not attested; yours`, never merged by fleet |
 | anything it could not read | reported, left alone |
 
+**Review comments are a delivery of their own, not a condition.** Beside the
+row above — whatever it says, short of `CHANGES_REQUESTED`, a fixer this pass
+just sent, or a merge — `shepherd` reads every review, comment and thread on
+the PR and sends what is new to a session: a review left as a comment, a line
+comment in an unresolved thread, a question in the conversation. It writes a
+`fix-NN-comments.md` naming each one (author, `file:line`, URL, body) and
+types one line pointing at it into the session already on that PR — the one
+sent its last comments, then a recorded fixer, then the task's own worker —
+only when that session's agent says it is at rest; a gone one is replaced by a
+fresh session on the branch, as a gone worker is for a failing check. Never
+sent: comments by the account fleet runs as (its own workers' replies, and
+your `review-prs` reviewer), bots, a resolved thread, and anything fleet's
+account answered after it. Each comment is sent once, by id, under
+`shepherd_comments` on the task — kept apart from `shepherd`, so a comment
+delivery never holds back the fixer a failing check needs next. A comment
+changes neither the merge gates nor the board's word for the PR.
+
 A PR is tied to a task by its recorded `artifact` (for `pr` and `attested`
 tasks only) or by its head branch; one matching neither is still classified
 and merged, and named as belonging to no task. A remote task's PR is
@@ -712,6 +729,19 @@ under them tracked, never a link (a shared store is somebody else's), and
 nothing in a worktree another session sits in. The rest of the worktree,
 uncommitted work included, stays.
 
+**Whether `landed` and `abandoned` delete the session is the operator's
+setting.** `ON_LANDED` and `ON_CLOSED` in the gitignored
+`orchestration/reconcile.conf` (the tracked `reconcile.example.conf` sets
+neither) are `delete` — the default, everything above — or `notify`: the task
+moves exactly as it would, blockers clear and topics archive, but the session
+is kept, its build output left alone, and it is told in one line, once, when
+it is at rest, that the work merged (or closed) and it is kept for
+follow-ups. A busy session is told on a later pass. After that the record
+carries `reaped: … how: kept` and the session is an orphan, below, for you to
+delete when done. `ON_CLOSED` is only a change request closed unmerged; an
+abandon by hand always deletes. A word that is neither keeps the session and
+says so every pass.
+
 **What `reap` cannot see, `fleet sessions orphans` lists**: every session
 parented to the lead that no live task holds — a skill's reviewer, a
 diagnosis sweep, a worker attached to nothing, a session whose task ended. It
@@ -816,8 +846,11 @@ uv run fleet reconcile stop       # durably down; only `start` brings it back
 ```
 
 `AGENTS.md`'s reconciler section owns what it may and may not do, and
-`scripts/lib/reconcile.py`'s docstring argues each interval. Two things are
-about you:
+`scripts/lib/reconcile.py`'s docstring argues each interval. Every interval
+is also a setting: `<NAME>_SECS` in the gitignored
+`orchestration/reconcile.conf`, read when the loop starts (so `reconcile
+restart` after an edit), with `FLEET_RECONCILE_<NAME>_SECS` still beating it.
+Two things are about you:
 
 - **It will type one line at you, and only ever about three things:** that N
   tasks are ready and nothing will dispatch them — treat it as `plan` already

@@ -108,7 +108,11 @@ Usage:
 
 Runtime state lives in orchestration/reconcile/ and is GITIGNORED.
 
-THE CADENCES, and why each number is the number:
+THE CADENCES, and why each number is the number. Each is the default of a
+setting: `<NAME>_SECS` in `orchestration/reconcile.conf` (gitignored; the
+tracked `reconcile.example.conf` sets none), read ONCE when the loop starts —
+an edit takes effect at `restart` — and beaten by FLEET_RECONCILE_<NAME>_SECS
+in the environment. `queue.py`'s `reconcile_conf` is the file's one reader.
 
   watch     20s per call, back to back: effectively continuous. The stream is a
             local socket, and `watch` resumes from each task's OWN floor, so
@@ -123,7 +127,10 @@ THE CADENCES, and why each number is the number:
             it looks for stands for STALE_WORKING_SECS = 30 min, so five minutes
             is six looks at a half-hour fact.
   shepherd  900s. The most expensive pass: a pull-request list per repo, then
-            checks, reviews and mergeability. CI does not change faster.
+            checks, reviews and mergeability, and one more call per open pull
+            request a task owns, for its review comments. CI does not change
+            faster; an operator who wants comments answered sooner sets
+            SHEPHERD_SECS and pays for it in forge calls.
   notify    collect's clock. What makes a task ready is a landing `collect` has
             just recorded, so a clock of its own would ask at a worse moment.
   sync      900s. A fetch, bounded by `sync-checkout`'s own timeout. A merge on
@@ -144,6 +151,8 @@ Environment:
   FLEET_RECONCILE_SHEPHERD_SECS seconds between shepherds  (default 900)
   FLEET_RECONCILE_SYNC_SECS     seconds between syncs; 0 is off (default 900)
   FLEET_RECONCILE_SYNC_DIR      the checkout it keeps current (default: this one)
+  FLEET_RECONCILE_CONF_ROOT     the checkout whose orchestration/reconcile.conf
+                                is read (default: this one; tests set it)
   FLEET_RECONCILE_PARENT_PID    exit once this pid is gone (default: unset; tests set it)
   FLEET_QUEUE_DIR               the queue to reconcile (default: this checkout's)
   FLEET_LEAD_SESSION            the lead session to wake; read by notify_lead.py
@@ -258,8 +267,26 @@ class Config:
                 raise SystemExit(f"fleet reconciler: FLEET_RECONCILE_QUEUE_CMD: {exc}") from exc
             label = " ".join(cmd)
 
+        # READ ONCE, HERE, at start — not every pass. The clocks are what
+        # `stop` waits on (one watch call plus its grace) from another process,
+        # and a loop that re-read them would have its stop computed against
+        # numbers it was no longer running on. An edit takes effect at the next
+        # `fleet reconcile restart`, which is what the file's header says.
+        conf = _load_sibling("fleet_queue", "queue.py").reconcile_conf()
+
         def secs(name: str, default: int) -> int:
-            return int(os.environ.get(f"FLEET_RECONCILE_{name}_SECS") or default)
+            env = os.environ.get(f"FLEET_RECONCILE_{name}_SECS")
+            if env:
+                return int(env)
+            said = conf.get(f"{name}_SECS", "").strip()
+            if not said:
+                return default
+            try:
+                return int(said)
+            except ValueError:
+                raise SystemExit(
+                    f"fleet reconciler: {name}_SECS={said!r} in reconcile.conf is not a whole number"
+                ) from None
 
         return cls(rt, cmd, label, secs("WATCH", 20), secs("COLLECT", 120), secs("REFUEL", 300), secs("SHEPHERD", 900),
                    int(os.environ.get("FLEET_RECONCILE_PARENT_PID") or 0), secs("SYNC", 900),

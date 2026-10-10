@@ -146,6 +146,13 @@ names every path and the reason for each.
   needs its attestation or its merge). Tracked and naming none; copy it to a
   gitignored `flow.conf`. `scripts/lib/queue.py`'s `integration_verdict` owns
   the rule.
+- `orchestration/reconcile.example.conf` — the reconciler's clocks
+  (`<NAME>_SECS`, read when the loop starts, beaten by
+  `FLEET_RECONCILE_<NAME>_SECS`) and what `reap` does with a finished task's
+  session (`ON_LANDED` / `ON_CLOSED`: `delete`, the default, or `notify`).
+  Tracked and setting nothing, so a fresh clone runs on the defaults; copy it
+  to a gitignored `reconcile.conf`. `queue.py`'s `reconcile_conf` is its one
+  reader, for both `reconcile.py` and `reap`.
 - `orchestration/session-glyphs.example.conf` — the mark fleet's sessions wear
   in the thurbox session list: `📡` on the lead and one word per KIND of session
   fleet spawns — a queue worker, the `diagnose-machine` sweep, the `review-prs`
@@ -414,8 +421,11 @@ a second copy — read the skill before you run any of it:
    merged moves a task to `landed` — one repository merged and one still open
    is not landed, or a dependent would be released while half its upstream sat
    unmerged — and `fleet queue reap`, which `collect` runs itself, deletes the
-   session then. It never touches one that is working, blocked, or was given
-   up in: that session is the evidence. Blockers clear on `landed`, and a
+   session then, unless `reconcile.conf`'s `ON_LANDED` / `ON_CLOSED` say
+   `notify`: the task moves all the same, and the session is kept and told
+   so once, at rest, for the operator to delete from `sessions orphans`. It
+   never touches one that is working, blocked, or was given up in: that
+   session is the evidence. Blockers clear on `landed`, and a
    topic whose every task is terminal archives itself. Two ends nobody
    declares are read as ends too: a change request **closed unmerged**, and a
    session thurbox has **not listed for ten minutes** with no result written.
@@ -440,7 +450,10 @@ a second copy — read the skill before you run any of it:
    example names NONE, so a fresh clone of this public repo merges nowhere.
    A `needs-human` rule there (a path glob or a label) holds a change the gates
    would merge and reports `needs a human: <rule>` instead.
-   Squash is the only method it merges by. `--dry-run` first.
+   Squash is the only method it merges by. `--dry-run` first. Beside the
+   four fixer conditions it delivers REVIEW COMMENTS nobody requested changes
+   for — once each, by id, into the PR's session when it is at rest — and
+   never its own account's or a bot's; a comment changes no merge gate.
 8. **A worker that hits its agent's token limit does not fail — it sits, and
    nothing above ever notices.** `fleet queue refuel` is a fifth thing: the
    account's shared quota window first, and a restart only when a stale
@@ -456,14 +469,14 @@ supervisor holds an exclusive lock on `orchestration/reconcile/lock` for its
 whole life, the OS drops it however that process dies, so no stale pid is ever
 trusted or signalled, and a holder that never beats is never called healthy.
 It consumes `fleet queue watch` continuously and calls `collect`, `shepherd`
-and `refuel` on separate intervals; `scripts/lib/reconcile.py`'s docstring
-argues every number and is the full usage. **It comes back by itself, and
-never through a down flag**: `fleet install` offers a user service
-(`scripts/lib/reconcile_service.py`: a systemd user unit running
-`reconcile serve`, or a Windows Startup-folder script running `ensure`), the
-SessionStart hook runs `reconcile ensure --if-lead`, which acts for this
-checkout's lead session and nobody else, and `status` exits 1 on "DOWN,
-nothing asked it down". Four things about it are load-bearing:
+and `refuel` on separate intervals — each a setting in `reconcile.conf`;
+`scripts/lib/reconcile.py`'s docstring argues every default and is the full
+usage. **It comes back by itself, and never through a down flag**: `fleet
+install` offers a user service (`scripts/lib/reconcile_service.py`: a
+systemd user unit running `reconcile serve`, or a Windows Startup-folder
+script running `ensure`), the SessionStart hook runs `reconcile ensure
+--if-lead`, which acts for this checkout's lead session and nobody else, and
+`status` exits 1 on "DOWN, nothing asked it down". Four things about it are load-bearing:
 
 - **It writes no record.** Every effect on the queue goes through
   `fleet queue`, which stays the only writer over the records; its own runtime
