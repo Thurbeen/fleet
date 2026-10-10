@@ -22,8 +22,8 @@ the `publish` skill, and a guided document a human annotates is `thurview`.
    reviewed (§2).
 3. For each one left: wait for CI to conclude — leave it if anything is
    pending (§3).
-4. Read the diff, the body, and the repo's own rules for the paths touched
-   (§4).
+4. Read the diff, the body, and the repo's own rules for the paths touched,
+   and judge what the change costs on them (§4).
 5. Verify the load-bearing claims, on real hardware where that is what it
    takes (§5).
 6. Post approve / request-changes / comment, opening with the next step (§6).
@@ -136,9 +136,18 @@ its own review rules, its `CLAUDE.md` / `AGENTS.md` / `CONTRIBUTING.md`, and
 any convention the touched subsystem documents in its header. Checking
 something else is noise.
 
-**Verify load-bearing claims rather than believing them.** "This now costs
-two subprocesses instead of nine" is testable in a minute, and finding the
-one place a claim does not hold is worth more than ten style notes. **Prefer
+**Weigh performance on every path the change touches**, in any repository:
+work added to a hot path (a render or draw loop, anything run per tick, per
+keystroke or per event); a new or shorter polling interval, or a subprocess
+spawned where none was; allocations and copies inside a loop; blocking I/O on
+a UI or event thread; anything that grows with the number of sessions,
+repositories or change requests instead of staying flat.
+
+**Verify load-bearing claims rather than believing them**, a performance claim
+above all. "This now costs two subprocesses instead of nine" is testable in a
+minute — count the spawns, time the command, run the repo's benchmark where it
+has one — and finding the one place a claim does not hold is worth more than
+ten style notes. **Prefer
 one real defect to a list of nits**: a review that opens with four naming
 preferences buries the bug, and the author reads the first two.
 
@@ -156,9 +165,15 @@ you would have run. An honest gap is fine to post; a silent one is not.
 
 Whatever standing writing rules your agent loads govern every word and
 outrank this section. What review itself requires where those are silent:
-**open with the next step** (who must act, in the first line); **one point
-per comment, anchored to its line**; **mark non-blocking as non-blocking**,
-so `request-changes` means one thing; **three to five lines**.
+
+- **The review body** opens with the next step (who must act, in the first
+  line) and carries **a performance verdict, always** — the cost on the paths
+  touched, with the number where you measured one, or "no performance impact"
+  when that is what §4 found. It is said once, there, not on each line comment.
+- **Each line comment** makes one point, anchored to its line, and marks
+  non-blocking as non-blocking, so `request-changes` means one thing. A
+  performance cost belongs in one only when it is that comment's point.
+- **Both** stay within three to five lines.
 
 **When a review is genuinely uncertain, post nothing and say so in the tick
 report.** An unreviewed change request is a known state; a confidently wrong
