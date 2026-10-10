@@ -94,7 +94,7 @@ class QueueRecords(unittest.TestCase):
         for _ in range(2):
             out = self.queue("run", topic)
             self.assertEqual(out.returncode, 0, out.stderr)
-            (log,) = (self.tmp / "runs").glob("*.md")
+            (log,) = (self.tmp / "runs").glob("*.facts.md")
             logs.append(log.read_bytes())
         self.assertIn("Task — one".encode("utf-8"), logs[-1])
         self.assertEqual(logs[0], logs[1], "refreshing the run log changed bytes it did not own")

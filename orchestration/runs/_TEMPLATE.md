@@ -1,15 +1,14 @@
 # Run: `<YYYY-MM-DD>` — `<slug>`
 
-> One run, one topic. `uv run fleet queue topic add` opens this file, and
-> `dispatch`, `collect`, `shepherd` and `run` refresh the fenced block below
-> from the queue's own records as the run goes on.
+> One run, one topic. `uv run fleet queue topic add` opens this file once, and
+> `dispatch`, `collect`, `shepherd` and `run` keep the facts file linked below
+> current from the queue's own records as the run goes on.
 >
-> **Everything outside that fence is yours.** Nothing rewrites it, nothing
-> generates it, and it is the reason the file exists — the block says what
-> happened, and these sections say what you decided and what it cost.
+> **This file is yours.** Fleet created it and never writes it again. The facts
+> say what happened; the sections below, all optional, say what you decided
+> and what it cost.
 
-<!-- fleet:facts -->
-<!-- fleet:facts:end -->
+<!-- fleet:facts-link -->
 
 ## Goal
 

@@ -263,12 +263,15 @@ def test_a_finished_topics_run_log_is_refreshed_and_never_reopened(stranded, stu
     `FLEET_RUNS_DIR` late must not fill it with a template per topic it has
     ever finished."""
     log = next(Path(os.environ["FLEET_RUNS_DIR"]).glob(f"*-{stranded}.md"))
-    # It carries the keep, written while the topic was still live.
-    expect(log.read_text(encoding="utf-8"), "01-wrote-and-kept-working")
+    facts = log.with_name(log.name[: -len(".md")] + ".facts.md")
+    # Its facts carry the keep, written while the topic was still live.
+    expect(facts.read_text(encoding="utf-8"), "01-wrote-and-kept-working")
     log.unlink()
+    facts.unlink()
 
     stubs.session_is(LATE, "idle")
     out = ok(q("collect")).out
     expect(out, "reaped")
     refute(out, "run log")
     assert not log.exists(), f"{log.name} was scaffolded again for an archived topic"
+    assert not facts.exists(), f"{facts.name} was written again for an archived topic"

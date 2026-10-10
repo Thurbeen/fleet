@@ -120,9 +120,10 @@ to run them. What is here is what is YOURS in each.
 4. **`watch` on your own cadence, then `collect`.** The event stream says WHEN
    a turn ended; the worker's own result file says WHAT it concluded. A turn
    ending is not a task finishing, and only `collect` closes anything.
-5. The run log records itself as you run those. Write the goal, decisions and
-   outcome into it in your own words — that half never comes from a record. It
-   is gitignored and not backed up by the repo.
+5. The run's facts record themselves as you run those, beside its log. The
+   log is yours, and writing in it is optional: the goal, decisions and
+   outcome in your own words, when they are worth keeping — that half never
+   comes from a record. It is gitignored and not backed up by the repo.
 6. **`shepherd`, as reflexively as `collect`**, which names it whenever it
    closed a task that left a change request open. It writes down what it saw
    either way, so a task's record says `checks-running` or `unattested` and not

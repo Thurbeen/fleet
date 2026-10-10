@@ -130,10 +130,11 @@ section below: the change request outlives the task, and a worker that hits its
 agent's token limit SITS rather than failing.
 
 THE RUN LOG IS PRODUCED, NOT REMEMBERED. `topic add` opens
-`orchestration/runs/<opened>-<topic>.md` from the tracked _TEMPLATE.md;
-`dispatch`, `collect` and `shepherd` rewrite a fenced block inside it from the
-records, and everything outside the fence is the lead's. `run` is that refresh
-made explicit.
+`orchestration/runs/<opened>-<topic>.md` from the tracked _TEMPLATE.md, once;
+`dispatch`, `collect` and `shepherd` rewrite the facts in the
+`<opened>-<topic>.facts.md` beside it from the records, and the log itself is
+the lead's and never written again. `run` is that refresh made explicit, and
+`run --all` reaches archived topics too.
 
 Usage:
   uv run fleet queue topic add <slug> --title T --prompt 'the ask'   # or --prompt-file F|-
@@ -205,7 +206,7 @@ Usage:
                        restart the workers that ran dry against it
   uv run fleet queue shepherd [--dry-run] # every open change request on the repo: fix or merge
                        [--json] [--topic T] [--ref R] [--no-merge] [--force]
-  uv run fleet queue run [<topic>]        # refresh the run log(s) by hand
+  uv run fleet queue run [<topic>] [--all]  # refresh the run facts by hand
   uv run fleet queue list [--topic T] [--archived] [--all] [--live]  # the
                        lead's view: a line per task; archived topics hidden by
                        default; --live re-reads each open task's change
@@ -253,6 +254,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import contextlib
 import difflib
 import fnmatch
 import glob
@@ -1424,9 +1426,19 @@ def read_yaml(path: str) -> dict:
     `check` — the command whose whole job is to name a broken record — with a
     traceback that named the file three lines from the bottom.
     """
+    return read_record(path)[0]
+
+
+def read_record(path: str) -> tuple[dict, str]:
+    """`read_yaml`, plus the text it was parsed from — what a save compares with."""
+    with open(path, encoding="utf-8") as fh:
+        text = fh.read()
+    return parse_record(path, text), text
+
+
+def parse_record(path: str, text: str) -> dict:
     try:
-        with open(path, encoding="utf-8") as fh:
-            doc = load_yaml(fh)
+        doc = load_yaml(text)
     except yaml.YAMLError as exc:
         raise QueueError(f"{path} is not a record fleet can read: {one_line(exc)}") from exc
     if not isinstance(doc, dict):
@@ -1434,9 +1446,11 @@ def read_yaml(path: str) -> dict:
     return doc
 
 
-def write_yaml(path: str, doc: dict, header: str) -> None:
-    body = yaml.safe_dump(doc, sort_keys=False, default_flow_style=False)
-    fleet_platform.write_record(path, header.rstrip() + "\n" + body)
+def write_yaml(path: str, doc: dict, header: str) -> str:
+    """Write one record; returns the text written."""
+    text = header.rstrip() + "\n" + yaml.safe_dump(doc, sort_keys=False, default_flow_style=False)
+    fleet_platform.write_record(path, text)
+    return text
 
 
 TASK_HEADER = """\
@@ -1461,11 +1475,14 @@ TOPIC_HEADER = """\
 
 
 class Task:
-    def __init__(self, topic: str, tid: str, path: str, doc: dict):
+    def __init__(self, topic: str, tid: str, path: str, doc: dict, loaded: str | None = None):
         self.topic = topic
         self.id = tid
         self.path = path
         self.doc = doc
+        # The text `doc` was parsed from, or None for a record this view made.
+        # A save compares the disk with it to tell whether anybody else wrote.
+        self.loaded = loaded
 
     @property
     def ref(self) -> str:
@@ -1487,7 +1504,56 @@ class Task:
         return os.path.join(self.path, name)
 
     def save(self) -> None:
-        write_yaml(self.file("task.yaml"), self.doc, TASK_HEADER)
+        """Write this task back, keeping whatever another writer saved since it loaded.
+
+        Every command loads a view, changes a task and saves the whole record,
+        and the loop's `collect` runs beside the lead's commands and its own
+        `shepherd`. A save of the view as it was loaded wrote the other's
+        change away: a `shepherd` that loaded a task while `dispatched` put it
+        back to `dispatched` after `collect` had closed it. So the save is a
+        transaction under the record's lock — re-read, merge, write — and the
+        merge is per top-level field: a field this view changed is this view's,
+        and every other field is what the disk holds now. The lock is held
+        for those few milliseconds and not across the command, whose forge
+        calls can take minutes.
+        """
+        path = self.file("task.yaml")
+        with fleet_platform.exclusive_lock(path + ".lock", wait=RECORD_LOCK_WAIT):
+            doc = self.doc
+            if self.loaded is not None:
+                try:
+                    with open(path, encoding="utf-8") as fh:
+                        now_text = fh.read()
+                except FileNotFoundError:
+                    now_text = self.loaded
+                if now_text != self.loaded:
+                    # A disk copy that no longer parses has nothing to keep.
+                    with contextlib.suppress(QueueError):
+                        doc = merge_fields(parse_record(path, self.loaded),
+                                           parse_record(path, now_text), self.doc)
+            text = write_yaml(path, doc, TASK_HEADER)
+        self.doc = doc
+        self.loaded = text
+
+
+# A save holds a record's lock for the milliseconds of one read and one write,
+# so a writer that waits this long is waiting on a holder that hung.
+RECORD_LOCK_WAIT = 30.0
+
+
+def merge_fields(base: dict, theirs: dict, mine: dict) -> dict:
+    """`theirs` with every top-level field `mine` changed from `base` applied over it."""
+    out = dict(theirs)
+    gone = object()
+    for key in [*base, *(k for k in mine if k not in base)]:
+        was, now = base.get(key, gone), mine.get(key, gone)
+        if was == now:
+            continue
+        if now is gone:
+            out.pop(key, None)
+        else:
+            out[key] = now
+    return out
 
 
 
@@ -1678,7 +1744,7 @@ class Queue:
                     continue
                 rec = os.path.join(dpath, "task.yaml")
                 if os.path.exists(rec):
-                    t = Task(topic, tid, dpath, read_yaml(rec))
+                    t = Task(topic, tid, dpath, *read_record(rec))
                     self.tasks[t.ref] = t
 
     def get(self, ref: str) -> Task:
@@ -1744,7 +1810,7 @@ class Queue:
             rec = os.path.join(dpath, "task.yaml")
             if not os.path.exists(rec):
                 continue
-            found.append(Task(topic, tid, dpath, read_yaml(rec)))
+            found.append(Task(topic, tid, dpath, *read_record(rec)))
         if len(found) > 1:
             raise QueueError(
                 f"{ref} names {len(found)} tasks across topics; use <topic>/<task>"
@@ -2032,12 +2098,13 @@ def unfinished(tasks: list, state_of=None) -> Task | None:
 def set_archived(root: str, slug: str, at: str | None) -> None:
     """Write or clear `archived` on one topic, leaving the rest of it alone."""
     path = topic_meta_path(root, slug)
-    doc = read_yaml(path)
-    if at is None:
-        doc.pop("archived", None)
-    else:
-        doc["archived"] = at
-    write_yaml(path, doc, TOPIC_HEADER)
+    with fleet_platform.exclusive_lock(path + ".lock", wait=RECORD_LOCK_WAIT):
+        doc = read_yaml(path)
+        if at is None:
+            doc.pop("archived", None)
+        else:
+            doc["archived"] = at
+        write_yaml(path, doc, TOPIC_HEADER)
 
 
 def sweep_archives(q: Queue, state_of, dry: bool) -> int:
@@ -9311,25 +9378,36 @@ def cmd_shepherd(args) -> int:
 #       where a run begins and the point is that nobody has to decide to.
 #   REFRESHED BY THE LOOP'S OWN COMMANDS — `dispatch`, `collect`, `shepherd`
 #       and the explicit `run` — so the facts arrive without being retyped and
-#       without a daemon. A fenced block is REWRITTEN in place, never appended
-#       to: `collect` runs many times over one run, and a line appended per
-#       pass is a timeline nobody reads, which is this failure relocated rather
-#       than fixed. The block is a pure function of the records, so a refresh
-#       that changes nothing writes nothing and says nothing.
-#   AND EVERYTHING OUTSIDE THE FENCE IS THE LEAD'S. The goal in its own words,
-#       the decisions, what went wrong, the outcome — none of that can be
-#       generated from records, and it is why the file exists. Nothing here
-#       reads it, nothing here writes it, and a log whose fence has been
-#       removed is a log the lead has taken over: it is reported and left
-#       exactly as it is.
+#       without a daemon. They are REWRITTEN, never appended to: `collect` runs
+#       many times over one run, and a line appended per pass is a timeline
+#       nobody reads, which is this failure relocated rather than fixed. They
+#       are a pure function of the records, so a refresh that changes nothing
+#       writes nothing and says nothing.
+#   INTO A FILE OF THEIR OWN, `<date>-<topic>.facts.md`, AND THE LOG IS THE
+#       LEAD'S. The goal in its own words, the decisions, what went wrong, the
+#       outcome — none of that can be generated from records. The facts once
+#       sat in a fenced block inside the log, and rewriting the log to refresh
+#       them lost the lead's prose three ways: an edit saved between the read
+#       and the write of a `collect` the loop ran on its own clock, the opening
+#       marker quoted in a sentence above the block, and the markers swapped.
+#       So the log is created once, by a create that refuses to overwrite, and
+#       nothing here writes it again — except to migrate an older log's exact
+#       fence once (`refresh_run_log`).
 
 RUNS_DIR = os.path.join("orchestration", "runs")
 RUN_TEMPLATE = "_TEMPLATE.md"
 
-# The fence, as a literal pair, so preserving what surrounds it is a string
-# search and not a parse of someone's prose.
+# The fence a log written before the facts moved out carries, as a literal
+# pair. Read only to MIGRATE such a log, and only when the pair is exact: see
+# `legacy_fence`.
 FACTS_BEGIN = "<!-- fleet:facts -->"
 FACTS_END = "<!-- fleet:facts:end -->"
+
+# What stands where the facts used to be, in a new log and a migrated one
+# alike. `_TEMPLATE.md` holds FACTS_LINK_SLOT where it goes.
+FACTS_LINK_SLOT = "<!-- fleet:facts-link -->"
+FACTS_LINK = ("**Facts.** [`{name}`]({name}) — generated from the queue's records "
+              "beside this file. This file is yours: fleet wrote it once and never writes it again.")
 
 # A run is over when the queue has nothing left to do for it. `done` is not
 # here: that task's pull request is open, which is the middle of a run.
@@ -9360,6 +9438,11 @@ def run_log_path(slug: str, topic: dict) -> str:
     """
     day = str(topic.get("created") or now())[:10]
     return os.path.join(runs_root(), f"{day}-{slug}.md")
+
+
+def run_facts_path(log: str) -> str:
+    """The facts file beside a run log: `<opened-date>-<topic>.facts.md`."""
+    return log[: -len(".md")] + ".facts.md"
 
 
 def cell(text) -> str:
@@ -9420,17 +9503,18 @@ def run_events(tasks: list) -> list:
 
 
 def run_facts(q: Queue, slug: str) -> str:
-    """The fenced block, rendered from records and from nothing else."""
+    """The facts file, rendered from records and from nothing else."""
     topic = q.topics.get(slug, {})
     tasks = q.by_topic().get(slug, [])
     profiles = sorted({t.doc.get("profile") or "default" for t in tasks})
+    log = os.path.basename(run_log_path(slug, topic))
 
     lines = [
-        FACTS_BEGIN,
+        f"# Run facts: `{log[:10]}` — `{slug}`",
         "",
         "<!-- Generated from the queue's records by `uv run fleet queue`, and",
-        "     rewritten in place every time it runs. Write nothing in here;",
-        "     everything outside this fence is yours and is never touched. -->",
+        "     rewritten every time it runs. Write nothing in here: what you",
+        f"     decided goes in {log}, which fleet never writes. -->",
         "",
         f"- **Topic.** `{slug}` — {topic.get('title', '')}",
         f"- **Prompt.** `{os.path.join(os.path.abspath(queue_root()), slug, 'PROMPT.md')}`",
@@ -9480,22 +9564,92 @@ def run_facts(q: Queue, slug: str) -> str:
         lines += ["", "### Timeline", ""]
         lines += [f"- `{at}` — {what}" for at, what in events]
 
-    lines += ["", FACTS_END]
-    return "\n".join(lines)
+    return "\n".join(lines) + "\n"
 
 
-def refresh_run_log(q: Queue, slug: str) -> tuple[str, str]:
-    """Write this topic's run log. Returns (path, what happened) — "" for nothing.
+def legacy_fence(text: str) -> tuple[str, tuple[int, int] | None]:
+    """("none" | "fence" | "malformed", the fence's line span) for one log.
 
-    The three outcomes that matter: it did not exist and now does, it existed
-    and its facts moved on, or someone removed the fence and it is theirs now.
+    A fence MIGRATES only when it is exact: each marker exactly once in the
+    whole file, each alone on its own line, the opening one first. Anything
+    else — a marker quoted in a sentence, the pair swapped, one of them
+    missing — is a log whose block cannot be told from the lead's prose by a
+    string search, which is how splicing at the first marker deleted that
+    prose. It is reported, and nothing guesses.
     """
-    path = run_log_path(slug, q.topics.get(slug, {}))
-    old = ""
+    begins, ends = text.count(FACTS_BEGIN), text.count(FACTS_END)
+    if not begins and not ends:
+        return "none", None
+    lines = text.splitlines()
+    whole_b = [i for i, line in enumerate(lines) if line == FACTS_BEGIN]
+    whole_e = [i for i, line in enumerate(lines) if line == FACTS_END]
+    if begins == ends == len(whole_b) == len(whole_e) == 1 and whole_b[0] < whole_e[0]:
+        return "fence", (whole_b[0], whole_e[0])
+    return "malformed", None
+
+
+def write_run_facts(path: str, text: str) -> bool:
+    """Write the facts file if it changed. True when it did.
+
+    Fleet is its only writer, but `collect` from the loop and a command of the
+    lead's can refresh one topic at once, so the compare and the write are one
+    step under its lock.
+    """
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with fleet_platform.exclusive_lock(path + ".lock", wait=RECORD_LOCK_WAIT):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                if fh.read() == text:
+                    return False
+        except FileNotFoundError:
+            pass
+        fleet_platform.write_record(path, text)
+    return True
+
+
+def refresh_run_log(q: Queue, slug: str, archived_too: bool = False) -> tuple[str, str]:
+    """Write this topic's facts file, opening its log first if there is none.
+
+    Returns (log path, what happened) — "" for nothing. THE LOG IS NEVER
+    REWRITTEN. It is created once, from the template, by a create that fails
+    rather than overwrites; after that, every word in it is the lead's. The
+    facts go in the file beside it, which only fleet writes.
+
+    A log written before the facts moved out carries them inside a fence. An
+    exact one is MIGRATED once: the facts file is written, then the block is
+    replaced by the link — only if the log still reads as it did when this
+    began, so an edit saved meanwhile is kept and the next pass tries again.
+    A fence that is not exact is left alone and reported.
+
+    An ARCHIVED topic is skipped unless `archived_too` (`run --all`): its
+    records stopped moving, and a loop pass that rewrote every old log in the
+    checkout would be a migration nobody asked for.
+    """
+    topic = q.topics.get(slug, {})
+    path = run_log_path(slug, topic)
+    facts = run_facts_path(path)
+    if topic.get("archived") and not archived_too:
+        return path, ""
+    verb = ""
     if os.path.exists(path):
         with open(path, encoding="utf-8") as fh:
             old = fh.read()
-        verb = "updated"
+        kind, span = legacy_fence(old)
+        if kind == "malformed":
+            return path, ("left alone — its fleet:facts markers are malformed (each must "
+                          "appear once, alone on its line, opening one first); fix or "
+                          "remove them and run `fleet queue run` again")
+        if kind == "fence":
+            write_run_facts(facts, run_facts(q, slug))
+            with open(path, encoding="utf-8") as fh:
+                if fh.read() != old:
+                    return path, ("not migrated — it changed while its facts rendered; "
+                                  "the next pass tries again")
+            lines = old.splitlines(keepends=True)
+            first, last = span
+            lines[first:last + 1] = [FACTS_LINK.format(name=os.path.basename(facts)) + "\n"]
+            fleet_platform.write_record(path, "".join(lines))
+            return path, "migrated"
     else:
         # A topic that was ALREADY archived when this view loaded is REFRESHED
         # and never OPENED. `shepherd` has always read every topic and `collect`
@@ -9506,31 +9660,27 @@ def refresh_run_log(q: Queue, slug: str) -> tuple[str, str]:
         # load and `sweep_archives` writes it to disk without touching that, so
         # a topic that archived during THIS pass is still live here and opens
         # its log exactly as it always did.
-        if q.topics.get(slug, {}).get("archived"):
+        if topic.get("archived"):
             return path, ""
         try:
             with open(run_template_path(), encoding="utf-8") as fh:
-                old = fh.read()
+                template = fh.read()
         except OSError as exc:
             return path, f"not scaffolded — {exc}"
-        old = old.replace("<YYYY-MM-DD>", os.path.basename(path)[:10]).replace("<slug>", slug)
-        verb = "opened"
+        template = (template.replace("<YYYY-MM-DD>", os.path.basename(path)[:10])
+                    .replace("<slug>", slug)
+                    .replace(FACTS_LINK_SLOT, FACTS_LINK.format(name=os.path.basename(facts))))
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        if fleet_platform.create_record(path, template):
+            verb = "opened"
 
-    if FACTS_BEGIN not in old or FACTS_END not in old:
-        return path, "left alone — no generated block in it"
-
-    head, _, rest = old.partition(FACTS_BEGIN)
-    _, _, tail = rest.partition(FACTS_END)
-    new = head + run_facts(q, slug) + tail
-    if new == old:
-        return path, ""
-
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    fleet_platform.write_record(path, new)
+    if write_run_facts(facts, run_facts(q, slug)) and not verb:
+        verb = "facts updated"
     return path, verb
 
 
-def refresh_run_logs(q: Queue, only: str | None = None, always: bool = False) -> None:
+def refresh_run_logs(q: Queue, only: str | None = None, always: bool = False,
+                     archived_too: bool = False) -> None:
     """Refresh every topic's log and say only what changed.
 
     Silence when nothing moved is the point: a loop that prints a line per
@@ -9539,20 +9689,24 @@ def refresh_run_logs(q: Queue, only: str | None = None, always: bool = False) ->
     for slug in sorted(q.topics):
         if only and slug != only:
             continue
-        path, note = refresh_run_log(q, slug)
+        path, note = refresh_run_log(q, slug, archived_too)
         if note or always:
             print(f"    run log {note or 'unchanged'}: {path}")
 
 
 def cmd_run(args) -> int:
-    """The refresh, made explicit — for a topic older than this and for the path."""
-    q = Queue(queue_root())
+    """The refresh, made explicit — for a topic older than this and for the path.
+
+    `--all` reaches the archived topics too, which no other pass refreshes, and
+    is how their logs are migrated.
+    """
+    q = Queue(queue_root(), scope="all" if args.all_topics else "live")
     if args.topic and args.topic not in q.topics:
         raise QueueError(f"no such topic: {args.topic}")
     if not q.topics:
         print("run: no topics, so no runs")
         return 0
-    refresh_run_logs(q, only=args.topic, always=True)
+    refresh_run_logs(q, only=args.topic, always=True, archived_too=args.all_topics)
     return 0
 
 
@@ -10508,7 +10662,9 @@ def build_parser() -> argparse.ArgumentParser:
     sh.set_defaults(func=cmd_shepherd)
 
     rn = sub.add_parser("run", help="refresh the run log this topic writes into")
-    rn.add_argument("topic", nargs="?", help="one topic; every one by default")
+    rn.add_argument("topic", nargs="?", help="one topic; every live one by default")
+    rn.add_argument("--all", action="store_true", dest="all_topics",
+                    help="archived topics as well, which migrates their logs")
     rn.set_defaults(func=cmd_run)
 
     li = sub.add_parser("list", help="one line per task, grouped by topic")

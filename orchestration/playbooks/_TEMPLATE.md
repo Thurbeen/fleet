@@ -34,8 +34,8 @@ How to decompose the goal into thurbox sessions. For each session, define:
 ## Run
 
 1. `uv run fleet queue topic add` — which opens this run's log under
-   `../runs/` for you. Write the goal into it now; the facts arrive by
-   themselves.
+   `../runs/` for you. Write the goal into it now if it is worth keeping; the
+   facts arrive by themselves, in the `.facts.md` beside it.
 2. Fast-forward each target repo's base branch, then `thurbox-cli session create`
    with `--parent "$THURBOX_SESSION"`, the chosen `--on-existing` mode, and the
    profile's flags from `uv run fleet session-flags <profile>`.
