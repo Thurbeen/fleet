@@ -190,7 +190,7 @@ native link roles. Thurbox 2.51.7 blocks drag-selection in floating panes;
 text copying awaits kernel support. Ctrl+H/Ctrl+L still belong
 to the kernel, pending [thurbox #1358](https://github.com/Thurbeen/thurbox/issues/1358).
 
-`Alt+Space` focuses Mission Control from anywhere in thurbox, a worker's
+`Ctrl+X` focuses Mission Control from anywhere in thurbox, a worker's
 focused terminal included: it selects the lead and puts the keyboard on its
 terminal. It is `interface/fleet_lead.lua` at `plugins/93_fleet_lead.lua`, a
 global plugin key with no slot and no trust, and nothing else — thurbox reads

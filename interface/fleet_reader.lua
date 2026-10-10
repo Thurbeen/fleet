@@ -716,7 +716,7 @@ local function same_dir(a, b)
   return a ~= nil and b ~= nil and plain(a) == plain(b)
 end
 
---- The Mission Control `Alt+Space` focuses, or nil and the sentence saying why.
+--- The Mission Control `Ctrl+X` focuses, or nil and the sentence saying why.
 ---
 --- `checkout` is the clone that last ran `fleet install-extension`, which
 --- renders it into `lib/fleet_home.lua`. The plugins are one set per machine
@@ -756,7 +756,7 @@ function M.lead_for(sessions, checkout)
       .. CONTROL_PLANE
       .. " sessions and none opens "
       .. (checkout or "the installing checkout")
-      .. " · run uv run fleet install-extension in the fleet Alt+Space should reach"
+      .. " · run uv run fleet install-extension in the fleet Ctrl+X should reach"
 end
 
 M.model_for = function(stdout)
