@@ -28,7 +28,8 @@ Windows makes `[[symlinks]]` into hard links, and a file replaced by a new one
 would leave those links on the old names. A rendered payload reaches no
 running lead — the session froze FLEET.md at launch.
 
-A CODEX LEAD also gets a gitignored `.codex/config.toml` in the checkout:
+A CODEX LEAD — `codex`, or an agent whose `LIKE` chain in agent.conf reaches
+it — also gets a gitignored `.codex/config.toml` in the checkout:
 the same payload as additional developer instructions, a document limit large
 enough for AGENTS.md, and the startup/Stop hooks. Normal Codex instructions
 and skill discovery stay intact. Workers' worktrees never inherit this file.
@@ -245,6 +246,13 @@ def lead_agent() -> str:
     return agent
 
 
+def lead_is_codex(agent: str) -> bool:
+    """Whether the lead is Codex, under its own name or one `LIKE` it."""
+    conf = pick(os.environ.get("FLEET_AGENT_ROOT") or REPO_ROOT, "agent")
+    settings = agent_settings.read_conf(conf) if os.path.isfile(conf) else {}
+    return "codex" in agent_settings.chain(agent, settings)
+
+
 def voice_names(conf: str) -> tuple[str, str]:
     if not os.path.isfile(conf):
         raise Refused(f"missing the voice setting: {conf}")
@@ -281,6 +289,7 @@ def render(dest: str, voice: str | None = None) -> Rendered:
     glyph_conf = pick(os.environ.get("FLEET_GLYPH_ROOT") or REPO_ROOT, "session-glyphs")
     glyph = lead_glyph(glyph_conf)
     agent = lead_agent()
+    codex = lead_is_codex(agent)
     fleet = fleet_name()
     voice = voice or os.environ.get("FLEET_VOICE_CONF") or pick(REPO_ROOT, "voice")
     operator, lead = voice_names(voice)
@@ -314,9 +323,9 @@ def render(dest: str, voice: str | None = None) -> Rendered:
     codex_path = os.path.join(dest, ".codex", "config.toml")
     owned_codex = (not os.path.islink(codex_path) and os.path.isfile(codex_path)
                    and read(codex_path).startswith(CODEX_HEADER))
-    if agent == "codex" and os.path.lexists(codex_path) and not owned_codex:
+    if codex and os.path.lexists(codex_path) and not owned_codex:
         raise Refused(f"{codex_path} is user-owned; refusing to replace it")
-    if agent == "codex":
+    if codex:
         codex_config = CODEX_HEADER + (
             f"developer_instructions = {json.dumps(payload, ensure_ascii=False)}\n"
             # Keep the default allowance for global/ancestor instructions in
@@ -337,7 +346,7 @@ def render(dest: str, voice: str | None = None) -> Rendered:
                 )
     fleet_platform.write_record(out, manifest)
     write_in_place(payload_out, payload)
-    if agent == "codex":
+    if codex:
         os.makedirs(os.path.dirname(codex_path), exist_ok=True)
         fleet_platform.write_record(codex_path, codex_config)
     elif owned_codex:

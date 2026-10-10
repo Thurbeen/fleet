@@ -144,3 +144,31 @@ def test_codex_context_is_at_the_lead_cwd_and_never_in_a_worker_worktree(tmp_pat
     assert (worker / "AGENTS.md").is_file()
     assert not (worker / ".codex/config.toml").exists()
     assert not (worker / "FLEET.rendered.md").exists()
+
+
+def test_codex_alias_named_through_like_gets_the_codex_context(tmp_path):
+    """A second Codex account is `LIKE=codex`, maybe through another alias.
+    The lead still runs as the alias; its account ENV is the alias's own."""
+    write(
+        Path(os.environ["FLEET_AGENT_ROOT"]) / "orchestration/agent.conf",
+        "AGENT=codex-spare\n"
+        "codex-spare.LIKE=codex-work\n"
+        "codex-spare.ENV=CODEX_HOME=~/.codex-spare\n"
+        "codex-work.LIKE=codex\n",
+    )
+    done = run_render(tmp_path)
+    assert done.code == 0, done.out
+    manifest = tomllib.loads((tmp_path / "extension.toml").read_text(encoding="utf-8"))
+    assert manifest["sessions"][0]["agent"] == "codex-spare"
+    config = tomllib.loads((tmp_path / ".codex/config.toml").read_text(encoding="utf-8"))
+    assert config["developer_instructions"] == (tmp_path / "FLEET.rendered.md").read_text(encoding="utf-8")
+
+
+def test_a_like_cycle_that_never_reaches_codex_renders_no_codex_context(tmp_path):
+    write(
+        Path(os.environ["FLEET_AGENT_ROOT"]) / "orchestration/agent.conf",
+        "AGENT=loop-a\nloop-a.LIKE=loop-b\nloop-b.LIKE=loop-a\n",
+    )
+    done = run_render(tmp_path)
+    assert done.code == 0, done.out
+    assert not (tmp_path / ".codex/config.toml").exists()
