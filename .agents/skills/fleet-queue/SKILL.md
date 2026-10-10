@@ -834,17 +834,23 @@ unrecorded while the instruction to keep one was there both times, so the gap
 was the tool's.
 
 ```text
-<!-- fleet:facts -->     everything between the fences is GENERATED — the task
-   …                     table, what waited on what, what overlapped anyway,
-<!-- fleet:facts:end -->  and a timeline from the records' own timestamps
+runs/<date>-<topic>.md        YOURS — created once from _TEMPLATE.md, linking
+                              the facts file, and never written by fleet again
+runs/<date>-<topic>.facts.md  GENERATED — the task table, what waited on what,
+                              what overlapped anyway, and a timeline from the
+                              records' own timestamps; rewritten, not appended
 ```
 
-Outside the fence is yours and nothing rewrites it: **Goal** in your own
-words, **Decisions worth keeping**, **What went wrong**, **Outcome**. Write
-into it while you still know it. The block is rewritten, not appended;
-`uv run fleet queue run [<topic>]` is that refresh made explicit; delete the
-fence and the log is yours entirely. Run logs are gitignored, so machine paths
-and session ids are fine in them; `_TEMPLATE.md` beside them is tracked.
+The log is yours entirely, and writing in it is optional: **Goal** in your
+own words, **Decisions worth keeping**, **What went wrong**, **Outcome** —
+write them while you still know them, if they are worth keeping.
+`uv run fleet queue run [<topic>]` is the refresh made explicit. A log from
+before the facts moved out still carries them between `fleet:facts` markers:
+an exact pair (each once, alone on its line, in order) is migrated into the
+facts file on its first refresh, and anything else is left alone and named —
+fix the markers by hand (its facts file is still kept current). Archived topics migrate only through
+`uv run fleet queue run --all`. Run logs are gitignored, so machine paths and
+session ids are fine in them; `_TEMPLATE.md` beside them is tracked.
 
 ## 6. The views, and keeping your context clean
 

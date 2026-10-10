@@ -372,6 +372,53 @@ class Records(TempDirCase):
         self.assertEqual(path.read_bytes(), b"old\n")
         self.assertEqual(self.names(), ["task.yaml"])
 
+    def test_two_writers_of_one_record_never_collide(self):
+        """D3: every writer shared `<path>.tmp`, so one renamed another's away."""
+        path = self.tmp / "task.yaml"
+        errors: list[str] = []
+
+        def writer(n: int) -> None:
+            for i in range(200):
+                try:
+                    fp.write_record(str(path), f"writer: {n}\nseq: {i}\n" + "x" * 4000 + "\n")
+                except Exception as exc:  # noqa: BLE001 - the failure is what is counted
+                    errors.append(type(exc).__name__)
+
+        threads = [threading.Thread(target=writer, args=(n,)) for n in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(errors, [])
+        self.assertEqual(path.read_text(encoding="utf-8").count("writer:"), 1)
+        self.assertEqual(self.names(), ["task.yaml"])
+
+    def test_a_failed_write_leaves_no_temp_file_behind(self):
+        path = self.tmp / "task.yaml"
+        with mock.patch.object(fp.os, "replace", side_effect=OSError(28, "no space left")):
+            with self.assertRaises(OSError):
+                fp.write_record(str(path), "new\n")
+        self.assertEqual(self.names(), [])
+
+    def test_a_waiting_lock_is_taken_once_its_holder_lets_go(self):
+        lock = self.tmp / "task.yaml.lock"
+        holder = subprocess.Popen(
+            [sys.executable, "-c", HOLDER, PLATFORM, str(lock), "hold"],
+            stdout=subprocess.PIPE, text=True,
+        )
+        try:
+            self.assertEqual(holder.stdout.readline().strip(), "got")
+            with self.assertRaises(fp.LockHeld):
+                with fp.exclusive_lock(str(lock), wait=0.2):
+                    pass
+            threading.Timer(0.3, holder.kill).start()
+            with fp.exclusive_lock(str(lock), wait=30):
+                pass
+        finally:
+            holder.kill()
+            holder.wait(timeout=30)
+            holder.stdout.close()
+
 
 HOLDER = textwrap.dedent(
     """

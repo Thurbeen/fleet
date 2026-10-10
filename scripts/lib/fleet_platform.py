@@ -14,6 +14,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import secrets
 import shlex
 import shutil
 import signal
@@ -246,21 +247,58 @@ def write_record(path: str, text: str) -> None:
     puts in titles, and every other reader of a record — the pane, a lead on
     another OS — reads UTF-8.
     """
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
-        fh.write(text)
-    wait = REPLACE_FIRST_WAIT
-    for attempt in range(1, REPLACE_ATTEMPTS + 1):
+    tmp = unique_temp(path)
+    try:
+        with open(tmp, "x", encoding="utf-8", newline="\n") as fh:
+            fh.write(text)
+        wait = REPLACE_FIRST_WAIT
+        for attempt in range(1, REPLACE_ATTEMPTS + 1):
+            try:
+                os.replace(tmp, path)
+                return
+            except PermissionError:
+                if attempt == REPLACE_ATTEMPTS:
+                    raise
+                time.sleep(wait)
+                wait *= 2
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.remove(tmp)
+        raise
+
+
+def unique_temp(path: str) -> str:
+    """A name beside `path` that no other writer, in any process or thread, picks.
+
+    Every writer once used `<path>.tmp`, so two saving one record at once
+    renamed each other's file away and the second `os.replace` raised
+    FileNotFoundError. Beside the record, because a rename is only atomic
+    within one filesystem. Opened with "x" by the caller, so a collision fails
+    rather than shares, and the file is created under the umask like the record
+    it replaces — which `tempfile.mkstemp`'s 0600 would not be.
+    """
+    return f"{path}.{os.getpid()}.{secrets.token_hex(6)}.tmp"
+
+
+def create_record(path: str, text: str) -> bool:
+    """Create `path` holding `text`, or leave it untouched if it exists. True when created.
+
+    The text is written to a unique temp file and linked into place, and a
+    link fails rather than replaces, so a reader never sees half of it and an
+    existing file — somebody's prose — is never overwritten.
+    """
+    tmp = unique_temp(path)
+    try:
+        with open(tmp, "x", encoding="utf-8", newline="\n") as fh:
+            fh.write(text)
         try:
-            os.replace(tmp, path)
-            return
-        except PermissionError:
-            if attempt == REPLACE_ATTEMPTS:
-                with contextlib.suppress(OSError):
-                    os.remove(tmp)
-                raise
-            time.sleep(wait)
-            wait *= 2
+            os.link(tmp, path)
+        except FileExistsError:
+            return False
+        return True
+    finally:
+        with contextlib.suppress(OSError):
+            os.remove(tmp)
 
 
 def read_record(path: str) -> str:
@@ -298,35 +336,50 @@ class LockHeld(Exception):
 
 
 @contextlib.contextmanager
-def exclusive_lock(path: str):
-    """Hold an exclusive lock on `path` for the block, or raise LockHeld at once.
+def exclusive_lock(path: str, wait: float = 0.0):
+    """Hold an exclusive lock on `path` for the block, or raise LockHeld.
 
     The OS drops the lock when the holder's handle closes, however its process
     ended, so a lock nobody holds proves its last holder is gone. A pidfile
     cannot: its pid may since belong to somebody else. The converse is not
     instant: Windows releases a killed process's locks when it gets to them,
     so a lock can still read as held for a moment after its holder died.
+
+    `wait` is how many seconds to keep asking before raising. The default asks
+    once, which is what a supervisor deciding "is one already running" wants;
+    a writer guarding a few milliseconds of read-modify-write waits instead.
     """
-    fh = open(path, "a+b")
-    try:
+    deadline = time.monotonic() + wait
+    pause = REPLACE_FIRST_WAIT
+    while True:
+        fh = open(path, "a+b")
         try:
             if WINDOWS:
                 fh.seek(0)
                 msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
             else:
                 fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
         except (BlockingIOError, PermissionError) as exc:
-            raise LockHeld(path) from exc
+            fh.close()
+            if time.monotonic() >= deadline:
+                raise LockHeld(path) from exc
+            time.sleep(pause)
+            pause = min(pause * 2, 0.2)
+        except BaseException:
+            fh.close()
+            raise
+    try:
+        yield
+    finally:
         try:
-            yield
-        finally:
             if WINDOWS:
                 fh.seek(0)
                 msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
             else:
                 fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
-    finally:
-        fh.close()
+        finally:
+            fh.close()
 
 
 # --- processes ----------------------------------------------------------------

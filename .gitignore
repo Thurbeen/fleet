@@ -119,10 +119,12 @@
 
 # WORKING STATE. One file per orchestration run — the record of what you did,
 # when, and how it went. `uv run fleet queue` opens one per topic and refreshes
-# the facts inside it, so these carry machine paths and session ids freely; the
-# judgement around those facts is the operator's. _TEMPLATE.md is the form, it
-# is generic, and it stays.
+# its facts in the `.facts.md` beside it, under that file's `.lock`, so these
+# carry machine paths and session ids freely; the judgement in the log itself is
+# the operator's. _TEMPLATE.md is the form, it is generic, and it stays.
 /orchestration/runs/*.md
+/orchestration/runs/*.lock
+/orchestration/runs/*.tmp
 !/orchestration/runs/_TEMPLATE.md
 
 # WORKING STATE. The task queue: topics, per-task briefs, the transitions a run

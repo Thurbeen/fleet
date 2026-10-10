@@ -100,7 +100,7 @@ def test_queued_and_condition_held_tasks_are_abandoned_and_the_topic_archives(sp
     # The reason is on every surface that shows the task.
     expect(q("list", "--all").out, "03-third-step", "abandoned", SUPERSEDED)
     expect(q("show", refs[1]).out, "state:       abandoned", SUPERSEDED)
-    runs = list(Path(queue_dir.parent / "runs").glob(f"*-{split}.md"))
+    runs = list(Path(queue_dir.parent / "runs").glob(f"*-{split}.facts.md"))
     assert runs, "the run log was not written"
     expect(runs[0].read_text(encoding="utf-8"), "abandoned", SUPERSEDED)
     # A record this verb wrote is still one the queue validates.

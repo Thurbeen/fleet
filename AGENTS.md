@@ -256,11 +256,13 @@ names every path and the reason for each.
 - `orchestration/playbooks/<name>.md` — reusable recipes for running thurbox.
   All tracked; write new ones here, from `_TEMPLATE.md`.
 - `orchestration/runs/<date>-<topic>.md` — a log per orchestration run, one
-  per topic. **The queue writes it**: `topic add` opens it from `_TEMPLATE.md`
-  and the loop's own commands rewrite a fenced block of facts inside it.
-  Everything outside that fence is the lead's judgement and nothing ever
-  overwrites it. Gitignored, like everything a run produces; the template is
-  the one tracked file there.
+  per topic. **The queue opens it and never writes it again**: `topic add`
+  creates it from `_TEMPLATE.md`, and the loop's own commands rewrite the
+  facts in `<date>-<topic>.facts.md` beside it, which only fleet writes. The
+  log is the lead's judgement, optional, and nothing ever overwrites it; the
+  fleet-queue skill's **The run log** owns migrating an older log's fenced
+  facts. Gitignored, like everything a run produces; the template is the one
+  tracked file there.
 - `install.sh` and `install.ps1` — the one-liners (`curl … | sh`,
   `irm … | iex`): install uv when it is missing, clone or fast-forward the
   checkout, and hand over to `uv run fleet install` (`scripts/lib/install.py`).
