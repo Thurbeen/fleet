@@ -205,7 +205,11 @@ Usage:
   uv run fleet queue refuel [<ref>] [--dry-run]  # the account's fuel first, then
                        restart the workers that ran dry against it
   uv run fleet queue shepherd [--dry-run] # every open change request on the repo: fix or merge
-                       [--json] [--topic T] [--ref R] [--no-merge] [--force]
+                       [--json] [--topic T] [--ref R] [--no-merge] [--force];
+                       also adopts sessions fleet did not spawn, and writes
+                       the PR-state store (shepherd_store.py)
+  uv run fleet queue prs [--json]         # every watched session's PR state,
+                       as the last shepherd pass recorded it
   uv run fleet queue run [<topic>] [--all]  # refresh the run facts by hand
   uv run fleet queue list [--topic T] [--archived] [--all] [--live]  # the
                        lead's view: a line per task; archived topics hidden by
@@ -9297,6 +9301,16 @@ def link_task(cr: forge.ChangeRequest, tasks: list) -> object:
     return None
 
 
+def shepherd_store():
+    """Adoption of outside sessions, and the PR-state store: `shepherd_store.py`."""
+    return _load_sibling("fleet_shepherd_store", "shepherd_store.py")
+
+
+def cmd_prs(args) -> int:
+    """Print the PR-state store the last shepherd pass wrote. Reads only that file."""
+    return shepherd_store().cmd_prs(sys.modules[__name__], args)
+
+
 def cmd_shepherd(args) -> int:
     """The fourth thing: the pull requests, after `watch` and after `collect`."""
     # No forge CLI on this machine, which is a local-only fleet and not a
@@ -9304,6 +9318,8 @@ def cmd_shepherd(args) -> int:
     # per repository the queue names.
     if not forge.available():
         why = forge.no_forge_reason()
+        if not args.dry_run:
+            shepherd_store().forge_unavailable(sys.modules[__name__], why)
         if args.json:
             print(json.dumps({"queue": os.path.abspath(queue_root()), "repos": [], "unreadable": [],
                               "prs": [], "unavailable": why}, indent=2))
@@ -9333,6 +9349,9 @@ def cmd_shepherd(args) -> int:
     named = [str(r) for r in repos]
 
     rows, unreadable = [], []
+    # What the PR-state store and adoption read after the pass: every listing
+    # it made, and each open PR with the task and row it got.
+    listings, observed = {}, []
     for repo in repos:
         here = [t for t in tasks if repo in repo_of.get(t.ref, ())]
         crs, err = open_prs(repo)
@@ -9342,8 +9361,17 @@ def cmd_shepherd(args) -> int:
             # only one of them means "nothing is open".
             unreadable.append({"repo": repo.qualified, "named": str(repo), "detail": err})
             continue
+        listings[repo] = crs
         for cr in sorted(crs, key=lambda c: c.number):
-            rows.append(shepherd_pr(cr, link_task(cr, here), args))
+            task = link_task(cr, here)
+            rows.append(shepherd_pr(cr, task, args))
+            observed.append((cr, task, rows[-1]))
+
+    # Sessions fleet did not spawn, and the one file of every watched PR's
+    # state; `shepherd_store.py` owns both and argues them.
+    store = shepherd_store()
+    adopted = store.after_pass(sys.modules[__name__], args, list(q.tasks.values()),
+                               observed, listings, unreadable)
 
     if args.json:
         print(json.dumps({
@@ -9351,8 +9379,11 @@ def cmd_shepherd(args) -> int:
             "repos": [r.qualified for r in repos],
             "unreadable": unreadable,
             "prs": rows,
+            "adopted": adopted,
         }, indent=2))
         return 0
+
+    store.print_adopted(adopted, args.dry_run)
 
     if not repos:
         print("shepherd: no task names a repository on a configured forge yet")
@@ -10724,6 +10755,12 @@ def build_parser() -> argparse.ArgumentParser:
     sh.add_argument("--force", action="store_true",
                     help="dispatch again for a condition a fixer is already out for")
     sh.set_defaults(func=cmd_shepherd)
+
+    ps = sub.add_parser("prs", help="every watched session's PR state, as the last shepherd pass "
+                        "recorded it; reads only that file")
+    ps.add_argument("--json", action="store_true",
+                    help="the store itself; its schema is shepherd_store.py's docstring")
+    ps.set_defaults(func=cmd_prs)
 
     rn = sub.add_parser("run", help="refresh the run log this topic writes into")
     rn.add_argument("topic", nargs="?", help="one topic; every live one by default")

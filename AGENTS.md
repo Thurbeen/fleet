@@ -233,6 +233,15 @@ names every path and the reason for each.
   writing it onto a task would make the loop a second writer over the queue.
   Written by `uv run fleet reconcile` (`scripts/lib/reconcile.py`) and created
   on first start. The loop's code is tracked; nothing it writes is.
+- `orchestration/shepherd/` — shepherd's runtime state: `prs.json`, the state
+  of every pull request it watches, per session — a task's worker or a session
+  it adopted — and `briefs/`, the files the one-line messages to adopted
+  sessions point at. Written by `fleet queue shepherd`
+  (`scripts/lib/shepherd_store.py`, whose docstring is the store's schema),
+  read by `fleet queue prs [--json]`, and never a queue record: "this PR was
+  red at 14:02" and "that session was told" are one machine's observations,
+  and an adopted session has no task to write them on. `FLEET_SHEPHERD_DIR`
+  moves it.
 - `interface/fleet_kanban.lua` — the Alt+K full-screen queue dashboard;
   `interface/fleet_queue.lua` remains the optional legacy column. Both use
   `interface/fleet_reader.lua` over the same records `fleet queue list` reads.
@@ -441,6 +450,13 @@ a second copy — read the skill before you run any of it:
    A `needs-human` rule there (a path glob or a label) holds a change the gates
    would merge and reports `needs a human: <rule>` instead.
    Squash is the only method it merges by. `--dry-run` first.
+   It also **adopts sessions fleet did not spawn**: every local thurbox session
+   that is not the lead, is held by no task, and sits on a branch with an open
+   change request is classified the same way and, for a condition shepherd
+   acts on, sent ONE line pointing at a brief — at rest only, once per
+   condition per head, and never a fixer or a merge of its own. Every pass
+   records each watched PR's state in `orchestration/shepherd/prs.json`;
+   `fleet queue prs` prints it.
 8. **A worker that hits its agent's token limit does not fail — it sits, and
    nothing above ever notices.** `fleet queue refuel` is a fifth thing: the
    account's shared quota window first, and a restart only when a stale
@@ -470,8 +486,10 @@ nothing asked it down". Four things about it are load-bearing:
   directory above holds the rest. It calls exactly `watch`, `collect`,
   `shepherd`, `refuel` and the read-only `plan`, and `tests/reconcile/` asserts
   that the set is those five and argues in place why a READ may join it while
-  `dispatch` never may. Outside the queue it touches one thing: the checkout,
-  through `sync-checkout`, which only fast-forwards a clean default branch.
+  `dispatch` never may. Adopting outside sessions and writing the PR-state
+  store are `shepherd`'s own, so the loop gains no verb and no writer.
+  Outside the queue it touches one thing: the checkout, through
+  `sync-checkout`, which only fast-forwards a clean default branch.
 - **It reconciles; it does not decide.** No dispatch, no cancel, no reorder,
   and it does not re-decide `refuel`'s rule about a spent quota window.
 - **It tells the lead when the ready set grows, or a worker stalls**, and once

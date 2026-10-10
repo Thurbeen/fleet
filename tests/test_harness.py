@@ -132,7 +132,7 @@ def test_isolated_env_defeats_the_hostile_host(tmp_path, stub_bin):
 
     queue = Path(env["FLEET_QUEUE_DIR"])
     assert queue.is_dir() and not queue.is_relative_to(REPO)
-    for var in ("FLEET_RUNS_DIR", "FLEET_RECONCILE_DIR"):
+    for var in ("FLEET_RUNS_DIR", "FLEET_RECONCILE_DIR", "FLEET_SHEPHERD_DIR"):
         assert Path(env[var]).is_dir() and not Path(env[var]).is_relative_to(REPO)
     assert not Path(env["FLEET_REGISTRY_FILE"]).exists()
     example_confs = sorted(p.name for p in (REPO / "orchestration").glob("*.example.conf"))
