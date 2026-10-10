@@ -81,7 +81,7 @@ def test_one_row_per_task(wide):
     # account holds two, and the detail row that named only the binding one is
     # gone, so the block costs one row more for the same reading.
     rows = [line for line in wide.splitlines() if line]
-    assert len(rows) <= 27, f"the whole queue costs {len(rows)} rows\n{wide}"
+    assert len(rows) <= 29, f"the whole queue costs {len(rows)} rows\n{wide}"
 
 
 def test_finished_work_weighs_less(wide):
@@ -474,3 +474,10 @@ def test_the_marks_and_the_page_actions_page_the_window():
 def test_column_and_fleet_selection_render_without_state_writes():
     render("44", "--readonly-state")
     render("44", "--readonly-state", "--leads", "two-named", "--selected", "s2,w9")
+
+
+@pytest.mark.parametrize('width', ['44', '30'])
+def test_review_link_and_missing_state_are_drawn(width):
+    out = render(width, '--review', 'https://review.example/reviews/change', '--roles')
+    expect(out, 'review: ', 'url:https://review.example/reviews/change')
+    expect(render(width), 'review: missing')

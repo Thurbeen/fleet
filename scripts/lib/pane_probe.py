@@ -15,7 +15,7 @@ THE FORMAT, tab-separated because a tab is the one character no field carries:
   T <topic slug> <topic title>
   K <id> <state> <title> <outcome> <artifact> <blockers> <brief> <events>
     <result> <branch> <moved-at, epoch seconds> <publish-method>
-    <publish-state> <publish-at, epoch seconds>
+    <publish-state> <publish-at, epoch seconds> <review>
 
 `<blockers>` is `ref|kind` pairs, comma separated. A CONDITION rides in the
 same field behind a `!` no task ref can begin with, flattened of the `,` and
@@ -127,7 +127,9 @@ def task_record(task_dir: str, doc: dict) -> str:
         str(events),
         "1" if os.path.isfile(os.path.join(task_dir, "result.md")) else "0",
         flat(doc.get("branch")), str(epoch(moved)),
-        flat(publish.get("method")), flat(publish.get("state")), str(epoch(publish.get("at"))),
+        flat(publish.get("method")), flat(publish.get("state")), str(epoch(publish.get("at"))), flat(next((e["url"] for e in fleetqueue.artifact_entries(
+            doc.get("review_url"), str(doc.get("repo") or "")
+        ) if e["url"]), "")),
     ])
 
 

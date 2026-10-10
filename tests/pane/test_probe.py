@@ -7,13 +7,17 @@ said nothing, as a failure.
 
     R <root>   E <what went wrong>   A <archived topics>   T <slug> <title>
     K <id> <state> <title> <outcome> <artifact> <blockers> <brief> <events>
-      <result> <branch> <moved-at> <publish-method> <publish-state> <publish-at>
+      <result> <branch> <moved-at> <publish-method> <publish-state> <publish-at> <review>
 """
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
+
+import pytest
+import yaml
+from panekit import REAL_LUA
 
 from harness import PYTHON, REPO, run, write
 from harness import run_queue as q
@@ -58,7 +62,7 @@ def test_every_live_task_is_one_record_and_an_archived_topic_only_a_count(tmp_pa
     assert records[-1] == ["A", "1"]
 
     tasks = {r[1]: r for r in records if r[0] == "K"}
-    assert all(len(r) == 15 for r in tasks.values())
+    assert all(len(r) == 16 for r in tasks.values())
     one = tasks["01-first"]
     assert one[2:4] == ["queued", "The first task"]
     assert one[6:10] == ["", "1", "2", "1"]
@@ -71,3 +75,36 @@ def test_every_live_task_is_one_record_and_an_archived_topic_only_a_count(tmp_pa
 
 def test_a_queue_that_is_not_there_is_an_E_record_and_exit_0(tmp_path):
     assert probe(FLEET_QUEUE_DIR=str(tmp_path / "nowhere"))[0][0] == "E"
+
+
+def test_review_is_appended_to_the_probe_record(tmp_path):
+    topic = ok(q("topic", "add", "reviews", "--prompt", "p")).stdout.strip()
+    ok(q("add", topic, "linked", "--title", "Linked review", "--repo", str(tmp_path / "repo"),
+         "--branch", "fix/linked"))
+    task = Path(os.environ["FLEET_QUEUE_DIR"]) / topic / "01-linked"
+    with open(task / "task.yaml", "a", encoding="utf-8") as fh:
+        fh.write("review_url: https://review.example/reviews/change\n")
+    record = next(r for r in probe() if r[0] == "K")
+    assert record[15] == "https://review.example/reviews/change"
+
+
+@pytest.mark.skipif(not REAL_LUA, reason="requires lua")
+@pytest.mark.parametrize('legacy_review', ['', 'https://review.example/reviews/legacy'])
+def test_board_metadata_preserves_the_collected_review_link(tmp_path, legacy_review):
+    root = Path(os.environ['FLEET_QUEUE_DIR'])
+    write(root / 'sample' / 'topic.yaml', 'title: Sample\n')
+    review = 'https://review.example/reviews/published'
+    write(root / 'sample' / '01-work' / 'task.yaml', yaml.safe_dump({
+        'id': '01-work', 'state': 'done', 'title': 'Work',
+        'artifact': 'https://github.com/example/project/pull/2',
+        'review_url': review, 'review': legacy_review,
+    }))
+    records = ok(run([*PYTHON, str(PROBE)])).stdout
+    script = tmp_path / 'read.lua'
+    write(script, '''package.preload["lib.theme"] = function() return {} end
+local reader = dofile("interface/fleet_reader.lua")
+local model = reader.model_for(io.read("*a"))
+print(model.topics[1].tasks[1].review)
+''')
+    rendered = ok(run([REAL_LUA, str(script)], stdin=records))
+    assert rendered.stdout.strip() == review

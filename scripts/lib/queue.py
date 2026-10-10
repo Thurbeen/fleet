@@ -129,6 +129,15 @@ source that could not be read is `not checked` rather than a silent no.
 section below: the change request outlives the task, and a worker that hits its
 agent's token limit SITS rather than failing.
 
+REVIEW LINKS ARE OPTIONAL RECORD EVIDENCE. `collect` copies the scalar
+`review:` URL (or per-repository `reviews:`) from result.md into `review_url`,
+including refreshed links on concluded tasks.
+Unchanged completed results and archived results are not parsed again;
+`collect --refresh-reviews` fetches completed remote results on demand.
+Old records need no migration; views report `review: missing`. It never gates
+artifact verification or landing. Fleet stores the URL in ignored records;
+the installed review workflow owns any forge posting.
+
 THE RUN LOG IS PRODUCED, NOT REMEMBERED. `topic add` opens
 `orchestration/runs/<opened>-<topic>.md` from the tracked _TEMPLATE.md;
 `dispatch`, `collect` and `shepherd` rewrite a fenced block inside it from the
@@ -185,11 +194,11 @@ Usage:
   uv run fleet queue send <ref> 'one line'  # message a task's worker, and
                        RECORD that you did
   uv run fleet queue watch [--for-secs N] # fold transitions in; close nothing
-  uv run fleet queue collect [--allow-unverified] [--no-reap]  # read results,
+  uv run fleet queue collect [--allow-unverified] [--no-reap] [--refresh-reviews]
                        close what is done; --allow-unverified closes one whose
                        artifact failed the publish check, after you have
                        judged that artifact; --no-reap leaves every session
-                       alone
+                       alone; --refresh-reviews fetches completed remote results
   uv run fleet queue reap [--dry-run]     # land what merged, release its session;
                        retire what closed unmerged or whose session vanished,
                        and free the build output a vanished session left
@@ -1615,6 +1624,31 @@ def artifact_text(task) -> str:
     return " ".join(str(a["url"]) for a in recorded_artifacts(task) if a["url"])
 
 
+def review_entries(task) -> list[dict]:
+    """Review evidence uses the artifact's scalar-or-per-repository shape."""
+    return artifact_entries(task.doc.get("review_url"), str(task.doc.get("repo") or ""))
+
+
+def review_text(task) -> str:
+    entries = review_entries(task)
+    if len(entries) == 1:
+        return entries[0]["url"] or "missing"
+    return "; ".join(f"{e['repo']}: {e['url'] or 'missing'}" for e in entries)
+
+
+def reported_reviews(task, meta):
+    plural = meta.get("reviews")
+    if isinstance(plural, dict) and len(task_repos(task)) > 1:
+        return [{"repo": u["path"], "url": review_address(next(
+            (url for path, url in plural.items() if same_path(str(path), u["path"])), ""
+        ))} for u in task_repos(task)]
+    return review_address(meta.get("review"))
+
+
+def review_address(value) -> str:
+    return value.strip() if isinstance(value, str) else ""
+
+
 def artifact_value(rows: list[dict]):
     """What goes onto the record as `artifact:`.
 
@@ -2538,7 +2572,11 @@ def render_brief(task: Task, topic: dict, body: str | None) -> str:
     # have to move together: every brief points its worker there rather than
     # restating the contract, so a change in one place and not the other is how
     # they drift.
+    review_contract = "review: <published thurview page URL for pr, attested or push; otherwise omit>"
     if spans and method in PER_REPO_METHODS:
+        review_contract = "reviews:\n" + "\n".join(
+            f"  {u['path']}: <published thurview page URL>" for u in task_repos(task)
+        )
         artifact_contract = "artifacts:\n" + "\n".join(
             f"  {u['path']}: <{spec['artifact']}>" for u in task_repos(task)
         ) + "\n  # a repository that needed nothing: no change needed — <why>"
@@ -2600,6 +2638,7 @@ with exactly this shape:
 ---
 outcome: shipped | stuck | failed | not-applicable
 {artifact_contract}
+{review_contract}
 ---
 A short paragraph: what you actually did, and anything the lead must know.
 ```
@@ -5138,9 +5177,9 @@ def cmd_collect(args) -> int:
     held = 0
     artifacts = 0
     for task in sorted(q.tasks.values(), key=lambda t: t.ref):
-        path = task.file("result.md")
-        if task.state in CONCLUDED_STATES and task.state not in REREAD_STATES:
+        if q.topics[task.topic].get("archived") or task.state in ("landed", "abandoned"):
             continue
+        path = task.file("result.md")
 
         # The remote transport, and the whole of it. A worker on another machine
         # wrote its result into its own worktree; this pulls that file into the
@@ -5148,7 +5187,10 @@ def cmd_collect(args) -> int:
         # and neither knows nor cares which machine wrote it. Nothing is closed
         # here: a result that could not be fetched leaves the task exactly as a
         # missing local one does.
-        if task.doc.get("host") and task.state in ("dispatched", *REREAD_STATES):
+        if task.doc.get("host") and (
+            task.state in ("dispatched", *REREAD_STATES)
+            or (task.state == "done" and args.refresh_reviews)
+        ):
             note = pull_remote_result(task)
             if note:
                 print(f"    {task.ref}  {note}")
@@ -5163,6 +5205,11 @@ def cmd_collect(args) -> int:
         # replacement character rather than refused, since the frontmatter is
         # ASCII and the body is only ever quoted.
         try:
+            stat = os.stat(path)
+            result_stamp = [stat.st_mtime_ns, stat.st_size]
+            # Waiting for the forge needs no repeated read of the same evidence.
+            if task.state == "done" and not args.refresh_reviews and task.doc.get("review_result") == result_stamp:
+                continue
             with open(path, encoding="utf-8", errors="replace") as fh:
                 meta, body = parse_result(fh.read())
         except (OSError, yaml.YAMLError) as exc:
@@ -5176,8 +5223,6 @@ def cmd_collect(args) -> int:
             )
             continue
         outcome = str(meta.get("outcome", "")).strip()
-        if task.state in REREAD_STATES and outcome == task.doc.get("outcome"):
-            continue  # the verdict it concluded on; nothing new to read
         if outcome not in OUTCOMES:
             print(
                 f"    {task.ref}: result.md has outcome {outcome!r}; expected one of "
@@ -5185,6 +5230,15 @@ def cmd_collect(args) -> int:
                 file=sys.stderr,
             )
             continue
+        review = reported_reviews(task, meta)
+        if task.doc.get("review_url", "") != review or task.doc.get("review_result") != result_stamp:
+            task.doc["review_url"] = review
+            task.doc["review_result"] = result_stamp
+            task.save()
+        if task.state in CONCLUDED_STATES and task.state not in REREAD_STATES:
+            continue
+        if task.state in REREAD_STATES and outcome == task.doc.get("outcome"):
+            continue  # the verdict it concluded on; nothing new to read
         method, _how = task_publish(task)
         # ONE ROW PER REPOSITORY THIS TASK SPANS, and exactly one for the task
         # that spans none — which is why everything below reads the same for a
@@ -5275,7 +5329,7 @@ def cmd_collect(args) -> int:
             line += "  [publish NOT verified — closed by --allow-unverified]"
         elif verdict == "unknown":
             line += f"  [publish unchecked: could not check — {detail}]"
-        print(line)
+        print(line + f"  review: {review_text(task)}")
         first = body.splitlines()[0] if body.splitlines() else ""
         if first:
             print(f"        {first}")
@@ -9441,15 +9495,15 @@ def run_facts(q: Queue, slug: str) -> str:
 
     if tasks:
         lines += [
-            "| Task | Where it runs | Branch | State | Artifact |",
-            "|---|---|---|---|---|",
+            "| Task | Where it runs | Branch | State | Artifact | Review |",
+            "|---|---|---|---|---|---|",
         ]
         for t in tasks:
             d = t.doc
             state = "waiting" if t.state == "queued" and not q.is_ready(t) else t.state
             lines.append(
                 f"| `{t.id}` — {cell(d.get('title'))} | `{cell(where_it_runs(t))}` "
-                f"| `{cell(d.get('branch'))}` | {state} | {cell(artifact_text(t))} |"
+                f"| `{cell(d.get('branch'))}` | {state} | {cell(artifact_text(t))} | review: {cell(review_text(t))} |"
             )
         held = sorted({(t.id, blocker_condition(bl) or bl.get("task") or "",
                         bool(blocker_condition(bl)), bl["kind"], bl["why"])
@@ -9965,7 +10019,8 @@ def cmd_list(args) -> int:
         print(f"{topic} — {meta.get('title', '')}{flag}")
         for t in tasks:
             mark = "waiting" if t.state == "queued" and not q.is_ready(t) else t.state
-            extra = t.doc.get("artifact") or t.doc.get("session") or ""
+            extra = artifact_text(t) or t.doc.get("session") or ""
+            extra += f"  review: {review_text(t)}"
             # The publish state, with the age of the look that produced it —
             # the same field the pane draws, so the two views cannot
             # disagree about what was last seen.
@@ -10025,6 +10080,7 @@ def cmd_show(args) -> int:
     # A scalar prints as itself, which is every record written before a task
     # could span repositories and every single-repository task since. A plural
     # one prints a line per repository rather than a Python list.
+    print(f"    review: {review_text(task)}")
     entries = recorded_artifacts(task)
     if len(entries) == 1:
         print(f"    {'artifact:':<12} {entries[0]['url']}")
@@ -10443,6 +10499,10 @@ def build_parser() -> argparse.ArgumentParser:
     w.set_defaults(func=cmd_watch)
 
     c = sub.add_parser("collect", help="read the results workers wrote")
+    c.add_argument(
+        "--refresh-reviews", action="store_true",
+        help="refresh completed live tasks' reviews, fetching remote results on demand",
+    )
     c.add_argument(
         "--no-reap",
         action="store_true",

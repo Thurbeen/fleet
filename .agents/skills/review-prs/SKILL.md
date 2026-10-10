@@ -1,6 +1,6 @@
 ---
 name: review-prs
-description: Stand up and drive a maintainer's review session over a repository's open change requests — find what is unreviewed, wait for CI, read the diff against the repo's own house rules, post approve / request-changes / comment to the forge, squash-merge what is genuinely clean, and reconcile the issue tracker behind it — what the merge actually closed, what it only narrowed, what nobody linked. Covers the head-SHA marker that stops re-reviewing the same commit, the skip rules for drafts and bots, verifying a claim on real hardware before approving it, the merge gate, and never closing an issue on a guess. Use when asked to review open PRs or MRs, to review a repository's pull requests continuously, to tidy up or close out the issues after a merge, or when invoked as /review-prs.
+description: Drive a maintainer's recurring review session — pick unreviewed open PRs or MRs, wait for CI, load the installed thurview-pr-review skill for review and posting, follow requests until merge, apply fleet's squash-merge gates and auto-merge.conf, and reconcile the issue tracker. Use when asked to review a repository's open change requests continuously, to reconcile issues after merges, or when invoked as /review-prs.
 user-invocable: true
 allowed-tools: Read, Bash, Glob, Grep
 ---
@@ -10,9 +10,9 @@ allowed-tools: Read, Bash, Glob, Grep
 The maintainer's side of review: somebody else's change request, arriving on
 a repository you own, needing a verdict. It runs on a cadence, because a
 change request that waits a day for a first opinion is the expensive kind of
-waiting. The distinguishing property is **inbound and recurring**: bugs in
-the diff you are writing is `/code-review`, your own branch through a gate is
-the `publish` skill, and a guided document a human annotates is `thurview`.
+waiting. **Fleet picks, waits, merges and records; the installed
+`thurview-pr-review` skill reviews and posts.** Load that skill for every PR
+or MR this session picks up. Do not reproduce its review format here.
 
 ## The loop
 
@@ -22,12 +22,12 @@ the `publish` skill, and a guided document a human annotates is `thurview`.
    reviewed (§2).
 3. For each one left: wait for CI to conclude — leave it if anything is
    pending (§3).
-4. Read the diff, the body, and the repo's own rules for the paths touched
-   (§4).
-5. Verify the load-bearing claims, on real hardware where that is what it
-   takes (§5).
-6. Post approve / request-changes / comment, opening with the next step (§6).
-7. Merge the approved ones that clear every gate — squash only (§7).
+4. Load `thurview-pr-review`, passing the repository's rules and verification
+   constraints (§4–§6). It owns review and posting.
+5. Keep each picked request under that skill's follow flow until it merges,
+   closes or is explicitly stopped (§6).
+6. On each tick, reconsider CI and fleet's merge gates for followed requests.
+7. Merge only where allowed and every gate clears — squash only (§7).
 8. Reconcile the tracker against what the forge actually closed (§8).
 9. Report one line per change request and per issue you touched (§9).
 
@@ -45,7 +45,9 @@ names two repositories once two forges are in play.
 | what is open | `gh pr list --repo <owner/repo> --state open --json number,title,author,isDraft,headRefOid,reviews` | `glab mr list -R <project url> -F json` |
 | did CI conclude | `gh pr checks <n> --repo <owner/repo>` | `glab ci status -R <project url> -b <branch>` |
 | the change | `gh pr view <n> …` / `gh pr diff <n> …` | `glab mr view <n> -R <project url> -F json` / `glab mr diff <n> -R <project url>` |
-| the verdict | `gh pr review <n> --approve / --request-changes / --comment` | `glab mr approve <n>` / `glab mr note <n> -m …` |
+
+Review posting on either forge belongs to the installed `thurview-pr-review`
+skill and its own forge adapter, not fleet's `scripts/lib/forge.py`.
 
 ## 1. Give it its own session, and its own worktree
 
@@ -103,7 +105,7 @@ Then send one line pointing at this file, and set the cadence. In Claude Code
 that is `/loop`:
 
 ```text
-/loop 15m Review open change requests on <owner/repo> — follow .agents/skills/review-prs/SKILL.md
+/loop 15m Review open change requests on <host/path> — read <absolute path to this SKILL.md> and load the installed thurview-pr-review skill for each picked PR or MR
 ```
 
 15 minutes fits CI: shorter and most ticks find a run still going, much
@@ -116,10 +118,11 @@ authors** — Renovate, Dependabot, any `is_bot` (a dependency bump's verdict
 is its CI run), and **anything whose CURRENT head SHA already carries your
 review**.
 
-That last rule is why the cadence is cheap, and it is keyed on the head SHA:
-a review is about the code it saw. When the author pushes, the SHA moves and
-the change request comes back into the queue by itself. Keying on the number
-would review each one once and then go blind to every revision.
+Read the reviewed-head marker through the installed skill's status command;
+do not invent another marker or parse another review format. The head-SHA
+rule skips a redundant review pass, **not following or merge checks** on a
+request already picked up. Keep that watch set until merge, closure or an
+explicit stop. The installed skill owns what to review after each push.
 
 ## 3. Wait for CI. Always
 
@@ -128,7 +131,7 @@ has to be retracted when a check goes red. If anything is still pending,
 leave it for the next tick and say "checks still running" in the tick report.
 Checks that are `SKIPPED` are concluded; checks that never started are not.
 
-## 4. Read the change, and read the house rules with it
+## 4. Give the review the repository's own rules
 
 The diff alone does not tell you whether a change is acceptable *here*. Read
 what the repository says about itself **for the paths this change touches**:
@@ -136,11 +139,8 @@ its own review rules, its `CLAUDE.md` / `AGENTS.md` / `CONTRIBUTING.md`, and
 any convention the touched subsystem documents in its header. Checking
 something else is noise.
 
-**Verify load-bearing claims rather than believing them.** "This now costs
-two subprocesses instead of nine" is testable in a minute, and finding the
-one place a claim does not hold is worth more than ten style notes. **Prefer
-one real defect to a list of nits**: a review that opens with four naming
-preferences buries the bug, and the author reads the first two.
+Pass those rules into the installed review flow. Its evidence and findings
+contracts govern the review; this file adds no second format.
 
 ## 5. When a verdict needs hardware you do not have
 
@@ -149,35 +149,47 @@ thing rather than approving on the author's word — a host the operator has
 told you about, driven as `thurbox-session` §1a describes, or the repo's own
 CI where the run covers it. **Do the check first and post one review carrying
 its result**: two reviews on one SHA read as indecision. If neither is
-available, say so in the review — the platform you could not reach and what
-you would have run. An honest gap is fine to post; a silent one is not.
+available, give the installed skill the platform you could not reach and what
+you would have run. Do not call that claim verified or merge on its strength.
 
-## 6. Post it
+## 6. Load thurview-pr-review and follow each request
 
-Whatever standing writing rules your agent loads govern every word and
-outrank this section. What review itself requires where those are silent:
-**open with the next step** (who must act, in the first line); **one point
-per comment, anchored to its line**; **mark non-blocking as non-blocking**,
-so `request-changes` means one thing; **three to five lines**.
+Load and run the **installed `thurview-pr-review` skill** on each picked PR
+or MR URL. Follow its complete publishing preflight, review and posting flow.
+It owns the summary, finding threads, published page link and re-review on
+push; fleet adds none of those itself. Apply the operator's writing and
+sharing rules before it posts on their behalf.
 
-**When a review is genuinely uncertain, post nothing and say so in the tick
-report.** An unreviewed change request is a known state; a confidently wrong
-approval is the one failure here that costs more than doing nothing.
+**Missing skill or publish config:** report what is missing and the relevant
+setup instructions the skill or CLI prints; do not fall back to a different
+format, a hand-written comment or a private live URL. If the skill is absent,
+report that `thurview skill` must list `thurview-pr-review` before proceeding.
+Leave that request unreviewed and do not merge it; continue independent work.
+
+Keep following every picked request until merge, closure or an explicit stop;
+do not use `--once` to discard that duty. Interleave the skill's bounded waits
+and passes across the watch set so one open request does not prevent the
+session from picking up another. CI still governs each new head (§3). A head
+already reviewed needs no new pass, but remains eligible for merge-gate checks.
+Respect the installed skill's stopped state; do not restart it on a guess.
 
 ## 7. Merge what is clean
 
-The operator's ask to review a named repository is the authorisation to merge
-there — not `orchestration/auto-merge.conf`, which is the list for the
-UNATTENDED path (`fleet queue shepherd`). **Squash is the only method fleet
-merges by**, so the title becomes the commit; a project that forbids squash
-(GitLab's `squash_option: never`) is one you report and leave.
+Merging is fleet's decision after the installed review pass, never an action
+of `thurview-pr-review`. Read `orchestration/auto-merge.conf` in the
+control-plane checkout (the tracked example names none); the repository must
+be allowed there. Honor any stricter operator rule, including manual UI
+validation or a repository they merge themselves. **Squash only**, so the
+title becomes the commit; a project that forbids squash (GitLab's
+`squash_option: never`) is one you report and leave.
 
 Merge only when every one of these holds — they are `shepherd`'s gates, and
 there is no reason for a second, weaker set:
 
 | Gate | Why it is not optional |
 |---|---|
-| you just approved it, on this head SHA | merging something you did not review is not review |
+| the installed review reports safe to merge on this head, with no open findings | an older verdict or unanswered finding cannot authorize this head |
+| any forge-required maintainer approval is present | the skill's confidence does not cast a forge approval |
 | every check concluded and passed | a pending check is not a passing one |
 | the forge reports it mergeable | a conflicting change needs its author |
 | the head branch is **in the repository**, not a fork | the one claim a stranger cannot write for themselves |
@@ -195,8 +207,8 @@ asked for in exactly the syntax it wanted. **Scope: the issues the change
 requests in front of you touch** — the ones a body names, and the ones you can
 see a merged change fixed. Not a triage sweep: on a public repository a
 reviewer forming opinions about strangers' unrelated reports is a way to be
-wrong in public. An issue comment is writing you publish, so §6's first
-paragraph governs it.
+wrong in public. An issue comment is writing you publish, so the operator's
+standing writing rules govern it.
 
 | Ask | GitHub | GitLab |
 |---|---|---|

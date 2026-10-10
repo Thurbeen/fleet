@@ -36,7 +36,8 @@ local evidence paths, or anything read from the control plane's own records
 and configuration. Describe what was measured, not which machine it was
 measured on. Search your diff and your text for such details before you push
 or post. The operator's `OPERATOR.md`, when your brief names one, lists the
-concrete terms.
+concrete terms. Keep interactive review addresses private; the installed
+review workflow owns publication of a shareable snapshot.
 
 ## You share the machine
 
@@ -151,6 +152,58 @@ default behind it is the operator's, in `orchestration/publish.conf`, and this
 file no longer carries one — it is tracked, and a tool name here would be one
 operator's pipeline shipped to every clone.
 
+## Get the review through thurview-pr-review
+
+A worker publishing a change request (`pr`, `attested`, or a `push` with a
+change request) loads and runs the installed **`thurview-pr-review` skill**
+on its URL after opening it. Complete the skill's publishing preflight,
+review, page publication and posting flow for the final head. A worker may
+use its `--once` handover; fleet's `review-prs` session follows requests until
+merge. After every later push, run that same flow on the new head and keep
+result.md current.
+
+**Missing skill or publish config:** report the setup instructions the skill
+or CLI prints and what is missing; do not fall back to another review format,
+a hand-written summary or a private live URL. If the skill is not installed,
+report that `thurview skill` must list `thurview-pr-review` before proceeding.
+Leave the review missing until setup succeeds; an otherwise verified artifact
+still collects. The installed skill owns the review, posting and push-following
+rules. Fleet owns selection, CI waiting, merge gates and records.
+
+Publishing targets, repository scope (`allow_remotes` / `deny_remotes`) and
+public-repository link eligibility belong to thurview's publishing setup,
+not a fleet setting. Follow those checks and the operator's sharing rules.
+Never put the interactive live-server address in a public body or comment.
+Read the operator's writing rules before the installed skill posts on their
+behalf. Use the **published page link returned by that flow** in result.md:
+
+```yaml
+review: <published thurview page URL>
+```
+
+For a task spanning repositories, run the flow per change request and use a
+`reviews:` mapping keyed by repository path, alongside `artifacts:`. Missing
+reviews show `review: missing` and never block collection. Collect refreshes
+completed live tasks when their local result changes; an explicit
+`fleet queue collect --refresh-reviews` also fetches completed remote results.
+Archived results are skipped. The reader can export the review
+for another agent when the installed workflow provides its Markdown export.
+
+A direct push with no change request is a commit-range review: use the
+installed `thurview` skill and its publishing workflow, report the published
+page link, and create no forge summary for a request that does not exist.
+This is the range entrypoint, not a fallback for a failed PR/MR review.
+
+## Keep the review reachable through landing
+
+Keep the published page, its retained snapshot archive and the publishing
+store available until the task lands; follow the installed workflow's
+retention rules. Use a persistent THURVIEW_HOME outside the worker worktree.
+The interactive server is detached and the store is user-level; session
+release removes neither. Live code peeks still need the source worktree,
+which fleet retains until landing. Do not delete that worktree or stop the
+server while the change is open; a host restart needs the server restarted.
+
 ## Every review gets an answer
 
 Before you write `result.md`, and again after every push, read every review,
@@ -184,6 +237,7 @@ this shape:
 ---
 outcome: shipped | stuck | failed | not-applicable
 artifact: <PR URL, commit URL for a `push` task, note URL for a `note` task, the document's URL for a `served` task, or omit>
+review: <published thurview page URL for pr, attested or push; otherwise omit>
 ---
 A short paragraph: what you actually did, and anything the lead must know.
 ```
@@ -199,6 +253,9 @@ outcome: shipped
 artifacts:
   /home/you/code/thurbox: https://github.com/owner/thurbox/pull/41
   /home/you/code/fleet: https://github.com/owner/fleet/pull/12
+reviews:
+  /home/you/code/thurbox: <published thurview page URL>
+  /home/you/code/fleet: <published thurview page URL>
 ---
 ```
 

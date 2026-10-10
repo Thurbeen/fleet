@@ -112,7 +112,7 @@ local FUEL_TIMEOUT = 30
 ---   T <topic slug> <topic title>
 ---   K <id> <state> <title> <outcome> <artifact> <blockers> <brief> <events>
 ---     <result> <branch> <moved-at, epoch seconds> <publish-method>
----     <publish-state> <publish-at, epoch seconds>
+---     <publish-state> <publish-at, epoch seconds> <review>
 ---
 --- `<blockers>` is `ref|kind` pairs, comma separated. The KIND travels with the
 --- ref because it is the whole reason the edge exists: `fleet queue block`
@@ -318,7 +318,11 @@ local function build_model(stdout)
       local task = topic.tasks[#topic.tasks]
       if f[2] == topic.slug .. "/" .. task.id then
         task.agent, task.host, task.session = f[3] or "", f[4] or "", f[5] or ""
-        task.review, task.publish_detail, task.threads = f[6] or "", f[7] or "", tonumber(f[8])
+        -- Collected evidence takes precedence over the board's legacy review field.
+        if task.review == "" then
+          task.review = f[6] or ""
+        end
+        task.publish_detail, task.threads = f[7] or "", tonumber(f[8])
       end
     elseif kind == "T" then
       local f = split_tabs(line)
@@ -332,6 +336,7 @@ local function build_model(stdout)
         title = scalar(f[4]),
         outcome = scalar(f[5]),
         artifact = scalar(f[6]),
+        review = scalar(f[16]),
         topic = topic.slug,
         blocked_by = edges(f[7] or ""),
         brief = f[8] == "1",

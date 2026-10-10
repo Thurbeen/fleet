@@ -693,6 +693,9 @@ local function task_rows(out, task)
   elseif task.artifact ~= "" then
     out[#out + 1] = { kind = "artifact", task = task }
   end
+  if task.review ~= "" or task.artifact ~= "" then
+    out[#out + 1] = { kind = "review", task = task }
+  end
 end
 
 --- The rows the pane would draw, as descriptors rather than spans.
@@ -1104,6 +1107,16 @@ local function draw(entry, width, spinner)
 
   if entry.kind == "note" then
     return line(note_spans(task, width))
+  end
+
+  if entry.kind == "review" then
+    local linked = task.review ~= ""
+    local text = "review: " .. (linked and task.review or "missing")
+    return line({
+      { text = "   " },
+      { text = widgets.truncate(text, math.max(1, width - 3)),
+        style = { fg = linked and theme.accent or theme.muted, underline = linked } },
+    }, linked and ("url:" .. task.review) or nil)
   end
 
   -- The publish row, carrying the artifact row's own click verb when there is

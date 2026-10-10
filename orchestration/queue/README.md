@@ -10,9 +10,10 @@ workers' results are not a thing to publish.
 your brief says and verify your own artifact, squash-merge, who merges, the
 gate, one-brief-one-worker, and the result contract. The default publish
 method is not in it — that is the operator's `orchestration/publish.conf`,
-because a tracked file must name no tool. Every `BRIEF.md` the scaffold
-writes points at it — by absolute path, or, for a
-task running on a remote host, by a path relative to the brief itself — rather
+because publishing tools are operator settings. The standing review policy
+names the installed `thurview-pr-review` skill explicitly. Every `BRIEF.md`
+the scaffold writes points at the policy — by absolute path, or, for a task
+running on a remote host, by a path relative to the brief itself — rather
 than restating it, so it is written once and cannot drift between briefs.
 **Task-specific detail still belongs in the brief**; only the repetition
 moved.
@@ -124,3 +125,26 @@ merged, because a blocker clears on `landed` and half a task on `main` would
 release a dependent onto code that is not there. Landing releases the
 task's session and worktree and stamps `task.yaml` with a `reaped: {session,
 how, at}` receipt, because the id it names no longer resolves to anything.
+
+## Review evidence
+
+Workers publishing changes report `review: <published page URL>` beside `artifact:`
+in result.md. `collect` records this as optional `task.yaml.review_url`;
+`review` already holds a served task's closure, so that field is preserved.
+Old records still load and the CLI, pane and run-log facts report
+`review: missing`. Review evidence never changes artifact verification or
+landing. A `reviews:` mapping beside `artifacts:` records a URL per repository
+as a list of `{repo, url}` under `review_url`; `show` and the run log name all
+of them and the pane links the first, as it does for artifacts.
+
+Completed live tasks refresh when their local result changes. The optional
+`review_result: [mtime_ns, size]` records which result was read; old records
+are read once to establish it. Archived results are skipped. Remote completed
+results are fetched only with `fleet queue collect --refresh-reviews`, after
+a worker changes its review, rather than on every reconciler pass.
+
+The installed `thurview-pr-review` skill owns PR/MR review and posting;
+fleet picks, waits, merges and records. See [POLICY.md](POLICY.md) for that
+handoff, missing-setup handling and review lifetime. The `review:` value is
+the published page link the skill returns. Publishing-target scope and public
+link eligibility belong to thurview's setup; fleet adds no parallel setting.
