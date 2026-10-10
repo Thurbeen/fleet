@@ -256,3 +256,17 @@ def test_the_brief_points_at_project_memory_and_the_results_it_waits_on(worked, 
     doc = parse_toon(context("repo", APP, "--task", "app-ci/03-follow-up").stdout)
     assert [r["task"] for r in doc["prior"]] == ["app-ci/02-fix-windows"], doc
     assert doc["prior"][0]["path"] == str(worked / "result.md")
+
+
+def test_a_fact_that_starts_with_a_dash_is_recorded_after_a_double_dash():
+    done = learn(APP, "--", "-O2 breaks the release build.")
+    assert done.code == 0, done.out
+    assert [read_fact(p)[1] for p in fact_files(APP)] == ["-O2 breaks the release build."]
+
+
+def test_the_briefs_placeholder_copied_verbatim_is_not_a_fact(worked):
+    """The brief shows `fact: "<one or two sentences>"`; a worker who copies it learned nothing."""
+    learned_result(worked, [{"repo": APP, "fact": "<one or two sentences>"}])
+    done = run_queue("collect")
+    assert done.code == 0, done.out
+    assert "learned[1]:" in done.out and fact_files(APP) == [], done.out

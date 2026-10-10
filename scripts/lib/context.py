@@ -7,7 +7,8 @@
     uv run fleet context repo <repo> [--task <ref>] [--all] [--full] [--fields replaces,at]
                                               a project's live facts and recent results (≤ 4 KB)
     uv run fleet context learn <repo> "<fact>" [--replaces <id>] [--source <src>]
-                                              record one fact; a repeat is `already`
+                                              record one fact; a repeat is `already`;
+                                              `--` before a fact that starts with `-`
 
 A FACT IS ONE FILE, CREATED ONCE AND NEVER EDITED:
 `registry/facts/<repo>/<id>.md`, YAML front matter (`id`, `repo`, `at`,
@@ -295,6 +296,9 @@ def clean_text(text) -> str:
     if not line:
         raise ContextError("empty_fact", "a fact needs some text", [f'Run `{fleet_command()} context learn '
                                                                     '<repo> "<fact>"`'])
+    if re.fullmatch(r"<[^<>]*>", line):
+        raise ContextError("empty_fact", f"{line} is the brief's placeholder, not a fact",
+                           ["Say what you learned in one or two sentences, or leave learned: out"])
     if len(line) > MAX_FACT_CHARS:
         raise ContextError("fact_too_long", f"a fact is one or two sentences, at most {MAX_FACT_CHARS} "
                            f"characters; this one is {len(line)}", ["Split it, or say only what was learned"])
@@ -766,6 +770,9 @@ def parse(argv: list) -> tuple[str, dict | None]:
     wants_help = False
     while rest:
         word = rest.pop(0)
+        if word == "--":
+            opts["args"] += rest
+            break
         if word in ("-h", "--help"):
             wants_help = True
             continue
