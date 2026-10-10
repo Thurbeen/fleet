@@ -22,6 +22,7 @@ GROUPS = {
     "queue": ("queue.py", "the task queue: topics, tasks, dispatch and completion"),
     "status": ("fleet_status.py", "one reading of the whole fleet"),
     "peers": ("peers.py", "every other fleet's queue, read-only, for the board"),
+    "context": ("context.py", "what fleet remembers: a project's facts, the lead's summary, learn a fact"),
     "watch": ("watch.py", "wait for a pipeline or change request to finish, a line per change"),
     "reconcile": ("reconcile.py", "the supervised loop that keeps the queue moving"),
     "check": ("check.py", "the gate: every check, or the named ones"),

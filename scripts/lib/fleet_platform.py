@@ -14,6 +14,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import secrets
 import shlex
 import shutil
@@ -273,28 +274,43 @@ def unique_temp(path: str) -> str:
     Every writer once used `<path>.tmp`, so two saving one record at once
     renamed each other's file away and the second `os.replace` raised
     FileNotFoundError. Beside the record, because a rename is only atomic
-    within one filesystem. Opened with "x" by the caller, so a collision fails
-    rather than shares, and the file is created under the umask like the record
-    it replaces — which `tempfile.mkstemp`'s 0600 would not be.
+    within one filesystem. Opened exclusively by the caller, so a collision
+    fails rather than shares, and the file is created under the umask like the
+    record it replaces — which `tempfile.mkstemp`'s 0600 would not be.
     """
     return f"{path}.{os.getpid()}.{secrets.token_hex(6)}.tmp"
 
 
-def create_record(path: str, text: str) -> bool:
+def create_record(path: str, text: str, mode: int = 0o666) -> bool:
     """Create `path` holding `text`, or leave it untouched if it exists. True when created.
 
     The text is written to a unique temp file and linked into place, and a
-    link fails rather than replaces, so a reader never sees half of it and an
-    existing file — somebody's prose — is never overwritten.
+    link fails rather than replaces, so a reader never sees half of it, an
+    existing file — somebody's prose, a fact — is never overwritten, and any
+    number of writers racing for one name need no lock: exactly one wins.
+    `mode` is the file's permission bits under the umask, as for `open`: the
+    default leaves a run log as readable as any record, and a fact asks for
+    0600. Windows: NTFS links too; where a volume cannot, `os.rename` is the
+    fallback, which on Windows refuses an existing target instead of replacing
+    it. POSIX keeps the link alone, because its rename replaces.
     """
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     tmp = unique_temp(path)
     try:
-        with open(tmp, "x", encoding="utf-8", newline="\n") as fh:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+        with open(fd, "w", encoding="utf-8", newline="\n") as fh:
             fh.write(text)
         try:
             os.link(tmp, path)
         except FileExistsError:
             return False
+        except OSError:
+            if not WINDOWS:
+                raise
+            try:
+                os.rename(tmp, path)
+            except FileExistsError:
+                return False
         return True
     finally:
         with contextlib.suppress(OSError):
@@ -570,6 +586,57 @@ def _windows_alive(pid: int) -> bool:
         return k32.WaitForSingleObject(wintypes.HANDLE(handle), 0) == wait_timeout
     finally:
         k32.CloseHandle(wintypes.HANDLE(handle))
+
+
+# --- TOON ---------------------------------------------------------------------
+#
+# What an agent reads from an AXI surface (`fleet context`): JSON repeats every
+# key on every row, and TOON states a list's keys once. Not an OS difference,
+# but the one encoder every surface shares, with the standard library alone, so
+# it lives with the other things every module shares rather than in one caller.
+
+_TOON_NUMBER = re.compile(r"^-?(?:\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|\.\d+)$")
+_TOON_ESCAPES = {"\\": "\\\\", '"': '\\"', "\n": "\\n", "\r": "\\r", "\t": "\\t"}
+
+
+def toon_value(value) -> str:
+    """One scalar, quoted only where TOON needs it: a reader must get the same string back."""
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    text = str(value)
+    plain = (
+        text
+        and text == text.strip()
+        and text not in ("true", "false", "null")
+        and not _TOON_NUMBER.match(text)
+        and not text.startswith("-")
+        and not any(ch in text for ch in ':"\\[]{},')
+        and not any(ord(ch) < 32 for ch in text)
+    )
+    if plain:
+        return text
+    return '"' + "".join(_TOON_ESCAPES.get(ch, ch if ord(ch) >= 32 else " ") for ch in text) + '"'
+
+
+def toon_field(key: str, value) -> str:
+    """`key: value`."""
+    return f"{key}: {toon_value(value)}"
+
+
+def toon_list(key: str, values: list) -> str:
+    """`key[N]: a,b`: a list of scalars on one line."""
+    return f"{key}[{len(values)}]: " + ",".join(toon_value(v) for v in values)
+
+
+def toon_table(key: str, fields: list, rows: list) -> str:
+    """`key[N]{a,b}:` and one indented line per row: a list of records, keys stated once."""
+    lines = [f"{key}[{len(rows)}]{{{','.join(fields)}}}:"]
+    lines += ["  " + ",".join(toon_value(row.get(f, "")) for f in fields) for row in rows]
+    return "\n".join(lines)
 
 
 # --- `fleet paths` --------------------------------------------------------------

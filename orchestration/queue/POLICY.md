@@ -217,6 +217,24 @@ none, and that is fine. `shipped` is a claim that the artifact exists, so
 report it without one, or with something of the wrong shape, and the lead's
 `collect` holds your task open rather than trusting the word alone.
 
+**What you learned goes in the same file**, as an optional `learned:` list
+beside `outcome` — at most five entries, each one or two sentences about one
+repository, named the way your brief's **Project memory** line names it:
+
+```yaml
+learned:
+  - repo: github.com/owner/repo
+    fact: "Release builds need the `vendored` feature on Windows."
+    replaces: 20260912-topic-01-fix-1   # optional: the fact this one supersedes
+```
+
+`collect` files each entry as a fact the next worker on that repository is
+pointed at, with your task as its source, and never holds your task over a bad
+entry. Write what someone starting cold would need and could not see in the
+code; leave out what the code or its docs already say. A local worker can also
+record one mid-task: `uv run --project <checkout> fleet context learn <repo>
+"<fact>"`, the command your brief names.
+
 That file is what closes your task. Without it the lead sees only that a turn
 ended, which is not the same claim, so a task with no result file stays open
 however cleanly your session finished.

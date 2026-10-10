@@ -31,8 +31,8 @@ One worker session.
 
 ## Run
 
-1. Read `registry/context/<repo>.md` for goals and gotchas; fold the relevant
-   bits into the prompt.
+1. Run `uv run fleet context repo <repo>` for what earlier workers learned
+   and its narrative, if any; the brief already points the worker at it.
 2. `uv run fleet queue topic add` opens this run's log; write the goal into it
    now.
 3. Fast-forward `base` in the target repo, then `session create --parent

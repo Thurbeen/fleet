@@ -471,6 +471,13 @@ RELEASE uv run fleet queue reap [--dry-run]
 A remote task completes the same way: `collect` fetches its `result.md` over
 ssh into the task's own, and everything downstream sees a local file.
 
+A result may carry `learned:` — at most five one-line facts about a
+repository. `collect` files each as `registry/facts/<repo>/<id>.md` when the
+task concludes, prints `N facts recorded` or one `learned[n]: … — skipped`
+line per bad entry, and never holds a task over one. You review none of them:
+the next worker's brief points it at `uv run fleet context repo <repo>`, and
+`uv run fleet context` is your own capped summary after a restart.
+
 Your own thurbox mailbox holds two kinds of fleet mail, both posted with
 `--no-wake` when you were mid-turn or your input line was not empty: the
 reconciler's `fleet-ready` notice, when the ready set grew, and `fleet-stale`,
