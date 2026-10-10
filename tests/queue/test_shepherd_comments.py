@@ -158,8 +158,9 @@ def test_a_busy_worker_is_left_alone_until_it_is_at_rest(talk):
 def test_its_own_account_bots_and_answered_comments_are_not_sent(talk):
     talk.comment("I1", "renovate", "Bump the lockfile.", "2026-10-01T09:00:00Z", bot=True)
     talk.comment("I2", ME, "Done — rebased.", "2026-10-01T09:30:00Z")
-    # Answered: fleet's account posted after it.
-    talk.comment("I0", "reviewer", "Rebase please.", "2026-10-01T09:10:00Z")
+    # Answered: fleet's account replied to it in its own thread.
+    talk.thread("T1", "b.py", 3, ("C1", "reviewer", "Rebase please.", "2026-10-01T09:10:00Z"),
+                ("C2", ME, "Rebased.", "2026-10-01T09:15:00Z"))
     # A thread somebody resolved is answered too.
     talk.thread("T0", "a.py", 1, ("C0", "reviewer", "Typo.", "2026-10-01T09:20:00Z"), resolved=True)
     # An approval's thank-you is not a request.
@@ -173,6 +174,16 @@ def test_its_own_account_bots_and_answered_comments_are_not_sent(talk):
     text = talk.briefs()[-1].read_text(encoding="utf-8")
     expect(text, "rename the flag")
     refute(text, "Bump the lockfile", "Done — rebased", "Rebase please", "Typo.", "LGTM")
+
+
+def test_a_later_post_by_its_own_account_does_not_swallow_a_person_s_comment(talk):
+    """A reviewer comments, then fleet's account submits an empty review: the
+    comment is still unanswered, and is still delivered."""
+    talk.comment("I1", "reviewer", "Is this covered by a test?", "2026-10-01T10:00:00Z")
+    talk.review("R9", ME, "", "2026-10-01T10:30:00Z")
+    talk.comment("I2", ME, "Pushed a follow-up.", "2026-10-01T10:40:00Z")
+    expect(talk.pass_(), "comments sent: 1 new comment")
+    expect(talk.briefs()[-1].read_text(encoding="utf-8"), "Is this covered by a test?")
 
 
 def test_a_comment_record_does_not_hold_back_a_failing_check_fixer(talk):

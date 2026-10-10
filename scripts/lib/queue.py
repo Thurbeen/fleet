@@ -9326,16 +9326,16 @@ def unanswered_feedback(items: list, me: str, sent) -> list:
     Never the account fleet runs as — that is the worker's own reply, or the
     operator's `review-prs` reviewer, and sending a session its own words is
     how it ends up answering itself — and never a bot. A thread somebody
-    RESOLVED is answered. What resolves nothing is read by time instead: a
-    conversation comment or a review is answered once fleet's account has
-    posted at the top level after it, and a line comment once it has replied
-    later in the same thread. Without that, the first pass after this existed
-    would have re-sent every comment a worker already answered before it
-    wrote its result.
+    RESOLVED is answered, and so is a line comment fleet's account replied to
+    later IN THE SAME THREAD: that reply is about that comment and nothing
+    else. A conversation comment or a review has no such reply to point at,
+    so only `sent` answers it. Reading "fleet's account posted anything at the
+    top level after it" as an answer dropped a person's comment for good the
+    moment fleet's account left an empty review; re-sending, once, a comment
+    a worker had already answered before this existed is the cheaper error.
     """
     me = me.lower()
     mine = [f for f in items if f.author.lower() == me]
-    last_top = max((f.at for f in mine if f.kind != "inline" and f.at), default="")
     last_in: dict = {}
     for f in mine:
         if f.kind == "inline" and f.at:
@@ -9348,10 +9348,7 @@ def unanswered_feedback(items: list, me: str, sent) -> list:
             continue
         if f.kind == "review" and f.state not in COMMENT_REVIEW_STATES:
             continue
-        if f.kind == "inline":
-            if f.resolved or (f.at and f.at < last_in.get(f.thread, "")):
-                continue
-        elif f.at and f.at < last_top:
+        if f.kind == "inline" and (f.resolved or (f.at and f.at < last_in.get(f.thread, ""))):
             continue
         out.append(f)
     return sorted(out, key=lambda f: f.at)

@@ -618,8 +618,8 @@ sent its last comments, then a recorded fixer, then the task's own worker —
 only when that session's agent says it is at rest; a gone one is replaced by a
 fresh session on the branch, as a gone worker is for a failing check. Never
 sent: comments by the account fleet runs as (its own workers' replies, and
-your `review-prs` reviewer), bots, a resolved thread, and anything fleet's
-account answered after it. Each comment is sent once, by id, under
+your `review-prs` reviewer), bots, a resolved thread, and a line comment
+fleet's account replied to in that thread. Each comment is sent once, by id, under
 `shepherd_comments` on the task — kept apart from `shepherd`, so a comment
 delivery never holds back the fixer a failing check needs next. A comment
 changes neither the merge gates nor the board's word for the PR.
