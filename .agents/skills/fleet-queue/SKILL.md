@@ -848,7 +848,7 @@ write them while you still know them, if they are worth keeping.
 before the facts moved out still carries them between `fleet:facts` markers:
 an exact pair (each once, alone on its line, in order) is migrated into the
 facts file on its first refresh, and anything else is left alone and named —
-fix the markers by hand. Archived topics migrate only through
+fix the markers by hand (its facts file is still kept current). Archived topics migrate only through
 `uv run fleet queue run --all`. Run logs are gitignored, so machine paths and
 session ids are fine in them; `_TEMPLATE.md` beside them is tracked.
 

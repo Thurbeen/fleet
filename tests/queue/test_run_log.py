@@ -149,6 +149,17 @@ def test_a_marker_quoted_in_prose_leaves_the_whole_log_alone():
     assert path.read_text(encoding="utf-8") == before
 
 
+def test_a_malformed_log_still_gets_fresh_facts_beside_it():
+    """Leaving the lead's file alone is no reason to stop writing fleet's own."""
+    slug = topic("malformed-facts")
+    path = legacy(slug, above="Quoting `<!-- fleet:facts -->` here.\n\n")
+    before = path.read_text(encoding="utf-8")
+    ok(q("add", slug, "later", "--title", "Added later", "--repo", "/tmp/repo", "--branch", "fix/later"))
+    expect(ok(q("run")).out, "malformed")
+    expect(facts_file(path).read_text(encoding="utf-8"), "Added later")
+    assert path.read_text(encoding="utf-8") == before
+
+
 def test_markers_in_the_wrong_order_leave_the_whole_log_alone():
     """D2, reproduction 2: an end marker first used to drop everything after the begin."""
     slug = topic("swapped-markers")

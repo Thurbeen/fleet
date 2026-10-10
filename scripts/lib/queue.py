@@ -9619,7 +9619,8 @@ def refresh_run_log(q: Queue, slug: str, archived_too: bool = False) -> tuple[st
     exact one is MIGRATED once: the facts file is written, then the block is
     replaced by the link — only if the log still reads as it did when this
     began, so an edit saved meanwhile is kept and the next pass tries again.
-    A fence that is not exact is left alone and reported.
+    A fence that is not exact is left alone and reported, and the facts file
+    beside it is still kept current.
 
     An ARCHIVED topic is skipped unless `archived_too` (`run --all`): its
     records stopped moving, and a loop pass that rewrote every old log in the
@@ -9636,6 +9637,8 @@ def refresh_run_log(q: Queue, slug: str, archived_too: bool = False) -> tuple[st
             old = fh.read()
         kind, span = legacy_fence(old)
         if kind == "malformed":
+            # The facts file is fleet's own, so it stays current regardless.
+            write_run_facts(facts, run_facts(q, slug))
             return path, ("left alone — its fleet:facts markers are malformed (each must "
                           "appear once, alone on its line, opening one first); fix or "
                           "remove them and run `fleet queue run` again")
