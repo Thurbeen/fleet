@@ -174,3 +174,52 @@ def test_a_dry_run_sends_nothing_and_writes_no_store(outside, stubs):
     expect(out, "would-send")
     assert sends(stubs, OUTSIDE) == []
     assert not (Path(os.environ["FLEET_SHEPHERD_DIR"]) / "prs.json").exists()
+
+
+def session_row(stubs, sid: str, **extra) -> None:
+    path = stubs.root / "sessions" / f"{sid}.json"
+    write(path, json.dumps({**json.loads(path.read_text(encoding="utf-8")), **extra}) + "\n")
+
+
+def test_a_session_that_checked_out_somebody_elses_branch_is_not_told_to_push_it(shep, stubs, tmp_path):
+    """`gh pr checkout` in a reviewer's worktree: the branch is born from its own remote copy."""
+    wt = checkout(tmp_path / "reviewer", "review-201")
+    git("update-ref", "refs/remotes/origin/feat/theirs", "HEAD", cwd=wt)
+    git("switch", "-q", "feat/theirs", cwd=wt)
+    session(stubs, OUTSIDE, "reviewer", "idle", wt, "review-201")
+    shep.pr(201, headRefName="feat/theirs", body="", statusCheckRollup=[FAILED])
+    out = q("shepherd").out
+    assert sends(stubs, OUTSIDE) == [], out
+    assert OUTSIDE not in store()["sessions"]
+
+
+def test_a_session_that_started_another_branch_of_its_own_is_still_adopted(shep, stubs, tmp_path):
+    wt = checkout(tmp_path / "moved", "created-by-thurbox")
+    git("checkout", "-q", "-b", "fix/its-own", cwd=wt)
+    session(stubs, OUTSIDE, "moved on", "idle", wt, "created-by-thurbox")
+    shep.pr(201, headRefName="fix/its-own", body="", statusCheckRollup=[FAILED])
+    out = q("shepherd").out
+    assert len(sends(stubs, OUTSIDE)) == 1, out
+
+
+@pytest.mark.parametrize(("parent_name", "adopted"), [
+    ("\U0001f4e1 Mission Control · other-fleet", False),
+    ("an ordinary session", True),
+])
+def test_a_session_parented_to_any_fleets_lead_is_that_fleets_and_not_adopted(
+    outside, shep, stubs, parent_name, adopted
+):
+    session(stubs, LEAD, parent_name, "idle", None)
+    session(stubs, OUTSIDE, "hand-made", "idle", outside, "feat/outside")
+    session_row(stubs, OUTSIDE, parent_session_id=LEAD)
+    out = q("shepherd").out
+    assert len(sends(stubs, OUTSIDE)) == (1 if adopted else 0), out
+    assert (OUTSIDE in store()["sessions"]) is adopted
+
+
+def test_another_fleets_lead_is_never_adopted(shep, stubs, tmp_path):
+    wt = checkout(tmp_path / "peer-lead", "feat/peer")
+    session(stubs, LEAD, "\U0001f4e1 Mission Control · other-fleet", "idle", wt, "feat/peer")
+    shep.pr(203, headRefName="feat/peer", body="", statusCheckRollup=[FAILED])
+    out = q("shepherd").out
+    assert sends(stubs, LEAD) == [], out
