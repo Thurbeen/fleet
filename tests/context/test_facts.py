@@ -270,3 +270,14 @@ def test_the_briefs_placeholder_copied_verbatim_is_not_a_fact(worked):
     done = run_queue("collect")
     assert done.code == 0, done.out
     assert "learned[1]:" in done.out and fact_files(APP) == [], done.out
+
+
+def test_restating_an_older_fact_with_replaces_supersedes_the_newer_one():
+    first = parse_toon(learn(APP, "Builds use toolchain A.").stdout)["recorded"]
+    second = parse_toon(learn(APP, "Builds use toolchain B.", "--replaces", first).stdout)["recorded"]
+    back = learn(APP, "Builds use toolchain A.", "--replaces", second)
+    assert back.code == 0 and "recorded" in parse_toon(back.stdout), back.stdout
+    doc = parse_toon(context("repo", APP).stdout)
+    assert [r["text"] for r in doc["live"]] == ["Builds use toolchain A."], doc
+    # The same statement with the same replaces is still a repeat.
+    assert "already" in parse_toon(learn(APP, "Builds use toolchain A.", "--replaces", second).stdout)

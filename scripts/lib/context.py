@@ -18,7 +18,7 @@ linked to the name, which fails when the name exists — so any number of
 workers and fleet processes write at once with no lock, a reader never sees
 half a fact, and a write that would collide keeps the first. The id is derived
 from what is written: `<date>-<topic>-<task>-<n>` from a task's `learned:`
-entry, `<date>-<hash of repo and text>` from `learn`. So `collect` running
+entry, `<date>-<hash of repo, text and replaces>` from `learn`. So `collect` running
 twice, or the loop and the lead running it together, makes each file once, and
 `learn` said twice answers `already`.
 
@@ -388,7 +388,9 @@ def learn(repo_text: str, text: str, replaces: str | None, source: str | None) -
     src = " ".join(str(source or "").split()) or f"agent:{os.environ.get('THURBOX_SESSION') or 'local'}"
     if len(src) > 120:
         raise ContextError("invalid_source", "a source is a task ref, agent:<who> or peer:<fleet>/<id>")
-    digest = hashlib.sha256(f"{repo}\n{line}".encode()).hexdigest()[:8]
+    # What it replaces is part of what is said: restating an old fact over a
+    # newer one is a new statement, and a repeat of both is not.
+    digest = hashlib.sha256(f"{repo}\n{line}\n{replaces or ''}".encode()).hexdigest()[:8]
     directory = repo_dir(repo)
     if os.path.isdir(directory):
         for name in os.listdir(directory):
