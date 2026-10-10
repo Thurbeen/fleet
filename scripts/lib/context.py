@@ -13,10 +13,10 @@
 A FACT IS ONE FILE, CREATED ONCE AND NEVER EDITED:
 `registry/facts/<repo>/<id>.md`, YAML front matter (`id`, `repo`, `at`,
 `source`, and `replaces` when it supersedes one) over one or two sentences.
-`fleet_platform.create_once` writes it — a temp file of the writer's own,
-linked to the name, which fails when the name exists — so any number of
-workers and fleet processes write at once with no lock, a reader never sees
-half a fact, and a write that would collide keeps the first. The id is derived
+`fleet_platform.create_record` writes it, 0600 — a temp file of the
+writer's own, linked to the name, which fails when the name exists — the one
+create seam the run log uses too, so any number of workers and fleet
+processes write at once with no lock, a reader never sees half a fact, and a write that would collide keeps the first. The id is derived
 from what is written: `<date>-<topic>-<task>-<n>` from a task's `learned:`
 entry, `<date>-<hash of repo, text and replaces>` from `learn`. So `collect` running
 twice, or the loop and the lead running it together, makes each file once, and
@@ -316,7 +316,7 @@ def write_fact(repo: str, fid: str, text: str, source: str, replaces: str | None
                at: str | None = None) -> tuple[bool, str]:
     """(made it, its path). Never overwrites: an existing id is kept as it is."""
     path = os.path.join(repo_dir(repo), f"{fid}.md")
-    made = fleet_platform.create_once(path, render_fact(fid, repo, text, source, at or stamp(), replaces))
+    made = fleet_platform.create_record(path, render_fact(fid, repo, text, source, at or stamp(), replaces), mode=0o600)
     return made, path
 
 

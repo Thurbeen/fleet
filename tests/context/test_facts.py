@@ -61,22 +61,64 @@ def test_fifty_concurrent_learns_leave_exactly_one_file_per_id_and_every_file_pa
     assert sorted(p.name for p in (facts_root() / APP).iterdir()) == sorted(p.name for p in files)
 
 
-def test_create_once_never_overwrites_and_leaves_no_temp_file(tmp_path):
+def umask() -> int:
+    mask = os.umask(0)
+    os.umask(mask)
+    return mask
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits; NTFS has no group or other bits")
+def test_learned_facts_are_private_to_their_owner_while_a_run_log_keeps_the_umask(tmp_path):
+    # Both go through the one create seam: the fact asks for 0600, the run
+    # log for nothing, so a mode one asks for never leaks into the other.
+    assert learn(APP, "The integration tests need a running Postgres.").code == 0
+    [fact] = fact_files(APP)
+    assert fact.stat().st_mode & 0o777 == 0o600, oct(fact.stat().st_mode)
+    assert run_queue("topic", "add", "perms", "--title", "Perms", "--prompt", "p").code == 0
+    [log] = [p for p in Path(os.environ["FLEET_RUNS_DIR"]).glob("*-perms.md")]
+    assert log.stat().st_mode & 0o777 == 0o666 & ~umask(), oct(log.stat().st_mode)
+
+
+def test_create_record_makes_its_directory_never_overwrites_and_leaves_no_temp_file(tmp_path):
     platform = lib("fleet_platform.py")
     target = tmp_path / "store" / "fact.md"
-    assert platform.create_once(str(target), "first\n") is True
-    assert platform.create_once(str(target), "second\n") is False
+    assert platform.create_record(str(target), "first\n", mode=0o600) is True
+    assert platform.create_record(str(target), "second\n", mode=0o600) is False
     assert target.read_text(encoding="utf-8") == "first\n"
     assert sorted(p.name for p in target.parent.iterdir()) == ["fact.md"]
 
 
-def test_create_once_from_many_threads_has_exactly_one_winner(tmp_path):
+def test_create_record_from_many_threads_has_exactly_one_winner(tmp_path):
     platform = lib("fleet_platform.py")
     target = tmp_path / "store" / "fact.md"
     with ThreadPoolExecutor(max_workers=32) as pool:
-        won = list(pool.map(lambda n: platform.create_once(str(target), f"writer {n}\n"), range(64)))
+        won = list(pool.map(lambda n: platform.create_record(str(target), f"writer {n}\n", mode=0o600), range(64)))
     assert won.count(True) == 1
     assert re.fullmatch(r"writer \d+\n", target.read_text(encoding="utf-8"))
+    assert sorted(p.name for p in target.parent.iterdir()) == ["fact.md"]
+
+
+def test_create_record_on_a_windows_volume_without_links_renames_into_place(tmp_path, monkeypatch):
+    # A volume that cannot link (FAT, some network shares) answers OSError;
+    # Windows' rename refuses an existing target, so it is the exclusive
+    # create there. Driven here by standing in for both, on any OS.
+    platform = lib("fleet_platform.py")
+    monkeypatch.setattr(platform, "WINDOWS", True)
+
+    def no_link(src, dst):
+        raise OSError(1, "links are not supported on this volume")
+
+    def windows_rename(src, dst):
+        if os.path.exists(dst):
+            raise FileExistsError(17, "exists", dst)
+        os.replace(src, dst)
+
+    monkeypatch.setattr(platform.os, "link", no_link)
+    monkeypatch.setattr(platform.os, "rename", windows_rename)
+    target = tmp_path / "store" / "fact.md"
+    assert platform.create_record(str(target), "first\n") is True
+    assert platform.create_record(str(target), "second\n") is False
+    assert target.read_text(encoding="utf-8") == "first\n"
     assert sorted(p.name for p in target.parent.iterdir()) == ["fact.md"]
 
 

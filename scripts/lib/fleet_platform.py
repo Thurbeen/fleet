@@ -21,7 +21,6 @@ import shutil
 import signal
 import subprocess
 import sys
-import tempfile
 import time
 
 WINDOWS = os.name == "nt"
@@ -275,28 +274,43 @@ def unique_temp(path: str) -> str:
     Every writer once used `<path>.tmp`, so two saving one record at once
     renamed each other's file away and the second `os.replace` raised
     FileNotFoundError. Beside the record, because a rename is only atomic
-    within one filesystem. Opened with "x" by the caller, so a collision fails
-    rather than shares, and the file is created under the umask like the record
-    it replaces — which `tempfile.mkstemp`'s 0600 would not be.
+    within one filesystem. Opened exclusively by the caller, so a collision
+    fails rather than shares, and the file is created under the umask like the
+    record it replaces — which `tempfile.mkstemp`'s 0600 would not be.
     """
     return f"{path}.{os.getpid()}.{secrets.token_hex(6)}.tmp"
 
 
-def create_record(path: str, text: str) -> bool:
+def create_record(path: str, text: str, mode: int = 0o666) -> bool:
     """Create `path` holding `text`, or leave it untouched if it exists. True when created.
 
     The text is written to a unique temp file and linked into place, and a
-    link fails rather than replaces, so a reader never sees half of it and an
-    existing file — somebody's prose — is never overwritten.
+    link fails rather than replaces, so a reader never sees half of it, an
+    existing file — somebody's prose, a fact — is never overwritten, and any
+    number of writers racing for one name need no lock: exactly one wins.
+    `mode` is the file's permission bits under the umask, as for `open`: the
+    default leaves a run log as readable as any record, and a fact asks for
+    0600. Windows: NTFS links too; where a volume cannot, `os.rename` is the
+    fallback, which on Windows refuses an existing target instead of replacing
+    it. POSIX keeps the link alone, because its rename replaces.
     """
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     tmp = unique_temp(path)
     try:
-        with open(tmp, "x", encoding="utf-8", newline="\n") as fh:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+        with open(fd, "w", encoding="utf-8", newline="\n") as fh:
             fh.write(text)
         try:
             os.link(tmp, path)
         except FileExistsError:
             return False
+        except OSError:
+            if not WINDOWS:
+                raise
+            try:
+                os.rename(tmp, path)
+            except FileExistsError:
+                return False
         return True
     finally:
         with contextlib.suppress(OSError):
@@ -322,41 +336,6 @@ def read_record(path: str) -> str:
             time.sleep(wait)
             wait *= 2
     raise AssertionError("unreachable")
-
-
-def create_once(path: str, text: str) -> bool:
-    """Create `path` holding `text`, or leave the one already there: True if this call made it.
-
-    A file written this way is never rewritten, so its writers need no lock.
-    The text goes into a temp file of this writer's own first, so a reader
-    never sees half a file, and is then LINKED to `path`, which fails when
-    `path` exists — an exclusive create of the whole file at once, whoever
-    else is racing for the name. Windows: NTFS links too; where a volume
-    cannot, `os.rename` is the fallback, which on Windows refuses an existing
-    target instead of replacing it. POSIX keeps the link alone, because its
-    rename replaces.
-    """
-    directory = os.path.dirname(path) or "."
-    os.makedirs(directory, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".create-", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
-            fh.write(text)
-        try:
-            os.link(tmp, path)
-        except FileExistsError:
-            return False
-        except OSError:
-            if not WINDOWS:
-                raise
-            try:
-                os.rename(tmp, path)
-            except FileExistsError:
-                return False
-        return True
-    finally:
-        with contextlib.suppress(OSError):
-            os.remove(tmp)
 
 
 def append_record(path: str, text: str) -> None:
