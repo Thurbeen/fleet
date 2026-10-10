@@ -338,6 +338,28 @@ class Records(TempDirCase):
         self.assertEqual(path.read_bytes(), b"new\n")
         self.assertEqual(self.names(), ["task.yaml"])
 
+    def test_read_record_waits_out_a_replace_in_flight(self):
+        """On Windows an open that races a replace is refused for a moment, and
+        a reader that took that for "no record" acted on nothing."""
+        path = self.tmp / "notified.json"
+        path.write_bytes(b"kept\n")
+        real = open
+        refused = []
+
+        def racing(*args, **kwargs):
+            if not refused:
+                refused.append(1)
+                raise PermissionError(13, "the file is being replaced")
+            return real(*args, **kwargs)
+
+        with mock.patch("builtins.open", racing), mock.patch.object(fp.time, "sleep"):
+            self.assertEqual(fp.read_record(str(path)), "kept\n")
+        self.assertEqual(refused, [1])
+
+    def test_read_record_says_a_missing_record_is_missing(self):
+        with self.assertRaises(FileNotFoundError):
+            fp.read_record(str(self.tmp / "nothing.json"))
+
     def test_write_record_gives_up_on_a_file_that_stays_held(self):
         path = self.tmp / "task.yaml"
         path.write_bytes(b"old\n")

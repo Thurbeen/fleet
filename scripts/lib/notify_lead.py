@@ -179,8 +179,7 @@ fleetqueue = _load_queue()
 
 def read_state(state_dir: str) -> dict:
     try:
-        with open(os.path.join(state_dir, STATE_FILE), encoding="utf-8") as fh:
-            doc = json.load(fh)
+        doc = json.loads(fleetqueue.fleet_platform.read_record(os.path.join(state_dir, STATE_FILE)))
     except (OSError, json.JSONDecodeError):
         return {}
     return doc if isinstance(doc, dict) else {}
