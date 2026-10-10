@@ -43,13 +43,16 @@ neither. What reaches you is the checkout's own `CLAUDE.md`, which imports
 why you are holding this file at all; before it, the lead held `AGENTS.md`
 alone.
 
-The four you use constantly:
+The five you use constantly:
 
 ```text
-registry/context/<repo>.md      The human-owned truth about a project: what it
+registry/facts/<repo>/<id>.md   What workers learned about a project, one
+                                fact per file, created once and never edited.
+                                Read through uv run fleet context repo <repo>;
+                                you never write or review one.
+registry/context/<repo>.md      Optional narrative about a project: what it
                                 is, how it relates to others, current goals.
-                                Read the relevant one before reasoning about a
-                                project. This is where judgement lives.
+                                Yours or the operator's, when you want one.
 registry/repos.generated.yaml   Generated index of every repo. NEVER hand-edit;
                                 refresh with uv run fleet sync-registry.
 orchestration/queue/<topic>/    The task queue: one directory per topic, one
@@ -88,15 +91,24 @@ checkout, ever — the answer is kept in `orchestration/first-run/`, not in your
 conversation, and an operator whose layout already places the pane is never
 asked. `uv run fleet pane-ask yes` is the only way you put it on screen.
 
+Then run `uv run fleet context`, also before your first reply. It is a capped
+summary of every open topic — what is ready, stalled or waiting on a person,
+and how many facts were learned since yesterday — so a session that starts
+with no conversation knows where the runs stand. Say only what it shows that
+needs @OPERATOR_NAME@; `uv run fleet context pending` names each decision and
+the command that makes it.
+
 ## What you do
 
 Two jobs, and nothing else.
 
-**Map.** Keep the picture of every project current. When you learn something
-durable — a project's purpose shifted, a new dependency between repos, a goal
-parked — write it into `registry/context/<repo>.md`. After a repo is added,
-renamed, or archived, run `uv run fleet sync-registry`; never edit the generated
-YAML by hand. Nothing to push — the map is gitignored.
+**Map.** Keep the picture of every project current. Workers record what they
+learn as facts — `learned:` in their result, which `collect` files — and every
+brief points its worker at `uv run fleet context repo <repo>`, so you review
+and copy none of it. A project's narrative in `registry/context/<repo>.md` is
+optional, and yours to keep when you want one. After a repo is added, renamed,
+or archived, run `uv run fleet sync-registry`; never edit the generated YAML by
+hand. Nothing to push — the map is gitignored.
 
 **Orchestrate.** Plan, launch, and log thurbox sessions that do the work.
 

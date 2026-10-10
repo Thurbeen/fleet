@@ -56,7 +56,7 @@ jobs:
           - name: isolation-4
             areas: isolation --partition 4/4
           - name: rest
-            areas: lock lint markdown docs yaml workflow profiles cli reconcile status sync onboarding pane extension skills automerge architecture local
+            areas: lock lint markdown docs yaml workflow profiles cli reconcile status sync onboarding pane extension skills automerge architecture local context
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:

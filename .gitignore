@@ -117,6 +117,10 @@
 /registry/context/*.md
 !/registry/context/_TEMPLATE.md
 
+# WORKING STATE. What workers learned about your projects, one fact per file
+# (`uv run fleet context`). Every fact names one of your repositories.
+/registry/facts/
+
 # WORKING STATE. One file per orchestration run — the record of what you did,
 # when, and how it went. `uv run fleet queue` opens one per topic and refreshes
 # its facts in the `.facts.md` beside it, under that file's `.lock`, so these

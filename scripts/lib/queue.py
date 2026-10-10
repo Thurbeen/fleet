@@ -2553,6 +2553,7 @@ def render_brief(task: Task, topic: dict, body: str | None) -> str:
         policy_ref = f"`{policy_path()}`"
         operator_ref = f"`{operator_path()}`"
     operator_line = f"\n- **Operator's standing instructions.** {operator_ref}" if has_operator else ""
+    memory_line = "" if host else context_lines(task)
     operator_note = (
         "\n\nRead the operator's file too. It is how this operator wants work done\n"
         "across every task, and it ADDS to this brief without replacing anything in\n"
@@ -2646,7 +2647,7 @@ The prompt this came from is at {prompt_ref}; read it if the goal here is unclea
 - **Branch.** `{d["branch"]}` off `{d["base"]}`{spans_line}{attached_line}{target_line}
 {publish_line}
 - **Expected to touch.** {", ".join(f"`{p}`" for p in d["touches"]) or "not recorded"}
-- **Standing policy.** {policy_ref}{operator_line}
+- **Standing policy.** {policy_ref}{operator_line}{memory_line}
 
 **Read that policy file before you start.** It is the rest of your
 instructions and it is not repeated here: how to verify your own publish, who
@@ -2667,6 +2668,9 @@ with exactly this shape:
 ---
 outcome: shipped | stuck | failed | not-applicable
 {artifact_contract}
+learned:   # optional, at most 5 — what the next worker on this repository needs
+  - repo: {context_repo(task)}
+    fact: "<one or two sentences>"
 ---
 A short paragraph: what you actually did, and anything the lead must know.
 ```
@@ -2674,6 +2678,47 @@ A short paragraph: what you actually did, and anything the lead must know.
 That file is what closes this task, and the policy's last section says why it,
 and not a message, is what does it.
 {result_note}"""
+
+
+def context_repo(task: Task) -> str:
+    """The name `fleet context` knows this task's repository by, or its path when it cannot tell here."""
+    path = str(task.doc.get("repo") or "")
+    if task.doc.get("host"):
+        return "<repo>"
+    return _load_sibling("fleet_context", "context.py").path_identity(path) or path
+
+
+def context_lines(task: Task) -> str:
+    """The brief's pointers into memory: a command read when the worker starts, never a pasted copy.
+
+    A pointer is current when it is read, which a copy frozen at `add` is not —
+    and blockers are usually recorded AFTER `add`, so `--task` has the command
+    list the results of whatever this task waits on by then. Results already
+    known at `add` are named too, as plain paths.
+    """
+    prior = [
+        os.path.join(queue_root(), b["task"], "result.md")
+        for b in task.blockers
+        if not blocker_condition(b) and isinstance(b.get("task"), str)
+    ]
+    line = "\n" + textwrap.fill(
+        "- **Project memory.** Run this before you start: this repository's live"
+        " facts, its recent results, and the result of every task this one waits"
+        " on. Put what you learn in `learned:` (see Reporting back).",
+        width=78,
+        subsequent_indent="  ",
+    )
+    line += (
+        f"\n\n      uv run --project {checkout_root()} fleet context repo"
+        f" {context_repo(task)} --task {task.ref}\n"
+    )
+    if prior:
+        line += "\n" + textwrap.fill(
+            "- **Prior results.** " + ", ".join(f"`{p}`" for p in prior),
+            width=78,
+            subsequent_indent="  ",
+        )
+    return line
 
 
 def blocker_kind_refusal(condition: bool = False) -> str:
@@ -4605,6 +4650,20 @@ def parse_result(text: str) -> tuple[dict, str]:
     return meta, body.strip()
 
 
+def record_learned(task: Task, meta: dict) -> None:
+    """Record the result's `learned:` entries as fact files, and say so in a line.
+
+    At the moment a task concludes, so a task held open records nothing until
+    it closes, and a second pass over the same result makes nothing new:
+    `context.py` derives each fact's id from the task and the entry's place,
+    and never overwrites one. A bad entry is a line, never a held task.
+    """
+    if meta.get("learned") is None:
+        return
+    for line in _load_sibling("fleet_context", "context.py").capture_learned(task, meta["learned"]):
+        print(f"        {line}")
+
+
 def task_publish(task: Task) -> tuple[str, str | None]:
     """(method, how) for one task — the resolved default when it declares none.
 
@@ -5308,6 +5367,7 @@ def cmd_collect(args) -> int:
             retire(task, "closed-unmerged", "; ".join(r["detail"] for r in closed))
             concluded += 1
             print(f"    {task.ref}  {ABANDON_HOW['closed-unmerged']}  {closed[0]['detail']}")
+            record_learned(task, meta)
             continue
 
         if verdict == "missing" and not args.allow_unverified:
@@ -5346,6 +5406,7 @@ def cmd_collect(args) -> int:
         first = body.splitlines()[0] if body.splitlines() else ""
         if first:
             print(f"        {first}")
+        record_learned(task, meta)
 
     print(f"collect: {concluded} result(s) read")
     if held:

@@ -14,12 +14,14 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import secrets
 import shlex
 import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 
 WINDOWS = os.name == "nt"
@@ -322,6 +324,41 @@ def read_record(path: str) -> str:
     raise AssertionError("unreachable")
 
 
+def create_once(path: str, text: str) -> bool:
+    """Create `path` holding `text`, or leave the one already there: True if this call made it.
+
+    A file written this way is never rewritten, so its writers need no lock.
+    The text goes into a temp file of this writer's own first, so a reader
+    never sees half a file, and is then LINKED to `path`, which fails when
+    `path` exists — an exclusive create of the whole file at once, whoever
+    else is racing for the name. Windows: NTFS links too; where a volume
+    cannot, `os.rename` is the fallback, which on Windows refuses an existing
+    target instead of replacing it. POSIX keeps the link alone, because its
+    rename replaces.
+    """
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".create-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(text)
+        try:
+            os.link(tmp, path)
+        except FileExistsError:
+            return False
+        except OSError:
+            if not WINDOWS:
+                raise
+            try:
+                os.rename(tmp, path)
+            except FileExistsError:
+                return False
+        return True
+    finally:
+        with contextlib.suppress(OSError):
+            os.remove(tmp)
+
+
 def append_record(path: str, text: str) -> None:
     """Append `text` to `path`, with LF line endings on every OS."""
     with open(path, "a", encoding="utf-8", newline="\n") as fh:
@@ -570,6 +607,57 @@ def _windows_alive(pid: int) -> bool:
         return k32.WaitForSingleObject(wintypes.HANDLE(handle), 0) == wait_timeout
     finally:
         k32.CloseHandle(wintypes.HANDLE(handle))
+
+
+# --- TOON ---------------------------------------------------------------------
+#
+# What an agent reads from an AXI surface (`fleet context`): JSON repeats every
+# key on every row, and TOON states a list's keys once. Not an OS difference,
+# but the one encoder every surface shares, with the standard library alone, so
+# it lives with the other things every module shares rather than in one caller.
+
+_TOON_NUMBER = re.compile(r"^-?(?:\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|\.\d+)$")
+_TOON_ESCAPES = {"\\": "\\\\", '"': '\\"', "\n": "\\n", "\r": "\\r", "\t": "\\t"}
+
+
+def toon_value(value) -> str:
+    """One scalar, quoted only where TOON needs it: a reader must get the same string back."""
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    text = str(value)
+    plain = (
+        text
+        and text == text.strip()
+        and text not in ("true", "false", "null")
+        and not _TOON_NUMBER.match(text)
+        and not text.startswith("-")
+        and not any(ch in text for ch in ':"\\[]{},')
+        and not any(ord(ch) < 32 for ch in text)
+    )
+    if plain:
+        return text
+    return '"' + "".join(_TOON_ESCAPES.get(ch, ch if ord(ch) >= 32 else " ") for ch in text) + '"'
+
+
+def toon_field(key: str, value) -> str:
+    """`key: value`."""
+    return f"{key}: {toon_value(value)}"
+
+
+def toon_list(key: str, values: list) -> str:
+    """`key[N]: a,b`: a list of scalars on one line."""
+    return f"{key}[{len(values)}]: " + ",".join(toon_value(v) for v in values)
+
+
+def toon_table(key: str, fields: list, rows: list) -> str:
+    """`key[N]{a,b}:` and one indented line per row: a list of records, keys stated once."""
+    lines = [f"{key}[{len(rows)}]{{{','.join(fields)}}}:"]
+    lines += ["  " + ",".join(toon_value(row.get(f, "")) for f in fields) for row in rows]
+    return "\n".join(lines)
 
 
 # --- `fleet paths` --------------------------------------------------------------

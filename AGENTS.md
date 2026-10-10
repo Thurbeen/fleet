@@ -71,9 +71,21 @@ names every path and the reason for each.
   `registry/owners.example.txt` is the tracked copy it starts from.
 - `registry/repos.generated.yaml` — generated index of every repo under those
   owners. **Never hand-edit it.** Refresh with `uv run fleet sync-registry`.
-- `registry/context/<repo>.md` — the human-owned truth about a project: what it
-  is, how it relates to others, current goals. Read the relevant one before
-  reasoning about a project, and keep it short and current.
+- `registry/facts/<repo>/<id>.md` — what workers learned about a project, one
+  fact per file, created once and never edited, so any number of writers need
+  no lock. A worker states up to five in its `result.md`'s `learned:`, which
+  `collect` files, or records one with `fleet context learn`; a newer fact's
+  `replaces` supersedes an old one, whose file stays as history. Nobody reviews
+  them and the lead writes none. `<repo>` is `<host>/<path>` or
+  `local/<name>-<hash>`, never a bare name, so two forges never share a store.
+  `uv run fleet context` (`scripts/lib/context.py`) is the one reader: a
+  project's capped bundle for a worker (`repo <repo>`, which every brief names),
+  the lead's summary after a restart, and what waits on a decision (`pending`) —
+  all TOON, AXI-shaped, read-only, and held to it by `tests/context/test_axi.py`.
+  The module's docstring owns the contract.
+- `registry/context/<repo>.md` — optional narrative about a project: what it
+  is, how it relates to others, current goals. Its owner's to keep; `fleet
+  context repo` points at it when it exists, and nothing requires one.
 - `orchestration/session-profiles.yaml` — named default settings a worker
   session STARTS under (`--env`, and `--command` for a setting that is a flag),
   as opposed to where its work goes. `uv run fleet session-flags <profile>`
@@ -505,9 +517,9 @@ means, and what settings the agent starts with.
   `registry/owners.txt` — run `uv run fleet sync-registry` locally. Never edit
   the generated YAML directly. There is nothing to push: both files are
   gitignored.
-- When you learn something durable about a project (its purpose shifted, a new
-  dependency between repos, a parked goal), update its
-  `registry/context/<repo>.md`. That file is where judgement lives.
+- Durable facts about a project reach `registry/facts/` from the workers that
+  learned them. A narrative in `registry/context/<repo>.md` is optional, and
+  nothing rewrites one.
 
 ## Gates
 
