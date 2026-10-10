@@ -873,6 +873,35 @@ def publish_conf(root: str | None = None) -> dict[str, str]:
     return read_kv_conf(conf_path(PUBLISH_CONF, PUBLISH_CONF_DEFAULTS, root))
 
 
+RECONCILE_CONF = "orchestration/reconcile.conf"
+RECONCILE_CONF_DEFAULTS = "orchestration/reconcile.example.conf"
+
+
+def reconcile_conf(root: str | None = None) -> dict[str, str]:
+    """The reconciler's settings in force. `FLEET_RECONCILE_CONF_ROOT` relocates them.
+
+    The one reader of the file: `reconcile.py` asks this for its clocks, and
+    `reap` for what a landing does to a session.
+    """
+    root = root or os.environ.get("FLEET_RECONCILE_CONF_ROOT") or checkout_root()
+    return read_kv_conf(conf_path(RECONCILE_CONF, RECONCILE_CONF_DEFAULTS, root))
+
+
+# What `reap` does with a finished task's session, per ending. `delete` is what
+# it always did. `notify` keeps the session and tells it why, once.
+SESSION_ENDINGS = ("delete", "notify")
+
+
+def session_ending(closed: bool) -> str:
+    """`ON_LANDED`, or `ON_CLOSED` for a change request closed unmerged; `delete` unset.
+
+    An unrecognised value comes back as itself, and `reap` keeps the session
+    rather than guess: a typo of `notify` is an operator who wanted it kept,
+    and the delete cannot be taken back.
+    """
+    return reconcile_conf().get("ON_CLOSED" if closed else "ON_LANDED", "").strip().lower() or "delete"
+
+
 def agent_conf(root: str | None = None) -> dict[str, str]:
     """The agent settings in force. `FLEET_AGENT_ROOT` relocates them.
 
@@ -6326,6 +6355,16 @@ def reap(q: Queue, dry: bool = False, release: bool = True) -> int:
                 kept += 1
                 continue
 
+        # What this ending does to a live session. A `closed` landing is the
+        # change request closed unmerged; an abandon by hand keeps today's
+        # delete whatever the setting, because nothing merged or closed.
+        closed = (landings.get(task.ref) or (None,))[0] == "closed" or (
+            state == "abandoned" and abandon_how(task) == "closed-unmerged")
+        ending = session_ending(closed) if state in ("landed", "abandoned") else "delete"
+        if ending != "delete" and sid in live:
+            kept += keep_session(task, sid, ending, closed, dry)
+            continue
+
         if sid not in live:
             if dry:
                 print(f"    {task.ref:<46} would drop {sid}  thurbox no longer has it")
@@ -6388,6 +6427,50 @@ def reap(q: Queue, dry: bool = False, release: bool = True) -> int:
             line += f", dropped {dropped} stale id(s)"
         print(line)
     return acted
+
+
+def keep_session(task: Task, sid: str, ending: str, closed: bool, dry: bool) -> int:
+    """`ON_LANDED`/`ON_CLOSED=notify`: keep the session, and tell it once. Returns 1.
+
+    The task has already moved — `landed` or `abandoned`, blockers cleared,
+    topic archived — exactly as under `delete`. Only the deletion and the
+    build-output cleanup are skipped. Once the line is typed the hold is
+    released as `kept`, so no later pass sends it again and `fleet sessions
+    orphans` lists the session for the operator to delete when done with it.
+    """
+    key = "ON_CLOSED" if closed else "ON_LANDED"
+    if ending not in SESSION_ENDINGS:
+        print(f"    {task.ref:<46} kept       {key}={ending} is neither "
+              f"{' nor '.join(SESSION_ENDINGS)}; the session is left as it is")
+        return 1
+    live_state, detail = session_state(sid)
+    if live_state == "stopped":
+        # No agent is running to read a line, and nothing is lost by keeping it.
+        if dry:
+            print(f"    {task.ref:<46} would keep {sid}  ({key}=notify; stopped, nothing to tell)")
+        else:
+            record_reaped(task, sid, "kept")
+            print(f"    {task.ref:<46} kept       {sid}  ({key}=notify; stopped, nothing to tell)")
+        return 1
+    if live_state not in SESSION_AT_REST:
+        print(f"    {task.ref:<46} kept       {key}=notify; thurbox says "
+              f"`{live_state or detail}` — told once it is at rest")
+        return 1
+    if dry:
+        print(f"    {task.ref:<46} would tell {sid}  ({key}=notify)")
+        return 1
+    what = (task.doc.get("landing") or {}).get("detail") or (
+        "its change request was closed unmerged" if closed else "it landed")
+    line = (f"fleet: task {task.ref} is {'abandoned' if closed else 'landed'} — {what}. "
+            f"This session is kept for follow-ups ({key}=notify); nothing is needed "
+            "unless somebody asks. `fleet sessions orphans` lists it for deletion.")
+    ok, report = trust_and_send(sid, " ".join(line.split()))
+    if not ok:
+        print(f"    {task.ref:<46} kept       {key}=notify; not told yet ({report}) — again next pass")
+        return 1
+    record_reaped(task, sid, "kept")
+    print(f"    {task.ref:<46} told       {sid}  ({key}=notify; kept for follow-ups)")
+    return 1
 
 
 def cmd_reap(args) -> int:
@@ -9189,6 +9272,231 @@ def shepherd_pr(cr: forge.ChangeRequest, task, args) -> dict:
     return row
 
 
+# --- plain review feedback ---------------------------------------------------
+#
+# `classify` hands a fixer four conditions, and the only review it reads is a
+# reviewer pressing "request changes". Everything else a person says on a pull
+# request — a review left as a comment, a line comment, a question in the
+# conversation — reached nobody: the worker had finished its turn, and fleet
+# itself never read past the review decision. This is the fifth thing shepherd
+# hands a session, and it is deliberately NOT a condition: a condition decides
+# merging and the board's publish word, and a comment must change neither. So
+# it runs beside `shepherd_pr` on its own record, and a pull request can be
+# `green`, still merged where the operator allows it, and still have its
+# comments delivered.
+
+COMMENTS_TITLE = "Answer the review comments on PR #{n}"
+
+# A review is something to answer when it says something. An APPROVED review's
+# body is a thank-you far more often than a request, and a DISMISSED or PENDING
+# one is not a verdict anybody stands behind.
+COMMENT_REVIEW_STATES = ("commented", "changes-requested")
+
+
+def comments_record(task: Task, url: str) -> dict:
+    """What `shepherd` already sent about this pull request's comments.
+
+    Keyed by pull request, not one record per task, because a task that spans
+    repositories has a pull request in each — and a single record would flip
+    between them, resending every comment each time it did. And kept APART from
+    `shepherd`'s own record, whose presence means "a fixer is in flight": a
+    comment delivery written there would hold back the `checks-failed` or
+    `conflicting` fixer the same pull request needs next.
+    """
+    every = task.doc.get("shepherd_comments")
+    rec = every.get(url) if isinstance(every, dict) else None
+    return rec if isinstance(rec, dict) else {}
+
+
+def record_comments(task: Task, url: str, entry: dict) -> None:
+    every = task.doc.get("shepherd_comments")
+    every = dict(every) if isinstance(every, dict) else {}
+    every[url] = entry
+    task.doc["shepherd_comments"] = every
+    task.save()
+    fleet_platform.append_record(
+        task.file("progress.jsonl"),
+        json.dumps({"shepherd_comments": {"pr": url, **entry}, "observed": now()}) + "\n",
+    )
+
+
+def unanswered_feedback(items: list, me: str, sent) -> list:
+    """The comments a worker has not been sent and nobody has answered, oldest first.
+
+    Never the account fleet runs as — that is the worker's own reply, or the
+    operator's `review-prs` reviewer, and sending a session its own words is
+    how it ends up answering itself — and never a bot. A thread somebody
+    RESOLVED is answered, and so is a line comment fleet's account replied to
+    later IN THE SAME THREAD: that reply is about that comment and nothing
+    else. A conversation comment or a review has no such reply to point at,
+    so only `sent` answers it. Reading "fleet's account posted anything at the
+    top level after it" as an answer dropped a person's comment for good the
+    moment fleet's account left an empty review; re-sending, once, a comment
+    a worker had already answered before this existed is the cheaper error.
+    """
+    me = me.lower()
+    mine = [f for f in items if f.author.lower() == me]
+    last_in: dict = {}
+    for f in mine:
+        if f.kind == "inline" and f.at:
+            last_in[f.thread] = max(last_in.get(f.thread, ""), f.at)
+    out = []
+    for f in items:
+        if f.id in sent or f.author_is_bot or not f.author or f.author.lower() == me:
+            continue
+        if not f.body.strip():
+            continue
+        if f.kind == "review" and f.state not in COMMENT_REVIEW_STATES:
+            continue
+        if f.kind == "inline" and (f.resolved or (f.at and f.at < last_in.get(f.thread, ""))):
+            continue
+        out.append(f)
+    return sorted(out, key=lambda f: f.at)
+
+
+def comments_brief(task: Task, cr: forge.ChangeRequest, items: list) -> str:
+    """The fix brief for comments: each one named, quoted, and linked."""
+    n = cr.number
+    parts = [
+        f"# {COMMENTS_TITLE.format(n=n)}",
+        "",
+        f"Somebody left review feedback on an open pull request from fleet task "
+        f"`{task.ref}`. Nobody requested changes, so nothing else would have told "
+        "you. This is the whole instruction set.",
+        "",
+        f"- **Pull request.** {cr.url} — {cr.title}".rstrip(" —"),
+        f"- **Repo.** `{task.doc['repo']}`",
+        f"- **Branch.** `{cr.head_branch or task.doc['branch']}`. It already exists.",
+        "",
+        "## The comments",
+    ]
+    for f in items:
+        where = ""
+        if f.path:
+            where = f" on `{f.path}:{f.line}`" if f.line else f" on `{f.path}`"
+        what = {"review": "review", "inline": "line comment"}.get(f.kind, "comment")
+        parts += ["", f"### {f.author}, {what}{where}", "", f.url or "(the forge gave no link)", ""]
+        parts += ["> " + line if line else ">" for line in f.body.strip().splitlines()]
+    parts += [
+        "",
+        "## What to do",
+        "",
+        "Answer each one. Where it asks for a change, make it — a test first when it"
+        " is behaviour — and push to the same branch. Where it is mistaken or out of"
+        " scope, reply on the forge with the reason. Either way reply to it, and"
+        " resolve the thread if it is one.",
+        "",
+        "## Hard constraints",
+        "",
+        "- Push to the branch that is already open. Do not open a second pull request,"
+        " and do not close this one.",
+        "- Do not merge it. Merging is not yours to do here.",
+        "- Do not widen the change beyond what the comments ask for.",
+        "",
+        "Fleet reads the pull request itself and does not need a message.",
+    ]
+    return "\n".join(parts) + "\n"
+
+
+def shepherd_comments(cr: forge.ChangeRequest, task, args, row: dict) -> None:
+    """Hand a pull request's new review comments to a session at rest.
+
+    Runs after `shepherd_pr` and adds `comments` and `comments_note` to its
+    row. Same rules as a fixer: the task's own session first, only when the
+    agent itself says it is at rest, never into a turn; a fresh session on the
+    branch when that session is gone — the same choice a gone worker gets for
+    a failing check, and for the same reason: the comment still needs an
+    answer. A comment already sent is never sent again, by id.
+    """
+    row["comments"] = "none"
+    if not task or cr.state != "open" or cr.head_is_ours is not True:
+        return
+    # A review decision of "request changes" is that condition's fixer, which
+    # already says "address the review" — asked of the decision itself, since
+    # a conflict outranks it in `classify` and would hide it from the row. A
+    # fixer this pass just sent is mid-turn, and a merged one is done.
+    if cr.review_decision == "changes-requested" or row.get("condition") in ("closed", "foreign"):
+        return
+    if row.get("action") in ("dispatched", "policy-refused", "merged"):
+        return
+    which, why = forge.for_repo(cr.repo)
+    if which is None:
+        return
+    items, why = which.feedback(cr.ref)
+    if why:
+        row["comments"], row["comments_note"] = "not-read", why
+        return
+    rec = comments_record(task, cr.url)
+    sent = set(rec.get("sent") or [])
+    if not any(f.id not in sent for f in items):
+        return
+    me, why = which.whoami(cr.repo.host)
+    if not me:
+        # Without fleet's own account, its workers' replies are indistinguishable
+        # from a reviewer's, and the first one sent would start a loop.
+        row["comments"], row["comments_note"] = "left-alone", (
+            f"could not tell which account fleet runs as ({why}); no comment sent"
+        )
+        return
+    new = unanswered_feedback(items, me, sent)
+    if not new:
+        return
+    count = f"{len(new)} new comment{'s' if len(new) != 1 else ''}"
+
+    # Who gets them: a session already working on this pull request for fleet —
+    # the one sent its last comments, then the fixer `shepherd_pr` recorded —
+    # then the task's own worker. The first that is still there decides.
+    fixer = rec_for(task, cr.url).get("session")
+    candidates = [str(s) for s in (rec.get("session"), fixer, task.doc.get("session")) if s]
+    live, live_why = live_sessions() if candidates else (set(), "")
+    target = ""
+    for sid in dict.fromkeys(candidates):
+        status = session_status(sid, live)
+        if status == "gone":
+            continue
+        if status in SESSION_AT_REST:
+            target = sid
+            break
+        row["comments"] = "left-alone"
+        row["comments_note"] = (
+            f"{count}; session {sid} is {status if status != 'unknown' else live_why or 'unknown'}"
+            " — sent once it is at rest, never into a turn"
+        )
+        return
+
+    # The policy door `shepherd_pr` asks for a fixer, asked for this too: a
+    # comment sent puts the same agent back to work on the same repository.
+    refusal = None if task.doc.get("host") else agent_policy_refusal(task)
+    if refusal:
+        row["comments"], row["comments_note"] = "policy-refused", f"{count}; nothing sent — {refusal}"
+        return
+
+    title = COMMENTS_TITLE.format(n=cr.number)
+    if args.dry_run:
+        row["comments"] = "would-send"
+        row["comments_note"] = f"{count} -> " + (target or "a fresh session on the branch")
+        return
+
+    path = next_fix_file(task, "comments")
+    fleet_platform.write_record(path, comments_brief(task, cr, new))
+    if target:
+        ok, note = trust_and_send(target, f"Read {os.path.abspath(path)} and do what it says.")
+        session = target if ok else ""
+    else:
+        checkout = task_checkout(task, cr.repo)
+        session, note = spawn_fixer(task, title, path, cr.head_branch or task.doc["branch"], checkout)
+    if not session:
+        row["comments"], row["comments_note"] = "not-sent", f"{count}; {note}"
+        return
+    row["comments"], row["comments_note"] = "sent", f"{count} -> {session}"
+    record_comments(task, cr.url, {
+        "sent": sorted(sent | {f.id for f in new}),
+        "session": session,
+        "brief": os.path.basename(path),
+        "at": now(),
+    })
+
+
 def repo_from_checkout(repo_path: str) -> forge.RepoId | None:
     """The repository a checkout's `origin` names, or None. Local, and no network.
 
@@ -9343,7 +9651,10 @@ def cmd_shepherd(args) -> int:
             unreadable.append({"repo": repo.qualified, "named": str(repo), "detail": err})
             continue
         for cr in sorted(crs, key=lambda c: c.number):
-            rows.append(shepherd_pr(cr, link_task(cr, here), args))
+            task = link_task(cr, here)
+            row = shepherd_pr(cr, task, args)
+            shepherd_comments(cr, task, args, row)
+            rows.append(row)
 
     if args.json:
         print(json.dumps({
@@ -9373,6 +9684,8 @@ def cmd_shepherd(args) -> int:
         print(f"        {r['condition']}: {r['detail']}")
         if r["action"] != "none":
             print(f"        {r['action']}: {r['note']}" if r["note"] else f"        {r['action']}")
+        if r.get("comments", "none") != "none":
+            print(f"        comments {r['comments']}: {r.get('comments_note', '')}")
     counts: dict[str, int] = {}
     for r in rows:
         counts[r["action"]] = counts.get(r["action"], 0) + 1
@@ -9549,7 +9862,8 @@ def run_events(tasks: list) -> list:
                                          f"{cell(given_up.get('why'))}"))
         reaped = d.get("reaped") or {}
         if reaped.get("at"):
-            out.append((reaped["at"], f"released `{t.id}`'s session "
+            verb = "kept" if reaped.get("how") == "kept" else "released"
+            out.append((reaped["at"], f"{verb} `{t.id}`'s session "
                                       f"`{reaped.get('session')}` ({reaped.get('how')})"))
         shep = d.get("shepherd") or {}
         if shep.get("at"):

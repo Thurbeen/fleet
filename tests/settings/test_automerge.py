@@ -44,6 +44,12 @@ def test_the_tracked_flow_names_no_repository():
     assert live == [], f"flow.example.conf names a repository; the tracked copy must name none: {live}"
 
 
+def test_the_tracked_reconciler_settings_set_nothing():
+    live = [line for line in (ORCH / "reconcile.example.conf").read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")]
+    assert live == [], f"reconcile.example.conf sets something; the tracked copy must set nothing: {live}"
+
+
 def test_a_fresh_clone_merges_nowhere(tmp_path, monkeypatch):
     # Read the way `shepherd` reads it, from a root holding the tracked example
     # and nothing else — never this checkout's root, where an operator's own

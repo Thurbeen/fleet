@@ -111,6 +111,12 @@
 # own session list finds most peers without this file existing at all.
 /orchestration/peers.conf
 
+# OPERATOR. How often this machine's reconciler polls, and whether a finished
+# task's session is kept. orchestration/reconcile.example.conf is the tracked
+# copy and sets nothing: without this file every clock and every reap is the
+# default.
+/orchestration/reconcile.conf
+
 # GENERATED. Rebuilt wholesale from your `gh` accounts by
 # `uv run fleet sync-registry`, and an index of every repo you can reach is not
 # a thing to publish.

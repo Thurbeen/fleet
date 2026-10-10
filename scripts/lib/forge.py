@@ -49,6 +49,11 @@ it:
                             still unresolved — what `queue list --live` reports
                             beside its state and checks, and a separate call so
                             `collect` never pays for it
+    feedback                every review, comment and thread on a change
+                            request, each with its author and whether it is
+                            a bot — what `shepherd` hands a worker when nobody
+                            pressed "request changes" but somebody still said
+                            something. A separate call, for the same reason
     parse_pipeline_url      is this URL a pipeline (a GitHub Actions run, a
                             GitLab pipeline), and which one
     pipeline                one pipeline and its jobs, each in fleet's own
@@ -201,6 +206,36 @@ class Note:
     ref: NoteRef
     author: str = ""
     target: Target | None = None
+
+
+@dataclass(frozen=True)
+class Feedback:
+    """One thing a person (or a bot) said on a change request, in fleet's words.
+
+    `kind` is `review` (a submitted review's own body), `comment` (the
+    conversation under the change request) or `inline` (a comment on a diff
+    line, inside a thread). `state` is a review's verdict — `commented`,
+    `changes-requested`, `approved`, `dismissed`, `pending` — and empty for
+    the other two kinds. `thread` names the thread an inline comment sits in,
+    and `resolved` is that thread's state; a comment in no thread is never
+    resolved, because nothing can resolve it.
+
+    `id` is the forge's own, as a string, and is what `shepherd` remembers
+    having sent — so it must be stable across reads and never a position.
+    """
+
+    id: str
+    kind: str
+    author: str = ""
+    author_is_bot: bool = False
+    body: str = ""
+    url: str = ""
+    at: str = ""
+    state: str = ""
+    path: str = ""
+    line: int | None = None
+    thread: str = ""
+    resolved: bool = False
 
 
 @dataclass(frozen=True)
@@ -538,6 +573,9 @@ class Forge:
     def threads(self, ref: ChangeRef) -> tuple:
         return None, f"{self.name} cannot count review threads"
 
+    def feedback(self, ref: ChangeRef) -> tuple:
+        return None, f"{self.name} cannot read review comments"
+
     def parse_pipeline_url(self, url: str) -> PipelineRef | None:
         return None
 
@@ -641,6 +679,25 @@ GH_THREADS_QUERY = (
     "{pullRequest(number:$number){reviewThreads(first:100){pageInfo{hasNextPage}"
     "nodes{isResolved}}}}}"
 )
+
+# Everything said on one pull request, in one GraphQL question: the reviews'
+# own bodies, the conversation, and every review thread with its comments. The
+# newest 100 reviews and comments, which is what a pass that remembers what it
+# already sent needs; the threads are read whole or not at all, like `threads`.
+# `__typename` is how GraphQL says an author is an app rather than a person.
+GH_FEEDBACK_QUERY = (
+    "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name)"
+    "{pullRequest(number:$number){"
+    "reviews(last:100){nodes{id state body url submittedAt author{__typename login}}}"
+    "comments(last:100){nodes{id body url createdAt author{__typename login}}}"
+    "reviewThreads(first:100){pageInfo{hasNextPage}nodes{id isResolved path line originalLine "
+    "comments(first:100){nodes{id body url createdAt author{__typename login}}}}}"
+    "}}}"
+)
+GH_REVIEW_STATES = {
+    "COMMENTED": "commented", "CHANGES_REQUESTED": "changes-requested",
+    "APPROVED": "approved", "DISMISSED": "dismissed", "PENDING": "pending",
+}
 
 # A pull request or an issue, and a note on one. GitHub's three note fragments
 # are three different APIs: a review, a conversation comment — which GitHub
@@ -877,6 +934,61 @@ class GitHubForge(Forge):
         if (threads.get("pageInfo") or {}).get("hasNextPage"):
             return None, "more than 100 review threads; not counted rather than undercounted"
         return sum(1 for n in nodes if not n.get("isResolved")), ""
+
+    def feedback(self, ref: ChangeRef) -> tuple:
+        owner, _, name = ref.repo.path.partition("/")
+        doc, why = self._json(
+            ["api", "graphql", "--hostname", ref.repo.host, "-f", f"owner={owner}",
+             "-f", f"name={name}", "-F", f"number={ref.number}", "-f", f"query={GH_FEEDBACK_QUERY}"],
+            timeout=30,
+        )
+        if why:
+            return None, f"gh api graphql could not read the review comments: {why}"
+        try:
+            pr = doc["data"]["repository"]["pullRequest"]
+            reviews = [n for n in pr["reviews"]["nodes"] if isinstance(n, dict)]
+            comments = [n for n in pr["comments"]["nodes"] if isinstance(n, dict)]
+            threads = pr["reviewThreads"]
+            nodes = [n for n in threads["nodes"] if isinstance(n, dict)]
+        except (KeyError, TypeError):
+            return None, "gh api graphql did not answer about review comments"
+        if (threads.get("pageInfo") or {}).get("hasNextPage"):
+            return None, "more than 100 review threads; not read rather than read short"
+
+        def who(n: dict) -> tuple:
+            a = n.get("author") or {}
+            return str(a.get("login") or ""), a.get("__typename") == "Bot"
+
+        out = []
+        for n in reviews:
+            login, bot = who(n)
+            out.append(Feedback(
+                id=str(n.get("id") or ""), kind="review", author=login, author_is_bot=bot,
+                body=str(n.get("body") or ""), url=str(n.get("url") or ""),
+                at=str(n.get("submittedAt") or ""),
+                state=GH_REVIEW_STATES.get(str(n.get("state") or "").upper(), ""),
+            ))
+        for n in comments:
+            login, bot = who(n)
+            out.append(Feedback(
+                id=str(n.get("id") or ""), kind="comment", author=login, author_is_bot=bot,
+                body=str(n.get("body") or ""), url=str(n.get("url") or ""),
+                at=str(n.get("createdAt") or ""),
+            ))
+        for t in nodes:
+            line = t.get("line") if isinstance(t.get("line"), int) else t.get("originalLine")
+            for n in (t.get("comments") or {}).get("nodes") or []:
+                if not isinstance(n, dict):
+                    continue
+                login, bot = who(n)
+                out.append(Feedback(
+                    id=str(n.get("id") or ""), kind="inline", author=login, author_is_bot=bot,
+                    body=str(n.get("body") or ""), url=str(n.get("url") or ""),
+                    at=str(n.get("createdAt") or ""), path=str(t.get("path") or ""),
+                    line=line if isinstance(line, int) else None,
+                    thread=str(t.get("id") or ""), resolved=bool(t.get("isResolved")),
+                ))
+        return [f for f in out if f.id], ""
 
     def parse_pipeline_url(self, url: str) -> PipelineRef | None:
         m = GH_RUN_URL_RE.match((url or "").strip())
@@ -1587,6 +1699,46 @@ class GitLabForge(Forge):
             if any(isinstance(n, dict) and n.get("resolvable") and not n.get("resolved")
                    for n in d.get("notes") or [])
         ), ""
+
+    def feedback(self, ref: ChangeRef) -> tuple:
+        """Every note people wrote on a merge request, from its discussions.
+
+        GitLab has no review body: a review is its notes. A resolvable note is
+        an `inline` one when it sits on a diff position and a thread either
+        way, so resolving it is what answers it, as on GitHub. A note nobody
+        can resolve is the conversation. `system` notes — "added 1 commit",
+        "approved this merge request" — are GitLab narrating, and are dropped.
+        """
+        docs, why = self._pages(
+            ref.repo, f"projects/{self._project(ref.repo)}/merge_requests/{ref.number}/discussions"
+        )
+        if why:
+            return None, f"glab api could not read the discussions: {why}"
+        out = []
+        for d in docs:
+            for n in d.get("notes") or []:
+                if not isinstance(n, dict) or n.get("system") or n.get("id") is None:
+                    continue
+                author = n.get("author") if isinstance(n.get("author"), dict) else {}
+                login = str(author.get("username") or "")
+                pos = n.get("position") if isinstance(n.get("position"), dict) else {}
+                line = pos.get("new_line") if isinstance(pos.get("new_line"), int) else pos.get("old_line")
+                resolvable = bool(n.get("resolvable"))
+                out.append(Feedback(
+                    id=str(n["id"]), kind="inline" if pos else "comment", author=login,
+                    # A note's author carries a `bot` flag where the merge
+                    # request's does not; the reserved token prefix is the
+                    # fallback for an instance that does not send it.
+                    author_is_bot=bool(author.get("bot")) or bool(GL_BOT_RE.match(login)),
+                    body=str(n.get("body") or ""),
+                    url=f"{ref.url}#note_{n['id']}",
+                    at=str(n.get("created_at") or ""),
+                    path=str(pos.get("new_path") or pos.get("old_path") or ""),
+                    line=line if isinstance(line, int) else None,
+                    thread=str(d.get("id") or "") if resolvable else "",
+                    resolved=resolvable and bool(n.get("resolved")),
+                ))
+        return out, ""
 
     def parse_pipeline_url(self, url: str) -> PipelineRef | None:
         m = GL_PIPELINE_URL_RE.match((url or "").strip())

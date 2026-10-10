@@ -9,10 +9,9 @@ run. So this builds that worst case on purpose:
 
   A POISONED COPY of the tree under test: a malformed queue record and an
   OPERATOR.md, an auto-merge.conf naming a repository, publish, agent,
-  agent-policy, glyph, fleet-name, voice, peer and session-profile settings with odd values,
-  a peer cache, a
-  rendered extension.toml, a reconciler runtime directory, and a registry map
-  of the wrong shape. All of it is made up here; nothing is copied from a real
+  agent-policy, glyph, fleet-name, voice, peer, reconciler and session-profile
+  settings with odd values, a peer cache, a rendered extension.toml, a
+  reconciler runtime directory, and a registry map of the wrong shape. All of it is made up here; nothing is copied from a real
   control plane.
 
   A HOSTILE HOST: `test_harness.hostile_host` — a git config that signs and
@@ -78,6 +77,7 @@ def poison(copy: Path) -> None:
                             "LIMIT_BANNER=you are out\n")
     write(o / "session-glyphs.conf", "GLYPHS=sideways\nLEAD_GLYPH_ON=@@\n")
     write(o / "fleet.conf", "NAME=operator-private-fleet\n")
+    write(o / "reconcile.conf", "ON_LANDED=operator-private-ending\nON_CLOSED=notify\nSHEPHERD_SECS=never\n")
     write(o / "voice.conf", "OPERATOR_NAME=Operator Private\nASSISTANT_NAME=Private Lead\n")
     write(o / "session-profiles.local.yaml",
           "profiles:\n  default:\n    env:\n      THURBOX_SESSION: operator-private\n")

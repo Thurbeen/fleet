@@ -66,7 +66,14 @@ def orphans(lead: str) -> tuple[list | None, str]:
     held: dict = {}
     for task in fleetqueue.Queue(fleetqueue.queue_root(), scope="all").tasks.values():
         fixer = (task.doc.get("shepherd") or {}).get("session")
-        for sid in {task.doc.get("session"), fixer} - {None}:
+        # The sessions shepherd sent review comments to, one per pull request.
+        talks = task.doc.get("shepherd_comments")
+        talkers = {r.get("session") for r in talks.values() if isinstance(r, dict)} if isinstance(talks, dict) else set()
+        # A session `reap` KEPT (`ON_LANDED`/`ON_CLOSED=notify`) left the
+        # record's `session`, and is still this task's to name.
+        reaped = task.doc.get("reaped") or {}
+        kept = reaped.get("session") if reaped.get("how") == "kept" else None
+        for sid in ({task.doc.get("session"), fixer, kept} | talkers) - {None}:
             held.setdefault(sid, []).append(task)
     rows = []
     for sid, row in sessions.items():
