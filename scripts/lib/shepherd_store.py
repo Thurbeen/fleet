@@ -9,12 +9,18 @@ open a pull request that goes CONFLICTING or red with nothing watching it. Each
 pass lists the sessions (`thurbox-cli session list --json`) and adopts every one
 that is:
 
-  not the lead      refused by name (the rendered extension.toml, or
+  not a lead        refused by name (the rendered extension.toml, or
                     FLEET_LEAD_SESSION), and by id when THURBOX_SESSION says
                     this process runs inside it — the same name `notify_lead`
-                    and `reap` refuse;
+                    and `reap` refuse — and ANY fleet's lead, by the name
+                    `peers.lead_fleet` recognises;
   not fleet's own   held by no queue task, as its worker or as a fixer sent
-                    for it (`sessions.py`'s `orphans` reads "held" the same way);
+                    for it (`sessions.py`'s `orphans` reads "held" the same way),
+                    and not parented to any fleet's lead. A second fleet on
+                    this machine has its own queue, so this one's records
+                    cannot see its workers — but thurbox names their parent,
+                    and that parent is a lead. A session parented to an
+                    ordinary session is still the operator's, and adopted;
   local             a session on a `hosts.toml` host keeps its worktree on that
                     host, where this pass cannot ask git which branch it is on.
                     Local only, deliberately; a remote one is skipped;
@@ -23,7 +29,19 @@ that is:
                     The branch is the worktree's CURRENT one, read from git:
                     thurbox records the branch a session was created on, and
                     an agent that switched branches opened its PR from the new
-                    one.
+                    one;
+  the branch's      ...and the branch is the session's OWN, not somebody else's
+  author            it checked out to read. A branch thurbox created for the
+                    session is its own. Any other one is read off its reflog's
+                    first entry: a branch born `Created from <remote>/<its own
+                    name>`, or by a fetch, is a copy of a branch that was
+                    pushed from elsewhere — what `gh pr checkout` leaves in a
+                    reviewer's worktree — and that session is not told to fix
+                    and push it. A branch born from HEAD or from another base
+                    (`origin/main`) is one the session started. A branch whose
+                    reflog cannot be read is not adopted: being wrong that way
+                    costs a message, the other way costs a push to somebody
+                    else's branch.
 
 There is no startup step. The reconciler's first shepherd pass after fleet
 starts is the one that picks them up.
@@ -113,6 +131,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import sys
 
 SCHEMA = 1
 STORE_ENV = "FLEET_SHEPHERD_DIR"
@@ -252,6 +272,16 @@ def lead_refusals(q) -> tuple[str, str]:
     return name, os.environ.get("THURBOX_SESSION", "").strip()
 
 
+def lead_fleet(q):
+    """`peers.lead_fleet`: which fleet a session name leads, or None for any other session.
+
+    peers.py loads queue.py as `fleet_queue`; handing it the copy already
+    running keeps one queue module per process however this one was started.
+    """
+    sys.modules.setdefault("fleet_queue", q)
+    return q._load_sibling("fleet_peers", "peers.py").lead_fleet
+
+
 def held_sessions(tasks) -> dict:
     """session id -> the task holding it, as its worker or as a fixer sent for it."""
     held: dict = {}
@@ -274,6 +304,25 @@ def current_branch(q, path: str) -> str:
     return q.git_out(path, ["branch", "--show-current"], timeout=10).strip()
 
 
+BORN_FROM = re.compile(r"branch: Created from (?:refs/remotes/)?([^/\s]+)/(\S+)$")
+
+
+def authored_here(q, path: str, branch: str, recorded: str) -> bool:
+    """Did this session start `branch`, or check out somebody else's? See the docstring."""
+    if branch == recorded:
+        return True
+    births = q.git_out(path, ["reflog", "show", "--format=%gs", f"refs/heads/{branch}"]).splitlines()
+    if not births:
+        return False
+    birth = births[-1].strip()
+    if birth.startswith("fetch"):
+        return False
+    born = BORN_FROM.match(birth)
+    if born and born.group(2) == branch:
+        return born.group(1) not in q.git_out(path, ["remote"]).split()
+    return True
+
+
 def session_branches(q, row: dict) -> list:
     """[(repo, branch)] for each worktree of a session that is on a branch of its own."""
     base = str(row.get("base_branch") or "").removeprefix("origin/") or "main"
@@ -282,8 +331,9 @@ def session_branches(q, row: dict) -> list:
         if not isinstance(wt, dict):
             continue
         path = str(wt.get("worktree_path") or "")
-        branch = current_branch(q, path) or str(wt.get("branch") or "")
-        if not branch or branch == base:
+        recorded = str(wt.get("branch") or "")
+        branch = current_branch(q, path) or recorded
+        if not branch or branch == base or not authored_here(q, path, branch, recorded):
             continue
         repo = q.repo_from_checkout(path) or q.repo_from_checkout(str(wt.get("repo_path") or ""))
         if repo is not None and (repo, branch) not in found:
@@ -485,12 +535,19 @@ def after_pass(q, args, all_tasks: list, observed: list, listings: dict, unreada
 def adopt(q, args, snapshot: dict, held: dict, prev_sessions: dict, listings: dict, readable: dict,
           observed: list, sessions: dict) -> list:
     lead_name, lead_id = lead_refusals(q)
+    leads_fleet = lead_fleet(q)
+
+    def a_lead(sid) -> bool:
+        name = str((snapshot.get(sid) or {}).get("name") or "")
+        return sid == lead_id or (bool(lead_name) and name == lead_name) or leads_fleet(name) is not None
+
     live = set(snapshot)
     merged_by_pass = {cr.url: row.get("note") or "" for cr, _t, row in observed if row["action"] == "merged"}
     rows: list = []
     for sid, row in sorted(snapshot.items(), key=lambda kv: str(kv[1].get("name") or kv[0])):
         name = str(row.get("name") or "")
-        if sid in held or sid == lead_id or (lead_name and name == lead_name) or not is_local(row):
+        parent = str(row.get("parent_session_id") or "")
+        if sid in held or a_lead(sid) or (parent and a_lead(parent)) or not is_local(row):
             continue
         prev = prev_sessions.get(sid) or {}
         prev_by_url = {e.get("url"): e for e in prev.get("prs") or []}
