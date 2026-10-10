@@ -118,7 +118,7 @@ def test_remembering_what_was_said_never_makes_the_runtime_directory(isolated_en
     mod = lib("notify_lead.py")
     gone = isolated_env / "reconcile-that-was-deleted"
 
-    mod.write_state(str(gone), ["alpha/01-first"], "")
+    mod.write_state(str(gone), {"told": ["alpha/01-first"]}, "")
 
     assert not gone.exists(), "notify made the runtime directory again"
 

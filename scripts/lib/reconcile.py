@@ -82,8 +82,8 @@ BUT IT SAYS WHEN THERE IS SOMETHING TO DECIDE. A task whose blocker clears is
 READY and has no actor: this loop may not dispatch, and the lead only acts when
 spoken to. So the pass after `collect` reads `plan` and, when the ready set has
 grown — or `plan`'s stalled set has, workers at rest with nothing to show —
-wakes the lead: once per transition, never mid-turn, silently when there is no
-lead. `scripts/lib/notify_lead.py` owns those rules.
+wakes the lead: once per transition and per lead conversation, never mid-turn,
+silently when there is no lead. `scripts/lib/notify_lead.py` owns those rules.
 
 AND IT KEEPS THE LEAD'S CHECKOUT CURRENT. `sync-checkout` ran only at
 SessionStart, and one lead conversation lasted sixteen days: a merged fix sat
@@ -829,7 +829,8 @@ def is_lead() -> bool:
     name from the rendered manifest, and that name's id in thurbox's list.
     """
     # THURBOX_SESSION is thurbox's id for it; THURBOX_SESSION_ID is the agent's
-    # conversation, which no `session list` row carries.
+    # conversation, which a fresh lead changes and a restart keeps — the session
+    # id is the one that says which session this is.
     sid = os.environ.get("THURBOX_SESSION") or ""
     if not sid:
         return False

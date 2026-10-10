@@ -213,7 +213,8 @@ names every path and the reason for each.
   ticking, a pidfile for people, its log, the advisory `nudge` flag, the `down`
   flag, and `notified.json` — which ready tasks the lead has
   already been woken about, and which were left in its thurbox mailbox while
-  it was mid-turn, so a transition is told once — and `stale.json`, a
+  it was mid-turn, so a transition is told once to each lead conversation,
+  which the file names — and `stale.json`, a
   stale-lead notice not yet delivered. Those last two are
   runtime state and not records for the same reason as all the others: "the
   lead has been told" is true of one machine's loop and one conversation, and
