@@ -165,11 +165,15 @@ you would have run. An honest gap is fine to post; a silent one is not.
 
 Whatever standing writing rules your agent loads govern every word and
 outrank this section. What review itself requires where those are silent:
-**open with the next step** (who must act, in the first line); **one point
-per comment, anchored to its line**; **mark non-blocking as non-blocking**,
-so `request-changes` means one thing; **a performance verdict, always** — the
-cost on the paths touched, with the number where you measured one, or "no
-performance impact" when that is what §4 found; **three to five lines**.
+
+- **The review body** opens with the next step (who must act, in the first
+  line) and carries **a performance verdict, always** — the cost on the paths
+  touched, with the number where you measured one, or "no performance impact"
+  when that is what §4 found. It is said once, there, not on each line comment.
+- **Each line comment** makes one point, anchored to its line, and marks
+  non-blocking as non-blocking, so `request-changes` means one thing. A
+  performance cost belongs in one only when it is that comment's point.
+- **Both** stay within three to five lines.
 
 **When a review is genuinely uncertain, post nothing and say so in the tick
 report.** An unreviewed change request is a known state; a confidently wrong
