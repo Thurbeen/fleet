@@ -26,8 +26,8 @@
 # synthetic tasks; a held lock and a fresh heartbeat stand in for it, so the
 # header reads as it does on a working fleet.
 #
-# The scratch directory is FLEET_DEMO_ROOT, default ~/.cache/fleet-board-demo,
-# and it is deleted on exit unless FLEET_DEMO_KEEP=1. The raw capture and its
+# The scratch directory is a new run.* directory under FLEET_DEMO_ROOT, default
+# ~/.cache/fleet-board-demo, and it is deleted on exit unless FLEET_DEMO_KEEP=1. The raw capture and its
 # frames are large, so they stay out of the system temp directory too.
 
 set -eu
@@ -35,7 +35,7 @@ set -eu
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)
 REAL_HOME=$HOME
-ROOT=${FLEET_DEMO_ROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/fleet-board-demo}
+PARENT=${FLEET_DEMO_ROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/fleet-board-demo}
 OUT="$REPO_ROOT/media/fleet-board.gif"
 
 missing=
@@ -51,9 +51,10 @@ fi
 UV_CACHE_DIR=$(uv cache dir)
 export UV_CACHE_DIR
 
-rm -rf "$ROOT"
-mkdir -p "$ROOT"
-ROOT=$(CDPATH= cd -- "$ROOT" && pwd)
+# A fresh directory of our own under FLEET_DEMO_ROOT: the only one this
+# script ever deletes, whatever that variable names.
+mkdir -p "$PARENT"
+ROOT=$(mktemp -d "$(CDPATH= cd -- "$PARENT" && pwd)/run.XXXXXX")
 
 # A short socket directory: AF_UNIX paths are length-limited.
 SOCK_DIR=$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/fleet-demo.XXXXXX")
@@ -236,9 +237,12 @@ mkdir -p "$ROOT/out"
 # vhs drives a headless browser it caches under the REAL home; the tape puts
 # the throwaway HOME back before it starts thurbox.
 export FLEET_DEMO_HOME="$HOME"
-# Its frames go to TMPDIR, so that is the scratch directory too.
+# Its frames go to TMPDIR, so that is the scratch directory too, reached
+# through a short link: the browser puts a socket there, and AF_UNIX paths are
+# length-limited.
 mkdir -p "$ROOT/tmp"
-(cd "$ROOT/out" && HOME=$REAL_HOME TMPDIR="$ROOT/tmp" vhs "$SCRIPT_DIR/fleet-board.tape")
+ln -s "$ROOT/tmp" "$SOCK_DIR/t"
+(cd "$ROOT/out" && HOME=$REAL_HOME TMPDIR="$SOCK_DIR/t" vhs "$SCRIPT_DIR/fleet-board.tape")
 # vhs drops frames it cannot capture in time and plays the rest at a fixed
 # rate, so the raw take runs fast. Stretch it back to the tape's own length:
 # every Sleep after Show, plus the typing.
