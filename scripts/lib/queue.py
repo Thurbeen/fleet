@@ -5249,7 +5249,7 @@ def report_unverified(task: Task, rows: list[dict]) -> None:
     )
 
 
-def reopen_unfinished_archives(root: str) -> None:
+def reopen_unfinished_archives(q: Queue) -> None:
     """Clear `archived` on every topic that holds a task that is not finished.
 
     An archived topic claims every task in it is finished, and the live view
@@ -5264,12 +5264,21 @@ def reopen_unfinished_archives(root: str) -> None:
     the price, and `list` and the pane still skip them. The topic comes back
     rather than being read around, so every other reader sees the task too,
     and `reap` archives it again once the task lands.
+
+    It reads them out of `collect`'s own `all` view rather than a second load:
+    archived topics are most of a long-running queue, and a view of its own
+    parsed every one of their records twice a pass. The flag it clears on disk
+    is cleared in that view too, so the rest of the pass reads the topic as
+    live, as a fresh load would.
     """
-    for slug, tasks in sorted(Queue(root, scope="archived").by_topic().items()):
+    for slug, tasks in sorted(q.by_topic().items()):
+        if not q.topics.get(slug, {}).get("archived"):
+            continue
         task = unfinished(tasks)
         if task is None:
             continue
-        set_archived(root, slug, None)
+        set_archived(q.root, slug, None)
+        q.topics[slug].pop("archived", None)
         print(
             f"    {slug:<46} unarchived {task.ref} is `{task.state}`, and an "
             "archived topic holds only finished tasks"
@@ -5278,15 +5287,15 @@ def reopen_unfinished_archives(root: str) -> None:
 
 def cmd_collect(args) -> int:
     root = queue_root()
-    reopen_unfinished_archives(root)
     # `all`, because this command ends by running `reap`, whose view must be —
     # see `reap` below. ONE view for the whole pass rather than a second one
     # built halfway through it, so the run log refreshed at the end renders the
-    # records `reap` just wrote and not the ones this loop read. It costs
-    # nothing: `reopen_unfinished_archives` above has already read every
-    # archived record, and every task in an archived topic is terminal, so the
-    # loop below skips all of them exactly as it skips a concluded live one.
+    # records `reap` just wrote and not the ones this loop read. Reopening an
+    # archived topic reads the same view, so each record is parsed once a
+    # pass, and every task left in an archived topic is terminal, so the loop
+    # below skips all of them exactly as it skips a concluded live one.
     q = Queue(root, scope="all")
+    reopen_unfinished_archives(q)
     concluded = 0
     held = 0
     artifacts = 0

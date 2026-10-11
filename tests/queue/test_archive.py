@@ -20,7 +20,7 @@ import pytest
 from kit_display import set_state_line
 from queuekit import deletions, ok, result
 
-from harness import PYTHON, REPO, expect, refute, run, run_fleet, write
+from harness import PYTHON, REPO, expect, lib, refute, run, run_fleet, write
 from harness import run_queue as q
 
 
@@ -275,3 +275,48 @@ def test_a_finished_topics_run_log_is_refreshed_and_never_reopened(stranded, stu
     refute(out, "run log")
     assert not log.exists(), f"{log.name} was scaffolded again for an archived topic"
     assert not facts.exists(), f"{facts.name} was written again for an archived topic"
+
+
+# --- what an archived record costs the loop ------------------------------------
+#
+# Archived topics are never deleted, so they are most of a long-running queue —
+# 85% of one measured at about 400 tasks — and `collect` is the one pass that
+# reads them, every two minutes. Two views of the same records used to be built
+# per pass: the archived one that looks for a topic to reopen, then the `all`
+# one right after it, so every archived record was parsed twice.
+
+
+def test_one_collect_parses_each_archived_record_once(archived, queue_dir, monkeypatch):
+    queue = lib("queue.py")
+    reads: dict = {}
+    real = queue.read_record
+
+    def counted(path):
+        reads[path] = reads.get(path, 0) + 1
+        return real(path)
+
+    monkeypatch.setattr(queue, "read_record", counted)
+    assert queue.main(["collect"]) == 0
+
+    finished = queue_dir / archived["all"]
+    archived_records = [str(p) for p in sorted(finished.glob("*/task.yaml"))] + [str(finished / "topic.yaml")]
+    assert len(archived_records) == 3
+    twice = {p: reads.get(p, 0) for p in archived_records if reads.get(p, 0) != 1}
+    assert not twice, f"each archived record is parsed once per collect, not {twice}"
+
+
+def test_the_one_view_still_reopens_an_archived_topic_and_reads_it_as_live(archived, queue_dir, monkeypatch):
+    """The view `collect` reads its archived records into is also the one it
+    goes on to close, reap and refresh run logs from — so a topic it reopens has
+    to read as live in that same view, exactly as a second load would have."""
+    finished = queue_dir / archived["all"]
+    # A stale write put the task back to `dispatched`; with no result.md left,
+    # nothing in this pass can close it again.
+    set_state_line(finished / "02-second-half" / "task.yaml", "dispatched")
+    (finished / "02-second-half" / "result.md").unlink()
+    out = ok(q("collect")).out
+    expect(out, archived["all"], "unarchived", "02-second-half")
+    refute(topic_yaml(queue_dir, archived["all"]), "archived:")
+    # Live in the same pass: its run log is opened like any live topic's.
+    assert list(Path(os.environ["FLEET_RUNS_DIR"]).glob(f"*-{archived['all']}.facts.md"))
+    expect(q("list").out, archived["all"], "02-second-half")
