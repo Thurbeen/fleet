@@ -567,7 +567,8 @@ change request comes from this task's branch" is the forge's fact, which
 closes the hole a worker pasting somebody else's good pull request would
 open. A branch NAME is not a repository, so the change request must also be
 in the repository the checkout's `origin` names — which is what stops one URL
-verifying every repository a task spans — and onto that repository's base. A
+verifying every repository a task spans — and onto that repository's base
+(or its integration branch, below). A
 checkout whose `origin` cannot be read is checked on the branch alone. **An integration branch is the one exception**: a repository the
 operator's `orchestration/flow.conf` maps to one (`github.com/o/r = develop`;
 the tracked `flow.example.conf` names none) also verifies a change request

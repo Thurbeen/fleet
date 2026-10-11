@@ -145,6 +145,9 @@ def test_the_task_branch_own_pr_still_verifies_under_a_flow(worked, stubs, isola
     """feat→develop is the other half of the flow, and it is from the task's branch."""
     flow(isolated_env, "github.com/acme/app = develop\n")
     stubs.plain_pr(1205, "feat/vend")
+    # Onto the integration branch, not onto the `main` the task was cut from:
+    # that is what the flow MEANS, so the base check must accept it.
+    stubs.pr_base(1205, "develop")
     result(worked["dir"], "shipped", "feat→develop is open.", PR + "1205")
     expect(ok(q("collect", "--no-reap")).out, "[publish verified: pr]")
 

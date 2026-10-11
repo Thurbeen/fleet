@@ -5032,8 +5032,10 @@ def pull_request_verdict(
     written for every `--add-repo` verify all of them. So the change request's
     repository is compared with the one this repository's checkout names
     (`unit_repo`), and, for the task's own branch, its base with the base the
-    worktree was cut from. A change request from an integration branch targets
-    the next branch along by design, so its base is `integration_verdict`'s
+    worktree was cut from — or, in a repository `flow.conf` gives an
+    integration branch, onto that branch, which is where its feat→develop
+    change request goes by design. A change request FROM the integration branch
+    targets the next branch along, so its base is `integration_verdict`'s
     business and not compared here. Where the checkout's repository cannot be
     read — no `origin`, a local-only fleet, another machine — nothing is
     guessed and the branch check stands alone, exactly as it always did.
@@ -5079,13 +5081,16 @@ def pull_request_verdict(
         if not cr.head_branch:
             return "unknown", "the forge did not say which branch this pull request is from", {}
         whose = f"is from {branch}"
-        if cr.head_branch == branch and cr.base_branch and cr.base_branch != unit["base"]:
+        integration = longest_prefix_rule(cr.repo, integration_branches())
+        # In a repository with an integration branch, the task's own change
+        # request goes feat→develop by design, whatever base it was cut from.
+        bases = {unit["base"]} | ({integration[0]} if integration else set())
+        if cr.head_branch == branch and cr.base_branch and cr.base_branch not in bases:
             return "missing", (
                 f"the pull request is from {branch} onto {cr.base_branch}, and this "
                 f"repository's work is cut from and lands on {unit['base']}"
             ), {}
         if cr.head_branch != branch:
-            integration = longest_prefix_rule(cr.repo, integration_branches())
             if integration is None or integration[0] != cr.head_branch:
                 return "missing", (
                     f"the pull request is from branch {cr.head_branch}, and this task's "
