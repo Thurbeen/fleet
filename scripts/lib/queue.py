@@ -6281,7 +6281,7 @@ def free_build_output(ref: str, trees: list[str], dry: bool) -> int:
             print(f"    {ref:<46} kept       build output in {tree}: {exc}")
             continue
         busy = occupant_in_worktrees(
-            sessions, None, roots, local_resolved_path, os.path.commonpath, skip_offbox=True,
+            sessions, None, roots, local_occupant_path, os.path.commonpath, skip_offbox=True,
         )
         if busy:
             print(f"    {ref:<46} kept       build output: {busy}")

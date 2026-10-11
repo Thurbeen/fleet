@@ -107,3 +107,26 @@ def test_a_worktree_another_session_sits_in_keeps_its_build_output(worktree, stu
     ok(q("abandon", "disk/01-build", "--why", "superseded"))
     expect(ok(q("reap")).out, "gone", "kept", "by-hand")
     assert (tree / "target").is_dir(), "build output was freed under a live session"
+
+
+def test_a_session_whose_directory_is_gone_elsewhere_does_not_keep_it(worktree, stubs, tmp_path):
+    """One stale session in a deleted directory used to keep every worktree's build output."""
+    tree, shared = worktree
+    write(stubs.root / "sessions" / "stale.json", json.dumps({
+        "id": "stale", "name": "left behind", "state": "idle",
+        "cwd": str(tmp_path / "deleted-checkout"), "backend_type": "local:tmux", "worktrees": [],
+    }))
+    ok(q("abandon", "disk/01-build", "--why", "superseded"))
+    expect(ok(q("reap")).out, "gone", "freed")
+    assert_freed(tree, shared)
+
+
+def test_a_session_whose_directory_inside_it_is_gone_still_keeps_it(worktree, stubs):
+    tree, _shared = worktree
+    write(stubs.root / "sessions" / "stale.json", json.dumps({
+        "id": "stale", "name": "left behind", "state": "idle",
+        "cwd": str(tree / "removed-subdir"), "backend_type": "local:tmux", "worktrees": [],
+    }))
+    ok(q("abandon", "disk/01-build", "--why", "superseded"))
+    expect(ok(q("reap")).out, "gone", "kept", "stale")
+    assert (tree / "target").is_dir(), "build output was freed under a session spelled inside it"
