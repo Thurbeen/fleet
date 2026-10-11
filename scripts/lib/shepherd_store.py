@@ -16,11 +16,18 @@ that is:
                     `peers.lead_fleet` recognises;
   not fleet's own   held by no queue task, as its worker or as a fixer sent
                     for it (`sessions.py`'s `orphans` reads "held" the same way),
-                    and not parented to any fleet's lead. A second fleet on
-                    this machine has its own queue, so this one's records
-                    cannot see its workers — but thurbox names their parent,
-                    and that parent is a lead. A session parented to an
-                    ordinary session is still the operator's, and adopted;
+                    and descended from no lead. A second fleet on this
+                    machine has its own queue, so this one's records cannot
+                    see its workers — but thurbox names their parent, and
+                    that parent is a lead. The whole chain of parents is
+                    walked: an ancestor that is any fleet's lead, a session
+                    this queue holds, or an id thurbox does NOT LIST makes
+                    the session somebody else's. An unlisted parent is a
+                    lead that was deleted or re-created under a new id as
+                    often as anything else, and an unknown owner is not
+                    this pass's to message. A session whose every ancestor
+                    is a listed, ordinary session is the operator's, and
+                    adopted;
   local             a session on a `hosts.toml` host keeps its worktree on that
                     host, where this pass cannot ask git which branch it is on.
                     Local only, deliberately; a remote one is skipped;
@@ -541,13 +548,23 @@ def adopt(q, args, snapshot: dict, held: dict, prev_sessions: dict, listings: di
         name = str((snapshot.get(sid) or {}).get("name") or "")
         return sid == lead_id or (bool(lead_name) and name == lead_name) or leads_fleet(name) is not None
 
+    def owned_elsewhere(sid) -> bool:
+        """Some ancestor is a lead, a session this queue holds, or one thurbox does not list."""
+        seen = {sid}
+        parent = str((snapshot.get(sid) or {}).get("parent_session_id") or "")
+        while parent:
+            if parent in seen or parent not in snapshot or parent in held or a_lead(parent):
+                return True
+            seen.add(parent)
+            parent = str(snapshot[parent].get("parent_session_id") or "")
+        return False
+
     live = set(snapshot)
     merged_by_pass = {cr.url: row.get("note") or "" for cr, _t, row in observed if row["action"] == "merged"}
     rows: list = []
     for sid, row in sorted(snapshot.items(), key=lambda kv: str(kv[1].get("name") or kv[0])):
         name = str(row.get("name") or "")
-        parent = str(row.get("parent_session_id") or "")
-        if sid in held or a_lead(sid) or (parent and a_lead(parent)) or not is_local(row):
+        if sid in held or a_lead(sid) or owned_elsewhere(sid) or not is_local(row):
             continue
         prev = prev_sessions.get(sid) or {}
         prev_by_url = {e.get("url"): e for e in prev.get("prs") or []}

@@ -670,9 +670,12 @@ every one — holds a change the gates would merge and reports `needs a human:
 forge cannot list, and a rule fleet cannot read, hold the change too.
 
 **Sessions fleet did not spawn are shepherded too.** Each pass lists thurbox's
-sessions and adopts every LOCAL one that is not the lead (refused by name), is
-held by no task (as worker or fixer), and has a worktree on a branch with an
-open change request on a forge fleet reaches. Its PR is classified exactly as
+sessions and adopts every LOCAL one that is not any fleet's lead (refused by
+name), is held by no task (as worker or fixer), has no ancestor that is a lead,
+a held session or a parent thurbox no longer lists (a deleted or re-created
+lead's workers stay that lead's), and has a worktree on a branch of its own —
+not one it checked out from a remote to review — with an open change request
+on a forge fleet reaches. Its PR is classified exactly as
 above, as a `pr`-method one; for a condition in the fixer table it gets a
 short brief under `orchestration/shepherd/briefs/` and ONE line pointing at
 it — only when the session is at rest by its own word, once per condition per

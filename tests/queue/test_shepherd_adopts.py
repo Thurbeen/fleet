@@ -223,3 +223,76 @@ def test_another_fleets_lead_is_never_adopted(shep, stubs, tmp_path):
     shep.pr(203, headRefName="feat/peer", body="", statusCheckRollup=[FAILED])
     out = q("shepherd").out
     assert sends(stubs, LEAD) == [], out
+
+
+GONE = "0d0d0d0d-0000-0000-0000-000000000004"
+MIDDLE = "0e0e0e0e-0000-0000-0000-000000000005"
+PEER_LEAD = "\U0001f4e1 Mission Control · other-fleet"
+
+
+def test_a_worker_whose_lead_is_gone_is_still_not_adopted(outside, shep, stubs):
+    """Its parent is not listed: a lead deleted, or re-created under a new id. Unknown is not ours."""
+    session(stubs, LEAD, PEER_LEAD, "idle", None)  # the re-created lead, under a new id
+    session(stubs, OUTSIDE, "hand-made", "idle", outside, "feat/outside")
+    session_row(stubs, OUTSIDE, parent_session_id=GONE)
+    out = q("shepherd").out
+    assert sends(stubs, OUTSIDE) == [], out
+    assert OUTSIDE not in store()["sessions"]
+
+
+@pytest.mark.parametrize(("grandparent", "adopted"), [
+    (PEER_LEAD, False),
+    (None, False),  # the grandparent is not listed
+    ("the operator's own session", True),
+])
+def test_a_session_is_judged_by_its_whole_ancestry(outside, shep, stubs, grandparent, adopted):
+    """A worker's own child is still that fleet's: the chain is walked to its root."""
+    session(stubs, MIDDLE, "a worker's helper", "idle", None)
+    session_row(stubs, MIDDLE, parent_session_id=LEAD if grandparent else GONE)
+    if grandparent:
+        session(stubs, LEAD, grandparent, "idle", None)
+    session(stubs, OUTSIDE, "hand-made", "idle", outside, "feat/outside")
+    session_row(stubs, OUTSIDE, parent_session_id=MIDDLE)
+    out = q("shepherd").out
+    assert len(sends(stubs, OUTSIDE)) == (1 if adopted else 0), out
+    assert (OUTSIDE in store()["sessions"]) is adopted
+
+
+def test_a_child_of_this_queues_worker_is_left_to_that_worker(outside, shep, stubs, tmp_path):
+    held = checkout(tmp_path / "held", "main-ish")
+    topic = ok(q("topic", "add", "adoption", "--title", "Adoption",
+                 "--prompt", "shepherd outside sessions")).stdout.strip()
+    ok(q("add", topic, "held", "--title", "A task's own worker", "--repo", str(held),
+         "--branch", "feat/held", "--number", "01"))
+    git("checkout", "-q", "-b", "feat/held", cwd=held)
+    session(stubs, HELD, "queued worker", "idle", held, "feat/held")
+    ok(q("attach", f"{topic}/01-held", HELD))
+    session(stubs, OUTSIDE, "hand-made", "idle", outside, "feat/outside")
+    session_row(stubs, OUTSIDE, parent_session_id=HELD)
+    out = q("shepherd").out
+    assert sends(stubs, OUTSIDE) == [], out
+    assert OUTSIDE not in store()["sessions"]
+
+
+def test_a_parent_cycle_is_not_adopted_and_does_not_hang(outside, shep, stubs):
+    session(stubs, MIDDLE, "loop", "idle", None)
+    session_row(stubs, MIDDLE, parent_session_id=OUTSIDE)
+    session(stubs, OUTSIDE, "hand-made", "idle", outside, "feat/outside")
+    session_row(stubs, OUTSIDE, parent_session_id=MIDDLE)
+    out = q("shepherd").out
+    assert sends(stubs, OUTSIDE) == [], out
+
+
+def test_a_session_spanning_two_repositories_is_told_about_each(shep, stubs, tmp_path):
+    one = checkout(tmp_path / "one", "feat/both")
+    two = checkout(tmp_path / "two", "feat/both")
+    git("remote", "set-url", "origin", "https://github.com/Thurbeen/thurbox.git", cwd=two)
+    trees = [{"branch": "feat/both", "repo_path": str(p), "worktree_path": str(p), "created_by_thurbox": True}
+             for p in (one, two)]
+    session(stubs, OUTSIDE, "hand-made", "idle", None)
+    session_row(stubs, OUTSIDE, worktrees=trees)
+    shep.pr(201, headRefName="feat/both", body="", statusCheckRollup=[FAILED])
+    out = q("shepherd").out
+    prs = store()["sessions"][OUTSIDE]["prs"]
+    assert [p["repo"] for p in prs] == ["github.com/Thurbeen/fleet"], out
+    expect(out, "pull/201")

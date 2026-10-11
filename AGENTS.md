@@ -469,7 +469,8 @@ a second copy — read the skill before you run any of it:
    for — once each, by id, into the PR's session when it is at rest — and
    never its own account's or a bot's; a comment changes no merge gate.
    It also **adopts sessions fleet did not spawn**: every local thurbox session
-   that is not the lead, is held by no task, and sits on a branch with an open
+   that is not a lead, is held by no task, descends from no lead, held
+   session or unlisted parent, and sits on a branch of its own with an open
    change request is classified the same way and, for a condition shepherd
    acts on, sent ONE line pointing at a brief — at rest only, once per
    condition per head, and never a fixer or a merge of its own. Every pass
