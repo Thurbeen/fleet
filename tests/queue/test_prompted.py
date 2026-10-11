@@ -41,9 +41,10 @@ def sends(stubs) -> str:
     return "\n".join(stubs.calls("thurbox-cli", "session send"))
 
 
-def test_attaching_a_working_session_records_it_prompted(stubs, queue_dir):
+@pytest.mark.parametrize("state", ["working", "blocked", "done"])
+def test_attaching_a_working_session_records_it_prompted(stubs, queue_dir, state):
     ref = add_task("adopted", "01")
-    stubs.session_is(WORKING, "working")
+    stubs.session_is(WORKING, state)
     ok(q("attach", ref, WORKING))
 
     out = q("prompt").out
@@ -62,6 +63,9 @@ def test_attaching_a_fresh_idle_session_delivers_the_brief(stubs, queue_dir):
     ref = add_task("fresh-idle", "01")
     stubs.session_is(FRESH, "idle")
     ok(q("attach", ref, FRESH))
+    assert task_doc(queue_dir, ref)["prompted"] is False
+    age_dispatch(queue_dir, ref, 10)
+    assert [row["task"] for row in unprompted()] == [ref]
     ok(q("prompt"))
     expect(sends(stubs), FRESH, "BRIEF.md")
     assert task_doc(queue_dir, ref)["prompted"] is True
@@ -79,7 +83,7 @@ def test_prompted_preserves_an_already_briefed_session(stubs, queue_dir, state):
 
 def test_unprompted_overrides_a_live_state(stubs, queue_dir):
     ref = add_task("hand-spawned", "01")
-    stubs.session_is(WORKING, "idle")
+    stubs.session_is(WORKING, "working")
     ok(q("attach", ref, WORKING, "--unprompted"))
     assert task_doc(queue_dir, ref)["prompted"] is False
 
