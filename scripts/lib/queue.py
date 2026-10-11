@@ -2233,8 +2233,13 @@ def unprintable(value: str) -> bool:
     Wider than a newline and a tab because every reader here splits on lines,
     and Python's `splitlines()` splits on `\\v`, `\\x85` and `\\u2028` too, while
     an escape sequence is printed raw into whoever's terminal lists the queue.
+    The bidi marks and overrides draw as nothing and make the rest of a line
+    read as other text — the same set context.py's CONTROL_RE strips from a peer.
     """
-    return any(unicodedata.category(ch) in ("Cc", "Zl", "Zp") for ch in value)
+    return any(unicodedata.category(ch) in ("Cc", "Zl", "Zp") or ch in BIDI_CONTROLS for ch in value)
+
+
+BIDI_CONTROLS = frozenset("\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069")
 
 
 def requester_value(text: str | None) -> str | None:

@@ -164,3 +164,17 @@ def test_a_hand_padded_topic_requester_reads_as_the_name_its_tasks_inherited(que
     facts = next(runs.glob(f"*-{topic}.facts.md")).read_text(encoding="utf-8")
     expect(facts, "**Requested by.** alice\n")
     refute(facts, "`01-inherits` was requested by")
+
+
+def test_a_bidi_mark_or_override_in_by_is_refused(queue_dir):
+    # An override draws as nothing and makes the rest of a line read as other
+    # text, in list, status and the pane alike.
+    for mark in ("‎", "‏", "‪", "‮", "⁦", "⁩"):
+        done = q("topic", "add", "bad", "--title", "Bad", "--prompt", "p", "--by", f"alice{mark}bob")
+        assert done.code != 0, repr(mark)
+        assert not (queue_dir / "bad").exists()
+    topic = asked(queue_dir)
+    path = queue_dir / topic / "01-inherits" / "task.yaml"
+    write(path, path.read_text(encoding="utf-8").replace("requested_by: alice", 'requested_by: "a\\u202eb"'))
+    expect(q("check").out, "requested_by")
+    refute(ok(q("list")).stdout, "‮")
