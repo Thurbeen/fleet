@@ -15,7 +15,8 @@ from pathlib import Path
 
 from harness import run_queue as q
 
-NOW = datetime.now(timezone.utc).replace(microsecond=0)
+def now() -> datetime:
+    return datetime.now(timezone.utc).replace(microsecond=0)
 
 
 def entry(number: int, **extra) -> dict:
@@ -24,7 +25,7 @@ def entry(number: int, **extra) -> dict:
         "title": f"PR {number}", "head_branch": "feat/x", "head_sha": "", "state": "open", "checks": "passing",
         "failing_checks": [], "review_decision": None, "unresolved_threads": 0, "mergeable": "mergeable",
         "condition": "ready", "detail": "", "action": "none", "action_note": "",
-        "observed_at": NOW.isoformat(), "stale": False, "stale_reason": "",
+        "observed_at": now().isoformat(), "stale": False, "stale_reason": "",
     }
     e.update(extra)
     return e
@@ -33,7 +34,7 @@ def entry(number: int, **extra) -> dict:
 def store(sessions: dict) -> None:
     root = Path(os.environ["FLEET_SHEPHERD_DIR"])
     root.mkdir(parents=True, exist_ok=True)
-    doc = {"schema": 1, "written_at": NOW.isoformat(), "sessions": sessions}
+    doc = {"schema": 1, "written_at": now().isoformat(), "sessions": sessions}
     (root / "prs.json").write_text(json.dumps(doc), encoding="utf-8")
 
 
@@ -48,7 +49,7 @@ def dots(rows) -> dict[int, str]:
 
 
 def test_every_dot_word_from_the_store():
-    old = (NOW - timedelta(hours=2)).isoformat()
+    old = (now() - timedelta(hours=2)).isoformat()
     store({"w1": {"session": "w1", "name": "worker", "task": "topic/01-work", "adopted": False, "prs": [
         entry(1),
         entry(2, checks="pending"),
@@ -77,7 +78,7 @@ def test_every_dot_word_from_the_store():
 
 def test_the_freshness_window_is_two_shepherd_passes():
     store({"w1": {"session": "w1", "name": "w", "task": "t/01", "adopted": False,
-                  "prs": [entry(1, observed_at=(NOW - timedelta(minutes=25)).isoformat())]}})
+                  "prs": [entry(1, observed_at=(now() - timedelta(minutes=25)).isoformat())]}})
     assert dots(records()) == {1: "ready"}, "25 minutes is inside two 15-minute passes"
     assert dots(records(FLEET_RECONCILE_SHEPHERD_SECS="600")) == {1: "stale"}
 
