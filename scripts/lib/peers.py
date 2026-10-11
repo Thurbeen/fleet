@@ -196,12 +196,7 @@ def discovered() -> list[dict] | None:
 
 
 def is_self(entry: dict) -> bool:
-    if entry["host"] != "local":
-        return False
-    try:
-        return os.path.samefile(entry["path"], fleetqueue.checkout_root())
-    except OSError:
-        return False
+    return entry["host"] == "local" and fleetqueue.is_this_checkout(entry["path"])
 
 
 def peers(cache: dict) -> list[dict]:

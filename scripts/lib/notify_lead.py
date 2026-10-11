@@ -265,7 +265,10 @@ def lead_session(name: str) -> tuple[str | None, str]:
 
 
 def lead_row(name: str) -> tuple[dict | None, str]:
-    """The named session's `session list` row, or (None, why not).
+    """This checkout's lead's `session list` row, or (None, why not).
+
+    The one answer to "which session is the lead": the wake below and
+    `reconcile.py`'s `is_lead` both read it, so they cannot disagree.
 
     `session list` and not `session get`: the list carries `id`, `state` and
     `agent_session_id` for every session in one call and probes no pane, which
@@ -291,10 +294,25 @@ def lead_row(name: str) -> tuple[dict | None, str]:
         return None, "thurbox-cli session list did not answer JSON"
     if not isinstance(rows, list):
         return None, "thurbox-cli session list did not answer a list"
-    for row in rows:
-        if isinstance(row, dict) and row.get("name") == name and row.get("id"):
-            return row, ""
-    return None, f"no session named {name!r} is running"
+    named = [r for r in rows if isinstance(r, dict) and r.get("name") == name and r.get("id")]
+    if not named:
+        return None, f"no session named {name!r} is running"
+    # thurbox mirrors every host it reaches, and a Mission Control on a remote
+    # host beside this one is a normal fleet wearing the same name. The lead is
+    # the row on THIS machine whose cwd is THIS checkout — `session_place` and
+    # `is_this_checkout`, the rule `peers.py` tells a peer from itself by. The
+    # name alone answers only when one row carries it (an older thurbox lists
+    # no cwd); several and none of them here is no lead, never a guess.
+    here = [r for r in named
+            if (fleetqueue.session_place(r.get("backend_type")) or ("",))[0] == "local"
+            and fleetqueue.is_this_checkout(r.get("cwd"))]
+    if len(here) == 1:
+        return here[0], ""
+    if len(named) == 1:
+        return named[0], ""
+    return None, (f"{len(named)} sessions are named {name!r} and "
+                  + ("several are" if here else "none of them is")
+                  + " this checkout's on this machine")
 
 
 def identity(row: dict) -> dict:

@@ -816,6 +816,22 @@ def checkout_root() -> str:
     return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
+def is_this_checkout(path) -> bool:
+    """Whether `path`, on THIS machine, is this checkout — False when it cannot tell.
+
+    `samefile` and not a string compare: a symlinked home, a trailing slash, a
+    drive letter's case or a Windows short name all spell one directory two
+    ways. The caller says the path is local first (`session_place`); a path
+    from another machine that happens to exist here is not this checkout.
+    """
+    if not isinstance(path, str) or not path:
+        return False
+    try:
+        return os.path.samefile(path, checkout_root())
+    except (OSError, ValueError):
+        return False
+
+
 # --- the session glyph, which is one setting and one name per KIND ------------
 #
 # thurbox has no per-session icon field, so a session that wears a mark wears it

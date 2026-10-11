@@ -22,7 +22,7 @@ import subprocess
 import time
 
 from harness import PYTHON, REPO, expect, lib, refute, write
-from reconcilekit import wait_for
+from reconcilekit import LEAD, wait_for
 
 BOOT = "import sys\nsys.path.insert(0, sys.argv[1])\nfrom fleet.cli import main\nsys.exit(main(sys.argv[2:]))"
 
@@ -96,6 +96,21 @@ def lead_env(sid: str) -> dict:
 
 
 def test_the_lead_session_start_brings_it_up(recon):
+    done = recon("ensure", "--if-lead", **lead_env("lead-uuid"))
+    assert done.code == 0, done.out
+    expect(done.out, "ticking (pid ")
+    assert recon.pid()
+
+
+def test_a_same_named_remote_lead_listed_first_does_not_hide_this_one(recon, stubs):
+    """thurbox mirrors a remote host's Mission Control under the same name; the
+    first row by name was that one, and the real lead's start skipped silently."""
+    write(stubs.root / "sessions" / "a-remote.json", json.dumps(
+        {"id": "remote-lead", "name": LEAD, "state": "idle",
+         "backend_type": "ssh:devbox:tmux", "cwd": "/srv/fleet"}) + "\n")
+    write(stubs.root / "sessions" / "lead-uuid.json", json.dumps(
+        {"id": "lead-uuid", "name": LEAD, "state": "idle",
+         "backend_type": "local:tmux", "cwd": str(REPO)}) + "\n")
     done = recon("ensure", "--if-lead", **lead_env("lead-uuid"))
     assert done.code == 0, done.out
     expect(done.out, "ticking (pid ")

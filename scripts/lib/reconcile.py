@@ -856,7 +856,8 @@ def is_lead() -> bool:
     """Whether this process runs in the session this checkout's extension names as its lead.
 
     notify_lead.py's two readings, so "who is the lead" has one answer: the
-    name from the rendered manifest, and that name's id in thurbox's list.
+    name from the rendered manifest, and the id of the row `lead_row` picks for
+    it — this checkout's, on this machine, not the first a remote mirror lists.
     """
     # THURBOX_SESSION is thurbox's id for it; THURBOX_SESSION_ID is the agent's
     # conversation, which a fresh lead changes and a restart keeps — the session
