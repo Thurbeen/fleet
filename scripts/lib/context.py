@@ -962,7 +962,7 @@ def pending_rows(q, stalled: set) -> list[dict]:
         # Whom the decision belongs to, as the record names them; null when
         # nobody was recorded.
         if len(rows) > n:
-            rows[-1]["by"] = task.doc.get("requested_by")
+            rows[-1]["by"] = queue.requester(task.doc.get("requested_by"))
     return rows
 
 
@@ -1000,7 +1000,7 @@ def lead_view(every: bool) -> str:
     q = queue.Queue(queue.queue_root())
     stalled = {s["task"] for s in queue.stalled_tasks(q)}
     pending = {r["task"]: r for r in pending_rows(q, stalled)}
-    topics = [topic_row(slug, tasks, pending, q.topics.get(slug, {}).get("requested_by"))
+    topics = [topic_row(slug, tasks, pending, queue.requester(q.topics.get(slug, {}).get("requested_by")))
               for slug, tasks in sorted(q.by_topic().items()) if tasks]
     topics.sort(key=lambda r: (TOPIC_ORDER.index(r["state"]), r["slug"]))
     ready = sum(1 for r in pending.values() if r["why"] == "ready")

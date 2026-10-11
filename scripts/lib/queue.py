@@ -283,6 +283,7 @@ import sys
 import textwrap
 import time
 import tomllib
+import unicodedata
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -2221,9 +2222,19 @@ def cmd_unarchive(args) -> int:
 # of its own to check it against, and recorded so that a Mission Control fronted
 # by a chat channel can start work "under this person". It is recorded and
 # shown, and NOTHING keys on it: no permission, no routing of a notice. A value
-# is one line of display text, so the two characters every line-per-record
-# reader here splits on are refused rather than flattened into somebody's name.
+# is one line of display text, so anything a line-per-record reader splits on,
+# or a terminal acts on, is refused rather than flattened into somebody's name.
 REQUESTER_MAX = 80
+
+
+def unprintable(value: str) -> bool:
+    """A control character or a line or paragraph separator: what no one-line view can draw.
+
+    Wider than a newline and a tab because every reader here splits on lines,
+    and Python's `splitlines()` splits on `\\v`, `\\x85` and `\\u2028` too, while
+    an escape sequence is printed raw into whoever's terminal lists the queue.
+    """
+    return any(unicodedata.category(ch) in ("Cc", "Zl", "Zp") for ch in value)
 
 
 def requester_value(text: str | None) -> str | None:
@@ -2233,8 +2244,8 @@ def requester_value(text: str | None) -> str | None:
     value = text.strip()
     if not value:
         return None
-    if any(ch in value for ch in "\n\r\t"):
-        raise QueueError("--by is one line of text: it may not hold a newline or a tab")
+    if unprintable(value):
+        raise QueueError("--by is one line of text: it may not hold a newline, a tab or any other control character")
     if len(value) > REQUESTER_MAX:
         raise QueueError(f"--by is {len(value)} characters; a requester is at most {REQUESTER_MAX}")
     return value
@@ -2246,9 +2257,19 @@ def requester_problem(value) -> str:
         return ""
     if not isinstance(value, str) or not value.strip():
         return f"requested_by {value!r} is not a name"
-    if any(ch in value for ch in "\n\r\t") or len(value) > REQUESTER_MAX:
+    if unprintable(value) or len(value.strip()) > REQUESTER_MAX:
         return f"requested_by {value!r} is not one short line"
     return ""
+
+
+def requester(value) -> str | None:
+    """A record's `requested_by` as every view shows it: trimmed, or None.
+
+    The one reader, so a hand-edited value no check would pass — a list, a
+    date YAML parsed, an escape sequence — is "not recorded" everywhere rather
+    than drawn, compared or serialized as it came; `check` is what names it.
+    """
+    return None if value is None or requester_problem(value) else value.strip()
 
 
 def cmd_topic_add(args) -> int:
@@ -2483,10 +2504,7 @@ def cmd_add(args) -> int:
     # later edit to topic.yaml does not rewrite who asked for work already
     # under way. None is "not recorded", which every older record also reads as.
     topic_meta = read_yaml(os.path.join(tpath, "topic.yaml"))
-    inherited = topic_meta.get("requested_by")
-    requested_by = requester_value(args.by) or (
-        inherited.strip() if inherited and not requester_problem(inherited) else None
-    )
+    requested_by = requester_value(args.by) or requester(topic_meta.get("requested_by"))
 
     doc = {
         "id": tid,
@@ -2655,7 +2673,8 @@ def render_brief(task: Task, topic: dict, body: str | None) -> str:
     where = f" on host `{host}`" if host else ""
     target_line = f"\n- **Target.** {d['target']}" if d.get("target") else ""
     # Whose request this is, so a worker who has to ask knows whom it is for.
-    requester_line = f"\n- **Requested by.** {d['requested_by']}" if d.get("requested_by") else ""
+    asked = requester(d.get("requested_by"))
+    requester_line = f"\n- **Requested by.** {asked}" if asked else ""
     spans = task_repos(task)[1:]
     spans_line = (
         "\n"
@@ -10112,7 +10131,7 @@ def run_facts(q: Queue, slug: str) -> str:
         f"- **Prompt.** `{os.path.join(os.path.abspath(queue_root()), slug, 'PROMPT.md')}`",
         f"- **Opened.** {topic.get('created', '—')} · **Status.** {run_status(tasks)}"
         f" · **Profile(s).** {', '.join(f'`{p}`' for p in profiles) or '—'}",
-        *([f"- **Requested by.** {topic['requested_by']}"] if topic.get("requested_by") else []),
+        *([f"- **Requested by.** {asked}"] if (asked := requester(topic.get("requested_by"))) else []),
         "",
     ]
 
@@ -10148,8 +10167,8 @@ def run_facts(q: Queue, slug: str) -> str:
         # Only a task asked for by somebody OTHER than its topic's requester:
         # the rest say what the topic line above already said.
         for t in tasks:
-            by = t.doc.get("requested_by")
-            if by and by != topic.get("requested_by"):
+            by = requester(t.doc.get("requested_by"))
+            if by and by != requester(topic.get("requested_by")):
                 lines += ["", f"- **`{t.id}` was requested by {by}**"]
         for o in q.overlaps(tasks):
             refs = ", ".join(f"`{r.split('/')[-1]}`" for r in o["tasks"])
@@ -10718,8 +10737,8 @@ def cmd_list(args) -> int:
     for topic, tasks in sorted(grouped.items()):
         meta = q.topics.get(topic, {})
         flag = "  [archived]" if meta.get("archived") else ""
-        by = f"  by {meta['requested_by']}" if meta.get("requested_by") else ""
-        print(f"{topic} — {meta.get('title', '')}{by}{flag}")
+        by = requester(meta.get("requested_by"))
+        print(f"{topic} — {meta.get('title', '')}{f'  by {by}' if by else ''}{flag}")
         for t in tasks:
             mark = "waiting" if t.state == "queued" and not q.is_ready(t) else t.state
             extra = t.doc.get("artifact") or t.doc.get("session") or ""
@@ -10729,8 +10748,8 @@ def cmd_list(args) -> int:
             pub = t.doc.get("publish") or {}
             if pub.get("state"):
                 extra = f"{extra}  {pub['state']} {age_of(pub.get('at'))}".strip()
-            if t.doc.get("requested_by"):
-                extra = f"{extra}  by {t.doc['requested_by']}".strip()
+            if asker := requester(t.doc.get("requested_by")):
+                extra = f"{extra}  by {asker}".strip()
             print(f"    {t.id:<34} {mark:<11} {where_it_runs(t)}  {extra}")
             # The row is one line and a record can contradict it; task_notes is
             # what says so, and it is the same list the pane renders.
@@ -10777,7 +10796,7 @@ def cmd_show(args) -> int:
     for key in ("state", "repo", "host", "branch", "base", "agent", "profile", "session",
                 "prompted", "outcome"):
         print(f"    {key + ':':<12} {d.get(key)}")
-    print(f"    {'by:':<12} {d.get('requested_by') or 'not recorded'}")
+    print(f"    {'by:':<12} {requester(d.get('requested_by')) or 'not recorded'}")
     for unit in task_repos(task)[1:]:
         print(f"    {'also:':<12} {unit['path']} off {unit['base']}")
     for extra in d.get("add_dirs") or []:

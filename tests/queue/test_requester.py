@@ -129,3 +129,38 @@ def test_the_pane_probe_carries_the_requester_on_the_topic_and_the_task(queue_di
     assert board[f"{topic}/02-overrides"][8] == "@bob"
     # The K record keeps its fifteen positions: additive, never renumbered.
     assert all(len(r) == 15 for r in records if r[0] == "K")
+
+
+def test_a_control_character_or_a_line_separator_in_by_is_refused(queue_dir):
+    # Every reader here splits records on lines, and Python's splitlines() on
+    # more than \n; an escape sequence would be printed raw into the terminal.
+    for bad in ("alice\x1b[2Jbob", "alice\x07bob", "alice\u2028bob", "alice\x85bob", "alice\x0bbob"):
+        done = q("topic", "add", "bad", "--title", "Bad", "--prompt", "p", "--by", bad)
+        assert done.code != 0, repr(bad)
+        assert not (queue_dir / "bad").exists()
+    topic = asked(queue_dir)
+    path = queue_dir / topic / "01-inherits" / "task.yaml"
+    write(path, path.read_text(encoding="utf-8").replace("requested_by: alice", 'requested_by: "a\\eb"'))
+    expect(q("check").out, "requested_by")
+
+
+def test_a_hand_edited_requester_yaml_reads_as_a_date_leaves_status_json_readable(queue_dir):
+    topic = asked(queue_dir)
+    path = queue_dir / topic / "topic.yaml"
+    write(path, path.read_text(encoding="utf-8").replace("requested_by: alice", "requested_by: 2026-10-11"))
+    doc = json.loads(ok(run_fleet("status", "--json")).stdout)
+    entry = next(t for t in doc["queue"]["topics"] if t["slug"] == topic)
+    assert entry["requested_by"] is None
+    expect(q("check").out, "requested_by")
+
+
+def test_a_hand_padded_topic_requester_reads_as_the_name_its_tasks_inherited(queue_dir):
+    topic = asked(queue_dir)
+    path = queue_dir / topic / "topic.yaml"
+    write(path, path.read_text(encoding="utf-8").replace("requested_by: alice", "requested_by: '  alice  '"))
+    expect(ok(q("list")).stdout, "asked — Asked for  by alice\n")
+    ok(q("run", topic))
+    runs = Path(os.environ["FLEET_RUNS_DIR"])
+    facts = next(runs.glob(f"*-{topic}.facts.md")).read_text(encoding="utf-8")
+    expect(facts, "**Requested by.** alice\n")
+    refute(facts, "`01-inherits` was requested by")

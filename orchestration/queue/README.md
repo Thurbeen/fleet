@@ -81,7 +81,9 @@ who asked for a topic, and `add --by` who asked for one task; a task with no
 `--by` stores its topic's name as it was at `add`, so editing `topic.yaml`
 later rewrites no history. A record without the field — every one written
 before it existed — means "not recorded" and loads unchanged. Nothing grants,
-routes or refuses on it.
+routes or refuses on it. `--by` is one line of at most 80
+characters, with no control character; a hand edit that breaks that fails
+`fleet queue check` and reads as "not recorded" in every view until fixed.
 
 ## Three rules worth knowing before you edit anything
 

@@ -238,7 +238,7 @@ def probe_queue() -> dict:
             "slug": topic,
             "title": q.topics.get(topic, {}).get("title", ""),
             # Who asked, as recorded; None for a topic nobody attributed.
-            "requested_by": q.topics.get(topic, {}).get("requested_by"),
+            "requested_by": fleetqueue.requester(q.topics.get(topic, {}).get("requested_by")),
             "tasks": [],
         }
         for t in tasks:
@@ -249,7 +249,7 @@ def probe_queue() -> dict:
                     "ref": t.ref,
                     "id": t.id,
                     "title": t.doc.get("title", ""),
-                    "requested_by": t.doc.get("requested_by"),
+                    "requested_by": fleetqueue.requester(t.doc.get("requested_by")),
                     "state": t.state,
                     "display_state": state,
                     "repo": t.doc.get("repo"),
