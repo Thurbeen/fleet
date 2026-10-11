@@ -24,8 +24,8 @@ does every static check and then ONE pytest run over every area with up to
 eight pytest-xdist workers. Each worker installs its own stub tools; every test
 still gets a fresh isolated environment. `--jobs N` sets the worker count and
 `--jobs 1` runs serially. Ordinary nested gates default to serial execution
-to bound process creation; the poisoned isolation child explicitly uses four
-workers. `markdown` and `lint` have fixers; `--fix` is a no-op for the rest, so
+to bound process creation; isolation uses one serial child for its focused
+contract. `markdown` and `lint` have fixers; `--fix` is a no-op for the rest, so
 it is always safe to pass.
 
 CI PARTITIONS. `--partition I/N` selects one of N deterministic slices of
@@ -185,8 +185,8 @@ def check_tests(names: list[str], jobs: int, partition: str | None = None) -> st
         return "no tests to run"
     argv = [sys.executable, "-m", "pytest", "-q", "--durations=50"]
     if jobs > 1:
-        # Consecutive isolation cases each launch a child gate: large default
-        # chunks strand them on one worker while the others finish.
+        # Bound chunks so expensive subprocess cases cannot strand one worker
+        # while the others finish.
         argv += ["-n", str(jobs), "--maxschedchunk=1"]
     if partition:
         argv += ["--fleet-partition", partition]

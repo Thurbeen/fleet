@@ -20,8 +20,8 @@ jobs:
   # can say which change breaks it.
   #
   # Shards keep the gate's area names. Inside each, fleet check uses up to
-  # eight independent pytest workers (bounded by CPU count); isolation keeps its poisoned checkout
-  # and reruns the same areas with four child workers. Queue and isolation
+  # eight independent pytest workers (bounded by CPU count); isolation uses
+  # one serial child in its poisoned checkout. Queue and isolation
   # also partition collected node ids across jobs; the workflow check holds
   # the complete set of partitions on both runners. No tests are omitted.
   #

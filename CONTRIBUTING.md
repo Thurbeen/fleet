@@ -39,10 +39,11 @@ Run `uv run fleet check <area>` while changing that area; `--list` maps tests
 back to their check. Batch fixes into one push, and run the full gate once
 before each push. Tests use up to eight pytest-xdist workers by default;
 `--jobs N` overrides that count, and `--jobs 1` is useful for diagnosis.
-Every worker keeps the same per-test isolation. The isolation check still
-reruns all eight areas in poisoned checkouts, with the queue split across
-three child gates and the other areas in a fourth. Each child uses four
-workers; ordinary nested gates default to serial execution.
+Every worker keeps the same per-test isolation. The isolation check runs a
+focused contract and explicit representative cases from every previously
+rerun area in one serial child, under a hostile host and poisoned checkout.
+The complete behavior suites run once in the normal gate. Ordinary nested
+gates default to serial execution.
 
 CI splits queue into three jobs and isolation into four per OS using
 `--partition I/N`. Every test node id belongs to exactly one slice, including
