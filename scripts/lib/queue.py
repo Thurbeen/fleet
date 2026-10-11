@@ -189,9 +189,9 @@ Usage:
                        once with no ref, which is the norm; refs launch
                        exactly those, refuse one that is not ready, and leave
                        the rest queued with nothing recorded
-  uv run fleet queue attach <ref> <uuid> [--unprompted]  # record a session
-                       you spawned by hand; one whose agent reports a state is
-                       recorded prompted, so `prompt` never re-briefs it
+  uv run fleet queue attach <ref> <uuid> [--prompted | --unprompted]
+                       # record a session you spawned by hand; working, blocked
+                       or done implies prompted; idle needs an explicit override
   uv run fleet queue prompt [<ref>]       # retry the handoff to a session that
                        was created but not prompted; every such one by default
   uv run fleet queue send <ref> 'one line'  # message a task's worker, and
@@ -4680,19 +4680,17 @@ def cmd_prompt(args) -> int:
 def cmd_attach(args) -> int:
     """Record a session somebody spawned, and whether it already has its work.
 
-    A session whose agent reports a state of its own — busy or at rest — has
-    been talking, so it is recorded prompted: the bare `prompt` sweep would
-    otherwise type the original brief into an agent mid-task, which it did. One
-    with no agent report, or one thurbox cannot answer for, stays
-    unprompted, as before. `--unprompted` is for the hand-spawned session that
-    reports `idle` at its first prompt and has never been told anything.
+    Working, blocked and done imply work has begun, so the bare `prompt` sweep
+    must not re-brief them. Idle is ambiguous: a startup hook can report it
+    before any work is delivered. It stays unprompted unless `--prompted`
+    confirms it already has its work; `--unprompted` forces the reverse.
     """
     q = Queue(queue_root())
     task = q.get(args.ref)
-    prompted = False
-    if not args.unprompted:
+    prompted = args.prompted
+    if not args.unprompted and not args.prompted:
         state, _why = session_state(args.session)
-        prompted = state in SESSION_BUSY | SESSION_AT_REST
+        prompted = state in SESSION_BUSY | {"done"}
     attach(task, args.session, prompted=prompted)
     print(f"{task.ref} -> {args.session}{'' if prompted else '  (unprompted)'}")
     return 0
@@ -11426,11 +11424,17 @@ def build_parser() -> argparse.ArgumentParser:
     at = sub.add_parser("attach", help="record the session doing a task")
     at.add_argument("ref")
     at.add_argument("session")
-    at.add_argument(
+    prompt_state = at.add_mutually_exclusive_group()
+    prompt_state.add_argument(
+        "--prompted",
+        action="store_true",
+        help="record it already briefed, so `fleet queue prompt` does not re-brief it",
+    )
+    prompt_state.add_argument(
         "--unprompted",
         action="store_true",
         help="record it unprompted whatever it reports, so `fleet queue prompt` "
-        "sends it the brief; by default a session whose agent reports a state "
+        "sends it the brief; by default only working, blocked or done "
         "is recorded prompted",
     )
     at.set_defaults(func=cmd_attach)

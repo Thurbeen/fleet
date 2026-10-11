@@ -15,6 +15,7 @@ import json
 from datetime import datetime, timedelta, timezone
 
 import yaml
+import pytest
 from queuekit import ok
 
 from harness import expect, refute, write
@@ -55,6 +56,25 @@ def test_attaching_a_session_with_no_agent_report_stays_unprompted(stubs, queue_
     ref = add_task("fresh", "01")
     ok(q("attach", ref, FRESH))
     assert task_doc(queue_dir, ref)["prompted"] is False
+
+
+def test_attaching_a_fresh_idle_session_delivers_the_brief(stubs, queue_dir):
+    ref = add_task("fresh-idle", "01")
+    stubs.session_is(FRESH, "idle")
+    ok(q("attach", ref, FRESH))
+    ok(q("prompt"))
+    expect(sends(stubs), FRESH, "BRIEF.md")
+    assert task_doc(queue_dir, ref)["prompted"] is True
+
+
+@pytest.mark.parametrize("state", ["idle", "unreported"])
+def test_prompted_preserves_an_already_briefed_session(stubs, queue_dir, state):
+    ref = add_task("briefed", "01")
+    stubs.session_is(FRESH, state)
+    ok(q("attach", ref, FRESH, "--prompted"))
+    ok(q("prompt"))
+    assert sends(stubs) == ""
+    assert task_doc(queue_dir, ref)["prompted"] is True
 
 
 def test_unprompted_overrides_a_live_state(stubs, queue_dir):
