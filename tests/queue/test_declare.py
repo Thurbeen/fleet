@@ -35,13 +35,19 @@ def stamp(delta: timedelta) -> str:
     return (datetime.now(timezone.utc) + delta).replace(microsecond=0).isoformat()
 
 
-def at_rest(stubs) -> None:
+def at_rest(stubs, queue_dir) -> None:
+    """At rest for two hours, so dispatched before that: a declaration made now is
+    never in the dispatch's own second, which `plan` would read as a tie and drop."""
     stubs.session_is(S1, "idle", age=2 * HOUR)
     stubs.session_is(S2, "working", age=2 * HOUR)
+    record = queue_dir / REF / "task.yaml"
+    doc = yaml.safe_load(record.read_text(encoding="utf-8"))
+    doc["dispatched_at"] = stamp(-timedelta(hours=3))
+    record.write_text(yaml.safe_dump(doc), encoding="utf-8")
 
 
-def test_a_future_pause_keeps_a_resting_worker_out_of_stalled(attached, stubs):
-    at_rest(stubs)
+def test_a_future_pause_keeps_a_resting_worker_out_of_stalled(attached, stubs, queue_dir):
+    at_rest(stubs, queue_dir)
     assert REF in stalled(), "the precondition: this worker is stall-eligible"
     ok(q("declare", REF, "paused", "--until", "2h", "--why", "waiting on CI"))
     assert REF not in stalled()
@@ -51,7 +57,7 @@ def test_a_future_pause_keeps_a_resting_worker_out_of_stalled(attached, stubs):
 
 
 def test_a_pause_that_has_run_out_is_a_stall_again(attached, stubs, queue_dir):
-    at_rest(stubs)
+    at_rest(stubs, queue_dir)
     line = {"declare": {"state": "paused", "until": stamp(-timedelta(minutes=5)), "why": "CI"},
             "observed": stamp(-timedelta(hours=1))}
     with open(queue_dir / REF / "progress.jsonl", "a", encoding="utf-8") as fh:
@@ -61,7 +67,7 @@ def test_a_pause_that_has_run_out_is_a_stall_again(attached, stubs, queue_dir):
 
 def test_a_pause_past_the_cap_counts_only_up_to_the_cap(attached, stubs, queue_dir):
     """Declared seven hours ago for a day: the cap ran out an hour ago."""
-    at_rest(stubs)
+    at_rest(stubs, queue_dir)
     line = {"declare": {"state": "paused", "until": stamp(timedelta(hours=17)), "why": "review"},
             "observed": stamp(-timedelta(hours=7))}
     with open(queue_dir / REF / "progress.jsonl", "a", encoding="utf-8") as fh:
@@ -78,8 +84,8 @@ def test_the_command_refuses_a_pause_beyond_the_cap_or_in_the_past(attached):
         "a time with no offset is refused rather than read as some machine's local time"
 
 
-def test_needs_input_is_its_own_set_and_not_a_stall(attached, stubs):
-    at_rest(stubs)
+def test_needs_input_is_its_own_set_and_not_a_stall(attached, stubs, queue_dir):
+    at_rest(stubs, queue_dir)
     ok(q("declare", REF, "needs-input", "--why", "keep the old flag or drop it?"))
     doc = plan()
     assert REF not in [r["task"] for r in doc["stalled"]]
@@ -88,15 +94,34 @@ def test_needs_input_is_its_own_set_and_not_a_stall(attached, stubs):
     expect(q("plan").out, "needs input: 1", "keep the old flag or drop it?")
 
 
-def test_a_message_from_the_lead_answers_needs_input(attached, stubs):
-    at_rest(stubs)
+def test_a_message_from_the_lead_answers_needs_input(attached, stubs, queue_dir):
+    at_rest(stubs, queue_dir)
     ok(q("declare", REF, "needs-input", "--why", "which?"))
     ok(q("send", REF, "drop it"))
     assert plan()["needs_input"] == []
 
 
+def test_a_message_in_the_same_second_as_the_question_answers_it(attached, stubs, queue_dir):
+    """Every stamp here is to the second, so a tie is ambiguous, and it goes to the
+    message: the task falls back to the inference rather than hiding behind a question
+    the lead may already have answered. CI on Windows ran declare and send inside
+    one second and kept the question standing."""
+    at_rest(stubs, queue_dir)
+    ok(q("declare", REF, "needs-input", "--why", "which?"))
+    ok(q("send", REF, "drop it"))
+    record = yaml.safe_load((queue_dir / REF / "task.yaml").read_text(encoding="utf-8"))
+    sent = record["sends"][-1]["at"]
+    progress = queue_dir / REF / "progress.jsonl"
+    rows = [json.loads(r) for r in progress.read_text(encoding="utf-8").splitlines()]
+    for row in rows:
+        if "declare" in row:
+            row["observed"] = sent
+    progress.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    assert plan()["needs_input"] == []
+
+
 def test_a_declaration_before_a_restart_is_ignored(attached, stubs, queue_dir):
-    at_rest(stubs)
+    at_rest(stubs, queue_dir)
     line = {"declare": {"state": "needs-input", "why": "old question"},
             "observed": stamp(-timedelta(hours=1))}
     pause = {"declare": {"state": "paused", "until": stamp(timedelta(hours=2)), "why": "old wait"},

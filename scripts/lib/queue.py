@@ -3103,7 +3103,9 @@ AT_REST_STATES = ("idle", "done")
 # DELIVERED MESSAGE. A declaration is about the conversation that wrote it: a
 # `refuel` restart or a fresh dispatch is a new turn the old word says nothing
 # about, and a message from the lead is the answer a `needs-input` was waiting
-# for. Ties go to the declaration, since every stamp here is to the second.
+# for. Every stamp here is to the second, so a declaration in the same second
+# as one of those is ambiguous, and the tie goes to the floor: the task falls
+# back to the inference, which can only report a stall, never hide one.
 
 DECLARE_STATES = ("paused", "needs-input")
 
@@ -3144,7 +3146,7 @@ def declaration(task: Task) -> dict | None:
         if not isinstance(said, dict) or said.get("state") not in DECLARE_STATES:
             continue
         when = record_time(doc.get("observed"))
-        if when and when >= floor and (latest is None or when >= latest[0]):
+        if when and when > floor and (latest is None or when >= latest[0]):
             latest = (when, said)
     if latest is None:
         return None
