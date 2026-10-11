@@ -131,7 +131,9 @@ STALE, NEVER DROPPED. A forge, thurbox or network that cannot be read leaves
 the previous entry exactly as it was, with `stale: true` and the reason, so a
 dot keeps its last colour and says it is old. An entry is removed only when its
 source PROVES it gone: thurbox listed every session and that one was not among
-them, its task released it, or the session moved to another branch.
+them, its task released it, or git READ the session's worktree on another
+branch. A worktree git cannot read keeps its entries, `sent` included, marked
+stale until git answers or thurbox stops listing the session.
 """
 
 from __future__ import annotations
@@ -139,6 +141,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 import sys
 
 SCHEMA = 1
@@ -305,20 +308,36 @@ def is_local(row: dict) -> bool:
     return not row.get("host") and (not backend or backend.startswith("local"))
 
 
-def current_branch(q, path: str) -> str:
+class Unread(Exception):
+    """git could not answer about a worktree that exists: not proof of anything."""
+
+
+def git_read(path: str, argv: list) -> str:
+    """git's stdout, or Unread. Unlike `git_out`, a failure is not an empty answer."""
+    try:
+        out = subprocess.run(["git", "-C", path] + argv, capture_output=True, text=True,
+                             encoding="utf-8", timeout=10)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise Unread(str(exc)) from exc
+    if out.returncode != 0:
+        raise Unread(out.stderr.strip() or f"git {argv[0]} exited {out.returncode}")
+    return out.stdout
+
+
+def current_branch(path: str) -> str:
     if not path or not os.path.isdir(path):
         return ""
-    return q.git_out(path, ["branch", "--show-current"], timeout=10).strip()
+    return git_read(path, ["branch", "--show-current"]).strip()
 
 
 BORN_FROM = re.compile(r"branch: Created from (?:refs/remotes/)?([^/\s]+)/(\S+)$")
 
 
-def authored_here(q, path: str, branch: str, recorded: str) -> bool:
+def authored_here(path: str, branch: str, recorded: str) -> bool:
     """Did this session start `branch`, or check out somebody else's? See the docstring."""
     if branch == recorded:
         return True
-    births = q.git_out(path, ["reflog", "show", "--format=%gs", f"refs/heads/{branch}"]).splitlines()
+    births = git_read(path, ["reflog", "show", "--format=%gs", f"refs/heads/{branch}"]).splitlines()
     if not births:
         return False
     birth = births[-1].strip()
@@ -326,26 +345,34 @@ def authored_here(q, path: str, branch: str, recorded: str) -> bool:
         return False
     born = BORN_FROM.match(birth)
     if born and born.group(2) == branch:
-        return born.group(1) not in q.git_out(path, ["remote"]).split()
+        return born.group(1) not in git_read(path, ["remote"]).split()
     return True
 
 
-def session_branches(q, row: dict) -> list:
-    """[(repo, branch)] for each worktree of a session that is on a branch of its own."""
+def session_branches(q, row: dict) -> tuple[list, str]:
+    """([(repo, branch)] for each worktree on a branch of its own, why a worktree could not be read).
+
+    A worktree git cannot read proves nothing about which branch it is on, so
+    the caller keeps what it knew rather than reading the silence as a move.
+    """
     base = str(row.get("base_branch") or "").removeprefix("origin/") or "main"
-    found = []
+    found, unread = [], ""
     for wt in row.get("worktrees") or []:
         if not isinstance(wt, dict):
             continue
         path = str(wt.get("worktree_path") or "")
         recorded = str(wt.get("branch") or "")
-        branch = current_branch(q, path) or recorded
-        if not branch or branch == base or not authored_here(q, path, branch, recorded):
+        try:
+            branch = current_branch(path) or recorded
+            if not branch or branch == base or not authored_here(path, branch, recorded):
+                continue
+        except Unread as exc:
+            unread = f"git could not read {path}: {exc}"
             continue
         repo = q.repo_from_checkout(path) or q.repo_from_checkout(str(wt.get("repo_path") or ""))
         if repo is not None and (repo, branch) not in found:
             found.append((repo, branch))
-    return found
+    return found, unread
 
 
 # --- an adopted session's PR --------------------------------------------------
@@ -572,7 +599,8 @@ def adopt(q, args, snapshot: dict, held: dict, prev_sessions: dict, listings: di
         prev_by_url = {e.get("url"): e for e in prev.get("prs") or []}
         fresh: list = []
         branches: set = set()
-        for repo, branch in session_branches(q, row):
+        found, unread = session_branches(q, row)
+        for repo, branch in found:
             branches.add(branch)
             if repo not in listings:
                 crs, err = q.open_prs(repo)
@@ -588,7 +616,12 @@ def adopt(q, args, snapshot: dict, held: dict, prev_sessions: dict, listings: di
                     rows.append({"session": sid, "name": name, "pr": cr.url, "repo": cr.repo.qualified,
                                  "condition": entry["condition"], "detail": entry["detail"],
                                  "action": entry["action"], "note": entry["action_note"]})
-        prs = carry_session(q, prev, fresh, readable, branches)
+        if unread:
+            seen = {e["url"] for e in fresh}
+            prs = fresh + [e if e.get("stale") else stale(e, unread)
+                           for e in prev.get("prs") or [] if e.get("url") not in seen]
+        else:
+            prs = carry_session(q, prev, fresh, readable, branches)
         # Adopted on an OPEN pull request; one already followed keeps how it ended.
         if fresh or (prev.get("adopted") and prs):
             sessions[sid] = {"session": sid, "name": name, "task": None, "adopted": True, "prs": prs}

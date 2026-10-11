@@ -315,3 +315,36 @@ def test_a_task_session_thurbox_no_longer_lists_leaves_the_store(shep, stubs, tm
     (stubs.root / "sessions" / f"{HELD}.json").unlink()
     out = q("shepherd").out
     assert HELD not in store()["sessions"], out
+
+
+def test_a_git_failure_keeps_an_adopted_session_and_what_it_was_told(shep, stubs, tmp_path):
+    """git that cannot be read is not git that said "another branch": the entry and its `sent` stay."""
+    wt = checkout(tmp_path / "moved", "created-by-thurbox")
+    git("checkout", "-q", "-b", "fix/its-own", cwd=wt)
+    session(stubs, OUTSIDE, "moved on", "idle", wt, "created-by-thurbox")
+    shep.pr(201, headRefName="fix/its-own", body="", statusCheckRollup=[FAILED])
+    q("shepherd")
+    assert len(sends(stubs, OUTSIDE)) == 1, shep.tbx_log()
+
+    head = wt / ".git" / "HEAD"
+    good = head.read_text(encoding="utf-8")
+    head.write_text("garbage\n", encoding="utf-8")  # every git read in the worktree now fails
+    out = q("shepherd").out
+    entry = store()["sessions"][OUTSIDE]["prs"][0]
+    assert entry["stale"] is True and len(entry["sent"]) == 1, out
+
+    head.write_text(good, encoding="utf-8")
+    out = q("shepherd").out
+    assert len(sends(stubs, OUTSIDE)) == 1, out + shep.tbx_log()
+
+
+def test_a_session_git_says_moved_to_another_branch_is_dropped(shep, stubs, tmp_path):
+    """A branch that WAS read and is not the PR's is definitive: ownership does not linger."""
+    wt = checkout(tmp_path / "moved", "created-by-thurbox")
+    git("checkout", "-q", "-b", "fix/its-own", cwd=wt)
+    session(stubs, OUTSIDE, "moved on", "idle", wt, "created-by-thurbox")
+    shep.pr(201, headRefName="fix/its-own", body="", statusCheckRollup=[FAILED])
+    q("shepherd")
+    git("checkout", "-q", "-b", "fix/next-thing", cwd=wt)
+    out = q("shepherd").out
+    assert OUTSIDE not in store()["sessions"], out
