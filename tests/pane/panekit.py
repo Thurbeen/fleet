@@ -39,7 +39,37 @@ elif verb == "session list":
     listing = root / "session-list.json"
     sys.stdout.write(listing.read_text(encoding="utf-8") if listing.exists() else "[]\n")
 elif verb == "plugin install":
-    print("installed " + args[2])
+    # thurbox's own rule: it overwrites only the bytes it last delivered. A
+    # destination holding anything else is `kept` — exit 0, nothing written —
+    # and one it never recorded is refused.
+    dest = root / "ui" / args[args.index("--as") + 1]
+    record = root / "delivered" / args[args.index("--as") + 1]
+    payload = Path(args[2]).read_bytes()
+    current = dest.read_bytes() if dest.exists() else None
+    last = record.read_bytes() if record.exists() else None
+    if current is not None and last is None:
+        print("error: " + args[args.index("--as") + 1] + " already exists and is not managed here")
+        raise SystemExit(1)
+    if current is None and last is not None:
+        outcome = "deleted"
+    elif current is not None and current not in (payload, last):
+        outcome = "kept"
+    else:
+        outcome = "installed" if current is None else "updated"
+        for path in (dest, record):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(payload)
+    print(outcome + " " + args[2])
+elif verb == "plugin remove":
+    # Forgets the record; takes back only a file still what was delivered.
+    dest = root / "ui" / args[2]
+    record = root / "delivered" / args[2]
+    if not record.exists():
+        print("error: " + args[2] + " is not installed")
+        raise SystemExit(1)
+    if dest.exists() and dest.read_bytes() == record.read_bytes():
+        dest.unlink()
+    record.unlink()
 elif verb == "plugin dir":
     print(root / "ui")
 elif verb == "plugin check":
@@ -47,6 +77,10 @@ elif verb == "plugin check":
     text = layout.read_text(encoding="utf-8") if layout.exists() else ""
     live = [line for line in text.splitlines() if not re.match(r"\s*--", line)]
     if any('slot = "fleetqueue"' in line for line in live):
+        # Chords claimed twice are reported only once every pane is placed.
+        claims = root / "check-claims.txt"
+        if claims.exists():
+            sys.stdout.write(claims.read_text(encoding="utf-8"))
         print("✓ loads — fleetqueue")
     else:
         print('✗ nothing places slot "fleetqueue"')

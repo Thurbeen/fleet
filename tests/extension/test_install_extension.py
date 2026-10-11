@@ -156,12 +156,120 @@ def test_an_install_installs_the_extension_and_the_pane_and_places_nothing(stubs
     assert not run(["git", "status", "--porcelain"], cwd=fleet).stdout, "a rendered file is tracked"
 
 
+def test_a_slot_thurbox_kept_is_retired_so_each_key_has_one_plugin(stubs, tmp_path):
+    """The board's slot once held the combined column; a copy thurbox will not overwrite must not outlive the install."""
+    ui = thurbox(stubs).parent
+    fleet = clone(tmp_path)
+    column = (fleet / "interface" / "fleet_queue.lua").read_bytes()
+    stale = column + b"-- edited in place\n"
+    write(ui / "plugins" / "91_fleet_queue.lua", stale.decode("utf-8"))
+    write(stubs.root / "delivered" / "plugins" / "91_fleet_queue.lua", column.decode("utf-8"))
+    done = install(fleet)
+    assert done.code == 0, done.out
+    board = (fleet / "interface" / "fleet_kanban.lua").read_bytes()
+    assert (ui / "plugins" / "91_fleet_queue.lua").read_bytes() == board, done.out
+    claimants = [p.name for p in sorted((ui / "plugins").glob("*.lua")) if b'"fleetqueue.toggle"' in p.read_bytes()]
+    assert claimants == ["92_fleet_queue.lua"], claimants
+    assert [p.name for p in (ui / "plugins").glob("*.lua") if b'"fleetqueue.board"' in p.read_bytes()] == ["91_fleet_queue.lua"]
+    backups = list((ui / "plugins").glob("91_fleet_queue.lua.bak-*"))
+    assert len(backups) == 1 and backups[0].read_bytes() == stale, "the edit thurbox protected was lost"
+    expect(done.out, "held a file thurbox would not replace", str(backups[0]), "The Kanban board is installed")
+    # A second run finds its own delivery and moves nothing.
+    again = install(fleet)
+    assert again.code == 0, again.out
+    assert len(list((ui / "plugins").glob("*.bak-*"))) == 1
+    refute(again.out, "would not replace")
+
+
+DELIVERIES = [
+    ("lib/fleet_reader.lua", "fleet_reader.lua"),
+    ("lib/fleet_board.lua", "fleet_board.lua"),
+    ("lib/fleet_home.lua", "fleet_home.lua"),
+    ("plugins/92_fleet_queue.lua", "fleet_queue.lua"),
+    ("plugins/91_fleet_queue.lua", "fleet_kanban.lua"),
+    ("plugins/93_fleet_lead.lua", "fleet_lead.lua"),
+]
+
+
+@pytest.mark.parametrize("destination,source", DELIVERIES)
+@pytest.mark.parametrize("recorded", [True, False], ids=["kept", "never-recorded"])
+def test_every_delivery_thurbox_declines_is_set_aside_and_made(stubs, tmp_path, destination, source, recorded):
+    """`kept` and exit 0 for an edited copy; a refusal for a file thurbox never recorded. Neither is an install."""
+    ui = thurbox(stubs).parent
+    fleet = clone(tmp_path)
+    write(ui / destination, "-- somebody's\n")
+    if recorded:
+        write(stubs.root / "delivered" / destination, "-- what thurbox last wrote\n")
+    done = install(fleet)
+    assert done.code == 0, done.out
+    assert (ui / destination).read_bytes() == (fleet / "interface" / source).read_bytes(), done.out
+    backups = list((ui / destination).parent.glob("*.bak-*"))
+    assert len(backups) == 1 and backups[0].read_text(encoding="utf-8") == "-- somebody's\n", done.out
+    expect(done.out, f"{destination} held a file thurbox would not replace", str(backups[0]))
+    refute(done.out, "could not install")
+
+
+def test_a_plugin_the_operator_deleted_stays_deleted_and_is_named(stubs, tmp_path):
+    ui = thurbox(stubs).parent
+    fleet = clone(tmp_path)
+    assert install(fleet).code == 0
+    (ui / "plugins" / "92_fleet_queue.lua").unlink()
+    done = install(fleet)
+    assert done.code == 0, done.out
+    assert not (ui / "plugins" / "92_fleet_queue.lua").exists()
+    expect(done.out, "plugins/92_fleet_queue.lua is not installed", "thurbox-cli plugin remove plugins/92_fleet_queue.lua")
+    assert (ui / "plugins" / "93_fleet_lead.lua").exists(), "the deliveries after it were skipped"
+
+
+def placed(stubs) -> None:
+    ui = thurbox(stubs)
+    ui.write_text(STOCK.read_text(encoding="utf-8") + '\n-- x\nlocal _ = { slot = "fleetqueue" }\n', encoding="utf-8")
+
+
+def test_a_key_another_plugin_wins_is_reported_and_not_announced(stubs, tmp_path):
+    placed(stubs)
+    write(stubs.root / "check-claims.txt",
+          "  ! plugins/93_fleet_lead.lua — ctrl+x is claimed by both review.open and fleetlead.focus; "
+          "review.open wins (declared in review/plugins/40_review.lua)\n"
+          "  ! files/90_files.lua — f3 is claimed by both fleetqueue.toggle and files.focus; fleetqueue.toggle wins\n")
+    done = install(clone(tmp_path))
+    assert done.code == 0, done.out
+    expect(done.out, "ctrl+x is claimed by both review.open and fleetlead.focus; review.open wins",
+           "Bind `fleetlead.focus`", "The Kanban board is installed", "installed and placed.")
+    refute(done.out, "Ctrl+X focuses this fleet's Mission Control (", "Bind `fleetqueue.toggle`", "Press F3", "NOT KNOWN")
+
+
+def test_a_board_key_another_plugin_wins_is_not_announced_either(stubs, tmp_path):
+    placed(stubs)
+    write(stubs.root / "check-claims.txt",
+          "  ! plugins/91_fleet_queue.lua — alt+k is claimed by both other.go and fleetqueue.board; other.go wins\n")
+    done = install(clone(tmp_path))
+    expect(done.out, "Bind `fleetqueue.board`", "Ctrl+X focuses this fleet's Mission Control (")
+    refute(done.out, "The Kanban board is installed", "Press F3")
+
+
+def test_a_key_two_fleet_files_both_claim_is_reported(stubs, tmp_path):
+    placed(stubs)
+    write(stubs.root / "check-claims.txt",
+          "  ! a, b — f3 is claimed by both fleetqueue.toggle and fleetqueue.toggle; fleetqueue.toggle wins\n")
+    done = install(clone(tmp_path))
+    expect(done.out, "Bind `fleetqueue.toggle`")
+
+
+def test_an_unplaced_column_leaves_the_keys_unchecked_and_says_so(stubs, tmp_path):
+    """thurbox names a chord claimed twice only once every pane is placed, so silence then is not a clean bill."""
+    thurbox(stubs)
+    done = install(clone(tmp_path))
+    expect(done.out, "NOT PLACED", "NOT KNOWN yet")
+
+
 def test_a_placed_pane_is_reported_placed(stubs, tmp_path):
     ui = thurbox(stubs)
     ui.write_text(STOCK.read_text(encoding="utf-8") + '\n-- x\nlocal _ = { slot = "fleetqueue" }\n', encoding="utf-8")
     done = install(clone(tmp_path))
     assert done.code == 0, done.out
     expect(done.out, "installed and placed. Press F3")
+    refute(done.out, "NOT KNOWN")
 
 
 def test_a_lead_opening_another_directory_is_a_non_zero_exit_naming_the_remedy(stubs, tmp_path):
