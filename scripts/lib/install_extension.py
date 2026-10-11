@@ -83,7 +83,9 @@ two claimants and Alt+K none, and this printed success. So every delivery is
 compared with its source afterwards, and a destination thurbox kept — or
 refused outright, which is its answer for a file it never recorded — is moved
 beside itself to `<name>.bak-<timestamp>`, which no interface loads, forgotten
-by thurbox (`plugin remove`) and delivered again. A file the operator DELETED
+by thurbox (`plugin remove`) and delivered again — and put back if that second
+delivery fails. An install that failed for any other reason moves nothing: the
+slot it would empty is one that works. A file the operator DELETED
 is the one thing left as it is: thurbox remembers a deletion on purpose. These destinations are fleet's by name and
 `interface/` is where a change to them is made; the edit is saved, never lost.
 
@@ -540,6 +542,11 @@ def deliver(cli: str, ui: str, source: str, destination: str) -> bool:
                 file=sys.stderr,
             )
         return installed
+    # Only thurbox's two ways of declining are a reason to move a file: any other
+    # failure — a source that is gone, a directory it cannot write — would empty
+    # a slot that works.
+    if not installed and not unmanaged(cli, destination):
+        return False
     # Set aside BEFORE thurbox forgets the record: a failure here changes nothing.
     backup = f"{path}.bak-{time.strftime('%Y%m%d%H%M%S')}"
     while os.path.exists(backup):
@@ -549,18 +556,40 @@ def deliver(cli: str, ui: str, source: str, destination: str) -> bool:
     except OSError as error:
         print(f"\nwarning: {destination} holds a file thurbox will not replace, and it could not be moved: {error}", file=sys.stderr)
         return False
+    # Fails for a file thurbox never recorded, which is one of the two cases; the install below is the verdict.
+    subprocess.run([cli, "plugin", "remove", destination, "--text"], capture_output=True)
+    if subprocess.run(command).returncode or not landed(ui, source, destination):
+        sys.stdout.flush()
+        try:
+            os.replace(backup, path)
+            where = "It was put back"
+        except OSError:
+            where = f"What was there is at {backup}"
+        print(f"\nwarning: {destination} could not be replaced with {source}. {where}.", file=sys.stderr)
+        return False
+    sys.stdout.flush()
     print(
         f"\nwarning: {destination} held a file thurbox would not replace — not what it last\n"
         f"delivered there. It was moved to {backup}\nand the current one installed in its place.",
         file=sys.stderr,
     )
     sys.stderr.flush()
-    # Fails for a file thurbox never recorded, which is one of the two cases; the install below is the verdict.
-    subprocess.run([cli, "plugin", "remove", destination, "--text"], capture_output=True)
-    if subprocess.run(command).returncode or not landed(ui, source, destination):
-        print(f"\nwarning: {destination} still does not hold {source}", file=sys.stderr)
-        return False
     return True
+
+
+def unmanaged(cli: str, destination: str) -> bool:
+    """Does thurbox list `destination` as a file it never installed — the one it refuses to install over?"""
+    listing = subprocess.run([cli, "plugin", "list", "--json"], capture_output=True, encoding="utf-8", errors="replace")
+    try:
+        files = json.loads(listing.stdout).get("files", [])
+    except (ValueError, AttributeError):
+        return False
+    return any(
+        isinstance(entry, dict)
+        and str(entry.get("file", "")).replace("\\", "/") == destination
+        and not entry.get("installed_from")
+        for entry in files
+    )
 
 
 def lost_keys(report: str) -> dict[str, str]:

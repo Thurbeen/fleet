@@ -44,6 +44,9 @@ elif verb == "plugin install":
     # and one it never recorded is refused.
     dest = root / "ui" / args[args.index("--as") + 1]
     record = root / "delivered" / args[args.index("--as") + 1]
+    if not Path(args[2]).is_file() or (root / "refuse-install" / Path(args[2]).name).exists():
+        print("error: could not read " + args[2])
+        raise SystemExit(1)
     payload = Path(args[2]).read_bytes()
     current = dest.read_bytes() if dest.exists() else None
     last = record.read_bytes() if record.exists() else None
@@ -60,6 +63,15 @@ elif verb == "plugin install":
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(payload)
     print(outcome + " " + args[2])
+elif verb == "plugin list":
+    # A file under the interface with no delivery record is one thurbox never installed.
+    import json
+    ui = root / "ui"
+    print(json.dumps({"files": [
+        {"file": path.relative_to(ui).as_posix(),
+         "installed_from": "somewhere" if (root / "delivered" / path.relative_to(ui)).exists() else None}
+        for path in sorted(ui.rglob("*")) if path.is_file()
+    ]}))
 elif verb == "plugin remove":
     # Forgets the record; takes back only a file still what was delivered.
     dest = root / "ui" / args[2]

@@ -209,6 +209,30 @@ def test_every_delivery_thurbox_declines_is_set_aside_and_made(stubs, tmp_path, 
     refute(done.out, "could not install")
 
 
+@pytest.mark.parametrize("recorded", [True, False], ids=["recorded", "never-recorded"])
+def test_an_install_that_fails_for_another_reason_leaves_a_working_slot_alone(stubs, tmp_path, recorded):
+    """Only `kept` and a refusal of an unrecorded file move anything; a source thurbox cannot read does not."""
+    ui = thurbox(stubs).parent
+    fleet = clone(tmp_path)
+    assert install(fleet).code == 0
+    slot = ui / "plugins" / "91_fleet_queue.lua"
+    if recorded:
+        working = slot.read_bytes()
+    else:
+        working = b"-- somebody's\n"
+        slot.write_bytes(working)
+        (stubs.root / "delivered" / "plugins" / "91_fleet_queue.lua").unlink()
+    write(stubs.root / "refuse-install" / "fleet_kanban.lua", "")
+    done = install(fleet)
+    assert slot.read_bytes() == working, done.out
+    assert not list((ui / "plugins").glob("*.bak-*")), done.out
+    expect(done.out, "could not install the TUI plugin")
+    refute(done.out, "installed in its place")
+    if recorded:
+        assert (stubs.root / "delivered" / "plugins" / "91_fleet_queue.lua").exists(), "thurbox's record was dropped"
+        assert not stubs.calls("thurbox-cli", "plugin remove plugins/91_fleet_queue.lua --text")
+
+
 def test_a_plugin_the_operator_deleted_stays_deleted_and_is_named(stubs, tmp_path):
     ui = thurbox(stubs).parent
     fleet = clone(tmp_path)
