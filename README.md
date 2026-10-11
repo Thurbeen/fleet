@@ -30,11 +30,13 @@ See the whole fleet without leaving thurbox. **Alt+K** opens six columns of
 live queue records, from waiting tasks to working sessions, open change
 requests, reader replies and work that needs your attention.
 
-![Animated Kanban demo: navigate cards, filter work that needs attention,
-search a topic while the board stays visible, clear the filter, and toggle
-optional fuel gauges.](media/fleet-board.gif)
+![Animated demo in thurbox: Mission Control beside the session list, Alt+K
+opens the Kanban board, filters work that needs attention, searches a topic,
+then Enter on a running card opens its worker session and Ctrl+X returns to
+Mission Control.](media/fleet-board.gif)
 
-The demo uses **Doom** at **200×50**, showing all six columns side by side.
+The demo uses thurbox's **Doom** theme at 1920×1080. It shows the session list
+on either side of the full-screen board, using synthetic sessions and records.
 [Open the full-size animation](media/fleet-board.gif).
 
 Kanban replaces the narrow fleet pane as the main queue view. The board

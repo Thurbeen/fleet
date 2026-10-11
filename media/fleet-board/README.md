@@ -16,9 +16,14 @@ captures hide fuel; `-fuel` captures show its compact two-column gauges, and
 drag-selection was also exercised and is blocked by thurbox 2.51.7’s float
 input routing; the board cannot enable copying itself.
 
-The README’s `../fleet-board.gif` animates native **200×50 Doom** captures,
-showing all six columns side by side. The demo moves between columns, unfolds
-recent landed work, filters needs-me cards, searches and selects a topic,
-clears the topic filter, and toggles fuel. It uses the same synthetic fixture
-and ANSI-to-image rendering described above; it contains no live operator
-records.
+The README’s `../fleet-board.gif` is a recording of a real thurbox TUI in the
+**Doom** theme, at 1920×1080. `record.sh` builds it in a throwaway profile:
+its own HOME, thurbox config and data, and tmux server. That profile holds a
+copy of this checkout with three synthetic topics and four sessions. Their
+stand-in agent, `demo-agent.sh`, prints a transcript from `transcripts/`. The
+plugins and the queue probe are this checkout's own, and no operator records
+appear. `fleet-board.tape` lists the scenes: Mission Control beside the
+session list, the board with navigation, the needs-me filter and topic search,
+a worker opened from its card, and Ctrl+X back to Mission Control. To
+re-record, run `media/fleet-board/record.sh`. It needs thurbox, uv, git,
+sqlite3, flock, vhs and ffmpeg, on Linux.

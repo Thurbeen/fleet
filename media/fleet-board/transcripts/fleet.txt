@@ -1,0 +1,22 @@
+[2mMission Control · the fleet lead[0m
+
+[1m[36m>[0m Add audit exports to atlas, put search behind beacon, and
+  update the cedar platform adapters. Ship each as a pull request.
+
+[35m●[0m Opened three topics and split them into tasks:
+
+    [1matlas[0m   Audit exports        5 tasks · 1 running
+    [1mbeacon[0m  Search index         3 tasks · 1 running
+    [1mcedar[0m   Platform adapters    3 tasks · 1 running
+
+[35m●[0m Dispatched 🚀 Export worker, 🚀 Search service and
+  🚀 Update adapters, one worktree each.
+
+[35m●[0m [33mNeeds you:[0m atlas/03 has failing unit checks and two
+  review threads; atlas/04 is stuck on the test database;
+  cedar/02 waits for your release sign-off.
+
+  The reconciler collects results and shepherds the pull
+  requests. [1mAlt+K[0m shows the board.
+
+[1m[36m>[0m [2m▌[0m

@@ -1,0 +1,6 @@
+[2m🚀 Update adapters · cedar/01 · branch demo/cedar-01[0m
+
+[35m●[0m Updating the platform adapters to the v2 client.
+[35m●[0m Edited adapters/linux.go     [32m+46[0m [31m-31[0m
+[35m●[0m Edited adapters/windows.go   [32m+52[0m [31m-29[0m
+
