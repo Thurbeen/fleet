@@ -273,6 +273,32 @@ def test_one_unverified_repository_holds_the_whole_task_open(two_pushes, queue_d
     assert verdicts == {both["first"]["work"]: "passed", both["second"]["work"]: "missing"}
 
 
+@pytest.mark.parametrize("unchanged", ["first", "second"])
+def test_a_push_with_a_no_change_repository_lands_and_releases_its_dependent(
+    two_pushes, queue_dir, unchanged
+):
+    both = two_pushes
+    topic = both["topic"]
+    ok(q("add", topic, "dependent", "--title", "Dependent",
+         "--repo", both["first"]["work"], "--branch", "fix/dependent", "--number", "02"))
+    fill_brief(queue_dir / topic / "02-dependent" / "BRIEF.md")
+    ok(q("block", f"{topic}/02-dependent", "--on", f"{topic}/01-commits-in-both",
+         "--kind", "semantic-dependency", "--why", "needs the published change"))
+    result_artifacts(both["dir"], "shipped", "One repository needed a change.", {
+        both[name]["work"]: (
+            "no change needed — already compatible" if name == unchanged
+            else both[name]["landed"]
+        ) for name in ("first", "second")
+    })
+
+    ok(q("collect", "--no-reap"))
+
+    doc = record(queue_dir, topic, "01-commits-in-both")
+    assert doc["artifact_check"]["verdict"] == "passed"
+    assert doc["state"] == "landed", doc
+    expect(ok(q("plan")).out.split("waiting:")[0], "02-dependent")
+
+
 def test_a_repository_the_result_names_nothing_for_is_held_open(two_pushes):
     """24c. A `shipped` claim with one repository left out is exactly a `shipped`
     claim with no artifact at all: there is nothing to check, and nothing proves

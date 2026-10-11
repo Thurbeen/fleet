@@ -5877,12 +5877,18 @@ def push_landing(task: Task, entry: dict) -> tuple[str, str]:
         skipped   -> none     no commit was claimed — `not-applicable` — so
                               there is nothing to wait for.
 
+    A repository recorded as `no change needed — <why>` in a multi-repo
+    task has no commit to wait for, just as at collect.
+
     A REMOTE TASK (`--host`) keeps the answer it always had, `none`, and on
     purpose: its repository is on that host, `commit_verdict` cannot look
     from here, and collect already recorded that as `unknown` in the
     publish block. Answering `unknown` again would leave every remote push
     task `done` for good — nothing this machine runs could ever end it.
     """
+    reason = no_change_reason(entry["url"]) if len(task_repos(task)) > 1 else None
+    if reason:
+        return "none", f"no change needed in this repository: {reason}"
     if task.doc.get("host"):
         return "none", (
             f"the base branch is on host {task.doc['host']}; a remote push lands "
