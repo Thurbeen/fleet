@@ -8,7 +8,9 @@ A host is shaped by a flag file under `ssh-state/`: `<dest>.down` for an
 unreachable one, `.nonposix` for a Windows-shaped shell, `.noforge` for one with
 no GitHub credentials, `.norepo` for one where the repo is not there.
 `.pane-probe` is what a fleet on that host answers when its queue probe
-(`pane_probe.py`) is run there, and `.slow` holds the seconds it takes first.
+(`pane_probe.py`) is run there, `.context` what it answers to a peer's context
+read (`context.py ... --wire json`), and `.slow` holds the seconds either takes
+first.
 `.windows` hands the command to `windows_host`, which answers only what a
 PowerShell 5 sshd answers. `.origin` holds what `git remote get-url origin`
 prints there. `mkdir -p`/`chmod`, `rm -f`/`rmdir` and `cat >` behave as a
@@ -50,11 +52,11 @@ def main() -> int:
         env = dict(os.environ, HOME=str(state / f"{dest}.home"))
         return subprocess.run(["/bin/sh", "-c", script], env=env).returncode
 
-    if "pane_probe.py" in script:
+    if "pane_probe.py" in script or "context.py" in script:
         slow = state / f"{dest}.slow"
         if slow.is_file():
             time.sleep(float(slow.read_text(encoding="utf-8").strip() or 0))
-        answer = state / f"{dest}.pane-probe"
+        answer = state / f"{dest}.{'pane-probe' if 'pane_probe.py' in script else 'context'}"
         if not answer.is_file():
             sys.stderr.write("uv: command not found\n")
             return 127
