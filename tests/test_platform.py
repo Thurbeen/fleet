@@ -492,6 +492,43 @@ class NoTerminal(unittest.TestCase):
         self.assertEqual(done.stdout.strip(), "ran")
 
 
+class RunBounded(TempDirCase):
+    """A child the reconciler runs, held to a bound: past it, the child and
+    everything it started are gone, which is what frees the loop."""
+
+    def test_a_child_inside_its_bound_answers_as_subprocess_run_would(self):
+        done = fp.run_bounded([sys.executable, "-c", "import sys; print(sys.stdin.read().upper())"], 30,
+                              input="ran", capture_output=True, text=True)
+        self.assertEqual((done.returncode, done.stdout.strip()), (0, "RAN"))
+
+    def test_past_its_bound_the_child_and_its_grandchild_are_ended(self):
+        mark = self.tmp / "grandchild"
+        child = (
+            "import subprocess, sys, time\n"
+            "g = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
+            f"open({str(mark)!r}, 'w').write(str(g.pid))\n"
+            "time.sleep(120)\n"
+        )
+        started = []
+        began = time.monotonic()
+        done = fp.run_bounded([sys.executable, "-c", child], 3, on_start=started.append,
+                              stdout=subprocess.PIPE, text=True)
+        self.assertIsNone(done, "a child past its bound reads as no answer")
+        self.assertLess(time.monotonic() - began, 60)
+        grandchild = int(mark.read_text(encoding="utf-8"))
+        deadline = time.monotonic() + 15
+        while fp.alive(grandchild) and time.monotonic() < deadline:
+            time.sleep(0.1)
+        self.assertFalse(fp.alive(grandchild), "the grandchild outlived the bound")
+        self.assertFalse(fp.alive(started[0]))
+
+    @unittest.skipIf(WINDOWS, "POSIX branch")
+    def test_the_child_leads_a_group_of_its_own_so_the_group_is_what_is_ended(self):
+        probe = "import os; print(os.getpgid(0) == os.getpid())"
+        done = fp.run_bounded([sys.executable, "-c", probe], 30, capture_output=True, text=True)
+        self.assertEqual(done.stdout.strip(), "True")
+
+
 class Alive(unittest.TestCase):
     def test_alive_sees_this_process(self):
         self.assertTrue(fp.alive(os.getpid()))

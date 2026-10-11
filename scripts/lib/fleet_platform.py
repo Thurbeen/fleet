@@ -463,6 +463,41 @@ def terminate_tree(pid: int, force: bool = False) -> None:
             pass
 
 
+def run_bounded(argv: list[str], secs: float, input: str | None = None, on_start=None,
+                capture_output: bool = False, **popen) -> subprocess.CompletedProcess | None:
+    """`subprocess.run`, held to `secs`: past it the child AND what it started are ended.
+
+    None when the bound ran out. `subprocess.run(timeout=)` kills the child
+    alone, and a grandchild still holding its pipe — `thurbox-cli` under
+    `watch`, `gh` under `shepherd` — leaves the caller waiting on output that
+    never ends. So the child is started as the root of a tree `terminate_tree`
+    ends whole. POSIX: a session of its own, so the group IS that tree.
+    Windows: nothing extra, because `taskkill /T` already walks descendants.
+    `on_start` is handed the child's pid the moment it exists, for a caller
+    that must be able to end it from another process.
+    """
+    if capture_output:
+        popen["stdout"] = popen["stderr"] = subprocess.PIPE
+    if input is not None:
+        popen["stdin"] = subprocess.PIPE
+    if not WINDOWS:
+        popen["start_new_session"] = True
+    with subprocess.Popen(argv, **popen) as proc:
+        if on_start:
+            on_start(proc.pid)
+        try:
+            out, errs = proc.communicate(input, timeout=secs)
+        except subprocess.TimeoutExpired:
+            terminate_tree(proc.pid, force=True)
+            try:
+                # Every holder of the pipes is gone with the tree; this only drains them.
+                proc.communicate(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+            return None
+    return subprocess.CompletedProcess(argv, proc.returncode, out, errs)
+
+
 def split_command(line: str, windows: bool = WINDOWS) -> list[str]:
     """An operator's command line as argv, with no shell to read it.
 

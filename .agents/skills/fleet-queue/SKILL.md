@@ -899,7 +899,7 @@ spotted.
 
 ```sh
 uv run fleet reconcile ensure     # start it unless it is running or asked down
-uv run fleet reconcile status     # ticking? since when? exit 1: DOWN, nobody asked
+uv run fleet reconcile status     # ticking? since when? exit 1: DOWN unasked, or STALLED
 uv run fleet reconcile logs       # what it has been doing
 uv run fleet reconcile stop       # durably down; only `start` brings it back
 ```

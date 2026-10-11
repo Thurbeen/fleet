@@ -503,7 +503,9 @@ install` offers a user service (`scripts/lib/reconcile_service.py`: a
 systemd user unit running `reconcile serve`, or a Windows Startup-folder
 script running `ensure`), the SessionStart hook runs `reconcile ensure
 --if-lead`, which acts for this checkout's lead session and nobody else, and
-`status` exits 1 on "DOWN, nothing asked it down". Four things about it are load-bearing:
+`status` exits 1 on "DOWN, nothing asked it down" and on STALLED. Every child
+it runs is held to a bound and killed with its tree past it, so a hung command
+costs one pass and never the loop. Four things about it are load-bearing:
 
 - **It writes no record.** Every effect on the queue goes through
   `fleet queue`, which stays the only writer over the records; its own runtime

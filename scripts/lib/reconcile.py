@@ -103,7 +103,7 @@ Usage:
   uv run fleet reconcile start      # start, and clear a previous `stop`
   uv run fleet reconcile stop       # durably down: writes the flag, then stops
   uv run fleet reconcile restart    # stop and start, clearing the flag
-  uv run fleet reconcile status     # ticking? since when? exit 1: down, unasked
+  uv run fleet reconcile status     # ticking? since when? exit 1: down unasked, or stalled
   uv run fleet reconcile nudge      # advisory: run the periodic pass NOW;
                                    # from a worker's Stop hook, asks once for a missing result.md
   uv run fleet reconcile hook       # print the worker Stop hook that nudges
@@ -140,6 +140,25 @@ in the environment. `queue.py`'s `reconcile_conf` is the file's one reader.
             origin is a fact the lead can wait a quarter of an hour for, and it
             had been waiting days. 0 turns it off.
 
+THE BOUNDS. Every child the loop runs is held to one, and past it is killed with
+everything it started (`fleet_platform.run_bounded`), logged as one line naming
+the verb and the bound, and the pass goes on. A queue command that never
+returned froze the loop whole: no heartbeat, no collect, no shepherd, until a
+person read `status`.
+
+  watch     its own call plus 60s (WATCH_MARGIN_SECS): it is told how long to
+            run, so anything past that and a minute is not a slow stream.
+  the rest  600s each, `BOUND_SECS`: collect, shepherd, refuel, plan, the
+            notification and the sync. A generous bound and not a tuned one —
+            the slowest honest pass is a shepherd over many repositories, and
+            it ends in minutes — so it only ever cuts off a child that is
+            hung. A record cut off mid-write is not torn: `write_record`
+            replaces a file in one step.
+
+It is also what `status` calls STALLED: a heartbeat older than one watch call
+plus one bound is a loop that one child at its bound does not explain, and
+`status` exits 1 on it, as it does on DOWN.
+
 Environment:
   FLEET_RECONCILE_DIR           runtime state (default orchestration/reconcile)
   FLEET_RECONCILE_QUEUE_CMD     the queue command it drives, as an argv: a JSON
@@ -153,6 +172,7 @@ Environment:
   FLEET_RECONCILE_REFUEL_SECS   seconds between refuels    (default 300)
   FLEET_RECONCILE_SHEPHERD_SECS seconds between shepherds  (default 900)
   FLEET_RECONCILE_SYNC_SECS     seconds between syncs; 0 is off (default 900)
+  FLEET_RECONCILE_BOUND_SECS    the most any child but watch may run (default 600)
   FLEET_RECONCILE_SYNC_DIR      the checkout it keeps current (default: this one)
   FLEET_RECONCILE_CONF_ROOT     the checkout whose orchestration/reconcile.conf
                                 is read (default: this one; tests set it)
@@ -214,12 +234,15 @@ COMMANDS = "ensure start stop restart status serve nudge hook logs"
 START_WAIT_SECS = 30
 
 # How long `stop` lets the loop notice the flag before it terminates the pid, on
-# top of one watch call. The loop never kills a queue command in flight: one cut
-# off mid-write leaves a torn record, and on Windows it would orphan the
-# thurbox-cli stream beneath it. So a stop lands at the next pass boundary, and
-# only a loop still holding the lock past this is terminated.
+# top of one watch call. A stop never cuts a queue command short: it lands at the
+# next pass boundary, and only a loop still holding the lock past this is
+# terminated, with the child it is running. Only a child past its own bound is
+# killed mid-run, by the loop itself (THE BOUNDS, above).
 STOP_GRACE_SECS = 30
 KILL_WAIT_SECS = 10
+
+# How far past its own --for-secs a `watch` may run before it is a hung one.
+WATCH_MARGIN_SECS = 60
 
 # A supervisor starting at the instant a `status` probes the lock sees it held
 # for that instant; it retries this long before concluding a twin owns it.
@@ -255,6 +278,7 @@ class Config:
     parent: int = 0
     sync: int = 0
     sync_dir: str = CHECKOUT
+    bound: int = 600
 
     @classmethod
     def from_env(cls) -> Config:
@@ -293,7 +317,7 @@ class Config:
 
         return cls(rt, cmd, label, secs("WATCH", 20), secs("COLLECT", 120), secs("REFUEL", 300), secs("SHEPHERD", 900),
                    int(os.environ.get("FLEET_RECONCILE_PARENT_PID") or 0), secs("SYNC", 900),
-                   os.environ.get("FLEET_RECONCILE_SYNC_DIR") or CHECKOUT)
+                   os.environ.get("FLEET_RECONCILE_SYNC_DIR") or CHECKOUT, secs("BOUND", 600))
 
     def path(self, name: str) -> str:
         return os.path.join(self.rt, name)
@@ -306,7 +330,7 @@ class Config:
     def stall(self) -> int:
         # A NOTE on status, never an adoption test: one slow shepherd sweep is not
         # a wedged loop, and adoption turning on freshness would start a twin.
-        return self.watch + 600
+        return self.watch + self.bound
 
 
 # --- small things -------------------------------------------------------------
@@ -404,9 +428,10 @@ def running(cfg: Config) -> bool:
     return beaten and lock_held(cfg)
 
 
-def pid_of(cfg: Config) -> int:
+def pid_of(cfg: Config, name: str = "pid") -> int:
+    """The supervisor's pid, or with `child` the one of the command it is running."""
     try:
-        return int(read(cfg.path("pid")).strip())
+        return int(read(cfg.path(name)).strip())
     except ValueError:
         return 0
 
@@ -513,21 +538,48 @@ def stop_legacy(cfg: Config) -> bool:
 # --- the loop -----------------------------------------------------------------
 
 
-def run_queue(cfg: Config, args: list, merge: bool = True) -> tuple[int, str]:
+# What a child killed at its bound reads as: GNU timeout's exit code.
+TIMED_OUT = 124
+
+
+def bounded(cfg: Config, label: str, argv: list, secs: int, loop: bool = True, **popen):
+    """One child, held to `secs`; None when it ran past them, logged as one line.
+
+    `loop` is the loop's own child, whose pid sits in `child` for as long as it
+    runs: it leads a process group of its own, which a `stop` that ends the
+    supervisor's group would not reach. `status` and the control-plane guard
+    run beside a live loop and must not touch that file."""
+    track = cfg.path("child")
+    done = fleet_platform.run_bounded(
+        argv, secs, env=child_env(), encoding="utf-8", errors="replace",
+        on_start=(lambda pid: fleet_platform.write_record(track, f"{pid}\n")) if loop else None, **popen,
+    )
+    if loop:
+        remove(track)
+        if done is None:
+            log(cfg, f"{label}: killed after {secs}s, its bound; the next pass runs it again")
+    return done
+
+
+def run_queue(cfg: Config, args: list, merge: bool = True, loop: bool = True) -> tuple[int, str]:
+    secs = cfg.watch + WATCH_MARGIN_SECS if args[0] == "watch" else cfg.bound
     try:
-        done = subprocess.run(
-            cfg.queue_cmd + args, cwd=CHECKOUT, env=child_env(), stdin=subprocess.DEVNULL,
+        done = bounded(
+            cfg, args[0], cfg.queue_cmd + args, secs, loop, cwd=CHECKOUT, stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT if merge else subprocess.DEVNULL,
-            encoding="utf-8", errors="replace",
         )
     except OSError as exc:
         return 127, f"cannot run {cfg.queue_label}: {exc}"
+    if done is None:
+        return TIMED_OUT, ""
     return done.returncode, done.stdout
 
 
 def run_pass(cfg: Config, label: str, args: list, quiet: bool = False) -> int:
     """One queue command, logged only when it said something worth reading."""
     rc, out = run_queue(cfg, args)
+    if rc == TIMED_OUT and not out:
+        return rc  # `bounded` said so, in one line
     if rc != 0:
         log(cfg, f"{label}: exit {rc}")
         log_raw(cfg, indented(out, "    "))
@@ -549,11 +601,11 @@ def notify_lead(cfg: Config) -> None:
     if rc != 0 or not plan.strip():
         return
     try:
-        done = subprocess.run(
-            [sys.executable, NOTIFY, "--state-dir", cfg.rt], input=plan, cwd=CHECKOUT, env=child_env(),
-            capture_output=True, encoding="utf-8", errors="replace",
-        )
+        done = bounded(cfg, "notify", [sys.executable, NOTIFY, "--state-dir", cfg.rt], cfg.bound,
+                       input=plan, cwd=CHECKOUT, capture_output=True)
     except OSError:
+        return
+    if done is None:
         return
     out = (done.stdout + done.stderr).strip()
     if out:
@@ -570,11 +622,9 @@ def sync_checkout(cfg: Config, said: str) -> tuple[dict, str]:
     standing refusal is one line and not one per pass. Returns the report and
     the message now standing."""
     try:
-        done = subprocess.run(
-            [sys.executable, "-c", BOOT, CHECKOUT, "sync-checkout", "--json"], cwd=cfg.sync_dir, env=child_env(),
-            stdin=subprocess.DEVNULL, capture_output=True, encoding="utf-8", errors="replace",
-        )
-        report = json.loads(done.stdout)
+        done = bounded(cfg, "sync", [sys.executable, "-c", BOOT, CHECKOUT, "sync-checkout", "--json"], cfg.bound,
+                       cwd=cfg.sync_dir, stdin=subprocess.DEVNULL, capture_output=True)
+        report = json.loads(done.stdout) if done else None
     except (OSError, ValueError):
         return {}, said
     if not isinstance(report, dict):
@@ -591,11 +641,11 @@ def notify_stale(cfg: Config, report: dict) -> None:
     --stale` owns who, when and how, and keeps it until it is delivered. An
     empty report is a retry of one still waiting."""
     try:
-        done = subprocess.run(
-            [sys.executable, NOTIFY, "--state-dir", cfg.rt, "--stale"], input=json.dumps(report), cwd=CHECKOUT,
-            env=child_env(), capture_output=True, encoding="utf-8", errors="replace",
-        )
+        done = bounded(cfg, "notify", [sys.executable, NOTIFY, "--state-dir", cfg.rt, "--stale"], cfg.bound,
+                       input=json.dumps(report), cwd=CHECKOUT, capture_output=True)
     except OSError:
+        return
+    if done is None:
         return
     out = (done.stdout + done.stderr).strip()
     if out:
@@ -760,8 +810,10 @@ def terminate(cfg: Config) -> bool:
     wait_until(lambda: pid_of(cfg) > 0 or not lock_held(cfg), LOCK_RETRY_SECS)
     pid = pid_of(cfg)
     for force in (False, True):
-        if pid and fleet_platform.alive(pid):
-            fleet_platform.terminate_tree(pid, force)
+        # The command leads a group of its own (`bounded`), so it is ended by name.
+        for each in (pid, pid_of(cfg, "child")):
+            if each and fleet_platform.alive(each):
+                fleet_platform.terminate_tree(each, force)
         # Windows releases a killed process's lock when it gets to it.
         if wait_until(lambda: not lock_held(cfg), KILL_WAIT_SECS):
             return True
@@ -790,6 +842,7 @@ def launch(cfg: Config) -> bool:
         terminate(cfg)
     remove(cfg.path("heartbeat"))
     remove(cfg.path("pid"))
+    remove(cfg.path("child"))
     log(cfg, "starting")
     with open(cfg.log, "ab") as errors:
         fleet_platform.spawn_detached(
@@ -813,7 +866,7 @@ def guard_control_plane(cfg: Config) -> bool:
     would reap its own session. Silent when nothing can tell; only a positive
     identification of a DIFFERENT checkout is loud, and then it is fatal.
     """
-    rc, out = run_queue(cfg, ["root", "--foreign"], merge=False)
+    rc, out = run_queue(cfg, ["root", "--foreign"], merge=False, loop=False)
     owner = out.strip()
     if rc != 0 or not owner:
         return True
@@ -931,17 +984,20 @@ def cmd_restart(cfg: Config) -> int:
 
 
 def cmd_status(cfg: Config) -> int:
-    """Exit 1 when it is down and nothing asked it down: that is a fault, not a reading."""
+    """Exit 1 when it is down and nothing asked it down, or when it is STALLED:
+    each is a fault, not a reading, and an exit code is all a script reads."""
     # Asked of the queue itself, so this line and `fleet queue list` cannot disagree.
-    rc, out = run_queue(cfg, ["root"], merge=False)
+    rc, out = run_queue(cfg, ["root"], merge=False, loop=False)
     queue = out.strip() if rc == 0 and out.strip() else os.environ.get("FLEET_QUEUE_DIR", "orchestration/queue")
     for pid, argv in legacy_loops():
         say(f"legacy    a bash reconciler from before the uv port is still running (pid {pid}):")
         say(f"          {argv}")
         say("          its script is gone, so every pass fails; uv run fleet reconcile ensure stops it")
+    stalled = False
     if running(cfg):
         age = beat_age(cfg)
-        if age is not None and age > cfg.stall:
+        stalled = age is not None and age > cfg.stall
+        if stalled:
             say(f"STALLED   ticking, but the last pass was {age}s ago (over {cfg.stall}s)")
             say(f"          look at {cfg.log} before you restart it")
         else:
@@ -971,6 +1027,8 @@ def cmd_status(cfg: Config) -> int:
     nudge = cfg.path("nudge")
     if os.path.isfile(nudge):
         say("nudge     one is waiting: " + (read(nudge).splitlines() or [""])[0])
+    if stalled:
+        return 1
     return 0 if running(cfg) or asked_down(cfg) else 1
 
 
