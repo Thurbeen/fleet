@@ -717,7 +717,12 @@ function M.render(ctx, model, fuel, worker, fleet, warning, peers)
       end
     end
   end
-  local strip = { text({ span(selected and " " .. selected.title or " No matching cards", theme.text) }) }
+  local heading = { span(selected and " " .. selected.title or " No matching cards", theme.text) }
+  -- Whose request it is, beside its title, only where somebody was recorded.
+  if selected and (selected.requested_by or "") ~= "" then
+    heading[2] = span(" · by " .. selected.requested_by, theme.muted)
+  end
+  local strip = { text(heading) }
   if selected then
     strip[#strip + 1] = { type = "text", len = 2, wrap = true, text = { linked(" " .. note(selected)) } }
     strip[#strip + 1] = text({

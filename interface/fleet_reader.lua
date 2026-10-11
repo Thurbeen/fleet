@@ -319,10 +319,12 @@ local function build_model(stdout)
       if f[2] == topic.slug .. "/" .. task.id then
         task.agent, task.host, task.session = f[3] or "", f[4] or "", f[5] or ""
         task.review, task.publish_detail, task.threads = f[6] or "", f[7] or "", tonumber(f[8])
+        -- Who asked, free text; drawn and never acted on.
+        task.requested_by = f[9] or ""
       end
     elseif kind == "T" then
       local f = split_tabs(line)
-      topic = { slug = f[2] or "", title = f[3] or "", tasks = {} }
+      topic = { slug = f[2] or "", title = f[3] or "", requested_by = f[4] or "", tasks = {} }
       model.topics[#model.topics + 1] = topic
     elseif kind == "K" and topic then
       local f = split_tabs(line)

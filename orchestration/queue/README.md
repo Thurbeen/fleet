@@ -47,10 +47,12 @@ POLICY.md                            standing policy — tracked, read by worker
 OPERATOR.example.md                  the form of the file below — tracked
 OPERATOR.md                          your standing instructions — yours, ignored
 <topic>/                             e.g. report-status-honestly/
-  topic.yaml                         slug, title, when it opened, whether archived
+  topic.yaml                         slug, title, when it opened, whether archived,
+                                     and requested_by — who asked, when recorded
   PROMPT.md                          the prompt that opened it, VERBATIM
   <NN>-<slug>/                       e.g. 01-drop-idle-default/
-    task.yaml                        intent + current state — the queue owns it
+    task.yaml                        intent + current state — the queue owns it;
+                                     requested_by is the resolved requester
     BRIEF.md                         the instructions ONE worker reads
     progress.jsonl                   one line per observed transition
     result.md                        what the worker concluded, in its words
@@ -73,6 +75,13 @@ A topic view — every task under one heading, plan beside progress beside
 outcome — is therefore the directory listing. It needs no field that is not
 already here. `interface/fleet_queue.lua` draws exactly that view in a thurbox
 column, as a reader: it opens these four files and adds nothing to them.
+
+`requested_by` is **recorded and shown, never acted on**. `topic add --by` names
+who asked for a topic, and `add --by` who asked for one task; a task with no
+`--by` stores its topic's name as it was at `add`, so editing `topic.yaml`
+later rewrites no history. A record without the field — every one written
+before it existed — means "not recorded" and loads unchanged. Nothing grants,
+routes or refuses on it.
 
 ## Three rules worth knowing before you edit anything
 
