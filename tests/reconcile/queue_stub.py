@@ -36,11 +36,13 @@ def main(argv: list[str]) -> int:
     verb = argv[0] if argv else ""
     # RECON_SLOW=verb:secs holds that verb open, with its pid in RECON_SLOW_PID,
     # so a test can see whether a queue command outlives the loop that ran it.
-    slow_verb, _, slow_secs = os.environ.get("RECON_SLOW", "").partition(":")
-    if slow_verb and verb == slow_verb:
+    # Several verbs are comma-separated (`collect:2,refuel:5`); the pid file is
+    # the last slow verb's to start.
+    slow = dict(part.partition(":")[::2] for part in os.environ.get("RECON_SLOW", "").split(",") if part)
+    if verb in slow:
         with open(os.environ["RECON_SLOW_PID"], "w", encoding="utf-8", newline="\n") as fh:
             fh.write(f"{os.getpid()}\n")
-        time.sleep(float(slow_secs))
+        time.sleep(float(slow[verb]))
     if verb == "root":
         # `root --foreign` is the control-plane guard's question, and the honest
         # answer for a throwaway queue is "this IS the control plane".

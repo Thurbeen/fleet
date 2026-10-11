@@ -67,3 +67,23 @@ def test_status_on_a_stale_heartbeat_says_stalled_and_exits_1(recon):
         holder.kill()
         holder.wait(timeout=30)
         holder.stdout.close()
+
+
+def test_the_heartbeat_is_fresh_when_each_child_starts(recon, monkeypatch, isolated_env):
+    # A pass runs several children, each with its own bound. Beaten only at the
+    # top of the pass, two slow-but-honest children together aged the heartbeat
+    # past `watch + bound`, and `status` exited 1 on a loop that was healthy.
+    monkeypatch.setenv("RECON_SLOW", "collect:3,refuel:20")
+    monkeypatch.setenv("RECON_SLOW_PID", str(isolated_env / "slow.pid"))
+    mod = lib("reconcile.py")
+
+    assert recon("ensure").code == 0
+    assert wait_for(lambda: recon.count("refuel") >= 1, 30), recon.calls()
+    beat = int((recon.rt / "heartbeat").read_text(encoding="utf-8").strip())
+    try:
+        assert time.time() - beat < 3, "the heartbeat predates the slow collect that ran before refuel"
+    finally:
+        recon("stop")
+        pid = int((isolated_env / "slow.pid").read_text(encoding="utf-8"))
+        if mod.fleet_platform.alive(pid):
+            mod.fleet_platform.terminate_tree(pid, force=True)
