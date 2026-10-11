@@ -285,14 +285,17 @@ def test_a_repository_the_result_names_nothing_for_is_held_open(two_pushes):
 
 
 def test_allow_unverified_still_closes_a_task_that_spans_repositories(two_pushes, queue_dir):
-    """24c. The operator's override is not narrowed by any of this."""
+    """24c. The operator's override is not narrowed by any of this — but it
+    closes the task, it does not move the commit: one that never reached its
+    base branch is not a landing, so the task stays `done`."""
     both = two_pushes
     result_artifacts(both["dir"], "shipped", "Committed in both.", {
         both["first"]["work"]: f"https://github.com/acme/first/commit/{both['first']['landed']}",
         both["second"]["work"]: f"https://github.com/acme/second/commit/{both['second']['aside']}",
     })
-    expect(ok(q("collect", "--allow-unverified", "--no-reap")).out, "publish NOT verified")
-    assert record(queue_dir, both["topic"], "01-commits-in-both")["state"] == "landed"
+    ref = f"{both['topic']}/01-commits-in-both"
+    expect(ok(q("collect", "--allow-unverified", ref, "--no-reap")).out, "publish NOT verified")
+    assert record(queue_dir, both["topic"], "01-commits-in-both")["state"] == "done"
 
 
 # --- §24d: landing, and the blocker that must not clear early ----------------

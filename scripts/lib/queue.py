@@ -194,11 +194,11 @@ Usage:
   uv run fleet queue send <ref> 'one line'  # message a task's worker, and
                        RECORD that you did
   uv run fleet queue watch [--for-secs N] # fold transitions in; close nothing
-  uv run fleet queue collect [--allow-unverified] [--no-reap]  # read results,
-                       close what is done; --allow-unverified closes one whose
-                       artifact failed the publish check, after you have
-                       judged that artifact; --no-reap leaves every session
-                       alone
+  uv run fleet queue collect [--allow-unverified <ref>...] [--no-reap]  # read
+                       results, close what is done; --allow-unverified closes
+                       exactly the tasks it names whose artifact failed the
+                       publish check, after you have judged each artifact;
+                       --no-reap leaves every session alone
   uv run fleet queue reap [--dry-run]     # land what merged, release its session;
                        retire what closed unmerged or whose session vanished,
                        and free the build output a vanished session left
@@ -5480,7 +5480,7 @@ def report_unverified(task: Task, rows: list[dict]) -> None:
         "        Send the worker back to publish again, then collect again.\n"
         "        If you have read the artifact yourself and judged it good as\n"
         "        it stands, close it deliberately with\n"
-        "        `fleet queue collect --allow-unverified`.",
+        f"        `fleet queue collect --allow-unverified {task.ref}`.",
         file=sys.stderr,
     )
 
@@ -5531,6 +5531,11 @@ def cmd_collect(args) -> int:
     # pass, and every task left in an archived topic is terminal, so the loop
     # below skips all of them exactly as it skips a concluded live one.
     q = Queue(root, scope="all")
+    # ONE TASK AT A TIME, BY NAME. The override used to be a bare flag that
+    # closed every held task in the pass, so judging one artifact good closed
+    # every other one nobody had read. A ref that names no task fails here,
+    # before anything is written.
+    allowed = {q.get(ref).ref for ref in args.allow_unverified}
     reopen_unfinished_archives(q)
     concluded = 0
     held = 0
@@ -5642,7 +5647,7 @@ def cmd_collect(args) -> int:
             record_learned(task, meta)
             continue
 
-        if verdict == "missing" and not args.allow_unverified:
+        if verdict == "missing" and task.ref not in allowed:
             task.save()
             report_unverified(task, rows)
             held += 1
@@ -5794,7 +5799,9 @@ def artifact_landing(
                   `note` or `none` one, whose URL may NAME a pull request that
                   is not its own. Such a task skips straight through rather
                   than waiting for a merge that is not its to wait for.
-        merged    the pull request is on main.
+                  A `push` task is never asked here: its commit is git's to
+                  vouch for, and `push_landing` asks git.
+        merged   the pull request is on main.
         closed    it was closed unmerged: nothing more will happen on that
                   branch, and the work did not land either.
         open      the normal state of work awaiting review. Not an error and
@@ -5843,6 +5850,57 @@ def artifact_landing(
     return "open", f"{url} is still open — work awaiting review"
 
 
+def push_landing(task: Task, entry: dict) -> tuple[str, str]:
+    """Has a `push` task's commit reached the base branch? Asked of git, as at collect.
+
+    A `push` artifact is a commit and not a change request, so the forge has
+    nothing to say about it, and `artifact_landing` used to answer `none`
+    for it — "nothing to wait for". That was the hole `unknown` must never
+    open: a sha the repository does not hold is `unknown` at collect, which
+    closes the task, and the same pass then LANDED it on no evidence at all
+    and released every task blocked on it. So landing asks exactly the
+    question collect asked, through `commit_verdict` itself, and only its
+    `passed` is a landing:
+
+        passed    -> merged   the commit is on origin/<base>.
+        unknown   -> unknown  git could not answer: no such commit here, a
+                              base branch that cannot be read.
+        missing   -> open     the commit has not reached the base branch,
+                              or a `shipped` result named none. A definite
+                              answer, so not `unknown`,
+                              which every landing reader keeps for "could not
+                              be asked"; `open` is the word they already read
+                              as "not yet", and the next pass asks again, so a
+                              commit that reaches the base branch later lands
+                              then. Only a task closed `--allow-unverified`
+                              reaches here, since collect holds `missing`.
+        skipped   -> none     no commit was claimed — `not-applicable` — so
+                              there is nothing to wait for.
+
+    A REMOTE TASK (`--host`) keeps the answer it always had, `none`, and on
+    purpose: its repository is on that host, `commit_verdict` cannot look
+    from here, and collect already recorded that as `unknown` in the
+    publish block. Answering `unknown` again would leave every remote push
+    task `done` for good — nothing this machine runs could ever end it.
+    """
+    if task.doc.get("host"):
+        return "none", (
+            f"the base branch is on host {task.doc['host']}; a remote push lands "
+            "on what collect recorded, not on a check from here"
+        )
+    unit = next(
+        (u for u in task_repos(task) if same_path(u["path"], entry["repo"])), None
+    )
+    verdict, detail = commit_verdict(task, task.doc.get("outcome"), entry["url"], unit)
+    if verdict == "passed":
+        return "merged", detail
+    if verdict == "skipped":
+        return "none", detail
+    if verdict == "missing":
+        return "open", detail
+    return "unknown", detail
+
+
 # The order a task's own landing folds in, most-blocking first. `unknown` is
 # still the word that never collapses into another, so a forge nobody could ask
 # leaves the task where it is. `open` holds it for the ordinary reason. `closed`
@@ -5864,13 +5922,17 @@ def task_landing(task: Task) -> tuple[str, str]:
     open is not landed.
 
     A task with one repository is exactly `artifact_landing` of its one
-    artifact: same word, same sentence, same reap.
+    artifact: same word, same sentence, same reap — or `push_landing` of it,
+    for the one method whose witness is git and not the forge.
     """
     method = task_publish(task)[0]
     closed = review_closed(task)
     rows = []
     for entry in recorded_artifacts(task):
-        kind, detail = artifact_landing(entry["url"], method, closed, task.ref)
+        if method == "push":
+            kind, detail = push_landing(task, entry)
+        else:
+            kind, detail = artifact_landing(entry["url"], method, closed, task.ref)
         rows.append({"repo": entry["repo"], "kind": kind, "detail": detail})
     if len(rows) == 1:
         return rows[0]["kind"], rows[0]["detail"]
@@ -5919,8 +5981,11 @@ def sweep_landings(q: Queue, dry: bool) -> dict:
             # of this task's publish, so a reader of that block alone is never
             # left at the last thing the shepherd saw while the pull request
             # has since merged. `open`, `none` and `unknown` write nothing:
-            # they say the sweep looked and learned nothing new.
-            record_publish(task, kind, detail, "reap")
+            # they say the sweep looked and learned nothing new. A `push`
+            # task is skipped: its block already says `pushed`, the same fact
+            # in the word its own method uses, and git is the witness to both.
+            if task_publish(task)[0] != "push":
+                record_publish(task, kind, detail, "reap")
         if nxt == "abandoned":
             retire(task, "closed-unmerged", detail)
             print(f"    {task.ref:<46} {nxt:<10} {ABANDON_HOW['closed-unmerged']}: {detail}")
@@ -11345,9 +11410,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     c.add_argument(
         "--allow-unverified",
-        action="store_true",
-        help="close a task whose artifact does not prove it published, after "
-        "you have read that artifact and judged it good anyway",
+        nargs="+",
+        action="extend",
+        default=[],
+        metavar="REF",
+        help="close exactly these tasks although their artifact does not prove "
+        "they published, after you have read each artifact and judged it good "
+        "anyway; every other held task stays held",
     )
     c.set_defaults(func=cmd_collect)
 

@@ -588,8 +588,10 @@ like any first result.
 
 When a task is held open: read the artifact, then send the worker back to
 publish again. If you have read it and judged it good as it stands, `collect
---allow-unverified` closes it and records that you did. A task that keeps
-needing it was declared the wrong shape.
+--allow-unverified <ref>` closes that task — and only the tasks it names — and
+records that you did. Closing is not landing: a `push` task lands only when git
+finds its commit on the base branch. A task that keeps needing it was declared
+the wrong shape.
 
 ### 5a. Shepherd the pull requests — the fourth thing
 

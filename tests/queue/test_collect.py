@@ -77,7 +77,8 @@ def test_collect_verifies_the_artifact_instead_of_trusting_the_worker(first_land
     expect(q("show", f"{first_landed}/04-log-state-changes").out, "state:       done", "unknown")
 
     # The lead can close a flagged task deliberately, and the record keeps saying why.
-    expect(q("collect", "--allow-unverified").out, "03-render-detected-agent")
+    expect(q("collect", "--allow-unverified", f"{first_landed}/03-render-detected-agent").out,
+           "03-render-detected-agent")
     expect(q("show", f"{first_landed}/03-render-detected-agent").out, "missing")
 
 
@@ -242,6 +243,73 @@ def test_a_check_that_cannot_run_is_neither_a_pass_nor_a_failure(ptopic, queue_d
         # It still closes — a check that could not run must not break collect.
         refute(show, "state:       queued")
         expect(show, "published:   unknown")
+    # LANDING DIVIDES THEM. A commit in a repository this machine holds and
+    # cannot find is never a landing. A remote task's repository is on its
+    # host, which this machine cannot ask, so it lands as it always has.
+    assert state_of(queue_dir, f"{ptopic}/07-push-elsewhere") == "landed"
+    assert state_of(queue_dir, f"{ptopic}/08-push-unreadable") == "done"
+
+
+def state_of(queue_dir, ref: str) -> str:
+    doc = yaml.safe_load((queue_dir / ref / "task.yaml").read_text(encoding="utf-8"))
+    return doc["state"]
+
+
+def ready_set(plan: str) -> str:
+    """`plan`'s ready block alone, so a ref named under `waiting:` is not read as ready."""
+    return plan.split("waiting:")[0]
+
+
+def test_a_push_whose_commit_the_repository_lacks_never_lands(ptopic, push_repo, queue_dir):
+    # A sha the repository does not hold is `unknown` at collect, which closes
+    # the task. Landing used to ask git nothing for a commit and land it in the
+    # same pass, releasing everything blocked on it: `unknown` manufactured a
+    # landing. Landing now asks the question collect asked.
+    ok(q("add", ptopic, "push-phantom", "--title", "Push a commit nobody can find",
+         "--repo", push_repo["work"], "--branch", "fix/push-phantom", "--base", "main", "--number", "10",
+         "--publish", "push"))
+    ok(q("add", ptopic, "after-phantom", "--title", "Build on the phantom push",
+         "--repo", push_repo["work"], "--branch", "fix/after-phantom", "--number", "11"))
+    ok(q("block", f"{ptopic}/11-after-phantom", "--on", f"{ptopic}/10-push-phantom",
+         "--kind", "semantic-dependency", "--why", "builds on what 10 pushed"))
+    result(queue_dir / ptopic / "10-push-phantom", "shipped", "Pushed it, I promise.",
+           f"https://github.com/acme/app/commit/{'deadbeef' * 5}")
+
+    expect(q("collect").out, "10-push-phantom", "is not a commit")
+    assert state_of(queue_dir, f"{ptopic}/10-push-phantom") != "landed"
+    refute(ready_set(q("plan").out), "11-after-phantom")
+    # A second pass does not change its mind either.
+    q("collect")
+    assert state_of(queue_dir, f"{ptopic}/10-push-phantom") != "landed"
+
+
+def test_a_push_whose_commit_is_on_the_base_branch_still_lands(ptopic, push_repo, queue_dir):
+    result(queue_dir / ptopic / "03-push-task", "shipped", "Committed onto main and pushed it.",
+           f"https://github.com/acme/app/commit/{push_repo['landed']}")
+    expect(q("collect").out, "[publish verified: push]")
+    assert state_of(queue_dir, f"{ptopic}/03-push-task") == "landed"
+
+
+def test_allow_unverified_closes_only_the_tasks_it_names(ptopic, push_repo, queue_dir):
+    for n, slug in (("12", "astray-one"), ("13", "astray-two")):
+        ok(q("add", ptopic, slug, "--title", f"Push {slug} that never landed",
+             "--repo", push_repo["work"], "--branch", f"fix/{slug}", "--base", "main", "--number", n,
+             "--publish", "push"))
+        result(queue_dir / ptopic / f"{n}-{slug}", "shipped", "Committed it. It is not on main.",
+               f"https://github.com/acme/app/commit/{push_repo['aside']}")
+
+    held = q("collect", "--no-reap")
+    expect(held.out, "2 task(s) HELD OPEN", f"--allow-unverified {ptopic}/12-astray-one")
+
+    out = ok(q("collect", "--allow-unverified", f"{ptopic}/12-astray-one", "--no-reap")).out
+    expect(out, "12-astray-one", "closed by --allow-unverified", "1 task(s) HELD OPEN")
+    assert state_of(queue_dir, f"{ptopic}/12-astray-one") == "done"
+    assert state_of(queue_dir, f"{ptopic}/13-astray-two") == "queued"
+
+
+def test_allow_unverified_refuses_a_ref_that_names_no_task(ptopic):
+    run = q("collect", "--allow-unverified", f"{ptopic}/99-nothing", "--no-reap")
+    assert run.code != 0, run.out
 
 
 def test_a_record_from_before_the_publish_block_keeps_the_operators_default(ptopic, stubs, queue_dir):

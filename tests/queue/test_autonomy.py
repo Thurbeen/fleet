@@ -179,8 +179,11 @@ def test_nothing_lets_a_workers_url_prove_itself(aq):
     # A forge that will not say who fleet runs as is could-not-check.
     expect(aq.show(f"{ctopic}/06-who-am-i"), "checked:     unknown")
 
-    # And --allow-unverified is still the deliberate escape hatch.
-    expect(aq.q("collect", "--allow-unverified").out, "closed by --allow-unverified")
+    # And --allow-unverified is still the deliberate escape hatch, one named
+    # task at a time: the others stay held.
+    out = aq.q("collect", "--allow-unverified", f"{ctopic}/04-stale-open").out
+    expect(out, "04-stale-open", "closed by --allow-unverified", "1 task(s) HELD OPEN")
+    expect(aq.show(f"{ctopic}/05-merged-elsewhere"), "published:   unverified")
 
 
 def test_intake_no_longer_invites_the_workaround(aq, fifteen):

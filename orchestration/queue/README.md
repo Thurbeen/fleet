@@ -119,10 +119,11 @@ there is reported and left OPEN, because "use the pipeline" is an instruction
 about a method and a method leaves no trace anyone can read. A check that could
 not run — no forge CLI, no network, a base branch this machine cannot see — says
 exactly that and is never counted as either verdict. `collect
---allow-unverified` closes a flagged task once you have read that artifact
-yourself. `fleet queue show` prints the method, the verdict and the publish
-state that came of it; the tool itself is `publish.how`, free text fleet
-renders into the brief and never parses.
+--allow-unverified <ref>...` closes the flagged tasks it names once you have
+read each artifact yourself; every other one stays held. `fleet queue show`
+prints the method, the verdict and the publish state that came of it; the tool
+itself is `publish.how`, free text fleet renders into the brief and never
+parses.
 
 **`done` is not the end of the record.** `fleet queue reap` — which `collect`
 runs for you — asks the forge whether a `done` task's change request merged and
