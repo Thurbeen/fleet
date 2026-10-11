@@ -173,6 +173,27 @@ answered.
   `github.com/owner/repo` or `gitlab.example.com/group/project`), but only once
   it clears its gates — never merge it yourself in the meantime.
 
+## Say when you are waiting on purpose
+
+The lead calls a worker at rest for half an hour with no result and no new
+commit STALLED, and cannot otherwise tell waiting by design from stopping
+early. So before your turn ends without a `result.md`, say which it is, with
+the command your brief names (local workers only — a worker on a remote host
+has no way to, and needs none):
+
+- **`paused --until <time> --why <what>`** when you are waiting on something
+  that will come back by itself — CI, a reviewer, a pipeline. `<time>` is an
+  ISO-8601 time with an offset or a duration such as `45m` or `2h`, at most
+  six hours away; past it, the inference applies again. A longer wait is the
+  lead's to record, so declare `needs-input` and say what you are waiting on.
+- **`needs-input --why <question>`** when you cannot go on without a decision.
+  The lead is told once, and its answer arrives as a message.
+
+The command appends one line to your task's `progress.jsonl`. It moves
+nothing: it is evidence the lead reads, and a restart, a re-dispatch or a
+message from the lead makes it stale. Never use it in place of `result.md` —
+`stuck` with the reason is still how you report a task you cannot finish.
+
 ## Reporting back — write a file, do not send mail
 
 Your brief names where `result.md` goes — an absolute path, or, if you are

@@ -1,4 +1,4 @@
-"""A stalled worker reaches the lead once, the way ready work does.
+"""A stalled worker, or one that said it needs input, reaches the lead once.
 
 `plan --json` names the stalled set and `notify_lead.py` carries it, under the
 same three rules as the ready notice: once per transition, never typed into a
@@ -15,8 +15,9 @@ from reconcilekit import LEAD
 NOTIFY = REPO / "scripts" / "lib" / "notify_lead.py"
 
 
-def notify(state_dir, ready=(), stalled=()):
-    plan = json.dumps({"ready": list(ready), "stalled": [{"task": r, "idle_secs": 7200} for r in stalled]})
+def notify(state_dir, ready=(), stalled=(), needs_input=()):
+    plan = json.dumps({"ready": list(ready), "stalled": [{"task": r, "idle_secs": 7200} for r in stalled],
+                       "needs_input": [{"task": r, "why": "which?"} for r in needs_input]})
     return run([*PYTHON, str(NOTIFY), "--state-dir", str(state_dir)], stdin=plan, FLEET_LEAD_SESSION=LEAD)
 
 
@@ -83,3 +84,23 @@ def test_an_unprompted_worker_is_told_once(stubs, tmp_path):
     unprompted()
     unprompted("alpha/01-first")
     assert len(sends()) == 2, "one that clears and comes back is news again"
+
+
+def test_a_worker_that_needs_input_is_told_once(stubs, tmp_path):
+    """The worker's own word, carried exactly as a stall is: once per transition."""
+    def sends() -> list[str]:
+        return stubs.calls("thurbox-cli", "session send")
+
+    lead(stubs, "idle")
+    notify(tmp_path, needs_input=["alpha/01-first"])
+    assert len(sends()) == 1, "a worker asking for a decision never reached the lead"
+    expect(sends()[0], "alpha/01-first", "need input", "uv run fleet queue show alpha/01-first")
+    refute(sends()[0], "stalled", "ready and nothing will dispatch")
+
+    notify(tmp_path, needs_input=["alpha/01-first"])
+    assert len(sends()) == 1, "the same question is told once, not once per pass"
+
+    notify(tmp_path, needs_input=["alpha/01-first"], stalled=["beta/02-second"])
+    assert len(sends()) == 2, "a fresh stall is still its own transition"
+    expect(sends()[-1], "beta/02-second")
+    refute(sends()[-1], "need input")

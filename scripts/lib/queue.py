@@ -183,8 +183,17 @@ Usage:
                        # Its kinds are their own closed set, also in --help
   uv run fleet queue plan [--json]        # what goes out now, what waits, and why;
                        and which dispatched workers are STALLED — at rest past
-                       half an hour with no result.md and no new commit — or
-                       UNPROMPTED, dispatched minutes ago and never briefed
+                       half an hour with no result.md and no new commit,
+                       unless the worker declared a wait, which it lists as
+                       `paused` or `needs_input` instead — or UNPROMPTED,
+                       dispatched minutes ago and never briefed
+  uv run fleet queue declare <ref> paused --until TIME --why W  # a worker's
+                       own word: waiting by design until TIME (ISO-8601 with
+                       an offset, or 45m / 2h; at most 6h away), so not
+                       stalled meanwhile
+  uv run fleet queue declare <ref> needs-input --why W  # or: a decision is
+                       needed, told to the lead once. Either counts only until
+                       the next dispatch, restart or delivered `send`
   uv run fleet queue dispatch [<ref>...] [--dry-run]  # the whole ready set at
                        once with no ref, which is the norm; refs launch
                        exactly those, refuse one that is not ready, and leave
@@ -2670,7 +2679,7 @@ def render_brief(task: Task, topic: dict, body: str | None) -> str:
         policy_ref = f"`{policy_path()}`"
         operator_ref = f"`{operator_path()}`"
     operator_line = f"\n- **Operator's standing instructions.** {operator_ref}" if has_operator else ""
-    memory_line = remote_context_line() if host else context_lines(task)
+    memory_line = remote_context_line() if host else context_lines(task) + declare_lines(task)
     operator_note = (
         "\n\nRead the operator's file too. It is how this operator wants work done\n"
         "across every task, and it ADDS to this brief without replacing anything in\n"
@@ -2812,6 +2821,25 @@ def remote_context_line() -> str:
         " put in `learned:` (see Reporting back).",
         width=78,
         subsequent_indent="  ",
+    )
+
+
+def declare_lines(task: Task) -> str:
+    """A local brief's way to say it is waiting on purpose, with its checkout and ref filled in.
+
+    Local only: a worker on a host cannot reach this checkout's records.
+    """
+    cmd = f"uv run --project {checkout_root()} fleet queue declare {task.ref}"
+    return (
+        "\n" + textwrap.fill(
+            "- **Waiting on purpose.** If you stop to wait for CI or a reviewer, or"
+            " need a decision before you can go on, say so before your turn ends"
+            " (the standing policy says when):",
+            width=78,
+            subsequent_indent="  ",
+        )
+        + f"\n\n      {cmd} paused --until 2h --why '...'"
+        + f"\n      {cmd} needs-input --why '...'\n"
     )
 
 
@@ -3048,18 +3076,133 @@ STALLED_IDLE_SECS = 30 * 60
 AT_REST_STATES = ("idle", "done")
 
 
-def stalled_tasks(q: Queue) -> list[dict]:
-    """Dispatched, at rest past STALLED_IDLE_SECS, no result.md, no commit in that window.
+# --- declarations: the worker's own word about a wait ------------------------
+#
+# `stalled` is an INFERENCE, and it cannot tell a worker waiting on CI or a
+# reviewer by design from one that ended its turn early; and a worker that
+# needed a decision had no way to say so except ending its turn, which reads as
+# exactly that stall. So a worker may SAY which it is, in one line appended to
+# its own progress.jsonl — the contract, which `fleet queue declare` writes so
+# nobody hand-writes JSON:
+#
+#     {"declare": {"state": "paused", "until": "<ISO-8601 UTC>", "why": "..."},
+#      "observed": "<ISO-8601 UTC>"}
+#     {"declare": {"state": "needs-input", "why": "..."}, "observed": "..."}
+#
+# Keyed `declare` the way `shepherd`'s and `publish`'s entries are keyed by
+# their own word, and carrying neither `seq` (watch's cursor) nor `at` (what
+# `last_transition` reads as the session moving), so no other reader of the
+# file can mistake it for one of its own.
+#
+# IT IS EVIDENCE `plan` READS AND NOTHING ELSE. No state moves, nothing is
+# dispatched or cancelled, and the reconciler still decides nothing: `paused`
+# keeps a task out of `stalled` until its time, and `needs-input` names it in a
+# set of its own that reaches the lead the way a stall does.
+#
+# ONLY THE LATEST, AND ONLY ONE NEWER THAN THE TASK'S LAST DISPATCH, RESTART OR
+# DELIVERED MESSAGE. A declaration is about the conversation that wrote it: a
+# `refuel` restart or a fresh dispatch is a new turn the old word says nothing
+# about, and a message from the lead is the answer a `needs-input` was waiting
+# for. Ties go to the declaration, since every stamp here is to the second.
 
-    A JUDGEMENT AND NOT A STATE. Nothing is written and nothing moves: it is
-    what `plan` reports, and the reconciler carries it to the lead once, like
-    the ready set. A session list that cannot be read reports nothing.
+DECLARE_STATES = ("paused", "needs-input")
+
+# The longest a `paused` keeps a worker out of `stalled`, counted from when it
+# was declared, whatever `until` says. A CI run or a review round comes back
+# well inside six hours; a wait longer than that is not the worker's to
+# declare but a CONDITION the lead records (`block --condition`), which only a
+# person clears. Without a cap, one line naming next year would hide a dead
+# worker for good — the very silence `stalled` exists to end.
+PAUSE_CAP_SECS = 6 * 3600
+
+
+def declaration_floor(task: Task) -> float:
+    """When the conversation a declaration must be newer than began."""
+    marks = [task.doc.get("dispatched_at")]
+    refuels = task.doc.get("refuels") or []
+    if refuels and isinstance(refuels[-1], dict):
+        marks.append(refuels[-1].get("at"))
+    marks += [s.get("at") for s in task.doc.get("sends") or []
+              if isinstance(s, dict) and s.get("delivered")]
+    return max((record_time(m) for m in marks if m), default=0.0)
+
+
+def declaration(task: Task) -> dict | None:
+    """The task's standing declaration, or None. See the section above."""
+    try:
+        rows = open(task.file("progress.jsonl"), encoding="utf-8").read().splitlines()
+    except OSError:
+        return None
+    floor = declaration_floor(task)
+    latest = None
+    for row in rows:
+        try:
+            doc = json.loads(row)
+        except ValueError:
+            continue
+        said = doc.get("declare") if isinstance(doc, dict) else None
+        if not isinstance(said, dict) or said.get("state") not in DECLARE_STATES:
+            continue
+        when = record_time(doc.get("observed"))
+        if when and when >= floor and (latest is None or when >= latest[0]):
+            latest = (when, said)
+    if latest is None:
+        return None
+    when, said = latest
+    out = {"state": said["state"], "why": str(said.get("why") or ""),
+           "declared": datetime.fromtimestamp(when, timezone.utc).isoformat()}
+    if said["state"] == "paused":
+        until = min(aware_time(said.get("until")), when + PAUSE_CAP_SECS)
+        if until <= time.time():
+            return None
+        out["until"] = datetime.fromtimestamp(until, timezone.utc).isoformat()
+    return out
+
+
+def aware_time(stamp) -> float:
+    """An ISO-8601 time WITH an offset as an epoch second; 0 for anything else.
+
+    A naive time would be read in whatever zone the reading machine is in, so
+    it means nothing here and counts as already past.
     """
-    todo = [
+    try:
+        then = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return 0.0
+    return then.timestamp() if then.tzinfo else 0.0
+
+
+def open_tasks(q: Queue) -> list:
+    """Dispatched, holding a session, with no result.md yet."""
+    return [
         t for t in sorted(q.tasks.values(), key=lambda t: t.ref)
         if t.state == "dispatched" and t.doc.get("session")
         and not os.path.exists(t.file("result.md"))
     ]
+
+
+def declared_tasks(q: Queue) -> dict:
+    """{ref: row} for every open task with a standing declaration."""
+    out = {}
+    for task in open_tasks(q):
+        said = declaration(task)
+        if said:
+            out[task.ref] = {"task": task.ref, "session": task.doc["session"], **said}
+    return out
+
+
+def stalled_tasks(q: Queue, declared: dict | None = None) -> list[dict]:
+    """Dispatched, at rest past STALLED_IDLE_SECS, no result.md, no commit in that window.
+
+    A JUDGEMENT AND NOT A STATE. Nothing is written and nothing moves: it is
+    what `plan` reports, and the reconciler carries it to the lead once, like
+    the ready set. A session list that cannot be read reports nothing. A task
+    whose worker has declared a wait (`declared_tasks`) is not judged at all:
+    its own word is the better evidence, for as long as it stands.
+    """
+    if declared is None:
+        declared = declared_tasks(q)
+    todo = [t for t in open_tasks(q) if t.ref not in declared]
     if not todo:
         return []
     sessions, _why = session_snapshot()
@@ -3113,7 +3256,10 @@ def cmd_plan(args) -> int:
     q = Queue(queue_root())
     ready, waiting = q.ready(), q.waiting()
     overlaps = q.overlaps(ready)
-    stalled = stalled_tasks(q)
+    declared = declared_tasks(q)
+    stalled = stalled_tasks(q, declared)
+    paused = [r for r in declared.values() if r["state"] == "paused"]
+    needs_input = [r for r in declared.values() if r["state"] == "needs-input"]
     unprompted = unprompted_tasks(q)
 
     if args.json:
@@ -3127,6 +3273,8 @@ def cmd_plan(args) -> int:
                     "overlaps": overlaps,
                     "stalled": stalled,
                     "unprompted": unprompted,
+                    "paused": paused,
+                    "needs_input": needs_input,
                 },
                 indent=2,
             )
@@ -3173,6 +3321,72 @@ def cmd_plan(args) -> int:
         for row in unprompted:
             print(f"    {row['task']:<52} {row['waited_secs'] // 60}m  session {row['session']}")
             print(f"          uv run fleet queue prompt {row['task']}")
+    if needs_input:
+        print()
+        print(f"needs input: {len(needs_input)} task(s) — the worker said it needs a decision")
+        for row in needs_input:
+            print(f"    {row['task']:<52} {row['why']}")
+        print("          `fleet queue send <ref> '...'` answers it.")
+    if paused:
+        print()
+        print(f"paused: {len(paused)} task(s) — the worker said it is waiting, so not judged stalled")
+        for row in paused:
+            print(f"    {row['task']:<52} until {row['until']}  {row['why']}")
+    return 0
+
+
+DURATION = re.compile(r"(\d+)([mh])")
+
+
+def cmd_declare(args) -> int:
+    """Append the worker's own word about a wait to its task's progress.jsonl.
+
+    A CONVENIENCE OVER THE CONTRACT, which is the JSON line the declarations
+    section above spells: this writes it so no worker hand-writes JSON. It
+    reaches a LOCAL worker, whose brief names the checkout; a worker on a
+    `--host` has no control-plane filesystem to write to, so it cannot declare,
+    and its stalls stay the inference they always were.
+    """
+    q = Queue(queue_root())
+    task = q.get(args.ref)
+    if task.state != "dispatched" or os.path.exists(task.file("result.md")):
+        raise QueueError(
+            f"{task.ref} is {task.state}, or has its result written; only a dispatched "
+            "task that has not reported can declare a wait"
+        )
+    why = args.why.strip()
+    if not why:
+        raise QueueError("--why is required: the lead reads it instead of your pane")
+    said = {"state": args.state}
+    if args.state == "paused":
+        if not args.until:
+            raise QueueError("paused needs --until: an ISO-8601 time with an offset, or 45m / 2h")
+        rel = DURATION.fullmatch(args.until.strip())
+        if rel:
+            until = time.time() + int(rel.group(1)) * (60 if rel.group(2) == "m" else 3600)
+        else:
+            until = aware_time(args.until)
+            if not until:
+                raise QueueError(
+                    f"--until {args.until!r} is not an ISO-8601 time with an offset "
+                    "(...Z or ...+00:00), nor a duration like 45m or 2h"
+                )
+        if until <= time.time():
+            raise QueueError(f"--until {args.until} is already past")
+        if until > time.time() + PAUSE_CAP_SECS:
+            raise QueueError(
+                f"a pause counts for at most {PAUSE_CAP_SECS // 3600}h. A longer wait is a "
+                "condition the lead records with `fleet queue block --condition`, so "
+                "declare needs-input and say what you are waiting on"
+            )
+        said["until"] = datetime.fromtimestamp(int(until), timezone.utc).isoformat()
+    elif args.until:
+        raise QueueError("--until is for paused only")
+    said["why"] = why
+    fleet_platform.append_record(
+        task.file("progress.jsonl"), json.dumps({"declare": said, "observed": now()}) + "\n"
+    )
+    print(f"{task.ref}: declared {args.state}" + (f" until {said['until']}" if "until" in said else ""))
     return 0
 
 
@@ -11498,6 +11712,14 @@ def build_parser() -> argparse.ArgumentParser:
     pl = sub.add_parser("plan", help="what dispatches now, what waits, and why")
     pl.add_argument("--json", action="store_true")
     pl.set_defaults(func=cmd_plan)
+
+    dc = sub.add_parser("declare", help="a worker's own word: paused until a time, or needs input")
+    dc.add_argument("ref")
+    dc.add_argument("state", choices=DECLARE_STATES)
+    dc.add_argument("--until", help="paused only: an ISO-8601 time with an offset, or 45m / 2h; "
+                    f"at most {PAUSE_CAP_SECS // 3600}h away")
+    dc.add_argument("--why", required=True, help="what you are waiting on, or the decision you need")
+    dc.set_defaults(func=cmd_declare)
 
     d = sub.add_parser("dispatch", help="launch every ready task at once")
     d.add_argument(

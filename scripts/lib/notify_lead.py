@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Tell the lead that ready work exists which nothing will dispatch, or a worker stalled or was never briefed.
+"""Tell the lead that ready work exists which nothing will dispatch, or a worker stalled,
+was never briefed, or asked.
 
 WHY THIS EXISTS, measured. On 2026-09-10 at 01:37 a pull request merged,
 `forge-agnostic/01-01-forge-seam` landed, and the `semantic-dependency` blocker
@@ -65,7 +66,10 @@ machine stopped without a result and nobody noticed for two days. `plan --json`
 names them (`stalled`: dispatched, at rest past half an hour, no result.md, no
 new commit — `queue.py`'s `stalled_tasks` owns the judgement) and this carries
 them under the four rules above, remembered as their own set, so a stall is
-told once and fresh ready work is still news beside it.
+told once and fresh ready work is still news beside it. A worker that SAID it
+needs a decision (`fleet queue declare <ref> needs-input`) is not a stall but
+the same silence named by the worker itself: `plan --json`'s `needs_input`,
+carried the same way as a set of its own.
 
 AN UNPROMPTED WORKER IS THE SILENCE BEFORE THE WORK. A dispatched task whose
 record still says `prompted: false` minutes later never got its brief — a
@@ -152,11 +156,12 @@ STALE_FILE = "stale.json"
 
 # What the loop remembers, per set: what was typed into the lead, and what was
 # left in its mailbox while it was mid-turn.
-MEMORY = ("told", "posted", "stalled", "stalled_posted", "unprompted", "unprompted_posted")
+MEMORY = ("told", "posted", "stalled", "stalled_posted", "unprompted", "unprompted_posted",
+          "needs_input", "needs_input_posted")
 # Which of those a new conversation forgets, and which only a new session does:
 # a mailbox note still waiting in the same session's inbox is not news twice.
-TYPED = ("told", "stalled", "unprompted")
-POSTED = ("posted", "stalled_posted", "unprompted_posted")
+TYPED = ("told", "stalled", "unprompted", "needs_input")
+POSTED = ("posted", "stalled_posted", "unprompted_posted", "needs_input_posted")
 
 
 def _load_queue():
@@ -196,9 +201,11 @@ def write_state(state_dir: str, memory: dict, note: str) -> None:
     """Remember what the lead has been told, and what was last logged about it.
 
     `memory` holds six lists of refs: `told` and `posted` for the ready set,
+    `memory` holds eight lists of refs: `told` and `posted` for the ready set,
     `stalled` and `stalled_posted` for the stalled one, `unprompted` and
-    `unprompted_posted` for the unprompted one — what was typed into the lead,
-    and what was left in its mailbox — and `lead`, which lead they are
+    `unprompted_posted` for the unprompted one, `needs_input` and
+    `needs_input_posted` for the workers that asked — what was typed into the
+    lead, and what was left in its mailbox — and `lead`, which lead they are
     true of (see WHERE THE STATE LIVES).
 
     Best effort on purpose: a runtime directory that cannot be written is worth
@@ -416,6 +423,16 @@ def stalled_message(stalled: list) -> str:
     )
 
 
+def needs_input_message(asking: list) -> str:
+    """One line: which workers said they need a decision, and where to read the question."""
+    shown = ", ".join(asking[:NAMED])
+    more = "" if len(asking) <= NAMED else f" and {len(asking) - NAMED} more"
+    return (
+        f"fleet reconciler: {len(asking)} worker(s) need input — they said so — "
+        f"{shown}{more}. Look: uv run fleet queue show {asking[0]}, then fleet queue send"
+    )
+
+
 
 def unprompted_message(unprompted: list) -> str:
     """One line: which dispatched workers never got their brief, and how to send it."""
@@ -568,15 +585,24 @@ def main(argv: list) -> int:
     if not isinstance(plan, dict):
         return 0
     ready = sorted(str(r) for r in (plan.get("ready") or []))
-    # `plan` writes a row per stalled task; a bare ref is read as one too.
-    stalled = sorted(
-        str(r.get("task") if isinstance(r, dict) else r) for r in (plan.get("stalled") or [])
-    )
-    unprompted = sorted(
-        str(r.get("task") if isinstance(r, dict) else r) for r in (plan.get("unprompted") or [])
+    # `plan` writes a row per stalled, unprompted or asking task; a bare ref is
+    # read as one too.
+    stalled, unprompted, asking = (
+        sorted(str(r.get("task") if isinstance(r, dict) else r) for r in (plan.get(key) or []))
+        for key in ("stalled", "unprompted", "needs_input")
     )
     now = {"told": ready, "posted": ready, "stalled": stalled, "stalled_posted": stalled,
-           "unprompted": unprompted, "unprompted_posted": unprompted}
+           "unprompted": unprompted, "unprompted_posted": unprompted,
+           "needs_input": asking, "needs_input_posted": asking}
+    # Each set, in the order its news is spoken: (typed, posted, refs, line, what, word).
+    sets = (
+        ("told", "posted", ready, message, "ready work", "ready"),
+        ("stalled", "stalled_posted", stalled, stalled_message, "a stalled worker", "stalled"),
+        ("unprompted", "unprompted_posted", unprompted, unprompted_message,
+         "an unprompted worker", "unprompted"),
+        ("needs_input", "needs_input_posted", asking, needs_input_message,
+         "a worker that needs input", "asking for input"),
+    )
 
     # PRUNE, THEN COMPARE, and the prune is what makes a re-entry news. A task
     # that leaves a set — dispatched, blocked again, abandoned, or a worker
@@ -586,7 +612,7 @@ def main(argv: list) -> int:
     state = read_state(args.state_dir)
     memory = {k: [r for r in (state.get(k) or []) if r in now[k]] for k in MEMORY}
     memory["lead"] = state.get("lead")
-    if not ready and not stalled and not unprompted:
+    if not ready and not stalled and not unprompted and not asking:
         return say(args.state_dir, memory, "")
 
     # WHO IS LISTENING, before what is news to them: only asked while a set
@@ -595,14 +621,11 @@ def main(argv: list) -> int:
     row, status = lead_row(name) if name else (None, "")
     if row:
         memory = forget_for(memory, identity(row))
-    fresh = [r for r in ready if r not in memory["told"]]
-    fresh_stalled = [r for r in stalled if r not in memory["stalled"]]
-    fresh_unprompted = [r for r in unprompted if r not in memory["unprompted"]]
-    if not fresh and not fresh_stalled and not fresh_unprompted:
+    news = [s for s in sets if any(r not in memory[s[0]] for r in s[2])]
+    if not news:
         return say(args.state_dir, memory, "")
 
-    what = ("ready work" if fresh else "a stalled worker" if fresh_stalled
-            else "an unprompted worker")
+    what = news[0][4]
     if not name:
         return say(args.state_dir, memory, f"{what}, but no lead session is configured")
     if not row:
@@ -610,14 +633,8 @@ def main(argv: list) -> int:
     sid, status = str(row["id"]), str(row.get("state") or "unknown")
 
     # ONE LINE, carrying whichever set has news; a set with nothing new is not
-    # repeated just because the other one changed.
-    parts = []
-    if fresh:
-        parts.append(("told", "posted", message(ready)))
-    if fresh_stalled:
-        parts.append(("stalled", "stalled_posted", stalled_message(stalled)))
-    if fresh_unprompted:
-        parts.append(("unprompted", "unprompted_posted", unprompted_message(unprompted)))
+    # repeated just because another one changed.
+    parts = [(told, posted, say_it(refs)) for told, posted, refs, say_it, _w, _n in news]
     line = " ".join(text for _, _, text in parts)
 
     held = f"{name} is {status}" if status not in AT_REST else ""
@@ -650,13 +667,11 @@ def main(argv: list) -> int:
     # the next pass rather than swallowed.
     for told, _, _text in parts:
         memory[told] = now[told]
-    named, word = ((ready, "ready") if fresh else (stalled, "stalled") if fresh_stalled
-                   else (unprompted, "unprompted"))
+    named, word = news[0][2], news[0][5]
     return say(
         args.state_dir,
         memory,
-        f"woke {name}: {len(named)} task(s) {word} — "
-        f"{', '.join(named[:NAMED])}",
+        f"woke {name}: {len(named)} task(s) {word} — {', '.join(named[:NAMED])}",
     )
 
 

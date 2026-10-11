@@ -81,8 +81,9 @@ second-guess `refuel`'s rule about a spent quota window.
 BUT IT SAYS WHEN THERE IS SOMETHING TO DECIDE. A task whose blocker clears is
 READY and has no actor: this loop may not dispatch, and the lead only acts when
 spoken to. So the pass after `collect` reads `plan` and, when the ready set has
-grown — or `plan`'s stalled set has, workers at rest with nothing to show, or
-its unprompted set, workers dispatched and never briefed —
+grown — or `plan`'s stalled set has, workers at rest with nothing to show,
+its unprompted set, workers dispatched and never briefed, or its needs-input
+set, workers that said they need a decision —
 wakes the lead: once per transition and per lead conversation, never mid-turn,
 silently when there is no lead. `scripts/lib/notify_lead.py` owns those rules.
 

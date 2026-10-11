@@ -535,7 +535,10 @@ script running `ensure`), the SessionStart hook runs `reconcile ensure
   opinion here to keep in step. `plan` also names the STALLED set —
   dispatched, at rest past half an hour, no `result.md`, no new commit — and
   the UNPROMPTED set — dispatched minutes ago and never handed its brief — and
-  each reaches the lead the same way, once per transition.
+  each reaches the lead the same way, once per transition. A worker may SAY
+  it is waiting instead (`fleet queue declare`): `paused` keeps it out of the
+  stalled set until a time at most six hours off, and `needs-input` is a set
+  of its own, told the same way. `queue.py`'s declarations section owns both.
 - **`nudge` is the accelerator and never the guarantee.** A worker's Claude
   Code `Stop` hook can call `uv run --project <checkout> fleet reconcile nudge`
   to bring the periodic pass forward; a worker that died on a token limit fires

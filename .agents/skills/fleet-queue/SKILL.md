@@ -1,6 +1,6 @@
 ---
 name: fleet-queue
-description: 'Turn a prompt into durable task records, dispatch every independent task at once, and learn what finished by reading a stream and a file instead of being interrupted. Use whenever the control plane is given work — especially work spanning several projects, several tasks, or several merges at the same time — whenever you are asked what is in flight, blocked or waiting, and for any of the queue''s own verbs: topic add, add, plan, block, dispatch, prompt, send, attach, watch, collect, shepherd, reap, reviewed, abandon, refuel, list, show, archive, or the reconcile loop that runs them.'
+description: 'Turn a prompt into durable task records, dispatch every independent task at once, and learn what finished by reading a stream and a file instead of being interrupted. Use whenever the control plane is given work — especially work spanning several projects, several tasks, or several merges at the same time — whenever you are asked what is in flight, blocked or waiting, and for any of the queue''s own verbs: topic add, add, plan, block, dispatch, prompt, send, attach, watch, collect, shepherd, reap, reviewed, abandon, refuel, declare, list, show, archive, or the reconcile loop that runs them.'
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Glob, Grep
 ---
@@ -911,15 +911,22 @@ is also a setting: `<NAME>_SECS` in the gitignored
 restart` after an edit), with `FLEET_RECONCILE_<NAME>_SECS` still beating it.
 Two things are about you:
 
-- **It will type one line at you, and only ever about four things:** that N
+- **It will type one line at you, and only ever about five things:** that N
   tasks are ready and nothing will dispatch them — treat it as `plan` already
   run, and `dispatch`; that N workers are STALLED — dispatched, at rest past
   half an hour, no `result.md`, no new commit: `show` the task, then `send` a
   nudge or `abandon` it; that N workers were never PROMPTED — dispatched over
   five minutes ago and never handed the brief: look at the pane, then
-  `fleet queue prompt <ref>`; or that it fast-forwarded this checkout and you need
-  `/update-fleet <sha>`. Once each, never mid-turn, and never into an input
+  `fleet queue prompt <ref>`; that N workers NEED INPUT — they said so with
+  `fleet queue declare <ref> needs-input --why …`: read the why in `plan`,
+  decide, and `send` the answer (a delivered `send` retires the question); or
+  that it fast-forwarded this checkout and you need `/update-fleet <sha>`.
+  Once each, never mid-turn, and never into an input
   line that holds anything: that waits in your mailbox instead.
+- **A worker that declared `paused --until T` is waiting by design** (CI, a
+  reviewer): `plan` lists it as paused rather than stalled until `T`, never
+  more than six hours from when it said so. A worker on a `--host` cannot
+  declare: it has no path to these records.
 - **It comes back without you.** Your SessionStart hook runs `ensure --if-lead`,
   and a machine where `fleet install` wrote the user service restarts it after
   a reboot. `status` saying `DOWN` with no down flag is a fault: `ensure`, and
