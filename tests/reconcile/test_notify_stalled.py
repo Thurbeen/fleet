@@ -58,3 +58,28 @@ def test_a_lead_mid_turn_finds_the_stall_in_its_inbox(stubs, tmp_path):
     expect(box[0]["body"], "alpha/01-first", "stalled")
     notify(tmp_path, stalled=["alpha/01-first"])
     assert len(stubs.inbox("lead-uuid")) == 1, "posted once per transition"
+
+
+def test_an_unprompted_worker_is_told_once(stubs, tmp_path):
+    """A dispatched task nobody ever briefed is not at rest, so the stalled set
+    never names it; `plan`'s `unprompted` set does, and it rides the same rules."""
+    def sends() -> list[str]:
+        return stubs.calls("thurbox-cli", "session send")
+
+    def unprompted(*refs: str):
+        plan = json.dumps({"ready": [], "stalled": [],
+                           "unprompted": [{"task": r, "waited_secs": 900} for r in refs]})
+        return run([*PYTHON, str(NOTIFY), "--state-dir", str(tmp_path)], stdin=plan, FLEET_LEAD_SESSION=LEAD)
+
+    lead(stubs, "idle")
+    assert unprompted("alpha/01-first").code == 0
+    assert len(sends()) == 1, "an unprompted worker never reached the lead"
+    expect(sends()[0], "alpha/01-first", "never prompted", "uv run fleet queue prompt alpha/01-first")
+    refute(sends()[0], "stalled —")
+
+    unprompted("alpha/01-first")
+    assert len(sends()) == 1, "the same unprompted task is told once, not once per pass"
+
+    unprompted()
+    unprompted("alpha/01-first")
+    assert len(sends()) == 2, "one that clears and comes back is news again"

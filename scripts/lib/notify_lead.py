@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tell the lead that ready work exists which nothing will dispatch, or a worker stalled.
+"""Tell the lead that ready work exists which nothing will dispatch, or a worker stalled or was never briefed.
 
 WHY THIS EXISTS, measured. On 2026-09-10 at 01:37 a pull request merged,
 `forge-agnostic/01-01-forge-seam` landed, and the `semantic-dependency` blocker
@@ -66,6 +66,13 @@ names them (`stalled`: dispatched, at rest past half an hour, no result.md, no
 new commit — `queue.py`'s `stalled_tasks` owns the judgement) and this carries
 them under the four rules above, remembered as their own set, so a stall is
 told once and fresh ready work is still news beside it.
+
+AN UNPROMPTED WORKER IS THE SILENCE BEFORE THE WORK. A dispatched task whose
+record still says `prompted: false` minutes later never got its brief — a
+handoff that failed and was never retried, or a session attached by hand — and
+it is not at rest, so the stalled set never named it. `plan --json` names it
+(`unprompted`: `queue.py`'s `unprompted_tasks` owns the judgement) and it is a
+third set here, under the same rules.
 
 WHERE THE STATE LIVES. In the reconciler's own runtime directory, beside its
 pid, heartbeat and flags — never on the task. "The lead has been told" is a
@@ -145,11 +152,11 @@ STALE_FILE = "stale.json"
 
 # What the loop remembers, per set: what was typed into the lead, and what was
 # left in its mailbox while it was mid-turn.
-MEMORY = ("told", "posted", "stalled", "stalled_posted")
+MEMORY = ("told", "posted", "stalled", "stalled_posted", "unprompted", "unprompted_posted")
 # Which of those a new conversation forgets, and which only a new session does:
 # a mailbox note still waiting in the same session's inbox is not news twice.
-TYPED = ("told", "stalled")
-POSTED = ("posted", "stalled_posted")
+TYPED = ("told", "stalled", "unprompted")
+POSTED = ("posted", "stalled_posted", "unprompted_posted")
 
 
 def _load_queue():
@@ -188,9 +195,10 @@ def read_state(state_dir: str) -> dict:
 def write_state(state_dir: str, memory: dict, note: str) -> None:
     """Remember what the lead has been told, and what was last logged about it.
 
-    `memory` holds four lists of refs: `told` and `posted` for the ready set,
-    `stalled` and `stalled_posted` for the stalled one — what was typed into the
-    lead, and what was left in its mailbox — and `lead`, which lead they are
+    `memory` holds six lists of refs: `told` and `posted` for the ready set,
+    `stalled` and `stalled_posted` for the stalled one, `unprompted` and
+    `unprompted_posted` for the unprompted one — what was typed into the lead,
+    and what was left in its mailbox — and `lead`, which lead they are
     true of (see WHERE THE STATE LIVES).
 
     Best effort on purpose: a runtime directory that cannot be written is worth
@@ -409,6 +417,16 @@ def stalled_message(stalled: list) -> str:
 
 
 
+def unprompted_message(unprompted: list) -> str:
+    """One line: which dispatched workers never got their brief, and how to send it."""
+    shown = ", ".join(unprompted[:NAMED])
+    more = "" if len(unprompted) <= NAMED else f" and {len(unprompted) - NAMED} more"
+    return (
+        f"fleet reconciler: {len(unprompted)} worker(s) dispatched and never prompted "
+        f"— {shown}{more}. Look at its pane, then: uv run fleet queue prompt {unprompted[0]}"
+    )
+
+
 # --- the stale lead ----------------------------------------------------------
 
 
@@ -527,7 +545,7 @@ def stale(state_dir: str, text: str) -> int:
 
 def main(argv: list) -> int:
     ap = argparse.ArgumentParser(
-        description="wake the lead when ready work has no actor, or a worker has stalled",
+        description="wake the lead when ready work has no actor, or a worker has stalled or was never prompted",
     )
     ap.add_argument(
         "--state-dir",
@@ -554,7 +572,11 @@ def main(argv: list) -> int:
     stalled = sorted(
         str(r.get("task") if isinstance(r, dict) else r) for r in (plan.get("stalled") or [])
     )
-    now = {"told": ready, "posted": ready, "stalled": stalled, "stalled_posted": stalled}
+    unprompted = sorted(
+        str(r.get("task") if isinstance(r, dict) else r) for r in (plan.get("unprompted") or [])
+    )
+    now = {"told": ready, "posted": ready, "stalled": stalled, "stalled_posted": stalled,
+           "unprompted": unprompted, "unprompted_posted": unprompted}
 
     # PRUNE, THEN COMPARE, and the prune is what makes a re-entry news. A task
     # that leaves a set — dispatched, blocked again, abandoned, or a worker
@@ -564,7 +586,7 @@ def main(argv: list) -> int:
     state = read_state(args.state_dir)
     memory = {k: [r for r in (state.get(k) or []) if r in now[k]] for k in MEMORY}
     memory["lead"] = state.get("lead")
-    if not ready and not stalled:
+    if not ready and not stalled and not unprompted:
         return say(args.state_dir, memory, "")
 
     # WHO IS LISTENING, before what is news to them: only asked while a set
@@ -575,10 +597,12 @@ def main(argv: list) -> int:
         memory = forget_for(memory, identity(row))
     fresh = [r for r in ready if r not in memory["told"]]
     fresh_stalled = [r for r in stalled if r not in memory["stalled"]]
-    if not fresh and not fresh_stalled:
+    fresh_unprompted = [r for r in unprompted if r not in memory["unprompted"]]
+    if not fresh and not fresh_stalled and not fresh_unprompted:
         return say(args.state_dir, memory, "")
 
-    what = "ready work" if fresh else "a stalled worker"
+    what = ("ready work" if fresh else "a stalled worker" if fresh_stalled
+            else "an unprompted worker")
     if not name:
         return say(args.state_dir, memory, f"{what}, but no lead session is configured")
     if not row:
@@ -592,6 +616,8 @@ def main(argv: list) -> int:
         parts.append(("told", "posted", message(ready)))
     if fresh_stalled:
         parts.append(("stalled", "stalled_posted", stalled_message(stalled)))
+    if fresh_unprompted:
+        parts.append(("unprompted", "unprompted_posted", unprompted_message(unprompted)))
     line = " ".join(text for _, _, text in parts)
 
     held = f"{name} is {status}" if status not in AT_REST else ""
@@ -624,11 +650,12 @@ def main(argv: list) -> int:
     # the next pass rather than swallowed.
     for told, _, _text in parts:
         memory[told] = now[told]
-    named = ready if fresh else stalled
+    named, word = ((ready, "ready") if fresh else (stalled, "stalled") if fresh_stalled
+                   else (unprompted, "unprompted"))
     return say(
         args.state_dir,
         memory,
-        f"woke {name}: {len(named)} task(s) {'ready' if fresh else 'stalled'} — "
+        f"woke {name}: {len(named)} task(s) {word} — "
         f"{', '.join(named[:NAMED])}",
     )
 

@@ -20,6 +20,8 @@ from kit_refuel import (
 )
 import json
 
+import yaml
+
 from queuekit import ok
 
 from harness import expect, refute, write
@@ -99,6 +101,17 @@ def test_with_fuel_only_the_session_on_its_limit_banner_is_restarted(ran_dry, st
     # Recorded, and still exactly as dispatched: a restart is not a completion.
     expect(state, "refuelled:", "state:       dispatched")
     refute(state, "outcome:     shipped")
+
+
+def test_a_restart_that_was_briefed_marks_the_task_prompted(ran_dry, stubs, queue_dir):
+    """The restart's send is a delivery like any other: a task left `prompted: false`
+    behind it is one the next bare `prompt` sweep re-briefs from the top."""
+    quota_is(stubs, 62, RESETS)
+    task_yaml = queue_dir / ran_dry / "01-ran-dry" / "task.yaml"
+    ok(q("refuel"))
+    doc = yaml.safe_load(task_yaml.read_text(encoding="utf-8"))
+    assert doc["refuels"][-1]["prompted"] is True
+    assert doc["prompted"] is True, "the restart delivered, and the task still reads unprompted"
 
 
 def test_the_transcript_is_the_precise_source(ran_dry, stubs, claude_home):

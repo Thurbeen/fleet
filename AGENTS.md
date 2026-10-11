@@ -534,7 +534,8 @@ script running `ensure`), the SessionStart hook runs `reconcile ensure
   condition, so the one reading carries the answer and there is no second
   opinion here to keep in step. `plan` also names the STALLED set —
   dispatched, at rest past half an hour, no `result.md`, no new commit — and
-  that reaches the lead the same way, once per transition.
+  the UNPROMPTED set — dispatched minutes ago and never handed its brief — and
+  each reaches the lead the same way, once per transition.
 - **`nudge` is the accelerator and never the guarantee.** A worker's Claude
   Code `Stop` hook can call `uv run --project <checkout> fleet reconcile nudge`
   to bring the periodic pass forward; a worker that died on a token limit fires

@@ -183,12 +183,15 @@ Usage:
                        # Its kinds are their own closed set, also in --help
   uv run fleet queue plan [--json]        # what goes out now, what waits, and why;
                        and which dispatched workers are STALLED — at rest past
-                       half an hour with no result.md and no new commit
+                       half an hour with no result.md and no new commit — or
+                       UNPROMPTED, dispatched minutes ago and never briefed
   uv run fleet queue dispatch [<ref>...] [--dry-run]  # the whole ready set at
                        once with no ref, which is the norm; refs launch
                        exactly those, refuse one that is not ready, and leave
                        the rest queued with nothing recorded
-  uv run fleet queue attach <ref> <uuid>  # record a session you spawned by hand
+  uv run fleet queue attach <ref> <uuid> [--unprompted]  # record a session
+                       you spawned by hand; one whose agent reports a state is
+                       recorded prompted, so `prompt` never re-briefs it
   uv run fleet queue prompt [<ref>]       # retry the handoff to a session that
                        was created but not prompted; every such one by default
   uv run fleet queue send <ref> 'one line'  # message a task's worker, and
@@ -3072,11 +3075,41 @@ def stalled_tasks(q: Queue) -> list[dict]:
     return out
 
 
+# How long a dispatched task may read `prompted: false` before `plan` names it.
+# Dispatch prompts in the same command that attaches, and its retry budget is
+# seconds, so a task still unprompted minutes later is one whose handoff failed
+# and nobody retried — or one attached by hand with no brief. Five minutes is
+# well past any handoff in flight and far short of the half hour a stall needs,
+# because an unprompted worker is not slow: it has nothing to do.
+UNPROMPTED_GRACE_SECS = 5 * 60
+
+
+def unprompted_tasks(q: Queue) -> list[dict]:
+    """Dispatched, `prompted` false, dispatched more than UNPROMPTED_GRACE_SECS ago.
+
+    The stalled set reads only sessions at rest, so a worker that never got
+    its brief — at a trust dialog, or reporting nothing — reached no standing
+    surface. A judgement like `stalled_tasks`, read off the records alone.
+    """
+    out = []
+    for task in sorted(q.tasks.values(), key=lambda t: t.ref):
+        if task.state != "dispatched" or task.doc.get("prompted"):
+            continue
+        if not task.doc.get("session") or os.path.exists(task.file("result.md")):
+            continue
+        waited = time.time() - record_time(task.doc.get("dispatched_at"))
+        if waited < UNPROMPTED_GRACE_SECS:
+            continue
+        out.append({"task": task.ref, "session": task.doc["session"], "waited_secs": int(waited)})
+    return out
+
+
 def cmd_plan(args) -> int:
     q = Queue(queue_root())
     ready, waiting = q.ready(), q.waiting()
     overlaps = q.overlaps(ready)
     stalled = stalled_tasks(q)
+    unprompted = unprompted_tasks(q)
 
     if args.json:
         print(
@@ -3088,6 +3121,7 @@ def cmd_plan(args) -> int:
                     ],
                     "overlaps": overlaps,
                     "stalled": stalled,
+                    "unprompted": unprompted,
                 },
                 indent=2,
             )
@@ -3125,6 +3159,15 @@ def cmd_plan(args) -> int:
         for row in stalled:
             print(f"    {row['task']:<52} idle {row['idle_secs'] // 60}m  session {row['session']}")
         print("          `fleet queue show <ref>` reads it; `fleet queue send <ref> '...'` nudges it.")
+    if unprompted:
+        print()
+        print(
+            f"unprompted: {len(unprompted)} task(s) — dispatched over "
+            f"{UNPROMPTED_GRACE_SECS // 60}m ago and never handed the brief"
+        )
+        for row in unprompted:
+            print(f"    {row['task']:<52} {row['waited_secs'] // 60}m  session {row['session']}")
+            print(f"          uv run fleet queue prompt {row['task']}")
     return 0
 
 
@@ -4524,8 +4567,14 @@ def cmd_dispatch(args) -> int:
     return 1 if failures else 0
 
 
-def attach(task: Task, session: str, agent: str = "") -> None:
+def attach(task: Task, session: str, agent: str = "", prompted: bool = False) -> None:
     """Bind a session to a task, and record the agent that session runs.
+
+    `prompted` is whether that session already has its work. Dispatch binds a
+    session it has just created and not yet briefed, so false; `fleet queue
+    attach` binds one somebody else started and says what thurbox reports of
+    it (`cmd_attach`), because the bare `prompt` sweep types the ORIGINAL brief
+    into every dispatched task that reads unprompted.
 
     `agent` is the string that actually reached `session create`'s `--agent`,
     carried out of `spawn_commands` rather than resolved again here. It is
@@ -4544,7 +4593,7 @@ def attach(task: Task, session: str, agent: str = "") -> None:
     task.doc["session"] = session
     task.doc["state"] = "dispatched"
     task.doc["dispatched_at"] = now()
-    task.doc["prompted"] = False
+    task.doc["prompted"] = prompted
     # Where the stream resumes FOR THIS TASK, fixed at the instant it attaches
     # so the first `watch` after a dispatch starts from the dispatch and not
     # from 0 (replays the whole backlog) or from "now" (drops the gap). Set
@@ -4629,10 +4678,23 @@ def cmd_prompt(args) -> int:
 
 
 def cmd_attach(args) -> int:
+    """Record a session somebody spawned, and whether it already has its work.
+
+    A session whose agent reports a state of its own — busy or at rest — has
+    been talking, so it is recorded prompted: the bare `prompt` sweep would
+    otherwise type the original brief into an agent mid-task, which it did. One
+    with no agent report, or one thurbox cannot answer for, stays
+    unprompted, as before. `--unprompted` is for the hand-spawned session that
+    reports `idle` at its first prompt and has never been told anything.
+    """
     q = Queue(queue_root())
     task = q.get(args.ref)
-    attach(task, args.session)
-    print(f"{task.ref} -> {args.session}")
+    prompted = False
+    if not args.unprompted:
+        state, _why = session_state(args.session)
+        prompted = state in SESSION_BUSY | SESSION_AT_REST
+    attach(task, args.session, prompted=prompted)
+    print(f"{task.ref} -> {args.session}{'' if prompted else '  (unprompted)'}")
     return 0
 
 
@@ -7849,6 +7911,11 @@ def refuel(q: Queue, ref: str | None = None, dry: bool = False) -> int:
             sid, send, verify=needs_verified_submit(task)
         )
         task.doc["refuels"][-1]["prompted"] = prompted
+        # The task's own flag follows a delivery, never a failed one: a
+        # restart that could not be briefed leaves it as it was, and the
+        # receipt above is what names the miss.
+        if prompted:
+            task.doc["prompted"] = True
         task.save()
         print(f"    {task.ref:<46} restarted     {sid}"
               f"{'' if prompted else '  NOT PROMPTED'}")
@@ -10536,7 +10603,9 @@ def record_send(
 ) -> dict:
     """The receipt. Appended, never replaced — a worker messaged four times is
     a fact about the task, and one that disappears if each send overwrites the
-    last. Nothing else on the record is touched.
+    last. The one other field it writes: a DELIVERED send marks the task
+    `prompted`, since the session now has words from the lead, and the bare
+    `prompt` sweep must not follow them with the original brief.
     """
     entry = {
         "at": now(),
@@ -10548,6 +10617,8 @@ def record_send(
     if detail:
         entry["detail"] = detail
     task.doc.setdefault("sends", []).append(entry)
+    if delivered:
+        task.doc["prompted"] = True
     task.save()
     return entry
 
@@ -11355,6 +11426,13 @@ def build_parser() -> argparse.ArgumentParser:
     at = sub.add_parser("attach", help="record the session doing a task")
     at.add_argument("ref")
     at.add_argument("session")
+    at.add_argument(
+        "--unprompted",
+        action="store_true",
+        help="record it unprompted whatever it reports, so `fleet queue prompt` "
+        "sends it the brief; by default a session whose agent reports a state "
+        "is recorded prompted",
+    )
     at.set_defaults(func=cmd_attach)
 
     w = sub.add_parser("watch", help="fold thurbox's event stream into the records")
