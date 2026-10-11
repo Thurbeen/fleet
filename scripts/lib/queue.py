@@ -1460,8 +1460,7 @@ def read_yaml(path: str) -> dict:
 
 def read_record(path: str) -> tuple[dict, str]:
     """`read_yaml`, plus the text it was parsed from — what a save compares with."""
-    with open(path, encoding="utf-8") as fh:
-        text = fh.read()
+    text = fleet_platform.read_record(path)
     return parse_record(path, text), text
 
 
@@ -1551,8 +1550,7 @@ class Task:
             doc = self.doc
             if self.loaded is not None:
                 try:
-                    with open(path, encoding="utf-8") as fh:
-                        now_text = fh.read()
+                    now_text = fleet_platform.read_record(path)
                 except FileNotFoundError:
                     now_text = self.loaded
                 if now_text != self.loaded:

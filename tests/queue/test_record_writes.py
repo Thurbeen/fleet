@@ -7,7 +7,9 @@ first one's change away. That is how a `shepherd` that loaded a task while it
 was `dispatched` put it back to `dispatched` after `collect` had closed it.
 """
 
+import builtins
 import threading
+from unittest import mock
 
 import yaml
 from queuekit import ok
@@ -82,6 +84,39 @@ def test_concurrent_writers_lose_no_change():
     assert errors == []
     disk = on_disk(ref)
     assert [disk.get(f"writer{n}") for n in range(4)] == [19] * 4, disk
+
+
+def refusing_one_open_of(name: str):
+    """`open`, refusing the first read of `name` the way Windows does mid-replace."""
+    real = builtins.open
+    refused = []
+
+    def racing(file, mode="r", *args, **kwargs):
+        if str(file).endswith(name) and "r" in mode and not refused:
+            refused.append(file)
+            raise PermissionError(13, "the file is being replaced")
+        return real(file, mode, *args, **kwargs)
+
+    return racing, refused
+
+
+def test_loading_a_task_waits_out_a_replace_in_flight():
+    """Windows refuses an open that races another writer's replace for a moment."""
+    ref = a_task()
+    racing, refused = refusing_one_open_of("task.yaml")
+    with mock.patch("builtins.open", racing):
+        task = view(ref)
+    assert refused and task.doc["title"] == "One"
+
+
+def test_a_save_waits_out_a_replace_in_flight():
+    ref = a_task()
+    task = view(ref)
+    task.doc["state"] = "landed"
+    racing, refused = refusing_one_open_of("task.yaml")
+    with mock.patch("builtins.open", racing):
+        task.save()
+    assert refused and on_disk(ref)["state"] == "landed"
 
 
 def test_a_record_left_unreadable_on_disk_is_still_saved_over():
