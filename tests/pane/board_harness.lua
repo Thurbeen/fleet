@@ -215,7 +215,7 @@ package.preload["lib.fuzzy"] = function()
 end
 package.preload["lib.fleet_reader"] = function() return dofile("interface/fleet_reader.lua") end
 package.preload["lib.fleet_board"] = function()
-  return dofile("interface/fleet_board.lua")
+  return dofile(arg[2] or "interface/fleet_board.lua")
 end
 _G.state = {}
 _G.store = {}
@@ -503,6 +503,18 @@ local function action(a)
     tree()
   end
 end
+-- Like the kernel's grabbed-float dispatcher: resolve the pane's declared
+-- chord to its action before falling back to the raw key handler.
+local function press(key)
+  for _, binding in ipairs(pane.keys) do
+    if binding.key == key and pane.on_action(binding.action) then
+      if state.board_open then tree() end
+      return
+    end
+  end
+  assert(pane.on_key({ key = key }), key .. " not handled")
+  if state.board_open then tree() end
+end
 if scenario == "render-readonly" then
   local function readonly(value)
     if type(value) ~= "table" then return value end
@@ -554,6 +566,21 @@ elseif scenario == "columns" then
   for _, s in ipairs({ "Queued / waiting", "Dispatched / working", "Shipped", "Served", "Stuck / abandoned", "Landed" }) do
     contains(s)
   end
+elseif scenario == "enter-dispatch" then
+  store.selected = "lead"
+  assert(pane.on_click({ id = "board:alpha/03-work" }))
+  tree()
+  -- The record remains reachable even for a card with a live worker.
+  press("d")
+  contains("Detail")
+  assert(store.selected == "lead" and state.board_open)
+  press("esc")
+  assert(not state.board_detail and state.board_open)
+  press("enter")
+  assert(store.selected == "worker", "Enter did not select the ticket's worker")
+  assert(#commands == 1 and commands[1].name == "focus" and commands[1].args.text == "agent",
+    "Enter did not return focus to the session pane")
+  assert(not state.board_open and tree() == nil, "Enter left the overlay above the session pane")
 elseif scenario == "enter-session" then
   pane.on_click({ id = "board:alpha/03-work" })
   action("enter")
@@ -566,8 +593,11 @@ elseif scenario == "enter-session" then
   )
   assert(not state.board_open)
 elseif scenario == "enter-detail" then
-  action("enter")
+  store.selected = "lead"
+  press("enter")
   contains("Detail")
+  assert(store.selected == "lead" and #commands == 0 and state.board_open,
+    "undispatched ticket invented a session or moved focus")
   local found = false
   for _, call in ipairs(calls) do
     if call.cmd:find("queue show", 1, true) then
@@ -827,10 +857,13 @@ elseif scenario == "buttons" then
   action("topic_all")
   contains("topic: all")
 elseif scenario == "missing-session" then
+  store.selected = "lead"
   pane.on_click({ id = "board:alpha/03-work" })
   thurbox.sessions[2] = nil
-  action("enter")
+  press("enter")
   contains("Detail")
+  assert(store.selected == "lead" and #commands == 0 and state.board_open,
+    "missing worker moved selection or focus")
 elseif scenario == "reserved" then
   assert(not pane.on_key({ key = "ctrl+h" }) and not pane.on_key({ key = "ctrl+l" }))
 elseif scenario == "peers-none" then
@@ -946,8 +979,8 @@ elseif scenario == "peers-readonly" then
   assert(state.board_ref == "devbox:/srv/fleet#far/01-far")
   contains("read-only")
   local before, selected = #commands, store.selected
-  action("enter")
-  action("detail")
+  press("enter")
+  press("d")
   assert(#commands == before and store.selected == selected, "a peer card focused a session here")
   assert(not state.board_detail, "a peer card opened this fleet's record of it")
   assert(state.board_open, "Enter on a peer card closed the board")
