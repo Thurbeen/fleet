@@ -5026,6 +5026,18 @@ def pull_request_verdict(
     `attestation` — a note on the record, never a hold. Who MAY merge an
     unattested pull request is the shepherd's gate, and nothing here touches it.
 
+    A BRANCH NAME IS NOT A REPOSITORY. `fix/x` exists in any number of them, and
+    every repository a task spans shares the task's branch — so the head branch
+    alone let a pull request in some other repository verify, and let one URL
+    written for every `--add-repo` verify all of them. So the change request's
+    repository is compared with the one this repository's checkout names
+    (`unit_repo`), and, for the task's own branch, its base with the base the
+    worktree was cut from. A change request from an integration branch targets
+    the next branch along by design, so its base is `integration_verdict`'s
+    business and not compared here. Where the checkout's repository cannot be
+    read — no `origin`, a local-only fleet, another machine — nothing is
+    guessed and the branch check stands alone, exactly as it always did.
+
     The third value is those fields for the publish block: `state`, when this
     check knows better than `collect_publish_state` does, and that note.
     """
@@ -5056,10 +5068,22 @@ def pull_request_verdict(
             ), {}
         whose = "is this task's target"
     else:
+        unit = unit or task_repos(task)[0]
+        mine = unit_repo(task, unit)
+        if mine is not None and not same_repo(mine, cr.repo):
+            return "missing", (
+                f"the pull request is in {cr.repo.qualified}, and this repository's "
+                f"checkout {unit['path']} is {mine.qualified}"
+            ), {}
         branch = str(task.doc.get("branch") or "")
         if not cr.head_branch:
             return "unknown", "the forge did not say which branch this pull request is from", {}
         whose = f"is from {branch}"
+        if cr.head_branch == branch and cr.base_branch and cr.base_branch != unit["base"]:
+            return "missing", (
+                f"the pull request is from {branch} onto {cr.base_branch}, and this "
+                f"repository's work is cut from and lands on {unit['base']}"
+            ), {}
         if cr.head_branch != branch:
             integration = longest_prefix_rule(cr.repo, integration_branches())
             if integration is None or integration[0] != cr.head_branch:
@@ -5069,7 +5093,7 @@ def pull_request_verdict(
                     "open names it with `add --target`"
                 ), {}
             own = False
-            verdict, whose = integration_verdict(task, cr, branch, unit or task_repos(task)[0])
+            verdict, whose = integration_verdict(task, cr, branch, unit)
             if verdict != "passed":
                 return verdict, whose, {}
 
@@ -5100,6 +5124,25 @@ def pull_request_verdict(
             f"the pull request is {cr.state or 'in no state the forge named'}"
         ), {}
     return "passed", f"the pull request is {cr.state} and {whose}", {}
+
+
+def unit_repo(task: Task, unit: dict) -> forge.RepoId | None:
+    """The forge repository one of this task's checkouts is, or None for "cannot tell".
+
+    `repo_from_checkout` — the checkout's `origin` — and nothing cleverer. A
+    `--host` task's paths are on another machine, and reading a directory that
+    happens to share the path here would answer about the wrong checkout, so
+    that is None too rather than a guess.
+    """
+    if task.doc.get("host"):
+        return None
+    return repo_from_checkout(unit["path"])
+
+
+def same_repo(a: forge.RepoId, b: forge.RepoId) -> bool:
+    """One repository, however the two spellings cased it — both forges fleet
+    ships an adapter for resolve a repository path without regard to case."""
+    return (a.host, a.path.lower()) == (b.host, b.path.lower())
 
 
 # The pipeline's own commits, which are the ONE way an `attested` branch grows

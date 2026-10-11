@@ -13,7 +13,7 @@ import shutil
 
 import pytest
 import yaml
-from queuekit import ok, result
+from queuekit import ok, result, result_artifacts
 
 from harness import REPO, expect, git, queue_module, refute, squeezed, write
 from harness import run_queue as q
@@ -396,3 +396,75 @@ def test_a_stale_attestation_the_pipeline_caused_itself_says_so(ptopic, stubs, q
 
     # Nor is one whose commits the forge would not enumerate.
     refute(q("show", f"{ptopic}/05-stale-attestation").out, "the pipeline pushed that head itself")
+
+
+# --- the pull request is this repository's, onto this base ---------------------
+
+
+def checkout(root, name: str, origin: str) -> str:
+    """A real checkout whose `origin` names a forge repository — the one thing
+    fleet reads to know which repository a task's checkout IS."""
+    work = root / name
+    git("init", "-q", "-b", "main", str(work))
+    git("remote", "add", "origin", origin, cwd=work)
+    return str(work)
+
+
+@pytest.fixture
+def rtopic(isolated_env) -> str:
+    return ok(q("topic", "add", "whose-pull-request", "--prompt", "Verify the right PR")).stdout.strip()
+
+
+def test_a_pull_request_in_another_repository_does_not_verify_on_its_branch_name(
+    tmp_path, rtopic, queue_dir, stubs,
+):
+    """A branch NAME is not a repository: `fix/x` exists in any number of them,
+    so somebody else's pull request from a branch spelled like this task's
+    proved nothing about this task."""
+    first = checkout(tmp_path, "first", "https://github.com/acme/first.git")
+    ok(q("add", rtopic, "wrong-repo", "--title", "Wrong repo", "--repo", first,
+         "--branch", "fix/wrong-repo", "--number", "01", "--publish", "pr"))
+    stubs.plain_pr(1301, "fix/wrong-repo")
+    result(queue_dir / rtopic / "01-wrong-repo", "shipped", "Opened it.",
+           "https://github.com/acme/second/pull/1301")
+    expect(q("collect", "--no-reap").out, "01-wrong-repo", "NOT CLOSED",
+           "acme/second", "acme/first")
+
+
+def test_one_pull_request_cannot_verify_every_repository_a_task_spans(
+    tmp_path, rtopic, queue_dir, stubs,
+):
+    """Every repository a task spans shares its branch name, so the same URL
+    written for each passed the branch check in each. The second repository's
+    change request has to be the second repository's."""
+    first = checkout(tmp_path, "first", "https://github.com/acme/first.git")
+    second = checkout(tmp_path, "second", "https://github.com/acme/second.git")
+    ok(q("add", rtopic, "spans-two", "--title", "Spans two", "--repo", first,
+         "--branch", "fix/spans-two", "--number", "01", "--add-repo", second,
+         "--publish", "pr"))
+    stubs.plain_pr(1302, "fix/spans-two")
+    url = "https://github.com/acme/first/pull/1302"
+    result_artifacts(queue_dir / rtopic / "01-spans-two", "shipped", "One PR for both.",
+                     {first: url, second: url})
+    expect(q("collect", "--no-reap").out, "NOT CLOSED", "1 of 2 repositories did not verify",
+           second, "acme/first", "acme/second")
+    doc = yaml.safe_load((queue_dir / rtopic / "01-spans-two" / "task.yaml").read_text(encoding="utf-8"))
+    verdicts = {r["repo"]: r["verdict"] for r in doc["artifact_check"]["repos"]}
+    assert verdicts == {first: "passed", second: "missing"}, verdicts
+
+
+def test_a_pull_request_onto_another_base_does_not_verify(tmp_path, rtopic, queue_dir, stubs):
+    """The task's work was cut off its base and is meant to land there; a pull
+    request from its branch onto some other branch is not that delivery."""
+    first = checkout(tmp_path, "first", "https://github.com/acme/first.git")
+    for number, name, base in (("01", "right-base", "main"), ("02", "wrong-base", "release")):
+        n = 1310 + int(number)
+        ok(q("add", rtopic, name, "--title", name, "--repo", first,
+             "--branch", f"fix/{name}", "--number", number, "--publish", "pr"))
+        stubs.plain_pr(n, f"fix/{name}")
+        stubs.pr_base(n, base)
+        result(queue_dir / rtopic / f"{number}-{name}", "shipped", "Opened it.",
+               f"https://github.com/acme/first/pull/{n}")
+    out = q("collect", "--no-reap").out
+    expect(out, "01-right-base", "[publish verified: pr]",
+           "02-wrong-base", "NOT CLOSED", "onto release")

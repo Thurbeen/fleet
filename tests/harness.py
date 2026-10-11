@@ -305,6 +305,9 @@ class Stubs:
         self._write(f"pr-heads/{n}.sha", f"{n:040d}")
         self._write(f"pr-bodies/{n}.md", body + "\n")
 
+    def pr_base(self, n: int, base: str) -> None:
+        self._write(f"pr-bases/{n}.branch", base)
+
     def pr_state(self, n: int, state: str) -> None:
         self._write(f"pr-states/{n}.state", state + "\n")
 

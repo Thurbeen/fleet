@@ -42,6 +42,9 @@ def worked(tmp_path, topic, queue_dir) -> dict:
     work = tmp_path / "app"
     git("init", "-q", "-b", "main", str(work))
     git("commit", "-q", "--allow-empty", "-m", "base", cwd=work)
+    # The repository the change requests below are in, so `collect`'s
+    # same-repository check runs on the integration path rather than standing aside.
+    git("remote", "add", "origin", "https://github.com/acme/app.git", cwd=work)
     ok(q("add", topic, "vend", "--title", "Vend", "--repo", str(work),
          "--branch", "feat/vend", "--number", "01", "--publish", "pr"))
     # What the worker's worktree leaves behind: the task's branch, one commit on.

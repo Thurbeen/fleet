@@ -31,6 +31,9 @@ def render(n: str, root: Path) -> str:
         "state": read(root / "pr-states" / f"{n}.state").strip() or "OPEN",
         "headRefName": read(root / "pr-heads" / f"{n}.branch").strip(),
         "headRefOid": read(root / "pr-heads" / f"{n}.sha").strip(),
+        # No base file is a base the forge did not name, which is how a check
+        # that compares bases learns to say nothing rather than guess one.
+        "baseRefName": read(root / "pr-bases" / f"{n}.branch").strip(),
         "commits": commits,
     })
 

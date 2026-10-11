@@ -504,8 +504,8 @@ publish must LEAVE BEHIND, and `collect` goes and looks:
 
 | `--publish` | the worker produces | what collect asks |
 |---|---|---|
-| `attested` | a PR carrying an attestation | the forge: a PR from this task's branch, its body attesting the commit that would merge |
-| `pr` | a PR by any means | the forge: a PR from this task's branch, open or merged |
+| `attested` | a PR carrying an attestation | the forge: a PR in this repository from this task's branch onto its base, its body attesting the commit that would merge |
+| `pr` | a PR by any means | the forge: a PR in this repository from this task's branch onto its base, open or merged |
 | `push` | a commit on the base branch | git: that commit is an ancestor of `origin/<base>` |
 | `note` | a review or comment on the task's `--target` | the forge: the note exists, was written by the account fleet runs as, and sits on that target |
 | `served` | a document served to a READER expected to answer it, hosted the way `SERVE` in `publish.conf` says | nothing about the document — but the task stands `open`, holding the session that can answer, until `fleet queue reviewed <ref>` |
@@ -565,7 +565,10 @@ named.
 The head-branch check is the one a worker cannot write for itself: "this
 change request comes from this task's branch" is the forge's fact, which
 closes the hole a worker pasting somebody else's good pull request would
-open. **An integration branch is the one exception**: a repository the
+open. A branch NAME is not a repository, so the change request must also be
+in the repository the checkout's `origin` names — which is what stops one URL
+verifying every repository a task spans — and onto that repository's base. A
+checkout whose `origin` cannot be read is checked on the branch alone. **An integration branch is the one exception**: a repository the
 operator's `orchestration/flow.conf` maps to one (`github.com/o/r = develop`;
 the tracked `flow.example.conf` names none) also verifies a change request
 from THAT branch, when the commits the forge lists for it include the head of
