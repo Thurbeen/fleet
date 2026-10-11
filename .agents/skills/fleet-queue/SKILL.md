@@ -1,6 +1,6 @@
 ---
 name: fleet-queue
-description: Turn a prompt into durable task records, dispatch every independent task at once, and learn what finished by reading a stream and a file instead of being interrupted. Use whenever the control plane is given work — especially work spanning several projects, several tasks, or several merges at the same time — whenever you are asked what is in flight, blocked or waiting, and for any of the queue's own verbs: topic add, add, plan, block, dispatch, prompt, send, attach, watch, collect, shepherd, reap, reviewed, abandon, refuel, list, show, archive, or the reconcile loop that runs them.
+description: 'Turn a prompt into durable task records, dispatch every independent task at once, and learn what finished by reading a stream and a file instead of being interrupted. Use whenever the control plane is given work — especially work spanning several projects, several tasks, or several merges at the same time — whenever you are asked what is in flight, blocked or waiting, and for any of the queue''s own verbs: topic add, add, plan, block, dispatch, prompt, send, attach, watch, collect, shepherd, reap, reviewed, abandon, refuel, list, show, archive, or the reconcile loop that runs them.'
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Glob, Grep
 ---

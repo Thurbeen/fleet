@@ -1,6 +1,6 @@
 ---
 name: update-fleet
-description: Bring an already-working control plane up to date — fast-forward the checkout, then re-apply only the consequences the sync reports and cannot fix itself: the extension manifest, the TUI queue pane, the registry, the reconciler, and the stale lead session. Use when asked to update fleet, pull the control plane, apply what a sync brought in, or when invoked as /update-fleet.
+description: 'Bring an already-working control plane up to date — fast-forward the checkout, then re-apply only the consequences the sync reports and cannot fix itself: the extension manifest, the TUI queue pane, the registry, the reconciler, and the stale lead session. Use when asked to update fleet, pull the control plane, apply what a sync brought in, or when invoked as /update-fleet.'
 user-invocable: true
 allowed-tools: Read, Bash, Glob, Grep
 ---
