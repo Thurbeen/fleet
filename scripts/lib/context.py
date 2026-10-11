@@ -6,6 +6,8 @@
     uv run fleet context pending [--all]      every task waiting on a decision
     uv run fleet context repo <repo> [--task <ref>] [--all] [--full] [--fields replaces,at]
                                               a project's live facts and recent results (≤ 4 KB)
+            [--peers [--refresh] [--timeout <s>]]
+                                              and what every other fleet shares about it
     uv run fleet context learn <repo> "<fact>" [--replaces <id>] [--source <src>]
                                               record one fact; a repeat is `already`;
                                               `--` before a fact that starts with `-`
@@ -47,6 +49,34 @@ every subcommand, an `error:`/`code:`/`help[]` block on stdout with exit 1
 for an error and 2 for a usage mistake, and no prompt — stdin is never read.
 `tests/context/test_axi.py` holds every subcommand to all of it.
 
+PEERS ARE READ, NEVER WRITTEN. `repo <repo> --peers` asks every other fleet
+`peers.py` finds — thurbox's session list on this machine and every
+`hosts.toml` host, plus `peers.conf` — through `peers.run_read`, the same
+local-or-ssh path and timeout the board's peer view uses, and the one thing a
+peer runs is its own `context.py repo <identity> --wire json`. Nothing
+replicates, merges or syncs: each fleet stays the only writer of its facts,
+and a reader keeps one only by `learn ... --source peer:<fleet>/<id>`.
+
+  the wire     the hidden machine half, one JSON line no agent reads:
+               `{"wire": "fleet-context/1", "repo", "share", "facts": [{id, at,
+               source, text, replaces}], "results": [{task, state, date,
+               summary}]}`, or the same with `refused`. It is asked by full
+               identity only — a bare name would resolve against the PEER's
+               map, a path would read the peer's disk — never fans out again,
+               and carries no `--task`. Everything the reader receives is
+               re-validated and bounded (`check_wire`): size, counts, fact ids,
+               the repository it answers for; an answer broken anywhere is
+               rejected whole.
+  SHARE=       in the PEER's `orchestration/fleet.conf`: unset means facts,
+               `facts,results` adds each result's first line, `none` refuses.
+               No word serves prompts, briefs, OPERATOR.md, run logs,
+               transcripts or narrative, and an unknown word is dropped.
+  status       per fleet, as `peers.py` reports it: ok, stale (the last good
+               answer, with its age), unreachable (why), or refused (SHARE).
+               Answers are cached in `context.json` beside the peers cache for
+               `peers.TTL` seconds, keyed by fleet AND repository identity, so
+               two fleets or two forges of one name stay two rows.
+
 `registry/` is beside FLEET_REGISTRY_FILE when that is set (the test harness
 relocates the map, and with it the facts) and this checkout's otherwise.
 Everything here is gitignored working state, like the queue it reads.
@@ -54,12 +84,15 @@ Everything here is gitignored working state, like the queue it reads.
 
 from __future__ import annotations
 
+import concurrent.futures
 import hashlib
 import importlib.util
+import json
 import os
 import re
 import subprocess
 import sys
+import time
 from datetime import UTC, datetime, timedelta
 
 import yaml
@@ -78,11 +111,17 @@ def _load_sibling(name: str, filename: str):
 
 
 fleet_platform = _load_sibling("fleet_platform", "fleet_platform.py")
+agent_settings = _load_sibling("fleet_agent_settings", "agent_settings.py")
 
 
 def _queue():
     """queue.py, loaded on first use: it loads this module back from `collect`."""
     return _load_sibling("fleet_queue", "queue.py")
+
+
+def _peers():
+    """peers.py, loaded only by a `--peers` read: it loads queue.py and the pane probe."""
+    return _load_sibling("fleet_peers", "peers.py")
 
 
 MAX_LEARNED = 5
@@ -101,6 +140,20 @@ FACT_ID_RE = re.compile(r"^\d{8}-[a-z0-9][a-z0-9-]{0,160}$")
 SEGMENT_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,99}$")
 DEVICE_NAMES = {"con", "prn", "aux", "nul"} | {f"{p}{n}" for p in ("com", "lpt") for n in range(1, 10)}
 LOCAL = "local"
+# The hidden machine wire between two fleets: one JSON document, never read by an agent.
+WIRE = "fleet-context/1"
+WIRE_FACTS = 50
+WIRE_RESULTS = RESULT_ROWS
+WIRE_BYTES = 64 * 1024
+SOURCE_CHARS = 120
+SHARE_WORDS = ("facts", "results")
+SHARE_OFF = ("none", "off", "no", "false", "0")
+PEER_FACT_ROWS = 8
+PEER_RESULT_ROWS = 5
+# A peer's last answer older than this is forgotten rather than shown as stale.
+PEER_CACHE_DAYS = 7
+TASK_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
+CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 
 class ContextError(Exception):
@@ -521,6 +574,8 @@ def prior_results(q, ref: str) -> list[dict]:
 
 
 def cmd_repo(opts: dict) -> str:
+    if opts.get("wire"):
+        return wire_view(str(opts["args"][0]).strip())
     queue = _queue()
     repo = resolve_repo(opts["args"][0])
     facts = read_facts(repo)
@@ -537,11 +592,36 @@ def cmd_repo(opts: dict) -> str:
     narrative = os.path.join(registry_dir(), "context", f"{short_name(repo)}.md")
     fleet = fleet_command()
     hints = [f'Run `{fleet} context learn {repo} "<fact>"` to record what you learned']
+    peered = peer_view(repo, opts.get("refresh", False), opts.get("timeout")) if opts.get("peers") else None
+    peer_facts = sorted(({**f, "fleet": p["fleet"]} for p in peered or [] for f in p["facts"]),
+                        key=lambda f: (f["at"], f["fleet"], f["id"]), reverse=True)
+    peer_results = [{**r, "fleet": p["fleet"]} for p in peered or [] for r in p["results"]]
+    if peer_facts:
+        hints.append(f'Run `{fleet} context learn {repo} "<fact>" --source peer:<fleet>/<id>` to keep a peer\'s fact')
+    elif peered is None:
+        hints.append(f"Run `{fleet} context repo {repo} --peers` to add other fleets' facts")
     if facts["live"] and not every:
         hints.append(f"Run `{fleet} context repo {repo} --all --full` for every fact in full")
 
+    def peer_lines(npf, npr):
+        if peered is None:
+            return []
+        states = {w: sum(1 for p in peered if p["status"] == w) for w in ("ok", "stale", "unreachable", "refused")}
+        lines = [fleet_platform.toon_field("peers", f"{len(peered)} · " + " · ".join(
+            f"{w} {n}" for w, n in states.items()) if peered else "0 — no other fleet found")]
+        if peered:
+            lines.append(fleet_platform.toon_table("fleets", ["fleet", "status", "age", "facts", "reason"], [
+                dict(p, facts=len(p["facts"])) for p in peered]))
+        if peer_facts and npf:
+            lines.append(fleet_platform.toon_table("peer_facts", ["fleet", "id", "date", "source", "text"],
+                                                   [dict(f, text=cut(f["text"], full)) for f in peer_facts[:npf]]))
+        if peer_results and npr:
+            lines.append(fleet_platform.toon_table("peer_results", ["fleet", "task", "state", "date", "summary"],
+                                                   peer_results[:npr]))
+        return lines
+
     def render(counts):
-        nfacts, nresults = counts
+        nfacts, nresults, npf, npr = counts
         lines = [fleet_platform.toon_field(
             "facts", f"{len(facts['live'])} live · {len(facts['replaced'])} replaced"
             if facts["live"] or facts["replaced"] else f"0 live for {repo}")]
@@ -561,16 +641,20 @@ def cmd_repo(opts: dict) -> str:
         if facts["malformed"]:
             lines.append(fleet_platform.toon_field(
                 "skipped", f"{len(facts['malformed'])} malformed fact file(s) — {facts['malformed'][0]}"))
+        lines += peer_lines(npf, npr)
         more = more_line([(len(facts["live"]) - nfacts, "facts"),
-                          (len(results) - min(nresults, len(results)), "results")])
+                          (len(results) - min(nresults, len(results)), "results"),
+                          (len(peer_facts) - npf, "peer facts"),
+                          (len(peer_results) - npr, "peer results")])
         if more:
             lines.append(more)
         lines.append(help_line(hints))
         return "\n".join(lines) + "\n"
 
     if every:
-        return render([len(facts["live"]), len(results)])
-    return capped(render, [min(FACT_ROWS, len(facts["live"])), min(RESULT_ROWS, len(results))],
+        return render([len(facts["live"]), len(results), len(peer_facts), len(peer_results)])
+    return capped(render, [min(FACT_ROWS, len(facts["live"])), min(RESULT_ROWS, len(results)),
+                           min(PEER_FACT_ROWS, len(peer_facts)), min(PEER_RESULT_ROWS, len(peer_results))],
                   None if full else REPO_BYTES)
 
 
@@ -628,6 +712,213 @@ def worker_bundle(repo: str | None, ref: str) -> str:
         if budget <= 0:
             break
     return "\n".join(lines) + "\n"
+
+
+# --- what this fleet shares, and what its peers share with it -------------------------
+
+
+def share_conf() -> str:
+    """The operator's `fleet.conf`, else the tracked example — the file `install-extension` reads NAME from."""
+    root = os.environ.get("FLEET_NAME_ROOT") or fleet_platform.checkout_dir()
+    own = os.path.join(root, "orchestration", "fleet.conf")
+    return own if os.path.isfile(own) else os.path.join(root, "orchestration", "fleet.example.conf")
+
+
+def shared() -> set:
+    """What this fleet serves a peer's read: `facts` unless SHARE says otherwise.
+
+    A word fleet does not know is dropped, never widened into something it
+    might mean: prompts, briefs, OPERATOR.md, run logs and narrative have no
+    word, so no setting serves them.
+    """
+    words = {w.strip().lower() for w in re.split(r"[,\s]+", agent_settings.read_conf(share_conf()).get("SHARE", ""))
+             if w.strip()}
+    if not words:
+        return {"facts"}
+    if words & set(SHARE_OFF):
+        return set()
+    return words & set(SHARE_WORDS)
+
+
+def summary_of(path: str) -> str:
+    """The first line of a result's prose, which is all `collect` ever printed of it."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            _meta, body = _queue().parse_result(fh.read())
+    except OSError:
+        return ""
+    line = next((ln.strip() for ln in body.splitlines() if ln.strip()), "")
+    return cut(line, False)
+
+
+def wire_view(raw: str) -> str:
+    """The hidden machine wire: one JSON document a peer's `--peers` read parses, and no agent reads.
+
+    Asked by full identity only: a bare name would resolve against THIS
+    fleet's map, and a path would read this machine's filesystem, for a reader
+    who is not here.
+    """
+    if os.path.isabs(raw) or raw.startswith((".", "~")):
+        raise ContextError("invalid_repo", "a peer is asked by repository identity, never by a path", NAME_HINTS)
+    repo = qualify(raw)
+    if not repo:
+        raise ContextError("invalid_repo", f"{raw!r} is a bare name; a peer is asked by <host>/<path>", NAME_HINTS)
+    share = shared()
+    doc: dict = {"wire": WIRE, "repo": repo, "share": sorted(share), "facts": [], "results": []}
+    if not share:
+        doc["refused"] = "this fleet shares nothing (SHARE=none)"
+        return json.dumps(doc, ensure_ascii=False) + "\n"
+    if "facts" in share:
+        facts = read_facts(repo)
+        doc["live"], doc["replaced"] = len(facts["live"]), len(facts["replaced"])
+        doc["facts"] = [{"id": f["id"], "at": f["at"], "source": f["source"][:SOURCE_CHARS],
+                         "text": f["text"][:MAX_FACT_CHARS], "replaces": f["replaces"]}
+                        for f in facts["live"][:WIRE_FACTS]]
+    if "results" in share:
+        queue = _queue()
+        rows = repo_results(queue.Queue(queue.queue_root(), scope="all"), repo)
+        doc["results"] = [{"task": r["task"], "state": r["state"], "date": r["date"],
+                           "summary": summary_of(r["path"])} for r in rows[:WIRE_RESULTS]]
+    return json.dumps(doc, ensure_ascii=False) + "\n"
+
+
+def plain(value, cap: int) -> str:
+    return CONTROL_RE.sub(" ", " ".join(str(value).split()))[:cap]
+
+
+def check_wire(text: str, repo: str) -> tuple[dict | None, str]:
+    """(a peer's answer, validated and bounded, "") or (None, why it is not one).
+
+    A peer is another fleet's code on another machine, so nothing it prints is
+    trusted to be the shape asked for: an answer that breaks the wire anywhere
+    is rejected whole, never shown in part.
+    """
+    if len(text.encode("utf-8")) > WIRE_BYTES:
+        return None, f"answered more than {WIRE_BYTES} bytes"
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    line = next((ln for ln in reversed(lines) if ln.lstrip().startswith("{")), None)
+    if line is None:
+        said = next((ln for ln in lines if ln.startswith("error: ")), lines[0] if lines else "")
+        return None, plain(said, 160) or "answered nothing"
+    try:
+        doc = json.loads(line)
+    except ValueError:
+        return None, "answered JSON that does not parse"
+    if not isinstance(doc, dict) or doc.get("wire") != WIRE:
+        return None, f"answered no {WIRE} wire — an older fleet?"
+    if doc.get("repo") != repo:
+        return None, "answered for another repository"
+    if doc.get("refused"):
+        return {"refused": plain(doc["refused"], 160), "facts": [], "results": []}, ""
+    facts, results = doc.get("facts"), doc.get("results", [])
+    if not isinstance(facts, list) or not isinstance(results, list):
+        return None, "answered a wire whose facts or results are not lists"
+    if len(facts) > WIRE_FACTS or len(results) > WIRE_RESULTS:
+        return None, f"answered more than {WIRE_FACTS} facts or {WIRE_RESULTS} results"
+    good_facts, good_results = [], []
+    for fact in facts:
+        if not isinstance(fact, dict) or not FACT_ID_RE.match(str(fact.get("id", ""))) \
+                or not isinstance(fact.get("text"), str) or not fact["text"].strip():
+            return None, "answered a malformed fact"
+        at = plain(fact.get("at") or "", 40)
+        good_facts.append({"id": fact["id"], "at": at, "date": at[:10],
+                           "source": plain(fact.get("source") or "", SOURCE_CHARS),
+                           "text": plain(fact["text"], MAX_FACT_CHARS)})
+    for row in results:
+        if not isinstance(row, dict) or not TASK_REF_RE.match(str(row.get("task", ""))):
+            return None, "answered a malformed result"
+        good_results.append({"task": row["task"], "state": plain(row.get("state") or "", 20),
+                             "date": plain(row.get("date") or "", 10),
+                             "summary": plain(row.get("summary") or "", TEXT_CAP)})
+    return {"refused": "", "facts": good_facts, "results": good_results}, ""
+
+
+def peer_cache_path() -> str:
+    return os.path.join(os.path.dirname(_peers().cache_path()), "context.json")
+
+
+def load_peer_cache() -> dict:
+    try:
+        with open(peer_cache_path(), encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    return doc if isinstance(doc, dict) else {}
+
+
+def save_peer_cache(doc: dict) -> None:
+    """Under the same rule as the peers cache beside it: one writer, and a failed write costs only a re-read."""
+    path = peer_cache_path()
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with fleet_platform.exclusive_lock(path + ".lock"):
+            fleet_platform.write_record(path, json.dumps(doc, indent=1, ensure_ascii=False) + "\n")
+    except (OSError, fleet_platform.LockHeld):
+        pass
+
+
+def strip_for_peer(key: str) -> bool:
+    """A local peer runs with none of THIS fleet's relocations, so it reads its own registry and SHARE."""
+    return key.startswith("FLEET_") and key != "FLEET_STUB_ROOT"
+
+
+def ask_peer(entry: dict, repo: str, timeout: float) -> tuple[dict | None, str]:
+    peers = _peers()
+    proc, why = peers.run_read(entry, timeout, "context.py", ("repo", repo, "--wire", "json"), strip_for_peer)
+    if proc is None:
+        return None, why
+    answer, why = check_wire(proc.stdout, repo)
+    if answer is None and proc.returncode and not proc.stdout.strip():
+        why = _queue().first_line(proc) or why
+    return answer, why
+
+
+def peer_view(repo: str, refresh: bool, timeout: float) -> list[dict]:
+    """Every other fleet's answer about `repo`: read now, from the cache, or why it could not be."""
+    peers = _peers()
+    entries = peers.peers(peers.load_cache())
+    old = load_peer_cache()
+    now = time.time()
+
+    def key(entry):
+        return f"{entry['key']} {repo}"
+
+    due = [e for e in entries if refresh or now - float((old.get(key(e)) or {}).get("tried_at") or 0) >= peers.TTL]
+    answers = {}
+    if due:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(due)) as pool:
+            for entry, answer in zip(due, pool.map(lambda e: ask_peer(e, repo, timeout), due), strict=True):
+                answers[key(entry)] = answer
+    cache = {k: v for k, v in old.items() if isinstance(v, dict)
+             and now - float(v.get("tried_at") or 0) < PEER_CACHE_DAYS * 86400}
+    out = []
+    for entry in entries:
+        seen = dict(old.get(key(entry)) or {})
+        if key(entry) in answers:
+            answer, why = answers[key(entry)]
+            seen["tried_at"] = now
+            if answer is not None:
+                seen.update(answer=answer, ok_at=now, error="", failing_since=None)
+            else:
+                seen["error"] = why
+                seen["failing_since"] = seen.get("failing_since") or now
+        seen["label"] = entry["label"]
+        cache[key(entry)] = seen
+        answer, error = seen.get("answer"), seen.get("error") or ""
+        if not error and answer and answer.get("refused"):
+            status, age, error = "refused", now - float(seen.get("ok_at") or now), answer["refused"]
+        elif not error:
+            status, age = "ok", now - float(seen.get("ok_at") or now)
+        elif answer:
+            status, age = "stale", now - float(seen.get("ok_at") or now)
+        else:
+            status, age = "unreachable", now - float(seen.get("failing_since") or now)
+        shown = answer if status in ("ok", "stale") else {}
+        out.append({"fleet": entry["label"], "key": entry["key"], "status": status, "age": int(age),
+                    "reason": error, "facts": (shown or {}).get("facts") or [],
+                    "results": (shown or {}).get("results") or []})
+    save_peer_cache(cache)
+    return out
 
 
 # --- lead and pending -----------------------------------------------------------------
@@ -799,11 +1090,16 @@ SUBCOMMANDS = {
         {"--all": "every task, past the cap"},
     ),
     "repo": (
-        ["repo"], {"--all": False, "--full": False, "--task": True, "--fields": True},
-        "fleet context repo <repo> [--task <ref>] [--all] [--full] [--fields replaces,at]",
+        ["repo"], {"--all": False, "--full": False, "--task": True, "--fields": True, "--peers": False,
+                   "--refresh": False, "--timeout": True, "--wire": True},
+        "fleet context repo <repo> [--task <ref>] [--all] [--full] [--fields replaces,at] "
+        "[--peers [--refresh] [--timeout <s>]]",
         "a repository's live facts, its narrative, and the results of tasks on it",
         {"--task": "add the results of the tasks <ref> waits on", "--all": "every fact and result, uncapped",
-         "--full": "no fact text truncated", "--fields": "add replaces and/or at to each fact row"},
+         "--full": "no fact text truncated", "--fields": "add replaces and/or at to each fact row",
+         "--peers": "add what every other fleet shares about it, read over ssh and never written",
+         "--refresh": "with --peers, ask every peer now instead of within the cache's seconds",
+         "--timeout": "with --peers, how long one peer may take (default 15)"},
     ),
     "learn": (
         ["repo", "fact"], {"--replaces": True, "--source": True},
@@ -830,7 +1126,8 @@ def parse(argv: list) -> tuple[str, dict | None]:
         if sub not in SUBCOMMANDS:
             raise usage_error(f"no subcommand {sub!r}")
     positionals, flags, *_ = SUBCOMMANDS[sub]
-    opts = {"args": [], "all": False, "full": False, "task": None, "fields": [], "replaces": None, "source": None}
+    opts = {"args": [], "all": False, "full": False, "task": None, "fields": [], "replaces": None, "source": None,
+            "peers": False, "refresh": False, "timeout": None, "wire": None}
     wants_help = False
     while rest:
         word = rest.pop(0)
@@ -867,6 +1164,25 @@ def parse(argv: list) -> tuple[str, dict | None]:
             raise ContextError("bad_argument", f"no field {unknown[0]!r}; --fields takes "
                                + ",".join(EXTRA_FIELDS), [f"Run `{fleet_command()} context repo --help`"])
         opts["fields"] = fields
+    if opts["wire"] is not None:
+        # The wire is one fleet answering another: it never fans out again, and
+        # never carries what --task would add, the results this task waits on.
+        if opts["wire"] != "json":
+            raise usage_error(f"no wire {opts['wire']!r}", sub)
+        if opts["peers"] or opts["refresh"] or opts["timeout"] is not None or opts["task"]:
+            raise usage_error("--wire answers one read: no --peers, --refresh, --timeout or --task", sub)
+    elif (opts["refresh"] or opts["timeout"] is not None) and not opts["peers"]:
+        raise usage_error("--refresh and --timeout go with --peers", sub)
+    if opts["timeout"] is not None:
+        try:
+            opts["timeout"] = float(opts["timeout"])
+        except ValueError:
+            opts["timeout"] = -1.0
+        if not 0 < opts["timeout"] <= 300:
+            raise ContextError("bad_argument", "--timeout is a number of seconds, above 0 and at most 300",
+                               [f"Run `{fleet_command()} context repo --help`"])
+    elif opts["peers"]:
+        opts["timeout"] = _peers().TIMEOUT
     return sub, opts
 
 

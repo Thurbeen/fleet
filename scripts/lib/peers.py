@@ -10,7 +10,10 @@
 A PEER IS ANOTHER FLEET'S LEAD, and nothing here reaches its records except by
 READING them: the one thing a peer is ever asked to run is its own queue probe,
 `scripts/lib/pane_probe.py` — the read-only command its own pane runs every ten
-seconds. No `collect`, no `reap`, no `dispatch`, no write; `tests/pane/` holds
+seconds — or, for `fleet context repo <repo> --peers`, its own read-only
+`context.py ... --wire json` (`run_read` is the one path both take, and
+`context.py`'s docstring owns that read). No `collect`, no `reap`, no
+`dispatch`, no write; `tests/pane/` holds
 the peer's records byte for byte across a reading, and every ssh to the probe.
 
 WHO THE PEERS ARE is asked of thurbox first. thurbox mirrors every host it
@@ -249,40 +252,57 @@ def host_entry(name: str) -> tuple[dict | None, str]:
     return entry, ""
 
 
-def remote_script(entry: dict, path: str) -> str:
+def remote_script(entry: dict, path: str, script: str = "pane_probe.py", args: tuple = ()) -> str:
+    """The one command a host's fleet is asked to run: one of its own read-only scripts."""
     shell = fleetqueue.host_shell(entry)
-    script = shell.join(shell.join(shell.join(path, "scripts"), "lib"), "pane_probe.py")
+    script = shell.join(shell.join(shell.join(path, "scripts"), "lib"), script)
     if shell is fleetqueue.POSIX:
-        return f"uv run --project {shlex.quote(path)} --frozen --quiet python {shlex.quote(script)}"
+        words = " ".join(shlex.quote(a) for a in args)
+        return f"uv run --project {shlex.quote(path)} --frozen --quiet python {shlex.quote(script)} {words}".rstrip()
     # PowerShell 5 re-encodes a native command's output through the console
     # code page, which turns every non-ASCII title into mojibake on the way.
+    words = " ".join(fleetqueue.ps_quote(a) for a in args)
     return ("[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()\n"
-            f"& uv run --project {fleetqueue.ps_quote(path)} --frozen --quiet python {fleetqueue.ps_quote(script)}")
+            f"& uv run --project {fleetqueue.ps_quote(path)} --frozen --quiet python "
+            f"{fleetqueue.ps_quote(script)} {words}").rstrip()
 
 
-def ask(entry: dict, timeout: float) -> tuple[list[str] | None, str]:
-    """(the peer's records, "") or (None, why it could not be read)."""
+def run_read(entry: dict, timeout: float, script: str = "pane_probe.py", args: tuple = (),
+             env_strip=lambda key: key in RELOCATING) -> tuple[subprocess.CompletedProcess | None, str]:
+    """(what one of the peer's own read-only scripts printed, "") or (None, why it could not be run).
+
+    A fleet on this machine runs it with this interpreter and none of the
+    variables that would point it at THIS fleet's state; a fleet on a host runs
+    it through `uv run` in its checkout, over `fleet queue`'s ssh path.
+    """
     try:
         if entry["host"] == "local":
-            script = os.path.join(entry["path"], "scripts", "lib", "pane_probe.py")
-            if not os.path.isfile(script):
+            path = os.path.join(entry["path"], "scripts", "lib", script)
+            if not os.path.isfile(path):
                 return None, f"no fleet checkout at {entry['path']}"
-            env = {k: v for k, v in os.environ.items() if k not in RELOCATING}
-            done = subprocess.run([sys.executable, script], cwd=entry["path"], env=env,
+            env = {k: v for k, v in os.environ.items() if not env_strip(k)}
+            done = subprocess.run([sys.executable, path, *args], cwd=entry["path"], env=env,
                                   capture_output=True, timeout=timeout)
         else:
             host, why = host_entry(entry["host"])
             if host is None:
                 return None, why
             argv = fleetqueue.ssh_argv(host) + [
-                fleetqueue.host_shell(host).command(remote_script(host, entry["path"]), True)]
+                fleetqueue.host_shell(host).command(remote_script(host, entry["path"], script, args), True)]
             done = subprocess.run(argv, capture_output=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         return None, f"no answer in {timeout:g}s"
     except OSError as exc:
         return None, str(exc)
-    proc = subprocess.CompletedProcess(done.args, done.returncode, fleetqueue.ssh_text(done.stdout),
-                                       fleetqueue.ssh_text(done.stderr))
+    return subprocess.CompletedProcess(done.args, done.returncode, fleetqueue.ssh_text(done.stdout),
+                                       fleetqueue.ssh_text(done.stderr)), ""
+
+
+def ask(entry: dict, timeout: float) -> tuple[list[str] | None, str]:
+    """(the peer's records, "") or (None, why it could not be read)."""
+    proc, why = run_read(entry, timeout)
+    if proc is None:
+        return None, why
     records = [line for line in proc.stdout.splitlines() if RECORD.match(line)]
     error = next((line.split("\t", 1)[1] for line in records if line.startswith("E\t")), "")
     if error:

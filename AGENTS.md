@@ -82,7 +82,9 @@ names every path and the reason for each.
   project's capped bundle for a worker (`repo <repo>`, which every brief names),
   the lead's summary after a restart, and what waits on a decision (`pending`) —
   all TOON, AXI-shaped, read-only, and held to it by `tests/context/test_axi.py`.
-  The module's docstring owns the contract.
+  `repo <repo> --peers` adds what every other fleet `fleet peers` finds shares
+  about it, read over the same local-or-ssh path and never written; each peer's
+  `SHARE=` decides what it serves. The module's docstring owns the contract.
 - `registry/context/<repo>.md` — optional narrative about a project: what it
   is, how it relates to others, current goals. Its owner's to keep; `fleet
   context repo` points at it when it exists, and nothing requires one.
@@ -183,11 +185,14 @@ names every path and the reason for each.
   `<glyph> Mission Control · acme` instead. Tracked and naming none, so an
   unnamed fleet renders exactly what fleet always rendered and a machine with
   one fleet never meets this; copy it to a gitignored `fleet.conf` beside it.
-  ONE READER: `fleet install-extension`, at render time — everything else reads
-  the rendered manifest or the live session list, so there is no second copy of
-  the answer. **Naming a fleet that is already running is a RENAME** with
-  everything `extension.toml.in`'s RENAMING header says one costs; name the
-  SECOND fleet. A second fleet is a second clone:
+  ONE READER of NAME: `fleet install-extension`, at render time — everything
+  else reads the rendered manifest or the live session list, so there is no
+  second copy of the answer. The same file's `SHARE=` is what this fleet serves
+  a peer's `fleet context repo --peers` read — facts unless it says otherwise,
+  `none` refusing — and `scripts/lib/context.py` is its one reader. **Naming a
+  fleet that is already running is a RENAME** with everything
+  `extension.toml.in`'s RENAMING header says one costs; name the SECOND fleet.
+  A second fleet is a second clone:
   `sh install.sh --dir ~/fleet-acme --name acme` (`install.ps1` on Windows), and
   `uv run fleet queue`'s control-plane guard is what keeps two of them from
   writing one queue.
