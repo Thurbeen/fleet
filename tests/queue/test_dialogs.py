@@ -160,11 +160,12 @@ def test_dispatch_prompts_a_codex_0_161_composer_under_its_longer_footer(stubs, 
     assert keys(stubs) == [], done.out
 
 
-def test_send_into_a_working_session_never_answers_a_dialog_it_only_quotes(stubs, queue_dir):
+@pytest.mark.parametrize("reported", [True, False], ids=["reported", "unreported"])
+def test_send_into_a_working_session_never_answers_a_dialog_it_only_quotes(stubs, queue_dir, reported):
     """A worker reading this very module has the folder dialog's text in its
-    scrollback. Its agent has reported, so only its visible screen can hold a
-    dialog in front of it: pressing Down and Enter on the scrollback's quote
-    types into a working agent."""
+    scrollback. Only its visible screen can hold a dialog in front of it,
+    even when its hook never reported: pressing Down and Enter on the
+    scrollback's quote types into a working agent."""
     stubs.tool("thurbox-cli", VISIBLE_CODEX_CAPTURE)
     topic = ok(q("topic", "add", "live-send", "--title", "Message a working worker",
                  "--prompt", "send a line to a session that is working")).stdout.strip()
@@ -174,16 +175,25 @@ def test_send_into_a_working_session_never_answers_a_dialog_it_only_quotes(stubs
     sid = "d1a10900-0000-0000-0000-00000000a11e"
     ok(q("attach", ref, sid))
     stubs.session_is(sid, "working")
+    if not reported:
+        write(stubs.root / "sessions" / f"{sid}.json", json.dumps({
+            "id": sid, "agent": "claude", "state": "running", "hook_reported": False,
+        }) + "\n")
     write(stubs.root / "panes" / f"{sid}.txt",
           "● Read(scripts/lib/session_trust.py)\n" + FOLDER_DIALOG + "\n● Reading on.\n")
     write(stubs.root / "panes" / f"{sid}.visible.txt", "● Reading on.\n")
 
     sent = q("send", ref, "Also update the changelog.")
     assert keys(stubs) == [], sent.out
-    assert sent.code == 0, sent.out
-    expect(sent.out, "delivered")
-    refute(sent.out, "NOT DELIVERED")
-    expect("\n".join(stubs.calls("thurbox-cli", "session send")), "Also update the changelog.")
+    if reported:
+        assert sent.code == 0, sent.out
+        expect(sent.out, "delivered")
+        refute(sent.out, "NOT DELIVERED")
+        expect("\n".join(stubs.calls("thurbox-cli", "session send")), "Also update the changelog.")
+    else:
+        assert sent.code == 1, sent.out
+        expect(sent.out, "NOT DELIVERED")
+        assert not stubs.calls("thurbox-cli", f"session send {sid}"), sent.out
     assert stubs.calls("thurbox-cli", f"session capture {sid} --lines 0"), sent.out
 
 

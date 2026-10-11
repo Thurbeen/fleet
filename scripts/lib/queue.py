@@ -9097,7 +9097,7 @@ def trust_and_send(
     reused into a live session leave it off: those panes are already up.
     """
     trust = _load_sibling("fleet_session_trust", "session_trust.py")
-    code, report = trust.answer_dialogs(session, timeout)
+    code, report = trust.answer_dialogs(session, timeout, visible_only=True)
     if code != 0:
         return False, report
     # The returncode is READ. It used to be thrown away, so a send into a

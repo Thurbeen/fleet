@@ -34,9 +34,9 @@ It is safe to run only in the window between `session create` and the first
 `session send`, which is when `fleet queue dispatch` runs it: nothing
 has been typed into that pane yet, so there is no composer content to
 corrupt. Do not run it against a session that is already working.
-`fleet queue send` does run it against a live session, so once the agent's
-hook has REPORTED a dialog is looked for on the visible screen only: its
-scrollback can quote a dialog that is not in front of it.
+Queue sends do run it against live sessions, so they request visible-screen
+checks even when the agent's hook never reported: scrollback can quote a
+dialog that is not in front of the agent.
 
 IN-PROCESS, AND NO SHELL. `dispatch` calls `answer_dialogs` directly, and
 `fleet session-trust` runs this file. It needs thurbox-cli and Python and
@@ -377,7 +377,9 @@ def taught_gates(agent_root: str, agent: str = "", only_named: bool = False) -> 
 # --- the whole handshake -----------------------------------------------------
 
 
-def answer_dialogs(session: str, timeout: int = 20, as_json: bool = False) -> tuple[int, str]:
+def answer_dialogs(
+    session: str, timeout: int = 20, as_json: bool = False, *, visible_only: bool = False
+) -> tuple[int, str]:
     """Confirm, answer and confirm every dialog in front of the agent.
 
     Returns the exit code and the one line of report, formatted for the
@@ -460,19 +462,14 @@ def answer_dialogs(session: str, timeout: int = 20, as_json: bool = False) -> tu
 
     is_codex = "codex" in agent_settings.chain(agent, conf)
 
-    # AN AGENT THAT HAS ALREADY REPORTED IS READ OFF ITS VISIBLE SCREEN ONLY.
-    # `fleet queue send` runs this against a WORKING session, whose sixty lines
-    # of scrollback can quote a dialog — a worker reading this very file shows
-    # `Yes, I trust this folder` — and answering that pressed Down and Enter
-    # into a live agent. A dialog that is really in front of the agent is on
-    # the screen, and Codex has been watched reporting with a menu up, so a
-    # reported session is still answered there; only scrollback stops counting.
-    reported = info.get("hook_reported") is True
+    # Sends can reach working agents whose hooks never reported. Their
+    # scrollback can quote a dialog just as a reported agent's can; only a
+    # menu still on screen is evidence that keys should be pressed.
+    visible_only = visible_only or info.get("hook_reported") is True
 
     def view() -> str:
-        """The squeezed pane a dialog is looked for in: the visible screen
-        alone once the agent has reported, the scrollback as well before."""
-        return squeeze(pane_text(uuid, lines=0 if reported else 60))
+        """The squeezed pane in which a dialog can still be in front of the agent."""
+        return squeeze(pane_text(uuid, lines=0 if visible_only else 60))
 
     def gate_on_pane() -> int | None:
         """The index of the gate the pane shows right now, if any."""
