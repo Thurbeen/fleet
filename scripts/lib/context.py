@@ -153,7 +153,9 @@ PEER_RESULT_ROWS = 5
 # A peer's last answer older than this is forgotten rather than shown as stale.
 PEER_CACHE_DAYS = 7
 TASK_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
-CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+# Everything a peer says reaches a terminal: C0, DEL and C1 (an 8-bit CSI is
+# U+009B), and the bidi marks and overrides that make text read as other text.
+CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f\u200e\u200f\u202a-\u202e\u2066-\u2069]")
 
 
 class ContextError(Exception):

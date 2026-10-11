@@ -262,3 +262,21 @@ def test_the_tracked_example_shares_nothing_beyond_the_default():
     text = (REPO / "orchestration" / "fleet.example.conf").read_text(encoding="utf-8")
     live = [line for line in text.splitlines() if line.strip() and not line.lstrip().startswith("#")]
     assert "SHARE=" in live, "fleet.example.conf does not document SHARE"
+
+
+def test_a_peer_cannot_put_terminal_or_bidi_controls_into_the_read(stubs, tmp_path):
+    """A peer's text reaches a reader's terminal: C1 escapes and bidi overrides are stripped like C0."""
+    sneaky = "\u009b31m red ‮evil‬ ⁦x⁩ ‏"
+    answer = {"wire": "fleet-context/1", "repo": REPO_ID, "share": ["facts", "results"],
+              "facts": [{"id": "20260912-x-1", "at": "2026-09-12T00:00:00Z", "source": "a/b" + sneaky,
+                         "text": "fact" + sneaky}],
+              "results": [{"task": "app-ci/02-fix", "state": "landed", "date": "2026-09-12",
+                           "summary": "done" + sneaky}]}
+    write(stubs.root / "ssh-state" / "me@devbox.context", json.dumps(answer) + "\n")
+    machine(stubs, [lead("self", str(REPO), "local-tmux"), lead("far", "/srv/fleet", "ssh:devbox")])
+    done = context("repo", REPO_ID, "--peers")
+    assert done.code == 0, done.out
+    doc = parse_toon(done.stdout)
+    assert doc["peer_facts"] and doc["peer_results"], done.stdout
+    for ch in ("\u009b", "‮", "‬", "⁦", "⁩", "‏"):
+        assert ch not in done.stdout, f"U+{ord(ch):04X} reached the reader"
