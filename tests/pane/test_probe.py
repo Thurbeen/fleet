@@ -5,7 +5,7 @@ Python and not a shell script. It spells every outcome it can tell apart on
 stdout and exits 0, because the pane reads only a probe that could not RUN, or
 said nothing, as a failure.
 
-    R <root>   E <what went wrong>   A <archived topics>   T <slug> <title>
+    R <root>   E <what went wrong>   A <archived topics>   T <slug> <title> <requested by>
     K <id> <state> <title> <outcome> <artifact> <blockers> <brief> <events>
       <result> <branch> <moved-at> <publish-method> <publish-state> <publish-at>
 """
@@ -53,7 +53,7 @@ def test_every_live_task_is_one_record_and_an_archived_topic_only_a_count(tmp_pa
 
     records = probe()
     assert records[0] == ["R", str(root)]
-    assert ["T", topic, "Probe the queue"] in records
+    assert ["T", topic, "Probe the queue", ""] in records
     assert not any(r[0] == "T" and r[1] == done for r in records)
     assert records[-1] == ["A", "1"]
 

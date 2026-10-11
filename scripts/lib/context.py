@@ -587,6 +587,7 @@ def pending_rows(q, stalled: set) -> list[dict]:
     fleet = fleet_command()
     rows = []
     for task in sorted(q.tasks.values(), key=lambda t: t.ref):
+        n = len(rows)
         conditions = [queue.blocker_condition(b) for b in task.blockers if queue.blocker_condition(b)]
         publish = (task.doc.get("publish") or {}).get("state")
         result = task.file("result.md")
@@ -603,6 +604,10 @@ def pending_rows(q, stalled: set) -> list[dict]:
             rows.append({"task": task.ref, "why": "held", "next": result})
         elif task.state == "done" and queue.task_publish(task)[0] == "served" and not queue.review_closed(task):
             rows.append({"task": task.ref, "why": "review", "next": f"{fleet} queue reviewed {task.ref}"})
+        # Whom the decision belongs to, as the record names them; null when
+        # nobody was recorded.
+        if len(rows) > n:
+            rows[-1]["by"] = task.doc.get("requested_by")
     return rows
 
 
@@ -610,7 +615,7 @@ TOPIC_ORDER = ("stalled", "ready", "stuck", "failed", "held", "condition", "revi
                "waiting", "landed")
 
 
-def topic_row(slug: str, tasks: list, pending: dict) -> dict:
+def topic_row(slug: str, tasks: list, pending: dict, by=None) -> dict:
     words = {}
     for task in tasks:
         why = pending.get(task.ref, {}).get("why")
@@ -632,7 +637,7 @@ def topic_row(slug: str, tasks: list, pending: dict) -> dict:
         "waiting": "waiting on another task",
         "landed": "archives on the next collect",
     }[state]
-    return {"slug": slug, "state": state, "next": nxt}
+    return {"slug": slug, "state": state, "by": by, "next": nxt}
 
 
 def lead_view(every: bool) -> str:
@@ -640,7 +645,8 @@ def lead_view(every: bool) -> str:
     q = queue.Queue(queue.queue_root())
     stalled = {s["task"] for s in queue.stalled_tasks(q)}
     pending = {r["task"]: r for r in pending_rows(q, stalled)}
-    topics = [topic_row(slug, tasks, pending) for slug, tasks in sorted(q.by_topic().items()) if tasks]
+    topics = [topic_row(slug, tasks, pending, q.topics.get(slug, {}).get("requested_by"))
+              for slug, tasks in sorted(q.by_topic().items()) if tasks]
     topics.sort(key=lambda r: (TOPIC_ORDER.index(r["state"]), r["slug"]))
     ready = sum(1 for r in pending.values() if r["why"] == "ready")
     since = f"{datetime.now(UTC) - timedelta(days=1):%Y-%m-%d}"
@@ -662,7 +668,7 @@ def lead_view(every: bool) -> str:
         [n] = counts
         lines = [head]
         if topics:
-            lines.append(fleet_platform.toon_table("open", ["slug", "state", "next"], topics[:n]))
+            lines.append(fleet_platform.toon_table("open", ["slug", "state", "by", "next"], topics[:n]))
         more = more_line([(len(topics) - n, "topics")])
         if more:
             lines.append(more)
@@ -693,7 +699,7 @@ def pending_view(every: bool) -> str:
         [n] = view
         lines = [head]
         if rows:
-            lines.append(fleet_platform.toon_table("tasks", ["task", "why", "next"], rows[:n]))
+            lines.append(fleet_platform.toon_table("tasks", ["task", "why", "by", "next"], rows[:n]))
         more = more_line([(len(rows) - n, "tasks")])
         if more:
             lines.append(more)

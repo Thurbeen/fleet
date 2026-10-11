@@ -12,7 +12,7 @@ THE FORMAT, tab-separated because a tab is the one character no field carries:
   R <queue root>
   E <what went wrong>
   A <archived topic count>
-  T <topic slug> <topic title>
+  T <topic slug> <topic title> <requested by>
   K <id> <state> <title> <outcome> <artifact> <blockers> <brief> <events>
     <result> <branch> <moved-at, epoch seconds> <publish-method>
     <publish-state> <publish-at, epoch seconds>
@@ -25,7 +25,7 @@ emitted, because renumbering fourteen positional fields is the worse trade.
 record, resolved beside it rather than in a renderer that has no clock.
 
 B <topic/id> <recorded agent> <host> <session> <review URL> <publish detail>
-  <unresolved threads, when recorded>
+  <unresolved threads, when recorded> <requested by>
 H <reconciler health> <latest queue input modification epoch>
 
 These additive records leave the existing K positions unchanged. Session state
@@ -141,7 +141,7 @@ def board_record(topic: str, doc: dict) -> str:
     return "\t".join([
         "B", flat(f"{topic}/{doc.get('id') or ''}"), flat(doc.get("agent")),
         flat(doc.get("host")), flat(doc.get("session")), flat(review),
-        flat(publish.get("detail")), flat(threads),
+        flat(publish.get("detail")), flat(threads), flat(doc.get("requested_by")),
     ])
 
 
@@ -185,7 +185,7 @@ def records(root: str) -> list[str]:
         if topic_doc.get("archived") not in (None, ""):
             archived += 1
             continue
-        out.append(f"T\t{topic}\t{flat(topic_doc.get('title'))}")
+        out.append(f"T\t{topic}\t{flat(topic_doc.get('title'))}\t{flat(topic_doc.get('requested_by'))}")
         for task in sorted(os.listdir(topic_dir)):
             task_dir = os.path.join(topic_dir, task)
             task_file = os.path.join(task_dir, "task.yaml")

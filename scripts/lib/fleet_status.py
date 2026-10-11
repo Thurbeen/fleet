@@ -203,6 +203,8 @@ def probe_queue() -> dict:
         entry = {
             "slug": topic,
             "title": q.topics.get(topic, {}).get("title", ""),
+            # Who asked, as recorded; None for a topic nobody attributed.
+            "requested_by": q.topics.get(topic, {}).get("requested_by"),
             "tasks": [],
         }
         for t in tasks:
@@ -213,6 +215,7 @@ def probe_queue() -> dict:
                     "ref": t.ref,
                     "id": t.id,
                     "title": t.doc.get("title", ""),
+                    "requested_by": t.doc.get("requested_by"),
                     "state": t.state,
                     "display_state": state,
                     "repo": t.doc.get("repo"),
@@ -1307,7 +1310,8 @@ def render_queue(sec: dict) -> list:
         lines.append(cont(f"{sec['archived']} archived topic(s) hidden — "
                           "`fleet queue list --archived`"))
     for topic in topics:
-        lines.append(f"  {topic['slug']} — {topic['title']}")
+        by = f"  by {topic['requested_by']}" if topic.get("requested_by") else ""
+        lines.append(f"  {topic['slug']} — {topic['title']}{by}")
         for t in topic["tasks"]:
             if t["artifacts"]:
                 extra = f"{t['outcome'] or ''} {' '.join(t['artifacts'])}".strip()
@@ -1319,6 +1323,8 @@ def render_queue(sec: dict) -> list:
             # line: where a task RUNS changes what every other field on it means.
             if t.get("host"):
                 extra = f"on {t['host']}  {extra}".rstrip()
+            if t.get("requested_by"):
+                extra = f"{extra}  by {t['requested_by']}".strip()
             lines.append(f"    {t['id']:<34} {t['display_state']:<11} {extra}")
             for note in t["notes"]:
                 lines.append(f"        {note}")

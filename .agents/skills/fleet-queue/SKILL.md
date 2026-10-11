@@ -71,7 +71,9 @@ EOF
 
 Store the prompt verbatim: your summary is a lossy copy made when you
 understood it least. `topic add` also opens this run's log (**The run log**,
-below); do not make a second one.
+below); do not make a second one. Pass `--by <name>` to `topic add` (or to one
+`add`) when the request came from someone other than the operator — relayed
+from Slack with a `[from: <name>]` prefix, say — so every view names whose it is.
 
 Then decompose. A topic is the unit of **intent**; a task is the unit of
 **work** — one branch, one thing a single worker can finish and validate on its

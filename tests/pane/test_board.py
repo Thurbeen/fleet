@@ -37,7 +37,7 @@ def test_board_probe_keeps_navigation_and_attention_fields(tmp_path):
     "float-contract", "closed-float", "independent-probes", "health-memo", "render-readonly", "changed-fleet", "retain-search", "retain-detail", "columns", "enter-session", "enter-detail", "links", "filters",
     "landed", "mouse", "selection", "fuel", "narrow", "large", "failure", "fuel-unavailable", "buttons", "missing-session", "reserved", "detail-links", "glyphs", "planned-served", "landed-age", "mouse-band", "topic-picker", "topic-context", "fuel-default", "fuel-compact",
     "peers-none", "peers-default", "peers-default-narrow", "peers-scope", "peers-scope-narrow", "peers-readonly",
-    "peers-picker",
+    "peers-picker", "requester",
 ])
 def test_board_interactions(scenario):
     done = run([REAL_LUA, "tests/pane/board_harness.lua", scenario], cwd=REPO)
