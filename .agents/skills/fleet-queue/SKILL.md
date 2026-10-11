@@ -351,9 +351,11 @@ into its worktree, so nothing lands in its pull request.
 
 If a spawn fails, the others still go. Re-run `dispatch`; the ones already out
 are not spawned twice. A session you spawned by hand for a task is bound to it
-with `fleet queue attach`. One whose agent already reports a state is recorded
-prompted, so the bare `prompt` sweep never types the brief into work in
-progress; `attach --unprompted` is for one that has never been told anything.
+with `fleet queue attach`. One whose agent reports working, blocked or done is
+recorded prompted, so the bare `prompt` sweep never types the brief into work
+in progress. Idle can mean a fresh session, so it stays unprompted by default;
+`attach --prompted` confirms it already has its work, and `attach --unprompted`
+forces a session to receive the brief regardless of its state.
 Any delivered `send`, and a refuel restart that was briefed, marks a task
 prompted the same way.
 
