@@ -193,7 +193,7 @@ def test_a_peer_answer_that_breaks_the_wire_is_rejected_not_shown(stubs, tmp_pat
     good = {"wire": "fleet-context/1", "repo": REPO_ID, "share": ["facts"], "results": [],
             "facts": [{"id": "20260912-x-1", "at": "2026-09-12T00:00:00Z", "source": "a/b", "text": "ok"}]}
     bad = {
-        "devbox": "login banner and no json at all\n",
+        "devbox": "login banner and no json at all " + "x" * 400 + "\n",
         "otherbox": json.dumps({**good, "repo": TWIN_ID}) + "\n",
         "bigbox": json.dumps({**good, "facts": [dict(good["facts"][0], id=f"20260912-x-{n}")
                                                 for n in range(500)]}) + "\n",
@@ -214,6 +214,7 @@ def test_a_peer_answer_that_breaks_the_wire_is_rejected_not_shown(stubs, tmp_pat
         assert fleets(doc)[f"{host}/fleet"]["status"] == "unreachable", (host, done.stdout)
     assert "peer_facts" not in doc, done.stdout
     assert "passwd" not in done.stdout
+    assert all(len(row["reason"]) <= 160 for row in doc["fleets"]), "a peer's error ran past its cap"
 
 
 def test_two_fleets_of_one_name_stay_two_fleets(stubs, tmp_path):

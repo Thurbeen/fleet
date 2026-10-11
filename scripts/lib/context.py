@@ -915,7 +915,7 @@ def peer_view(repo: str, refresh: bool, timeout: float) -> list[dict]:
             status, age = "unreachable", now - float(seen.get("failing_since") or now)
         shown = answer if status in ("ok", "stale") else {}
         out.append({"fleet": entry["label"], "key": entry["key"], "status": status, "age": int(age),
-                    "reason": error, "facts": (shown or {}).get("facts") or [],
+                    "reason": plain(error, 160), "facts": (shown or {}).get("facts") or [],
                     "results": (shown or {}).get("results") or []})
     save_peer_cache(cache)
     return out
