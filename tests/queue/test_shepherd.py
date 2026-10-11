@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 import yaml
-from kit_shepherd import BUSY, GONE, Shep, repo, seed
+from kit_shepherd import BUSY, GONE, GREEN, Shep, repo, seed
 
 from harness import REPO, expect, git, refute
 from harness import run_queue as q
@@ -254,3 +254,45 @@ def test_a_repo_at_ghs_list_limit_is_unreadable_and_not_silently_capped(stubs, t
     expect(out, "could not read the pull requests on many-owner/many-repo", "may be truncated")
     refute("\n".join(stubs.calls("gh")), "pr merge")
     refute(out, "no open pull requests")
+
+
+def test_gh_host_does_not_redirect_a_github_com_repository(stopic, shep):
+    """`GH_HOST` is gh's DEFAULT host, and a bare `owner/repo` goes to it.
+
+    A machine pointed at a GitHub Enterprise instance still shepherds its
+    github.com repositories, so every call about one names that repository's
+    own host: the listing as `--repo HOST/OWNER/REPO`, the permission check
+    with `--hostname`. Without them both asked the enterprise host, which
+    knows neither the repository nor its maintainers.
+    """
+    out = q("shepherd", "--topic", stopic, GH_HOST="ghe.example").out
+    expect(shep.gh_log(), "pr list --repo github.com/Thurbeen/fleet",
+           "api --hostname github.com repos/Thurbeen/fleet/collaborators/maintainer/permission")
+    assert 102 in shep.merged(), out + shep.gh_log()
+
+
+def publish_lines(queue_dir: Path, topic: str, task: str) -> list[dict]:
+    path = queue_dir / topic / task / "progress.jsonl"
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    return [r["publish"] for r in rows if "publish" in r]
+
+
+def test_an_unchanged_look_writes_no_record(first_pass, stopic, shep, queue_dir):
+    """The reconciler comes round every few minutes and sees the same pull
+    request in the same state: that is not news, and it must not grow
+    progress.jsonl or rewrite task.yaml. A change of state still is."""
+    task = queue_dir / stopic / "01-conflicting"
+    before = publish_lines(queue_dir, stopic, "01-conflicting")
+    assert before and before[-1]["state"] == "conflicting", before
+    stamp = yaml.safe_load((task / "task.yaml").read_text(encoding="utf-8"))["publish"]
+    for _ in range(5):
+        assert q("shepherd", "--topic", stopic).code == 0
+        assert q("collect").code == 0
+    assert publish_lines(queue_dir, stopic, "01-conflicting") == before
+    assert yaml.safe_load((task / "task.yaml").read_text(encoding="utf-8"))["publish"] == stamp
+
+    shep.update(101, mergeable="MERGEABLE", statusCheckRollup=[{**GREEN, "conclusion": "FAILURE"}])
+    assert q("shepherd", "--topic", stopic).code == 0
+    after = publish_lines(queue_dir, stopic, "01-conflicting")
+    assert len(after) == len(before) + 1, after
+    assert after[-1]["state"] != "conflicting", after

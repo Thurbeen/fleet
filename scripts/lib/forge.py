@@ -824,8 +824,10 @@ class GitHubForge(Forge):
         return state, ""
 
     def open_change_requests(self, repo: RepoId) -> tuple:
+        # `HOST/OWNER/REPO`: a bare `OWNER/REPO` goes to `GH_HOST` when it is
+        # set, which is another instance than the one this repository is on.
         docs, why = self._json(
-            ["pr", "list", "--repo", repo.path, "--state", "open",
+            ["pr", "list", "--repo", repo.qualified, "--state", "open",
              "--limit", str(GH_LIST_LIMIT), "--json", GH_FIELDS]
         )
         return self._listed(docs, why, repo, GH_LIST_LIMIT)
@@ -1109,7 +1111,7 @@ class GitHubForge(Forge):
         if key in self._push:
             return self._push[key]
         doc, why = self._json(
-            ["api", f"repos/{repo.path}/collaborators/{login}/permission"]
+            ["api", "--hostname", repo.host, f"repos/{repo.path}/collaborators/{login}/permission"]
         )
         if why or not isinstance(doc, dict):
             answer = (

@@ -538,3 +538,21 @@ def test_a_broken_overlay_refuses_the_spawn_rather_than_dropping_the_profile(stu
     out = q("dispatch", FLEET_PROFILES_ROOT=root).out
     expect(out, "session-profiles.local.yaml", "THURBOX_SESSION")
     assert not stubs.calls("thurbox-cli", "session create"), out
+
+
+def test_a_task_whose_profile_is_gone_is_refused_rather_than_spawned_bare(stubs, queue_dir, tmp_path):
+    """A profile that existed at `add` and was removed from the overlay since:
+    rendering no flags for it would start the worker as some other agent."""
+    write(tmp_path / "orchestration" / "session-profiles.local.yaml",
+          "profiles:\n  deep:\n    env:\n      ANTHROPIC_MODEL: some-model\n")
+    root = str(tmp_path)
+    topic = ok(q("topic", "add", "gone-profile", "--title", "Gone profile",
+                 "--prompt", "a profile removed after add", FLEET_PROFILES_ROOT=root)).stdout.strip()
+    ok(q("add", topic, "deep", "--title", "Deep", "--repo", "/tmp/repo-gone", "--branch", "fix/gone",
+         "--number", "01", "--profile", "deep", FLEET_PROFILES_ROOT=root))
+    write(queue_dir / topic / "01-deep" / "BRIEF.md", "Think hard about it.\n")
+    (tmp_path / "orchestration" / "session-profiles.local.yaml").unlink()
+
+    out = q("dispatch", FLEET_PROFILES_ROOT=root).out
+    expect(out, "'deep'")
+    assert not stubs.calls("thurbox-cli", "session create"), out

@@ -2428,7 +2428,12 @@ def cmd_add(args) -> int:
 
     # Refused here, before a directory exists and long before a brief is
     # written: a host thurbox does not know, or one fleet cannot drive, is a
-    # typo or a decision to make, and both are cheapest at `add` time.
+    # typo or a decision to make, and both are cheapest at `add` time. So is a
+    # profile nobody defined, which dispatch would otherwise render as no
+    # flags at all.
+    unknown = unknown_profile(args.profile)
+    if unknown:
+        raise QueueError(f"--profile {args.profile}: {unknown}. Nothing was created.")
     if args.host:
         entry, why = host_entry(args.host)
         if not entry:
@@ -4112,20 +4117,36 @@ def profile_flags(profile: str) -> list:
     return profiles_mod.render(profiles[profile])
 
 
-def profile_problem() -> str | None:
-    """Why no task's profile can be rendered right now, or None.
+def unknown_profile(profile: str) -> str | None:
+    """Why `profile` names no profile, or None — when the profiles load at all.
+
+    `profile_flags` renders nothing for a name it does not know, so a typo at
+    `add`, or a profile removed from the overlay since, spawned a worker with
+    no profile and said nothing. Profiles that do not load are
+    `profile_problem`'s to report, not this.
+    """
+    profiles_mod = _load_sibling("fleet_session_profiles", "session_profiles.py")
+    profiles = profiles_mod.load_layers([])
+    if profiles is None or profile in profiles:
+        return None
+    return f"no session profile {profile!r} — known: {', '.join(sorted(profiles))}"
+
+
+def profile_problem(profile: str | None = None) -> str | None:
+    """Why this task's profile cannot be rendered right now, or None.
 
     The gate validates the tracked file, so on a checkout without the
     operator's gitignored overlay this is always None. The overlay is read by
     no gate, and a rule it breaks would otherwise make `profile_flags` render
     nothing — a `cursor-trusted` task spawned as the default agent — so the
-    spawn refuses instead and names the file.
+    spawn refuses instead and names the file. A `profile` that is not there at
+    all is the same nothing, and is refused the same way.
     """
     profiles_mod = _load_sibling("fleet_session_profiles", "session_profiles.py")
     errors: list[str] = []
     if profiles_mod.load_layers(errors) is None:
         return "the session profiles do not load — run `uv run fleet session-flags --check`"
-    return "; ".join(errors) or None
+    return "; ".join(errors) or (unknown_profile(profile) if profile else None)
 
 
 def spawn_uncovered_notice(create: list) -> str | None:
@@ -4265,7 +4286,7 @@ def spawn_commands(task: Task) -> tuple[list, str, str]:
     # locally — see `probe_host`, which asks the host instead.
     if d.get("host"):
         create += ["--host", d["host"]]
-    problem = profile_problem()
+    problem = profile_problem(d.get("profile") or "default")
     if problem:
         raise QueueError(problem)
     flags = profile_flags(d.get("profile") or "default")
@@ -5520,9 +5541,18 @@ def record_publish(task: Task, state: str, detail: str, by: str, extra: dict | N
     ready" is the story of a pull request, and every retelling of it would
     otherwise be overwritten by the next pass. The entry carries no `seq`, so
     it is not a stream event and never moves a watch floor (`folded_through`).
+
+    AN UNCHANGED LOOK WRITES NOTHING. The shepherd calls this for every linked
+    task on every pass, and the reconciler comes round every few minutes: the
+    same state and the same detail is not news, and writing it grew
+    progress.jsonl without bound and rewrote task.yaml each time. Compared on
+    everything except `at`, the rule `record_shepherd`'s caller already keeps,
+    so a changed state, detail or observer still appends.
     """
-    block = dict(task.doc.get("publish") or {})
-    block.update({"state": state, "detail": detail, "at": now(), "by": by, **(extra or {})})
+    old = dict(task.doc.get("publish") or {})
+    block = {**old, "state": state, "detail": detail, "at": now(), "by": by, **(extra or {})}
+    if {k: v for k, v in old.items() if k != "at"} == {k: v for k, v in block.items() if k != "at"}:
+        return
     task.doc["publish"] = block
     task.save()
     fleet_platform.append_record(
@@ -9316,7 +9346,7 @@ def spawn_fixer(
             "withheld. Send the fix into that worker's own session, or fix it by hand."
         )
 
-    problem = profile_problem()
+    problem = profile_problem(task.doc.get("profile") or "default")
     if problem:
         return "", problem
     slug = f"{task.topic}__{task.id}"

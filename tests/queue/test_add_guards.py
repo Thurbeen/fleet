@@ -81,3 +81,12 @@ def test_the_brief_headings_are_named_up_front():
     """In `add --help`, before a `--brief-file` is written, not only once it is refused."""
     # argparse wraps help text, so the words are matched and not the line breaks.
     expect(" ".join(q("add", "--help").out.split()), "## What to do", "## Hard constraints", "## Coordination", "## Done means")
+
+
+def test_an_unknown_profile_is_refused_naming_the_known_ones(gtopic, queue_dir):
+    """A typo in `--profile` used to be recorded, and dispatch then rendered
+    no flags for it: the worker started as the default agent, nothing said."""
+    r = add(gtopic, "typo", "--profile", "nope")
+    assert r.code != 0, r.out
+    expect(r.out, "'nope'", "default", "cursor-trusted")
+    assert not any(p.is_dir() for p in (queue_dir / gtopic).iterdir())

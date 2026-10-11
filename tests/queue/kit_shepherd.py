@@ -29,6 +29,13 @@ from pathlib import Path
 
 shep = Path(os.environ["FLEET_STUB_ROOT"]) / "shep"
 args = sys.argv[1:]
+# gh's own rule for which host a call reaches: `--hostname`, else GH_HOST,
+# else github.com. Every pull request here is on github.com, so a call that
+# lands on any other host is answered the way that host would: knowing nobody.
+def host_of(argv):
+    if "--hostname" in argv:
+        return argv[argv.index("--hostname") + 1]
+    return os.environ.get("GH_HOST") or "github.com"
 if os.environ.get("SHEP_GH_DOWN"):
     sys.stderr.write("gh: could not connect to github.com\n")
     raise SystemExit(1)
@@ -59,18 +66,24 @@ if args[:2] == ["api", "graphql"] and not any(a.startswith("query=") and "review
         "pageInfo": {"hasNextPage": False}, "nodes": nodes}}}}}))
     raise SystemExit(0)
 if args[:1] == ["api"]:
-    login =args[1].removesuffix("/permission").rsplit("/", 1)[-1]
+    path = next(a for a in args[1:] if a.startswith("repos/"))
+    login = path.removesuffix("/permission").rsplit("/", 1)[-1]
     perm = shep / "perms" / login
     level = perm.read_text(encoding="utf-8").strip() if perm.is_file() else "none"
+    if host_of(args) != "github.com":
+        level = "none"
     print(json.dumps({"permission": level}))
     raise SystemExit(0)
 docs = sorted((shep / "gh").glob("*.json"))
 if args[:2] == ["pr", "list"]:
+    # `--repo [HOST/]OWNER/REPO`: a bare OWNER/REPO is on gh's default host.
     repo = args[args.index("--repo") + 1] if "--repo" in args else ""
+    if repo.count("/") == 1:
+        repo = f"{host_of([])}/{repo}"
     found = []
     for f in docs:
         d = json.loads(f.read_text(encoding="utf-8"))
-        if d.get("state") == "OPEN" and d["url"].split("/pull/")[0][len("https://github.com/"):] == repo:
+        if d.get("state") == "OPEN" and d["url"].split("/pull/")[0][len("https://"):] == repo:
             found.append(d)
     print(json.dumps(found))
     raise SystemExit(0)
