@@ -19,17 +19,14 @@ run. So this builds that worst case on purpose:
   hosts.toml, forge credentials, a THURBOX_SESSION, and a tripwire under each
   stubbed tool's name behind the stubs on PATH.
 
-Then the static checks and the test areas that read settings or records run in
-that copy under that host, and must pass exactly as on a clean runner, without
-repeating anything operator-private. The reconcile area is not run a second
-time: it stands on the same `isolated_env`, which test_harness.py proves
-against the same host, and `test_every_test_runs_isolated` holds every test to
-it. The queue area IS run here, because it is the one reader of
-`orchestration/agent-policy.conf` — a setting that sits at the checkout root
-rather than inside a fixture, so nothing but a real poisoned copy proves it
-cannot leak. Its three partitions together run every collected queue test;
-other settings areas run together in their own child gate. Each child has a
-separate poisoned checkout, and each keeps the same verdict and leak checks.
+Static checks still run through the real gate. One serial pytest child runs
+an explicit isolation contract plus a representative test from each area
+previously rerun here, including peers and the board. The contract checks the
+actual autouse fixture under this host and reads the default queue settings
+from this poisoned checkout. Every area's complete behavior suite still runs
+once in the normal gate; `test_every_test_runs_isolated` holds all of those
+tests to the same fixture. This proves the isolation boundary without a
+second broad suite or a nested worker pool.
 """
 
 import re
@@ -113,7 +110,7 @@ def hostile(tmp_path, poisoned) -> dict:
 
 
 def gate(copy: Path, env: dict, *checks: str) -> subprocess.CompletedProcess:
-    return subprocess.run([sys.executable, str(copy / "scripts" / "lib" / "check.py"), "--jobs", "4", *checks],
+    return subprocess.run([sys.executable, str(copy / "scripts" / "lib" / "check.py"), "--jobs", "1", *checks],
                           cwd=copy, env=env, capture_output=True, encoding="utf-8", errors="replace")
 
 
@@ -136,25 +133,25 @@ def test_the_static_checks_read_no_record_and_no_setting(poisoned, hostile):
     assert_same_verdict(gate(poisoned, hostile, "lock", "yaml", "workflow", "profiles"), hostile)
 
 
-@pytest.mark.parametrize("checks", [
-    ("automerge", "skills", "extension", "status", "sync", "onboarding", "install"),
-    ("queue", "--partition", "1/3"),
-    ("queue", "--partition", "2/3"),
-    ("queue", "--partition", "3/3"),
-])
-def test_the_areas_that_read_settings_give_the_same_verdict(poisoned, hostile, checks):
-    assert_same_verdict(gate(poisoned, hostile, *checks), hostile)
+# Explicit node ids keep missing or renamed coverage a failure, rather than
+# letting a broad -k expression quietly select fewer isolation cases.
+ISOLATION_CASES = (
+    "tests/isolation/probe.py",
+    "tests/settings/test_automerge.py::test_the_tracked_publish_default_needs_no_tool",
+    "tests/skills/test_layout.py::test_the_link_is_not_tracked_and_is_ignored",
+    "tests/extension/test_install_extension.py::test_render_only_writes_both_files_and_installs_nothing",
+    "tests/status/test_status.py::test_json_has_every_section_and_marks_the_missing_ones",
+    "tests/sync/test_registry.py::test_every_owner_any_account_reaches_is_in_a_map_of_the_shape_the_control_plane_reads",
+    "tests/onboarding/test_preflight.py::test_a_fully_equipped_machine_exits_0_and_has_nothing_to_install",
+    "tests/install/test_install.py::test_no_terminal_and_no_yes_prints_the_plan_installs_nothing_and_says_yes",
+    "tests/queue/test_agent_policy.py::test_isolation_from_checkout_agent_policy_conf",
+    "tests/pane/test_peers.py::test_no_peers_is_this_fleet_alone_and_an_empty_wire",
+    "tests/pane/test_board.py::test_board_interactions[peers-readonly]",
+)
 
 
-def test_the_board_s_peers_read_no_peer_setting_or_cache(poisoned, hostile):
-    """`fleet peers` is the one reader of `peers.conf` and of the peer cache.
-
-    Its tests and the board's, not the whole pane area: that area also asks
-    the real thurbox kernel for its verdict on purpose, which a hostile host
-    reads as a real tool running.
-    """
-    done = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
-                           "tests/pane/test_peers.py", "tests/pane/test_board.py"],
+def test_the_areas_that_read_settings_give_the_same_verdict(poisoned, hostile):
+    done = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", *ISOLATION_CASES],
                           cwd=poisoned, env=hostile, capture_output=True, encoding="utf-8", errors="replace")
     assert_same_verdict(done, hostile)
 

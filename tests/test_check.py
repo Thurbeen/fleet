@@ -11,6 +11,7 @@ Three claims a gate can lose without anyone noticing:
   absent passes on the machine that has the least.
 """
 
+import json
 import shutil
 import subprocess
 from pathlib import Path
@@ -197,3 +198,66 @@ def test_parent():
     done = run([*PYTHON, str(copy / "scripts" / "lib" / "check.py"),
                 "skills", "--jobs", str(parent_jobs)], cwd=copy, PYTEST_XDIST_WORKER=None)
     assert done.code == 0, done.out
+
+
+@pytest.mark.parametrize("parent_jobs", [1, 2])
+def test_isolation_children_have_bounded_workers_and_work(tmp_path, parent_jobs):
+    """Collect the real isolation children without executing a second broad suite."""
+    copy = tracked_copy(tmp_path / "copy")
+    log = tmp_path / "work.jsonl"
+    write(copy / "sitecustomize.py", '''import json
+import os
+import subprocess
+from pathlib import Path
+
+original = subprocess.run
+
+
+def measured(argv, *args, **kwargs):
+    current = os.environ.get("PYTEST_CURRENT_TEST", "")
+    if (isinstance(argv, list) and "pytest" in argv
+            and any(name in current for name in (
+                "areas_that_read_settings", "board_s_peers"))):
+        workers = int(argv[argv.index("-n") + 1]) if "-n" in argv else 0
+        with Path(os.environ["ISOLATION_WORK_LOG"]).open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps({"workers": workers}) + "\\n")
+        argv = list(argv)
+        for option in ("-n", "--maxschedchunk"):
+            if option in argv:
+                index = argv.index(option)
+                del argv[index:index + 2]
+        argv = [arg for arg in argv if not arg.startswith("--maxschedchunk=")]
+        argv.append("--collect-only")
+        env = dict(kwargs.get("env") or os.environ)
+        env.pop("PYTEST_ADDOPTS", None)
+        env["ISOLATION_MEASURE_CHILD"] = "1"
+        kwargs["env"] = env
+    return original(argv, *args, **kwargs)
+
+
+subprocess.run = measured
+''')
+    with (copy / "tests" / "conftest.py").open("a", encoding="utf-8") as stream:
+        stream.write('''
+
+
+def pytest_collection_finish(session):
+    if os.environ.get("ISOLATION_MEASURE_CHILD"):
+        import json
+        with Path(os.environ["ISOLATION_WORK_LOG"]).open("a", encoding="utf-8") as log:
+            log.write(json.dumps({"nodes": [item.nodeid for item in session.items]}) + "\\n")
+''')
+    done = run([*PYTHON, str(copy / "scripts" / "lib" / "check.py"), "isolation", "--jobs", str(parent_jobs)],
+               cwd=copy, PYTHONPATH=str(copy), ISOLATION_WORK_LOG=str(log),
+               PYTEST_ADDOPTS="-k 'areas_that_read_settings or board_s_peers'")
+    assert done.code == 0, done.out
+    records = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    children = [record["workers"] for record in records if "workers" in record]
+    nodes = [node for record in records for node in record.get("nodes", [])]
+    print(f"isolation children={len(children)}, requested workers={children}, collected tests={len(nodes)}")
+    assert children == [0], f"isolation expanded child processes or nested workers: {children}"
+    assert 1 <= len(nodes) <= 20, f"isolation reran a broad suite: {len(nodes)} tests"
+    assert len(nodes) == len(set(nodes)), "isolation executed a test more than once"
+    assert {node.split("/")[1] for node in nodes} >= {
+        "settings", "skills", "extension", "status", "sync", "onboarding", "install", "queue", "pane",
+    }, f"an isolation area disappeared: {nodes}"
