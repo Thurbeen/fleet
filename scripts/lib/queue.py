@@ -5973,6 +5973,22 @@ def local_resolved_path(value) -> str:
     return os.path.normcase(str(Path(value).resolve(strict=True)))
 
 
+def local_occupant_path(value) -> str:
+    """Another session's cwd, judged even when its directory is gone.
+
+    A deleted directory holds nothing a deletion could take away, but a
+    session whose cwd was deleted still names where it stood — and one stale
+    row must not stop every release on the machine. So a path that no longer
+    exists is placed lexically, with the symlinks of the part that does still
+    exist resolved: one still spelled inside a worktree keeps it. Anything
+    else unresolvable is still a refusal to judge.
+    """
+    try:
+        return local_resolved_path(value)
+    except (FileNotFoundError, NotADirectoryError):
+        return os.path.normcase(str(Path(value).resolve(strict=False)))
+
+
 def documented_path(value, posix: bool) -> str:
     """A path as the multiplexer spells it, not as this machine would resolve it."""
     if not isinstance(value, str) or not value or "\0" in value:
@@ -6082,7 +6098,7 @@ def worktree_release_blocker(sid: str) -> str:
         except (OSError, ValueError, RuntimeError) as exc:
             return f"cannot resolve session worktree: {exc}"
         return occupant_in_worktrees(
-            sessions, sid, roots, local_resolved_path, os.path.commonpath, skip_offbox=True,
+            sessions, sid, roots, local_occupant_path, os.path.commonpath, skip_offbox=True,
         )
     if via == "ssh":
         remote, entry, why = host_session_snapshot(host)

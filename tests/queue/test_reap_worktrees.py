@@ -88,6 +88,36 @@ def test_unknown_cwd_keeps_session(landed, stubs, cwd):
     assert_kept(stubs, task)
 
 
+def test_a_missing_cwd_elsewhere_does_not_hold_up_the_release(landed, stubs, tmp_path):
+    # One stale session whose directory is gone used to keep every landed
+    # task's session: its cwd could not be resolved, so no worktree check
+    # could finish.
+    task, _ = landed
+    session(stubs, OTHER, cwd=str(tmp_path / "deleted-worktree" / "src"))
+    expect(ok(q("reap")).out, "reaped", S1)
+    doc = yaml.safe_load((task / "task.yaml").read_text(encoding="utf-8"))
+    assert doc["reaped"]["session"] == S1
+
+
+def test_a_missing_cwd_inside_the_worktree_still_protects_it(landed, stubs):
+    task, tree = landed
+    session(stubs, OTHER, cwd=str(tree / "removed-subdir"))
+    expect(ok(q("reap")).out, "kept", S1, OTHER, str(tree))
+    assert_kept(stubs, task)
+
+
+def test_a_missing_cwd_under_a_link_into_the_worktree_still_protects_it(landed, stubs, tmp_path):
+    task, tree = landed
+    link = tmp_path / "alias"
+    try:
+        link.symlink_to(tree, target_is_directory=True)
+    except OSError:
+        pytest.skip("creating directory symlinks is unavailable")
+    session(stubs, OTHER, cwd=str(link / "removed-subdir"))
+    expect(ok(q("reap")).out, "kept", S1, OTHER, str(tree))
+    assert_kept(stubs, task)
+
+
 @pytest.mark.parametrize("worktrees", [None, {}, [None], [{}], [{
     "worktree_path": "relative", "created_by_thurbox": True,
 }]])
@@ -219,13 +249,6 @@ def test_unknown_backend_does_not_promise_a_later_pass(landed, stubs):
     out = ok(q("reap")).out
     expect(out, "kept", "cannot judge backend", S1)
     refute(out, "next pass", "retry")
-    assert_kept(stubs, task)
-
-
-def test_missing_cwd_directory_is_unknown(landed, stubs, tmp_path):
-    task, _ = landed
-    session(stubs, OTHER, cwd=str(tmp_path / "missing"))
-    expect(ok(q("reap")).out, "kept", "cwd", OTHER)
     assert_kept(stubs, task)
 
 
