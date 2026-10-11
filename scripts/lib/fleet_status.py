@@ -78,6 +78,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 
@@ -118,6 +119,11 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 
 LABEL = 10  # the left gutter every section header shares
 
+# At most this many forge list calls in flight at once: one per checkout with
+# work in flight, which is a handful, bounded so a large queue cannot open a
+# burst of them against one account's rate limit.
+PR_LISTS = 8
+
 # A task in one of these has said what it concluded; the rest are open.
 # `landed` is concluded AND merged — the state whose session `fleet queue reap`
 # has already released, so its absence from thurbox is expected, not news.
@@ -152,6 +158,34 @@ def run(argv: list, cwd: str | None = None, timeout: int = 10,
         detail = (p.stderr or p.stdout or "").strip().splitlines()
         return None, f"{argv[0]} exited {p.returncode}" + (f": {detail[0]}" if detail else "")
     return p.stdout, None
+
+
+def at_once(*calls: tuple) -> list:
+    """Each `(function, *args)` on its own thread: their results in order, or
+    the first one's exception raised here, as a plain call would have.
+
+    Threads and not `concurrent.futures`, which imports the standard library's
+    `queue` — and run as `python scripts/lib/fleet_status.py`, this directory
+    is first on sys.path and that name is fleet's own queue.py.
+    """
+    results: list = [None] * len(calls)
+    errors: list = [None] * len(calls)
+
+    def one(i: int, call: tuple) -> None:
+        try:
+            results[i] = call[0](*call[1:])
+        except BaseException as exc:  # noqa: BLE001 - handed to the caller below
+            errors[i] = exc
+
+    threads = [threading.Thread(target=one, args=(i, call), daemon=True) for i, call in enumerate(calls)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    for exc in errors:
+        if exc is not None:
+            raise exc
+    return results
 
 
 def run_json(argv: list, cwd: str | None = None, timeout: int = 10, env: dict | None = None):
@@ -410,14 +444,23 @@ def probe_prs(tasks: list) -> dict:
         sec["errors"] = remote
         return sec
 
+    # Every list call waits on the network and none needs another's answer,
+    # so they are asked at once and the section costs its slowest repo rather
+    # than the sum of them; the rows are still read back in repo order.
+    present = [repo for repo in sorted(repos) if os.path.isdir(repo)]
+    forge.forges()  # the registry is built once, before any thread can race to
+    listed = {}
+    for start in range(0, len(present), PR_LISTS):
+        batch = present[start:start + PR_LISTS]
+        listed.update(zip(batch, at_once(*((forge.open_change_requests_in_checkout, repo) for repo in batch))))
     reasons = []
     for repo, owners in sorted(repos.items()):
-        if not os.path.isdir(repo):
+        if repo not in listed:
             reasons.append(f"{repo}: no such directory")
             sec["errors"].append({"repo": repo, "kind": "unread",
                                   "reason": "no such directory"})
             continue
-        crs, why = forge.open_change_requests_in_checkout(repo)
+        crs, why = listed[repo]
         if why:
             reasons.append(why)
             sec["errors"].append({"repo": repo, "kind": "unread", "reason": why})
@@ -1639,16 +1682,24 @@ def render(doc: dict) -> str:
 
 
 def collect() -> dict:
+    """Every section. The probes after the queue share nothing but its tasks
+    and each waits on a different tool — quota-axi, thurbox, the forge, git,
+    preflight's own probes — so they run at once, and the screen costs its
+    slowest section instead of the sum of all of them."""
+    generated = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
     queue = probe_queue()
     tasks = all_tasks(queue)
+    _load_lib("fleet_preflight", "preflight.py")  # loaded here, never half-loaded under a second thread
+    fuel, sessions, prs, checkout, machine = at_once(
+        (probe_fuel_all,), (probe_sessions, tasks), (probe_prs, tasks), (probe_checkout,), (probe_machine,))
     return {
-        "generated": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
-        "fuel": probe_fuel_all(),
+        "generated": generated,
+        "fuel": fuel,
         "queue": queue,
-        "sessions": probe_sessions(tasks),
-        "prs": probe_prs(tasks),
-        "checkout": probe_checkout(),
-        "machine": probe_machine(),
+        "sessions": sessions,
+        "prs": prs,
+        "checkout": checkout,
+        "machine": machine,
     }
 
 

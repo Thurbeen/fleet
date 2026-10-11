@@ -212,9 +212,12 @@ def local_identity(base: str) -> str:
 
 
 def checkout_identity(path: str) -> str:
-    """The identity of the repository a checkout belongs to: its origin's, or its own path's."""
-    if not _git(path, "rev-parse", "--git-dir"):
-        raise ContextError("invalid_repo", f"{path} is not a git checkout", NAME_HINTS)
+    """The identity of the repository a checkout belongs to: its origin's, or its own path's.
+
+    An origin is only ever read from a checkout, so its answer settles both
+    questions in one `git`; asking for the common directory first would cost
+    every results row a second process for the rare checkout with no origin.
+    """
     origin = _git(path, "remote", "get-url", "origin")
     if origin:
         found = remote_identity(origin)
@@ -223,6 +226,8 @@ def checkout_identity(path: str) -> str:
         local = origin[7:] if origin.startswith("file://") else origin
         return local_identity(local if os.path.isabs(local) else os.path.join(path, local))
     common = _git(path, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    if not common and not _git(path, "rev-parse", "--git-dir"):
+        raise ContextError("invalid_repo", f"{path} is not a git checkout", NAME_HINTS)
     return local_identity(os.path.dirname(common) if common.endswith(".git") else path)
 
 

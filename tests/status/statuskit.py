@@ -226,3 +226,31 @@ def records(text: str) -> list[dict]:
         dict(line.split("\t", 1) for line in block.splitlines() if "\t" in line)
         for block in text.split("\n\n") if block.strip()
     ]
+
+
+def meeting(room: Path, parties: int, script: str, when: list[str]) -> str:
+    """A tool that answers as `script` does, but only once `parties` callers are in `room` at once.
+
+    A call whose argv starts with `when` arrives in `room` and waits for the
+    others; a caller still alone when 15 seconds are up — under the
+    forge's own timeout — leaves and answers exit 3, which
+    `fleet status` prints as that probe's failure. Probes run one after
+    another can never meet, so that is the assertion, and nothing is timed:
+    probes that overlap meet at once, and only a failure waits.
+    """
+    return (
+        "import os, sys, time\n"
+        f"if sys.argv[1:1 + {len(when)}] == {when!r}:\n"
+        f"    room = {str(room)!r}\n"
+        "    os.makedirs(room, exist_ok=True)\n"
+        "    me = os.path.join(room, str(os.getpid()))\n"
+        "    open(me, 'w').close()\n"
+        "    deadline = time.monotonic() + 15\n"
+        f"    while len(os.listdir(room)) < {parties} and time.monotonic() < deadline:\n"
+        "        time.sleep(0.01)\n"
+        f"    if len(os.listdir(room)) < {parties}:\n"
+        "        os.remove(me)  # gone, so a later caller cannot meet who already left\n"
+        "        sys.stderr.write('met nobody\\n')\n"
+        "        sys.exit(3)\n"
+        + script
+    )

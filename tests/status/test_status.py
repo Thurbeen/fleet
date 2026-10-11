@@ -24,7 +24,7 @@ import time
 from pathlib import Path
 
 import pytest
-from harness import expect, lib, refute, run_fleet, run_queue, write
+from harness import PYTHON, REPO, expect, lib, refute, run, run_fleet, run_queue, write
 from statuskit import (
     GLORBNAK,
     MANY,
@@ -41,6 +41,7 @@ from statuskit import (
     claude,
     fetch,
     fuel_of,
+    meeting,
     ok,
     per_account,
     quota_axi,
@@ -946,3 +947,43 @@ def test_not_a_byte_of_the_queue_is_touched(queue, stubbed):
     status("--json")
     assert snapshot(queue) == before
 
+
+
+# --- 8. it waits on its slowest probe, not on the sum of them -----------------
+
+
+def second_repo(queue: Path, tmp: Path) -> None:
+    """A dispatched task on another checkout, so the forge is asked about two."""
+    (tmp / "repo2").mkdir()
+    ok(run_queue("add", "selftest", "other-repo", "--title", "Another repo", "--repo", str(tmp / "repo2"),
+                 "--branch", "t/other", "--brief-file", str(tmp / "brief.md")))
+    ok(run_queue("attach", "selftest/04-other-repo", "77777777-7777-7777-7777-777777777777"))
+
+
+def test_the_forge_is_asked_about_every_checkout_at_once(queue, stubs, tmp_path):
+    second_repo(queue, tmp_path)
+    stubs.tool("thurbox-cli", answer(json.dumps(SESSIONS)))
+    stubs.tool("quota-axi", fuel_of(64))
+    stubs.tool("gh", meeting(tmp_path / "room", 2, answer(json.dumps(PRS)), ["pr", "list"]))
+    done = status()
+    refute(done.out, "met nobody", "gh exited")
+    expect(done.out, "Thurbeen/fleet#13")
+
+
+def test_the_fuel_reading_and_the_forge_are_asked_at_once(queue, stubs, tmp_path):
+    stubs.tool("thurbox-cli", answer(json.dumps(SESSIONS)))
+    stubs.tool("quota-axi", meeting(tmp_path / "room", 2, fuel_of(64), ["--provider"]))
+    stubs.tool("gh", meeting(tmp_path / "room", 2, answer(json.dumps(PRS)), ["pr", "list"]))
+    done = status()
+    refute(done.out, "met nobody", "gh exited", "quota-axi exited")
+    expect(done.out, "Thurbeen/fleet#13", "  claude  64% remaining")
+
+
+def test_run_as_a_script_it_still_asks_at_once(queue, stubbed, tmp_path):
+    """`python scripts/lib/fleet_status.py` puts scripts/lib first on sys.path,
+    where `queue` is fleet's own queue.py and not the standard library's — so
+    nothing that asks the probes at once may import the latter."""
+    second_repo(queue, tmp_path)
+    done = run([*PYTHON, str(REPO / "scripts" / "lib" / "fleet_status.py")])
+    assert done.code == 0, done.out
+    expect(done.out, "Thurbeen/fleet#13", "  claude  64% remaining")
