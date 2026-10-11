@@ -102,7 +102,22 @@ def test_a_green_attested_pr_in_an_allowlisted_repo_is_squash_merged(first_pass,
     expect(first_pass, "merged")
     assert 102 in shep.merged(), first_pass
     # A squash, the only method the remote allows.
-    expect(shep.gh_log(), "pr merge https://github.com/Thurbeen/fleet/pull/102 --squash --delete-branch")
+    expect(shep.gh_log(), "pr merge https://github.com/Thurbeen/fleet/pull/102 --squash --delete-branch "
+                          f"--match-head-commit {102:040d}")
+
+
+def test_a_push_between_the_gates_and_the_merge_is_not_merged(stopic, shep, queue_dir):
+    """The gates judged one head; a push landing before the merge is a head no
+    gate saw. GitHub is told which commit to merge, refuses the moved one, and
+    the row says the head moved rather than calling it merged."""
+    run = q("shepherd", "--topic", stopic, "--json", SHEP_PUSH_BEFORE_MERGE="102")
+    assert run.code == 0, run.out
+    row = next(pr for pr in json.loads(run.stdout)["prs"] if pr["pr"].endswith("/pull/102"))
+    assert row["action"] == "merge-failed", row
+    expect(row["note"], "head moved", "next pass")
+    assert 102 not in shep.merged()
+    task = yaml.safe_load((queue_dir / stopic / "02-green" / "task.yaml").read_text(encoding="utf-8"))
+    assert task.get("shepherd", {}).get("condition") != "merged", task
 
 
 def test_remote_merge_is_reported_after_local_branch_cleanup_fails(stopic, shep, queue_dir):

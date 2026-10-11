@@ -1,7 +1,8 @@
 """The shepherd's forge and thurbox, and the pull requests it is shown.
 
 The shepherd asks the FORGE for every open pull request, so its `gh` answers
-`pr list` out of one JSON document per pull request under `shep/gh/`, and it
+`pr list` out of one JSON document per pull request under `shep/gh/`, honours
+`pr merge --match-head-commit` against that document's head, and it
 refuses every subcommand it was not taught — an unexpected reach for
 `pr close` fails the test rather than passing quietly. Its `thurbox-cli`
 REGISTERS each session it creates, idle and reporting, so the trust step
@@ -81,6 +82,15 @@ elif args[:2] == ["pr", "merge"]:
         raise SystemExit(1)
     doc = shep / "gh" / f"{n}.json"
     d = json.loads(doc.read_text(encoding="utf-8"))
+    # A push that lands after the shepherd listed the pull request and before
+    # it merged: the head the forge holds is no longer the one that was gated.
+    if os.environ.get("SHEP_PUSH_BEFORE_MERGE") == n:
+        d["headRefOid"] = "e" * 40
+        doc.write_text(json.dumps(d), encoding="utf-8")
+    # `--match-head-commit`: GitHub merges THAT commit or nothing, in its own words.
+    if "--match-head-commit" in args and args[args.index("--match-head-commit") + 1] != d["headRefOid"]:
+        sys.stderr.write("GraphQL: Head branch was modified. Review and try the merge again. (mergePullRequest)\n")
+        raise SystemExit(1)
     d["state"] = "MERGED"
     doc.write_text(json.dumps(d), encoding="utf-8")
     with open(shep / "merged", "a", encoding="utf-8") as fh:

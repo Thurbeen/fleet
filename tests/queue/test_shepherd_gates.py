@@ -65,7 +65,8 @@ def test_a_named_repository_merges_on_fleets_own_gates_and_no_looser(ttopic, she
     out = q("shepherd", "--topic", ttopic).out
     expect(out, "Thurbeen/thurbox")
     assert 201 in shep.merged(), out
-    expect(shep.gh_log(), "pr merge https://github.com/Thurbeen/thurbox/pull/201 --squash --delete-branch")
+    expect(shep.gh_log(), "pr merge https://github.com/Thurbeen/thurbox/pull/201 --squash --delete-branch "
+                             f"--match-head-commit {201:040d}")
     # Naming a repository adds a REPOSITORY and not a looser rule.
     assert 202 not in shep.merged(), out
     expect(out, "the body carries no attestation")

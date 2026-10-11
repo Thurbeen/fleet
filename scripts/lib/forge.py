@@ -1207,7 +1207,8 @@ class GitHubForge(Forge):
         return self._me[host]
 
     def describe_merge(self, method: str, delete_branch: bool) -> str:
-        return "gh pr merge --" + method + (" --delete-branch" if delete_branch else "")
+        return ("gh pr merge --" + method + (" --delete-branch" if delete_branch else "")
+                + " --match-head-commit <the head it checked>")
 
     def merge(self, cr: ChangeRequest, method: str, delete_branch: bool) -> tuple:
         if method not in self.merge_methods:
@@ -1215,11 +1216,22 @@ class GitHubForge(Forge):
         argv = ["pr", "merge", cr.url, f"--{method}"]
         if delete_branch:
             argv.append("--delete-branch")
+        if cr.head_sha:
+            # Merge THIS commit or nothing, as GitLab's `--sha` does: a push
+            # that lands between `classify` and here is a head no gate saw.
+            argv += ["--match-head-commit", cr.head_sha]
         _, why = self._run(argv, timeout=120)
         if why:
             state, _ = self.state(cr.ref)
             if state == "merged":
                 return True, f"{method}-merged (remote confirmed; gh reported: {why})"
+            now, _ = self.get(cr.ref) if cr.head_sha else (None, "")
+            if now is not None and now.head_sha and now.head_sha != cr.head_sha:
+                return False, (
+                    f"the head moved to {now.head_sha[:12]} after the gates checked "
+                    f"{cr.head_sha[:12]}, so it was not merged; it is re-gated next "
+                    f"pass (gh reported: {why})"
+                )
             return False, why
         return True, f"{method}-merged" + (", branch deleted" if delete_branch else "")
 
