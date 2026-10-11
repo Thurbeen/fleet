@@ -1419,7 +1419,7 @@ def is_record_dir(name: str) -> bool:
 
 
 def now() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    return datetime.now(timezone.utc).isoformat()
 
 
 def age_of(stamp) -> str:
@@ -3103,9 +3103,9 @@ AT_REST_STATES = ("idle", "done")
 # DELIVERED MESSAGE. A declaration is about the conversation that wrote it: a
 # `refuel` restart or a fresh dispatch is a new turn the old word says nothing
 # about, and a message from the lead is the answer a `needs-input` was waiting
-# for. Every stamp here is to the second, so a declaration in the same second
-# as one of those is ambiguous, and the tie goes to the floor: the task falls
-# back to the inference, which can only report a stall, never hide one.
+# for. Keep fractional seconds in queue timestamps so a declaration and its
+# answer in the same second remain ordered. Exact ties are ambiguous and
+# invalidate the declaration rather than hiding a possible stall.
 
 DECLARE_STATES = ("paused", "needs-input")
 

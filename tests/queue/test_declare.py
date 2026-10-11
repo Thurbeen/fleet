@@ -13,10 +13,11 @@ task's last dispatch, restart or message counts.
 import json
 from datetime import datetime, timedelta, timezone
 
+import pytest
 import yaml
 from queuekit import S1, S2, ok
 
-from harness import expect, refute
+from harness import PYTHON, expect, refute, run
 from harness import run_queue as q
 
 HOUR = 3600
@@ -36,13 +37,13 @@ def stamp(delta: timedelta) -> str:
 
 
 def at_rest(stubs, queue_dir) -> None:
-    """At rest for two hours, so dispatched before that: a declaration made now is
-    never in the dispatch's own second, which `plan` would read as a tie and drop."""
+    """Dispatched before all historical declarations used below, so pause tests
+    exercise expiry and the cap rather than dispatch invalidation."""
     stubs.session_is(S1, "idle", age=2 * HOUR)
     stubs.session_is(S2, "working", age=2 * HOUR)
     record = queue_dir / REF / "task.yaml"
     doc = yaml.safe_load(record.read_text(encoding="utf-8"))
-    doc["dispatched_at"] = stamp(-timedelta(hours=3))
+    doc["dispatched_at"] = stamp(-timedelta(hours=9))
     record.write_text(yaml.safe_dump(doc), encoding="utf-8")
 
 
@@ -94,15 +95,77 @@ def test_needs_input_is_its_own_set_and_not_a_stall(attached, stubs, queue_dir):
     expect(q("plan").out, "needs input: 1", "keep the old flag or drop it?")
 
 
-def test_a_message_from_the_lead_answers_needs_input(attached, stubs, queue_dir):
+def clocked_queue(instant: datetime, *args: str):
+    """Real CLI and records, with each operation pinned within the same second."""
+    boot = '''import sys
+from datetime import datetime
+from fleet.cli import load, main
+
+instant = datetime.fromisoformat(sys.argv.pop(1))
+
+class Clock(datetime):
+    @classmethod
+    def now(cls, tz=None):
+        return instant.astimezone(tz)
+
+load("queue.py").datetime = Clock
+sys.exit(main(sys.argv[1:]))
+'''
+    return run([*PYTHON, "-c", boot, instant.isoformat(), "queue", *args])
+
+
+@pytest.mark.parametrize("state, bucket", [("needs-input", "needs_input"), ("paused", "paused")])
+def test_a_message_answers_an_earlier_declaration_in_the_same_second(attached, stubs, queue_dir, state, bucket):
     at_rest(stubs, queue_dir)
-    ok(q("declare", REF, "needs-input", "--why", "which?"))
-    ok(q("send", REF, "drop it"))
+    second = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(seconds=1)
+    until = ["--until", "2h"] if state == "paused" else []
+    ok(clocked_queue(second.replace(microsecond=100000), "declare", REF, state, "--why", "which?", *until))
+    assert [row["task"] for row in plan()[bucket]] == [REF]
+    ok(clocked_queue(second.replace(microsecond=200000), "send", REF, "drop it"))
+    assert plan()[bucket] == []
+
+
+@pytest.mark.parametrize("state, bucket", [("needs-input", "needs_input"), ("paused", "paused")])
+def test_a_declaration_after_a_message_in_the_same_second_still_counts(attached, stubs, queue_dir, state, bucket):
+    at_rest(stubs, queue_dir)
+    second = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(seconds=1)
+    ok(clocked_queue(second.replace(microsecond=100000), "send", REF, "drop it"))
+    until = ["--until", "2h"] if state == "paused" else []
+    ok(clocked_queue(second.replace(microsecond=200000), "declare", REF, state, "--why", "new wait", *until))
+    assert [row["task"] for row in plan()[bucket]] == [REF]
+
+
+@pytest.mark.parametrize("boundary", ["dispatch", "restart"])
+def test_conversation_boundaries_order_declarations_within_a_second(attached, stubs, queue_dir, boundary):
+    at_rest(stubs, queue_dir)
+    second = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(seconds=1)
+    ok(clocked_queue(second.replace(microsecond=100000), "declare", REF, "needs-input", "--why", "old"))
+    if boundary == "dispatch":
+        ok(clocked_queue(second.replace(microsecond=200000), "attach", REF, S1, "--prompted"))
+    else:
+        record = queue_dir / REF / "task.yaml"
+        doc = yaml.safe_load(record.read_text(encoding="utf-8"))
+        doc["refuels"] = [{"at": second.replace(microsecond=200000).isoformat(),
+                           "session": S1, "why": "quota", "prompted": True}]
+        record.write_text(yaml.safe_dump(doc), encoding="utf-8")
     assert plan()["needs_input"] == []
+    ok(clocked_queue(second.replace(microsecond=300000), "declare", REF, "needs-input", "--why", "new"))
+    assert [row["why"] for row in plan()["needs_input"]] == ["new"]
+
+
+def test_an_undelivered_message_does_not_answer_a_declaration(attached, stubs, queue_dir):
+    at_rest(stubs, queue_dir)
+    second = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(seconds=1)
+    ok(clocked_queue(second.replace(microsecond=100000), "declare", REF, "needs-input", "--why", "which?"))
+    stubs.tool("thurbox-cli", "import sys; sys.exit(1)")
+    failed = clocked_queue(second.replace(microsecond=200000), "send", REF, "drop it")
+    assert failed.code != 0
+    expect(failed.out, "NOT DELIVERED")
+    assert [row["task"] for row in plan()["needs_input"]] == [REF]
 
 
 def test_a_message_in_the_same_second_as_the_question_answers_it(attached, stubs, queue_dir):
-    """Every stamp here is to the second, so a tie is ambiguous, and it goes to the
+    """An exact timestamp tie is ambiguous, so it goes to the
     message: the task falls back to the inference rather than hiding behind a question
     the lead may already have answered. CI on Windows ran declare and send inside
     one second and kept the question standing."""
