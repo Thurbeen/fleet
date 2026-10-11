@@ -599,8 +599,8 @@ def worker_bundle(repo: str | None, ref: str) -> str:
         except (ContextError, OSError) as exc:
             body = fleet_platform.toon_field("facts", f"not rendered — {getattr(exc, 'message', exc)}") + "\n"
     else:
-        body = (fleet_platform.toon_field("facts", "none — this host's origin names no forge, so no store"
-                                          " here is this repository's") + "\n"
+        body = (fleet_platform.toon_field("facts", "none — the host's origin could not be read or names no"
+                                          " forge, so no store here is this repository's") + "\n"
                 + fleet_platform.toon_field("repo", "unknown") + "\n")
     lines = [*head, body.rstrip("\n"), "```"]
     q = _queue()
