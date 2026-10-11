@@ -974,18 +974,21 @@ def cmd_status(cfg: Config) -> int:
 def cmd_nudge(cfg: Config) -> int:
     """The accelerator, and the ONLY verb safe from a worker: one flag file, no
     queue command, so a worker calling it cannot collect or reap anything.
-    A nudge with the loop down waits in the file for the next start."""
+    A nudge with the loop down waits in the file for the next start.
+
+    It reports on stderr: a hook's stdout is the agent's protocol channel, and
+    Codex fails a Stop hook whose stdout is not JSON."""
     by = os.environ.get("THURBOX_SESSION") or who()
     try:
         os.makedirs(cfg.rt, exist_ok=True)
         fleet_platform.write_record(cfg.path("nudge"), f"nudged {now()} by {by}\n")
     except OSError as exc:
-        say(f"fleet reconciler: could not leave a nudge ({exc}); the loop's own timers still run")
+        err(f"fleet reconciler: could not leave a nudge ({exc}); the loop's own timers still run")
         return 0
     if running(cfg):
-        say(f"fleet reconciler: nudged — the next pass runs within {cfg.watch}s")
+        err(f"fleet reconciler: nudged — the next pass runs within {cfg.watch}s")
     else:
-        say("fleet reconciler: nudged, but nothing is ticking; the nudge waits")
+        err("fleet reconciler: nudged, but nothing is ticking; the nudge waits")
     return 0
 
 

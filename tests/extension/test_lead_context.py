@@ -6,8 +6,10 @@ alongside AGENTS.md. Neither route reaches a worker's separate worktree.
 
 from __future__ import annotations
 
+import json
 import os
 import re
+import subprocess
 import tomllib
 from pathlib import Path
 
@@ -116,6 +118,26 @@ def test_codex_context_refreshes_and_is_removed_when_switching_back(tmp_path):
     write(conf, "AGENT=claude\n")
     assert run_render(tmp_path).code == 0
     assert not config_path.exists()
+
+
+def test_codex_stop_hook_meets_codex_stop_output_contract(tmp_path, isolated_env):
+    """Codex parses a Stop hook's stdout as JSON: plain text fails the hook with
+    "hook returned invalid stop hook JSON output" (measured against Codex
+    0.162.1, where empty stdout and `{}` both pass). So the rendered nudge runs
+    the way Codex runs it — through the shell, from the checkout, the hook's
+    JSON on stdin — and still leaves its nudge."""
+    write(Path(os.environ["FLEET_AGENT_ROOT"]) / "orchestration/agent.conf", "AGENT=codex\n")
+    assert run_render(tmp_path).code == 0
+    config = tomllib.loads((tmp_path / ".codex/config.toml").read_text(encoding="utf-8"))
+    command = config["hooks"]["Stop"][0]["hooks"][0]["command"]
+    done = subprocess.run(
+        command, shell=True, cwd=REPO, input=json.dumps({"hook_event_name": "Stop"}),
+        capture_output=True, encoding="utf-8", errors="replace",
+    )
+    assert done.returncode == 0, done.stderr
+    assert (isolated_env / "reconcile" / "nudge").is_file(), done.stderr
+    if done.stdout.strip():
+        assert isinstance(json.loads(done.stdout), dict), done.stdout
 
 
 def test_codex_render_refuses_user_owned_config_before_writing(tmp_path):
