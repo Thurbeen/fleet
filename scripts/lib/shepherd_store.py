@@ -513,6 +513,8 @@ def after_pass(q, args, all_tasks: list, observed: list, listings: dict, unreada
     for sid, task in held.items():
         if str(task.doc.get("session") or "") != sid:
             continue
+        if snapshot is not None and sid not in snapshot:
+            continue  # thurbox listed every session, and not this one: it is gone
         fresh = by_session.get(sid, (task, []))[1]
         prev = prev_sessions.get(sid) or {}
         prs = carry_session(q, prev, fresh, readable, None)

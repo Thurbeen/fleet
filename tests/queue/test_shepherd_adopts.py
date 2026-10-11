@@ -296,3 +296,22 @@ def test_a_session_spanning_two_repositories_is_told_about_each(shep, stubs, tmp
     prs = store()["sessions"][OUTSIDE]["prs"]
     assert [p["repo"] for p in prs] == ["github.com/Thurbeen/fleet"], out
     expect(out, "pull/201")
+
+
+def test_a_task_session_thurbox_no_longer_lists_leaves_the_store(shep, stubs, tmp_path):
+    """The docstring's contract: thurbox listing every session but that one proves it gone."""
+    held = checkout(tmp_path / "held", "main-ish")
+    topic = ok(q("topic", "add", "adoption", "--title", "Adoption",
+                 "--prompt", "shepherd outside sessions")).stdout.strip()
+    ok(q("add", topic, "held", "--title", "A task's own worker", "--repo", str(held),
+         "--branch", "feat/held", "--number", "01"))
+    git("checkout", "-q", "-b", "feat/held", cwd=held)
+    session(stubs, HELD, "queued worker", "working", held, "feat/held")
+    ok(q("attach", f"{topic}/01-held", HELD))
+    shep.pr(202, headRefName="feat/held", body="")
+    q("shepherd")
+    assert HELD in store()["sessions"]
+
+    (stubs.root / "sessions" / f"{HELD}.json").unlink()
+    out = q("shepherd").out
+    assert HELD not in store()["sessions"], out
