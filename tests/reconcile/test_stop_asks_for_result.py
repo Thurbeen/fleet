@@ -16,6 +16,8 @@ import json
 import os
 from pathlib import Path
 
+import pytest
+
 from harness import expect, run, run_fleet, write
 
 SID = "worker-uuid"
@@ -106,4 +108,51 @@ def test_hook_input_that_is_not_json_never_fails_the_stop(tmp_path, isolated_env
     out = run_fleet("reconcile", "nudge", stdin="not json", THURBOX_SESSION=SID)
     assert out.code == 0, out.out
     assert out.stdout.strip() == "", out.stdout
+    assert nudged(isolated_env)
+
+
+@pytest.mark.parametrize("hook", [{}, {"hook_event_name": "PreToolUse"}])
+def test_a_nudge_with_non_stop_json_never_blocks(tmp_path, isolated_env, hook):
+    worker(tmp_path)
+    out = run_fleet("reconcile", "nudge", stdin=json.dumps(hook), THURBOX_SESSION=SID)
+    assert out.code == 0, out.out
+    assert out.stdout.strip() == "", "only a Stop hook may ask the worker to continue"
+    assert nudged(isolated_env)
+
+
+@pytest.mark.parametrize("change", [{"host": "remote"}, {"state": "shipped"}, {"branch": "missing"}])
+def test_a_task_outside_the_local_dispatched_branch_is_not_asked(tmp_path, isolated_env, change):
+    task = worker(tmp_path)
+    record = json.loads((task / "task.yaml").read_text(encoding="utf-8"))
+    write(task / "task.yaml", json.dumps(record | change))
+    out = stop()
+    assert out.code == 0, out.out
+    assert out.stdout.strip() == "", out.stdout
+    assert nudged(isolated_env)
+
+
+def test_the_remote_base_prevents_a_stale_local_base_counting_as_work(tmp_path, isolated_env):
+    worker(tmp_path)
+    git(tmp_path / "repo", "update-ref", "refs/remotes/origin/main", BRANCH)
+    out = stop()
+    assert out.code == 0, out.out
+    assert out.stdout.strip() == "", "the remote base already contains every worker commit"
+    assert nudged(isolated_env)
+
+
+def test_work_in_an_additional_repository_also_asks_for_the_result(tmp_path, isolated_env):
+    task = worker(tmp_path, ahead=False)
+    second = tmp_path / "second"
+    second.mkdir()
+    git(second, "init", "-q", "-b", "develop")
+    git(second, "commit", "-q", "--allow-empty", "-m", "base")
+    git(second, "switch", "-q", "-c", BRANCH)
+    git(second, "commit", "-q", "--allow-empty", "-m", "the work")
+    record = json.loads((task / "task.yaml").read_text(encoding="utf-8"))
+    write(task / "task.yaml", json.dumps(record | {"add_repos": [f"{second}@develop"]}))
+    out = stop()
+    assert out.code == 0, out.out
+    decision = json.loads(out.stdout)
+    assert decision["decision"] == "block", out.stdout
+    expect(decision["reason"], str(task / "result.md"))
     assert nudged(isolated_env)

@@ -1011,7 +1011,8 @@ def stop_decision() -> dict | None:
         return None
     try:
         hook = json.loads(sys.stdin.read() or "null")
-        if not isinstance(hook, dict) or hook.get("stop_hook_active"):
+        if (not isinstance(hook, dict) or hook.get("hook_event_name") != "Stop"
+                or hook.get("stop_hook_active")):
             return None
         reason = _load_sibling("fleet_queue", "queue.py").missing_result(sid)
     except Exception:
@@ -1047,8 +1048,7 @@ def cmd_hook(cfg: Config) -> int:
     block = json.dumps({"type": "command", "command": hook_command(), "timeout": 10}, indent=2)
     say(f'`uv run fleet install` adds this to the "Stop" hooks in {settings}.')
     say("To add it by hand, put it there as well: thurbox rewrites its own hooks")
-    say("file on every start. It is a NUDGE")
-    say("and nothing more: it tells the reconciler to run its periodic pass now")
+    say("file on every start. It tells the reconciler to run its periodic pass now")
     say(f"instead of waiting out {cfg.collect}s. It closes nothing, it reaps")
     say("nothing, and if it never fires the loop's own timers still catch")
     say("everything it would have caught.")
