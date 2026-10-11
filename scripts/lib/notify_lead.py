@@ -200,7 +200,6 @@ def read_state(state_dir: str) -> dict:
 def write_state(state_dir: str, memory: dict, note: str) -> None:
     """Remember what the lead has been told, and what was last logged about it.
 
-    `memory` holds six lists of refs: `told` and `posted` for the ready set,
     `memory` holds eight lists of refs: `told` and `posted` for the ready set,
     `stalled` and `stalled_posted` for the stalled one, `unprompted` and
     `unprompted_posted` for the unprompted one, `needs_input` and
