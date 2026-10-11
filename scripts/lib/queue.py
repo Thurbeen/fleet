@@ -6094,6 +6094,21 @@ def sweep_landings(q: Queue, dry: bool) -> dict:
 # the same afternoon for a worker a crashed multiplexer took with it.
 VANISHED_GRACE_SECS = 10 * 60
 
+# How many tracked sessions may go missing from one machine in ONE look before
+# that look is read as an outage of the machine rather than as that many
+# separate endings. A thurbox restart, a multiplexer crash or a host whose
+# mirror stopped answering still yields a list that reads cleanly — it just
+# lacks most of the sessions — and without this every task on that machine is
+# retired as `session gone` one grace period later, in words that claim each
+# worker ended. Five, and more than half of that machine's dispatched sessions,
+# is the line Agent Orchestrator's reaper draws for the same question: below
+# five, a handful of real deaths on a small fleet is still believed; at five or
+# more, losing the majority at once is a fact about the machine, which is for a
+# person to look at and not for this loop to act on. Counted PER HOST, because
+# an outage is: devbox dropping off ends nothing here, and must not hold back a
+# local session that really is gone.
+MASS_VANISH_MIN = 5
+
 
 def sweep_vanished(q: Queue, dry: bool, snapshot=None) -> int:
     """Retire every dispatched task whose session thurbox no longer has.
@@ -6107,7 +6122,9 @@ def sweep_vanished(q: Queue, dry: bool, snapshot=None) -> int:
 
     It retires nothing on a guess. A session list that could not be read, a
     result.md waiting for `collect`, the lead's own session, and a task whose
-    host cannot be reached all leave the task exactly where it is.
+    host cannot be reached all leave the task exactly where it is. So does a
+    look in which one machine lost MASS_VANISH_MIN or more of its sessions, and
+    most of them: that is an outage, and it is named for a person instead.
     """
     todo = [
         t for t in sorted(q.tasks.values(), key=lambda t: t.ref)
@@ -6119,16 +6136,52 @@ def sweep_vanished(q: Queue, dry: bool, snapshot=None) -> int:
     if live is None:
         return 0
     lead = os.environ.get("THURBOX_SESSION")
+    reachable: dict = {}
+
+    def missing(task) -> bool:
+        sid = task.doc["session"]
+        return not (sid in live or sid == lead or os.path.exists(task.file("result.md")))
+
+    def unreachable(host) -> bool:
+        if host and host not in reachable:
+            reachable[host] = host_reachable(host)[0]
+        return bool(host) and not reachable[host]
+
+    # One machine at a time: how many of its tracked sessions this look lost.
+    per_host: dict = {}
+    for task in todo:
+        host = task.doc.get("host") or ""
+        tracked, absent = per_host.get(host, (0, 0))
+        per_host[host] = (tracked + 1, absent + (missing(task) and not unreachable(host)))
+    outage = set()
+    for host, (tracked, absent) in sorted(per_host.items()):
+        if absent >= MASS_VANISH_MIN and absent * 2 > tracked:
+            outage.add(host)
+            where = f"on {host}" if host else "here"
+            print(
+                f"    thurbox lists {absent} of {tracked} dispatched sessions {where} as gone in one look; "
+                "read as an outage, nothing retired — a person should look"
+            )
+
     acted = 0
     for task in todo:
         sid = task.doc["session"]
         seen = task.doc.get("vanished") or {}
-        if sid in live or sid == lead or os.path.exists(task.file("result.md")):
+        if not missing(task):
             if seen and not dry:
                 task.doc.pop("vanished", None)
                 task.save()
             continue
-        if task.doc.get("host") and not host_reachable(task.doc["host"])[0]:
+        if unreachable(task.doc.get("host")):
+            continue
+        if (task.doc.get("host") or "") in outage:
+            # Neither a first look nor a retirement. A first look started here
+            # would count the outage itself toward the grace, so a session
+            # still missing when the machine recovers would be retired on its
+            # very next pass, with ten minutes of "evidence" that were really
+            # the outage's. Leaving it unrecorded starts the clock only once a
+            # look can be believed again. An earlier first look is left as it
+            # is: it predates the outage and stays honest on its own.
             continue
         since = record_time(seen.get("since")) if seen.get("session") == sid else 0.0
         if not since:
