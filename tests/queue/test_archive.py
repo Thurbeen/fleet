@@ -314,9 +314,13 @@ def test_the_one_view_still_reopens_an_archived_topic_and_reads_it_as_live(archi
     # nothing in this pass can close it again.
     set_state_line(finished / "02-second-half" / "task.yaml", "dispatched")
     (finished / "02-second-half" / "result.md").unlink()
+    # The fixture's own collect wrote these facts; only this pass may write them again.
+    runs = Path(os.environ["FLEET_RUNS_DIR"])
+    for facts in runs.glob(f"*-{archived['all']}.facts.md"):
+        facts.unlink()
     out = ok(q("collect")).out
     expect(out, archived["all"], "unarchived", "02-second-half")
     refute(topic_yaml(queue_dir, archived["all"]), "archived:")
     # Live in the same pass: its run log is opened like any live topic's.
-    assert list(Path(os.environ["FLEET_RUNS_DIR"]).glob(f"*-{archived['all']}.facts.md"))
+    assert list(runs.glob(f"*-{archived['all']}.facts.md"))
     expect(q("list").out, archived["all"], "02-second-half")
