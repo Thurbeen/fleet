@@ -413,7 +413,8 @@ def capture_learned(task, learned) -> list[str]:
     if not isinstance(learned, list):
         return ["learned: not a list — skipped"]
     q = _queue()
-    hints = tuple(filter(None, (path_identity(u["path"]) for u in q.task_repos(task))))
+    hints = tuple(filter(None, [path_identity(u["path"]) for u in q.task_repos(task)]
+                         + [(task.doc.get("remote") or {}).get("repo")]))
     # The task's own date and not today's: a pass tomorrow must name the same file.
     day = re.sub(r"\D", "", str(task.doc.get("created") or "")[:10])
     if len(day) != 8:
@@ -566,6 +567,62 @@ def cmd_repo(opts: dict) -> str:
         return render([len(facts["live"]), len(results)])
     return capped(render, [min(FACT_ROWS, len(facts["live"])), min(RESULT_ROWS, len(results))],
                   None if full else REPO_BYTES)
+
+
+PRIOR_BYTES = 2048
+
+
+def worker_bundle(repo: str | None, ref: str) -> str:
+    """CONTEXT.md: `repo <repo> --task <ref>`, rendered for a worker that cannot run it.
+
+    A remote host has no control plane, so its worker reads this file, copied
+    beside its worktree at dispatch, instead of the command a local brief
+    names. It is SELF-CONTAINED where that matters: the result of each task
+    this one waits on is inlined, capped at PRIOR_BYTES in all, because the
+    path `--task` would name is on this machine. Every other path in it is
+    this machine's too, and the header says so. Never raises: a bundle that
+    cannot be rendered says why, and the worker starts anyway.
+    """
+    head = [
+        f"# Project memory for {ref}",
+        "",
+        "Rendered by the control plane when this task was dispatched. This host",
+        "cannot run `fleet context`, and the paths and commands below are the",
+        "control plane's: read this file instead, and report what you learn in",
+        "result.md's `learned:` under the `repo:` named here.",
+        "",
+        "```toon",
+    ]
+    if repo:
+        try:
+            body = cmd_repo({"args": [repo], "task": None, "fields": [], "full": False, "all": False})
+        except (ContextError, OSError) as exc:
+            body = fleet_platform.toon_field("facts", f"not rendered — {getattr(exc, 'message', exc)}") + "\n"
+    else:
+        body = (fleet_platform.toon_field("facts", "none — this host's origin names no forge, so no store"
+                                          " here is this repository's") + "\n"
+                + fleet_platform.toon_field("repo", "unknown") + "\n")
+    lines = [*head, body.rstrip("\n"), "```"]
+    q = _queue()
+    try:
+        prior = prior_results(q.Queue(q.queue_root(), scope="all"), ref)
+    except q.QueueError:
+        prior = []
+    budget = PRIOR_BYTES
+    for row in prior:
+        try:
+            with open(row["path"], encoding="utf-8") as fh:
+                text = fh.read().strip()
+        except OSError:
+            text = "(no result.md)"
+        if len(text.encode("utf-8")) > budget:
+            text = text.encode("utf-8")[:max(budget, 0)].decode("utf-8", "ignore").rstrip()
+            text += "\n(truncated)"
+        budget -= len(text.encode("utf-8"))
+        lines += ["", f"## Prior result: {row['task']} ({row['state']})", "", text]
+        if budget <= 0:
+            break
+    return "\n".join(lines) + "\n"
 
 
 # --- lead and pending -----------------------------------------------------------------

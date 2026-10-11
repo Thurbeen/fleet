@@ -19,7 +19,7 @@ import os
 import pytest
 import yaml
 from kit_hosts import Hosts, creates, deletions
-from queuekit import ok
+from queuekit import fill_brief, ok
 
 from harness import PYTHON, REPO, expect, queue_module, refute, run, write
 from harness import run_queue as q
@@ -100,9 +100,10 @@ def test_a_remote_brief_names_nothing_the_worker_cannot_reach(devbox_task, rtopi
     """Every control-plane path the brief would name is not on that filesystem,
     so each is stated relative to the brief itself."""
     brief = (queue_dir / devbox_task / "BRIEF.md").read_text(encoding="utf-8")
-    expect(brief, "on host `devbox`", "in the root of this worktree",
+    expect(brief, "on host `devbox`", "in\n    `<worktree>.fleet`, and not inside your worktree",
            "PROMPT.md`, alongside this file", "POLICY.md`, alongside this file",
-           "Delete `BRIEF.md`, `POLICY.md`, and `PROMPT.md` before you commit")
+           "CONTEXT.md`, alongside this file", "no commit can carry them")
+    refute(brief, "Delete `BRIEF.md`", "fleet context repo")
     refute(brief, str(queue_dir / devbox_task / "result.md"), str(queue_dir / rtopic / "PROMPT.md"),
            str(REPO / "orchestration" / "queue" / "POLICY.md"))
 
@@ -152,7 +153,7 @@ def test_a_remote_task_is_spawned_on_its_host_with_its_brief_really_there(
     # and the lead is local by construction.
     refute(remote[-1], "--parent")
 
-    there = hosts.remote("me@devbox", WORKTREE)
+    there = hosts.remote("me@devbox", WORKTREE + ".fleet")
     assert (there / "BRIEF.md").is_file(), "the brief really is on the host's filesystem"
     # Records are LF on every OS, and a Windows lead's text-mode stdin would add a CR to every line.
     for name in ("BRIEF.md", "POLICY.md", "PROMPT.md"):
@@ -170,7 +171,7 @@ def test_a_remote_result_comes_back_and_its_session_outlives_a_down_host(
     devbox_dispatched, devbox_task, hosts, queue_dir
 ):
     stubs = hosts.stubs
-    write(hosts.remote("me@devbox", WORKTREE) / "result.md",
+    write(hosts.remote("me@devbox", WORKTREE + ".fleet") / "result.md",
           "---\noutcome: shipped\nartifact: https://github.com/remote-owner/app/pull/4242\n---\n"
           "Built it on devbox and opened the pull request.\n")
     stubs.pipeline_pr(4242, "fix/build-on-devbox")
@@ -277,15 +278,15 @@ def test_a_windows_host_is_spoken_to_in_powershell_and_the_bytes_survive(hosts, 
     hosts.session(WSESSION, name="Build it on winbox", state="working", agent="claude", hook_reported=True,
                   worktrees=[{"repo_path": WINREPO, "worktree_path": WWORKTREE, "branch": "fix/build-on-winbox"}])
     expect(q("dispatch").out, "reachable: answers ssh, PowerShell", "brief copied to me@winbox")
-    there = hosts.remote("me@winbox", WWORKTREE)
+    there = hosts.remote("me@winbox", WWORKTREE + ".fleet")
     for name, src in (("BRIEF.md", task / "BRIEF.md"),
                       ("POLICY.md", REPO / "orchestration" / "queue" / "POLICY.md"),
                       ("PROMPT.md", queue_dir / wtopic / "PROMPT.md")):
         assert (there / name).read_bytes() == src.read_bytes(), f"{name} lands in the Windows worktree byte for byte"
     remote = yaml.safe_load((task / "task.yaml").read_text(encoding="utf-8"))["remote"]
     # Named in the host's own spelling, the result beside it where collect will look.
-    assert remote["brief"] == WWORKTREE + "\\BRIEF.md", remote
-    assert remote["result"] == WWORKTREE + "\\result.md", remote
+    assert remote["brief"] == WWORKTREE + ".fleet\\BRIEF.md", remote
+    assert remote["result"] == WWORKTREE + ".fleet\\result.md", remote
 
     written = ("---\noutcome: shipped\nartifact: https://github.com/remote-owner/app/pull/4343\n---\n"
                "Built it on winbox \u2014 caf\u00e9 \u2713.\r\nWritten by Windows.\r\n").encode()
@@ -342,3 +343,82 @@ def test_the_trust_dialog_on_a_windows_pane_is_answered_in_both_layouts(stubs):
     out = trust(stubs, ["Quick safety check: Is this a project you created or one you trust?", "❯ No, exit",
                         "  Yes, I trust this folder", "Enter to confirm · Esc to cancel"]).out
     expect(out, "sent 'down enter' but")
+
+
+COMPANIONS = WORKTREE + ".fleet"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the fake worktree's mode bits are POSIX")
+def test_a_remote_worktree_stays_clean_and_its_memory_sits_beside_it(rtopic, hosts, queue_dir):
+    """Nothing private lands inside the worktree a remote worker commits from:
+    the brief, its prompt, policy and operator file, and the context bundle all
+    sit in `<worktree>.fleet/` beside it, private to the account, so `git add -A`
+    cannot publish them. The bundle is rendered here, because that host has no
+    `fleet context` to run, and it is self-contained — the prior result's text,
+    not a control-plane path. `reap` takes the directory away with the session,
+    and nothing else."""
+    stubs = hosts.stubs
+    write(queue_dir / "OPERATOR.md", "Never name the lab machines.\n")
+    ok(q("add", rtopic, "upstream", "--title", "Upstream", "--repo", "/tmp/repo-a",
+         "--branch", "fix/upstream", "--number", "40"))
+    upstream = queue_dir / rtopic / "40-upstream"
+    write(upstream / "result.md", "---\noutcome: shipped\n---\nThe upstream API is `build --fast`.\n")
+    ok(q("add", rtopic, "build-on-devbox", "--title", "Build it on devbox", "--repo", "/srv/code/app",
+         "--host", "devbox", "--branch", "fix/build-on-devbox", "--number", "41"))
+    ok(q("block", f"{rtopic}/41-build-on-devbox", "--on", f"{rtopic}/40-upstream",
+         "--kind", "semantic-dependency", "--why", "uses the upstream API"))
+    doc = yaml.safe_load((upstream / "task.yaml").read_text(encoding="utf-8"))
+    doc.update(state="landed", outcome="shipped", concluded_at="2026-10-01T00:00:00+00:00")
+    write(upstream / "task.yaml", yaml.safe_dump(doc))
+    hold_open(rtopic, "42")
+    task = queue_dir / rtopic / "41-build-on-devbox"
+    fill_brief(task / "BRIEF.md")
+    ok(run([*PYTHON, str(REPO / "scripts" / "lib" / "context.py"), "learn", "github.com/remote-owner/app",
+            "The app builds only with the vendored toolchain."]))
+
+    there = hosts.remote("me@devbox", WORKTREE)
+    there.mkdir(parents=True)
+    git_env = {"GIT_DIR": None}
+    for argv in (["init", "-q"], ["commit", "-q", "--allow-empty", "-m", "base"]):
+        ok(run(["git", "-C", str(there), *argv], **git_env))
+    write(hosts.state / "me@devbox.origin", "git@github.com:remote-owner/app.git\n")
+    hosts.next_session(RSESSION)
+    hosts.session(RSESSION, name="Build it on devbox", state="working", agent="claude", hook_reported=True,
+                  worktrees=[{"repo_path": "/srv/code/app", "worktree_path": WORKTREE,
+                              "branch": "fix/build-on-devbox"}])
+    expect(q("dispatch", THURBOX_SESSION=LEAD).out, "brief copied to me@devbox")
+
+    status = ok(run(["git", "-C", str(there), "status", "--porcelain", "--untracked-files=all"], **git_env)).stdout
+    assert status == "", f"the remote worktree is clean after dispatch:\n{status}"
+    beside = hosts.remote("me@devbox", COMPANIONS)
+    assert sorted(p.name for p in beside.iterdir()) == ["BRIEF.md", "CONTEXT.md", "OPERATOR.md",
+                                                       "POLICY.md", "PROMPT.md"]
+    assert beside.stat().st_mode & 0o777 == 0o700, oct(beside.stat().st_mode)
+    expect(stubs.calls("thurbox-cli", "session send")[-1], f"{COMPANIONS}/BRIEF.md")
+
+    bundle = (beside / "CONTEXT.md").read_text(encoding="utf-8")
+    expect(bundle, "repo: github.com/remote-owner/app", "vendored toolchain", "The upstream API is `build --fast`")
+    refute(bundle, str(upstream / "result.md"))
+    assert len(bundle.encode("utf-8")) <= 8192, len(bundle)
+    brief = (beside / "BRIEF.md").read_text(encoding="utf-8")
+    expect(brief, "CONTEXT.md`, alongside this file", "`<worktree>.fleet`")
+    refute(brief, "Delete `BRIEF.md`", "fleet context repo", "in the root of this worktree")
+    remote = yaml.safe_load((task / "task.yaml").read_text(encoding="utf-8"))["remote"]
+    assert remote["brief"] == COMPANIONS + "/BRIEF.md" and remote["result"] == COMPANIONS + "/result.md", remote
+
+    # The worker writes its result beside the brief, and collect fetches it from there.
+    write(beside / "result.md", "---\noutcome: shipped\nartifact: https://github.com/remote-owner/app/pull/4444\n"
+          "learned:\n  - repo: github.com/remote-owner/app\n    fact: \"Run the linter twice.\"\n---\nDone.\n")
+    write(beside / "notes.txt", "mine")
+    stubs.pipeline_pr(4444, "fix/build-on-devbox")
+    hosts.session(RSESSION, name="Build it on devbox", state="idle", agent="claude",
+                  backend_type="ssh:devbox", cwd=WORKTREE,
+                  worktrees=[{"repo_path": "/srv/code/app", "worktree_path": WORKTREE,
+                              "branch": "fix/build-on-devbox", "created_by_thurbox": True}])
+    expect(q("collect").out, "result fetched from me@devbox", "shipped", "1 fact recorded")
+
+    # Released with the session, and only what fleet put there.
+    stubs.pr_state(4444, "MERGED")
+    expect(q("reap").out, "reaped", RSESSION, COMPANIONS)
+    assert sorted(p.name for p in beside.iterdir()) == ["notes.txt"], "a file fleet did not write is left"
+    assert there.is_dir(), "the worktree itself is thurbox's, not this cleanup's"

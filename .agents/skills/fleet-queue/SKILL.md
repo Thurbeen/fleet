@@ -160,6 +160,13 @@ that are), one whose `multiplexer` fleet cannot speak (`tmux` is POSIX,
 `share_sessions = false`, since that switches off the delegation that lets
 the trust dialog be answered.
 
+**Nothing private lands in the remote worktree.** `dispatch` puts the brief,
+`PROMPT.md`, `POLICY.md`, `OPERATOR.md` and `CONTEXT.md` — the project memory,
+rendered here because the host has no `fleet context` — in `<worktree>.fleet/`
+beside the worktree, mode 0700 on a POSIX host, and the worker writes
+`result.md` there. `reap` removes those files with the session, and the
+directory only if nothing else is in it.
+
 **Credentials are never moved.** The host needs its OWN credentials for the
 forge that repository lives on; the `forge` probe (§4) refuses a dispatch when
 it has none. Forwarding your SSH agent fixes it and forwards every key the

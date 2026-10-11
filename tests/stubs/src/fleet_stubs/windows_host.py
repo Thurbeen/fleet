@@ -58,9 +58,33 @@ def main(argv: list) -> int:
             print("github.com|`gh`")
             return 1
         print("github.com with an ssh key")
+    elif "remote get-url origin" in body:
+        origin = os.path.join(state, f"{dest}.origin")
+        if not os.path.isfile(origin):
+            sys.stderr.write("error: No such remote 'origin'\n")
+            return 1
+        with open(origin, encoding="utf-8") as fh:
+            sys.stdout.write(fh.read())
+    elif "New-Item -ItemType Directory" in body:
+        os.makedirs(local(literal(r"-Path ", body)), exist_ok=True)
+        print("fleet-dir")
+    elif "fleet-removed" in body:
+        for m in re.finditer(r"'((?:[^']|'')*)'", body.split("-Force")[0]):
+            path = local(m.group(1).replace("''", "'"))
+            if os.path.isfile(path):
+                os.remove(path)
+        try:
+            last = [ln for ln in body.splitlines() if ln.startswith("Remove-Item") and "-Force" not in ln][0]
+            os.rmdir(local(literal(r"-LiteralPath ", last)))
+        except OSError:
+            sys.stderr.write("Remove-Item : The item has children and the Recurse parameter was not specified.\n")
+            return 1
+        print("fleet-removed")
     elif "FromBase64String" in body:
         target = local(literal(r"WriteAllBytes\(", body))
-        os.makedirs(os.path.dirname(target), exist_ok=True)
+        if not os.path.isdir(os.path.dirname(target)):
+            sys.stderr.write("Exception calling WriteAllBytes: Could not find a part of the path.\n")
+            return 1
         with open(target, "wb") as fh:
             fh.write(base64.b64decode(sys.stdin.read().strip()))
         print("fleet-wrote")

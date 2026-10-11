@@ -71,7 +71,8 @@ one status word.
 WHERE A TASK RUNS. A task may name a `host` from thurbox's hosts.toml, and then
 its worker — agent, tmux window and worktree — lives on that machine while the
 queue stays here. That changes the transport and NOTHING else: the brief is
-copied to the host before the worker is prompted, and the result is fetched back
+copied to the host, into `<worktree>.fleet` beside the worktree and never into
+it (COMPANION_SUFFIX), before the worker is prompted, and the result is fetched back
 into this same result.md before it is read. See the remote-hosts section below
 for why the alternative (a worker reporting through `message send`) was refused.
 A task with no host is untouched by any of it.
@@ -2552,7 +2553,8 @@ def render_brief(task: Task, topic: dict, body: str | None) -> str:
     A REMOTE task's brief differs in more than the result contract. An absolute
     control-plane path — the prompt, the standing policy, the operator's
     instructions — is not on the worker's filesystem either, so `settle_remote`
-    copies each of those alongside the brief in the worktree it mints there, and
+    copies each of those, and a rendered context bundle, alongside the brief in
+    `<worktree>.fleet` BESIDE the worktree thurbox mints there, never in it, and
     every pointer below is stated RELATIVE to the brief itself for a host task,
     the one thing a remote worker can always resolve. `collect` fetches the
     result over ssh into this task's own result.md, so the closing claim is the
@@ -2582,7 +2584,7 @@ def render_brief(task: Task, topic: dict, body: str | None) -> str:
         policy_ref = f"`{policy_path()}`"
         operator_ref = f"`{operator_path()}`"
     operator_line = f"\n- **Operator's standing instructions.** {operator_ref}" if has_operator else ""
-    memory_line = "" if host else context_lines(task)
+    memory_line = remote_context_line() if host else context_lines(task)
     operator_note = (
         "\n\nRead the operator's file too. It is how this operator wants work done\n"
         "across every task, and it ADDS to this brief without replacing anything in\n"
@@ -2646,13 +2648,8 @@ def render_brief(task: Task, topic: dict, body: str | None) -> str:
         )
     if host:
         result_target = (
-            "    result.md — in the root of this worktree, beside the BRIEF.md\n"
-            "    you are reading now"
-        )
-        delete_names = (
-            "`BRIEF.md`, `POLICY.md`, `PROMPT.md`, and `OPERATOR.md`"
-            if has_operator
-            else "`BRIEF.md`, `POLICY.md`, and `PROMPT.md`"
+            "    result.md — beside the BRIEF.md you are reading now, in\n"
+            f"    `<worktree>{COMPANION_SUFFIX}`, and not inside your worktree"
         )
         result_note = f"""
 You are running on the remote host `{host}`, so the control plane's own
@@ -2660,9 +2657,9 @@ directories are not on this filesystem and an absolute path to one would
 resolve to nothing here. `fleet queue collect` fetches that file over ssh, and it
 closes this task exactly as it would locally.
 
-**Delete {delete_names} before you commit**, or they land in your pull
-request. Write `result.md` after the pull request is open, and do not commit
-it either.
+This brief and every file beside it sit in `<worktree>{COMPANION_SUFFIX}`, next to
+your worktree and outside it, so no commit can carry them. Do not copy them
+into the worktree. Write `result.md` there after the pull request is open.
 """
     else:
         result_target = f"    {result}"
@@ -2715,6 +2712,18 @@ def context_repo(task: Task) -> str:
     if task.doc.get("host"):
         return "<repo>"
     return _load_sibling("fleet_context", "context.py").path_identity(path) or path
+
+
+def remote_context_line() -> str:
+    """A remote brief's pointer into memory: the bundle beside it, since that host has no `fleet context`."""
+    return "\n" + textwrap.fill(
+        "- **Project memory.** `CONTEXT.md`, alongside this file: this"
+        " repository's live facts and the result of every task this one waits"
+        " on, rendered when it was dispatched. Its `repo:` line is the name to"
+        " put in `learned:` (see Reporting back).",
+        width=78,
+        subsequent_indent="  ",
+    )
 
 
 def context_lines(task: Task) -> str:
@@ -3301,6 +3310,15 @@ def ssh_argv(entry: dict) -> list:
 # ssh's own 255, and every answer that matters is a WORD on stdout.
 
 
+# WHERE A REMOTE WORKER'S PRIVATE FILES GO: a directory BESIDE its worktree,
+# `<worktree>.fleet`, and never inside it. The brief, the prompt, the policy,
+# the operator's file and the context bundle are the control plane's, and a
+# copy in the worktree is one `git add -A` from a public pull request — which
+# only the worker's own diligence used to prevent. Beside it, no commit can
+# reach them, and `reap` removes exactly the files fleet put there.
+COMPANION_SUFFIX = ".fleet"
+
+
 class PosixShell:
     """A POSIX host — every remote command exactly as it was first written."""
 
@@ -3336,6 +3354,20 @@ class PosixShell:
 
     def join(self, worktree: str, name: str) -> str:
         return f"{worktree.rstrip('/')}/{name}"
+
+    def beside(self, worktree: str) -> str:
+        return f"{worktree.rstrip('/')}{COMPANION_SUFFIX}"
+
+    def private_dir(self, path: str) -> str:
+        quoted = shlex.quote(path)
+        return f"mkdir -p -- {quoted} && chmod 700 -- {quoted}"
+
+    def remove(self, path: str, names: list) -> str:
+        files = " ".join(shlex.quote(self.join(path, n)) for n in names)
+        return f"rm -f -- {files} && rmdir -- {shlex.quote(path)}"
+
+    def origin(self, repo: str) -> str:
+        return f"git -C {shlex.quote(repo)} remote get-url origin"
 
 
 def ps_quote(s: str) -> str:
@@ -3482,6 +3514,30 @@ class PowerShell:
 
     def join(self, worktree: str, name: str) -> str:
         return f"{worktree.rstrip(chr(92) + '/')}\\{name}"
+
+    def beside(self, worktree: str) -> str:
+        return f"{worktree.rstrip(chr(92) + '/')}{COMPANION_SUFFIX}"
+
+    # A new directory inherits the ACL of the one it is made in, which on a
+    # Windows host is the account's own tree; POSIX gets an explicit 0700.
+    def private_dir(self, path: str) -> str:
+        return (
+            "$ErrorActionPreference = 'Stop'\n"
+            f"New-Item -ItemType Directory -Force -Path {ps_quote(path)} | Out-Null\n"
+            "Write-Output 'fleet-dir'\n"
+        )
+
+    def remove(self, path: str, names: list) -> str:
+        files = ",".join(ps_quote(self.join(path, n)) for n in names)
+        return (
+            "$ErrorActionPreference = 'Stop'\n"
+            f"Remove-Item -LiteralPath {files} -Force -ErrorAction SilentlyContinue\n"
+            f"Remove-Item -LiteralPath {ps_quote(path)}\n"
+            "Write-Output 'fleet-removed'\n"
+        )
+
+    def origin(self, repo: str) -> str:
+        return f"& git -C {ps_quote(repo)} remote get-url origin\n"
 
 
 POSIX = PosixShell()
@@ -3787,44 +3843,93 @@ def fetch_result(entry: dict, src: str) -> tuple[str | None, str]:
 
 
 def settle_remote(task: Task, entry: dict) -> tuple[bool, str]:
-    """Resolve the host-side worktree and put the brief in it. (ok, what happened).
+    """Resolve the host-side worktree and put the brief beside it. (ok, what happened).
 
     Runs between `session create` and the first `session send`, because the
     worker is about to be told to read a file that does not exist yet.
 
-    The brief points at PROMPT.md, POLICY.md and (when the operator has one)
-    OPERATOR.md as siblings of itself — see render_brief — so those must land
-    in the worktree too, not only BRIEF.md, or the brief tells the worker to
-    read control-plane paths that do not exist on this filesystem.
+    Everything goes in `<worktree>.fleet/` (COMPANION_SUFFIX), private to the
+    account, and the brief names its companions as siblings of itself — see
+    render_brief: PROMPT.md, POLICY.md, OPERATOR.md when the operator has one,
+    and CONTEXT.md, the project memory rendered HERE because the host has no
+    `fleet context` to run. The worker writes result.md there too, so its
+    worktree holds nothing but its own work.
     """
     wt, why = session_worktree(task.doc["session"])
     if not wt:
         return False, why
     shell = host_shell(entry)
-    brief = shell.join(wt, "BRIEF.md")
-    why = push_brief(entry, brief, read_text(task.file("BRIEF.md")))
-    if why:
-        return False, f"could not copy the brief to {entry['destination']}: {why}"
-    companions = [
-        ("PROMPT.md", os.path.join(os.path.dirname(task.path), "PROMPT.md")),
-        ("POLICY.md", policy_path()),
+    beside = shell.beside(wt)
+    proc = ssh_run(entry, shell.private_dir(beside), login=False)
+    if proc.returncode != 0:
+        return False, (f"could not make {beside} on {entry['destination']}: "
+                       f"{first_line(proc) or 'no output'}")
+    repo = remote_identity(entry, str(task.doc["repo"]))
+    files = [
+        ("BRIEF.md", read_text(task.file("BRIEF.md"))),
+        ("PROMPT.md", read_text(os.path.join(os.path.dirname(task.path), "PROMPT.md"))),
+        ("POLICY.md", read_text(policy_path())),
     ]
     if operator_instructions():
-        companions.append(("OPERATOR.md", operator_path()))
-    for name, src in companions:
-        why = push_brief(entry, shell.join(wt, name), read_text(src))
+        files.append(("OPERATOR.md", read_text(operator_path())))
+    files.append(("CONTEXT.md", _load_sibling("fleet_context", "context.py").worker_bundle(repo, task.ref)))
+    for name, text in files:
+        why = push_brief(entry, shell.join(beside, name), text)
         if why:
             return False, f"could not copy {name} to {entry['destination']}: {why}"
+    brief = shell.join(beside, "BRIEF.md")
     task.doc["remote"] = {
         "host": task.doc["host"],
         "destination": str(entry["destination"]),
         "worktree": wt,
+        "companions": beside,
+        "files": [name for name, _ in files] + ["result.md"],
+        "repo": repo,
         "brief": brief,
-        "result": shell.join(wt, "result.md"),
+        "result": shell.join(beside, "result.md"),
         "at": now(),
     }
     task.save()
     return True, f"brief copied to {entry['destination']}:{brief}"
+
+
+def remote_identity(entry: dict, repo: str) -> str | None:
+    """The name `fleet context` knows a host's checkout by: its `origin`'s, asked of the host.
+
+    None when the host cannot say or its origin is on no forge — a local path
+    there means nothing here, so no store on this machine is that repository's.
+    """
+    proc = ssh_run(entry, host_shell(entry).origin(repo))
+    url = last_out_of(proc.stdout) if proc.returncode == 0 else ""
+    return _load_sibling("fleet_context", "context.py").remote_identity(url) if url else None
+
+
+def release_companions(task: Task, dry: bool) -> None:
+    """Remove the files `settle_remote` put beside a remote worktree, once its session is gone.
+
+    ONLY THOSE FILES, by the names the record lists, and then the directory
+    only if that left it empty: anything else in it is somebody else's, and
+    `rmdir` refusing is how it is kept. The worktree itself is thurbox's. The
+    caller has already found the host reachable; a failure is said once and
+    the record dropped, since the session it served no longer exists.
+    """
+    rec = task.doc.get("remote") or {}
+    beside, names = rec.get("companions"), rec.get("files") or []
+    if not task.doc.get("host") or not beside:
+        return
+    if dry:
+        print(f"    {task.ref:<46} would remove {beside}")
+        return
+    entry, why = host_entry(str(task.doc["host"]))
+    if entry:
+        proc = ssh_run(entry, host_shell(entry).remove(str(beside), [str(n) for n in names]), login=False)
+        why = "" if proc.returncode == 0 else first_line(proc) or "it is not empty"
+    if why:
+        print(f"    {task.ref:<46} left       {beside}: {why}")
+    else:
+        print(f"    {task.ref:<46} removed    {beside}")
+    rec.pop("companions", None)
+    task.save()
 
 
 def pull_remote_result(task: Task) -> str:
@@ -3993,7 +4098,7 @@ def brief_target(task: Task) -> str:
     """
     rec = task.doc.get("remote") or {}
     if task.doc.get("host"):
-        return rec.get("brief") or f"<{task.doc['host']}>:<worktree>/BRIEF.md"
+        return rec.get("brief") or f"<{task.doc['host']}>:<worktree>{COMPANION_SUFFIX}/BRIEF.md"
     return os.path.abspath(task.file("BRIEF.md"))
 
 
@@ -4225,11 +4330,11 @@ def cmd_dispatch(args) -> int:
             if notice := spawn_uncovered_notice(create):
                 print(f"      {notice}")
             if shell is POSIX:
-                print("      ssh <host> 'cat > <worktree>/BRIEF.md'   # the worker's"
-                      " filesystem is not this one")
+                print(f"      ssh <host> 'cat > <worktree>{COMPANION_SUFFIX}/BRIEF.md'   # the worker's"
+                      " filesystem is not this one; its companions go beside it")
             elif shell:
                 print("      ssh <host> powershell -EncodedCommand <BRIEF.md, as base64,"
-                      " into <worktree>\\BRIEF.md>   # the worker's filesystem is not this one")
+                      f" into <worktree>{COMPANION_SUFFIX}\\BRIEF.md>   # the worker's filesystem is not this one")
             print("      uv run fleet session-trust <uuid>   # answer the trust dialog first")
             print(f"      thurbox-cli session send <uuid> {shell_quote([send])}")
         return 1 if dry_failures else 0
@@ -5757,6 +5862,7 @@ def sweep_vanished(q: Queue, dry: bool, snapshot=None) -> int:
         record_reaped(task, sid, "already gone")
         print(f"    {task.ref:<46} abandoned  {ABANDON_HOW['session-gone']}: {why}")
         free_build_output(task.ref, task_worktrees(task), dry)
+        release_companions(task, dry)
     return acted
 
 
@@ -6375,6 +6481,7 @@ def reap(q: Queue, dry: bool = False, release: bool = True) -> int:
             # A session that went without `delete --force` left its worktree,
             # and the worktree its build output.
             free_build_output(task.ref, task_worktrees(task), dry)
+            release_companions(task, dry)
             continue
 
         live_state, detail = session_state(sid)
@@ -6394,6 +6501,7 @@ def reap(q: Queue, dry: bool = False, release: bool = True) -> int:
 
         if dry:
             print(f"    {task.ref:<46} would reap {sid}  ({live_state})")
+            release_companions(task, dry)
             reaped += 1
             continue
 
@@ -6416,6 +6524,7 @@ def reap(q: Queue, dry: bool = False, release: bool = True) -> int:
             continue
         record_reaped(task, sid, "deleted")
         print(f"    {task.ref:<46} reaped     {sid}  ({live_state})")
+        release_companions(task, dry)
         reaped += 1
 
     if reaped or kept or dropped:

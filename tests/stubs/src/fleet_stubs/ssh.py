@@ -10,12 +10,15 @@ no GitHub credentials, `.norepo` for one where the repo is not there.
 `.pane-probe` is what a fleet on that host answers when its queue probe
 (`pane_probe.py`) is run there, and `.slow` holds the seconds it takes first.
 `.windows` hands the command to `windows_host`, which answers only what a
-PowerShell 5 sshd answers. `.realshell` RUNS the script with `sh -c`, the way
+PowerShell 5 sshd answers. `.origin` holds what `git remote get-url origin`
+prints there. `mkdir -p`/`chmod`, `rm -f`/`rmdir` and `cat >` behave as a
+shell does: a write into a directory that does not exist fails. `.realshell` RUNS the script with `sh -c`, the way
 sshd runs an account's login shell, with HOME at `<dest>.home` — POSIX only.
 """
 
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -71,9 +74,32 @@ def main() -> int:
             sys.stdout.write("no-dir")
             return 1
         sys.stdout.write("ok")
+    elif "remote get-url origin" in script:
+        origin = state / f"{dest}.origin"
+        if not origin.is_file():
+            sys.stderr.write("error: No such remote 'origin'\n")
+            return 2
+        sys.stdout.write(origin.read_text(encoding="utf-8"))
+    elif script.startswith("mkdir -p -- "):
+        words = shlex.split(script)
+        target = remotes / dest / words[3].lstrip("/")
+        target.mkdir(parents=True, exist_ok=True)
+        if "chmod 700" in script:
+            target.chmod(0o700)
+    elif script.startswith("rm -f -- "):
+        words = shlex.split(script)
+        for word in words[3:words.index("&&")]:
+            (remotes / dest / word.lstrip("/")).unlink(missing_ok=True)
+        try:
+            (remotes / dest / words[-1].lstrip("/")).rmdir()
+        except OSError:
+            sys.stderr.write(f"rmdir: failed to remove '{words[-1]}': Directory not empty\n")
+            return 1
     elif script.startswith("cat > "):
         target = remotes / dest / unquote(script[len("cat > "):]).lstrip("/")
-        target.parent.mkdir(parents=True, exist_ok=True)
+        if not target.parent.is_dir():
+            sys.stderr.write(f"sh: {target.name}: Directory nonexistent\n")
+            return 2
         target.write_bytes(sys.stdin.buffer.read())
     elif script.startswith("cat "):
         path = unquote(script[len("cat "):])
