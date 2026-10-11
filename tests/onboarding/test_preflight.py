@@ -195,6 +195,35 @@ def test_glab_defaulting_to_a_host_with_no_credential_is_a_lead_gap_with_its_fix
     refute(lead_tier(glab_machine, GLAB_HOSTS=hosts, GLAB_OK=hosts), "missing  glab host")
 
 
+def test_one_pass_asks_each_gitlab_instance_once(glab_machine, stubs):
+    """`glab auth` and `glab host` both want the instances that authenticate,
+    and each `--hostname` answer is a round trip to that instance. Asked once
+    per row, a pass cost two network calls per configured instance."""
+    hosts = [f"gitlab{i}.example.com" for i in range(3)]
+    done = preflight(glab_machine, GLAB_HOSTS=" ".join(hosts), GLAB_OK=hosts[1])
+    expect(plain(done.out), "missing  glab host", f"glab config set host {hosts[1]} --global")
+
+    assert len(stubs.calls("glab", "auth status --all")) == 1
+    asked = stubs.calls("glab", "auth status --hostname")
+    assert sorted(asked) == sorted(f"glab auth status --hostname {h}" for h in hosts), asked
+
+
+def test_a_second_pass_in_one_process_asks_the_instances_again(glab_machine, monkeypatch):
+    """`fleet install` probes, installs, then probes again in one process: a
+    login made in between must reach the second table."""
+    monkeypatch.setenv("PATH", glab_machine)
+    monkeypatch.setenv("GLAB_HOSTS", SELF_HOSTED)
+    module = lib("preflight.py")
+
+    def glab_auth() -> str:
+        return next(f.state for f in module.findings(["forge"]) if f.dependency.name == "glab auth")
+
+    monkeypatch.setenv("GLAB_OK", "")
+    assert glab_auth() == "missing"
+    monkeypatch.setenv("GLAB_OK", SELF_HOSTED)
+    assert glab_auth() == "ok"
+
+
 # --- 7. the gh row is per ACCOUNT, and one expired token is not the answer -----
 
 # Plain `auth status` exits 1, which is what gh does when ANY account has

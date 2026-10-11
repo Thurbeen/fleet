@@ -133,3 +133,39 @@ def test_the_fleet_group_is_wired_to_it():
     done = run_fleet("sync-registry", "--help")
     assert done.code == 0, done.out
     expect(done.stdout, "registry/repos.generated.yaml")
+
+
+class Repo(dict):
+    """A listed repository that counts how often its owner is read."""
+
+    reads = 0
+
+    def get(self, key, default=None):
+        if key == "owner":
+            Repo.reads += 1
+        return super().get(key, default)
+
+
+def test_grouping_by_owner_reads_each_repository_a_bounded_number_of_times(tmp_path, monkeypatch):
+    """Each owner's section used to be one pass over every repository, so the
+    work grew as owners x repositories: twenty thousand repositories under
+    fifty owners read an owner a million times."""
+    import importlib.util
+
+    def owner_reads(owners: int) -> int:
+        root = sandbox(tmp_path / f"owners-{owners}", "".join(f"o{i}\n" for i in range(owners)))
+        spec = importlib.util.spec_from_file_location(f"sandboxed_sync_registry_{owners}",
+                                                      root / "scripts" / "lib" / "sync_registry.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        repos = [Repo(full_name=f"o{j % owners}/r{j}", name=f"r{j}", owner={"login": f"o{j % owners}"},
+                      pushed_at=f"2026-01-{j % 28 + 1:02d}T00:00:00Z") for j in range(400)]
+        monkeypatch.setattr(module.gh, "accounts", lambda host: [])
+        monkeypatch.setattr(module, "listing", lambda token: repos)
+        Repo.reads = 0
+        assert module.sync() == 0
+        assert f"repos: {len(repos)}" in (root / "registry" / "repos.generated.yaml").read_text(encoding="utf-8")
+        return Repo.reads
+
+    few, many = owner_reads(2), owner_reads(40)
+    assert many == few, (few, many)

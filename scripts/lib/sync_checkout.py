@@ -129,6 +129,16 @@ def count(root: str, spec: str) -> int:
         return 0
 
 
+def ahead_behind(root: str, remote_ref: str) -> tuple[int, int]:
+    """Commits HEAD has that `remote_ref` lacks, and the reverse, in one walk."""
+    done = git(root, "rev-list", "--left-right", "--count", f"HEAD...{remote_ref}")
+    try:
+        ahead, behind = (int(n) for n in done.stdout.split()) if done.returncode == 0 else (0, 0)
+    except ValueError:
+        return 0, 0
+    return ahead, behind
+
+
 def lead_name(root: str) -> str:
     """The lead's name as the INSTALLED manifest spells it, or "" with nothing installed.
 
@@ -190,11 +200,6 @@ def _sync(facts: dict) -> str | None:
     if git(root, "rev-parse", "--verify", "--quiet", remote_ref).returncode != 0:
         return None
 
-    # Only TRACKED modifications block a fast-forward. An untracked file, a
-    # worker's BRIEF.md or a stray note, would otherwise wedge every sync; one
-    # that genuinely collides makes `merge --ff-only` refuse on its own.
-    dirty = git(root, "status", "--porcelain", "--untracked-files=no").stdout
-
     if branch != default:
         behind_base = count(root, f"HEAD..{remote_ref}")
         if behind_base > 0:
@@ -202,8 +207,7 @@ def _sync(facts: dict) -> str | None:
                     "Rebase before opening a PR, or it will conflict.")
         return None
 
-    behind = count(root, f"HEAD..{remote_ref}")
-    ahead = count(root, f"{remote_ref}..HEAD")
+    ahead, behind = ahead_behind(root, remote_ref)
 
     if behind == 0 and ahead == 0:
         return None
@@ -212,6 +216,12 @@ def _sync(facts: dict) -> str | None:
                 f"({ahead} ahead, {behind} behind). Left alone — reconcile by hand.")
     if ahead > 0:
         return f"control-plane sync: '{branch}' is {ahead} commit(s) ahead of {remote_ref} and not pushed."
+    # Only TRACKED modifications block a fast-forward. An untracked file, a
+    # worker's BRIEF.md or a stray note, would otherwise wedge every sync; one
+    # that genuinely collides makes `merge --ff-only` refuse on its own. Read
+    # only here: the tree matters to a fast-forward alone, and `status` is the
+    # costliest local call on the already-current path every pass takes.
+    dirty = git(root, "status", "--porcelain", "--untracked-files=no").stdout
     if dirty.strip():
         # The one tracked file an operator was once told to edit. A profile of
         # their own goes in the gitignored overlay, which frees the sync.

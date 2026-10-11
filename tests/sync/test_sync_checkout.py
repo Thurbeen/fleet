@@ -103,6 +103,22 @@ def test_nothing_to_do_says_nothing(tmp_path):
     assert done.out.strip() == ""
 
 
+def test_an_already_current_checkout_asks_git_only_what_it_answers_with(tmp_path, stubs):
+    """The common case — the reconciler's every pass and every session start —
+    reads no working tree: the tree only matters to a fast-forward, and
+    `status` is the costliest of the local calls. Ahead and behind are one
+    walk, not two."""
+    work = new_repo(tmp_path)
+    real_git = shutil.which("git")
+    stubs.tool("git", f"import subprocess, sys\nraise SystemExit(subprocess.run([{real_git!r}, *sys.argv[1:]]).returncode)\n")
+
+    assert sync(work).out.strip() == ""
+
+    asked = [line.split()[1] for line in stubs.calls("git")]
+    assert "status" not in asked, asked
+    assert asked.count("rev-list") == 1, asked
+
+
 # --- §4 the three refusals change no tracked state ----------------------------
 
 

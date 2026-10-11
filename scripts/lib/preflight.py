@@ -49,6 +49,7 @@ usage error. Recommended, lead, forge and gate gaps never fail it.
 from __future__ import annotations
 
 import contextlib
+import functools
 import importlib.util
 import io
 import os
@@ -370,6 +371,19 @@ def _gh_auth() -> tuple[str, str, str]:
     return "missing", "", ""
 
 
+@functools.cache
+def _glab_working() -> tuple[list[str], list[str]]:
+    """Every configured GitLab instance, and the ones that authenticate.
+
+    ONCE PER PASS: `glab auth` and `glab host` both ask it, and each instance's
+    answer is a round trip to that instance. `findings` clears it, so a second
+    pass in one process — `fleet install` probes before and after installing —
+    asks again.
+    """
+    configured = glab_hosts.hosts()
+    return configured, [h for h in configured if glab_hosts.host_ok(h)]
+
+
 def _glab_auth() -> tuple[str, str, str]:
     """ASKED PER HOST, because `glab auth status` is all-or-nothing across every
     instance: an operator authenticated to their company's GitLab and not to
@@ -382,8 +396,7 @@ def _glab_auth() -> tuple[str, str, str]:
         if glab_hosts.host_ok(host):
             return "ok", host, ""
         return "missing", "", f"glab auth login --hostname {host}"
-    configured = glab_hosts.hosts()
-    working = [h for h in configured if glab_hosts.host_ok(h)]
+    configured, working = _glab_working()
     if working:
         # One working credential is the whole question: fleet reaches a GitLab
         # repository by HOST plus path.
@@ -491,7 +504,7 @@ def _glab_host() -> tuple[str, str, str]:
     Only asked when some instance has a working credential: with none at all,
     `glab auth` is the row that says so.
     """
-    working = [h for h in glab_hosts.hosts() if glab_hosts.host_ok(h)]
+    _configured, working = _glab_working()
     default = glab_hosts.default_host()
     if not working or not default or default in working:
         return "ok", default, ""
@@ -555,6 +568,7 @@ def probe(dependency: Dependency) -> Finding | None:
 def findings(tiers: Iterable[str] | None = None) -> list[Finding]:
     """Every row probed, in table order, limited to `tiers` when given."""
     wanted = set(tiers or TIERS)
+    _glab_working.cache_clear()
     return [f for d in dependencies() if d.tier in wanted and (f := probe(d))]
 
 
