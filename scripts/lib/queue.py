@@ -10718,7 +10718,9 @@ def cmd_send(args) -> int:
             "anything\n    has moved since, without opening a worktree."
         )
     else:
-        print(f"    nothing was typed into that session: {report}", file=sys.stderr)
+        # The report says what WAS typed — a dialog's keys may have been — so
+        # this line claims only what is always true: the message did not land.
+        print(f"    the message was not delivered: {report}", file=sys.stderr)
     return 0 if ok else 1
 
 

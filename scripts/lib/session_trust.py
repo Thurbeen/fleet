@@ -34,6 +34,9 @@ It is safe to run only in the window between `session create` and the first
 `session send`, which is when `fleet queue dispatch` runs it: nothing
 has been typed into that pane yet, so there is no composer content to
 corrupt. Do not run it against a session that is already working.
+`fleet queue send` does run it against a live session, so a session whose
+hook had ALREADY REPORTED when this starts is never answered: its scrollback
+can quote a dialog that is not in front of it.
 
 IN-PROCESS, AND NO SHELL. `dispatch` calls `answer_dialogs` directly, and
 `fleet session-trust` runs this file. It needs thurbox-cli and Python and
@@ -294,16 +297,32 @@ def pane(uuid: str) -> str:
     return squeeze(pane_text(uuid))
 
 
+CODEX_COMPOSER = "› Ask Codex to do anything"
+
+# What Codex draws BELOW its empty composer, and nothing else may be there.
+# 0.156 drew one status line (`model · path · branch`); 0.161 adds `? for
+# shortcuts` under it, and a `⚠ 2 warnings · f2 to view` line when its config
+# raised any. Each is recognised by its own shape, so a line of transcript
+# after a quoted placeholder still is not a footer.
+CODEX_FOOTER = re.compile(r".* · .*|\? for shortcuts|⚠ .*\bwarnings?\b.*")
+CODEX_FOOTER_LINES = 3
+
+
 def codex_composer_ready(uuid: str) -> bool:
     """The Codex input prompt is visible at the foot of the captured pane.
 
     Codex can be running before its startup hook reports. Its composer is the
     pane's own evidence that the trust gate is behind it. A mention of the
-    placeholder in older transcript text is not that evidence.
+    placeholder in older transcript text is not that evidence: the composer
+    line must be followed by at least one footer line and by footer lines
+    ONLY, no more of them than Codex draws.
     """
     tail = [line.strip() for line in pane_text(uuid).splitlines() if line.strip()]
-    return (len(tail) >= 2 and tail[-2] == "› Ask Codex to do anything"
-            and " · " in tail[-1])
+    if CODEX_COMPOSER not in tail:
+        return False
+    after = tail[len(tail) - tail[::-1].index(CODEX_COMPOSER):]
+    return (0 < len(after) <= CODEX_FOOTER_LINES
+            and all(CODEX_FOOTER.fullmatch(line) for line in after))
 
 
 def shows(signature: str, text: str) -> bool:
@@ -446,9 +465,19 @@ def answer_dialogs(session: str, timeout: int = 20, as_json: bool = False) -> tu
 
     is_codex = "codex" in agent_settings.chain(agent, conf)
 
+    # AN AGENT THAT HAS ALREADY REPORTED HAS NO DIALOG IN FRONT OF IT, which is
+    # `agent_reported`'s whole claim. `fleet queue send` runs this against a
+    # WORKING session, whose sixty lines of scrollback can quote a dialog — a
+    # worker reading this very file shows `Yes, I trust this folder` — and
+    # answering that pressed Down and Enter into a live agent. So a session
+    # that had reported when this started is never answered and never refused
+    # on a dialog's text; Codex's hook-review menu, read off the visible screen
+    # alone, still blocks it.
+    reported = info.get("hook_reported") is True
+
     def gate_on_pane() -> int | None:
         """The index of the gate the pane shows right now, if any."""
-        if not gates:
+        if not gates or reported:
             return None
         text = pane(uuid)
         for i, (signature, _keys) in enumerate(gates):
@@ -462,7 +491,7 @@ def answer_dialogs(session: str, timeout: int = 20, as_json: bool = False) -> tu
     def unanswerable_codex_folder_on_pane() -> bool:
         # A folder screen may leave the composer visible below it. A changed
         # selector or wording must block the brief, even though no gate matches.
-        return is_codex and shows(r"trust this folder\?", pane(uuid))
+        return is_codex and not reported and shows(r"trust this folder\?", pane(uuid))
 
     def hook_review_blocked() -> tuple[int, str]:
         return 3, say(

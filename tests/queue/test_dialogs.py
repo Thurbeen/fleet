@@ -27,8 +27,8 @@ from pathlib import Path
 
 import pytest
 from kit_dispatch import (
-    ANSWERING_KEYS, CODEX_DIALOG, CODEX_READY, FOLDER_DIALOG, IMPORTS_DIALOG, behind_dialog, codex_pane, keys,
-    next_session,
+    ANSWERING_KEYS, CODEX_DIALOG, CODEX_READY, CODEX_READY_SHORTCUTS, CODEX_READY_WARNINGS, DELEGATE, FOLDER_DIALOG,
+    IMPORTS_DIALOG, behind_dialog, codex_pane, keys, next_session,
 )
 from queuekit import ok
 
@@ -136,6 +136,76 @@ def test_dispatch_prompts_a_codex_composer_with_one_footer_separator(stubs, queu
     refute(done.out, "NOT PROMPTED")
     expect("\n".join(stubs.calls("thurbox-cli", "session send")), f"session send {sid} Read")
     assert keys(stubs) == [], done.out
+
+
+@pytest.mark.parametrize("pane", [CODEX_READY_SHORTCUTS, CODEX_READY_WARNINGS], ids=["shortcuts", "warnings"])
+def test_dispatch_prompts_a_codex_0_161_composer_under_its_longer_footer(stubs, queue_dir, pane):
+    """Codex 0.161 draws a shortcuts hint, and sometimes a warnings line, under
+    the status line. The composer is no longer second from the foot, and a check
+    that wanted it there left every Codex worker NOT PROMPTED."""
+    topic = ok(q("topic", "add", "codex-0-161", "--title", "Ready Codex",
+                 "--prompt", "send the brief to a ready Codex composer")).stdout.strip()
+    ok(q("add", topic, "composer", "--title", "Ready composer", "--repo", "/tmp/repo-codex",
+         "--branch", "fix/codex-composer", "--number", "01", "--agent", "codex"))
+    write(queue_dir / topic / "01-composer" / "BRIEF.md", "Do the Codex task.\n")
+
+    sid = "d1a10900-0000-0000-0000-0000000000ce"
+    next_session(stubs, sid)
+    codex_pane(stubs, sid, pane)
+
+    done = q("dispatch")
+    assert done.code == 0, done.out
+    refute(done.out, "NOT PROMPTED")
+    expect("\n".join(stubs.calls("thurbox-cli", "session send")), f"session send {sid} Read")
+    assert keys(stubs) == [], done.out
+
+
+def test_send_into_a_working_session_never_answers_a_dialog_it_only_quotes(stubs, queue_dir):
+    """A worker reading this very module has the folder dialog's text in its
+    scrollback. Its agent has reported, so nothing modal is in front of it:
+    pressing Down and Enter there types into a working agent."""
+    topic = ok(q("topic", "add", "live-send", "--title", "Message a working worker",
+                 "--prompt", "send a line to a session that is working")).stdout.strip()
+    ok(q("add", topic, "worker", "--title", "Working worker", "--repo", "/tmp/repo-live",
+         "--branch", "fix/live-send", "--number", "01"))
+    ref = f"{topic}/01-worker"
+    sid = "d1a10900-0000-0000-0000-00000000a11e"
+    ok(q("attach", ref, sid))
+    stubs.session_is(sid, "working")
+    write(stubs.root / "panes" / f"{sid}.txt",
+          "● Read(scripts/lib/session_trust.py)\n" + FOLDER_DIALOG + "\n● Reading on.\n")
+
+    sent = q("send", ref, "Also update the changelog.")
+    assert keys(stubs) == [], sent.out
+    assert sent.code == 0, sent.out
+    expect(sent.out, "delivered")
+    refute(sent.out, "NOT DELIVERED")
+    expect("\n".join(stubs.calls("thurbox-cli", "session send")), "Also update the changelog.")
+
+
+def test_a_send_refused_after_keys_were_pressed_never_says_nothing_was_typed(stubs, queue_dir):
+    """A dialog that does not close gets its keys and then refuses the send.
+    Keys went into that pane, so "nothing was typed" would be false."""
+    stubs.tool("thurbox-cli", DELEGATE + '''
+if ARGS[:2] == ["session", "key"]:
+    raise SystemExit(0)
+delegate()
+''')
+    topic = ok(q("topic", "add", "stuck-dialog", "--title", "Message a worker behind a dialog",
+                 "--prompt", "send a line to a session whose dialog will not close")).stdout.strip()
+    ok(q("add", topic, "worker", "--title", "Stuck worker", "--repo", "/tmp/repo-stuck",
+         "--branch", "fix/stuck-dialog", "--number", "01"))
+    ref = f"{topic}/01-worker"
+    sid = "d1a10900-0000-0000-0000-00000000d1a1"
+    ok(q("attach", ref, sid))
+    behind_dialog(stubs, sid, FOLDER_DIALOG)
+
+    sent = q("send", ref, "Are you there?")
+    assert sent.code == 1, sent.out
+    assert keys(stubs) == [f"session key {sid} down", f"session key {sid} enter"], sent.out
+    expect(sent.out, "NOT DELIVERED")
+    refute(sent.out, "nothing was typed")
+    assert not stubs.calls("thurbox-cli", f"session send {sid}"), sent.out
 
 
 def codex_task(stubs, queue_dir, pane: str) -> tuple[str, str]:

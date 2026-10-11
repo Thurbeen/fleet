@@ -77,6 +77,23 @@ CODEX_READY = """OpenAI Codex
 
   model · repository · branch"""
 
+# Codex 0.161 moved the footer: the status line, then a shortcuts hint, both
+# below the composer — and, when its config raised any, a warnings line too.
+CODEX_READY_SHORTCUTS = """OpenAI Codex
+
+› Ask Codex to do anything
+
+  model · ~/worktrees/example · branch
+  ? for shortcuts"""
+
+CODEX_READY_WARNINGS = """OpenAI Codex
+
+› Ask Codex to do anything
+
+  ⚠ 2 warnings · f2 to view
+  model · ~/worktrees/example · branch
+  ? for shortcuts"""
+
 CODEX_DIALOG = """Do you trust the contents of this directory?
 
 › Yes, continue
