@@ -37,7 +37,9 @@ then hand over here. This owns the rest, in this order:
      ONE PER FLEET, since these settings are one file every worker on the
      machine shares and a worker does not know which fleet dispatched it: a
      second fleet's nudge is added beside the first's, and only a nudge whose
-     checkout is GONE is repointed. `_stale` argues it.
+     checkout is GONE is repointed. `_stale` argues it. The same hook asks a
+     worker that stops with commits ahead and no result.md for it, once
+     (`reconcile.py`'s `stop_decision`).
   6. THE RECONCILER SERVICE, where this machine has a user service manager:
      the systemd user unit or Windows logon script `reconcile_service.py`
      owns, so the loop comes back after a reboot without anyone running

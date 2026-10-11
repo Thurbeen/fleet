@@ -390,7 +390,8 @@ The worker `Stop` hook that nudges the loop is already in place: step 1's
 `fleet install` merged it into Claude Code's user settings (`uv run fleet
 paths claude-settings`), never into thurbox's hooks file, which thurbox
 rewrites on every start. It is an accelerator, never the mechanism: a worker
-that ran out of quota fires no hook at all.
+that ran out of quota fires no hook at all. It also asks, once, a worker that
+stops with commits ahead and no `result.md` to write it.
 
 ## Hand over
 

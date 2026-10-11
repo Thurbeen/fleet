@@ -1,0 +1,109 @@
+"""A worker that published and stopped without its result.md is asked for it, once.
+
+The recurring failure: a worker opens its pull request, ends its turn, and
+never writes the result.md its brief names, so its task sits `dispatched`
+until a person notices. The Stop hook already runs `fleet reconcile nudge` in
+that worker. When the session is a dispatched task's, the task has no
+result.md and its branch has commits ahead of its base, the nudge answers
+Claude Code's Stop hook with a block decision naming the path — and never when
+the hook says it is already continuing from one, so it blocks once. Every
+other stop is today's: the nudge, and nothing on stdout.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+
+from harness import expect, run, run_fleet, write
+
+SID = "worker-uuid"
+REF = "alpha/01-first"
+BRANCH = "feat/first"
+
+
+def git(repo: Path, *argv: str) -> None:
+    done = run(["git", "-C", str(repo), *argv])
+    assert done.code == 0, done.out
+
+
+def worker(tmp_path: Path, *, ahead: bool = True, session: str = SID) -> Path:
+    """A repository with the task's branch, and a dispatched task bound to `session`."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git(repo, "init", "-q", "-b", "main")
+    git(repo, "commit", "-q", "--allow-empty", "-m", "base")
+    git(repo, "branch", BRANCH)
+    if ahead:
+        git(repo, "worktree", "add", "-q", str(tmp_path / "wt"), BRANCH)
+        git(tmp_path / "wt", "commit", "-q", "--allow-empty", "-m", "the work")
+    queue = Path(os.environ["FLEET_QUEUE_DIR"])
+    write(queue / "alpha" / "topic.yaml", "title: Alpha\n")
+    task = queue / "alpha" / "01-first"
+    write(task / "task.yaml", json.dumps({
+        "title": "First", "repo": str(repo), "branch": BRANCH, "base": "main",
+        "state": "dispatched", "session": session, "touches": [],
+    }) + "\n")
+    return task
+
+
+def stop(active: bool = False, session: str | None = SID):
+    hook = {"hook_event_name": "Stop", "stop_hook_active": active, "session_id": "conversation"}
+    return run_fleet("reconcile", "nudge", stdin=json.dumps(hook), THURBOX_SESSION=session)
+
+
+def nudged(isolated_env: Path) -> bool:
+    return (isolated_env / "reconcile" / "nudge").is_file()
+
+
+def test_a_published_worker_without_its_result_is_asked_for_it(tmp_path, isolated_env):
+    task = worker(tmp_path)
+    out = stop()
+    assert out.code == 0, out.out
+    decision = json.loads(out.stdout)
+    assert decision["decision"] == "block", out.stdout
+    expect(decision["reason"], str(task / "result.md"), "result.md")
+    assert nudged(isolated_env), "the nudge is still left"
+
+
+def test_a_stop_continuing_from_a_block_is_allowed(tmp_path, isolated_env):
+    worker(tmp_path)
+    out = stop(active=True)
+    assert out.code == 0, out.out
+    assert out.stdout.strip() == "", "blocked twice: the agent can never stop"
+    assert nudged(isolated_env)
+
+
+def test_a_worker_that_wrote_its_result_stops(tmp_path, isolated_env):
+    task = worker(tmp_path)
+    write(task / "result.md", "status: done\n")
+    out = stop()
+    assert out.code == 0, out.out
+    assert out.stdout.strip() == "", out.stdout
+    assert nudged(isolated_env)
+
+
+def test_a_session_that_is_no_tasks_is_todays_nudge(tmp_path, isolated_env):
+    worker(tmp_path, session="somebody-else")
+    out = stop()
+    assert out.code == 0, out.out
+    assert out.stdout.strip() == "", out.stdout
+    expect(out.stderr, "nudged")
+    assert nudged(isolated_env)
+
+
+def test_a_branch_with_nothing_on_it_stops(tmp_path, isolated_env):
+    worker(tmp_path, ahead=False)
+    out = stop()
+    assert out.code == 0, out.out
+    assert out.stdout.strip() == "", out.stdout
+    assert nudged(isolated_env)
+
+
+def test_hook_input_that_is_not_json_never_fails_the_stop(tmp_path, isolated_env):
+    worker(tmp_path)
+    out = run_fleet("reconcile", "nudge", stdin="not json", THURBOX_SESSION=SID)
+    assert out.code == 0, out.out
+    assert out.stdout.strip() == "", out.stdout
+    assert nudged(isolated_env)

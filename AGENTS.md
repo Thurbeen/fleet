@@ -544,7 +544,11 @@ script running `ensure`), the SessionStart hook runs `reconcile ensure
   (`uv run fleet paths claude-settings`), never into thurbox's hooks file,
   which thurbox rewrites on every start; `fleet reconcile hook` prints it.
   `nudge` runs no queue command, so a worker
-  firing it can never collect or reap itself.
+  firing it can never collect or reap itself. It does read one: when the
+  stopping session is a dispatched task's whose branch is ahead of its base
+  and whose `result.md` is missing, it blocks that stop once with Claude
+  Code's Stop-hook JSON naming the path (`queue.py`'s `missing_result`).
+  Codex workers get no Stop hook, and rely on the timer and `plan`'s stalled set.
 
 `.agents/skills/fleet-queue/` is the driving surface for 1–3 and 5–8, and
 `.agents/skills/thurbox-session/` for one session: spawning, prompting, cleanup.

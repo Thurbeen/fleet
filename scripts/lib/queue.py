@@ -3104,6 +3104,59 @@ def unprompted_tasks(q: Queue) -> list[dict]:
     return out
 
 
+def commits_ahead(task: Task) -> bool:
+    """Whether any of this task's repositories holds a commit on its branch that
+    its base does not. Asked of the task's own `repo`, as `branch_head` asks, so
+    the worktree's path is never needed; against `origin/<base>` when the clone
+    has one, because a local base that fell behind would count origin's commits
+    as the worker's. Unreadable is False: this only ever adds a question."""
+    branch = str(task.doc.get("branch") or "")
+    if task.doc.get("host") or not branch:
+        return False
+    for unit in task_repos(task):
+        if not os.path.isdir(unit["path"]):
+            continue
+        for base in (f"origin/{unit['base']}", unit["base"]):
+            if git_out(unit["path"], ["rev-parse", "--verify", "--quiet", base + "^{commit}"]).strip():
+                count = git_out(unit["path"], ["rev-list", "--count", f"{base}..{branch}", "--"]).strip()
+                if count.isdigit() and int(count) > 0:
+                    return True
+                break
+    return False
+
+
+def missing_result(sid: str) -> str:
+    """What a worker's Stop hook should ask for before the worker stops, or "".
+
+    THE FAILURE IT ANSWERS. A worker publishes — commits pushed, pull request
+    open — and ends its turn without the result.md its brief names, and its
+    task sits `dispatched` until a person notices, because only that file
+    closes a task. So when the stopping session is a DISPATCHED task's, that
+    task has no result.md and its branch has commits ahead of its base, this
+    returns the one sentence that asks for it, naming the path the brief names.
+    `reconcile nudge` hands it to the agent as a Stop-hook block; every other
+    session, a lead's above all, gets "" and stops exactly as before. A `--host`
+    task's result is written on that machine, so it is never asked about here.
+    """
+    if not sid:
+        return ""
+    for task in Queue(queue_root()).tasks.values():
+        if task.doc.get("session") != sid:
+            continue
+        if task.state != "dispatched" or task.doc.get("host"):
+            return ""
+        result = os.path.abspath(task.file("result.md"))
+        if os.path.exists(result) or not commits_ahead(task):
+            return ""
+        return (
+            f"fleet task {task.ref} has commits on {task.doc['branch']} but no result.md, "
+            f"and only that file closes it. If your work is published, write it now at "
+            f"{result} as your brief's Reporting back says, then stop. If you are stopping "
+            "to wait on a person instead, say so in one line and stop."
+        )
+    return ""
+
+
 def cmd_plan(args) -> int:
     q = Queue(queue_root())
     ready, waiting = q.ready(), q.waiting()

@@ -103,7 +103,8 @@ Usage:
   uv run fleet reconcile stop       # durably down: writes the flag, then stops
   uv run fleet reconcile restart    # stop and start, clearing the flag
   uv run fleet reconcile status     # ticking? since when? exit 1: down, unasked
-  uv run fleet reconcile nudge      # advisory: run the periodic pass NOW
+  uv run fleet reconcile nudge      # advisory: run the periodic pass NOW;
+                                   # from a worker's Stop hook, asks once for a missing result.md
   uv run fleet reconcile hook       # print the worker Stop hook that nudges
   uv run fleet reconcile logs [-f]  # the loop's log
 
@@ -975,6 +976,7 @@ def cmd_status(cfg: Config) -> int:
 def cmd_nudge(cfg: Config) -> int:
     """The accelerator, and the ONLY verb safe from a worker: one flag file, no
     queue command, so a worker calling it cannot collect or reap anything.
+    (`stop_decision`, run after it, only READS the queue.)
     A nudge with the loop down waits in the file for the next start.
 
     It reports on stderr: a hook's stdout is the agent's protocol channel, and
@@ -991,6 +993,30 @@ def cmd_nudge(cfg: Config) -> int:
     else:
         err("fleet reconciler: nudged, but nothing is ticking; the nudge waits")
     return 0
+
+
+def stop_decision() -> dict | None:
+    """The Stop-hook answer that asks a worker for its missing result.md, or None.
+
+    Only a thurbox session can be a task's worker, and only a hook pipes its
+    input: a nudge typed at a terminal reads nothing and decides nothing. Claude
+    Code's protocol is `{"decision": "block", "reason": ...}` on stdout, and it
+    sets `stop_hook_active` on the stop that follows one: that stop is always
+    allowed, so a worker is asked ONCE and can never be held. `queue.py`'s
+    `missing_result` owns which stops are asked about at all; any error is a
+    stop allowed, because a hook that fails a stop is worse than one that never
+    fired, and the loop's own timer still reads the queue."""
+    sid = os.environ.get("THURBOX_SESSION", "").strip()
+    if not sid or sys.stdin is None or sys.stdin.isatty():
+        return None
+    try:
+        hook = json.loads(sys.stdin.read() or "null")
+        if not isinstance(hook, dict) or hook.get("stop_hook_active"):
+            return None
+        reason = _load_sibling("fleet_queue", "queue.py").missing_result(sid)
+    except Exception:
+        return None
+    return {"decision": "block", "reason": reason} if reason else None
 
 
 HOOK_BARE = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789/._:@+=,~-")
@@ -1030,8 +1056,9 @@ def cmd_hook(cfg: Config) -> int:
     sys.stdout.write(indented(block, "          "))
     say("")
     say("It is one command with nothing a shell reads differently, so bash, cmd")
-    say("and PowerShell run it alike. `nudge` exits 0 whatever happens, and a Stop")
-    say("hook blocks the agent only on exit 2, so this one never blocks it.")
+    say("and PowerShell run it alike. `nudge` exits 0 whatever happens. It blocks")
+    say("one stop and no other: a dispatched task's worker stopping with commits")
+    say("ahead of its base and no result.md is told, once, to write it.")
     return 0
 
 
@@ -1070,11 +1097,15 @@ def main(argv: list[str]) -> int:
         return 0
     if cmd == "nudge":
         # Whatever goes wrong, a hook must not fail: not even a bad setting.
+        # Its stdout is the hook's protocol channel: the one block decision, or nothing.
         try:
-            return cmd_nudge(Config.from_env())
+            cmd_nudge(Config.from_env())
         except Exception as exc:
-            say(f"fleet reconciler: could not nudge ({exc})")
-            return 0
+            err(f"fleet reconciler: could not nudge ({exc})")
+        decision = stop_decision()
+        if decision:
+            sys.stdout.write(json.dumps(decision) + "\n")
+        return 0
     if cmd == "ensure" and "--if-lead" in argv[1:]:
         # Before the settings are read: a SessionStart hook never fails, not even on a bad one.
         return cmd_ensure_if_lead()
