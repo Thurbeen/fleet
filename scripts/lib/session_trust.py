@@ -34,9 +34,9 @@ It is safe to run only in the window between `session create` and the first
 `session send`, which is when `fleet queue dispatch` runs it: nothing
 has been typed into that pane yet, so there is no composer content to
 corrupt. Do not run it against a session that is already working.
-`fleet queue send` does run it against a live session, so a session whose
-hook had ALREADY REPORTED when this starts is never answered: its scrollback
-can quote a dialog that is not in front of it.
+`fleet queue send` does run it against a live session, so once the agent's
+hook has REPORTED a dialog is looked for on the visible screen only: its
+scrollback can quote a dialog that is not in front of it.
 
 IN-PROCESS, AND NO SHELL. `dispatch` calls `answer_dialogs` directly, and
 `fleet session-trust` runs this file. It needs thurbox-cli and Python and
@@ -292,11 +292,6 @@ def pane_text(uuid: str, lines: int = 60) -> str:
     return output if isinstance(output, str) else ""
 
 
-def pane(uuid: str) -> str:
-    """The captured pane squeezed for signatures that may wrap or lose spaces."""
-    return squeeze(pane_text(uuid))
-
-
 CODEX_COMPOSER = "› Ask Codex to do anything"
 
 # What Codex draws BELOW its empty composer, and nothing else may be there.
@@ -465,21 +460,25 @@ def answer_dialogs(session: str, timeout: int = 20, as_json: bool = False) -> tu
 
     is_codex = "codex" in agent_settings.chain(agent, conf)
 
-    # AN AGENT THAT HAS ALREADY REPORTED HAS NO DIALOG IN FRONT OF IT, which is
-    # `agent_reported`'s whole claim. `fleet queue send` runs this against a
-    # WORKING session, whose sixty lines of scrollback can quote a dialog — a
-    # worker reading this very file shows `Yes, I trust this folder` — and
-    # answering that pressed Down and Enter into a live agent. So a session
-    # that had reported when this started is never answered and never refused
-    # on a dialog's text; Codex's hook-review menu, read off the visible screen
-    # alone, still blocks it.
+    # AN AGENT THAT HAS ALREADY REPORTED IS READ OFF ITS VISIBLE SCREEN ONLY.
+    # `fleet queue send` runs this against a WORKING session, whose sixty lines
+    # of scrollback can quote a dialog — a worker reading this very file shows
+    # `Yes, I trust this folder` — and answering that pressed Down and Enter
+    # into a live agent. A dialog that is really in front of the agent is on
+    # the screen, and Codex has been watched reporting with a menu up, so a
+    # reported session is still answered there; only scrollback stops counting.
     reported = info.get("hook_reported") is True
+
+    def view() -> str:
+        """The squeezed pane a dialog is looked for in: the visible screen
+        alone once the agent has reported, the scrollback as well before."""
+        return squeeze(pane_text(uuid, lines=0 if reported else 60))
 
     def gate_on_pane() -> int | None:
         """The index of the gate the pane shows right now, if any."""
-        if not gates or reported:
+        if not gates:
             return None
-        text = pane(uuid)
+        text = view()
         for i, (signature, _keys) in enumerate(gates):
             if shows(signature, text):
                 return i
@@ -491,7 +490,7 @@ def answer_dialogs(session: str, timeout: int = 20, as_json: bool = False) -> tu
     def unanswerable_codex_folder_on_pane() -> bool:
         # A folder screen may leave the composer visible below it. A changed
         # selector or wording must block the brief, even though no gate matches.
-        return is_codex and not reported and shows(r"trust this folder\?", pane(uuid))
+        return is_codex and shows(r"trust this folder\?", view())
 
     def hook_review_blocked() -> tuple[int, str]:
         return 3, say(
@@ -519,7 +518,7 @@ def answer_dialogs(session: str, timeout: int = 20, as_json: bool = False) -> tu
         dialog being GONE is. On either failure nothing more is sent.
         """
         signature, keys = gates[i]
-        if keys == "down enter" and YES_SELECTED.search(pane(uuid)):
+        if keys == "down enter" and YES_SELECTED.search(view()):
             keys = "enter"
         for k in keys.split():
             if not send_key(uuid, k):
@@ -527,7 +526,7 @@ def answer_dialogs(session: str, timeout: int = 20, as_json: bool = False) -> tu
                                "send-failed")), keys
             time.sleep(1)
         for _ in range(10):
-            if not shows(signature, pane(uuid)):
+            if not shows(signature, view()):
                 return None, keys
             time.sleep(1)
         return (3, say(

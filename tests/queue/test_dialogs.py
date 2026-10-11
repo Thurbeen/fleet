@@ -162,8 +162,10 @@ def test_dispatch_prompts_a_codex_0_161_composer_under_its_longer_footer(stubs, 
 
 def test_send_into_a_working_session_never_answers_a_dialog_it_only_quotes(stubs, queue_dir):
     """A worker reading this very module has the folder dialog's text in its
-    scrollback. Its agent has reported, so nothing modal is in front of it:
-    pressing Down and Enter there types into a working agent."""
+    scrollback. Its agent has reported, so only its visible screen can hold a
+    dialog in front of it: pressing Down and Enter on the scrollback's quote
+    types into a working agent."""
+    stubs.tool("thurbox-cli", VISIBLE_CODEX_CAPTURE)
     topic = ok(q("topic", "add", "live-send", "--title", "Message a working worker",
                  "--prompt", "send a line to a session that is working")).stdout.strip()
     ok(q("add", topic, "worker", "--title", "Working worker", "--repo", "/tmp/repo-live",
@@ -174,6 +176,7 @@ def test_send_into_a_working_session_never_answers_a_dialog_it_only_quotes(stubs
     stubs.session_is(sid, "working")
     write(stubs.root / "panes" / f"{sid}.txt",
           "● Read(scripts/lib/session_trust.py)\n" + FOLDER_DIALOG + "\n● Reading on.\n")
+    write(stubs.root / "panes" / f"{sid}.visible.txt", "● Reading on.\n")
 
     sent = q("send", ref, "Also update the changelog.")
     assert keys(stubs) == [], sent.out
@@ -181,6 +184,7 @@ def test_send_into_a_working_session_never_answers_a_dialog_it_only_quotes(stubs
     expect(sent.out, "delivered")
     refute(sent.out, "NOT DELIVERED")
     expect("\n".join(stubs.calls("thurbox-cli", "session send")), "Also update the changelog.")
+    assert stubs.calls("thurbox-cli", f"session capture {sid} --lines 0"), sent.out
 
 
 def test_a_send_refused_after_keys_were_pressed_never_says_nothing_was_typed(stubs, queue_dir):
