@@ -845,7 +845,10 @@ function M.on_action(action)
     if selected and not selected.peer then
       local live = name == "enter" and session(selected)
       if live then
-        command("action", { text = "session.focus", session = live.id })
+        -- As Ctrl+X does (`fleet_lead.lua`): a plugin's `session.focus`
+        -- action arrives without its session and leaves the selection alone.
+        store.selected = live.id
+        command("focus", { text = "agent" })
         state.board_open = false
       elseif selected.ref:match("^[%w_.%-]+/[%w_.%-]+$") then
         state.board_detail = selected.ref

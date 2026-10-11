@@ -517,10 +517,12 @@ elseif scenario == "columns" then
 elseif scenario == "enter-session" then
   pane.on_click({ id = "board:alpha/03-work" })
   action("enter")
+  -- What Ctrl+X does: a plugin's `session.focus` action arrives without its
+  -- session, so the worker is selected through the store instead.
+  assert(store.selected == "worker", "Enter selected " .. tostring(store.selected) .. ", not the worker")
   assert(
-    commands[#commands].name == "action"
-      and commands[#commands].args.text == "session.focus"
-      and commands[#commands].args.session == "worker"
+    commands[#commands].name == "focus" and commands[#commands].args.text == "agent",
+    "Enter did not put the input on the worker's terminal"
   )
   assert(not state.board_open)
 elseif scenario == "enter-detail" then
@@ -898,10 +900,10 @@ elseif scenario == "peers-readonly" then
   assert(pane.on_click({ id = "board:devbox:/srv/fleet#far/01-far" }), "a peer card cannot be selected")
   assert(state.board_ref == "devbox:/srv/fleet#far/01-far")
   contains("read-only")
-  local before = #commands
+  local before, selected = #commands, store.selected
   action("enter")
   action("detail")
-  assert(#commands == before, "a peer card focused a session here")
+  assert(#commands == before and store.selected == selected, "a peer card focused a session here")
   assert(not state.board_detail, "a peer card opened this fleet's record of it")
   assert(state.board_open, "Enter on a peer card closed the board")
   for _, call in ipairs(calls) do
