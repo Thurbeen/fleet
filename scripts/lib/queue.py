@@ -9292,7 +9292,7 @@ def shepherd_pr(cr: forge.ChangeRequest, task, args) -> dict:
         row["action"] = "not-merged"
         row["note"] = (
             "not merged while a review thread is unresolved; "
-            + ("its comments go to the task's session" if task
+            + ("what nobody has answered yet goes to its session" if task
                else "no task records it, so resolving them is yours")
         )
         return row
