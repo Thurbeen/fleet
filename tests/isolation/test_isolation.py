@@ -147,6 +147,8 @@ ISOLATION_CASES = (
     "tests/queue/test_agent_policy.py::test_isolation_from_checkout_agent_policy_conf",
     "tests/pane/test_peers.py::test_no_peers_is_this_fleet_alone_and_an_empty_wire",
     "tests/pane/test_board.py::test_board_interactions[peers-readonly]",
+    "tests/status/test_status.py::test_a_registry_map_of_the_right_shape_reads_as_ok",
+    "tests/onboarding/test_preflight.py::test_the_reconcilers_and_thurboxs_own_directories_are_probed_too[FLEET_RECONCILE_DIR]",
 )
 
 

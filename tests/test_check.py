@@ -261,3 +261,22 @@ def pytest_collection_finish(session):
     assert {node.split("/")[1] for node in nodes} >= {
         "settings", "skills", "extension", "status", "sync", "onboarding", "install", "queue", "pane",
     }, f"an isolation area disappeared: {nodes}"
+
+
+@pytest.mark.parametrize("module,before,after,case", [
+    ("fleet_status.py", 'REGISTRY_ENV = "FLEET_REGISTRY_FILE"', 'REGISTRY_ENV = "ISOLATION_IGNORED_REGISTRY"',
+     "test_a_registry_map_of_the_right_shape_reads_as_ok"),
+    ("reconcile.py", 'os.environ.get("FLEET_RECONCILE_DIR") or ', "",
+     "test_the_reconcilers_and_thurboxs_own_directories_are_probed_too"),
+], ids=["registry", "reconciler"])
+def test_isolation_rejects_readers_that_bypass_relocated_state(tmp_path, module, before, after, case):
+    copy = tracked_copy(tmp_path / "copy")
+    reader = copy / "scripts" / "lib" / module
+    source = reader.read_text(encoding="utf-8")
+    assert source.count(before) == 1, "the mutation no longer targets one live-state reader"
+    reader.write_text(source.replace(before, after), encoding="utf-8")
+    done = run([*PYTHON, str(copy / "scripts" / "lib" / "check.py"), "isolation", "--jobs", "1"],
+               cwd=copy, PYTHONPATH=str(copy))
+    assert done.code == 1, f"isolation accepted a reader bypassing its relocated state:\n{done.out}"
+    assert case in done.out, done.out
+    assert "FAILED tests/isolation/test_isolation.py::test_the_areas_that_read_settings" in done.out, done.out
