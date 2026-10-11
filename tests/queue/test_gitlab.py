@@ -230,6 +230,22 @@ def test_the_whole_queue_runs_through_the_gitlab_adapter(gitlab_queue, glab, stu
     assert stubs.calls("gh") == [], "a code path ran `gh` against a GitLab merge request"
 
 
+@pytest.mark.parametrize("target,verified", [("main", True), ("release", False)])
+def test_gitlab_collect_checks_verified_origin_base(gitlab_queue, glab, glrepo, stubs, target, verified):
+    gq = gitlab_queue
+    git("update-ref", "refs/remotes/origin/main", "HEAD", cwd=glrepo)
+    ok(gq.q("add", gq.topic, "origin-base", "--title", "Origin base", "--repo", str(glrepo),
+            "--branch", "fix/origin-base", "--base", "origin/main", "--number", "05", "--publish", "pr"))
+    glab.mr(315, source_branch="fix/origin-base", target_branch=target)
+    result(gq.queue / gq.topic / "05-origin-base", "shipped", "Opened it.", f"{MR}315")
+    out = gq.q("collect", "--no-reap").out
+    if verified:
+        expect(out, "05-origin-base  shipped", "[publish verified: pr]")
+    else:
+        expect(out, "05-origin-base: NOT CLOSED", "onto release")
+    assert stubs.calls("gh") == [], "a GitLab merge request reached gh"
+
+
 def test_a_develop_merge_request_carrying_the_task_head_verifies(
     gitlab_queue, glab, glrepo, stubs, isolated_env
 ):

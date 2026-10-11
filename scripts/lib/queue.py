@@ -5084,7 +5084,7 @@ def pull_request_verdict(
         integration = longest_prefix_rule(cr.repo, integration_branches())
         # In a repository with an integration branch, the task's own change
         # request goes feat→develop by design, whatever base it was cut from.
-        bases = {unit["base"]} | ({integration[0]} if integration else set())
+        bases = {forge_base(task, unit)} | ({integration[0]} if integration else set())
         if cr.head_branch == branch and cr.base_branch and cr.base_branch not in bases:
             return "missing", (
                 f"the pull request is from {branch} onto {cr.base_branch}, and this "
@@ -5129,6 +5129,30 @@ def pull_request_verdict(
             f"the pull request is {cr.state or 'in no state the forge named'}"
         ), {}
     return "passed", f"the pull request is {cr.state} and {whose}", {}
+
+
+def forge_base(task: Task, unit: dict) -> str:
+    """Translate a verified origin tracking ref to the branch the forge names.
+
+    The checkout's identity comes from origin, so another remote cannot prove
+    its landing branch. Git must resolve the ref unambiguously, and origin's
+    fetch mapping must confirm its heads name; a slash alone proves neither.
+    Unreadable checkouts, including remote tasks, retain the recorded base.
+    """
+    base = unit["base"]
+    if task.doc.get("host"):
+        return base
+    repo = unit["path"]
+    ref = git_out(repo, ["rev-parse", "--symbolic-full-name", "--verify", "--quiet", base]).strip()
+    prefix = "refs/remotes/origin/"
+    if not ref.startswith(prefix):
+        return base
+    branch = ref[len(prefix):]
+    mappings = git_out(repo, ["config", "--get-all", "remote.origin.fetch"]).splitlines()
+    allowed = {"refs/heads/*:refs/remotes/origin/*", f"refs/heads/{branch}:{ref}"}
+    if any(mapping.removeprefix("+") in allowed for mapping in mappings):
+        return branch
+    return base
 
 
 def unit_repo(task: Task, unit: dict) -> forge.RepoId | None:

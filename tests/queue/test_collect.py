@@ -468,3 +468,59 @@ def test_a_pull_request_onto_another_base_does_not_verify(tmp_path, rtopic, queu
     out = q("collect", "--no-reap").out
     expect(out, "01-right-base", "[publish verified: pr]",
            "02-wrong-base", "NOT CLOSED", "onto release")
+
+
+@pytest.mark.parametrize("base", ["origin/main", "refs/remotes/origin/main"])
+@pytest.mark.parametrize("method", ["pr", "attested"])
+def test_collect_accepts_verified_origin_base(tmp_path, rtopic, queue_dir, stubs, base, method):
+    work = checkout(tmp_path, "first", "https://github.com/acme/first.git")
+    git("commit", "-q", "--allow-empty", "-m", "base", cwd=work)
+    git("update-ref", "refs/remotes/origin/main", "HEAD", cwd=work)
+    for number, name, target in (("01", "right", "main"), ("02", "wrong", "release")):
+        n = 1320 + int(number)
+        ok(q("add", rtopic, name, "--title", name, "--repo", work,
+             "--branch", f"fix/{name}", "--base", base, "--number", number, "--publish", method))
+        stubs.pipeline_pr(n, f"fix/{name}")
+        stubs.pr_base(n, target)
+        result(queue_dir / rtopic / f"{number}-{name}", "shipped", "Opened it.",
+               f"https://github.com/acme/first/pull/{n}")
+    out = q("collect", "--no-reap").out
+    expect(out, "01-right", f"[publish verified: {method}]", "02-wrong", "NOT CLOSED", "onto release")
+    right = yaml.safe_load((queue_dir / rtopic / "01-right" / "task.yaml").read_text(encoding="utf-8"))
+    wrong = yaml.safe_load((queue_dir / rtopic / "02-wrong" / "task.yaml").read_text(encoding="utf-8"))
+    assert right["state"] == "done", right
+    assert wrong["state"] == "queued", wrong
+
+
+@pytest.mark.parametrize("case,base", [
+    ("missing", "origin/main"),
+    ("other-remote", "upstream/main"),
+    ("local-slash", "release/main"),
+    ("ambiguous", "origin/main"),
+    ("remapped", "origin/main"),
+])
+def test_collect_does_not_strip_unverified_base_prefixes(
+    tmp_path, rtopic, queue_dir, stubs, case, base,
+):
+    work = checkout(tmp_path, "first", "https://github.com/acme/first.git")
+    git("commit", "-q", "--allow-empty", "-m", "base", cwd=work)
+    if case == "other-remote":
+        git("remote", "add", "upstream", "https://github.com/acme/second.git", cwd=work)
+        git("update-ref", "refs/remotes/upstream/main", "HEAD", cwd=work)
+    elif case == "local-slash":
+        git("branch", base, cwd=work)
+    elif case != "missing":
+        git("update-ref", "refs/remotes/origin/main", "HEAD", cwd=work)
+        if case == "ambiguous":
+            git("branch", "origin/main", cwd=work)
+        else:
+            git("config", "remote.origin.fetch", "refs/heads/release:refs/remotes/origin/main", cwd=work)
+    ok(q("add", rtopic, "unverified", "--title", "Unverified base", "--repo", work,
+         "--branch", "fix/unverified", "--base", base, "--number", "01", "--publish", "pr"))
+    stubs.plain_pr(1330, "fix/unverified")
+    stubs.pr_base(1330, "main")
+    result(queue_dir / rtopic / "01-unverified", "shipped", "Opened it.",
+           "https://github.com/acme/first/pull/1330")
+    expect(q("collect", "--no-reap").out, "NOT CLOSED", "onto main")
+    doc = yaml.safe_load((queue_dir / rtopic / "01-unverified" / "task.yaml").read_text(encoding="utf-8"))
+    assert doc["state"] == "queued", doc
