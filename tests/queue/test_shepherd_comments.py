@@ -94,8 +94,7 @@ class Talk:
         return ok(q("shepherd", "--topic", self.topic, *extra)).out
 
 
-@pytest.fixture
-def talk(stubs, tmp_path, queue_dir) -> Talk:
+def talk_on(stubs, tmp_path, queue_dir, vetted: bool) -> Talk:
     shep = Shep(stubs)
     stubs.tool("gh", FEEDBACK_GH)
     srepo = repo(tmp_path / "talk-repo")
@@ -103,17 +102,27 @@ def talk(stubs, tmp_path, queue_dir) -> Talk:
     t.topic = ok(q("topic", "add", "review-talk", "--title", "Comments reach the worker",
                    "--prompt", "send plain review comments to the session")).stdout.strip()
     # `pr`: green is never merged, so the pull request stays open for every pass.
+    # Vetted: attested, in a repository fleet merges in, so the merge is live.
+    method = () if vetted else ("--publish", "pr")
     ok(q("add", t.topic, "talk", "--title", "A PR people talk on", "--repo", str(srepo),
-         "--branch", "fix/talk", "--number", "01", "--publish", "pr"))
+         "--branch", "fix/talk", "--number", "01", *method))
     git("branch", "fix/talk", cwd=srepo)
     result(queue_dir / t.topic / "01-talk", "shipped", "Opened it.", PR)
     ok(q("collect"))
     shep.perm("maintainer", "admin")
-    shep.pr(201, headRefName="fix/talk", body="Plain.\n")
+    if vetted:
+        shep.pr(201, headRefName="fix/talk")
+    else:
+        shep.pr(201, headRefName="fix/talk", body="Plain.\n")
     shep.session(WORKER, "idle")
     ok(q("attach", f"{t.topic}/01-talk", WORKER))
     t.save()
     return t
+
+
+@pytest.fixture
+def talk(stubs, tmp_path, queue_dir) -> Talk:
+    return talk_on(stubs, tmp_path, queue_dir, vetted=False)
 
 
 def test_a_commented_review_reaches_an_idle_worker_once_and_not_twice(talk):
@@ -226,6 +235,46 @@ def test_a_gone_worker_gets_a_fresh_session_for_its_comments(talk):
     talk.comment("I1", "reviewer", "And this?", "2026-10-01T11:00:00Z")
     expect(talk.pass_(), "comments sent")
     assert len(talk.shep.creates()) == 1 and len(talk.sends(sid)) == 2, talk.shep.tbx_log()
+
+
+# --- an unresolved thread holds the merge ---------------------------------------
+#
+# POLICY.md: a change request with an unanswered thread is not done. The
+# comments above reached the worker, but the merge ran first and never asked:
+# an attested, green, allow-listed pull request merged with a reviewer's line
+# comment still open. So a pull request `classify` calls ready is asked for its
+# unresolved threads before anything merges it, and the thread itself goes to
+# the worker through the delivery above.
+
+
+@pytest.fixture
+def vetted(stubs, tmp_path, queue_dir) -> Talk:
+    return talk_on(stubs, tmp_path, queue_dir, vetted=True)
+
+
+def test_an_unresolved_thread_holds_the_merge_and_reaches_the_worker(vetted):
+    vetted.thread("T1", "src/retry.rs", 42, ("C1", "reviewer", "Cap this at five.", "2026-10-01T11:00:00Z"))
+    out = vetted.pass_()
+    assert 201 not in vetted.shep.merged(), out
+    expect(out, "threads-open", "1 unresolved review thread", "not-merged")
+    expect(out, "comments sent: 1 new comment")
+    expect(vetted.briefs()[-1].read_text(encoding="utf-8"), "line comment on `src/retry.rs:42`",
+           "Cap this at five.")
+    assert vetted.task()["publish"]["state"] == "threads-open"
+
+
+def test_the_same_pull_request_merges_once_its_thread_is_resolved(vetted):
+    vetted.thread("T1", "src/retry.rs", 42, ("C1", "reviewer", "Cap this at five.", "2026-10-01T11:00:00Z"),
+                  resolved=True)
+    out = vetted.pass_()
+    assert 201 in vetted.shep.merged(), out
+    refute(out, "threads-open")
+
+
+def test_threads_the_forge_will_not_read_are_undetermined_and_never_merged(vetted):
+    out = ok(q("shepherd", "--topic", vetted.topic, SHEP_THREADS_DOWN="201")).out
+    assert 201 not in vetted.shep.merged(), out
+    expect(out, "undetermined", "could not read the review threads")
 
 
 # --- GitLab: the same delivery, through `glab` --------------------------------------

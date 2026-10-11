@@ -44,8 +44,22 @@ if args[:1] == ["api"] and args[1].endswith("/files"):
         raise SystemExit(1)
     sys.stdout.write(served.read_text(encoding="utf-8"))
     raise SystemExit(0)
+# The unresolved-thread count, out of the same `feedback/<n>.json` the comment
+# stand-in reads, so one record of what was said answers both questions.
+# No file is a pull request nobody left a thread on; SHEP_THREADS_DOWN is a
+# forge that would not say.
+if args[:2] == ["api", "graphql"] and not any(a.startswith("query=") and "reviews(" in a for a in args):
+    n = next(a for a in args if a.startswith("number=")).split("=", 1)[1]
+    if os.environ.get("SHEP_THREADS_DOWN") == n:
+        sys.stderr.write("gh: HTTP 502: could not read review threads\n")
+        raise SystemExit(1)
+    said = shep / "feedback" / f"{n}.json"
+    nodes = json.loads(said.read_text(encoding="utf-8")).get("threads", []) if said.is_file() else []
+    print(json.dumps({"data": {"repository": {"pullRequest": {"reviewThreads": {
+        "pageInfo": {"hasNextPage": False}, "nodes": nodes}}}}}))
+    raise SystemExit(0)
 if args[:1] == ["api"]:
-    login = args[1].removesuffix("/permission").rsplit("/", 1)[-1]
+    login =args[1].removesuffix("/permission").rsplit("/", 1)[-1]
     perm = shep / "perms" / login
     level = perm.read_text(encoding="utf-8").strip() if perm.is_file() else "none"
     print(json.dumps({"permission": level}))

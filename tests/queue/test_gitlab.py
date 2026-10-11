@@ -253,6 +253,26 @@ def test_a_develop_merge_request_carrying_the_task_head_verifies(
     assert stubs.calls("gh") == []
 
 
+def test_an_unresolved_discussion_holds_the_merge_on_gitlab_too(gitlab_queue, glab, stubs):
+    """The threads gate asks GitLab through the same seam: a resolvable note nobody
+    resolved holds a merge request every other gate would merge."""
+    gq = gitlab_queue
+    ok(gq.q("collect"))
+    glab.api("discussions", [{"id": "d1", "notes": [
+        {"id": 21, "body": "Off by one here.", "system": False, "resolvable": True, "resolved": False,
+         "author": {"username": "reviewer"}, "created_at": "2026-10-01T10:05:00.000Z"}]}])
+    out = gq.q("shepherd", "--topic", gq.topic).out
+    expect(out, "threads-open", "1 unresolved review thread")
+    refute("\n".join(glab.merged()), "mr merge 303")
+
+    glab.api("discussions", [{"id": "d1", "notes": [
+        {"id": 21, "body": "Off by one here.", "system": False, "resolvable": True, "resolved": True,
+         "author": {"username": "reviewer"}, "created_at": "2026-10-01T10:05:00.000Z"}]}])
+    gq.q("shepherd", "--topic", gq.topic)
+    expect("\n".join(glab.merged()), "mr merge 303")
+    assert stubs.calls("gh") == []
+
+
 def test_a_project_that_forbids_squash_is_a_refusal_and_not_a_crash(gitlab_queue, glab, stubs):
     """14c. GitLab's `squash` is a flag on the merge, and `squash_option: never` is
     the PROJECT setting that forbids it: §13d's mismatch, per project, and still a

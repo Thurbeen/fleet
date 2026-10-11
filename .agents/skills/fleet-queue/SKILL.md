@@ -612,7 +612,8 @@ gets exactly one of these:
 | a check failed | a fixer is dispatched to fix it |
 | `reviewDecision: CHANGES_REQUESTED` | a fixer is dispatched to address it |
 | an `attested` task's PR with no attestation for this head | a fixer is dispatched to publish again, naming that task's own command |
-| attested, checks green, `MERGEABLE`, ours | **squash-merged**, in the allowlisted repos only |
+| all of the below, with a review thread nobody resolved | `threads-open`: **not merged**; the threads reach the session as comments (below) |
+| attested, checks green, `MERGEABLE`, ours, no unresolved thread | **squash-merged**, in the allowlisted repos only |
 | checks green, `MERGEABLE`, ours, nothing attested it | recorded `green`, reported `ready to merge — not attested; yours`, never merged by fleet |
 | anything it could not read | reported, left alone |
 
@@ -631,7 +632,10 @@ your `review-prs` reviewer), bots, a resolved thread, and a line comment
 fleet's account replied to in that thread. Each comment is sent once, by id, under
 `shepherd_comments` on the task — kept apart from `shepherd`, so a comment
 delivery never holds back the fixer a failing check needs next. A comment
-changes neither the merge gates nor the board's word for the PR.
+changes neither the merge gates nor the board's word for the PR — except an
+unresolved THREAD on a PR otherwise ready: that one holds the merge and the
+word is `threads-open`, until somebody resolves it. A thread count the forge
+will not give is `undetermined`, and is never merged past.
 
 A PR is tied to a task by its recorded `artifact` (for `pr` and `attested`
 tasks only) or by its head branch; one matching neither is still classified

@@ -7883,7 +7883,8 @@ FIXABLE = ("conflicting", "checks-failed", "changes-requested", "policy")
 # body carries an attestation naming the pull request's CURRENT
 # head commit (so a stale attestation from an earlier push can never authorise
 # the push that replaced it), every check has CONCLUDED and passed, the forge
-# itself calls it mergeable, and whoever opened it can push to this repo
+# itself calls it mergeable, no review thread is unresolved (`threads_gate`,
+# asked only once the rest hold), and whoever opened it can push to this repo
 # (`author_can_push` — the last thing checked, because it is the one claim the
 # pull request body cannot make for itself).
 #
@@ -8668,6 +8669,36 @@ def classify(cr: forge.ChangeRequest, method: str | None) -> tuple[str, str]:
     )
 
 
+def threads_gate(cr: forge.ChangeRequest, detail: str) -> tuple[str, str]:
+    """`ready`, or the unresolved review threads that hold it. (condition, why).
+
+    POLICY.md says a change request with an unanswered thread is not done, and
+    for a while shepherd merged one anyway: `classify` reads a review DECISION,
+    and a line comment nobody resolved is not one. So the last question before
+    a merge decision is the forge's own count of unresolved threads.
+
+    OUTSIDE `classify`, and asked only of what `classify` already calls ready.
+    `classify` is pure — it judges the one listing the forge answered — and
+    this is a second network call per pull request, which is only worth paying
+    right before something could merge. Every other condition already holds
+    the merge for a reason of its own.
+
+    A count the forge would not give is `undetermined`, never `ready`: the same
+    rule as a check that has not reported. Which threads they are is not asked
+    here; `shepherd_comments` reads them whole and sends them to the worker.
+    """
+    which, why = forge.for_repo(cr.repo)
+    count, why = which.threads(cr.ref) if which else (None, why)
+    if count is None:
+        return "undetermined", f"review threads not read: {why}"
+    if count:
+        return "threads-open", (
+            f"{count} unresolved review thread{'s' if count != 1 else ''}; "
+            "a change request with an unanswered thread is not done"
+        )
+    return "ready", detail
+
+
 def publish_word(cr: forge.ChangeRequest, condition: str, method: str | None) -> str:
     """`classify`'s condition as one word of the `publish.state` vocabulary.
 
@@ -8722,8 +8753,8 @@ def publish_word(cr: forge.ChangeRequest, condition: str, method: str | None) ->
         # request linked here is open from somebody else's repository. The
         # detail recorded beside this word is the sentence that says so.
         return "unknown"
-    # `closed`, `conflicting`, `checks-failed` and `changes-requested` are
-    # already the vocabulary's own words.
+    # `closed`, `conflicting`, `checks-failed`, `changes-requested` and
+    # `threads-open` (`threads_gate`'s) are already the vocabulary's own words.
     return condition
 
 
@@ -9227,6 +9258,8 @@ def shepherd_pr(cr: forge.ChangeRequest, task, args) -> dict:
 
     method = task_publish(task)[0] if task else None
     condition, detail = classify(cr, method)
+    if condition == "ready":
+        condition, detail = threads_gate(cr, detail)
     row["condition"], row["detail"] = condition, detail
     word = publish_word(cr, condition, method)
     # What the pass SAW, written down for every linked task and whatever the
@@ -9250,6 +9283,18 @@ def shepherd_pr(cr: forge.ChangeRequest, task, args) -> dict:
         # Reported, and nothing else. Not merged, and not handed to an agent.
         row["action"] = "left-alone"
         row["note"] = "not ours; fleet only merges and only fixes its own"
+        return row
+
+    if condition == "threads-open":
+        # Held, and no fixer: the threads themselves are what the worker needs,
+        # and `shepherd_comments` runs next on this same row and sends them —
+        # each quoted, with its file and line — into the task's session.
+        row["action"] = "not-merged"
+        row["note"] = (
+            "not merged while a review thread is unresolved; "
+            + ("its comments go to the task's session" if task
+               else "no task records it, so resolving them is yours")
+        )
         return row
 
     if condition == "ready":

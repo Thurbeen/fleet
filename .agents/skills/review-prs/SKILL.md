@@ -195,6 +195,7 @@ there is no reason for a second, weaker set:
 | you just approved it, on this head SHA | merging something you did not review is not review |
 | every check concluded and passed | a pending check is not a passing one |
 | the forge reports it mergeable | a conflicting change needs its author |
+| no review thread is unresolved | a change request with an unanswered thread is not done |
 | the head branch is **in the repository**, not a fork | the one claim a stranger cannot write for themselves |
 | whoever opened it can push there | anyone with read access can open one between two existing branches |
 | an attestation naming the current head, where the repo expects one | a verdict is about the code it saw |

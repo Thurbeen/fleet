@@ -434,6 +434,9 @@ class GlabStore:
             write(root / log, "")
         self.project(squash_option="default_on")
         write(root / "api" / "members.json", json.dumps(MEMBERS) + "\n")
+        # Nobody said anything: no thread to hold a merge. A test that is about
+        # discussions serves its own with `api("discussions", ...)`.
+        write(root / "api" / "discussions.json", "[]\n")
 
     def replay_recordings(self) -> None:
         """The recorded fork merge request under its own number, and the recorded refusal

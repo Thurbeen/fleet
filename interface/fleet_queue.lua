@@ -542,6 +542,7 @@ local PUBLISH_WORD = {
   ["checks-failed"] = { text = "checks ✗", tone = "bad" },
   conflicting = { text = "conflict", tone = "bad" },
   ["changes-requested"] = { text = "changes", tone = "bad" },
+  ["threads-open"] = { text = "threads", tone = "bad" },
   unattested = { text = "unattested", tone = "bad" },
   ready = { text = "ready ✓", tone = "ok" },
   green = { text = "green", tone = "warn", note = "yours to merge" },

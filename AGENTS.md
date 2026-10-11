@@ -467,7 +467,10 @@ a second copy — read the skill before you run any of it:
    Squash is the only method it merges by. `--dry-run` first. Beside the
    four fixer conditions it delivers REVIEW COMMENTS nobody requested changes
    for — once each, by id, into the PR's session when it is at rest — and
-   never its own account's or a bot's; a comment changes no merge gate.
+   never its own account's or a bot's; a comment changes no merge gate. An
+   unresolved review THREAD does: a change request every other gate clears is
+   held `threads-open` until each one is resolved, and a count the forge will
+   not give is `undetermined`, never ready.
    It also **adopts sessions fleet did not spawn**: every local thurbox session
    that is not a lead, is held by no task, descends from no lead, held
    session or unlisted parent, and sits on a branch of its own with an open
