@@ -14,6 +14,8 @@ one would rewrite the operator's map with fixture data.
 
 from __future__ import annotations
 
+import importlib.util
+
 import pytest
 from harness import expect, lib, refute, run_fleet
 from synckit import GH, fixture, hosts_json, repo_json, run_module, sandbox
@@ -150,8 +152,6 @@ def test_grouping_by_owner_reads_each_repository_a_bounded_number_of_times(tmp_p
     """Each owner's section used to be one pass over every repository, so the
     work grew as owners x repositories: twenty thousand repositories under
     fifty owners read an owner a million times."""
-    import importlib.util
-
     def owner_reads(owners: int) -> int:
         root = sandbox(tmp_path / f"owners-{owners}", "".join(f"o{i}\n" for i in range(owners)))
         spec = importlib.util.spec_from_file_location(f"sandboxed_sync_registry_{owners}",
