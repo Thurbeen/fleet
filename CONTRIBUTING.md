@@ -274,7 +274,9 @@ pointing at the canonical tree.
 
 `uv run fleet check skills` guards the layout: that `.claude/skills` is untracked
 and ignored, resolves to `.agents/skills` where it exists, and that every skill
-directory has a `SKILL.md`.
+directory has a `SKILL.md`. It also parses tracked skill frontmatter as YAML,
+requiring a mapping with nonempty string names and descriptions while accepting
+platform-specific optional metadata.
 
 ### What is tracked, and what is not
 
