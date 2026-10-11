@@ -138,7 +138,14 @@ the lead's and never written again. `run` is that refresh made explicit, and
 
 Usage:
   uv run fleet queue topic add <slug> --title T --prompt 'the ask'   # or --prompt-file F|-
+                       [--by PERSON]  # who asked, as free text: written to
+                       # topic.yaml's `requested_by`, shown, and acted on by
+                       # nothing; its tasks inherit it
   uv run fleet queue add <topic> <slug> --title T --repo P --branch B [--base main]
+                       [--by PERSON]  # overrides the topic's requester; the
+                       # task.yaml stores the RESOLVED name, so editing the
+                       # topic later rewrites no history. None anywhere is
+                       # valid and means "not recorded"
                        [--add-dir P] [--add-repo P[@BASE]] [--host H]
                        [--profile default] [--touches a,b] [--brief-file F]
                        # --add-dir, repeatable, attaches another directory to
@@ -2207,6 +2214,40 @@ def cmd_unarchive(args) -> int:
 # --- commands ----------------------------------------------------------------
 
 
+# WHO ASKED. Free text — a name, a chat handle — because fleet has no identity
+# of its own to check it against, and recorded so that a Mission Control fronted
+# by a chat channel can start work "under this person". It is recorded and
+# shown, and NOTHING keys on it: no permission, no routing of a notice. A value
+# is one line of display text, so the two characters every line-per-record
+# reader here splits on are refused rather than flattened into somebody's name.
+REQUESTER_MAX = 80
+
+
+def requester_value(text: str | None) -> str | None:
+    """`--by`, trimmed; None when it names nobody. Refuses a value no view could draw."""
+    if text is None:
+        return None
+    value = text.strip()
+    if not value:
+        return None
+    if any(ch in value for ch in "\n\r\t"):
+        raise QueueError("--by is one line of text: it may not hold a newline or a tab")
+    if len(value) > REQUESTER_MAX:
+        raise QueueError(f"--by is {len(value)} characters; a requester is at most {REQUESTER_MAX}")
+    return value
+
+
+def requester_problem(value) -> str:
+    """Why a recorded `requested_by` is not one, or "" — absent is valid and means not recorded."""
+    if value is None:
+        return ""
+    if not isinstance(value, str) or not value.strip():
+        return f"requested_by {value!r} is not a name"
+    if any(ch in value for ch in "\n\r\t") or len(value) > REQUESTER_MAX:
+        return f"requested_by {value!r} is not one short line"
+    return ""
+
+
 def cmd_topic_add(args) -> int:
     root = queue_root()
     if not SLUG_RE.match(args.slug):
@@ -2220,17 +2261,19 @@ def cmd_topic_add(args) -> int:
         prompt = sys.stdin.read() if args.prompt_file == "-" else open(args.prompt_file, encoding="utf-8").read()
     if not prompt:
         raise QueueError("a topic needs the prompt that opened it: --prompt or --prompt-file")
+    by = requester_value(args.by)
 
+    meta = {
+        "slug": args.slug,
+        "title": args.title or args.slug.replace("-", " "),
+        "created": now(),
+    }
+    # Written only when somebody was named, so a topic nobody attributed has
+    # exactly the shape every topic had before the field existed.
+    if by:
+        meta["requested_by"] = by
     os.makedirs(path)
-    write_yaml(
-        os.path.join(path, "topic.yaml"),
-        {
-            "slug": args.slug,
-            "title": args.title or args.slug.replace("-", " "),
-            "created": now(),
-        },
-        TOPIC_HEADER,
-    )
+    write_yaml(os.path.join(path, "topic.yaml"), meta, TOPIC_HEADER)
     fleet_platform.write_record(os.path.join(path, "PROMPT.md"), prompt.rstrip() + "\n")
 
     # Opening a topic is where a run begins, so it is where its log begins —
@@ -2433,6 +2476,14 @@ def cmd_add(args) -> int:
     refusal = target_refusal(method, target)
     if refusal:
         raise QueueError(refusal)
+    # The task's own `--by`, else its topic's — RESOLVED HERE and stored, so a
+    # later edit to topic.yaml does not rewrite who asked for work already
+    # under way. None is "not recorded", which every older record also reads as.
+    topic_meta = read_yaml(os.path.join(tpath, "topic.yaml"))
+    inherited = topic_meta.get("requested_by")
+    requested_by = requester_value(args.by) or (
+        inherited.strip() if inherited and not requester_problem(inherited) else None
+    )
 
     doc = {
         "id": tid,
@@ -2463,6 +2514,8 @@ def cmd_add(args) -> int:
         # shepherds this task reads these too — one artifact per repository.
         "add_repos": add_repos,
         "touches": [s.strip() for s in (args.touches or "").split(",") if s.strip()],
+        # Who asked for this work, as free text; displayed and never acted on.
+        "requested_by": requested_by,
         # What this task must PRODUCE, and — as free text nothing ever parses —
         # what the operator calls the tool that produces it.
         "publish": {"method": method, "how": how},
@@ -2491,7 +2544,7 @@ def cmd_add(args) -> int:
     # `add` with no --brief-file is untouched. That is the deliberate "scaffold
     # it, I will write it" path, and dispatch stays its backstop.
     brief = open(args.brief_file, encoding="utf-8").read() if args.brief_file else None
-    text = render_brief(task, read_yaml(os.path.join(tpath, "topic.yaml")), brief)
+    text = render_brief(task, topic_meta, brief)
     if args.brief_file:
         missing = unfilled_sections(text)
         if missing:
@@ -2597,6 +2650,8 @@ def render_brief(task: Task, topic: dict, body: str | None) -> str:
     )
     where = f" on host `{host}`" if host else ""
     target_line = f"\n- **Target.** {d['target']}" if d.get("target") else ""
+    # Whose request this is, so a worker who has to ask knows whom it is for.
+    requester_line = f"\n- **Requested by.** {d['requested_by']}" if d.get("requested_by") else ""
     spans = task_repos(task)[1:]
     spans_line = (
         "\n"
@@ -2672,7 +2727,7 @@ it either.
 Task `{task.ref}` of topic **{topic.get("title", task.topic)}**.
 The prompt this came from is at {prompt_ref}; read it if the goal here is unclear.
 
-- **Repo.** `{d["repo"]}`{where}
+- **Repo.** `{d["repo"]}`{where}{requester_line}
 - **Branch.** `{d["branch"]}` off `{d["base"]}`{spans_line}{attached_line}{target_line}
 {publish_line}
 - **Expected to touch.** {", ".join(f"`{p}`" for p in d["touches"]) or "not recorded"}
@@ -9895,6 +9950,7 @@ def run_facts(q: Queue, slug: str) -> str:
         f"- **Prompt.** `{os.path.join(os.path.abspath(queue_root()), slug, 'PROMPT.md')}`",
         f"- **Opened.** {topic.get('created', '—')} · **Status.** {run_status(tasks)}"
         f" · **Profile(s).** {', '.join(f'`{p}`' for p in profiles) or '—'}",
+        *([f"- **Requested by.** {topic['requested_by']}"] if topic.get("requested_by") else []),
         "",
     ]
 
@@ -9927,6 +9983,12 @@ def run_facts(q: Queue, slug: str) -> str:
             what = (f"a condition outside the queue — {on}" if is_condition
                     else f"`{on}`")
             lines += ["", f"- **`{tid}` waits on {what}** — {kind}: {why}"]
+        # Only a task asked for by somebody OTHER than its topic's requester:
+        # the rest say what the topic line above already said.
+        for t in tasks:
+            by = t.doc.get("requested_by")
+            if by and by != topic.get("requested_by"):
+                lines += ["", f"- **`{t.id}` was requested by {by}**"]
         for o in q.overlaps(tasks):
             refs = ", ".join(f"`{r.split('/')[-1]}`" for r in o["tasks"])
             lines += ["", f"- **Overlap on `{o['touches']}`** — {refs}. A risk that "
@@ -10494,7 +10556,8 @@ def cmd_list(args) -> int:
     for topic, tasks in sorted(grouped.items()):
         meta = q.topics.get(topic, {})
         flag = "  [archived]" if meta.get("archived") else ""
-        print(f"{topic} — {meta.get('title', '')}{flag}")
+        by = f"  by {meta['requested_by']}" if meta.get("requested_by") else ""
+        print(f"{topic} — {meta.get('title', '')}{by}{flag}")
         for t in tasks:
             mark = "waiting" if t.state == "queued" and not q.is_ready(t) else t.state
             extra = t.doc.get("artifact") or t.doc.get("session") or ""
@@ -10504,6 +10567,8 @@ def cmd_list(args) -> int:
             pub = t.doc.get("publish") or {}
             if pub.get("state"):
                 extra = f"{extra}  {pub['state']} {age_of(pub.get('at'))}".strip()
+            if t.doc.get("requested_by"):
+                extra = f"{extra}  by {t.doc['requested_by']}".strip()
             print(f"    {t.id:<34} {mark:<11} {where_it_runs(t)}  {extra}")
             # The row is one line and a record can contradict it; task_notes is
             # what says so, and it is the same list the pane renders.
@@ -10550,6 +10615,7 @@ def cmd_show(args) -> int:
     for key in ("state", "repo", "host", "branch", "base", "agent", "profile", "session",
                 "prompted", "outcome"):
         print(f"    {key + ':':<12} {d.get(key)}")
+    print(f"    {'by:':<12} {d.get('requested_by') or 'not recorded'}")
     for unit in task_repos(task)[1:]:
         print(f"    {'also:':<12} {unit['path']} off {unit['base']}")
     for extra in d.get("add_dirs") or []:
@@ -10691,6 +10757,9 @@ def record_problems(root: str) -> tuple["Queue", list]:
                 f"{slug}: archived while {held.ref} is `{held.state}` — "
                 "run `fleet queue unarchive` on it"
             )
+        why = requester_problem(meta.get("requested_by"))
+        if why:
+            problems.append(f"{slug}: {why}")
     for ref, t in sorted(q.tasks.items()):
         d = t.doc
         for key in ("id", "topic", "title", "state", "repo", "branch"):
@@ -10717,6 +10786,9 @@ def record_problems(root: str) -> tuple["Queue", list]:
         # deciding which tools exist.
         if pub.get("how") is not None and not isinstance(pub["how"], str):
             problems.append(f"{ref}: publish how {pub['how']!r} is not text")
+        why = requester_problem(d.get("requested_by"))
+        if why:
+            problems.append(f"{ref}: {why}")
         if d.get("state") not in STATES:
             problems.append(f"{ref}: state {d.get('state')!r} is not one of {', '.join(STATES)}")
         if d.get("id") != t.id:
@@ -10810,12 +10882,24 @@ def build_parser() -> argparse.ArgumentParser:
     ta.add_argument("--title")
     ta.add_argument("--prompt")
     ta.add_argument("--prompt-file")
+    ta.add_argument(
+        "--by",
+        metavar="PERSON",
+        help="who asked for this, as free text (a name, a chat handle) — recorded "
+        "and shown, never acted on; every task added to the topic inherits it",
+    )
     ta.set_defaults(func=cmd_topic_add, creates=True)
 
     a = sub.add_parser("add", help="add a task to a topic")
     a.add_argument("topic")
     a.add_argument("slug")
     a.add_argument("--title")
+    a.add_argument(
+        "--by",
+        metavar="PERSON",
+        help="who asked for this task, when it is not who asked for its topic; "
+        "with none the task records its topic's requester, resolved now",
+    )
     a.add_argument(
         "--repo",
         required=True,

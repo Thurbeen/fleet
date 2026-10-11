@@ -76,3 +76,23 @@ def test_fleet_md_has_the_lead_read_context_on_its_first_turn():
     fleet = (REPO / "FLEET.md").read_text(encoding="utf-8")
     first = fleet[fleet.index("## First, every session"):fleet.index("## What you do")]
     assert "uv run fleet context" in first, first
+
+
+def test_the_summary_and_pending_name_whom_each_topic_and_decision_belongs_to(tmp_path):
+    brief = tmp_path / "brief.md"
+    write(brief, BRIEF)
+    add = ["--repo", "/nowhere/a", "--publish", "none", "--brief-file", str(brief)]
+    assert run_queue_batch([
+        ["topic", "add", "asked", "--title", "Asked", "--prompt", "p", "--by", "alice"],
+        ["add", "asked", "inherits", "--title", "Inherits", "--branch", "a", *add],
+        ["add", "asked", "overrides", "--title", "Overrides", "--branch", "b", "--by", "@bob", *add],
+        ["topic", "add", "nobody", "--title", "Nobody", "--prompt", "p"],
+        ["add", "nobody", "plain", "--title", "Plain", "--branch", "c", *add],
+    ]).code == 0
+    lead = {row["slug"]: row for row in parse_toon(context().stdout)["open"]}
+    assert lead["asked"]["by"] == "alice"
+    assert lead["nobody"]["by"] == "null"
+    rows = {row["task"]: row for row in parse_toon(context("pending").stdout)["tasks"]}
+    assert rows["asked/01-inherits"]["by"] == "alice"
+    assert rows["asked/02-overrides"]["by"] == "@bob"
+    assert rows["nobody/01-plain"]["by"] == "null"

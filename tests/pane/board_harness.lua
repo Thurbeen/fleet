@@ -253,6 +253,7 @@ local function task(id, state, title, session, agent, block, method, publish)
     "https://example.org/review",
     publish == "checks-failed" and "failed checks: unit" or "",
     publish == "checks-failed" and "2" or "",
+    id == "03-work" and "alice" or "",
   }, "\t")
 end
 task("01-ready", "queued", "Ready")
@@ -687,6 +688,11 @@ elseif scenario == "detail-links" then
   assert(found, "wrapping broke the full review URL")
   assert(pane.on_scroll({ x = 1, y = 5, up = false }))
   assert(state.board_detail_offset == 1)
+elseif scenario == "requester" then
+  pane.on_click({ id = "board:alpha/03-work" })
+  contains("· by alice")
+  pane.on_click({ id = "board:alpha/01-ready" })
+  assert(not strings(tree()):find("· by", 1, true), "a task nobody attributed names a requester")
 elseif scenario == "selection" then
   action("enter")
   assert(pane.on_key({ key = "ctrl+c" }) == false, "copy key swallowed")
