@@ -53,6 +53,20 @@ class TempDirCase(unittest.TestCase):
         return sorted(p.name for p in self.tmp.iterdir())
 
 
+class ShellCommands(TempDirCase):
+    def test_delivered_command_preserves_literal_arguments_in_native_shell(self):
+        probe = self.tmp / "argument probe.py"
+        probe.write_text("import json, sys\nprint(json.dumps(sys.argv[1:]))\n", encoding="utf-8")
+        values = [str(self.tmp / "Fleet's project & $value `tick"), "https://example.com/pr/1#note"]
+        command = fp.shell_command([sys.executable, str(probe), *values])
+        shell = (["powershell", "-NoProfile", "-NonInteractive", "-Command", command]
+                 if WINDOWS else ["sh", "-c", command])
+        result = subprocess.run(shell, capture_output=True, text=True, encoding="utf-8", check=True)
+        import json
+
+        self.assertEqual(json.loads(result.stdout), values)
+
+
 class Directories(TempDirCase):
     def test_thurbox_config_dir_honours_thurbox_own_pin(self):
         with environ(THURBOX_CONFIG_DIR=str(self.tmp / "pinned"), XDG_CONFIG_HOME=str(self.tmp / "xdg")):

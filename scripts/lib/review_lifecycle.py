@@ -14,6 +14,8 @@ English review prose. The configured session must not own or fix the PR.
 
 An assessment is invalidated by a new head, reviewer assignment, policy change,
 or any changed forge feedback (including resolved threads). Errors stay pending.
+A deliberate session stop preserves a completed assessment; it prevents new
+recordings and wakes. Reviewer task retirement, blockers or absence invalidate it.
 A clean assessment supplements the existing shepherd merge gate. This module
 never merges, dispatches, spawns, cancels, or writes task records.
 
@@ -217,13 +219,17 @@ def gate(q, cr, task, args, condition, detail):
             error = error or refusal or ("no existing fixer; lead must assign one" if not sid else "")
         if sid in owners(q, cr) and state == "pending":
             error = "configured reviewer owns or fixes this PR; independent review required"
+        command = q.fleet_platform.shell_command([
+            "uv", "run", "--project", str(q.checkout_root()), "fleet", "queue", "review", "record",
+            cr.url, "--head", cr.head_sha, "--score", "<score>", "--findings", "<count>",
+            "--evidence", "<summary-note-url>",
+        ])
         line = (f"fleet review: {cr.url} head {cr.head_sha} is review-{state}. "
                 f"Read the forge feedback and the configured review policy. "
                 + ("Fix valid findings in place, publish, and await independent reassessment."
                    if state == "findings" else
                    "Review the full head independently, publish a linked summary, then run: "
-                   f"uv run fleet queue review record {cr.url} --head {cr.head_sha} "
-                   "--score <score> --findings <count> --evidence <summary-note-url>"))
+                   + command))
         if args.dry_run:
             view["action"] = "would-notify" if sid and not error else "needs-lead"
         else:

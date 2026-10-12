@@ -395,3 +395,61 @@ def test_repository_case_does_not_duplicate_watches_or_hide_a_forge_absence(life
     out = ok(q("shepherd", "--json", PATH=str(empty))).stdout
     assert json.loads(out)["unavailable"]
     assert json.loads(ok(q("plan", "--json")).stdout)["reviews"]
+
+
+def test_delivered_assessment_command_uses_control_plane_from_another_worktree(lifecycle, tmp_path):
+    from harness import run
+
+    t = lifecycle
+    t.shep.stubs.tool("fleet", "import sys\n"
+                     "sys.stderr.write('assessment ran outside the control-plane project\\n')\n"
+                     "raise SystemExit(1)\n")
+    pass_(t)
+    line = t.sends(REVIEWER)[0]
+    command = line.split("then run: ", 1)[1]
+    command = command.replace("<score>", "5").replace("<count>", "0")
+    command = command.replace("<summary-note-url>", PR + "#issuecomment-501")
+    t.comment("501", "fleet-account", f"Independently reviewed {HEAD}: 5/5, no findings.",
+              "2026-10-01T00:00:00Z")
+    reviewer_cwd = tmp_path / "another-worktree"
+    reviewer_cwd.mkdir()
+    # Execute the actual delivered command, with a tripwire standing in for a
+    # Fleet command outside the configured project. The callback must load the
+    # control plane even though the reviewer's cwd is elsewhere.
+    shell = (["powershell", "-NoProfile", "-NonInteractive", "-Command", command]
+             if os.name == "nt" else ["sh", "-c", command])
+    result = run(shell, cwd=reviewer_cwd, THURBOX_SESSION=REVIEWER,
+                 VIRTUAL_ENV=None)
+    assert result.code == 0, result.out
+    assert pass_(t)[0]["review"]["state"] == "clean"
+
+
+def test_completed_clean_review_survives_deliberate_stop_and_can_merge(lifecycle):
+    t = lifecycle
+    ok(record(t))
+    reviewer_path = t.shep.stubs.root / "sessions" / f"{REVIEWER}.json"
+    doc = json.loads(reviewer_path.read_text(encoding="utf-8"))
+    doc.update(state="stopped", stopped=True)
+    write(reviewer_path, json.dumps(doc))
+    rejected = q("review", "record", PR, "--head", HEAD, "--score", "5", "--findings", "0",
+                 "--evidence", PR + "#issuecomment-501", THURBOX_SESSION=REVIEWER)
+    expect(rejected.out, "deliberately stopped")
+    assert pass_(t)[0]["review"]["state"] == "clean"
+    t.shep.files(201, "example.py")
+    ok(q("shepherd", "--topic", t.topic))
+    assert 201 in t.shep.merged()
+    assert not t.sends(REVIEWER)
+
+
+def test_stopped_reviewer_cannot_complete_or_be_woken_for_a_new_head(lifecycle):
+    t = lifecycle
+    ok(record(t))
+    reviewer_path = t.shep.stubs.root / "sessions" / f"{REVIEWER}.json"
+    doc = json.loads(reviewer_path.read_text(encoding="utf-8"))
+    doc.update(state="stopped", stopped=True)
+    write(reviewer_path, json.dumps(doc))
+    t.shep.update(201, headRefOid="d" * 40)
+    row = pass_(t)[0]
+    assert row["review"]["state"] == "pending"
+    assert row["review"]["action"] == "needs-lead"
+    assert not t.sends(REVIEWER)

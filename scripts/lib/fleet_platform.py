@@ -514,6 +514,18 @@ def run_bounded(argv: list[str], secs: float, input: str | None = None, on_start
     return subprocess.CompletedProcess(argv, proc.returncode, out, errs)
 
 
+def shell_command(argv: list[str], windows: bool = WINDOWS) -> str:
+    """A command delivered to a POSIX shell or native Windows PowerShell.
+
+    PowerShell single-quoted literals double apostrophes; backslashes, dollar
+    signs and backticks stay literal. Its call operator also runs a quoted exe.
+    This is for human-delivered commands, not subprocess argv or split_command.
+    """
+    if windows:
+        return "& " + " ".join("'" + str(word).replace("'", "''") + "'" for word in argv)
+    return shlex.join(argv)
+
+
 def split_command(line: str, windows: bool = WINDOWS) -> list[str]:
     """An operator's command line as argv, with no shell to read it.
 
