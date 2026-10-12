@@ -548,7 +548,8 @@ psmux tasks that request `attested` still need their existing publishing
 pipeline to write a current body attestation, or an explicit operator decision
 to reclassify each task and review it manually. Never rewrite those records
 or their PR bodies as part of a default change. Clean PRs remain outside
-Fleet auto-merge even where a repository is allowlisted.
+Fleet auto-merge without the independent review opt-in described in §5a,
+even where a repository is allowlisted.
 
 ```text
     topic/02-document-the-states  shipped  https://…/pull/1001  [publish verified: attested]
@@ -705,7 +706,7 @@ merges only in the repositories the operator named in
 `orchestration/auto-merge.conf` — gitignored, absent by default, read every
 pass; the tracked `auto-merge.example.conf` names NOTHING and owns the gates a
 merge still clears (head branch in the repository, the opener can push there,
-an attestation naming the CURRENT head, every check concluded and passed,
+  vetting evidence naming the CURRENT head, every check concluded and passed,
 `MERGEABLE`). Entries are host-qualified. `FLEET_AUTO_MERGE_REPOS` in the
 environment REPLACES the file. Everywhere outside the list it reports `ready
 to merge` and stops. A `needs-human` rule on a line — `path:<glob>` or
@@ -939,7 +940,7 @@ is also a setting: `<NAME>_SECS` in the gitignored
 restart` after an edit), with `FLEET_RECONCILE_<NAME>_SECS` still beating it.
 Two things are about you:
 
-- **It will type one line at you, and only ever about five things:** that N
+- **It will type one line at you about six things:** that N
   tasks are ready and nothing will dispatch them — treat it as `plan` already
   run, and `dispatch`; that N workers are STALLED — dispatched, at rest past
   half an hour, no `result.md`, no new commit: `show` the task, then `send` a
@@ -947,8 +948,11 @@ Two things are about you:
   five minutes ago and never handed the brief: look at the pane, then
   `fleet queue prompt <ref>`; that N workers NEED INPUT — they said so with
   `fleet queue declare <ref> needs-input --why …`: read the why in `plan`,
-  decide, and `send` the answer (a delivered `send` retires the question); or
-  that it fast-forwarded this checkout and you need `/update-fleet <sha>`.
+  decide, and `send` the answer (a delivered `send` retires the question); that
+  independent review obligations remain pending — read `plan --json`'s
+  `reviews`, restore any absent recipient and finish the current-head review
+  (§5a); or that it fast-forwarded this checkout and you need
+  `/update-fleet <sha>`.
   Once each, never mid-turn, and never into an input
   line that holds anything: that waits in your mailbox instead.
 - **A worker that declared `paused --until T` is waiting by design** (CI, a
