@@ -97,6 +97,7 @@ below), so THIS IS A CONTRACT: add fields, never rename or retype them.
               "head_branch": "feat/x",
               "head_sha": "<sha>" | "",
               "state": "open" | "draft" | "merged" | "closed",
+              "review_state": "pending" | "findings" | "clean" | "",  # opt-in contract
               "checks": "pending" | "passing" | "failing" | "none",
               "failing_checks": ["job name", ...],
               "review_decision": "changes-requested" | "approved" | null,

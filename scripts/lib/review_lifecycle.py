@@ -92,9 +92,13 @@ def locked(q, url):
 
 def reviewer(q, pol):
     try:
-        task = q.Queue(q.queue_root(), scope="all").get(pol["task"])
+        queue = q.Queue(q.queue_root(), scope="all")
+        task = queue.get(pol["task"])
     except q.QueueError:
         return "", "configured reviewer task is absent"
+    if (task.state not in ("dispatched", "done", "landed")
+            or any(not queue.blocker_cleared(b) for b in task.blockers)):
+        return "", "configured reviewer task is retired or blocked"
     return str(task.doc.get("session") or ""), ""
 
 
@@ -159,6 +163,8 @@ def notify(q, doc, sid, key, line):
     row, why = q.session_doc(sid)
     if not row:
         return "needs-lead", why
+    if row.get("stopped") or row.get("state") == "stopped":
+        return "needs-lead", "review recipient is deliberately stopped"
     identity = helper.identity(row)
     receipt = doc.get("delivery") or {}
     if receipt.get("key") != key or receipt.get("identity") != identity:
@@ -185,6 +191,15 @@ def gate(q, cr, task, args, condition, detail):
     view = {"state": state, "head": cr.head_sha, "reviewer_task": pol["task"],
             "action": "none", "detail": error}
     if state == "clean":
+        if not args.dry_run:
+            with locked(q, cr.url) as (filename, latest):
+                if latest.get("assessment") != doc.get("assessment"):
+                    view.update(state="pending", action="retry", detail="assessment changed; retry")
+                    return "review-pending", view["detail"], view
+                latest.update(url=cr.url, repo=cr.repo.qualified, head=cr.head_sha, state=state,
+                              action="none", detail="", reviewer_task=pol["task"],
+                              feedback=digest, required_score=pol["score"])
+                q.fleet_platform.write_record(filename, json.dumps(latest) + "\n")
         return condition, detail, view
     if condition not in ("ready", "threads-open"):
         view["detail"] = error or detail
@@ -246,6 +261,9 @@ def record(q, args):
     live, why = q.live_sessions()
     if live is None or sid not in live or sid in owners(q, cr):
         raise q.QueueError("configured reviewer is absent or owns/fixes this PR")
+    session, why = q.session_doc(sid)
+    if not session or session.get("stopped") or session.get("state") == "stopped":
+        raise q.QueueError("configured reviewer session is unreadable or deliberately stopped")
     refusal = recipient_refusal(q, cr, sid)
     if refusal:
         raise q.QueueError(refusal)
@@ -324,7 +342,8 @@ def retire(q, listings, unreadable, dry_run):
 def holds_reviewer(q, task):
     conf = q.publish_conf()
     return bool(conf.get("REVIEW_REPOS", "").strip()
-                and conf.get("REVIEWER_TASK", "").strip() == task.ref)
+                and conf.get("REVIEWER_TASK", "").strip() == task.ref
+                and task.state in ("dispatched", "done", "landed"))
 
 
 def before_merge(q, cr, method):

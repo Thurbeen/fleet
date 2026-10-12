@@ -187,6 +187,8 @@ def test_same_head_feedback_and_unreadable_sources_cannot_stay_clean(lifecycle):
     out = ok(q("shepherd", "--json", SHEP_GH_DOWN="1")).stdout
     assert json.loads(out)["unreadable"]
     assert json.loads(ok(q("plan", "--json")).stdout)["reviews"]
+    assert pass_(t)[0]["review"]["state"] == "clean"
+    assert json.loads(ok(q("plan", "--json")).stdout)["reviews"] == []
 
 
 def test_unresolved_threads_and_pending_ci_block_clean_assessment(lifecycle):
@@ -329,3 +331,29 @@ def test_gitlab_independent_review_goes_through_the_forge_seam(lifecycle, tmp_pa
     rows = json.loads(ok(q("shepherd", "--topic", topic, "--no-merge", "--json")).stdout)["prs"]
     assert rows[0]["review"]["state"] == "clean"
     assert not t.shep.stubs.calls("gh")[-1].endswith("gh: a GitLab review must never go through gh")
+
+
+def test_explicitly_retired_reviewer_is_not_woken(lifecycle):
+    t = lifecycle
+    ok(q("abandon", f"{t.topic}/02-review", "--why", "reviewer retired", "--force"))
+    row = pass_(t)[0]
+    assert row["review"]["action"] == "needs-lead"
+    assert not t.sends(REVIEWER)
+
+
+def test_stopped_flag_and_condition_blocker_prevent_review_wakes(lifecycle):
+    t = lifecycle
+    reviewer_path = t.shep.stubs.root / "sessions" / f"{REVIEWER}.json"
+    doc = json.loads(reviewer_path.read_text(encoding="utf-8"))
+    doc["stopped"] = True
+    write(reviewer_path, json.dumps(doc))
+    row = pass_(t)[0]
+    assert row["review"]["action"] == "needs-lead"
+    assert not t.sends(REVIEWER)
+    doc.pop("stopped")
+    write(reviewer_path, json.dumps(doc))
+    ok(q("block", f"{t.topic}/02-review", "--condition", "reviewer on hold",
+         "--kind", "awaiting-approval", "--why", "operator must release the review"))
+    row = pass_(t)[0]
+    assert row["review"]["action"] == "needs-lead"
+    assert not t.sends(REVIEWER)

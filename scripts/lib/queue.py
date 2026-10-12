@@ -10638,7 +10638,7 @@ def cmd_shepherd(args) -> int:
             + ", and only for a pull request whose\n"
             "          head branch is in that repo, that someone who can push there "
             "opened, that\n"
-            "          carries an attestation for its CURRENT head, whose "
+            "          carries vetting evidence for its CURRENT head, whose "
             "checks passed,\n          and that the forge itself calls mergeable."
         )
     else:
