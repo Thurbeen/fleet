@@ -227,6 +227,7 @@ def entry_for(q, cr, condition: str, detail: str, action: str, note: str) -> dic
         "head_branch": cr.head_branch,
         "head_sha": cr.head_sha,
         "state": state_word(cr),
+        "review_state": q.review_lifecycle().observed_state(q, cr),
         "checks": checks,
         "failing_checks": failing,
         "review_decision": cr.review_decision or None,
@@ -704,6 +705,10 @@ def dot_word(entry: dict, now: float, window: int) -> str:
         return "conflicting"
     if entry.get("review_decision") == "changes-requested" or (entry.get("unresolved_threads") or 0) > 0:
         return "changes"
+    if entry.get("review_state") == "findings":
+        return "changes"
+    if entry.get("review_state") == "pending":
+        return "pending"
     if state == "open" and entry.get("checks") == "passing" and entry.get("mergeable") == "mergeable":
         return "ready"
     return "pending"

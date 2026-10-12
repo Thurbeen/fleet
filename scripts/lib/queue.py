@@ -130,6 +130,14 @@ source that could not be read is `not checked` rather than a silent no.
 section below: the change request outlives the task, and a worker that hits its
 agent's token limit SITS rather than failing.
 
+An independent review can be required separately from publication, through
+publish.conf's opt-in contract. `review_lifecycle.py` owns it: pending heads
+reach the configured reviewer, findings reach the existing fixer, and only a
+linked assessment recorded from the independent reviewer session discharges
+review. `plan` exposes obligations to the lead; merging still uses shepherd's
+single gate. The configured reviewer is held for future heads and PRs even
+after its result is collected. Empty configuration preserves existing behavior.
+
 THE RUN LOG IS PRODUCED, NOT REMEMBERED. `topic add` opens
 `orchestration/runs/<opened>-<topic>.md` from the tracked _TEMPLATE.md, once;
 `dispatch`, `collect` and `shepherd` rewrite the facts in the
@@ -217,6 +225,8 @@ Usage:
   uv run fleet queue reviewed <ref> [--why W]  # a `served` task's document is no
                        longer waiting on a reader: the next reap lands it and
                        releases the session kept to answer them
+  uv run fleet queue review record <PR-URL> --head SHA --score N --findings N
+                       --evidence URL  # assigned independent reviewer only
   uv run fleet queue abandon <ref>... --why W [--force]  # retire tasks that
                        will never run; or --topic T for every task in it not
                        landed or abandoned. Refuses `landed`, and a dispatched
@@ -3332,6 +3342,7 @@ def cmd_plan(args) -> int:
     paused = [r for r in declared.values() if r["state"] == "paused"]
     needs_input = [r for r in declared.values() if r["state"] == "needs-input"]
     unprompted = unprompted_tasks(q)
+    reviews = review_lifecycle().pending(sys.modules[__name__])
 
     if args.json:
         print(
@@ -3346,6 +3357,7 @@ def cmd_plan(args) -> int:
                     "unprompted": unprompted,
                     "paused": paused,
                     "needs_input": needs_input,
+                    "reviews": reviews,
                 },
                 indent=2,
             )
@@ -3403,6 +3415,8 @@ def cmd_plan(args) -> int:
         print(f"paused: {len(paused)} task(s) — the worker said it is waiting, so not judged stalled")
         for row in paused:
             print(f"    {row['task']:<52} until {row['until']}  {row['why']}")
+    for row in reviews:
+        print(f"review-{row['state']}: {row['url']} at {row['head']} — {row.get('detail', '')}")
     return 0
 
 
@@ -7110,6 +7124,8 @@ def reap(q: Queue, dry: bool = False, release: bool = True) -> int:
         acted += 1
         if sid == lead:
             why = "that is the lead's own session, not a worker's"
+        elif review_lifecycle().holds_reviewer(sys.modules[__name__], task):
+            why = "configured reviewer remains responsible for current and future heads"
         elif state in ("stuck", "failed"):
             why = (
                 f"the worker's own verdict is `{state}` — its session is the "
@@ -8207,7 +8223,9 @@ def refuel(q: Queue, ref: str | None = None, dry: bool = False) -> int:
                   "command — the lead's own, not a worker's")
             kept += 1
             continue
-        if task.state != "dispatched":
+        reviewing = (task.state in ("done", "landed")
+                     and review_lifecycle().holds_reviewer(sys.modules[__name__], task))
+        if task.state != "dispatched" and not reviewing:
             print(f"    {task.ref:<46} kept          its task is `{task.state}`; only a "
                   "worker still in flight is refuelled")
             kept += 1
@@ -8372,7 +8390,16 @@ def refuel(q: Queue, ref: str | None = None, dry: bool = False) -> int:
 
 
 def cmd_refuel(args) -> int:
-    if refuel(Queue(queue_root()), ref=args.ref, dry=args.dry_run) == 0:
+    q = Queue(queue_root())
+    reviewer = publish_conf().get("REVIEWER_TASK", "").strip()
+    if reviewer and reviewer not in q.tasks:
+        try:
+            assigned = Queue(queue_root(), scope="all").get(reviewer)
+        except QueueError:
+            pass
+        else:
+            q.tasks[assigned.ref] = assigned
+    if refuel(q, ref=args.ref, dry=args.dry_run) == 0:
         print("refuel: no task here is holding a session")
     return 0
 
@@ -9833,11 +9860,20 @@ def shepherd_pr(cr: forge.ChangeRequest, task, args) -> dict:
     }
 
     method = task_publish(task)[0] if task else None
-    condition, detail = classify(cr, method)
+    review = review_lifecycle()
+    required = review.policy(sys.modules[__name__], cr.repo)
+    condition, detail = classify(cr, "pr" if required and method is None else method)
     if condition == "ready":
         condition, detail = threads_gate(cr, detail)
+    condition, detail, obligation = review.gate(
+        sys.modules[__name__], cr, task, args, condition, detail,
+    )
+    if obligation is not None:
+        row["review"] = obligation
     row["condition"], row["detail"] = condition, detail
     word = publish_word(cr, condition, method)
+    if obligation and obligation["state"] == "clean" and condition == "ready":
+        word = "ready"
     # What the pass SAW, written down for every linked task and whatever the
     # condition — the facts all arrived in the one forge listing above, and a
     # record that keeps them is the difference between "shipped" and "its
@@ -9846,6 +9882,11 @@ def shepherd_pr(cr: forge.ChangeRequest, task, args) -> dict:
     if task and not args.dry_run:
         record_publish(task, word, detail, "shepherd")
     rec = rec_for(task, url)
+
+    if condition in ("review-pending", "review-findings"):
+        row["action"] = obligation["action"]
+        row["note"] = obligation["detail"]
+        return row
 
     # A dry run writes nothing at all, including the record-clearing below:
     # "change nothing" is the flag's whole contract, and a stale record
@@ -9921,6 +9962,10 @@ def shepherd_pr(cr: forge.ChangeRequest, task, args) -> dict:
             )
             row["action"] = "would-merge"
             row["note"] = f"{how} ({why})"
+            return row
+        allowed, why = review.before_merge(sys.modules[__name__], cr, method)
+        if not allowed:
+            row["action"], row["note"] = "not-merged", why
             return row
         ok, note = merge_change_request(cr)
         row["action"], row["note"] = ("merged" if ok else "merge-failed"), note
@@ -10245,6 +10290,10 @@ def shepherd_comments(cr: forge.ChangeRequest, task, args, row: dict) -> None:
     answer. A comment already sent is never sent again, by id.
     """
     row["comments"] = "none"
+    if row.get("condition") == "review-findings":
+        # The linked assessment already routes all findings, including a
+        # reviewer using the same forge account. Do not hand it off twice.
+        return
     if not task or cr.state != "open" or cr.head_is_ours is not True:
         return
     # A review decision of "request changes" is that condition's fixer, which
@@ -10451,6 +10500,14 @@ def cmd_prs(args) -> int:
     return shepherd_store().cmd_prs(sys.modules[__name__], args)
 
 
+def review_lifecycle():
+    return _load_sibling("fleet_review_lifecycle", "review_lifecycle.py")
+
+
+def cmd_review_record(args) -> int:
+    return review_lifecycle().record(sys.modules[__name__], args)
+
+
 def cmd_shepherd(args) -> int:
     """The fourth thing: the pull requests, after `watch` and after `collect`."""
     # No forge CLI on this machine, which is a local-only fleet and not a
@@ -10460,6 +10517,7 @@ def cmd_shepherd(args) -> int:
         why = forge.no_forge_reason()
         if not args.dry_run:
             shepherd_store().forge_unavailable(sys.modules[__name__], why)
+            review_lifecycle().unavailable(sys.modules[__name__], why)
         if args.json:
             print(json.dumps({"queue": os.path.abspath(queue_root()), "repos": [], "unreadable": [],
                               "prs": [], "unavailable": why}, indent=2))
@@ -10485,7 +10543,10 @@ def cmd_shepherd(args) -> int:
         tasks.append(task)
 
     repo_of = shepherd_targets(tasks)
-    repos = sorted({r for named in repo_of.values() for r in named}, key=lambda r: r.qualified)
+    watched = {r for named in repo_of.values() for r in named}
+    if not args.topic and not only:
+        watched.update(review_lifecycle().configured_repos(sys.modules[__name__]))
+    repos = sorted(watched, key=lambda r: r.qualified)
     named = [str(r) for r in repos]
 
     rows, unreadable = [], []
@@ -10514,6 +10575,7 @@ def cmd_shepherd(args) -> int:
     store = shepherd_store()
     adopted = store.after_pass(sys.modules[__name__], args, list(q.tasks.values()),
                                observed, listings, unreadable)
+    review_lifecycle().retire(sys.modules[__name__], listings, unreadable, args.dry_run)
 
     if args.json:
         print(json.dumps({
@@ -11960,6 +12022,16 @@ def build_parser() -> argparse.ArgumentParser:
     sh.add_argument("--force", action="store_true",
                     help="dispatch again for a condition a fixer is already out for")
     sh.set_defaults(func=cmd_shepherd)
+
+    rv = sub.add_parser("review", help="record an independent current-head assessment")
+    rvsub = rv.add_subparsers(dest="review_command", required=True)
+    rr = rvsub.add_parser("record", help="configured reviewer attests its linked forge summary")
+    rr.add_argument("url")
+    rr.add_argument("--head", required=True)
+    rr.add_argument("--score", required=True, type=int)
+    rr.add_argument("--findings", required=True, type=int)
+    rr.add_argument("--evidence", required=True)
+    rr.set_defaults(func=cmd_review_record)
 
     ps = sub.add_parser("prs", help="every watched session's PR state, as the last shepherd pass "
                         "recorded it; reads only that file")

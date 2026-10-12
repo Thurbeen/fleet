@@ -78,6 +78,12 @@ it is not at rest, so the stalled set never named it. `plan --json` names it
 (`unprompted`: `queue.py`'s `unprompted_tasks` owns the judgement) and it is a
 third set here, under the same rules.
 
+PENDING INDEPENDENT REVIEW IS WORK AFTER PUBLICATION. `plan --json` exposes
+the configured review contract's obligations, including a missing reviewer,
+a finished turn with no assessment, and findings with no existing fixer.
+Those are told under the same safe delivery and conversation rules. The
+reconciler never replaces the recipient or declares a review clean.
+
 WHERE THE STATE LIVES. In the reconciler's own runtime directory, beside its
 pid, heartbeat and flags — never on the task. "The lead has been told" is a
 fact about one machine's loop and one conversation; it is not part of what a
@@ -157,11 +163,11 @@ STALE_FILE = "stale.json"
 # What the loop remembers, per set: what was typed into the lead, and what was
 # left in its mailbox while it was mid-turn.
 MEMORY = ("told", "posted", "stalled", "stalled_posted", "unprompted", "unprompted_posted",
-          "needs_input", "needs_input_posted")
+          "needs_input", "needs_input_posted", "reviews", "reviews_posted")
 # Which of those a new conversation forgets, and which only a new session does:
 # a mailbox note still waiting in the same session's inbox is not news twice.
-TYPED = ("told", "stalled", "unprompted", "needs_input")
-POSTED = ("posted", "stalled_posted", "unprompted_posted", "needs_input_posted")
+TYPED = ("told", "stalled", "unprompted", "needs_input", "reviews")
+POSTED = ("posted", "stalled_posted", "unprompted_posted", "needs_input_posted", "reviews_posted")
 
 
 def _load_queue():
@@ -200,11 +206,13 @@ def read_state(state_dir: str) -> dict:
 def write_state(state_dir: str, memory: dict, note: str) -> None:
     """Remember what the lead has been told, and what was last logged about it.
 
-    `memory` holds eight lists of refs: `told` and `posted` for the ready set,
+    `memory` holds pairs of ref lists: `told` and `posted` for the ready set,
     `stalled` and `stalled_posted` for the stalled one, `unprompted` and
     `unprompted_posted` for the unprompted one, `needs_input` and
     `needs_input_posted` for the workers that asked — what was typed into the
-    lead, and what was left in its mailbox — and `lead`, which lead they are
+    lead, and what was left in its mailbox, plus `reviews` and
+    `reviews_posted` for independent review obligations — and `lead`, which
+    lead they are
     true of (see WHERE THE STATE LIVES).
 
     Best effort on purpose: a runtime directory that cannot be written is worth
@@ -575,6 +583,14 @@ def stale(state_dir: str, text: str) -> int:
     return 0
 
 
+def reviews_message(reviews: list) -> str:
+    return (
+        f"fleet reconciler: {len(reviews)} independent review obligation(s) pending. "
+        "Run: uv run fleet queue plan --json; restore the configured reviewer or "
+        "fixer if absent, and finish review of each current head."
+    )
+
+
 # --- the pass ----------------------------------------------------------------
 
 
@@ -609,9 +625,11 @@ def main(argv: list) -> int:
         sorted(str(r.get("task") if isinstance(r, dict) else r) for r in (plan.get(key) or []))
         for key in ("stalled", "unprompted", "needs_input")
     )
+    reviews = sorted(str(r.get("task")) for r in (plan.get("reviews") or []) if isinstance(r, dict))
     now = {"told": ready, "posted": ready, "stalled": stalled, "stalled_posted": stalled,
            "unprompted": unprompted, "unprompted_posted": unprompted,
-           "needs_input": asking, "needs_input_posted": asking}
+           "needs_input": asking, "needs_input_posted": asking,
+           "reviews": reviews, "reviews_posted": reviews}
     # Each set, in the order its news is spoken: (typed, posted, refs, line, what, word).
     sets = (
         ("told", "posted", ready, message, "ready work", "ready"),
@@ -620,6 +638,8 @@ def main(argv: list) -> int:
          "an unprompted worker", "unprompted"),
         ("needs_input", "needs_input_posted", asking, needs_input_message,
          "a worker that needs input", "asking for input"),
+        ("reviews", "reviews_posted", reviews, reviews_message,
+         "pending independent reviews", "review-pending"),
     )
 
     # PRUNE, THEN COMPARE, and the prune is what makes a re-entry news. A task
@@ -630,7 +650,7 @@ def main(argv: list) -> int:
     state = read_state(args.state_dir)
     memory = {k: [r for r in (state.get(k) or []) if r in now[k]] for k in MEMORY}
     memory["lead"] = state.get("lead")
-    if not ready and not stalled and not unprompted and not asking:
+    if not ready and not stalled and not unprompted and not asking and not reviews:
         return say(args.state_dir, memory, "")
 
     # WHO IS LISTENING, before what is news to them: only asked while a set
