@@ -13,6 +13,8 @@ import subprocess
 import sys
 import time
 
+import pytest
+
 from harness import expect, lib, write
 from reconcilekit import wait_for
 
@@ -87,3 +89,63 @@ def test_the_heartbeat_is_fresh_when_each_child_starts(recon, monkeypatch, isola
         pid = int((isolated_env / "slow.pid").read_text(encoding="utf-8"))
         if mod.fleet_platform.alive(pid):
             mod.fleet_platform.terminate_tree(pid, force=True)
+
+
+def test_a_pid_recording_failure_ends_the_command_and_clears_tracking(recon):
+    # Run the supervisor in another process, with a write error injected at the PID record.
+    driver = """
+import sys, time
+sys.path.insert(0, sys.argv[1])
+from harness import lib
+mod = lib("reconcile.py")
+cfg = mod.Config.from_env()
+cfg.queue_cmd = [sys.executable, "-c", "import time; time.sleep(3)"]
+original = mod.fleet_platform.write_record
+
+def broken_record(path, text):
+    original(path, text)
+    if path == cfg.path("child"):
+        original(cfg.path("started"), text)
+        original(cfg.path("down"), "test stops after the recording failure\\n")
+        raise OSError("cannot record child")
+
+mod.fleet_platform.write_record = broken_record
+began = time.monotonic()
+assert mod.with_lock(cfg, mod.supervise) == 0
+print(time.monotonic() - began)
+"""
+    done = subprocess.run(
+        [sys.executable, "-c", driver, os.path.dirname(os.path.dirname(__file__))],
+        capture_output=True, text=True, encoding="utf-8", timeout=30,
+    )
+    assert done.returncode == 0, done.stderr
+    assert float(done.stdout) < 2, "PID recording failure waited for the command"
+    mod = lib("reconcile.py")
+    pid = int((recon.rt / "started").read_text(encoding="utf-8"))
+    assert not mod.fleet_platform.alive(pid)
+    assert not (recon.rt / "child").exists(), "failed command left stale PID tracking"
+    assert not (recon.rt / "pid").exists()
+    assert not (recon.rt / "heartbeat").exists(), "failed startup was advertised as healthy"
+    assert not mod.lock_held(mod.Config.from_env())
+    assert "nothing to reconcile" in recon.log()
+
+
+@pytest.mark.parametrize(("bound", "age"), [(1, 30), (1, 70), (90, 100)])
+def test_status_does_not_call_an_inside_bound_watch_stalled(recon, monkeypatch, bound, age):
+    monkeypatch.setenv("FLEET_RECONCILE_BOUND_SECS", str(bound))
+    recon.rt.mkdir(parents=True, exist_ok=True)
+    holder = subprocess.Popen(
+        [sys.executable, "-c", HOLDER, os.path.join(LIB, "fleet_platform.py"), str(recon.rt)],
+        stdout=subprocess.PIPE, text=True, encoding="utf-8",
+    )
+    try:
+        assert holder.stdout.readline().strip() == "held"
+        # Controlled age covers watch, longer commands and cleanup without a slow real watch.
+        write(recon.rt / "heartbeat", f"{int(time.time()) - age}\n")
+        done = recon("status")
+        assert done.code == 0, done.out
+        assert "STALLED" not in done.out
+    finally:
+        holder.kill()
+        holder.wait(timeout=30)
+        holder.stdout.close()

@@ -437,6 +437,10 @@ def no_terminal() -> dict:
     return {"start_new_session": True}
 
 
+# Tree termination and pipe draining each get this allowance, including on Windows.
+BOUNDED_CLEANUP_SECS = 10
+
+
 def terminate_tree(pid: int, force: bool = False) -> None:
     """End `pid` and what it is running, as a stop has to.
 
@@ -449,8 +453,9 @@ def terminate_tree(pid: int, force: bool = False) -> None:
     if WINDOWS:
         taskkill = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "taskkill.exe")
         try:
-            subprocess.run([taskkill, "/PID", str(pid), "/T", "/F"], capture_output=True, check=False)
-        except OSError:
+            subprocess.run([taskkill, "/PID", str(pid), "/T", "/F"], capture_output=True, check=False,
+                           timeout=BOUNDED_CLEANUP_SECS)
+        except (OSError, subprocess.TimeoutExpired):
             pass
         return
     sig = signal.SIGKILL if force else signal.SIGTERM
@@ -483,18 +488,29 @@ def run_bounded(argv: list[str], secs: float, input: str | None = None, on_start
     if not WINDOWS:
         popen["start_new_session"] = True
     with subprocess.Popen(argv, **popen) as proc:
-        if on_start:
-            on_start(proc.pid)
+        def cleanup():
+            terminate_tree(proc.pid, force=True)
+            try:
+                # Descendants can hold inherited pipes even after the root exits.
+                proc.communicate(timeout=BOUNDED_CLEANUP_SECS)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+
+        try:
+            if on_start:
+                on_start(proc.pid)
+        except BaseException:
+            cleanup()
+            raise
         try:
             out, errs = proc.communicate(input, timeout=secs)
         except subprocess.TimeoutExpired:
-            terminate_tree(proc.pid, force=True)
-            try:
-                # Every holder of the pipes is gone with the tree; this only drains them.
-                proc.communicate(timeout=10)
-            except subprocess.TimeoutExpired:
-                proc.kill()
+            cleanup()
             return None
+        except BaseException:
+            cleanup()
+            raise
+
     return subprocess.CompletedProcess(argv, proc.returncode, out, errs)
 
 

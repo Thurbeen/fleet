@@ -522,6 +522,40 @@ class RunBounded(TempDirCase):
         self.assertFalse(fp.alive(grandchild), "the grandchild outlived the bound")
         self.assertFalse(fp.alive(started[0]))
 
+    def test_a_start_callback_failure_does_not_wait_for_the_child(self):
+        mark = self.tmp / "grandchild"
+        child = (
+            "import subprocess, sys, time\n"
+            "g = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
+            f"open({str(mark)!r}, 'w').write(str(g.pid))\n"
+            "time.sleep(3)\n"
+        )
+        started = []
+
+        def failed(pid):
+            started.append(pid)
+            deadline = time.monotonic() + 30
+            while not mark.is_file() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue(mark.is_file(), "child never started its descendant")
+            raise OSError("cannot record child")
+
+        began = time.monotonic()
+        try:
+            with self.assertRaisesRegex(OSError, "cannot record child"):
+                fp.run_bounded([sys.executable, "-c", child], 0.1,
+                               on_start=failed, capture_output=True, text=True)
+            self.assertLess(time.monotonic() - began, 2, "startup failure waited for the child")
+            self.assertFalse(fp.alive(started[0]))
+            grandchild = int(mark.read_text(encoding="utf-8"))
+            deadline = time.monotonic() + 15
+            while fp.alive(grandchild) and time.monotonic() < deadline:
+                time.sleep(0.1)
+            self.assertFalse(fp.alive(grandchild), "descendant kept the inherited pipe open")
+        finally:
+            if started:
+                fp.terminate_tree(started[0], force=True)
+
     @unittest.skipIf(WINDOWS, "POSIX branch")
     def test_the_child_leads_a_group_of_its_own_so_the_group_is_what_is_ended(self):
         probe = "import os; print(os.getpgid(0) == os.getpid())"

@@ -156,9 +156,10 @@ person read `status`.
             replaces a file in one step.
 
 It is also what `status` calls STALLED. The heartbeat is written before every
-child the loop starts, so one older than one watch call plus one bound is a
-child that outran its bound and was not ended — a loop that is stuck, not slow —
-and `status` exits 1 on it, as it does on DOWN.
+child the loop starts, so one older than the longest child allowance plus
+tree termination and pipe draining is a child that outran its bound and was
+not ended — a loop that is stuck, not slow — and `status` exits 1 on it, as it
+does on DOWN.
 
 Environment:
   FLEET_RECONCILE_DIR           runtime state (default orchestration/reconcile)
@@ -331,7 +332,7 @@ class Config:
     def stall(self) -> int:
         # A NOTE on status, never an adoption test: one slow shepherd sweep is not
         # a wedged loop, and adoption turning on freshness would start a twin.
-        return self.watch + self.bound
+        return max(self.watch + WATCH_MARGIN_SECS, self.bound) + 2 * fleet_platform.BOUNDED_CLEANUP_SECS
 
 
 # --- small things -------------------------------------------------------------
@@ -555,20 +556,22 @@ def bounded(cfg: Config, label: str, argv: list, secs: int, loop: bool = True, *
         # Beaten before EVERY child, not once a pass: a pass runs several, each
         # with its own bound, and two slow-but-honest ones would otherwise age
         # the beat past `stall` and have `status` fail a healthy loop. So a beat
-        # older than one watch plus one bound is one child past its bound — a
+        # older than the longest child allowance and cleanup is past its bound — a
         # loop that is genuinely stuck. Only REFRESHED, never started here: the
         # first beat is the pass's own, so a loop whose startup `root` cannot
         # run still never reads as up.
         if os.path.isfile(cfg.path("heartbeat")):
             fleet_platform.write_record(cfg.path("heartbeat"), f"{int(time.time())}\n")
-    done = fleet_platform.run_bounded(
-        argv, secs, env=child_env(), encoding="utf-8", errors="replace",
-        on_start=(lambda pid: fleet_platform.write_record(track, f"{pid}\n")) if loop else None, **popen,
-    )
-    if loop:
-        remove(track)
-        if done is None:
-            log(cfg, f"{label}: killed after {secs}s, its bound; the next pass runs it again")
+    try:
+        done = fleet_platform.run_bounded(
+            argv, secs, env=child_env(), encoding="utf-8", errors="replace",
+            on_start=(lambda pid: fleet_platform.write_record(track, f"{pid}\n")) if loop else None, **popen,
+        )
+    finally:
+        if loop:
+            remove(track)
+    if loop and done is None:
+        log(cfg, f"{label}: killed after {secs}s, its bound; the next pass runs it again")
     return done
 
 
