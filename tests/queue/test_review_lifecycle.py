@@ -357,3 +357,38 @@ def test_stopped_flag_and_condition_blocker_prevent_review_wakes(lifecycle):
     row = pass_(t)[0]
     assert row["review"]["action"] == "needs-lead"
     assert not t.sends(REVIEWER)
+
+
+def test_latest_recipient_state_cannot_wake_a_turn_that_just_started(lifecycle):
+    t = lifecycle
+    original = (t.shep.stubs.root / "scripts" / "thurbox-cli.py").read_text(encoding="utf-8")
+    t.shep.stubs.tool("thurbox-cli", '''import json, os, sys
+from pathlib import Path
+if sys.argv[1:3] == ["session", "get"] and sys.argv[3] == "''' + REVIEWER + '''":
+    counter = Path(os.environ["FLEET_STUB_ROOT"]) / "reviewer-gets"
+    count = int(counter.read_text(encoding="utf-8")) + 1 if counter.exists() else 1
+    counter.write_text(str(count), encoding="utf-8")
+    print(json.dumps({"id": "''' + REVIEWER + '''", "state": "idle" if count == 1 else "working"}))
+    raise SystemExit(0)
+''' + original)
+    pass_(t)
+    assert not t.sends(REVIEWER)
+    notes = t.shep.stubs.calls("thurbox-cli", "message send")
+    assert len(notes) == 1
+    expect(notes[0], "--no-wake", REVIEWER)
+
+
+def test_repository_case_does_not_duplicate_watches_or_hide_a_forge_absence(lifecycle, tmp_path):
+    t = lifecycle
+    settings = Path(os.environ["FLEET_PUBLISH_ROOT"]) / "orchestration" / "publish.conf"
+    write(settings, "METHOD=pr\nREVIEW_REPOS=github.com/thurbeen/fleet\n"
+          f"REVIEWER_TASK={t.topic}/02-review\nREVIEW_SCORE=5\n")
+    ok(record(t))
+    rows = json.loads(ok(q("shepherd", "--no-merge", "--json")).stdout)["prs"]
+    assert len(rows) == 1
+    assert rows[0]["review"]["state"] == "clean"
+    empty = tmp_path / "no-tools"
+    empty.mkdir()
+    out = ok(q("shepherd", "--json", PATH=str(empty))).stdout
+    assert json.loads(out)["unavailable"]
+    assert json.loads(ok(q("plan", "--json")).stdout)["reviews"]

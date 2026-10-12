@@ -165,6 +165,9 @@ def notify(q, doc, sid, key, line):
         return "needs-lead", why
     if row.get("stopped") or row.get("state") == "stopped":
         return "needs-lead", "review recipient is deliberately stopped"
+    # The pane probe can change between reads; use the latest word before
+    # choosing a mailbox note or a wake.
+    status = str(row.get("state") or "unknown")
     identity = helper.identity(row)
     receipt = doc.get("delivery") or {}
     if receipt.get("key") != key or receipt.get("identity") != identity:
@@ -326,7 +329,8 @@ def retire(q, listings, unreadable, dry_run):
         filename = os.path.join(directory(q), name)
         doc = read(filename)
         repo = q.forge.RepoId.parse(doc.get("repo", ""))
-        failed = next((r["detail"] for r in unreadable if r["repo"] == doc.get("repo")), "")
+        failed = next((r["detail"] for r in unreadable
+                       if r["repo"].casefold() == str(doc.get("repo", "")).casefold()), "")
         if failed:
             with locked(q, doc["url"]) as (filename, latest):
                 latest.update(state="pending", action="needs-lead", detail="forge not read: " + failed)
