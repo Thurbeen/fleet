@@ -300,15 +300,16 @@ def lead_row(name: str) -> tuple[dict | None, str]:
     # thurbox mirrors every host it reaches, and a Mission Control on a remote
     # host beside this one is a normal fleet wearing the same name. The lead is
     # the row on THIS machine whose cwd is THIS checkout — `session_place` and
-    # `is_this_checkout`, the rule `peers.py` tells a peer from itself by. The
-    # name alone answers only when one row carries it (an older thurbox lists
-    # no cwd); several and none of them here is no lead, never a guess.
+    # `is_this_checkout`, the rule `peers.py` tells a peer from itself by.
+    # A sole legacy row without cwd still answers, unless its backend says it
+    # runs elsewhere. Known metadata must never contradict checkout ownership.
     here = [r for r in named
-            if (fleetqueue.session_place(r.get("backend_type")) or ("",))[0] == "local"
+            if (fleetqueue.session_place(r.get("backend_type") or "") or ("",))[0] == "local"
             and fleetqueue.is_this_checkout(r.get("cwd"))]
     if len(here) == 1:
         return here[0], ""
-    if len(named) == 1:
+    if (len(named) == 1 and not named[0].get("cwd")
+            and (fleetqueue.session_place(named[0].get("backend_type") or "") or ("",))[0] == "local"):
         return named[0], ""
     return None, (f"{len(named)} sessions are named {name!r} and "
                   + ("several are" if here else "none of them is")

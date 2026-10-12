@@ -10,7 +10,7 @@ import json
 
 from queuekit import S1, S2
 
-from harness import expect, refute, run_fleet, write
+from harness import REPO, expect, refute, run_fleet, write
 
 LEAD = "Gate Control"
 LEAD_ID = "lead-uuid"
@@ -21,7 +21,8 @@ STRANGER = "44444444-4444-4444-4444-444444444444"
 def session(stubs, sid: str, name: str, parent: str | None, state: str = "idle") -> None:
     write(stubs.root / "sessions" / f"{sid}.json", json.dumps({
         "id": sid, "name": name, "state": state, "parent_session_id": parent,
-        "hook_state_age_secs": 7200, "cwd": "/work", "backend_type": "local:tmux", "worktrees": [],
+        "hook_state_age_secs": 7200, "cwd": str(REPO) if sid == LEAD_ID else "/work",
+        "backend_type": "local:tmux", "worktrees": [],
     }))
 
 
@@ -59,3 +60,15 @@ def test_no_lead_is_said_and_is_not_a_crash(attached, stubs):
     assert run.code != 0
     expect(run.out, "no session named")
     refute(run.out, "Traceback")
+
+
+def test_another_checkouts_lead_does_not_supply_this_fleets_orphans(attached, stubs, tmp_path):
+    write(stubs.root / "sessions" / f"{LEAD_ID}.json", json.dumps({
+        "id": LEAD_ID, "name": LEAD, "state": "idle",
+        "backend_type": "local:tmux", "cwd": str(tmp_path),
+    }))
+    session(stubs, REVIEW, "review prs", LEAD_ID)
+    run = run_fleet("sessions", "orphans", FLEET_LEAD_SESSION=LEAD)
+    assert run.code != 0, run.out
+    expect(run.out, "none of them is this checkout's")
+    refute(run.out, REVIEW, "Traceback")
