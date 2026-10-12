@@ -47,6 +47,21 @@ names two repositories once two forges are in play.
 | the change | `gh pr view <n> …` / `gh pr diff <n> …` | `glab mr view <n> -R <project url> -F json` / `glab mr diff <n> -R <project url>` |
 | the verdict | `gh pr review <n> --approve / --request-changes / --comment` | `glab mr approve <n>` / `glab mr note <n> -m …` |
 
+### A configured Fleet review obligation
+
+If this repository's `publish.conf` assigns your queue task as `REVIEWER_TASK`,
+publication and green CI leave an independent review obligation open. Follow
+the review tool and publishing instructions in your brief, publish the linked
+summary naming the full head, then record the assessment from your own session
+with `uv run fleet queue review record` (see `--help`). The configuration's
+`REVIEW_SCORE` sets the required maximum. Record valid findings too; they need
+an existing fixer, and its next push needs another independent review.
+
+A finished turn or a result file never records this assessment. Pending CI is
+left pending: Fleet will deliver work when the checks conclude. The assignment
+keeps your session for future PRs and heads; the lead removes it to retire you.
+Do not reuse old-head scores or bypass any of §7's merge restrictions.
+
 ## 1. Give it its own session, and its own worktree
 
 ```bash

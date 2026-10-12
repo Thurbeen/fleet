@@ -629,6 +629,33 @@ gets exactly one of these:
 | checks green, `MERGEABLE`, ours, nothing attested it | recorded `green`, reported `ready to merge — not attested; yours`, never merged by fleet |
 | anything it could not read | reported, left alone |
 
+**Optional independent review stays pending after publication.** The
+`REVIEW_REPOS`, `REVIEWER_TASK` and `REVIEW_SCORE` settings in
+`orchestration/publish.conf` opt repositories into an explicit review
+obligation. The tracked example owns the configuration and trust boundary;
+`scripts/lib/review_lifecycle.py` owns the lifecycle. Read them before enabling
+it. `collect` still proves artifact existence; green CI and a finished reviewer
+turn do not discharge the obligation. `queue plan --json` exposes `reviews`,
+including a missing reviewer or fixer, and the reconciler tells the lead.
+
+The configured reviewer receives actionable current-head work, safely and
+once per obligation and conversation. Findings go to the existing fixer;
+nobody is spawned by this contract. A push requires independent reassessment.
+The reviewer records the published forge summary from its own assigned session:
+
+```bash
+uv run fleet queue review record <PR-URL> --head <full-head> \
+  --score <score> --findings <count> --evidence <forge-summary-note-URL>
+```
+
+The reviewer remains held after its result is collected, for new heads and new
+PRs. Remove its assignment before retiring it. A clean assessment adds vetting
+evidence to the existing merge gate only in opted-in repositories; allowlists,
+CI, threads, author permission and human holds still apply. An `attested` task
+still needs its original publisher attestation. After changed feedback, absence,
+or an unreadable source, do not reuse an earlier score: finish the assessment of
+the current full head and record it again.
+
 **Review comments are a delivery of their own, not a condition.** Beside the
 row above — whatever it says, short of `CHANGES_REQUESTED`, a fixer this pass
 just sent, or a merge — `shepherd` reads every review, comment and thread on
@@ -718,8 +745,9 @@ uv run fleet queue prs --records  # the same, as the board's tab-separated wire
 
 Each `--records` PR carries one dot word: `merged`, `closed`, `stale` (marked
 stale, or not observed in two `SHEPHERD_SECS` passes), `failing`,
-`conflicting`, `changes` (changes requested or unresolved threads), `ready`
-(checks passing and mergeable) or `pending` — most decisive first.
+`conflicting`, `changes` (changes requested, unresolved threads or independent
+findings), `ready` (checks passing, mergeable and no required review pending)
+or `pending` — most decisive first.
 
 `shepherd` is a sibling of `collect`, not part of it: `collect` reads local
 files and works offline, and folding a session-spawning, forge-calling side
