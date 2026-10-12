@@ -645,9 +645,14 @@ nobody is spawned by this contract. A push requires independent reassessment.
 The reviewer records the published forge summary from its own assigned session:
 
 ```bash
-uv run fleet queue review record <PR-URL> --head <full-head> \
+uv run --project <control-plane-checkout> fleet queue review record <PR-URL> --head <full-head> \
   --score <score> --findings <count> --evidence <forge-summary-note-URL>
 ```
+
+Use the control-plane project even from a separate reviewer worktree; the
+delivered command includes its path. A deliberate session stop preserves a
+completed clean assessment but blocks new recordings and wakes. Retiring or
+blocking its task, or an absent/unreadable census, invalidates the assessment.
 
 The reviewer remains held after its result is collected, for new heads and new
 PRs. Remove its assignment before retiring it. A clean assessment adds vetting

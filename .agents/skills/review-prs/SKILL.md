@@ -53,7 +53,9 @@ If this repository's `publish.conf` assigns your queue task as `REVIEWER_TASK`,
 publication and green CI leave an independent review obligation open. Follow
 the review tool and publishing instructions in your brief, publish the linked
 summary naming the full head, then record the assessment from your own session
-with `uv run fleet queue review record` (see `--help`). The configuration's
+with the delivered `uv run --project <control-plane-checkout> fleet queue
+review record` command (see `--help`), even from your separate worktree.
+The configuration's
 `REVIEW_SCORE` sets the required maximum. Record valid findings too; they need
 an existing fixer, and its next push needs another independent review.
 
