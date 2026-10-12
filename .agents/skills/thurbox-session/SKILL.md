@@ -115,12 +115,18 @@ turns off remote hook status — a Windows worker sits at `unreported` and you
 read the pane — and psmux captures a pane with its spaces gone
 (`Yes,Itrustthisfolder`), so match with whitespace stripped.
 
-**The pane IS reachable on a remote host.** `session get`, `capture`, `key`
-and `send` each delegate to the thurbox-cli on that machine, so `uv run fleet
-session-trust` answers a remote dialog as it answers a local one. The
-config-seeding fallback (`fleet trust-thurbox-dir`) writes THIS machine's
-`~/.claude.json` and does not travel. A host with `share_sessions = false` is
-the one where nothing can see the pane.
+**The pane is NOT reachable from here for a remote session** (thurbox 2.58:
+`session capture` is "local sessions only", and `session get` skips the pane
+probe — `hook_corroboration: "unavailable"`). `get`, `list` and `delete --force`
+act on the row this machine mirrored from the host; the state in that row is the
+last hook report, with no probe behind it, and it stays latched when the host
+goes away. So for a remote session: ask the host (`ssh <host> true`), then ask
+the HOST's own thurbox (`ssh <host> thurbox-cli session get <id> --json`), which
+has the pane and probes it. `fleet queue reap` does both and keeps the session
+when either cannot answer; `refuel` and `abandon` treat a remote session as
+undetermined; `fleet sessions orphans` marks its state as a mirror. `capture`,
+and so `fleet session-trust`, cannot answer a remote dialog from this machine:
+run it on the host. A host with `share_sessions = false` shows nothing at all.
 
 ## 1b. Get past the trust dialog — as part of the spawn, not after it
 
@@ -347,7 +353,8 @@ absence of one.
 has gone away answers with the state LATCHED before it went, so a worker that
 last reported `idle` still reads `idle` an hour after its machine died. For a
 remote session, ask the HOST (`ssh <host> true`) before you believe a resting
-state; `fleet queue reap` does.
+state, then the host's own `session get` (§1a) — a reachable host does not make
+the mirrored state fresh; `fleet queue reap` does both.
 
 `get` and `list` answer differently, on purpose: **`session get --json` probes
 the pane** (`--no-verify` skips it), which is the only way to see an agent

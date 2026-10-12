@@ -193,6 +193,7 @@ def test_a_remote_result_comes_back_and_its_session_outlives_a_down_host(
     expect((stubs.root / "sessions" / f"{RSESSION}.json").read_text(encoding="utf-8"), '"state": "idle"')
 
     hosts.unflag("me@devbox", "down")
+    hosts.host_session("me@devbox", RSESSION, state="idle")
     # Reachability is not permission to delete: the host is asked for its own
     # session list, the same ssh path host_reachable just used. An occupant
     # there keeps the session; an empty list is a real absence and is reaped.
@@ -203,6 +204,18 @@ def test_a_remote_result_comes_back_and_its_session_outlives_a_down_host(
     expect(q("reap").out, "kept", RSESSION, "manual-on-host", WORKTREE)
     refute(deletions(stubs), RSESSION)
     (stubs.root / "ssh-state" / "me@devbox.session-list.json").unlink()
+
+    # The state this machine holds is the host's, MIRRORED: never pane-probed,
+    # so a reachable host does not make it fresh. The host's own thurbox is
+    # asked, and a session it will not vouch for is kept — it says nothing
+    # (no such session / an error), or it says the agent is working.
+    (stubs.root / "ssh-state" / "me@devbox.host-sessions" / f"{RSESSION}.json").unlink()
+    expect(q("reap").out, "kept", "host devbox's own thurbox says", "no such session")
+    refute(deletions(stubs), RSESSION)
+    hosts.host_session("me@devbox", RSESSION, state="working")
+    expect(q("reap").out, "kept", "host devbox's own thurbox says `working`")
+    refute(deletions(stubs), RSESSION)
+    hosts.host_session("me@devbox", RSESSION, state="idle")
     expect(q("reap").out, "reaped", RSESSION)
     expect(deletions(stubs), RSESSION)
 
@@ -303,6 +316,7 @@ def test_a_windows_host_is_spoken_to_in_powershell_and_the_bytes_survive(hosts, 
     hosts.flag("me@winbox", "down")
     expect(q("reap").out, "unreachable: host winbox")
     hosts.unflag("me@winbox", "down")
+    hosts.host_session("me@winbox", WSESSION, state="idle")
     write(stubs.root / "ssh-state" / "me@winbox.session-list.json", json.dumps([
         {"id": WSESSION, "cwd": WWORKTREE, "backend_type": "local-tmux"},
         {"id": "manual-on-winbox", "cwd": WWORKTREE + "\\src", "backend_type": "local-tmux"},
@@ -310,6 +324,7 @@ def test_a_windows_host_is_spoken_to_in_powershell_and_the_bytes_survive(hosts, 
     expect(q("reap").out, "kept", WSESSION, "manual-on-winbox", WWORKTREE)
     refute(deletions(stubs), WSESSION)
     (stubs.root / "ssh-state" / "me@winbox.session-list.json").unlink()
+    hosts.host_session("me@winbox", WSESSION, state="idle")
     expect(q("reap").out, "reaped", WSESSION)
     expect(deletions(stubs), WSESSION)
 
@@ -419,6 +434,7 @@ def test_a_remote_worktree_stays_clean_and_its_memory_sits_beside_it(rtopic, hos
 
     # Released with the session, and only what fleet put there.
     stubs.pr_state(4444, "MERGED")
+    hosts.host_session("me@devbox", RSESSION, state="idle")
     expect(q("reap").out, "reaped", RSESSION, COMPANIONS)
     assert sorted(p.name for p in beside.iterdir()) == ["notes.txt"], "a file fleet did not write is left"
     assert there.is_dir(), "the worktree itself is thurbox's, not this cleanup's"

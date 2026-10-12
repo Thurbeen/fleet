@@ -6615,6 +6615,38 @@ def host_session_snapshot(name: str) -> tuple[dict | None, dict | None, str]:
     return sessions, entry, why
 
 
+def host_session_state(name: str, sid: str) -> tuple[str | None, str]:
+    """What the HOST's own thurbox says this session is doing. (state, reason it cannot say).
+
+    The local `session get` on a remote session reads the row this machine
+    MIRRORED: thurbox never probes a pane it does not have (`hook_corroboration`
+    is `unavailable`), so a reachable host does not make that state fresh — an
+    agent that died after its last `idle` report still reads `idle`. The host's
+    own thurbox has the pane, so the same call run THERE probes it. Anything
+    short of a state is None, and a caller keeps the session.
+    """
+    if not re.fullmatch(r"[0-9A-Za-z-]+", sid):
+        return None, f"session id {sid!r} is not one this file will put in a host command"
+    entry, why = host_entry(name)
+    if not entry:
+        return None, why
+    proc = ssh_run(entry, f"thurbox-cli session get {sid} --json")
+    if proc.returncode != 0:
+        return None, first_line(proc) or f"thurbox-cli session get on host {name} failed"
+    out = proc.stdout
+    start = out.find("{")
+    try:
+        doc = json.loads(out[start:]) if start >= 0 else None
+    except ValueError:
+        doc = None
+    if not isinstance(doc, dict):
+        return None, f"thurbox-cli session get on host {name} did not answer JSON"
+    state = doc.get("state")
+    if not state:
+        return None, f"thurbox-cli session get on host {name} answered no state"
+    return str(state), ""
+
+
 def owned_worktree_paths(target) -> tuple[list | None, str]:
     worktrees = target.get("worktrees")
     if not isinstance(worktrees, list):
@@ -7185,6 +7217,20 @@ def reap(q: Queue, dry: bool = False, release: bool = True) -> int:
             )
             kept += 1
             continue
+
+        if task.doc.get("host"):
+            # The state above is this machine's mirror of the host's. Only the
+            # host's own thurbox can probe the pane, so it is asked too, and a
+            # session it will not vouch for is kept. See `host_session_state`.
+            host_state, host_why = host_session_state(task.doc["host"], sid)
+            if host_state not in REAPABLE_SESSION_STATES:
+                print(
+                    f"    {task.ref:<46} kept       host {task.doc['host']}'s own thurbox says "
+                    f"`{host_state or host_why}`; only " + ", ".join(REAPABLE_SESSION_STATES)
+                    + " are reaped"
+                )
+                kept += 1
+                continue
 
         blocker = worktree_release_blocker(sid)
         if blocker:

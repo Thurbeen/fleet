@@ -86,6 +86,10 @@ def orphans(lead: str) -> tuple[list | None, str]:
             "id": sid,
             "name": row.get("name"),
             "state": row.get("state"),
+            # A remote row's state is this machine's mirror of the host's: never
+            # pane-probed, and latched when the host is away. Say so rather than
+            # let `idle` read as an agent at rest.
+            "host": str(row.get("backend_type"))[4:] if str(row.get("backend_type")).startswith("ssh:") else None,
             "idle_secs": row.get("hook_state_age_secs"),
             "cwd": row.get("cwd"),
             "task": tasks[0].ref if tasks else None,
@@ -112,6 +116,9 @@ def cmd_orphans(args) -> int:
         age = row["idle_secs"]
         since = f"  for {int(age) // 60}m" if isinstance(age, (int, float)) else ""
         print(f"    {row['id']}  {row['state'] or '?':<10} {row['name'] or ''}{since}")
+        if row["host"]:
+            print(f"        on host {row['host']}: that state is a mirror, never probed here and "
+                  "latched while the host is away — check the host before deleting")
         if row["task"]:
             print(f"        task {row['task']} is {row['task_state']}")
         else:

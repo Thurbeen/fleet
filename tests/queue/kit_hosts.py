@@ -74,6 +74,10 @@ class Hosts:
     def session(self, sid: str, **doc) -> None:
         write(self.stubs.root / "sessions" / f"{sid}.json", json.dumps({"id": sid, **doc}) + "\n")
 
+    def host_session(self, dest: str, sid: str, **doc) -> None:
+        """What the HOST's own thurbox answers to `session get` — the pane-probed truth."""
+        write(self.state / f"{dest}.host-sessions" / f"{sid}.json", json.dumps({"id": sid, **doc}) + "\n")
+
     def remote(self, dest: str, path: str):
         """Where a path on a fake host lives here: `C:\\x\\y` is spelled as `C/x/y`."""
         return self.remotes / dest / path.replace(":", "").replace("\\", "/").lstrip("/")

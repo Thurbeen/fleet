@@ -95,6 +95,14 @@ def main(argv: list) -> int:
             return 1
         with open(target, "rb") as fh:
             print(base64.b64encode(fh.read()).decode("ascii"))
+    elif "thurbox-cli session get " in body:
+        sid = body.split("thurbox-cli session get ")[1].split()[0]
+        doc = os.path.join(state, f"{dest}.host-sessions", f"{sid}.json")
+        if not os.path.isfile(doc):
+            sys.stderr.write(f"no such session: {sid}\n")
+            return 1
+        with open(doc, encoding="utf-8") as fh:
+            sys.stdout.write(fh.read())
     elif "thurbox-cli session list" in body:
         listing = os.path.join(state, f"{dest}.session-list.json")
         if os.path.isfile(listing):

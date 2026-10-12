@@ -857,6 +857,12 @@ probed first, and a session it cannot reach is kept:
     topic/22-build-on-devbox     kept       unreachable: host devbox — No route to host
 ```
 
+A reachable host is not yet a fresh state: the local `session get` answers from
+the row this machine mirrored (no pane probe — `hook_corroboration` is
+`unavailable`), so `reap` then asks the HOST's own thurbox for the session
+(`host_session_state`) and deletes only when that answer is also at rest; an
+error, a missing session or any other word keeps it.
+
 **Never treat a transition as a completion.** `watch` will tell you a turn
 ended with no result file — a worker that stopped, hit an approval, or
 crashed. Closing it would mark failed work as shipped. Look at the pane

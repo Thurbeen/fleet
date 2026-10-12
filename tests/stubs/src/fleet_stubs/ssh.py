@@ -7,6 +7,7 @@ what makes a brief push and a result fetch provable rather than asserted.
 A host is shaped by a flag file under `ssh-state/`: `<dest>.down` for an
 unreachable one, `.nonposix` for a Windows-shaped shell, `.noforge` for one with
 no GitHub credentials, `.norepo` for one where the repo is not there.
+`<dest>.host-sessions/<id>.json` is what that host's own `session get` answers (none: an error).
 `.pane-probe` is what a fleet on that host answers when its queue probe
 (`pane_probe.py`) is run there, `.context` what it answers to a peer's context
 read (`context.py ... --wire json`), and `.slow` holds the seconds either takes
@@ -110,6 +111,13 @@ def main() -> int:
             sys.stderr.write(f"cat: {path}: No such file or directory\n")
             return 1
         sys.stdout.buffer.write(target.read_bytes())
+    elif "thurbox-cli session get " in script:
+        sid = script.split("thurbox-cli session get ")[1].split()[0]
+        doc = state / f"{dest}.host-sessions" / f"{sid}.json"
+        if not doc.is_file():
+            sys.stderr.write(f"no such session: {sid}\n")
+            return 1
+        sys.stdout.write(doc.read_text(encoding="utf-8"))
     elif "thurbox-cli session list" in script:
         listing = state / f"{dest}.session-list.json"
         if listing.is_file():

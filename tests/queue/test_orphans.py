@@ -72,3 +72,16 @@ def test_another_checkouts_lead_does_not_supply_this_fleets_orphans(attached, st
     assert run.code != 0, run.out
     expect(run.out, "none of them is this checkout's")
     refute(run.out, REVIEW, "Traceback")
+
+
+def test_a_remote_orphans_state_is_flagged_as_a_mirror(stubs):
+    session(stubs, LEAD_ID, LEAD, None)
+    write(stubs.root / "sessions" / f"{REVIEW}.json", json.dumps({
+        "id": REVIEW, "name": "review on devbox", "state": "idle", "parent_session_id": LEAD_ID,
+        "hook_state_age_secs": 7200, "cwd": "/work", "backend_type": "ssh:devbox", "worktrees": [],
+    }))
+    run = run_fleet("sessions", "orphans", FLEET_LEAD_SESSION=LEAD)
+    assert run.code == 0, run.out
+    expect(run.out, REVIEW, "on host devbox", "mirror", "latched")
+    doc = json.loads(run_fleet("sessions", "orphans", "--json", FLEET_LEAD_SESSION=LEAD).out)
+    assert [o["host"] for o in doc["orphans"]] == ["devbox"]
