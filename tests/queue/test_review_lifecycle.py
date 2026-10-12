@@ -416,12 +416,19 @@ def test_delivered_assessment_command_uses_control_plane_from_another_worktree(l
     # Execute the actual delivered command, with a tripwire standing in for a
     # Fleet command outside the configured project. The callback must load the
     # control plane even though the reviewer's cwd is elsewhere.
-    shell = (["powershell", "-NoProfile", "-NonInteractive", "-Command", command]
+    # The queue fixture stubs bare powershell for process-census probes. Use
+    # the real native shell here: a successful census stub executes nothing.
+    powershell = (Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32"
+                  / "WindowsPowerShell" / "v1.0" / "powershell.exe")
+    shell = ([str(powershell), "-NoProfile", "-NonInteractive", "-Command",
+              command + "; exit $LASTEXITCODE"]
              if os.name == "nt" else ["sh", "-c", command])
     result = run(shell, cwd=reviewer_cwd, THURBOX_SESSION=REVIEWER,
                  VIRTUAL_ENV=None)
     assert result.code == 0, result.out
-    assert pass_(t)[0]["review"]["state"] == "clean"
+    expect(result.out, f"review clean: {PR} at {HEAD}")
+    row = pass_(t)[0]
+    assert row["review"]["state"] == "clean", (result.out, row)
 
 
 def test_completed_clean_review_survives_deliberate_stop_and_can_merge(lifecycle):
