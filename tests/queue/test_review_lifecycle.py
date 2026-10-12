@@ -380,6 +380,9 @@ if sys.argv[1:3] == ["session", "get"] and sys.argv[3] == "''' + REVIEWER + '''"
 
 def test_repository_case_does_not_duplicate_watches_or_hide_a_forge_absence(lifecycle, tmp_path):
     t = lifecycle
+    original = (t.shep.stubs.root / "scripts" / "gh.py").read_text(encoding="utf-8")
+    # GitHub resolves this case variation to the same canonical repository.
+    t.shep.stubs.tool("gh", original.replace("== repo:", ".casefold() == repo.casefold():"))
     settings = Path(os.environ["FLEET_PUBLISH_ROOT"]) / "orchestration" / "publish.conf"
     write(settings, "METHOD=pr\nREVIEW_REPOS=github.com/thurbeen/fleet\n"
           f"REVIEWER_TASK={t.topic}/02-review\nREVIEW_SCORE=5\n")

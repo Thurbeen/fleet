@@ -10545,7 +10545,9 @@ def cmd_shepherd(args) -> int:
     repo_of = shepherd_targets(tasks)
     watched = {r for named in repo_of.values() for r in named}
     if not args.topic and not only:
-        watched.update(review_lifecycle().configured_repos(sys.modules[__name__]))
+        for repo in review_lifecycle().configured_repos(sys.modules[__name__]):
+            if not any(r.qualified.casefold() == repo.qualified.casefold() for r in watched):
+                watched.add(repo)
     repos = sorted(watched, key=lambda r: r.qualified)
     named = [str(r) for r in repos]
 
