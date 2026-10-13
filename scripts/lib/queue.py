@@ -6486,7 +6486,7 @@ VANISHED_GRACE_SECS = 10 * 60
 MASS_VANISH_MIN = 5
 
 
-def sweep_vanished(q: Queue, dry: bool, snapshot=None) -> int:
+def sweep_vanished(q: Queue, dry: bool, snapshot=None, decided: set | None = None) -> int:
     """Retire every dispatched task whose session thurbox no longer has.
 
     A worker whose multiplexer crashed, or whose session somebody deleted by
@@ -6585,7 +6585,7 @@ def sweep_vanished(q: Queue, dry: bool, snapshot=None) -> int:
         print(f"    {task.ref:<46} abandoned  {ABANDON_HOW['session-gone']}: {why}")
         trees = task_worktrees(task)
         free_build_output(task.ref, trees, dry)
-        run_worktree_hook(task.ref, trees, dry)
+        run_worktree_command(task.ref, trees, dry, decided=decided)
         release_companions(task, dry)
     return acted
 
@@ -6982,7 +6982,7 @@ def worktree_occupant(sessions, tree: str, sid: str | None = None) -> str:
 
     ONE GATE FOR BOTH THINGS reap does to a worktree it lets go of: free the
     build output under it, and hand it to the operator's own command
-    (`WORKTREE_HOOK` below). Somebody carrying the work on may be building in
+    (`WORKTREE_CMD` below). Somebody carrying the work on may be building in
     it right now, or running whatever that command would take down — so a
     worktree another session sits in is left whole, and so is one whose
     occupancy could not be judged, because a guess here is someone else's
@@ -7022,6 +7022,16 @@ def free_build_output(ref: str, trees: list[str], dry: bool) -> int:
             if sessions is None:
                 print(f"    {ref:<46} kept       build output in {tree}: {why}")
                 return freed
+        # ASKED STRICTLY HERE, and not through the gate: `worktree_occupant`
+        # places a path whose directory is already gone, which is what the
+        # command below needs and what a deletion must never be run on the
+        # strength of. Nothing changed for this caller when that gate was
+        # extracted, and this line is why.
+        try:
+            local_resolved_path(tree)
+        except (OSError, ValueError, RuntimeError) as exc:
+            print(f"    {ref:<46} kept       build output in {tree}: {exc}")
+            continue
         busy = worktree_occupant(sessions, tree)
         if busy:
             print(f"    {ref:<46} kept       build output: {busy}")
@@ -7081,16 +7091,36 @@ def free_build_output(ref: str, trees: list[str], dry: bool) -> int:
 # over a leftover stack would hold its dependents too. It is bounded and
 # killed with everything it started, exactly as a reconciler child is
 # (`fleet_platform.run_bounded`): a command that hangs costs one pass.
-WORKTREE_HOOK = "ON_WORKTREE_RELEASED"
-WORKTREE_HOOK_SECS = "ON_WORKTREE_RELEASED_SECS"
+# NOT `ON_WORKTREE_RELEASED`, and neither half of that name is an accident.
+# `ON_LANDED` / `ON_CLOSED` above hold a WORD fleet knows (`delete`, `notify`)
+# and this holds a command line fleet never reads, which `_CMD` is how the
+# rest of the settings say; and `<NAME>_SECS` is the reconciler's family of
+# clocks, read once when the loop starts and overridable by
+# `FLEET_RECONCILE_<NAME>_SECS`, while this bound is read on every reap, by
+# hand as much as by the loop, and has no environment override.
+WORKTREE_CMD = "WORKTREE_RELEASED_CMD"
+WORKTREE_CMD_SECS = "WORKTREE_RELEASED_CMD_SECS"
 
-# Long enough for a command that talks to a local daemon, short enough that it
-# cannot outlive the `collect` the reconciler runs it inside (`BOUND_SECS`,
-# 600s for the whole pass). An operator whose teardown is slower says so.
-WORKTREE_HOOK_DEFAULT_SECS = 60
+#
+# WHAT ITS BOUND IS AND IS NOT: it is PER COMMAND, not per pass. A reap that
+# releases many worktrees at once spends it once for each, and the reconciler
+# bounds the whole `collect` it runs this inside (`BOUND_SECS`, 600s by
+# default) — so an operator whose teardown is slow AND whose passes release
+# several worktrees sets this lower rather than higher, or that one pass is
+# killed and its remaining worktrees wait for the next.
+WORKTREE_CMD_DEFAULT_SECS = 60
+
+# A bound this long is not a bound, and the reason to refuse it here rather
+# than pass it on is mechanical: the wait goes to the OS, which rejects one
+# this large with an error no `run_bounded` caller is prepared for — it is
+# neither an `OSError` nor a timeout — and a reap pass has nothing to do with
+# a typo in a setting. Whole seconds only, `int` like every other clock in
+# this file, which is also what keeps `inf` and `nan` out: read as floats they
+# pass every "is it positive" test there is and raise out of the pass.
+WORKTREE_CMD_MAX_SECS = 3600
 
 
-def worktree_hook() -> tuple[list[str], float, str]:
+def worktree_command() -> tuple[list[str], int, str]:
     """The operator's command for a released worktree: (argv, its bound, why not).
 
     `([], 0, "")` is a fleet that configured none, which is every fresh clone
@@ -7100,29 +7130,31 @@ def worktree_hook() -> tuple[list[str], float, str]:
     open must not take down a reap pass that had nothing to do with it.
     """
     conf = reconcile_conf()
-    line = conf.get(WORKTREE_HOOK, "").strip()
+    line = conf.get(WORKTREE_CMD, "").strip()
     if not line:
-        return [], 0.0, ""
+        return [], 0, ""
     try:
         argv = fleet_platform.split_command(line)
     except ValueError as exc:
-        return [], 0.0, f"{WORKTREE_HOOK}: {exc}"
+        return [], 0, f"{WORKTREE_CMD}: {exc}"
     if not argv:
-        return [], 0.0, ""
-    raw = conf.get(WORKTREE_HOOK_SECS, "").strip()
-    try:
-        secs = float(raw) if raw else float(WORKTREE_HOOK_DEFAULT_SECS)
-    except ValueError:
-        secs = 0.0
-    if secs <= 0:
-        return [], 0.0, (
-            f"{WORKTREE_HOOK_SECS}={raw} is not a number of seconds above zero; "
-            f"{WORKTREE_HOOK} was not run"
+        return [], 0, ""
+    raw = conf.get(WORKTREE_CMD_SECS, "").strip()
+    secs = WORKTREE_CMD_DEFAULT_SECS
+    if raw:
+        try:
+            secs = int(raw)
+        except ValueError:
+            secs = 0
+    if not 0 < secs <= WORKTREE_CMD_MAX_SECS:
+        return [], 0, (
+            f"{WORKTREE_CMD_SECS}={raw} is not a whole number of seconds between 1 and "
+            f"{WORKTREE_CMD_MAX_SECS}; {WORKTREE_CMD} was not run"
         )
     return argv, secs, ""
 
 
-def hook_worktrees(task: Task) -> list[str]:
+def command_worktrees(task: Task) -> list[str]:
     """This task's worktrees, asked only when the operator has a command for them.
 
     WITH NO SETTING, NOTHING ABOUT A REAP CHANGES — not even one more `git
@@ -7130,21 +7162,49 @@ def hook_worktrees(task: Task) -> list[str]:
     deletes the session, which is the one place nothing else was asking for
     them, so the question is asked there only when there is something to do
     with the answer. A setting that cannot be read still counts as configured:
-    `run_worktree_hook` is what names it, and it names it once per task.
+    `run_worktree_command` is what names it, wherever it was reached.
     """
-    argv, _secs, why = worktree_hook()
+    argv, _secs, why = worktree_command()
     return task_worktrees(task) if argv or why else []
 
 
-def run_worktree_hook(ref: str, trees: list[str], dry: bool, sid: str | None = None) -> int:
+def worktree_key(tree: str) -> str:
+    """One key per worktree for a pass's `decided` set, however it was spelled.
+
+    The placed path, because the four release points reach the same directory
+    by different routes — git lists a task's worktrees, a fixer's checkout is
+    assembled from the queue root — and two spellings of one worktree must
+    count as one. A path that cannot be placed is keyed by itself: the gate
+    refuses it anyway, and a key only has to be stable.
+    """
+    try:
+        return local_occupant_path(tree)
+    except (OSError, ValueError, RuntimeError):
+        return tree
+
+
+def run_worktree_command(ref: str, trees: list[str], dry: bool, sid: str | None = None,
+                         decided: set | None = None) -> int:
     """Hand each released worktree to the operator's command. Returns how many ran.
 
     The same refusals as `free_build_output`: a worktree another session sits
     in is not handed over, and neither is one whose occupancy cannot be
     judged (`worktree_occupant` owns both, and `sid` is why the session being
     deleted is not read as its own occupant).
+
+    ONCE PER WORKTREE PER PASS, which is what `decided` carries. One worktree
+    is reached twice by design: `release_fixer_checkouts` removes the checkout
+    a fixer worked in, and the holders pass below lists that same checkout
+    among its task's worktrees whenever the fixer was cut on the task's own
+    branch. A teardown is not promised to be idempotent — the second call is
+    at best noise and at worst takes down what the first one's replacement
+    raised — so a worktree this pass has already answered for is skipped
+    silently. A refusal counts as an answer: `release_fixer_checkouts` puts a
+    checkout git would not remove in here itself, because the reason it was
+    kept is somebody's uncommitted work, and work being carried on is the one
+    thing this command must not be pointed at.
     """
-    argv, secs, why = worktree_hook()
+    argv, secs, why = worktree_command()
     if why:
         print(f"    {ref:<46} NOT RUN    {why}", file=sys.stderr)
         return 0
@@ -7153,14 +7213,21 @@ def run_worktree_hook(ref: str, trees: list[str], dry: bool, sid: str | None = N
     ran = 0
     sessions = None
     for tree in trees:
+        key = worktree_key(tree)
+        if decided is not None and key in decided:
+            continue
         if sessions is None:
             sessions, snap_why = session_snapshot()
             if sessions is None:
-                print(f"    {ref:<46} kept       {WORKTREE_HOOK} for {tree}: {snap_why}")
+                print(f"    {ref:<46} kept       {WORKTREE_CMD} for {tree}: {snap_why}")
                 return ran
         busy = worktree_occupant(sessions, tree, sid)
+        # Answered, whichever way it went: a worktree somebody is sitting in
+        # is still being sat in when the next release point reaches it.
+        if decided is not None:
+            decided.add(key)
         if busy:
-            print(f"    {ref:<46} kept       {WORKTREE_HOOK}: {busy}")
+            print(f"    {ref:<46} kept       {WORKTREE_CMD}: {busy}")
             continue
         argv_here = [*argv, tree, ref]
         if dry:
@@ -7173,25 +7240,25 @@ def run_worktree_hook(ref: str, trees: list[str], dry: bool, sid: str | None = N
                 stderr=subprocess.STDOUT, encoding="utf-8", errors="replace",
             )
         except OSError as exc:
-            print(f"    {ref:<46} FAILED     {WORKTREE_HOOK}: {exc}; {tree} may still be "
+            print(f"    {ref:<46} FAILED     {WORKTREE_CMD}: {exc}; {tree} may still be "
                   "held outside fleet", file=sys.stderr)
             continue
         if done is None:
-            print(f"    {ref:<46} FAILED     {WORKTREE_HOOK} killed after {secs:g}s, its bound "
-                  f"({WORKTREE_HOOK_SECS}); {tree} may still be held outside fleet",
+            print(f"    {ref:<46} FAILED     {WORKTREE_CMD} killed after {secs}s, its bound "
+                  f"({WORKTREE_CMD_SECS}); {tree} may still be held outside fleet",
                   file=sys.stderr)
             continue
         if done.returncode != 0:
             said = (done.stdout or "").strip().splitlines()
-            print(f"    {ref:<46} FAILED     {WORKTREE_HOOK} exit {done.returncode}: "
+            print(f"    {ref:<46} FAILED     {WORKTREE_CMD} exit {done.returncode}: "
                   + (said[-1] if said else "no output"), file=sys.stderr)
             continue
-        print(f"    {ref:<46} released   {tree}  ({WORKTREE_HOOK})")
+        print(f"    {ref:<46} released   {tree}  ({WORKTREE_CMD})")
         ran += 1
     return ran
 
 
-def release_fixer_checkouts(q: Queue, state_of, dry: bool) -> int:
+def release_fixer_checkouts(q: Queue, state_of, dry: bool, decided: set | None = None) -> int:
     """Take back the checkout `branch_checkout` cut for a finished task's fixer.
 
     Nothing else does. git cut it, not thurbox, so `session delete` leaves it:
@@ -7219,7 +7286,7 @@ def release_fixer_checkouts(q: Queue, state_of, dry: bool) -> int:
             free_build_output(task.ref, [path], dry)
             if dry:
                 print(f"    {task.ref:<46} would remove fixer checkout {path}")
-                run_worktree_hook(task.ref, [path], dry)
+                run_worktree_command(task.ref, [path], dry, decided=decided)
                 continue
             # Asked of each repository the task spans, because `shepherd` cuts
             # the checkout off whichever one the change request was in and only
@@ -7239,11 +7306,19 @@ def release_fixer_checkouts(q: Queue, state_of, dry: bool) -> int:
                     + (err[-1] if err else "git worktree remove failed"),
                     file=sys.stderr,
                 )
+                # HANDED OVER TO NOBODY, and taken off this pass's list so the
+                # holders below cannot hand it over either: git refused this
+                # checkout because it holds files it does not track, which is
+                # work somebody has not finished, and a teardown aimed at a
+                # worktree still being worked in is the one mistake here that
+                # costs more than the leak it was added to stop.
+                if decided is not None:
+                    decided.add(worktree_key(path))
                 continue
             print(f"    {task.ref:<46} removed    fixer checkout {path}")
             # A fixer's checkout is a worktree an agent worked in too, so what
             # it started outside it is the operator's to take down as well.
-            run_worktree_hook(task.ref, [path], dry)
+            run_worktree_command(task.ref, [path], dry, decided=decided)
     return acted
 
 
@@ -7302,6 +7377,11 @@ def reap(q: Queue, dry: bool = False, release: bool = True) -> int:
     # the vanished sweep and the holders below read the same answer.
     taken: list = []
 
+    # Which worktrees this pass has already answered the operator's command
+    # for (`run_worktree_command`'s docstring owns the rule). Pass-scoped, so
+    # the next reap asks again about anything that is still there.
+    decided: set[str] = set()
+
     def snapshot() -> tuple[set | None, str]:
         if not taken:
             taken.append(live_sessions())
@@ -7312,7 +7392,7 @@ def reap(q: Queue, dry: bool = False, release: bool = True) -> int:
     # session drops its id and frees its worktree's build output, which is
     # exactly the session work that flag promises to leave alone.
     if release:
-        acted += sweep_vanished(q, dry, snapshot)
+        acted += sweep_vanished(q, dry, snapshot, decided)
 
     # A topic can only become finished when one of its tasks moves into a
     # terminal state, and this is the pass that moves them — so the flag is
@@ -7327,7 +7407,7 @@ def reap(q: Queue, dry: bool = False, release: bool = True) -> int:
 
     # Before the holders: a task whose own session is long gone can still have
     # a fixer checkout on disk.
-    acted += release_fixer_checkouts(q, state_of, dry)
+    acted += release_fixer_checkouts(q, state_of, dry, decided)
 
     holders = [
         t
@@ -7401,7 +7481,7 @@ def reap(q: Queue, dry: bool = False, release: bool = True) -> int:
             # and the worktree its build output.
             trees = task_worktrees(task)
             free_build_output(task.ref, trees, dry)
-            run_worktree_hook(task.ref, trees, dry)
+            run_worktree_command(task.ref, trees, dry, decided=decided)
             release_companions(task, dry)
             continue
 
@@ -7423,12 +7503,12 @@ def reap(q: Queue, dry: bool = False, release: bool = True) -> int:
         # READ BEFORE THE DELETION, which takes the worktree with the session:
         # after it git lists none for this branch and the path the operator's
         # command needs is unrecoverable. Asked only when there is a command
-        # (`hook_worktrees`), so an unconfigured fleet runs nothing extra.
-        hooked = hook_worktrees(task)
+        # (`command_worktrees`), so an unconfigured fleet runs nothing extra.
+        released = command_worktrees(task)
 
         if dry:
             print(f"    {task.ref:<46} would reap {sid}  ({live_state})")
-            run_worktree_hook(task.ref, hooked, dry, sid)
+            run_worktree_command(task.ref, released, dry, sid, decided)
             release_companions(task, dry)
             reaped += 1
             continue
@@ -7455,7 +7535,7 @@ def reap(q: Queue, dry: bool = False, release: bool = True) -> int:
         # After the deletion, on a worktree that is gone and whatever it
         # started that is not. `sid` is already deleted, so it cannot be read
         # as its own occupant whichever list answers.
-        run_worktree_hook(task.ref, hooked, dry, sid)
+        run_worktree_command(task.ref, released, dry, sid, decided)
         release_companions(task, dry)
         reaped += 1
 

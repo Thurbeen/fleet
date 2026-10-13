@@ -6,7 +6,7 @@ OUTSIDE its worktree and keyed by it — a container stack, a database, a daemon
 took those down: on one machine eleven of them outlived the worktrees they
 were keyed to, holding 26 GB that a disk which never shrinks kept for good.
 
-So `ON_WORKTREE_RELEASED` in the gitignored `orchestration/reconcile.conf` is
+So `WORKTREE_RELEASED_CMD` in the gitignored `orchestration/reconcile.conf` is
 the seam. Fleet contributes what only it knows — which worktree, whose task,
 and when it is nobody's any more — and runs what it is given, bounded, with
 every refusal `free_build_output` makes and none of its own.
@@ -45,8 +45,8 @@ def hook(isolated_env, stubs, script: str = TOOK_IT_DOWN, line: str = HOOK, secs
     """Configure the operator's command, and say what it does when run."""
     stubs.tool(HOOK, script)
     write(isolated_env / "settings" / "orchestration" / "reconcile.conf",
-          f"ON_WORKTREE_RELEASED={line}\n"
-          + (f"ON_WORKTREE_RELEASED_SECS={secs}\n" if secs else ""))
+          f"WORKTREE_RELEASED_CMD={line}\n"
+          + (f"WORKTREE_RELEASED_CMD_SECS={secs}\n" if secs else ""))
 
 
 def ran(stubs) -> list[str]:
@@ -103,7 +103,7 @@ def test_a_dropped_session_hands_its_worktree_over_with_the_path_and_the_ref(gon
     _repo, tree = gone
     hook(isolated_env, stubs)
     out = ok(q("reap")).out
-    expect(out, "gone", "released", str(tree), "ON_WORKTREE_RELEASED")
+    expect(out, "gone", "released", str(tree), "WORKTREE_RELEASED_CMD")
     assert ran(stubs) == [f"{HOOK} {tree} {REF}"], ran(stubs)
 
 
@@ -151,12 +151,89 @@ def test_a_fixers_checkout_is_handed_over_when_it_is_taken_back(gone, stubs, iso
     assert f"{HOOK} {fixer} {REF}" in ran(stubs), ran(stubs)
 
 
+@pytest.fixture
+def fixer_on_the_task_branch(queue_dir, tmp_path):
+    """The one worktree two release points both reach.
+
+    `branch_checkout` cuts a fixer's checkout on the TASK'S OWN branch, so git
+    lists it among `task_worktrees` too — `release_fixer_checkouts` takes it
+    back, and the holders pass right after would hand over the same path.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git(repo, "init", "-q", "-b", "main")
+    write(repo / "README.md", "hello\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "init")
+    ok(q("topic", "add", "disk", "--title", "Let the worktree go", "--prompt", "take the stack down too"))
+    ok(q("add", "disk", "build", "--title", "Build something big", "--repo", str(repo),
+         "--branch", "fix/build", "--number", "01"))
+    fixer = queue_dir / ".worktrees" / "disk__01-build"
+    git(repo, "worktree", "add", "-q", "-b", "fix/build", str(fixer))
+    ok(q("attach", REF, SID))
+    ok(q("abandon", REF, "--why", "superseded"))
+    return repo, fixer
+
+
+def test_one_worktree_is_handed_over_once_however_many_releases_reach_it(
+        fixer_on_the_task_branch, stubs, isolated_env):
+    """A teardown is not promised to be idempotent, so it is asked for once."""
+    _repo, fixer = fixer_on_the_task_branch
+    hook(isolated_env, stubs)
+    dry = ok(q("reap", "--dry-run")).out
+    expect(dry, "would remove fixer checkout", str(fixer), "would run")
+    assert dry.count("would run") == 1, dry
+    out = ok(q("reap")).out
+    expect(out, "removed    fixer checkout", "released", str(fixer))
+    assert ran(stubs) == [f"{HOOK} {fixer} {REF}"], ran(stubs)
+
+
+def test_a_checkout_git_refuses_to_remove_is_handed_to_nobody(
+        fixer_on_the_task_branch, stubs, isolated_env):
+    """git keeps it because somebody's unfinished work is in it — which is the answer.
+
+    The holders pass lists the same path and must not hand over what the
+    removal just refused: whatever is running in there is still theirs.
+    """
+    _repo, fixer = fixer_on_the_task_branch
+    write(fixer / "notes.txt", "work in progress\n")
+    hook(isolated_env, stubs)
+    out = ok(q("reap")).out
+    expect(out, "kept       fixer checkout", str(fixer))
+    refute(out, "WORKTREE_RELEASED_CMD", "would run")
+    assert ran(stubs) == [], ran(stubs)
+
+
+def test_a_task_spanning_repositories_hands_over_each_worktree(worktree, stubs, isolated_env, tmp_path):
+    """One artifact per repository, and one worktree per repository to let go of."""
+    repo, tree = worktree
+    second = tmp_path / "other"
+    second.mkdir()
+    git(second, "init", "-q", "-b", "main")
+    write(second / "README.md", "hello\n")
+    git(second, "add", "-A")
+    git(second, "commit", "-q", "-m", "init")
+    ok(q("add", "disk", "spanning", "--title", "Both of them", "--repo", str(repo),
+         "--add-repo", str(second), "--branch", "fix/span", "--number", "02"))
+    here = tmp_path / "wt-here"
+    there = tmp_path / "wt-there"
+    git(repo, "worktree", "add", "-q", "-b", "fix/span", str(here))
+    git(second, "worktree", "add", "-q", "-b", "fix/span", str(there))
+    ok(q("attach", "disk/02-spanning", SID))
+    ok(q("abandon", "disk/02-spanning", "--why", "superseded"))
+    hook(isolated_env, stubs)
+    out = ok(q("reap")).out
+    expect(out, "released", str(here), str(there))
+    assert ran(stubs) == [f"{HOOK} {here} disk/02-spanning",
+                          f"{HOOK} {there} disk/02-spanning"], ran(stubs)
+
+
 def test_without_the_setting_nothing_is_run(gone, stubs, queue_dir):
     _repo, _tree = gone
     stubs.tool(HOOK, TOOK_IT_DOWN)
     out = ok(q("reap")).out
     expect(out, "gone")
-    refute(out, "ON_WORKTREE_RELEASED", "would run")
+    refute(out, "WORKTREE_RELEASED_CMD", "would run")
     assert ran(stubs) == []
     assert state(queue_dir)["reaped"]["how"] == "already gone"
 
@@ -170,7 +247,7 @@ def test_a_worktree_another_session_sits_in_is_not_handed_over(gone, stubs, isol
         "cwd": str(tree / "src"), "backend_type": "local:tmux", "worktrees": [],
     }))
     out = ok(q("reap")).out
-    expect(out, "gone", "kept       ON_WORKTREE_RELEASED", "by-hand")
+    expect(out, "gone", "kept       WORKTREE_RELEASED_CMD", "by-hand")
     assert ran(stubs) == []
 
 
@@ -203,7 +280,7 @@ def test_occupancy_that_cannot_be_judged_is_not_a_release(gone, stubs, isolated_
     stubs.tool("thurbox-cli", STOPS_ANSWERING)
     out = ok(q("reap")).out
     expect(out, "gone", f"kept       build output in {tree}",
-           f"kept       ON_WORKTREE_RELEASED for {tree}")
+           f"kept       WORKTREE_RELEASED_CMD for {tree}")
     assert ran(stubs) == []
 
 
@@ -211,7 +288,7 @@ def test_a_failing_command_is_reported_and_the_task_still_lands(gone, stubs, iso
     _repo, tree = gone
     hook(isolated_env, stubs, "print('cannot reach the daemon')\nraise SystemExit(3)\n")
     out = ok(q("reap")).out
-    expect(out, "FAILED", "ON_WORKTREE_RELEASED exit 3", "cannot reach the daemon")
+    expect(out, "FAILED", "WORKTREE_RELEASED_CMD exit 3", "cannot reach the daemon")
     assert ran(stubs) == [f"{HOOK} {tree} {REF}"], ran(stubs)
     doc = state(queue_dir)
     assert doc["state"] == "abandoned" and doc["reaped"]["how"] == "already gone"
@@ -221,19 +298,43 @@ def test_a_line_that_is_not_a_command_is_named_and_nothing_runs(gone, stubs, iso
     _repo, _tree = gone
     hook(isolated_env, stubs, line=f"{HOOK} 'unclosed")
     out = ok(q("reap")).out
-    expect(out, "NOT RUN", "ON_WORKTREE_RELEASED", "unclosed")
+    expect(out, "NOT RUN", "WORKTREE_RELEASED_CMD", "unclosed")
     refute(out, "Traceback")
     assert ran(stubs) == []
     assert state(queue_dir)["state"] == "abandoned"
 
 
-@pytest.mark.parametrize("secs", ["0", "never"])
-def test_a_bound_that_is_not_a_number_of_seconds_runs_nothing(gone, stubs, isolated_env, secs):
-    """A bound fleet cannot read is not permission to run unbounded."""
+# `inf`, `nan` and `1e400` are why this is read as a whole number and not as a
+# float: each one is positive (or compares as neither), so a `> 0` test waves
+# it through, and the wait then goes to the OS, which raises something no
+# `run_bounded` caller catches — out of the command, out of the reap, out of
+# the `collect` the reconciler runs every two minutes. `3000000` is the same
+# end reached by a value a human could type.
+@pytest.mark.parametrize(
+    "secs", ["0", "never", "-5", "0.5", "inf", "nan", "1e400", "3601", "3000000"])
+def test_a_bound_that_is_not_a_whole_number_of_seconds_runs_nothing(gone, stubs, isolated_env, secs):
+    """A bound fleet cannot use is not permission to run unbounded."""
     hook(isolated_env, stubs, secs=secs)
     out = ok(q("reap")).out
-    expect(out, "NOT RUN", f"ON_WORKTREE_RELEASED_SECS={secs}")
+    expect(out, "NOT RUN", f"WORKTREE_RELEASED_CMD_SECS={secs}")
+    refute(out, "Traceback")
     assert ran(stubs) == []
+
+
+def test_the_largest_bound_fleet_accepts_runs(gone, stubs, isolated_env):
+    """The ceiling itself is usable; one second past it is the refusal above."""
+    _repo, tree = gone
+    hook(isolated_env, stubs, secs="3600")
+    expect(ok(q("reap")).out, "released", str(tree))
+    assert ran(stubs) == [f"{HOOK} {tree} {REF}"], ran(stubs)
+
+
+def test_the_operators_own_arguments_come_first_and_no_shell_reads_the_line(gone, stubs, isolated_env):
+    """The line is split as a command line and run directly: two appends, no shell."""
+    _repo, tree = gone
+    hook(isolated_env, stubs, line=f"{HOOK} --quiet 'two words' | grep nothing")
+    ok(q("reap"))
+    assert ran(stubs) == [f"{HOOK} --quiet two words | grep nothing {tree} {REF}"], ran(stubs)
 
 
 # A grandchild holding the inherited pipe is what makes the bound load-bearing:
@@ -256,7 +357,7 @@ def test_a_command_that_hangs_is_bounded_and_the_task_still_lands(gone, stubs, i
     started = time.monotonic()
     out = ok(q("reap")).out
     took = time.monotonic() - started
-    expect(out, "FAILED", "ON_WORKTREE_RELEASED killed after 1s", str(tree))
+    expect(out, "FAILED", "WORKTREE_RELEASED_CMD killed after 1s", str(tree))
     assert took < 30, f"the reap waited {took:.1f}s on a command bounded at 1s"
     doc = state(queue_dir)
     assert doc["state"] == "abandoned" and doc["reaped"]["how"] == "already gone"
@@ -280,6 +381,19 @@ def test_dry_run_prints_it_for_a_session_it_would_delete_too(live, stubs, isolat
     hook(isolated_env, stubs)
     out = ok(q("reap", "--dry-run")).out
     expect(out, "would reap", SID, "would run", str(tree), REF)
-    refute(out, "kept       ON_WORKTREE_RELEASED")
+    refute(out, "kept       WORKTREE_RELEASED_CMD")
     assert ran(stubs) == []
     assert not stubs.calls("thurbox-cli", "session delete")
+
+
+def test_a_remote_task_hands_over_nothing(worktree, stubs, isolated_env, queue_dir):
+    """Its worktree is on another machine, and the operator's command is on this one."""
+    hook(isolated_env, stubs)
+    path = queue_dir / "disk" / "01-build" / "task.yaml"
+    doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+    doc["host"] = "devbox"
+    path.write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
+    ok(q("attach", REF, SID))
+    ok(q("abandon", REF, "--why", "superseded", "--force"))
+    expect(ok(q("reap")).out, "gone")
+    assert ran(stubs) == []

@@ -826,23 +826,28 @@ uncommitted work included, stays.
 down.** A container stack, a database, a daemon keyed to the worktree belongs
 to a tool fleet neither names nor runs, and it outlives the directory — on one
 machine eleven such stacks held 26 GB keyed to worktrees that no longer
-existed. So `ON_WORKTREE_RELEASED` in the gitignored
+existed. So `WORKTREE_RELEASED_CMD` in the gitignored
 `orchestration/reconcile.conf` (the tracked example sets it, like everything
 else there, to nothing) is a command run once per worktree reap lets go of,
 with that worktree's absolute path and the task's ref appended:
 
 ```text
     disk/01-build                  reaped     99999999-…  (idle)
-    disk/01-build                  released   /…/worktrees/fix-build  (ON_WORKTREE_RELEASED)
+    disk/01-build                  released   /…/worktrees/fix-build  (WORKTREE_RELEASED_CMD)
 ```
 
 It is refused exactly as the build output is — a worktree somebody sits in,
-or one whose occupancy cannot be established, is not handed over — and it
+one whose occupancy cannot be established, and a fixer checkout git would not
+remove because there is uncommitted work in it, are not handed over — and it
 never holds a task open: a failure, a timeout past
-`ON_WORKTREE_RELEASED_SECS` (60), or a line that is not a command is printed
-and the task lands all the same. `reap --dry-run` prints what it would run.
+`WORKTREE_RELEASED_CMD_SECS` (60), or a line that is not a command is printed
+and the task lands all the same. It runs once per worktree per pass, however
+many release points reach it. `reap --dry-run` prints what it would run.
 In the `session delete --force` case the directory is already gone when the
-command runs, which is why it gets the path and not the directory.
+command runs, which is why it gets the path and not the directory. A session
+`notify` keeps below keeps its worktree, so nothing is handed over then — and
+nothing is when you delete that session yourself either, so run the teardown
+by hand for those.
 
 **Whether `landed` and `abandoned` delete the session is the operator's
 setting.** `ON_LANDED` and `ON_CLOSED` in the gitignored

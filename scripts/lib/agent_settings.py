@@ -88,8 +88,13 @@ LIKE_DEPTH = 8
 def read_conf(path: str) -> dict[str, str]:
     """`KEY=value` lines, as data. An unreadable file is no settings at all.
 
-    Read and never executed: a setting that can run is a different kind of
-    file. The LAST occurrence of a key wins, because a line appended below a
+    THE FILE IS NEVER EXECUTED and this reader runs nothing: it returns
+    strings. One of those strings is a command line its own caller runs on
+    purpose — `reconcile.conf`'s `WORKTREE_RELEASED_CMD`, which `queue.py`
+    splits and runs with no shell — and that is a thing that one reader
+    answers for, not a change to the grammar here: the rest of the line is
+    still taken verbatim, quotes and all, and nothing in it means anything to
+    this function. The LAST occurrence of a key wins, because a line appended below a
     correct one is the edit a first-match read would wave through.
     """
     conf: dict[str, str] = {}
