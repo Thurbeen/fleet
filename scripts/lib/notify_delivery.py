@@ -114,6 +114,14 @@ def write_memory(path: str, doc: dict) -> None:
         pass
 
 
+def forget_memory(path: str) -> None:
+    """Remove a notifier's memory file; one already gone is already forgotten."""
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
 # --- who is listening --------------------------------------------------------
 
 

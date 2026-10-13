@@ -224,30 +224,38 @@ def questions(state_dir: str, rows: list, conductor: str = "") -> tuple[set, str
     for row in sorted(rows, key=lambda r: str(r.get("task"))):
         ref = str(row.get("task"))
         task = tasks.get(ref)
-        origin = task.doc.get("origin") if task else None
-        if not origin:
-            continue
-        target = reach.target(origin, rules)
+        target = reach.target(task.doc.get("origin"), rules) if task else None
         if target is None or target.kind == "unrouted":
             continue
         taken.add(ref)
-        key = str(row.get("declared") or "")
-        entry = asked.get(ref) if (asked.get(ref) or {}).get("key") == key else None
-        if entry is None:
-            entry = asked[ref] = {"key": key}
-        if entry.get("done"):
-            continue
-        if target.kind == "gone":
-            entry["done"] = True
-            notes.append(f"{ref} needs input, but its origin {origin} is gone ({target.why}); "
-                         "the question stays in its own pane")
-            continue
-        outcome, note = tell(reach, target, question_line(ref, row.get("why")), entry, "fleet-question")
-        if outcome != "wait":
-            entry["done"] = True
-        notes.append(f"{ref} needs input: {note}")
+        note = ask(reach, target, row, asked)
+        if note:
+            notes.append(note)
     delivery.write_memory(path, {"asked": asked})
     return taken, "; ".join(notes)
+
+
+def ask(reach: Reach, target, row: dict, asked: dict) -> str:
+    """Put one worker's question to its origin, once per declaration: the note to log.
+
+    `asked` is the questions memory, updated in place: an entry per ref, keyed
+    by when the worker declared, `done` once it was told or dropped.
+    """
+    ref = str(row.get("task"))
+    key = str(row.get("declared") or "")
+    entry = asked.get(ref)
+    if not isinstance(entry, dict) or entry.get("key") != key:
+        entry = asked[ref] = {"key": key}
+    if entry.get("done"):
+        return ""
+    if target.kind == "gone":
+        entry["done"] = True
+        return (f"{ref} needs input, but its origin {target.origin} is gone ({target.why}); "
+                "the question stays in its own pane")
+    outcome, note = tell(reach, target, question_line(ref, row.get("why")), entry, "fleet-question")
+    if outcome != "wait":
+        entry["done"] = True
+    return f"{ref} needs input: {note}"
 
 
 # --- outcomes ----------------------------------------------------------------
@@ -313,6 +321,18 @@ def add(doc: dict, events: list) -> None:
     doc["pending"], doc["sent"] = pending, sent
 
 
+def deliver_outcome(reach: Reach, rules: list, key: str, entry: dict, keep: bool) -> tuple[str, str]:
+    """Tell one pending outcome to its origin: ("sent" | "wait" | "dropped", a log line)."""
+    target = reach.target(entry.get("origin"), rules)
+    if target is None or target.kind in ("gone", "unrouted"):
+        why = target.why if target else "no origin"
+        return "dropped", f"origin: {key} told nobody — {entry.get('origin')}: {why}"
+    outcome, note = tell(reach, target, str(entry.get("line")), entry, "fleet-outcome")
+    if outcome == "wait" and not keep:
+        note += ", but there is no runtime directory to keep it in, so it is dropped"
+    return outcome, f"origin: {key} {note}"
+
+
 def flush(doc: dict, keep: bool) -> list[str]:
     """Deliver every pending outcome, in the order they happened."""
     pending = doc["pending"]
@@ -323,17 +343,8 @@ def flush(doc: dict, keep: bool) -> list[str]:
     reach = Reach(conductor_id(rules), held)
     lines = []
     for key in sorted(pending, key=lambda k: (pending[k].get("at") or 0, k)):
-        entry = pending[key]
-        target = reach.target(entry.get("origin"), rules)
-        if target is None or target.kind in ("gone", "unrouted"):
-            why = target.why if target else "no origin"
-            lines.append(f"origin: {key} told nobody — {entry.get('origin')}: {why}")
-            outcome = "dropped"
-        else:
-            outcome, note = tell(reach, target, str(entry.get("line")), entry, "fleet-outcome")
-            if outcome == "wait" and not keep:
-                note += ", but there is no runtime directory to keep it in, so it is dropped"
-            lines.append(f"origin: {key} {note}")
+        outcome, line = deliver_outcome(reach, rules, key, pending[key], keep)
+        lines.append(line)
         if outcome == "sent":
             doc["sent"].append(key)
         if outcome != "wait" or not keep:

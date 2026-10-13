@@ -118,7 +118,8 @@ def test_a_question_whose_session_origin_is_gone_is_told_to_nobody(stubs, tmp_pa
     ref = task("orphan", "thurbox:deleted-by-accident")
     session(stubs, "lead", LEAD, "lead-id", cwd=str(REPO))
     out = notify(tmp_path, asking=asks(ref))
-    assert sends(stubs) == [] and stubs.inbox("lead-id") == [], "a gone origin fell back to the lead"
+    assert sends(stubs) == [], "a gone origin fell back to the lead"
+    assert stubs.inbox("lead-id") == [], "a gone origin fell back to the lead's mailbox"
     expect(out, ref, "is gone", "stays in its own pane")
     assert notify(tmp_path, asking=asks(ref)) == "", "the same gone origin was logged again"
 
@@ -162,7 +163,8 @@ def test_an_owners_rule_routes_a_question_to_its_session(stubs, tmp_path):
     session(stubs, "worker", "Concierge fix", "worker-id", backend_type="local:tmux")
     notify(tmp_path, asking=asks(ref))
     assert len(to(stubs, "owner-id")) == 1
-    assert to(stubs, "lead-id") == [] and to(stubs, "worker-id") == []
+    assert to(stubs, "lead-id") == []
+    assert to(stubs, "worker-id") == []
 
 
 def test_an_owner_that_is_only_a_mirrored_remote_session_is_not_typed_into(stubs, tmp_path):

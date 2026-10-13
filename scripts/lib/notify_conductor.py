@@ -374,26 +374,17 @@ def unprompted_message(unprompted: list) -> str:
 
 
 def read_stale(state_dir: str) -> dict:
-    try:
-        with open(os.path.join(state_dir, STALE_FILE), encoding="utf-8") as fh:
-            doc = json.load(fh)
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return doc if isinstance(doc, dict) else {}
+    return delivery.read_memory(os.path.join(state_dir, STALE_FILE))
 
 
 def write_stale(state_dir: str, pending: dict, note: str) -> None:
     """Keep a notice still to deliver; with none, remove the file. Into the
     runtime directory and never making it, for `write_state`'s reason."""
     path = os.path.join(state_dir, STALE_FILE)
-    try:
-        if not pending:
-            os.remove(path)
-            return
-        with open(path, "w", encoding="utf-8") as fh:
-            json.dump({"pending": pending, "note": note}, fh)
-    except OSError:
-        pass
+    if not pending:
+        delivery.forget_memory(path)
+        return
+    delivery.write_memory(path, {"pending": pending, "note": note})
 
 
 def merge(pending: dict, report: dict) -> dict:
@@ -442,29 +433,44 @@ def stale(state_dir: str, text: str) -> int:
     has nothing left to say, so a notice dropped here is lost for good. A fleet
     with no conductor configured has nobody to tell, and drops it.
     """
-    try:
-        report = json.loads(text or "{}")
-    except ValueError:
-        report = {}
     doc = read_stale(state_dir)
-    pending = doc.get("pending") or {}
-    if isinstance(report, dict) and report.get("actions"):
-        pending = merge(pending, report)
+    pending = stale_pending(doc, text)
     if not pending:
         return 0
-
-    def wait(note: str) -> int:
-        if note != doc.get("note"):
-            print(note)
-        write_stale(state_dir, pending, note)
-        return 0
-
     name, row, status = conductor_row()
     if not name:
         write_stale(state_dir, {}, "")
         return 0
+    note = stale_wait(name, row, status, pending)
+    if note:
+        if note != doc.get("note"):
+            print(note)
+        write_stale(state_dir, pending, note)
+        return 0
+    write_stale(state_dir, {}, "")
+    print(f"told {name} the checkout moved: {', '.join(pending['actions'])}")
+    return 0
+
+
+def stale_pending(doc: dict, text: str) -> dict:
+    """The notice still owed: what waited, with sync-checkout's new report folded in."""
+    try:
+        report = json.loads(text or "{}")
+    except ValueError:
+        report = {}
+    pending = doc.get("pending") or {}
+    if isinstance(report, dict) and report.get("actions"):
+        pending = merge(pending, report)
+    return pending
+
+
+def stale_wait(name: str, row: dict | None, status: str, pending: dict) -> str:
+    """Try to type the stale notice: "" once it is, else the note to log while it waits.
+
+    A conductor that may not be typed into gets the notice in its mailbox
+    once, recorded in `pending["posted"]`."""
     if not row:
-        return wait(f"the checkout moved, but {status}; the notice waits")
+        return f"the checkout moved, but {status}; the notice waits"
     sid = str(row["id"])
     line = stale_message(pending)
     why = delivery.held(name, row)
@@ -472,13 +478,9 @@ def stale(state_dir: str, text: str) -> int:
         if not pending.get("posted"):
             pending["posted"] = post(sid, line, kind="fleet-stale")[0]
         where = " — noted in its inbox" if pending["posted"] else ""
-        return wait(f"the checkout moved; {why}{where}; the wake waits")
+        return f"the checkout moved; {why}{where}; the wake waits"
     sent, why = wake(sid, line)
-    if not sent:
-        return wait(f"the checkout moved; could not wake {name}: {why}")
-    write_stale(state_dir, {}, "")
-    print(f"told {name} the checkout moved: {', '.join(pending['actions'])}")
-    return 0
+    return "" if sent else f"the checkout moved; could not wake {name}: {why}"
 
 
 def reviews_message(reviews: list) -> str:
@@ -512,7 +514,7 @@ def main(argv: list) -> int:
 
     try:
         plan = json.loads(sys.stdin.read() or "{}")
-    except (json.JSONDecodeError, ValueError):
+    except ValueError:
         return 0
     if not isinstance(plan, dict):
         return 0
@@ -557,6 +559,27 @@ def main(argv: list) -> int:
     return say(args.state_dir, memory, "; ".join(n for n in notes if n))
 
 
+def post_news(sid: str, line: str, parts: list, now: dict, memory: dict) -> bool:
+    """Leave `line` in a busy conductor's mailbox, once per change; True when
+    everything new in it is noted there.
+
+    The note is posted on its own transition, so a conductor busy for an hour
+    finds one line per change in its mailbox and not one per pass. `memory`
+    is updated in place.
+    """
+    unposted = [
+        r for told, posted, _ in parts for r in now[told]
+        if r not in memory[told] and r not in memory[posted]
+    ]
+    if unposted and post(sid, line)[0]:
+        for _, posted, _text in parts:
+            memory[posted] = now[posted]
+    return all(
+        r in memory[posted] for told, posted, _ in parts
+        for r in now[told] if r not in memory[told]
+    )
+
+
 # Each set, in the order its news is spoken: (typed, posted, line, what, word).
 SETS = (
     ("told", "posted", message, "ready work", "ready"),
@@ -599,22 +622,7 @@ def deliver(now: dict, memory: dict, resolve, unnamed: str) -> tuple[dict, str]:
 
     why = delivery.held(name, row)
     if why:
-        # The note is posted on its own transition, so a conductor busy for an
-        # hour finds one line per change in its mailbox and not one per pass.
-        unposted = [
-            r for told, posted, _ in parts for r in now[told]
-            if r not in memory[told] and r not in memory[posted]
-        ]
-        if unposted:
-            sent, _why = post(sid, line)
-            if sent:
-                for _, posted, _text in parts:
-                    memory[posted] = now[posted]
-        noted = all(
-            r in memory[posted] for told, posted, _ in parts
-            for r in now[told] if r not in memory[told]
-        )
-        where = " — noted in its inbox" if noted else ""
+        where = " — noted in its inbox" if post_news(sid, line, parts, now, memory) else ""
         return memory, f"{what}; {why}{where}; the wake waits"
 
     sent, why = wake(sid, line)
