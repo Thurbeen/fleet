@@ -148,13 +148,17 @@ names every path and the reason for each.
   needs its attestation or its merge). Tracked and naming none; copy it to a
   gitignored `flow.conf`. `scripts/lib/queue.py`'s `integration_verdict` owns
   the rule.
-- `orchestration/owners.example.conf` — which session owns the conversation of
-  a task by its opaque `--origin` (`<origin-prefix> = <session-name
-  substring>`), so the reconciler's notices for it go there and not to this
-  checkout's lead. `fleet queue add --reply` names the command its worker
-  speaks with, and `fleet queue find --origin STR --json` lists an origin's
-  live tasks for another program; `queue.py`'s docstring owns both. Tracked and
-  naming none; copy it to a gitignored `owners.conf`.
+- `orchestration/owners.example.conf` — who owns the conversation of a task
+  by its opaque `--origin`: `<origin-prefix> = <session-name substring>`, so
+  the reconciler's notices for it go there and not to this checkout's lead, or
+  `<origin-prefix> = !<command>`, a RELAY run with the origin and the message
+  as its last two arguments. **Every task has an origin**: `add` inside thurbox
+  defaults it to the calling session, stored as `thurbox:<session id>`, and its
+  `--reply` to that session's mailbox. `queue.py`'s `origin_target` is the one
+  resolver — that session, a rule's session or relay, or `gone` once thurbox no
+  longer lists the session — and `fleet queue find --origin STR --json` lists
+  an origin's live tasks for another program; `queue.py`'s docstring owns all
+  of it. Tracked and naming none; copy it to a gitignored `owners.conf`.
 - `orchestration/reconcile.example.conf` — the reconciler's clocks
   (`<NAME>_SECS`, read when the loop starts, beaten by
   `FLEET_RECONCILE_<NAME>_SECS`) and what `reap` does with a finished task's

@@ -85,8 +85,9 @@ Those are told under the same safe delivery and conversation rules. The
 reconciler never replaces the recipient or declares a review clean.
 
 WHOSE NOTICE IT IS. A task added with `--origin` is owned by whoever that
-origin names, and `orchestration/owners.conf` (`<origin-prefix> = <session-name
-substring>`, read by `queue.py`'s `owner_rules`) says which session that is.
+origin names, and `orchestration/owners.conf`'s session rules (`<origin-prefix>
+= <session-name substring>`, read by `queue.py`'s `owner_rules`) say which
+session that is; a relay rule (`= !<command>`) routes nothing here yet.
 Such a task's notices are delivered to THAT session instead of the lead, by
 every rule above, with a memory of its own per rule (`owners` in the state
 file) — what the lead was told is no news to an owner. A task with no origin or

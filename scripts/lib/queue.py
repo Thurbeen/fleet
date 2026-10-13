@@ -185,11 +185,19 @@ Usage:
                        # --reply is the command a worker runs to speak to them:
                        # two opaque strings, stored as `origin` and `reply`,
                        # shown by `show`, checked as text by `check`, and
-                       # parsed by nothing. `reply` also adds one fixed section
-                       # to the brief (verdict, PR URL, every question BEFORE
-                       # `declare needs-input`); with none the brief is
-                       # unchanged. `owners.conf` routes a matching origin's
-                       # reconciler notices to another session (notify_lead.py).
+                       # parsed by nothing. Without --origin, inside thurbox,
+                       # the origin is the calling session, stored as
+                       # `thurbox:<session id>` — the one form fleet reads —
+                       # and without --reply a session origin gets
+                       # `thurbox-cli message send --to <id> --kind reply
+                       # --body` (none on a --host task). Outside thurbox both
+                       # stay empty. `reply` also adds one fixed section to
+                       # the brief (verdict, PR URL, every question BEFORE
+                       # `declare needs-input`, and `needs-input` in its own
+                       # pane when the command fails); with none the brief is
+                       # unchanged. `owners.conf` routes a matching origin to
+                       # a session or a `!command` relay, and `origin_target`
+                       # resolves an origin to one of them, or to `gone`.
                        # --brief-file fills whichever of the brief's four
                        # sections its own `## ` headings name; a body with no
                        # headings all goes into `What to do`. A file that
@@ -289,8 +297,9 @@ Environment:
                          split with shell quoting (on Windows a backslash is
                          an ordinary character) and run with no shell, so
                          not a pipeline
-  THURBOX_SESSION        set inside a thurbox session; dispatch passes it as
-                         --parent so `session list --parent` enumerates
+  THURBOX_SESSION        set inside a thurbox session; add records it as the
+                         task's origin when none is given, dispatch passes it
+                         as --parent so `session list --parent` enumerates
                          workers, and reap refuses to delete it
 
 Requires: uv, which brings the Python and the PyYAML pinned in uv.lock.
@@ -327,6 +336,7 @@ import time
 import tomllib
 import unicodedata
 from pathlib import Path
+from typing import NamedTuple
 from datetime import datetime, timezone
 
 import yaml
@@ -2610,9 +2620,9 @@ def cmd_add(args) -> int:
         "requested_by": requested_by,
         # Who OWNS the conversation, and how a worker speaks to them. Opaque
         # strings: fleet matches `origin` against `owners.conf` and `find`, and
-        # renders `reply` into the brief, and parses neither.
-        "origin": (args.origin or "").strip() or None,
-        "reply": (args.reply or "").strip() or None,
+        # renders `reply` into the brief, and parses neither — except the one
+        # form fleet writes itself, a session origin (`add_origin`).
+        **dict(zip(("origin", "reply"), add_origin(args))),
         # What this task must PRODUCE, and — as free text nothing ever parses —
         # what the operator calls the tool that produces it.
         "publish": {"method": method, "how": how},
@@ -2734,7 +2744,7 @@ def render_brief(task: Task, topic: dict, body: str | None) -> str:
         operator_ref = f"`{operator_path()}`"
     operator_line = f"\n- **Operator's standing instructions.** {operator_ref}" if has_operator else ""
     memory_line = remote_context_line() if host else context_lines(task) + declare_lines(task)
-    reply_section = reply_lines(d.get("reply"))
+    reply_section = reply_lines(task)
     operator_note = (
         "\n\nRead the operator's file too. It is how this operator wants work done\n"
         "across every task, and it ADDS to this brief without replacing anything in\n"
@@ -2859,24 +2869,52 @@ and not a message, is what does it.
 {result_note}"""
 
 
-def reply_lines(reply) -> str:
+def reply_lines(task: Task) -> str:
     """The brief's section for a task with a reply command, or nothing at all.
 
     Fixed text: the command is the operator's, and fleet runs and parses none of
-    it. A task without one renders no section, so its brief is what it was.
+    it. A task without one renders no section, so its brief is what it was. The
+    one command fleet wrote itself, a session origin's default, takes no
+    `--file`, so that hint is left off it.
+
+    A reply that fails means the origin is gone — a deleted session, a relay
+    that is down — and nothing routes the question anywhere else: the worker
+    asks in its own pane, and a local one declares `needs-input` so the board
+    shows that it is.
     """
-    cmd = str(reply or "").strip()
+    d = task.doc
+    cmd = str(d.get("reply") or "").strip()
     if not cmd:
         return ""
+    sid = origin_session(d.get("origin"))
+    file_hint = "" if sid and cmd == session_reply(sid) else " (or `--file <path>`)"
+    if d.get("host"):
+        fallback = textwrap.fill(
+            "If that command fails, the requester cannot be reached: ask your"
+            " question here, in your own session, and wait for the answer.",
+            width=78,
+        )
+    else:
+        fallback = textwrap.fill(
+            "If that command fails, the requester cannot be reached: ask the same"
+            " question here, in your own session, where the operator will answer"
+            " it, and say that you are waiting:",
+            width=78,
+        ) + (
+            f"\n\n    uv run --project {checkout_root()} fleet queue declare {task.ref}"
+            " needs-input --why '<your question>'"
+        )
     return f"""
 ## Replying to the requester
 
-Post with `{cmd} '<text>'` (or `--file <path>`):
+Post with `{cmd} '<text>'`{file_hint}:
 
 - your verdict, once `result.md` is written;
 - the pull request URL, as soon as one is open and ready for review;
 - every question, BEFORE you run `fleet queue declare ... needs-input`. A
   person answers in the thread and the answer reaches this session.
+
+{fallback}
 """
 
 
@@ -9215,23 +9253,68 @@ def integration_branches(root: str | None = None) -> dict[str, str]:
     return out
 
 
-# --- owners: whose conversation a task's notices belong to -------------------
+# --- origins: whose conversation a task is, and how to reach it -------------
 #
-# The operator's copy is `orchestration/owners.conf`; the tracked example names
-# none. One rule per line, `<origin-prefix> = <session-name substring>`: a task
-# whose `origin` starts with the prefix has its reconciler notices delivered to
-# the session whose name contains the substring, instead of to this checkout's
-# lead. Both sides are opaque text; `notify_lead.py` owns the delivery.
+# Every task added inside a thurbox session has an origin. `add` with no
+# `--origin` records the calling session as `thurbox:<session id>` — the ONE
+# form fleet writes and reads itself, and a stable string `find --origin` and
+# `dispatch --origin` match exactly — and, with no `--reply`, the command that
+# reaches it. Any other origin is the caller's opaque text.
+#
+# The operator's copy of the routing is `orchestration/owners.conf`; the tracked
+# example names none. One rule per line, `<origin-prefix> = <target>`, where the
+# target is a session-name substring, as it always was, or `!<command>`: a
+# RELAY, run with the origin and the message appended as two arguments, which
+# forwards it to wherever that origin lives. Fleet parses neither the origin nor
+# the command. `origin_target` is the one resolver; `notify_lead.py` owns the
+# delivery of the notices that use a session rule.
 
 OWNERS_CONF = "orchestration/owners.conf"
 OWNERS_CONF_DEFAULTS = "orchestration/owners.example.conf"
+SESSION_ORIGIN = "thurbox:"
+RELAY_MARK = "!"
 
 
-def owner_rules(root: str | None = None) -> list[tuple[str, str]]:
-    """[(origin prefix, session-name substring)], longest prefix first.
+def session_origin(sid) -> str | None:
+    """The origin that names thurbox session `sid`, or None for no session."""
+    sid = str(sid or "").strip()
+    return f"{SESSION_ORIGIN}{sid}" if sid else None
 
-    A line with no `=`, or an empty side, is refused out loud: silence would
-    read as a task that has no owner on purpose.
+
+def origin_session(origin) -> str | None:
+    """The session id a session origin names, or None for any other origin."""
+    if isinstance(origin, str) and origin.startswith(SESSION_ORIGIN):
+        return origin[len(SESSION_ORIGIN):].strip() or None
+    return None
+
+
+def session_reply(sid: str) -> str:
+    """The default reply to a session origin: its mailbox, the message appended last."""
+    return shlex.join(["thurbox-cli", "message", "send", "--to", sid, "--kind", "reply", "--body"])
+
+
+def add_origin(args) -> tuple[str | None, str | None]:
+    """(origin, reply) for a task `add` is creating.
+
+    A stated value always wins. With no `--origin`, the calling thurbox session
+    ($THURBOX_SESSION) is the origin; outside thurbox there is none, as before.
+    With no `--reply`, a session origin gets the command that reaches it — but
+    not on a `--host` task, whose worker runs on a machine that session is not
+    on. Any other origin gets no default: fleet cannot know how to reach it.
+    """
+    origin = (args.origin or "").strip() or session_origin(os.environ.get("THURBOX_SESSION"))
+    reply = (args.reply or "").strip() or None
+    sid = origin_session(origin)
+    if reply is None and sid and not args.host:
+        reply = session_reply(sid)
+    return origin, reply
+
+
+def origin_rules(root: str | None = None) -> list[tuple[str, str, str]]:
+    """[(origin prefix, "session" | "relay", substring or command)], longest prefix first.
+
+    A line with no `=`, an empty side, or a `!` with no command, is refused out
+    loud: silence would read as a task that has no owner on purpose.
     """
     root = root or os.environ.get("FLEET_OWNERS_ROOT") or checkout_root()
     path = conf_path(OWNERS_CONF, OWNERS_CONF_DEFAULTS, root)
@@ -9240,18 +9323,29 @@ def owner_rules(root: str | None = None) -> list[tuple[str, str]]:
             lines = [line.partition("#")[0].strip() for line in fh]
     except OSError:
         return []
-    out: list[tuple[str, str]] = []
+    out: list[tuple[str, str, str]] = []
     for entry in filter(None, lines):
-        prefix, _, name = (part.strip() for part in entry.partition("="))
-        if not prefix or not name:
+        prefix, _, target = (part.strip() for part in entry.partition("="))
+        kind = "session"
+        if target.startswith(RELAY_MARK):
+            kind, target = "relay", target[len(RELAY_MARK):].strip()
+        if not prefix or not target:
             print(
                 f"{path}: ignoring {entry!r} — an owners entry must be "
-                "ORIGIN-PREFIX = SESSION-NAME-SUBSTRING",
+                "ORIGIN-PREFIX = SESSION-NAME-SUBSTRING or ORIGIN-PREFIX = !RELAY-COMMAND",
                 file=sys.stderr,
             )
             continue
-        out.append((prefix, name))
+        out.append((prefix, kind, target))
     return sorted(out, key=lambda rule: -len(rule[0]))
+
+
+def owner_rules(root: str | None = None) -> list[tuple[str, str]]:
+    """[(origin prefix, session-name substring)]: the session rules only, longest first.
+
+    What `notify_lead.py` routes notices by; a relay rule is `origin_target`'s.
+    """
+    return [(prefix, target) for prefix, kind, target in origin_rules(root) if kind == "session"]
 
 
 def owner_of(origin, rules: list[tuple[str, str]]) -> tuple[str, str] | None:
@@ -9259,6 +9353,77 @@ def owner_of(origin, rules: list[tuple[str, str]]) -> tuple[str, str] | None:
     if not isinstance(origin, str):
         return None
     return next((rule for rule in rules if origin.startswith(rule[0])), None)
+
+
+class OriginTarget(NamedTuple):
+    """Where a message for one origin goes. `kind` is one of:
+
+    session   `value` is the session id a session origin names, and thurbox
+              lists it (or could not be asked, which is never called gone).
+    owner     `value` is the session-name substring of the owners rule `rule`.
+    relay     `value` is the command of the owners rule `rule`; `relay_argv`
+              is how it is run.
+    gone      a session origin thurbox no longer lists: nobody to tell. A
+              worker asks in its own pane; an outcome is logged and not sent.
+    unrouted  an origin that is no session and that no rule names: reachable
+              in principle — a chat thread does not disappear — and fleet has
+              no way to it.
+
+    `why` is one line for a log, saying which of those it is and why.
+    """
+
+    kind: str
+    origin: str
+    value: str
+    rule: str | None
+    why: str
+
+    @property
+    def reachable(self) -> bool:
+        """False only for a session origin that is gone: any other origin always is."""
+        return self.kind != "gone"
+
+
+def origin_target(origin, rules: list | None = None, sessions=None) -> OriginTarget | None:
+    """Resolve a task's origin to where a message for it goes. None when it has none.
+
+    The longest matching `owners.conf` rule wins, so an operator can route even
+    a session origin elsewhere. Otherwise a session origin is that session, or
+    `gone` when `thurbox-cli session list` no longer lists it; and any other
+    origin is `unrouted`. `rules` is `origin_rules()`'s shape, read when None;
+    `sessions` is any container of the session ids thurbox lists, asked only
+    when a session origin needs it and not given — None from thurbox is
+    "unknown", never "gone". Resolving delivers nothing.
+    """
+    if not isinstance(origin, str) or not origin.strip():
+        return None
+    rules = origin_rules() if rules is None else rules
+    for prefix, kind, target in rules:
+        if origin.startswith(prefix):
+            if kind == "relay":
+                return OriginTarget("relay", origin, target, prefix, f"relayed by the rule for {prefix!r}")
+            return OriginTarget("owner", origin, target, prefix, f"owned by the session named like {target!r}")
+    sid = origin_session(origin)
+    if not sid:
+        return OriginTarget("unrouted", origin, "", None, "no session, and no owners rule names it")
+    why = "listed by thurbox"
+    if sessions is None:
+        sessions, unknown = session_snapshot()
+        if sessions is None:
+            why = f"not called gone: {unknown}"
+    if sessions is not None and sid not in sessions:
+        return OriginTarget("gone", origin, sid, None, "thurbox no longer lists the session")
+    return OriginTarget("session", origin, sid, None, why)
+
+
+def relay_argv(target: OriginTarget, message: str) -> list[str]:
+    """A relay's command as argv, with the origin and the message as its last two arguments.
+
+    Split by the operator's shell quoting and run with no shell, so the message
+    is one argument however it is quoted. Raises ValueError for a command whose
+    quote is left open.
+    """
+    return [*fleet_platform.split_command(target.value), target.origin, message]
 
 
 def integration_verdict(task: Task, cr: forge.ChangeRequest, branch: str, unit: dict) -> tuple[str, str]:
@@ -12262,15 +12427,17 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument(
         "--origin",
         help="who owns this task's conversation, as an opaque string "
-        "(`<kind>:<where>`): recorded and shown, never parsed. `owners.conf` "
-        "routes a matching origin's notices to another session, and `find "
+        "(`<kind>:<where>`): recorded and shown, never parsed. Default: the "
+        "calling thurbox session, as `thurbox:<session id>`. `owners.conf` "
+        "routes a matching origin to a session or a relay, and `find "
         "--origin` lists its live tasks",
     )
     a.add_argument(
         "--reply",
         help="the command a worker runs to speak to that origin, as free text "
         "the worker appends its message to (or `--file PATH`). Rendered into the "
-        "brief and never run or parsed here",
+        "brief and never run or parsed here. Default, for a session origin: "
+        "that session's thurbox mailbox",
     )
     a.add_argument(
         "--add-dir",

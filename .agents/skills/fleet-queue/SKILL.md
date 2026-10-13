@@ -75,6 +75,15 @@ below); do not make a second one. Pass `--by <name>` to `topic add` (or to one
 `add`) when the request came from someone other than the operator — relayed
 from Slack with a `[from: <name>]` prefix, say — so every view names whose it is.
 
+**Every task has an origin: the conversation that owns it.** Run inside thurbox,
+`add` records the calling session as `thurbox:<session id>` and, as its reply,
+the `thurbox-cli message send` that reaches that session's mailbox, so a
+worker's question comes back to you. Pass `--origin` and `--reply` when the ask
+arrived somewhere else — a chat thread another agent serves — and both are
+opaque text fleet never parses. `owners.conf` maps an origin prefix to the
+session or relay command that reaches it, and a worker whose reply fails
+declares `needs-input` and asks in its own pane; nothing falls back to you.
+
 Then decompose. A topic is the unit of **intent**; a task is the unit of
 **work** — one branch, one thing a single worker can finish and validate on its
 own. A task is still one unit when it **spans repositories** (`--add-repo`).
