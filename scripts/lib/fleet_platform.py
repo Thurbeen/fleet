@@ -658,7 +658,9 @@ def _windows_alive(pid: int) -> bool:
 # but the one encoder every surface shares, with the standard library alone, so
 # it lives with the other things every module shares rather than in one caller.
 
-_TOON_NUMBER = re.compile(r"^-?(?:\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|\.\d+)$")
+# Two patterns rather than one alternation: the same language, each simple.
+_TOON_NUMBER = re.compile(r"^-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?$")
+_TOON_FRACTION = re.compile(r"^-?\.\d+$")
 _TOON_ESCAPES = {"\\": "\\\\", '"': '\\"', "\n": "\\n", "\r": "\\r", "\t": "\\t"}
 
 
@@ -676,6 +678,7 @@ def toon_value(value) -> str:
         and text == text.strip()
         and text not in ("true", "false", "null")
         and not _TOON_NUMBER.match(text)
+        and not _TOON_FRACTION.match(text)
         and not text.startswith("-")
         and not any(ch in text for ch in ':"\\[]{},')
         and not any(ord(ch) < 32 for ch in text)

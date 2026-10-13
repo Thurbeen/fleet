@@ -58,11 +58,8 @@ def lead_id(parent: str | None) -> tuple[str | None, str]:
     return None, "no lead session is configured; name its id with --parent"
 
 
-def orphans(lead: str) -> tuple[list | None, str]:
-    """Every session parented to `lead` that no live task holds, oldest-idle first."""
-    sessions, why = fleetqueue.session_snapshot()
-    if sessions is None:
-        return None, why
+def _held_sessions() -> dict:
+    """Each session id any task names, mapped to the tasks that name it."""
     held: dict = {}
     for task in fleetqueue.Queue(fleetqueue.queue_root(), scope="all").tasks.values():
         fixer = (task.doc.get("shepherd") or {}).get("session")
@@ -75,6 +72,15 @@ def orphans(lead: str) -> tuple[list | None, str]:
         kept = reaped.get("session") if reaped.get("how") == "kept" else None
         for sid in ({task.doc.get("session"), fixer, kept} | talkers) - {None}:
             held.setdefault(sid, []).append(task)
+    return held
+
+
+def orphans(lead: str) -> tuple[list | None, str]:
+    """Every session parented to `lead` that no live task holds, oldest-idle first."""
+    sessions, why = fleetqueue.session_snapshot()
+    if sessions is None:
+        return None, why
+    held = _held_sessions()
     rows = []
     for sid, row in sessions.items():
         if sid == lead or row.get("parent_session_id") != lead:

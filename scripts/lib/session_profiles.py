@@ -47,7 +47,7 @@ import sys
 
 import yaml
 
-ENV_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+ENV_KEY = re.compile(r"^[A-Za-z_]\w*$", re.ASCII)
 PROFILE_KEYS = ("env", "command", "args", "reports_as", "uncovered")
 UNCOVERED_NOTICE = (
     "uncovered — no hook family; watch, refuel and reap will not see this session"
@@ -70,38 +70,26 @@ def scalar(value, where, errors):
     return None
 
 
-def check_profile(name, profile, errors):
-    where = f"profiles.{name}"
-    if not isinstance(profile, dict):
-        errors.append(f"{where}: expected a mapping")
-        return
-
-    unknown = sorted(set(profile) - set(PROFILE_KEYS))
-    if unknown:
-        errors.append(f"{where}: unknown key(s) {', '.join(unknown)}")
-
-    env = profile.get("env") or {}
+def _check_env(where, env, errors):
     if not isinstance(env, dict):
         errors.append(f"{where}.env: expected a mapping of KEY: VALUE")
-    else:
-        for key, value in env.items():
-            if not isinstance(key, str) or not ENV_KEY.match(key):
-                errors.append(f"{where}.env: {key!r} is not a valid variable name")
-                continue
-            # thurbox's own identity vars always win over --env, so accepting
-            # one here would emit a flag that is silently discarded.
-            if key.startswith("THURBOX_"):
-                errors.append(
-                    f"{where}.env: {key} is thurbox's to set — it always wins "
-                    "over --env, so setting it here would do nothing"
-                )
-                continue
-            scalar(value, f"{where}.env.{key}", errors)
+        return
+    for key, value in env.items():
+        if not isinstance(key, str) or not ENV_KEY.match(key):
+            errors.append(f"{where}.env: {key!r} is not a valid variable name")
+            continue
+        # thurbox's own identity vars always win over --env, so accepting
+        # one here would emit a flag that is silently discarded.
+        if key.startswith("THURBOX_"):
+            errors.append(
+                f"{where}.env: {key} is thurbox's to set — it always wins "
+                "over --env, so setting it here would do nothing"
+            )
+            continue
+        scalar(value, f"{where}.env.{key}", errors)
 
-    command = profile.get("command")
-    if command is not None:
-        scalar(command, f"{where}.command", errors)
 
+def _declares_uncovered(where, profile, command, errors):
     # `uncovered: true` is the other declaration beside reports_as: this
     # command has no hook family, the session will be uncovered, and that
     # is accepted. Silence — neither key — is still the trap rule 2 exists
@@ -117,35 +105,61 @@ def check_profile(name, profile, errors):
             )
     if declared and command is None:
         errors.append(f"{where}: uncovered without command has nothing to uncover")
+    return declared
 
-    if command is not None:
-        # A --command session is named after the command's file stem, so
-        # thurbox reads hook coverage against `sh` rather than against the
-        # agent in the pane: coverage `none`, no reportable states, and a
-        # working session rendering as `uncovered`. --reports-as names the
-        # family that fixes it; uncovered: true accepts that there is none.
-        has_reports = profile.get("reports_as") is not None
-        if declared and has_reports:
-            errors.append(
-                f"{where}: command has both reports_as and uncovered — pick "
-                "one: declare the hook family, or accept that the session "
-                "will be uncovered"
-            )
-        elif not declared and not has_reports:
-            errors.append(
-                f"{where}: command needs reports_as or uncovered — without "
-                "one, thurbox reads hook coverage against the command, not "
-                "the agent in the pane"
-            )
 
-    args = profile.get("args") or []
+def _check_hook_family(where, profile, declared, errors):
+    # A --command session is named after the command's file stem, so
+    # thurbox reads hook coverage against `sh` rather than against the
+    # agent in the pane: coverage `none`, no reportable states, and a
+    # working session rendering as `uncovered`. --reports-as names the
+    # family that fixes it; uncovered: true accepts that there is none.
+    has_reports = profile.get("reports_as") is not None
+    if declared and has_reports:
+        errors.append(
+            f"{where}: command has both reports_as and uncovered — pick "
+            "one: declare the hook family, or accept that the session "
+            "will be uncovered"
+        )
+    elif not declared and not has_reports:
+        errors.append(
+            f"{where}: command needs reports_as or uncovered — without "
+            "one, thurbox reads hook coverage against the command, not "
+            "the agent in the pane"
+        )
+
+
+def _check_args(where, args, command, errors):
     if not isinstance(args, list):
         errors.append(f"{where}.args: expected a list")
-    else:
-        if args and command is None:
-            errors.append(f"{where}.args: args without command has nothing to pass")
-        for i, arg in enumerate(args):
-            scalar(arg, f"{where}.args[{i}]", errors)
+        return
+    if args and command is None:
+        errors.append(f"{where}.args: args without command has nothing to pass")
+    for i, arg in enumerate(args):
+        scalar(arg, f"{where}.args[{i}]", errors)
+
+
+def check_profile(name, profile, errors):
+    where = f"profiles.{name}"
+    if not isinstance(profile, dict):
+        errors.append(f"{where}: expected a mapping")
+        return
+
+    unknown = sorted(set(profile) - set(PROFILE_KEYS))
+    if unknown:
+        errors.append(f"{where}: unknown key(s) {', '.join(unknown)}")
+
+    _check_env(where, profile.get("env") or {}, errors)
+
+    command = profile.get("command")
+    if command is not None:
+        scalar(command, f"{where}.command", errors)
+
+    declared = _declares_uncovered(where, profile, command, errors)
+    if command is not None:
+        _check_hook_family(where, profile, declared, errors)
+
+    _check_args(where, profile.get("args") or [], command, errors)
 
     reports_as = profile.get("reports_as")
     if reports_as is not None:
@@ -255,6 +269,13 @@ def parse_args(argv: list[str]) -> tuple[str, str, bool] | int:
     return PROFILES, wanted, True
 
 
+def _print_ok(path, profiles, layered):
+    shown = os.path.relpath(path, CHECKOUT) if layered else path
+    if layered and os.path.exists(overlay_path()):
+        shown += f" and {overlay_path()}"
+    print(f"profiles ok: {len(profiles)} in {shown}")
+
+
 def main(argv: list[str] | None = None) -> int:
     parsed = parse_args(sys.argv[1:] if argv is None else argv)
     if isinstance(parsed, int):
@@ -272,10 +293,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     if wanted == "--check":
-        shown = os.path.relpath(path, CHECKOUT) if layered else path
-        if layered and os.path.exists(overlay_path()):
-            shown += f" and {overlay_path()}"
-        print(f"profiles ok: {len(profiles)} in {shown}")
+        _print_ok(path, profiles, layered)
         return 0
 
     if wanted not in profiles:
