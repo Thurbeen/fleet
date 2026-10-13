@@ -350,7 +350,15 @@ sent one line pointing at the absolute path of its brief; nothing is copied
 into its worktree, so nothing lands in its pull request.
 
 If a spawn fails, the others still go. Re-run `dispatch`; the ones already out
-are not spawned twice. A session you spawned by hand for a task is bound to it
+are not spawned twice. **Two dispatchers never spawn one task**: each holds the
+task's `dispatch.lock` from its readiness re-check to the save of
+`dispatched`, and the loser prints `being dispatched by another process` and
+writes nothing for it, while its other tasks still go. The OS drops the lock
+when its holder dies, so there is nothing stale to clear. A dispatcher that
+died between `session create` and that save left a session no record names;
+the next `dispatch` finds it — a local session under the task's name, on its
+branch — and binds it the way `attach` does below instead of failing on the
+duplicate name, so its brief is never typed twice. A session you spawned by hand for a task is bound to it
 with `fleet queue attach`. One whose agent reports working, blocked or done is
 recorded prompted, so the bare `prompt` sweep never types the brief into work
 in progress. Idle can mean a fresh session, so it stays unprompted by default;
@@ -373,6 +381,20 @@ record as a blocker is what this exists to stop — one was once recorded as
 someone deleted it by hand. Refs record nothing; a task left out is still
 `queued` and the next bare `dispatch` sends it. Do not drip-feed: anything you
 could write down belongs in `block`.
+
+### Scoping a bare dispatch — `--origin` and `--topic`
+
+```bash
+uv run fleet queue dispatch --origin slack:C0123/1700000000.000100
+uv run fleet queue dispatch --topic report-status-honestly
+```
+
+Bare `dispatch` sends every topic's ready work, which is right for whoever
+keeps the whole queue moving and wrong for one origin, which would send other
+origins' tasks with its own. `--origin` keeps the ready tasks whose recorded
+`origin` is exactly that string, as `find --origin` compares it; `--topic`
+keeps one topic's. Like refs they record nothing, and they are refused beside
+refs, which already say exactly what goes.
 
 ### A remote task is probed before it is spawned
 

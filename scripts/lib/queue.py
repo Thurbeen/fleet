@@ -89,6 +89,17 @@ not.
 `dispatch` takes refs for the one case that is neither ready nor blocked — the
 operator has not authorized a task yet. That is a fact about this moment, so it
 records nothing: the task stays queued and the next bare `dispatch` sends it.
+`--origin ID` and `--topic SLUG` scope a bare `dispatch` to one origin's or one
+topic's ready tasks, so an origin sends its own work and nobody else's.
+
+ONE DISPATCHER PER TASK. `dispatch` holds the task's `dispatch.lock` from its
+readiness re-check to the save of `dispatched`; a second dispatcher prints
+`being dispatched by another process` and writes nothing for that task. The OS
+releases the lock however its holder dies, and the task stays `queued` until
+the save. A dispatcher that died after `session create` and before that save
+left a live session no record names: the next `dispatch` adopts it — this
+machine's session under the task's name, on its branch — the way `attach`
+does, instead of failing on the duplicate name.
 
 WHAT `collect` CHECKS. A task declares a PUBLISH METHOD — `attested`, `pr`,
 `push`, `note`, `served` or `none` — which names what the work must LEAVE
@@ -222,10 +233,12 @@ Usage:
   uv run fleet queue declare <ref> needs-input --why W  # or: a decision is
                        needed, told to the lead once. Either counts only until
                        the next dispatch, restart or delivered `send`
-  uv run fleet queue dispatch [<ref>...] [--dry-run]  # the whole ready set at
-                       once with no ref, which is the norm; refs launch
-                       exactly those, refuse one that is not ready, and leave
-                       the rest queued with nothing recorded
+  uv run fleet queue dispatch [<ref>...] [--origin ID | --topic SLUG] [--dry-run]
+                       # the whole ready set at once with no ref, which is the
+                       norm; refs launch exactly those, refuse one that is not
+                       ready, and leave the rest queued with nothing recorded;
+                       --origin / --topic restrict the ready set instead, and
+                       are refused beside refs
   uv run fleet queue attach <ref> <uuid> [--prompted | --unprompted]
                        # record a session you spawned by hand; working, blocked
                        or done implies prompted; idle needs an explicit override
@@ -4712,7 +4725,8 @@ def shell_quote(argv: list) -> str:
     return " ".join(shlex.quote(a) for a in argv)
 
 
-def select_for_dispatch(q: Queue, refs: list) -> list:
+def select_for_dispatch(q: Queue, refs: list, origin: str | None = None,
+                        topic: str | None = None) -> list:
     """What this dispatch launches: the tasks named, or the whole ready set.
 
     NO REF IS THE NORM, and it stays the default: `dispatch` alone sends
@@ -4730,9 +4744,26 @@ def select_for_dispatch(q: Queue, refs: list) -> list:
 
     A named task that is not ready is refused BY NAME, with whatever is
     actually holding it, rather than quietly dropped from the wave.
+
+    `origin` and `topic` SCOPE a bare dispatch, and that is all they do: the
+    ready set restricted to tasks recording exactly that `origin` — the same
+    comparison `find --origin` makes — or filed under that topic. A bare
+    `dispatch` is right for the one actor that keeps the whole queue moving
+    and wrong for an origin, which would send every other origin's ready work
+    with its own (#227). Refs already name exactly what goes, so a scope beside
+    them is two answers to one question and is refused rather than combined.
     """
+    if refs and (origin is not None or topic is not None):
+        raise QueueError(
+            "name tasks OR scope the ready set with --origin / --topic, not both: "
+            "refs already say exactly what goes"
+        )
     if not refs:
-        return q.ready()
+        return [
+            t for t in q.ready()
+            if (origin is None or t.doc.get("origin") == origin)
+            and (topic is None or t.topic == topic)
+        ]
     picked, seen = [], set()
     for ref in refs:
         task = q.get(ref)
@@ -4760,9 +4791,44 @@ def select_for_dispatch(q: Queue, refs: list) -> list:
     return sorted(picked, key=lambda t: t.ref)
 
 
+# Held by the one process dispatching a task, from its readiness re-check to
+# the save of `dispatched`. See `cmd_dispatch`.
+DISPATCH_LOCK = "dispatch.lock"
+
+
+def stranded_session(task: Task, named: str) -> tuple[str, dict] | None:
+    """The live LOCAL session a dispatch that died left for this task, if any.
+
+    A dispatcher that dies between `session create` and the save of
+    `dispatched` leaves a session no record names, and a plain retry then
+    failed on `--on-existing fail`'s duplicate name, holding the task where
+    only a hand could free it. Both halves have to match — the name this task
+    is spawned under AND a worktree on its branch — because a name alone is a
+    title another task may share, and the branch is what makes it this task's.
+
+    Only ever this machine's sessions: a `--host` task is never adopted, and a
+    row thurbox places anywhere else is not one this dispatch could have made.
+    A list that cannot be read answers None, and `session create` is then the
+    same refusal it always was.
+    """
+    if task.doc.get("host"):
+        return None
+    sessions, _why = session_snapshot()
+    for sid, row in (sessions or {}).items():
+        if row.get("name") != named:
+            continue
+        if session_place(row.get("backend_type") or "") != ("local", ""):
+            continue
+        if any(isinstance(w, dict) and w.get("branch") == task.doc.get("branch")
+               for w in row.get("worktrees") or []):
+            return sid, row
+    return None
+
+
 def cmd_dispatch(args) -> int:
     q = Queue(queue_root())
-    ready = select_for_dispatch(q, args.ref)
+    origin = args.origin.strip() if args.origin is not None else None
+    ready = select_for_dispatch(q, args.ref, origin, args.topic)
 
     # The backstop for `add`'s own check, and it says the same thing: WHICH
     # sections, so the answer is in the refusal and not in a file the lead has
@@ -4798,8 +4864,14 @@ def cmd_dispatch(args) -> int:
             )
         )
     else:
+        scope = " ".join(
+            f"{flag} {value}" for flag, value in (("--origin", origin), ("--topic", args.topic))
+            if value is not None
+        )
         print(
-            f"dispatch: {len(ready)} task(s) ready, launching together — no "
+            f"dispatch: {len(ready)} task(s) ready"
+            + (f" in scope {scope}" if scope else "")
+            + ", launching together — no "
             "concurrency cap,\n          because every one of them has no "
             "recorded blocker left."
         )
@@ -4845,64 +4917,102 @@ def cmd_dispatch(args) -> int:
     spawned: list[tuple[Task, list]] = []
     failures = 0
     for t in ready:
-        # A remote task is probed BEFORE it is spawned, in §1a's order, and one
-        # failed probe stops it there. A remote worker that starts and then
-        # fails at its first `git` call looks exactly like an agent bug and is
-        # not one — and the lead pays for that difference by reading a pane on
-        # another machine. The task stays `queued`, so fixing the host and
-        # re-running `dispatch` sends it.
-        entry = None
-        if t.doc.get("host"):
-            entry, why = host_entry(t.doc["host"])
-            if not entry:
-                print(f"    {t.ref}: NOT SPAWNED — host {t.doc['host']}: {why}",
-                      file=sys.stderr)
-                failures += 1
+        # ONE DISPATCHER PER TASK, from the readiness re-check to the save of
+        # `dispatched`. `session create` takes seconds, so two actors that both
+        # read `queued` both spawned, and the second was stopped only by
+        # `--on-existing fail` refusing a duplicate name. The lock is a file
+        # the OS releases however its holder dies, so it is never stale and
+        # trusts no pid — the reconciler supervisor's own argument — and the
+        # task stays `queued` throughout: no state word, no timeout. It is
+        # taken BEFORE the record's own lock (`Task.save`, milliseconds) and
+        # never after it, which is the one order both can be held in.
+        with contextlib.ExitStack() as held:
+            try:
+                held.enter_context(
+                    fleet_platform.exclusive_lock(t.file(DISPATCH_LOCK), wait=0)
+                )
+            except fleet_platform.LockHeld:
+                print(f"    {t.ref}: being dispatched by another process")
                 continue
-            probes = probe_host(entry, t.doc["repo"])
-            for p in probes:
-                mark = "ok  " if p["ok"] else "FAIL"
-                print(f"    {t.ref}  probe {mark} {p['check']}: {p['detail']}",
-                      file=None if p["ok"] else sys.stderr)
-            if not probes[-1]["ok"]:
-                print(f"    {t.ref}: NOT SPAWNED — the `{probes[-1]['check']}` probe "
-                      f"failed on host {t.doc['host']}", file=sys.stderr)
-                failures += 1
+            # The view was read before the lock, and a dispatcher that held it
+            # since may have saved `dispatched`. Only the disk says.
+            t = Task(t.topic, t.id, t.path, *read_record(t.file("task.yaml")))
+            if not q.is_ready(t):
+                print(f"    {t.ref}: {t.state} now, and only a queued task is dispatched — skipped")
                 continue
+            # A remote task is probed BEFORE it is spawned, in §1a's order, and one
+            # failed probe stops it there. A remote worker that starts and then
+            # fails at its first `git` call looks exactly like an agent bug and is
+            # not one — and the lead pays for that difference by reading a pane on
+            # another machine. The task stays `queued`, so fixing the host and
+            # re-running `dispatch` sends it.
+            entry = None
+            if t.doc.get("host"):
+                entry, why = host_entry(t.doc["host"])
+                if not entry:
+                    print(f"    {t.ref}: NOT SPAWNED — host {t.doc['host']}: {why}",
+                          file=sys.stderr)
+                    failures += 1
+                    continue
+                probes = probe_host(entry, t.doc["repo"])
+                for p in probes:
+                    mark = "ok  " if p["ok"] else "FAIL"
+                    print(f"    {t.ref}  probe {mark} {p['check']}: {p['detail']}",
+                          file=None if p["ok"] else sys.stderr)
+                if not probes[-1]["ok"]:
+                    print(f"    {t.ref}: NOT SPAWNED — the `{probes[-1]['check']}` probe "
+                          f"failed on host {t.doc['host']}", file=sys.stderr)
+                    failures += 1
+                    continue
 
-        try:
-            create, _send, spawned_as = spawn_commands(t)
-        except QueueError as exc:
-            print(f"    {t.ref}: NOT SPAWNED — {exc}", file=sys.stderr)
-            failures += 1
-            continue
-        proc = None
-        try:
-            proc = subprocess.run(create, capture_output=True, check=True)
-            session = json.loads(proc.stdout)["id"]
-        except (OSError, subprocess.CalledProcessError, ValueError, KeyError) as exc:
-            print(f"    {t.ref}: spawn failed: {spawn_failure(exc, proc)}", file=sys.stderr)
-            failures += 1
-            continue
-        # What the spawn ACTUALLY named, carried out of `spawn_commands` and
-        # never resolved a second time: the record is a claim about a session
-        # that now exists, and a second reading of the policy and of `origin`
-        # on the far side of `session create` can answer differently.
-        attach(t, session, spawned_as)
-        spawned.append((t, create))
-
-        # The remote worker is about to be told to read a file that is not on
-        # its filesystem. Put it there first, and record where — `collect`
-        # fetches the result back from beside it.
-        if entry:
-            ok, note = settle_remote(t, entry)
-            print(f"    {t.ref}  {note}", file=None if ok else sys.stderr)
-            if not ok:
-                print(f"    {t.ref}: session exists but was NOT prompted — the brief "
-                      "never reached the host", file=sys.stderr)
+            try:
+                create, _send, spawned_as = spawn_commands(t)
+            except QueueError as exc:
+                print(f"    {t.ref}: NOT SPAWNED — {exc}", file=sys.stderr)
                 failures += 1
                 continue
-        attached.append(t)
+            # A session already spawned for this task and never recorded is
+            # bound the way `attach` binds one, not spawned a twin: busy or
+            # done means it was briefed, and idle stays unprompted for phase 2.
+            stranded = stranded_session(t, create[create.index("--name") + 1])
+            if stranded:
+                sid, row = stranded
+                state, _why = session_state(sid)
+                prompted = state in SESSION_BUSY | {"done"}
+                attach(t, sid, spawned_as if row.get("agent") == spawned_as else "",
+                       prompted=prompted)
+                print(f"    {t.ref}: adopted {sid}, which a dispatch that did not "
+                      "finish left behind" + ("" if prompted else "  (unprompted)"))
+                if not prompted:
+                    attached.append(t)
+                continue
+            proc = None
+            try:
+                proc = subprocess.run(create, capture_output=True, check=True)
+                session = json.loads(proc.stdout)["id"]
+            except (OSError, subprocess.CalledProcessError, ValueError, KeyError) as exc:
+                print(f"    {t.ref}: spawn failed: {spawn_failure(exc, proc)}", file=sys.stderr)
+                failures += 1
+                continue
+            # What the spawn ACTUALLY named, carried out of `spawn_commands` and
+            # never resolved a second time: the record is a claim about a session
+            # that now exists, and a second reading of the policy and of `origin`
+            # on the far side of `session create` can answer differently.
+            attach(t, session, spawned_as)
+            spawned.append((t, create))
+
+            # The remote worker is about to be told to read a file that is not on
+            # its filesystem. Put it there first, and record where — `collect`
+            # fetches the result back from beside it.
+            if entry:
+                ok, note = settle_remote(t, entry)
+                print(f"    {t.ref}  {note}", file=None if ok else sys.stderr)
+                if not ok:
+                    print(f"    {t.ref}: session exists but was NOT prompted — the brief "
+                          "never reached the host", file=sys.stderr)
+                    failures += 1
+                    continue
+            attached.append(t)
 
     # Phase 2: the session exists, but the agent may be sitting on a trust
     # dialog: thurbox mints a fresh worktree path per session and most agents
@@ -12366,6 +12476,11 @@ def build_parser() -> argparse.ArgumentParser:
         "records nothing, so use it when the operator has not authorized a task "
         "yet — never to drip-feed a queue, which is slower than no queue",
     )
+    d.add_argument("--origin", metavar="ID",
+                   help="send only the ready tasks recording exactly this origin "
+                   "(as `find --origin` compares it); refused beside refs")
+    d.add_argument("--topic", metavar="SLUG",
+                   help="send only this topic's ready tasks; refused beside refs")
     d.add_argument("--dry-run", action="store_true")
     d.set_defaults(func=cmd_dispatch)
 

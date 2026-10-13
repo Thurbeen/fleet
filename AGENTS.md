@@ -419,7 +419,11 @@ a second copy — read the skill before you run any of it:
    record it with `fleet queue block`. **A blocker names a task or a
    CONDITION**, and only a person clears the second kind — nothing releases a
    task on a guess. A queue that runs one task at a time is slower than no
-   queue at all.
+   queue at all. `dispatch --origin ID` or `--topic SLUG` scopes that set to
+   one origin's or one topic's work. **Any number of actors may dispatch**: a
+   per-task `dispatch.lock`, which the OS drops with its holder, means one of
+   them spawns a task and the rest write nothing, and a session a dead
+   dispatcher left unrecorded is adopted by the next one rather than twinned.
 4. Each worker targets a real repo and its own git worktree, one per
    repository the task spans — the control plane holds the plan and the log,
    never the workers' branches. `dispatch` gets each
