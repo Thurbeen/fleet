@@ -377,6 +377,232 @@ def taught_gates(agent_root: str, agent: str = "", only_named: bool = False) -> 
 # --- the whole handshake -----------------------------------------------------
 
 
+def _pane_agent(info: dict) -> str:
+    """The agent in the pane, as the session row names it, or "" when none does."""
+    # `detected_agent` is what is observably running and wins over the row's
+    # `agent` when they disagree — a session created as a bare shell that a
+    # harness launched an agent into is exactly that case.
+    for key in ("detected_agent", "reports_as", "agent"):
+        if info.get(key) not in (None, False):
+            return str(info[key])
+    return ""
+
+
+def _flag_only_refusal(info: dict, agent: str, conf, say) -> tuple[int, str]:
+    """An agent whose trust is a launch flag: what the pane's launch already says."""
+    names = agent_settings.chain(agent, conf)
+    if any(name in TRUST_LAUNCH for name in names):
+        if "--trust" in launch_tokens(info):
+            return 0, say(
+                f"'{agent}' is not answered by a keystroke; nothing was "
+                "typed (--trust on the launch already answered the dialog)",
+                "ready",
+            )
+        return 3, say(
+            f"'{agent}' is not answered by a keystroke — it takes --trust "
+            "on the launch. This session's pane does not show that flag; "
+            "nothing was typed.",
+            "flag-required",
+        )
+    return 3, say(
+        f"'{agent}' is not answered by a keystroke. muse's --yolo is "
+        "--disable-approval, not a trust flag, and nothing here has "
+        "watched a session start; nothing was typed.",
+        "flag-required",
+    )
+
+
+def _gates_for(info: dict, agent: str, agent_root: str, conf, say) -> tuple[list | None, tuple[int, str] | None]:
+    """(the gates to answer, None), or (None, the outcome) when no keystroke is the answer."""
+    # A line that NAMES this agent is the most specific answer there is, so it
+    # comes before everything — including the two tables below, which are keyed
+    # by the agents fleet itself has watched. A second account of a watched
+    # agent has neither a line nor a key of its own; `<agent>.LIKE=` hands it
+    # the watched row through `agent_settings.row`.
+    named = taught_gates(agent_root, agent, only_named=True) if agent else None
+    table = agent_settings.row(GATES, agent, conf)
+    if named is not None:
+        return named, None
+    if table is not None:
+        return table, None
+    if any(name in FLAG_ONLY for name in agent_settings.chain(agent, conf)):
+        return None, _flag_only_refusal(info, agent, conf, say)
+    if not agent:
+        return None, (3, say("could not tell which agent holds the pane; sending nothing", "unconfirmed"))
+    gates = taught_gates(agent_root, agent)
+    if gates is None:
+        return None, (3, say(
+            f"no trust gate is known for '{agent}'; sending nothing. Teach fleet\n"
+            f"             one with {agent}.TRUST_SIGNATURE and {agent}.TRUST_KEYS in\n"
+            "             orchestration/agent.conf — or, where it is another account of\n"
+            f"             an agent fleet knows, {agent}.LIKE=<that agent>. A checkout-wide\n"
+            "             TRUST_SIGNATURE still answers for every agent with no line of\n"
+            f"             its own; the table is in {os.path.join(HERE, 'session_trust.py')}",
+            "unknown-agent",
+        ))
+    return gates, None
+
+
+class _Handshake:
+    """One session's pane, watched and answered gate by gate."""
+
+    def __init__(self, uuid: str, agent: str, gates: list, is_codex: bool, visible_only: bool, say):
+        self.uuid = uuid
+        self.agent = agent
+        self.gates = gates
+        self.is_codex = is_codex
+        self.visible_only = visible_only
+        self.say = say
+
+    def view(self) -> str:
+        """The squeezed pane in which a dialog can still be in front of the agent."""
+        return squeeze(pane_text(self.uuid, lines=0 if self.visible_only else 60))
+
+    def gate_on_pane(self) -> int | None:
+        """The index of the gate the pane shows right now, if any."""
+        if not self.gates:
+            return None
+        text = self.view()
+        for i, (signature, _keys) in enumerate(self.gates):
+            if shows(signature, text):
+                return i
+        return None
+
+    def hook_review_on_pane(self) -> bool:
+        return self.is_codex and shows("hooks need review", squeeze(pane_text(self.uuid, lines=0)))
+
+    def unanswerable_codex_folder_on_pane(self) -> bool:
+        # A folder screen may leave the composer visible below it. A changed
+        # selector or wording must block the brief, even though no gate matches.
+        return self.is_codex and shows(r"trust this folder\?", self.view())
+
+    def agent_up(self) -> bool:
+        """The agent is past every gate: Codex's composer is drawn, or the hooks reported."""
+        return (self.is_codex and codex_composer_ready(self.uuid)) or agent_reported(self.uuid)
+
+    def hook_review_blocked(self) -> tuple[int, str]:
+        return 3, self.say(
+            "Codex shows 'Hooks need review'. Inspect the hooks in the pane:\n"
+            f"               thurbox-cli session capture {self.uuid}\n"
+            "             Choose how to continue yourself, then retry the queue "
+            "prompt. Nothing was typed into this menu and the brief was not sent.",
+            "hooks-review-required",
+        )
+
+    def folder_blocked(self) -> tuple[int, str]:
+        return 3, self.say(
+            "Codex's folder trust dialog is visible, but the accepting option "
+            "could not be confirmed. Inspect the pane:\n"
+            f"               thurbox-cli session capture {self.uuid}\n"
+            "             Answer it yourself, then retry the queue prompt. "
+            "Nothing was typed into this dialog and the brief was not sent.",
+            "unconfirmed",
+        )
+
+    def answer(self, i: int) -> tuple[tuple[int, str] | None, str]:
+        """Answer one gate, then confirm it took: (the failure or None, the keys sent).
+
+        A send that reports success is not proof the dialog was answered. The
+        dialog being GONE is. On either failure nothing more is sent.
+        """
+        signature, keys = self.gates[i]
+        if keys == "down enter" and YES_SELECTED.search(self.view()):
+            keys = "enter"
+        for k in keys.split():
+            if not send_key(self.uuid, k):
+                return (3, self.say(f"could not send '{k}' to the pane; the dialog is still up",
+                                    "send-failed")), keys
+            time.sleep(1)
+        for _ in range(10):
+            if not shows(signature, self.view()):
+                return None, keys
+            time.sleep(1)
+        return (3, self.say(
+            f"sent '{keys}' but {self.agent}'s dialog is still on the pane. Do not\n"
+            "             prompt this session; look at it:\n"
+            f"               thurbox-cli session capture {self.uuid}\n"
+            "             The config-seeding fallback is:\n"
+            f"               uv run --project {os.path.dirname(os.path.dirname(HERE))} fleet trust-thurbox-dir"
+            " <that session's worktree path>\n"
+            "             — which seeds THIS machine. For a session on a remote host, run\n"
+            "             that command ON THE HOST, against the worktree path there.",
+            "unconfirmed",
+        )), keys
+
+    def answer_next(self, i: int, answered: list) -> tuple[int, str] | None:
+        """Answer gate `i` unless MAX_ANSWERS are already behind it: the failure, or None."""
+        if len(answered) >= MAX_ANSWERS:
+            return 3, self.say(
+                f"answered {len(answered)} dialogs ({', '.join(answered)}) and another"
+                " is still coming.\n"
+                "             Nothing more was sent. Look at the pane before prompting it:\n"
+                f"               thurbox-cli session capture {self.uuid}",
+                "unconfirmed",
+            )
+        failed, sent = self.answer(i)
+        if failed:
+            return failed
+        answered.append(f"'{sent}'")
+        return None
+
+    def watch(self, timeout: int) -> tuple[list, tuple[int, str] | None]:
+        """Answer every dialog in turn: (the keys sent to each, the failure or None)."""
+        # Another dialog can come up BEHIND the one just answered — Claude Code
+        # shows folder trust, then external imports — and returning after the first
+        # would hand the send to the second. So after each answer the pane is
+        # watched for SETTLE more seconds. Codex keeps that watch even when a
+        # composer or hook report appears first: its hook-review menu may follow.
+        answered: list[str] = []
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if self.hook_review_on_pane():
+                return answered, self.hook_review_blocked()
+            i = self.gate_on_pane()
+            if i is not None:
+                failed = self.answer_next(i, answered)
+                if failed:
+                    return answered, failed
+                deadline = time.monotonic() + SETTLE
+                continue
+            if self.unanswerable_codex_folder_on_pane():
+                return answered, self.folder_blocked()
+            if answered and self.is_codex:
+                time.sleep(1)
+                continue
+            if self.agent_up():
+                break
+            time.sleep(1)
+        return answered, None
+
+    def verdict(self, answered: list, timeout: int) -> tuple[int, str]:
+        """What the pane shows once the watch is over."""
+        agent, say = self.agent, self.say
+        if self.hook_review_on_pane():
+            return self.hook_review_blocked()
+        if self.gate_on_pane() is not None:
+            return 3, say(
+                f"{agent}'s trust dialog is still on the pane; nothing was sent",
+                "unconfirmed",
+            )
+        if self.unanswerable_codex_folder_on_pane():
+            return self.folder_blocked()
+        if answered:
+            return 0, say(f"answered {agent}'s dialog(s) with {', '.join(answered)}; "
+                          "none is left on the pane", "answered")
+        if agent_reported(self.uuid):
+            return 0, say(f"no dialog: {agent} is already reporting; nothing sent", "ready")
+        if self.is_codex and codex_composer_ready(self.uuid):
+            return 0, say(f"no dialog: {agent}'s composer is ready; nothing sent", "ready")
+        if not self.gates:
+            return 0, say(f"{agent} shows no trust dialog in a git worktree; nothing sent", "ready")
+        return 3, say(
+            f"no trust dialog seen in {timeout}s and {agent} has not reported.\n"
+            "             Nothing was sent. Look at the pane before prompting it:\n"
+            f"               thurbox-cli session capture {self.uuid}",
+            "unconfirmed",
+        )
+
+
 def answer_dialogs(
     session: str, timeout: int = 20, as_json: bool = False, *, visible_only: bool = False
 ) -> tuple[int, str]:
@@ -403,62 +629,13 @@ def answer_dialogs(
     if not info:
         return 2, say(f"no such session: {session}", "error")
     uuid = str(info.get("id") or session)
-    # `detected_agent` is what is observably running and wins over the row's
-    # `agent` when they disagree — a session created as a bare shell that a
-    # harness launched an agent into is exactly that case.
-    for key in ("detected_agent", "reports_as", "agent"):
-        if info.get(key) not in (None, False):
-            agent = str(info[key])
-            break
+    agent = _pane_agent(info)
 
     agent_root = os.environ.get("FLEET_AGENT_ROOT") or os.path.dirname(os.path.dirname(HERE))
     conf = agent_settings.conf(agent_root)
-    # A line that NAMES this agent is the most specific answer there is, so it
-    # comes before everything — including the two tables below, which are keyed
-    # by the agents fleet itself has watched. A second account of a watched
-    # agent has neither a line nor a key of its own; `<agent>.LIKE=` hands it
-    # the watched row through `agent_settings.row`.
-    named = taught_gates(agent_root, agent, only_named=True) if agent else None
-    table = agent_settings.row(GATES, agent, conf)
-    if named is not None:
-        gates = named
-    elif table is not None:
-        gates = table
-    elif any(name in FLAG_ONLY for name in agent_settings.chain(agent, conf)):
-        names = agent_settings.chain(agent, conf)
-        if any(name in TRUST_LAUNCH for name in names):
-            if "--trust" in launch_tokens(info):
-                return 0, say(
-                    f"'{agent}' is not answered by a keystroke; nothing was "
-                    "typed (--trust on the launch already answered the dialog)",
-                    "ready",
-                )
-            return 3, say(
-                f"'{agent}' is not answered by a keystroke — it takes --trust "
-                "on the launch. This session's pane does not show that flag; "
-                "nothing was typed.",
-                "flag-required",
-            )
-        return 3, say(
-            f"'{agent}' is not answered by a keystroke. muse's --yolo is "
-            "--disable-approval, not a trust flag, and nothing here has "
-            "watched a session start; nothing was typed.",
-            "flag-required",
-        )
-    elif not agent:
-        return 3, say("could not tell which agent holds the pane; sending nothing", "unconfirmed")
-    else:
-        gates = taught_gates(agent_root, agent)
-        if gates is None:
-            return 3, say(
-                f"no trust gate is known for '{agent}'; sending nothing. Teach fleet\n"
-                f"             one with {agent}.TRUST_SIGNATURE and {agent}.TRUST_KEYS in\n"
-                "             orchestration/agent.conf — or, where it is another account of\n"
-                f"             an agent fleet knows, {agent}.LIKE=<that agent>. A checkout-wide\n"
-                "             TRUST_SIGNATURE still answers for every agent with no line of\n"
-                f"             its own; the table is in {os.path.join(HERE, 'session_trust.py')}",
-                "unknown-agent",
-            )
+    gates, refused = _gates_for(info, agent, agent_root, conf, say)
+    if refused:
+        return refused
 
     is_codex = "codex" in agent_settings.chain(agent, conf)
 
@@ -467,140 +644,22 @@ def answer_dialogs(
     # menu still on screen is evidence that keys should be pressed.
     visible_only = visible_only or info.get("hook_reported") is True
 
-    def view() -> str:
-        """The squeezed pane in which a dialog can still be in front of the agent."""
-        return squeeze(pane_text(uuid, lines=0 if visible_only else 60))
-
-    def gate_on_pane() -> int | None:
-        """The index of the gate the pane shows right now, if any."""
-        if not gates:
-            return None
-        text = view()
-        for i, (signature, _keys) in enumerate(gates):
-            if shows(signature, text):
-                return i
-        return None
-
-    def hook_review_on_pane() -> bool:
-        return is_codex and shows("hooks need review", squeeze(pane_text(uuid, lines=0)))
-
-    def unanswerable_codex_folder_on_pane() -> bool:
-        # A folder screen may leave the composer visible below it. A changed
-        # selector or wording must block the brief, even though no gate matches.
-        return is_codex and shows(r"trust this folder\?", view())
-
-    def hook_review_blocked() -> tuple[int, str]:
-        return 3, say(
-            "Codex shows 'Hooks need review'. Inspect the hooks in the pane:\n"
-            f"               thurbox-cli session capture {uuid}\n"
-            "             Choose how to continue yourself, then retry the queue "
-            "prompt. Nothing was typed into this menu and the brief was not sent.",
-            "hooks-review-required",
-        )
-
-    def folder_blocked() -> tuple[int, str]:
-        return 3, say(
-            "Codex's folder trust dialog is visible, but the accepting option "
-            "could not be confirmed. Inspect the pane:\n"
-            f"               thurbox-cli session capture {uuid}\n"
-            "             Answer it yourself, then retry the queue prompt. "
-            "Nothing was typed into this dialog and the brief was not sent.",
-            "unconfirmed",
-        )
-
-    def answer(i: int) -> tuple[tuple[int, str] | None, str]:
-        """Answer one gate, then confirm it took: (the failure or None, the keys sent).
-
-        A send that reports success is not proof the dialog was answered. The
-        dialog being GONE is. On either failure nothing more is sent.
-        """
-        signature, keys = gates[i]
-        if keys == "down enter" and YES_SELECTED.search(view()):
-            keys = "enter"
-        for k in keys.split():
-            if not send_key(uuid, k):
-                return (3, say(f"could not send '{k}' to the pane; the dialog is still up",
-                               "send-failed")), keys
-            time.sleep(1)
-        for _ in range(10):
-            if not shows(signature, view()):
-                return None, keys
-            time.sleep(1)
-        return (3, say(
-            f"sent '{keys}' but {agent}'s dialog is still on the pane. Do not\n"
-            "             prompt this session; look at it:\n"
-            f"               thurbox-cli session capture {uuid}\n"
-            "             The config-seeding fallback is:\n"
-            f"               uv run --project {os.path.dirname(os.path.dirname(HERE))} fleet trust-thurbox-dir"
-            " <that session's worktree path>\n"
-            "             — which seeds THIS machine. For a session on a remote host, run\n"
-            "             that command ON THE HOST, against the worktree path there.",
-            "unconfirmed",
-        )), keys
-
     # --- watch, answering every dialog in turn -------------------------------
-    #
-    # Another dialog can come up BEHIND the one just answered — Claude Code
-    # shows folder trust, then external imports — and returning after the first
-    # would hand the send to the second. So after each answer the pane is
-    # watched for SETTLE more seconds. Codex keeps that watch even when a
-    # composer or hook report appears first: its hook-review menu may follow.
-    answered: list[str] = []
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if hook_review_on_pane():
-            return hook_review_blocked()
-        i = gate_on_pane()
-        if i is not None:
-            if len(answered) >= MAX_ANSWERS:
-                return 3, say(
-                    f"answered {len(answered)} dialogs ({', '.join(answered)}) and another"
-                    " is still coming.\n"
-                    "             Nothing more was sent. Look at the pane before prompting it:\n"
-                    f"               thurbox-cli session capture {uuid}",
-                    "unconfirmed",
-                )
-            failed, sent = answer(i)
-            if failed:
-                return failed
-            answered.append(f"'{sent}'")
-            deadline = time.monotonic() + SETTLE
-            continue
-        if unanswerable_codex_folder_on_pane():
-            return folder_blocked()
-        if answered and is_codex:
-            time.sleep(1)
-            continue
-        if is_codex and codex_composer_ready(uuid):
-            break
-        if agent_reported(uuid):
-            break
-        time.sleep(1)
+    handshake = _Handshake(uuid, agent, gates, is_codex, visible_only, say)
+    answered, failed = handshake.watch(timeout)
+    if failed:
+        return failed
+    return handshake.verdict(answered, timeout)
 
-    if hook_review_on_pane():
-        return hook_review_blocked()
-    if gate_on_pane() is not None:
-        return 3, say(
-            f"{agent}'s trust dialog is still on the pane; nothing was sent",
-            "unconfirmed",
-        )
-    if unanswerable_codex_folder_on_pane():
-        return folder_blocked()
-    if answered:
-        return 0, say(f"answered {agent}'s dialog(s) with {', '.join(answered)}; "
-                      "none is left on the pane", "answered")
-    if agent_reported(uuid):
-        return 0, say(f"no dialog: {agent} is already reporting; nothing sent", "ready")
-    if is_codex and codex_composer_ready(uuid):
-        return 0, say(f"no dialog: {agent}'s composer is ready; nothing sent", "ready")
-    if not gates:
-        return 0, say(f"{agent} shows no trust dialog in a git worktree; nothing sent", "ready")
-    return 3, say(
-        f"no trust dialog seen in {timeout}s and {agent} has not reported.\n"
-        "             Nothing was sent. Look at the pane before prompting it:\n"
-        f"               thurbox-cli session capture {uuid}",
-        "unconfirmed",
-    )
+
+def _timeout_arg(args: list) -> int | None:
+    """Pop `--timeout`'s value off `args`: whole seconds, or None once the error is printed."""
+    value = args.pop(0) if args else "20"
+    try:
+        return int(value)
+    except ValueError:
+        print(f"error: --timeout wants whole seconds, not {value!r}", file=sys.stderr)
+        return None
 
 
 def main(argv: list | None = None) -> int:
@@ -612,11 +671,8 @@ def main(argv: list | None = None) -> int:
             print(__doc__.strip())
             return 0
         if arg == "--timeout":
-            value = args.pop(0) if args else "20"
-            try:
-                timeout = int(value)
-            except ValueError:
-                print(f"error: --timeout wants whole seconds, not {value!r}", file=sys.stderr)
+            timeout = _timeout_arg(args)
+            if timeout is None:
                 return 2
         elif arg == "--json":
             as_json = True
