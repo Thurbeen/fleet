@@ -654,7 +654,7 @@ def test_the_fixer_is_refused_when_the_policy_no_longer_clears_its_agent(
 
     dry = q("shepherd", "--topic", topic, "--dry-run", **narrowed).out
     expect(dry, "policy-refused", "no fixer sent", "'alpha'", "beta")
-    refute(dry, "would-dispatch")
+    refute(dry, "would-spawn", "would-ping")
     # A dry run writes nothing, including this.
     assert "shepherd" not in yaml.safe_load(task_file.read_text(encoding="utf-8"))
 
@@ -789,7 +789,7 @@ def test_a_refusal_never_overwrites_the_record_of_a_fixer_in_flight(
     # And the proof of what keeping it is for: with the policy widened again,
     # the pass that follows sees the fixer it already has, not a vacancy.
     again = q("shepherd", "--topic", topic, **wide).out
-    expect(again, "in-flight")
+    expect(again, "already-sent")
     assert len(shep.creates("01-conflicting")) == 1, shep.tbx_log()
 
 

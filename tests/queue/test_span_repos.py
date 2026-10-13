@@ -552,7 +552,7 @@ def test_a_fixer_is_cut_from_the_repository_the_change_request_is_in(cross_forge
     next_session(stubs, sid)
     stubs.session_is(sid, "idle")
     stubs.tool("thurbox-cli", ANSWERING_KEYS)
-    expect(ok(cf.q("shepherd", "--topic", cf.topic)).out, "dispatched", "Rebase")
+    expect(ok(cf.q("shepherd", "--topic", cf.topic)).out, "spawned", "Rebase")
 
     cut = f"{cf.topic}__01-both-forges"
     assert cut in git("worktree", "list", cwd=cf.gl), "the fixer's worktree is off the GitLab checkout"

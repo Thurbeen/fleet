@@ -141,8 +141,10 @@ def test_shepherd_all_the_way_through(seam, stubs):
 
     out = seam.q("shepherd", "--topic", seam.topic).out
     assert "203 squash" in seam.store.merged(), out
-    # A conflicting one gets a fixer, in the base branch's own terms, and it is dispatched.
-    expect(out, "conflicts with main", "dispatched:")
+    # A conflicting one gets a fixer, in the base branch's own terms: a session
+    # is spawned for it, which this seam's thurbox then never confirms. (The
+    # old `dispatched:` matched only inside `not-dispatched:`.)
+    expect(out, "conflicts with main", "not-dispatched: session stub exists but was NOT prompted")
     # One whose head is not ours is left alone, named as where the forge said it lives.
     expect(out, "left-alone", "a stranger's fork")
     assert not [m for m in seam.store.merged() if m.startswith("204 ")], "a stranger's change request merged"

@@ -9317,9 +9317,14 @@ def cmd_refuel(args) -> int:
 #
 # THE RULES THAT KEEP IT FROM BEING WORSE THAN NOTHING:
 #
-#   Idempotent.  A dispatched fixer is recorded on the task under `shepherd`,
-#                with the condition it went out for. A second pass over the
-#                same still-broken PR sees work in flight, not a second job.
+#   Idempotent.  Every fix sent is recorded on the task under `shepherd`, as
+#                one (condition, head) entry in its `sent` list. A second pass
+#                over the same condition on the same head sends nothing; a
+#                different condition, or a new head, goes to the session
+#                already on the PR once it is at rest by its own word.
+#   Ping first.  A session that is still there is typed into (`pinged`) and
+#                never doubled; a fresh one is `spawned` on the branch only
+#                when the recorded fixer and the task's own worker are gone.
 #   Never guess. "Could not check" is its own outcome and is never `broken`.
 #                No forge, no network, no thurbox: say what could not be
 #                determined and carry on. Spawning a fixer for a healthy PR is
@@ -9344,8 +9349,8 @@ def cmd_refuel(args) -> int:
 SESSION_BUSY = {"working", "blocked"}
 SESSION_AT_REST = {"idle", "done"}
 
-# Conditions that get a fixer, worst first: one PR gets ONE fixer, for the
-# thing that has to be fixed before any of the others can even be judged.
+# Conditions that get a fixer, worst first: one pass sends ONE fix per PR, for
+# the thing that has to be fixed before any of the others can even be judged.
 FIXABLE = ("conflicting", "checks-failed", "changes-requested", "policy")
 
 # WHERE FLEET IS ALLOWED TO MERGE. An explicit allowlist and not a flag,
@@ -11193,26 +11198,32 @@ def _fixer_refused(task: Task, args, row: dict, rec: dict, condition: str,
 
 def _shepherd_fix(cr: forge.ChangeRequest, task: Task, args, row: dict, rec: dict,
                   condition: str, detail: str) -> dict:
-    """Send a fixer for a fixable change request, unless one is already on it."""
-    # Everything below here needs a fixer. Both liveness checks below share
-    # one `session list` snapshot, so a fixer and the task's own worker read
-    # "gone" from the same evidence.
+    """Send a fixer for a fixable change request, unless this one already went out.
+
+    Keyed on (condition, head), not on the pull request. A record that names
+    a fixer used to hold back EVERY later send for its pull request, so a
+    `checks-failed` fix that finished, then `main` moving under it, read
+    "in-flight ... now done" and the conflict reached nobody until `--force`.
+    The same condition on the same head is still sent once; anything else
+    goes to whichever session is already on it, once that session is at rest
+    by its own word.
+    """
+    # Every liveness check below shares one `session list` snapshot, so a
+    # fixer and the task's own worker read "gone" from the same evidence.
     rec_session = str(rec["session"]) if rec.get("session") else ""
     worker = str(task.doc.get("session") or "")
-    live, live_why = live_sessions() if (rec_session or worker) else (set(), "")
+    sent = fixes_sent(rec, cr.head_sha)
+    probe = rec_session or worker or any(s.get("session") for s in sent)
+    live, live_why = live_sessions() if probe else (set(), "")
 
-    # A fixer already dispatched for THIS pull request is still the one
-    # doing the work, whatever the PR now classifies as — the condition can
-    # drift between passes while the fixer is mid-fix, and that drift must
-    # never look like nobody is on it.
-    if not args.force and rec_session and _fixer_in_flight(rec, rec_session, live, live_why, row):
+    if not args.force and _fix_already_sent(sent, condition, cr.head_sha, live, live_why, row):
         return row
 
-    # The task's own session has the context and the worktree, so it is the
-    # first choice — but only its own word puts it at rest (§4a). A session
-    # that is gone reads as no session at all, which is the ordinary case once
-    # a run has been cleaned up.
-    reuse = _reusable_worker(worker, live, live_why, row) if worker else ""
+    # A session already on this pull request has the context and the
+    # worktree: the fixer recorded for it first, then the task's own worker.
+    # Only its own word puts it at rest (§4a), and only when every one of them
+    # is gone is a fresh session spawned — never beside one that is there.
+    reuse = _fix_target(rec_session, worker, live, live_why, row)
     if reuse is None:
         return row
 
@@ -11221,75 +11232,98 @@ def _shepherd_fix(cr: forge.ChangeRequest, task: Task, args, row: dict, rec: dic
     title = FIXER_TITLES[condition].format(n=cr.number, base=base)
 
     if args.dry_run:
-        row["action"] = "would-dispatch"
-        how = f"reusing its own worker {reuse}" if reuse else "a fresh session on the branch"
+        row["action"] = "would-ping" if reuse else "would-spawn"
+        how = f"typed into {reuse}, already on it" if reuse else "a fresh session on the branch"
         row["note"] = f"{title} ({how})"
         return row
 
-    return _send_fixer(cr, task, row, condition, detail, reuse, title, base, branch)
+    return _send_fixer(cr, task, row, rec, condition, detail, reuse, title, base, branch)
 
 
-def _fixer_in_flight(rec: dict, rec_session: str, live, live_why: str, row: dict) -> bool:
-    """Whether the fixer already sent for this pull request may still be on it.
+def fixes_sent(rec: dict, head: str) -> list:
+    """What `shepherd` already sent about this pull request's current head.
 
-    True has filled `row`.
+    One entry per (condition, head) it sent, as `shepherd_comments` keeps one
+    per comment id. A push moves the head, which resets the list. A record
+    written before the list existed names one send and no head, so it is read
+    as having been about this one: the conservative reading, because it only
+    ever holds back the condition that record names.
     """
-    status = session_status(rec_session, live)
+    every = rec.get("sent")
+    if isinstance(every, list):
+        return [s for s in every if isinstance(s, dict) and s.get("head", "") == head]
+    if rec.get("session") and rec.get("condition") in FIXABLE:
+        return [{"condition": rec["condition"], "head": head, "session": str(rec["session"]),
+                 "at": rec.get("at"), "brief": rec.get("brief")}]
+    return []
+
+
+def _fix_already_sent(sent: list, condition: str, head: str, live, live_why: str,
+                      row: dict) -> bool:
+    """Whether this (condition, head) already went to a session that is still there.
+
+    True has filled `row`. A session that is gone since takes the fix with
+    it, so the same send goes out again — a fixer that crashed must not stall
+    its pull request's recovery forever.
+    """
+    told = next((s for s in reversed(sent) if s.get("condition") == condition
+                 and s.get("head", "") == head), None)
+    if told is None:
+        return False
+    sid = str(told.get("session") or "")
+    status = session_status(sid, live) if sid else "gone"
+    if status == "gone":
+        return False
     if status == "unknown":
         row["action"] = "left-alone"
         row["note"] = (
-            f"could not tell whether the fixer sent for this at {rec.get('at')} "
-            f"(session {rec_session}) is still working ({live_why or 'no state reported'}). "
-            "Nothing sent."
+            f"could not tell whether the session sent {condition} at {told.get('at')} "
+            f"({sid}) is still there ({live_why or 'no state reported'}). Nothing sent."
         )
         return True
-    if status != "gone":
-        row["action"] = "in-flight"
-        row["note"] = (
-            f"a fixer went out for this at {rec.get('at')} "
-            f"(session {rec_session}, now {status}). "
-            "Nothing sent. `--force` overrides."
-        )
-        return True
-    return False
+    row["action"] = "already-sent"
+    row["note"] = (
+        f"{condition} on this head went to {sid} at {told.get('at')} (now {status}); "
+        "not again until the condition or the head changes. `--force` overrides."
+    )
+    return True
 
 
-def _reusable_worker(worker: str, live, live_why: str, row: dict) -> str | None:
-    """The task's own worker when it is at rest, "" when it is gone, None to wait.
+def _fix_target(rec_session: str, worker: str, live, live_why: str, row: dict) -> str | None:
+    """The session at rest to type the fix into, "" to spawn one, None to wait.
 
-    None has filled `row`.
+    None has filled `row`. The first candidate that is not gone decides.
     """
-    status = session_status(worker, live)
-    if status == "unknown":
-        row["action"] = "left-alone"
-        row["note"] = (
-            f"could not tell whether its own worker {worker} is still there "
-            f"({live_why or 'no state reported'}). Nothing sent."
-        )
-        return None
-    if status in SESSION_BUSY:
-        row["action"] = "left-alone"
-        row["note"] = (
-            f"its own worker {worker} is {status} — probably already on it. "
-            "Interrupting a turn is how a fix gets half-applied."
-        )
-        return None
-    if status in SESSION_AT_REST:
-        return worker
-    if status != "gone":
-        row["action"] = "left-alone"
-        row["note"] = (
-            f"its own worker {worker} reads {status}, which is an observation "
-            "and not the agent saying it is at rest. Nothing sent; look at "
-            f"the pane: thurbox-cli session capture {worker}"
-        )
+    for sid, whose in ((rec_session, "the fixer sent for it"), (worker, "its own worker")):
+        if not sid or (sid == worker and whose != "its own worker"):
+            continue
+        status = session_status(sid, live)
+        if status == "gone":
+            continue
+        if status in SESSION_AT_REST:
+            return sid
+        row["action"] = "in-flight" if status in SESSION_BUSY else "left-alone"
+        if status == "unknown":
+            row["note"] = (f"could not tell whether {whose} {sid} is still there "
+                           f"({live_why or 'no state reported'}). Nothing sent.")
+        elif status in SESSION_BUSY:
+            row["note"] = (f"{whose} {sid} is {status} — probably already on it. "
+                           "Interrupting a turn is how a fix gets half-applied.")
+        else:
+            row["note"] = (f"{whose} {sid} reads {status}, which is an observation "
+                           "and not the agent saying it is at rest. Nothing sent; look at "
+                           f"the pane: thurbox-cli session capture {sid}")
         return None
     return ""
 
 
-def _send_fixer(cr: forge.ChangeRequest, task: Task, row: dict, condition: str, detail: str,
-                reuse: str, title: str, base: str, branch: str) -> dict:
-    """Write the fix brief, hand it to `reuse` or a fresh session, and record it."""
+def _send_fixer(cr: forge.ChangeRequest, task: Task, row: dict, rec: dict, condition: str,
+                detail: str, reuse: str, title: str, base: str, branch: str) -> dict:
+    """Write the fix brief, ping `reuse` or spawn a fresh session, and record it.
+
+    Two different acts with two words: `pinged` typed one line into a session
+    that was already there, and `spawned` started a new one on the branch.
+    """
     checkout = task_checkout(task, cr.repo)
     drift = base_drift(checkout, base, branch) if condition == "conflicting" else ""
 
@@ -11300,26 +11334,36 @@ def _send_fixer(cr: forge.ChangeRequest, task: Task, row: dict, condition: str, 
         ok, report = trust_and_send(
             reuse, f"Read {os.path.abspath(path)} and do what it says."
         )
-        session = reuse if ok else ""
-        note = report if not ok else "reused its own worker"
+        session, how = (reuse if ok else ""), "pinged"
+        note = report if not ok else f"{title} -> typed into {reuse}"
     else:
         session, note = spawn_fixer(task, title, path, branch, checkout)
+        how = "spawned"
+        note = f"{title} -> new session {session}" if session else note
 
     if not session:
         row["action"] = "not-dispatched"
         row["note"] = note
         return row
-    row["action"] = "dispatched"
-    row["note"] = f"{title} -> {session}"
+    row["action"] = how
+    row["note"] = note
+    at = now()
+    sent = fixes_sent(rec, cr.head_sha) + [{
+        "condition": condition, "head": cr.head_sha, "session": session,
+        "how": how, "at": at, "brief": os.path.basename(path),
+    }]
     record_shepherd(
         task,
         {
             "condition": condition,
             "detail": detail,
             "session": session,
+            "how": how,
             "pr": cr.url,
+            "head": cr.head_sha,
             "brief": os.path.basename(path),
-            "at": now(),
+            "at": at,
+            "sent": sent,
         },
     )
     return row
@@ -11523,7 +11567,7 @@ def _comments_wanted(cr: forge.ChangeRequest, task, row: dict) -> bool:
     # fixer this pass just sent is mid-turn, and a merged one is done.
     if cr.review_decision == "changes-requested" or row.get("condition") in ("closed", "foreign"):
         return False
-    return row.get("action") not in ("dispatched", "policy-refused", "merged")
+    return row.get("action") not in ("pinged", "spawned", "policy-refused", "merged")
 
 
 def _comments_target(task: Task, cr: forge.ChangeRequest, rec: dict, count: str,
@@ -11880,7 +11924,7 @@ def _print_shepherd_summary(rows: list, dry_run: bool) -> None:
             f"          {len(undetermined)} could not be determined and were left "
             "exactly as they are —\n          a PR that cannot be read is not a broken one."
         )
-    if not dry_run and any(r["action"] == "dispatched" for r in rows):
+    if not dry_run and any(r["action"] in ("pinged", "spawned") for r in rows):
         print("          Fixers are working in place on the existing branches; nothing forked.")
     # An empty allowlist is the default a fresh clone has, so it gets a
     # sentence rather than a dangling "limited to , and only for" — and that

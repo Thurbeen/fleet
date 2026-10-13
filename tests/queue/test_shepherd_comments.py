@@ -203,7 +203,7 @@ def test_a_comment_record_does_not_hold_back_a_failing_check_fixer(talk):
     talk.shep.update(201, statusCheckRollup=[{"__typename": "CheckRun", "name": "CI", "status": "COMPLETED",
                                               "conclusion": "FAILURE"}])
     out = talk.pass_()
-    expect(out, "checks-failed", "dispatched")
+    expect(out, "checks-failed", "pinged")
     assert len(talk.sends()) == 2, talk.shep.tbx_log()
 
 
@@ -211,7 +211,7 @@ def test_a_change_request_whose_review_requested_changes_is_the_fixer_s(talk):
     talk.shep.update(201, reviewDecision="CHANGES_REQUESTED", mergeable="CONFLICTING")
     talk.review("R1", "reviewer", "Please split this.", "2026-10-01T10:00:00Z", state="CHANGES_REQUESTED")
     out = talk.pass_()
-    expect(out, "conflicting", "dispatched")
+    expect(out, "conflicting", "pinged")
     refute(out, "comments sent")
     assert talk.briefs() == []
     assert "shepherd_comments" not in talk.task()

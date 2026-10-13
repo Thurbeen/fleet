@@ -124,8 +124,9 @@ below), so THIS IS A CONTRACT: add fields, never rename or retype them.
     }
 
 `action` is what shepherd did about that PR: `sent` a line to the session (an
-adopted session, or a task's own worker reused for a fix), dispatched a `fixer`
-session (tasks only), `merged` it, `left-alone` (busy, foreign, or nothing it
+adopted session, or a session already on a task's PR — its fixer or its own
+worker — pinged with a fix, or one told this condition on this head before),
+spawned a `fixer` session (tasks only, and only when no session is left), `merged` it, `left-alone` (busy, foreign, or nothing it
 may do), or `none` (nothing called for). A `merged` or `closed` PR stays under
 its session for as long as the session is still on that branch, so the board
 can draw how it ended.
@@ -248,12 +249,14 @@ def stale(entry: dict, why: str) -> dict:
     return {**entry, "stale": True, "stale_reason": why}
 
 
-# What a task row's `action` means in the store's five words. A fix sent into
-# the task's own worker is a line typed into a session, which is what `sent`
-# means for an adopted one; a fresh session on the branch is the `fixer`.
+# What a task row's `action` means in the store's five words. A fix typed into
+# a session already on the pull request is `pinged`, which is what `sent` means
+# for an adopted one; a fresh session spawned on the branch is the `fixer`.
 TASK_ACTIONS = {
     "merged": "merged",
-    "dispatched": "fixer",
+    "pinged": "sent",
+    "already-sent": "sent",
+    "spawned": "fixer",
     "left-alone": "left-alone",
     "in-flight": "left-alone",
     "policy-refused": "left-alone",
@@ -265,8 +268,6 @@ TASK_ACTIONS = {
 
 
 def task_action(row: dict) -> str:
-    if row["action"] == "dispatched" and "reused its own worker" in (row.get("note") or ""):
-        return "sent"
     return TASK_ACTIONS.get(row["action"], "none")
 
 
@@ -527,10 +528,26 @@ def forge_unavailable(q, why: str) -> None:
         save(q, {sid: mark_stale(s, why) for sid, s in previous["sessions"].items()})
 
 
-def _by_session(q, observed: list) -> dict:
+def pr_session(task, snapshot: dict | None) -> str:
+    """The session a task's pull requests are filed under: its worker, else its fixer.
+
+    The worker while thurbox still lists it; once it is gone, the fixer
+    `shepherd` spawned on the branch in its place, so the PR — and the `fixer`
+    word that says what was done about it — stays on the board.
+    """
+    worker = str(task.doc.get("session") or "")
+    fixer = str((task.doc.get("shepherd") or {}).get("session") or "")
+    if worker and (snapshot is None or worker in snapshot):
+        return worker
+    if fixer and snapshot is not None and fixer in snapshot:
+        return fixer
+    return worker
+
+
+def _by_session(q, observed: list, snapshot: dict | None) -> dict:
     by_session: dict = {}
     for cr, task, row in observed:
-        sid = str(task.doc.get("session") or "") if task else ""
+        sid = pr_session(task, snapshot) if task else ""
         if sid:
             by_session.setdefault(sid, (task, []))[1].append(
                 entry_for(q, cr, row["condition"], row["detail"], task_action(row), row.get("note") or ""))
@@ -540,10 +557,10 @@ def _by_session(q, observed: list) -> dict:
 def _task_sessions(q, observed: list, held: dict, snapshot: dict | None, prev_sessions: dict,
                    readable: dict) -> dict:
     """The tasks' own sessions, from what the main pass already classified."""
-    by_session = _by_session(q, observed)
+    by_session = _by_session(q, observed, snapshot)
     sessions: dict = {}
     for sid, task in held.items():
-        if str(task.doc.get("session") or "") != sid:
+        if pr_session(task, snapshot) != sid:
             continue
         if snapshot is not None and sid not in snapshot:
             continue  # thurbox listed every session, and not this one: it is gone

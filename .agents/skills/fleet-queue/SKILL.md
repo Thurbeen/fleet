@@ -652,10 +652,10 @@ gets exactly one of these:
 | What the forge says | What happens |
 |---|---|
 | the head branch is in someone else's fork | reported, never merged, **never given an agent** |
-| `mergeable: CONFLICTING` | a fixer is dispatched to rebase |
-| a check failed | a fixer is dispatched to fix it |
-| `reviewDecision: CHANGES_REQUESTED` | a fixer is dispatched to address it |
-| an `attested` task's PR with no attestation for this head | a fixer is dispatched to publish again, naming that task's own command |
+| `mergeable: CONFLICTING` | a fixer is sent to rebase |
+| a check failed | a fixer is sent to fix it |
+| `reviewDecision: CHANGES_REQUESTED` | a fixer is sent to address it |
+| an `attested` task's PR with no attestation for this head | a fixer is sent to publish again, naming that task's own command |
 | all of the below, with a review thread nobody resolved | `threads-open`: **not merged**; the threads reach the session as comments (below) |
 | attested, checks green, `MERGEABLE`, ours, no unresolved thread | **squash-merged**, in the allowlisted repos only |
 | checks green, `MERGEABLE`, ours, nothing attested it | recorded `green`, reported `ready to merge — not attested; yours`, never merged by fleet |
@@ -725,13 +725,21 @@ condition, which PR merged underneath it and what that deleted, and that the
 fix updates the PR **in place** — on a checkout of the branch that already
 exists. Three things it will not do:
 
-- **Dispatch twice for one pull request.** The fixer is recorded on the task
-  under `shepherd`; a second pass checks that session's liveness, not whether
-  the condition still matches, since a PR can drift to another condition while
-  the fixer is mid-fix. `--force` overrides once you have decided the first
-  one is not coming back.
-- **Interrupt a working session.** A PR whose own worker is `working` or
-  `blocked` is left alone, and so is one merely *observed* (`running`,
+- **Send one condition twice.** Every fix is recorded on the task under
+  `shepherd`, as a (condition, head) entry in its `sent` list — keyed the way
+  `shepherd_comments` keys comments by id. The same condition on the same head
+  is reported `already-sent` while the session it went to is still there; a
+  DIFFERENT condition, or a new head, goes out again. A `checks-failed` fix
+  that finished, then `main` moving under it, is a `conflicting` fix the same
+  session gets next. `--force` overrides once you have decided the first one
+  is not coming back.
+- **Spawn beside a session that is there.** The fix goes to the recorded
+  fixer, else the task's own worker: typed in once it is at rest (`pinged`).
+  Only when both are gone is a fresh session started on the branch
+  (`spawned`). `prs.json` keeps its words: `pinged` is `sent`, `spawned` is
+  `fixer`.
+- **Interrupt a working session.** A PR whose fixer or own worker is `working`
+  or `blocked` is `in-flight` and left alone, and so is one merely *observed* (`running`,
   `uncovered`, `unreported` — `thurbox-session` §4a).
 - **Guess.** No forge, no network, no thurbox: it says what it could not
   determine and carries on.

@@ -490,7 +490,10 @@ a second copy — read the skill before you run any of it:
    example names NONE, so a fresh clone of this public repo merges nowhere.
    A `needs-human` rule there (a path glob or a label) holds a change the gates
    would merge and reports `needs a human: <rule>` instead.
-   Squash is the only method it merges by. `--dry-run` first. Beside the
+   Squash is the only method it merges by. `--dry-run` first. A fixer
+   condition is sent once per (condition, head): `pinged` into the session
+   already on the PR once it is at rest, `spawned` on the branch only when
+   that session and the task's worker are gone. Beside the
    four fixer conditions it delivers REVIEW COMMENTS nobody requested changes
    for — once each, by id, into the PR's session when it is at rest — and
    never its own account's or a bot's; a comment changes no merge gate. An

@@ -50,7 +50,7 @@ def test_a_dry_run_says_what_it_would_do_and_does_none_of_it(stopic, shep):
     out = q("shepherd", "--topic", stopic, "--dry-run").out
     expect(out,
            # The conflicting PR, what it would dispatch, and why in the PR's own terms.
-           "pull/101", "would-dispatch", "conflicts with main",
+           "pull/101", "would-spawn", "conflicts with main",
            # What it would merge, and the command it would merge with.
            "would-merge", "--squash --delete-branch")
     assert shep.creates() == [], shep.tbx_log()
@@ -211,7 +211,7 @@ def test_a_second_pass_sends_no_second_fixer_until_the_first_one_dies(first_pass
     before = len(shep.creates())
     out = q("shepherd", "--topic", stopic).out
     assert len(shep.creates()) == before, out + shep.tbx_log()
-    expect(out, "in-flight")
+    expect(out, "already-sent")
 
     # A fixer that crashed or was cleaned up after dispatch must not stall that
     # PR's recovery forever: gone reads as no session, for a fixer too.
@@ -219,7 +219,7 @@ def test_a_second_pass_sends_no_second_fixer_until_the_first_one_dies(first_pass
     (shep.stubs.root / "sessions" / f"{doc['shepherd']['session']}.json").unlink()
     out = q("shepherd", "--topic", stopic).out
     assert len(shep.creates()) == before + 1, out + shep.tbx_log()
-    expect(out, "dispatched:")
+    expect(out, "spawned:")
     assert len(shep.creates("01-conflicting")) == 2, shep.tbx_log()
 
 
