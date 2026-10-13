@@ -7246,6 +7246,13 @@ def run_worktree_command(ref: str, trees: list[str], dry: bool, sid: str | None 
     ran = 0
     sessions = None
     for tree in trees:
+        # ONE SPELLING, whichever route the path arrived by. `git worktree
+        # list` answers in forward slashes on Windows and fleet's own
+        # `os.path.join` in backslashes, so without this an operator's command
+        # would be handed two spellings of one path depending on which release
+        # point reached it — and a teardown that compares the path against
+        # what some other tool recorded compares strings.
+        tree = os.path.normpath(tree)
         key = worktree_key(tree)
         if decided is not None and key in decided:
             continue

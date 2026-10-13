@@ -16,6 +16,7 @@ call and nothing calls is the failure this file exists to catch.
 """
 
 import json
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -51,6 +52,16 @@ def hook(isolated_env, stubs, script: str = TOOK_IT_DOWN, line: str = HOOK, secs
 
 def ran(stubs) -> list[str]:
     return stubs.calls(HOOK)
+
+
+def listed(tree) -> str:
+    """A worktree as `git worktree list` spells it: forward slashes on Windows.
+
+    What the command is HANDED is this platform's own spelling, so `str(tree)`
+    is right for every hand-over assertion. `free_build_output` quotes git's
+    answer as it came, and these two tests read that line.
+    """
+    return str(tree).replace(os.sep, "/")
 
 
 def state(queue_dir) -> dict:
@@ -291,7 +302,7 @@ def test_a_worktree_git_lists_without_a_directory_frees_nothing_and_is_still_han
         path.unlink() if path.is_file() or path.is_symlink() else path.rmdir()
     tree.rmdir()
     out = ok(q("reap")).out
-    expect(out, f"kept       build output in {tree}", "released", str(tree))
+    expect(out, f"kept       build output in {listed(tree)}", "released", str(tree))
     assert ran(stubs) == [f"{HOOK} {tree} {REF}"], ran(stubs)
 
 
@@ -370,7 +381,7 @@ def test_occupancy_that_cannot_be_judged_is_not_a_release(gone, stubs, isolated_
     hook(isolated_env, stubs)
     stubs.tool("thurbox-cli", STOPS_ANSWERING)
     out = ok(q("reap")).out
-    expect(out, "gone", f"kept       build output in {tree}",
+    expect(out, "gone", f"kept       build output in {listed(tree)}",
            f"kept       WORKTREE_RELEASED_CMD for {tree}")
     assert ran(stubs) == []
 
@@ -428,33 +439,38 @@ def test_the_operators_own_arguments_come_first_and_no_shell_reads_the_line(gone
     assert ran(stubs) == [f"{HOOK} --quiet two words | grep nothing {tree} {REF}"], ran(stubs)
 
 
-# A grandchild holding the inherited pipe is what makes the bound load-bearing:
-# the child exits at once and the pipe stays open, which is the shape that left
-# `watch` and `shepherd` waiting for ever on output that never ended.
-# `fleet_platform.run_bounded` ends the whole tree, and `tests/test_platform.py`
-# is where that mechanism itself is proved.
-HOLDS_THE_PIPE = """
+# A teardown that hangs holds a child of its own — a process it started, which
+# on POSIX also keeps the inherited pipe open, the shape that left `watch` and
+# `shepherd` waiting for ever on output that never ended. The child must go
+# with it: `fleet_platform.run_bounded` ends the whole tree, and
+# `tests/test_platform.py` is where that mechanism itself is proved per OS.
+# The command sleeps far past its own bound so the timeout is the command's
+# and not the pipe's, which is the only shape both OSes agree on — Windows
+# hands no inherited handle to a grandchild.
+HANGS_WITH_A_CHILD = """
 import subprocess
 import sys
+import time
 subprocess.Popen([sys.executable, "-c",
-                  "import pathlib, time; time.sleep(2); pathlib.Path(%r).write_text('late', encoding='utf-8')"])
+                  "import pathlib, time; time.sleep(3); pathlib.Path(%r).write_text('late', encoding='utf-8')"])
+time.sleep(60)
 """
 
 
 def test_a_command_that_hangs_is_bounded_and_the_task_still_lands(gone, stubs, isolated_env, tmp_path, queue_dir):
     _repo, tree = gone
-    marker = tmp_path / "grandchild-survived"
-    hook(isolated_env, stubs, HOLDS_THE_PIPE % str(marker), secs="1")
+    marker = tmp_path / "child-survived"
+    hook(isolated_env, stubs, HANGS_WITH_A_CHILD % str(marker), secs="1")
     started = time.monotonic()
     out = ok(q("reap")).out
     took = time.monotonic() - started
     expect(out, "FAILED", "WORKTREE_RELEASED_CMD killed after 1s", str(tree))
-    assert took < 30, f"the reap waited {took:.1f}s on a command bounded at 1s"
+    assert took < 40, f"the reap waited {took:.1f}s on a command bounded at 1s"
     doc = state(queue_dir)
     assert doc["state"] == "abandoned" and doc["reaped"]["how"] == "already gone"
     # Killed with what it started, and not merely ahead of its own exit.
-    time.sleep(3)
-    assert not marker.exists(), "a grandchild outlived the command's bound"
+    time.sleep(4)
+    assert not marker.exists(), "a child outlived the command's bound"
 
 
 def test_dry_run_prints_the_command_and_runs_nothing(gone, stubs, isolated_env, queue_dir):
