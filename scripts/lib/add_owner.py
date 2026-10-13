@@ -75,6 +75,15 @@ def list_some(items: list[str]) -> str:
     return shown + (f", +{len(items) - SHOW} more" if len(items) > SHOW else "")
 
 
+def _ask_account(token: str) -> tuple[str, list[str]] | None:
+    who = gh.api_as(token, "user", "--jq", ".login")
+    login = who.stdout.strip() if who.returncode == 0 else ""
+    if not login:
+        return None
+    orgs = gh.api_as(token, "--paginate", "user/orgs", "--jq", ".[].login")
+    return login, [login, *(orgs.stdout.split() if orgs.returncode == 0 else [])]
+
+
 def reach() -> list[tuple[str, list[str]]]:
     """(login, [login, org, ...]) for every account that could say who it is.
 
@@ -85,19 +94,11 @@ def reach() -> list[tuple[str, list[str]]]:
     if not shutil.which("gh"):
         return []
 
-    def ask(token: str) -> tuple[str, list[str]] | None:
-        who = gh.api_as(token, "user", "--jq", ".login")
-        login = who.stdout.strip() if who.returncode == 0 else ""
-        if not login:
-            return None
-        orgs = gh.api_as(token, "--paginate", "user/orgs", "--jq", ".[].login")
-        return login, [login, *(orgs.stdout.split() if orgs.returncode == 0 else [])]
-
     host = os.environ.get("GH_HOST") or "github.com"
     accounts = gh.accounts(host)
     if not accounts:
         # An EMPTY token is the active session, the fallback the seam documents.
-        one = ask("")
+        one = _ask_account("")
         return [one] if one else []
 
     found = []
@@ -106,7 +107,7 @@ def reach() -> list[tuple[str, list[str]]]:
         if not token:
             sys.stderr.write(f"warning: no usable token for gh account '{login}' — what it reaches is not below\n")
             continue
-        one = ask(token)
+        one = _ask_account(token)
         if one:
             found.append(one)
         else:
@@ -123,9 +124,9 @@ def map_pairs() -> list[str]:
         return []
     pairs, owner = [], ""
     for line in lines:
-        if m := re.match(r"^  - name: (\S+)", line):
+        if m := re.match(r"^ {2}- name: (\S+)", line):
             owner = m.group(1)
-        elif (m := re.match(r"^    - name: (\S+)", line)) and owner:
+        elif (m := re.match(r"^ {4}- name: (\S+)", line)) and owner:
             pairs.append(f"{owner}/{m.group(1)}")
     return pairs
 
@@ -138,8 +139,8 @@ def map_totals() -> str:
             text = fh.read()
     except OSError:
         return "no map"
-    repos = re.findall(r"^  repos: (.*)$", text, re.MULTILINE)
-    owners = re.findall(r"^  owners: (.*)$", text, re.MULTILINE)
+    repos = re.findall(r"^ {2}repos: (.*)$", text, re.MULTILINE)
+    owners = re.findall(r"^ {2}owners: (.*)$", text, re.MULTILINE)
     return f"{repos[-1] if repos else '?'} repos across {owners[-1] if owners else '?'} owners"
 
 
@@ -187,7 +188,8 @@ def report(accounts: list[tuple[str, list[str]]], configured: set[str], new: lis
     out(f"  uv run fleet add-owner {new[0]:<10}  or name the ones you want\n")
 
 
-def main(argv: list[str]) -> int:
+def _parse_args(argv: list[str]) -> tuple[bool, list[str]] | int:
+    """(add_all, wanted), or the exit code when the arguments end the run."""
     add_all, wanted = False, []
     for arg in argv:
         if arg == "--all":
@@ -200,43 +202,11 @@ def main(argv: list[str]) -> int:
             return 2
         else:
             wanted.append(arg)
+    return add_all, wanted
 
-    # A clone with no owners file has not been onboarded, and writing one from
-    # here would be a first run done badly: which owners the map should cover is
-    # a question somebody has to be asked.
-    if not os.path.isfile(OWNERS_FILE):
-        message = (f"no {OWNERS_FILE} yet — this is the path for a map that already exists.\n"
-                   "       A first run belongs to the fleet-onboarding skill, which asks:\n"
-                   "         uv run fleet discover-owners\n"
-                   "         cp registry/owners.example.txt registry/owners.txt")
-        if add_all or wanted:
-            return fail(message)
-        # Only a report was asked for, and no map is a fleet that works: a local-only one.
-        sys.stdout.write(f"note: {message}\n       The repo map is optional; a local-only fleet has none.\n")
-        return 0
 
-    sync_registry = _load_sibling("fleet_sync_registry", "sync_registry.py")
-    configured = set(sync_registry.read_owners(OWNERS_FILE))
-
-    accounts = reach()
-    new: list[str] = []
-    for _, owners in accounts:
-        new.extend(o for o in owners if o not in configured and o not in new)
-
-    if not add_all and not wanted:
-        report(accounts, configured, new)
-        return 0
-
-    if add_all:
-        # An empty answer is not agreement: `--all` may not call the map complete.
-        if not accounts:
-            sys.stderr.write(no_accounts())
-            return 1
-        if not new:
-            sys.stdout.write(NOTHING_NEW)
-            return 0
-        wanted.extend(new)
-
+def _refuse_wanted(wanted: list[str], configured: set[str]) -> int | None:
+    """The exit code of the first owner that may not be added, else None."""
     asked: set[str] = set()
     for owner in wanted:
         # Named twice is the same duplicate as one already in the file.
@@ -251,7 +221,10 @@ def main(argv: list[str]) -> int:
                         "       and path, through the seam in scripts/lib/forge.py.")
         if owner in configured:
             return fail(f"'{owner}' is already in registry/owners.txt. Nothing was written.")
+    return None
 
+
+def _append_owners(wanted: list[str]) -> None:
     # Appended, never inserted or sorted. A last line with no newline would
     # otherwise get the first new owner glued onto it.
     with open(OWNERS_FILE, "rb") as fh:
@@ -262,22 +235,8 @@ def main(argv: list[str]) -> int:
         fh.write("".join(f"{o}\n" for o in wanted))
     sys.stdout.write(f"added to registry/owners.txt: {list_some(wanted)}\n")
 
-    # No gh, so nothing can sync, and the sync says so and exits 0: reporting
-    # MAP CHANGED after it would describe a map nobody wrote.
-    if not shutil.which("gh"):
-        sys.stdout.write("\nThe map was NOT synced: gh not found, and the map is read from GitHub with it.\n"
-                         "  uv run fleet preflight --tier forge   installs it; then uv run fleet sync-registry\n")
-        return 0
 
-    had_map = os.path.isfile(MAP)
-    before_pairs, before_totals = map_pairs(), map_totals()
-
-    sys.stdout.write("\n")
-    sys.stdout.flush()
-    if sync_registry.main([]) != 0:
-        return fail("the sync failed — registry/owners.txt keeps the owners just added,\n"
-                    "       so re-running uv run fleet sync-registry is all that is left to do.")
-
+def _report_map_change(wanted: list[str], before_pairs: list[str], before_totals: str, had_map: bool) -> None:
     after_pairs = map_pairs()
     gained = [p for p in after_pairs if p not in set(before_pairs)]
     lost = [p for p in before_pairs if p not in set(after_pairs)]
@@ -297,6 +256,83 @@ def main(argv: list[str]) -> int:
         out(f"  totals              {map_totals()} (the map did not exist before this)\n")
     out("\nA repository that is in the map and still unexplained belongs in\n"
         "registry/context/<repo>.md, which is where the judgement about a project lives.\n")
+
+
+def _take_all(accounts: list[tuple[str, list[str]]], new: list[str], wanted: list[str]) -> int | None:
+    """Adds every new owner to `wanted`, or the exit code when `--all` ends the run."""
+    # An empty answer is not agreement: `--all` may not call the map complete.
+    if not accounts:
+        sys.stderr.write(no_accounts())
+        return 1
+    if not new:
+        sys.stdout.write(NOTHING_NEW)
+        return 0
+    wanted.extend(new)
+    return None
+
+
+def _not_onboarded(asked_to_add: bool) -> int:
+    message = (f"no {OWNERS_FILE} yet — this is the path for a map that already exists.\n"
+               "       A first run belongs to the fleet-onboarding skill, which asks:\n"
+               "         uv run fleet discover-owners\n"
+               "         cp registry/owners.example.txt registry/owners.txt")
+    if asked_to_add:
+        return fail(message)
+    # Only a report was asked for, and no map is a fleet that works: a local-only one.
+    sys.stdout.write(f"note: {message}\n       The repo map is optional; a local-only fleet has none.\n")
+    return 0
+
+
+def main(argv: list[str]) -> int:
+    parsed = _parse_args(argv)
+    if isinstance(parsed, int):
+        return parsed
+    add_all, wanted = parsed
+
+    # A clone with no owners file has not been onboarded, and writing one from
+    # here would be a first run done badly: which owners the map should cover is
+    # a question somebody has to be asked.
+    if not os.path.isfile(OWNERS_FILE):
+        return _not_onboarded(add_all or bool(wanted))
+
+    sync_registry = _load_sibling("fleet_sync_registry", "sync_registry.py")
+    configured = set(sync_registry.read_owners(OWNERS_FILE))
+
+    accounts = reach()
+    new: list[str] = []
+    for _, owners in accounts:
+        new.extend(o for o in owners if o not in configured and o not in new)
+
+    if not add_all and not wanted:
+        report(accounts, configured, new)
+        return 0
+
+    if add_all:
+        ended = _take_all(accounts, new, wanted)
+        if ended is not None:
+            return ended
+
+    refused = _refuse_wanted(wanted, configured)
+    if refused is not None:
+        return refused
+    _append_owners(wanted)
+
+    # No gh, so nothing can sync, and the sync says so and exits 0: reporting
+    # MAP CHANGED after it would describe a map nobody wrote.
+    if not shutil.which("gh"):
+        sys.stdout.write("\nThe map was NOT synced: gh not found, and the map is read from GitHub with it.\n"
+                         "  uv run fleet preflight --tier forge   installs it; then uv run fleet sync-registry\n")
+        return 0
+
+    had_map = os.path.isfile(MAP)
+    before_pairs, before_totals = map_pairs(), map_totals()
+
+    sys.stdout.write("\n")
+    sys.stdout.flush()
+    if sync_registry.main([]) != 0:
+        return fail("the sync failed — registry/owners.txt keeps the owners just added,\n"
+                    "       so re-running uv run fleet sync-registry is all that is left to do.")
+    _report_map_change(wanted, before_pairs, before_totals, had_map)
     return 0
 
 

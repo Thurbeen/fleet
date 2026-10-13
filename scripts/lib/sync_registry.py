@@ -146,6 +146,37 @@ def skip(message: str) -> int:
     return 0
 
 
+def _list_accounts(host: str, accounts: list[str]) -> list[dict] | int:
+    """Every repository the accounts list, or the exit code when none could."""
+    repos: list[dict] = []
+    if not accounts:
+        # The documented fallback, not a failure: the active session alone.
+        one = listing("")
+        if one is None:
+            return fail(f"could not list repositories with the active gh session.\n"
+                        f"       {OUT} is left exactly as it was.")
+        return one
+    listed = 0
+    for login in accounts:
+        token = gh.account_token(host, login)
+        if not token:
+            sys.stderr.write(f"warning: no usable token for gh account '{login}' — "
+                             "its repositories are not in this map\n")
+            continue
+        one = listing(token)
+        if one is None:
+            sys.stderr.write(f"warning: could not list repositories for gh account '{login}' — "
+                             "its repositories are not in this map\n")
+            continue
+        listed += 1
+        repos.extend(one)
+    if listed == 0:
+        return fail(f"not one of the {len(accounts)} gh accounts above could be listed.\n"
+                    f"       {OUT} is left exactly as it was rather than\n"
+                    "       overwritten with an empty map.")
+    return repos
+
+
 def sync() -> int:
     if not os.path.isfile(OWNERS_FILE):
         return skip(f"no {OWNERS_FILE} — it is yours and gitignored.\n"
@@ -163,33 +194,9 @@ def sync() -> int:
     accounts = gh.accounts(host)
     sys.stderr.write("fetching every accessible repository ...\n")
 
-    repos: list[dict] = []
-    if not accounts:
-        # The documented fallback, not a failure: the active session alone.
-        one = listing("")
-        if one is None:
-            return fail(f"could not list repositories with the active gh session.\n"
-                        f"       {OUT} is left exactly as it was.")
-        repos = one
-    else:
-        listed = 0
-        for login in accounts:
-            token = gh.account_token(host, login)
-            if not token:
-                sys.stderr.write(f"warning: no usable token for gh account '{login}' — "
-                                 "its repositories are not in this map\n")
-                continue
-            one = listing(token)
-            if one is None:
-                sys.stderr.write(f"warning: could not list repositories for gh account '{login}' — "
-                                 "its repositories are not in this map\n")
-                continue
-            listed += 1
-            repos.extend(one)
-        if listed == 0:
-            return fail(f"not one of the {len(accounts)} gh accounts above could be listed.\n"
-                        f"       {OUT} is left exactly as it was rather than\n"
-                        "       overwritten with an empty map.")
+    repos = _list_accounts(host, accounts)
+    if isinstance(repos, int):
+        return repos
 
     everything = merged(repos)
 

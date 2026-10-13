@@ -100,6 +100,20 @@ def _api(token: str, *args: str) -> str:
     return done.stdout.strip() if done.returncode == 0 else ""
 
 
+def _note_login(candidates: Candidates, token: str, orgless: list[str]) -> bool | None:
+    """None when the login cannot say who it is, else whether it listed an org."""
+    login = _api(token, "user", "--jq", ".login")
+    if not login:
+        return None
+    candidates.note(login, "gh account")
+    orgs = [o for o in _api(token, "user/orgs", "--jq", ".[].login").splitlines() if o]
+    for org in orgs:
+        candidates.note(org, "gh org")
+    if not orgs:
+        orgless.append(f"'{login}'")
+    return bool(orgs)
+
+
 def ask_gh(candidates: Candidates) -> str:
     """Every gh login's account and orgs, noted; returns the scope hint, or "".
 
@@ -117,34 +131,25 @@ def ask_gh(candidates: Candidates) -> str:
 
     answered, orgs_seen, orgless = False, False, []
 
-    def one(token: str) -> bool:
-        nonlocal orgs_seen
-        login = _api(token, "user", "--jq", ".login")
-        if not login:
-            return False
-        candidates.note(login, "gh account")
-        orgs = [o for o in _api(token, "user/orgs", "--jq", ".[].login").splitlines() if o]
-        for org in orgs:
-            candidates.note(org, "gh org")
-        orgs_seen = orgs_seen or bool(orgs)
-        if not orgs:
-            orgless.append(f"'{login}'")
-        return True
-
     # GH_HOST is the variable `gh api` itself obeys, so logins for any other
     # host would name tokens the calls above never use.
     host = os.environ.get("GH_HOST") or "github.com"
     logins = gh_accounts.accounts(host)
     if not logins:
-        answered = one("")
+        listed = _note_login(candidates, "", orgless)
+        answered = listed is not None
+        orgs_seen = orgs_seen or bool(listed)
     for login in logins:
         token = gh_accounts.account_token(host, login)
         if not token:
             sys.stderr.write(f"warning: no usable token for gh account '{login}' — its orgs are not below\n")
-        elif one(token):
-            answered = True
-        else:
+            continue
+        listed = _note_login(candidates, token, orgless)
+        if listed is None:
             sys.stderr.write(f"warning: gh account '{login}' could not say who it is — its orgs are not below\n")
+        else:
+            answered = True
+            orgs_seen = orgs_seen or listed
 
     if not answered:
         return "no gh account answered, so no login and no org is below: gh auth login"
@@ -317,6 +322,11 @@ def main(argv: list[str]) -> int:
         )
         return 0
 
+    _print_candidates(candidates, scope_hint, gitlab)
+    return 0
+
+
+def _print_candidates(candidates: Candidates, scope_hint: str, gitlab: Counter) -> None:
     configured = configured_owners()
     print("CANDIDATE OWNERS — for registry/owners.txt, which is a list of GITHUB owners\n")
     for owner, sources in candidates.sources.items():
@@ -334,7 +344,6 @@ def main(argv: list[str]) -> int:
         print("\n  These belong in no owners file: the map is built with gh. A task targets a\n"
               "  GitLab repo by host and path, through the seam in scripts/lib/forge.py, and\n"
               "  needs glab authenticated for that host.")
-    return 0
 
 
 if __name__ == "__main__":

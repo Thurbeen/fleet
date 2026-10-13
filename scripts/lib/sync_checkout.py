@@ -178,6 +178,22 @@ def report() -> dict:
     return facts
 
 
+def _default_branch(root: str) -> str:
+    default = git(root, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD").stdout.strip()
+    default = default.removeprefix("origin/")
+    if not default or default == "HEAD":
+        default = "main"
+    return default
+
+
+def _off_default(root: str, branch: str, remote_ref: str) -> str | None:
+    behind_base = count(root, f"HEAD..{remote_ref}")
+    if behind_base > 0:
+        return (f"control-plane sync: on '{branch}'; {remote_ref} is {behind_base} commit(s) ahead. "
+                "Rebase before opening a PR, or it will conflict.")
+    return None
+
+
 def _sync(facts: dict) -> str | None:
     if not shutil.which("git"):
         return "control-plane sync: git not found; skipped."
@@ -190,10 +206,7 @@ def _sync(facts: dict) -> str | None:
     if not fetch_bounded(root):
         return OFFLINE
 
-    default = git(root, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD").stdout.strip()
-    default = default.removeprefix("origin/")
-    if not default or default == "HEAD":
-        default = "main"
+    default = _default_branch(root)
 
     branch = git(root, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
     remote_ref = f"origin/{default}"
@@ -201,11 +214,7 @@ def _sync(facts: dict) -> str | None:
         return None
 
     if branch != default:
-        behind_base = count(root, f"HEAD..{remote_ref}")
-        if behind_base > 0:
-            return (f"control-plane sync: on '{branch}'; {remote_ref} is {behind_base} commit(s) ahead. "
-                    "Rebase before opening a PR, or it will conflict.")
-        return None
+        return _off_default(root, branch, remote_ref)
 
     ahead, behind = ahead_behind(root, remote_ref)
 
@@ -238,7 +247,13 @@ def _sync(facts: dict) -> str | None:
     short = git(root, "rev-parse", "--short", "HEAD").stdout.strip()
     facts["before"], facts["after"] = before, git(root, "rev-parse", "HEAD").stdout.strip()
     msg = f"control-plane sync: fast-forwarded '{branch}' {behind} commit(s) to {short}."
+    return msg + _actions(root, before, facts)
 
+
+def _actions(root: str, before: str, facts: dict) -> str:
+    """The notes for each action a fast-forward from `before` raised, recorded
+    in `facts` as it goes."""
+    msg = ""
     instr = changed(root, before, INSTRUCTION_PATHS)
     if instr:
         facts["actions"]["restart-lead"] = instr

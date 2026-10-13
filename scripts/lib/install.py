@@ -128,6 +128,27 @@ def prepare(argv: tuple[str, ...], root: bool) -> list[str]:
 
 
 APT_UPDATE = ("sudo", "apt-get", "update")
+IN_PLACE = "already in place"
+
+
+def _plan_row(finding, manager: str | None, root: bool) -> Row:
+    dep = finding.dependency
+    if finding.manual:
+        return Row(dep.name, "you run", finding.manual)
+    plan = preflight.install_plan(dep, manager)
+    if plan is None:
+        return Row(dep.name, "no route", f"see {dep.see}" if dep.see else "nothing here installs it")
+    if plan.argv[0] in ("sh", "powershell"):
+        # An installer one-liner: the line is what the operator reads.
+        return Row(dep.name, "install", plan.text, plan.argv)
+    argv = prepare(plan.argv, root)
+    # A route through a tool nothing here installs (quota-axi's npm, a
+    # missing sudo) is the operator's to unblock, not a failure each run.
+    absent = [tool for tool in dict.fromkeys(argv[:2] if argv[0] == "sudo" else argv[:1])
+              if not shutil.which(tool)]
+    if absent:
+        return Row(dep.name, "needs", f"{absent[0]} first, then: {' '.join(argv)}")
+    return Row(dep.name, "install", " ".join(argv), plan.argv)
 
 
 def plan_rows(dev: bool, root: bool, forges: tuple[str, ...] = ()) -> list[Row]:
@@ -143,26 +164,7 @@ def plan_rows(dev: bool, root: bool, forges: tuple[str, ...] = ()) -> list[Row]:
         if dep.name in wanted and dep.manual and dep.needs in named and dep.name not in named:
             found.append(preflight.Finding(dep, "missing", manual=dep.manual))
     for finding in found:
-        dep = finding.dependency
-        if finding.manual:
-            rows.append(Row(dep.name, "you run", finding.manual))
-            continue
-        plan = preflight.install_plan(dep, manager)
-        if plan is None:
-            rows.append(Row(dep.name, "no route", f"see {dep.see}" if dep.see else "nothing here installs it"))
-        elif plan.argv[0] in ("sh", "powershell"):
-            # An installer one-liner: the line is what the operator reads.
-            rows.append(Row(dep.name, "install", plan.text, plan.argv))
-        else:
-            argv = prepare(plan.argv, root)
-            # A route through a tool nothing here installs (quota-axi's npm, a
-            # missing sudo) is the operator's to unblock, not a failure each run.
-            absent = [tool for tool in dict.fromkeys(argv[:2] if argv[0] == "sudo" else argv[:1])
-                      if not shutil.which(tool)]
-            if absent:
-                rows.append(Row(dep.name, "needs", f"{absent[0]} first, then: {' '.join(argv)}"))
-            else:
-                rows.append(Row(dep.name, "install", " ".join(argv), plan.argv))
+        rows.append(_plan_row(finding, manager, root))
     if manager == "apt" and any(row.argv and "apt-get" in row.argv[:2] for row in rows):
         # A fresh image ships with no package lists, and `install` then finds nothing.
         rows.insert(0, Row("apt lists", "refresh", " ".join(prepare(APT_UPDATE, root)), APT_UPDATE))
@@ -191,25 +193,29 @@ def execute(row: Row, root: bool) -> bool:
 # --- the skills links ---------------------------------------------------------------
 
 
+def _file_link_state(link: str, label: str, text_target: str | None) -> tuple[str, str]:
+    if text_target is not None:
+        with open(link, encoding="utf-8", errors="replace") as fh:
+            text = fh.read().strip().replace("\\", "/")
+        if text == text_target:
+            return "replace", "a clone without symlinks left the link as a text file"
+    return "refuse", f"{label} is a file fleet did not write; move it aside and run this again"
+
+
 def _dir_link_state(link: str, target: str, label: str, text_target: str | None = None,
                     replace_other_link: bool = True) -> tuple[str, str]:
     """"ok", "create", "replace" or "refuse", and why, for one directory link."""
     if fleet_platform.is_dir_link(link):
         try:
             if os.path.samefile(link, target):
-                return "ok", "already in place"
+                return "ok", IN_PLACE
         except OSError:
             pass
         if replace_other_link:
             return "replace", "it points somewhere else"
         return "refuse", f"{label} is a link fleet did not write; move it aside and run this again"
     if os.path.isfile(link):
-        if text_target is not None:
-            with open(link, encoding="utf-8", errors="replace") as fh:
-                text = fh.read().strip().replace("\\", "/")
-            if text == text_target:
-                return "replace", "a clone without symlinks left the link as a text file"
-        return "refuse", f"{label} is a file fleet did not write; move it aside and run this again"
+        return _file_link_state(link, label, text_target)
     if os.path.isdir(link):
         if not os.listdir(link):
             return "replace", "an empty directory"
@@ -294,7 +300,7 @@ def codex_links_state(checkout: str) -> tuple[str, str]:
     pending = [name for name, state, _ in states if state != "ok"]
     if pending:
         return "create", f"{len(pending)} skill link{'s' if len(pending) != 1 else ''} not in place"
-    return "ok", "already in place"
+    return "ok", IN_PLACE
 
 
 def make_codex_links(checkout: str) -> tuple[bool, str]:
@@ -392,7 +398,7 @@ def hook_state(path: str, command: str) -> tuple[str, str]:
         return "refuse", f"{path}: {error}; left untouched"
     nudges = _nudges(data)
     if any(h.get("command") == command for h in nudges):
-        return "ok", "already in place"
+        return "ok", IN_PLACE
     if any(_stale(h) for h in nudges):
         return "update", "it names a checkout that is not there any more"
     return "add", "beside another fleet's" if nudges else "not there yet"
@@ -469,8 +475,8 @@ def extension_step(checkout: str) -> int:
 # --- the run ---------------------------------------------------------------------------------
 
 
-def main(argv: list[str], checkout: str | None = None) -> int:
-    checkout = checkout or CHECKOUT
+def _parse_args(argv: list[str]) -> tuple[bool, bool, bool, list[str]] | int:
+    """(yes, dev, no_service, forges), or the exit code when the arguments end the run."""
     yes = dev = no_service = False
     forges: list[str] = []
     args = list(argv)
@@ -490,60 +496,47 @@ def main(argv: list[str], checkout: str | None = None) -> int:
         else:
             sys.stderr.write(USAGE)
             return 2
+    return yes, dev, no_service, forges
 
-    root = fleet_platform.running_as_root()
-    say(f"fleet install: {checkout}")
-    # What an earlier run installed is on the registry's PATH and not yet on
-    # this window's: without this, a second run plans it and asks again.
-    fleet_platform.refresh_path()
-    rows = plan_rows(dev, root, tuple(dict.fromkeys(forges)))
-    link, link_why = link_state(checkout)
-    codex, codex_why = codex_links_state(checkout)
-    settings, command = claude_settings_file(), reconcile.hook_command(checkout)
-    hook, hook_why = hook_state(settings, command)
-    svc = None if no_service else reconcile_service.service(checkout)
-    service, service_why = reconcile_service.state(svc) if svc else ("ok", "")
 
-    say()
-    say("The plan")
-    for row in rows:
-        say(f"  {row.action:<9} {row.name:<14} {row.text}")
-    if link != "ok":
-        say(f"  {'link':<9} {LINK:<14} -> {TARGET} ({link_why})")
-    if codex != "ok":
-        say(f"  {'link':<9} {'Codex skills':<14} ~/{CODEX_SKILLS} ({codex_why})")
-    if hook != "ok":
-        say(f"  {'hook':<9} {'Stop nudge':<14} {settings} ({hook_why})")
-    if service != "ok":
-        say(f"  {'service':<9} {'reconciler':<14} {svc.path} ({service_why})")
-    say(f"  {'then':<9} {'':<14} the thurbox extension and queue pane, then preflight")
-
-    runs = [row for row in rows if row.argv]
-    if not runs and link == "ok" and codex == "ok" and hook == "ok" and service == "ok":
+def _confirm(nothing: bool, yes: bool) -> bool:
+    """False when the plan was declined, or there was nobody to ask."""
+    if nothing:
         say()
         say("Nothing to install.")
-    elif not yes:
-        if not sys.stdin.isatty():
-            say()
-            say("fleet install: nothing was installed — there is no terminal to ask. Run it again with")
-            say("--yes to install the plan above.")
-            return 1
+        return True
+    if yes:
+        return True
+    if not sys.stdin.isatty():
         say()
-        # The question ends its own line: a caller relaying output line by line
-        # would otherwise show it only after the answer.
-        say("Install everything above? [y/N]")
-        if input().strip().lower() not in ("y", "yes"):
-            say("Nothing was installed.")
-            return 1
+        say("fleet install: nothing was installed — there is no terminal to ask. Run it again with")
+        say("--yes to install the plan above.")
+        return False
+    say()
+    # The question ends its own line: a caller relaying output line by line
+    # would otherwise show it only after the answer.
+    say("Install everything above? [y/N]")
+    if input().strip().lower() not in ("y", "yes"):
+        say("Nothing was installed.")
+        return False
+    return True
 
+
+def _install_rows(runs: list[Row], root: bool) -> int:
+    """How many of the plan's commands failed."""
+    if not runs:
+        return 0
+    say()
+    say("Installing")
+    failed = sum(not execute(row, root) for row in runs)
+    if fleet_platform.install_family() == "windows":
+        fleet_platform.refresh_path()
+    return failed
+
+
+def _wire(checkout: str, settings: str, command: str, svc, no_service: bool) -> int:
+    """Links, hook and service; how many of them failed."""
     failed = 0
-    if runs:
-        say()
-        say("Installing")
-        failed += sum(not execute(row, root) for row in runs)
-        if fleet_platform.install_family() == "windows":
-            fleet_platform.refresh_path()
-
     ok, message = make_link(checkout)
     failed += not ok
     say()
@@ -561,7 +554,11 @@ def main(argv: list[str], checkout: str | None = None) -> int:
         message = ("left out (--no-service)" if no_service else
                    "no user service manager here; the lead's SessionStart hook is what brings it back")
     say(f"Reconciler service: {message}")
+    return failed
 
+
+def _finish(checkout: str, failed: int) -> int:
+    """The extension and preflight, after everything the plan installed."""
     still = [f.dependency.name for f in preflight.missing(["required"])]
     say()
     if still:
@@ -593,6 +590,50 @@ if you work on a forge, the owners your map covers. A local-only fleet needs no
 forge at all; `--forge github` or `--forge gitlab` installs one's CLI.""")
     return 0
 
+
+
+def main(argv: list[str], checkout: str | None = None) -> int:
+    checkout = checkout or CHECKOUT
+    parsed = _parse_args(argv)
+    if isinstance(parsed, int):
+        return parsed
+    yes, dev, no_service, forges = parsed
+
+    root = fleet_platform.running_as_root()
+    say(f"fleet install: {checkout}")
+    # What an earlier run installed is on the registry's PATH and not yet on
+    # this window's: without this, a second run plans it and asks again.
+    fleet_platform.refresh_path()
+    rows = plan_rows(dev, root, tuple(dict.fromkeys(forges)))
+    link, link_why = link_state(checkout)
+    codex, codex_why = codex_links_state(checkout)
+    settings, command = claude_settings_file(), reconcile.hook_command(checkout)
+    hook, hook_why = hook_state(settings, command)
+    svc = None if no_service else reconcile_service.service(checkout)
+    service, service_why = reconcile_service.state(svc) if svc else ("ok", "")
+
+    say()
+    say("The plan")
+    for row in rows:
+        say(f"  {row.action:<9} {row.name:<14} {row.text}")
+    if link != "ok":
+        say(f"  {'link':<9} {LINK:<14} -> {TARGET} ({link_why})")
+    if codex != "ok":
+        say(f"  {'link':<9} {'Codex skills':<14} ~/{CODEX_SKILLS} ({codex_why})")
+    if hook != "ok":
+        say(f"  {'hook':<9} {'Stop nudge':<14} {settings} ({hook_why})")
+    if service != "ok":
+        say(f"  {'service':<9} {'reconciler':<14} {svc.path} ({service_why})")
+    say(f"  {'then':<9} {'':<14} the thurbox extension and queue pane, then preflight")
+
+    runs = [row for row in rows if row.argv]
+    if not _confirm(not runs and link == "ok" and codex == "ok" and hook == "ok" and service == "ok", yes):
+        return 1
+
+    failed = _install_rows(runs, root)
+    failed += _wire(checkout, settings, command, svc, no_service)
+
+    return _finish(checkout, failed)
 
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))
