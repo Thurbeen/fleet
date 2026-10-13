@@ -625,7 +625,8 @@ GH_STATUS_FIELDS = "number,url,title,headRefName,state,statusCheckRollup"
 # one no check has reported on, which `watch` waits on until it times out.
 GH_ONE_FIELDS = (
     "title,body,headRefOid,headRefName,baseRefName,state,isDraft,mergeable,"
-    "reviewDecision,statusCheckRollup,commits,mergeCommit"
+    "reviewDecision,statusCheckRollup,commits,mergeCommit,headRepositoryOwner,"
+    "isCrossRepository,author"
 )
 
 # A check that FAILED. Anything still running is NOT a failure. `CANCELLED` is

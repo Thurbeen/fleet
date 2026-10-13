@@ -19,6 +19,15 @@ HEAD = f"{201:040d}"
 @pytest.fixture
 def lifecycle(stubs, tmp_path, queue_dir):
     talk = talk_on(stubs, tmp_path, queue_dir, vetted=False)
+    gh_path = stubs.root / "scripts" / "gh.py"
+    gh_source = gh_path.read_text(encoding="utf-8")
+    # Real gh returns only requested fields; an over-complete response hides
+    # missing ownership and author data in the single-PR reader.
+    stubs.tool("gh", gh_source.replace(
+        'sys.stdout.write(doc.read_text(encoding="utf-8"))',
+        'fields = args[args.index("--json") + 1].split(",")\n'
+        '        print(json.dumps({k: v for k, v in d.items() if k in fields}))',
+    ))
     worker_path = stubs.root / "sessions" / f"{WORKER}.json"
     worker = json.loads(worker_path.read_text(encoding="utf-8"))
     worker["worktrees"] = []
@@ -145,6 +154,15 @@ def test_reviewer_cannot_attest_self_or_stale_head(lifecycle):
     expect(record(t, sid=WORKER).out, "configured reviewer")
     t.shep.update(201, headRefOid="c" * 40)
     expect(record(t).out, "current head")
+
+
+def test_fork_review_is_refused_with_requested_fields(lifecycle):
+    t = lifecycle
+    t.shep.update(201, headRepositoryOwner={"login": "stranger"}, isCrossRepository=True)
+    result = record(t)
+    assert result.code != 0
+    expect(result.out, "owned")
+    assert not t.shep.merged()
 
 
 def test_finished_reviewer_result_retains_its_responsibility(lifecycle, queue_dir):
