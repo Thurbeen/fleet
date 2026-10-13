@@ -159,7 +159,13 @@ names every path and the reason for each.
   (`<NAME>_SECS`, read when the loop starts, beaten by
   `FLEET_RECONCILE_<NAME>_SECS`) and what `reap` does with a finished task's
   session (`ON_LANDED` / `ON_CLOSED`: `delete`, the default, or `notify`).
-  Tracked and setting nothing, so a fresh clone runs on the defaults; copy it
+  `ON_WORKTREE_RELEASED` is the third: the operator's own command, run once
+  per worktree reap lets go of, with that worktree's absolute path and the
+  task's ref — the seam for everything a worker raised OUTSIDE its worktree
+  and keyed by it, which belongs to a tool fleet neither names nor runs.
+  Bounded (`ON_WORKTREE_RELEASED_SECS`, 60) and killed with its tree; its
+  failure never holds a task open. Tracked and setting nothing, so a fresh
+  clone runs on the defaults and runs no command; copy it
   to a gitignored `reconcile.conf`. `queue.py`'s `reconcile_conf` is its one
   reader, for both `reconcile.py` and `reap`.
 - `orchestration/session-glyphs.example.conf` — the mark fleet's sessions wear
@@ -456,7 +462,10 @@ a second copy — read the skill before you run any of it:
    `session gone` — never "abandoned by hand". A session that goes without
    `delete --force` leaves its worktree, so `reap` frees that worktree's
    ignored build output (`target/`, `node_modules`, `.venv`) — never a link to
-   a shared store, never a tracked directory. `uv run fleet sessions orphans`
+   a shared store, never a tracked directory. That is all reap can name
+   itself; what a worker raised outside its worktree is the operator's
+   `ON_WORKTREE_RELEASED` command, handed each worktree reap releases.
+   `uv run fleet sessions orphans`
    lists what `reap` cannot see: sessions parented to the lead that no live
    task holds. It deletes nothing. **A `served` task is
    that same wait with no forge in it**: fleet cannot ask a server it did not

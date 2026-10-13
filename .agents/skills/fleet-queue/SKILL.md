@@ -822,6 +822,28 @@ under them tracked, never a link (a shared store is somebody else's), and
 nothing in a worktree another session sits in. The rest of the worktree,
 uncommitted work included, stays.
 
+**What a worker started OUTSIDE its worktree is the operator's to take
+down.** A container stack, a database, a daemon keyed to the worktree belongs
+to a tool fleet neither names nor runs, and it outlives the directory — on one
+machine eleven such stacks held 26 GB keyed to worktrees that no longer
+existed. So `ON_WORKTREE_RELEASED` in the gitignored
+`orchestration/reconcile.conf` (the tracked example sets it, like everything
+else there, to nothing) is a command run once per worktree reap lets go of,
+with that worktree's absolute path and the task's ref appended:
+
+```text
+    disk/01-build                  reaped     99999999-…  (idle)
+    disk/01-build                  released   /…/worktrees/fix-build  (ON_WORKTREE_RELEASED)
+```
+
+It is refused exactly as the build output is — a worktree somebody sits in,
+or one whose occupancy cannot be established, is not handed over — and it
+never holds a task open: a failure, a timeout past
+`ON_WORKTREE_RELEASED_SECS` (60), or a line that is not a command is printed
+and the task lands all the same. `reap --dry-run` prints what it would run.
+In the `session delete --force` case the directory is already gone when the
+command runs, which is why it gets the path and not the directory.
+
 **Whether `landed` and `abandoned` delete the session is the operator's
 setting.** `ON_LANDED` and `ON_CLOSED` in the gitignored
 `orchestration/reconcile.conf` (the tracked `reconcile.example.conf` sets

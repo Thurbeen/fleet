@@ -6583,7 +6583,9 @@ def sweep_vanished(q: Queue, dry: bool, snapshot=None) -> int:
         retire(task, "session-gone", why)
         record_reaped(task, sid, "already gone")
         print(f"    {task.ref:<46} abandoned  {ABANDON_HOW['session-gone']}: {why}")
-        free_build_output(task.ref, task_worktrees(task), dry)
+        trees = task_worktrees(task)
+        free_build_output(task.ref, trees, dry)
+        run_worktree_hook(task.ref, trees, dry)
         release_companions(task, dry)
     return acted
 
@@ -6975,6 +6977,36 @@ def build_output(tree: str) -> list[str]:
     ]
 
 
+def worktree_occupant(sessions, tree: str, sid: str | None = None) -> str:
+    """Why reap must leave this worktree alone, or "" when it may act on it.
+
+    ONE GATE FOR BOTH THINGS reap does to a worktree it lets go of: free the
+    build output under it, and hand it to the operator's own command
+    (`WORKTREE_HOOK` below). Somebody carrying the work on may be building in
+    it right now, or running whatever that command would take down — so a
+    worktree another session sits in is left whole, and so is one whose
+    occupancy could not be judged, because a guess here is someone else's
+    work. Two actions, one answer, rather than two that could disagree.
+
+    `sid` is the session being released, which is never its own occupant: the
+    deletion path asks this BEFORE `session delete --force` runs, while that
+    session is still listed sitting in the worktree it is about to take down.
+
+    THE PATH IS PLACED EVEN WHEN THE DIRECTORY IS ALREADY GONE, exactly as
+    another session's cwd is (`local_occupant_path`), because `session delete
+    --force` takes the worktree with the session and the operator's command
+    still has something to say about it afterwards. Nothing is freed on the
+    strength of that: a directory that is not there holds no build output.
+    """
+    try:
+        roots = [(tree, local_occupant_path(tree))]
+    except (OSError, ValueError, RuntimeError) as exc:
+        return f"cannot place worktree {tree}: {exc}"
+    return occupant_in_worktrees(
+        sessions, sid, roots, local_occupant_path, os.path.commonpath, skip_offbox=True,
+    )
+
+
 def free_build_output(ref: str, trees: list[str], dry: bool) -> int:
     """Delete the build output in each worktree, saying what went. Returns how many.
 
@@ -6990,14 +7022,7 @@ def free_build_output(ref: str, trees: list[str], dry: bool) -> int:
             if sessions is None:
                 print(f"    {ref:<46} kept       build output in {tree}: {why}")
                 return freed
-        try:
-            roots = [(tree, local_resolved_path(tree))]
-        except (OSError, ValueError, RuntimeError) as exc:
-            print(f"    {ref:<46} kept       build output in {tree}: {exc}")
-            continue
-        busy = occupant_in_worktrees(
-            sessions, None, roots, local_occupant_path, os.path.commonpath, skip_offbox=True,
-        )
+        busy = worktree_occupant(sessions, tree)
         if busy:
             print(f"    {ref:<46} kept       build output: {busy}")
             continue
@@ -7014,6 +7039,156 @@ def free_build_output(ref: str, trees: list[str], dry: bool) -> int:
             print(f"    {ref:<46} freed      {path}")
             freed += 1
     return freed
+
+
+# --- the operator's own command for a worktree reap lets go of ---------------
+#
+# WHAT FLEET CANNOT KNOW ABOUT A WORKTREE. `BUILD_OUTPUT` above is everything
+# reap can name for itself: directories a build makes and the next build makes
+# again. A worker also starts things OUTSIDE the worktree that are keyed by it
+# — a container stack, a database, a daemon, a tunnel — and every one of those
+# belongs to a tool fleet has never heard of. Measured on one machine on
+# 2026-10-13: eleven such stacks whose recorded working directory pointed at a
+# worktree reap had already removed, holding 55 containers, 14 images, 38
+# named volumes (3.0 GB) and 127 anonymous volumes with no container left
+# (23.0 GB) — on a non-sparse virtual disk, which grows to its peak and never
+# shrinks, so each remnant cost that space for good.
+#
+# SO IT IS A SEAM AND NOT A CLEANUP, for the same reason `publish.conf` holds
+# no tool name and `forge.py` takes plugins: the one command that can take
+# those down is the operator's, and naming theirs here would ship one
+# operator's machine to every clone. Fleet contributes the three things only
+# it knows — WHICH worktree, WHOSE task, and WHEN it is nobody's any more —
+# and runs what it is given.
+#
+# WHAT THE COMMAND IS GIVEN, and why each: the worktree's ABSOLUTE PATH, as
+# the first argument, because that path is how a tool outside fleet recorded
+# what it made (and its last component is how such a tool names a project by
+# default), and the TASK REF as the second, so a command can log or decide per
+# task. Nothing is passed in the environment: an operator reads argv in any
+# language, and one record of the answer beats two.
+#
+# WHEN IT RUNS. Wherever reap LETS A WORKTREE GO, which is four places and not
+# one: a vanished session's task retiring, an id reap drops because thurbox no
+# longer has it, a session reap deletes with `--force` — which takes the
+# worktree with it, so the paths are read from git BEFORE the deletion and the
+# command runs after it, on a directory that is gone and a stack that is not —
+# and a fixer's checkout `git worktree remove` takes back.
+#
+# WHAT IT MAY NOT DO: hold up the reap. A failure, a timeout, a line that is
+# not a command — each is printed and the task still lands, because the
+# artifact merged whatever the operator's machine thinks, and a task held open
+# over a leftover stack would hold its dependents too. It is bounded and
+# killed with everything it started, exactly as a reconciler child is
+# (`fleet_platform.run_bounded`): a command that hangs costs one pass.
+WORKTREE_HOOK = "ON_WORKTREE_RELEASED"
+WORKTREE_HOOK_SECS = "ON_WORKTREE_RELEASED_SECS"
+
+# Long enough for a command that talks to a local daemon, short enough that it
+# cannot outlive the `collect` the reconciler runs it inside (`BOUND_SECS`,
+# 600s for the whole pass). An operator whose teardown is slower says so.
+WORKTREE_HOOK_DEFAULT_SECS = 60
+
+
+def worktree_hook() -> tuple[list[str], float, str]:
+    """The operator's command for a released worktree: (argv, its bound, why not).
+
+    `([], 0, "")` is a fleet that configured none, which is every fresh clone
+    and the tracked example — and then reap does exactly what it always did.
+    `([], 0, why)` is a setting that cannot be read as a command or a bound:
+    the line is named and nothing runs, never raised, because a quote left
+    open must not take down a reap pass that had nothing to do with it.
+    """
+    conf = reconcile_conf()
+    line = conf.get(WORKTREE_HOOK, "").strip()
+    if not line:
+        return [], 0.0, ""
+    try:
+        argv = fleet_platform.split_command(line)
+    except ValueError as exc:
+        return [], 0.0, f"{WORKTREE_HOOK}: {exc}"
+    if not argv:
+        return [], 0.0, ""
+    raw = conf.get(WORKTREE_HOOK_SECS, "").strip()
+    try:
+        secs = float(raw) if raw else float(WORKTREE_HOOK_DEFAULT_SECS)
+    except ValueError:
+        secs = 0.0
+    if secs <= 0:
+        return [], 0.0, (
+            f"{WORKTREE_HOOK_SECS}={raw} is not a number of seconds above zero; "
+            f"{WORKTREE_HOOK} was not run"
+        )
+    return argv, secs, ""
+
+
+def hook_worktrees(task: Task) -> list[str]:
+    """This task's worktrees, asked only when the operator has a command for them.
+
+    WITH NO SETTING, NOTHING ABOUT A REAP CHANGES — not even one more `git
+    worktree list` per task. The deletion path needs the paths before it
+    deletes the session, which is the one place nothing else was asking for
+    them, so the question is asked there only when there is something to do
+    with the answer. A setting that cannot be read still counts as configured:
+    `run_worktree_hook` is what names it, and it names it once per task.
+    """
+    argv, _secs, why = worktree_hook()
+    return task_worktrees(task) if argv or why else []
+
+
+def run_worktree_hook(ref: str, trees: list[str], dry: bool, sid: str | None = None) -> int:
+    """Hand each released worktree to the operator's command. Returns how many ran.
+
+    The same refusals as `free_build_output`: a worktree another session sits
+    in is not handed over, and neither is one whose occupancy cannot be
+    judged (`worktree_occupant` owns both, and `sid` is why the session being
+    deleted is not read as its own occupant).
+    """
+    argv, secs, why = worktree_hook()
+    if why:
+        print(f"    {ref:<46} NOT RUN    {why}", file=sys.stderr)
+        return 0
+    if not argv or not trees:
+        return 0
+    ran = 0
+    sessions = None
+    for tree in trees:
+        if sessions is None:
+            sessions, snap_why = session_snapshot()
+            if sessions is None:
+                print(f"    {ref:<46} kept       {WORKTREE_HOOK} for {tree}: {snap_why}")
+                return ran
+        busy = worktree_occupant(sessions, tree, sid)
+        if busy:
+            print(f"    {ref:<46} kept       {WORKTREE_HOOK}: {busy}")
+            continue
+        argv_here = [*argv, tree, ref]
+        if dry:
+            print(f"    {ref:<46} would run  {shell_quote(argv_here)}")
+            ran += 1
+            continue
+        try:
+            done = fleet_platform.run_bounded(
+                argv_here, secs, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, encoding="utf-8", errors="replace",
+            )
+        except OSError as exc:
+            print(f"    {ref:<46} FAILED     {WORKTREE_HOOK}: {exc}; {tree} may still be "
+                  "held outside fleet", file=sys.stderr)
+            continue
+        if done is None:
+            print(f"    {ref:<46} FAILED     {WORKTREE_HOOK} killed after {secs:g}s, its bound "
+                  f"({WORKTREE_HOOK_SECS}); {tree} may still be held outside fleet",
+                  file=sys.stderr)
+            continue
+        if done.returncode != 0:
+            said = (done.stdout or "").strip().splitlines()
+            print(f"    {ref:<46} FAILED     {WORKTREE_HOOK} exit {done.returncode}: "
+                  + (said[-1] if said else "no output"), file=sys.stderr)
+            continue
+        print(f"    {ref:<46} released   {tree}  ({WORKTREE_HOOK})")
+        ran += 1
+    return ran
 
 
 def release_fixer_checkouts(q: Queue, state_of, dry: bool) -> int:
@@ -7044,6 +7219,7 @@ def release_fixer_checkouts(q: Queue, state_of, dry: bool) -> int:
             free_build_output(task.ref, [path], dry)
             if dry:
                 print(f"    {task.ref:<46} would remove fixer checkout {path}")
+                run_worktree_hook(task.ref, [path], dry)
                 continue
             # Asked of each repository the task spans, because `shepherd` cuts
             # the checkout off whichever one the change request was in and only
@@ -7065,6 +7241,9 @@ def release_fixer_checkouts(q: Queue, state_of, dry: bool) -> int:
                 )
                 continue
             print(f"    {task.ref:<46} removed    fixer checkout {path}")
+            # A fixer's checkout is a worktree an agent worked in too, so what
+            # it started outside it is the operator's to take down as well.
+            run_worktree_hook(task.ref, [path], dry)
     return acted
 
 
@@ -7220,7 +7399,9 @@ def reap(q: Queue, dry: bool = False, release: bool = True) -> int:
                 dropped += 1
             # A session that went without `delete --force` left its worktree,
             # and the worktree its build output.
-            free_build_output(task.ref, task_worktrees(task), dry)
+            trees = task_worktrees(task)
+            free_build_output(task.ref, trees, dry)
+            run_worktree_hook(task.ref, trees, dry)
             release_companions(task, dry)
             continue
 
@@ -7239,8 +7420,15 @@ def reap(q: Queue, dry: bool = False, release: bool = True) -> int:
             kept += 1
             continue
 
+        # READ BEFORE THE DELETION, which takes the worktree with the session:
+        # after it git lists none for this branch and the path the operator's
+        # command needs is unrecoverable. Asked only when there is a command
+        # (`hook_worktrees`), so an unconfigured fleet runs nothing extra.
+        hooked = hook_worktrees(task)
+
         if dry:
             print(f"    {task.ref:<46} would reap {sid}  ({live_state})")
+            run_worktree_hook(task.ref, hooked, dry, sid)
             release_companions(task, dry)
             reaped += 1
             continue
@@ -7264,6 +7452,10 @@ def reap(q: Queue, dry: bool = False, release: bool = True) -> int:
             continue
         record_reaped(task, sid, "deleted")
         print(f"    {task.ref:<46} reaped     {sid}  ({live_state})")
+        # After the deletion, on a worktree that is gone and whatever it
+        # started that is not. `sid` is already deleted, so it cannot be read
+        # as its own occupant whichever list answers.
+        run_worktree_hook(task.ref, hooked, dry, sid)
         release_companions(task, dry)
         reaped += 1
 
