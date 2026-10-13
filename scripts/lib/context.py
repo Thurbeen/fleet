@@ -152,6 +152,7 @@ PEER_FACT_ROWS = 8
 PEER_RESULT_ROWS = 5
 # A peer's last answer older than this is forgotten rather than shown as stale.
 PEER_CACHE_DAYS = 7
+RESULT_FILE = "result.md"
 TASK_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 # Everything a peer says reaches a terminal: C0, DEL and C1 (an 8-bit CSI is
 # U+009B), and the bidi marks and overrides that make text read as other text.
@@ -314,12 +315,19 @@ def known_repos() -> set:
             doc = yaml.safe_load(fh) or {}
     except (OSError, yaml.YAMLError):
         doc = {}
+    found.update(_registry_identities(doc))
+    return found
+
+
+def _registry_identities(doc) -> list[str]:
+    """Every identity the registry map's repositories resolve to, in its order."""
+    idents = []
     for owner in doc.get("owners") or [] if isinstance(doc, dict) else []:
         for repo in (owner or {}).get("repos") or []:
             ident = remote_identity(str((repo or {}).get("url") or ""))
             if ident:
-                found.add(ident)
-    return found
+                idents.append(ident)
+    return idents
 
 
 def resolve_repo(text: str, hints: tuple = ()) -> str:
@@ -481,33 +489,42 @@ def capture_learned(task, learned) -> list[str]:
         day = f"{datetime.now(UTC):%Y%m%d}"
     lines, made, kept = [], 0, 0
     for n, entry in enumerate(learned[:MAX_LEARNED], 1):
-        if not isinstance(entry, dict):
-            lines.append(f"learned[{n}]: not a mapping — skipped")
-            continue
-        if not str(entry.get("repo") or "").strip():
-            lines.append(f"learned[{n}]: no repo — skipped")
-            continue
-        try:
-            repo = resolve_repo(str(entry["repo"]), hints)
-            text = clean_text(entry.get("fact"))
-            replaces = check_replaces(repo, entry.get("replaces"))
-            new, _path = write_fact(repo, f"{day}-{task.topic}-{task.id}-{n}", text, task.ref, replaces)
-        except ContextError as exc:
-            lines.append(f"learned[{n}]: {exc.message} — skipped")
-            continue
-        except OSError as exc:
-            lines.append(f"learned[{n}]: could not be written ({exc.strerror or exc}) — skipped")
+        new, skipped = _learn_one(task, n, entry, hints, day)
+        if skipped:
+            lines.append(skipped)
             continue
         made += new
         kept += not new
+    return [*lines, _learned_summary(made, kept, len(learned))]
+
+
+def _learn_one(task, n: int, entry, hints: tuple, day: str) -> tuple[bool, str]:
+    """(whether the fact is new, "") for one `learned:` entry, or (False, the line saying why it was skipped)."""
+    if not isinstance(entry, dict):
+        return False, f"learned[{n}]: not a mapping — skipped"
+    if not str(entry.get("repo") or "").strip():
+        return False, f"learned[{n}]: no repo — skipped"
+    try:
+        repo = resolve_repo(str(entry["repo"]), hints)
+        text = clean_text(entry.get("fact"))
+        replaces = check_replaces(repo, entry.get("replaces"))
+        new, _path = write_fact(repo, f"{day}-{task.topic}-{task.id}-{n}", text, task.ref, replaces)
+    except ContextError as exc:
+        return False, f"learned[{n}]: {exc.message} — skipped"
+    except OSError as exc:
+        return False, f"learned[{n}]: could not be written ({exc.strerror or exc}) — skipped"
+    return new, ""
+
+
+def _learned_summary(made: int, kept: int, total: int) -> str:
     summary = []
     if made or not kept:
         summary.append(f"{made} fact{'' if made == 1 else 's'} recorded")
     if kept:
         summary.append(f"{kept} already recorded")
-    if len(learned) > MAX_LEARNED:
-        summary.append(f"{len(learned) - MAX_LEARNED} over the limit of {MAX_LEARNED} — skipped")
-    return [*lines, ", ".join(summary)]
+    if total > MAX_LEARNED:
+        summary.append(f"{total - MAX_LEARNED} over the limit of {MAX_LEARNED} — skipped")
+    return ", ".join(summary)
 
 
 # --- rendering ---------------------------------------------------------------------
@@ -547,7 +564,7 @@ def repo_results(q, repo: str) -> list[dict]:
     ids: dict[str, str | None] = {}
     rows = []
     for task in q.tasks.values():
-        path = task.file("result.md")
+        path = task.file(RESULT_FILE)
         if task.doc.get("host") or not os.path.exists(path):
             continue
         for unit in queue.task_repos(task):
@@ -571,8 +588,61 @@ def prior_results(q, ref: str) -> list[dict]:
             up = q.get(blocker.get("task"))
         except queue.QueueError:
             continue
-        rows.append({"task": up.ref, "state": up.state, "path": up.file("result.md")})
+        rows.append({"task": up.ref, "state": up.state, "path": up.file(RESULT_FILE)})
     return rows
+
+
+def _repo_prior(q, ref: str | None) -> list[dict]:
+    if not ref:
+        return []
+    queue = _queue()
+    try:
+        return prior_results(q, ref)
+    except queue.QueueError as exc:
+        raise ContextError("unknown_task", str(exc), [f"Run `{fleet_command()} queue list`"]) from exc
+
+
+def _repo_hints(fleet: str, repo: str, facts: dict, every: bool, peered: list | None, peer_facts: list) -> list:
+    hints = [f'Run `{fleet} context learn {repo} "<fact>"` to record what you learned']
+    if peer_facts:
+        hints.append(f'Run `{fleet} context learn {repo} "<fact>" --source peer:<fleet>/<id>` to keep a peer\'s fact')
+    elif peered is None:
+        hints.append(f"Run `{fleet} context repo {repo} --peers` to add other fleets' facts")
+    if facts["live"] and not every:
+        hints.append(f"Run `{fleet} context repo {repo} --all --full` for every fact in full")
+    return hints
+
+
+def _fact_lines(repo: str, facts: dict, fields: list, full: bool, nfacts: int) -> list:
+    lines = [fleet_platform.toon_field(
+        "facts", f"{len(facts['live'])} live · {len(facts['replaced'])} replaced"
+        if facts["live"] or facts["replaced"] else f"0 live for {repo}")]
+    lines.append(fleet_platform.toon_field("repo", repo))
+    if facts["live"]:
+        rows = [dict(f, text=cut(f["text"], full)) for f in facts["live"][:nfacts]]
+        lines.append(fleet_platform.toon_table("live", fields, rows))
+    if facts["contested"]:
+        lines.append(fleet_platform.toon_field("contested", " ; ".join(
+            f"{t} replaced by {' · '.join(ids)}" for t, ids in facts["contested"].items())))
+    return lines
+
+
+def _peer_lines(peered: list | None, peer_facts: list, peer_results: list, full: bool, npf: int, npr: int) -> list:
+    if peered is None:
+        return []
+    states = {w: sum(1 for p in peered if p["status"] == w) for w in ("ok", "stale", "unreachable", "refused")}
+    lines = [fleet_platform.toon_field("peers", f"{len(peered)} · " + " · ".join(
+        f"{w} {n}" for w, n in states.items()) if peered else "0 — no other fleet found")]
+    if peered:
+        lines.append(fleet_platform.toon_table("fleets", ["fleet", "status", "age", "facts", "reason"], [
+            dict(p, facts=len(p["facts"])) for p in peered]))
+    if peer_facts and npf:
+        lines.append(fleet_platform.toon_table("peer_facts", ["fleet", "id", "date", "source", "text"],
+                                               [dict(f, text=cut(f["text"], full)) for f in peer_facts[:npf]]))
+    if peer_results and npr:
+        lines.append(fleet_platform.toon_table("peer_results", ["fleet", "task", "state", "date", "summary"],
+                                               peer_results[:npr]))
+    return lines
 
 
 def cmd_repo(opts: dict) -> str:
@@ -585,55 +655,18 @@ def cmd_repo(opts: dict) -> str:
     full, every = opts["full"], opts["all"]
     q = queue.Queue(queue.queue_root(), scope="all")
     results = repo_results(q, repo)
-    prior = []
-    if opts["task"]:
-        try:
-            prior = prior_results(q, opts["task"])
-        except queue.QueueError as exc:
-            raise ContextError("unknown_task", str(exc), [f"Run `{fleet_command()} queue list`"]) from exc
+    prior = _repo_prior(q, opts["task"])
     narrative = os.path.join(registry_dir(), "context", f"{short_name(repo)}.md")
     fleet = fleet_command()
-    hints = [f'Run `{fleet} context learn {repo} "<fact>"` to record what you learned']
     peered = peer_view(repo, opts.get("refresh", False), opts.get("timeout")) if opts.get("peers") else None
     peer_facts = sorted(({**f, "fleet": p["fleet"]} for p in peered or [] for f in p["facts"]),
                         key=lambda f: (f["at"], f["fleet"], f["id"]), reverse=True)
     peer_results = [{**r, "fleet": p["fleet"]} for p in peered or [] for r in p["results"]]
-    if peer_facts:
-        hints.append(f'Run `{fleet} context learn {repo} "<fact>" --source peer:<fleet>/<id>` to keep a peer\'s fact')
-    elif peered is None:
-        hints.append(f"Run `{fleet} context repo {repo} --peers` to add other fleets' facts")
-    if facts["live"] and not every:
-        hints.append(f"Run `{fleet} context repo {repo} --all --full` for every fact in full")
-
-    def peer_lines(npf, npr):
-        if peered is None:
-            return []
-        states = {w: sum(1 for p in peered if p["status"] == w) for w in ("ok", "stale", "unreachable", "refused")}
-        lines = [fleet_platform.toon_field("peers", f"{len(peered)} · " + " · ".join(
-            f"{w} {n}" for w, n in states.items()) if peered else "0 — no other fleet found")]
-        if peered:
-            lines.append(fleet_platform.toon_table("fleets", ["fleet", "status", "age", "facts", "reason"], [
-                dict(p, facts=len(p["facts"])) for p in peered]))
-        if peer_facts and npf:
-            lines.append(fleet_platform.toon_table("peer_facts", ["fleet", "id", "date", "source", "text"],
-                                                   [dict(f, text=cut(f["text"], full)) for f in peer_facts[:npf]]))
-        if peer_results and npr:
-            lines.append(fleet_platform.toon_table("peer_results", ["fleet", "task", "state", "date", "summary"],
-                                                   peer_results[:npr]))
-        return lines
+    hints = _repo_hints(fleet, repo, facts, every, peered, peer_facts)
 
     def render(counts):
         nfacts, nresults, npf, npr = counts
-        lines = [fleet_platform.toon_field(
-            "facts", f"{len(facts['live'])} live · {len(facts['replaced'])} replaced"
-            if facts["live"] or facts["replaced"] else f"0 live for {repo}")]
-        lines.append(fleet_platform.toon_field("repo", repo))
-        if facts["live"]:
-            rows = [dict(f, text=cut(f["text"], full)) for f in facts["live"][:nfacts]]
-            lines.append(fleet_platform.toon_table("live", fields, rows))
-        if facts["contested"]:
-            lines.append(fleet_platform.toon_field("contested", " ; ".join(
-                f"{t} replaced by {' · '.join(ids)}" for t, ids in facts["contested"].items())))
+        lines = _fact_lines(repo, facts, fields, full, nfacts)
         lines.append(fleet_platform.toon_field("narrative", narrative if os.path.exists(narrative) else "none"))
         lines.append(fleet_platform.toon_field("results", f"{len(results)} for {repo}"))
         if results and nresults:
@@ -643,7 +676,7 @@ def cmd_repo(opts: dict) -> str:
         if facts["malformed"]:
             lines.append(fleet_platform.toon_field(
                 "skipped", f"{len(facts['malformed'])} malformed fact file(s) — {facts['malformed'][0]}"))
-        lines += peer_lines(npf, npr)
+        lines += _peer_lines(peered, peer_facts, peer_results, full, npf, npr)
         more = more_line([(len(facts["live"]) - nfacts, "facts"),
                           (len(results) - min(nresults, len(results)), "results"),
                           (len(peer_facts) - npf, "peer facts"),
@@ -788,6 +821,32 @@ def plain(value, cap: int) -> str:
     return CONTROL_RE.sub(" ", " ".join(str(value).split()))[:cap]
 
 
+def _wire_facts(facts: list) -> list[dict] | None:
+    """A peer's facts, bounded, or None when any one of them is malformed."""
+    good = []
+    for fact in facts:
+        if not isinstance(fact, dict) or not FACT_ID_RE.match(str(fact.get("id", ""))) \
+                or not isinstance(fact.get("text"), str) or not fact["text"].strip():
+            return None
+        at = plain(fact.get("at") or "", 40)
+        good.append({"id": fact["id"], "at": at, "date": at[:10],
+                     "source": plain(fact.get("source") or "", SOURCE_CHARS),
+                     "text": plain(fact["text"], MAX_FACT_CHARS)})
+    return good
+
+
+def _wire_results(results: list) -> list[dict] | None:
+    """A peer's results, bounded, or None when any one of them is malformed."""
+    good = []
+    for row in results:
+        if not isinstance(row, dict) or not TASK_REF_RE.match(str(row.get("task", ""))):
+            return None
+        good.append({"task": row["task"], "state": plain(row.get("state") or "", 20),
+                     "date": plain(row.get("date") or "", 10),
+                     "summary": plain(row.get("summary") or "", TEXT_CAP)})
+    return good
+
+
 def check_wire(text: str, repo: str) -> tuple[dict | None, str]:
     """(a peer's answer, validated and bounded, "") or (None, why it is not one).
 
@@ -817,21 +876,12 @@ def check_wire(text: str, repo: str) -> tuple[dict | None, str]:
         return None, "answered a wire whose facts or results are not lists"
     if len(facts) > WIRE_FACTS or len(results) > WIRE_RESULTS:
         return None, f"answered more than {WIRE_FACTS} facts or {WIRE_RESULTS} results"
-    good_facts, good_results = [], []
-    for fact in facts:
-        if not isinstance(fact, dict) or not FACT_ID_RE.match(str(fact.get("id", ""))) \
-                or not isinstance(fact.get("text"), str) or not fact["text"].strip():
-            return None, "answered a malformed fact"
-        at = plain(fact.get("at") or "", 40)
-        good_facts.append({"id": fact["id"], "at": at, "date": at[:10],
-                           "source": plain(fact.get("source") or "", SOURCE_CHARS),
-                           "text": plain(fact["text"], MAX_FACT_CHARS)})
-    for row in results:
-        if not isinstance(row, dict) or not TASK_REF_RE.match(str(row.get("task", ""))):
-            return None, "answered a malformed result"
-        good_results.append({"task": row["task"], "state": plain(row.get("state") or "", 20),
-                             "date": plain(row.get("date") or "", 10),
-                             "summary": plain(row.get("summary") or "", TEXT_CAP)})
+    good_facts = _wire_facts(facts)
+    if good_facts is None:
+        return None, "answered a malformed fact"
+    good_results = _wire_results(results)
+    if good_results is None:
+        return None, "answered a malformed result"
     return {"refused": "", "facts": good_facts, "results": good_results}, ""
 
 
@@ -875,6 +925,27 @@ def ask_peer(entry: dict, repo: str, timeout: float) -> tuple[dict | None, str]:
     return answer, why
 
 
+def _remember_peer(seen: dict, reply: tuple[dict | None, str], now: float) -> None:
+    answer, why = reply
+    seen["tried_at"] = now
+    if answer is not None:
+        seen.update(answer=answer, ok_at=now, error="", failing_since=None)
+    else:
+        seen["error"] = why
+        seen["failing_since"] = seen.get("failing_since") or now
+
+
+def _peer_status(seen: dict, answer: dict | None, error: str, now: float) -> tuple[str, float, str]:
+    """(status, age, the reason shown) for one peer's cached reading."""
+    if not error and answer and answer.get("refused"):
+        return "refused", now - float(seen.get("ok_at") or now), answer["refused"]
+    if not error:
+        return "ok", now - float(seen.get("ok_at") or now), error
+    if answer:
+        return "stale", now - float(seen.get("ok_at") or now), error
+    return "unreachable", now - float(seen.get("failing_since") or now), error
+
+
 def peer_view(repo: str, refresh: bool, timeout: float) -> list[dict]:
     """Every other fleet's answer about `repo`: read now, from the cache, or why it could not be."""
     peers = _peers()
@@ -897,24 +968,11 @@ def peer_view(repo: str, refresh: bool, timeout: float) -> list[dict]:
     for entry in entries:
         seen = dict(old.get(key(entry)) or {})
         if key(entry) in answers:
-            answer, why = answers[key(entry)]
-            seen["tried_at"] = now
-            if answer is not None:
-                seen.update(answer=answer, ok_at=now, error="", failing_since=None)
-            else:
-                seen["error"] = why
-                seen["failing_since"] = seen.get("failing_since") or now
+            _remember_peer(seen, answers[key(entry)], now)
         seen["label"] = entry["label"]
         cache[key(entry)] = seen
-        answer, error = seen.get("answer"), seen.get("error") or ""
-        if not error and answer and answer.get("refused"):
-            status, age, error = "refused", now - float(seen.get("ok_at") or now), answer["refused"]
-        elif not error:
-            status, age = "ok", now - float(seen.get("ok_at") or now)
-        elif answer:
-            status, age = "stale", now - float(seen.get("ok_at") or now)
-        else:
-            status, age = "unreachable", now - float(seen.get("failing_since") or now)
+        answer = seen.get("answer")
+        status, age, error = _peer_status(seen, answer, seen.get("error") or "", now)
         shown = answer if status in ("ok", "stale") else {}
         out.append({"fleet": entry["label"], "key": entry["key"], "status": status, "age": int(age),
                     "reason": plain(error, 160), "facts": (shown or {}).get("facts") or [],
@@ -945,7 +1003,7 @@ def pending_rows(q, stalled: set) -> list[dict]:
         n = len(rows)
         conditions = [queue.blocker_condition(b) for b in task.blockers if queue.blocker_condition(b)]
         publish = (task.doc.get("publish") or {}).get("state")
-        result = task.file("result.md")
+        result = task.file(RESULT_FILE)
         if task.ref in stalled:
             rows.append({"task": task.ref, "why": "stalled", "next": f"{fleet} queue show {task.ref}"})
         elif q.is_ready(task):
@@ -966,7 +1024,8 @@ def pending_rows(q, stalled: set) -> list[dict]:
     return rows
 
 
-TOPIC_ORDER = ("stalled", "ready", "stuck", "failed", "held", "condition", "review", "working", "awaiting merge",
+AWAITING_MERGE = "awaiting merge"
+TOPIC_ORDER = ("stalled", "ready", "stuck", "failed", "held", "condition", "review", "working", AWAITING_MERGE,
                "waiting", "landed")
 
 
@@ -974,7 +1033,7 @@ def topic_row(slug: str, tasks: list, pending: dict, by=None) -> dict:
     words = {}
     for task in tasks:
         why = pending.get(task.ref, {}).get("why")
-        word = why or {"dispatched": "working", "done": "awaiting merge", "queued": "waiting",
+        word = why or {"dispatched": "working", "done": AWAITING_MERGE, "queued": "waiting",
                        "landed": "landed", "abandoned": "landed"}.get(task.state, task.state)
         words.setdefault(word, []).append(task.ref)
     state = next((w for w in TOPIC_ORDER if w in words), "landed")
@@ -988,7 +1047,7 @@ def topic_row(slug: str, tasks: list, pending: dict, by=None) -> dict:
         "condition": "a person clears a condition",
         "review": "waiting on reader",
         "working": f"{len(refs)} working",
-        "awaiting merge": f"{len(refs)} awaiting merge",
+        AWAITING_MERGE: f"{len(refs)} {AWAITING_MERGE}",
         "waiting": "waiting on another task",
         "landed": "archives on the next collect",
     }[state]
@@ -1125,6 +1184,74 @@ def usage_error(message: str, sub: str | None = None) -> ContextError:
         "  ", " ") + f" — {usage}"], exit_code=2)
 
 
+def _read_words(rest: list, flags: dict, opts: dict, sub: str) -> bool:
+    """Fill `opts` from the words after the subcommand; True when one asked for --help."""
+    wants_help = False
+    while rest:
+        word = rest.pop(0)
+        if word == "--":
+            opts["args"] += rest
+            break
+        if word in ("-h", "--help"):
+            wants_help = True
+            continue
+        if word.startswith("--"):
+            _read_flag(word, rest, flags, opts, sub)
+            continue
+        opts["args"].append(word)
+    return wants_help
+
+
+def _read_flag(word: str, rest: list, flags: dict, opts: dict, sub: str) -> None:
+    name, eq, value = word.partition("=")
+    if name not in flags:
+        raise usage_error(f"unknown flag {name}", sub)
+    if not flags[name]:
+        opts[name[2:]] = True
+        return
+    if not eq:
+        if not rest:
+            raise usage_error(f"{name} needs a value", sub)
+        value = rest.pop(0)
+    opts[name[2:]] = value
+
+
+def _check_fields(opts: dict) -> None:
+    if not isinstance(opts["fields"], str):
+        return
+    fields = [f.strip() for f in opts["fields"].split(",") if f.strip()]
+    unknown = [f for f in fields if f not in EXTRA_FIELDS + tuple(FACT_FIELDS)]
+    if unknown:
+        raise ContextError("bad_argument", f"no field {unknown[0]!r}; --fields takes "
+                           + ",".join(EXTRA_FIELDS), [f"Run `{fleet_command()} context repo --help`"])
+    opts["fields"] = fields
+
+
+def _check_wire(opts: dict, sub: str) -> None:
+    if opts["wire"] is not None:
+        # The wire is one fleet answering another: it never fans out again, and
+        # never carries what --task would add, the results this task waits on.
+        if opts["wire"] != "json":
+            raise usage_error(f"no wire {opts['wire']!r}", sub)
+        if opts["peers"] or opts["refresh"] or opts["timeout"] is not None or opts["task"]:
+            raise usage_error("--wire answers one read: no --peers, --refresh, --timeout or --task", sub)
+    elif (opts["refresh"] or opts["timeout"] is not None) and not opts["peers"]:
+        raise usage_error("--refresh and --timeout go with --peers", sub)
+
+
+def _check_timeout(opts: dict) -> None:
+    if opts["timeout"] is not None:
+        try:
+            opts["timeout"] = float(opts["timeout"])
+        except ValueError:
+            opts["timeout"] = -1.0
+        if not 0 < opts["timeout"] <= 300:
+            raise ContextError("bad_argument", "--timeout is a number of seconds, above 0 and at most 300",
+                               [f"Run `{fleet_command()} context repo --help`"])
+    elif opts["peers"]:
+        opts["timeout"] = _peers().TIMEOUT
+
+
 def parse(argv: list) -> tuple[str, dict | None]:
     """(subcommand, options), or (subcommand, None) for --help. Raises usage errors before anything runs."""
     sub = "lead"
@@ -1136,61 +1263,15 @@ def parse(argv: list) -> tuple[str, dict | None]:
     positionals, flags, *_ = SUBCOMMANDS[sub]
     opts = {"args": [], "all": False, "full": False, "task": None, "fields": [], "replaces": None, "source": None,
             "peers": False, "refresh": False, "timeout": None, "wire": None}
-    wants_help = False
-    while rest:
-        word = rest.pop(0)
-        if word == "--":
-            opts["args"] += rest
-            break
-        if word in ("-h", "--help"):
-            wants_help = True
-            continue
-        if word.startswith("--"):
-            name, eq, value = word.partition("=")
-            if name not in flags:
-                raise usage_error(f"unknown flag {name}", sub)
-            if flags[name]:
-                if not eq:
-                    if not rest:
-                        raise usage_error(f"{name} needs a value", sub)
-                    value = rest.pop(0)
-                opts[name[2:]] = value
-            else:
-                opts[name[2:]] = True
-            continue
-        opts["args"].append(word)
-    if wants_help:
+    if _read_words(rest, flags, opts, sub):
         return sub, None
     if len(opts["args"]) != len(positionals):
         raise ContextError("bad_argument", f"{sub} takes {len(positionals)} argument(s), "
                            f"{', '.join(f'<{p}>' for p in positionals) or 'none'}; got {len(opts['args'])}",
                            [f"Run `{fleet_command()} context {sub} --help`"])
-    if isinstance(opts["fields"], str):
-        fields = [f.strip() for f in opts["fields"].split(",") if f.strip()]
-        unknown = [f for f in fields if f not in EXTRA_FIELDS + tuple(FACT_FIELDS)]
-        if unknown:
-            raise ContextError("bad_argument", f"no field {unknown[0]!r}; --fields takes "
-                               + ",".join(EXTRA_FIELDS), [f"Run `{fleet_command()} context repo --help`"])
-        opts["fields"] = fields
-    if opts["wire"] is not None:
-        # The wire is one fleet answering another: it never fans out again, and
-        # never carries what --task would add, the results this task waits on.
-        if opts["wire"] != "json":
-            raise usage_error(f"no wire {opts['wire']!r}", sub)
-        if opts["peers"] or opts["refresh"] or opts["timeout"] is not None or opts["task"]:
-            raise usage_error("--wire answers one read: no --peers, --refresh, --timeout or --task", sub)
-    elif (opts["refresh"] or opts["timeout"] is not None) and not opts["peers"]:
-        raise usage_error("--refresh and --timeout go with --peers", sub)
-    if opts["timeout"] is not None:
-        try:
-            opts["timeout"] = float(opts["timeout"])
-        except ValueError:
-            opts["timeout"] = -1.0
-        if not 0 < opts["timeout"] <= 300:
-            raise ContextError("bad_argument", "--timeout is a number of seconds, above 0 and at most 300",
-                               [f"Run `{fleet_command()} context repo --help`"])
-    elif opts["peers"]:
-        opts["timeout"] = _peers().TIMEOUT
+    _check_fields(opts)
+    _check_wire(opts, sub)
+    _check_timeout(opts)
     return sub, opts
 
 
