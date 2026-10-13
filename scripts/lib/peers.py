@@ -83,6 +83,7 @@ import time
 import tomllib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+PROBE_SCRIPT = "pane_probe.py"
 
 
 def _load_sibling(name: str, filename: str):
@@ -157,12 +158,16 @@ def settings() -> tuple[bool, list[dict]]:
     path = os.path.join(root, "orchestration", "peers.conf")
     if not os.path.isfile(path):
         path = os.path.join(root, "orchestration", "peers.example.conf")
-    discover, declared = True, []
     try:
         with open(path, encoding="utf-8") as fh:
             lines = fh.read().splitlines()
     except OSError:
-        return discover, declared
+        return True, []
+    return _parse_settings(lines)
+
+
+def _parse_settings(lines: list[str]) -> tuple[bool, list[dict]]:
+    discover, declared = True, []
     for line in lines:
         key, sep, value = line.strip().partition("=")
         if not sep or key.strip().startswith("#"):
@@ -247,7 +252,7 @@ def host_entry(name: str) -> tuple[dict | None, str]:
     return entry, ""
 
 
-def remote_script(entry: dict, path: str, script: str = "pane_probe.py", args: tuple = ()) -> str:
+def remote_script(entry: dict, path: str, script: str = PROBE_SCRIPT, args: tuple = ()) -> str:
     """The one command a host's fleet is asked to run: one of its own read-only scripts."""
     shell = fleetqueue.host_shell(entry)
     script = shell.join(shell.join(shell.join(path, "scripts"), "lib"), script)
@@ -262,7 +267,7 @@ def remote_script(entry: dict, path: str, script: str = "pane_probe.py", args: t
             f"{fleetqueue.ps_quote(script)} {words}").rstrip()
 
 
-def run_read(entry: dict, timeout: float, script: str = "pane_probe.py", args: tuple = (),
+def run_read(entry: dict, timeout: float, script: str = PROBE_SCRIPT, args: tuple = (),
              env_strip=lambda key: key in RELOCATING) -> tuple[subprocess.CompletedProcess | None, str]:
     """(what one of the peer's own read-only scripts printed, "") or (None, why it could not be run).
 
@@ -338,6 +343,24 @@ def save_cache(doc: dict) -> None:
         pass
 
 
+def _remember(seen: dict, answer: tuple[list[str] | None, str], now: float) -> None:
+    records, why = answer
+    seen["tried_at"] = now
+    if records is not None:
+        seen.update(records=records, ok_at=now, error="", failing_since=None)
+    else:
+        seen["error"] = why
+        seen["failing_since"] = seen.get("failing_since") or now
+
+
+def _status(seen: dict, error: str, now: float) -> tuple[str, float]:
+    if not error:
+        return "ok", now - float(seen.get("ok_at") or now)
+    if seen.get("records"):
+        return "stale", now - float(seen.get("ok_at") or now)
+    return "unreachable", now - float(seen.get("failing_since") or now)
+
+
 def read_all(entries: list[dict], old: dict, refresh: bool, timeout: float) -> list[dict]:
     """Every peer with its status, asking only those the cache cannot answer."""
     now = time.time()
@@ -351,22 +374,11 @@ def read_all(entries: list[dict], old: dict, refresh: bool, timeout: float) -> l
     for entry in entries:
         seen = dict(old.get(entry["key"]) or {})
         if entry["key"] in answers:
-            records, why = answers[entry["key"]]
-            seen["tried_at"] = now
-            if records is not None:
-                seen.update(records=records, ok_at=now, error="", failing_since=None)
-            else:
-                seen["error"] = why
-                seen["failing_since"] = seen.get("failing_since") or now
+            _remember(seen, answers[entry["key"]], now)
         seen.update({k: entry[k] for k in ("key", "host", "path", "fleet", "label", "source")})
         cache[entry["key"]] = seen
         error = seen.get("error") or ""
-        if not error:
-            status, age = "ok", now - float(seen.get("ok_at") or now)
-        elif seen.get("records"):
-            status, age = "stale", now - float(seen.get("ok_at") or now)
-        else:
-            status, age = "unreachable", now - float(seen.get("failing_since") or now)
+        status, age = _status(seen, error, now)
         out.append({**entry, "self": False, "status": status, "reason": error, "age": int(age),
                     "read_at": int(seen.get("ok_at") or 0) or None, "records": seen.get("records") or []})
     save_cache(cache)
@@ -374,6 +386,23 @@ def read_all(entries: list[dict], old: dict, refresh: bool, timeout: float) -> l
 
 
 # --- what it prints ------------------------------------------------------------
+
+
+def _blockers(field: str) -> list[dict]:
+    blockers = []
+    for pair in filter(None, field.split(",")):
+        ref, _, kind = pair.partition("|")
+        blockers.append({"ref": ref.removeprefix("!"), "kind": kind, "condition": ref.startswith("!")})
+    return blockers
+
+
+def _task(f: list[str], fleet: str, host: str, topic: str, title: str) -> dict:
+    return {
+        "fleet": fleet, "host": host, "topic": topic, "topic_title": title, "id": f[1],
+        "ref": f"{topic}/{f[1]}", "state": f[2], "title": f[3], "outcome": f[4], "artifact": f[5],
+        "blocked_by": _blockers(f[6]), "branch": f[10], "moved_at": int(f[11] or 0),
+        "publish": {"method": f[12], "state": f[13], "at": int(f[14] or 0)},
+    }
 
 
 def tasks(records: list[str], fleet: str, host: str) -> list[dict]:
@@ -384,16 +413,7 @@ def tasks(records: list[str], fleet: str, host: str) -> list[dict]:
         if f[0] == "T":
             topic, title = f[1], f[2] if len(f) > 2 else ""
         elif f[0] == "K" and len(f) >= 15:
-            blockers = []
-            for pair in filter(None, f[6].split(",")):
-                ref, _, kind = pair.partition("|")
-                blockers.append({"ref": ref.removeprefix("!"), "kind": kind, "condition": ref.startswith("!")})
-            task = {
-                "fleet": fleet, "host": host, "topic": topic, "topic_title": title, "id": f[1],
-                "ref": f"{topic}/{f[1]}", "state": f[2], "title": f[3], "outcome": f[4], "artifact": f[5],
-                "blocked_by": blockers, "branch": f[10], "moved_at": int(f[11] or 0),
-                "publish": {"method": f[12], "state": f[13], "at": int(f[14] or 0)},
-            }
+            task = _task(f, fleet, host, topic, title)
             by_ref[task["ref"]] = task
             out.append(task)
         elif f[0] == "B" and f[1] in by_ref and len(f) >= 8:

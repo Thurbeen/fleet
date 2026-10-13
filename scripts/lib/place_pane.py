@@ -151,6 +151,46 @@ def check(layout: str | None = None, pane: str = PANE) -> tuple[int, str]:
     return 1, not_placed(layout, slot)
 
 
+def _unrecognised(text: str, anchor: int | None) -> str:
+    """What keeps `text` from being a layout this recognises, or ""."""
+    if anchor is None:
+        return 'no line placing the "center" slot in a columns list'
+    if "panels.shown(" not in text:
+        return "no call to panels.shown(), which the block's guard needs"
+    if "filled(ctx," not in text:
+        return "no filled(ctx, ...) helper, which the block calls"
+    return ""
+
+
+def _reread(layout: str, backup: str) -> None:
+    lua = shutil.which("lua")
+    if lua:
+        reread = subprocess.run(
+            [lua, "-e", 'assert(loadfile(os.getenv("LAYOUT_PATH")))'],
+            env=dict(os.environ, LAYOUT_PATH=layout), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        if reread.returncode:
+            shutil.copyfile(backup, layout)
+            raise Stop(f"the edited layout no longer parses as Lua; restored {backup}", 3)
+
+
+def _plugin_check() -> None:
+    cli = shutil.which("thurbox-cli")
+    if cli:
+        done = subprocess.run([cli, "plugin", "check", "--text"], capture_output=True, encoding="utf-8", errors="replace")
+        report = (done.stdout + done.stderr).rstrip("\n")
+        if done.returncode == 0:
+            print(f"{report}\n\nthurbox-cli plugin check is green. Press F3 in thurbox.")
+        else:
+            print(f"{report}\n", file=sys.stderr)
+            print(
+                "thurbox-cli plugin check is not green. The block is in, so read\n"
+                "what it says above: it names the pane it is unhappy about, which\n"
+                "may not be this one.",
+                file=sys.stderr,
+            )
+
+
 def place(side: str, dry: bool, check_only: bool, layout: str | None, pane: str) -> int:
     slot = slot_of(pane)
     layout = layout_path(layout)
@@ -171,13 +211,7 @@ def place(side: str, dry: bool, check_only: bool, layout: str | None, pane: str)
     # edit and dies at the next launch. Both are part of "a layout this recognises".
     lines = text.splitlines(keepends=True)
     anchor = next((i for i, line in enumerate(lines) if CENTER in line), None)
-    unrecognised = ""
-    if anchor is None:
-        unrecognised = 'no line placing the "center" slot in a columns list'
-    elif "panels.shown(" not in text:
-        unrecognised = "no call to panels.shown(), which the block's guard needs"
-    elif "filled(ctx," not in text:
-        unrecognised = "no filled(ctx, ...) helper, which the block calls"
+    unrecognised = _unrecognised(text, anchor)
     if unrecognised:
         print(f"Refusing to edit {layout}: it has {unrecognised}.", file=sys.stderr)
         print("That is the only shape this recognises. Your arrangement is yours — add", file=sys.stderr)
@@ -212,35 +246,14 @@ def place(side: str, dry: bool, check_only: bool, layout: str | None, pane: str)
 
     # A Lua file that no longer parses is a black screen at the next launch, and
     # it would be THIS edit's doing — so it is read back before anyone lives with it.
-    lua = shutil.which("lua")
-    if lua:
-        reread = subprocess.run(
-            [lua, "-e", 'assert(loadfile(os.getenv("LAYOUT_PATH")))'],
-            env=dict(os.environ, LAYOUT_PATH=layout), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        if reread.returncode:
-            shutil.copyfile(backup, layout)
-            raise Stop(f"the edited layout no longer parses as Lua; restored {backup}", 3)
+    _reread(layout, backup)
 
     print(f"Placed the queue pane {where}.\n\n  file:   {layout}\n  backup: {backup}\n")
 
     # The verdict that matters. Its failure is reported, never swallowed — but
     # the edit stands, since a check failing for an unrelated pane is not a
     # reason to undo this one.
-    cli = shutil.which("thurbox-cli")
-    if cli:
-        done = subprocess.run([cli, "plugin", "check", "--text"], capture_output=True, encoding="utf-8", errors="replace")
-        report = (done.stdout + done.stderr).rstrip("\n")
-        if done.returncode == 0:
-            print(f"{report}\n\nthurbox-cli plugin check is green. Press F3 in thurbox.")
-        else:
-            print(f"{report}\n", file=sys.stderr)
-            print(
-                "thurbox-cli plugin check is not green. The block is in, so read\n"
-                "what it says above: it names the pane it is unhappy about, which\n"
-                "may not be this one.",
-                file=sys.stderr,
-            )
+    _plugin_check()
     return 0
 
 

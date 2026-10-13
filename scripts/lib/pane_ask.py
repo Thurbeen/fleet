@@ -64,39 +64,47 @@ def record(answer: str) -> None:
     fleet_platform.write_record(STATE, f"{answer} {date.today().isoformat()}\n")
 
 
+def _ask() -> int:
+    if os.path.isfile(STATE):
+        with open(STATE, encoding="utf-8") as fh:
+            words = fh.read().split()
+        answer, when = (words + ["?", "?"])[:2]
+        print(f"skip: already answered ({answer}, {when})")
+        return 0
+    code, report = place_pane.check()
+    if code == 0:
+        record("placed")
+        print(f"skip: already on screen — {report}")
+    elif code == 1:
+        print(ASK)
+    else:
+        # No thurbox to name the layout, or no layout yet: nothing could be
+        # placed on a yes, so nothing is asked and nothing recorded.
+        print(f"skip: cannot tell whether the pane is placed — {report.splitlines()[0]}")
+    return 0
+
+
+def _yes(args: list[str]) -> int:
+    if len(args) > 1 or args not in ([], ["--left"], ["--right"]):
+        print("usage: fleet pane-ask yes [--left|--right]", file=sys.stderr)
+        return 2
+    code = place_pane.main(args)
+    if code == 0:
+        record("yes")
+    elif code == 3:
+        # Refused: the layout is not one place-pane can edit, and it printed
+        # the block for the operator to add. The question was still answered.
+        record("yes")
+        print("\nThe answer is recorded; the block above is yours to add.")
+    return code
+
+
 def main(argv: list[str]) -> int:
     verb = argv[0] if argv else ""
     if verb == "":
-        if os.path.isfile(STATE):
-            with open(STATE, encoding="utf-8") as fh:
-                words = fh.read().split()
-            answer, when = (words + ["?", "?"])[:2]
-            print(f"skip: already answered ({answer}, {when})")
-            return 0
-        code, report = place_pane.check()
-        if code == 0:
-            record("placed")
-            print(f"skip: already on screen — {report}")
-        elif code == 1:
-            print(ASK)
-        else:
-            # No thurbox to name the layout, or no layout yet: nothing could be
-            # placed on a yes, so nothing is asked and nothing recorded.
-            print(f"skip: cannot tell whether the pane is placed — {report.splitlines()[0]}")
-        return 0
+        return _ask()
     if verb == "yes":
-        if len(argv) > 2 or argv[1:] not in ([], ["--left"], ["--right"]):
-            print("usage: fleet pane-ask yes [--left|--right]", file=sys.stderr)
-            return 2
-        code = place_pane.main(argv[1:])
-        if code == 0:
-            record("yes")
-        elif code == 3:
-            # Refused: the layout is not one place-pane can edit, and it printed
-            # the block for the operator to add. The question was still answered.
-            record("yes")
-            print("\nThe answer is recorded; the block above is yours to add.")
-        return code
+        return _yes(argv[1:])
     if verb == "no":
         record("no")
         print("Recorded. Nothing will ask about the pane again.")
