@@ -112,7 +112,8 @@ def check_lint(fix: bool) -> str | None:
     # The rules live in pyproject.toml, so no user-level ruff config decides.
     if err := missing("ruff"):
         return err
-    return "ruff" if run(["ruff", "check", *(["--fix"] if fix else []), "fleet", "scripts", "tests"]) else None
+    flags = ["--fix"] if fix else []
+    return "ruff" if run(["ruff", "check", *flags, "fleet", "scripts", "tests"]) else None
 
 
 def check_markdown(fix: bool) -> str | None:
@@ -202,6 +203,46 @@ def listing() -> str:
     return "".join(row + "\n" for row in rows)
 
 
+def _take_jobs(argv: list[str]) -> int | None:
+    """Consume `--jobs N` from argv; None when N is not a positive integer."""
+    pos = argv.index("--jobs")
+    try:
+        jobs = int(argv[pos + 1])
+        if jobs < 1:
+            raise ValueError
+    except (IndexError, ValueError):
+        return None
+    del argv[pos:pos + 2]
+    return jobs
+
+
+def _take_partition(argv: list[str]) -> str | None:
+    """Consume `--partition I/N` from argv; None when it is not 1 <= I <= N."""
+    pos = argv.index("--partition")
+    try:
+        partition = argv[pos + 1]
+        index, count = map(int, partition.split("/"))
+        if not 1 <= index <= count:
+            raise ValueError
+    except (IndexError, ValueError):
+        return None
+    del argv[pos:pos + 2]
+    return partition
+
+
+def _run_checks(names: list[str], fix: bool, jobs: int, partition: str | None) -> list[tuple[str, str | None]]:
+    verdicts: list[tuple[str, str | None]] = []
+    for name in dict.fromkeys(n for n in names if n in STATIC):
+        verdicts.append((name, STATIC[name](fix)))
+        report(*verdicts[-1])
+    areas = list(dict.fromkeys(n for n in names if n in TESTS))
+    if areas:
+        label = "tests" if len(areas) > 1 else areas[0]
+        verdicts.append((label, check_tests(areas, jobs, partition)))
+        report(*verdicts[-1])
+    return verdicts
+
+
 def main(argv: list[str]) -> int:
     # Line-buffered, so each verdict lands after the tool output it judges.
     sys.stdout.reconfigure(line_buffering=True)
@@ -217,27 +258,16 @@ def main(argv: list[str]) -> int:
     jobs = 1 if nested else min(8, os.cpu_count() or 1)
     argv = list(argv)
     if "--jobs" in argv:
-        pos = argv.index("--jobs")
-        try:
-            jobs = int(argv[pos + 1])
-            if jobs < 1:
-                raise ValueError
-        except (IndexError, ValueError):
+        jobs = _take_jobs(argv)
+        if jobs is None:
             sys.stderr.write("fleet check: --jobs wants a positive integer\n" + usage)
             return 2
-        del argv[pos:pos + 2]
     partition = None
     if "--partition" in argv:
-        pos = argv.index("--partition")
-        try:
-            partition = argv[pos + 1]
-            index, count = map(int, partition.split("/"))
-            if not 1 <= index <= count:
-                raise ValueError
-        except (IndexError, ValueError):
+        partition = _take_partition(argv)
+        if partition is None:
             sys.stderr.write("fleet check: --partition wants I/N with 1 <= I <= N\n" + usage)
             return 2
-        del argv[pos:pos + 2]
     fix = "--fix" in argv
     names = [a for a in argv if a != "--fix"] or everything
     unknown = [n for n in names if n not in STATIC and n not in TESTS]
@@ -245,15 +275,7 @@ def main(argv: list[str]) -> int:
         sys.stderr.write(f"fleet check: no check named {', '.join(unknown)}\n{usage}")
         return 2
 
-    verdicts: list[tuple[str, str | None]] = []
-    for name in dict.fromkeys(n for n in names if n in STATIC):
-        verdicts.append((name, STATIC[name](fix)))
-        report(*verdicts[-1])
-    areas = list(dict.fromkeys(n for n in names if n in TESTS))
-    if areas:
-        label = "tests" if len(areas) > 1 else areas[0]
-        verdicts.append((label, check_tests(areas, jobs, partition)))
-        report(*verdicts[-1])
+    verdicts = _run_checks(names, fix, jobs, partition)
     failed = [name for name, err in verdicts if err]
     if failed:
         print(f"\033[31mFAIL\033[0m  {len(failed)} of {len(verdicts)}: {' '.join(failed)}", file=sys.stderr)

@@ -83,6 +83,25 @@ def local(url: str) -> str | None:
     return url.split("#", 1)[0].split("?", 1)[0] or None
 
 
+def _scan_elements(path: str, root: ET.Element, name, problems: list[str]) -> tuple[int, list[str]]:
+    """Append what loads or links out to `problems`; return the count of
+    worded <text> elements and every <style> body."""
+    words = 0
+    styles = []
+    for el in root.iter():
+        tag = name(el)
+        if tag in ("image", "script", "foreignObject"):
+            problems.append(f"{path}: contains <{tag}>; the diagram must load nothing")
+        for attr, value in el.attrib.items():
+            if attr.rsplit("}", 1)[-1] == "href" and not value.startswith("#"):
+                problems.append(f"{path}: <{tag}> links out to {value!r}")
+        if tag == "text" and "".join(el.itertext()).strip():
+            words += 1
+        if tag == "style":
+            styles.append(el.text or "")
+    return words, styles
+
+
 def check_svg(path: str) -> list[str]:
     problems = []
     size = os.path.getsize(path)
@@ -101,19 +120,7 @@ def check_svg(path: str) -> list[str]:
     if not root.get("viewBox"):
         problems.append(f"{path}: <svg> has no viewBox, so it cannot scale")
 
-    words = 0
-    styles = []
-    for el in root.iter():
-        tag = name(el)
-        if tag in ("image", "script", "foreignObject"):
-            problems.append(f"{path}: contains <{tag}>; the diagram must load nothing")
-        for attr, value in el.attrib.items():
-            if attr.rsplit("}", 1)[-1] == "href" and not value.startswith("#"):
-                problems.append(f"{path}: <{tag}> links out to {value!r}")
-        if tag == "text" and "".join(el.itertext()).strip():
-            words += 1
-        if tag == "style":
-            styles.append(el.text or "")
+    words, styles = _scan_elements(path, root, name, problems)
 
     if words == 0:
         problems.append(f"{path}: no <text> with words in it; text must stay text")
@@ -160,6 +167,31 @@ def paints_backdrop(root: ET.Element, name, css: str) -> bool:
     return False
 
 
+def _markdown_problems(md: str, tracked: set[str]) -> list[str]:
+    problems = []
+    # Resolved as git names paths, with forward slashes on every OS: an
+    # os.path join on Windows gives backslashes, which match no tracked path.
+    base = posixpath.dirname(md.replace(os.sep, "/"))
+    with open(md, encoding="utf-8") as f:
+        text = f.read()
+    svgs = []
+    for url, is_image in targets(text):
+        rel = local(url)
+        if rel is None:
+            continue
+        path = posixpath.normpath(posixpath.join(base, rel))
+        if path not in tracked:
+            problems.append(f"{md}: links to {url!r}, which is not a tracked file")
+            continue
+        if is_image and path.lower().endswith(".svg"):
+            svgs.append(path)
+    if os.path.basename(md) == "README.md" and not svgs:
+        problems.append(f"{md}: embeds no SVG diagram; the README opens with one")
+    for svg in dict.fromkeys(svgs):
+        problems.extend(check_svg(svg))
+    return problems
+
+
 def main(argv: list[str]) -> int:
     if not argv:
         sys.stderr.write(__doc__.split("Usage: ", 1)[1])
@@ -167,26 +199,7 @@ def main(argv: list[str]) -> int:
     tracked = tracked_paths()
     problems = []
     for md in argv:
-        # Resolved as git names paths, with forward slashes on every OS: an
-        # os.path join on Windows gives backslashes, which match no tracked path.
-        base = posixpath.dirname(md.replace(os.sep, "/"))
-        with open(md, encoding="utf-8") as f:
-            text = f.read()
-        svgs = []
-        for url, is_image in targets(text):
-            rel = local(url)
-            if rel is None:
-                continue
-            path = posixpath.normpath(posixpath.join(base, rel))
-            if path not in tracked:
-                problems.append(f"{md}: links to {url!r}, which is not a tracked file")
-                continue
-            if is_image and path.lower().endswith(".svg"):
-                svgs.append(path)
-        if os.path.basename(md) == "README.md" and not svgs:
-            problems.append(f"{md}: embeds no SVG diagram; the README opens with one")
-        for svg in dict.fromkeys(svgs):
-            problems.extend(check_svg(svg))
+        problems.extend(_markdown_problems(md, tracked))
     for p in problems:
         print(p, file=sys.stderr)
     return 1 if problems else 0

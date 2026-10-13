@@ -43,7 +43,7 @@ MATRIX_REF = re.compile(r"\$\{\{\s*matrix\.([A-Za-z0-9_.-]+)\s*\}\}")
 # Where the gate's own words end and the next command begins, so a step that
 # chains or redirects one is read for what it runs the gate with — not for
 # `echo`, and not for the `2` in `2>&1`.
-CHAINED = re.compile(r"&&|\|\||;|\||\d*>>?")
+CHAINED = re.compile(r"&&|\|\||;|\||(?<!\d)\d*>>?")
 
 
 def problems(path: str) -> list[str]:
@@ -70,9 +70,14 @@ def problems(path: str) -> list[str]:
     if not any("windows-latest" in runner.split() for job in jobs.values() for runner in runners(job)):
         found.append(f"{path}: no job runs on windows-latest")
 
+    return found + _coverage_problems(path, jobs)
+
+
+def _coverage_problems(path: str, jobs: dict) -> list[str]:
+    """Promise 4: the gate's names cover every check, per runner, and invent none."""
     every = check_names()
     named, partitions = gate_names(jobs, every)
-    found += [f"{path}: {error}" for error in partitions]
+    found = [f"{path}: {error}" for error in partitions]
     if named is not None:
         for runner, names in sorted(named.items()):
             found += [f"{path}: nothing runs `fleet check {n}` on {runner}" for n in every if n not in names]
@@ -132,44 +137,63 @@ def gate_names(jobs: dict, every: list[str]) -> tuple[dict[str, set] | None, lis
     slices: dict[tuple[str, str], dict[int, set[int]]] = {}
     errors = []
     for job in jobs.values():
-        matrix = (job.get("strategy") or {}).get("matrix") or {}
-        for step in job.get("steps") or []:
-            run = step.get("run") if isinstance(step, dict) else None
-            for line in (run or "").splitlines():
-                _, gate, rest = line.partition("fleet check")
-                if not gate:
-                    continue
-                for text in expand(CHAINED.split(rest)[0], matrix):
-                    words = text.split()
-                    index, count = 1, 1
-                    for flag in ("--jobs", "--partition"):
-                        if flag not in words:
-                            continue
-                        pos = words.index(flag)
-                        try:
-                            value = words[pos + 1]
-                            if flag == "--partition":
-                                index, count = map(int, value.split("/"))
-                                if not 1 <= index <= count:
-                                    raise ValueError
-                            elif int(value) < 1:
-                                raise ValueError
-                        except (IndexError, ValueError):
-                            errors.append(f"invalid {flag} in `fleet check{text}`")
-                            break
-                        del words[pos:pos + 2]
-                    else:
-                        words = [w for w in words if not w.startswith("-")] or every
-                        for runner in runners(job):
-                            named.setdefault(runner, set())
-                            for area in words:
-                                slices.setdefault((runner, area), {}).setdefault(count, set()).add(index)
+        for text in _gate_texts(job):
+            parsed = _gate_words(text, every)
+            if isinstance(parsed, str):
+                errors.append(f"invalid {parsed} in `fleet check{text}`")
+                continue
+            words, index, count = parsed
+            for runner in runners(job):
+                named.setdefault(runner, set())
+                for area in words:
+                    slices.setdefault((runner, area), {}).setdefault(count, set()).add(index)
+    _mark_complete(slices, named, errors)
+    return named or None, errors
+
+
+def _gate_texts(job: dict):
+    """What each `fleet check` call in this job's steps passes it, once per
+    matrix value it expands to."""
+    matrix = (job.get("strategy") or {}).get("matrix") or {}
+    for step in job.get("steps") or []:
+        run = step.get("run") if isinstance(step, dict) else None
+        for line in (run or "").splitlines():
+            _, gate, rest = line.partition("fleet check")
+            if not gate:
+                continue
+            yield from expand(CHAINED.split(rest)[0], matrix)
+
+
+def _gate_words(text: str, every: list[str]) -> tuple[list[str], int, int] | str:
+    """The areas one call names, and its partition I/N (1/1 when none); the
+    flag itself when its value is invalid."""
+    words = text.split()
+    index, count = 1, 1
+    for flag in ("--jobs", "--partition"):
+        if flag not in words:
+            continue
+        pos = words.index(flag)
+        try:
+            value = words[pos + 1]
+            if flag == "--partition":
+                index, count = map(int, value.split("/"))
+                if not 1 <= index <= count:
+                    raise ValueError
+            elif int(value) < 1:
+                raise ValueError
+        except (IndexError, ValueError):
+            return flag
+        del words[pos:pos + 2]
+    return [w for w in words if not w.startswith("-")] or every, index, count
+
+
+def _mark_complete(slices: dict, named: dict[str, set], errors: list[str]) -> None:
+    """Credit an area to a runner only when one N has every slice 1..N there."""
     for (runner, area), counts in slices.items():
         if any(indices == set(range(1, count + 1)) for count, indices in counts.items()):
             named[runner].add(area)
         else:
             errors.append(f"incomplete partitions for `fleet check {area}` on {runner}")
-    return named or None, errors
 
 
 def runners(job: dict) -> list[str]:
