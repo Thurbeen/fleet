@@ -580,6 +580,25 @@ def stale_message(pending: dict) -> str:
     )
 
 
+def _with_report(pending: dict, text: str) -> dict:
+    """The pending notice with sync-checkout's --json report folded in, if it has news."""
+    try:
+        report = json.loads(text or "{}")
+    except ValueError:
+        report = {}
+    if isinstance(report, dict) and report.get("actions"):
+        return merge(pending, report)
+    return pending
+
+
+def _held(name: str, sid: str, status: str) -> str:
+    """Why a line may not be typed into this session now, or '' when it may."""
+    held = f"{name} is {status}" if status not in AT_REST else ""
+    if not held and not composer_empty(sid):
+        held = f"{name}'s input line is not provably empty"
+    return held
+
+
 def stale(state_dir: str, text: str) -> int:
     """Tell the lead the checkout moved under it, once.
 
@@ -594,14 +613,8 @@ def stale(state_dir: str, text: str) -> int:
     has nothing left to say, so a notice dropped here is lost for good. A fleet
     with no lead configured has nobody to tell, and drops it.
     """
-    try:
-        report = json.loads(text or "{}")
-    except ValueError:
-        report = {}
     doc = read_stale(state_dir)
-    pending = doc.get("pending") or {}
-    if isinstance(report, dict) and report.get("actions"):
-        pending = merge(pending, report)
+    pending = _with_report(doc.get("pending") or {}, text)
     if not pending:
         return 0
 
@@ -619,9 +632,7 @@ def stale(state_dir: str, text: str) -> int:
     if not sid:
         return wait(f"the checkout moved, but {status}; the notice waits")
     line = stale_message(pending)
-    held = f"{name} is {status}" if status not in AT_REST else ""
-    if not held and not composer_empty(sid):
-        held = f"{name}'s input line is not provably empty"
+    held = _held(name, sid, status)
     if held:
         if not pending.get("posted"):
             pending["posted"] = post(sid, line, kind="fleet-stale")[0]
@@ -664,22 +675,9 @@ def main(argv: list) -> int:
     if args.stale:
         return stale(args.state_dir, sys.stdin.read())
 
-    try:
-        plan = json.loads(sys.stdin.read() or "{}")
-    except (json.JSONDecodeError, ValueError):
+    everything = _plan_sets(sys.stdin.read())
+    if everything is None:
         return 0
-    if not isinstance(plan, dict):
-        return 0
-    ready = sorted(str(r) for r in (plan.get("ready") or []))
-    # `plan` writes a row per stalled, unprompted or asking task; a bare ref is
-    # read as one too.
-    stalled, unprompted, asking = (
-        sorted(str(r.get("task") if isinstance(r, dict) else r) for r in (plan.get(key) or []))
-        for key in ("stalled", "unprompted", "needs_input")
-    )
-    reviews = sorted(str(r.get("task")) for r in (plan.get("reviews") or []) if isinstance(r, dict))
-    everything = {"told": ready, "stalled": stalled, "unprompted": unprompted,
-                  "needs_input": asking, "reviews": reviews}
 
     # WHOSE NOTICE IT IS. A task whose origin matches an `owners.conf` rule is
     # that session's to be told of; every other task — no origin, no match, no
@@ -702,11 +700,8 @@ def main(argv: list) -> int:
     # weeks ago.
     state = read_state(args.state_dir)
 
-    def recalled(doc, now):
-        return {k: [r for r in (doc.get(k) or []) if r in now[k]] for k in MEMORY}
-
     now = now_for(None)
-    memory = recalled(state, now)
+    memory = _recalled(state, now)
     memory["lead"] = state.get("lead")
     notes = []
 
@@ -718,6 +713,36 @@ def main(argv: list) -> int:
     memory, note = deliver(now, memory, lead, "no lead session is configured")
     notes.append(note)
 
+    memory["owners"] = _deliver_owners(rules, state, now_for, held, notes)
+    return say(args.state_dir, memory, "; ".join(n for n in notes if n))
+
+
+def _plan_sets(text: str) -> dict | None:
+    """The five sets `plan --json` names, or None for a plan that is not one."""
+    try:
+        plan = json.loads(text or "{}")
+    except ValueError:
+        return None
+    if not isinstance(plan, dict):
+        return None
+    ready = sorted(str(r) for r in (plan.get("ready") or []))
+    # `plan` writes a row per stalled, unprompted or asking task; a bare ref is
+    # read as one too.
+    stalled, unprompted, asking = (
+        sorted(str(r.get("task") if isinstance(r, dict) else r) for r in (plan.get(key) or []))
+        for key in ("stalled", "unprompted", "needs_input")
+    )
+    reviews = sorted(str(r.get("task")) for r in (plan.get("reviews") or []) if isinstance(r, dict))
+    return {"told": ready, "stalled": stalled, "unprompted": unprompted,
+            "needs_input": asking, "reviews": reviews}
+
+
+def _recalled(doc: dict, now: dict) -> dict:
+    return {k: [r for r in (doc.get(k) or []) if r in now[k]] for k in MEMORY}
+
+
+def _deliver_owners(rules: list, state: dict, now_for, held: set, notes: list) -> dict:
+    """Tell each owner session its share, appending each note; every owner's memory now."""
     # Each owner is a recipient of its own, with a memory of its own: what the
     # lead was told is no news to them, nor theirs to the lead.
     owners_state = state.get("owners") if isinstance(state.get("owners"), dict) else {}
@@ -733,16 +758,16 @@ def main(argv: list) -> int:
             continue
         if lead_id is None:
             lead_id = str((lead_row(lead_name())[0] or {}).get("id") or "") if lead_name() else ""
-        mine = recalled(owners_state.get(prefix) or {}, now)
+        mine = _recalled(owners_state.get(prefix) or {}, now)
         mine["lead"] = (owners_state.get(prefix) or {}).get("lead")
         mine, note = deliver(
-            now, mine, lambda: (substring, *owner_row(substring, held, lead_id)),
+            now, mine,
+            lambda substring=substring, lead_id=lead_id: (substring, *owner_row(substring, held, lead_id)),
             "no session is configured")
         owners_memory[prefix] = {k: mine.get(k) or [] for k in MEMORY} | (
             {"lead": mine["lead"]} if mine.get("lead") else {})
         notes.append(note)
-    memory["owners"] = owners_memory
-    return say(args.state_dir, memory, "; ".join(n for n in notes if n))
+    return owners_memory
 
 
 # Each set, in the order its news is spoken: (typed, posted, line, what, word).
@@ -779,6 +804,25 @@ def ownership(rules: list, refs: set) -> tuple[dict, set]:
     return owned, held
 
 
+def _post_once(sid: str, line: str, parts: list, now: dict, memory: dict) -> bool:
+    """Post the line to a recipient that may not be woken; whether all its news is noted."""
+    # The note is posted on its own transition, so a lead busy for an hour
+    # finds one line per change in its mailbox and not one per pass.
+    unposted = [
+        r for told, posted, _ in parts for r in now[told]
+        if r not in memory[told] and r not in memory[posted]
+    ]
+    if unposted:
+        sent, _why = post(sid, line)
+        if sent:
+            for _, posted, _text in parts:
+                memory[posted] = now[posted]
+    return all(
+        r in memory[posted] for told, posted, _ in parts
+        for r in now[told] if r not in memory[told]
+    )
+
+
 def deliver(now: dict, memory: dict, resolve, unnamed: str) -> tuple[dict, str]:
     """Tell ONE recipient what is news to it: (its memory now, the note to log).
 
@@ -809,26 +853,9 @@ def deliver(now: dict, memory: dict, resolve, unnamed: str) -> tuple[dict, str]:
     parts = [(told, posted, say_it(now[told])) for told, posted, say_it, _w, _n in news]
     line = " ".join(text for _, _, text in parts)
 
-    held = f"{name} is {status}" if status not in AT_REST else ""
-    if not held and not composer_empty(sid):
-        held = f"{name}'s input line is not provably empty"
+    held = _held(name, sid, status)
     if held:
-        # The note is posted on its own transition, so a lead busy for an hour
-        # finds one line per change in its mailbox and not one per pass.
-        unposted = [
-            r for told, posted, _ in parts for r in now[told]
-            if r not in memory[told] and r not in memory[posted]
-        ]
-        if unposted:
-            sent, _why = post(sid, line)
-            if sent:
-                for _, posted, _text in parts:
-                    memory[posted] = now[posted]
-        noted = all(
-            r in memory[posted] for told, posted, _ in parts
-            for r in now[told] if r not in memory[told]
-        )
-        where = " — noted in its inbox" if noted else ""
+        where = " — noted in its inbox" if _post_once(sid, line, parts, now, memory) else ""
         return memory, f"{what}; {held}{where}; the wake waits"
 
     sent, why = wake(sid, line)

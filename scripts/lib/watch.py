@@ -101,6 +101,18 @@ class Clock:
         return f"{s // 60}m{s % 60:02d}s" if s >= 60 else f"{s}s"
 
 
+def _say_pipeline(ref, p, jobs: dict, verdict):
+    """Say each job and the pipeline whose verdict moved; the pipeline's verdict now."""
+    for job in p.jobs:
+        name = one_line(job.name) or f"job {job.id}"
+        if jobs.get(name) != job.verdict:
+            say(f"{ref.url}  {name}: {job.verdict}")
+            jobs[name] = job.verdict
+    if p.verdict != verdict:
+        say(f"{ref.url}  pipeline: {p.verdict}")
+    return p.verdict
+
+
 def watch_pipeline(which, ref, clock: Clock) -> tuple:
     """(verdict | 'timeout', the last Pipeline read or None)."""
     jobs: dict = {}
@@ -113,14 +125,7 @@ def watch_pipeline(which, ref, clock: Clock) -> tuple:
                 why_seen = why
         else:
             why_seen, last = "", p
-            for job in p.jobs:
-                name = one_line(job.name) or f"job {job.id}"
-                if jobs.get(name) != job.verdict:
-                    say(f"{ref.url}  {name}: {job.verdict}")
-                    jobs[name] = job.verdict
-            if p.verdict != verdict:
-                say(f"{ref.url}  pipeline: {p.verdict}")
-                verdict = p.verdict
+            verdict = _say_pipeline(ref, p, jobs, verdict)
             if p.verdict in PIPELINE_DONE:
                 return p.verdict, p
         if clock.expired():
@@ -147,6 +152,18 @@ def cr_outcome(cr, until: str, graced: bool = False) -> str:
     return "checks passed" if verdicts == {"passed"} else "checks failed"
 
 
+def _read_change(which, ref, until: str, clock: Clock, grace: float, seen: dict) -> tuple:
+    """Read one change request and say it if it moved: (outcome or '', the ChangeRequest)."""
+    cr, why = which.get(ref)
+    line = fleetqueue.live_summary(cr) if cr else f"could not read: {why}"
+    name = cr.name if cr else ref.url
+    if seen.get(ref.url) != line:
+        say(f"{name}  {line}")
+        seen[ref.url] = line
+    graced = time.monotonic() - clock.start >= grace
+    return (cr_outcome(cr, until, graced) if cr else ""), cr
+
+
 def watch_changes(pairs: list, until: str, clock: Clock, grace: float = 0.0) -> dict:
     """url -> (outcome | 'timeout', the last ChangeRequest read or None)."""
     seen: dict = {}
@@ -155,14 +172,7 @@ def watch_changes(pairs: list, until: str, clock: Clock, grace: float = 0.0) -> 
         for which, ref in pairs:
             if ref.url in done:
                 continue
-            cr, why = which.get(ref)
-            line = fleetqueue.live_summary(cr) if cr else f"could not read: {why}"
-            name = cr.name if cr else ref.url
-            if seen.get(ref.url) != line:
-                say(f"{name}  {line}")
-                seen[ref.url] = line
-            graced = time.monotonic() - clock.start >= grace
-            outcome = cr_outcome(cr, until, graced) if cr else ""
+            outcome, cr = _read_change(which, ref, until, clock, grace, seen)
             if outcome:
                 done[ref.url] = (outcome, cr)
         if len(done) == len(pairs):
@@ -172,60 +182,77 @@ def watch_changes(pairs: list, until: str, clock: Clock, grace: float = 0.0) -> 
         clock.wait()
 
 
+def _merge_pipelines(which, cr, clock: Clock):
+    """The pipelines on a merge commit once there are any, or None on a timeout."""
+    why_seen = None
+    while True:
+        refs, why = which.pipelines_for_commit(cr.repo, cr.merge_sha)
+        if refs:
+            return refs
+        if why != why_seen:
+            say(f"{cr.name}  could not list the pipelines of {cr.merge_sha[:12]}: {why}" if why
+                else f"{cr.name}  no pipeline on {cr.merge_sha[:12]} yet; waiting for one")
+            why_seen = why
+        if clock.expired():
+            return None
+        clock.wait()
+
+
+def _say_job_logs(which, ref, p, match: re.Pattern) -> None:
+    """Every line of a finished job's log that `match` finds."""
+    for job in (p.jobs if p else []):
+        if job.verdict not in ("passed", "failed"):
+            continue
+        text, why = which.job_log(ref, job)
+        if why:
+            say(f"{ref.url}  {one_line(job.name)}: log not read — {why}")
+        for raw in text.splitlines():
+            line = one_line(raw.rsplit("\t", 1)[-1])
+            if match.search(line):
+                say(f"{ref.url}  {one_line(job.name)}: {line}")
+
+
 def follow(which, cr, match: re.Pattern, clock: Clock) -> str:
     """From a merge to the base branch's pipeline, and what its jobs' logs said."""
     if not cr.merge_sha:
         say(f"{cr.name}  merged, but the forge named no merge commit: nothing to follow")
         return "merged"
-    refs, why_seen = [], None
-    while not refs:
-        refs, why = which.pipelines_for_commit(cr.repo, cr.merge_sha)
-        if not refs and why != why_seen:
-            say(f"{cr.name}  could not list the pipelines of {cr.merge_sha[:12]}: {why}" if why
-                else f"{cr.name}  no pipeline on {cr.merge_sha[:12]} yet; waiting for one")
-            why_seen = why
-        if refs:
-            break
-        if clock.expired():
-            return "timeout"
-        clock.wait()
+    refs = _merge_pipelines(which, cr, clock)
+    if refs is None:
+        return "timeout"
     worst = "passed"
     for ref in refs:
         say(f"{cr.name}  following {cr.merge_sha[:12]} on {cr.base_branch or 'the base branch'}: {ref.url}")
         verdict, p = watch_pipeline(which, ref, clock)
-        for job in (p.jobs if p else []):
-            if job.verdict not in ("passed", "failed"):
-                continue
-            text, why = which.job_log(ref, job)
-            if why:
-                say(f"{ref.url}  {one_line(job.name)}: log not read — {why}")
-            for raw in text.splitlines():
-                line = one_line(raw.rsplit("\t", 1)[-1])
-                if match.search(line):
-                    say(f"{ref.url}  {one_line(job.name)}: {line}")
+        _say_job_logs(which, ref, p, match)
         if verdict != "passed":
             worst = verdict
     return worst
 
 
+def _resolve_task(target: str) -> tuple:
+    """A task ref's recorded change requests, as `resolve` answers them."""
+    try:
+        task = fleetqueue.Queue(fleetqueue.queue_root(), scope="all").get(target)
+    except fleetqueue.QueueError as exc:
+        return None, str(exc).splitlines()[0]
+    pairs, reasons = [], []
+    for entry in fleetqueue.recorded_artifacts(task):
+        which, ref = forge.for_url(str(entry.get("url") or ""))
+        if which is None:
+            reasons.append(f"{entry.get('url')}: {ref}")
+        else:
+            pairs.append((which, ref))
+    if not pairs:
+        return None, f"{task.ref} records no change request fleet can ask about" + (
+            f" ({'; '.join(reasons)})" if reasons else "")
+    return "changes", pairs
+
+
 def resolve(target: str) -> tuple:
     """('pipeline', [(forge, PipelineRef)]) | ('changes', [(forge, ChangeRef)]), or (None, why)."""
     if "://" not in target:
-        try:
-            task = fleetqueue.Queue(fleetqueue.queue_root(), scope="all").get(target)
-        except fleetqueue.QueueError as exc:
-            return None, str(exc).splitlines()[0]
-        pairs, reasons = [], []
-        for entry in fleetqueue.recorded_artifacts(task):
-            which, ref = forge.for_url(str(entry.get("url") or ""))
-            if which is None:
-                reasons.append(f"{entry.get('url')}: {ref}")
-            else:
-                pairs.append((which, ref))
-        if not pairs:
-            return None, f"{task.ref} records no change request fleet can ask about" + (
-                f" ({'; '.join(reasons)})" if reasons else "")
-        return "changes", pairs
+        return _resolve_task(target)
     which, ref = forge.for_pipeline(target)
     if which is not None:
         return "pipeline", [(which, ref)]
@@ -261,29 +288,39 @@ def main(argv: list) -> int:
     clock = Clock(args.timeout, args.interval)
     try:
         if kind == "pipeline":
-            which, ref = pairs[0]
-            verdict, p = watch_pipeline(which, ref, clock)
-            bad = [one_line(j.name) for j in (p.jobs if p else []) if j.verdict in ("failed", "cancelled", "manual")]
-            return finish(ref.url, verdict, clock, last=p.verdict if p else "nothing read", bad=bad)
-        until = "merged" if args.follow else args.until
-        results = watch_changes(pairs, until, clock, args.grace)
-        outcomes = []
-        for which, ref in pairs:
-            outcome, cr = results[ref.url]
-            if args.follow and outcome == "merged":
-                outcome = follow(which, cr, match, clock)
-            outcomes.append(outcome)
-            if len(pairs) > 1:
-                say(f"{cr.name if cr else ref.url}  {outcome}")
-        # A real verdict first, then a timeout, then "no check reported": one
-        # change request closed or red beside one still running, or one with no
-        # CI at all, is a failure, said as one.
-        weak = ("timeout", NO_CHECKS)
-        overall = (next((o for o in outcomes if o not in SUCCESS and o not in weak), None)
-                   or next((o for w in weak for o in outcomes if o == w), outcomes[0]))
-        return finish(args.target, overall, clock)
+            return _main_pipeline(pairs[0], clock)
+        return _main_changes(args, pairs, match, clock)
     except KeyboardInterrupt:
         return 130
+
+
+def _main_pipeline(pair: tuple, clock: Clock) -> int:
+    """`main` for a pipeline URL."""
+    which, ref = pair
+    verdict, p = watch_pipeline(which, ref, clock)
+    bad = [one_line(j.name) for j in (p.jobs if p else []) if j.verdict in ("failed", "cancelled", "manual")]
+    return finish(ref.url, verdict, clock, last=p.verdict if p else "nothing read", bad=bad)
+
+
+def _main_changes(args, pairs: list, match: re.Pattern, clock: Clock) -> int:
+    """`main` for change requests: a URL's, or every one a task records."""
+    until = "merged" if args.follow else args.until
+    results = watch_changes(pairs, until, clock, args.grace)
+    outcomes = []
+    for which, ref in pairs:
+        outcome, cr = results[ref.url]
+        if args.follow and outcome == "merged":
+            outcome = follow(which, cr, match, clock)
+        outcomes.append(outcome)
+        if len(pairs) > 1:
+            say(f"{cr.name if cr else ref.url}  {outcome}")
+    # A real verdict first, then a timeout, then "no check reported": one
+    # change request closed or red beside one still running, or one with no
+    # CI at all, is a failure, said as one.
+    weak = ("timeout", NO_CHECKS)
+    overall = (next((o for o in outcomes if o not in SUCCESS and o not in weak), None)
+               or next((o for w in weak for o in outcomes if o == w), outcomes[0]))
+    return finish(args.target, overall, clock)
 
 
 def finish(label: str, verdict: str, clock: Clock, last: str = "", bad: list | None = None) -> int:
