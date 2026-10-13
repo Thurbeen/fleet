@@ -721,13 +721,13 @@ def main(argv: list) -> int:
     # lead was told is no news to them, nor theirs to the lead.
     owners_state = state.get("owners") if isinstance(state.get("owners"), dict) else {}
     owners_memory = {}
-    lead_id = ""
-    if rules:
-        lead_id = str((lead_row(lead_name())[0] or {}).get("id") or "") if lead_name() else ""
+    lead_id = None
     for prefix, substring in rules:
         now = now_for(prefix)
         if not any(now[k] for k in TYPED):
             continue
+        if lead_id is None:
+            lead_id = str((lead_row(lead_name())[0] or {}).get("id") or "") if lead_name() else ""
         mine = recalled(owners_state.get(prefix) or {}, now)
         mine["lead"] = (owners_state.get(prefix) or {}).get("lead")
         mine, note = deliver(

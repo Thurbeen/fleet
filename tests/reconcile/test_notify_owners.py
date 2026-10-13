@@ -167,3 +167,12 @@ def test_the_tracked_owners_example_names_nobody():
     text = (REPO / "orchestration" / "owners.example.conf").read_text(encoding="utf-8")
     live = [line for line in text.splitlines() if line.split("#", 1)[0].strip()]
     assert live == [], f"owners.example.conf names an owner; the tracked copy must name none: {live}"
+
+
+def test_rules_with_nothing_to_tell_ask_thurbox_nothing(stubs, tmp_path):
+    conf("chat: = Concierge\n")
+    session(stubs, "lead", LEAD, "lead-id", cwd=str(REPO))
+    notify(tmp_path, [])
+    assert not stubs.calls("thurbox-cli", "session list"), "an idle pass polled the session list"
+    notify(tmp_path, [task("plain")])
+    assert len(stubs.calls("thurbox-cli", "session list")) == 1, "an unowned notice polled for an owner"
