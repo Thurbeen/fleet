@@ -145,6 +145,16 @@ THE RUN LOG IS PRODUCED, NOT REMEMBERED. `topic add` opens
 the lead's and never written again. `run` is that refresh made explicit, and
 `run --all` reaches archived topics too.
 
+`find` IS THE STABLE READ FOR ANOTHER PROGRAM, so its shape is a contract:
+
+  uv run fleet queue find --origin STR --json
+      # a JSON list, one object per task whose `origin` equals STR exactly and
+      # whose `session` is recorded and not terminal (not landed or abandoned,
+      # not reaped): [{"ref": "topic/01-slug", "state": "dispatched",
+      # "session": "<thurbox session id>", "host": null | "<host name>"}],
+      # sorted by ref. `[]` and exit 0 when there are none. Read-only; whether
+      # thurbox still lists the session is the caller's to ask.
+
 Usage:
   uv run fleet queue topic add <slug> --title T --prompt 'the ask'   # or --prompt-file F|-
                        [--by PERSON]  # who asked, as free text: written to
@@ -170,6 +180,16 @@ Usage:
                        [--publish attested|pr|push|note|served|none]
                        [--target U]
                        [--how 'run `/publish`']
+                       [--origin STR] [--reply CMD]
+                       # --origin says who OWNS the task's conversation and
+                       # --reply is the command a worker runs to speak to them:
+                       # two opaque strings, stored as `origin` and `reply`,
+                       # shown by `show`, checked as text by `check`, and
+                       # parsed by nothing. `reply` also adds one fixed section
+                       # to the brief (verdict, PR URL, every question BEFORE
+                       # `declare needs-input`); with none the brief is
+                       # unchanged. `owners.conf` routes a matching origin's
+                       # reconciler notices to another session (notify_lead.py).
                        # --brief-file fills whichever of the brief's four
                        # sections its own `## ` headings name; a body with no
                        # headings all goes into `What to do`. A file that
@@ -2585,6 +2605,11 @@ def cmd_add(args) -> int:
         "touches": [s.strip() for s in (args.touches or "").split(",") if s.strip()],
         # Who asked for this work, as free text; displayed and never acted on.
         "requested_by": requested_by,
+        # Who OWNS the conversation, and how a worker speaks to them. Opaque
+        # strings: fleet matches `origin` against `owners.conf` and `find`, and
+        # renders `reply` into the brief, and parses neither.
+        "origin": (args.origin or "").strip() or None,
+        "reply": (args.reply or "").strip() or None,
         # What this task must PRODUCE, and — as free text nothing ever parses —
         # what the operator calls the tool that produces it.
         "publish": {"method": method, "how": how},
@@ -2706,6 +2731,7 @@ def render_brief(task: Task, topic: dict, body: str | None) -> str:
         operator_ref = f"`{operator_path()}`"
     operator_line = f"\n- **Operator's standing instructions.** {operator_ref}" if has_operator else ""
     memory_line = remote_context_line() if host else context_lines(task) + declare_lines(task)
+    reply_section = reply_lines(d.get("reply"))
     operator_note = (
         "\n\nRead the operator's file too. It is how this operator wants work done\n"
         "across every task, and it ADDS to this brief without replacing anything in\n"
@@ -2805,7 +2831,7 @@ merges it, the gate to run before you push, and what the other workers running
 beside you mean for you. This brief does not override it.{operator_note}
 
 {sections}
-
+{reply_section}
 ## Reporting back — write a file, do not send mail
 
 When you are finished, or when you have concluded you cannot finish, write:
@@ -2828,6 +2854,27 @@ A short paragraph: what you actually did, and anything the lead must know.
 That file is what closes this task, and the policy's last section says why it,
 and not a message, is what does it.
 {result_note}"""
+
+
+def reply_lines(reply) -> str:
+    """The brief's section for a task with a reply command, or nothing at all.
+
+    Fixed text: the command is the operator's, and fleet runs and parses none of
+    it. A task without one renders no section, so its brief is what it was.
+    """
+    cmd = str(reply or "").strip()
+    if not cmd:
+        return ""
+    return f"""
+## Replying to the requester
+
+Post with `{cmd} '<text>'` (or `--file <path>`):
+
+- your verdict, once `result.md` is written;
+- the pull request URL, as soon as one is open and ready for review;
+- every question, BEFORE you run `fleet queue declare ... needs-input`. A
+  person answers in the thread and the answer reaches this session.
+"""
 
 
 def context_repo(task: Task) -> str:
@@ -8852,6 +8899,52 @@ def integration_branches(root: str | None = None) -> dict[str, str]:
     return out
 
 
+# --- owners: whose conversation a task's notices belong to -------------------
+#
+# The operator's copy is `orchestration/owners.conf`; the tracked example names
+# none. One rule per line, `<origin-prefix> = <session-name substring>`: a task
+# whose `origin` starts with the prefix has its reconciler notices delivered to
+# the session whose name contains the substring, instead of to this checkout's
+# lead. Both sides are opaque text; `notify_lead.py` owns the delivery.
+
+OWNERS_CONF = "orchestration/owners.conf"
+OWNERS_CONF_DEFAULTS = "orchestration/owners.example.conf"
+
+
+def owner_rules(root: str | None = None) -> list[tuple[str, str]]:
+    """[(origin prefix, session-name substring)], longest prefix first.
+
+    A line with no `=`, or an empty side, is refused out loud: silence would
+    read as a task that has no owner on purpose.
+    """
+    root = root or os.environ.get("FLEET_OWNERS_ROOT") or checkout_root()
+    path = conf_path(OWNERS_CONF, OWNERS_CONF_DEFAULTS, root)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            lines = [line.partition("#")[0].strip() for line in fh]
+    except OSError:
+        return []
+    out: list[tuple[str, str]] = []
+    for entry in filter(None, lines):
+        prefix, _, name = (part.strip() for part in entry.partition("="))
+        if not prefix or not name:
+            print(
+                f"{path}: ignoring {entry!r} — an owners entry must be "
+                "ORIGIN-PREFIX = SESSION-NAME-SUBSTRING",
+                file=sys.stderr,
+            )
+            continue
+        out.append((prefix, name))
+    return sorted(out, key=lambda rule: -len(rule[0]))
+
+
+def owner_of(origin, rules: list[tuple[str, str]]) -> tuple[str, str] | None:
+    """The rule whose prefix `origin` starts with (the longest), or None."""
+    if not isinstance(origin, str):
+        return None
+    return next((rule for rule in rules if origin.startswith(rule[0])), None)
+
+
 def integration_verdict(task: Task, cr: forge.ChangeRequest, branch: str, unit: dict) -> tuple[str, str]:
     """Does this change request from an integration branch carry the task's work?
 
@@ -11484,6 +11577,26 @@ def hidden(q: Queue) -> None:
         )
 
 
+def find_rows(q: "Queue", origin: str) -> list[dict]:
+    """Live tasks of `origin`: [{"ref","state","session","host"}], sorted by ref.
+
+    Live is a RECORDED session on a task that is not terminal and was not
+    reaped. A record is read as it stands and no thurbox is asked, so "is that
+    session still listed" stays the caller's question.
+    """
+    return [
+        {"ref": t.ref, "state": t.state, "session": t.doc["session"], "host": t.doc.get("host")}
+        for _ref, t in sorted(q.tasks.items())
+        if t.doc.get("origin") == origin and t.doc.get("session")
+        and t.state not in TERMINAL_STATES and not t.doc.get("reaped")
+    ]
+
+
+def cmd_find(args) -> int:
+    print(json.dumps(find_rows(Queue(queue_root()), args.origin.strip())))
+    return 0
+
+
 def cmd_show(args) -> int:
     q = Queue(queue_root())
     task = q.get(args.ref)
@@ -11493,6 +11606,9 @@ def cmd_show(args) -> int:
                 "prompted", "outcome"):
         print(f"    {key + ':':<12} {d.get(key)}")
     print(f"    {'by:':<12} {requester(d.get('requested_by')) or 'not recorded'}")
+    for key in ("origin", "reply"):
+        if d.get(key):
+            print(f"    {key + ':':<12} {d[key]}")
     for unit in task_repos(task)[1:]:
         print(f"    {'also:':<12} {unit['path']} off {unit['base']}")
     for extra in d.get("add_dirs") or []:
@@ -11666,6 +11782,9 @@ def record_problems(root: str) -> tuple["Queue", list]:
         why = requester_problem(d.get("requested_by"))
         if why:
             problems.append(f"{ref}: {why}")
+        for key in ("origin", "reply"):
+            if d.get(key) is not None and not (isinstance(d[key], str) and d[key].strip()):
+                problems.append(f"{ref}: {key} {d[key]!r} is not text")
         if d.get("state") not in STATES:
             problems.append(f"{ref}: state {d.get('state')!r} is not one of {', '.join(STATES)}")
         if d.get("id") != t.id:
@@ -11823,6 +11942,19 @@ def build_parser() -> argparse.ArgumentParser:
         "(\"run `/publish`\", \"use `make release`\"). Free text: it is rendered "
         "into the brief and nothing ever parses it, which is what lets it name "
         "a tool fleet knows nothing about",
+    )
+    a.add_argument(
+        "--origin",
+        help="who owns this task's conversation, as an opaque string "
+        "(`<kind>:<where>`): recorded and shown, never parsed. `owners.conf` "
+        "routes a matching origin's notices to another session, and `find "
+        "--origin` lists its live tasks",
+    )
+    a.add_argument(
+        "--reply",
+        help="the command a worker runs to speak to that origin, as free text "
+        "the worker appends its message to (or `--file PATH`). Rendered into the "
+        "brief and never run or parsed here",
     )
     a.add_argument(
         "--add-dir",
@@ -12071,6 +12203,14 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("show", help="one task's whole record")
     s.add_argument("ref")
     s.set_defaults(func=cmd_show)
+
+    fi = sub.add_parser(
+        "find",
+        help="the live tasks of one origin, as JSON — read-only, for another program",
+    )
+    fi.add_argument("--origin", required=True, help="the origin string, matched exactly")
+    fi.add_argument("--json", action="store_true", help="accepted; the answer is always JSON")
+    fi.set_defaults(func=cmd_find)
 
     ch = sub.add_parser("check", help="validate every record")
     ch.set_defaults(func=cmd_check)

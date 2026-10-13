@@ -208,3 +208,7 @@ __pycache__/
 # about is one machine's, and the lead's conversation is disposable, so it lives
 # here.
 /orchestration/first-run/
+
+# WORKING STATE. Which session owns the notices of a task by its --origin.
+# The tracked owners.example.conf names none.
+/orchestration/owners.conf

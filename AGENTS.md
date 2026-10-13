@@ -148,6 +148,13 @@ names every path and the reason for each.
   needs its attestation or its merge). Tracked and naming none; copy it to a
   gitignored `flow.conf`. `scripts/lib/queue.py`'s `integration_verdict` owns
   the rule.
+- `orchestration/owners.example.conf` — which session owns the conversation of
+  a task by its opaque `--origin` (`<origin-prefix> = <session-name
+  substring>`), so the reconciler's notices for it go there and not to this
+  checkout's lead. `fleet queue add --reply` names the command its worker
+  speaks with, and `fleet queue find --origin STR --json` lists an origin's
+  live tasks for another program; `queue.py`'s docstring owns both. Tracked and
+  naming none; copy it to a gitignored `owners.conf`.
 - `orchestration/reconcile.example.conf` — the reconciler's clocks
   (`<NAME>_SECS`, read when the loop starts, beaten by
   `FLEET_RECONCILE_<NAME>_SECS`) and what `reap` does with a finished task's
@@ -528,7 +535,10 @@ costs one pass and never the loop. Four things about it are load-bearing:
   cannot prove empty, and silent when no lead session is running. A lead it may
   not type into gets the same line in its thurbox mailbox instead, posted with
   `message send --no-wake`, which enqueues and delivers nothing; a thurbox
-  with no mailbox leaves it at the wait.
+  with no mailbox leaves it at the wait. **A task whose `--origin` matches a
+  rule in `orchestration/owners.conf` is told of to that rule's session
+  instead, by the same rules and only if it is provably the one local
+  session.**
   `scripts/lib/notify_lead.py` owns those rules. Notifying is not
   deciding: nothing moves, and the choice is still the lead's. **It says
   exactly what `plan` says is ready and derives nothing**, which is how a

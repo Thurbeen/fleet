@@ -84,6 +84,20 @@ a finished turn with no assessment, and findings with no existing fixer.
 Those are told under the same safe delivery and conversation rules. The
 reconciler never replaces the recipient or declares a review clean.
 
+WHOSE NOTICE IT IS. A task added with `--origin` is owned by whoever that
+origin names, and `orchestration/owners.conf` (`<origin-prefix> = <session-name
+substring>`, read by `queue.py`'s `owner_rules`) says which session that is.
+Such a task's notices are delivered to THAT session instead of the lead, by
+every rule above, with a memory of its own per rule (`owners` in the state
+file) — what the lead was told is no news to an owner. A task with no origin or
+no matching rule is the lead's, exactly as before, and with no rules nothing
+here changes. The owner is typed into only when provably the intended one:
+exactly one session on THIS machine whose name contains the substring, that is
+neither this fleet's lead nor a worker a task here holds. A session mirrored
+from another host, none, or several, is delivered nothing, and the log says why;
+the notice waits, as it does for a lead that is not there. Fleet parses neither
+the origin nor the name, and the session is never started or repointed here.
+
 WHERE THE STATE LIVES. In the reconciler's own runtime directory, beside its
 pid, heartbeat and flags — never on the task. "The lead has been told" is a
 fact about one machine's loop and one conversation; it is not part of what a
@@ -225,6 +239,8 @@ def write_state(state_dir: str, memory: dict, note: str) -> None:
     doc = {**{k: memory.get(k) or [] for k in MEMORY}, "note": note}
     if memory.get("lead"):
         doc["lead"] = memory["lead"]
+    if memory.get("owners"):
+        doc["owners"] = memory["owners"]
     try:
         fleetqueue.fleet_platform.write_record(os.path.join(state_dir, STATE_FILE), json.dumps(doc))
     except OSError:
@@ -272,17 +288,8 @@ def lead_session(name: str) -> tuple[str | None, str]:
     return (str(row["id"]), str(row.get("state") or "unknown")) if row else (None, why)
 
 
-def lead_row(name: str) -> tuple[dict | None, str]:
-    """This checkout's lead's `session list` row, or (None, why not).
-
-    The one answer to "which session is the lead": the wake below and
-    `reconcile.py`'s `is_lead` both read it, so they cannot disagree.
-
-    `session list` and not `session get`: the list carries `id`, `state` and
-    `agent_session_id` for every session in one call and probes no pane, which
-    is the cheaper of the two answers and the one that does not touch the lead
-    to ask about it.
-    """
+def session_rows() -> tuple[list | None, str]:
+    """thurbox's `session list`, or (None, why not)."""
     if not shutil.which("thurbox-cli"):
         return None, "no thurbox-cli here, so there is nothing to wake"
     try:
@@ -302,6 +309,23 @@ def lead_row(name: str) -> tuple[dict | None, str]:
         return None, "thurbox-cli session list did not answer JSON"
     if not isinstance(rows, list):
         return None, "thurbox-cli session list did not answer a list"
+    return rows, ""
+
+
+def lead_row(name: str) -> tuple[dict | None, str]:
+    """This checkout's lead's `session list` row, or (None, why not).
+
+    The one answer to "which session is the lead": the wake below and
+    `reconcile.py`'s `is_lead` both read it, so they cannot disagree.
+
+    `session list` and not `session get`: the list carries `id`, `state` and
+    `agent_session_id` for every session in one call and probes no pane, which
+    is the cheaper of the two answers and the one that does not touch the lead
+    to ask about it.
+    """
+    rows, why = session_rows()
+    if rows is None:
+        return None, why
     named = [r for r in rows if isinstance(r, dict) and r.get("name") == name and r.get("id")]
     if not named:
         return None, f"no session named {name!r} is running"
@@ -322,6 +346,33 @@ def lead_row(name: str) -> tuple[dict | None, str]:
     return None, (f"{len(named)} sessions are named {name!r} and "
                   + ("several are" if here else "none of them is")
                   + " this checkout's on this machine")
+
+
+def owner_row(substring: str, held: set, lead_id: str = "") -> tuple[dict | None, str]:
+    """The `session list` row of the session that owns some origin, or (None, why not).
+
+    NEVER TYPED INTO ON A GUESS. Unlike the lead, whose cwd is this checkout,
+    the owner is any session on this machine, so the name is all there is to go
+    on, and the rule is correspondingly strict: exactly ONE session whose name
+    contains `substring`, running on THIS machine — a row thurbox mirrors from
+    another host, wearing the same name, is nobody this fleet may type into —
+    that is neither this fleet's lead nor a worker some task here holds (a
+    worker's title can contain any word). Zero, or several, deliver nothing.
+    """
+    rows, why = session_rows()
+    if rows is None:
+        return None, why
+    named = [r for r in rows if isinstance(r, dict) and r.get("id")
+             and substring in str(r.get("name") or "")
+             and str(r["id"]) != lead_id and str(r["id"]) not in held]
+    if not named:
+        return None, f"no session named like {substring!r} is running"
+    here = [r for r in named
+            if (fleetqueue.session_place(r.get("backend_type") or "") or ("",))[0] == "local"]
+    if len(here) == 1:
+        return here[0], ""
+    return None, (f"{len(named)} sessions are named like {substring!r} and "
+                  + ("several are" if here else "none of them is") + " on this machine")
 
 
 def identity(row: dict) -> dict:
@@ -626,21 +677,22 @@ def main(argv: list) -> int:
         for key in ("stalled", "unprompted", "needs_input")
     )
     reviews = sorted(str(r.get("task")) for r in (plan.get("reviews") or []) if isinstance(r, dict))
-    now = {"told": ready, "posted": ready, "stalled": stalled, "stalled_posted": stalled,
-           "unprompted": unprompted, "unprompted_posted": unprompted,
-           "needs_input": asking, "needs_input_posted": asking,
-           "reviews": reviews, "reviews_posted": reviews}
-    # Each set, in the order its news is spoken: (typed, posted, refs, line, what, word).
-    sets = (
-        ("told", "posted", ready, message, "ready work", "ready"),
-        ("stalled", "stalled_posted", stalled, stalled_message, "a stalled worker", "stalled"),
-        ("unprompted", "unprompted_posted", unprompted, unprompted_message,
-         "an unprompted worker", "unprompted"),
-        ("needs_input", "needs_input_posted", asking, needs_input_message,
-         "a worker that needs input", "asking for input"),
-        ("reviews", "reviews_posted", reviews, reviews_message,
-         "pending independent reviews", "review-pending"),
-    )
+    everything = {"told": ready, "stalled": stalled, "unprompted": unprompted,
+                  "needs_input": asking, "reviews": reviews}
+
+    # WHOSE NOTICE IT IS. A task whose origin matches an `owners.conf` rule is
+    # that session's to be told of; every other task — no origin, no match, no
+    # rules at all, a queue this cannot read — is the lead's, as it always was.
+    rules = fleetqueue.owner_rules()
+    owned, held = ownership(rules, set().union(*everything.values()))
+
+    def now_for(prefix):
+        """The five sets as one recipient's: `prefix` None is the lead's share."""
+        out = {}
+        for told, posted in zip(TYPED, POSTED):
+            refs = [r for r in everything[told] if (owned.get(r) or (None,))[0] == prefix]
+            out[told] = out[posted] = refs
+        return out
 
     # PRUNE, THEN COMPARE, and the prune is what makes a re-entry news. A task
     # that leaves a set — dispatched, blocked again, abandoned, or a worker
@@ -648,31 +700,108 @@ def main(argv: list) -> int:
     # transition again rather than something the lead was already told about
     # weeks ago.
     state = read_state(args.state_dir)
-    memory = {k: [r for r in (state.get(k) or []) if r in now[k]] for k in MEMORY}
+
+    def recalled(doc, now):
+        return {k: [r for r in (doc.get(k) or []) if r in now[k]] for k in MEMORY}
+
+    now = now_for(None)
+    memory = recalled(state, now)
     memory["lead"] = state.get("lead")
-    if not ready and not stalled and not unprompted and not asking and not reviews:
-        return say(args.state_dir, memory, "")
+    notes = []
+
+    def lead():
+        name = lead_name()
+        row, status = lead_row(name) if name else (None, "")
+        return name, row, status
+
+    memory, note = deliver(now, memory, lead, "no lead session is configured")
+    notes.append(note)
+
+    # Each owner is a recipient of its own, with a memory of its own: what the
+    # lead was told is no news to them, nor theirs to the lead.
+    owners_state = state.get("owners") if isinstance(state.get("owners"), dict) else {}
+    owners_memory = {}
+    lead_id = ""
+    if rules:
+        lead_id = str((lead_row(lead_name())[0] or {}).get("id") or "") if lead_name() else ""
+    for prefix, substring in rules:
+        now = now_for(prefix)
+        if not any(now[k] for k in TYPED):
+            continue
+        mine = recalled(owners_state.get(prefix) or {}, now)
+        mine["lead"] = (owners_state.get(prefix) or {}).get("lead")
+        mine, note = deliver(
+            now, mine, lambda: (substring, *owner_row(substring, held, lead_id)),
+            "no session is configured")
+        owners_memory[prefix] = {k: mine.get(k) or [] for k in MEMORY} | (
+            {"lead": mine["lead"]} if mine.get("lead") else {})
+        notes.append(note)
+    memory["owners"] = owners_memory
+    return say(args.state_dir, memory, "; ".join(n for n in notes if n))
+
+
+# Each set, in the order its news is spoken: (typed, posted, line, what, word).
+SETS = (
+    ("told", "posted", message, "ready work", "ready"),
+    ("stalled", "stalled_posted", stalled_message, "a stalled worker", "stalled"),
+    ("unprompted", "unprompted_posted", unprompted_message, "an unprompted worker", "unprompted"),
+    ("needs_input", "needs_input_posted", needs_input_message,
+     "a worker that needs input", "asking for input"),
+    ("reviews", "reviews_posted", reviews_message, "pending independent reviews", "review-pending"),
+)
+
+
+def ownership(rules: list, refs: set) -> tuple[dict, set]:
+    """({ref: its owner rule}, the session ids this fleet's tasks hold).
+
+    Read only when a rule exists, so a fleet that routes nothing never loads
+    the queue here. A queue that cannot be read owns nothing: every notice
+    then goes to the lead, which is what it did before there were owners.
+    """
+    if not rules or not refs:
+        return {}, set()
+    try:
+        tasks = fleetqueue.Queue(fleetqueue.queue_root()).tasks
+    except Exception:  # noqa: BLE001 — a notifier may not fail the pass it rides on
+        return {}, set()
+    owned = {}
+    for ref in refs:
+        task = tasks.get(ref)
+        rule = fleetqueue.owner_of(task.doc.get("origin"), rules) if task else None
+        if rule:
+            owned[ref] = rule
+    held = {str(t.doc["session"]) for t in tasks.values() if t.doc.get("session")}
+    return owned, held
+
+
+def deliver(now: dict, memory: dict, resolve, unnamed: str) -> tuple[dict, str]:
+    """Tell ONE recipient what is news to it: (its memory now, the note to log).
+
+    `resolve()` is (name, row, why not) — the lead's or an owner's, whose row
+    was found by different rules but is spoken to by the same ones.
+    """
+    if not any(now[k] for k in TYPED):
+        return memory, ""
 
     # WHO IS LISTENING, before what is news to them: only asked while a set
     # holds something, so an idle fleet costs thurbox nothing.
-    name = lead_name()
-    row, status = lead_row(name) if name else (None, "")
+    name, row, status = resolve()
     if row:
         memory = forget_for(memory, identity(row))
-    news = [s for s in sets if any(r not in memory[s[0]] for r in s[2])]
+    news = [s for s in SETS if any(r not in memory[s[0]] for r in now[s[0]])]
     if not news:
-        return say(args.state_dir, memory, "")
+        return memory, ""
 
-    what = news[0][4]
+    what = news[0][3]
     if not name:
-        return say(args.state_dir, memory, f"{what}, but no lead session is configured")
+        return memory, f"{what}, but {unnamed}"
     if not row:
-        return say(args.state_dir, memory, f"{what}, but {status}")
+        return memory, f"{what}, but {status}"
     sid, status = str(row["id"]), str(row.get("state") or "unknown")
 
     # ONE LINE, carrying whichever set has news; a set with nothing new is not
     # repeated just because another one changed.
-    parts = [(told, posted, say_it(refs)) for told, posted, refs, say_it, _w, _n in news]
+    parts = [(told, posted, say_it(now[told])) for told, posted, say_it, _w, _n in news]
     line = " ".join(text for _, _, text in parts)
 
     held = f"{name} is {status}" if status not in AT_REST else ""
@@ -695,22 +824,18 @@ def main(argv: list) -> int:
             for r in now[told] if r not in memory[told]
         )
         where = " — noted in its inbox" if noted else ""
-        return say(args.state_dir, memory, f"{what}; {held}{where}; the wake waits")
+        return memory, f"{what}; {held}{where}; the wake waits"
 
     sent, why = wake(sid, line)
     if not sent:
-        return say(args.state_dir, memory, f"could not wake {name}: {why}")
+        return memory, f"could not wake {name}: {why}"
 
     # Only a delivered wake is remembered, so a send that failed is retried on
     # the next pass rather than swallowed.
     for told, _, _text in parts:
         memory[told] = now[told]
-    named, word = news[0][2], news[0][5]
-    return say(
-        args.state_dir,
-        memory,
-        f"woke {name}: {len(named)} task(s) {word} — {', '.join(named[:NAMED])}",
-    )
+    named, word = now[news[0][0]], news[0][4]
+    return memory, f"woke {name}: {len(named)} task(s) {word} — {', '.join(named[:NAMED])}"
 
 
 if __name__ == "__main__":
