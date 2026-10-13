@@ -70,14 +70,20 @@
 # Usage: sh install.sh [--dir DIR] [--name NAME] [--yes]
 # Exit: 0 installed, 1 refused or a step failed, 2 usage.
 
-say() { printf '%s\n' "$*"; }
+say() {
+	printf '%s\n' "$*"
+	return
+}
 
 die() {
 	printf '\nfleet install: %s\n' "$1" >&2
 	exit "${2:-1}"
 }
 
-has_tty() { (exec </dev/tty) 2>/dev/null; }
+has_tty() {
+	(exec </dev/tty) 2>/dev/null
+	return
+}
 
 # 0 yes, 1 no, 2 nobody to ask.
 confirm() {
@@ -94,6 +100,7 @@ uv_dirs_on_path() {
 		[ -n "$d" ] && [ -x "$d/uv" ] && PATH="$d:$PATH"
 	done
 	export PATH
+	return 0
 }
 
 ensure_uv() {
@@ -105,7 +112,7 @@ ensure_uv() {
 	if [ -n "${FLEET_TEST_UV_INSTALLER:-}" ]; then
 		sh "$FLEET_TEST_UV_INSTALLER" </dev/null || die "the uv installer failed; its error is above"
 	elif command -v curl >/dev/null 2>&1; then
-		curl -LsSf https://astral.sh/uv/install.sh </dev/null | sh || die "the uv installer failed; its error is above"
+		curl --proto '=https' --tlsv1.2 -LsSf https://astral.sh/uv/install.sh </dev/null | sh || die "the uv installer failed; its error is above"
 	elif command -v wget >/dev/null 2>&1; then
 		wget -qO- https://astral.sh/uv/install.sh </dev/null | sh || die "the uv installer failed; its error is above"
 	else
@@ -134,6 +141,7 @@ git_line() {
 	else
 		LINE=""
 	fi
+	return 0
 }
 
 ensure_git() {
@@ -170,7 +178,7 @@ ensure_git() {
 lead_cwds() {
 	command -v thurbox-cli >/dev/null 2>&1 || return 0
 	thurbox-cli session list --json </dev/null 2>/dev/null |
-		uv run --no-project --quiet python -c 'import json, sys
+		uv run --no-project --no-build --quiet python -c 'import json, sys
 try:
     sessions = json.load(sys.stdin)
 except ValueError:
@@ -257,6 +265,7 @@ sequences - one keeps the lead's conversation, one discards it."
 			line="NAME=$NAME"
 			wrote=1
 			;;
+		*) ;;
 		esac
 		body="$body$line
 "
@@ -367,6 +376,7 @@ starting with a letter or a digit." 2
 unrendered placeholder: a lead whose name holds one is read as a manifest nobody
 rendered, and the reconciler stops waking it. Use a single '_' or a '-'." 2
 			;;
+		*) ;;
 		esac
 		[ "${#NAME}" -le 24 ] || die "--name $NAME is longer than 24 characters" 2
 	fi

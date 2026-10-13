@@ -80,9 +80,10 @@ export FLEET_DEMO_TRANSCRIPTS="$SCRIPT_DIR/transcripts"
 mkdir -p "$THURBOX_CONFIG_DIR" "$THURBOX_DATA_DIR" "$XDG_STATE_HOME" "$XDG_CACHE_HOME"
 
 git_init() {
-    git -C "$1" init -q -b main
-    git -C "$1" -c user.email=demo@example.org -c user.name=demo add -A
-    git -C "$1" -c user.email=demo@example.org -c user.name=demo commit -q -m "$2"
+    repo_dir="$1" message="$2"
+    git -C "$repo_dir" init -q -b main
+    git -C "$repo_dir" -c user.email=demo@example.org -c user.name=demo add -A
+    git -C "$repo_dir" -c user.email=demo@example.org -c user.name=demo commit -q -m "$message"
 }
 
 # --- The control plane: this checkout's tracked files, and a synthetic queue --
@@ -115,7 +116,8 @@ thurbox-cli extension deactivate hooks >/dev/null 2>&1 || true
 thurbox-cli config accept-interface >/dev/null 2>&1 || true
 
 session() { # name repo agent -> id
-    thurbox-cli session create --json --name "$1" --repo-path "$2" --agent "$3" |
+    name="$1" repo_path="$2" agent="$3"
+    thurbox-cli session create --json --name "$name" --repo-path "$repo_path" --agent "$agent" |
         uv run --project "$FLEET" --frozen --quiet python -c 'import json,sys; print(json.load(sys.stdin)["id"])'
 }
 LEAD=$(session "📡 Mission Control" "$FLEET" claude)
@@ -126,11 +128,15 @@ ADAPTERS=$(session "🚀 Update adapters" "$HOME/code/cedar" codex)
 # --- Queue records ----------------------------------------------------------------
 QUEUE="$FLEET/orchestration/queue"
 NOW=$(date -u +%s)
-stamp() { date -u -d "@$((NOW - $1))" +%Y-%m-%dT%H:%M:%S+00:00; }
+stamp() {
+    ago="$1"
+    date -u -d "@$((NOW - ago))" +%Y-%m-%dT%H:%M:%S+00:00
+}
 
 topic() { # slug title
-    mkdir -p "$QUEUE/$1"
-    printf 'slug: %s\ntitle: %s\ncreated: %s\n' "$1" "$2" "$(stamp 7200)" >"$QUEUE/$1/topic.yaml"
+    slug="$1" title="$2"
+    mkdir -p "$QUEUE/$slug"
+    printf 'slug: %s\ntitle: %s\ncreated: %s\n' "$slug" "$title" "$(stamp 7200)" >"$QUEUE/$slug/topic.yaml"
 }
 
 # task topic id state title agent repo [session] [method] [publish-state] [artifact]
@@ -150,9 +156,9 @@ task() {
         [ -n "${12:-}" ] && printf '%s\n' "${12}"
         printf 'created: %s\n' "$(stamp 5400)"
         case "$3" in queued) ;; *) printf 'dispatched_at: %s\n' "$(stamp 2400)" ;; esac
-        case "$3" in done | landed | stuck | abandoned) printf 'concluded_at: %s\n' "$(stamp 900)" ;; esac
+        case "$3" in done | landed | stuck | abandoned) printf 'concluded_at: %s\n' "$(stamp 900)" ;; *) ;; esac
     } >"$dir/task.yaml"
-    case "$3" in done | landed | stuck) printf -- '---\noutcome: shipped\n---\n' >"$dir/result.md" ;; esac
+    case "$3" in done | landed | stuck) printf -- '---\noutcome: shipped\n---\n' >"$dir/result.md" ;; *) ;; esac
 }
 
 A="$HOME/code/atlas" B="$HOME/code/beacon" C="$HOME/code/cedar"
