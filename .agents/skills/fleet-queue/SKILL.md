@@ -357,7 +357,7 @@ writes nothing for it, while its other tasks still go. The OS drops the lock
 when its holder dies, so there is nothing stale to clear. A dispatcher that
 died between `session create` and that save left a session no record names;
 the next `dispatch` finds it — a local session under the task's name, on its
-branch — and binds it the way `attach` does below instead of failing on the
+branch in every repository the task spans — and binds it the way `attach` does below instead of failing on the
 duplicate name, so its brief is never typed twice. A session you spawned by hand for a task is bound to it
 with `fleet queue attach`. One whose agent reports working, blocked or done is
 recorded prompted, so the bare `prompt` sweep never types the brief into work

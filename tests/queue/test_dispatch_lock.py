@@ -73,14 +73,16 @@ def worker_name(title: str) -> str:
     return queue_module("print(q.session_name(sys.argv[1], q.worker_glyph()))", title).strip()
 
 
-def left_behind(stubs, sid: str, title: str, branch: str, state: str) -> None:
+def left_behind(stubs, sid: str, title: str, branch: str, state: str,
+                repos: tuple = ("/tmp/repo-a",)) -> None:
     """A session a dispatch spawned under this task's name, on its branch, and never recorded."""
     write(stubs.root / "sessions" / f"{sid}.json", json.dumps({
         "id": sid, "name": worker_name(title), "state": state, "agent": "claude",
         "hook_reported": True, "hook_state": state, "state_source": "hook",
         "backend_type": "local-tmux",
-        "worktrees": [{"branch": branch, "repo_path": "/tmp/repo-a",
-                       "worktree_path": f"/tmp/wt/{sid}", "created_by_thurbox": True}],
+        "worktrees": [{"branch": branch, "repo_path": repo,
+                       "worktree_path": f"/tmp/wt/{sid}-{n}", "created_by_thurbox": True}
+                      for n, repo in enumerate(repos)],
     }) + "\n")
 
 
@@ -173,6 +175,35 @@ def test_a_session_of_the_same_name_on_another_branch_is_not_adopted(stubs, queu
     refute(out, "adopted")
     assert len(creates(stubs)) == 1
     assert record(queue_dir, ref)["session"] == SID
+
+
+def test_a_session_of_the_same_name_and_branch_in_another_repository_is_not_adopted(stubs, queue_dir):
+    ref = briefed(queue_dir, add("elsewhere", "01"))
+    left_behind(stubs, OTHER, "Task elsewhere", "fix/elsewhere", "working",
+                repos=("/tmp/completely-different-repo",))
+    next_session(stubs, SID)
+    stubs.session_is(SID, "idle")
+
+    out = ok(q("dispatch")).out
+    refute(out, "adopted")
+    assert len(creates(stubs)) == 1
+    doc = record(queue_dir, ref)
+    assert (doc["session"], doc["prompted"]) == (SID, True)
+
+
+def test_a_spanning_task_adopts_only_a_session_in_every_repository_it_spans(stubs, queue_dir):
+    ref = briefed(queue_dir, add("spanning", "01", "--add-repo", "/tmp/repo-b"))
+    left_behind(stubs, OTHER, "Task spanning", "fix/spanning", "working")
+    next_session(stubs, SID)
+    stubs.session_is(SID, "idle")
+    refute(ok(q("dispatch")).out, "adopted")
+    assert record(queue_dir, ref)["session"] == SID
+
+    ref = briefed(queue_dir, add("spanned", "02", "--add-repo", "/tmp/repo-b"))
+    left_behind(stubs, OTHER, "Task spanned", "fix/spanned", "working",
+                repos=("/tmp/repo-a", "/tmp/repo-b"))
+    expect(ok(q("dispatch")).out, f"{ref}: adopted {OTHER}")
+    assert len(creates(stubs)) == 1
 
 
 def test_origin_and_topic_scope_a_bare_dispatch(stubs, queue_dir):

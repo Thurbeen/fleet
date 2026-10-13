@@ -98,8 +98,8 @@ readiness re-check to the save of `dispatched`; a second dispatcher prints
 releases the lock however its holder dies, and the task stays `queued` until
 the save. A dispatcher that died after `session create` and before that save
 left a live session no record names: the next `dispatch` adopts it — this
-machine's session under the task's name, on its branch — the way `attach`
-does, instead of failing on the duplicate name.
+machine's session under the task's name, on its branch in every repository the
+task spans — the way `attach` does, instead of failing on the duplicate name.
 
 WHAT `collect` CHECKS. A task declares a PUBLISH METHOD — `attested`, `pr`,
 `push`, `note`, `served` or `none` — which names what the work must LEAVE
@@ -4796,33 +4796,51 @@ def select_for_dispatch(q: Queue, refs: list, origin: str | None = None,
 DISPATCH_LOCK = "dispatch.lock"
 
 
-def stranded_session(task: Task, named: str) -> tuple[str, dict] | None:
+def stranded_session(task: Task, named: str, sessions: dict | None) -> tuple[str, dict] | None:
     """The live LOCAL session a dispatch that died left for this task, if any.
 
     A dispatcher that dies between `session create` and the save of
     `dispatched` leaves a session no record names, and a plain retry then
     failed on `--on-existing fail`'s duplicate name, holding the task where
-    only a hand could free it. Both halves have to match — the name this task
-    is spawned under AND a worktree on its branch — because a name alone is a
-    title another task may share, and the branch is what makes it this task's.
+    only a hand could free it. Everything that makes it THIS task's has to
+    match: the name it is spawned under, and a worktree on its branch in EVERY
+    repository it spans — the primary and each `--add-repo`. A name alone is a
+    title another task may share, and a title and branch alone can belong to a
+    session in another repository, which adopting would mark prompted without
+    it ever being handed this brief.
 
     Only ever this machine's sessions: a `--host` task is never adopted, and a
     row thurbox places anywhere else is not one this dispatch could have made.
-    A list that cannot be read answers None, and `session create` is then the
+    `sessions` is the dispatch's one `session_snapshot`, and None — a list
+    that could not be read — adopts nothing, so `session create` is then the
     same refusal it always was.
     """
     if task.doc.get("host"):
         return None
-    sessions, _why = session_snapshot()
+    branch = task.doc.get("branch")
     for sid, row in (sessions or {}).items():
         if row.get("name") != named:
             continue
         if session_place(row.get("backend_type") or "") != ("local", ""):
             continue
-        if any(isinstance(w, dict) and w.get("branch") == task.doc.get("branch")
-               for w in row.get("worktrees") or []):
+        trees = [w for w in row.get("worktrees") or []
+                 if isinstance(w, dict) and w.get("branch") == branch]
+        if all(any(same_checkout(str(w.get("repo_path") or ""), unit["path"]) for w in trees)
+               for unit in task_repos(task)):
             return sid, row
     return None
+
+
+def same_checkout(a: str, b: str) -> bool:
+    """Whether two paths on THIS machine name one checkout: as written, or on disk."""
+    if not a or not b:
+        return False
+    if same_path(a, b):
+        return True
+    try:
+        return os.path.samefile(a, b)
+    except (OSError, ValueError):
+        return False
 
 
 def cmd_dispatch(args) -> int:
@@ -4916,6 +4934,7 @@ def cmd_dispatch(args) -> int:
     # a document read now would call a reporting session silent.
     spawned: list[tuple[Task, list]] = []
     failures = 0
+    listed: list | None = None
     for t in ready:
         # ONE DISPATCHER PER TASK, from the readiness re-check to the save of
         # `dispatched`. `session create` takes seconds, so two actors that both
@@ -4974,7 +4993,13 @@ def cmd_dispatch(args) -> int:
             # A session already spawned for this task and never recorded is
             # bound the way `attach` binds one, not spawned a twin: busy or
             # done means it was briefed, and idle stays unprompted for phase 2.
-            stranded = stranded_session(t, create[create.index("--name") + 1])
+            # One `session list` per dispatch, read at the first local task:
+            # a session a dispatcher that died left is there before this run
+            # began, and one that dies mid-run is repaired by the next dispatch.
+            if listed is None and not t.doc.get("host"):
+                listed = [session_snapshot()[0]]
+            stranded = stranded_session(t, create[create.index("--name") + 1],
+                                        listed[0] if listed else None)
             if stranded:
                 sid, row = stranded
                 state, _why = session_state(sid)
