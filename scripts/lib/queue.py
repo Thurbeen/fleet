@@ -518,7 +518,7 @@ TERMINAL_STATES = ("landed", "abandoned")
 
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,60}$")
 # The ordinal `add` prefixes, which a slug must not carry a second time.
-ORDINAL_RE = re.compile(r"^(?:[0-9]{2}-)+")
+ORDINAL_RE = re.compile(r"^(?:\d{2}-)+", re.ASCII)
 BRIEF_PLACEHOLDER = "<!-- WRITE THE INSTRUCTIONS HERE -->"
 
 # The sections every brief has, in order. The lead was designing a document per
@@ -565,7 +565,7 @@ def split_brief_body(body: str) -> dict:
         if fence is not None:
             if stripped.startswith(fence):
                 fence = None
-        elif stripped.startswith("```") or stripped.startswith("~~~"):
+        elif stripped.startswith(("```", "~~~")):
             fence = stripped[:3]
         elif line.startswith("## ") and line[3:].strip() in BRIEF_SECTIONS:
             current = line[3:].strip()
@@ -594,11 +594,8 @@ def brief_sections(text: str) -> dict:
     fence = None
     for line in text.splitlines():
         stripped = line.strip()
-        if fence is not None:
-            if stripped.startswith(fence):
-                fence = None
-        elif stripped.startswith("```") or stripped.startswith("~~~"):
-            fence = stripped[:3]
+        if fence is not None or stripped.startswith(("```", "~~~")):
+            fence = _next_fence(fence, stripped)
         elif line.startswith("## "):
             heading = line[3:].strip()
             current = heading if heading in BRIEF_SECTIONS else None
@@ -610,7 +607,15 @@ def brief_sections(text: str) -> dict:
     return {h: "\n".join(v).strip() for h, v in out.items()}
 
 
+def _next_fence(fence: str | None, stripped: str) -> str | None:
+    """The open fence after one line: closed by its own marker, or opened by one."""
+    if fence is not None:
+        return None if stripped.startswith(fence) else fence
+    return stripped[:3]
+
+
 def unfilled_sections(text: str) -> list:
+
     """Which sections still hold the scaffold's own text, and nothing else.
 
     The check this replaces was a substring grep for BRIEF_PLACEHOLDER over the
@@ -1598,6 +1603,20 @@ TOPIC_HEADER = """\
 
 # --- records -----------------------------------------------------------------
 
+# The files a topic directory and a task directory hold, each named once.
+TOPIC_RECORD = "topic.yaml"
+TASK_RECORD = "task.yaml"
+PROMPT_FILE = "PROMPT.md"
+BRIEF_FILE = "BRIEF.md"
+RESULT_FILE = "result.md"
+PROGRESS_FILE = "progress.jsonl"
+# The lock beside a record is the record's own path plus this.
+LOCK_SUFFIX = ".lock"
+
+# What a failed command that printed nothing is said to have printed.
+NO_OUTPUT = "no output"
+NO_THURBOX_CLI = "thurbox-cli not found on PATH"
+
 
 class Task:
     def __init__(self, topic: str, tid: str, path: str, doc: dict, loaded: str | None = None):
@@ -1642,8 +1661,8 @@ class Task:
         for those few milliseconds and not across the command, whose forge
         calls can take minutes.
         """
-        path = self.file("task.yaml")
-        with fleet_platform.exclusive_lock(path + ".lock", wait=RECORD_LOCK_WAIT):
+        path = self.file(TASK_RECORD)
+        with fleet_platform.exclusive_lock(path + LOCK_SUFFIX, wait=RECORD_LOCK_WAIT):
             doc = self.doc
             if self.loaded is not None:
                 try:
@@ -1851,7 +1870,7 @@ class Queue:
             tpath = os.path.join(self.root, topic)
             if not os.path.isdir(tpath) or not is_record_dir(topic):
                 continue
-            meta = os.path.join(tpath, "topic.yaml")
+            meta = os.path.join(tpath, TOPIC_RECORD)
             if not os.path.exists(meta):
                 continue
             doc = read_yaml(meta)
@@ -1862,14 +1881,18 @@ class Queue:
             if not archived and self.scope == "archived":
                 continue
             self.topics[topic] = doc
-            for tid in sorted(os.listdir(tpath)):
-                dpath = os.path.join(tpath, tid)
-                if not os.path.isdir(dpath) or not is_record_dir(tid):
-                    continue
-                rec = os.path.join(dpath, "task.yaml")
-                if os.path.exists(rec):
-                    t = Task(topic, tid, dpath, *read_record(rec))
-                    self.tasks[t.ref] = t
+            self._load_tasks(topic, tpath)
+
+    def _load_tasks(self, topic: str, tpath: str) -> None:
+        """Every task record under one loaded topic."""
+        for tid in sorted(os.listdir(tpath)):
+            dpath = os.path.join(tpath, tid)
+            if not os.path.isdir(dpath) or not is_record_dir(tid):
+                continue
+            rec = os.path.join(dpath, TASK_RECORD)
+            if os.path.exists(rec):
+                t = Task(topic, tid, dpath, *read_record(rec))
+                self.tasks[t.ref] = t
 
     def get(self, ref: str) -> Task:
         # A blocker entry a hand left without its `task:` key asks for None.
@@ -1918,20 +1941,12 @@ class Queue:
         """
         if ref in self._fetched:
             return self._fetched[ref]
-        candidates = []
-        if "/" in ref:
-            candidates.append(tuple(ref.split("/", 1)))
-        else:
-            for topic in self.archived_hidden:
-                tpath = os.path.join(self.root, topic)
-                if os.path.isdir(os.path.join(tpath, ref)):
-                    candidates.append((topic, ref))
         found = []
-        for topic, tid in candidates:
+        for topic, tid in self._fetch_candidates(ref):
             if not (is_record_dir(topic) and is_record_dir(tid)):
                 continue
             dpath = os.path.join(self.root, topic, tid)
-            rec = os.path.join(dpath, "task.yaml")
+            rec = os.path.join(dpath, TASK_RECORD)
             if not os.path.exists(rec):
                 continue
             found.append(Task(topic, tid, dpath, *read_record(rec)))
@@ -1944,6 +1959,18 @@ class Queue:
             self._fetched[ref] = task
             return task
         return None
+
+    def _fetch_candidates(self, ref: str) -> list:
+        """(topic, id) pairs `_fetch` may find `ref` under."""
+        candidates = []
+        if "/" in ref:
+            candidates.append(tuple(ref.split("/", 1)))
+        else:
+            for topic in self.archived_hidden:
+                tpath = os.path.join(self.root, topic)
+                if os.path.isdir(os.path.join(tpath, ref)):
+                    candidates.append((topic, ref))
+        return candidates
 
     def by_topic(self) -> dict:
         out: dict[str, list] = {t: [] for t in self.topics}
@@ -2195,7 +2222,7 @@ def task_notes(q: Queue, task: Task) -> list:
 
 
 def topic_meta_path(root: str, slug: str) -> str:
-    return os.path.join(root, slug, "topic.yaml")
+    return os.path.join(root, slug, TOPIC_RECORD)
 
 
 def unfinished(tasks: list, state_of=None) -> Task | None:
@@ -2222,7 +2249,7 @@ def unfinished(tasks: list, state_of=None) -> Task | None:
 def set_archived(root: str, slug: str, at: str | None) -> None:
     """Write or clear `archived` on one topic, leaving the rest of it alone."""
     path = topic_meta_path(root, slug)
-    with fleet_platform.exclusive_lock(path + ".lock", wait=RECORD_LOCK_WAIT):
+    with fleet_platform.exclusive_lock(path + LOCK_SUFFIX, wait=RECORD_LOCK_WAIT):
         doc = read_yaml(path)
         if at is None:
             doc.pop("archived", None)
@@ -2386,8 +2413,8 @@ def cmd_topic_add(args) -> int:
     if by:
         meta["requested_by"] = by
     os.makedirs(path)
-    write_yaml(os.path.join(path, "topic.yaml"), meta, TOPIC_HEADER)
-    fleet_platform.write_record(os.path.join(path, "PROMPT.md"), prompt.rstrip() + "\n")
+    write_yaml(os.path.join(path, TOPIC_RECORD), meta, TOPIC_HEADER)
+    fleet_platform.write_record(os.path.join(path, PROMPT_FILE), prompt.rstrip() + "\n")
 
     # Opening a topic is where a run begins, so it is where its log begins —
     # nobody has to decide to make one. On stderr because stdout is the VALUE
@@ -2494,110 +2521,30 @@ def cmd_add(args) -> int:
     tpath = os.path.join(root, args.topic)
     if not os.path.isdir(tpath):
         raise QueueError(f"no such topic: {args.topic} (open one with `topic add`)")
-    if not SLUG_RE.match(args.slug):
-        raise QueueError(f"{args.slug!r} is not a slug (lowercase, digits, hyphens)")
-
-    # `add` numbers the task itself, so an ordinal the lead typed into the slug
-    # was a second one: `01-design` became `01-01-design`, and every ref typed
-    # from memory afterwards missed. It is dropped, and the ref is said.
-    slug = ORDINAL_RE.sub("", args.slug) or args.slug
-    number = args.number or next_number(tpath)
-    tid = f"{number}-{slug}"
-    path = os.path.join(tpath, tid)
-    if os.path.exists(path):
-        raise QueueError(f"task {args.topic}/{tid} already exists")
-
-    # Refused here, before a directory exists and long before a brief is
-    # written: a host thurbox does not know, or one fleet cannot drive, is a
-    # typo or a decision to make, and both are cheapest at `add` time. So is a
-    # profile nobody defined, which dispatch would otherwise render as no
-    # flags at all.
-    unknown = unknown_profile(args.profile)
-    if unknown:
-        raise QueueError(f"--profile {args.profile}: {unknown}. Nothing was created.")
-    if args.host:
-        entry, why = host_entry(args.host)
-        if not entry:
-            raise QueueError(
-                f"--host {args.host}: {why}\n"
-                "A host is a name from thurbox's hosts.toml, and `--repo` is then "
-                "a path on THAT machine."
-            )
-
-    # Same argument, one layer down: a branch no worktree can be made on is a
-    # spawn failure `add` can see coming, and refusing it here costs the
-    # operator one re-run instead of a dead dispatch and a hand-edited
-    # task.yaml.
-    refusal = branch_refusal(args.repo, args.branch, args.base, args.host)
-    if refusal:
-        raise QueueError(refusal)
+    slug, tid, path = _new_task_path(args, tpath)
 
     add_dirs = [d.strip() for d in (args.add_dir or []) if d.strip()]
     add_repos = [r.strip() for r in (args.add_repo or []) if r.strip()]
-
-    # And once per --add-repo, for exactly the same reason: thurbox cuts a
-    # worktree on the same branch in every one of them, so a branch that
-    # already exists in the SECOND repository fails the same spawn just as
-    # dead. Each is asked about its own base, which `PATH@BASE` may name.
-    for spec in add_repos:
-        also, also_base = split_add_repo(spec)
-        refusal = branch_refusal(also, args.branch, also_base or args.base, args.host)
-        if refusal:
-            raise QueueError(f"--add-repo {spec}: {refusal}")
+    _refuse_unplaceable(args, add_repos)
 
     # And one layer down again: the title becomes the worker's session NAME,
     # and thurbox refuses a name it could not make a path segment of. Asked
     # here for the branch's own reason, only harder — a title that gets past
     # `add` is repaired by hand-editing task.yaml and the brief's H1, because
     # nothing here retitles a task.
-    title = args.title or slug.replace("-", " ")
-    refusal = session_name_refusal(title, worker_glyph())
-    if refusal:
-        raise QueueError(refusal)
+    title = _task_title(args, slug)
 
     # Refuse an explicit --agent that contradicts the operator's policy before
     # the task record exists. The same check runs again at dispatch, because a
     # rule may appear between add and dispatch.
     if args.agent:
-        policy = agent_policy()
-        if policy:
-            paths = [] if args.host else [args.repo, *(split_add_repo(r)[0] for r in add_repos)]
-            matched = repos_policy(paths, policy)
-            if matched:
-                allowed, prefix = matched
-                if not allowed:
-                    raise QueueError(
-                        f"agent policy covers this task's repositories with "
-                        f"{prefix!r} and no one agent is allowed in all of them. "
-                        "A task that spans repositories runs one agent in every "
-                        "one of them."
-                    )
-                if args.agent not in allowed:
-                    raise QueueError(
-                        f"--agent {args.agent!r} contradicts policy for "
-                        f"{prefix!r}, which allows only {', '.join(allowed)}."
-                    )
+        _refuse_agent(args, add_repos)
 
-    # A stated method keeps the default command when it names the same shape.
-    # Another shape drops it: an attesting command is wrong for a `push` task.
-    # A stated command always wins, with or without a stated method.
-    method, how = policy_publish_default()
-    if args.publish and args.publish != method:
-        method, how = args.publish, None
-    if args.how is not None:
-        how = args.how
-    # A served document's HOW is where it is hosted, which is the operator's
-    # `SERVE` line — the publishing HOW names a tool for another shape.
-    if method == "served" and not how:
-        how = publish_conf().get("SERVE", "").strip() or None
-    target = (args.target or "").strip() or None
-    refusal = target_refusal(method, target)
-    if refusal:
-        raise QueueError(refusal)
+    method, how, target = _add_publish(args)
     # The task's own `--by`, else its topic's — RESOLVED HERE and stored, so a
     # later edit to topic.yaml does not rewrite who asked for work already
     # under way. None is "not recorded", which every older record also reads as.
-    topic_meta = read_yaml(os.path.join(tpath, "topic.yaml"))
+    topic_meta = read_yaml(os.path.join(tpath, TOPIC_RECORD))
     requested_by = requester_value(args.by) or requester(topic_meta.get("requested_by"))
 
     doc = {
@@ -2666,30 +2613,18 @@ def cmd_add(args) -> int:
     brief = open(args.brief_file, encoding="utf-8").read() if args.brief_file else None
     text = render_brief(task, topic_meta, brief)
     if args.brief_file:
-        missing = unfilled_sections(text)
-        if missing:
-            raise QueueError(
-                f"{args.brief_file} leaves {len(missing)} of the brief's "
-                "sections unwritten:\n"
-                + "\n".join(f"    {h}" for h in missing)
-                + "\nA worker gets all four whatever the file says, so one the "
-                "file does not\nname stays the scaffold's placeholder and "
-                "`dispatch` refuses it. Add the\nheading — `None.` is a "
-                "complete answer — and run this again. Nothing was created."
-            )
+        _refuse_partial_brief(args.brief_file, text)
 
     # A topic that grows a new task is live again, whatever it was. Without
     # this an operator who did not notice the flag would add and dispatch into
     # a topic no default view draws — and would then be watching for progress
     # on a screen that had already decided not to show it. Last of all, so a
     # refusal above has written nothing.
-    if read_yaml(os.path.join(tpath, "topic.yaml")).get("archived"):
-        set_archived(root, args.topic, None)
-        print(f"{args.topic} was archived; a new task un-archives it", file=sys.stderr)
+    _unarchive_for_add(root, tpath, args.topic)
 
     os.makedirs(path)
     task.save()
-    fleet_platform.write_record(task.file("BRIEF.md"), text)
+    fleet_platform.write_record(task.file(BRIEF_FILE), text)
 
     if slug != args.slug:
         print(f"{args.slug}: add numbers the task itself, so the ref is {task.ref}",
@@ -2698,7 +2633,140 @@ def cmd_add(args) -> int:
     return 0
 
 
+def _task_title(args, slug: str) -> str:
+    """The new task's title, refused when thurbox could not name a session after it."""
+    title = args.title or slug.replace("-", " ")
+    refusal = session_name_refusal(title, worker_glyph())
+    if refusal:
+        raise QueueError(refusal)
+    return title
+
+
+def _unarchive_for_add(root: str, tpath: str, topic: str) -> None:
+    """Clear a topic's archived flag because a task is being added to it."""
+    if read_yaml(os.path.join(tpath, TOPIC_RECORD)).get("archived"):
+        set_archived(root, topic, None)
+        print(f"{topic} was archived; a new task un-archives it", file=sys.stderr)
+
+
+def _new_task_path(args, tpath: str) -> tuple[str, str, str]:
+    """(slug, id, directory) for the task `add` is about to create, refusing a clash."""
+    if not SLUG_RE.match(args.slug):
+        raise QueueError(f"{args.slug!r} is not a slug (lowercase, digits, hyphens)")
+
+    # `add` numbers the task itself, so an ordinal the lead typed into the slug
+    # was a second one: `01-design` became `01-01-design`, and every ref typed
+    # from memory afterwards missed. It is dropped, and the ref is said.
+    slug = ORDINAL_RE.sub("", args.slug) or args.slug
+    number = args.number or next_number(tpath)
+    tid = f"{number}-{slug}"
+    path = os.path.join(tpath, tid)
+    if os.path.exists(path):
+        raise QueueError(f"task {args.topic}/{tid} already exists")
+    return slug, tid, path
+
+
+def _refuse_unplaceable(args, add_repos: list) -> None:
+
+    """Refuse an `add` whose profile, host or branch no spawn could use."""
+    # Refused here, before a directory exists and long before a brief is
+    # written: a host thurbox does not know, or one fleet cannot drive, is a
+    # typo or a decision to make, and both are cheapest at `add` time. So is a
+    # profile nobody defined, which dispatch would otherwise render as no
+    # flags at all.
+    unknown = unknown_profile(args.profile)
+    if unknown:
+        raise QueueError(f"--profile {args.profile}: {unknown}. Nothing was created.")
+    if args.host:
+        entry, why = host_entry(args.host)
+        if not entry:
+            raise QueueError(
+                f"--host {args.host}: {why}\n"
+                "A host is a name from thurbox's hosts.toml, and `--repo` is then "
+                "a path on THAT machine."
+            )
+
+    # Same argument, one layer down: a branch no worktree can be made on is a
+    # spawn failure `add` can see coming, and refusing it here costs the
+    # operator one re-run instead of a dead dispatch and a hand-edited
+    # task.yaml.
+    refusal = branch_refusal(args.repo, args.branch, args.base, args.host)
+    if refusal:
+        raise QueueError(refusal)
+
+    # And once per --add-repo, for exactly the same reason: thurbox cuts a
+    # worktree on the same branch in every one of them, so a branch that
+    # already exists in the SECOND repository fails the same spawn just as
+    # dead. Each is asked about its own base, which `PATH@BASE` may name.
+    for spec in add_repos:
+        also, also_base = split_add_repo(spec)
+        refusal = branch_refusal(also, args.branch, also_base or args.base, args.host)
+        if refusal:
+            raise QueueError(f"--add-repo {spec}: {refusal}")
+
+
+def _refuse_agent(args, add_repos: list) -> None:
+    """Refuse an `--agent` the policy covering this task's repositories does not allow."""
+    policy = agent_policy()
+    if not policy:
+        return
+    paths = [] if args.host else [args.repo, *(split_add_repo(r)[0] for r in add_repos)]
+    matched = repos_policy(paths, policy)
+    if not matched:
+        return
+    allowed, prefix = matched
+    if not allowed:
+        raise QueueError(
+            f"agent policy covers this task's repositories with "
+            f"{prefix!r} and no one agent is allowed in all of them. "
+            "A task that spans repositories runs one agent in every "
+            "one of them."
+        )
+    if args.agent not in allowed:
+        raise QueueError(
+            f"--agent {args.agent!r} contradicts policy for "
+            f"{prefix!r}, which allows only {', '.join(allowed)}."
+        )
+
+
+def _add_publish(args) -> tuple:
+    """(method, how, target) for a new task, refusing a target its method cannot use."""
+    # A stated method keeps the default command when it names the same shape.
+    # Another shape drops it: an attesting command is wrong for a `push` task.
+    # A stated command always wins, with or without a stated method.
+    method, how = policy_publish_default()
+    if args.publish and args.publish != method:
+        method, how = args.publish, None
+    if args.how is not None:
+        how = args.how
+    # A served document's HOW is where it is hosted, which is the operator's
+    # `SERVE` line — the publishing HOW names a tool for another shape.
+    if method == "served" and not how:
+        how = publish_conf().get("SERVE", "").strip() or None
+    target = (args.target or "").strip() or None
+    refusal = target_refusal(method, target)
+    if refusal:
+        raise QueueError(refusal)
+    return method, how, target
+
+
+def _refuse_partial_brief(brief_file: str, text: str) -> None:
+    """Refuse a `--brief-file` that left one of the brief's sections unwritten."""
+    missing = unfilled_sections(text)
+    if missing:
+        raise QueueError(
+            f"{brief_file} leaves {len(missing)} of the brief's "
+            "sections unwritten:\n"
+            + "\n".join(f"    {h}" for h in missing)
+            + "\nA worker gets all four whatever the file says, so one the "
+            "file does not\nname stays the scaffold's placeholder and "
+            "`dispatch` refuses it. Add the\nheading — `None.` is a "
+            "complete answer — and run this again. Nothing was created."
+        )
+
+
 def render_brief(task: Task, topic: dict, body: str | None) -> str:
+
     """The worker's whole world: this file, and the one policy file it names.
 
     What is TASK-SPECIFIC is written here — the goal, the repo, the branch, and
@@ -2744,17 +2812,10 @@ def render_brief(task: Task, topic: dict, body: str | None) -> str:
         width=78,
         subsequent_indent="  ",
     )
-    result = os.path.abspath(task.file("result.md"))
-    prompt = os.path.abspath(os.path.join(os.path.dirname(task.path), "PROMPT.md"))
+    result = os.path.abspath(task.file(RESULT_FILE))
+    prompt = os.path.abspath(os.path.join(os.path.dirname(task.path), PROMPT_FILE))
     has_operator = bool(operator_instructions())
-    if host:
-        prompt_ref = "`PROMPT.md`, alongside this file"
-        policy_ref = "`POLICY.md`, alongside this file"
-        operator_ref = "`OPERATOR.md`, alongside this file"
-    else:
-        prompt_ref = f"`{prompt}`"
-        policy_ref = f"`{policy_path()}`"
-        operator_ref = f"`{operator_path()}`"
+    prompt_ref, policy_ref, operator_ref = _brief_refs(host, prompt)
     operator_line = f"\n- **Operator's standing instructions.** {operator_ref}" if has_operator else ""
     memory_line = remote_context_line() if host else context_lines(task) + declare_lines(task)
     reply_section = reply_lines(task)
@@ -2808,38 +2869,8 @@ def render_brief(task: Task, topic: dict, body: str | None) -> str:
         if attached
         else ""
     )
-    # The `artifact:` line, or the `artifacts:` block a task that spans
-    # repositories writes instead. POLICY.md carries the same pair, and the two
-    # have to move together: every brief points its worker there rather than
-    # restating the contract, so a change in one place and not the other is how
-    # they drift.
-    if spans and method in PER_REPO_METHODS:
-        artifact_contract = "artifacts:\n" + "\n".join(
-            f"  {u['path']}: <{spec['artifact']}>" for u in task_repos(task)
-        ) + "\n  # a repository that needed nothing: no change needed — <why>"
-    else:
-        artifact_contract = (
-            "artifact: <PR URL, commit URL for a `push` task, note URL for a "
-            "`note` task, the document's URL for a `served` task, or omit>"
-        )
-    if host:
-        result_target = (
-            "    result.md — beside the BRIEF.md you are reading now, in\n"
-            f"    `<worktree>{COMPANION_SUFFIX}`, and not inside your worktree"
-        )
-        result_note = f"""
-You are running on the remote host `{host}`, so the control plane's own
-directories are not on this filesystem and an absolute path to one would
-resolve to nothing here. `fleet queue collect` fetches that file over ssh, and it
-closes this task exactly as it would locally.
-
-This brief and every file beside it sit in `<worktree>{COMPANION_SUFFIX}`, next to
-your worktree and outside it, so no commit can carry them. Do not copy them
-into the worktree. Write `result.md` there after the pull request is open.
-"""
-    else:
-        result_target = f"    {result}"
-        result_note = ""
+    artifact_contract = _artifact_contract(task, spans, method, spec)
+    result_target, result_note = _result_target(host, result)
     return f"""# {d["title"]}
 
 Task `{task.ref}` of topic **{topic.get("title", task.topic)}**.
@@ -2880,6 +2911,58 @@ A short paragraph: what you actually did, and anything the lead must know.
 That file is what closes this task, and the policy's last section says why it,
 and not a message, is what does it.
 {result_note}"""
+
+
+def _brief_refs(host, prompt: str) -> tuple[str, str, str]:
+    """How the brief names the prompt, the policy and the operator's file.
+
+    Relative to the brief itself for a host task, whose filesystem is not this one.
+    """
+    if host:
+        return (
+            "`PROMPT.md`, alongside this file",
+            "`POLICY.md`, alongside this file",
+            "`OPERATOR.md`, alongside this file",
+        )
+    return f"`{prompt}`", f"`{policy_path()}`", f"`{operator_path()}`"
+
+
+def _artifact_contract(task: Task, spans: list, method: str, spec: dict) -> str:
+    """The brief's `artifact:` line, or the `artifacts:` block a spanning task writes."""
+    # The `artifact:` line, or the `artifacts:` block a task that spans
+    # repositories writes instead. POLICY.md carries the same pair, and the two
+    # have to move together: every brief points its worker there rather than
+    # restating the contract, so a change in one place and not the other is how
+    # they drift.
+    if spans and method in PER_REPO_METHODS:
+        return "artifacts:\n" + "\n".join(
+            f"  {u['path']}: <{spec['artifact']}>" for u in task_repos(task)
+        ) + "\n  # a repository that needed nothing: no change needed — <why>"
+    return (
+        "artifact: <PR URL, commit URL for a `push` task, note URL for a "
+        "`note` task, the document's URL for a `served` task, or omit>"
+    )
+
+
+def _result_target(host, result: str) -> tuple[str, str]:
+    """Where the brief tells its worker to write result.md, and the note a host task adds."""
+    if host:
+        result_target = (
+            "    result.md — beside the BRIEF.md you are reading now, in\n"
+            f"    `<worktree>{COMPANION_SUFFIX}`, and not inside your worktree"
+        )
+        result_note = f"""
+You are running on the remote host `{host}`, so the control plane's own
+directories are not on this filesystem and an absolute path to one would
+resolve to nothing here. `fleet queue collect` fetches that file over ssh, and it
+closes this task exactly as it would locally.
+
+This brief and every file beside it sit in `<worktree>{COMPANION_SUFFIX}`, next to
+your worktree and outside it, so no commit can carry them. Do not copy them
+into the worktree. Write `result.md` there after the pull request is open.
+"""
+        return result_target, result_note
+    return f"    {result}", ""
 
 
 def reply_lines(task: Task) -> str:
@@ -2931,12 +3014,17 @@ Post with `{cmd} '<text>'`{file_hint}:
 """
 
 
+def _context_module():
+    """`fleet context`'s own module (`context.py`), loaded once on first use."""
+    return _load_sibling("fleet_context", "context.py")
+
+
 def context_repo(task: Task) -> str:
     """The name `fleet context` knows this task's repository by, or its path when it cannot tell here."""
     path = str(task.doc.get("repo") or "")
     if task.doc.get("host"):
         return "<repo>"
-    return _load_sibling("fleet_context", "context.py").path_identity(path) or path
+    return _context_module().path_identity(path) or path
 
 
 def remote_context_line() -> str:
@@ -2979,7 +3067,7 @@ def context_lines(task: Task) -> str:
     known at `add` are named too, as plain paths.
     """
     prior = [
-        os.path.join(queue_root(), b["task"], "result.md")
+        os.path.join(queue_root(), b["task"], RESULT_FILE)
         for b in task.blockers
         if not blocker_condition(b) and isinstance(b.get("task"), str)
     ]
@@ -3068,7 +3156,7 @@ def cmd_block(args) -> int:
     task = q.get(args.ref)
 
     if args.condition is not None:
-        return block_on_condition(q, task, args.condition.strip(), args)
+        return block_on_condition(task, args.condition.strip(), args)
 
     target = q.get(args.on)
 
@@ -3103,7 +3191,7 @@ def cmd_block(args) -> int:
     return 0
 
 
-def block_on_condition(q: Queue, task: Task, condition: str, args) -> int:
+def block_on_condition(task: Task, condition: str, args) -> int:
     """The condition form: a wait on something the queue cannot observe.
 
     NO CYCLE CHECK, because a condition is not an edge — `find_cycle` walks
@@ -3163,31 +3251,32 @@ def block_on_condition(q: Queue, task: Task, condition: str, args) -> int:
 def find_cycle(q: Queue) -> list | None:
     colour: dict[str, int] = {}
     stack: list[str] = []
-
-    def walk(ref: str) -> list | None:
-        colour[ref] = 1
-        stack.append(ref)
-        for b in q.tasks[ref].blockers:
-            # A condition names no task, so it is not an edge in this graph and
-            # cannot be part of a cycle.
-            nxt = b.get("task")
-            if nxt is None or nxt not in q.tasks:
-                continue
-            if colour.get(nxt) == 1:
-                return stack[stack.index(nxt):] + [nxt]
-            if colour.get(nxt, 0) == 0:
-                found = walk(nxt)
-                if found:
-                    return found
-        stack.pop()
-        colour[ref] = 2
-        return None
-
     for ref in sorted(q.tasks):
         if colour.get(ref, 0) == 0:
-            found = walk(ref)
+            found = _walk_blockers(q, ref, colour, stack)
             if found:
                 return found
+    return None
+
+
+def _walk_blockers(q: Queue, ref: str, colour: dict, stack: list) -> list | None:
+    """`find_cycle`'s depth-first walk from `ref`: the cycle it closes, or None."""
+    colour[ref] = 1
+    stack.append(ref)
+    for b in q.tasks[ref].blockers:
+        # A condition names no task, so it is not an edge in this graph and
+        # cannot be part of a cycle.
+        nxt = b.get("task")
+        if nxt is None or nxt not in q.tasks:
+            continue
+        if colour.get(nxt) == 1:
+            return stack[stack.index(nxt):] + [nxt]
+        if colour.get(nxt, 0) == 0:
+            found = _walk_blockers(q, nxt, colour, stack)
+            if found:
+                return found
+    stack.pop()
+    colour[ref] = 2
     return None
 
 
@@ -3259,10 +3348,25 @@ def declaration_floor(task: Task) -> float:
 def declaration(task: Task) -> dict | None:
     """The task's standing declaration, or None. See the section above."""
     try:
-        rows = open(task.file("progress.jsonl"), encoding="utf-8").read().splitlines()
+        rows = open(task.file(PROGRESS_FILE), encoding="utf-8").read().splitlines()
     except OSError:
         return None
-    floor = declaration_floor(task)
+    latest = _latest_declaration(rows, declaration_floor(task))
+    if latest is None:
+        return None
+    when, said = latest
+    out = {"state": said["state"], "why": str(said.get("why") or ""),
+           "declared": datetime.fromtimestamp(when, timezone.utc).isoformat()}
+    if said["state"] == "paused":
+        until = min(aware_time(said.get("until")), when + PAUSE_CAP_SECS)
+        if until <= time.time():
+            return None
+        out["until"] = datetime.fromtimestamp(until, timezone.utc).isoformat()
+    return out
+
+
+def _latest_declaration(rows: list, floor: float) -> tuple | None:
+    """(when, what) of the newest declaration in progress.jsonl newer than `floor`."""
     latest = None
     for row in rows:
         try:
@@ -3275,17 +3379,7 @@ def declaration(task: Task) -> dict | None:
         when = record_time(doc.get("observed"))
         if when and when > floor and (latest is None or when >= latest[0]):
             latest = (when, said)
-    if latest is None:
-        return None
-    when, said = latest
-    out = {"state": said["state"], "why": str(said.get("why") or ""),
-           "declared": datetime.fromtimestamp(when, timezone.utc).isoformat()}
-    if said["state"] == "paused":
-        until = min(aware_time(said.get("until")), when + PAUSE_CAP_SECS)
-        if until <= time.time():
-            return None
-        out["until"] = datetime.fromtimestamp(until, timezone.utc).isoformat()
-    return out
+    return latest
 
 
 def aware_time(stamp) -> float:
@@ -3306,7 +3400,7 @@ def open_tasks(q: Queue) -> list:
     return [
         t for t in sorted(q.tasks.values(), key=lambda t: t.ref)
         if t.state == "dispatched" and t.doc.get("session")
-        and not os.path.exists(t.file("result.md"))
+        and not os.path.exists(t.file(RESULT_FILE))
     ]
 
 
@@ -3372,7 +3466,7 @@ def unprompted_tasks(q: Queue) -> list[dict]:
     for task in sorted(q.tasks.values(), key=lambda t: t.ref):
         if task.state != "dispatched" or task.doc.get("prompted"):
             continue
-        if not task.doc.get("session") or os.path.exists(task.file("result.md")):
+        if not task.doc.get("session") or os.path.exists(task.file(RESULT_FILE)):
             continue
         waited = time.time() - record_time(task.doc.get("dispatched_at"))
         if waited < UNPROMPTED_GRACE_SECS:
@@ -3390,15 +3484,17 @@ def commits_ahead(task: Task) -> bool:
     branch = str(task.doc.get("branch") or "")
     if task.doc.get("host") or not branch:
         return False
-    for unit in task_repos(task):
-        if not os.path.isdir(unit["path"]):
-            continue
-        for base in (f"origin/{unit['base']}", unit["base"]):
-            if git_out(unit["path"], ["rev-parse", "--verify", "--quiet", base + "^{commit}"]).strip():
-                count = git_out(unit["path"], ["rev-list", "--count", f"{base}..{branch}", "--"]).strip()
-                if count.isdigit() and int(count) > 0:
-                    return True
-                break
+    return any(
+        _unit_ahead(unit, branch) for unit in task_repos(task) if os.path.isdir(unit["path"])
+    )
+
+
+def _unit_ahead(unit: dict, branch: str) -> bool:
+    """Whether one repository holds a commit on `branch` its base does not."""
+    for base in (f"origin/{unit['base']}", unit["base"]):
+        if git_out(unit["path"], ["rev-parse", "--verify", "--quiet", base + "^{commit}"]).strip():
+            count = git_out(unit["path"], ["rev-list", "--count", f"{base}..{branch}", "--"]).strip()
+            return count.isdigit() and int(count) > 0
     return False
 
 
@@ -3422,7 +3518,7 @@ def missing_result(sid: str) -> str:
             continue
         if task.state != "dispatched" or task.doc.get("host"):
             return ""
-        result = os.path.abspath(task.file("result.md"))
+        result = os.path.abspath(task.file(RESULT_FILE))
         if os.path.exists(result) or not commits_ahead(task):
             return ""
         return (
@@ -3465,6 +3561,17 @@ def cmd_plan(args) -> int:
         )
         return 0
 
+    _print_plan_ready(ready, overlaps)
+    _print_plan_waiting(q, waiting)
+    _print_plan_stalled(stalled, unprompted)
+    _print_plan_declared(needs_input, paused)
+    for row in reviews:
+        print(f"review-{row['state']}: {row['url']} at {row['head']} — {row.get('detail', '')}")
+    return 0
+
+
+def _print_plan_ready(ready: list, overlaps: list) -> None:
+    """`plan`'s ready set, and the overlaps it goes out with anyway."""
     print(
         f"ready: {len(ready)} task(s) — every one of them goes out now, "
         "there is no concurrency cap"
@@ -3478,6 +3585,9 @@ def cmd_plan(args) -> int:
             "          them together and let the delivery path reconcile a rebase."
         )
 
+
+def _print_plan_waiting(q: Queue, waiting: list) -> None:
+    """`plan`'s waiting set, each with the blockers still holding it."""
     print()
     print(f"waiting: {len(waiting)} task(s) — each held by a durable, recorded blocker")
     for t in waiting:
@@ -3487,6 +3597,10 @@ def cmd_plan(args) -> int:
             if view["status"] == "cleared":
                 continue
             print(f"        {view['line']}")
+
+
+def _print_plan_stalled(stalled: list, unprompted: list) -> None:
+    """`plan`'s stalled and unprompted sets, when there are any."""
     if stalled:
         print()
         print(
@@ -3505,6 +3619,10 @@ def cmd_plan(args) -> int:
         for row in unprompted:
             print(f"    {row['task']:<52} {row['waited_secs'] // 60}m  session {row['session']}")
             print(f"          uv run fleet queue prompt {row['task']}")
+
+
+def _print_plan_declared(needs_input: list, paused: list) -> None:
+    """`plan`'s declared waits: what needs input, and what is paused."""
     if needs_input:
         print()
         print(f"needs input: {len(needs_input)} task(s) — the worker said it needs a decision")
@@ -3516,9 +3634,6 @@ def cmd_plan(args) -> int:
         print(f"paused: {len(paused)} task(s) — the worker said it is waiting, so not judged stalled")
         for row in paused:
             print(f"    {row['task']:<52} until {row['until']}  {row['why']}")
-    for row in reviews:
-        print(f"review-{row['state']}: {row['url']} at {row['head']} — {row.get('detail', '')}")
-    return 0
 
 
 DURATION = re.compile(r"(\d+)([mh])")
@@ -3535,7 +3650,7 @@ def cmd_declare(args) -> int:
     """
     q = Queue(queue_root())
     task = q.get(args.ref)
-    if task.state != "dispatched" or os.path.exists(task.file("result.md")):
+    if task.state != "dispatched" or os.path.exists(task.file(RESULT_FILE)):
         raise QueueError(
             f"{task.ref} is {task.state}, or has its result written; only a dispatched "
             "task that has not reported can declare a wait"
@@ -3545,38 +3660,45 @@ def cmd_declare(args) -> int:
         raise QueueError("--why is required: the lead reads it instead of your pane")
     said = {"state": args.state}
     if args.state == "paused":
-        if not args.until:
-            raise QueueError("paused needs --until: an ISO-8601 time with an offset, or 45m / 2h")
-        rel = DURATION.fullmatch(args.until.strip())
-        if rel:
-            until = time.time() + int(rel.group(1)) * (60 if rel.group(2) == "m" else 3600)
-        else:
-            until = aware_time(args.until)
-            if not until:
-                raise QueueError(
-                    f"--until {args.until!r} is not an ISO-8601 time with an offset "
-                    "(...Z or ...+00:00), nor a duration like 45m or 2h"
-                )
-        if until <= time.time():
-            raise QueueError(f"--until {args.until} is already past")
-        if until > time.time() + PAUSE_CAP_SECS:
-            raise QueueError(
-                f"a pause counts for at most {PAUSE_CAP_SECS // 3600}h. A longer wait is a "
-                "condition the lead records with `fleet queue block --condition`, so "
-                "declare needs-input and say what you are waiting on"
-            )
+        until = _pause_until(args.until)
         said["until"] = datetime.fromtimestamp(int(until), timezone.utc).isoformat()
     elif args.until:
         raise QueueError("--until is for paused only")
     said["why"] = why
     fleet_platform.append_record(
-        task.file("progress.jsonl"), json.dumps({"declare": said, "observed": now()}) + "\n"
+        task.file(PROGRESS_FILE), json.dumps({"declare": said, "observed": now()}) + "\n"
     )
     print(f"{task.ref}: declared {args.state}" + (f" until {said['until']}" if "until" in said else ""))
     return 0
 
 
+def _pause_until(text: str | None) -> float:
+    """`declare paused --until`, as an epoch second inside the pause cap, or refused."""
+    if not text:
+        raise QueueError("paused needs --until: an ISO-8601 time with an offset, or 45m / 2h")
+    rel = DURATION.fullmatch(text.strip())
+    if rel:
+        until = time.time() + int(rel.group(1)) * (60 if rel.group(2) == "m" else 3600)
+    else:
+        until = aware_time(text)
+        if not until:
+            raise QueueError(
+                f"--until {text!r} is not an ISO-8601 time with an offset "
+                "(...Z or ...+00:00), nor a duration like 45m or 2h"
+            )
+    if until <= time.time():
+        raise QueueError(f"--until {text} is already past")
+    if until > time.time() + PAUSE_CAP_SECS:
+        raise QueueError(
+            f"a pause counts for at most {PAUSE_CAP_SECS // 3600}h. A longer wait is a "
+            "condition the lead records with `fleet queue block --condition`, so "
+            "declare needs-input and say what you are waiting on"
+        )
+    return until
+
+
 # --- remote hosts ------------------------------------------------------------
+
 #
 # A task may name a HOST from thurbox's hosts.toml, and `session create --host`
 # then puts the agent, its tmux window and its git worktrees on that machine.
@@ -4277,27 +4399,31 @@ def probe_host(entry: dict, repo: str) -> list:
         # non-login `PATH` used to manufacture, and both are answers from a
         # host that is up, which is the sentence the lead needed and did not
         # have.
-        said = last_out(creds)
-        if said.startswith("no forge: "):
-            detail = said[len("no forge: "):]
-        else:
-            tried, _, tools = said.partition("|")
-            tried = tried or "its forge"
-            found = (
-                f"{tools} is installed there and not logged in to it" if tools
-                else "neither `gh` nor `glab` is on its "
-                + ("login shell's " if shell is POSIX else "") + "PATH"
-            )
-            detail = (
-                f"the host ANSWERED, and it has no credentials of its own for "
-                f"{tried}: no ssh key, and {found}. It cannot clone, fetch or push. "
-                "Give that MACHINE its own credentials; nothing here sends yours."
-            )
-        out.append({"check": "forge", "ok": False, "detail": detail})
+        out.append({"check": "forge", "ok": False, "detail": _no_forge_credential(creds, shell)})
         return out
     out.append({"check": "forge", "ok": True,
                 "detail": f"reaches {last_out(creds) or 'its forge with a credential'}"})
     return out
+
+
+def _no_forge_credential(creds, shell) -> str:
+    """What a failed forge probe says, in words that name the host's own gap."""
+    said = last_out(creds)
+    if said.startswith("no forge: "):
+        return said[len("no forge: "):]
+    tried, _, tools = said.partition("|")
+    tried = tried or "its forge"
+    login = "login shell's " if shell is POSIX else ""
+    found = (
+        f"{tools} is installed there and not logged in to it" if tools
+        else f"neither `gh` nor `glab` is on its {login}PATH"
+    )
+
+    return (
+        f"the host ANSWERED, and it has no credentials of its own for "
+        f"{tried}: no ssh key, and {found}. It cannot clone, fetch or push. "
+        "Give that MACHINE its own credentials; nothing here sends yours."
+    )
 
 
 def host_reachable(name: str) -> tuple[bool, str]:
@@ -4395,27 +4521,27 @@ def settle_remote(task: Task, entry: dict) -> tuple[bool, str]:
                        f"{first_line(proc) or 'no output'}")
     repo = remote_identity(entry, str(task.doc["repo"]))
     files = [
-        ("BRIEF.md", read_text(task.file("BRIEF.md"))),
-        ("PROMPT.md", read_text(os.path.join(os.path.dirname(task.path), "PROMPT.md"))),
+        (BRIEF_FILE, read_text(task.file(BRIEF_FILE))),
+        (PROMPT_FILE, read_text(os.path.join(os.path.dirname(task.path), PROMPT_FILE))),
         ("POLICY.md", read_text(policy_path())),
     ]
     if operator_instructions():
         files.append(("OPERATOR.md", read_text(operator_path())))
-    files.append(("CONTEXT.md", _load_sibling("fleet_context", "context.py").worker_bundle(repo, task.ref)))
+    files.append(("CONTEXT.md", _context_module().worker_bundle(repo, task.ref)))
     for name, text in files:
         why = push_brief(entry, shell.join(beside, name), text)
         if why:
             return False, f"could not copy {name} to {entry['destination']}: {why}"
-    brief = shell.join(beside, "BRIEF.md")
+    brief = shell.join(beside, BRIEF_FILE)
     task.doc["remote"] = {
         "host": task.doc["host"],
         "destination": str(entry["destination"]),
         "worktree": wt,
         "companions": beside,
-        "files": [name for name, _ in files] + ["result.md"],
+        "files": [name for name, _ in files] + [RESULT_FILE],
         "repo": repo,
         "brief": brief,
-        "result": shell.join(beside, "result.md"),
+        "result": shell.join(beside, RESULT_FILE),
         "at": now(),
     }
     task.save()
@@ -4430,7 +4556,7 @@ def remote_identity(entry: dict, repo: str) -> str | None:
     """
     proc = ssh_run(entry, host_shell(entry).origin(repo))
     url = last_out_of(proc.stdout) if proc.returncode == 0 else ""
-    return _load_sibling("fleet_context", "context.py").remote_identity(url) if url else None
+    return _context_module().remote_identity(url) if url else None
 
 
 def release_companions(task: Task, dry: bool) -> None:
@@ -4479,7 +4605,7 @@ def pull_remote_result(task: Task) -> str:
     text, why = fetch_result(entry, str(src))
     if text is None:
         return ""  # not there yet is the normal state of a working task
-    fleet_platform.write_record(task.file("result.md"), text)
+    fleet_platform.write_record(task.file(RESULT_FILE), text)
     return f"result fetched from {rec.get('destination')}:{src}"
 
 
@@ -4500,6 +4626,11 @@ def read_text(path: str) -> str:
         return BRIEF_PLACEHOLDER
 
 
+def _profiles_module():
+    """Session profiles (`session_profiles.py`), loaded once on first use."""
+    return _load_sibling("fleet_session_profiles", "session_profiles.py")
+
+
 def profile_flags(profile: str) -> list:
     """The agent settings for this task: session-profiles.yaml, and the overlay.
 
@@ -4509,7 +4640,7 @@ def profile_flags(profile: str) -> list:
     (tests/queue/test_dialogs.py). A
     profile that is missing or breaks a rule still renders no flags.
     """
-    profiles_mod = _load_sibling("fleet_session_profiles", "session_profiles.py")
+    profiles_mod = _profiles_module()
     errors: list[str] = []
     profiles = profiles_mod.load_layers(errors)
     if profiles is None or errors or profile not in profiles:
@@ -4525,7 +4656,7 @@ def unknown_profile(profile: str) -> str | None:
     no profile and said nothing. Profiles that do not load are
     `profile_problem`'s to report, not this.
     """
-    profiles_mod = _load_sibling("fleet_session_profiles", "session_profiles.py")
+    profiles_mod = _profiles_module()
     profiles = profiles_mod.load_layers([])
     if profiles is None or profile in profiles:
         return None
@@ -4542,7 +4673,7 @@ def profile_problem(profile: str | None = None) -> str | None:
     spawn refuses instead and names the file. A `profile` that is not there at
     all is the same nothing, and is refused the same way.
     """
-    profiles_mod = _load_sibling("fleet_session_profiles", "session_profiles.py")
+    profiles_mod = _profiles_module()
     errors: list[str] = []
     if profiles_mod.load_layers(errors) is None:
         return "the session profiles do not load — run `uv run fleet session-flags --check`"
@@ -4556,7 +4687,7 @@ def spawn_uncovered_notice(create: list) -> str | None:
     actually reaches `session create`. This is the DECLARATION's own sentence,
     and it is what a dry run prints, because a dry run has no session to ask.
     """
-    profiles_mod = _load_sibling("fleet_session_profiles", "session_profiles.py")
+    profiles_mod = _profiles_module()
     return profiles_mod.uncovered_notice(create)
 
 
@@ -4644,7 +4775,7 @@ def brief_target(task: Task) -> str:
     rec = task.doc.get("remote") or {}
     if task.doc.get("host"):
         return rec.get("brief") or f"<{task.doc['host']}>:<worktree>{COMPANION_SUFFIX}/BRIEF.md"
-    return os.path.abspath(task.file("BRIEF.md"))
+    return os.path.abspath(task.file(BRIEF_FILE))
 
 
 def spawn_commands(task: Task) -> tuple[list, str, str]:
@@ -5322,7 +5453,7 @@ def folded_through(task: Task) -> int | None:
     """
     high = None
     try:
-        fh = open(task.file("progress.jsonl"), encoding="utf-8")
+        fh = open(task.file(PROGRESS_FILE), encoding="utf-8")
     except OSError:
         return None
     with fh:
@@ -5412,20 +5543,25 @@ def cmd_watch(args) -> int:
         )
 
     print(f"watch: {len(touched)} task(s) moved, stream at seq {high}")
+    _print_turn_ends(q, touched)
+    return 0
+
+
+def _print_turn_ends(q: Queue, touched: dict) -> None:
+    """Point at the result of every task whose turn just ended — or say there is none."""
     for ref, ev in sorted(touched.items()):
         # A turn ending is the ONLY thing worth a second look, and it is still
         # not a completion — the worker's own file is.
         if (ev.get("to_state") or ev.get("state")) not in ("done", "idle"):
             continue
         task = q.tasks[ref]
-        if os.path.exists(task.file("result.md")):
+        if os.path.exists(task.file(RESULT_FILE)):
             print(f"    {ref}: a result is waiting — read it with `fleet queue collect`")
         else:
             print(
                 f"    {ref}: turn ended with no result file yet. That is not a\n"
                 "        finished task; leave it be or go and look at the pane."
             )
-    return 0
 
 
 def record_event(task: Task, ev: dict) -> None:
@@ -5443,7 +5579,7 @@ def record_event(task: Task, ev: dict) -> None:
         "observed": now(),
     }
     try:
-        fleet_platform.append_record(task.file("progress.jsonl"), json.dumps(entry) + "\n")
+        fleet_platform.append_record(task.file(PROGRESS_FILE), json.dumps(entry) + "\n")
     except OSError as exc:
         raise QueueError(
             f"{task.ref}: could not append to progress.jsonl: {exc}\n"
@@ -5478,7 +5614,7 @@ def record_learned(task: Task, meta: dict) -> None:
     """
     if meta.get("learned") is None:
         return
-    for line in _load_sibling("fleet_context", "context.py").capture_learned(task, meta["learned"]):
+    for line in _context_module().capture_learned(task, meta["learned"]):
         print(f"        {line}")
 
 
@@ -5663,48 +5799,64 @@ def pull_request_verdict(
     # own change request from the task's branch and is compared against it,
     # exactly as a task with no target always was.
     named, target, why = task_target(task) if (unit or {}).get("primary", True) else ("", None, "")
-    own = True
     if named:
-        if target is None:
-            return "unknown", why, {}
-        if not target.same(forge.Target(cr.repo, cr.number, "change")):
-            return "missing", (
-                f"the pull request is {cr.url}, and this task's target is {named}"
-            ), {}
-        whose = "is this task's target"
+        stop, whose, own = _target_match(cr, named, target, why)
     else:
-        unit = unit or task_repos(task)[0]
-        mine = unit_repo(task, unit)
-        if mine is not None and not same_repo(mine, cr.repo):
-            return "missing", (
-                f"the pull request is in {cr.repo.qualified}, and this repository's "
-                f"checkout {unit['path']} is {mine.qualified}"
-            ), {}
-        branch = str(task.doc.get("branch") or "")
-        if not cr.head_branch:
-            return "unknown", "the forge did not say which branch this pull request is from", {}
-        whose = f"is from {branch}"
-        integration = longest_prefix_rule(cr.repo, integration_branches())
-        # In a repository with an integration branch, the task's own change
-        # request goes feat→develop by design, whatever base it was cut from.
-        bases = {forge_base(task, unit)} | ({integration[0]} if integration else set())
-        if cr.head_branch == branch and cr.base_branch and cr.base_branch not in bases:
-            return "missing", (
-                f"the pull request is from {branch} onto {cr.base_branch}, and this "
-                f"repository's work is cut from and lands on {unit['base']}"
-            ), {}
-        if cr.head_branch != branch:
-            if integration is None or integration[0] != cr.head_branch:
-                return "missing", (
-                    f"the pull request is from branch {cr.head_branch}, and this task's "
-                    f"is {branch}; a task that works on a change request it did not "
-                    "open names it with `add --target`"
-                ), {}
-            own = False
-            verdict, whose = integration_verdict(task, cr, branch, unit)
-            if verdict != "passed":
-                return verdict, whose, {}
+        stop, whose, own = _branch_match(task, cr, unit or task_repos(task)[0])
+    if stop is not None:
+        return stop
+    return _merge_state_verdict(cr, method, whose, own)
 
+
+def _target_match(cr: forge.ChangeRequest, named: str, target, why: str) -> tuple:
+    """`pull_request_verdict` for a task with a `--target`: (refusal or None, whose, own)."""
+    if target is None:
+        return ("unknown", why, {}), "", True
+    if not target.same(forge.Target(cr.repo, cr.number, "change")):
+        return ("missing", (
+            f"the pull request is {cr.url}, and this task's target is {named}"
+        ), {}), "", True
+    return None, "is this task's target", True
+
+
+def _branch_match(task: Task, cr: forge.ChangeRequest, unit: dict) -> tuple:
+    """`pull_request_verdict` for a task's own branch: (refusal or None, whose, own)."""
+    mine = unit_repo(task, unit)
+    if mine is not None and not same_repo(mine, cr.repo):
+        return ("missing", (
+            f"the pull request is in {cr.repo.qualified}, and this repository's "
+            f"checkout {unit['path']} is {mine.qualified}"
+        ), {}), "", True
+    branch = str(task.doc.get("branch") or "")
+    if not cr.head_branch:
+        return ("unknown", "the forge did not say which branch this pull request is from", {}), "", True
+    whose = f"is from {branch}"
+    integration = longest_prefix_rule(cr.repo, integration_branches())
+    # In a repository with an integration branch, the task's own change
+    # request goes feat→develop by design, whatever base it was cut from.
+    bases = {forge_base(task, unit)} | ({integration[0]} if integration else set())
+    if cr.head_branch == branch and cr.base_branch and cr.base_branch not in bases:
+        return ("missing", (
+            f"the pull request is from {branch} onto {cr.base_branch}, and this "
+            f"repository's work is cut from and lands on {unit['base']}"
+        ), {}), "", True
+    if cr.head_branch == branch:
+        return None, whose, True
+    if integration is None or integration[0] != cr.head_branch:
+        return ("missing", (
+            f"the pull request is from branch {cr.head_branch}, and this task's "
+            f"is {branch}; a task that works on a change request it did not "
+            "open names it with `add --target`"
+        ), {}), "", True
+    verdict, whose = integration_verdict(task, cr, branch, unit)
+    if verdict != "passed":
+        return (verdict, whose, {}), "", False
+    return None, whose, False
+
+
+def _merge_state_verdict(cr: forge.ChangeRequest, method: str, whose: str,
+                         own: bool) -> tuple[str, str, dict]:
+    """`pull_request_verdict` once the change request is this task's: its state."""
     # CLOSED UNMERGED IS AN END, NOT A GAP. Nothing more will happen on that
     # change request, so holding the task open for a publish that can never
     # verify left it `dispatched` until somebody abandoned it by hand. The
@@ -6078,7 +6230,7 @@ def record_publish(task: Task, state: str, detail: str, by: str, extra: dict | N
     task.doc["publish"] = block
     task.save()
     fleet_platform.append_record(
-        task.file("progress.jsonl"), json.dumps({"publish": dict(block), "observed": now()}) + "\n"
+        task.file(PROGRESS_FILE), json.dumps({"publish": dict(block), "observed": now()}) + "\n"
     )
 
 
@@ -6177,150 +6329,199 @@ def cmd_collect(args) -> int:
     held = 0
     artifacts = 0
     for task in sorted(q.tasks.values(), key=lambda t: t.ref):
-        path = task.file("result.md")
-        if task.state in CONCLUDED_STATES and task.state not in REREAD_STATES:
-            continue
+        c, h, a = _collect_task(task, allowed)
+        concluded, held, artifacts = concluded + c, held + h, artifacts + a
 
-        # The remote transport, and the whole of it. A worker on another machine
-        # wrote its result into its own worktree; this pulls that file into the
-        # task's own result.md, after which every line below reads a local file
-        # and neither knows nor cares which machine wrote it. Nothing is closed
-        # here: a result that could not be fetched leaves the task exactly as a
-        # missing local one does.
-        if task.doc.get("host") and task.state in ("dispatched", *REREAD_STATES):
-            note = pull_remote_result(task)
-            if note:
-                print(f"    {task.ref}  {note}")
+    _print_collect_summary(concluded, held, artifacts)
 
-        if not os.path.exists(path):
-            continue
-        # ONE WORKER'S FILE HOLDS ONE TASK. A frontmatter the worker mangled
-        # used to end this whole pass with the parser's traceback, and the
-        # reconciler ran that pass every two minutes: nothing else was
-        # collected until somebody found the file. Bytes that are not UTF-8 —
-        # a Windows console writing in its own code page — are read with a
-        # replacement character rather than refused, since the frontmatter is
-        # ASCII and the body is only ever quoted.
-        try:
-            with open(path, encoding="utf-8", errors="replace") as fh:
-                meta, body = parse_result(fh.read())
-        except (OSError, yaml.YAMLError) as exc:
-            why = (
-                f"its frontmatter is not YAML: {one_line(exc)}"
-                if isinstance(exc, yaml.YAMLError) else str(exc)
-            )
-            print(
-                f"    {task.ref}: result.md could not be read — {why}; the task is left as it is",
-                file=sys.stderr,
-            )
-            continue
-        outcome = str(meta.get("outcome", "")).strip()
-        if task.state in REREAD_STATES and outcome == task.doc.get("outcome"):
-            continue  # the verdict it concluded on; nothing new to read
-        if outcome not in OUTCOMES:
-            print(
-                f"    {task.ref}: result.md has outcome {outcome!r}; expected one of "
-                + ", ".join(sorted(OUTCOMES)),
-                file=sys.stderr,
-            )
-            continue
-        method, _how = task_publish(task)
-        # ONE ROW PER REPOSITORY THIS TASK SPANS, and exactly one for the task
-        # that spans none — which is why everything below reads the same for a
-        # single-repository task as it did before a task could span any.
-        rows = reported_artifacts(task, meta)
-        for row in rows:
-            row["verdict"], row["detail"], row["seen"] = publish_verdict(
-                task, outcome, row["url"], row["unit"]
-            )
-        verdict, detail = fold_verdicts(rows)
-        artifact = artifact_value(rows)
-        # Recorded before the branch below, so a held-back task carries the
-        # reason in its record and not only in the terminal that saw it. The
-        # METHOD is recorded with it because a verdict is only readable beside
-        # what it was asked to prove.
-        task.doc["artifact_check"] = {
-            "verdict": verdict, "detail": detail, "at": now(), "method": method,
-        }
-        if len(rows) > 1:
-            # The per-repository verdicts, kept beside the folded one: the fold
-            # says the task is held and this says which repository held it,
-            # after the terminal that printed it has scrolled away.
-            task.doc["artifact_check"]["repos"] = [
-                {"repo": r["repo"], "url": r["url"], "verdict": r["verdict"],
-                 "detail": r["detail"]}
-                for r in rows
-            ]
-        seen = fold_seen(rows)
-        state = seen.pop("state", "") or collect_publish_state(verdict, method)
-        if state:
-            record_publish(task, state, detail, "collect", seen)
-        elif (task.doc.get("publish") or {}).get("state") == "unverified":
-            # A WORKER THAT WITHDREW ITS CLAIM LEAVES THE REFUSAL BEHIND IT. A
-            # held-open task whose worker comes back with a result claiming no
-            # artifact at all is not the task that was refused: `unverified` is
-            # a verdict about an artifact this pass was not given, and left
-            # standing it is drawn red in the pane over a task that landed
-            # having correctly produced nothing. Cleared rather than
-            # overwritten with a fresh word, because "nothing has looked" is
-            # exactly where such a record stands.
-            record_publish(task, "", "this result claims no artifact to check", "collect")
+    # The third thing, wired into the command the lead already runs rather than
+    # left as a chore for it to remember — a step only a human remembers is the
+    # step that let twenty gigabytes of merged-and-forgotten worktree pile up.
+    # It is safe to run here because its gate is not this command's: it acts on
+    # a task whose artifact the FORGE says has landed, which is never true of a
+    # result collected a moment ago. Everything else is reported and left be.
+    reap(q, dry=False, release=not args.no_reap)
 
-        # A change request closed unmerged is the forge ending the task, and
-        # every repository that held it open is one: retired, never held.
-        closed = [r for r in rows if (r.get("seen") or {}).get("state") == "closed"]
-        # `unknown` still never collapses into another word: a repository whose
-        # forge could not be asked leaves the task where it is, as at landing.
-        if verdict == "missing" and closed and all(
-            r in closed for r in rows if r["verdict"] in ("missing", "unknown")
-        ):
-            task.doc["outcome"] = outcome
-            task.doc["artifact"] = artifact
-            task.doc["concluded_at"] = now()
-            retire(task, "closed-unmerged", "; ".join(r["detail"] for r in closed))
-            concluded += 1
-            print(f"    {task.ref}  {ABANDON_HOW['closed-unmerged']}  {closed[0]['detail']}")
-            record_learned(task, meta)
-            continue
+    # The run log's facts move when the records do, and this is the command
+    # that moves them most. It prints only when a file actually changed.
+    refresh_run_logs(q)
+    return 0
 
-        if verdict == "missing" and task.ref not in allowed:
-            task.save()
-            report_unverified(task, rows)
-            held += 1
-            continue
 
+def _read_result(task: Task) -> tuple | None:
+    """(meta, body, outcome) of a task's new result.md, or None when there is none to act on.
+
+    Every reason it is None that a person should see is printed.
+    """
+    path = task.file(RESULT_FILE)
+    if task.state in CONCLUDED_STATES and task.state not in REREAD_STATES:
+        return None
+
+    # The remote transport, and the whole of it. A worker on another machine
+    # wrote its result into its own worktree; this pulls that file into the
+    # task's own result.md, after which every line below reads a local file
+    # and neither knows nor cares which machine wrote it. Nothing is closed
+    # here: a result that could not be fetched leaves the task exactly as a
+    # missing local one does.
+    if task.doc.get("host") and task.state in ("dispatched", *REREAD_STATES):
+        note = pull_remote_result(task)
+        if note:
+            print(f"    {task.ref}  {note}")
+
+    if not os.path.exists(path):
+        return None
+    # ONE WORKER'S FILE HOLDS ONE TASK. A frontmatter the worker mangled
+    # used to end this whole pass with the parser's traceback, and the
+    # reconciler ran that pass every two minutes: nothing else was
+    # collected until somebody found the file. Bytes that are not UTF-8 —
+    # a Windows console writing in its own code page — are read with a
+    # replacement character rather than refused, since the frontmatter is
+    # ASCII and the body is only ever quoted.
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            meta, body = parse_result(fh.read())
+    except (OSError, yaml.YAMLError) as exc:
+        why = (
+            f"its frontmatter is not YAML: {one_line(exc)}"
+            if isinstance(exc, yaml.YAMLError) else str(exc)
+        )
+        print(
+            f"    {task.ref}: result.md could not be read — {why}; the task is left as it is",
+            file=sys.stderr,
+        )
+        return None
+    outcome = str(meta.get("outcome", "")).strip()
+    if task.state in REREAD_STATES and outcome == task.doc.get("outcome"):
+        return None  # the verdict it concluded on; nothing new to read
+    if outcome not in OUTCOMES:
+        print(
+            f"    {task.ref}: result.md has outcome {outcome!r}; expected one of "
+            + ", ".join(sorted(OUTCOMES)),
+            file=sys.stderr,
+        )
+        return None
+    return meta, body, outcome
+
+
+def _collect_task(task: Task, allowed: set) -> tuple[int, int, int]:
+    """Read one task's result and close it, hold it, or retire it.
+
+    (concluded, held, artifacts) — what it adds to `collect`'s counts.
+    """
+    read = _read_result(task)
+    if read is None:
+        return 0, 0, 0
+    meta, body, outcome = read
+    method, _how = task_publish(task)
+    # ONE ROW PER REPOSITORY THIS TASK SPANS, and exactly one for the task
+    # that spans none — which is why everything below reads the same for a
+    # single-repository task as it did before a task could span any.
+    rows = reported_artifacts(task, meta)
+    verdict, detail, seen = _check_artifacts(task, outcome, method, rows)
+    artifact = artifact_value(rows)
+
+    # A change request closed unmerged is the forge ending the task, and
+    # every repository that held it open is one: retired, never held.
+    closed = [r for r in rows if (r.get("seen") or {}).get("state") == "closed"]
+    # `unknown` still never collapses into another word: a repository whose
+    # forge could not be asked leaves the task where it is, as at landing.
+    if verdict == "missing" and closed and all(
+        r in closed for r in rows if r["verdict"] in ("missing", "unknown")
+    ):
         task.doc["outcome"] = outcome
         task.doc["artifact"] = artifact
-        task.doc["state"] = OUTCOMES[outcome]
         task.doc["concluded_at"] = now()
-        task.save()
-        concluded += 1
-        artifacts += (
-            1 if method in CHANGE_METHODS and any(pr_ref(r["url"]) for r in rows) else 0
-        )
-        line = f"    {task.ref}  {outcome}"
-        if len(rows) == 1:
-            if artifact:
-                line += f"  {artifact}"
-        else:
-            named = ", ".join(str(r["url"]) for r in rows if r["url"])
-            line += f"  {len(rows)} repositories: {named or '(none reported)'}"
-        if verdict == "passed":
-            line += f"  [publish verified: {method}]"
-            if seen.get("attestation"):
-                line += "  [merged; its attestation did not hold — noted, not held]"
-        elif verdict == "skipped" and method in ("none", "served"):
-            line += f"  [publish not checked: {method}]"
-        elif verdict == "missing":
-            line += "  [publish NOT verified — closed by --allow-unverified]"
-        elif verdict == "unknown":
-            line += f"  [publish unchecked: could not check — {detail}]"
-        print(line)
-        first = body.splitlines()[0] if body.splitlines() else ""
-        if first:
-            print(f"        {first}")
+        retire(task, "closed-unmerged", "; ".join(r["detail"] for r in closed))
+        print(f"    {task.ref}  {ABANDON_HOW['closed-unmerged']}  {closed[0]['detail']}")
         record_learned(task, meta)
+        return 1, 0, 0
 
+    if verdict == "missing" and task.ref not in allowed:
+        task.save()
+        report_unverified(task, rows)
+        return 0, 1, 0
+
+    task.doc["outcome"] = outcome
+    task.doc["artifact"] = artifact
+    task.doc["state"] = OUTCOMES[outcome]
+    task.doc["concluded_at"] = now()
+    task.save()
+    artifacts = (
+        1 if method in CHANGE_METHODS and any(pr_ref(r["url"]) for r in rows) else 0
+    )
+    print(_concluded_line(task, outcome, rows, artifact, verdict, detail, method, seen))
+    first = body.splitlines()[0] if body.splitlines() else ""
+    if first:
+        print(f"        {first}")
+    record_learned(task, meta)
+    return 1, 0, artifacts
+
+
+def _check_artifacts(task: Task, outcome: str, method: str, rows: list) -> tuple:
+    """Verify each reported artifact and record the verdict. (verdict, detail, seen)."""
+    for row in rows:
+        row["verdict"], row["detail"], row["seen"] = publish_verdict(
+            task, outcome, row["url"], row["unit"]
+        )
+    verdict, detail = fold_verdicts(rows)
+    # Recorded before the branch below, so a held-back task carries the
+    # reason in its record and not only in the terminal that saw it. The
+    # METHOD is recorded with it because a verdict is only readable beside
+    # what it was asked to prove.
+    task.doc["artifact_check"] = {
+        "verdict": verdict, "detail": detail, "at": now(), "method": method,
+    }
+    if len(rows) > 1:
+        # The per-repository verdicts, kept beside the folded one: the fold
+        # says the task is held and this says which repository held it,
+        # after the terminal that printed it has scrolled away.
+        task.doc["artifact_check"]["repos"] = [
+            {"repo": r["repo"], "url": r["url"], "verdict": r["verdict"],
+             "detail": r["detail"]}
+            for r in rows
+        ]
+    seen = fold_seen(rows)
+    state = seen.pop("state", "") or collect_publish_state(verdict, method)
+    if state:
+        record_publish(task, state, detail, "collect", seen)
+    elif (task.doc.get("publish") or {}).get("state") == "unverified":
+        # A WORKER THAT WITHDREW ITS CLAIM LEAVES THE REFUSAL BEHIND IT. A
+        # held-open task whose worker comes back with a result claiming no
+        # artifact at all is not the task that was refused: `unverified` is
+        # a verdict about an artifact this pass was not given, and left
+        # standing it is drawn red in the pane over a task that landed
+        # having correctly produced nothing. Cleared rather than
+        # overwritten with a fresh word, because "nothing has looked" is
+        # exactly where such a record stands.
+        record_publish(task, "", "this result claims no artifact to check", "collect")
+    return verdict, detail, seen
+
+
+def _concluded_line(task: Task, outcome: str, rows: list, artifact, verdict: str,
+                    detail: str, method: str, seen: dict) -> str:
+    """`collect`'s line for a task it closed."""
+    line = f"    {task.ref}  {outcome}"
+    if len(rows) == 1:
+        if artifact:
+            line += f"  {artifact}"
+    else:
+        named = ", ".join(str(r["url"]) for r in rows if r["url"])
+        line += f"  {len(rows)} repositories: {named or '(none reported)'}"
+    if verdict == "passed":
+        line += f"  [publish verified: {method}]"
+        if seen.get("attestation"):
+            line += "  [merged; its attestation did not hold — noted, not held]"
+    elif verdict == "skipped" and method in ("none", "served"):
+        line += f"  [publish not checked: {method}]"
+    elif verdict == "missing":
+        line += "  [publish NOT verified — closed by --allow-unverified]"
+    elif verdict == "unknown":
+        line += f"  [publish unchecked: could not check — {detail}]"
+    return line
+
+
+def _print_collect_summary(concluded: int, held: int, artifacts: int) -> None:
+    """`collect`'s closing counts, and the nudge toward `shepherd`."""
     print(f"collect: {concluded} result(s) read")
     if held:
         print(
@@ -6337,19 +6538,6 @@ def cmd_collect(args) -> int:
             "         `fleet queue shepherd --dry-run` — a PR can go bad long\n"
             "         after the worker that wrote it stopped."
         )
-
-    # The third thing, wired into the command the lead already runs rather than
-    # left as a chore for it to remember — a step only a human remembers is the
-    # step that let twenty gigabytes of merged-and-forgotten worktree pile up.
-    # It is safe to run here because its gate is not this command's: it acts on
-    # a task whose artifact the FORGE says has landed, which is never true of a
-    # result collected a moment ago. Everything else is reported and left be.
-    reap(q, dry=False, release=not args.no_reap)
-
-    # The run log's facts move when the records do, and this is the command
-    # that moves them most. It prints only when a file actually changed.
-    refresh_run_logs(q)
-    return 0
 
 
 # --- land and reap: the third thing, after both halves of completion ---------
@@ -6617,25 +6805,30 @@ def sweep_landings(q: Queue, dry: bool) -> dict:
             if nxt:
                 print(f"    {task.ref:<46} would be {nxt:<10} {detail}")
             continue
-        task.doc["landing"] = {"state": kind, "detail": detail, "at": now()}
-        if kind in ("merged", "closed"):
-            # The same fact in the block that carries every other observation
-            # of this task's publish, so a reader of that block alone is never
-            # left at the last thing the shepherd saw while the pull request
-            # has since merged. `open`, `none` and `unknown` write nothing:
-            # they say the sweep looked and learned nothing new. A `push`
-            # task is skipped: its block already says `pushed`, the same fact
-            # in the word its own method uses, and git is the witness to both.
-            if task_publish(task)[0] != "push":
-                record_publish(task, kind, detail, "reap")
-        if nxt == "abandoned":
-            retire(task, "closed-unmerged", detail)
-            print(f"    {task.ref:<46} {nxt:<10} {ABANDON_HOW['closed-unmerged']}: {detail}")
-        elif nxt:
-            task.doc["state"] = nxt
-            print(f"    {task.ref:<46} {nxt:<10} {detail}")
-        task.save()
+        _record_landing(task, kind, detail, nxt)
     return seen
+
+
+def _record_landing(task: Task, kind: str, detail: str, nxt: str | None) -> None:
+    """Write what the forge said of one `done` task, promoting it if it landed."""
+    task.doc["landing"] = {"state": kind, "detail": detail, "at": now()}
+    if kind in ("merged", "closed"):
+        # The same fact in the block that carries every other observation
+        # of this task's publish, so a reader of that block alone is never
+        # left at the last thing the shepherd saw while the pull request
+        # has since merged. `open`, `none` and `unknown` write nothing:
+        # they say the sweep looked and learned nothing new. A `push`
+        # task is skipped: its block already says `pushed`, the same fact
+        # in the word its own method uses, and git is the witness to both.
+        if task_publish(task)[0] != "push":
+            record_publish(task, kind, detail, "reap")
+    if nxt == "abandoned":
+        retire(task, "closed-unmerged", detail)
+        print(f"    {task.ref:<46} {nxt:<10} {ABANDON_HOW['closed-unmerged']}: {detail}")
+    elif nxt:
+        task.doc["state"] = nxt
+        print(f"    {task.ref:<46} {nxt:<10} {detail}")
+    task.save()
 
 
 # How long a dispatched task's session has to stay missing from thurbox's
@@ -6692,13 +6885,44 @@ def sweep_vanished(q: Queue, dry: bool, snapshot=None, decided: set | None = Non
 
     def missing(task) -> bool:
         sid = task.doc["session"]
-        return not (sid in live or sid == lead or os.path.exists(task.file("result.md")))
+        return not (sid in live or sid == lead or os.path.exists(task.file(RESULT_FILE)))
 
     def unreachable(host) -> bool:
         if host and host not in reachable:
             reachable[host] = host_reachable(host)[0]
         return bool(host) and not reachable[host]
 
+    outage = _outage_hosts(todo, missing, unreachable)
+
+    acted = 0
+    for task in todo:
+        if not _vanish_held(task, missing, unreachable, outage, dry):
+            acted += _vanished_look(task, dry, decided)
+    return acted
+
+
+def _vanish_held(task: Task, missing, unreachable, outage: set, dry: bool) -> bool:
+    """Whether this look leaves the task alone; a session listed again clears its first look."""
+    if not missing(task):
+        seen = task.doc.get("vanished") or {}
+        if seen and not dry:
+            task.doc.pop("vanished", None)
+            task.save()
+        return True
+    if unreachable(task.doc.get("host")):
+        return True
+    # Neither a first look nor a retirement. A first look started here
+    # would count the outage itself toward the grace, so a session
+    # still missing when the machine recovers would be retired on its
+    # very next pass, with ten minutes of "evidence" that were really
+    # the outage's. Leaving it unrecorded starts the clock only once a
+    # look can be believed again. An earlier first look is left as it
+    # is: it predates the outage and stays honest on its own.
+    return (task.doc.get("host") or "") in outage
+
+
+def _outage_hosts(todo: list, missing, unreachable) -> set:
+    """The hosts that lost most of their sessions in one look, each named out loud."""
     # One machine at a time: how many of its tracked sessions this look lost.
     per_host: dict = {}
     for task in todo:
@@ -6714,56 +6938,40 @@ def sweep_vanished(q: Queue, dry: bool, snapshot=None, decided: set | None = Non
                 f"    thurbox lists {absent} of {tracked} dispatched sessions {where} as gone in one look; "
                 "read as an outage, nothing retired — a person should look"
             )
+    return outage
 
-    acted = 0
-    for task in todo:
-        sid = task.doc["session"]
-        seen = task.doc.get("vanished") or {}
-        if not missing(task):
-            if seen and not dry:
-                task.doc.pop("vanished", None)
-                task.save()
-            continue
-        if unreachable(task.doc.get("host")):
-            continue
-        if (task.doc.get("host") or "") in outage:
-            # Neither a first look nor a retirement. A first look started here
-            # would count the outage itself toward the grace, so a session
-            # still missing when the machine recovers would be retired on its
-            # very next pass, with ten minutes of "evidence" that were really
-            # the outage's. Leaving it unrecorded starts the clock only once a
-            # look can be believed again. An earlier first look is left as it
-            # is: it predates the outage and stays honest on its own.
-            continue
-        since = record_time(seen.get("since")) if seen.get("session") == sid else 0.0
-        if not since:
-            acted += 1
-            if dry:
-                print(f"    {task.ref:<46} not listed {sid}  thurbox does not list its session")
-                continue
-            task.doc["vanished"] = {"session": sid, "since": now()}
-            task.save()
-            print(
-                f"    {task.ref:<46} not listed {sid}  thurbox no longer lists its session; "
-                f"`{ABANDON_HOW['session-gone']}` if it is still absent in "
-                f"{VANISHED_GRACE_SECS // 60}m"
-            )
-            continue
-        if time.time() - since < VANISHED_GRACE_SECS:
-            continue
-        why = f"thurbox has not listed session {sid} since {seen['since']}, and no result.md was written"
-        acted += 1
+
+def _vanished_look(task: Task, dry: bool, decided: set | None) -> int:
+    """Record a missing session's first look, or retire it once the grace is up. 1 if acted."""
+    sid = task.doc["session"]
+    seen = task.doc.get("vanished") or {}
+    since = record_time(seen.get("since")) if seen.get("session") == sid else 0.0
+    if not since:
         if dry:
-            print(f"    {task.ref:<46} would be abandoned  {ABANDON_HOW['session-gone']}: {why}")
-            continue
-        retire(task, "session-gone", why)
-        record_reaped(task, sid, "already gone")
-        print(f"    {task.ref:<46} abandoned  {ABANDON_HOW['session-gone']}: {why}")
-        trees = task_worktrees(task)
-        free_build_output(task.ref, trees, dry)
-        run_worktree_command(task.ref, handover_worktrees(task), dry, decided=decided)
-        release_companions(task, dry)
-    return acted
+            print(f"    {task.ref:<46} not listed {sid}  thurbox does not list its session")
+            return 1
+        task.doc["vanished"] = {"session": sid, "since": now()}
+        task.save()
+        print(
+            f"    {task.ref:<46} not listed {sid}  thurbox no longer lists its session; "
+            f"`{ABANDON_HOW['session-gone']}` if it is still absent in "
+            f"{VANISHED_GRACE_SECS // 60}m"
+        )
+        return 1
+    if time.time() - since < VANISHED_GRACE_SECS:
+        return 0
+    why = f"thurbox has not listed session {sid} since {seen['since']}, and no result.md was written"
+    if dry:
+        print(f"    {task.ref:<46} would be abandoned  {ABANDON_HOW['session-gone']}: {why}")
+        return 1
+    retire(task, "session-gone", why)
+    record_reaped(task, sid, "already gone")
+    print(f"    {task.ref:<46} abandoned  {ABANDON_HOW['session-gone']}: {why}")
+    trees = task_worktrees(task)
+    free_build_output(task.ref, trees, dry)
+    run_worktree_command(task.ref, handover_worktrees(task), dry, decided=decided)
+    release_companions(task, dry)
+    return 1
 
 
 def session_snapshot() -> tuple[dict | None, str]:
@@ -6774,7 +6982,7 @@ def session_snapshot() -> tuple[dict | None, str]:
     session still holding a worktree, and the worktree with it.
     """
     if not shutil.which("thurbox-cli"):
-        return None, "thurbox-cli not found on PATH"
+        return None, NO_THURBOX_CLI
     try:
         proc = subprocess.run(
             ["thurbox-cli", "session", "list", "--json"],
@@ -6858,11 +7066,16 @@ def owned_worktree_paths(target) -> tuple[list | None, str]:
     return owned, ""
 
 
+# Why a path a session reports cannot be placed at all.
+NOT_ABSOLUTE = "missing or non-absolute path"
+
+
 def local_resolved_path(value) -> str:
+
     # Path.resolve(strict=True), not os.path.realpath(..., strict=True):
     # the latter's strict= is 3.13 and this file's floor is 3.11.
     if not isinstance(value, str) or not value or "\0" in value or not os.path.isabs(value):
-        raise ValueError("missing or non-absolute path")
+        raise ValueError(NOT_ABSOLUTE)
     return os.path.normcase(str(Path(value).resolve(strict=True)))
 
 
@@ -6885,10 +7098,10 @@ def local_occupant_path(value) -> str:
 def documented_path(value, posix: bool) -> str:
     """A path as the multiplexer spells it, not as this machine would resolve it."""
     if not isinstance(value, str) or not value or "\0" in value:
-        raise ValueError("missing or non-absolute path")
+        raise ValueError(NOT_ABSOLUTE)
     mod = posixpath if posix else ntpath
     if not mod.isabs(value):
-        raise ValueError("missing or non-absolute path")
+        raise ValueError(NOT_ABSOLUTE)
     return mod.normcase(mod.normpath(value))
 
 
@@ -6927,32 +7140,40 @@ def occupant_in_worktrees(sessions, sid, roots, path_of, common, skip_offbox=Fal
     for other_id, other in sessions.items():
         if other_id == sid:
             continue
-        backend = other.get("backend_type")
-        if not isinstance(backend, str):
-            return f"cannot read backend of session {other_id} for worktree check"
-        place = session_place(backend)
-        if place is None:
-            return f"cannot judge backend {backend!r} of session {other_id} for worktree check"
-        off_box = place[0] != "local"
+        why = _occupant(other_id, other, roots, path_of, common, skip_offbox)
+        if why:
+            return why
+    return ""
+
+
+def _occupant(other_id, other: dict, roots, path_of, common, skip_offbox: bool) -> str:
+    """Why one other session occupies one of `roots`, or "" when it does not."""
+    backend = other.get("backend_type")
+    if not isinstance(backend, str):
+        return f"cannot read backend of session {other_id} for worktree check"
+    place = session_place(backend)
+    if place is None:
+        return f"cannot judge backend {backend!r} of session {other_id} for worktree check"
+    off_box = place[0] != "local"
+    try:
+        cwd = path_of(other.get("cwd"))
+    except (OSError, ValueError, RuntimeError) as exc:
+        # An ssh/wsl cwd that does not resolve here is a path on another
+        # machine, not a refusal to judge this one. A wsl row whose cwd
+        # *does* resolve is on this filesystem and is checked below.
+        if skip_offbox and off_box:
+            return ""
+        return f"cannot resolve cwd of session {other_id}: {exc}"
+    for path, root in roots:
+        # commonpath compares components, unlike a prefix check which
+        # confuses worktree and worktree-other. Separate Windows drives
+        # cannot contain one another.
         try:
-            cwd = path_of(other.get("cwd"))
-        except (OSError, ValueError, RuntimeError) as exc:
-            # An ssh/wsl cwd that does not resolve here is a path on another
-            # machine, not a refusal to judge this one. A wsl row whose cwd
-            # *does* resolve is on this filesystem and is checked below.
-            if skip_offbox and off_box:
-                continue
-            return f"cannot resolve cwd of session {other_id}: {exc}"
-        for path, root in roots:
-            # commonpath compares components, unlike a prefix check which
-            # confuses worktree and worktree-other. Separate Windows drives
-            # cannot contain one another.
-            try:
-                inside = common((root, cwd)) == root
-            except ValueError:
-                inside = False
-            if inside:
-                return f"session {other_id} uses worktree {path} (cwd {other['cwd']})"
+            inside = common((root, cwd)) == root
+        except ValueError:
+            inside = False
+        if inside:
+            return f"session {other_id} uses worktree {path} (cwd {other['cwd']})"
     return ""
 
 
@@ -6994,31 +7215,7 @@ def worktree_release_blocker(sid: str) -> str:
             sessions, sid, roots, local_occupant_path, os.path.commonpath, skip_offbox=True,
         )
     if via == "ssh":
-        remote, entry, why = host_session_snapshot(host)
-        if remote is None:
-            return why
-        # Occupancy skips the target by id. That only holds when the host
-        # lists this session under the same id the local mirror does. A
-        # non-empty list without that row cannot tell an occupant from the
-        # target itself, so this is a named keep rather than a silent one.
-        if remote and sid not in remote:
-            return (
-                f"host session list has no row {sid}; "
-                "cannot tell an occupant from this session"
-            )
-        # The host's platform, never the route's multiplexer: thurbox serves
-        # psmux on a POSIX host and tmux on a Windows one.
-        posix = host_platform(entry) == "posix"
-        common = posixpath.commonpath if posix else ntpath.commonpath
-
-        def host_path(value):
-            return documented_path(value, posix)
-
-        try:
-            roots = [(path, host_path(path)) for path in owned]
-        except (OSError, ValueError, RuntimeError) as exc:
-            return f"cannot resolve session worktree: {exc}"
-        return occupant_in_worktrees(remote, sid, roots, host_path, common)
+        return _host_release_blocker(sid, host, owned)
 
     # A WSL distro: on this filesystem, spelled as POSIX paths.
     def wsl_path(value):
@@ -7031,6 +7228,35 @@ def worktree_release_blocker(sid: str) -> str:
     return occupant_in_worktrees(
         sessions, sid, roots, wsl_path, posixpath.commonpath,
     )
+
+
+def _host_release_blocker(sid: str, host: str, owned: list) -> str:
+    """`worktree_release_blocker` for a session on an ssh host, judged on its own list."""
+    remote, entry, why = host_session_snapshot(host)
+    if remote is None:
+        return why
+    # Occupancy skips the target by id. That only holds when the host
+    # lists this session under the same id the local mirror does. A
+    # non-empty list without that row cannot tell an occupant from the
+    # target itself, so this is a named keep rather than a silent one.
+    if remote and sid not in remote:
+        return (
+            f"host session list has no row {sid}; "
+            "cannot tell an occupant from this session"
+        )
+    # The host's platform, never the route's multiplexer: thurbox serves
+    # psmux on a POSIX host and tmux on a Windows one.
+    posix = host_platform(entry) == "posix"
+    common = posixpath.commonpath if posix else ntpath.commonpath
+
+    def host_path(value):
+        return documented_path(value, posix)
+
+    try:
+        roots = [(path, host_path(path)) for path in owned]
+    except (OSError, ValueError, RuntimeError) as exc:
+        return f"cannot resolve session worktree: {exc}"
+    return occupant_in_worktrees(remote, sid, roots, host_path, common)
 
 
 def session_state(sid: str) -> tuple[str | None, str]:
@@ -7086,6 +7312,9 @@ def record_reaped(task: Task, sid: str, how: str) -> None:
 # machine, and a session that was already gone took none of it with it.
 BUILD_OUTPUT = ("target", "node_modules", ".venv")
 
+# How `git worktree list --porcelain` opens each worktree's block.
+WORKTREE_LINE = "worktree "
+
 
 def task_worktrees(task: Task) -> list[str]:
     """Where this task's branch is checked out on this machine, one per repository.
@@ -7100,8 +7329,8 @@ def task_worktrees(task: Task) -> list[str]:
     for unit in task_repos(task):
         here = None
         for line in git_out(unit["path"], ["worktree", "list", "--porcelain"]).splitlines():
-            if line.startswith("worktree "):
-                here = line[len("worktree "):]
+            if line.startswith(WORKTREE_LINE):
+                here = line[len(WORKTREE_LINE):]
             elif line == want and here and not same_path(here, unit["path"]):
                 found.append(here)
     return found
@@ -7117,18 +7346,7 @@ def build_output(tree: str) -> list[str]:
     directory that happens to be called `target` and holds source is source.
     Anything git cannot answer about is kept.
     """
-    found = []
-    for here, dirs, _files in os.walk(tree):
-        keep = []
-        for name in dirs:
-            full = os.path.join(here, name)
-            if name == ".git" or fleet_platform.is_dir_link(full):
-                continue
-            if name in BUILD_OUTPUT:
-                found.append(full)
-            else:
-                keep.append(name)
-        dirs[:] = keep
+    found = _named_build_dirs(tree)
     if not found:
         return []
     rel = [os.path.relpath(f, tree).replace(os.sep, "/") for f in found]
@@ -7151,6 +7369,23 @@ def build_output(tree: str) -> list[str]:
         full for full, r in zip(found, rel)
         if r in said and not any(t == r or t.startswith(r + "/") for t in held)
     ]
+
+
+def _named_build_dirs(tree: str) -> list[str]:
+    """Every real directory under `tree` named in BUILD_OUTPUT, not descending into one."""
+    found = []
+    for here, dirs, _files in os.walk(tree):
+        keep = []
+        for name in dirs:
+            full = os.path.join(here, name)
+            if name == ".git" or fleet_platform.is_dir_link(full):
+                continue
+            if name in BUILD_OUTPUT:
+                found.append(full)
+            else:
+                keep.append(name)
+        dirs[:] = keep
+    return found
 
 
 def worktree_occupant(sessions, tree: str, sid: str | None = None) -> str:
@@ -7212,18 +7447,25 @@ def free_build_output(ref: str, trees: list[str], dry: bool) -> int:
         if busy:
             print(f"    {ref:<46} kept       build output: {busy}")
             continue
-        for path in build_output(tree):
-            if dry:
-                print(f"    {ref:<46} would free {path}")
-                freed += 1
-                continue
-            try:
-                fleet_platform.remove_tree(path)
-            except OSError as exc:
-                print(f"    {ref:<46} kept       {path}: {exc}", file=sys.stderr)
-                continue
-            print(f"    {ref:<46} freed      {path}")
+        freed += _free_paths(ref, build_output(tree), dry)
+    return freed
+
+
+def _free_paths(ref: str, paths: list[str], dry: bool) -> int:
+    """Delete each build-output path, saying what went. Returns how many."""
+    freed = 0
+    for path in paths:
+        if dry:
+            print(f"    {ref:<46} would free {path}")
             freed += 1
+            continue
+        try:
+            fleet_platform.remove_tree(path)
+        except OSError as exc:
+            print(f"    {ref:<46} kept       {path}: {exc}", file=sys.stderr)
+            continue
+        print(f"    {ref:<46} freed      {path}")
+        freed += 1
     return freed
 
 
@@ -7438,38 +7680,48 @@ def run_worktree_command(ref: str, trees: list[str], dry: bool, sid: str | None 
         if busy:
             print(f"    {ref:<46} kept       {WORKTREE_CMD}: {busy}")
             continue
-        argv_here = [*argv, tree, ref]
-        # Asked for, so nothing asks again. Set before the run and not after
-        # it: a command that fails has still been pointed at this worktree,
-        # and pointing a second one at it is not the retry to make.
-        if decided is not None:
-            decided.add(key)
-        if dry:
-            print(f"    {ref:<46} would run  {shell_quote(argv_here)}")
-            ran += 1
-            continue
-        try:
-            done = fleet_platform.run_bounded(
-                argv_here, secs, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT, encoding="utf-8", errors="replace",
-            )
-        except OSError as exc:
-            print(f"    {ref:<46} FAILED     {WORKTREE_CMD}: {exc}; {tree} may still be "
-                  "held outside fleet", file=sys.stderr)
-            continue
-        if done is None:
-            print(f"    {ref:<46} FAILED     {WORKTREE_CMD} killed after {secs}s, its bound "
-                  f"({WORKTREE_CMD_SECS}); {tree} may still be held outside fleet",
-                  file=sys.stderr)
-            continue
-        if done.returncode != 0:
-            said = (done.stdout or "").strip().splitlines()
-            print(f"    {ref:<46} FAILED     {WORKTREE_CMD} exit {done.returncode}: "
-                  + (said[-1] if said else "no output"), file=sys.stderr)
-            continue
-        print(f"    {ref:<46} released   {tree}  ({WORKTREE_CMD})")
-        ran += 1
+        ran += _hand_over(ref, [*argv, tree, ref], secs, tree, dry, decided, key)
     return ran
+
+
+def _hand_over(ref: str, argv_here: list, secs, tree: str, dry: bool,
+               decided: set | None, key: str) -> int:
+    """Run (or, dry, name) the operator's command on one worktree. 1 when it ran."""
+    # Asked for, so nothing asks again. Set before the run and not after
+    # it: a command that fails has still been pointed at this worktree,
+    # and pointing a second one at it is not the retry to make.
+    if decided is not None:
+        decided.add(key)
+    if dry:
+
+        print(f"    {ref:<46} would run  {shell_quote(argv_here)}")
+        return 1
+    return 1 if _run_worktree_argv(ref, argv_here, secs, tree) else 0
+
+
+def _run_worktree_argv(ref: str, argv_here: list, secs, tree: str) -> bool:
+    """Run the operator's command on one worktree, bounded. True when it succeeded."""
+    try:
+        done = fleet_platform.run_bounded(
+            argv_here, secs, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, encoding="utf-8", errors="replace",
+        )
+    except OSError as exc:
+        print(f"    {ref:<46} FAILED     {WORKTREE_CMD}: {exc}; {tree} may still be "
+              "held outside fleet", file=sys.stderr)
+        return False
+    if done is None:
+        print(f"    {ref:<46} FAILED     {WORKTREE_CMD} killed after {secs}s, its bound "
+              f"({WORKTREE_CMD_SECS}); {tree} may still be held outside fleet",
+              file=sys.stderr)
+        return False
+    if done.returncode != 0:
+        said = (done.stdout or "").strip().splitlines()
+        print(f"    {ref:<46} FAILED     {WORKTREE_CMD} exit {done.returncode}: "
+              + (said[-1] if said else NO_OUTPUT), file=sys.stderr)
+        return False
+    print(f"    {ref:<46} released   {tree}  ({WORKTREE_CMD})")
+    return True
 
 
 def release_fixer_checkouts(q: Queue, state_of, dry: bool, decided: set | None = None) -> int:
@@ -7495,48 +7747,59 @@ def release_fixer_checkouts(q: Queue, state_of, dry: bool, decided: set | None =
             if not os.path.isdir(path):
                 continue
             acted += 1
-            # Before the remove, which refuses a checkout holding files git
-            # does not track, and build output is exactly that.
-            free_build_output(task.ref, [path], dry)
-            if dry:
-                # NO `would run` HERE. Whether this checkout is handed over
-                # depends on a `git worktree remove` that has not been tried,
-                # and a dry run that printed the command would promise exactly
-                # what a refused removal cancels.
-                argv, _secs, why = worktree_command()
-                after = ", then hand it over" if argv or why else ""
-                print(f"    {task.ref:<46} would remove fixer checkout {path}{after}")
-                continue
-            # Asked of each repository the task spans, because `shepherd` cuts
-            # the checkout off whichever one the change request was in and only
-            # that one's git knows about the worktree. A task with one
-            # repository asks exactly the one it always asked.
-            for unit in task_repos(task):
-                proc = subprocess.run(
-                    ["git", "-C", unit["path"], "worktree", "remove", path],
-                    capture_output=True, text=True, encoding="utf-8",
-                )
-                if proc.returncode == 0:
-                    break
-            if proc.returncode != 0:
-                err = (proc.stderr or proc.stdout).strip().splitlines()
-                print(
-                    f"    {task.ref:<46} kept       fixer checkout {path}: "
-                    + (err[-1] if err else "git worktree remove failed"),
-                    file=sys.stderr,
-                )
-                # HANDED OVER TO NOBODY. git refused this checkout because it
-                # holds files it does not track, which is work somebody has
-                # not finished, and no other release point reaches it
-                # (`handover_worktrees`) — a teardown aimed at a worktree
-                # still being worked in is the one mistake here that costs
-                # more than the leak it was added to stop.
-                continue
-            print(f"    {task.ref:<46} removed    fixer checkout {path}")
-            # A fixer's checkout is a worktree an agent worked in too, so what
-            # it started outside it is the operator's to take down as well.
-            run_worktree_command(task.ref, [path], dry, decided=decided)
+            _release_fixer_checkout(task, path, dry, decided)
     return acted
+
+
+def _release_fixer_checkout(task: Task, path: str, dry: bool, decided: set | None) -> None:
+    """Free, remove and hand over one fixer checkout that is still on disk."""
+    # Before the remove, which refuses a checkout holding files git
+    # does not track, and build output is exactly that.
+    free_build_output(task.ref, [path], dry)
+    if dry:
+        # NO `would run` HERE. Whether this checkout is handed over
+        # depends on a `git worktree remove` that has not been tried,
+        # and a dry run that printed the command would promise exactly
+        # what a refused removal cancels.
+        argv, _secs, why = worktree_command()
+        after = ", then hand it over" if argv or why else ""
+        print(f"    {task.ref:<46} would remove fixer checkout {path}{after}")
+        return
+    proc = _remove_fixer_worktree(task, path)
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout).strip().splitlines()
+        print(
+            f"    {task.ref:<46} kept       fixer checkout {path}: "
+            + (err[-1] if err else "git worktree remove failed"),
+            file=sys.stderr,
+        )
+        # HANDED OVER TO NOBODY. git refused this checkout because it
+        # holds files it does not track, which is work somebody has
+        # not finished, and no other release point reaches it
+        # (`handover_worktrees`) — a teardown aimed at a worktree
+        # still being worked in is the one mistake here that costs
+        # more than the leak it was added to stop.
+        return
+    print(f"    {task.ref:<46} removed    fixer checkout {path}")
+    # A fixer's checkout is a worktree an agent worked in too, so what
+    # it started outside it is the operator's to take down as well.
+    run_worktree_command(task.ref, [path], dry, decided=decided)
+
+
+def _remove_fixer_worktree(task: Task, path: str) -> subprocess.CompletedProcess:
+    """`git worktree remove` of a fixer checkout; the last attempt's result."""
+    # Asked of each repository the task spans, because `shepherd` cuts
+    # the checkout off whichever one the change request was in and only
+    # that one's git knows about the worktree. A task with one
+    # repository asks exactly the one it always asked.
+    for unit in task_repos(task):
+        proc = subprocess.run(
+            ["git", "-C", unit["path"], "worktree", "remove", path],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        if proc.returncode == 0:
+            break
+    return proc
 
 
 def reap(q: Queue, dry: bool = False, release: bool = True) -> int:
@@ -7625,8 +7888,15 @@ def reap(q: Queue, dry: bool = False, release: bool = True) -> int:
     # Before the holders: a task whose own session is long gone can still have
     # a fixer checkout on disk.
     acted += release_fixer_checkouts(q, state_of, dry, decided)
+    return acted + _reap_holders(q, state_of, landings, snapshot, dry, decided)
 
+
+def _reap_holders(q: Queue, state_of, landings: dict, snapshot, dry: bool,
+                  decided: set) -> int:
+    """`reap`'s last step: every finished task still holding a session. Returns how many."""
+    acted = 0
     holders = [
+
         t
         for t in sorted(q.tasks.values(), key=lambda t: t.ref)
         if t.doc.get("session") and state_of(t) in HOLDING_STATES
@@ -7642,119 +7912,10 @@ def reap(q: Queue, dry: bool = False, release: bool = True) -> int:
 
     reaped = kept = dropped = 0
     for task in holders:
-        sid = task.doc["session"]
-        state = state_of(task)
         acted += 1
-        if sid == lead:
-            why = "that is the lead's own session, not a worker's"
-        elif review_lifecycle().holds_reviewer(sys.modules[__name__], task):
-            why = "configured reviewer remains responsible for current and future heads"
-        elif state in ("stuck", "failed"):
-            why = (
-                f"the worker's own verdict is `{state}` — its session is the "
-                "evidence, and a human decides"
-            )
-        elif state == "done":
-            why = landings.get(task.ref, ("", "its artifact has not landed"))[1]
-        elif live is None:
-            why = live_detail
-        else:
-            why = ""
-        if why:
-            print(f"    {task.ref:<46} kept       {why}")
-            kept += 1
-            continue
-
-        # A remote session is asked about its HOST first. Both answers below
-        # would otherwise be wrong for a host that is merely down: an absent id
-        # would read as a session that finished, and a latched `idle` would
-        # read as an agent at rest. See REAPABLE_SESSION_STATES.
-        if task.doc.get("host"):
-            up, unreachable_why = host_reachable(task.doc["host"])
-            if not up:
-                print(f"    {task.ref:<46} kept       unreachable: host "
-                      f"{task.doc['host']} — {unreachable_why}")
-                kept += 1
-                continue
-
-        # What this ending does to a live session. A `closed` landing is the
-        # change request closed unmerged; an abandon by hand keeps today's
-        # delete whatever the setting, because nothing merged or closed.
-        closed = (landings.get(task.ref) or (None,))[0] == "closed" or (
-            state == "abandoned" and abandon_how(task) == "closed-unmerged")
-        ending = session_ending(closed) if state in ("landed", "abandoned") else "delete"
-        if ending != "delete" and sid in live:
-            kept += keep_session(task, sid, ending, closed, dry)
-            continue
-
-        if sid not in live:
-            if dry:
-                print(f"    {task.ref:<46} would drop {sid}  thurbox no longer has it")
-            else:
-                record_reaped(task, sid, "already gone")
-                print(f"    {task.ref:<46} gone       {sid}  thurbox no longer had it")
-                dropped += 1
-            # A session that went without `delete --force` left its worktree,
-            # and the worktree its build output.
-            trees = task_worktrees(task)
-            free_build_output(task.ref, trees, dry)
-            run_worktree_command(task.ref, handover_worktrees(task), dry, decided=decided)
-            release_companions(task, dry)
-            continue
-
-        live_state, detail = session_state(sid)
-        if live_state not in REAPABLE_SESSION_STATES:
-            print(
-                f"    {task.ref:<46} kept       thurbox says `{live_state or detail}`; "
-                "only " + ", ".join(REAPABLE_SESSION_STATES) + " are reaped"
-            )
-            kept += 1
-            continue
-
-        blocker = worktree_release_blocker(sid)
-        if blocker:
-            print(f"    {task.ref:<46} kept       {sid}: {blocker}")
-            kept += 1
-            continue
-
-        # READ BEFORE THE DELETION, which takes the worktree with the session:
-        # after it git lists none for this branch and the path the operator's
-        # command needs is unrecoverable. Asked only when there is a command
-        # (`command_worktrees`), so an unconfigured fleet runs nothing extra.
-        released = command_worktrees(task)
-
-        if dry:
-            print(f"    {task.ref:<46} would reap {sid}  ({live_state})")
-            run_worktree_command(task.ref, released, dry, sid, decided)
-            release_companions(task, dry)
-            reaped += 1
-            continue
-
-        # `--force`, never a plain `delete`. Plain delete soft-deletes the row
-        # and leaves the TUI to reap the tmux window and the worktrees on its
-        # next sync; headless — which this is — that never happens and the disk
-        # is never actually freed, which is the entire point.
-        proc = subprocess.run(
-            ["thurbox-cli", "session", "delete", sid, "--force"],
-            capture_output=True, text=True, encoding="utf-8",
-        )
-        if proc.returncode != 0:
-            err = (proc.stderr or proc.stdout).strip().splitlines()
-            print(
-                f"    {task.ref:<46} NOT REAPED  session delete failed: "
-                + (err[-1] if err else "no output"),
-                file=sys.stderr,
-            )
-            kept += 1
-            continue
-        record_reaped(task, sid, "deleted")
-        print(f"    {task.ref:<46} reaped     {sid}  ({live_state})")
-        # After the deletion, on a worktree that is gone and whatever it
-        # started that is not. `sid` is already deleted, so it cannot be read
-        # as its own occupant whichever list answers.
-        run_worktree_command(task.ref, released, dry, sid, decided)
-        release_companions(task, dry)
-        reaped += 1
+        r, k, d = _reap_holder(task, state_of(task), lead, landings, live, live_detail,
+                               dry, decided)
+        reaped, kept, dropped = reaped + r, kept + k, dropped + d
 
     if reaped or kept or dropped:
         line = (
@@ -7765,6 +7926,131 @@ def reap(q: Queue, dry: bool = False, release: bool = True) -> int:
             line += f", dropped {dropped} stale id(s)"
         print(line)
     return acted
+
+
+def _reap_hold_reason(task: Task, sid: str, state: str, lead: str | None, landings: dict,
+                      live: set | None, live_detail: str) -> str:
+    """Why `reap` keeps this holder's session before asking thurbox, or ""."""
+    if sid == lead:
+        return "that is the lead's own session, not a worker's"
+    if review_lifecycle().holds_reviewer(sys.modules[__name__], task):
+        return "configured reviewer remains responsible for current and future heads"
+    if state in ("stuck", "failed"):
+        return (
+            f"the worker's own verdict is `{state}` — its session is the "
+            "evidence, and a human decides"
+        )
+    if state == "done":
+        return landings.get(task.ref, ("", "its artifact has not landed"))[1]
+    if live is None:
+        return live_detail
+    return ""
+
+
+def _reap_holder(task: Task, state: str, lead: str | None, landings: dict, live: set | None,
+                 live_detail: str, dry: bool, decided: set) -> tuple[int, int, int]:
+    """Release, keep or drop one holder's session. (reaped, kept, dropped)."""
+    sid = task.doc["session"]
+    why = _reap_hold_reason(task, sid, state, lead, landings, live, live_detail)
+    if why:
+        print(f"    {task.ref:<46} kept       {why}")
+        return 0, 1, 0
+
+    # A remote session is asked about its HOST first. Both answers below
+        # would otherwise be wrong for a host that is merely down: an absent id
+        # would read as a session that finished, and a latched `idle` would
+        # read as an agent at rest. See REAPABLE_SESSION_STATES.
+    if task.doc.get("host"):
+        up, unreachable_why = host_reachable(task.doc["host"])
+        if not up:
+            print(f"    {task.ref:<46} kept       unreachable: host "
+                  f"{task.doc['host']} — {unreachable_why}")
+            return 0, 1, 0
+
+    # What this ending does to a live session. A `closed` landing is the
+    # change request closed unmerged; an abandon by hand keeps today's
+    # delete whatever the setting, because nothing merged or closed.
+    closed = (landings.get(task.ref) or (None,))[0] == "closed" or (
+        state == "abandoned" and abandon_how(task) == "closed-unmerged")
+    ending = session_ending(closed) if state in ("landed", "abandoned") else "delete"
+    if ending != "delete" and sid in live:
+        return 0, keep_session(task, sid, ending, closed, dry), 0
+
+    if sid not in live:
+        return 0, 0, _drop_gone(task, sid, dry, decided)
+
+    live_state, detail = session_state(sid)
+    if live_state not in REAPABLE_SESSION_STATES:
+        print(
+            f"    {task.ref:<46} kept       thurbox says `{live_state or detail}`; "
+            "only " + ", ".join(REAPABLE_SESSION_STATES) + " are reaped"
+        )
+        return 0, 1, 0
+
+    blocker = worktree_release_blocker(sid)
+    if blocker:
+        print(f"    {task.ref:<46} kept       {sid}: {blocker}")
+        return 0, 1, 0
+    return _reap_delete(task, sid, live_state, dry, decided)
+
+
+def _drop_gone(task: Task, sid: str, dry: bool, decided: set) -> int:
+    """A holder thurbox no longer lists: drop its id and free its worktree. Returns 1 if dropped."""
+    dropped = 0
+    if dry:
+        print(f"    {task.ref:<46} would drop {sid}  thurbox no longer has it")
+    else:
+        record_reaped(task, sid, "already gone")
+        print(f"    {task.ref:<46} gone       {sid}  thurbox no longer had it")
+        dropped = 1
+    # A session that went without `delete --force` left its worktree,
+    # and the worktree its build output.
+    trees = task_worktrees(task)
+    free_build_output(task.ref, trees, dry)
+    run_worktree_command(task.ref, handover_worktrees(task), dry, decided=decided)
+    release_companions(task, dry)
+    return dropped
+
+
+def _reap_delete(task: Task, sid: str, live_state: str, dry: bool,
+                 decided: set) -> tuple[int, int, int]:
+    """Delete a session at rest, then hand its worktrees over. (reaped, kept, dropped)."""
+    # READ BEFORE THE DELETION, which takes the worktree with the session:
+    # after it git lists none for this branch and the path the operator's
+    # command needs is unrecoverable. Asked only when there is a command
+    # (`command_worktrees`), so an unconfigured fleet runs nothing extra.
+    released = command_worktrees(task)
+
+    if dry:
+        print(f"    {task.ref:<46} would reap {sid}  ({live_state})")
+        run_worktree_command(task.ref, released, dry, sid, decided)
+        release_companions(task, dry)
+        return 1, 0, 0
+
+    # `--force`, never a plain `delete`. Plain delete soft-deletes the row
+    # and leaves the TUI to reap the tmux window and the worktrees on its
+    # next sync; headless — which this is — that never happens and the disk
+    # is never actually freed, which is the entire point.
+    proc = subprocess.run(
+        ["thurbox-cli", "session", "delete", sid, "--force"],
+        capture_output=True, text=True, encoding="utf-8",
+    )
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout).strip().splitlines()
+        print(
+            f"    {task.ref:<46} NOT REAPED  session delete failed: "
+            + (err[-1] if err else NO_OUTPUT),
+            file=sys.stderr,
+        )
+        return 0, 1, 0
+    record_reaped(task, sid, "deleted")
+    print(f"    {task.ref:<46} reaped     {sid}  ({live_state})")
+    # After the deletion, on a worktree that is gone and whatever it
+    # started that is not. `sid` is already deleted, so it cannot be read
+    # as its own occupant whichever list answers.
+    run_worktree_command(task.ref, released, dry, sid, decided)
+    release_companions(task, dry)
+    return 1, 0, 0
 
 
 def keep_session(task: Task, sid: str, ending: str, closed: bool, dry: bool) -> int:
@@ -7916,7 +8202,7 @@ def retire(task: Task, how: str, why: str, **extra) -> dict:
     task.doc.pop("vanished", None)
     task.save()
     fleet_platform.append_record(
-        task.file("progress.jsonl"), json.dumps({"abandoned": entry, "observed": now()}) + "\n"
+        task.file(PROGRESS_FILE), json.dumps({"abandoned": entry, "observed": now()}) + "\n"
     )
     return entry
 
@@ -7969,12 +8255,7 @@ def cmd_abandon(args) -> int:
     if bool(args.refs) == bool(args.topic):
         raise QueueError("name the tasks to abandon, or --topic T — one or the other")
     q = Queue(queue_root(), scope="all")
-    if args.topic:
-        if args.topic not in q.topics:
-            raise QueueError(f"no such topic: {args.topic}")
-        tasks = [t for t in q.by_topic().get(args.topic, []) if t.state not in TERMINAL_STATES]
-    else:
-        tasks = list({t.ref: t for t in (q.get(r) for r in args.refs)}.values())
+    tasks = _abandon_targets(q, args)
 
     todo = [t for t in tasks if t.state != "abandoned"]
     live, live_why = (None, "")
@@ -7998,7 +8279,26 @@ def cmd_abandon(args) -> int:
     # A blocker on an abandoned task never clears — only `landed` releases one
     # — so every task still waiting on these is named, with both ways out.
     # Which one is right is the lead's decision, not this command's.
-    gone = {t.ref for t in todo}
+    _print_stranded(q, {t.ref for t in todo})
+
+    touched = {t.topic for t in todo}
+    for slug in sorted(touched):
+        refresh_run_logs(q, only=slug)
+    sweep_archives(Queue(queue_root(), scope="live"), lambda t: t.state, dry=False)
+    return 0
+
+
+def _abandon_targets(q: Queue, args) -> list:
+    """The tasks `abandon` names: a topic's unfinished ones, or the refs given."""
+    if args.topic:
+        if args.topic not in q.topics:
+            raise QueueError(f"no such topic: {args.topic}")
+        return [t for t in q.by_topic().get(args.topic, []) if t.state not in TERMINAL_STATES]
+    return list({t.ref: t for t in (q.get(r) for r in args.refs)}.values())
+
+
+def _print_stranded(q: Queue, gone: set) -> None:
+    """Name every task still waiting on one of the abandoned `gone`, with both ways out."""
     for dep in sorted(q.tasks.values(), key=lambda t: t.ref):
         if dep.state in CONCLUDED_STATES or dep.ref in gone:
             continue
@@ -8012,12 +8312,6 @@ def cmd_abandon(args) -> int:
                     f"      uv run fleet queue abandon {dep.ref} --why '...'"
                     "   # it cannot"
                 )
-
-    touched = {t.topic for t in todo}
-    for slug in sorted(touched):
-        refresh_run_logs(q, only=slug)
-    sweep_archives(Queue(queue_root(), scope="live"), lambda t: t.state, dry=False)
-    return 0
 
 
 # --- refuel: the fuel, and the sessions that ran dry -------------------------
@@ -8243,23 +8537,31 @@ def task_agent_reason(task) -> tuple[str, str]:
         return recorded, ""
     policy = agent_policy()
     if policy:
-        if task.doc.get("host"):
-            return "", (f"agent policy is in force and this task's checkout is on "
-                        f"{task.doc['host']}, so which agent it runs cannot be read here")
-        for unit in task_repos(task):
-            if repo_from_checkout(unit["path"]) is None:
-                return "", (f"agent policy is in force and no repository can be read from "
-                            f"`origin` in {unit['path']!r}, so which agent it runs "
-                            "is not knowable")
-        matched = task_policy(task, policy)
-        if matched:
-            allowed, prefix = matched
-            if not allowed:
-                return "", (f"agent policy covers this task's repositories with {prefix!r} "
-                            "and no one agent is allowed in all of them, so which agent "
-                            "it runs is not knowable")
-            return allowed[0], ""
+        named = _policy_agent(task, policy)
+        if named is not None:
+            return named
     return configured_agent() or "", ""
+
+
+def _policy_agent(task, policy: dict) -> tuple[str, str] | None:
+    """`task_agent_reason` under a policy in force; None when no rule covers the task."""
+    if task.doc.get("host"):
+        return "", (f"agent policy is in force and this task's checkout is on "
+                    f"{task.doc['host']}, so which agent it runs cannot be read here")
+    for unit in task_repos(task):
+        if repo_from_checkout(unit["path"]) is None:
+            return "", (f"agent policy is in force and no repository can be read from "
+                        f"`origin` in {unit['path']!r}, so which agent it runs "
+                        "is not knowable")
+    matched = task_policy(task, policy)
+    if not matched:
+        return None
+    allowed, prefix = matched
+    if not allowed:
+        return "", (f"agent policy covers this task's repositories with {prefix!r} "
+                    "and no one agent is allowed in all of them, so which agent "
+                    "it runs is not knowable")
+    return allowed[0], ""
 
 
 def task_agent(task) -> str:
@@ -8392,7 +8694,25 @@ def transcript_file(agent_sid: str, agent: str | None = None) -> str:
     return hits[0] if hits else ""
 
 
+def _last_turn(tail: str) -> dict | None:
+    """The last conversational entry in a transcript's tail, or None."""
+    last = None
+    for line in tail.splitlines():
+        # A tail read can start mid-line; an unparseable line is that, or a
+        # record shape this does not know. Either way it is not evidence.
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(row, dict) or row.get("isSidechain"):
+            continue
+        if row.get("type") in ("user", "assistant"):
+            last = row
+    return last
+
+
 def transcript_exhaustion(agent_sid: str, agent: str | None = None) -> tuple[str, str]:
+
     """Did the agent's LAST turn end on the quota rejecting it?
 
     The precise source, and the one this section derives its number from: the
@@ -8425,18 +8745,7 @@ def transcript_exhaustion(agent_sid: str, agent: str | None = None) -> tuple[str
     except OSError as exc:
         return "unknown", f"could not read {path}: {exc}"
 
-    last = None
-    for line in tail.splitlines():
-        # A tail read can start mid-line; an unparseable line is that, or a
-        # record shape this does not know. Either way it is not evidence.
-        try:
-            row = json.loads(line)
-        except ValueError:
-            continue
-        if not isinstance(row, dict) or row.get("isSidechain"):
-            continue
-        if row.get("type") in ("user", "assistant"):
-            last = row
+    last = _last_turn(tail)
     name = os.path.basename(path)
     if last is None:
         return "unknown", f"transcript {name} records no turn yet"
@@ -8460,7 +8769,7 @@ def pane_exhaustion(sid: str, agent: str | None = None) -> tuple[str, str]:
     came back from an earlier limit, and that is history, not a verdict.
     """
     if not shutil.which("thurbox-cli"):
-        return "unknown", "thurbox-cli not found on PATH"
+        return "unknown", NO_THURBOX_CLI
     try:
         proc = subprocess.run(
             ["thurbox-cli", "session", "capture", sid, "--lines", str(CAPTURE_LINES), "--json"],
@@ -8470,7 +8779,7 @@ def pane_exhaustion(sid: str, agent: str | None = None) -> tuple[str, str]:
         return "unknown", f"session capture could not run: {exc}"
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout).strip().splitlines()
-        return "unknown", "session capture failed: " + (detail[-1] if detail else "no output")
+        return "unknown", "session capture failed: " + (detail[-1] if detail else NO_OUTPUT)
     try:
         doc = json.loads(proc.stdout)
     except ValueError:
@@ -8524,7 +8833,7 @@ def session_doc(sid: str) -> tuple[dict | None, str]:
     themselves, three copies of the same four failure branches.
     """
     if not shutil.which("thurbox-cli"):
-        return None, "thurbox-cli not found on PATH"
+        return None, NO_THURBOX_CLI
     try:
         proc = subprocess.run(
             ["thurbox-cli", "session", "get", sid, "--json"],
@@ -8590,32 +8899,45 @@ def restart_session(sid: str, doc: dict) -> tuple[bool, str, bool]:
         holders = {pid for pid, row in commands.items() if command == row.strip()}
         if len(holders) > 1:
             return False, "foreground command belongs to several processes; cannot identify the old holder", False
-    issued_stop = False
-    for verb in ("stop", "start"):
-        try:
-            proc = subprocess.run(
-                ["thurbox-cli", "session", verb, sid],
-                capture_output=True, text=True, encoding="utf-8", timeout=120,
-            )
-        except (OSError, subprocess.SubprocessError) as exc:
-            return False, f"session {verb} could not run: {exc}", issued_stop
-        if verb == "stop":
-            issued_stop = True
-        if proc.returncode != 0:
-            detail = (proc.stderr or proc.stdout).strip().splitlines()
-            return False, f"session {verb} failed: " + (detail[-1] if detail else "no output"), issued_stop
-        if verb == "stop":
-            deadline = time.monotonic() + HOLDER_WAIT_SECS
-            while True:
-                commands = fleet_platform.process_commands()
-                if commands is None:
-                    return False, "session parked: cannot confirm the old process exited; inspect before starting", True
-                if not any(pid in holders or (ident and ident in row) for pid, row in commands.items()):
-                    break
-                if time.monotonic() >= deadline:
-                    return False, "session parked: the old conversation is still in use; inspect before starting", True
-                time.sleep(0.2)
+    issued_stop, why = _session_verb("stop", sid)
+    if why:
+        return False, why, issued_stop
+    why = _await_holders(holders, ident)
+    if why:
+        return False, why, True
+    _ran, why = _session_verb("start", sid)
+    if why:
+        return False, why, True
     return True, "", True
+
+
+def _session_verb(verb: str, sid: str) -> tuple[bool, str]:
+    """`thurbox-cli session <verb> <sid>`: (whether it ran, why it failed or "")."""
+    try:
+        proc = subprocess.run(
+            ["thurbox-cli", "session", verb, sid],
+            capture_output=True, text=True, encoding="utf-8", timeout=120,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, f"session {verb} could not run: {exc}"
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout).strip().splitlines()
+        return True, f"session {verb} failed: " + (detail[-1] if detail else NO_OUTPUT)
+    return True, ""
+
+
+def _await_holders(holders: set, ident: str) -> str:
+    """Wait for the old conversation's holders to exit: "" once they have, else why not."""
+    deadline = time.monotonic() + HOLDER_WAIT_SECS
+    while True:
+        commands = fleet_platform.process_commands()
+        if commands is None:
+            return "session parked: cannot confirm the old process exited; inspect before starting"
+        if not any(pid in holders or (ident and ident in row) for pid, row in commands.items()):
+            return ""
+        if time.monotonic() >= deadline:
+            return "session parked: the old conversation is still in use; inspect before starting"
+        time.sleep(0.2)
 
 
 def stale_since(age: float) -> float:
@@ -8725,197 +9047,16 @@ def refuel(q: Queue, ref: str | None = None, dry: bool = False) -> int:
     )
     accounts = read_accounts(holders)
     for account in accounts.values():
-        print(f"    account {account.label:<26} "
-              f"{'undetermined' if account.verdict == 'unknown' else account.verdict:<12} "
-              f"{account.detail}")
-        if account.verdict == "spent":
-            print(
-                "      That window is SPENT, and it is a subscription every "
-                "session on the\n"
-                "      account draws on. The fleet is waiting on the window, not "
-                "on any session:\n"
-                "      resuming a worker now would hit the same wall and burn the "
-                "reset. Nothing\n"
-                "      on that account is touched until it comes back."
-            )
-        if account.verdict == "unknown":
-            print(
-                "      That account's own quota could not be read, and "
-                "undetermined is never a pass\n"
-                f"      and never a failure — so nothing is acted on. {QUOTA_CMD}: "
-                "https://github.com/kunchenguid/quota-axi"
-            )
+        _print_account(account)
 
     lead = os.environ.get("THURBOX_SESSION")
     acted = fired = kept = 0
     for task in holders:
-        sid = task.doc["session"]
         acted += 1
-
-        if sid == lead:
-            # `reap`'s guard, for the same reason and a worse consequence: a
-            # restart of the lead kills the operator's own conversation.
-            print(f"    {task.ref:<46} kept          that is the session running this "
-                  "command — the lead's own, not a worker's")
-            kept += 1
-            continue
-        reviewing = (task.state in ("done", "landed")
-                     and review_lifecycle().holds_reviewer(sys.modules[__name__], task))
-        if task.state != "dispatched" and not reviewing:
-            print(f"    {task.ref:<46} kept          its task is `{task.state}`; only a "
-                  "worker still in flight is refuelled")
-            kept += 1
-            continue
-        account = accounts.get(account_key(task))
-        if account is None:
-            runs, why = task_agent_reason(task)
-            if why:
-                # Which AGENT is unknown, which is a different sentence from
-                # which PROVIDER — and saying the provider one here sent a
-                # reader to `agent.conf` to fix something that was never wrong.
-                print(f"    {task.ref:<46} undetermined  {why}")
-            else:
-                runs = runs or "thurbox's own default"
-                print(f"    {task.ref:<46} undetermined  no provider to read for `{runs}`: "
-                      f"name one with FUEL_PROVIDER or AGENT_PROVIDERS in {AGENT_CONF}")
-            kept += 1
-            continue
-        if account.verdict != "fuel":
-            # The reason is the account line above, printed once: repeating a
-            # hundred characters of it per task buries the one thing a reader
-            # is looking for, which is which tasks it applies to.
-            word = "kept" if account.verdict == "spent" else "undetermined"
-            print(f"    {task.ref:<46} {word:<13} the {account.label} window is "
-                  f"{'spent' if account.verdict == 'spent' else 'unreadable'} — see above")
-            kept += 1
-            continue
-        if task.doc.get("host"):
-            # `session capture` is local-only and the transcript is on that
-            # machine, so neither half of the detection can be established from
-            # here. Undetermined, and never a guess.
-            print(f"    {task.ref:<46} undetermined  runs on host {task.doc['host']}: its "
-                  "pane and its transcript are there, not here")
-            kept += 1
-            continue
-
-        doc, why = session_doc(sid)
-        if doc is None:
-            print(f"    {task.ref:<46} undetermined  {why}")
-            kept += 1
-            continue
-
-        history = task.doc.get("refuels") or []
-        if doc.get("stopped") or doc.get("state") == "stopped":
-            last = history[-1] if history else {}
-            park = last.get("park") if last.get("session") == sid else None
-            print(f"    {task.ref:<46} kept          "
-                  f"{park or 'the session is deliberately stopped'}")
-            kept += 1
-            continue
-        # `get` probes the multiplexer. Its corroboration is the pane's actual
-        # liveness even when the last hook was fresh, absent, or contradicted.
-        # It is independent of terminal width, locale and old scrollback text.
-        dead = doc.get("hook_corroboration") == "dead"
-        if dead:
-            detail = "dead pane: thurbox reports hook_corroboration=dead"
-        else:
-            # The agent's own word, and only that. `running`, `uncovered` and
-            # `unreported` are observations about a pane, not a claim by the agent
-            # about itself (`thurbox-session` §4a), and a worker that is genuinely
-            # at rest is `collect`'s business, not this command's.
-            hook = doc.get("hook_state")
-            age = doc.get("hook_state_age_secs")
-            if hook != "working":
-                print(f"    {task.ref:<46} kept          its hook says `{hook or doc.get('state')}`, "
-                      "which is not a stale working state")
-                kept += 1
-                continue
-            if not isinstance(age, (int, float)) or isinstance(age, bool):
-                print(f"    {task.ref:<46} undetermined  thurbox reports no age for that "
-                      "`working` state")
-                kept += 1
-                continue
-            if age < STALE_WORKING_SECS:
-                print(f"    {task.ref:<46} kept          working for {age / 60:.0f}m, under the "
-                      f"{STALE_WORKING_SECS // 60}m staleness threshold")
-                kept += 1
-                continue
-
-            seen, detail = exhaustion(doc)
-            if seen == "undetermined":
-                print(f"    {task.ref:<46} undetermined  {detail}")
-                kept += 1
-                continue
-            if seen != "exhausted":
-                # The whole reason detection is a conjunction: this worker has been
-                # in one turn for a long time and its agent has said nothing about
-                # a limit. Slow is not dry.
-                print(f"    {task.ref:<46} kept          working for {age / 60:.0f}m and quiet "
-                      f"about it — slow, not dry ({detail})")
-                kept += 1
-                continue
-
-            # A `working` state REPORTED BEFORE the last restart is evidence from
-            # before that restart: the re-spawned agent has simply not reported yet.
-            # Without this, two passes a minute apart spend the cap on one wedge and
-            # kill a window that was coming back up.
-            if history and stale_since(age) < record_time(history[-1].get("at")):
-                print(f"    {task.ref:<46} kept          restarted at "
-                      f"{history[-1].get('at')}, and this `working` was reported before "
-                      "that — give it a moment")
-                kept += 1
-                continue
-
-        already = len(history)
-        if already >= REFUEL_CAP:
-            print(f"    {task.ref:<46} kept          {'dead pane' if dead else 'ran dry again'} after {already} restart(s); "
-                  f"the cap is {REFUEL_CAP} — a human decides now")
-            kept += 1
-            continue
-
-        if dry:
-            print(f"    {task.ref:<46} would restart {sid}  {detail}")
+        if _refuel_task(task, accounts, lead, dry):
             fired += 1
-            continue
-
-        # A stop that ran — even one that then failed to start — spends the
-        # cap, so a pane that dies on every launch cannot loop. A census that
-        # could not be read never issued stop, and must not.
-        ok, note, issued_stop = restart_session(sid, doc)
-        if issued_stop:
-            record_refuel(task, sid, detail, False, park=None if ok else note)
-        if not ok:
-            print(f"    {task.ref:<46} NOT RESTARTED {note}", file=sys.stderr)
+        else:
             kept += 1
-            continue
-
-        # The dispatch path's handoff, in dispatch's order and for its reason:
-        # a re-spawned agent in a worktree can ask the trust question again, and
-        # `session send` into that dialog types the prompt INTO it.
-        send = (
-            f"Read {brief_target(task)} and do what it says. Your session was "
-            "restarted to recover a dead pane or a quota limit mid-task, so the "
-            "conversation above is yours: continue from where you stopped rather "
-            "than starting over."
-        )
-        prompted, report = trust_and_send(
-            sid, send, verify=needs_verified_submit(task)
-        )
-        task.doc["refuels"][-1]["prompted"] = prompted
-        # The task's own flag follows a delivery, never a failed one: a
-        # restart that could not be briefed leaves it as it was, and the
-        # receipt above is what names the miss.
-        if prompted:
-            task.doc["prompted"] = True
-        task.save()
-        print(f"    {task.ref:<46} restarted     {sid}"
-              f"{'' if prompted else '  NOT PROMPTED'}")
-        print(f"        {detail}")
-        if not prompted:
-            print(f"        the session is up but was NOT prompted: {report}\n"
-                  f"        nothing was typed into it — retry with `fleet queue prompt {task.ref}`",
-                  file=sys.stderr)
-        fired += 1
 
     if fired or kept:
         print(
@@ -8923,6 +9064,212 @@ def refuel(q: Queue, ref: str | None = None, dry: bool = False) -> int:
             f"{kept} session(s) left alone"
         )
     return acted
+
+
+def _print_account(account: "Account") -> None:
+    """One account's line in `refuel`, and what a spent or unread one means."""
+    print(f"    account {account.label:<26} "
+          f"{'undetermined' if account.verdict == 'unknown' else account.verdict:<12} "
+          f"{account.detail}")
+    if account.verdict == "spent":
+        print(
+            "      That window is SPENT, and it is a subscription every "
+            "session on the\n"
+            "      account draws on. The fleet is waiting on the window, not "
+            "on any session:\n"
+            "      resuming a worker now would hit the same wall and burn the "
+            "reset. Nothing\n"
+            "      on that account is touched until it comes back."
+        )
+    if account.verdict == "unknown":
+        print(
+            "      That account's own quota could not be read, and "
+            "undetermined is never a pass\n"
+            f"      and never a failure — so nothing is acted on. {QUOTA_CMD}: "
+            "https://github.com/kunchenguid/quota-axi"
+        )
+
+
+def _refuel_task(task: Task, accounts: dict, lead: str | None, dry: bool) -> bool:
+    """Judge one session holder, and restart it when it ran dry. True when it fired."""
+    sid = task.doc["session"]
+    if _refuel_held(task, sid, accounts, lead):
+        return False
+
+    doc, why = session_doc(sid)
+    if doc is None:
+        print(f"    {task.ref:<46} undetermined  {why}")
+        return False
+
+    history = task.doc.get("refuels") or []
+    if doc.get("stopped") or doc.get("state") == "stopped":
+        last = history[-1] if history else {}
+        park = last.get("park") if last.get("session") == sid else None
+        print(f"    {task.ref:<46} kept          "
+              f"{park or 'the session is deliberately stopped'}")
+        return False
+    # `get` probes the multiplexer. Its corroboration is the pane's actual
+    # liveness even when the last hook was fresh, absent, or contradicted.
+    # It is independent of terminal width, locale and old scrollback text.
+    dead = doc.get("hook_corroboration") == "dead"
+    if dead:
+        detail = "dead pane: thurbox reports hook_corroboration=dead"
+    else:
+        detail = _ran_dry(task, doc, history)
+        if detail is None:
+            return False
+    return _refuel_restart(task, sid, doc, detail, dead, len(history), dry)
+
+
+def _refuel_restart(task: Task, sid: str, doc: dict, detail: str, dead: bool,
+                    already: int, dry: bool) -> bool:
+    """Restart a session that ran dry, inside the cap. True when it fired."""
+    if already >= REFUEL_CAP:
+        print(f"    {task.ref:<46} kept          {'dead pane' if dead else 'ran dry again'} after {already} restart(s); "
+              f"the cap is {REFUEL_CAP} — a human decides now")
+        return False
+
+    if dry:
+        print(f"    {task.ref:<46} would restart {sid}  {detail}")
+        return True
+
+    # A stop that ran — even one that then failed to start — spends the
+    # cap, so a pane that dies on every launch cannot loop. A census that
+    # could not be read never issued stop, and must not.
+    ok, note, issued_stop = restart_session(sid, doc)
+    if issued_stop:
+        record_refuel(task, sid, detail, False, park=None if ok else note)
+    if not ok:
+        print(f"    {task.ref:<46} NOT RESTARTED {note}", file=sys.stderr)
+        return False
+
+    _brief_refuelled(task, sid, detail)
+    return True
+
+
+def _refuel_held(task: Task, sid: str, accounts: dict, lead: str | None) -> bool:
+    """Whether `refuel` leaves this session alone before reading it. True has said why."""
+    if sid == lead:
+        # `reap`'s guard, for the same reason and a worse consequence: a
+        # restart of the lead kills the operator's own conversation.
+        print(f"    {task.ref:<46} kept          that is the session running this "
+              "command — the lead's own, not a worker's")
+        return True
+    reviewing = (task.state in ("done", "landed")
+                 and review_lifecycle().holds_reviewer(sys.modules[__name__], task))
+    if task.state != "dispatched" and not reviewing:
+        print(f"    {task.ref:<46} kept          its task is `{task.state}`; only a "
+              "worker still in flight is refuelled")
+        return True
+    account = accounts.get(account_key(task))
+    if account is None:
+        _print_no_account(task)
+        return True
+    if account.verdict != "fuel":
+        # The reason is the account line above, printed once: repeating a
+        # hundred characters of it per task buries the one thing a reader
+        # is looking for, which is which tasks it applies to.
+        word = "kept" if account.verdict == "spent" else "undetermined"
+        print(f"    {task.ref:<46} {word:<13} the {account.label} window is "
+              f"{'spent' if account.verdict == 'spent' else 'unreadable'} — see above")
+        return True
+    if task.doc.get("host"):
+        # `session capture` is local-only and the transcript is on that
+        # machine, so neither half of the detection can be established from
+        # here. Undetermined, and never a guess.
+        print(f"    {task.ref:<46} undetermined  runs on host {task.doc['host']}: its "
+              "pane and its transcript are there, not here")
+        return True
+    return False
+
+
+def _print_no_account(task: Task) -> None:
+    """Why a task has no account window for `refuel` to read."""
+    runs, why = task_agent_reason(task)
+    if why:
+        # Which AGENT is unknown, which is a different sentence from
+        # which PROVIDER — and saying the provider one here sent a
+        # reader to `agent.conf` to fix something that was never wrong.
+        print(f"    {task.ref:<46} undetermined  {why}")
+    else:
+        runs = runs or "thurbox's own default"
+        print(f"    {task.ref:<46} undetermined  no provider to read for `{runs}`: "
+              f"name one with FUEL_PROVIDER or AGENT_PROVIDERS in {AGENT_CONF}")
+
+
+def _ran_dry(task: Task, doc: dict, history: list) -> str | None:
+    """The evidence a live pane ran dry, or None when `refuel` keeps it (and says why)."""
+    # The agent's own word, and only that. `running`, `uncovered` and
+    # `unreported` are observations about a pane, not a claim by the agent
+    # about itself (`thurbox-session` §4a), and a worker that is genuinely
+    # at rest is `collect`'s business, not this command's.
+    hook = doc.get("hook_state")
+    age = doc.get("hook_state_age_secs")
+    if hook != "working":
+        print(f"    {task.ref:<46} kept          its hook says `{hook or doc.get('state')}`, "
+              "which is not a stale working state")
+        return None
+    if not isinstance(age, (int, float)) or isinstance(age, bool):
+        print(f"    {task.ref:<46} undetermined  thurbox reports no age for that "
+              "`working` state")
+        return None
+    if age < STALE_WORKING_SECS:
+        print(f"    {task.ref:<46} kept          working for {age / 60:.0f}m, under the "
+              f"{STALE_WORKING_SECS // 60}m staleness threshold")
+        return None
+
+    seen, detail = exhaustion(doc)
+    if seen == "undetermined":
+        print(f"    {task.ref:<46} undetermined  {detail}")
+        return None
+    if seen != "exhausted":
+        # The whole reason detection is a conjunction: this worker has been
+        # in one turn for a long time and its agent has said nothing about
+        # a limit. Slow is not dry.
+        print(f"    {task.ref:<46} kept          working for {age / 60:.0f}m and quiet "
+              f"about it — slow, not dry ({detail})")
+        return None
+
+    # A `working` state REPORTED BEFORE the last restart is evidence from
+    # before that restart: the re-spawned agent has simply not reported yet.
+    # Without this, two passes a minute apart spend the cap on one wedge and
+    # kill a window that was coming back up.
+    if history and stale_since(age) < record_time(history[-1].get("at")):
+        print(f"    {task.ref:<46} kept          restarted at "
+              f"{history[-1].get('at')}, and this `working` was reported before "
+              "that — give it a moment")
+        return None
+    return detail
+
+
+def _brief_refuelled(task: Task, sid: str, detail: str) -> None:
+    """Hand a restarted session its brief again, and record whether it landed."""
+    # The dispatch path's handoff, in dispatch's order and for its reason:
+    # a re-spawned agent in a worktree can ask the trust question again, and
+    # `session send` into that dialog types the prompt INTO it.
+    send = (
+        f"Read {brief_target(task)} and do what it says. Your session was "
+        "restarted to recover a dead pane or a quota limit mid-task, so the "
+        "conversation above is yours: continue from where you stopped rather "
+        "than starting over."
+    )
+    prompted, report = trust_and_send(
+        sid, send, verify=needs_verified_submit(task)
+    )
+    task.doc["refuels"][-1]["prompted"] = prompted
+    # The task's own flag follows a delivery, never a failed one: a
+    # restart that could not be briefed leaves it as it was, and the
+    # receipt above is what names the miss.
+    if prompted:
+        task.doc["prompted"] = True
+    task.save()
+    print(f"    {task.ref:<46} restarted     {sid}"
+          f"{'' if prompted else '  NOT PROMPTED'}")
+    print(f"        {detail}")
+    if not prompted:
+        print(f"        the session is up but was NOT prompted: {report}\n"
+              f"        nothing was typed into it — retry with `fleet queue prompt {task.ref}`",
+              file=sys.stderr)
 
 
 def cmd_refuel(args) -> int:
@@ -9166,32 +9513,41 @@ def auto_merge_rules(root: str | None = None) -> list:
     path = auto_merge_conf_path(root)
     rules = []
     for line in auto_merge_lines(path):
-        parts = NEEDS_HUMAN_RE.split(line, 1)
-        if len(parts) < 2:
-            continue
-        scope, rest = parts
-        repo = ""
-        if scope.strip():
-            parsed = forge.RepoId.parse(scope.strip())
-            if parsed is None:
-                continue  # parse_auto_merge has already refused it out loud
-            repo = parsed.qualified
-        try:
-            words = shlex.split(rest)
-        except ValueError:
-            words = [rest.strip()]
-        for word in words or [NEEDS_HUMAN]:
-            kind, sep, value = word.partition(":")
-            if not (sep and value and kind in MERGE_RULE_KINDS):
-                print(
-                    f"{path}: {word!r} is not a rule fleet can read — it must be "
-                    "path:<glob> or label:<name>, and until it is it holds "
-                    + (f"every merge in {repo}" if repo else "every merge"),
-                    file=sys.stderr,
-                )
-                kind, value = "unreadable", word
-            rules.append((repo, kind, value))
+        rules += _needs_human_line(path, line)
     return rules
+
+
+def _needs_human_line(path: str, line: str) -> list:
+    """The `needs-human` rules one line of auto-merge.conf holds, if any."""
+    parts = NEEDS_HUMAN_RE.split(line, 1)
+    if len(parts) < 2:
+        return []
+    scope, rest = parts
+    repo = ""
+    if scope.strip():
+        parsed = forge.RepoId.parse(scope.strip())
+        if parsed is None:
+            return []  # parse_auto_merge has already refused it out loud
+        repo = parsed.qualified
+    try:
+        words = shlex.split(rest)
+    except ValueError:
+        words = [rest.strip()]
+    return [_merge_rule(path, repo, word) for word in words or [NEEDS_HUMAN]]
+
+
+def _merge_rule(path: str, repo: str, word: str) -> tuple:
+    """One `needs-human` word as (repository or "", kind, value)."""
+    kind, sep, value = word.partition(":")
+    if not (sep and value and kind in MERGE_RULE_KINDS):
+        print(
+            f"{path}: {word!r} is not a rule fleet can read — it must be "
+            "path:<glob> or label:<name>, and until it is it holds "
+            + (f"every merge in {repo}" if repo else "every merge"),
+            file=sys.stderr,
+        )
+        kind, value = "unreadable", word
+    return (repo, kind, value)
 
 
 def needs_human(cr: forge.ChangeRequest) -> str:
@@ -9211,7 +9567,13 @@ def needs_human(cr: forge.ChangeRequest) -> str:
     globs = [value for _repo, kind, value in rules if kind == "path"]
     if not globs:
         return ""
+    return _path_rule_hit(cr, globs)
+
+
+def _path_rule_hit(cr: forge.ChangeRequest, globs: list) -> str:
+    """The first path rule a file this change touches matches, or ""."""
     which, why = forge.for_repo(cr.repo)
+
     paths, why = which.changed_paths(cr) if which else (None, why)
     if paths is None:
         return f"could not list the files it changes ({why})"
@@ -9299,7 +9661,9 @@ def agent_policy(root: str | None = None) -> dict[str, list[str]]:
         # rules" rather than "read the file". Spaces around `=` and after
         # commas are formatting only; split into entries after normalising them.
         raw = os.environ.get(AGENT_POLICY_ENV, "").strip()
-        normalised = re.sub(r"\s*=\s*", "=", raw)
+        # Split and stripped rather than `re.sub(r"\s*=\s*", ...)`: the same
+        # result, without a pattern that backtracks over a long whitespace run.
+        normalised = "=".join(part.strip() for part in raw.split("="))
         # Both sides of a comma, not just the space after it: entries are
         # whitespace-separated (there is no newline-per-entry in a shell
         # variable, unlike the file), so a leftover space anywhere around an
@@ -9308,7 +9672,8 @@ def agent_policy(root: str | None = None) -> dict[str, list[str]]:
         # that actually understands a rule's syntax; this step only turns one
         # flat string into the same per-line entries the file already hands
         # it, one whitespace-run at a time.
-        normalised = re.sub(r"\s*,\s*", ",", normalised)
+        normalised = ",".join(part.strip() for part in normalised.split(","))
+
         entries = [e for e in normalised.split() if e]
         return parse_agent_policy(entries, AGENT_POLICY_ENV)
     path = agent_policy_path(root)
@@ -9639,18 +10004,9 @@ def agent_policy_refusal(task: Task) -> str | None:
     policy = agent_policy()
     d = task.doc
     if policy:
-        for unit in task_repos(task):
-            if (None if d.get("host") else repo_from_checkout(unit["path"])) is not None:
-                continue
-            if d.get("host"):
-                return (
-                    "--host task cannot be checked against agent policy "
-                    "because its checkout is on another machine."
-                )
-            return (
-                f"cannot read origin for {unit['path']!r}, so agent policy "
-                "cannot be checked."
-            )
+        unreadable = _policy_unreadable(task)
+        if unreadable:
+            return unreadable
     matched = task_policy(task, policy)
     if matched is None:
         return None
@@ -9669,6 +10025,29 @@ def agent_policy_refusal(task: Task) -> str | None:
             f"{', '.join(allowed)}. Fleet cannot tell which agent a free "
             "command launches, so dispatch is refused."
         )
+    return _recorded_agent_refusal(d, allowed, prefix)
+
+
+def _policy_unreadable(task: Task) -> str | None:
+    """Why a policy in force cannot be checked against this task, or None."""
+    d = task.doc
+    for unit in task_repos(task):
+        if (None if d.get("host") else repo_from_checkout(unit["path"])) is not None:
+            continue
+        if d.get("host"):
+            return (
+                "--host task cannot be checked against agent policy "
+                "because its checkout is on another machine."
+            )
+        return (
+            f"cannot read origin for {unit['path']!r}, so agent policy "
+            "cannot be checked."
+        )
+    return None
+
+
+def _recorded_agent_refusal(d: dict, allowed: list, prefix: str) -> str | None:
+    """Why the agent a task records is no longer allowed by policy, or None."""
     recorded = d.get("agent")
     if recorded and recorded not in allowed:
         # WHO put that value there decides what the operator can do about it.
@@ -9869,13 +10248,20 @@ def attestation_verdict(body: str, head_sha: str) -> tuple[bool, str]:
     steps = doc.get("steps")
     if not isinstance(steps, list) or not steps:
         return False, "the attestation lists no steps"
-    for st in steps:
-        if not isinstance(st, dict):
-            return False, "the attestation's steps are malformed"
+    if not all(isinstance(st, dict) for st in steps):
+        return False, "the attestation's steps are malformed"
 
     if "verdict" in doc:
         return _declared_verdict(doc, steps, attested)
 
+    unfinished = _unfinished_steps(steps)
+    if unfinished:
+        return False, "the pipeline did not finish: " + ", ".join(unfinished[:4])
+    return True, f"the pipeline attests {attested[:8]}, which is this head"
+
+
+def _unfinished_steps(steps: list) -> list:
+    """Each attested step whose status is not a finished one, said as a phrase."""
     unfinished = []
     for st in steps:
         name = str(st.get("step") or "an unnamed step")
@@ -9887,9 +10273,7 @@ def attestation_verdict(body: str, head_sha: str) -> tuple[bool, str]:
         )
         if status not in allowed:
             unfinished.append(f"{name} is {status or 'unreported'}")
-    if unfinished:
-        return False, "the pipeline did not finish: " + ", ".join(unfinished[:4])
-    return True, f"the pipeline attests {attested[:8]}, which is this head"
+    return unfinished
 
 
 def classify(cr: forge.ChangeRequest, method: str | None) -> tuple[str, str]:
@@ -9957,6 +10341,12 @@ def classify(cr: forge.ChangeRequest, method: str | None) -> tuple[str, str]:
         if hit:
             return condition, why
 
+    return _merge_readiness(cr, pending, attested, attest_why)
+
+
+def _merge_readiness(cr: forge.ChangeRequest, pending: list, attested: bool,
+                     attest_why: str) -> tuple[str, str]:
+    """`classify` past every fixable condition: `ready`, or why not yet."""
     if pending:
         return "undetermined", "checks still running: " + ", ".join(pending[:4])
     if not cr.checks:
@@ -10011,7 +10401,7 @@ def threads_gate(cr: forge.ChangeRequest, detail: str) -> tuple[str, str]:
     return "ready", detail
 
 
-def publish_word(cr: forge.ChangeRequest, condition: str, method: str | None) -> str:
+def publish_word(cr: forge.ChangeRequest, condition: str) -> str:
     """`classify`'s condition as one word of the `publish.state` vocabulary.
 
     `classify` answers "what should fleet DO about this pull request"; the
@@ -10257,7 +10647,8 @@ def branch_checkout(repo: str, branch: str, slug: str) -> tuple[str, str]:
     path = ""
     for block in listed.split("\n\n"):
         lines = [ln.strip() for ln in block.splitlines() if ln.strip()]
-        here = next((ln[9:] for ln in lines if ln.startswith("worktree ")), "")
+        here = next((ln[len(WORKTREE_LINE):] for ln in lines if ln.startswith(WORKTREE_LINE)), "")
+
         on = next((ln[7:] for ln in lines if ln.startswith("branch ")), "")
         if on == f"refs/heads/{branch}" and here:
             path = here
@@ -10374,7 +10765,7 @@ def trust_and_send(
     sent = subprocess.run(send, capture_output=True, check=False)
     if sent.returncode != 0:
         detail = (sent.stderr + sent.stdout).decode().strip().splitlines()
-        return False, "session send failed: " + (detail[-1] if detail else "no output")
+        return False, "session send failed: " + (detail[-1] if detail else NO_OUTPUT)
     if not verify:
         return True, report
     if not wait_for_composer(session, text, timeout):
@@ -10389,7 +10780,7 @@ def trust_and_send(
     if keyed.returncode != 0:
         detail = (keyed.stderr + keyed.stdout).decode().strip().splitlines()
         return False, "session key enter failed: " + (
-            detail[-1] if detail else "no output"
+            detail[-1] if detail else NO_OUTPUT
         )
     return True, report
 
@@ -10427,32 +10818,7 @@ def spawn_fixer(
     path, note = branch_checkout(repo_path or task.doc["repo"], branch, slug)
     if not path:
         return "", note
-    create = [
-        "thurbox-cli", "session", "create",
-        # A fixer is a worker fleet spawned, so it wears the same mark under the
-        # same setting — and the same byte-safe cut, which is the one that made
-        # `[:64]` wrong here rather than merely generous.
-        "--name", session_name(name, worker_glyph()),
-        "--repo-path", path,
-        # Reconciling desired state, so a name already in use is the fixer that
-        # is already there rather than news (§1c). `created` is read below.
-        "--on-existing", "adopt",
-    ]
-    flags = profile_flags(task.doc.get("profile") or "default")
-    if "--command" not in flags:
-        # The third site that used to open-code this, and the second door into
-        # a policy-covered repository (#116): a fixer is a worker fleet spawns,
-        # so it runs the agent the task runs. Whether the policy still clears
-        # that agent is asked by the caller, before a dry run answers — see
-        # `shepherd_pr`'s `policy-refused` row — because a refusal here would
-        # reach nobody until a real pass had already decided to spawn.
-        agent = task_agent(task)
-        if agent:
-            create += ["--agent", agent]
-    parent = os.environ.get("THURBOX_SESSION")
-    if parent:
-        create += ["--parent", parent]
-    create += flags + ["--json"]
+    create = _fixer_create_cmd(task, name, path)
     try:
         out = subprocess.run(create, capture_output=True, check=True).stdout
         doc = json.loads(out)
@@ -10473,6 +10839,37 @@ def spawn_fixer(
     if not ok:
         return "", f"session {session} exists but was NOT prompted: {report}"
     return session, f"{note}; session {session}"
+
+
+def _fixer_create_cmd(task: Task, name: str, path: str) -> list:
+    """The `session create` command that spawns a fixer in `path`."""
+    create = [
+        "thurbox-cli", "session", "create",
+        # A fixer is a worker fleet spawned, so it wears the same mark under the
+        # same setting — and the same byte-safe cut, which is the one that made
+        # `[:64]` wrong here rather than merely generous.
+        "--name", session_name(name, worker_glyph()),
+        "--repo-path", path,
+        # Reconciling desired state, so a name already in use is the fixer that
+        # is already there rather than news (§1c). `spawn_fixer` reads `created`.
+        "--on-existing", "adopt",
+    ]
+    flags = profile_flags(task.doc.get("profile") or "default")
+    if "--command" not in flags:
+        # The third site that used to open-code this, and the second door into
+        # a policy-covered repository (#116): a fixer is a worker fleet spawns,
+        # so it runs the agent the task runs. Whether the policy still clears
+        # that agent is asked by the caller, before a dry run answers — see
+        # `shepherd_pr`'s `policy-refused` row — because a refusal here would
+        # reach nobody until a real pass had already decided to spawn.
+        agent = task_agent(task)
+        if agent:
+            create += ["--agent", agent]
+    parent = os.environ.get("THURBOX_SESSION")
+    if parent:
+        create += ["--parent", parent]
+    create += flags + ["--json"]
+    return create
 
 
 def author_can_push(cr: forge.ChangeRequest) -> tuple[bool, str]:
@@ -10530,7 +10927,7 @@ def record_shepherd(task: Task, entry: dict | None) -> None:
         task.doc["shepherd"] = entry
     task.save()
     fleet_platform.append_record(
-        task.file("progress.jsonl"), json.dumps({"shepherd": entry, "observed": now()}) + "\n"
+        task.file(PROGRESS_FILE), json.dumps({"shepherd": entry, "observed": now()}) + "\n"
     )
 
 
@@ -10570,17 +10967,11 @@ def shepherd_pr(cr: forge.ChangeRequest, task, args) -> dict:
 
     method = task_publish(task)[0] if task else None
     review = review_lifecycle()
-    required = review.policy(sys.modules[__name__], cr.repo)
-    condition, detail = classify(cr, "pr" if required and method is None else method)
-    if condition == "ready":
-        condition, detail = threads_gate(cr, detail)
-    condition, detail, obligation = review.gate(
-        sys.modules[__name__], cr, task, args, condition, detail,
-    )
+    condition, detail, obligation = _shepherd_classify(cr, task, args, method, review)
     if obligation is not None:
         row["review"] = obligation
     row["condition"], row["detail"] = condition, detail
-    word = publish_word(cr, condition, method)
+    word = publish_word(cr, condition)
     if obligation and obligation["state"] == "clean" and condition == "ready":
         word = "ready"
     # What the pass SAW, written down for every linked task and whatever the
@@ -10597,92 +10988,11 @@ def shepherd_pr(cr: forge.ChangeRequest, task, args) -> dict:
         row["note"] = obligation["detail"]
         return row
 
-    # A dry run writes nothing at all, including the record-clearing below:
-    # "change nothing" is the flag's whole contract, and a stale record
-    # cleared by a dry run is a fixer that a later real pass re-sends.
-    if condition in ("closed", "undetermined"):
-        if condition == "closed" and rec and not args.dry_run:
-            record_shepherd(task, None)
-        return row
-
-    if condition == "foreign":
-        # Reported, and nothing else. Not merged, and not handed to an agent.
-        row["action"] = "left-alone"
-        row["note"] = "not ours; fleet only merges and only fixes its own"
-        return row
-
-    if condition == "threads-open":
-        # Held, and no fixer: the threads themselves are what the worker needs,
-        # and `shepherd_comments` runs next on this same row and sends them —
-        # each quoted, with its file and line — into the task's session.
-        row["action"] = "not-merged"
-        row["note"] = (
-            "not merged while a review thread is unresolved; "
-            + ("what nobody has answered yet goes to its session" if task
-               else "no task records it, so resolving them is yours")
-        )
+    if _shepherd_left(condition, task, args, rec, row):
         return row
 
     if condition == "ready":
-        if rec and not args.dry_run:
-            record_shepherd(task, None)
-        if word == "green":
-            # Asked BEFORE the allowlist, because this is the deeper reason:
-            # not "fleet does not merge here" but "nothing vetted the head
-            # that would land". Never merged — see `publish_word`
-            # for why this is not the same state as `ready`.
-            row["action"] = "ready"
-            row["note"] = (
-                "ready to merge — not attested; yours. Every gate the forge "
-                "can answer holds, and nothing says review, tests and lint "
-                "ever ran on the commit that would land"
-            )
-            return row
-        if cr.repo.qualified not in auto_merge_repos():
-            row["action"] = "ready"
-            row["note"] = f"fleet does not merge in {cr.repo}; this one is yours"
-            return row
-        if args.no_merge:
-            row["action"] = "ready"
-            row["note"] = "--no-merge"
-            return row
-        held = needs_human(cr)
-        if held:
-            row["action"] = "needs-human"
-            row["note"] = f"needs a human: {held}"
-            return row
-        # The last gate, and the one a pull request body cannot write for
-        # itself. Asked before --dry-run answers, so a dry run is honest
-        # about what it would actually merge.
-        allowed, why = author_can_push(cr)
-        if not allowed:
-            row["action"] = "not-merged"
-            row["note"] = (
-                f"{why} — fleet merges unattended only what someone who can "
-                "push here opened"
-            )
-            return row
-        if args.dry_run:
-            which, _ = forge.for_repo(cr.repo)
-            how = (
-                which.describe_merge(MERGE_METHOD, DELETE_MERGED_BRANCH)
-                if which
-                else f"merge by {MERGE_METHOD}"
-            )
-            row["action"] = "would-merge"
-            row["note"] = f"{how} ({why})"
-            return row
-        allowed, why = review.before_merge(sys.modules[__name__], cr, method)
-        if not allowed:
-            row["action"], row["note"] = "not-merged", why
-            return row
-        ok, note = merge_change_request(cr)
-        row["action"], row["note"] = ("merged" if ok else "merge-failed"), note
-        if ok and task:
-            record_shepherd(task, {"condition": "merged", "detail": note,
-                                   "pr": url, "at": now()})
-            record_publish(task, "merged", note, "shepherd")
-        return row
+        return _shepherd_ready(cr, task, args, row, rec, word, method, review)
 
     # Fixable, but only a task carries a session, a worktree and a brief
     # directory to fix it from.
@@ -10694,6 +11004,129 @@ def shepherd_pr(cr: forge.ChangeRequest, task, args) -> dict:
         )
         return row
 
+    if _fixer_refused(task, args, row, rec, condition, detail):
+        return row
+    return _shepherd_fix(cr, task, args, row, rec, condition, detail)
+
+
+def _shepherd_classify(cr: forge.ChangeRequest, task, args, method, review) -> tuple:
+    """(condition, detail, review obligation) for one change request."""
+    required = review.policy(sys.modules[__name__], cr.repo)
+    condition, detail = classify(cr, "pr" if required and method is None else method)
+    if condition == "ready":
+        condition, detail = threads_gate(cr, detail)
+    return review.gate(
+        sys.modules[__name__], cr, task, args, condition, detail,
+    )
+
+
+def _shepherd_left(condition: str, task, args, rec: dict, row: dict) -> bool:
+    """Settle a change request shepherd neither merges nor fixes. True when it did."""
+    # A dry run writes nothing at all, including the record-clearing below:
+    # "change nothing" is the flag's whole contract, and a stale record
+    # cleared by a dry run is a fixer that a later real pass re-sends.
+    if condition in ("closed", "undetermined"):
+        if condition == "closed" and rec and not args.dry_run:
+            record_shepherd(task, None)
+        return True
+
+    if condition == "foreign":
+        # Reported, and nothing else. Not merged, and not handed to an agent.
+        row["action"] = "left-alone"
+        row["note"] = "not ours; fleet only merges and only fixes its own"
+        return True
+
+    if condition == "threads-open":
+        # Held, and no fixer: the threads themselves are what the worker needs,
+        # and `shepherd_comments` runs next on this same row and sends them —
+        # each quoted, with its file and line — into the task's session.
+        row["action"] = "not-merged"
+        row["note"] = (
+            "not merged while a review thread is unresolved; "
+            + ("what nobody has answered yet goes to its session" if task
+               else "no task records it, so resolving them is yours")
+        )
+        return True
+    return False
+
+
+def _shepherd_ready(cr: forge.ChangeRequest, task, args, row: dict, rec: dict,
+                    word: str, method, review) -> dict:
+    """A change request every gate clears: merge it, or say why not."""
+    if rec and not args.dry_run:
+        record_shepherd(task, None)
+    if word == "green":
+        # Asked BEFORE the allowlist, because this is the deeper reason:
+        # not "fleet does not merge here" but "nothing vetted the head
+        # that would land". Never merged — see `publish_word`
+        # for why this is not the same state as `ready`.
+        row["action"] = "ready"
+        row["note"] = (
+            "ready to merge — not attested; yours. Every gate the forge "
+            "can answer holds, and nothing says review, tests and lint "
+            "ever ran on the commit that would land"
+        )
+        return row
+    if cr.repo.qualified not in auto_merge_repos():
+        row["action"] = "ready"
+        row["note"] = f"fleet does not merge in {cr.repo}; this one is yours"
+        return row
+    if args.no_merge:
+        row["action"] = "ready"
+        row["note"] = "--no-merge"
+        return row
+    held = needs_human(cr)
+    if held:
+        row["action"] = "needs-human"
+        row["note"] = f"needs a human: {held}"
+        return row
+    # The last gate, and the one a pull request body cannot write for
+    # itself. Asked before --dry-run answers, so a dry run is honest
+    # about what it would actually merge.
+    allowed, why = author_can_push(cr)
+    if not allowed:
+        row["action"] = "not-merged"
+        row["note"] = (
+            f"{why} — fleet merges unattended only what someone who can "
+            "push here opened"
+        )
+        return row
+    if args.dry_run:
+        row["action"] = "would-merge"
+        row["note"] = f"{_merge_how(cr)} ({why})"
+        return row
+    return _shepherd_merge(cr, task, row, method, review)
+
+
+def _merge_how(cr: forge.ChangeRequest) -> str:
+    """How a merge of `cr` would be done, in its forge's words."""
+    which, _ = forge.for_repo(cr.repo)
+    return (
+        which.describe_merge(MERGE_METHOD, DELETE_MERGED_BRANCH)
+        if which
+        else f"merge by {MERGE_METHOD}"
+    )
+
+
+def _shepherd_merge(cr: forge.ChangeRequest, task, row: dict, method, review) -> dict:
+    """The review lifecycle's last word, then the merge itself."""
+    allowed, why = review.before_merge(sys.modules[__name__], cr, method)
+    if not allowed:
+        row["action"], row["note"] = "not-merged", why
+        return row
+    ok, note = merge_change_request(cr)
+    row["action"], row["note"] = ("merged" if ok else "merge-failed"), note
+    if ok and task:
+        record_shepherd(task, {"condition": "merged", "detail": note,
+                               "pr": cr.url, "at": now()})
+        record_publish(task, "merged", note, "shepherd")
+    return row
+
+
+def _fixer_refused(task: Task, args, row: dict, rec: dict, condition: str,
+                   detail: str) -> bool:
+    """Whether the agent policy refuses a fixer here. True has filled `row`."""
+    url = row["pr"]
     # The second door into a policy-covered repository (#116), and the half of
     # it that stayed open: the fixer already runs the agent the task runs, and
     # now it asks whether that agent may still serve this repository. The same
@@ -10754,8 +11187,13 @@ def shepherd_pr(cr: forge.ChangeRequest, task, args) -> dict:
                          == {k: v for k, v in entry.items() if k != "at"})
             if not rec.get("session") and not unchanged:
                 record_shepherd(task, entry)
-        return row
+        return True
+    return False
 
+
+def _shepherd_fix(cr: forge.ChangeRequest, task: Task, args, row: dict, rec: dict,
+                  condition: str, detail: str) -> dict:
+    """Send a fixer for a fixable change request, unless one is already on it."""
     # Everything below here needs a fixer. Both liveness checks below share
     # one `session list` snapshot, so a fixer and the task's own worker read
     # "gone" from the same evidence.
@@ -10767,56 +11205,16 @@ def shepherd_pr(cr: forge.ChangeRequest, task, args) -> dict:
     # doing the work, whatever the PR now classifies as — the condition can
     # drift between passes while the fixer is mid-fix, and that drift must
     # never look like nobody is on it.
-    if not args.force and rec_session:
-        status = session_status(rec_session, live)
-        if status == "unknown":
-            row["action"] = "left-alone"
-            row["note"] = (
-                f"could not tell whether the fixer sent for this at {rec.get('at')} "
-                f"(session {rec_session}) is still working ({live_why or 'no state reported'}). "
-                "Nothing sent."
-            )
-            return row
-        if status != "gone":
-            row["action"] = "in-flight"
-            row["note"] = (
-                f"a fixer went out for this at {rec.get('at')} "
-                f"(session {rec_session}, now {status}). "
-                "Nothing sent. `--force` overrides."
-            )
-            return row
+    if not args.force and rec_session and _fixer_in_flight(rec, rec_session, live, live_why, row):
+        return row
 
     # The task's own session has the context and the worktree, so it is the
     # first choice — but only its own word puts it at rest (§4a). A session
     # that is gone reads as no session at all, which is the ordinary case once
     # a run has been cleaned up.
-    reuse = ""
-    if worker:
-        status = session_status(worker, live)
-        if status == "unknown":
-            row["action"] = "left-alone"
-            row["note"] = (
-                f"could not tell whether its own worker {worker} is still there "
-                f"({live_why or 'no state reported'}). Nothing sent."
-            )
-            return row
-        if status in SESSION_BUSY:
-            row["action"] = "left-alone"
-            row["note"] = (
-                f"its own worker {worker} is {status} — probably already on it. "
-                "Interrupting a turn is how a fix gets half-applied."
-            )
-            return row
-        if status in SESSION_AT_REST:
-            reuse = worker
-        elif status != "gone":
-            row["action"] = "left-alone"
-            row["note"] = (
-                f"its own worker {worker} reads {status}, which is an observation "
-                "and not the agent saying it is at rest. Nothing sent; look at "
-                f"the pane: thurbox-cli session capture {worker}"
-            )
-            return row
+    reuse = _reusable_worker(worker, live, live_why, row) if worker else ""
+    if reuse is None:
+        return row
 
     base = cr.base_branch or task.doc.get("base") or "main"
     branch = cr.head_branch or task.doc["branch"]
@@ -10828,8 +11226,73 @@ def shepherd_pr(cr: forge.ChangeRequest, task, args) -> dict:
         row["note"] = f"{title} ({how})"
         return row
 
+    return _send_fixer(cr, task, row, condition, detail, reuse, title, base, branch)
+
+
+def _fixer_in_flight(rec: dict, rec_session: str, live, live_why: str, row: dict) -> bool:
+    """Whether the fixer already sent for this pull request may still be on it.
+
+    True has filled `row`.
+    """
+    status = session_status(rec_session, live)
+    if status == "unknown":
+        row["action"] = "left-alone"
+        row["note"] = (
+            f"could not tell whether the fixer sent for this at {rec.get('at')} "
+            f"(session {rec_session}) is still working ({live_why or 'no state reported'}). "
+            "Nothing sent."
+        )
+        return True
+    if status != "gone":
+        row["action"] = "in-flight"
+        row["note"] = (
+            f"a fixer went out for this at {rec.get('at')} "
+            f"(session {rec_session}, now {status}). "
+            "Nothing sent. `--force` overrides."
+        )
+        return True
+    return False
+
+
+def _reusable_worker(worker: str, live, live_why: str, row: dict) -> str | None:
+    """The task's own worker when it is at rest, "" when it is gone, None to wait.
+
+    None has filled `row`.
+    """
+    status = session_status(worker, live)
+    if status == "unknown":
+        row["action"] = "left-alone"
+        row["note"] = (
+            f"could not tell whether its own worker {worker} is still there "
+            f"({live_why or 'no state reported'}). Nothing sent."
+        )
+        return None
+    if status in SESSION_BUSY:
+        row["action"] = "left-alone"
+        row["note"] = (
+            f"its own worker {worker} is {status} — probably already on it. "
+            "Interrupting a turn is how a fix gets half-applied."
+        )
+        return None
+    if status in SESSION_AT_REST:
+        return worker
+    if status != "gone":
+        row["action"] = "left-alone"
+        row["note"] = (
+            f"its own worker {worker} reads {status}, which is an observation "
+            "and not the agent saying it is at rest. Nothing sent; look at "
+            f"the pane: thurbox-cli session capture {worker}"
+        )
+        return None
+    return ""
+
+
+def _send_fixer(cr: forge.ChangeRequest, task: Task, row: dict, condition: str, detail: str,
+                reuse: str, title: str, base: str, branch: str) -> dict:
+    """Write the fix brief, hand it to `reuse` or a fresh session, and record it."""
     checkout = task_checkout(task, cr.repo)
     drift = base_drift(checkout, base, branch) if condition == "conflicting" else ""
+
     path = next_fix_file(task, condition)
     fleet_platform.write_record(path, fixer_brief(task, cr, condition, detail, drift))
 
@@ -10854,7 +11317,7 @@ def shepherd_pr(cr: forge.ChangeRequest, task, args) -> dict:
             "condition": condition,
             "detail": detail,
             "session": session,
-            "pr": url,
+            "pr": cr.url,
             "brief": os.path.basename(path),
             "at": now(),
         },
@@ -10905,7 +11368,7 @@ def record_comments(task: Task, url: str, entry: dict) -> None:
     task.doc["shepherd_comments"] = every
     task.save()
     fleet_platform.append_record(
-        task.file("progress.jsonl"),
+        task.file(PROGRESS_FILE),
         json.dumps({"shepherd_comments": {"pr": url, **entry}, "observed": now()}) + "\n",
     )
 
@@ -10930,18 +11393,19 @@ def unanswered_feedback(items: list, me: str, sent) -> list:
     for f in mine:
         if f.kind == "inline" and f.at:
             last_in[f.thread] = max(last_in.get(f.thread, ""), f.at)
-    out = []
-    for f in items:
-        if f.id in sent or f.author_is_bot or not f.author or f.author.lower() == me:
-            continue
-        if not f.body.strip():
-            continue
-        if f.kind == "review" and f.state not in COMMENT_REVIEW_STATES:
-            continue
-        if f.kind == "inline" and (f.resolved or (f.at and f.at < last_in.get(f.thread, ""))):
-            continue
-        out.append(f)
+    out = [f for f in items if _feedback_open(f, me, sent, last_in)]
     return sorted(out, key=lambda f: f.at)
+
+
+def _feedback_open(f, me: str, sent, last_in: dict) -> bool:
+    """Whether one comment is still to be sent, for `unanswered_feedback`."""
+    if f.id in sent or f.author_is_bot or not f.author or f.author.lower() == me:
+        return False
+    if not f.body.strip():
+        return False
+    if f.kind == "review" and f.state not in COMMENT_REVIEW_STATES:
+        return False
+    return not (f.kind == "inline" and (f.resolved or (f.at and f.at < last_in.get(f.thread, ""))))
 
 
 def comments_brief(task: Task, cr: forge.ChangeRequest, items: list) -> str:
@@ -10999,19 +11463,7 @@ def shepherd_comments(cr: forge.ChangeRequest, task, args, row: dict) -> None:
     answer. A comment already sent is never sent again, by id.
     """
     row["comments"] = "none"
-    if row.get("condition") == "review-findings":
-        # The linked assessment already routes all findings, including a
-        # reviewer using the same forge account. Do not hand it off twice.
-        return
-    if not task or cr.state != "open" or cr.head_is_ours is not True:
-        return
-    # A review decision of "request changes" is that condition's fixer, which
-    # already says "address the review" — asked of the decision itself, since
-    # a conflict outranks it in `classify` and would hide it from the row. A
-    # fixer this pass just sent is mid-turn, and a merged one is done.
-    if cr.review_decision == "changes-requested" or row.get("condition") in ("closed", "foreign"):
-        return
-    if row.get("action") in ("dispatched", "policy-refused", "merged"):
+    if not _comments_wanted(cr, task, row):
         return
     which, why = forge.for_repo(cr.repo)
     if which is None:
@@ -11037,25 +11489,8 @@ def shepherd_comments(cr: forge.ChangeRequest, task, args, row: dict) -> None:
         return
     count = f"{len(new)} new comment{'s' if len(new) != 1 else ''}"
 
-    # Who gets them: a session already working on this pull request for fleet —
-    # the one sent its last comments, then the fixer `shepherd_pr` recorded —
-    # then the task's own worker. The first that is still there decides.
-    fixer = rec_for(task, cr.url).get("session")
-    candidates = [str(s) for s in (rec.get("session"), fixer, task.doc.get("session")) if s]
-    live, live_why = live_sessions() if candidates else (set(), "")
-    target = ""
-    for sid in dict.fromkeys(candidates):
-        status = session_status(sid, live)
-        if status == "gone":
-            continue
-        if status in SESSION_AT_REST:
-            target = sid
-            break
-        row["comments"] = "left-alone"
-        row["comments_note"] = (
-            f"{count}; session {sid} is {status if status != 'unknown' else live_why or 'unknown'}"
-            " — sent once it is at rest, never into a turn"
-        )
+    target = _comments_target(task, cr, rec, count, row)
+    if target is None:
         return
 
     # The policy door `shepherd_pr` asks for a fixer, asked for this too: a
@@ -11065,15 +11500,68 @@ def shepherd_comments(cr: forge.ChangeRequest, task, args, row: dict) -> None:
         row["comments"], row["comments_note"] = "policy-refused", f"{count}; nothing sent — {refusal}"
         return
 
-    title = COMMENTS_TITLE.format(n=cr.number)
     if args.dry_run:
         row["comments"] = "would-send"
+
         row["comments_note"] = f"{count} -> " + (target or "a fresh session on the branch")
         return
 
+    _send_comments(task, cr, new, sent, target, count, row)
+
+
+def _comments_wanted(cr: forge.ChangeRequest, task, row: dict) -> bool:
+    """Whether `shepherd_comments` should read this pull request's comments at all."""
+    if row.get("condition") == "review-findings":
+        # The linked assessment already routes all findings, including a
+        # reviewer using the same forge account. Do not hand it off twice.
+        return False
+    if not task or cr.state != "open" or cr.head_is_ours is not True:
+        return False
+    # A review decision of "request changes" is that condition's fixer, which
+    # already says "address the review" — asked of the decision itself, since
+    # a conflict outranks it in `classify` and would hide it from the row. A
+    # fixer this pass just sent is mid-turn, and a merged one is done.
+    if cr.review_decision == "changes-requested" or row.get("condition") in ("closed", "foreign"):
+        return False
+    return row.get("action") not in ("dispatched", "policy-refused", "merged")
+
+
+def _comments_target(task: Task, cr: forge.ChangeRequest, rec: dict, count: str,
+                     row: dict) -> str | None:
+    """The session at rest to send comments to, "" for a fresh one, None to wait.
+
+    None has already said why on `row`.
+    """
+    # Who gets them: a session already working on this pull request for fleet —
+    # the one sent its last comments, then the fixer `shepherd_pr` recorded —
+    # then the task's own worker. The first that is still there decides.
+    fixer = rec_for(task, cr.url).get("session")
+    candidates = [str(s) for s in (rec.get("session"), fixer, task.doc.get("session")) if s]
+    live, live_why = live_sessions() if candidates else (set(), "")
+    for sid in dict.fromkeys(candidates):
+        status = session_status(sid, live)
+        if status == "gone":
+            continue
+        if status in SESSION_AT_REST:
+            return sid
+        said = status if status != "unknown" else live_why or "unknown"
+        row["comments"] = "left-alone"
+        row["comments_note"] = (
+            f"{count}; session {sid} is {said}"
+            " — sent once it is at rest, never into a turn"
+        )
+        return None
+    return ""
+
+
+def _send_comments(task: Task, cr: forge.ChangeRequest, new: list, sent: set,
+                   target: str, count: str, row: dict) -> None:
+    """Write the comments brief, hand it over, and record what was sent."""
+    title = COMMENTS_TITLE.format(n=cr.number)
     path = next_fix_file(task, "comments")
     fleet_platform.write_record(path, comments_brief(task, cr, new))
     if target:
+
         ok, note = trust_and_send(target, f"Read {os.path.abspath(path)} and do what it says.")
         session = target if ok else ""
     else:
@@ -11123,22 +11611,9 @@ def shepherd_targets(tasks: list) -> dict:
     command exists for.
     """
     repo_of: dict[str, list] = {}
-    by_path: dict[str, forge.RepoId] = {}
+    by_path = _artifact_repo_paths(tasks)
     for task in tasks:
-        for entry in recorded_artifacts(task):
-            ref = pr_ref(entry.get("url"))
-            if ref:
-                by_path.setdefault(str(entry.get("repo") or ""), ref.repo)
-    for task in tasks:
-        found: list = []
-        for unit in task_repos(task):
-            repo = by_path.get(unit["path"])
-            if repo is None:
-                repo = repo_from_checkout(unit["path"])
-                if repo is not None:
-                    by_path[unit["path"]] = repo
-            if repo is not None and repo not in found:
-                found.append(repo)
+        found = _checkout_repos(task, by_path)
         # An artifact on a repository none of this task's checkouts resolve to
         # is still this task's — a worker that pushed to a fork, a checkout
         # that has since moved — and dropping it would stop watching a pull
@@ -11152,7 +11627,34 @@ def shepherd_targets(tasks: list) -> dict:
     return repo_of
 
 
+def _artifact_repo_paths(tasks: list) -> dict:
+    """checkout path -> RepoId, from every artifact URL the tasks recorded."""
+    by_path: dict[str, forge.RepoId] = {}
+    for task in tasks:
+        for entry in recorded_artifacts(task):
+            ref = pr_ref(entry.get("url"))
+            if ref:
+                by_path.setdefault(str(entry.get("repo") or ""), ref.repo)
+    return by_path
+
+
+def _checkout_repos(task: Task, by_path: dict) -> list:
+
+    """The repositories `task`'s checkouts resolve to, caching each in `by_path`."""
+    found: list = []
+    for unit in task_repos(task):
+        repo = by_path.get(unit["path"])
+        if repo is None:
+            repo = repo_from_checkout(unit["path"])
+            if repo is not None:
+                by_path[unit["path"]] = repo
+        if repo is not None and repo not in found:
+            found.append(repo)
+    return found
+
+
 def task_checkout(task: Task, repo: forge.RepoId) -> str:
+
     """The local checkout of `repo`, among the ones this task spans.
 
     A task that spans repositories has a change request in more than one of
@@ -11186,17 +11688,22 @@ def link_task(cr: forge.ChangeRequest, tasks: list) -> object:
     that asks for no attestation, which would clear the merge gate for it.
     """
     for task in tasks:
-        if task_publish(task)[0] not in CHANGE_METHODS:
-            continue
-        for entry in recorded_artifacts(task):
-            ref = pr_ref(entry.get("url"))
-            if ref and ref.number == cr.number and ref.repo == cr.repo:
-                return task
+        if task_publish(task)[0] in CHANGE_METHODS and _artifact_is(cr, task):
+            return task
     if cr.head_branch:
         for task in tasks:
             if str(task.doc.get("branch") or "") == cr.head_branch:
                 return task
     return None
+
+
+def _artifact_is(cr: forge.ChangeRequest, task: Task) -> bool:
+    """True when one of `task`'s recorded artifacts is this change request."""
+    for entry in recorded_artifacts(task):
+        ref = pr_ref(entry.get("url"))
+        if ref and ref.number == cr.number and ref.repo == cr.repo:
+            return True
+    return False
 
 
 def shepherd_store():
@@ -11223,15 +11730,7 @@ def cmd_shepherd(args) -> int:
     # fault: nothing to list and nothing to merge, said once rather than once
     # per repository the queue names.
     if not forge.available():
-        why = forge.no_forge_reason()
-        if not args.dry_run:
-            shepherd_store().forge_unavailable(sys.modules[__name__], why)
-            review_lifecycle().unavailable(sys.modules[__name__], why)
-        if args.json:
-            print(json.dumps({"queue": os.path.abspath(queue_root()), "repos": [], "unreadable": [],
-                              "prs": [], "unavailable": why}, indent=2))
-        else:
-            print(f"shepherd: {why}")
+        _shepherd_no_forge(args)
         return 0
     # `all`, and deliberately not the default view. This does not act on the
     # tasks it loads — it derives the REPOSITORIES they name and then asks the
@@ -11243,23 +11742,67 @@ def cmd_shepherd(args) -> int:
     # archived records costs it nothing it was not already paying.
     q = Queue(queue_root(), scope="all")
     only = q.get(args.ref).ref if args.ref else ""
-    tasks = []
-    for task in sorted(q.tasks.values(), key=lambda t: t.ref):
-        if args.topic and task.topic != args.topic:
-            continue
-        if only and task.ref != only:
-            continue
-        tasks.append(task)
+    tasks = [
+        task for task in sorted(q.tasks.values(), key=lambda t: t.ref)
+        if not (args.topic and task.topic != args.topic) and not (only and task.ref != only)
+    ]
 
     repo_of = shepherd_targets(tasks)
-    watched = {r for named in repo_of.values() for r in named}
-    if not args.topic and not only:
-        for repo in review_lifecycle().configured_repos(sys.modules[__name__]):
-            if not any(r.qualified.casefold() == repo.qualified.casefold() for r in watched):
-                watched.add(repo)
-    repos = sorted(watched, key=lambda r: r.qualified)
+    repos = _shepherd_repos(repo_of, args.topic or only)
     named = [str(r) for r in repos]
 
+    rows, unreadable, listings, observed = _shepherd_pass(repos, tasks, repo_of, args)
+
+    # Sessions fleet did not spawn, and the one file of every watched PR's
+    # state; `shepherd_store.py` owns both and argues them.
+    store = shepherd_store()
+    adopted = store.after_pass(sys.modules[__name__], args, list(q.tasks.values()),
+                               observed, listings, unreadable)
+    review_lifecycle().retire(sys.modules[__name__], listings, unreadable, args.dry_run)
+
+    if args.json:
+        print(json.dumps({
+            "queue": os.path.abspath(queue_root()),
+            "repos": [r.qualified for r in repos],
+            "unreadable": unreadable,
+            "prs": rows,
+            "adopted": adopted,
+        }, indent=2))
+        return 0
+
+    store.print_adopted(adopted, args.dry_run)
+    _report_shepherd(q, args, named, rows, unreadable)
+    return 0
+
+
+def _report_shepherd(q: Queue, args, named: list, rows: list, unreadable: list) -> None:
+    """`shepherd`'s report of what it found and did, then the run logs it moved."""
+    if not named:
+        print("shepherd: no task names a repository on a configured forge yet")
+        return
+    for bad in unreadable:
+        print(f"shepherd: could not read the pull requests on {bad['named']}: "
+              f"{bad['detail']} — nothing there was touched")
+    if not rows:
+        if not unreadable:
+            print("shepherd: no open pull requests on " + ", ".join(named))
+        return
+
+    verb = "would do" if args.dry_run else "did"
+    print(f"shepherd: {len(rows)} open pull request(s) on {', '.join(named)} "
+          f"— what it {verb}:\n")
+    for r in rows:
+        _print_shepherd_row(r)
+    _print_shepherd_summary(rows, args.dry_run)
+    if not args.dry_run:
+        refresh_run_logs(q)
+
+
+def _shepherd_pass(repos: list, tasks: list, repo_of: dict, args) -> tuple:
+    """List every repository's open pull requests and shepherd each one.
+
+    (rows, unreadable, listings, observed).
+    """
     rows, unreadable = [], []
     # What the PR-state store and adoption read after the pass: every listing
     # it made, and each open PR with the task and row it got.
@@ -11280,47 +11823,48 @@ def cmd_shepherd(args) -> int:
             shepherd_comments(cr, task, args, row)
             rows.append(row)
             observed.append((cr, task, row))
+    return rows, unreadable, listings, observed
 
-    # Sessions fleet did not spawn, and the one file of every watched PR's
-    # state; `shepherd_store.py` owns both and argues them.
-    store = shepherd_store()
-    adopted = store.after_pass(sys.modules[__name__], args, list(q.tasks.values()),
-                               observed, listings, unreadable)
-    review_lifecycle().retire(sys.modules[__name__], listings, unreadable, args.dry_run)
 
+def _shepherd_no_forge(args) -> None:
+    """`shepherd` on a machine with no forge CLI: said once, and recorded."""
+    why = forge.no_forge_reason()
+    if not args.dry_run:
+        shepherd_store().forge_unavailable(sys.modules[__name__], why)
+        review_lifecycle().unavailable(sys.modules[__name__], why)
     if args.json:
-        print(json.dumps({
-            "queue": os.path.abspath(queue_root()),
-            "repos": [r.qualified for r in repos],
-            "unreadable": unreadable,
-            "prs": rows,
-            "adopted": adopted,
-        }, indent=2))
-        return 0
+        print(json.dumps({"queue": os.path.abspath(queue_root()), "repos": [], "unreadable": [],
+                          "prs": [], "unavailable": why}, indent=2))
+    else:
+        print(f"shepherd: {why}")
 
-    store.print_adopted(adopted, args.dry_run)
 
-    if not repos:
-        print("shepherd: no task names a repository on a configured forge yet")
-        return 0
-    for bad in unreadable:
-        print(f"shepherd: could not read the pull requests on {bad['named']}: "
-              f"{bad['detail']} — nothing there was touched")
-    if not rows:
-        if not unreadable:
-            print("shepherd: no open pull requests on " + ", ".join(named))
-        return 0
+def _shepherd_repos(repo_of: dict, narrowed) -> list:
+    """Every repository a shepherd pass lists: the tasks', then the configured ones.
 
-    verb = "would do" if args.dry_run else "did"
-    print(f"shepherd: {len(rows)} open pull request(s) on {', '.join(named)} "
-          f"— what it {verb}:\n")
-    for r in rows:
-        print(f"    {r['task'] or '(no task records it)'}  {r['pr']}")
-        print(f"        {r['condition']}: {r['detail']}")
-        if r["action"] != "none":
-            print(f"        {r['action']}: {r['note']}" if r["note"] else f"        {r['action']}")
-        if r.get("comments", "none") != "none":
-            print(f"        comments {r['comments']}: {r.get('comments_note', '')}")
+    The configured review repositories join only an un-narrowed pass — no
+    `--topic`, no ref.
+    """
+    watched = {r for named in repo_of.values() for r in named}
+    if not narrowed:
+        for repo in review_lifecycle().configured_repos(sys.modules[__name__]):
+            if not any(r.qualified.casefold() == repo.qualified.casefold() for r in watched):
+                watched.add(repo)
+    return sorted(watched, key=lambda r: r.qualified)
+
+
+def _print_shepherd_row(r: dict) -> None:
+    """One pull request's lines in `shepherd`'s report."""
+    print(f"    {r['task'] or '(no task records it)'}  {r['pr']}")
+    print(f"        {r['condition']}: {r['detail']}")
+    if r["action"] != "none":
+        print(f"        {r['action']}: {r['note']}" if r["note"] else f"        {r['action']}")
+    if r.get("comments", "none") != "none":
+        print(f"        comments {r['comments']}: {r.get('comments_note', '')}")
+
+
+def _print_shepherd_summary(rows: list, dry_run: bool) -> None:
+    """`shepherd`'s closing counts, caveats and merge scope."""
     counts: dict[str, int] = {}
     for r in rows:
         counts[r["action"]] = counts.get(r["action"], 0) + 1
@@ -11336,7 +11880,7 @@ def cmd_shepherd(args) -> int:
             f"          {len(undetermined)} could not be determined and were left "
             "exactly as they are —\n          a PR that cannot be read is not a broken one."
         )
-    if not args.dry_run and any(r["action"] == "dispatched" for r in rows):
+    if not dry_run and any(r["action"] == "dispatched" for r in rows):
         print("          Fixers are working in place on the existing branches; nothing forked.")
     # An empty allowlist is the default a fresh clone has, so it gets a
     # sentence rather than a dangling "limited to , and only for" — and that
@@ -11362,9 +11906,6 @@ def cmd_shepherd(args) -> int:
             "your own; its\n          header owns the format and the five gates a "
             "merge still has to clear."
         )
-    if not args.dry_run:
-        refresh_run_logs(q)
-    return 0
 
 
 # --- the run log: the half of it the queue already knows ---------------------
@@ -11475,41 +12016,62 @@ def run_events(tasks: list) -> list:
     """
     out = []
     for t in tasks:
-        d = t.doc
-        where = f" on `{d['host']}`" if d.get("host") else ""
-        session = d.get("session") or (d.get("reaped") or {}).get("session")
-        profile = d.get("profile") or "default"
-        if d.get("dispatched_at"):
-            out.append((d["dispatched_at"], f"dispatched `{t.id}`{where} to session "
-                                            f"`{session}` on profile `{profile}`"))
-        if d.get("concluded_at"):
-            check = (d.get("artifact_check") or {}).get("verdict") or ""
-            said = f"`{t.id}` concluded `{d.get('outcome')}`"
-            if d.get("artifact"):
-                said += f" — {cell(artifact_text(t))}"
-            out.append((d["concluded_at"], said + (f" [pipeline {check}]" if check else "")))
-        landing = d.get("landing") or {}
-        if landing.get("at") and landing.get("state") in LANDED_STATE:
-            out.append((landing["at"], f"`{t.id}` {landing['state']} — {landing.get('detail', '')}"))
-        given_up = d.get("abandoned") or {}
-        if given_up.get("at"):
-            out.append((given_up["at"], f"`{t.id}` {ABANDON_HOW.get(abandon_how(t), abandon_how(t))} — "
-                                         f"{cell(given_up.get('why'))}"))
-        reaped = d.get("reaped") or {}
-        if reaped.get("at"):
-            verb = "kept" if reaped.get("how") == "kept" else "released"
-            out.append((reaped["at"], f"{verb} `{t.id}`'s session "
-                                      f"`{reaped.get('session')}` ({reaped.get('how')})"))
-        shep = d.get("shepherd") or {}
-        if shep.get("at"):
-            said = (f"shepherd: `{t.id}`'s pull request is "
-                    f"`{shep.get('condition')}`")
-            if shep.get("session"):
-                said += f" — fixer `{shep['session']}`"
-            elif shep.get("refused"):
-                said += f" — no fixer sent: {shep['refused']}"
-            out.append((shep["at"], said))
+        out += _work_events(t)
+        out += _end_events(t)
     return sorted(out, key=lambda e: e[0])
+
+
+def _work_events(t: Task) -> list:
+    """`run_events` for one task's dispatch, conclusion and landing."""
+    out = []
+    d = t.doc
+    where = f" on `{d['host']}`" if d.get("host") else ""
+    session = d.get("session") or (d.get("reaped") or {}).get("session")
+    profile = d.get("profile") or "default"
+    if d.get("dispatched_at"):
+        out.append((d["dispatched_at"], f"dispatched `{t.id}`{where} to session "
+                                        f"`{session}` on profile `{profile}`"))
+    if d.get("concluded_at"):
+        out.append(_concluded_event(t))
+    landing = d.get("landing") or {}
+    if landing.get("at") and landing.get("state") in LANDED_STATE:
+        out.append((landing["at"], f"`{t.id}` {landing['state']} — {landing.get('detail', '')}"))
+    return out
+
+
+def _concluded_event(t: Task) -> tuple:
+    """`run_events`' entry for the moment a task concluded."""
+    d = t.doc
+    check = (d.get("artifact_check") or {}).get("verdict") or ""
+    said = f"`{t.id}` concluded `{d.get('outcome')}`"
+    if d.get("artifact"):
+        said += f" — {cell(artifact_text(t))}"
+    return (d["concluded_at"], said + (f" [pipeline {check}]" if check else ""))
+
+
+def _end_events(t: Task) -> list:
+    """`run_events` for one task's abandonment, reaping and shepherd record."""
+    out = []
+    d = t.doc
+    given_up = d.get("abandoned") or {}
+    if given_up.get("at"):
+        out.append((given_up["at"], f"`{t.id}` {ABANDON_HOW.get(abandon_how(t), abandon_how(t))} — "
+                                     f"{cell(given_up.get('why'))}"))
+    reaped = d.get("reaped") or {}
+    if reaped.get("at"):
+        verb = "kept" if reaped.get("how") == "kept" else "released"
+        out.append((reaped["at"], f"{verb} `{t.id}`'s session "
+                                  f"`{reaped.get('session')}` ({reaped.get('how')})"))
+    shep = d.get("shepherd") or {}
+    if shep.get("at"):
+        said = (f"shepherd: `{t.id}`'s pull request is "
+                f"`{shep.get('condition')}`")
+        if shep.get("session"):
+            said += f" — fixer `{shep['session']}`"
+        elif shep.get("refused"):
+            said += f" — no fixer sent: {shep['refused']}"
+        out.append((shep["at"], said))
+    return out
 
 
 def run_facts(q: Queue, slug: str) -> str:
@@ -11535,44 +12097,7 @@ def run_facts(q: Queue, slug: str) -> str:
     ]
 
     if tasks:
-        lines += [
-            "| Task | Where it runs | Branch | State | Artifact |",
-            "|---|---|---|---|---|",
-        ]
-        for t in tasks:
-            d = t.doc
-            state = "waiting" if t.state == "queued" and not q.is_ready(t) else t.state
-            lines.append(
-                f"| `{t.id}` — {cell(d.get('title'))} | `{cell(where_it_runs(t))}` "
-                f"| `{cell(d.get('branch'))}` | {state} | {cell(artifact_text(t))} |"
-            )
-        held = sorted({(t.id, blocker_condition(bl) or bl.get("task") or "",
-                        bool(blocker_condition(bl)), bl["kind"], bl["why"])
-                       for t in tasks for bl in t.blockers})
-        # The two things about ordering worth having in a run log, and the
-        # reason the last one was typed by hand: what waited and on what
-        # condition, and what went out together anyway despite touching one
-        # file. The second is the queue's whole doctrine, so it is recorded
-        # here rather than left to a lead remembering to mention it.
-        #
-        # A CONDITION IS NAMED AS ONE, in words rather than as a ref in
-        # backticks: a reader of this log who cannot tell "waited for 01" from
-        # "waited for somebody to log into Azure" has lost the fact that makes
-        # the second one worth writing down.
-        for tid, on, is_condition, kind, why in held:
-            what = (f"a condition outside the queue — {on}" if is_condition
-                    else f"`{on}`")
-            lines += ["", f"- **`{tid}` waits on {what}** — {kind}: {why}"]
-        # Only a task asked for by somebody OTHER than its topic's requester:
-        # the rest say what the topic line above already said.
-        for t in tasks:
-            by = requester(t.doc.get("requested_by"))
-            if by and by != requester(topic.get("requested_by")):
-                lines += ["", f"- **`{t.id}` was requested by {by}**"]
-        for o in q.overlaps(tasks):
-            refs = ", ".join(f"`{r.split('/')[-1]}`" for r in o["tasks"])
-            lines += ["", f"- **Overlap on `{o['touches']}`** — {refs}. A risk that "
-                          "was reported and accepted, never a reason to wait."]
+        lines += _run_facts_tasks(q, topic, tasks)
     else:
         lines.append("No tasks yet.")
 
@@ -11582,6 +12107,49 @@ def run_facts(q: Queue, slug: str) -> str:
         lines += [f"- `{at}` — {what}" for at, what in events]
 
     return "\n".join(lines) + "\n"
+
+
+def _run_facts_tasks(q: Queue, topic: dict, tasks: list) -> list:
+    """`run_facts`' task table, then what waited, who asked and what overlapped."""
+    lines = [
+        "| Task | Where it runs | Branch | State | Artifact |",
+        "|---|---|---|---|---|",
+    ]
+    for t in tasks:
+        d = t.doc
+        state = "waiting" if t.state == "queued" and not q.is_ready(t) else t.state
+        lines.append(
+            f"| `{t.id}` — {cell(d.get('title'))} | `{cell(where_it_runs(t))}` "
+            f"| `{cell(d.get('branch'))}` | {state} | {cell(artifact_text(t))} |"
+        )
+    held = sorted({(t.id, blocker_condition(bl) or bl.get("task") or "",
+                    bool(blocker_condition(bl)), bl["kind"], bl["why"])
+                   for t in tasks for bl in t.blockers})
+    # The two things about ordering worth having in a run log, and the
+    # reason the last one was typed by hand: what waited and on what
+    # condition, and what went out together anyway despite touching one
+    # file. The second is the queue's whole doctrine, so it is recorded
+    # here rather than left to a lead remembering to mention it.
+    #
+    # A CONDITION IS NAMED AS ONE, in words rather than as a ref in
+    # backticks: a reader of this log who cannot tell "waited for 01" from
+    # "waited for somebody to log into Azure" has lost the fact that makes
+    # the second one worth writing down.
+    for tid, on, is_condition, kind, why in held:
+        what = (f"a condition outside the queue — {on}" if is_condition
+                else f"`{on}`")
+        lines += ["", f"- **`{tid}` waits on {what}** — {kind}: {why}"]
+    # Only a task asked for by somebody OTHER than its topic's requester:
+    # the rest say what the topic line above already said.
+    for t in tasks:
+        by = requester(t.doc.get("requested_by"))
+        if by and by != requester(topic.get("requested_by")):
+            lines += ["", f"- **`{t.id}` was requested by {by}**"]
+    for o in q.overlaps(tasks):
+        refs = ", ".join(f"`{r.split('/')[-1]}`" for r in o["tasks"])
+        lines += ["", f"- **Overlap on `{o['touches']}`** — {refs}. A risk that "
+                      "was reported and accepted, never a reason to wait."]
+    return lines
 
 
 def legacy_fence(text: str) -> tuple[str, tuple[int, int] | None]:
@@ -11613,7 +12181,7 @@ def write_run_facts(path: str, text: str) -> bool:
     step under its lock.
     """
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    with fleet_platform.exclusive_lock(path + ".lock", wait=RECORD_LOCK_WAIT):
+    with fleet_platform.exclusive_lock(path + LOCK_SUFFIX, wait=RECORD_LOCK_WAIT):
         try:
             with open(path, encoding="utf-8") as fh:
                 if fh.read() == text:
@@ -11650,26 +12218,9 @@ def refresh_run_log(q: Queue, slug: str, archived_too: bool = False) -> tuple[st
         return path, ""
     verb = ""
     if os.path.exists(path):
-        with open(path, encoding="utf-8") as fh:
-            old = fh.read()
-        kind, span = legacy_fence(old)
-        if kind == "malformed":
-            # The facts file is fleet's own, so it stays current regardless.
-            write_run_facts(facts, run_facts(q, slug))
-            return path, ("left alone — its fleet:facts markers are malformed (each must "
-                          "appear once, alone on its line, opening one first); fix or "
-                          "remove them and run `fleet queue run` again")
-        if kind == "fence":
-            write_run_facts(facts, run_facts(q, slug))
-            with open(path, encoding="utf-8") as fh:
-                if fh.read() != old:
-                    return path, ("not migrated — it changed while its facts rendered; "
-                                  "the next pass tries again")
-            lines = old.splitlines(keepends=True)
-            first, last = span
-            lines[first:last + 1] = [FACTS_LINK.format(name=os.path.basename(facts)) + "\n"]
-            fleet_platform.write_record(path, "".join(lines))
-            return path, "migrated"
+        said = _migrate_run_log(q, slug, path, facts)
+        if said is not None:
+            return path, said
     else:
         # A topic that was ALREADY archived when this view loaded is REFRESHED
         # and never OPENED. `shepherd` has always read every topic and `collect`
@@ -11682,21 +12233,58 @@ def refresh_run_log(q: Queue, slug: str, archived_too: bool = False) -> tuple[st
         # its log exactly as it always did.
         if topic.get("archived"):
             return path, ""
-        try:
-            with open(run_template_path(), encoding="utf-8") as fh:
-                template = fh.read()
-        except OSError as exc:
-            return path, f"not scaffolded — {exc}"
-        template = (template.replace("<YYYY-MM-DD>", os.path.basename(path)[:10])
-                    .replace("<slug>", slug)
-                    .replace(FACTS_LINK_SLOT, FACTS_LINK.format(name=os.path.basename(facts))))
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        if fleet_platform.create_record(path, template):
+        opened, why = _scaffold_run_log(slug, path, facts)
+        if why:
+            return path, why
+        if opened:
             verb = "opened"
 
     if write_run_facts(facts, run_facts(q, slug)) and not verb:
         verb = "facts updated"
     return path, verb
+
+
+def _migrate_run_log(q: Queue, slug: str, path: str, facts: str) -> str | None:
+    """Migrate an existing log's legacy fence, if it has one.
+
+    What `refresh_run_log` returns when it stops here, and None when the log
+    carries no fence and the refresh carries on.
+    """
+    with open(path, encoding="utf-8") as fh:
+        old = fh.read()
+    kind, span = legacy_fence(old)
+    if kind == "malformed":
+        # The facts file is fleet's own, so it stays current regardless.
+        write_run_facts(facts, run_facts(q, slug))
+        return ("left alone — its fleet:facts markers are malformed (each must "
+                "appear once, alone on its line, opening one first); fix or "
+                "remove them and run `fleet queue run` again")
+    if kind == "fence":
+        write_run_facts(facts, run_facts(q, slug))
+        with open(path, encoding="utf-8") as fh:
+            if fh.read() != old:
+                return ("not migrated — it changed while its facts rendered; "
+                        "the next pass tries again")
+        lines = old.splitlines(keepends=True)
+        first, last = span
+        lines[first:last + 1] = [FACTS_LINK.format(name=os.path.basename(facts)) + "\n"]
+        fleet_platform.write_record(path, "".join(lines))
+        return "migrated"
+    return None
+
+
+def _scaffold_run_log(slug: str, path: str, facts: str) -> tuple[bool, str]:
+    """Open a topic's log from the template: (created, why it could not be)."""
+    try:
+        with open(run_template_path(), encoding="utf-8") as fh:
+            template = fh.read()
+    except OSError as exc:
+        return False, f"not scaffolded — {exc}"
+    template = (template.replace("<YYYY-MM-DD>", os.path.basename(path)[:10])
+                .replace("<slug>", slug)
+                .replace(FACTS_LINK_SLOT, FACTS_LINK.format(name=os.path.basename(facts))))
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    return fleet_platform.create_record(path, template), ""
 
 
 def refresh_run_logs(q: Queue, only: str | None = None, always: bool = False,
@@ -11841,7 +12429,7 @@ def last_transition(task: Task) -> tuple[str | None, str]:
     so a fold that happens to run after the message cannot manufacture
     movement that predates it.
     """
-    path = task.file("progress.jsonl")
+    path = task.file(PROGRESS_FILE)
     if not os.path.exists(path):
         return None, ""
     try:
@@ -11939,14 +12527,7 @@ def liveness(task: Task) -> dict | None:
         }
 
     rows = movement_since(task, entry)
-    for row in rows:
-        word = MOVED_WORD[row["source"]]
-        if row["status"] == "moved":
-            row["line"] = f"{word} {age_of(row['at'])} ago" if row["at"] else f"{word} since"
-        elif row["status"] == "still":
-            row["line"] = f"no {row['source']} since"
-        else:
-            row["line"] = f"{row['source']} not checked: {row['why']}"
+    _word_movement(rows)
 
     moved = [r for r in rows if r["status"] == "moved"]
     still = [r for r in rows if r["status"] == "still"]
@@ -11967,6 +12548,18 @@ def liveness(task: Task) -> dict | None:
         "movement": rows,
         "line": f"messaged {ago} ago · {tail}",
     }
+
+
+def _word_movement(rows: list) -> None:
+    """Give each of `liveness`'s movement rows its `line`, in place."""
+    for row in rows:
+        word = MOVED_WORD[row["source"]]
+        if row["status"] == "moved":
+            row["line"] = f"{word} {age_of(row['at'])} ago" if row["at"] else f"{word} since"
+        elif row["status"] == "still":
+            row["line"] = f"no {row['source']} since"
+        else:
+            row["line"] = f"{row['source']} not checked: {row['why']}"
 
 
 # What every view prints under a liveness line that reports no movement, and
@@ -12090,29 +12683,31 @@ def live_rows(task: Task) -> list[dict]:
     rows = []
     for entry in recorded_artifacts(task):
         url = str(entry.get("url") or "")
-        if not forge.change_url(url):
-            continue
-        which, ref = forge.for_url(url)
-        if which is None:
-            rows.append({"name": url, "state": "unreadable", "line": f"could not be read — {ref}"})
-            continue
-        cr, why = which.get(ref)
-        if cr is None:
-            rows.append({"name": f"{ref.repo.path}#{ref.number}", "state": "unreadable",
-                         "line": f"could not be read — {why}"})
-            continue
-        threads, twhy = which.threads(ref) if cr.state == "open" else (None, "")
-        line = live_summary(cr, threads)
-        if twhy:
-            # Left out, a count nobody could read would read as none open.
-            line += f" · threads not read: {twhy}"
-        if cr.state == "merged":
-            line = ("merged on the forge — the record has not caught up; "
-                    "`fleet queue collect` lands it")
-        elif cr.state == "closed":
-            line = "closed unmerged on the forge"
-        rows.append({"name": cr.name, "state": cr.state or "unreadable", "line": line})
+        if forge.change_url(url):
+            rows.append(_live_row(url))
     return rows
+
+
+def _live_row(url: str) -> dict:
+    """One change request's `live_rows` row, read from its forge now."""
+    which, ref = forge.for_url(url)
+    if which is None:
+        return {"name": url, "state": "unreadable", "line": f"could not be read — {ref}"}
+    cr, why = which.get(ref)
+    if cr is None:
+        return {"name": f"{ref.repo.path}#{ref.number}", "state": "unreadable",
+                "line": f"could not be read — {why}"}
+    threads, twhy = which.threads(ref) if cr.state == "open" else (None, "")
+    line = live_summary(cr, threads)
+    if twhy:
+        # Left out, a count nobody could read would read as none open.
+        line += f" · threads not read: {twhy}"
+    if cr.state == "merged":
+        line = ("merged on the forge — the record has not caught up; "
+                "`fleet queue collect` lands it")
+    elif cr.state == "closed":
+        line = "closed unmerged on the forge"
+    return {"name": cr.name, "state": cr.state or "unreadable", "line": line}
 
 
 def cmd_list(args) -> int:
@@ -12124,9 +12719,11 @@ def cmd_list(args) -> int:
     # Named explicitly, so a topic stays reachable BY NAME however it is
     # flagged: `list --topic <archived>` is a request for that topic, not a
     # request for the default view narrowed to it.
-    scope = "all" if (args.all_topics or args.topic) else (
-        "archived" if args.archived else "live"
-    )
+    scope = "live"
+    if args.all_topics or args.topic:
+        scope = "all"
+    elif args.archived:
+        scope = "archived"
     q = Queue(root, scope=scope)
     grouped = q.by_topic()
     if args.topic:
@@ -12140,43 +12737,54 @@ def cmd_list(args) -> int:
         print(f"live: {forge.no_forge_reason()} — every row below is the record")
         live_read = None
     for topic, tasks in sorted(grouped.items()):
-        meta = q.topics.get(topic, {})
-        flag = "  [archived]" if meta.get("archived") else ""
-        by = requester(meta.get("requested_by"))
-        print(f"{topic} — {meta.get('title', '')}{f'  by {by}' if by else ''}{flag}")
-        for t in tasks:
-            mark = "waiting" if t.state == "queued" and not q.is_ready(t) else t.state
-            extra = t.doc.get("artifact") or t.doc.get("session") or ""
-            # The publish state, with the age of the look that produced it —
-            # the same field the pane draws, so the two views cannot
-            # disagree about what was last seen.
-            pub = t.doc.get("publish") or {}
-            if pub.get("state"):
-                extra = f"{extra}  {pub['state']} {age_of(pub.get('at'))}".strip()
-            if asker := requester(t.doc.get("requested_by")):
-                extra = f"{extra}  by {asker}".strip()
-            print(f"    {t.id:<34} {mark:<11} {where_it_runs(t)}  {extra}")
-            # The row is one line and a record can contradict it; task_notes is
-            # what says so, and it is the same list the pane renders.
-            for note in task_notes(q, t):
-                print(f"        {note}")
-            # "I sent that worker a message — did it land, and has anything
-            # moved since?" Drawn only on a task somebody actually messaged,
-            # so a queue nobody has course-corrected looks exactly as it did.
-            live = liveness(t)
-            if live and live["status"] != "moot":
-                print(f"        {live['line']}")
-            if live_read is not None and t.state not in TERMINAL_STATES:
-                for row in live_rows(t):
-                    live_read.append(row["state"])
-                    print(f"        live: {row['name']}  {row['line']}")
-        print()
+        _list_topic(q, topic, tasks, live_read)
     if live_read is not None:
         counts = {k: live_read.count(k) for k in ("merged", "closed", "open", "unreadable")}
         said = ", ".join(f"{n} {k}" for k, n in counts.items() if n)
         print(f"live: {len(live_read)} change request(s) read" + (f": {said}" if said else ""))
     hidden(q)
     return 0
+
+
+def _list_topic(q: "Queue", topic: str, tasks: list, live_read: list | None) -> None:
+    """One topic's heading in `list`, then each of its tasks."""
+    meta = q.topics.get(topic, {})
+    flag = "  [archived]" if meta.get("archived") else ""
+    by = requester(meta.get("requested_by"))
+    print(f"{topic} — {meta.get('title', '')}{f'  by {by}' if by else ''}{flag}")
+    for t in tasks:
+        _list_task(q, t, live_read)
+    print()
+
+
+def _list_task(q: "Queue", t: Task, live_read: list | None) -> None:
+
+    """One task's row in `list`, its notes, and — with `--live` — its forge read."""
+    mark = "waiting" if t.state == "queued" and not q.is_ready(t) else t.state
+    extra = t.doc.get("artifact") or t.doc.get("session") or ""
+    # The publish state, with the age of the look that produced it —
+    # the same field the pane draws, so the two views cannot
+    # disagree about what was last seen.
+    pub = t.doc.get("publish") or {}
+    if pub.get("state"):
+        extra = f"{extra}  {pub['state']} {age_of(pub.get('at'))}".strip()
+    if asker := requester(t.doc.get("requested_by")):
+        extra = f"{extra}  by {asker}".strip()
+    print(f"    {t.id:<34} {mark:<11} {where_it_runs(t)}  {extra}")
+    # The row is one line and a record can contradict it; task_notes is
+    # what says so, and it is the same list the pane renders.
+    for note in task_notes(q, t):
+        print(f"        {note}")
+    # "I sent that worker a message — did it land, and has anything
+    # moved since?" Drawn only on a task somebody actually messaged,
+    # so a queue nobody has course-corrected looks exactly as it did.
+    live = liveness(t)
+    if live and live["status"] != "moot":
+        print(f"        {live['line']}")
+    if live_read is not None and t.state not in TERMINAL_STATES:
+        for row in live_rows(t):
+            live_read.append(row["state"])
+            print(f"        live: {row['name']}  {row['line']}")
 
 
 def hidden(q: Queue) -> None:
@@ -12213,15 +12821,8 @@ def cmd_find(args) -> int:
     return 0
 
 
-def cmd_show(args) -> int:
-    q = Queue(queue_root())
-    task = q.get(args.ref)
-    d = task.doc
-    print(f"{task.ref} — {d['title']}")
-    for key in ("state", "repo", "host", "branch", "base", "agent", "profile", "session",
-                "prompted", "outcome"):
-        print(f"    {key + ':':<12} {d.get(key)}")
-    print(f"    {'by:':<12} {requester(d.get('requested_by')) or 'not recorded'}")
+def _show_extras(task: Task, d: dict) -> None:
+    """`show`'s origin, reply, extra repositories, attachments and artifacts."""
     for key in ("origin", "reply"):
         if d.get(key):
             print(f"    {key + ':':<12} {d[key]}")
@@ -12238,12 +12839,10 @@ def cmd_show(args) -> int:
     else:
         for entry in entries:
             print(f"    {'artifact:':<12} {entry['repo']}  {entry['url']}")
-    remote = d.get("remote") or {}
-    if remote.get("worktree"):
-        # Named in full because it is the only place the worker's actual
-        # filesystem appears: the brief it reads and the result that closes
-        # this task are both files on that machine.
-        print(f"    {'remote:':<12} {remote.get('destination')}:{remote['worktree']}")
+
+
+def _show_publish(task: Task, d: dict) -> None:
+    """`show`'s publish method, target, artifact check and publish state."""
     method, how = task_publish(task)
     print(f"    {'publish:':<12} {method}{f' — {how}' if how else ''}")
     if d.get("target"):
@@ -12259,13 +12858,22 @@ def cmd_show(args) -> int:
             f"    {'published:':<12} {pub['state']} — {pub.get('detail', '')} "
             f"({pub.get('by', '')}, {age_of(pub.get('at'))} ago)"
         )
+
+
+def _show_liveness(task: Task) -> None:
+    """`show`'s account of a message sent to the worker, when one was."""
     live = liveness(task)
-    if live:
-        print(f"    {'messaged:':<12} {live['line']}")
-        for row in live["movement"]:
-            print(f"    {'':<12}   {row['line']}")
-        if live["status"] in ("still", "unknown"):
-            print(f"    {'':<12} {LIVENESS_CAVEAT}")
+    if not live:
+        return
+    print(f"    {'messaged:':<12} {live['line']}")
+    for row in live["movement"]:
+        print(f"    {'':<12}   {row['line']}")
+    if live["status"] in ("still", "unknown"):
+        print(f"    {'':<12} {LIVENESS_CAVEAT}")
+
+
+def _show_ends(task: Task, d: dict) -> None:
+    """`show`'s landing, review, abandonment, refuels and reaping."""
     landing = d.get("landing") or {}
     if landing.get("state"):
         print(f"    {'landing:':<12} {landing['state']} — {landing.get('detail', '')}")
@@ -12290,8 +12898,10 @@ def cmd_show(args) -> int:
             f"    {'reaped:':<12} {reaped['session']} {reaped.get('how', '')} "
             f"at {reaped.get('at', '')}"
         )
-    if task.touches:
-        print(f"    {'touches:':<12} {', '.join(task.touches)}")
+
+
+def _show_shepherd(d: dict) -> None:
+    """`show`'s last shepherd record, when there is one."""
     rec = d.get("shepherd")
     if rec:
         # A record does not always name a fixer, and `fixer None sent` was
@@ -12302,6 +12912,41 @@ def cmd_show(args) -> int:
         print(f"    {'shepherd:':<12} {rec.get('condition')} — {sent} {rec.get('at')}")
         if rec.get("refused"):
             print(f"    {'':<12} {rec['refused']}")
+
+
+def _show_files(task: Task) -> None:
+    """`show`'s brief, progress and result files."""
+    print(f"    {'brief:':<12} {task.file('BRIEF.md')}")
+    progress = task.file(PROGRESS_FILE)
+    if os.path.exists(progress):
+        lines = open(progress, encoding="utf-8").read().splitlines()
+        print(f"    {'progress:':<12} {len(lines)} transition(s), last: {lines[-1] if lines else '-'}")
+    if os.path.exists(task.file(RESULT_FILE)):
+        print(f"    {'result:':<12} {task.file('result.md')}")
+
+
+def cmd_show(args) -> int:
+    q = Queue(queue_root())
+    task = q.get(args.ref)
+    d = task.doc
+    print(f"{task.ref} — {d['title']}")
+    for key in ("state", "repo", "host", "branch", "base", "agent", "profile", "session",
+                "prompted", "outcome"):
+        print(f"    {key + ':':<12} {d.get(key)}")
+    print(f"    {'by:':<12} {requester(d.get('requested_by')) or 'not recorded'}")
+    _show_extras(task, d)
+    remote = d.get("remote") or {}
+    if remote.get("worktree"):
+        # Named in full because it is the only place the worker's actual
+        # filesystem appears: the brief it reads and the result that closes
+        # this task are both files on that machine.
+        print(f"    {'remote:':<12} {remote.get('destination')}:{remote['worktree']}")
+    _show_publish(task, d)
+    _show_liveness(task)
+    _show_ends(task, d)
+    if task.touches:
+        print(f"    {'touches:':<12} {', '.join(task.touches)}")
+    _show_shepherd(d)
     conflict = state_conflict(task)
     if conflict:
         print(f"    {'conflict:':<12} {conflict}")
@@ -12312,13 +12957,7 @@ def cmd_show(args) -> int:
     # itself, and the record keeps what a status line has stopped showing.
     for b in task.blockers:
         print(f"    blocked_by:  {blocker_view(q, task, b)['line']}")
-    print(f"    {'brief:':<12} {task.file('BRIEF.md')}")
-    progress = task.file("progress.jsonl")
-    if os.path.exists(progress):
-        lines = open(progress, encoding="utf-8").read().splitlines()
-        print(f"    {'progress:':<12} {len(lines)} transition(s), last: {lines[-1] if lines else '-'}")
-    if os.path.exists(task.file("result.md")):
-        print(f"    {'result:':<12} {task.file('result.md')}")
+    _show_files(task)
     return 0
 
 
@@ -12338,6 +12977,146 @@ def cmd_check(args) -> int:
     return 0
 
 
+def _topic_problems(q: "Queue", slug: str, meta: dict) -> list:
+    """What is wrong with one topic's record, for `record_problems`."""
+    problems = []
+    at = meta.get("archived")
+    if at is not None and not isinstance(at, str):
+        problems.append(f"{slug}: archived {at!r} is not a timestamp")
+        return problems
+    # An archived topic holding a live task is the one way this flag can
+    # be actively harmful: it is work nothing draws. Nothing fleet does
+    # produces one — `add` clears the flag — but a hand-edited topic.yaml
+    # can, and this is the check that says so out loud.
+    held = unfinished(q.by_topic().get(slug) or []) if at else None
+    if held:
+        problems.append(
+            f"{slug}: archived while {held.ref} is `{held.state}` — "
+            "run `fleet queue unarchive` on it"
+        )
+    why = requester_problem(meta.get("requested_by"))
+    if why:
+        problems.append(f"{slug}: {why}")
+    return problems
+
+
+def _publish_problems(ref: str, d: dict) -> list:
+    """What is wrong with one task's publish, target and how."""
+    problems = []
+    pub = d.get("publish") or {}
+    # Through publish_method(), like every other reader: a record older
+    # than the rename is never rewritten, so refusing its word here would
+    # fail this check for good.
+    if "method" in pub and publish_method(pub["method"]) not in PUBLISH_METHODS:
+        problems.append(
+            f"{ref}: publish method {pub['method']!r} is not one of "
+            + ", ".join(sorted(PUBLISH_METHODS))
+        )
+    target = d.get("target")
+    if target is not None and not (
+        isinstance(target, str) and forge.TARGET_URL_RE.match(target)
+    ):
+        problems.append(f"{ref}: target {target!r} is not a change request or issue URL")
+    if publish_method(pub.get("method")) == "note" and not target:
+        problems.append(f"{ref}: a `note` task names no target to check its note against")
+    # The ONLY thing ever asked of `how`. It names a tool fleet does not
+    # know, so "it is text" is the whole contract — anything more is fleet
+    # deciding which tools exist.
+    if pub.get("how") is not None and not isinstance(pub["how"], str):
+        problems.append(f"{ref}: publish how {pub['how']!r} is not text")
+    return problems
+
+
+def _blocker_problems(q: "Queue", ref: str, t: "Task") -> list:
+    """What is wrong with one task's blockers."""
+    problems = []
+    for b in t.blockers:
+        problems += _one_blocker_problems(q, ref, b)
+    return problems
+
+
+def _one_blocker_problems(q: "Queue", ref: str, b: dict) -> list:
+    """What is wrong with one blocker entry."""
+    problems = []
+    # The two forms are validated against their own closed sets, and a
+    # condition is checked for none of the three things that are only
+    # true of a task: there is no upstream record to find.
+    cond = blocker_condition(b)
+    kinds = CONDITION_KINDS if cond else BLOCKER_KINDS
+    if b.get("kind") not in kinds:
+        problems.append(f"{ref}: blocker kind {b.get('kind')!r} is not a real one")
+    if not (b.get("why") or "").strip():
+        problems.append(
+            f"{ref}: blocker on {cond or b.get('task')} has no reason"
+        )
+    if cond and b.get("task"):
+        problems.append(
+            f"{ref}: blocker names both a task and a condition; it is one or the other"
+        )
+    if not cond and b.get("task") not in q.tasks:
+        problems.append(f"{ref}: blocker names {b.get('task')}, which does not exist")
+    return problems
+
+
+def _placement_problems(ref: str, t: "Task") -> list:
+    """What is wrong with where one task runs: its brief, host, extras, artifact."""
+    d = t.doc
+    problems = []
+    if not os.path.exists(t.file(BRIEF_FILE)):
+        problems.append(f"{ref}: no BRIEF.md")
+    # The host name only — never whether that host exists. A queue is read
+    # on machines that are not the one it dispatches from, and a check that
+    # asked thurbox would report a perfectly good record as broken there.
+    if d.get("host") is not None and not isinstance(d.get("host"), str):
+        problems.append(f"{ref}: host {d.get('host')!r} is not a name")
+    if (d.get("remote") or {}) and not d.get("host"):
+        problems.append(f"{ref}: carries a remote worktree but names no host")
+    for key in ("add_dirs", "add_repos"):
+        extra = d.get(key)
+        if extra is not None and not (
+            isinstance(extra, list) and all(isinstance(x, str) and x for x in extra)
+        ):
+            problems.append(f"{ref}: {key} {extra!r} is not a list of paths")
+    problems += _artifact_shape_problems(ref, d.get("artifact"))
+    return problems
+
+
+def _artifact_shape_problems(ref: str, art) -> list:
+    """What is wrong with the shape of a task's recorded artifact."""
+    # Both shapes are valid, so the check is that it IS one of them: a
+    # plural entry that names no url is a record nothing can verify, and a
+    # scalar is whatever a worker reported, which `collect` judges and this
+    # does not second-guess.
+    if isinstance(art, list) and not all(
+        isinstance(x, dict) and isinstance(x.get("repo"), str) for x in art
+    ):
+        return [f"{ref}: artifact {art!r} is a list but not one of {{repo, url}} mappings"]
+    return []
+
+
+def _task_problems(q: "Queue", ref: str, t: "Task") -> list:
+    """What is wrong with one task's record, for `record_problems`."""
+    d = t.doc
+    problems = []
+    for key in ("id", "topic", "title", "state", "repo", "branch"):
+        if not d.get(key):
+            problems.append(f"{ref}: missing {key}")
+    problems += _publish_problems(ref, d)
+    why = requester_problem(d.get("requested_by"))
+    if why:
+        problems.append(f"{ref}: {why}")
+    for key in ("origin", "reply"):
+        if d.get(key) is not None and not (isinstance(d[key], str) and d[key].strip()):
+            problems.append(f"{ref}: {key} {d[key]!r} is not text")
+    if d.get("state") not in STATES:
+        problems.append(f"{ref}: state {d.get('state')!r} is not one of {', '.join(STATES)}")
+    if d.get("id") != t.id:
+        problems.append(f"{ref}: id {d.get('id')!r} disagrees with its directory")
+    problems += _blocker_problems(q, ref, t)
+    problems += _placement_problems(ref, t)
+    return problems
+
+
 def record_problems(root: str) -> tuple["Queue", list]:
     """The queue under `root`, and every way one of its records is wrong.
 
@@ -12352,103 +13131,9 @@ def record_problems(root: str) -> tuple["Queue", list]:
     q = Queue(root, scope="all")
     problems = []
     for slug, meta in sorted(q.topics.items()):
-        at = meta.get("archived")
-        if at is not None and not isinstance(at, str):
-            problems.append(f"{slug}: archived {at!r} is not a timestamp")
-            continue
-        # An archived topic holding a live task is the one way this flag can
-        # be actively harmful: it is work nothing draws. Nothing fleet does
-        # produces one — `add` clears the flag — but a hand-edited topic.yaml
-        # can, and this is the check that says so out loud.
-        held = unfinished(q.by_topic().get(slug) or []) if at else None
-        if held:
-            problems.append(
-                f"{slug}: archived while {held.ref} is `{held.state}` — "
-                "run `fleet queue unarchive` on it"
-            )
-        why = requester_problem(meta.get("requested_by"))
-        if why:
-            problems.append(f"{slug}: {why}")
+        problems += _topic_problems(q, slug, meta)
     for ref, t in sorted(q.tasks.items()):
-        d = t.doc
-        for key in ("id", "topic", "title", "state", "repo", "branch"):
-            if not d.get(key):
-                problems.append(f"{ref}: missing {key}")
-        pub = d.get("publish") or {}
-        # Through publish_method(), like every other reader: a record older
-        # than the rename is never rewritten, so refusing its word here would
-        # fail this check for good.
-        if "method" in pub and publish_method(pub["method"]) not in PUBLISH_METHODS:
-            problems.append(
-                f"{ref}: publish method {pub['method']!r} is not one of "
-                + ", ".join(sorted(PUBLISH_METHODS))
-            )
-        target = d.get("target")
-        if target is not None and not (
-            isinstance(target, str) and forge.TARGET_URL_RE.match(target)
-        ):
-            problems.append(f"{ref}: target {target!r} is not a change request or issue URL")
-        if publish_method(pub.get("method")) == "note" and not target:
-            problems.append(f"{ref}: a `note` task names no target to check its note against")
-        # The ONLY thing ever asked of `how`. It names a tool fleet does not
-        # know, so "it is text" is the whole contract — anything more is fleet
-        # deciding which tools exist.
-        if pub.get("how") is not None and not isinstance(pub["how"], str):
-            problems.append(f"{ref}: publish how {pub['how']!r} is not text")
-        why = requester_problem(d.get("requested_by"))
-        if why:
-            problems.append(f"{ref}: {why}")
-        for key in ("origin", "reply"):
-            if d.get(key) is not None and not (isinstance(d[key], str) and d[key].strip()):
-                problems.append(f"{ref}: {key} {d[key]!r} is not text")
-        if d.get("state") not in STATES:
-            problems.append(f"{ref}: state {d.get('state')!r} is not one of {', '.join(STATES)}")
-        if d.get("id") != t.id:
-            problems.append(f"{ref}: id {d.get('id')!r} disagrees with its directory")
-        for b in t.blockers:
-            # The two forms are validated against their own closed sets, and a
-            # condition is checked for none of the three things that are only
-            # true of a task: there is no upstream record to find.
-            cond = blocker_condition(b)
-            kinds = CONDITION_KINDS if cond else BLOCKER_KINDS
-            if b.get("kind") not in kinds:
-                problems.append(f"{ref}: blocker kind {b.get('kind')!r} is not a real one")
-            if not (b.get("why") or "").strip():
-                problems.append(
-                    f"{ref}: blocker on {cond or b.get('task')} has no reason"
-                )
-            if cond and b.get("task"):
-                problems.append(
-                    f"{ref}: blocker names both a task and a condition; it is one or the other"
-                )
-            if not cond and b.get("task") not in q.tasks:
-                problems.append(f"{ref}: blocker names {b.get('task')}, which does not exist")
-        if not os.path.exists(t.file("BRIEF.md")):
-            problems.append(f"{ref}: no BRIEF.md")
-        # The host name only — never whether that host exists. A queue is read
-        # on machines that are not the one it dispatches from, and a check that
-        # asked thurbox would report a perfectly good record as broken there.
-        if d.get("host") is not None and not isinstance(d.get("host"), str):
-            problems.append(f"{ref}: host {d.get('host')!r} is not a name")
-        if (d.get("remote") or {}) and not d.get("host"):
-            problems.append(f"{ref}: carries a remote worktree but names no host")
-        for key in ("add_dirs", "add_repos"):
-            extra = d.get(key)
-            if extra is not None and not (
-                isinstance(extra, list) and all(isinstance(x, str) and x for x in extra)
-            ):
-                problems.append(f"{ref}: {key} {extra!r} is not a list of paths")
-        # Both shapes are valid, so the check is that it IS one of them: a
-        # plural entry that names no url is a record nothing can verify, and a
-        # scalar is whatever a worker reported, which `collect` judges and this
-        # does not second-guess.
-        art = d.get("artifact")
-        if isinstance(art, list) and not all(
-            isinstance(x, dict) and isinstance(x.get("repo"), str) for x in art
-        ):
-            problems.append(
-                f"{ref}: artifact {art!r} is a list but not one of {{repo, url}} mappings"
-            )
+        problems += _task_problems(q, ref, t)
 
     cycle = find_cycle(q)
     if cycle:
