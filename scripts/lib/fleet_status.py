@@ -468,30 +468,7 @@ def probe_prs(tasks: list) -> dict:
             reasons.append(why)
             sec["errors"].append({"repo": repo, "kind": "unread", "reason": why})
             continue
-        for cr in crs:
-            url, head = cr.url, cr.head_branch
-            owner = next(
-                (
-                    t
-                    for t in owners
-                    if any(str(a).rstrip("/") == url.rstrip("/") for a in t.get("artifacts") or [])
-                ),
-                None,
-            ) or next((t for t in owners if head and t.get("branch") == head), None)
-            if owner is None:
-                continue  # somebody else's change request in the same repo
-            sec["prs"].append(
-                {
-                    "ref": owner["ref"],
-                    "repo": repo,
-                    "slug": cr.name,
-                    "number": cr.number,
-                    "url": url,
-                    "title": cr.title,
-                    "branch": head,
-                    "checks": rollup(cr.checks),
-                }
-            )
+        sec["prs"] += _task_prs(repo, crs, owners)
 
     # Every repo failed the same way — no forge CLI, most likely — so that is
     # the section's story rather than a list of identical per-repo errors.
@@ -503,6 +480,41 @@ def probe_prs(tasks: list) -> dict:
     sec["errors"] += remote
     sec["prs"].sort(key=lambda p: p["ref"])
     return sec
+
+
+def _task_prs(repo: str, crs: list, owners: list) -> list:
+    """One repo's open change requests that belong to one of its tasks, as rows."""
+    rows = []
+    for cr in crs:
+        url, head = cr.url, cr.head_branch
+        owner = _cr_owner(url, head, owners)
+        if owner is None:
+            continue  # somebody else's change request in the same repo
+        rows.append(
+            {
+                "ref": owner["ref"],
+                "repo": repo,
+                "slug": cr.name,
+                "number": cr.number,
+                "url": url,
+                "title": cr.title,
+                "branch": head,
+                "checks": rollup(cr.checks),
+            }
+        )
+    return rows
+
+
+def _cr_owner(url: str, head, owners: list):
+    """The task a change request belongs to: by recorded artifact, then by branch."""
+    return next(
+        (
+            t
+            for t in owners
+            if any(str(a).rstrip("/") == url.rstrip("/") for a in t.get("artifacts") or [])
+        ),
+        None,
+    ) or next((t for t in owners if head and t.get("branch") == head), None)
 
 
 # --- checkout ----------------------------------------------------------------
@@ -622,6 +634,11 @@ def epoch_of(instant) -> int | None:
         return None
 
 
+def _is_number(value) -> bool:
+    """An int or float that is not a bool, which JSON would also have parsed."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
 def fuel_windows(provider: dict) -> list:
     """The provider's windows that carry a number, SHORTEST WINDOW FIRST.
 
@@ -646,10 +663,10 @@ def fuel_windows(provider: dict) -> list:
         if not isinstance(w, dict):
             continue
         remaining = w.get("percentRemaining")
-        if not isinstance(remaining, (int, float)) or isinstance(remaining, bool):
+        if not _is_number(remaining):
             continue
         seconds = w.get("windowSeconds")
-        if not isinstance(seconds, (int, float)) or isinstance(seconds, bool):
+        if not _is_number(seconds):
             seconds = None
         out.append(
             {
@@ -670,6 +687,10 @@ def fuel_windows(provider: dict) -> list:
 # all. One spelling, because a caller that has to tell the two apart compares
 # against it, and two copies of a sentence are two answers waiting to drift.
 NO_CREDENTIAL = "quota-axi auth named no provider with a credential"
+
+# What the FUEL section says when it ends with no provider to read at all,
+# whichever way it got there; the screen and `--fuel` print the same words.
+NO_PROVIDER_READABLE = "no provider has a credential to read"
 
 
 def authenticated_providers(env: dict | None = None) -> tuple[list, str | None]:
@@ -705,21 +726,23 @@ def authenticated_providers(env: dict | None = None) -> tuple[list, str | None]:
     doc, why = run_json(["quota-axi", "auth", "--json"], timeout=15, env=env)
     if why:
         return ([lead] if lead else []), why
-    names = []
-    for entry in (doc or {}).get("auth") or []:
-        if not isinstance(entry, dict):
-            continue
-        sources = entry.get("sources") or []
-        if any(isinstance(s, dict) and s.get("status") == "available" for s in sources):
-            name = str(entry.get("provider") or "").strip()
-            if name:
-                names.append(name)
+    names = [name for name in map(_available_provider, (doc or {}).get("auth") or []) if name]
     if not names:
         return ([lead] if lead else []), NO_CREDENTIAL
     # Stable, so the rest keep quota-axi's own order behind the one fleet runs.
     if lead:
         names.sort(key=lambda n: n != lead)
     return names, None
+
+
+def _available_provider(entry) -> str:
+    """An `auth` entry's provider name when one of its sources is usable, else ""."""
+    if not isinstance(entry, dict):
+        return ""
+    sources = entry.get("sources") or []
+    if any(isinstance(s, dict) and s.get("status") == "available" for s in sources):
+        return str(entry.get("provider") or "").strip()
+    return ""
 
 
 def fuel_read(providers: list, env: dict | None = None):
@@ -1035,7 +1058,7 @@ def probe_fuel(provider: str | None = None, env: dict | None = None) -> dict:
         provider = names[0] if names else ""
         if not provider:
             sec = fuel_blank(provider, read_at)
-            sec["unavailable"] = why or "no provider has a credential to read"
+            sec["unavailable"] = why or NO_PROVIDER_READABLE
             return sec
     doc, why = fuel_read([provider], env=env)
     if why:
@@ -1131,6 +1154,38 @@ def probe_fuel_all() -> dict:
     # folds two entries into one when BOTH their provider and their
     # environment match; this catches the remaining case, two DIFFERENT
     # providers under the SAME environment.
+    entries = _fuel_discover(accounts, read_at, sec, records, failures)
+
+    # PASS 2 — one FETCH PER DISTINCT ENVIRONMENT that has something to read,
+    # asking for the UNION of every entry's own names under it in one
+    # `--provider a,b` call — the same saving pass 1 banked on `auth`, now on
+    # the read itself.
+    fetch_results = _fuel_fetch(entries, sec)
+
+    # PASS 3 — every entry's own record(s), in `fuel_accounts()`'s order,
+    # reading its own name(s) out of whichever fetch its environment shared.
+    for e in entries:
+        _fuel_entry_records(e, fetch_results, read_at, records, failures)
+
+    # A SINGLE account failing collapses to the one line `probe_fuel_all()`
+    # always rendered before this feature existed — the hard constraint that a
+    # checkout naming no dotted `ENV` key prints byte-identically to before.
+    # TWO OR MORE ACCOUNTS NEVER COLLAPSE, even when every one of them failed:
+    # each already has its own labelled, reasoned record in `records`, and
+    # discarding that detail down to `failures[0]` would report only the FIRST
+    # account's reason for a fleet where a second account failed for a
+    # completely different one — the same silent loss this whole feature
+    # exists to end for a single account with no credential.
+    if len(accounts) == 1 and failures:
+        sec["unavailable"] = failures[0]
+        return sec
+    sec["providers"] = records
+    return sec
+
+
+def _fuel_discover(accounts: list, read_at: int, sec: dict, records: list, failures: list) -> list:
+    """`probe_fuel_all()`'s pass 1: each account's entry, `auth` read once per
+    environment; an account with a problem goes straight to `records`."""
     entries = []
     discovery_cache: dict = {}
     for acc in accounts:
@@ -1164,11 +1219,11 @@ def probe_fuel_all() -> dict:
         names = discovered if provider is None else account_providers(provider, discovered, why)
         entries.append({"account": account, "provider": provider, "checkout": checkout,
                          "env_key": env_key, "child": child, "why": why, "names": names})
+    return entries
 
-    # PASS 2 — one FETCH PER DISTINCT ENVIRONMENT that has something to read,
-    # asking for the UNION of every entry's own names under it in one
-    # `--provider a,b` call — the same saving pass 1 banked on `auth`, now on
-    # the read itself.
+
+def _fuel_fetch(entries: list, sec: dict) -> dict:
+    """`probe_fuel_all()`'s pass 2: one fetch per environment, keyed by it."""
     fetch_buckets: dict = {}
     for e in entries:
         if not e["names"]:
@@ -1181,54 +1236,41 @@ def probe_fuel_all() -> dict:
         fetch_results[env_key] = (doc, fetch_why)
         if isinstance(doc, dict) and sec["schema_version"] is None:
             sec["schema_version"] = doc.get("schemaVersion")
+    return fetch_results
 
-    # PASS 3 — every entry's own record(s), in `fuel_accounts()`'s order,
-    # reading its own name(s) out of whichever fetch its environment shared.
-    for e in entries:
-        account, provider, checkout, names, why = (
-            e["account"], e["provider"], e["checkout"], e["names"], e["why"])
-        if not names:
-            # NO `provider is not None` GUARD HERE: the checkout's own account
-            # naming zero providers is exactly as much "nothing to read" as a
-            # named account naming zero, and skipping the guard for it used to
-            # call `fuel_read([])` anyway — an extra quota-axi process asked
-            # for no provider at all — and then add this account to NEITHER
-            # `records` NOR `failures`. With another account in the list that
-            # DID have a reading, that silent drop is not a blank line — it is
-            # the survivor's reading rendered as if the checkout were the only
-            # account, unlabelled: `fuel_named()` counts one distinct account
-            # in `records` and drops the very field that would have told them
-            # apart. Still ON SCREEN, though: a record that names the reason
-            # rather than an account that simply never appears.
-            reason = why or (f"quota-axi named no {provider} credential for this account"
-                              if provider is not None else "no provider has a credential to read")
-            failures.append(reason)
-            records.append(fuel_blank(provider or "", read_at, account)
-                            | {"unavailable": reason, "checkout": checkout})
-            continue
-        doc, fetch_why = fetch_results[e["env_key"]]
-        if fetch_why:
-            failures.append(fetch_why)
-            records += [fuel_blank(name, read_at, account)
-                        | {"unavailable": fetch_why, "checkout": checkout, "discovery_fallback": why}
-                        for name in names]
-            continue
-        records += [fuel_record(doc, name, read_at, account) | {"checkout": checkout, "discovery_fallback": why}
+
+def _fuel_entry_records(e: dict, fetch_results: dict, read_at: int, records: list, failures: list) -> None:
+    """`probe_fuel_all()`'s pass 3 for one entry: its record(s) and failure, if any."""
+    account, provider, checkout, names, why = (
+        e["account"], e["provider"], e["checkout"], e["names"], e["why"])
+    if not names:
+        # NO `provider is not None` GUARD HERE: the checkout's own account
+        # naming zero providers is exactly as much "nothing to read" as a
+        # named account naming zero, and skipping the guard for it used to
+        # call `fuel_read([])` anyway — an extra quota-axi process asked
+        # for no provider at all — and then add this account to NEITHER
+        # `records` NOR `failures`. With another account in the list that
+        # DID have a reading, that silent drop is not a blank line — it is
+        # the survivor's reading rendered as if the checkout were the only
+        # account, unlabelled: `fuel_named()` counts one distinct account
+        # in `records` and drops the very field that would have told them
+        # apart. Still ON SCREEN, though: a record that names the reason
+        # rather than an account that simply never appears.
+        reason = why or (f"quota-axi named no {provider} credential for this account"
+                          if provider is not None else NO_PROVIDER_READABLE)
+        failures.append(reason)
+        records.append(fuel_blank(provider or "", read_at, account)
+                        | {"unavailable": reason, "checkout": checkout})
+        return
+    doc, fetch_why = fetch_results[e["env_key"]]
+    if fetch_why:
+        failures.append(fetch_why)
+        records += [fuel_blank(name, read_at, account)
+                    | {"unavailable": fetch_why, "checkout": checkout, "discovery_fallback": why}
                     for name in names]
-    # A SINGLE account failing collapses to the one line `probe_fuel_all()`
-    # always rendered before this feature existed — the hard constraint that a
-    # checkout naming no dotted `ENV` key prints byte-identically to before.
-    # TWO OR MORE ACCOUNTS NEVER COLLAPSE, even when every one of them failed:
-    # each already has its own labelled, reasoned record in `records`, and
-    # discarding that detail down to `failures[0]` would report only the FIRST
-    # account's reason for a fleet where a second account failed for a
-    # completely different one — the same silent loss this whole feature
-    # exists to end for a single account with no credential.
-    if len(accounts) == 1 and failures:
-        sec["unavailable"] = failures[0]
-        return sec
-    sec["providers"] = records
-    return sec
+        return
+    records += [fuel_record(doc, name, read_at, account) | {"checkout": checkout, "discovery_fallback": why}
+                for name in names]
 
 
 def fuel_named(sec: dict) -> bool:
@@ -1353,27 +1395,38 @@ def render_queue(sec: dict) -> list:
         lines.append(cont(f"{sec['archived']} archived topic(s) hidden — "
                           "`fleet queue list --archived`"))
     for topic in topics:
-        by = f"  by {topic['requested_by']}" if topic.get("requested_by") else ""
-        lines.append(f"  {topic['slug']} — {topic['title']}{by}")
-        for t in topic["tasks"]:
-            if t["artifacts"]:
-                extra = f"{t['outcome'] or ''} {' '.join(t['artifacts'])}".strip()
-            elif t["display_state"] == "dispatched" and t["session"]:
-                extra = t["session"][:8]
-            else:
-                extra = t["branch"] or ""
-            # The host, when there is one, comes before everything else on the
-            # line: where a task RUNS changes what every other field on it means.
-            if t.get("host"):
-                extra = f"on {t['host']}  {extra}".rstrip()
-            if t.get("requested_by"):
-                extra = f"{extra}  by {t['requested_by']}".strip()
-            lines.append(f"    {t['id']:<34} {t['display_state']:<11} {extra}")
-            for note in t["notes"]:
-                lines.append(f"        {note}")
+        lines += _queue_topic_lines(topic)
     for risk in sec["risks"]:
         lines.append(f"  risk: {', '.join(risk['tasks'])} all touch {risk['touches']}")
     return lines
+
+
+def _queue_topic_lines(topic: dict) -> list:
+    """One topic's QUEUE lines: its heading, then each task and its notes."""
+    by = f"  by {topic['requested_by']}" if topic.get("requested_by") else ""
+    lines = [f"  {topic['slug']} — {topic['title']}{by}"]
+    for t in topic["tasks"]:
+        lines.append(f"    {t['id']:<34} {t['display_state']:<11} {_queue_task_extra(t)}")
+        for note in t["notes"]:
+            lines.append(f"        {note}")
+    return lines
+
+
+def _queue_task_extra(t: dict) -> str:
+    """What a task's QUEUE line says after its id and state."""
+    if t["artifacts"]:
+        extra = f"{t['outcome'] or ''} {' '.join(t['artifacts'])}".strip()
+    elif t["display_state"] == "dispatched" and t["session"]:
+        extra = t["session"][:8]
+    else:
+        extra = t["branch"] or ""
+    # The host, when there is one, comes before everything else on the
+    # line: where a task RUNS changes what every other field on it means.
+    if t.get("host"):
+        extra = f"on {t['host']}  {extra}".rstrip()
+    if t.get("requested_by"):
+        extra = f"{extra}  by {t['requested_by']}".strip()
+    return extra
 
 
 def render_records(sec: dict) -> list:
@@ -1524,18 +1577,23 @@ def fuel_provider_lines(rec: dict, named: bool = False) -> list:
         lines.append(f"      {w['id']:<16}{w['remaining']:>4}%  {resets}{binds}")
     # A cached number is a fact with an age, and the age is part of the fact.
     if rec["stale"] or (rec["state"] and rec["state"] != "fresh"):
-        detail = [str(rec["state"] or "stale")]
-        if rec["refreshed_at"]:
-            detail.append(f"last refreshed {rec['refreshed_at']}")
-        if rec["error"]:
-            detail.append(str(rec["error"]))
-        if rec["retry_after"]:
-            detail.append(f"retry after {rec['retry_after']}")
-        lines.append("      " + "; ".join(detail))
+        lines.append(_fuel_age_line(rec))
     if rec["below_reserve"]:
         lines.append(f"      ! under the {rec['reserve']}% reserve — dispatch, "
                      "do not investigate (FLEET.md `## Fuel`)")
     return lines
+
+
+def _fuel_age_line(rec: dict) -> str:
+    """The line saying how old a cached reading is, and why it is not fresh."""
+    detail = [str(rec["state"] or "stale")]
+    if rec["refreshed_at"]:
+        detail.append(f"last refreshed {rec['refreshed_at']}")
+    if rec["error"]:
+        detail.append(str(rec["error"]))
+    if rec["retry_after"]:
+        detail.append(f"retry after {rec['retry_after']}")
+    return "      " + "; ".join(detail)
 
 
 def render_fuel(sec: dict) -> list:
@@ -1550,7 +1608,7 @@ def render_fuel(sec: dict) -> list:
     if sec["unavailable"]:
         return [head("FUEL", f"unavailable — {sec['unavailable']}")]
     if not sec["providers"]:
-        return [head("FUEL", "unavailable — no provider has a credential to read")]
+        return [head("FUEL", f"unavailable — {NO_PROVIDER_READABLE}")]
     named = fuel_named(sec)
     count = len(sec["providers"])
     if named:
@@ -1638,23 +1696,12 @@ def render_fuel_record(sec: dict) -> str:
     records = sec.get("providers") or [{
         "read_at": sec.get("read_at"),
         "reserve": sec.get("reserve"),
-        "unavailable": sec.get("unavailable") or "no provider has a credential to read",
+        "unavailable": sec.get("unavailable") or NO_PROVIDER_READABLE,
     }]
     drop = set() if fuel_named(sec) else {"account", "checkout"}
     blocks = []
     for rec in records:
-        lines = []
-        for name in RECORD_FIELDS:
-            if name in drop:
-                continue
-            value = rec.get(source.get(name, name))
-            if value is None or value == "":
-                continue
-            if isinstance(value, bool):
-                value = "1" if value else "0"
-            elif isinstance(value, list):
-                value = ",".join(str(v) for v in value)
-            lines.append(f"{name}\t{value}")
+        lines = _record_field_lines(rec, source, drop)
         # EVERY WINDOW, after the fields: `window<TAB>id<TAB>percent<TAB>reset
         # epoch<TAB>label`, one line each, in `fuel_windows`' order. A reader
         # that knows only `name<TAB>value` still parses the record — it sees a
@@ -1667,6 +1714,23 @@ def render_fuel_record(sec: dict) -> str:
             ))
         blocks.append("\n".join(lines))
     return "\n\n".join(blocks) + "\n"
+
+
+def _record_field_lines(rec: dict, source: dict, drop: set) -> list:
+    """One reading's `name<TAB>value` lines, in RECORD_FIELDS order."""
+    lines = []
+    for name in RECORD_FIELDS:
+        if name in drop:
+            continue
+        value = rec.get(source.get(name, name))
+        if value is None or value == "":
+            continue
+        if isinstance(value, bool):
+            value = "1" if value else "0"
+        elif isinstance(value, list):
+            value = ",".join(str(v) for v in value)
+        lines.append(f"{name}\t{value}")
+    return lines
 
 
 def render(doc: dict) -> str:
