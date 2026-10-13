@@ -173,14 +173,14 @@ function Get-FleetLeadCheckout {
     # match, and a second checkout would be cloned. Only for this one read:
     # this runs in the operator's own window.
     $previous = [Console]::OutputEncoding
-    try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch { }
+    try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch { <# a console that refuses keeps its own; the read below still runs #> }
     try {
         $json = (& thurbox-cli session list --json 2>$null) -join "`n"
         $sessions = $json | ConvertFrom-Json -ErrorAction Stop
     } catch {
         return @()
     } finally {
-        try { [Console]::OutputEncoding = $previous } catch { }
+        try { [Console]::OutputEncoding = $previous } catch { <# nothing to restore that the set above changed #> }
     }
     $found = @()
     foreach ($session in $sessions) {
@@ -228,45 +228,31 @@ function Set-FleetName([string]$Dir, [string]$Name) {
     return $true
 }
 
-function Sync-FleetCheckout([string]$Dir, [string]$Repo, [string]$Branch) {
-    $empty = (Test-Path -LiteralPath $Dir -PathType Container) -and
-        -not (Get-ChildItem -LiteralPath $Dir -Force | Select-Object -First 1)
-    if (-not (Test-Path -LiteralPath $Dir) -or $empty) {
-        $parent = Split-Path -Parent $Dir
-        if ($parent -and -not (Test-Path -LiteralPath $parent)) {
-            New-Item -ItemType Directory -Force -Path $parent | Out-Null
-        }
-        & git clone --quiet --branch $Branch $Repo $Dir | Out-Host
-        if ($LASTEXITCODE -ne 0) {
-            Write-FleetRefusal "git clone of $Repo failed (exit code $LASTEXITCODE); its error, if git printed one, is above."
-            return $false
-        }
-        Write-Host "Cloned $Repo ($Branch)."
-        return $true
+function New-FleetClone([string]$Dir, [string]$Repo, [string]$Branch) {
+    $parent = Split-Path -Parent $Dir
+    if ($parent -and -not (Test-Path -LiteralPath $parent)) {
+        New-Item -ItemType Directory -Force -Path $parent | Out-Null
     }
+    & git clone --quiet --branch $Branch $Repo $Dir | Out-Host
+    if ($LASTEXITCODE -ne 0) {
+        Write-FleetRefusal "git clone of $Repo failed (exit code $LASTEXITCODE); its error, if git printed one, is above."
+        return $false
+    }
+    Write-Host "Cloned $Repo ($Branch)."
+    return $true
+}
 
-    # --show-cdup prints nothing at a repository's top level: no path comparison
-    # that a short 8.3 name or a symlinked directory would get wrong.
+# --show-cdup prints nothing at a repository's top level: no path comparison
+# that a short 8.3 name or a symlinked directory would get wrong.
+function Test-FleetClone([string]$Dir) {
     $cdup = & git -C $Dir rev-parse --show-cdup 2>$null
     $isRepo = ($LASTEXITCODE -eq 0) -and -not $cdup
-    if (-not (Test-Path -LiteralPath (Join-Path $Dir 'extension.toml.in')) -or
-        -not (Test-Path -LiteralPath (Join-Path $Dir 'scripts\lib\queue.py')) -or -not $isRepo) {
-        Write-FleetRefusal "$Dir exists and is not a fleet clone, so it was left alone.`nSet FLEET_DIR to an empty or new directory and run this again."
-        return $false
-    }
+    return (Test-Path -LiteralPath (Join-Path $Dir 'extension.toml.in')) -and
+        (Test-Path -LiteralPath (Join-Path $Dir 'scripts\lib\queue.py')) -and $isRepo
+}
 
-    $current = & git -C $Dir symbolic-ref --quiet --short HEAD 2>$null
-    if ("$current" -ne $Branch) {
-        $name = if ($current) { $current } else { 'a detached HEAD' }
-        Write-FleetRefusal "$Dir is on '$name', not '$Branch'; not switching it.`nCheck out $Branch there yourself, then run this again."
-        return $false
-    }
-
-    & git -C $Dir fetch --quiet origin $Branch | Out-Host
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "Could not fetch origin; carrying on with the checkout as it is."
-        return $true
-    }
+# Fast-forward a fetched clone, and only ever fast-forward it.
+function Update-FleetCheckout([string]$Dir, [string]$Branch) {
     $behind = [int](& git -C $Dir rev-list --count "HEAD..origin/$Branch")
     $ahead = [int](& git -C $Dir rev-list --count "origin/$Branch..HEAD")
     $dirty = (& git -C $Dir status --porcelain --untracked-files=no) -join "`n"
@@ -295,68 +281,88 @@ function Sync-FleetCheckout([string]$Dir, [string]$Repo, [string]$Branch) {
     return $true
 }
 
-# Sets $script:FleetInstallExit rather than returning it: a native command's
-# output inside a function is part of what the function returns, and capturing
-# it would hide the whole install from the operator.
-function Install-Fleet {
-    $ErrorActionPreference = 'Continue'
-    $script:FleetInstallExit = 1
-    $yes = ($env:FLEET_YES -eq '1')
-    $dirArg = $null
-    $name = $env:FLEET_NAME
-    for ($i = 0; $i -lt $args.Count; $i++) {
-        switch -regex ($args[$i]) {
-            '^(--yes|-y)$' { $yes = $true }
+function Sync-FleetCheckout([string]$Dir, [string]$Repo, [string]$Branch) {
+    $empty = (Test-Path -LiteralPath $Dir -PathType Container) -and
+        -not (Get-ChildItem -LiteralPath $Dir -Force | Select-Object -First 1)
+    if (-not (Test-Path -LiteralPath $Dir) -or $empty) {
+        return (New-FleetClone $Dir $Repo $Branch)
+    }
+
+    if (-not (Test-FleetClone $Dir)) {
+        Write-FleetRefusal "$Dir exists and is not a fleet clone, so it was left alone.`nSet FLEET_DIR to an empty or new directory and run this again."
+        return $false
+    }
+
+    $current = & git -C $Dir symbolic-ref --quiet --short HEAD 2>$null
+    if ("$current" -ne $Branch) {
+        $name = if ($current) { $current } else { 'a detached HEAD' }
+        Write-FleetRefusal "$Dir is on '$name', not '$Branch'; not switching it.`nCheck out $Branch there yourself, then run this again."
+        return $false
+    }
+
+    & git -C $Dir fetch --quiet origin $Branch | Out-Host
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Could not fetch origin; carrying on with the checkout as it is."
+        return $true
+    }
+    return (Update-FleetCheckout $Dir $Branch)
+}
+
+# The command line as a hashtable, or $null once a usage error is refused.
+function Read-FleetArgs([object[]]$Arguments) {
+    $parsed = @{ Yes = ($env:FLEET_YES -eq '1'); Dir = $null; Name = $env:FLEET_NAME }
+    for ($i = 0; $i -lt $Arguments.Count; $i++) {
+        switch -regex ($Arguments[$i]) {
+            '^(--yes|-y)$' { $parsed.Yes = $true }
             '^--dir$' {
-                if ($i + 1 -ge $args.Count) { Write-FleetRefusal '--dir takes a directory'; $script:FleetInstallExit = 2; return }
-                $i++; $dirArg = $args[$i]
+                if ($i + 1 -ge $Arguments.Count) { Write-FleetRefusal '--dir takes a directory'; return $null }
+                $i++; $parsed.Dir = $Arguments[$i]
             }
-            '^--dir=' { $dirArg = $args[$i].Substring(6) }
+            '^--dir=' { $parsed.Dir = $Arguments[$i].Substring(6) }
             '^--name$' {
-                if ($i + 1 -ge $args.Count) { Write-FleetRefusal '--name takes a name'; $script:FleetInstallExit = 2; return }
-                $i++; $name = $args[$i]
+                if ($i + 1 -ge $Arguments.Count) { Write-FleetRefusal '--name takes a name'; return $null }
+                $i++; $parsed.Name = $Arguments[$i]
             }
-            '^--name=' { $name = $args[$i].Substring(7) }
-            default { Write-FleetRefusal "unknown argument: $($args[$i])"; $script:FleetInstallExit = 2; return }
+            '^--name=' { $parsed.Name = $Arguments[$i].Substring(7) }
+            default { Write-FleetRefusal "unknown argument: $($Arguments[$i])"; return $null }
         }
     }
+    return $parsed
+}
 
-    # The same grammar the renderer holds a name to, refused before a clone
-    # rather than after one.
-    if ($name -and ($name -notmatch '^[A-Za-z0-9][A-Za-z0-9_-]{0,23}$')) {
-        Write-FleetRefusal "--name $name is not a name a fleet can carry: letters, digits, '_' and '-',`nstarting with a letter or a digit, at most 24 of them."
-        $script:FleetInstallExit = 2
-        return
+# The same grammar the renderer holds a name to, refused before a clone
+# rather than after one.
+function Test-FleetName([string]$Name) {
+    if ($Name -and ($Name -notmatch '^[A-Za-z0-9][A-Za-z0-9_-]{0,23}$')) {
+        Write-FleetRefusal "--name $Name is not a name a fleet can carry: letters, digits, '_' and '-',`nstarting with a letter or a digit, at most 24 of them."
+        return $false
     }
-    if ($name -and $name.Contains('__')) {
-        Write-FleetRefusal "--name $name carries a double underscore, which is how this repo spells an`nunrendered placeholder: a lead whose name holds one is read as a manifest nobody`nrendered, and the reconciler stops waking it. Use a single '_' or a '-'."
-        $script:FleetInstallExit = 2
-        return
+    if ($Name -and $Name.Contains('__')) {
+        Write-FleetRefusal "--name $Name carries a double underscore, which is how this repo spells an`nunrendered placeholder: a lead whose name holds one is read as a manifest nobody`nrendered, and the reconciler stops waking it. Use a single '_' or a '-'."
+        return $false
     }
+    return $true
+}
 
-    $repo = if ($env:FLEET_REPO) { $env:FLEET_REPO } else { 'https://github.com/Thurbeen/fleet.git' }
-    $branch = if ($env:FLEET_BRANCH) { $env:FLEET_BRANCH } else { 'main' }
-
-    if (-not (Install-FleetUv)) { return }
-    if (-not (Install-FleetGit $yes)) { return }
-
-    if ($dirArg) {
-        $dir = $dirArg; $why = '--dir'
+# Where the checkout goes and why, as a hashtable, or $null once refused.
+function Resolve-FleetDir([string]$DirArg, [string]$Name) {
+    if ($DirArg) {
+        $dir = $DirArg; $why = '--dir'
     } elseif ($env:FLEET_DIR) {
         $dir = $env:FLEET_DIR; $why = 'FLEET_DIR'
-    } elseif ($name) {
+    } elseif ($Name) {
         # A NAMED run is a fleet of its own by construction, so it never lands
         # on the fleet already installed here, which is what asking thurbox
         # would do.
-        $dir = Join-Path $env:USERPROFILE "fleet-$name"
-        $why = "the default for a fleet named $name; set FLEET_DIR to choose another"
+        $dir = Join-Path $env:USERPROFILE "fleet-$Name"
+        $why = "the default for a fleet named $Name; set FLEET_DIR to choose another"
     } else {
         $leads = @(Get-FleetLeadCheckout)
         if ($leads.Count -gt 1) {
             Write-FleetRefusal ("this machine already runs $($leads.Count) fleets, and nothing here says which one this is:`n" +
                 (($leads | ForEach-Object { "  $_" }) -join "`n") +
                 "`n`nName the checkout you mean with --dir DIR, or start another fleet with --name NAME.")
-            return
+            return $null
         }
         if ($leads.Count -eq 1) {
             $dir = $leads[0]
@@ -367,17 +373,41 @@ function Install-Fleet {
         }
     }
     if (-not [IO.Path]::IsPathRooted($dir)) { $dir = Join-Path (Get-Location).Path $dir }
-    $dir = [IO.Path]::GetFullPath($dir)
+    return @{ Dir = [IO.Path]::GetFullPath($dir); Why = $why }
+}
+
+# Sets $script:FleetInstallExit rather than returning it: a native command's
+# output inside a function is part of what the function returns, and capturing
+# it would hide the whole install from the operator.
+function Install-Fleet {
+    $ErrorActionPreference = 'Continue'
+    $script:FleetInstallExit = 1
+    $parsed = Read-FleetArgs $args
+    if (-not $parsed -or -not (Test-FleetName $parsed.Name)) {
+        $script:FleetInstallExit = 2
+        return
+    }
+    $name = $parsed.Name
+
+    $repo = if ($env:FLEET_REPO) { $env:FLEET_REPO } else { 'https://github.com/Thurbeen/fleet.git' }
+    $branch = if ($env:FLEET_BRANCH) { $env:FLEET_BRANCH } else { 'main' }
+
+    if (-not (Install-FleetUv)) { return }
+    if (-not (Install-FleetGit $parsed.Yes)) { return }
+
+    $target = Resolve-FleetDir $parsed.Dir $name
+    if (-not $target) { return }
+    $dir = $target.Dir
 
     Write-Host "fleet: installing into $dir"
-    Write-Host "       ($why)"
+    Write-Host "       ($($target.Why))"
     Write-Host ''
     if (-not (Sync-FleetCheckout $dir $repo $branch)) { return }
     if (-not (Set-FleetName $dir $name)) { return }
     Write-Host ''
 
     $fleetArgs = @('run', '--project', $dir, 'fleet', 'install')
-    if ($yes) { $fleetArgs += '--yes' }
+    if ($parsed.Yes) { $fleetArgs += '--yes' }
     & uv @fleetArgs
     $script:FleetInstallExit = $LASTEXITCODE
 }
