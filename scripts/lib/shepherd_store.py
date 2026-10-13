@@ -354,6 +354,14 @@ def authored_here(path: str, branch: str, recorded: str) -> bool:
     return True
 
 
+def _own_branch(path: str, recorded: str, base: str) -> str:
+    """The worktree's branch when this session authored it off `base`, else empty. Raises Unread."""
+    branch = current_branch(path) or recorded
+    if not branch or branch == base or not authored_here(path, branch, recorded):
+        return ""
+    return branch
+
+
 def session_branches(q, row: dict) -> tuple[list, str]:
     """([(repo, branch)] for each worktree on a branch of its own, why a worktree could not be read).
 
@@ -368,11 +376,11 @@ def session_branches(q, row: dict) -> tuple[list, str]:
         path = str(wt.get("worktree_path") or "")
         recorded = str(wt.get("branch") or "")
         try:
-            branch = current_branch(path) or recorded
-            if not branch or branch == base or not authored_here(path, branch, recorded):
-                continue
+            branch = _own_branch(path, recorded, base)
         except Unread as exc:
             unread = f"git could not read {path}: {exc}"
+            continue
+        if not branch:
             continue
         repo = q.repo_from_checkout(path) or q.repo_from_checkout(str(wt.get("repo_path") or ""))
         if repo is not None and (repo, branch) not in found:
@@ -519,6 +527,37 @@ def forge_unavailable(q, why: str) -> None:
         save(q, {sid: mark_stale(s, why) for sid, s in previous["sessions"].items()})
 
 
+def _by_session(q, observed: list) -> dict:
+    by_session: dict = {}
+    for cr, task, row in observed:
+        sid = str(task.doc.get("session") or "") if task else ""
+        if sid:
+            by_session.setdefault(sid, (task, []))[1].append(
+                entry_for(q, cr, row["condition"], row["detail"], task_action(row), row.get("note") or ""))
+    return by_session
+
+
+def _task_sessions(q, observed: list, held: dict, snapshot: dict | None, prev_sessions: dict,
+                   readable: dict) -> dict:
+    """The tasks' own sessions, from what the main pass already classified."""
+    by_session = _by_session(q, observed)
+    sessions: dict = {}
+    for sid, task in held.items():
+        if str(task.doc.get("session") or "") != sid:
+            continue
+        if snapshot is not None and sid not in snapshot:
+            continue  # thurbox listed every session, and not this one: it is gone
+        fresh = by_session.get(sid, (task, []))[1]
+        prev = prev_sessions.get(sid) or {}
+        prs = carry_session(q, prev, fresh, readable, None)
+        if not prs:
+            continue
+        row = (snapshot or {}).get(sid) or {}
+        sessions[sid] = {"session": sid, "name": str(row.get("name") or task.doc.get("title") or task.ref),
+                         "task": task.ref, "adopted": False, "prs": prs}
+    return sessions
+
+
 def after_pass(q, args, all_tasks: list, observed: list, listings: dict, unreadable: list) -> list:
     """Adopt outside sessions, shepherd their PRs, and rewrite the store. Returns the adopted rows.
 
@@ -533,28 +572,7 @@ def after_pass(q, args, all_tasks: list, observed: list, listings: dict, unreada
     scoped = bool(getattr(args, "topic", None) or getattr(args, "ref", None))
     snapshot, snap_why = q.session_snapshot()
     held = held_sessions(all_tasks)
-    sessions: dict = {}
-
-    # The tasks' own sessions, from what the main pass already classified.
-    by_session: dict = {}
-    for cr, task, row in observed:
-        sid = str(task.doc.get("session") or "") if task else ""
-        if sid:
-            by_session.setdefault(sid, (task, []))[1].append(
-                entry_for(q, cr, row["condition"], row["detail"], task_action(row), row.get("note") or ""))
-    for sid, task in held.items():
-        if str(task.doc.get("session") or "") != sid:
-            continue
-        if snapshot is not None and sid not in snapshot:
-            continue  # thurbox listed every session, and not this one: it is gone
-        fresh = by_session.get(sid, (task, []))[1]
-        prev = prev_sessions.get(sid) or {}
-        prs = carry_session(q, prev, fresh, readable, None)
-        if not prs:
-            continue
-        row = (snapshot or {}).get(sid) or {}
-        sessions[sid] = {"session": sid, "name": str(row.get("name") or task.doc.get("title") or task.ref),
-                         "task": task.ref, "adopted": False, "prs": prs}
+    sessions = _task_sessions(q, observed, held, snapshot, prev_sessions, readable)
 
     adopted_rows: list = []
     if scoped:
@@ -573,6 +591,61 @@ def after_pass(q, args, all_tasks: list, observed: list, listings: dict, unreada
     return adopted_rows
 
 
+def _owned_elsewhere(snapshot: dict, held: dict, a_lead, sid) -> bool:
+    """Some ancestor is a lead, a session this queue holds, or one thurbox does not list."""
+    seen = {sid}
+    parent = str((snapshot.get(sid) or {}).get("parent_session_id") or "")
+    while parent:
+        if parent in seen or parent not in snapshot or parent in held or a_lead(parent):
+            return True
+        seen.add(parent)
+        parent = str(snapshot[parent].get("parent_session_id") or "")
+    return False
+
+
+def _listed_prs(q, repo, listings: dict, readable: dict) -> list | None:
+    """The repo's open PRs, listing it on first sight; None when the forge could not."""
+    if repo not in listings:
+        crs, err = q.open_prs(repo)
+        if err:
+            readable[repo.qualified] = err
+            return None
+        listings[repo] = crs
+        readable[repo.qualified] = ""
+    return listings[repo]
+
+
+def _shepherd_session(q, args, sid: str, row: dict, prev: dict, listings: dict, readable: dict, live: set,
+                      merged_by_pass: dict, rows: list) -> tuple[list, set, str]:
+    """(fresh entries, branches, why a worktree could not be read) for one adoptable session."""
+    name = str(row.get("name") or "")
+    prev_by_url = {e.get("url"): e for e in prev.get("prs") or []}
+    fresh: list = []
+    branches: set = set()
+    found, unread = session_branches(q, row)
+    for repo, branch in found:
+        branches.add(branch)
+        crs = _listed_prs(q, repo, listings, readable)
+        if crs is None:
+            continue
+        for cr in crs:
+            if cr.head_branch == branch and cr.head_is_ours is not False:
+                entry = shepherd_adopted(q, args, sid, cr, prev_by_url.get(cr.url) or {}, live, merged_by_pass)
+                fresh.append(entry)
+                rows.append({"session": sid, "name": name, "pr": cr.url, "repo": cr.repo.qualified,
+                             "condition": entry["condition"], "detail": entry["detail"],
+                             "action": entry["action"], "note": entry["action_note"]})
+    return fresh, branches, unread
+
+
+def _adopted_prs(q, prev: dict, fresh: list, readable: dict, branches: set, unread: str) -> list:
+    if not unread:
+        return carry_session(q, prev, fresh, readable, branches)
+    seen = {e["url"] for e in fresh}
+    return fresh + [e if e.get("stale") else stale(e, unread)
+                    for e in prev.get("prs") or [] if e.get("url") not in seen]
+
+
 def adopt(q, args, snapshot: dict, held: dict, prev_sessions: dict, listings: dict, readable: dict,
           observed: list, sessions: dict) -> list:
     lead_name, lead_id = lead_refusals(q)
@@ -582,51 +655,17 @@ def adopt(q, args, snapshot: dict, held: dict, prev_sessions: dict, listings: di
         name = str((snapshot.get(sid) or {}).get("name") or "")
         return sid == lead_id or (bool(lead_name) and name == lead_name) or leads_fleet(name) is not None
 
-    def owned_elsewhere(sid) -> bool:
-        """Some ancestor is a lead, a session this queue holds, or one thurbox does not list."""
-        seen = {sid}
-        parent = str((snapshot.get(sid) or {}).get("parent_session_id") or "")
-        while parent:
-            if parent in seen or parent not in snapshot or parent in held or a_lead(parent):
-                return True
-            seen.add(parent)
-            parent = str(snapshot[parent].get("parent_session_id") or "")
-        return False
-
     live = set(snapshot)
     merged_by_pass = {cr.url: row.get("note") or "" for cr, _t, row in observed if row["action"] == "merged"}
     rows: list = []
     for sid, row in sorted(snapshot.items(), key=lambda kv: str(kv[1].get("name") or kv[0])):
         name = str(row.get("name") or "")
-        if sid in held or a_lead(sid) or owned_elsewhere(sid) or not is_local(row):
+        if sid in held or a_lead(sid) or _owned_elsewhere(snapshot, held, a_lead, sid) or not is_local(row):
             continue
         prev = prev_sessions.get(sid) or {}
-        prev_by_url = {e.get("url"): e for e in prev.get("prs") or []}
-        fresh: list = []
-        branches: set = set()
-        found, unread = session_branches(q, row)
-        for repo, branch in found:
-            branches.add(branch)
-            if repo not in listings:
-                crs, err = q.open_prs(repo)
-                if err:
-                    readable[repo.qualified] = err
-                    continue
-                listings[repo] = crs
-                readable[repo.qualified] = ""
-            for cr in listings[repo]:
-                if cr.head_branch == branch and cr.head_is_ours is not False:
-                    entry = shepherd_adopted(q, args, sid, cr, prev_by_url.get(cr.url) or {}, live, merged_by_pass)
-                    fresh.append(entry)
-                    rows.append({"session": sid, "name": name, "pr": cr.url, "repo": cr.repo.qualified,
-                                 "condition": entry["condition"], "detail": entry["detail"],
-                                 "action": entry["action"], "note": entry["action_note"]})
-        if unread:
-            seen = {e["url"] for e in fresh}
-            prs = fresh + [e if e.get("stale") else stale(e, unread)
-                           for e in prev.get("prs") or [] if e.get("url") not in seen]
-        else:
-            prs = carry_session(q, prev, fresh, readable, branches)
+        fresh, branches, unread = _shepherd_session(q, args, sid, row, prev, listings, readable, live,
+                                                    merged_by_pass, rows)
+        prs = _adopted_prs(q, prev, fresh, readable, branches, unread)
         # Adopted on an OPEN pull request; one already followed keeps how it ended.
         if fresh or (prev.get("adopted") and prs):
             sessions[sid] = {"session": sid, "name": name, "task": None, "adopted": True, "prs": prs}
@@ -720,6 +759,17 @@ def field(value) -> str:
     return re.sub(r"[\t\r\n]+", " ", "" if value is None else str(value))
 
 
+def _pr_record(sid: str, e: dict, now: float, window: int) -> str:
+    stale_reason = e.get("stale_reason") or ""
+    dot = dot_word(e, now, window)
+    if dot == "stale" and not stale_reason:
+        stale_reason = "not observed in the last two shepherd passes"
+    return "\t".join(field(v) for v in (
+        "P", sid, dot, e.get("number"), e.get("url"), e.get("repo"), e.get("state"), e.get("checks"),
+        e.get("review_decision") or "", e.get("unresolved_threads"), e.get("mergeable") or "",
+        e.get("condition"), stale_reason, e.get("title")))
+
+
 def records(q, doc: dict, now: float) -> list[str]:
     window = freshness_secs(q)
     out = []
@@ -727,26 +777,29 @@ def records(q, doc: dict, now: float) -> list[str]:
     for sid, s in sorted(sessions.items(), key=lambda kv: str(kv[1].get("name") or kv[0])):
         out.append("\t".join(field(v) for v in ("S", sid, s.get("task") or "", "1" if s.get("adopted") else "0",
                                                 s.get("name") or "")))
-        for e in s.get("prs") or []:
-            stale_reason = e.get("stale_reason") or ""
-            dot = dot_word(e, now, window)
-            if dot == "stale" and not stale_reason:
-                stale_reason = "not observed in the last two shepherd passes"
-            out.append("\t".join(field(v) for v in (
-                "P", sid, dot, e.get("number"), e.get("url"), e.get("repo"), e.get("state"), e.get("checks"),
-                e.get("review_decision") or "", e.get("unresolved_threads"), e.get("mergeable") or "",
-                e.get("condition"), stale_reason, e.get("title"))))
+        out.extend(_pr_record(sid, e, now, window) for e in s.get("prs") or [])
     return out
+
+
+def _print_records(q, doc: dict, why: str) -> None:
+    if why:
+        print("E\t" + field(why))
+        return
+    for line in records(q, doc, datetime.now(timezone.utc).timestamp()):
+        print(line)
+
+
+def _print_session_prs(s: dict) -> None:
+    for e in s.get("prs") or []:
+        stale_note = f"  STALE: {e.get('stale_reason')}" if e.get("stale") else ""
+        print(f"        #{e.get('number')} {e.get('repo')}  {e.get('state')}, checks {e.get('checks')}, "
+              f"{e.get('condition')} -> {e.get('action')}{stale_note}")
 
 
 def cmd_prs(q, args) -> int:
     doc, why = load(q)
     if getattr(args, "records", False):
-        if why:
-            print("E\t" + field(why))
-        else:
-            for line in records(q, doc, datetime.now(timezone.utc).timestamp()):
-                print(line)
+        _print_records(q, doc, why)
         return 0
     if args.json:
         print(json.dumps(doc, indent=2, ensure_ascii=False))
@@ -762,8 +815,5 @@ def cmd_prs(q, args) -> int:
     for sid, s in sorted(sessions.items(), key=lambda kv: str(kv[1].get("name") or kv[0])):
         whose = s.get("task") or "adopted"
         print(f"    {s.get('name') or sid}  ({whose})")
-        for e in s.get("prs") or []:
-            stale_note = f"  STALE: {e.get('stale_reason')}" if e.get("stale") else ""
-            print(f"        #{e.get('number')} {e.get('repo')}  {e.get('state')}, checks {e.get('checks')}, "
-                  f"{e.get('condition')} -> {e.get('action')}{stale_note}")
+        _print_session_prs(s)
     return 0
