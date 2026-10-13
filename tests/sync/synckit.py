@@ -95,10 +95,10 @@ def run_module(root: Path, module: str, *args: str, **env: str | None) -> Run:
     return run([*PYTHON, str(root / "scripts" / "lib" / module), *args], cwd=root, **env)
 
 
-def repo_json(owner: str, name: str) -> str:
+def repo_json(owner: str, name: str, archived: bool = False) -> str:
     return json.dumps({
         "full_name": f"{owner}/{name}", "name": name, "html_url": f"https://github.com/{owner}/{name}",
-        "owner": {"login": owner}, "private": False, "role_name": "admin", "archived": False,
+        "owner": {"login": owner}, "private": False, "role_name": "admin", "archived": archived,
         "fork": False, "language": "Rust", "default_branch": "main", "pushed_at": "2026-09-01T00:00:00Z",
         "topics": [], "description": "fixture",
     }) + "\n"

@@ -21,7 +21,13 @@ with an empty one.
 
 The file is GENERATED, so never hand-edit it, and gitignored like
 registry/owners.txt; .gitignore says why. Curated context lives in
-registry/context/<repo>.md, which this never touches. Needs `gh`,
+registry/context/<repo>.md, which this never touches.
+
+ARCHIVED REPOSITORIES ARE NOT MAPPED. An archived repo is read-only and no
+task can land work on it, so listing it only invites a dispatch that cannot
+finish. The rule lives in `listing`, the one place a repo list enters, so
+`add-owner` (which reads the map) and the counts follow it; a repo archived
+after it was mapped drops out on the next sync. Needs `gh`,
 authenticated; no PAT and no CI secret. THE MAP IS OPTIONAL: with no owners
 file, no owner in it, or no `gh`, this says so and exits 0 without writing —
 a local-only fleet dispatches against local repos and has no map.
@@ -76,15 +82,18 @@ def map_host() -> str:
 
 
 def listing(token: str) -> list[dict] | None:
-    """Every repository one account reaches, or None when it could not be listed."""
+    """Every live repository one account reaches, or None when it could not be listed.
+
+    Archived ones are dropped here, once, so nothing downstream sees them."""
     done = gh.api_as(token, "--paginate", ENDPOINT, "--jq", ".[]")
     sys.stderr.write(done.stderr)
     if done.returncode != 0:
         return None
     try:
-        return [json.loads(line) for line in done.stdout.splitlines() if line.strip()]
+        repos = [json.loads(line) for line in done.stdout.splitlines() if line.strip()]
     except ValueError:
         return None
+    return [repo for repo in repos if not repo.get("archived")]
 
 
 def merged(repos: list[dict]) -> list[dict]:

@@ -70,6 +70,21 @@ def test_a_repo_two_accounts_reach_is_one_repo_and_the_totals_count_the_merged_s
     expect(text, "repos: 5", "owners: 4")
 
 
+def test_an_archived_repo_is_not_mapped_and_drops_out_once_it_is_archived(tmp_path, stubs):
+    root = sandbox(tmp_path / "checkout", "octo\n")
+    fixture(stubs, "hosts.json", hosts_json(("octo", "success")))
+    stubs.tool("gh", GH)
+    fixture(stubs, "repos-octo.json", repo_json("octo", "live") + repo_json("octo", "old"))
+    run_module(root, "sync_registry.py")
+    expect(the_map(root), "    - name: old", "repos: 2")
+
+    fixture(stubs, "repos-octo.json", repo_json("octo", "live") + repo_json("octo", "old", archived=True))
+    run_module(root, "sync_registry.py")
+    text = the_map(root)
+    expect(text, "    - name: live", "repos: 1")
+    refute(text, "    - name: old")
+
+
 def test_asking_every_account_never_switches_the_active_one(root, stubs):
     run_module(root, "sync_registry.py")
     assert stubs.calls("gh", "api"), "the accounts were asked"
