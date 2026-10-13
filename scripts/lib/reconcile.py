@@ -260,7 +260,7 @@ LOG_KEEP_LINES = 2000
 
 # `watch` reports "0 task(s) moved" nearly every call. Anchored, because a moved
 # count of 10 or 100 contains the same substring.
-QUIET = re.compile(r"(^|[^0-9])0 task\(s\) moved", re.MULTILINE)
+QUIET = re.compile(r"(^|\D)0 task\(s\) moved", re.MULTILINE | re.ASCII)
 
 
 def runtime_dir() -> str:
@@ -686,6 +686,55 @@ def rest(cfg: Config, secs: float) -> None:
     wait_until(lambda: over(cfg), max(secs, 0), step=0.2)
 
 
+def _consume_nudge(cfg: Config) -> bool:
+    """Take the advisory nudge flag, if one is waiting, and say whether it was."""
+    # ADVISORY, and consumed here: it brings the periodic pass forward and
+    # nothing else. If it never arrives the timers catch everything anyway.
+    nudge = cfg.path("nudge")
+    nudged = os.path.isfile(nudge)
+    if nudged:
+        log(cfg, "nudged: " + (read(nudge).splitlines() or [""])[0])
+        remove(nudge)
+    return nudged
+
+
+def _note_forge(cfg: Config, forge, has_forge):
+    """Ask whether a forge CLI is on PATH, log only a change, return the answer."""
+    now_forge = bool(forge.available())
+    if now_forge != has_forge:
+        if not now_forge:
+            log(cfg, f"shepherd: skipped while no forge is available — {forge.no_forge_reason()}")
+        elif has_forge is not None:
+            log(cfg, "shepherd: resumed — a forge CLI is on PATH now")
+        has_forge = now_forge
+    return has_forge
+
+
+def _run_due(cfg: Config, last: dict, stamp: float, did_collect: bool, has_forge) -> bool:
+    """Run each timed verb whose clock is up; True when a stop came in between."""
+    for verb, every in (("collect", cfg.collect), ("shepherd", cfg.shepherd), ("refuel", cfg.refuel)):
+        if verb == "shepherd" and not has_forge:
+            continue
+        if (verb == "collect" and did_collect) or (verb != "collect" and stamp - last[verb] >= every):
+            run_pass(cfg, verb, [verb])
+            last[verb] = stamp
+            if over(cfg):
+                return True
+    return False
+
+
+def _sync_and_tell(cfg: Config, last: dict, stamp: float, did_collect: bool, synced: str) -> str:
+    """The checkout itself, on a clock of its own. What a fast-forward needs a
+    hand for is told on it, and a notice still waiting is retried on collect's."""
+    report = {}
+    if cfg.sync > 0 and stamp - last["sync"] >= cfg.sync:
+        report, synced = sync_checkout(cfg, synced)
+        last["sync"] = stamp
+    if report.get("actions") or (did_collect and os.path.isfile(cfg.path(STALE_FILE))):
+        notify_stale(cfg, report if report.get("actions") else {})
+    return synced
+
+
 def tick(cfg: Config) -> int:
     """The loop. Read the cadences in the docstring before changing a number here."""
     # Before the first heartbeat, so a loop that cannot run the one command it
@@ -712,46 +761,20 @@ def tick(cfg: Config) -> int:
         stamp = time.monotonic()
         fleet_platform.write_record(cfg.path("heartbeat"), f"{int(time.time())}\n")
 
-        # ADVISORY, and consumed here: it brings the periodic pass forward and
-        # nothing else. If it never arrives the timers catch everything anyway.
-        nudge = cfg.path("nudge")
-        nudged = os.path.isfile(nudge)
-        if nudged:
-            log(cfg, "nudged: " + (read(nudge).splitlines() or [""])[0])
-            remove(nudge)
+        nudged = _consume_nudge(cfg)
 
         # collect first: it is the one that CLOSES tasks, and shepherd's view of
         # which pull requests still matter is better for running after it.
         did_collect = nudged or stamp - last["collect"] >= cfg.collect
-        now_forge = bool(forge.available())
-        if now_forge != has_forge:
-            if not now_forge:
-                log(cfg, f"shepherd: skipped while no forge is available — {forge.no_forge_reason()}")
-            elif has_forge is not None:
-                log(cfg, "shepherd: resumed — a forge CLI is on PATH now")
-            has_forge = now_forge
-        for verb, every in (("collect", cfg.collect), ("shepherd", cfg.shepherd), ("refuel", cfg.refuel)):
-            if verb == "shepherd" and not has_forge:
-                continue
-            if (verb == "collect" and did_collect) or (verb != "collect" and stamp - last[verb] >= every):
-                run_pass(cfg, verb, [verb])
-                last[verb] = stamp
-                if over(cfg):
-                    return 0
+        has_forge = _note_forge(cfg, forge, has_forge)
+        if _run_due(cfg, last, stamp, did_collect, has_forge):
+            return 0
 
         # LAST, on collect's clock: it sees the landings collect just recorded.
         if did_collect:
             notify_lead(cfg)
 
-        # The checkout itself, on a clock of its own. What a fast-forward needs a
-        # hand for is told on it, and a notice still waiting is retried on
-        # collect's.
-        report = {}
-        if cfg.sync > 0 and stamp - last["sync"] >= cfg.sync:
-            report, synced = sync_checkout(cfg, synced)
-            last["sync"] = stamp
-        if report.get("actions") or (did_collect and os.path.isfile(cfg.path(STALE_FILE))):
-            notify_stale(cfg, report if report.get("actions") else {})
+        synced = _sync_and_tell(cfg, last, stamp, did_collect, synced)
 
         trim_log(cfg)
 
@@ -998,16 +1021,8 @@ def cmd_restart(cfg: Config) -> int:
     return come_up(cfg)
 
 
-def cmd_status(cfg: Config) -> int:
-    """Exit 1 when it is down and nothing asked it down, or when it is STALLED:
-    each is a fault, not a reading, and an exit code is all a script reads."""
-    # Asked of the queue itself, so this line and `fleet queue list` cannot disagree.
-    rc, out = run_queue(cfg, ["root"], merge=False, loop=False)
-    queue = out.strip() if rc == 0 and out.strip() else os.environ.get("FLEET_QUEUE_DIR", "orchestration/queue")
-    for pid, argv in legacy_loops():
-        say(f"legacy    a bash reconciler from before the uv port is still running (pid {pid}):")
-        say(f"          {argv}")
-        say("          its script is gone, so every pass fails; uv run fleet reconcile ensure stops it")
+def _say_state(cfg: Config) -> bool:
+    """`cmd_status`'s first lines: up, STALLED, down or DOWN. True when STALLED."""
     stalled = False
     if running(cfg):
         age = beat_age(cfg)
@@ -1032,6 +1047,20 @@ def cmd_status(cfg: Config) -> int:
         else:
             say("          and nothing brings it back after a reboot but the lead's next session:")
             say("          uv run fleet install installs a user service where this machine has one")
+    return stalled
+
+
+def cmd_status(cfg: Config) -> int:
+    """Exit 1 when it is down and nothing asked it down, or when it is STALLED:
+    each is a fault, not a reading, and an exit code is all a script reads."""
+    # Asked of the queue itself, so this line and `fleet queue list` cannot disagree.
+    rc, out = run_queue(cfg, ["root"], merge=False, loop=False)
+    queue = out.strip() if rc == 0 and out.strip() else os.environ.get("FLEET_QUEUE_DIR", "orchestration/queue")
+    for pid, argv in legacy_loops():
+        say(f"legacy    a bash reconciler from before the uv port is still running (pid {pid}):")
+        say(f"          {argv}")
+        say("          its script is gone, so every pass fails; uv run fleet reconcile ensure stops it")
+    stalled = _say_state(cfg)
     say(f"queue     {queue}")
     say(f"watch     every {cfg.watch}s, back to back — the continuous fold")
     say(f"collect   every {cfg.collect}s")
@@ -1102,14 +1131,17 @@ def hook_command(checkout: str = CHECKOUT) -> str:
     not eat and Windows accepts; the path bare when every character is plain,
     in double quotes when it holds a space, an apostrophe or the like, and in a
     POSIX shell's single quotes only when a double-quoted shell would expand it."""
-    project = checkout.replace("\\", "/")
-    if set(project) <= HOOK_BARE:
-        pass
-    elif not any(c in project for c in '"$`!'):
-        project = f'"{project}"'
-    else:
-        project = shlex.quote(project)
+    project = _shell_neutral(checkout.replace("\\", "/"))
     return f"uv run --project {project} fleet reconcile nudge"
+
+
+def _shell_neutral(project: str) -> str:
+    """`hook_command`'s quoting of the checkout path: the least that is still one word."""
+    if set(project) <= HOOK_BARE:
+        return project
+    if not any(c in project for c in '"$`!'):
+        return f'"{project}"'
+    return shlex.quote(project)
 
 
 def cmd_hook(cfg: Config) -> int:
