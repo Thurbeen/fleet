@@ -123,7 +123,7 @@ def test_a_complete_machine_asks_nothing_installs_nothing_and_changes_nothing(st
     assert first.code == 0, first.out
     expect(first.stdout, "extension: installed (stand-in)", "Every required dependency is present")
     settings = stubs.root.parent / "home" / ".claude" / "settings.json"
-    before = (tree_snapshot(checkout), settings.read_bytes())
+    tree_before, settings_before = tree_snapshot(checkout), settings.read_bytes()
 
     stubs.root.joinpath("calls.log").unlink()
     again = run_install(checkout, stubs, family)
@@ -131,7 +131,8 @@ def test_a_complete_machine_asks_nothing_installs_nothing_and_changes_nothing(st
     expect(again.stdout, "Nothing to install")
     refute(again.out, "[y/N]", "--yes")
     assert manager_calls(stubs) == []
-    assert (tree_snapshot(checkout), settings.read_bytes()) == before
+    assert tree_snapshot(checkout) == tree_before
+    assert settings.read_bytes() == settings_before
     assert stubs.calls("extension") == [f"extension install {checkout}"], "the extension step is re-applied"
 
 

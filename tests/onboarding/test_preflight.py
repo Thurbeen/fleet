@@ -43,7 +43,8 @@ def test_a_fully_equipped_machine_exits_0_and_has_nothing_to_install(stubs):
     expect(done.out, "Every required dependency is present")
 
     done = preflight(path, "--commands")
-    assert (done.code, done.stdout) == (0, ""), done.out
+    assert done.code == 0, done.out
+    assert done.stdout == "", done.out
 
 
 def test_every_missing_required_tool_is_named_in_the_same_pass(stubs):
@@ -401,7 +402,8 @@ def test_commands_never_prints_a_lead_rows_remedy(stubs):
     path = machine(stubs, full_machine())
     expect(lead_tier(path), "missing  refuel agent")
     done = preflight(path, "--commands")
-    assert (done.code, done.stdout) == (0, ""), done.out
+    assert done.code == 0, done.out
+    assert done.stdout == "", done.out
 
 
 # --- the table is data a second module can act on -----------------------------
@@ -424,11 +426,13 @@ def test_the_table_is_one_record_per_dependency_with_a_route_for_each(pf, monkey
     names = [d.name for d in table]
     assert len(names) == len(set(names)), names
     for d in table:
-        assert d.tier in pf.TIERS and d.why, d
+        assert d.tier in pf.TIERS, d
+        assert d.why, d
         assert set(d.packages) <= set(pf.MANAGERS), d
         if d.manual:
             # Not a package: the operator runs it themselves.
-            assert not d.packages and not d.installer, d
+            assert not d.packages, d
+            assert not d.installer, d
         else:
             assert d.packages or d.installer.get(name) or d.see, d
     assert {"git", "uv", "thurbox-cli"} <= {d.name for d in table if d.tier == "required"}
@@ -436,8 +440,7 @@ def test_the_table_is_one_record_per_dependency_with_a_route_for_each(pf, monkey
     # No forge is required: each is its own optional row, CLI and login alike.
     assert {d.name for d in table if d.tier == "forge"} == {"gh", "gh auth", "glab", "glab auth"}
     assert {"lua", "prek"} <= {d.name for d in table if d.tier == "gate"}
-    assert {"commit signing", "refuel agent", "glab host", "fleet writes"} == {
-        d.name for d in table if d.tier == "lead"}
+    assert {d.name for d in table if d.tier == "lead"} == {"commit signing", "refuel agent", "glab host", "fleet writes"}
     # Retired by the port: Python and PyYAML come with uv, and nothing runs bash, jq or shellcheck.
     assert not {"python3", "PyYAML", "jq", "shellcheck", "bash"} & set(names)
     assert next(d for d in table if d.name == "thurbox-cli").floor == FLOOR
@@ -446,11 +449,14 @@ def test_the_table_is_one_record_per_dependency_with_a_route_for_each(pf, monkey
 def test_the_multiplexer_is_psmux_on_windows_and_tmux_elsewhere(pf, monkeypatch):
     family(monkeypatch, pf, "windows")
     names = {d.name for d in pf.dependencies()}
-    assert "psmux" in names and "tmux" not in names
+    assert "psmux" in names
+    assert "tmux" not in names
     family(monkeypatch, pf, "posix")
     table = {d.name: d for d in pf.dependencies()}
-    assert "tmux" in table and "psmux" not in table
-    assert table["tmux"].tier == "required" and table["tmux"].floor == "3.2"
+    assert "tmux" in table
+    assert "psmux" not in table
+    assert table["tmux"].tier == "required"
+    assert table["tmux"].floor == "3.2"
 
 
 def test_windows_picks_winget_and_posix_the_first_manager_in_its_fixed_order(pf, monkeypatch, stubs):
@@ -481,13 +487,15 @@ def test_thurbox_prefers_its_official_installer_and_records_winget_as_the_altern
     family(monkeypatch, pf, "windows")
     thurbox = next(d for d in pf.dependencies() if d.name == "thurbox-cli")
     on_windows = pf.install_plan(thurbox, "winget")
-    assert on_windows.argv[0] == "powershell" and "install.ps1" in on_windows.text
+    assert on_windows.argv[0] == "powershell"
+    assert "install.ps1" in on_windows.text
     assert thurbox.alternatives == {"winget": "Thurbeen.thurbox"}
     family(monkeypatch, pf, "posix")
     assert pf.install_plan(thurbox, "brew").argv == ("brew", "install", "thurbeen/thurbox/thurbox")
     for manager in ("apt", "dnf", "pacman", None):
         plan = pf.install_plan(thurbox, manager)
-        assert plan.argv[:2] == ("sh", "-c") and "install.sh" in plan.text
+        assert plan.argv[:2] == ("sh", "-c")
+        assert "install.sh" in plan.text
 
 
 def test_no_manager_falls_back_to_the_tools_own_installer_or_to_nothing(pf, monkeypatch):
