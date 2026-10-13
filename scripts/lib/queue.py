@@ -906,8 +906,11 @@ def glyph_conf(root: str | None = None) -> dict[str, str]:
 #
 # One parse for every `orchestration/*.conf`: the operator's copy when it is
 # there, the tracked `*.example.conf` beside it when it is not. Read as DATA —
-# `KEY=value`, no quoting, no continuation — and never executed. A setting that
-# can run is a different kind of file.
+# `KEY=value`, no quoting, no continuation — and none of these files is ever
+# executed. One VALUE is a command line, which the module that reads it runs on
+# purpose (`reconcile.conf`'s `WORKTREE_RELEASED_CMD`, split and run with no
+# shell); this parser gives no meaning to anything in a value and takes the
+# rest of the line verbatim, quotes and all.
 #
 # The tracked copy is where the DEFAULT lives, so every one of these ships a
 # working answer and a fresh clone needs no configuration at all. What none of
@@ -6585,7 +6588,7 @@ def sweep_vanished(q: Queue, dry: bool, snapshot=None, decided: set | None = Non
         print(f"    {task.ref:<46} abandoned  {ABANDON_HOW['session-gone']}: {why}")
         trees = task_worktrees(task)
         free_build_output(task.ref, trees, dry)
-        run_worktree_command(task.ref, trees, dry, decided=decided)
+        run_worktree_command(task.ref, handover_worktrees(task), dry, decided=decided)
         release_companions(task, dry)
     return acted
 
@@ -7110,13 +7113,16 @@ WORKTREE_CMD_SECS = "WORKTREE_RELEASED_CMD_SECS"
 # killed and its remaining worktrees wait for the next.
 WORKTREE_CMD_DEFAULT_SECS = 60
 
-# A bound this long is not a bound, and the reason to refuse it here rather
-# than pass it on is mechanical: the wait goes to the OS, which rejects one
-# this large with an error no `run_bounded` caller is prepared for — it is
-# neither an `OSError` nor a timeout — and a reap pass has nothing to do with
-# a typo in a setting. Whole seconds only, `int` like every other clock in
-# this file, which is also what keeps `inf` and `nan` out: read as floats they
-# pass every "is it positive" test there is and raise out of the pass.
+# A bound this long is not a bound: an hour is already longer than any
+# teardown, and `collect` is bounded at 600s above it, so every value past
+# this is a typo. A CEILING AND NOT A LIMIT OF THE MACHINE — measured here,
+# `communicate(timeout=…)` takes 4000 and 86400 happily and only raises
+# `OverflowError: timeout is too large` around 3e6 — but a refusal here is
+# cheap, says which setting, and keeps the absurd end of the range away from a
+# call whose only guard is `except OSError`. Whole seconds, `int` like every
+# other clock in this file, which is also what keeps `inf` and `nan` out: read
+# as floats they pass every "is it positive" test there is, and `inf` reaches
+# that same raise out of the pass.
 WORKTREE_CMD_MAX_SECS = 3600
 
 
@@ -7165,7 +7171,7 @@ def command_worktrees(task: Task) -> list[str]:
     `run_worktree_command` is what names it, wherever it was reached.
     """
     argv, _secs, why = worktree_command()
-    return task_worktrees(task) if argv or why else []
+    return handover_worktrees(task) if argv or why else []
 
 
 def worktree_key(tree: str) -> str:
@@ -7183,6 +7189,36 @@ def worktree_key(tree: str) -> str:
         return tree
 
 
+def fixer_checkout_paths(task: Task) -> list[str]:
+    """Where this task's fixer checkout would be — now, and before the move."""
+    slug = f"{task.topic}__{task.id}"
+    return [
+        os.path.join(fixer_worktrees_root(), slug),
+        os.path.join(queue_root(), ".worktrees", slug),
+    ]
+
+
+def handover_worktrees(task: Task) -> list[str]:
+    """The task's worktrees a GENERIC release point may hand to the command.
+
+    NOT THE FIXER'S CHECKOUT, which git lists among them whenever
+    `branch_checkout` cut it on the task's own branch — and it usually does.
+    That checkout has a release point of its own, and that one is the only
+    place that knows whether `git worktree remove` actually took it back: a
+    removal git REFUSES means files it does not track are in there, which is
+    work somebody has not finished. The vanished sweep runs BEFORE that point,
+    so without this it handed over a directory nothing had even tried to
+    release yet, and the same pass then printed `kept fixer checkout`.
+
+    The build output is a different question and keeps asking git's whole
+    answer: `release_fixer_checkouts` frees it on purpose before the removal,
+    because untracked build output is exactly what the removal would refuse
+    over.
+    """
+    skip = {worktree_key(path) for path in fixer_checkout_paths(task)}
+    return [tree for tree in task_worktrees(task) if worktree_key(tree) not in skip]
+
+
 def run_worktree_command(ref: str, trees: list[str], dry: bool, sid: str | None = None,
                          decided: set | None = None) -> int:
     """Hand each released worktree to the operator's command. Returns how many ran.
@@ -7192,17 +7228,14 @@ def run_worktree_command(ref: str, trees: list[str], dry: bool, sid: str | None 
     judged (`worktree_occupant` owns both, and `sid` is why the session being
     deleted is not read as its own occupant).
 
-    ONCE PER WORKTREE PER PASS, which is what `decided` carries. One worktree
-    is reached twice by design: `release_fixer_checkouts` removes the checkout
-    a fixer worked in, and the holders pass below lists that same checkout
-    among its task's worktrees whenever the fixer was cut on the task's own
-    branch. A teardown is not promised to be idempotent — the second call is
-    at best noise and at worst takes down what the first one's replacement
-    raised — so a worktree this pass has already answered for is skipped
-    silently. A refusal counts as an answer: `release_fixer_checkouts` puts a
-    checkout git would not remove in here itself, because the reason it was
-    kept is somebody's uncommitted work, and work being carried on is the one
-    thing this command must not be pointed at.
+    ONCE PER WORKTREE PER PASS, which is what `decided` carries. Two tasks on
+    one branch share one worktree, so two release points can reach it in a
+    single pass, and a teardown is not promised to be idempotent — the second
+    call is at best noise and at worst takes down what the first one's
+    replacement raised. ONLY RUNNING COUNTS as having answered for a worktree.
+    A refusal does not, and that distinction is the whole point: the reason a
+    worktree is refused can be a session THIS PASS is about to delete, and
+    marking that refusal down would lose the one hand-over that mattered.
     """
     argv, secs, why = worktree_command()
     if why:
@@ -7222,14 +7255,15 @@ def run_worktree_command(ref: str, trees: list[str], dry: bool, sid: str | None 
                 print(f"    {ref:<46} kept       {WORKTREE_CMD} for {tree}: {snap_why}")
                 return ran
         busy = worktree_occupant(sessions, tree, sid)
-        # Answered, whichever way it went: a worktree somebody is sitting in
-        # is still being sat in when the next release point reaches it.
-        if decided is not None:
-            decided.add(key)
         if busy:
             print(f"    {ref:<46} kept       {WORKTREE_CMD}: {busy}")
             continue
         argv_here = [*argv, tree, ref]
+        # Asked for, so nothing asks again. Set before the run and not after
+        # it: a command that fails has still been pointed at this worktree,
+        # and pointing a second one at it is not the retry to make.
+        if decided is not None:
+            decided.add(key)
         if dry:
             print(f"    {ref:<46} would run  {shell_quote(argv_here)}")
             ran += 1
@@ -7285,8 +7319,13 @@ def release_fixer_checkouts(q: Queue, state_of, dry: bool, decided: set | None =
             # does not track, and build output is exactly that.
             free_build_output(task.ref, [path], dry)
             if dry:
-                print(f"    {task.ref:<46} would remove fixer checkout {path}")
-                run_worktree_command(task.ref, [path], dry, decided=decided)
+                # NO `would run` HERE. Whether this checkout is handed over
+                # depends on a `git worktree remove` that has not been tried,
+                # and a dry run that printed the command would promise exactly
+                # what a refused removal cancels.
+                argv, _secs, why = worktree_command()
+                after = ", then hand it over" if argv or why else ""
+                print(f"    {task.ref:<46} would remove fixer checkout {path}{after}")
                 continue
             # Asked of each repository the task spans, because `shepherd` cuts
             # the checkout off whichever one the change request was in and only
@@ -7306,14 +7345,12 @@ def release_fixer_checkouts(q: Queue, state_of, dry: bool, decided: set | None =
                     + (err[-1] if err else "git worktree remove failed"),
                     file=sys.stderr,
                 )
-                # HANDED OVER TO NOBODY, and taken off this pass's list so the
-                # holders below cannot hand it over either: git refused this
-                # checkout because it holds files it does not track, which is
-                # work somebody has not finished, and a teardown aimed at a
-                # worktree still being worked in is the one mistake here that
-                # costs more than the leak it was added to stop.
-                if decided is not None:
-                    decided.add(worktree_key(path))
+                # HANDED OVER TO NOBODY. git refused this checkout because it
+                # holds files it does not track, which is work somebody has
+                # not finished, and no other release point reaches it
+                # (`handover_worktrees`) — a teardown aimed at a worktree
+                # still being worked in is the one mistake here that costs
+                # more than the leak it was added to stop.
                 continue
             print(f"    {task.ref:<46} removed    fixer checkout {path}")
             # A fixer's checkout is a worktree an agent worked in too, so what
@@ -7481,7 +7518,7 @@ def reap(q: Queue, dry: bool = False, release: bool = True) -> int:
             # and the worktree its build output.
             trees = task_worktrees(task)
             free_build_output(task.ref, trees, dry)
-            run_worktree_command(task.ref, trees, dry, decided=decided)
+            run_worktree_command(task.ref, handover_worktrees(task), dry, decided=decided)
             release_companions(task, dry)
             continue
 

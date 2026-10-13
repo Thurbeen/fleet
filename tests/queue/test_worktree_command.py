@@ -177,12 +177,16 @@ def fixer_on_the_task_branch(queue_dir, tmp_path):
 
 def test_one_worktree_is_handed_over_once_however_many_releases_reach_it(
         fixer_on_the_task_branch, stubs, isolated_env):
-    """A teardown is not promised to be idempotent, so it is asked for once."""
+    """A teardown is not promised to be idempotent, so it is asked for once.
+
+    And the dry run promises only what it can know: whether this checkout is
+    handed over depends on a `git worktree remove` it has not tried.
+    """
     _repo, fixer = fixer_on_the_task_branch
     hook(isolated_env, stubs)
     dry = ok(q("reap", "--dry-run")).out
-    expect(dry, "would remove fixer checkout", str(fixer), "would run")
-    assert dry.count("would run") == 1, dry
+    expect(dry, f"would remove fixer checkout {fixer}, then hand it over")
+    refute(dry, "would run")
     out = ok(q("reap")).out
     expect(out, "removed    fixer checkout", "released", str(fixer))
     assert ran(stubs) == [f"{HOOK} {fixer} {REF}"], ran(stubs)
@@ -192,16 +196,103 @@ def test_a_checkout_git_refuses_to_remove_is_handed_to_nobody(
         fixer_on_the_task_branch, stubs, isolated_env):
     """git keeps it because somebody's unfinished work is in it — which is the answer.
 
-    The holders pass lists the same path and must not hand over what the
-    removal just refused: whatever is running in there is still theirs.
+    No other release point may hand it over, and the dry run may not promise
+    a command either: whatever is running in there is still theirs.
     """
     _repo, fixer = fixer_on_the_task_branch
     write(fixer / "notes.txt", "work in progress\n")
     hook(isolated_env, stubs)
+    refute(ok(q("reap", "--dry-run")).out, "would run")
     out = ok(q("reap")).out
     expect(out, "kept       fixer checkout", str(fixer))
     refute(out, "WORKTREE_RELEASED_CMD", "would run")
     assert ran(stubs) == [], ran(stubs)
+
+
+def test_the_vanished_sweep_hands_over_no_checkout_nothing_has_tried_to_release(
+        fixer_on_the_task_branch, stubs, isolated_env, queue_dir):
+    """The sweep runs BEFORE the removal, and git refuses this removal.
+
+    The order is what made this reachable: a worker that vanished is exactly
+    when a fixer is spawned, so its checkout is on disk, on the task's own
+    branch, with the fixer's unfinished work in it — and the sweep retires the
+    task one release point ahead of the only thing that may hand that checkout
+    over.
+    """
+    _repo, fixer = fixer_on_the_task_branch
+    write(fixer / "notes.txt", "the fixer is mid-change\n")
+    hook(isolated_env, stubs)
+    ok(q("attach", REF, SID))
+    ok(q("collect"))
+    path = queue_dir / "disk" / "01-build" / "task.yaml"
+    doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+    doc["vanished"]["since"] = "2020-01-01T00:00:00+00:00"
+    path.write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
+    out = ok(q("collect")).out
+    expect(out, "session gone", "kept       fixer checkout")
+    refute(out, "released")
+    assert ran(stubs) == [], ran(stubs)
+
+
+def test_a_worktree_whose_occupant_this_pass_deletes_is_still_handed_over(
+        queue_dir, tmp_path, stubs, isolated_env):
+    """A refusal is not an answer: the occupant can be a session reap is about to delete.
+
+    Two tasks on one branch share one worktree. The first task's release reads
+    the second task's live session sitting in it and keeps it — and then this
+    same pass deletes that session with `--force`, which takes the worktree
+    with it. The stack keyed to that directory is what this whole seam exists
+    to take down, so the hand-over must still happen.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git(repo, "init", "-q", "-b", "main")
+    write(repo / "README.md", "hello\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "init")
+    ok(q("topic", "add", "disk", "--title", "Let the worktree go", "--prompt", "take the stack down too"))
+    ok(q("add", "disk", "first", "--title", "The one that is gone", "--repo", str(repo),
+         "--branch", "fix/build", "--number", "01"))
+    ok(q("add", "disk", "second", "--title", "The one still in it", "--repo", str(repo),
+         "--branch", "fix/build", "--number", "02"))
+    tree = tmp_path / "wt"
+    git(repo, "worktree", "add", "-q", "-b", "fix/build", str(tree))
+
+    other = "88888888-8888-8888-8888-888888888888"
+    write(stubs.root / "sessions" / f"{other}.json", json.dumps({
+        "id": other, "name": "still in it", "state": "idle", "agent": "claude",
+        "hook_reported": True, "hook_state": "idle", "hook_state_age_secs": 5,
+        "cwd": str(tree), "backend_type": "local:tmux",
+        "worktrees": [{"worktree_path": str(tree), "created_by_thurbox": True}],
+    }))
+    ok(q("attach", "disk/01-first", SID))
+    ok(q("abandon", "disk/01-first", "--why", "superseded"))
+    ok(q("attach", "disk/02-second", other))
+    ok(q("abandon", "disk/02-second", "--why", "superseded", "--force"))
+
+    hook(isolated_env, stubs)
+    out = ok(q("reap")).out
+    expect(out, "kept       WORKTREE_RELEASED_CMD", other, "reaped", "released", str(tree))
+    assert ran(stubs) == [f"{HOOK} {tree} disk/02-second"], ran(stubs)
+
+
+def test_a_worktree_git_lists_without_a_directory_frees_nothing_and_is_still_handed_over(
+        gone, stubs, isolated_env):
+    """The two questions are not one, which is why the gate is not the only check.
+
+    A directory somebody removed behind git's back holds no build output to
+    free, and `free_build_output` says so from its own strict placing of the
+    path — while the command still has every reason to run, since what the
+    worktree raised outside itself is exactly what outlives the directory.
+    """
+    _repo, tree = gone
+    hook(isolated_env, stubs)
+    for path in sorted(tree.rglob("*"), reverse=True):
+        path.unlink() if path.is_file() or path.is_symlink() else path.rmdir()
+    tree.rmdir()
+    out = ok(q("reap")).out
+    expect(out, f"kept       build output in {tree}", "released", str(tree))
+    assert ran(stubs) == [f"{HOOK} {tree} {REF}"], ran(stubs)
 
 
 def test_a_task_spanning_repositories_hands_over_each_worktree(worktree, stubs, isolated_env, tmp_path):

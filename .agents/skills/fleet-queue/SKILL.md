@@ -836,18 +836,21 @@ with that worktree's absolute path and the task's ref appended:
     disk/01-build                  released   /…/worktrees/fix-build  (WORKTREE_RELEASED_CMD)
 ```
 
-It is refused exactly as the build output is — a worktree somebody sits in,
-one whose occupancy cannot be established, and a fixer checkout git would not
-remove because there is uncommitted work in it, are not handed over — and it
-never holds a task open: a failure, a timeout past
-`WORKTREE_RELEASED_CMD_SECS` (60), or a line that is not a command is printed
-and the task lands all the same. It runs once per worktree per pass, however
-many release points reach it. `reap --dry-run` prints what it would run.
-In the `session delete --force` case the directory is already gone when the
-command runs, which is why it gets the path and not the directory. A session
-`notify` keeps below keeps its worktree, so nothing is handed over then — and
-nothing is when you delete that session yourself either, so run the teardown
-by hand for those.
+It is refused where the build output is — a worktree somebody sits in, and one
+whose occupancy cannot be established — and a fixer's checkout only ever
+reaches it from the one place that takes that checkout back, so a removal git
+refuses over somebody's uncommitted work hands over nothing. It never holds a
+task open: a failure, a timeout past `WORKTREE_RELEASED_CMD_SECS` (60), or a
+line that is not a command is printed and the task lands all the same. It runs
+once per worktree per pass, however many release points reach it.
+`reap --dry-run` prints what it would run, except for that checkout, where it
+says it would hand it over rather than promise a command a refused removal
+cancels. In the `session delete --force` case the directory is already gone
+when the command runs, which is why it gets the path and not the directory.
+A session `notify` keeps below keeps its own worktree, so that one is not
+handed over — then or when you delete the session yourself, so run the teardown
+by hand for those. Its fixer's checkout is still taken back and handed over,
+because that is released on the task's state and not on its session.
 
 **Whether `landed` and `abandoned` delete the session is the operator's
 setting.** `ON_LANDED` and `ON_CLOSED` in the gitignored
