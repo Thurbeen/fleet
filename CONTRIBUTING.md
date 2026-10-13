@@ -429,3 +429,47 @@ rather than restating a rule in a fourth place.
 This repository has no `CHANGELOG.md` and does not need one. Do not add a new
 documentation file to close a perceived gap when an owner above already covers
 the subject.
+
+## SonarCloud analysis
+
+[Thurbeen_fleet](https://sonarcloud.io/dashboard?id=Thurbeen_fleet), in the
+`thurbeen` organization, uses automatic analysis of `main` and pull requests.
+`.sonarcloud.properties` separates `tests/` (including the stub tools) from
+production code and sets Python's supported versions from the project's 3.11
+minimum through Sonar's documented 3.14 maximum. Update that range when the
+project minimum or the analyzer's supported versions change.
+
+The explicit source roots cover the Python command and libraries, interface,
+installers, GitHub workflows and tracked tool configuration. They omit the
+registry, queue, run logs, rendered files, environments, caches and worktrees.
+Sonar reads the repository from GitHub, so local ignored operator configuration
+is never uploaded. Add a new production root to the list when one is introduced.
+Python, shell, PowerShell and YAML have language analyzers; JSON and other
+supported configuration receive the applicable analysis. Lua has no Sonar
+language analyzer; `fleet check pane` still exercises it on Linux and Windows.
+
+Keep the project's existing quality profiles and Sonar way quality gate.
+The SonarCloud GitHub App reports its gate separately from CI's All Checks;
+it does not replace the Linux or native Windows gate. Automatic analysis needs
+no Actions secret and runs without executing fork code in a privileged workflow.
+Do not add a CI scanner alongside it: Sonar rejects duplicate analysis paths.
+
+[Automatic analysis](https://docs.sonarsource.com/sonarqube-cloud/analyzing-source-code/automatic-analysis)
+does not import coverage. Coverage is unmeasured in this setup, not zero or
+fabricated. If coverage reporting becomes required, switch off automatic
+analysis and instrument the existing meaningful tests in CI with an authorized
+Sonar analysis token; avoid running a second copy of the gate just for coverage.
+
+Exercise the live classification regression explicitly after `main` analysis
+completes (substitute the full analyzed commit):
+
+```text
+uv run python tests/sonarcloud_e2e.py FULL_SHA
+```
+
+This checks the real cloud analysis, including its commit, production Python
+metrics and test classification. It intentionally runs outside the offline
+gate. Also check the dashboard's analysis warnings, quality gate and GitHub PR
+check/comment at that same SHA. Sonar documents the properties file on the
+[default branch](https://docs.sonarsource.com/sonarqube-cloud/analyzing-source-code/automatic-analysis#additional-analysis-configuration);
+a PR analysis alone may not prove a scope change took effect before merge.
