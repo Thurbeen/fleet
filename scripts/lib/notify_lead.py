@@ -723,6 +723,10 @@ def main(argv: list) -> int:
     owners_memory = {}
     lead_id = None
     for prefix, substring in rules:
+        # owner_of chooses the first matching rule; a duplicate prefix must
+        # not deliver its notices to a second recipient.
+        if prefix in owners_memory:
+            continue
         now = now_for(prefix)
         if not any(now[k] for k in TYPED):
             continue

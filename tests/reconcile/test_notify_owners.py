@@ -176,3 +176,15 @@ def test_rules_with_nothing_to_tell_ask_thurbox_nothing(stubs, tmp_path):
     assert not stubs.calls("thurbox-cli", "session list"), "an idle pass polled the session list"
     notify(tmp_path, [task("plain")])
     assert len(stubs.calls("thurbox-cli", "session list")) == 1, "an unowned notice polled for an owner"
+
+
+def test_duplicate_prefix_rules_deliver_only_to_the_first_owner(stubs, tmp_path):
+    conf("chat: = First owner\nchat: = Second owner\n")
+    ref = task("mine", ORIGIN)
+    session(stubs, "first", "First owner", "first-id", backend_type="local:tmux")
+    session(stubs, "second", "Second owner", "second-id", backend_type="local:tmux")
+    notify(tmp_path, [ref])
+    assert len(sends(stubs)) == 1
+    expect(sends(stubs)[0], "session send first-id")
+    notify(tmp_path, [ref])
+    assert len(sends(stubs)) == 1
