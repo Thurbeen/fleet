@@ -29,7 +29,7 @@ import tempfile
 # Hosts are the only lines `--all` puts at column 0; the per-instance findings,
 # and the error banner when one of them failed, are indented. The `.` keeps a
 # stray unindented word out: an instance is a hostname.
-HOST_LINE = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*\.[A-Za-z0-9._-]*)\s*$")
+HOST_LINE = re.compile(r"^([A-Za-z0-9][A-Za-z0-9_-]*\.[A-Za-z0-9._-]*)\s*$")
 
 
 def hosts() -> list[str]:

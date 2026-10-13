@@ -303,7 +303,7 @@ def dependencies(family: str | None = None) -> list[Dependency]:
 
 # --- probing ------------------------------------------------------------------
 
-VERSION = re.compile(r"[0-9]+\.[0-9]+(?:\.[0-9]+)?")
+VERSION = re.compile(r"(?<!\d)\d+\.\d+(?:\.\d+)?", re.ASCII)
 
 
 def _output(argv: list[str]) -> str:
@@ -533,7 +533,7 @@ def _fleet_writes() -> tuple[str, str, str]:
         try:
             seen = os.stat(where)
             with tempfile.NamedTemporaryFile(dir=where, prefix=".fleet-preflight-"):
-                pass
+                pass  # creating and removing it is the whole probe
         except OSError as exc:
             denied.append(f"{where} ({exc.strerror or exc})")
             continue
@@ -616,7 +616,8 @@ HEADINGS = {
 USAGE = "usage: uv run fleet preflight [--commands] [--tier required|recommended|lead|forge|gate]...\n"
 
 
-def main(argv: list[str]) -> int:
+def _parse_args(argv: list[str]) -> tuple[bool, list[str]] | int:
+    """(--commands, the --tier values), or the exit code to return now."""
     commands, tiers = False, []
     args = list(argv)
     while args:
@@ -635,6 +636,49 @@ def main(argv: list[str]) -> int:
         else:
             sys.stderr.write(USAGE)
             return 2
+    return commands, tiers
+
+
+def _print_commands(shown: list[Finding], manager: str | None) -> None:
+    # Only the lines that would change something, in table order, once
+    # each. A lead row's remedy is the operator's configuration, with
+    # placeholders in it: one to read, never to run unread.
+    printed: list[str] = []
+    for f in shown:
+        line = "" if f.ok or f.dependency.tier == "lead" else remedy(f, manager)
+        if line and not line.startswith("see ") and line not in printed:
+            printed.append(line)
+            print(line)
+
+
+def _row_text(f: Finding) -> str:
+    d = f.dependency
+    if f.state == "ok":
+        return f.detail
+    if f.state == "stale":
+        return f"{f.detail} — {d.floor_why.format(floor=d.floor)}"
+    return f"{d.why} ({f.detail})" if f.detail else d.why
+
+
+def _print_table(shown: list[Finding], tiers: list[str], manager: str | None) -> None:
+    colour = {"ok": "\033[32mok\033[0m      ", "stale": "\033[33mstale\033[0m   ", "missing": "\033[31mmissing\033[0m "}
+    for tier in TIERS:
+        if tiers and tier not in tiers:
+            continue
+        print(f"\n{HEADINGS[tier]}")
+        for f in (f for f in shown if f.dependency.tier == tier):
+            d = f.dependency
+            print(f"  {colour[f.state]} {d.name:<14} {_row_text(f)}".rstrip())
+            if not f.ok and (line := remedy(f, manager)):
+                label = "fix" if d.tier == "lead" else "install"
+                print(f"           {'':<14} {label}: {line}")
+
+
+def main(argv: list[str]) -> int:
+    parsed = _parse_args(argv)
+    if isinstance(parsed, int):
+        return parsed
+    commands, tiers = parsed
 
     # Every tier is probed whatever was asked to be SHOWN: a required gap is
     # still one when the caller only asked to see the gate tools, and a
@@ -646,34 +690,10 @@ def main(argv: list[str]) -> int:
     manager = package_manager()
 
     if commands:
-        # Only the lines that would change something, in table order, once
-        # each. A lead row's remedy is the operator's configuration, with
-        # placeholders in it: one to read, never to run unread.
-        printed: list[str] = []
-        for f in shown:
-            line = "" if f.ok or f.dependency.tier == "lead" else remedy(f, manager)
-            if line and not line.startswith("see ") and line not in printed:
-                printed.append(line)
-                print(line)
+        _print_commands(shown, manager)
         return 1 if required_missing else 0
 
-    colour = {"ok": "\033[32mok\033[0m      ", "stale": "\033[33mstale\033[0m   ", "missing": "\033[31mmissing\033[0m "}
-    for tier in TIERS:
-        if tiers and tier not in tiers:
-            continue
-        print(f"\n{HEADINGS[tier]}")
-        for f in (f for f in shown if f.dependency.tier == tier):
-            d = f.dependency
-            if f.state == "ok":
-                text = f.detail
-            elif f.state == "stale":
-                text = f"{f.detail} — {d.floor_why.format(floor=d.floor)}"
-            else:
-                text = f"{d.why} ({f.detail})" if f.detail else d.why
-            print(f"  {colour[f.state]} {d.name:<14} {text}".rstrip())
-            if not f.ok and (line := remedy(f, manager)):
-                label = "fix" if d.tier == "lead" else "install"
-                print(f"           {'':<14} {label}: {line}")
+    _print_table(shown, tiers, manager)
     print()
     if required_missing == 0:
         print('Every required dependency is present. "--commands" lists the\n'
