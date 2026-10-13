@@ -21,7 +21,7 @@ import threading
 from harness import PYTHON, REPO, expect, lib, run, write
 from reconcilekit import LEAD
 
-NOTIFY = REPO / "scripts" / "lib" / "notify_lead.py"
+NOTIFY = REPO / "scripts" / "lib" / "notify_conductor.py"
 
 
 def notify(state_dir, ready=()):
@@ -124,7 +124,7 @@ def test_a_lead_that_is_away_keeps_what_it_was_told(stubs, tmp_path):
 def test_a_reader_never_sees_a_torn_record(isolated_env):
     """D4: written in place, a reader racing the writer read `{}`, and the lead
     was told twice."""
-    mod = lib("notify_lead.py")
+    mod = lib("notify_conductor.py")
     told = [f"topic/{n:03d}-task" for n in range(400)]
     memory = {"told": told, "lead": {"session": "lead-1", "conversation": "conversation-1"}}
     mod.write_state(str(isolated_env), memory, "")

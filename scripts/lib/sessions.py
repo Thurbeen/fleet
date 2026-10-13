@@ -15,7 +15,7 @@ holds: none records it, or the one that does is `landed` or `abandoned`. It
 DELETES NOTHING. Whether a reviewer's conversation is still worth having is the
 operator's call, and the line under each row is the command that makes it.
 
-The lead is the session `notify_lead.py` would wake — the rendered manifest's
+The lead is the session `notify_conductor.py` would wake — the rendered manifest's
 name, or FLEET_LEAD_SESSION — then THURBOX_SESSION when this runs inside it;
 `--parent` names one outright.
 """
@@ -41,7 +41,7 @@ def _load_sibling(name: str, filename: str):
 
 
 fleetqueue = _load_sibling("fleet_queue", "queue.py")
-notify = _load_sibling("fleet_notify_lead", "notify_lead.py")
+notify = _load_sibling("fleet_notify_conductor", "notify_conductor.py")
 
 
 def lead_id(parent: str | None) -> tuple[str | None, str]:

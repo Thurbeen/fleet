@@ -254,7 +254,7 @@ def fleet_name() -> str:
             "  starting with a letter or a digit, at most 24 of them."
         )
     # AND NEVER A DOUBLE UNDERSCORE, which is this repo's placeholder spelling.
-    # The name goes into the lead's, and `scripts/lib/notify_lead.py` reads a
+    # The name goes into the lead's, and `scripts/lib/notify_conductor.py` reads a
     # session name carrying `__` as a manifest nobody rendered — so a fleet
     # called `dev__two` would be a lead the reconciler never wakes when ready
     # work appears, silently, which is the failure that module exists to

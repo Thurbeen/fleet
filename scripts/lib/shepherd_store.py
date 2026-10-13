@@ -11,7 +11,7 @@ that is:
 
   not a lead        refused by name (the rendered extension.toml, or
                     FLEET_LEAD_SESSION), and by id when THURBOX_SESSION says
-                    this process runs inside it — the same name `notify_lead`
+                    this process runs inside it — the same name `notify_conductor`
                     and `reap` refuse — and ANY fleet's lead, by the name
                     `peers.lead_fleet` recognises;
   not fleet's own   held by no queue task, as its worker or as a fixer sent
@@ -276,7 +276,7 @@ def task_action(row: dict) -> str:
 def lead_refusals(q) -> tuple[str, str]:
     """(the lead's name, the lead's id), either "" when nothing here can tell.
 
-    The name the way `notify_lead.lead_name` reads it — FLEET_LEAD_SESSION,
+    The name the way `notify_conductor.lead_name` reads it — FLEET_LEAD_SESSION,
     else the rendered extension.toml's session — and the id the way `reap`
     refuses it, from THURBOX_SESSION.
     """

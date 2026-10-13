@@ -524,13 +524,14 @@ line per bad entry, and never holds a task over one. You review none of them:
 the next worker's brief points it at `uv run fleet context repo <repo>`, and
 `uv run fleet context` is your own capped summary after a restart.
 
-Your own thurbox mailbox holds two kinds of fleet mail, both posted with
-`--no-wake` when you were mid-turn or your input line was not empty: the
-reconciler's `fleet-ready` notice, when the ready set grew, and `fleet-stale`,
-when it fast-forwarded this checkout and what arrived needs
-`/update-fleet <sha>`. Nothing delivers either; `thurbox-cli message inbox
---claim` reads them, and `uv run fleet queue plan` is the current answer the
-first was a snapshot of.
+Your own thurbox mailbox holds fleet mail, all of it posted with `--no-wake`
+when you were mid-turn or your input line was not empty: the reconciler's
+`fleet-ready` notice, when the ready set grew, and `fleet-stale`, when it
+fast-forwarded this checkout and what arrived needs `/update-fleet <sha>`;
+and, for a task whose origin is you, `fleet-outcome` — it shipped, landed or
+was abandoned — and `fleet-question`, its worker's `needs-input`. Nothing
+delivers any of them; `thurbox-cli message inbox --claim` reads them, and
+`uv run fleet queue plan` is the current answer the first was a snapshot of.
 
 ### `collect` verifies the artifact — you do not have to take the worker on trust
 

@@ -138,7 +138,7 @@ def test_remembering_what_was_said_never_makes_the_runtime_directory(isolated_en
     Creating it is how a deleted directory came back: the loop checks it is
     still there at the top of every pass, and a notify that made it again in
     the middle of one left an orphaned loop ticking forever."""
-    mod = lib("notify_lead.py")
+    mod = lib("notify_conductor.py")
     gone = isolated_env / "reconcile-that-was-deleted"
 
     mod.write_state(str(gone), {"told": ["alpha/01-first"]}, "")

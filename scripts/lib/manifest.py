@@ -1,7 +1,7 @@
 """The lead session as the extension manifest names it: `name` and `repo_path`.
 
 The ONE READER of a manifest's `[[sessions]]` table. `queue.py`'s
-control-plane guard, `notify_lead.py` (through the queue), `sync_checkout.py`
+control-plane guard, `notify_conductor.py` (through the queue), `sync_checkout.py`
 and `install_extension.py` all ask this module, so they cannot disagree about
 what the manifest says.
 

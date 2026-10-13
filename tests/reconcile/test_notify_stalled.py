@@ -1,6 +1,6 @@
 """A stalled worker, or one that said it needs input, reaches the lead once.
 
-`plan --json` names the stalled set and `notify_lead.py` carries it, under the
+`plan --json` names the stalled set and `notify_conductor.py` carries it, under the
 same three rules as the ready notice: once per transition, never typed into a
 lead mid-turn (its mailbox gets the line instead), and one line.
 """
@@ -12,7 +12,7 @@ import json
 from harness import PYTHON, REPO, expect, refute, run, write
 from reconcilekit import LEAD
 
-NOTIFY = REPO / "scripts" / "lib" / "notify_lead.py"
+NOTIFY = REPO / "scripts" / "lib" / "notify_conductor.py"
 
 
 def notify(state_dir, ready=(), stalled=(), needs_input=()):

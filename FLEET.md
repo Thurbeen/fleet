@@ -400,7 +400,7 @@ carries them, a gitignored `voice.conf` beside it overrides, and
 - **Workers write files; they do not mail you.** `thurbox-cli message send`
   WAKES its recipient — it pushes into your conversation and interrupts whoever
   is talking to you. Only `--no-wake` leaves a message in the mailbox and
-  nothing else, and the reconciler's ready notice is the one fleet path that
+  nothing else, and the reconciler's notices are the one fleet path that
   uses it. So a worker writes `result.md` into its task directory and you
   read it when you choose, alongside `thurbox-cli watch`'s event stream for the
   timing. `uv run fleet queue watch` and `collect` are the two halves. The

@@ -148,17 +148,17 @@ names every path and the reason for each.
   needs its attestation or its merge). Tracked and naming none; copy it to a
   gitignored `flow.conf`. `scripts/lib/queue.py`'s `integration_verdict` owns
   the rule.
-- `orchestration/owners.example.conf` — who owns the conversation of a task
-  by its opaque `--origin`: `<origin-prefix> = <session-name substring>`, so
-  the reconciler's notices for it go there and not to this checkout's lead, or
-  `<origin-prefix> = !<command>`, a RELAY run with the origin and the message
+- `orchestration/owners.example.conf` — who owns the conversation of a task by
+  its opaque `--origin`: `<origin-prefix> = <session-name substring>`, so what
+  that origin is told — its task's outcome, its worker's question — goes there,
+  or `<origin-prefix> = !<command>`, a RELAY run with the origin and the message
   as its last two arguments. **Every task has an origin**: `add` inside thurbox
   defaults it to the calling session, stored as `thurbox:<session id>`, and its
   `--reply` to that session's mailbox. `queue.py`'s `origin_target` is the one
   resolver — that session, a rule's session or relay, or `gone` once thurbox no
-  longer lists the session — and `fleet queue find --origin STR --json` lists
-  an origin's live tasks for another program; `queue.py`'s docstring owns all
-  of it. Tracked and naming none; copy it to a gitignored `owners.conf`.
+  longer lists the session — and `fleet queue find --origin STR --json` lists an
+  origin's live tasks for another program; `queue.py`'s docstring owns all of
+  it. Tracked and naming none; copy it to a gitignored `owners.conf`.
 - `orchestration/reconcile.example.conf` — the reconciler's clocks
   (`<NAME>_SECS`, read when the loop starts, beaten by
   `FLEET_RECONCILE_<NAME>_SECS`) and what `reap` does with a finished task's
@@ -252,11 +252,13 @@ names every path and the reason for each.
 - `orchestration/reconcile/` — the reconciler's runtime state: the `lock` its
   supervisor holds for its whole life, the heartbeat proving its loop is
   ticking, a pidfile for people, its log, the advisory `nudge` flag, the `down`
-  flag, and `notified.json` — which ready tasks the lead has
+  flag, and `notified.json` — which ready tasks the conductor has
   already been woken about, and which were left in its thurbox mailbox while
-  it was mid-turn, so a transition is told once to each lead conversation,
-  which the file names — and `stale.json`, a
-  stale-lead notice not yet delivered. Those last two are
+  it was mid-turn, so a transition is told once to each conversation,
+  which the file names — `stale.json`, a
+  stale-checkout notice not yet delivered, and `origin_questions.json` and
+  `origin_outcomes.json`, what each origin was asked and which outcomes still
+  wait for it. Those are
   runtime state and not records for the same reason as all the others: "the
   lead has been told" is true of one machine's loop and one conversation, and
   writing it onto a task would make the loop a second writer over the queue.
@@ -542,7 +544,8 @@ costs one pass and never the loop. Four things about it are load-bearing:
   `sync-checkout`, which only fast-forwards a clean default branch.
 - **It reconciles; it does not decide.** No dispatch, no cancel, no reorder,
   and it does not re-decide `refuel`'s rule about a spent quota window.
-- **It tells the lead when the ready set grows, or a worker stalls**, and once
+- **It tells the conductor when the ready set grows, or a worker stalls** —
+  the lead, until fleet runs a conductor session of its own — and once
   when a sync it ran needs a hand (see **Pulling changes in**). A task whose
   blocker clears is ready and has no actor: the loop may not dispatch, and the
   lead only acts when spoken to — on 2026-09-10 that cost six and a half hours.
@@ -552,11 +555,17 @@ costs one pass and never the loop. Four things about it are load-bearing:
   cannot prove empty, and silent when no lead session is running. A lead it may
   not type into gets the same line in its thurbox mailbox instead, posted with
   `message send --no-wake`, which enqueues and delivers nothing; a thurbox
-  with no mailbox leaves it at the wait. **A task whose `--origin` matches a
-  rule in `orchestration/owners.conf` is told of to that rule's session
-  instead, by the same rules and only if it is provably the one local
-  session.**
-  `scripts/lib/notify_lead.py` owns those rules. Notifying is not
+  with no mailbox leaves it at the wait. `scripts/lib/notify_conductor.py`
+  owns who that is (`conductor_name`, the one function to repoint) and when;
+  `scripts/lib/notify_delivery.py` owns how, for it and for the origin
+  notices. **A task's ORIGIN is told two things, by the same rules**
+  (`scripts/lib/notify_origin.py`): its outcome — one line when `collect`
+  closes it `shipped` and one when `reap` moves it to `landed` or
+  `abandoned` — and its worker's `needs-input` question, which then is not the
+  conductor's. A session origin that is gone is told nothing, and the log says
+  why; a relay runs bounded and its failure fails neither `collect` nor
+  `reap`. Each is remembered once in the runtime directory, never on the
+  task. Notifying is not
   deciding: nothing moves, and the choice is still the lead's. **It says
   exactly what `plan` says is ready and derives nothing**, which is how a
   condition-held task stays out of the line: `is_ready` never clears a
@@ -680,7 +689,7 @@ them at launch and nothing reloads them from disk. This is equally true of a
 plain `git pull`. The sync says so when it happens; act on it rather
 than assuming the new instructions reached the lead. A sync the reconciler
 ran says so ONCE, to the lead, by the ready notice's rules
-(`notify_lead.py --stale`): one line naming the range and
+(`notify_conductor.py --stale`): one line naming the range and
 `/update-fleet <before>`, since the sync itself has nothing left to say.
 
 `.agents/skills/update-fleet/` drives that whole update — the sync, then only

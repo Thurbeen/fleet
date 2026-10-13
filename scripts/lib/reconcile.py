@@ -69,7 +69,8 @@ otherwise leak a detached loop ticking against a deleted temp directory.
 
 IT WRITES NO RECORD. Every effect on the queue goes through `fleet queue`, the
 only writer over the records. Its own runtime directory is not an exception: a
-pid, a heartbeat, a log, the flags, `notified.json` and `stale.json` are facts
+pid, a heartbeat, a log, the flags, `notified.json`, `stale.json` and the
+`origin_*.json` memories are facts
 about this loop on this machine, not about any task. It calls exactly `watch`,
 `collect`, `shepherd`, `refuel` and the read-only `plan` (plus `root`, to check
 it can). The one thing it changes outside the queue is the CHECKOUT, through
@@ -84,8 +85,13 @@ spoken to. So the pass after `collect` reads `plan` and, when the ready set has
 grown — or `plan`'s stalled set has, workers at rest with nothing to show,
 its unprompted set, workers dispatched and never briefed, or its needs-input
 set, workers that said they need a decision —
-wakes the lead: once per transition and per lead conversation, never mid-turn,
-silently when there is no lead. `scripts/lib/notify_lead.py` owns those rules.
+wakes the CONDUCTOR, which until fleet runs one of its own is the lead: once
+per transition and per conversation, never mid-turn, silently when there is
+none. `scripts/lib/notify_conductor.py` owns those rules. A worker's question
+on a task whose origin fleet can reach goes to that origin instead, and so does
+each task's outcome, which `collect` and `reap` tell as they move it:
+`scripts/lib/notify_origin.py`, a child of this loop's children and no new
+verb in it.
 
 AND IT KEEPS THE LEAD'S CHECKOUT CURRENT. `sync-checkout` ran only at
 SessionStart, and one lead conversation lasted sixteen days: a merged fix sat
@@ -93,7 +99,7 @@ unpulled for five of them while the lead kept hitting the bug. So the loop runs
 it on a clock of its own, honouring every refusal it has, and when what arrived
 needs a hand — new instructions, a manifest to re-render, its own code — it
 tells the lead once, with the `/update-fleet` that applies it
-(`notify_lead.py --stale`). Code the loop runs as a child, `queue.py` above
+(`notify_conductor.py --stale`). Code the loop runs as a child, `queue.py` above
 all, needs nothing: the next pass runs the new bytes.
 
 Usage:
@@ -180,7 +186,8 @@ Environment:
                                 is read (default: this one; tests set it)
   FLEET_RECONCILE_PARENT_PID    exit once this pid is gone (default: unset; tests set it)
   FLEET_QUEUE_DIR               the queue to reconcile (default: this checkout's)
-  FLEET_LEAD_SESSION            the lead session to wake; read by notify_lead.py
+  FLEET_LEAD_SESSION            the lead (and so conductor) session to wake;
+                                read by notify_conductor.py
 
 Requires: uv and whatever the pass needs: thurbox-cli for `watch`, `refuel` and
 the notification, `gh` or `glab` for `collect` and `shepherd`, `quota-axi` for
@@ -220,8 +227,8 @@ def _load_sibling(name: str, filename: str):
 fleet_platform = _load_sibling("fleet_platform", "fleet_platform.py")
 
 CHECKOUT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-NOTIFY = os.path.join(CHECKOUT, "scripts", "lib", "notify_lead.py")
-# Where notify_lead.py keeps a stale-lead notice it has not delivered yet, and
+NOTIFY = os.path.join(CHECKOUT, "scripts", "lib", "notify_conductor.py")
+# Where notify_conductor.py keeps a stale-checkout notice it has not delivered yet, and
 # deletes it once it has: its presence is the whole question this loop asks.
 STALE_FILE = "stale.json"
 
@@ -605,7 +612,7 @@ def run_pass(cfg: Config, label: str, args: list, quiet: bool = False) -> int:
     return 0
 
 
-def notify_lead(cfg: Config) -> None:
+def notify_conductor(cfg: Config) -> None:
     """What this loop says out loud about the queue, and the one question it asks it.
 
     `plan` is a READ: it prints the ready set and moves nothing. It cannot fail
@@ -651,7 +658,7 @@ def sync_checkout(cfg: Config, said: str) -> tuple[dict, str]:
 
 
 def notify_stale(cfg: Config, report: dict) -> None:
-    """Hand what a fast-forward needs done to the lead, once: `notify_lead.py
+    """Hand what a fast-forward needs done to the conductor, once: `notify_conductor.py
     --stale` owns who, when and how, and keeps it until it is delivered. An
     empty report is a retry of one still waiting."""
     try:
@@ -772,7 +779,7 @@ def tick(cfg: Config) -> int:
 
         # LAST, on collect's clock: it sees the landings collect just recorded.
         if did_collect:
-            notify_lead(cfg)
+            notify_conductor(cfg)
 
         synced = _sync_and_tell(cfg, last, stamp, did_collect, synced)
 
@@ -945,7 +952,7 @@ def cmd_ensure(cfg: Config) -> int:
 def is_lead() -> bool:
     """Whether this process runs in the session this checkout's extension names as its lead.
 
-    notify_lead.py's two readings, so "who is the lead" has one answer: the
+    notify_conductor.py's two readings, so "who is the lead" has one answer: the
     name from the rendered manifest, and the id of the row `lead_row` picks for
     it — this checkout's, on this machine, not the first a remote mirror lists.
     """
@@ -955,7 +962,7 @@ def is_lead() -> bool:
     sid = os.environ.get("THURBOX_SESSION") or ""
     if not sid:
         return False
-    notify = _load_sibling("fleet_notify_lead", "notify_lead.py")
+    notify = _load_sibling("fleet_notify_conductor", "notify_conductor.py")
     name = notify.lead_name()
     return bool(name) and notify.lead_session(name)[0] == sid
 

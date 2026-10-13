@@ -104,7 +104,7 @@ def test_nothing_in_scripts_lib_is_unreachable():
 
     Three ways to be reached, all of them real here: a `fleet` group, a sibling
     load, or a child process another file starts — `check.py` runs the three
-    static checks that way, the reconciler runs `notify_lead.py`, and the queue
+    static checks that way, the reconciler runs `notify_conductor.py`, and the queue
     pane runs `pane_probe.py` from Lua.
 
     Documentation does not count. A module every skill explains and nothing

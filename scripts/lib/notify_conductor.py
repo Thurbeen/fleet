@@ -1,6 +1,14 @@
 #!/usr/bin/env python3
-"""Tell the lead that ready work exists which nothing will dispatch, or a worker stalled,
-was never briefed, or asked.
+"""Tell the conductor that ready work exists which nothing will dispatch, a worker
+stalled, was never briefed, or asked with nowhere else to ask, review is owed,
+or a sync needs a hand.
+
+THE CONDUCTOR is the session that keeps the work moving. Until fleet runs one
+of its own it IS the lead — a single Mission Control is both the only origin
+and the conductor — and `conductor_name` is the one function that says which
+session it is, so pointing it somewhere else changes one answer. What a task's
+ORIGIN is told — its outcome, its worker's question — is `notify_origin.py`'s.
+HOW either is said is `notify_delivery.py`'s, shared by both.
 
 WHY THIS EXISTS, measured. On 2026-09-10 at 01:37 a pull request merged,
 `forge-agnostic/01-01-forge-seam` landed, and the `semantic-dependency` blocker
@@ -21,7 +29,9 @@ of the one actor that may act on it, along with the command that acts. The loop
 keeps its constraint; the lead keeps the decision.
 
 FIVE THINGS MAKE IT SURVIVABLE, and each is a way this could have been worse
-than silence:
+than silence. The second and third are `notify_delivery.py`'s now, kept there
+for this and `notify_origin.py` alike; they are told here where they were
+learned:
 
   IT FIRES ON THE TRANSITION.  A loop that says "one task is ready" every
       pass is turned off within the day, and then the six hours come back with
@@ -84,20 +94,13 @@ a finished turn with no assessment, and findings with no existing fixer.
 Those are told under the same safe delivery and conversation rules. The
 reconciler never replaces the recipient or declares a review clean.
 
-WHOSE NOTICE IT IS. A task added with `--origin` is owned by whoever that
-origin names, and `orchestration/owners.conf`'s session rules (`<origin-prefix>
-= <session-name substring>`, read by `queue.py`'s `owner_rules`) say which
-session that is; a relay rule (`= !<command>`) routes nothing here yet.
-Such a task's notices are delivered to THAT session instead of the lead, by
-every rule above, with a memory of its own per rule (`owners` in the state
-file) — what the lead was told is no news to an owner. A task with no origin or
-no matching rule is the lead's, exactly as before, and with no rules nothing
-here changes. The owner is typed into only when provably the intended one:
-exactly one session on THIS machine whose name contains the substring, that is
-neither this fleet's lead nor a worker a task here holds. A session mirrored
-from another host, none, or several, is delivered nothing, and the log says why;
-the notice waits, as it does for a lead that is not there. Fleet parses neither
-the origin nor the name, and the session is never started or repointed here.
+WHOSE NOTICE IT IS. All five operational notices are the conductor's,
+whatever a task's origin: `owners.conf` no longer routes them to an owner
+session. The one exception is a worker's question. A `needs-input` row whose
+task has an origin fleet can reach — a session, an owners rule's session, or a
+relay — is handed to `notify_origin.questions` first and goes THERE; one whose
+session origin is gone goes nowhere, and stays in the worker's pane. Only what
+is left, no origin or an origin fleet has no road to, reaches the conductor.
 
 WHERE THE STATE LIVES. In the reconciler's own runtime directory, beside its
 pid, heartbeat and flags — never on the task. "The lead has been told" is a
@@ -119,11 +122,11 @@ the key names no lead, and resets once.
 
 Usage (it is `scripts/lib/reconcile.py`'s, and nothing else's):
 
-    uv run fleet queue plan --json | uv run python scripts/lib/notify_lead.py --state-dir DIR
+    uv run fleet queue plan --json | uv run python scripts/lib/notify_conductor.py --state-dir DIR
 
-    uv run fleet sync-checkout --json | uv run python scripts/lib/notify_lead.py --state-dir DIR --stale
+    uv run fleet sync-checkout --json | uv run python scripts/lib/notify_conductor.py --state-dir DIR --stale
 
-The second is the STALE LEAD: the loop fast-forwarded the checkout and what
+The second is the STALE CHECKOUT: the loop fast-forwarded the checkout and what
 arrived needs a hand. `stale()` owns its one difference from the ready notice.
 
 It prints a line worth logging, or nothing, and it exits 0 whatever happens.
@@ -131,8 +134,9 @@ A notifier that can fail the pass it rides on would cost the reconciler the
 `collect` it just did, which is a real loss traded for a message.
 
 Environment:
-  FLEET_LEAD_SESSION  the lead session's name, overriding the rendered
-                      extension.toml. The gate uses it, since a rendered
+  FLEET_LEAD_SESSION  the lead session's name — and so, until there is a
+                      conductor of its own, the conductor's — overriding the
+                      rendered extension.toml. The gate uses it, since a rendered
                       manifest belongs to the operator's checkout and is not
                       something a test may write.
 
@@ -148,35 +152,42 @@ import argparse
 import importlib.util
 import json
 import os
-import shutil
-import subprocess
 import sys
 
-# THE ONLY TWO STATES A WAKE IS ALLOWED INTO, and the list is an allowlist
-# because the failure modes are asymmetric. `idle` and `done` are the agent's
-# own hook saying it is at rest — at rest between turns, and typing at it is
-# how the operator would speak to it anyway.
-#
-# Everything else is refused, and `blocked` is the one to understand: it means
-# the agent is sitting on a permission or input prompt, so text sent to it does
-# not start a turn, it ANSWERS the dialog. `working` is a turn in flight.
-# `running`, `uncovered` and `unreported` are not the agent saying anything at
-# all — see the state table in `.agents/skills/thurbox-session/SKILL.md`, whose
-# whole point is that the absence of a word is not `idle`.
-AT_REST = ("idle", "done")
 
-# How many refs the one line spells before it stops naming them. Six is about
-# what stays readable in a terminal; the count is always exact, and `dispatch`
-# sends the whole set regardless of what was named.
-NAMED = 6
+def _load_sibling(name: str, filename: str):
+    """A scripts/lib module under a `fleet_` key, never shadowing the standard library."""
+    if name in sys.modules:
+        return sys.modules[name]
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
 
+
+# HOW a line reaches a session — at rest, into an empty line, else the mailbox
+# without a wake — is `notify_delivery.py`'s, shared with `notify_origin.py`.
+# This module decides WHO and WHAT; those names are bound here so a reader of
+# this file reads the rules by the names they have always had.
+delivery = _load_sibling("fleet_notify_delivery", "notify_delivery.py")
+origins = _load_sibling("fleet_notify_origin", "notify_origin.py")
+fleetqueue = delivery.fleetqueue
+AT_REST, NAMED = delivery.AT_REST, delivery.NAMED
+session_rows, identity = delivery.session_rows, delivery.identity
+composer_empty, wake, post = delivery.composer_empty, delivery.wake, delivery.post
+
+# The file names are the loop's runtime state from before the conductor had a
+# name, and they keep them: a `notified.json` the lead was told by is what the
+# conductor reads after the rename, so no pass tells it all again.
 STATE_FILE = "notified.json"
-# A stale-lead notice not delivered yet. Deleted once it is, so the loop asks
-# for a retry only while one waits.
+# A stale-checkout notice not delivered yet. Deleted once it is, so the loop
+# asks for a retry only while one waits.
 STALE_FILE = "stale.json"
 
-# What the loop remembers, per set: what was typed into the lead, and what was
-# left in its mailbox while it was mid-turn.
+# What the loop remembers, per set: what was typed into the conductor, and what
+# was left in its mailbox while it was mid-turn.
 MEMORY = ("told", "posted", "stalled", "stalled_posted", "unprompted", "unprompted_posted",
           "needs_input", "needs_input_posted", "reviews", "reviews_posted")
 # Which of those a new conversation forgets, and which only a new session does:
@@ -185,75 +196,41 @@ TYPED = ("told", "stalled", "unprompted", "needs_input", "reviews")
 POSTED = ("posted", "stalled_posted", "unprompted_posted", "needs_input_posted", "reviews_posted")
 
 
-def _load_queue():
-    """Load scripts/lib/queue.py under a name that is not `queue`.
-
-    For `manifest_session` and `checkout_root`, so that "what is the lead
-    session called" has one answer here and in queue.py's control-plane guard
-    rather than two parsers that agree until someone renames the session. The
-    alias is what keeps this directory on sys.path from shadowing the standard
-    library's `queue`, and it is the same load fleet_status.py does.
-    """
-    if "fleet_queue" in sys.modules:
-        return sys.modules["fleet_queue"]
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "queue.py")
-    spec = importlib.util.spec_from_file_location("fleet_queue", path)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["fleet_queue"] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-fleetqueue = _load_queue()
-
-
 # --- what the loop remembers -------------------------------------------------
 
 
 def read_state(state_dir: str) -> dict:
-    try:
-        doc = json.loads(fleetqueue.fleet_platform.read_record(os.path.join(state_dir, STATE_FILE)))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return doc if isinstance(doc, dict) else {}
+    return delivery.read_memory(os.path.join(state_dir, STATE_FILE))
 
 
 def write_state(state_dir: str, memory: dict, note: str) -> None:
-    """Remember what the lead has been told, and what was last logged about it.
+    """Remember what the conductor has been told, and what was last logged about it.
 
     `memory` holds pairs of ref lists: `told` and `posted` for the ready set,
     `stalled` and `stalled_posted` for the stalled one, `unprompted` and
     `unprompted_posted` for the unprompted one, `needs_input` and
     `needs_input_posted` for the workers that asked — what was typed into the
-    lead, and what was left in its mailbox, plus `reviews` and
+    conductor, and what was left in its mailbox, plus `reviews` and
     `reviews_posted` for independent review obligations — and `lead`, which
-    lead they are
-    true of (see WHERE THE STATE LIVES).
+    conversation they are true of (see WHERE THE STATE LIVES). The key is
+    still `lead`, the word it was written under, so a file from before the
+    conductor reads as the same conversation and tells it nothing twice.
 
-    Best effort on purpose: a runtime directory that cannot be written is worth
-    a repeated notification, and is not worth failing a reconciler pass over.
-
-    Into the loop's runtime directory, and NEVER making it: that directory
-    being gone is how the loop knows it has nothing left to run for, and a
-    notify that made it again mid-pass left an orphaned loop ticking forever.
+    Into the loop's runtime directory, and NEVER making it — `notify_delivery`'s
+    `write_memory` owns that rule and why.
     """
     doc = {**{k: memory.get(k) or [] for k in MEMORY}, "note": note}
     if memory.get("lead"):
         doc["lead"] = memory["lead"]
-    if memory.get("owners"):
-        doc["owners"] = memory["owners"]
-    try:
-        fleetqueue.fleet_platform.write_record(os.path.join(state_dir, STATE_FILE), json.dumps(doc))
-    except OSError:
-        pass
+    delivery.write_memory(os.path.join(state_dir, STATE_FILE), doc)
 
 
 def say(state_dir: str, memory: dict, note: str) -> int:
     """Print `note` only if it is not the one already standing.
 
-    The deduplication is the difference between a diagnosis and a wall. A lead
-    that is away for an hour, or busy for one, is one fact; at the collect
-    cadence it would otherwise be thirty log lines saying it again.
+    The deduplication is the difference between a diagnosis and a wall. A
+    conductor that is away for an hour, or busy for one, is one fact; at the
+    collect cadence it would otherwise be thirty log lines saying it again.
     """
     if note and read_state(state_dir).get("note") != note:
         print(note)
@@ -283,34 +260,28 @@ def lead_name() -> str:
     return name
 
 
+def conductor_name() -> str:
+    """What the conductor session is called, or "" when nothing here can tell.
+
+    THE ONE PLACE THAT ANSWERS IT. Until fleet runs a conductor session of its
+    own, the conductor IS the lead — a single Mission Control is both the only
+    origin and the one that keeps the work moving — so this is `lead_name()`,
+    and every notice reaches exactly the session it always did.
+    """
+    return lead_name()
+
+
+def conductor_row() -> tuple[str, dict | None, str]:
+    """(the conductor's name, its `session list` row, why there is none)."""
+    name = conductor_name()
+    row, status = lead_row(name) if name else (None, "")
+    return name, row, status
+
+
 def lead_session(name: str) -> tuple[str | None, str]:
     """(session id, state) for the named session, or (None, why not)."""
     row, why = lead_row(name)
     return (str(row["id"]), str(row.get("state") or "unknown")) if row else (None, why)
-
-
-def session_rows() -> tuple[list | None, str]:
-    """thurbox's `session list`, or (None, why not)."""
-    if not shutil.which("thurbox-cli"):
-        return None, "no thurbox-cli here, so there is nothing to wake"
-    try:
-        out = subprocess.run(
-            ["thurbox-cli", "session", "list", "--json"],
-            capture_output=True,
-            text=True, encoding="utf-8",
-            timeout=10,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        return None, f"thurbox-cli session list failed: {exc}"
-    if out.returncode != 0:
-        return None, "thurbox-cli session list failed"
-    try:
-        rows = json.loads(out.stdout)
-    except json.JSONDecodeError:
-        return None, "thurbox-cli session list did not answer JSON"
-    if not isinstance(rows, list):
-        return None, "thurbox-cli session list did not answer a list"
-    return rows, ""
 
 
 def lead_row(name: str) -> tuple[dict | None, str]:
@@ -336,58 +307,20 @@ def lead_row(name: str) -> tuple[dict | None, str]:
     # `is_this_checkout`, the rule `peers.py` tells a peer from itself by.
     # A sole legacy row without cwd still answers, unless its backend says it
     # runs elsewhere. Known metadata must never contradict checkout ownership.
-    here = [r for r in named
-            if (fleetqueue.session_place(r.get("backend_type") or "") or ("",))[0] == "local"
-            and fleetqueue.is_this_checkout(r.get("cwd"))]
+    here = [r for r in named if delivery.is_local(r) and fleetqueue.is_this_checkout(r.get("cwd"))]
     if len(here) == 1:
         return here[0], ""
-    if (len(named) == 1 and not named[0].get("cwd")
-            and (fleetqueue.session_place(named[0].get("backend_type") or "") or ("",))[0] == "local"):
+    if len(named) == 1 and not named[0].get("cwd") and delivery.is_local(named[0]):
         return named[0], ""
     return None, (f"{len(named)} sessions are named {name!r} and "
                   + ("several are" if here else "none of them is")
                   + " this checkout's on this machine")
 
 
-def owner_row(substring: str, held: set, lead_id: str = "") -> tuple[dict | None, str]:
-    """The `session list` row of the session that owns some origin, or (None, why not).
-
-    NEVER TYPED INTO ON A GUESS. Unlike the lead, whose cwd is this checkout,
-    the owner is any session on this machine, so the name is all there is to go
-    on, and the rule is correspondingly strict: exactly ONE session whose name
-    contains `substring`, running on THIS machine — a row thurbox mirrors from
-    another host, wearing the same name, is nobody this fleet may type into —
-    that is neither this fleet's lead nor a worker some task here holds (a
-    worker's title can contain any word). Zero, or several, deliver nothing.
-    """
-    rows, why = session_rows()
-    if rows is None:
-        return None, why
-    named = [r for r in rows if isinstance(r, dict) and r.get("id")
-             and substring in str(r.get("name") or "")
-             and str(r["id"]) != lead_id and str(r["id"]) not in held]
-    if not named:
-        return None, f"no session named like {substring!r} is running"
-    here = [r for r in named
-            if (fleetqueue.session_place(r.get("backend_type") or "") or ("",))[0] == "local"]
-    if len(here) == 1:
-        return here[0], ""
-    return None, (f"{len(named)} sessions are named like {substring!r} and "
-                  + ("several are" if here else "none of them is") + " on this machine")
-
-
-def identity(row: dict) -> dict:
-    """Which lead a row is: thurbox's session id, and the agent's conversation.
-
-    A thurbox whose list carries no conversation leaves the session id to
-    stand for both, which is what a new session still changes."""
-    sid = str(row["id"])
-    return {"session": sid, "conversation": str(row.get("agent_session_id") or sid)}
-
-
 def forget_for(memory: dict, lead: dict) -> dict:
-    """`memory` as the lead `lead` knows it: what another conversation was told
-    is not what this one was, and another session's mailbox is not its own."""
+    """`memory` as the conversation `lead` knows it: what another conversation
+    was told is not what this one was, and another session's mailbox is not
+    its own."""
     was = memory.get("lead") if isinstance(memory.get("lead"), dict) else {}
     kept = dict(memory, lead=lead)
     if was.get("conversation") != lead["conversation"]:
@@ -395,90 +328,6 @@ def forget_for(memory: dict, lead: dict) -> dict:
     if was.get("session") != lead["session"]:
         kept.update({k: [] for k in POSTED})
     return kept
-
-
-def composer_empty(sid: str) -> bool:
-    """Whether the lead's input line is PROVABLY empty; False whenever it cannot tell.
-
-    `--lines 0` is the visible pane alone, which is what `cursor_row` counts
-    in. Empty is the cursor right after one prompt glyph — `❯`, `›`, `>`: a
-    word with no letter or digit in it — with nothing after it on the line.
-    Only Codex's exact empty placeholder with its footer also counts. A draft
-    or a thurbox that reports no cursor costs a mailbox note.
-    """
-    try:
-        out = subprocess.run(
-            ["thurbox-cli", "session", "capture", sid, "--json", "--lines", "0"],
-            capture_output=True,
-            text=True, encoding="utf-8",
-            timeout=10,
-        )
-        shown = json.loads(out.stdout) if out.returncode == 0 else {}
-    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
-        return False
-    if not isinstance(shown, dict):
-        return False
-    row, col = shown.get("cursor_row"), shown.get("cursor_col")
-    lines = str(shown.get("output") or "").split("\n")
-    if not isinstance(row, int) or not isinstance(col, int) or not 0 <= row < len(lines):
-        return False
-    before, after = lines[row][:col].split(), lines[row][col:]
-    # Codex draws this placeholder after the cursor in its empty composer.
-    # Require the footer immediately below as well, so a multiline draft
-    # cannot be mistaken for the one-line placeholder.
-    tail = [line.strip() for line in lines[row + 1:] if line.strip()]
-    if (before == ["›"] and after.rstrip() == "Ask Codex to do anything"
-            and len(tail) == 1 and " · " in tail[0]):
-        return True
-    return len(before) == 1 and len(before[0]) <= 2 and not any(c.isalnum() for c in before[0]) and not after.strip()
-
-
-def wake(sid: str, text: str) -> tuple[bool, str]:
-    """Type one line into the lead's terminal.
-
-    `session send`, not `message send`. The mailbox is what POLICY.md forbids
-    workers, because an arriving worker message interrupts whoever is talking
-    to the lead and routine completion is not worth that. This is the case the
-    same rule leaves open: it goes only to a lead that has said it is at rest,
-    so there is nobody to interrupt, and the thing it carries is the one fact
-    the lead cannot learn any other way.
-    """
-    try:
-        out = subprocess.run(
-            ["thurbox-cli", "session", "send", sid, text],
-            capture_output=True,
-            text=True, encoding="utf-8",
-            timeout=20,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        return False, f"session send failed: {exc}"
-    if out.returncode != 0:
-        detail = (out.stderr or out.stdout or "").strip().splitlines()
-        return False, "session send failed: " + (detail[-1] if detail else "no output")
-    return True, ""
-
-
-def post(sid: str, text: str, kind: str = "fleet-ready") -> tuple[bool, str]:
-    """Leave one line in the lead's thurbox mailbox, and wake nothing.
-
-    `message send --no-wake` only enqueues. Without the flag thurbox pushes
-    the body into the recipient's conversation between tool calls, which is
-    exactly the interruption POLICY.md forbids, so the flag is not optional
-    and a thurbox that does not know it fails here rather than waking anyone.
-    """
-    try:
-        out = subprocess.run(
-            ["thurbox-cli", "message", "send", "--to", sid, "--kind", kind,
-             "--body", text, "--no-wake", "--json"],
-            capture_output=True,
-            text=True, encoding="utf-8",
-            timeout=20,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        return False, f"message send failed: {exc}"
-    if out.returncode != 0:
-        return False, "this thurbox has no mailbox"
-    return True, ""
 
 
 def message(ready: list) -> str:
@@ -511,7 +360,6 @@ def needs_input_message(asking: list) -> str:
     )
 
 
-
 def unprompted_message(unprompted: list) -> str:
     """One line: which dispatched workers never got their brief, and how to send it."""
     shown = ", ".join(unprompted[:NAMED])
@@ -522,7 +370,7 @@ def unprompted_message(unprompted: list) -> str:
     )
 
 
-# --- the stale lead ----------------------------------------------------------
+# --- the stale checkout ------------------------------------------------------
 
 
 def read_stale(state_dir: str) -> dict:
@@ -549,8 +397,8 @@ def write_stale(state_dir: str, pending: dict, note: str) -> None:
 
 
 def merge(pending: dict, report: dict) -> dict:
-    """Two fast-forwards before the lead heard of the first are one notice: the
-    earliest `before`, the latest `after`, and every action with every path."""
+    """Two fast-forwards before the conductor heard of the first are one notice:
+    the earliest `before`, the latest `after`, and every action with every path."""
     actions = dict(pending.get("actions") or {})
     for action, paths in (report.get("actions") or {}).items():
         have = actions.get(action, "").split()
@@ -580,41 +428,28 @@ def stale_message(pending: dict) -> str:
     )
 
 
-def _with_report(pending: dict, text: str) -> dict:
-    """The pending notice with sync-checkout's --json report folded in, if it has news."""
+def stale(state_dir: str, text: str) -> int:
+    """Tell the conductor the checkout moved under it, once.
+
+    THE SAME RULES AS THE READY NOTICE. Typed only into a conductor at rest
+    whose input line is provably empty; any other gets it posted `--no-wake`
+    into its inbox, ONCE, and the typed line waits for rest. The post does not
+    count as telling: `--no-wake` only enqueues, nothing delivers it, and a
+    notice deleted after one was a conductor never told. A new fast-forward
+    folded in before the wake is news, and is posted again.
+
+    Kept until delivered, across passes and restarts: by the next pass the sync
+    has nothing left to say, so a notice dropped here is lost for good. A fleet
+    with no conductor configured has nobody to tell, and drops it.
+    """
     try:
         report = json.loads(text or "{}")
     except ValueError:
         report = {}
-    if isinstance(report, dict) and report.get("actions"):
-        return merge(pending, report)
-    return pending
-
-
-def _held(name: str, sid: str, status: str) -> str:
-    """Why a line may not be typed into this session now, or '' when it may."""
-    held = f"{name} is {status}" if status not in AT_REST else ""
-    if not held and not composer_empty(sid):
-        held = f"{name}'s input line is not provably empty"
-    return held
-
-
-def stale(state_dir: str, text: str) -> int:
-    """Tell the lead the checkout moved under it, once.
-
-    THE SAME RULES AS THE READY NOTICE. Typed only into a lead at rest whose
-    input line is provably empty; any other lead gets it posted `--no-wake`
-    into its inbox, ONCE, and the typed line waits for rest. The post does not
-    count as telling: `--no-wake` only enqueues, nothing delivers it, and a
-    notice deleted after one was a lead never told. A new fast-forward folded
-    in before the wake is news, and is posted again.
-
-    Kept until delivered, across passes and restarts: by the next pass the sync
-    has nothing left to say, so a notice dropped here is lost for good. A fleet
-    with no lead configured has nobody to tell, and drops it.
-    """
     doc = read_stale(state_dir)
-    pending = _with_report(doc.get("pending") or {}, text)
+    pending = doc.get("pending") or {}
+    if isinstance(report, dict) and report.get("actions"):
+        pending = merge(pending, report)
     if not pending:
         return 0
 
@@ -624,20 +459,20 @@ def stale(state_dir: str, text: str) -> int:
         write_stale(state_dir, pending, note)
         return 0
 
-    name = lead_name()
+    name, row, status = conductor_row()
     if not name:
         write_stale(state_dir, {}, "")
         return 0
-    sid, status = lead_session(name)
-    if not sid:
+    if not row:
         return wait(f"the checkout moved, but {status}; the notice waits")
+    sid = str(row["id"])
     line = stale_message(pending)
-    held = _held(name, sid, status)
-    if held:
+    why = delivery.held(name, row)
+    if why:
         if not pending.get("posted"):
             pending["posted"] = post(sid, line, kind="fleet-stale")[0]
         where = " — noted in its inbox" if pending["posted"] else ""
-        return wait(f"the checkout moved; {held}{where}; the wake waits")
+        return wait(f"the checkout moved; {why}{where}; the wake waits")
     sent, why = wake(sid, line)
     if not sent:
         return wait(f"the checkout moved; could not wake {name}: {why}")
@@ -659,7 +494,7 @@ def reviews_message(reviews: list) -> str:
 
 def main(argv: list) -> int:
     ap = argparse.ArgumentParser(
-        description="wake the lead when ready work has no actor, or a worker has stalled or was never prompted",
+        description="wake the conductor when ready work has no actor, or a worker has stalled or was never prompted",
     )
     ap.add_argument(
         "--state-dir",
@@ -669,111 +504,57 @@ def main(argv: list) -> int:
     ap.add_argument(
         "--stale",
         action="store_true",
-        help="tell the lead what a fast-forward needs: sync-checkout's --json report on stdin, or none to retry",
+        help="tell the conductor what a fast-forward needs: sync-checkout's --json report on stdin, or none to retry",
     )
     args = ap.parse_args(argv)
     if args.stale:
         return stale(args.state_dir, sys.stdin.read())
 
-    everything = _plan_sets(sys.stdin.read())
-    if everything is None:
+    try:
+        plan = json.loads(sys.stdin.read() or "{}")
+    except (json.JSONDecodeError, ValueError):
         return 0
+    if not isinstance(plan, dict):
+        return 0
+    ready = sorted(str(r) for r in (plan.get("ready") or []))
+    # `plan` writes a row per stalled, unprompted or asking task; a bare ref is
+    # read as one too.
+    stalled, unprompted = (
+        sorted(str(r.get("task") if isinstance(r, dict) else r) for r in (plan.get(key) or []))
+        for key in ("stalled", "unprompted")
+    )
+    reviews = sorted(str(r.get("task")) for r in (plan.get("reviews") or []) if isinstance(r, dict))
+    notes = []
 
-    # WHOSE NOTICE IT IS. A task whose origin matches an `owners.conf` rule is
-    # that session's to be told of; every other task — no origin, no match, no
-    # rules at all, a queue this cannot read — is the lead's, as it always was.
-    rules = fleetqueue.owner_rules()
-    owned, held = ownership(rules, set().union(*everything.values()))
+    # A QUESTION IS ITS ORIGIN'S. A worker that declared `needs-input` on a task
+    # with an origin fleet can reach is asked about in THAT conversation, which
+    # holds the context to answer; one whose session origin is gone is told to
+    # nobody, and its question stays in its own pane. What is left — no origin,
+    # or one fleet has no way to — is the conductor's, as it always was.
+    rows = [r if isinstance(r, dict) else {"task": str(r)} for r in (plan.get("needs_input") or [])]
+    try:
+        theirs, note = origins.questions(args.state_dir, rows)
+    except Exception as exc:  # noqa: BLE001 — a notifier may not fail the pass it rides on
+        theirs, note = set(), f"questions could not be routed to their origins: {exc}"
+    notes.append(note)
+    asking = sorted(str(r.get("task")) for r in rows if str(r.get("task")) not in theirs)
 
-    def now_for(prefix):
-        """The five sets as one recipient's: `prefix` None is the lead's share."""
-        out = {}
-        for told, posted in zip(TYPED, POSTED):
-            refs = [r for r in everything[told] if (owned.get(r) or (None,))[0] == prefix]
-            out[told] = out[posted] = refs
-        return out
+    now = {"told": ready, "stalled": stalled, "unprompted": unprompted,
+           "needs_input": asking, "reviews": reviews}
+    for told, posted in zip(TYPED, POSTED):
+        now[posted] = now[told]
 
     # PRUNE, THEN COMPARE, and the prune is what makes a re-entry news. A task
     # that leaves a set — dispatched, blocked again, abandoned, or a worker
     # that came back to life — is forgotten, so if it comes back it is a
-    # transition again rather than something the lead was already told about
-    # weeks ago.
+    # transition again rather than something the conductor was already told
+    # about weeks ago.
     state = read_state(args.state_dir)
-
-    now = now_for(None)
-    memory = _recalled(state, now)
+    memory = {k: [r for r in (state.get(k) or []) if r in now[k]] for k in MEMORY}
     memory["lead"] = state.get("lead")
-    notes = []
-
-    def lead():
-        name = lead_name()
-        row, status = lead_row(name) if name else (None, "")
-        return name, row, status
-
-    memory, note = deliver(now, memory, lead, "no lead session is configured")
-    notes.append(note)
-
-    memory["owners"] = _deliver_owners(rules, state, now_for, held, notes)
+    memory, note = deliver(now, memory, conductor_row, "no conductor session is configured")
+    notes.insert(0, note)
     return say(args.state_dir, memory, "; ".join(n for n in notes if n))
-
-
-def _plan_sets(text: str) -> dict | None:
-    """The five sets `plan --json` names, or None for a plan that is not one."""
-    try:
-        plan = json.loads(text or "{}")
-    except ValueError:
-        return None
-    if not isinstance(plan, dict):
-        return None
-    ready = sorted(str(r) for r in (plan.get("ready") or []))
-    # `plan` writes a row per stalled, unprompted or asking task; a bare ref is
-    # read as one too.
-    stalled, unprompted, asking = (
-        sorted(str(r.get("task") if isinstance(r, dict) else r) for r in (plan.get(key) or []))
-        for key in ("stalled", "unprompted", "needs_input")
-    )
-    reviews = sorted(str(r.get("task")) for r in (plan.get("reviews") or []) if isinstance(r, dict))
-    return {"told": ready, "stalled": stalled, "unprompted": unprompted,
-            "needs_input": asking, "reviews": reviews}
-
-
-def _recalled(doc: dict, now: dict) -> dict:
-    return {k: [r for r in (doc.get(k) or []) if r in now[k]] for k in MEMORY}
-
-
-def _deliver_owners(rules: list, state: dict, now_for, held: set, notes: list) -> dict:
-    """Tell each owner session its share, appending each note; every owner's memory now."""
-    # Each owner is a recipient of its own, with a memory of its own: what the
-    # lead was told is no news to them, nor theirs to the lead.
-    owners_state = state.get("owners") if isinstance(state.get("owners"), dict) else {}
-    owners_memory = {}
-    lead_id = None
-    for prefix, substring in rules:
-        # owner_of chooses the first matching rule; a duplicate prefix must
-        # not deliver its notices to a second recipient.
-        if prefix in owners_memory:
-            continue
-        now = now_for(prefix)
-        if not any(now[k] for k in TYPED):
-            continue
-        if lead_id is None:
-            lead_id = str((lead_row(lead_name())[0] or {}).get("id") or "") if lead_name() else ""
-        owners_memory[prefix], note = _deliver_owner(
-            now, owners_state.get(prefix) or {}, substring, held, lead_id)
-        notes.append(note)
-    return owners_memory
-
-
-def _deliver_owner(now: dict, remembered: dict, substring: str, held: set, lead_id: str) -> tuple[dict, str]:
-    """Tell one owner session its share: (its memory now, the note)."""
-    mine = _recalled(remembered, now)
-    mine["lead"] = remembered.get("lead")
-    mine, note = deliver(
-        now, mine,
-        lambda: (substring, *owner_row(substring, held, lead_id)),
-        "no session is configured")
-    return {k: mine.get(k) or [] for k in MEMORY} | (
-        {"lead": mine["lead"]} if mine.get("lead") else {}), note
 
 
 # Each set, in the order its news is spoken: (typed, posted, line, what, word).
@@ -787,53 +568,10 @@ SETS = (
 )
 
 
-def ownership(rules: list, refs: set) -> tuple[dict, set]:
-    """({ref: its owner rule}, the session ids this fleet's tasks hold).
-
-    Read only when a rule exists, so a fleet that routes nothing never loads
-    the queue here. A queue that cannot be read owns nothing: every notice
-    then goes to the lead, which is what it did before there were owners.
-    """
-    if not rules or not refs:
-        return {}, set()
-    try:
-        tasks = fleetqueue.Queue(fleetqueue.queue_root()).tasks
-    except Exception:  # noqa: BLE001 — a notifier may not fail the pass it rides on
-        return {}, set()
-    owned = {}
-    for ref in refs:
-        task = tasks.get(ref)
-        rule = fleetqueue.owner_of(task.doc.get("origin"), rules) if task else None
-        if rule:
-            owned[ref] = rule
-    held = {str(t.doc["session"]) for t in tasks.values() if t.doc.get("session")}
-    return owned, held
-
-
-def _post_once(sid: str, line: str, parts: list, now: dict, memory: dict) -> bool:
-    """Post the line to a recipient that may not be woken; whether all its news is noted."""
-    # The note is posted on its own transition, so a lead busy for an hour
-    # finds one line per change in its mailbox and not one per pass.
-    unposted = [
-        r for told, posted, _ in parts for r in now[told]
-        if r not in memory[told] and r not in memory[posted]
-    ]
-    if unposted:
-        sent, _why = post(sid, line)
-        if sent:
-            for _, posted, _text in parts:
-                memory[posted] = now[posted]
-    return all(
-        r in memory[posted] for told, posted, _ in parts
-        for r in now[told] if r not in memory[told]
-    )
-
-
 def deliver(now: dict, memory: dict, resolve, unnamed: str) -> tuple[dict, str]:
-    """Tell ONE recipient what is news to it: (its memory now, the note to log).
+    """Tell the conductor what is news to it: (its memory now, the note to log).
 
-    `resolve()` is (name, row, why not) — the lead's or an owner's, whose row
-    was found by different rules but is spoken to by the same ones.
+    `resolve()` is (name, row, why not) — `conductor_row`.
     """
     if not any(now[k] for k in TYPED):
         return memory, ""
@@ -852,17 +590,32 @@ def deliver(now: dict, memory: dict, resolve, unnamed: str) -> tuple[dict, str]:
         return memory, f"{what}, but {unnamed}"
     if not row:
         return memory, f"{what}, but {status}"
-    sid, status = str(row["id"]), str(row.get("state") or "unknown")
+    sid = str(row["id"])
 
     # ONE LINE, carrying whichever set has news; a set with nothing new is not
     # repeated just because another one changed.
     parts = [(told, posted, say_it(now[told])) for told, posted, say_it, _w, _n in news]
     line = " ".join(text for _, _, text in parts)
 
-    held = _held(name, sid, status)
-    if held:
-        where = " — noted in its inbox" if _post_once(sid, line, parts, now, memory) else ""
-        return memory, f"{what}; {held}{where}; the wake waits"
+    why = delivery.held(name, row)
+    if why:
+        # The note is posted on its own transition, so a conductor busy for an
+        # hour finds one line per change in its mailbox and not one per pass.
+        unposted = [
+            r for told, posted, _ in parts for r in now[told]
+            if r not in memory[told] and r not in memory[posted]
+        ]
+        if unposted:
+            sent, _why = post(sid, line)
+            if sent:
+                for _, posted, _text in parts:
+                    memory[posted] = now[posted]
+        noted = all(
+            r in memory[posted] for told, posted, _ in parts
+            for r in now[told] if r not in memory[told]
+        )
+        where = " — noted in its inbox" if noted else ""
+        return memory, f"{what}; {why}{where}; the wake waits"
 
     sent, why = wake(sid, line)
     if not sent:

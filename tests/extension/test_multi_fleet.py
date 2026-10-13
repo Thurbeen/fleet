@@ -116,7 +116,7 @@ def test_a_name_that_could_not_be_a_directory_or_a_session_is_refused(tmp_path, 
 
 def test_a_name_that_would_read_as_a_placeholder_is_refused(tmp_path):
     """`__x__` is how this repo spells an unrendered placeholder, and
-    `notify_lead.py` reads a session name carrying `__` as a manifest nobody
+    `notify_conductor.py` reads a session name carrying `__` as a manifest nobody
     rendered — so a fleet called `dev__two` would be a lead the reconciler
     stops waking, silently, when ready work appears."""
     name_fleet("dev__two")

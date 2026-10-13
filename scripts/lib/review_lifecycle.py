@@ -168,7 +168,7 @@ def _post_once(helper, doc, receipt, sid, line):
 
 
 def notify(q, doc, sid, key, line):
-    helper = q._load_sibling("fleet_notify_lead", "notify_lead.py")
+    helper = q._load_sibling("fleet_notify_delivery", "notify_delivery.py")
     live, why = q.live_sessions()
     status = q.session_status(sid, live) if sid else "gone"
     if status in ("gone", "unknown"):

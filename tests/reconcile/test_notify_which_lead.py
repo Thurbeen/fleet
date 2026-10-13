@@ -19,7 +19,7 @@ import pytest
 from harness import PYTHON, REPO, expect, run, write
 from reconcilekit import LEAD
 
-NOTIFY = REPO / "scripts" / "lib" / "notify_lead.py"
+NOTIFY = REPO / "scripts" / "lib" / "notify_conductor.py"
 
 
 def notify(state_dir, ready=("alpha/01-first",)):

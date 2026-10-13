@@ -84,8 +84,9 @@ git diff --name-only <before> <after>
 
 `FLEET.md` is in two rows: it is rendered into the extension's payload *and*
 it is the lead's standing context, so it needs §3 and §8.
-`scripts/lib/queue.py` and `notify_lead.py` are in none: the loop runs them
-as fresh child processes every pass, so a change reaches it with no restart.
+`scripts/lib/queue.py` and the notifiers (`notify_conductor.py`,
+`notify_origin.py`, `notify_delivery.py`) are in none: the loop runs them as
+fresh child processes every pass, so a change reaches it with no restart.
 
 ### §5b — settings the sync can silently change
 

@@ -234,7 +234,7 @@ def test_missing_reviewer_obligation_reaches_real_lead_notification(lifecycle, t
     doc.update(ready=[], stalled=[], unprompted=[])
     (tmp_path / "notified").mkdir()
     for _ in range(2):
-        ok(run([*PYTHON, str(REPO / "scripts/lib/notify_lead.py"), "--state-dir", str(tmp_path / "notified")],
+        ok(run([*PYTHON, str(REPO / "scripts/lib/notify_conductor.py"), "--state-dir", str(tmp_path / "notified")],
                stdin=json.dumps(doc), FLEET_LEAD_SESSION="Review Control"))
     calls = t.shep.stubs.calls("thurbox-cli", f"session send {lead}")
     assert len(calls) == 1

@@ -42,7 +42,8 @@ interrupts whoever is talking to it. A stream that is read and a file that is
 read interrupt nobody. `--no-wake` would not interrupt either, and it is still
 not the completion: `watch` already says WHEN with nothing sent, `collect`
 verifies the WHAT, and a third signal is one more thing to drain. The one
-fleet use of the mailbox is the reconciler's ready notice, in notify_lead.py.
+fleet use of the mailbox is the reconciler's own notices, in notify_conductor.py
+and notify_origin.py.
 
 WHICH CHECKOUT. The queue belongs to the CONTROL PLANE's clone — the one the
 Mission Control session opens — and never to the process cwd. A second clone
@@ -419,7 +420,7 @@ BLOCKER_KINDS = {
 # every record fleet keeps and unrunnable in fact — its brief's first
 # instruction reads Azure and `az` was not authenticated. `block` took only
 # `--on <ref>`, so there was nothing to write down: `plan` listed the task as
-# ready and `notify_lead.py` correctly woke the lead to dispatch it. The only
+# ready and `notify_conductor.py` correctly woke the lead to dispatch it. The only
 # honest answer was to refuse in conversation and leave the record silent,
 # which is the one thing this queue exists not to do.
 #
@@ -3287,7 +3288,7 @@ def _walk_blockers(q: Queue, ref: str, colour: dict, stack: list) -> list | None
 # nobody saw, or never got its brief — each of which only the lead can answer.
 STALLED_IDLE_SECS = 30 * 60
 
-# The session states that are the agent saying it is at rest; `notify_lead.py`
+# The session states that are the agent saying it is at rest; `notify_delivery.py`
 # wakes into exactly these, and for the same reason reads nothing else.
 AT_REST_STATES = ("idle", "done")
 
@@ -6319,6 +6320,7 @@ def cmd_collect(args) -> int:
     # pass, and every task left in an archived topic is terminal, so the loop
     # below skips all of them exactly as it skips a concluded live one.
     q = Queue(root, scope="all")
+    before = {ref: t.state for ref, t in q.tasks.items()}
     # ONE TASK AT A TIME, BY NAME. The override used to be a bare flag that
     # closed every held task in the pass, so judging one artifact good closed
     # every other one nobody had read. A ref that names no task fails here,
@@ -6341,6 +6343,7 @@ def cmd_collect(args) -> int:
     # a task whose artifact the FORGE says has landed, which is never true of a
     # result collected a moment ago. Everything else is reported and left be.
     reap(q, dry=False, release=not args.no_reap)
+    tell_origins(q, before)
 
     # The run log's facts move when the records do, and this is the command
     # that moves them most. It prints only when a file actually changed.
@@ -8099,9 +8102,54 @@ def keep_session(task: Task, sid: str, ending: str, closed: bool, dry: bool) -> 
 
 def cmd_reap(args) -> int:
     # `all`, and deliberately not the default view — see `reap` above.
-    if reap(Queue(queue_root(), scope="all"), dry=args.dry_run) == 0:
+    q = Queue(queue_root(), scope="all")
+    before = {ref: t.state for ref, t in q.tasks.items()}
+    if reap(q, dry=args.dry_run) == 0:
         print("reap: nothing has landed and no finished task is still holding a session")
+    if not args.dry_run:
+        tell_origins(q, before)
     return 0
+
+
+def origin_outcomes(q: Queue, before: dict) -> list[tuple[Task, str]]:
+    """[(task, word)] for every task this pass moved to an end its origin is told of.
+
+    TRANSITIONS, NEVER STANDING STATES: `before` is each task's state when the
+    pass began, so a first run after an upgrade tells nobody about every task
+    that landed last month. `shipped` is collect closing a task on a shipped
+    result; `landed` and `abandoned` are reap's — or collect's own, for a change
+    request closed unmerged. A task collected and landed in one pass is told
+    both, in that order.
+    """
+    out = []
+    for ref, task in sorted(q.tasks.items()):
+        was, state = before.get(ref), task.state
+        if was == state or not task.doc.get("origin"):
+            continue
+        if (task.doc.get("outcome") == "shipped" and state in ("done", "landed")
+                and was not in ("done", "landed")):
+            out.append((task, "shipped"))
+        if state in ("landed", "abandoned"):
+            out.append((task, state))
+    return out
+
+
+def tell_origins(q: Queue, before: dict) -> None:
+    """Tell each origin how its task ended, through `notify_origin.py`, and say so.
+
+    Run on every `collect` and `reap` even with nothing new, which is what
+    retries an outcome still waiting for its origin to come to rest. NEVER A
+    FAILURE OF THE PASS: a relay that fails, a thurbox that does not answer or
+    a notifier that raises costs a line here and nothing else, because a
+    message is not worth the records this pass just wrote.
+    """
+    events = origin_outcomes(q, before)
+    try:
+        lines = _load_sibling("fleet_notify_origin", "notify_origin.py").outcomes(events)
+    except Exception as exc:  # noqa: BLE001 — telling may not fail what it tells of
+        lines = [f"origin: outcomes could not be told: {one_line(exc)}"]
+    for line in lines:
+        print(f"    {line}")
 
 
 # Why a task in each state is not one waiting on a reader — and, where there is
@@ -9766,8 +9814,9 @@ def integration_branches(root: str | None = None) -> dict[str, str]:
 # target is a session-name substring, as it always was, or `!<command>`: a
 # RELAY, run with the origin and the message appended as two arguments, which
 # forwards it to wherever that origin lives. Fleet parses neither the origin nor
-# the command. `origin_target` is the one resolver; `notify_lead.py` owns the
-# delivery of the notices that use a session rule.
+# the command. `origin_target` is the one resolver; `notify_origin.py` owns the
+# delivery of what an origin is told: its task's outcome, and its worker's
+# question.
 
 OWNERS_CONF = "orchestration/owners.conf"
 OWNERS_CONF_DEFAULTS = "orchestration/owners.example.conf"
@@ -9838,21 +9887,6 @@ def origin_rules(root: str | None = None) -> list[tuple[str, str, str]]:
             continue
         out.append((prefix, kind, target))
     return sorted(out, key=lambda rule: -len(rule[0]))
-
-
-def owner_rules(root: str | None = None) -> list[tuple[str, str]]:
-    """[(origin prefix, session-name substring)]: the session rules only, longest first.
-
-    What `notify_lead.py` routes notices by; a relay rule is `origin_target`'s.
-    """
-    return [(prefix, target) for prefix, kind, target in origin_rules(root) if kind == "session"]
-
-
-def owner_of(origin, rules: list[tuple[str, str]]) -> tuple[str, str] | None:
-    """The rule whose prefix `origin` starts with (the longest), or None."""
-    if not isinstance(origin, str):
-        return None
-    return next((rule for rule in rules if origin.startswith(rule[0])), None)
 
 
 class OriginTarget(NamedTuple):
