@@ -239,8 +239,7 @@ def _obligation_line(q, cr, state):
 
 
 def _hold_for_review(q, cr, task, args, pol, state, sid, digest, error, view):
-    """Holds a PR the other gates clear until its review is clean, and delivers that obligation."""
-    condition, detail = "review-" + state, error or f"independent current-head review {state}"
+    """Delivers the review obligation of a PR the other gates clear, which `gate` holds."""
     if state == "findings":
         sid, error = _fixer(q, cr, task, error)
     if sid in owners(q, cr) and state == "pending":
@@ -248,7 +247,7 @@ def _hold_for_review(q, cr, task, args, pol, state, sid, digest, error, view):
     line = _obligation_line(q, cr, state)
     if args.dry_run:
         view["action"] = "would-notify" if sid and not error else "needs-lead"
-        return condition, detail
+        return
     with locked(q, cr.url) as (filename, latest):
         # A concurrent reviewer record wins; never overwrite its assessment.
         latest_state, _, latest_digest, _ = assessment(q, cr, pol, latest)
@@ -260,7 +259,6 @@ def _hold_for_review(q, cr, task, args, pol, state, sid, digest, error, view):
             key = f"{cr.head_sha}:{state}:{digest}:{pol['task']}:{pol['score']}"
             view["action"], view["detail"] = notify(q, latest, sid, key, line)
         _store(q, filename, latest, cr, pol, state, digest, view["action"], view["detail"])
-    return condition, detail
 
 
 def gate(q, cr, task, args, condition, detail):
@@ -280,7 +278,8 @@ def gate(q, cr, task, args, condition, detail):
     if condition not in ("ready", "threads-open"):
         view["detail"] = error or detail
     else:
-        condition, detail = _hold_for_review(q, cr, task, args, pol, state, sid, digest, error, view)
+        condition, detail = "review-" + state, error or f"independent current-head review {state}"
+        _hold_for_review(q, cr, task, args, pol, state, sid, digest, error, view)
     if not args.dry_run and condition not in ("review-pending", "review-findings"):
         with locked(q, cr.url) as (filename, latest):
             _store(q, filename, latest, cr, pol, state, digest, view["action"], view["detail"])

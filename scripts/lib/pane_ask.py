@@ -64,13 +64,13 @@ def record(answer: str) -> None:
     fleet_platform.write_record(STATE, f"{answer} {date.today().isoformat()}\n")
 
 
-def _ask() -> int:
+def _ask() -> None:
     if os.path.isfile(STATE):
         with open(STATE, encoding="utf-8") as fh:
             words = fh.read().split()
         answer, when = (words + ["?", "?"])[:2]
         print(f"skip: already answered ({answer}, {when})")
-        return 0
+        return
     code, report = place_pane.check()
     if code == 0:
         record("placed")
@@ -81,7 +81,6 @@ def _ask() -> int:
         # No thurbox to name the layout, or no layout yet: nothing could be
         # placed on a yes, so nothing is asked and nothing recorded.
         print(f"skip: cannot tell whether the pane is placed — {report.splitlines()[0]}")
-    return 0
 
 
 def _yes(args: list[str]) -> int:
@@ -102,7 +101,8 @@ def _yes(args: list[str]) -> int:
 def main(argv: list[str]) -> int:
     verb = argv[0] if argv else ""
     if verb == "":
-        return _ask()
+        _ask()
+        return 0
     if verb == "yes":
         return _yes(argv[1:])
     if verb == "no":

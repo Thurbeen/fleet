@@ -758,16 +758,22 @@ def _deliver_owners(rules: list, state: dict, now_for, held: set, notes: list) -
             continue
         if lead_id is None:
             lead_id = str((lead_row(lead_name())[0] or {}).get("id") or "") if lead_name() else ""
-        mine = _recalled(owners_state.get(prefix) or {}, now)
-        mine["lead"] = (owners_state.get(prefix) or {}).get("lead")
-        mine, note = deliver(
-            now, mine,
-            lambda substring=substring, lead_id=lead_id: (substring, *owner_row(substring, held, lead_id)),
-            "no session is configured")
-        owners_memory[prefix] = {k: mine.get(k) or [] for k in MEMORY} | (
-            {"lead": mine["lead"]} if mine.get("lead") else {})
+        owners_memory[prefix], note = _deliver_owner(
+            now, owners_state.get(prefix) or {}, substring, held, lead_id)
         notes.append(note)
     return owners_memory
+
+
+def _deliver_owner(now: dict, remembered: dict, substring: str, held: set, lead_id: str) -> tuple[dict, str]:
+    """Tell one owner session its share: (its memory now, the note)."""
+    mine = _recalled(remembered, now)
+    mine["lead"] = remembered.get("lead")
+    mine, note = deliver(
+        now, mine,
+        lambda: (substring, *owner_row(substring, held, lead_id)),
+        "no session is configured")
+    return {k: mine.get(k) or [] for k in MEMORY} | (
+        {"lead": mine["lead"]} if mine.get("lead") else {}), note
 
 
 # Each set, in the order its news is spoken: (typed, posted, line, what, word).
