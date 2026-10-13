@@ -86,8 +86,10 @@ def test_the_split_sends_each_recipient_only_its_own(stubs, tmp_path):
     session(stubs, "owner", "Concierge", "owner-id", backend_type="local:tmux")
     notify(tmp_path, [mine, theirs])
     by = {s.split()[3]: s for s in sends(stubs)}
-    assert mine in by["owner-id"] and theirs not in by["owner-id"]
-    assert theirs in by["lead-id"] and mine not in by["lead-id"]
+    assert mine in by["owner-id"]
+    assert theirs not in by["owner-id"]
+    assert theirs in by["lead-id"]
+    assert mine not in by["lead-id"]
 
 
 def test_an_owner_mid_turn_gets_its_mailbox_and_the_lead_none(stubs, tmp_path):

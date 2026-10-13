@@ -28,7 +28,8 @@ def test_ensure_starts_the_loop_and_a_second_ensure_adopts_it(recon):
     assert first.code == 0, first.out
     expect(first.out, "ticking (pid ")
     pid = recon.pid()
-    assert pid and f"(pid {pid})" in first.out
+    assert pid
+    assert f"(pid {pid})" in first.out
 
     second = recon("ensure")
     assert second.code == 0, second.out
@@ -124,7 +125,8 @@ def test_a_stale_pidfile_and_heartbeat_are_not_trusted(recon):
 
         recon("start")
         started = recon.pid()
-        assert started and started != str(bystander.pid), "start adopted a stale pid"
+        assert started, "start adopted a stale pid"
+        assert started != str(bystander.pid), "start adopted a stale pid"
     finally:
         bystander.kill()
         bystander.wait(timeout=30)

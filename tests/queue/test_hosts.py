@@ -404,7 +404,8 @@ def test_a_remote_worktree_stays_clean_and_its_memory_sits_beside_it(rtopic, hos
     expect(brief, "CONTEXT.md`, alongside this file", "`<worktree>.fleet`")
     refute(brief, "Delete `BRIEF.md`", "fleet context repo", "in the root of this worktree")
     remote = yaml.safe_load((task / "task.yaml").read_text(encoding="utf-8"))["remote"]
-    assert remote["brief"] == COMPANIONS + "/BRIEF.md" and remote["result"] == COMPANIONS + "/result.md", remote
+    assert remote["brief"] == COMPANIONS + "/BRIEF.md", remote
+    assert remote["result"] == COMPANIONS + "/result.md", remote
 
     # The worker writes its result beside the brief, and collect fetches it from there.
     write(beside / "result.md", "---\noutcome: shipped\nartifact: https://github.com/remote-owner/app/pull/4444\n"

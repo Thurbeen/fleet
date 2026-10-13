@@ -123,7 +123,8 @@ def test_a_second_fleet_on_this_machine_shares_its_facts_and_nothing_private(stu
     assert done.stdout.splitlines()[-1].startswith("help[")
     assert [f["id"] for f in doc["live"]] == ["20261001-aaaaaaaa"], "this fleet's own facts went missing"
     near = fleets(doc)["local/near"]
-    assert near["status"] == "ok" and near["facts"] == "1", near
+    assert near["status"] == "ok", near
+    assert near["facts"] == "1", near
     rows = doc["peer_facts"]
     assert [(r["fleet"], r["id"], r["date"]) for r in rows] == [("local/near", "20260912-app-ci-02-1", "2026-09-12")]
     assert "vendored" in rows[0]["text"]
@@ -140,14 +141,17 @@ def test_a_peer_that_turned_sharing_off_refuses_and_serves_nothing(stubs, tmp_pa
 
     raw = wire_of(peer, REPO_ID, "--wire", "json")
     answer = json.loads(raw)
-    assert answer.get("refused") and not answer.get("facts") and not answer.get("results"), raw
+    assert answer.get("refused"), raw
+    assert not answer.get("facts"), raw
+    assert not answer.get("results"), raw
     assert "vendored" not in raw
 
     done = context("repo", REPO_ID, "--peers")
     assert done.code == 0, done.out
     doc = parse_toon(done.stdout)
     assert fleets(doc)["local/near"]["status"] == "refused", done.stdout
-    assert "vendored" not in done.stdout and "peer_facts" not in doc
+    assert "vendored" not in done.stdout
+    assert "peer_facts" not in doc
     assert_private(done.stdout)
 
 
@@ -159,7 +163,9 @@ def test_result_summaries_are_served_only_when_the_peer_opts_in(stubs, tmp_path)
     assert done.code == 0, done.out
     doc = parse_toon(done.stdout)
     [row] = doc["peer_results"]
-    assert row["fleet"] == "local/near" and row["task"] == "app-ci/02-fix" and row["state"] == "landed"
+    assert row["fleet"] == "local/near"
+    assert row["task"] == "app-ci/02-fix"
+    assert row["state"] == "landed"
     assert row["summary"] == "Fixed the Windows release build."
     assert_private(done.stdout)
 
@@ -174,18 +180,21 @@ def test_a_fleet_on_a_host_is_read_over_ssh_then_stale_from_the_cache(stubs, tmp
     doc = parse_toon(context("repo", REPO_ID, "--peers", "--timeout", "5").stdout)
     found = fleets(doc)
     assert found["devbox/fleet"]["status"] == "ok", found
-    assert found["downbox/fleet"]["status"] == "unreachable" and "No route" in found["downbox/fleet"]["reason"]
+    assert found["downbox/fleet"]["status"] == "unreachable"
+    assert "No route" in found["downbox/fleet"]["reason"]
     assert [(r["fleet"], r["id"]) for r in doc["peer_facts"]] == [("devbox/fleet", "20260912-app-ci-02-1")]
     calls = stubs.calls("ssh")
     asked = [c for c in calls if "me@devbox" in c]
-    assert asked and all("context.py" in c and REPO_ID in c and "--wire json" in c for c in asked), asked
+    assert asked, asked
+    assert all("context.py" in c and REPO_ID in c and "--wire json" in c for c in asked), asked
     for call in calls:
         assert "context.py" in call, f"a peer was asked something other than to be read: {call}"
 
     write(stubs.root / "ssh-state" / "me@devbox.down", "")
     doc = parse_toon(context("repo", REPO_ID, "--peers", "--refresh").stdout)
     far_row = fleets(doc)["devbox/fleet"]
-    assert far_row["status"] == "stale" and int(far_row["age"]) >= 0, far_row
+    assert far_row["status"] == "stale", far_row
+    assert int(far_row["age"]) >= 0, far_row
     assert [r["id"] for r in doc["peer_facts"]] == ["20260912-app-ci-02-1"], "a stale peer blanked its facts"
 
 
@@ -224,7 +233,8 @@ def test_two_fleets_of_one_name_stay_two_fleets(stubs, tmp_path):
                     lead("b", str(two), "local-tmux")])
     doc = parse_toon(context("repo", REPO_ID, "--peers").stdout)
     labels = sorted(fleets(doc))
-    assert len(labels) == 2 and labels[0] != labels[1], labels
+    assert len(labels) == 2, labels
+    assert labels[0] != labels[1], labels
     assert sorted(r["fleet"] for r in doc["peer_facts"]) == labels, "two fleets' facts were merged under one name"
 
 
@@ -250,12 +260,15 @@ def test_the_wire_refuses_what_a_peer_may_not_be_asked(stubs, tmp_path):
     done = context("repo", REPO_ID, "--wire", "json")
     assert done.code == 0, done.out
     answer = json.loads(done.stdout)
-    assert answer["wire"] == "fleet-context/1" and answer["repo"] == REPO_ID and answer["facts"] == []
+    assert answer["wire"] == "fleet-context/1"
+    assert answer["repo"] == REPO_ID
+    assert answer["facts"] == []
 
 
 def test_wire_is_hidden_and_peers_is_documented():
     done = context("repo", "--help")
-    assert "--peers" in done.stdout and "--wire" not in done.stdout
+    assert "--peers" in done.stdout
+    assert "--wire" not in done.stdout
 
 
 def test_the_tracked_example_shares_nothing_beyond_the_default():
@@ -277,6 +290,7 @@ def test_a_peer_cannot_put_terminal_or_bidi_controls_into_the_read(stubs, tmp_pa
     done = context("repo", REPO_ID, "--peers")
     assert done.code == 0, done.out
     doc = parse_toon(done.stdout)
-    assert doc["peer_facts"] and doc["peer_results"], done.stdout
+    assert doc["peer_facts"], done.stdout
+    assert doc["peer_results"], done.stdout
     for ch in ("\u009b", "‮", "‬", "⁦", "⁩", "‏"):
         assert ch not in done.stdout, f"U+{ord(ch):04X} reached the reader"

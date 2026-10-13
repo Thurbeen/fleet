@@ -73,7 +73,8 @@ def test_every_dot_word_from_the_store():
     by = {int(r[3]): r for r in rows if r[0] == "P"}
     assert by[9][12] == "gh could not be read"
     assert by[10][12], "a dot gone stale by age says why"
-    assert by[6][9] == "2" and by[5][8] == "changes-requested"
+    assert by[6][9] == "2"
+    assert by[5][8] == "changes-requested"
 
 
 def test_the_freshness_window_is_two_shepherd_passes():
@@ -93,14 +94,19 @@ def test_sessions_say_whose_they_are_and_no_field_can_split_a_record():
     assert ["S", "a1", "", "1", "hand made"] in rows
     assert ["S", "w1", "topic/01-work", "0", "worker"] in rows
     pr = next(r for r in rows if r[0] == "P")
-    assert len(pr) == 14 and pr[1] == "a1" and pr[13] == "two lines and a tab"
+    assert len(pr) == 14
+    assert pr[1] == "a1"
+    assert pr[13] == "two lines and a tab"
 
 
 def test_no_store_prints_nothing_and_an_unreadable_one_is_one_E_line():
     out = q("prs", "--records")
-    assert out.code == 0 and out.stdout == "", out.out
+    assert out.code == 0, out.out
+    assert out.stdout == "", out.out
     root = Path(os.environ["FLEET_SHEPHERD_DIR"])
     root.mkdir(parents=True, exist_ok=True)
     (root / "prs.json").write_text("{not json", encoding="utf-8")
     out = q("prs", "--records")
-    assert out.code == 0 and out.stdout.startswith("E\t") and len(out.stdout.splitlines()) == 1, out.out
+    assert out.code == 0, out.out
+    assert out.stdout.startswith("E\t"), out.out
+    assert len(out.stdout.splitlines()) == 1, out.out

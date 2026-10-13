@@ -53,7 +53,8 @@ def test_a_future_pause_keeps_a_resting_worker_out_of_stalled(attached, stubs, q
     ok(q("declare", REF, "paused", "--until", "2h", "--why", "waiting on CI"))
     assert REF not in stalled()
     rows = plan()["paused"]
-    assert [r["task"] for r in rows] == [REF] and rows[0]["why"] == "waiting on CI"
+    assert [r["task"] for r in rows] == [REF]
+    assert rows[0]["why"] == "waiting on CI"
     expect(q("plan").out, "paused: 1", "waiting on CI")
 
 
@@ -196,7 +197,8 @@ def test_a_declaration_before_a_restart_is_ignored(attached, stubs, queue_dir):
     doc["refuels"] = [{"at": stamp(-timedelta(minutes=10)), "session": S1, "why": "quota", "prompted": True}]
     record.write_text(yaml.safe_dump(doc), encoding="utf-8")
     after = plan()
-    assert after["needs_input"] == [] and after["paused"] == []
+    assert after["needs_input"] == []
+    assert after["paused"] == []
     assert REF in [r["task"] for r in after["stalled"]]
 
 
@@ -205,7 +207,8 @@ def test_the_declaration_is_no_stream_event_and_no_transition(attached, queue_di
     rows = [json.loads(r) for r in (queue_dir / REF / "progress.jsonl").read_text(encoding="utf-8").splitlines()]
     mine = [r for r in rows if "declare" in r]
     assert len(mine) == 1
-    assert "seq" not in mine[0] and "at" not in mine[0], "watch's cursor and send's movement read those"
+    assert "seq" not in mine[0], "watch's cursor and send's movement read those"
+    assert "at" not in mine[0], "watch's cursor and send's movement read those"
 
 
 def test_only_a_dispatched_task_declares(briefed):

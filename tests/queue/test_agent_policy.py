@@ -665,8 +665,10 @@ def test_the_fixer_is_refused_when_the_policy_no_longer_clears_its_agent(
     refute(shep.tbx_log(), "session send")
     # And the record a person reads afterwards says which agent and which rule.
     rec = yaml.safe_load(task_file.read_text(encoding="utf-8"))["shepherd"]
-    assert "alpha" in rec["refused"] and "beta" in rec["refused"], rec
-    assert rec["pr"] == FIXER_PR and "session" not in rec, rec
+    assert "alpha" in rec["refused"], rec
+    assert "beta" in rec["refused"], rec
+    assert rec["pr"] == FIXER_PR, rec
+    assert "session" not in rec, rec
     # The refusal is not an outcome: `collect` closes tasks and `shepherd`
     # watches, so the state this leaves behind is the one it found.
     assert yaml.safe_load(task_file.read_text(encoding="utf-8"))["state"] == was
@@ -987,7 +989,9 @@ def test_dispatch_announces_an_uncovered_command_profile(checkout, forge_store, 
     create = [c for c in stubs.calls("thurbox-cli", "session create") if "fix/uncovered" in c][0]
     assert "--reports-as" not in create, create
     assert "uncovered" in out, out
-    assert "watch" in out and "refuel" in out and "reap" in out, out
+    assert "watch" in out, out
+    assert "refuel" in out, out
+    assert "reap" in out, out
     refute(out, "NOT PROMPTED")
     sends = [c for c in stubs.calls("thurbox-cli", "session send") if sid in c]
     assert sends, out

@@ -111,7 +111,8 @@ def test_the_default_roots_are_the_checkouts_parent_and_code_directories_under_h
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     roots = lib("discover_owners.py").default_roots()
     assert roots[0] == Path(__file__).resolve().parents[2].parent
-    assert tmp_path / "code" in roots and tmp_path / "src" in roots
+    assert tmp_path / "code" in roots
+    assert tmp_path / "src" in roots
 
 
 # --- 5. every login is asked, not only the active one --------------------------

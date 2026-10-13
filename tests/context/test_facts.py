@@ -39,7 +39,9 @@ def test_learn_records_one_fact_with_provenance_and_answers_a_repeat_as_already_
     assert body == "Release builds need the `vendored` feature on Windows."
     assert front["id"] == doc["recorded"] == path.stem
     assert re.fullmatch(r"\d{8}-[0-9a-f]{8}", front["id"]), front
-    assert front["repo"] == APP and front["source"].startswith("agent:") and front["at"].endswith("Z")
+    assert front["repo"] == APP
+    assert front["source"].startswith("agent:")
+    assert front["at"].endswith("Z")
 
     again = learn(APP, "Release builds need the `vendored` feature on Windows.")
     assert again.code == 0, again.out
@@ -56,7 +58,8 @@ def test_fifty_concurrent_learns_leave_exactly_one_file_per_id_and_every_file_pa
     assert len(files) == 10, [f.name for f in files]
     for path in files:
         front, body = read_fact(path)
-        assert front["id"] == path.stem and body.startswith("Fact number")
+        assert front["id"] == path.stem
+        assert body.startswith("Fact number")
     # No writer's temp file is left behind for a reader to trip over.
     assert sorted(p.name for p in (facts_root() / APP).iterdir()) == sorted(p.name for p in files)
 
@@ -185,7 +188,8 @@ def test_the_same_path_on_two_forges_is_two_repositories():
     assert [read_fact(p)[1] for p in fact_files("gitlab.example.com/acme/app")] == ["GitLab's copy."]
     # And a bare name both could mean is ambiguous rather than a guess.
     done = context("repo", "app")
-    assert done.code == 1 and parse_toon(done.stdout)["code"] == "ambiguous_repo", done.out
+    assert done.code == 1, done.out
+    assert parse_toon(done.stdout)["code"] == "ambiguous_repo", done.out
 
 
 def test_a_checkout_names_its_repository_by_origin_and_a_local_one_by_its_own_path(tmp_path):
@@ -199,7 +203,8 @@ def test_a_checkout_names_its_repository_by_origin_and_a_local_one_by_its_own_pa
         assert done.code == 0, done.out
         ids[path] = parse_toon(done.stdout)["repo"]
     assert ids[forge] == ids[https] == "github.com/acme/app"
-    assert ids[lonely].startswith("local/tool-") and ids[other].startswith("local/tool-")
+    assert ids[lonely].startswith("local/tool-")
+    assert ids[other].startswith("local/tool-")
     assert ids[lonely] != ids[other], "two local repositories with one name share a fact store"
 
 
@@ -261,7 +266,8 @@ def test_more_than_five_learned_entries_records_the_first_five(worked):
     done = run_queue("collect")
     assert done.code == 0, done.out
     assert len(fact_files(APP)) == 5
-    assert "5 facts recorded" in done.out and "2 over the limit of 5" in done.out, done.out
+    assert "5 facts recorded" in done.out, done.out
+    assert "2 over the limit of 5" in done.out, done.out
 
 
 def test_two_overlapping_collects_produce_each_fact_once(worked):
@@ -311,14 +317,16 @@ def test_the_briefs_placeholder_copied_verbatim_is_not_a_fact(worked):
     learned_result(worked, [{"repo": APP, "fact": "<one or two sentences>"}])
     done = run_queue("collect")
     assert done.code == 0, done.out
-    assert "learned[1]:" in done.out and fact_files(APP) == [], done.out
+    assert "learned[1]:" in done.out, done.out
+    assert fact_files(APP) == [], done.out
 
 
 def test_restating_an_older_fact_with_replaces_supersedes_the_newer_one():
     first = parse_toon(learn(APP, "Builds use toolchain A.").stdout)["recorded"]
     second = parse_toon(learn(APP, "Builds use toolchain B.", "--replaces", first).stdout)["recorded"]
     back = learn(APP, "Builds use toolchain A.", "--replaces", second)
-    assert back.code == 0 and "recorded" in parse_toon(back.stdout), back.stdout
+    assert back.code == 0, back.stdout
+    assert "recorded" in parse_toon(back.stdout), back.stdout
     doc = parse_toon(context("repo", APP).stdout)
     assert [r["text"] for r in doc["live"]] == ["Builds use toolchain A."], doc
     # The same statement with the same replaces is still a repeat.

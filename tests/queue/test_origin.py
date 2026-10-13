@@ -58,7 +58,8 @@ def test_a_task_with_neither_is_unchanged(queue_dir):
     t = topic()
     ref = add(t, "plain")
     doc = record(queue_dir, ref)
-    assert doc["origin"] is None and doc["reply"] is None
+    assert doc["origin"] is None
+    assert doc["reply"] is None
     out = ok(q("show", ref)).stdout
     refute(out, "origin:", "reply:")
     refute((queue_dir / ref / "BRIEF.md").read_text(encoding="utf-8"), "Replying to the requester")
@@ -121,4 +122,5 @@ def test_find_is_empty_on_nothing_and_skips_terminal_and_reaped_tasks(queue_dir)
     mark(queue_dir, gone, session="s2", state="abandoned")
     mark(queue_dir, reaped, session="s3", state="shipped", reaped={"session": "s3", "how": "deleted"})
     done = q("find", "--origin", ORIGIN, "--json")
-    assert done.code == 0 and json.loads(done.stdout) == []
+    assert done.code == 0
+    assert json.loads(done.stdout) == []

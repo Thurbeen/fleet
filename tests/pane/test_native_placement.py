@@ -44,7 +44,8 @@ def verify_placement(tmp_path: Path, column: Path, overlay: bool = True):
     write(ui / "layout.lua", 'return function(ctx) return {type="box",axis="horizontal",children={{slot="center"},{slot="fleetqueue"}}} end\n')
     placed = run([NATIVE_CLI, "plugin", "check", "--text"], **env)
     assert placed.code == 0, placed.out
-    assert "✓ loads" in placed.out and "nothing places" not in placed.out, placed.out
+    assert "✓ loads" in placed.out, placed.out
+    assert "nothing places" not in placed.out, placed.out
     assert not (tmp_path / "data" / "sessions").exists()
 
 
@@ -86,5 +87,7 @@ def test_real_kernel_sees_one_claimant_per_key_after_an_install_over_a_kept_slot
     assert check.code == 0, check.out
     assert "claimed by both" not in check.out, check.out
     loads = next(line for line in check.out.splitlines() if "✓ loads" in line)
-    assert loads.count("fleetqueue") == 1 and "fleetkanban" in loads and "fleetlead" in loads, check.out
+    assert loads.count("fleetqueue") == 1, check.out
+    assert "fleetkanban" in loads, check.out
+    assert "fleetlead" in loads, check.out
     assert not (tmp_path / "data" / "sessions").exists()

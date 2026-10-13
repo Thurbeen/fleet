@@ -55,7 +55,8 @@ def test_a_lead_mid_turn_finds_the_stall_in_its_inbox(stubs, tmp_path):
     notify(tmp_path, stalled=["alpha/01-first"])
     assert stubs.calls("thurbox-cli", "session send") == []
     box = stubs.inbox("lead-uuid")
-    assert len(box) == 1 and not box[0]["woke"]
+    assert len(box) == 1
+    assert not box[0]["woke"]
     expect(box[0]["body"], "alpha/01-first", "stalled")
     notify(tmp_path, stalled=["alpha/01-first"])
     assert len(stubs.inbox("lead-uuid")) == 1, "posted once per transition"

@@ -53,7 +53,8 @@ def test_a_session_name_wears_the_mark_and_is_cut_in_bytes_on_a_codepoint():
     assert out[1] == "Fix the thing"
     assert out[2] == "64"
     size, whole = out[3].split()
-    assert int(size) <= 64 and whole == "True", out[3]
+    assert int(size) <= 64, out[3]
+    assert whole == "True", out[3]
 
 
 def test_the_mark_reaches_the_name_thurbox_is_asked_to_create(tmp_path, queue_dir):

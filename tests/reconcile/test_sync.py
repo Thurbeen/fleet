@@ -110,13 +110,15 @@ def test_a_lead_mid_turn_finds_the_notice_in_its_inbox_and_is_told_once_at_rest(
     expect(note["body"], "restart-reconciler", "scripts/lib/reconcile.py", "/update-fleet")
     assert not note["woke"], "a note to a lead mid-turn must not wake it"
     passes(recon, 2)
-    assert len(stubs.inbox("lead-uuid")) == 1 and not typed(), "posted once, and nothing typed mid-turn"
+    assert len(stubs.inbox("lead-uuid")) == 1, "posted once, and nothing typed mid-turn"
+    assert not typed(), "posted once, and nothing typed mid-turn"
 
     recon.lead("idle")
     assert wait_for(lambda: typed()), f"the notice was posted and then dropped\n{recon.log()}"
     expect(typed()[0], "restart-reconciler", "/update-fleet")
     passes(recon, 3)
-    assert len(typed()) == 1 and len(stubs.inbox("lead-uuid")) == 1, "typed once, never posted again"
+    assert len(typed()) == 1, "typed once, never posted again"
+    assert len(stubs.inbox("lead-uuid")) == 1, "typed once, never posted again"
 
 
 def test_a_dirty_tree_is_left_alone_and_said_once(recon, stubs, monkeypatch, tmp_path):
@@ -135,7 +137,8 @@ def test_a_dirty_tree_is_left_alone_and_said_once(recon, stubs, monkeypatch, tmp
     assert head(work) == before, "a dirty tree is never fast-forwarded"
     assert (work / "README.md").read_text(encoding="utf-8").endswith("live\n"), "and the edit is untouched"
     assert recon.log().count("the tree is dirty") == 1, "a standing refusal is logged once, not once per pass"
-    assert not stubs.inbox("lead-uuid") and not stubs.calls("thurbox-cli", "session send"), "nobody is told"
+    assert not stubs.inbox("lead-uuid"), "nobody is told"
+    assert not stubs.calls("thurbox-cli", "session send"), "nobody is told"
 
 
 def test_status_says_the_sync_clock_and_zero_turns_it_off(recon, monkeypatch, tmp_path):

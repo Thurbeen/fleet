@@ -134,7 +134,8 @@ def test_the_leads_glyph_is_rendered_and_the_words_still_agree_with_the_pane():
     glyphs = (REPO / "orchestration" / "session-glyphs.example.conf").read_text(encoding="utf-8")
     for key in ("LEAD_GLYPH_ON", "LEAD_GLYPH_OFF"):
         value = re.search(rf"^{key}=(.*)$", glyphs, re.MULTILINE)
-        assert value and value.group(1), f"{key} has a value in session-glyphs.example.conf"
+        assert value, f"{key} has a value in session-glyphs.example.conf"
+        assert value.group(1), f"{key} has a value in session-glyphs.example.conf"
         glyph = value.group(1)
         assert template.replace("__LEAD_GLYPH__", glyph) == f"{glyph} {pane_name}"
 

@@ -28,7 +28,8 @@ pytestmark = pytest.mark.skipif(not REAL_LUA, reason="no lua on PATH: the pane i
 
 def render(*args: str) -> str:
     done = run([REAL_LUA, "scripts/lib/pane_harness.lua", *args], cwd=REPO)
-    assert done.code == 0 and done.stdout.strip(), f"the pane did not render at {args}:\n{done.out}"
+    assert done.code == 0, f"the pane did not render at {args}:\n{done.out}"
+    assert done.stdout.strip(), f"the pane did not render at {args}:\n{done.out}"
     return done.stdout
 
 
@@ -116,8 +117,9 @@ def test_every_fuel_window_is_drawn_all_the_time(wide, narrow):
     instead of hiding the others."""
     for width, out in (("44", wide), ("30", narrow)):
         short, long = row_of(" session ", out), row_of(" week ", out)
-        assert short is not None and long is not None and short < long, \
-            f"both windows are drawn at {width}, shortest first\n{out}"
+        assert short is not None, f"both windows are drawn at {width}, shortest first\n{out}"
+        assert long is not None, f"both windows are drawn at {width}, shortest first\n{out}"
+        assert short < long, f"both windows are drawn at {width}, shortest first\n{out}"
         expect(out, "62%", "18%")
     session = next(line for line in wide.splitlines() if " session " in line)
     week = next(line for line in wide.splitlines() if " week " in line)
@@ -243,7 +245,8 @@ def test_two_accounts_of_one_provider_get_two_labelled_bars(tmp_path):
         # first is under the reserve and the second is not.
         rows = [line for line in out.splitlines() if " week " in line]
         assert len(rows) == 2, out
-        assert "low" in rows[0] and "low" not in rows[1], out
+        assert "low" in rows[0], out
+        assert "low" not in rows[1], out
         widest = max(cells(line) for line in out.splitlines())
         assert widest <= int(width), f"a row is {widest} columns wide at {width}\n{out}"
 
@@ -372,8 +375,9 @@ def test_a_queue_with_nothing_live_still_draws_the_fuel_block(shape, sentence, a
         out = render(width, "--queue", shape)
         expect(out, anchor, "⛽ fuel left", " session ", " week ", "62%", "18%")
         block, said = row_of("fuel left", out), row_of(anchor, out)
-        assert block is not None and said is not None and block < said, \
-            f"the fuel block is drawn above the sentence at {width}\n{out}"
+        assert block is not None, f"the fuel block is drawn above the sentence at {width}\n{out}"
+        assert said is not None, f"the fuel block is drawn above the sentence at {width}\n{out}"
+        assert block < said, f"the fuel block is drawn above the sentence at {width}\n{out}"
         widest = max(cells(line) for line in out.splitlines())
         assert widest <= int(width), f"a row is {widest} columns wide at {width}\n{out}"
 
@@ -432,7 +436,8 @@ def test_a_click_on_a_task_row_moves_nothing_and_the_root_takes_the_wheel():
 
 def test_a_list_that_does_not_fit_says_where_it_is_and_marks_what_is_hidden():
     first, last, total = position(long("--frame")) or (0, 0, 0)
-    assert first == 1 and total > last > 0, long("--frame")
+    assert first == 1, long("--frame")
+    assert total > last > 0, long("--frame")
     expect(long(), "↓")
     assert "↑" not in long(), "a list at its top marks something above"
     assert "of" not in frame_line(render("44", "--frame"), "bottom_right"), "a list that fits shows a position"
@@ -441,7 +446,8 @@ def test_a_list_that_does_not_fit_says_where_it_is_and_marks_what_is_hidden():
 def test_the_wheel_moves_the_window_and_clamps_at_both_ends():
     _, last, _ = position(long("--frame"))
     wfirst, wlast, _ = position(long("--frame", "--wheel", "2"))
-    assert wfirst > 1 and wlast > last, long("--frame", "--wheel", "2")
+    assert wfirst > 1, long("--frame", "--wheel", "2")
+    assert wlast > last, long("--frame", "--wheel", "2")
     expect(long("--wheel", "2"), "↑")
 
     bfirst, blast, btotal = position(long("--frame", "--wheel", "999"))

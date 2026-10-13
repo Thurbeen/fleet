@@ -393,7 +393,8 @@ def test_a_failing_command_is_reported_and_the_task_still_lands(gone, stubs, iso
     expect(out, "FAILED", "WORKTREE_RELEASED_CMD exit 3", "cannot reach the daemon")
     assert ran(stubs) == [f"{HOOK} {tree} {REF}"], ran(stubs)
     doc = state(queue_dir)
-    assert doc["state"] == "abandoned" and doc["reaped"]["how"] == "already gone"
+    assert doc["state"] == "abandoned"
+    assert doc["reaped"]["how"] == "already gone"
 
 
 def test_a_line_that_is_not_a_command_is_named_and_nothing_runs(gone, stubs, isolated_env, queue_dir):
@@ -467,7 +468,8 @@ def test_a_command_that_hangs_is_bounded_and_the_task_still_lands(gone, stubs, i
     expect(out, "FAILED", "WORKTREE_RELEASED_CMD killed after 1s", str(tree))
     assert took < 40, f"the reap waited {took:.1f}s on a command bounded at 1s"
     doc = state(queue_dir)
-    assert doc["state"] == "abandoned" and doc["reaped"]["how"] == "already gone"
+    assert doc["state"] == "abandoned"
+    assert doc["reaped"]["how"] == "already gone"
     # Killed with what it started, and not merely ahead of its own exit.
     time.sleep(4)
     assert not marker.exists(), "a child outlived the command's bound"

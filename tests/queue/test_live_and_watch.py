@@ -262,12 +262,14 @@ def test_github_answers_the_new_questions_through_gh(forge_mod, stubs):
 
     p, why = gh.pipeline(ref)
     assert not why, why
-    assert p.verdict == "failed" and p.sha == "abc"
+    assert p.verdict == "failed"
+    assert p.sha == "abc"
     assert [(j.name, j.verdict) for j in p.jobs] == [("✅ lint", "passed"), ("apply", "failed"),
                                                       ("notify", "pending")]
 
     found, why = gh.pipelines_for_commit(ref.repo, "abc")
-    assert not why and [r.id for r in found] == [5]
+    assert not why
+    assert [r.id for r in found] == [5]
     text, why = gh.job_log(ref, p.jobs[1])
     assert "Apply complete!" in text, why
 
@@ -275,9 +277,11 @@ def test_github_answers_the_new_questions_through_gh(forge_mod, stubs):
     assert gh.threads(cr) == (2, "")
     calls = (Path(stubs.root) / "gh-watch.log").read_text(encoding="utf-8")
     # The host travels with every call, so GitHub Enterprise is asked and not github.com.
-    assert "-R github.com/acme/widgets" in calls and "--hostname github.com" in calls, calls
+    assert "-R github.com/acme/widgets" in calls, calls
+    assert "--hostname github.com" in calls, calls
     # Strings go as strings: `-F` would send a repository named `2048` as a number.
-    assert "-f owner=acme" in calls and "-f name=widgets" in calls, calls
+    assert "-f owner=acme" in calls, calls
+    assert "-f name=widgets" in calls, calls
 
 
 @pytest.fixture
@@ -305,7 +309,9 @@ def test_gitlab_answers_the_new_questions_through_glab(forge_mod, glab):
     ])
     gl = forge_mod.GitLabForge(hosts=["gitlab.example.com"])
     ref = gl.parse_pipeline_url("https://gitlab.example.com/acme/group/widgets/-/pipelines/6")
-    assert ref is not None and ref.repo.path == "acme/group/widgets" and ref.id == 6
+    assert ref is not None
+    assert ref.repo.path == "acme/group/widgets"
+    assert ref.id == 6
 
     p, why = gl.pipeline(ref)
     assert not why, why
@@ -313,13 +319,15 @@ def test_gitlab_answers_the_new_questions_through_glab(forge_mod, glab):
     assert [(j.name, j.verdict) for j in p.jobs] == [("🔍 plan", "passed"), ("apply", "manual"),
                                                       ("old", "cancelled")]
     found, why = gl.pipelines_for_commit(ref.repo, "def")
-    assert not why and [r.id for r in found] == [6]
+    assert not why
+    assert [r.id for r in found] == [6]
     cr_ref = forge_mod.ChangeRef(ref.repo, 4, "https://gitlab.example.com/acme/group/widgets/-/merge_requests/4")
     assert gl.threads(cr_ref) == (1, "")
 
     glab.mr(4, state="merged", merge_commit_sha=None, squash_commit_sha="5" * 40)
     cr, why = gl.get(cr_ref)
-    assert not why and cr.merge_sha == "5" * 40
+    assert not why
+    assert cr.merge_sha == "5" * 40
     # GitLab's default already leaves retried jobs out, so only the latest attempt is read.
     assert "include_retried" not in glab.calls()
 

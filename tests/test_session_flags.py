@@ -97,7 +97,9 @@ def test_command_with_uncovered_renders_without_reports_as(tmp_path):
     assert rendered == ["--command", "cursor-agent", "--arg", "--trust"], rendered
     assert "--reports-as" not in rendered
     assert "uncovered" in done.stderr
-    assert "watch" in done.stderr and "refuel" in done.stderr and "reap" in done.stderr
+    assert "watch" in done.stderr
+    assert "refuel" in done.stderr
+    assert "reap" in done.stderr
 
 
 def test_command_without_reports_as_or_uncovered_is_still_refused(tmp_path):
@@ -223,4 +225,5 @@ def test_the_gate_form_never_layers_the_overlay_even_given_the_tracked_file_by_a
     done = run([*PYTHON, "scripts/lib/session_profiles.py", tracked, "--check"], cwd=REPO, FLEET_PROFILES_ROOT=root)
     assert done.code == 0, done.out
     rendered = run([*PYTHON, "scripts/lib/session_profiles.py", tracked, "bad"], cwd=REPO, FLEET_PROFILES_ROOT=root)
-    assert rendered.code == 1 and "no profile 'bad'" in rendered.stderr, rendered.out
+    assert rendered.code == 1, rendered.out
+    assert "no profile 'bad'" in rendered.stderr, rendered.out

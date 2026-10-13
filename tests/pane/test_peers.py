@@ -104,24 +104,32 @@ def test_one_peer_ok_one_unreachable_one_too_slow(stubs, tmp_path):
                           "downbox:/srv/fleet", "slowbox:/srv/fleet"}, "a worker was read as a lead"
 
     me = found["local:" + str(REPO)]
-    assert me["self"] and me["status"] == "ok"
+    assert me["self"]
+    assert me["status"] == "ok"
     assert [t["ref"] for t in me["tasks"]] == ["home-topic/01-here"]
 
     near = found["local:" + str(peer)]
-    assert near["status"] == "ok" and near["fleet"] == "near" and near["source"] == "thurbox"
+    assert near["status"] == "ok"
+    assert near["fleet"] == "near"
+    assert near["source"] == "thurbox"
     assert [(t["ref"], t["state"], t["fleet"], t["host"]) for t in near["tasks"]] == [
         ("local-topic/01-near", "queued", "near", "local")]
 
     far = found["devbox:/srv/fleet"]
     assert far["status"] == "ok", far
-    assert far["tasks"][0]["title"] == "Far away task" and far["tasks"][0]["host"] == "devbox"
-    assert far["tasks"][0]["session"] == "worker-far" and far["tasks"][0]["agent"] == "claude"
+    assert far["tasks"][0]["title"] == "Far away task"
+    assert far["tasks"][0]["host"] == "devbox"
+    assert far["tasks"][0]["session"] == "worker-far"
+    assert far["tasks"][0]["agent"] == "claude"
 
     gone = found["downbox:/srv/fleet"]
-    assert gone["status"] == "unreachable" and "No route to host" in gone["reason"] and gone["tasks"] == []
+    assert gone["status"] == "unreachable"
+    assert "No route to host" in gone["reason"]
+    assert gone["tasks"] == []
 
     late = found["slowbox:/srv/fleet"]
-    assert late["status"] == "unreachable" and "2s" in late["reason"], late
+    assert late["status"] == "unreachable", late
+    assert "2s" in late["reason"], late
 
     # Every peer is asked at once: three hosts and a local fleet in one
     # timeout, not one after another.
@@ -153,7 +161,8 @@ def test_a_peer_that_stops_answering_is_stale_and_keeps_its_last_reading(stubs, 
 
     far = fleets(json.loads(peers("--json", "--refresh").stdout))["devbox:/srv/fleet"]
     assert far["status"] == "stale", far
-    assert "No route to host" in far["reason"] and far["age"] >= 0
+    assert "No route to host" in far["reason"]
+    assert far["age"] >= 0
     assert [t["ref"] for t in far["tasks"]] == ["remote-topic/01-far"], "a stale peer blanked its tasks"
     line = peers("--records").stdout.splitlines()[0].split("\t")
     assert line[4] == "stale"
@@ -166,7 +175,8 @@ def test_thurbox_failing_to_answer_keeps_every_peer_it_found_before(stubs, tmp_p
     write(stubs.root / "ssh-state" / "me@devbox.down", "")
     far = fleets(json.loads(peers("--json", "--refresh").stdout)).get("devbox:/srv/fleet")
     assert far, "a session list that failed once forgot every peer it had found"
-    assert far["status"] == "stale" and [t["ref"] for t in far["tasks"]] == ["remote-topic/01-far"]
+    assert far["status"] == "stale"
+    assert [t["ref"] for t in far["tasks"]] == ["remote-topic/01-far"]
 
 
 def test_no_peers_is_this_fleet_alone_and_an_empty_wire(stubs, tmp_path):
@@ -185,7 +195,9 @@ def test_the_operator_setting_adds_a_peer_and_can_turn_discovery_off(stubs, tmp_
     found = fleets(json.loads(peers("--json").stdout))
     assert "devbox:/srv/fleet" not in found, "DISCOVER=off still read thurbox's leads"
     late = found["slowbox:/srv/fleet"]
-    assert late["status"] == "ok" and late["fleet"] == "late" and late["source"] == "config"
+    assert late["status"] == "ok"
+    assert late["fleet"] == "late"
+    assert late["source"] == "config"
 
 
 def test_two_unnamed_fleets_in_folders_of_one_name_keep_two_names(stubs, tmp_path):
@@ -199,7 +211,8 @@ def test_two_unnamed_fleets_in_folders_of_one_name_keep_two_names(stubs, tmp_pat
 def test_an_unknown_host_is_unreachable_and_not_a_crash(stubs, tmp_path):
     machine(stubs, tmp_path, [lead("self", str(REPO), "local-tmux"), lead("x", "/srv/fleet", "ssh:nobox")])
     gone = fleets(json.loads(peers("--json").stdout))["nobox:/srv/fleet"]
-    assert gone["status"] == "unreachable" and "nobox" in gone["reason"]
+    assert gone["status"] == "unreachable"
+    assert "nobox" in gone["reason"]
 
 
 def test_the_tracked_example_names_no_peer():

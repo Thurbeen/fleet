@@ -172,7 +172,8 @@ def test_a_slot_thurbox_kept_is_retired_so_each_key_has_one_plugin(stubs, tmp_pa
     assert claimants == ["92_fleet_queue.lua"], claimants
     assert [p.name for p in (ui / "plugins").glob("*.lua") if b'"fleetqueue.board"' in p.read_bytes()] == ["91_fleet_queue.lua"]
     backups = list((ui / "plugins").glob("91_fleet_queue.lua.bak-*"))
-    assert len(backups) == 1 and backups[0].read_bytes() == stale, "the edit thurbox protected was lost"
+    assert len(backups) == 1, "the edit thurbox protected was lost"
+    assert backups[0].read_bytes() == stale, "the edit thurbox protected was lost"
     expect(done.out, "held a file thurbox would not replace", str(backups[0]), "The Kanban board is installed")
     # A second run finds its own delivery and moves nothing.
     again = install(fleet)
@@ -204,7 +205,8 @@ def test_every_delivery_thurbox_declines_is_set_aside_and_made(stubs, tmp_path, 
     assert done.code == 0, done.out
     assert (ui / destination).read_bytes() == (fleet / "interface" / source).read_bytes(), done.out
     backups = list((ui / destination).parent.glob("*.bak-*"))
-    assert len(backups) == 1 and backups[0].read_text(encoding="utf-8") == "-- somebody's\n", done.out
+    assert len(backups) == 1, done.out
+    assert backups[0].read_text(encoding="utf-8") == "-- somebody's\n", done.out
     expect(done.out, f"{destination} held a file thurbox would not replace", str(backups[0]))
     refute(done.out, "could not install")
 

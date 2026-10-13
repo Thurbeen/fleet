@@ -40,10 +40,8 @@ def test_ctrl_x_focuses_the_installing_fleets_lead(scenario, tmp_path):
 
 def test_the_key_plugin_is_installed_beside_the_board():
     installer = lib("install_extension.py")
-    assert installer.LEAD_DEST.startswith("plugins/") and installer.LEAD_DEST not in (
-        installer.PANE_DEST,
-        installer.BOARD_DEST,
-    )
+    assert installer.LEAD_DEST.startswith("plugins/")
+    assert installer.LEAD_DEST not in (installer.PANE_DEST, installer.BOARD_DEST)
     assert installer.HOME_LIB.replace("\\", "/") == "interface/fleet_home.lua"
     ignored = (REPO / ".gitignore").read_text(encoding="utf-8")
     assert "/interface/fleet_home.lua" in ignored.splitlines(), "the rendered checkout path would be tracked"

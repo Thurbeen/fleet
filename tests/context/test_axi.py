@@ -82,7 +82,8 @@ def test_many_records_stay_under_the_cap_and_say_what_was_left_out(surface, many
     assert done.code == 0, done.out
     doc = axi(done, cap)
     if surface in ("summary", "lead", "repo"):
-        assert "more" in doc and "--all" in doc["more"], f"no disclosure of what was cut:\n{done.stdout}"
+        assert "more" in doc, f"no disclosure of what was cut:\n{done.stdout}"
+        assert "--all" in doc["more"], f"no disclosure of what was cut:\n{done.stdout}"
 
 
 @pytest.mark.parametrize("surface", ["summary", "lead", "repo"])
@@ -106,7 +107,8 @@ def test_an_unknown_flag_is_a_usage_error_on_stdout_with_exit_2(surface):
     done = context(*good, "--no-such-flag")
     assert done.code == 2, done.out
     doc = axi(done, 4096)
-    assert doc["code"] == "usage" and "--no-such-flag" in doc["error"], done.stdout
+    assert doc["code"] == "usage", done.stdout
+    assert "--no-such-flag" in doc["error"], done.stdout
 
 
 @pytest.mark.parametrize("surface", SURFACES)
@@ -115,7 +117,8 @@ def test_a_bad_argument_is_an_error_on_stdout_with_exit_1(surface):
     done = context(*bad)
     assert done.code in (1, 2), done.out
     doc = axi(done, 4096)
-    assert doc["error"] and doc["code"], done.stdout
+    assert doc["error"], done.stdout
+    assert doc["code"], done.stdout
     if surface != "summary":
         assert done.code == 1, done.out
 

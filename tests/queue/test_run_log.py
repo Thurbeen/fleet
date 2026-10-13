@@ -177,7 +177,8 @@ def test_a_well_formed_fence_migrates_once_into_the_facts_file():
     facts = facts_file(path)
     expect(facts.read_text(encoding="utf-8"), slug, "No tasks yet.")
     log = path.read_text(encoding="utf-8")
-    assert "fleet:facts" not in log and "old facts" not in log, log
+    assert "fleet:facts" not in log, log
+    assert "old facts" not in log, log
     expect(log, "Prose above the block.", "LEAD-DECISION", facts.name)
     # The block's place now holds the link, and nothing else moved.
     assert log == f"# Run: `{slug}`\n\nProse above the block.\n\n{FACTS_LINK(facts.name)}\n\n{LEAD}"
@@ -232,7 +233,9 @@ def test_an_edit_saved_while_a_migration_runs_survives_and_migrates_next_pass():
     _, note = raced(slug, path)
     assert "changed" in note, note
     text = path.read_text(encoding="utf-8")
-    assert text.count("LEAD-DECISION") == 2 and "fleet:facts" in text, text
+    assert text.count("LEAD-DECISION") == 2, text
+    assert "fleet:facts" in text, text
     ok(q("run"))
     text = path.read_text(encoding="utf-8")
-    assert text.count("LEAD-DECISION") == 2 and "fleet:facts" not in text, text
+    assert text.count("LEAD-DECISION") == 2, text
+    assert "fleet:facts" not in text, text

@@ -239,4 +239,5 @@ def test_architecture_board_uses_its_own_toggle():
     root = ET.fromstring(read(REPO / "docs/fleet-architecture.svg"))
     labels = [node.text for node in root if node.tag.endswith("text")]
     index = labels.index("Kanban board")
-    assert "Alt+K" in labels[index + 1] and "F3" not in labels[index + 1]
+    assert "Alt+K" in labels[index + 1]
+    assert "F3" not in labels[index + 1]

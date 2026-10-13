@@ -145,8 +145,11 @@ def test_json_has_every_section_and_marks_the_missing_ones(queue, bare):
     assert done.code == 0, done.out
     doc = json.loads(done.stdout)
     for key in ("fuel", "queue", "sessions", "prs", "checkout", "machine"):
-        assert key in doc and "unavailable" in doc[key], key
-    assert doc["sessions"]["unavailable"] and doc["prs"]["unavailable"] and doc["fuel"]["unavailable"]
+        assert key in doc, key
+        assert "unavailable" in doc[key], key
+    assert doc["sessions"]["unavailable"]
+    assert doc["prs"]["unavailable"]
+    assert doc["fuel"]["unavailable"]
     assert doc["fuel"]["providers"] == [], "an unreadable fuel section names no provider"
     assert doc["queue"]["unavailable"] is None, "the queue is on disk and readable"
     assert len(doc["queue"]["topics"][0]["tasks"]) == 3
@@ -360,7 +363,8 @@ def test_fuel_flag_is_the_fuel_section_alone_and_spends_no_other_probe(stubs):
     done = status("--fuel")
 
     assert done.code == 0, done.out
-    assert stubs.calls("gh") == [] and stubs.calls("thurbox-cli") == []
+    assert stubs.calls("gh") == []
+    assert stubs.calls("thurbox-cli") == []
     expect(done.out, "remaining\t64", "reserve\t20", "limited_by\tseven_day",
            "resets_at\t2026-03-20T17:59:45.600Z", "state\tfresh")
     refute(done.out, "2026-03-19T03:43:45.600Z", "298906")
@@ -380,7 +384,8 @@ def test_the_record_carries_every_window_shortest_first(stubs):
     rows = [line.split("\t")[1:] for line in done.stdout.splitlines() if line.startswith("window\t")]
     assert [r[0] for r in rows] == ["five_hour", "seven_day", "model:fable"], done.out
     week = rows[1]
-    assert week[1] == "64" and week[3] == "week", week
+    assert week[1] == "64", week
+    assert week[3] == "week", week
     want = int(datetime.fromisoformat("2026-03-20T17:59:45.600+00:00").timestamp())
     assert int(week[2]) == want, f"reset is not epoch seconds: {week}"
     expect(done.out, "limited_by\tseven_day")
@@ -431,10 +436,13 @@ def test_fuel_flag_carries_one_record_per_provider_from_one_fetch(stubs):
     blocks = records(status("--fuel").stdout)
     by = {b["provider"]: b for b in blocks}
     assert [b["provider"] for b in blocks] == ["claude", "codex", "zai"]
-    assert by["claude"]["remaining"] == "64" and by["zai"]["remaining"] == "7"
-    assert "remaining" not in by["codex"] and by["codex"]["unavailable"].startswith("auth_required")
+    assert by["claude"]["remaining"] == "64"
+    assert by["zai"]["remaining"] == "7"
+    assert "remaining" not in by["codex"]
+    assert by["codex"]["unavailable"].startswith("auth_required")
     for b in blocks:
-        assert b["reserve"] == "20" and b["read_at"] == blocks[0]["read_at"]
+        assert b["reserve"] == "20"
+        assert b["read_at"] == blocks[0]["read_at"]
     assert len(fetches(stubs)) == 1
 
 
@@ -586,7 +594,8 @@ def test_a_checkout_wide_env_line_moves_the_leads_own_account(tmp_path, stubs):
         (auth(("claude", "available")), fetch(claude(7))),
     ))
     blocks = records(status("--fuel", FLEET_AGENT_ROOT=str(conf)).stdout)
-    assert len(blocks) == 1 and blocks[0]["remaining"] == "7", blocks
+    assert len(blocks) == 1, blocks
+    assert blocks[0]["remaining"] == "7", blocks
     assert "account" not in blocks[0], blocks
     assert len(fetches(stubs)) == 1, fetches(stubs)
     done = status(FLEET_AGENT_ROOT=str(conf))
@@ -666,9 +675,11 @@ def test_a_different_provider_sharing_the_checkouts_own_env_still_gets_its_own_a
     blocks = records(status("--fuel", FLEET_AGENT_ROOT=str(conf)).stdout)
     assert len(blocks) == 2, blocks
     by_account = {b.get("account", ""): b for b in blocks}
-    assert "claude" in by_account and "codex" in by_account, blocks
+    assert "claude" in by_account, blocks
+    assert "codex" in by_account, blocks
     assert by_account["claude"]["remaining"] == "64", blocks
-    assert "unavailable" in by_account["codex"] and "remaining" not in by_account["codex"], blocks
+    assert "unavailable" in by_account["codex"], blocks
+    assert "remaining" not in by_account["codex"], blocks
     # One shared environment, so one `auth` call between the two accounts —
     # never a second one just because a second entry now reaches the screen.
     assert len(stubs.calls("quota-axi", "auth")) == 1, stubs.calls("quota-axi")
@@ -751,7 +762,8 @@ def test_a_named_account_with_no_credential_stays_visible(tmp_path, stubs):
     blocks = records(status("--fuel", FLEET_AGENT_ROOT=str(conf)).stdout)
     assert [b["provider"] for b in blocks] == ["claude", "claude"], blocks
     assert [b["account"] for b in blocks] == ["claude", "claude-spare"], blocks
-    assert "unavailable" in blocks[1] and "remaining" not in blocks[1], blocks
+    assert "unavailable" in blocks[1], blocks
+    assert "remaining" not in blocks[1], blocks
     # Named nothing means fleet trusts it and never probes it with a fetch.
     assert len(fetches(stubs)) == 1, fetches(stubs)
     assert len(stubs.calls("quota-axi", "auth")) == 2, stubs.calls("quota-axi")
@@ -790,8 +802,10 @@ def test_the_checkouts_own_account_having_no_credential_does_not_hide_behind_ano
     blocks = records(status("--fuel", FLEET_AGENT_ROOT=str(conf)).stdout)
     assert len(blocks) == 2, blocks
     by_account = {b.get("account", ""): b for b in blocks}
-    assert "claude" in by_account and "claude-spare" in by_account, blocks
-    assert "unavailable" in by_account["claude"] and "remaining" not in by_account["claude"], blocks
+    assert "claude" in by_account, blocks
+    assert "claude-spare" in by_account, blocks
+    assert "unavailable" in by_account["claude"], blocks
+    assert "remaining" not in by_account["claude"], blocks
     assert by_account["claude-spare"]["remaining"] == "70", blocks
     # Two distinct environments, so two `auth` calls and two fetches — the
     # checkout's own guessed "claude" from `AGENT=claude` fetches like any
@@ -896,7 +910,8 @@ def test_every_account_failing_for_a_different_reason_keeps_every_reason(tmp_pat
     blocks = records(status("--fuel", FLEET_AGENT_ROOT=str(conf)).stdout)
     assert len(blocks) == 2, blocks
     by_account = {b.get("account", ""): b for b in blocks}
-    assert "claude" in by_account and "claude-broken" in by_account, blocks
+    assert "claude" in by_account, blocks
+    assert "claude-broken" in by_account, blocks
     assert "network unreachable" in by_account["claude"]["unavailable"], blocks
     assert "rate limited" in by_account["claude-broken"]["unavailable"], blocks
     done = status(FLEET_AGENT_ROOT=str(conf))

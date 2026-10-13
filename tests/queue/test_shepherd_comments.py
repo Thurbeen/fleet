@@ -139,7 +139,8 @@ def test_a_commented_review_reaches_an_idle_worker_once_and_not_twice(talk):
     # The same comment, the next pass: nothing sent, nothing written.
     out = talk.pass_()
     refute(out, "comments sent")
-    assert len(talk.sends()) == 1 and len(talk.briefs()) == 1, talk.shep.tbx_log()
+    assert len(talk.sends()) == 1, talk.shep.tbx_log()
+    assert len(talk.briefs()) == 1, talk.shep.tbx_log()
 
     # A new line comment is new, and is sent alone, with where it sits.
     talk.thread("T1", "src/retry.rs", 42, ("C1", "reviewer", "Cap this at five.", "2026-10-01T11:00:00Z"))
@@ -156,7 +157,8 @@ def test_a_busy_worker_is_left_alone_until_it_is_at_rest(talk):
         talk.shep.session(WORKER, state)
         out = talk.pass_()
         expect(out, "comments left-alone", f"is {state}", "never into a turn")
-        assert talk.sends() == [] and talk.briefs() == [], talk.shep.tbx_log()
+        assert talk.sends() == [], talk.shep.tbx_log()
+        assert talk.briefs() == [], talk.shep.tbx_log()
         assert "shepherd_comments" not in talk.task()
 
     talk.shep.session(WORKER, "idle")
@@ -211,13 +213,15 @@ def test_a_change_request_whose_review_requested_changes_is_the_fixer_s(talk):
     out = talk.pass_()
     expect(out, "conflicting", "dispatched")
     refute(out, "comments sent")
-    assert talk.briefs() == [] and "shepherd_comments" not in talk.task()
+    assert talk.briefs() == []
+    assert "shepherd_comments" not in talk.task()
 
 
 def test_a_dry_run_says_what_it_would_send_and_sends_nothing(talk):
     talk.review("R1", "reviewer", "Why?", "2026-10-01T10:00:00Z")
     expect(talk.pass_("--dry-run"), "comments would-send: 1 new comment -> " + WORKER)
-    assert talk.sends() == [] and talk.briefs() == []
+    assert talk.sends() == []
+    assert talk.briefs() == []
     assert "shepherd_comments" not in talk.task()
 
 
@@ -234,7 +238,8 @@ def test_a_gone_worker_gets_a_fresh_session_for_its_comments(talk):
     # The next comment goes to that session, not a second new one.
     talk.comment("I1", "reviewer", "And this?", "2026-10-01T11:00:00Z")
     expect(talk.pass_(), "comments sent")
-    assert len(talk.shep.creates()) == 1 and len(talk.sends(sid)) == 2, talk.shep.tbx_log()
+    assert len(talk.shep.creates()) == 1, talk.shep.tbx_log()
+    assert len(talk.sends(sid)) == 2, talk.shep.tbx_log()
 
 
 # --- an unresolved thread holds the merge ---------------------------------------

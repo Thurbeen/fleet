@@ -596,4 +596,5 @@ def test_a_closed_change_request_beside_an_open_one_retires_the_task_at_collect(
     stubs.pr_state(702, "CLOSED")
     expect(ok(q("collect")).out, "01-spans-two", "closed unmerged")
     doc = record(queue_dir, topic, "01-spans-two")
-    assert doc["state"] == "abandoned" and doc["abandoned"]["how"] == "closed-unmerged"
+    assert doc["state"] == "abandoned"
+    assert doc["abandoned"]["how"] == "closed-unmerged"

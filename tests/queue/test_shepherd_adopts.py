@@ -73,7 +73,8 @@ def test_an_outside_session_is_told_once_at_rest_and_never_while_working(outside
     expect(out, "sessions fleet did not spawn", "pull/201", "checks-failed", "the session is working")
     assert sends(stubs, OUTSIDE) == [], out
     entry = store()["sessions"][OUTSIDE]["prs"][0]
-    assert entry["action"] == "left-alone" and entry["sent"] == []
+    assert entry["action"] == "left-alone"
+    assert entry["sent"] == []
 
     session(stubs, OUTSIDE, "hand-made", "idle", outside, "feat/outside")
     out = q("shepherd").out
@@ -127,8 +128,11 @@ def test_a_session_held_by_a_task_is_not_adopted_and_both_land_in_the_store(outs
 
     sessions = store()["sessions"]
     task, adopted = sessions[HELD], sessions[OUTSIDE]
-    assert task["adopted"] is False and task["task"] == f"{topic}/01-held"
-    assert adopted["adopted"] is True and adopted["task"] is None and adopted["name"] == "hand-made"
+    assert task["adopted"] is False
+    assert task["task"] == f"{topic}/01-held"
+    assert adopted["adopted"] is True
+    assert adopted["task"] is None
+    assert adopted["name"] == "hand-made"
     for s in (task, adopted):
         pr = s["prs"][0]
         assert set(pr) >= {
@@ -136,9 +140,12 @@ def test_a_session_held_by_a_task_is_not_adopted_and_both_land_in_the_store(outs
             "review_decision", "unresolved_threads", "mergeable", "condition", "action", "observed_at",
             "stale",
         }, pr
-        assert pr["repo"] == "github.com/Thurbeen/fleet" and pr["state"] == "open"
-        assert pr["checks"] == "failing" and pr["failing_checks"] == ["lint"]
-        assert pr["condition"] == "checks-failed" and pr["stale"] is False
+        assert pr["repo"] == "github.com/Thurbeen/fleet"
+        assert pr["state"] == "open"
+        assert pr["checks"] == "failing"
+        assert pr["failing_checks"] == ["lint"]
+        assert pr["condition"] == "checks-failed"
+        assert pr["stale"] is False
     assert adopted["prs"][0]["action"] == "sent"
     assert task["prs"][0]["number"] == 202
 
@@ -156,7 +163,8 @@ def test_an_unreadable_forge_keeps_the_old_entry_marked_stale(outside, stubs):
     after = store()["sessions"][OUTSIDE]["prs"][0]
     assert after["stale"] is True, out
     expect(after["stale_reason"], "could not connect")
-    assert after["observed_at"] == before["observed_at"] and after["number"] == 201
+    assert after["observed_at"] == before["observed_at"]
+    assert after["number"] == 201
 
 
 def test_unreadable_thurbox_keeps_adopted_entries_marked_stale(outside, stubs):
@@ -331,7 +339,8 @@ def test_a_git_failure_keeps_an_adopted_session_and_what_it_was_told(shep, stubs
     head.write_text("garbage\n", encoding="utf-8")  # every git read in the worktree now fails
     out = q("shepherd").out
     entry = store()["sessions"][OUTSIDE]["prs"][0]
-    assert entry["stale"] is True and len(entry["sent"]) == 1, out
+    assert entry["stale"] is True, out
+    assert len(entry["sent"]) == 1, out
 
     head.write_text(good, encoding="utf-8")
     out = q("shepherd").out

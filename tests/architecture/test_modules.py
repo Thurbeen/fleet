@@ -58,7 +58,8 @@ def test_every_sibling_is_keyed_the_way_fleet_cli_keys_it():
         if not (isinstance(node.func, ast.Name) and node.func.id == "_load_sibling" and len(node.args) == 2):
             continue
         name, filename = text_constant(node.args[0]), text_constant(node.args[1])
-        assert name and filename, f"{at(path, node)}: a sibling load with something other than two literals"
+        assert name, f"{at(path, node)}: a sibling load with something other than two literals"
+        assert filename, f"{at(path, node)}: a sibling load with something other than two literals"
         if name != key_for(filename):
             wrong.append(f"{at(path, node)}: {filename} keyed {name}, not {key_for(filename)}")
     assert wrong == [], "a module would load twice under two keys:\n  " + "\n  ".join(wrong)

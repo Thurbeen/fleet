@@ -60,7 +60,8 @@ def test_a_key_removed_by_one_writer_stays_removed():
     later.doc["note"] = "kept"
     later.save()
     disk = on_disk(ref)
-    assert "shepherd" not in disk and disk["note"] == "kept", disk
+    assert "shepherd" not in disk, disk
+    assert disk["note"] == "kept", disk
 
 
 def test_concurrent_writers_lose_no_change():
@@ -106,7 +107,8 @@ def test_loading_a_task_waits_out_a_replace_in_flight():
     racing, refused = refusing_one_open_of("task.yaml")
     with mock.patch("builtins.open", racing):
         task = view(ref)
-    assert refused and task.doc["title"] == "One"
+    assert refused
+    assert task.doc["title"] == "One"
 
 
 def test_a_save_waits_out_a_replace_in_flight():
@@ -116,7 +118,8 @@ def test_a_save_waits_out_a_replace_in_flight():
     racing, refused = refusing_one_open_of("task.yaml")
     with mock.patch("builtins.open", racing):
         task.save()
-    assert refused and on_disk(ref)["state"] == "landed"
+    assert refused
+    assert on_disk(ref)["state"] == "landed"
 
 
 def test_a_record_left_unreadable_on_disk_is_still_saved_over():

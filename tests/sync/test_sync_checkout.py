@@ -53,7 +53,8 @@ def test_a_reachable_origin_is_never_reported_unreachable_and_no_coreutils_timeo
     refute(done.out, "could not reach origin")
     expect(done.out, "fast-forwarded 'main' 1 commit(s)")
     assert head_of(work) == origin_main(tmp_path), "the checkout actually moved to origin/main"
-    assert stubs.calls("timeout") == [] and stubs.calls("gtimeout") == []
+    assert stubs.calls("timeout") == []
+    assert stubs.calls("gtimeout") == []
 
 
 def test_a_fetch_that_hangs_is_given_up_on_and_reported_rather_than_waited_out(tmp_path, stubs, monkeypatch, capsys):
@@ -276,7 +277,8 @@ def test_the_hook_contract_is_one_json_object_and_exit_0(tmp_path):
 
     assert done.code == 0
     payload = json.loads(done.stdout)
-    assert "systemMessage" in payload and "suppressOutput" in payload
+    assert "systemMessage" in payload
+    assert "suppressOutput" in payload
 
 
 def test_no_git_on_path_is_said_and_still_exits_0(tmp_path):
@@ -342,7 +344,8 @@ def test_the_json_report_names_the_range_and_every_action_it_raised(tmp_path):
 
     assert done.code == 0
     report = json.loads(done.stdout)
-    assert report["before"] == before and report["after"] == head_of(work) == origin_main(tmp_path)
+    assert report["before"] == before
+    assert report["after"] == head_of(work) == origin_main(tmp_path)
     assert report["actions"] == {
         "restart-lead": "FLEET.md",
         "reinstall-extension": "FLEET.md",
@@ -360,4 +363,5 @@ def test_the_json_report_of_a_refusal_moves_nothing_and_raises_nothing(tmp_path)
     report = json.loads(run_fleet("sync-checkout", "--json", cwd=work).stdout)
 
     expect(report["message"], "the tree is dirty")
-    assert report["actions"] == {} and report["before"] == report["after"] == ""
+    assert report["actions"] == {}
+    assert report["before"] == report["after"] == ""

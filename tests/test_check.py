@@ -80,7 +80,8 @@ def test_a_failing_check_fails_the_run_and_names_itself(tmp_path):
 
     done = run([*PYTHON, str(copy / "scripts" / "lib" / "check.py"), "yaml"], cwd=copy)
     assert done.code == 1, done.out
-    assert "FAIL" in done.out and "yaml" in done.out, done.out
+    assert "FAIL" in done.out, done.out
+    assert "yaml" in done.out, done.out
     assert "broken.yaml" in done.out, done.out
 
 
@@ -114,7 +115,8 @@ def test_{name}():
     done = run([*PYTHON, str(copy / "scripts" / "lib" / "check.py"), "--jobs", "2", "skills"], cwd=copy)
     assert "AssertionError: tests ran serially" not in done.out, done.out
     assert "deliberate worker failure" in done.out, done.out
-    assert done.code == 1 and "FAIL" in done.out, done.out
+    assert done.code == 1, done.out
+    assert "FAIL" in done.out, done.out
 
 
 @pytest.mark.parametrize("value", [None, "0", "-1", "many"])

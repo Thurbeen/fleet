@@ -134,7 +134,8 @@ def test_a_look_alike_from_another_checkout_is_never_signalled(recon, here, tmp_
         assert done.code == 0, done.out
         refute(done.out, "legacy")
         reconcile(here, "stop")
-        assert stranger.proc.poll() is None and alive(stranger.pass_in_flight), "a stranger was signalled"
+        assert stranger.proc.poll() is None, "a stranger was signalled"
+        assert alive(stranger.pass_in_flight), "a stranger was signalled"
     finally:
         stranger.kill()
 

@@ -54,7 +54,8 @@ def test_a_dry_run_says_what_it_would_do_and_does_none_of_it(stopic, shep):
            # What it would merge, and the command it would merge with.
            "would-merge", "--squash --delete-branch")
     assert shep.creates() == [], shep.tbx_log()
-    assert shep.merged() == [] and "pr merge" not in shep.gh_log(), shep.gh_log()
+    assert shep.merged() == [], shep.gh_log()
+    assert "pr merge" not in shep.gh_log(), shep.gh_log()
 
     # --json is a clean seam for `fleet status`.
     assert "prs" in json.loads(q("shepherd", "--dry-run", "--json").stdout)
@@ -283,7 +284,8 @@ def test_an_unchanged_look_writes_no_record(first_pass, stopic, shep, queue_dir)
     progress.jsonl or rewrite task.yaml. A change of state still is."""
     task = queue_dir / stopic / "01-conflicting"
     before = publish_lines(queue_dir, stopic, "01-conflicting")
-    assert before and before[-1]["state"] == "conflicting", before
+    assert before, before
+    assert before[-1]["state"] == "conflicting", before
     stamp = yaml.safe_load((task / "task.yaml").read_text(encoding="utf-8"))["publish"]
     for _ in range(5):
         assert q("shepherd", "--topic", stopic).code == 0

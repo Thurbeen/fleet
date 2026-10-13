@@ -24,7 +24,8 @@ def brief(queue_dir, topic, slug) -> str:
 
 
 def test_a_brief_points_at_the_tracked_policy_by_absolute_path(topic, queue_dir):
-    assert POLICY.is_file() and not git_ignored(POLICY), f"missing or gitignored: {POLICY}"
+    assert POLICY.is_file(), f"missing or gitignored: {POLICY}"
+    assert not git_ignored(POLICY), f"missing or gitignored: {POLICY}"
     expect(brief(queue_dir, topic, "document-the-states"), str(POLICY))
 
 
@@ -60,7 +61,8 @@ def test_a_brief_carries_the_operators_own_instructions_only_when_there_are_any(
 
 def test_the_example_is_tracked_and_the_operators_copy_is_not():
     example = REPO / "orchestration" / "queue" / "OPERATOR.example.md"
-    assert example.is_file() and not git_ignored(example)
+    assert example.is_file()
+    assert not git_ignored(example)
     assert git_ignored(REPO / "orchestration" / "queue" / "OPERATOR.md")
 
 

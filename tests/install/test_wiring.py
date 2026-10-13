@@ -70,7 +70,8 @@ def test_a_correct_link_is_left_alone(checkout):
     link = checkout / ".claude" / "skills"
     before = os.lstat(link)
     ok, message = install.make_link(str(checkout))
-    assert ok and "already" in message
+    assert ok
+    assert "already" in message
     after = os.lstat(link)
     assert (before.st_ino, before.st_mtime_ns) == (after.st_ino, after.st_mtime_ns)
 
@@ -92,7 +93,8 @@ def test_a_real_directory_with_content_is_refused_and_kept(checkout):
     install = load_install()
     assert install.link_state(str(checkout))[0] == "refuse"
     ok, message = install.make_link(str(checkout))
-    assert not ok and ".claude/skills" in message
+    assert not ok
+    assert ".claude/skills" in message
     assert mine.read_text(encoding="utf-8") == "an operator's own skill\n"
 
 
@@ -163,7 +165,8 @@ def test_codex_refuses_a_user_owned_skill_name_without_linking_anything(checkout
 
     ok, message = install.make_codex_links(str(checkout))
 
-    assert not ok and "fleet-queue" in message
+    assert not ok
+    assert "fleet-queue" in message
     assert collision.read_text(encoding="utf-8") == "the operator's fleet-queue skill\n"
     assert not (codex_skills(isolated_env) / "fleet-pane").exists()
 
@@ -178,7 +181,8 @@ def test_codex_refuses_a_user_owned_skill_link_without_repointing_it(checkout, i
 
     ok, message = install.make_codex_links(str(checkout))
 
-    assert not ok and "fleet-queue" in message
+    assert not ok
+    assert "fleet-queue" in message
     assert os.path.samefile(link, mine)
     assert not (codex_skills(isolated_env) / "fleet-pane").exists()
 
@@ -251,7 +255,8 @@ def test_a_nudge_already_there_is_left_byte_for_byte(checkout, isolated_env):
     mtime = os.stat(path).st_mtime_ns
     assert install.hook_state(path, command)[0] == "ok"
     ok, message = install.apply_hook(path, command)
-    assert ok and "already" in message
+    assert ok
+    assert "already" in message
     assert settings_file(isolated_env).read_bytes() == before
     assert os.stat(path).st_mtime_ns == mtime
 
@@ -331,5 +336,6 @@ def test_a_settings_file_that_is_not_json_is_refused_and_untouched(checkout, iso
     path = str(settings_file(isolated_env))
     assert install.hook_state(path, nudge(checkout))[0] == "refuse"
     ok, message = install.apply_hook(path, nudge(checkout))
-    assert not ok and "settings.json" in message
+    assert not ok
+    assert "settings.json" in message
     assert settings_file(isolated_env).read_text(encoding="utf-8") == "{ not json\n"
