@@ -861,24 +861,10 @@ class GitHubForge(Forge):
         return out, ""
 
     def _change_request(self, d: dict, repo: RepoId | None) -> ChangeRequest | None:
-        url = str(d.get("url") or "")
-        ref = self.parse_change_url(url)
+        ref = self._gh_change_ref(d, repo)
         if ref is None:
-            if repo is None or not d.get("number"):
-                return None
-            # A repository was asked for by name and gh answered with a pull
-            # request whose url it did not give: rebuild it rather than drop it.
-            n = int(d["number"])
-            ref = ChangeRef(repo, n, url or f"https://{repo.host}/{repo.path}/pull/{n}")
-
-        owner = str((d.get("headRepositoryOwner") or {}).get("login") or "")
-        if not owner:
-            ours, where = None, ""
-        elif d.get("isCrossRepository"):
-            ours, where = False, f"{owner}'s fork"
-        else:
-            ours = owner.lower() == ref.repo.owner.lower()
-            where = f"{owner}'s repository"
+            return None
+        ours, where = self._gh_head_ownership(d, ref)
 
         author = d.get("author") or {}
         return ChangeRequest(
@@ -900,16 +886,47 @@ class GitHubForge(Forge):
                 str(d.get("reviewDecision") or "").upper(), ""
             ),
             checks=self._checks(d.get("statusCheckRollup")),
-            commits=[
-                Commit(str(c.get("oid") or ""), str(c.get("messageHeadline") or ""))
-                for c in (d.get("commits") or [])
-                if isinstance(c, dict)
-            ],
-            labels=[str(lb.get("name") or "") for lb in (d.get("labels") or []) if isinstance(lb, dict)],
+            commits=self._gh_commits(d.get("commits")),
+            labels=self._gh_labels(d.get("labels")),
             head_is_ours=ours,
             head_location=where,
             merge_sha=str((d.get("mergeCommit") or {}).get("oid") or ""),
         )
+
+    def _gh_change_ref(self, d: dict, repo: RepoId | None) -> ChangeRef | None:
+        """The pull request `d` is, from its url — or rebuilt from `repo` and its number."""
+        url = str(d.get("url") or "")
+        ref = self.parse_change_url(url)
+        if ref is not None:
+            return ref
+        if repo is None or not d.get("number"):
+            return None
+        # A repository was asked for by name and gh answered with a pull
+        # request whose url it did not give: rebuild it rather than drop it.
+        n = int(d["number"])
+        return ChangeRef(repo, n, url or f"https://{repo.host}/{repo.path}/pull/{n}")
+
+    @staticmethod
+    def _gh_head_ownership(d: dict, ref: ChangeRef) -> tuple:
+        """(head is ours: True / False / None, where the head branch lives)."""
+        owner = str((d.get("headRepositoryOwner") or {}).get("login") or "")
+        if not owner:
+            return None, ""
+        if d.get("isCrossRepository"):
+            return False, f"{owner}'s fork"
+        return owner.lower() == ref.repo.owner.lower(), f"{owner}'s repository"
+
+    @staticmethod
+    def _gh_commits(raw) -> list:
+        return [
+            Commit(str(c.get("oid") or ""), str(c.get("messageHeadline") or ""))
+            for c in (raw or [])
+            if isinstance(c, dict)
+        ]
+
+    @staticmethod
+    def _gh_labels(raw) -> list:
+        return [str(lb.get("name") or "") for lb in (raw or []) if isinstance(lb, dict)]
 
     # --- pipelines and threads ---
 
@@ -957,10 +974,7 @@ class GitHubForge(Forge):
         if (threads.get("pageInfo") or {}).get("hasNextPage"):
             return None, "more than 100 review threads; not read rather than read short"
 
-        def who(n: dict) -> tuple:
-            a = n.get("author") or {}
-            return str(a.get("login") or ""), a.get("__typename") == "Bot"
-
+        who = self._gh_author
         out = []
         for n in reviews:
             login, bot = who(n)
@@ -978,19 +992,32 @@ class GitHubForge(Forge):
                 at=str(n.get("createdAt") or ""),
             ))
         for t in nodes:
-            line = t.get("line") if isinstance(t.get("line"), int) else t.get("originalLine")
-            for n in (t.get("comments") or {}).get("nodes") or []:
-                if not isinstance(n, dict):
-                    continue
-                login, bot = who(n)
-                out.append(Feedback(
-                    id=str(n.get("id") or ""), kind="inline", author=login, author_is_bot=bot,
-                    body=str(n.get("body") or ""), url=str(n.get("url") or ""),
-                    at=str(n.get("createdAt") or ""), path=str(t.get("path") or ""),
-                    line=line if isinstance(line, int) else None,
-                    thread=str(t.get("id") or ""), resolved=bool(t.get("isResolved")),
-                ))
+            out.extend(self._gh_thread_feedback(t))
         return [f for f in out if f.id], ""
+
+    @staticmethod
+    def _gh_author(n: dict) -> tuple:
+        """(login, is a bot) of a review, comment or inline comment."""
+        a = n.get("author") or {}
+        return str(a.get("login") or ""), a.get("__typename") == "Bot"
+
+    @classmethod
+    def _gh_thread_feedback(cls, t: dict) -> list:
+        """Every comment of one review thread, as `inline` feedback."""
+        out = []
+        line = t.get("line") if isinstance(t.get("line"), int) else t.get("originalLine")
+        for n in (t.get("comments") or {}).get("nodes") or []:
+            if not isinstance(n, dict):
+                continue
+            login, bot = cls._gh_author(n)
+            out.append(Feedback(
+                id=str(n.get("id") or ""), kind="inline", author=login, author_is_bot=bot,
+                body=str(n.get("body") or ""), url=str(n.get("url") or ""),
+                at=str(n.get("createdAt") or ""), path=str(t.get("path") or ""),
+                line=line if isinstance(line, int) else None,
+                thread=str(t.get("id") or ""), resolved=bool(t.get("isResolved")),
+            ))
+        return out
 
     def parse_pipeline_url(self, url: str) -> PipelineRef | None:
         m = GH_RUN_URL_RE.match((url or "").strip())
@@ -1631,28 +1658,9 @@ class GitLabForge(Forge):
             repo, number, f"https://{repo.host}/{repo.path}/-/merge_requests/{number}"
         )
 
-        # WHOSE BRANCH. On GitLab a fork is a project of its own, so this is
-        # two integers and not a name — and when either is missing the answer
-        # is `None`, which `classify` reads as undetermined rather than as a
-        # stranger or as one of ours.
-        source, target = d.get("source_project_id"), d.get("target_project_id")
-        if not isinstance(source, int) or not isinstance(target, int):
-            ours, where = None, ""
-        elif source == target:
-            ours, where = True, f"{ref.repo.path} itself"
-        else:
-            # The merge request says which project the branch is in by id and
-            # never by name, and resolving the id would be another call for a
-            # sentence nobody acts on.
-            ours, where = False, f"another project on {ref.repo.host} (id {source})"
-
+        ours, where = self._head_ownership(d, ref)
         said = str(d.get("detailed_merge_status") or "").lower()
-        if d.get("has_conflicts") is True or said == GL_CONFLICT:
-            mergeable = "conflicting"
-        elif said == GL_MERGEABLE:
-            mergeable = "mergeable"
-        else:
-            mergeable = ""
+        mergeable = self._mergeable(d, said)
 
         author = d.get("author") or {}
         login = str(author.get("username") or "")
@@ -1684,6 +1692,32 @@ class GitLabForge(Forge):
             # branch's head, which is what its pipeline runs for.
             merge_sha=str(d.get("merge_commit_sha") or d.get("squash_commit_sha") or ""),
         )
+
+    @staticmethod
+    def _head_ownership(d: dict, ref: ChangeRef) -> tuple:
+        """(head is ours: True / False / None, where the head branch lives)."""
+        # WHOSE BRANCH. On GitLab a fork is a project of its own, so this is
+        # two integers and not a name — and when either is missing the answer
+        # is `None`, which `classify` reads as undetermined rather than as a
+        # stranger or as one of ours.
+        source, target = d.get("source_project_id"), d.get("target_project_id")
+        if not isinstance(source, int) or not isinstance(target, int):
+            return None, ""
+        if source == target:
+            return True, f"{ref.repo.path} itself"
+        # The merge request says which project the branch is in by id and
+        # never by name, and resolving the id would be another call for a
+        # sentence nobody acts on.
+        return False, f"another project on {ref.repo.host} (id {source})"
+
+    @staticmethod
+    def _mergeable(d: dict, said: str) -> str:
+        """`detailed_merge_status` (lowered, as `said`), in fleet's word."""
+        if d.get("has_conflicts") is True or said == GL_CONFLICT:
+            return "conflicting"
+        if said == GL_MERGEABLE:
+            return "mergeable"
+        return ""
 
     # --- pipelines and threads ---
 
@@ -1733,26 +1767,37 @@ class GitLabForge(Forge):
             for n in d.get("notes") or []:
                 if not isinstance(n, dict) or n.get("system") or n.get("id") is None:
                     continue
-                author = n.get("author") if isinstance(n.get("author"), dict) else {}
-                login = str(author.get("username") or "")
-                pos = n.get("position") if isinstance(n.get("position"), dict) else {}
-                line = pos.get("new_line") if isinstance(pos.get("new_line"), int) else pos.get("old_line")
-                resolvable = bool(n.get("resolvable"))
-                out.append(Feedback(
-                    id=str(n["id"]), kind="inline" if pos else "comment", author=login,
-                    # A note's author carries a `bot` flag where the merge
-                    # request's does not; the reserved token prefix is the
-                    # fallback for an instance that does not send it.
-                    author_is_bot=bool(author.get("bot")) or bool(GL_BOT_RE.match(login)),
-                    body=str(n.get("body") or ""),
-                    url=f"{ref.url}#note_{n['id']}",
-                    at=str(n.get("created_at") or ""),
-                    path=str(pos.get("new_path") or pos.get("old_path") or ""),
-                    line=line if isinstance(line, int) else None,
-                    thread=str(d.get("id") or "") if resolvable else "",
-                    resolved=resolvable and bool(n.get("resolved")),
-                ))
+                out.append(self._note_feedback(ref, d, n))
         return out, ""
+
+    @staticmethod
+    def _note_author(n: dict) -> tuple:
+        """(username, is a bot) of one note."""
+        author = n.get("author") if isinstance(n.get("author"), dict) else {}
+        login = str(author.get("username") or "")
+        # A note's author carries a `bot` flag where the merge request's does
+        # not; the reserved token prefix is the fallback for an instance that
+        # does not send it.
+        return login, bool(author.get("bot")) or bool(GL_BOT_RE.match(login))
+
+    @classmethod
+    def _note_feedback(cls, ref: ChangeRef, d: dict, n: dict) -> Feedback:
+        """One note of discussion `d`, as fleet's `Feedback`."""
+        login, bot = cls._note_author(n)
+        pos = n.get("position") if isinstance(n.get("position"), dict) else {}
+        line = pos.get("new_line") if isinstance(pos.get("new_line"), int) else pos.get("old_line")
+        resolvable = bool(n.get("resolvable"))
+        return Feedback(
+            id=str(n["id"]), kind="inline" if pos else "comment", author=login,
+            author_is_bot=bot,
+            body=str(n.get("body") or ""),
+            url=f"{ref.url}#note_{n['id']}",
+            at=str(n.get("created_at") or ""),
+            path=str(pos.get("new_path") or pos.get("old_path") or ""),
+            line=line if isinstance(line, int) else None,
+            thread=str(d.get("id") or "") if resolvable else "",
+            resolved=resolvable and bool(n.get("resolved")),
+        )
 
     def parse_pipeline_url(self, url: str) -> PipelineRef | None:
         m = GL_PIPELINE_URL_RE.match((url or "").strip())
@@ -1874,13 +1919,7 @@ class GitLabForge(Forge):
                 f"{why or 'unexpected output'}",
             )
         else:
-            level = None
-            for m in docs:
-                if not isinstance(m, dict):
-                    continue
-                if str(m.get("username") or "").lower() == login.lower():
-                    level = m.get("access_level")
-                    break
+            level = self._access_level(docs, login)
             if not isinstance(level, int):
                 answer = (False, f"{login} is not a member of {repo}")
             else:
@@ -1891,6 +1930,16 @@ class GitLabForge(Forge):
                 )
         self._push[key] = answer
         return answer
+
+    @staticmethod
+    def _access_level(docs: list, login: str):
+        """`login`'s `access_level` in a members list, or None if it is not there."""
+        for m in docs:
+            if not isinstance(m, dict):
+                continue
+            if str(m.get("username") or "").lower() == login.lower():
+                return m.get("access_level")
+        return None
 
     def parse_target_url(self, url: str) -> Target | None:
         m = GL_TARGET_RE.match((url or "").strip())
