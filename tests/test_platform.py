@@ -49,7 +49,7 @@ class TempDirCase(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.tmp = Path(tmp.name)
 
-    def names(self) -> list[str]:
+    def _names(self) -> list[str]:
         return sorted(p.name for p in self.tmp.iterdir())
 
 
@@ -316,7 +316,7 @@ class Records(TempDirCase):
         path = self.tmp / "task.yaml"
         fp.write_record(str(path), "id: one\ntitle: two\n")
         self.assertEqual(path.read_bytes(), b"id: one\ntitle: two\n")
-        self.assertEqual(self.names(), ["task.yaml"])
+        self.assertEqual(self._names(), ["task.yaml"])
 
     def test_records_are_utf8_whatever_the_locale(self):
         text = "title: dash — moon ◐ rocket \U0001f680\n"
@@ -350,7 +350,7 @@ class Records(TempDirCase):
             closer.join()
             reader.close()
         self.assertEqual(path.read_bytes(), b"new\n")
-        self.assertEqual(self.names(), ["task.yaml"])
+        self.assertEqual(self._names(), ["task.yaml"])
 
     def test_read_record_waits_out_a_replace_in_flight(self):
         """On Windows an open that races a replace is refused for a moment, and
@@ -384,7 +384,7 @@ class Records(TempDirCase):
         self.assertGreater(refuse.call_count, 1)
         self.assertEqual(refuse.call_count, fp.REPLACE_ATTEMPTS)
         self.assertEqual(path.read_bytes(), b"old\n")
-        self.assertEqual(self.names(), ["task.yaml"])
+        self.assertEqual(self._names(), ["task.yaml"])
 
     def test_two_writers_of_one_record_never_collide(self):
         """D3: every writer shared `<path>.tmp`, so one renamed another's away."""
@@ -405,14 +405,14 @@ class Records(TempDirCase):
             t.join()
         self.assertEqual(errors, [])
         self.assertEqual(path.read_text(encoding="utf-8").count("writer:"), 1)
-        self.assertEqual(self.names(), ["task.yaml"])
+        self.assertEqual(self._names(), ["task.yaml"])
 
     def test_a_failed_write_leaves_no_temp_file_behind(self):
         path = self.tmp / "task.yaml"
         with mock.patch.object(fp.os, "replace", side_effect=OSError(28, "no space left")):
             with self.assertRaises(OSError):
                 fp.write_record(str(path), "new\n")
-        self.assertEqual(self.names(), [])
+        self.assertEqual(self._names(), [])
 
     def test_a_waiting_lock_is_taken_once_its_holder_lets_go(self):
         lock = self.tmp / "task.yaml.lock"
