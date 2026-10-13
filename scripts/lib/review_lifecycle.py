@@ -68,8 +68,11 @@ def directory(q):
     return os.path.join(q.shepherd_store().store_dir(q), "reviews")
 
 
+_RECORD_SUFFIX = ".json"
+
+
 def path(q, url):
-    return os.path.join(directory(q), hashlib.sha256(url.encode()).hexdigest() + ".json")
+    return os.path.join(directory(q), hashlib.sha256(url.encode()).hexdigest() + _RECORD_SUFFIX)
 
 
 def read(filename):
@@ -156,6 +159,14 @@ def assessment(q, cr, pol, doc):
     return state, sid, digest, pol["error"] or why or error or absent or refusal
 
 
+def _post_once(helper, doc, receipt, sid, line):
+    """A busy recipient gets one no-wake mailbox note; the wake waits."""
+    if not receipt.get("posted"):
+        receipt["posted"], _ = helper.post(sid, line, kind="fleet-review")
+    doc["delivery"] = receipt
+    return "waiting", "wake waits for rest and an empty input line"
+
+
 def notify(q, doc, sid, key, line):
     helper = q._load_sibling("fleet_notify_lead", "notify_lead.py")
     live, why = q.live_sessions()
@@ -177,13 +188,79 @@ def notify(q, doc, sid, key, line):
     if receipt.get("woken"):
         return "awaiting-review", "obligation delivered; assessment still required"
     if status not in q.SESSION_AT_REST or not helper.composer_empty(sid):
-        if not receipt.get("posted"):
-            receipt["posted"], why = helper.post(sid, line, kind="fleet-review")
-        doc["delivery"] = receipt
-        return "waiting", "wake waits for rest and an empty input line"
+        return _post_once(helper, doc, receipt, sid, line)
     receipt["woken"], why = helper.wake(sid, line)
     doc["delivery"] = receipt
     return ("sent", "review obligation delivered") if receipt["woken"] else ("needs-lead", why)
+
+
+def _store(q, filename, latest, cr, pol, state, digest, action, detail):
+    latest.update(url=cr.url, repo=cr.repo.qualified, head=cr.head_sha, state=state,
+                  action=action, detail=detail, reviewer_task=pol["task"],
+                  feedback=digest, required_score=pol["score"])
+    q.fleet_platform.write_record(filename, json.dumps(latest) + "\n")
+
+
+def _store_clean(q, cr, args, pol, doc, digest, view):
+    """Records a clean state; the hold to report instead when the assessment moved underneath."""
+    if args.dry_run:
+        return None
+    with locked(q, cr.url) as (filename, latest):
+        if latest.get("assessment") != doc.get("assessment"):
+            view.update(state="pending", action="retry", detail="assessment changed; retry")
+            return "review-pending", view["detail"]
+        _store(q, filename, latest, cr, pol, "clean", digest, "none", "")
+    return None
+
+
+def _fixer(q, cr, task, error):
+    """The live session to hand findings to, and what stops that when nothing can take them."""
+    candidates = (q.comments_record(task, cr.url).get("session"),
+                  q.rec_for(task, cr.url).get("session"), task.doc.get("session")) if task else ()
+    live, _ = q.live_sessions()
+    sid = next((str(s) for s in candidates if s and q.session_status(str(s), live) != "gone"), "")
+    refusal = q.agent_policy_refusal(task) if task and not task.doc.get("host") else None
+    error = error or refusal or ("no existing fixer; lead must assign one" if not sid else "")
+    return sid, error
+
+
+def _obligation_line(q, cr, state):
+    command = q.fleet_platform.shell_command([
+        "uv", "run", "--project", str(q.checkout_root()), "fleet", "queue", "review", "record",
+        cr.url, "--head", cr.head_sha, "--score", "<score>", "--findings", "<count>",
+        "--evidence", "<summary-note-url>",
+    ])
+    return (f"fleet review: {cr.url} head {cr.head_sha} is review-{state}. "
+            f"Read the forge feedback and the configured review policy. "
+            + ("Fix valid findings in place, publish, and await independent reassessment."
+               if state == "findings" else
+               "Review the full head independently, publish a linked summary, then run: "
+               + command))
+
+
+def _hold_for_review(q, cr, task, args, pol, state, sid, digest, error, view):
+    """Holds a PR the other gates clear until its review is clean, and delivers that obligation."""
+    condition, detail = "review-" + state, error or f"independent current-head review {state}"
+    if state == "findings":
+        sid, error = _fixer(q, cr, task, error)
+    if sid in owners(q, cr) and state == "pending":
+        error = "configured reviewer owns or fixes this PR; independent review required"
+    line = _obligation_line(q, cr, state)
+    if args.dry_run:
+        view["action"] = "would-notify" if sid and not error else "needs-lead"
+        return condition, detail
+    with locked(q, cr.url) as (filename, latest):
+        # A concurrent reviewer record wins; never overwrite its assessment.
+        latest_state, _, latest_digest, _ = assessment(q, cr, pol, latest)
+        if latest_state != state or latest_digest != digest:
+            view["action"] = "retry"
+        elif error:
+            view["action"], view["detail"] = "needs-lead", error
+        else:
+            key = f"{cr.head_sha}:{state}:{digest}:{pol['task']}:{pol['score']}"
+            view["action"], view["detail"] = notify(q, latest, sid, key, line)
+        _store(q, filename, latest, cr, pol, state, digest, view["action"], view["detail"])
+    return condition, detail
 
 
 def gate(q, cr, task, args, condition, detail):
@@ -196,64 +273,46 @@ def gate(q, cr, task, args, condition, detail):
     view = {"state": state, "head": cr.head_sha, "reviewer_task": pol["task"],
             "action": "none", "detail": error}
     if state == "clean":
-        if not args.dry_run:
-            with locked(q, cr.url) as (filename, latest):
-                if latest.get("assessment") != doc.get("assessment"):
-                    view.update(state="pending", action="retry", detail="assessment changed; retry")
-                    return "review-pending", view["detail"], view
-                latest.update(url=cr.url, repo=cr.repo.qualified, head=cr.head_sha, state=state,
-                              action="none", detail="", reviewer_task=pol["task"],
-                              feedback=digest, required_score=pol["score"])
-                q.fleet_platform.write_record(filename, json.dumps(latest) + "\n")
+        held = _store_clean(q, cr, args, pol, doc, digest, view)
+        if held:
+            return held[0], held[1], view
         return condition, detail, view
     if condition not in ("ready", "threads-open"):
         view["detail"] = error or detail
     else:
-        condition, detail = "review-" + state, error or f"independent current-head review {state}"
-        if state == "findings":
-            candidates = (q.comments_record(task, cr.url).get("session"),
-                          q.rec_for(task, cr.url).get("session"), task.doc.get("session")) if task else ()
-            live, _ = q.live_sessions()
-            sid = next((str(s) for s in candidates if s and q.session_status(str(s), live) != "gone"), "")
-            refusal = q.agent_policy_refusal(task) if task and not task.doc.get("host") else None
-            error = error or refusal or ("no existing fixer; lead must assign one" if not sid else "")
-        if sid in owners(q, cr) and state == "pending":
-            error = "configured reviewer owns or fixes this PR; independent review required"
-        command = q.fleet_platform.shell_command([
-            "uv", "run", "--project", str(q.checkout_root()), "fleet", "queue", "review", "record",
-            cr.url, "--head", cr.head_sha, "--score", "<score>", "--findings", "<count>",
-            "--evidence", "<summary-note-url>",
-        ])
-        line = (f"fleet review: {cr.url} head {cr.head_sha} is review-{state}. "
-                f"Read the forge feedback and the configured review policy. "
-                + ("Fix valid findings in place, publish, and await independent reassessment."
-                   if state == "findings" else
-                   "Review the full head independently, publish a linked summary, then run: "
-                   + command))
-        if args.dry_run:
-            view["action"] = "would-notify" if sid and not error else "needs-lead"
-        else:
-            with locked(q, cr.url) as (filename, latest):
-                # A concurrent reviewer record wins; never overwrite its assessment.
-                latest_state, _, latest_digest, _ = assessment(q, cr, pol, latest)
-                if latest_state != state or latest_digest != digest:
-                    view["action"] = "retry"
-                elif error:
-                    view["action"], view["detail"] = "needs-lead", error
-                else:
-                    key = f"{cr.head_sha}:{state}:{digest}:{pol['task']}:{pol['score']}"
-                    view["action"], view["detail"] = notify(q, latest, sid, key, line)
-                latest.update(url=cr.url, repo=cr.repo.qualified, head=cr.head_sha, state=state,
-                              action=view["action"], detail=view["detail"], reviewer_task=pol["task"],
-                              feedback=digest, required_score=pol["score"])
-                q.fleet_platform.write_record(filename, json.dumps(latest) + "\n")
+        condition, detail = _hold_for_review(q, cr, task, args, pol, state, sid, digest, error, view)
     if not args.dry_run and condition not in ("review-pending", "review-findings"):
         with locked(q, cr.url) as (filename, latest):
-            latest.update(url=cr.url, repo=cr.repo.qualified, head=cr.head_sha, state=state,
-                          action=view["action"], detail=view["detail"], reviewer_task=pol["task"],
-                          feedback=digest, required_score=pol["score"])
-            q.fleet_platform.write_record(filename, json.dumps(latest) + "\n")
+            _store(q, filename, latest, cr, pol, state, digest, view["action"], view["detail"])
     return condition, detail, view
+
+
+def _recording_reviewer(q, cr, pol):
+    """The configured reviewer's session id, when this process is it and may record."""
+    sid, _ = reviewer(q, pol)
+    if not sid or os.environ.get("THURBOX_SESSION") != sid:
+        raise q.QueueError("only the configured reviewer session can record this assessment")
+    live, _ = q.live_sessions()
+    if live is None or sid not in live or sid in owners(q, cr):
+        raise q.QueueError("configured reviewer is absent or owns/fixes this PR")
+    session, _ = q.session_doc(sid)
+    if not session or session.get("stopped") or session.get("state") == "stopped":
+        raise q.QueueError("configured reviewer session is unreadable or deliberately stopped")
+    refusal = recipient_refusal(q, cr, sid)
+    if refusal:
+        raise q.QueueError(refusal)
+    return sid
+
+
+def _require_mergeable_if_clean(q, cr, clean):
+    """A clean assessment is only recorded on a PR every other gate already clears."""
+    condition, detail = q.classify(cr, "pr")
+    if not clean:
+        return
+    if condition == "ready":
+        condition, detail = q.threads_gate(cr, detail)
+    if condition != "ready":
+        raise q.QueueError("clean review cannot be recorded: " + detail)
 
 
 def record(q, args):
@@ -264,18 +323,7 @@ def record(q, args):
     pol = policy(q, cr.repo)
     if not pol or pol["error"]:
         raise q.QueueError("no valid configured review policy")
-    sid, why = reviewer(q, pol)
-    if not sid or os.environ.get("THURBOX_SESSION") != sid:
-        raise q.QueueError("only the configured reviewer session can record this assessment")
-    live, why = q.live_sessions()
-    if live is None or sid not in live or sid in owners(q, cr):
-        raise q.QueueError("configured reviewer is absent or owns/fixes this PR")
-    session, why = q.session_doc(sid)
-    if not session or session.get("stopped") or session.get("state") == "stopped":
-        raise q.QueueError("configured reviewer session is unreadable or deliberately stopped")
-    refusal = recipient_refusal(q, cr, sid)
-    if refusal:
-        raise q.QueueError(refusal)
+    sid = _recording_reviewer(q, cr, pol)
     if (cr.state != "open" or cr.draft or cr.head_is_ours is not True
             or not re.fullmatch(r"[0-9a-f]{40}", args.head) or args.head != cr.head_sha):
         raise q.QueueError("review must name the full current head of an open, owned, non-draft PR")
@@ -287,12 +335,7 @@ def record(q, args):
     if not any(f.url == args.evidence and args.head in f.body for f in items):
         raise q.QueueError("linked forge review summary must name the full current head")
     clean = args.score == pol["score"] and args.findings == 0
-    condition, detail = q.classify(cr, "pr")
-    if clean:
-        if condition == "ready":
-            condition, detail = q.threads_gate(cr, detail)
-        if condition != "ready":
-            raise q.QueueError("clean review cannot be recorded: " + detail)
+    _require_mergeable_if_clean(q, cr, clean)
     latest, why = which.get(ref)
     if latest is None or latest.head_sha != args.head or latest.state != "open" or latest.draft:
         raise q.QueueError("current head changed or could not be re-read; review not recorded")
@@ -313,7 +356,7 @@ def pending(q):
     if not os.path.isdir(directory(q)):
         return rows
     for name in sorted(os.listdir(directory(q))):
-        if not name.endswith(".json"):
+        if not name.endswith(_RECORD_SUFFIX):
             continue
         doc = read(os.path.join(directory(q), name))
         pol = policy(q, q.forge.RepoId.parse(doc.get("repo", ""))) if doc.get("repo") else None
@@ -330,7 +373,7 @@ def retire(q, listings, unreadable, dry_run):
     if dry_run or not os.path.isdir(directory(q)):
         return
     for name in os.listdir(directory(q)):
-        if not name.endswith(".json"):
+        if not name.endswith(_RECORD_SUFFIX):
             continue
         filename = os.path.join(directory(q), name)
         doc = read(filename)
