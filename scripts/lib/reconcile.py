@@ -1275,7 +1275,7 @@ def cmd_ensure_if_lead() -> int:
     try:
         if is_lead():
             cmd_ensure(Config.from_env())
-    except (Exception, SystemExit) as exc:
+    except Exception as exc:
         say(f"fleet reconciler: could not ensure it is up ({exc}); uv run fleet reconcile ensure")
     return 0
 
