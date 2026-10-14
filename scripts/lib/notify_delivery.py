@@ -22,6 +22,13 @@ does not, and this is the how, kept once so the two cannot drift apart:
   A RELAY IS BOUNDED.  A relay command (`owners.conf`'s `= !<command>`) runs
       under `fleet_platform.run_bounded`, killed with its tree past
       `RELAY_SECS`, and its failure is a line for the log, never a raise.
+  ONE LINE PER DECISION, ONE SHAPE.  Whatever a notifier decided — typed,
+      left in the mailbox, waiting, relayed, skipped, dropped or failed — it
+      says in one line that `notice` builds, `notice <kind> → <who> [<id>]
+      <how>: <why>`, so `grep 'notice '` over the reconciler's log answers
+      "was it told, and if not, why" for every kind at once. The id is there
+      because two sessions may wear one name: a remote fleet's conductor is
+      mirrored into this machine's `session list` under the same one.
   MEMORY IS RUNTIME STATE.  What a recipient has been told lives in the
       reconciler's runtime directory, replaced in one step, written INTO that
       directory and never creating it — that directory being gone is how the
@@ -190,6 +197,19 @@ def identity(row: dict) -> dict:
     stand for both, which is what a new session still changes."""
     sid = str(row["id"])
     return {"session": sid, "conversation": str(row.get("agent_session_id") or sid)}
+
+
+def notice(kind: str, name: str, row: dict | None, how: str, why: str = "") -> str:
+    """One notice decision, as the log carries it: `notice <kind> → <who> [<id>] <how>: <why>`.
+
+    `how` is the road it took or why none: `typed`, `mailbox`, `waiting`,
+    `relayed`, `skipped`, `dropped` or `failed`. `<who>` is "nobody" when there
+    is nobody to name; the id, the session's first eight characters, only when
+    there is a session."""
+    who = name or "nobody"
+    if row and row.get("id"):
+        who += f" [{str(row['id'])[:8]}]"
+    return f"notice {kind} → {who} {how}" + (f": {why}" if why else "")
 
 
 # --- may it be typed into ----------------------------------------------------

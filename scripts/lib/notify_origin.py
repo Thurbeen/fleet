@@ -32,6 +32,9 @@ nothing, and the log says why: the worker's question stays in its own pane,
 where its brief told it to ask, and the outcome is in the record as it always
 was. Nothing falls back to a lead.
 
+Each decision is one `notice` line in `notify_delivery.notice`'s shape — kind
+`question` or `outcome` — which `collect`'s report and the loop's log carry.
+
 HOW is `notify_delivery.py`'s, the same as the conductor's: typed only into a
 session at rest whose input line is provably empty, else posted to its mailbox
 `--no-wake` once while the wake waits; a relay bounded and never raised.
@@ -75,6 +78,7 @@ def _load_sibling(name: str, filename: str):
 
 delivery = _load_sibling("fleet_notify_delivery", "notify_delivery.py")
 fleetqueue = delivery.fleetqueue
+notice = delivery.notice
 
 CHECKOUT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -140,34 +144,39 @@ class Reach:
         return str(row.get("name") or target.value), row, ""
 
 
-def tell(reach: Reach, target, line: str, entry: dict, kind: str) -> tuple[str, str]:
-    """Deliver `line` to `target` once: ("sent" | "wait" | "dropped", a note).
+def tell(reach: Reach, target, line: str, entry: dict, kind: str, subject: str) -> tuple[str, str]:
+    """Deliver `line` to `target` once: ("sent" | "wait" | "dropped", its `notice` line).
 
     `entry` is this notice's memory and is updated in place: `posted` once its
-    mailbox note is left, `tries` for a relay that failed.
+    mailbox note is left, `tries` for a relay that failed. `kind` is the
+    mailbox kind, `fleet-<what the notice line calls it>`; `subject` is what
+    the line is about.
     """
+    said = kind.removeprefix("fleet-")
     if target.kind == "relay":
+        relay = f"relay {target.rule!r}"
         sent, why = delivery.relay(target, line)
         if sent:
-            return "sent", f"relayed to {target.origin} by the rule for {target.rule!r}"
+            return "sent", notice(said, relay, None, "relayed", f"{subject}, to {target.origin}")
         entry["tries"] = int(entry.get("tries") or 0) + 1
         if entry["tries"] >= RELAY_TRIES:
-            return "dropped", f"{why}; given up after {entry['tries']} tries"
-        return "wait", why
+            return "dropped", notice(said, relay, None, "dropped",
+                                     f"{subject}: {why}; given up after {entry['tries']} tries")
+        return "wait", notice(said, relay, None, "failed", f"{subject}: {why}; it is tried again")
     name, row, why = reach.row(target)
     if row is None:
-        return "wait", f"{why}; it waits"
+        return "wait", notice(said, name, None, "waiting", f"{subject}: {why}; it waits")
     sid = str(row["id"])
     busy = delivery.held(name, row)
     if busy:
         if not entry.get("posted"):
             entry["posted"] = delivery.post(sid, line, kind=kind)[0]
-        where = " — noted in its inbox" if entry["posted"] else ""
-        return "wait", f"{busy}{where}; the wake waits"
+        how = "mailbox" if entry["posted"] else "waiting"
+        return "wait", notice(said, name, row, how, f"{subject}: {busy}; the wake waits")
     sent, why = delivery.wake(sid, line)
     if not sent:
-        return "wait", f"could not wake {name}: {why}"
-    return "sent", f"told {name}"
+        return "wait", notice(said, name, row, "failed", f"{subject}: could not wake it: {why}")
+    return "sent", notice(said, name, row, "typed", subject)
 
 
 def conductor_id(rules: list) -> str:
@@ -250,12 +259,14 @@ def ask(reach: Reach, target, row: dict, asked: dict) -> str:
         return ""
     if target.kind == "gone":
         entry["done"] = True
-        return (f"{ref} needs input, but its origin {target.origin} is gone ({target.why}); "
-                "the question stays in its own pane")
-    outcome, note = tell(reach, target, question_line(ref, row.get("why")), entry, "fleet-question")
+        return notice("question", str(target.origin), None, "dropped",
+                      f"{ref} needs input, but its origin is gone ({target.why}); "
+                      "the question stays in its own pane")
+    outcome, note = tell(reach, target, question_line(ref, row.get("why")), entry, "fleet-question",
+                         f"{ref} needs input")
     if outcome != "wait":
         entry["done"] = True
-    return f"{ref} needs input: {note}"
+    return note
 
 
 # --- outcomes ----------------------------------------------------------------
@@ -303,10 +314,11 @@ def outcomes(events: list, state_dir: str | None = None) -> list[str]:
             delivery.write_memory(path, {"pending": doc["pending"], "sent": doc["sent"][-REMEMBERED:]})
             return lines
     except fleetqueue.fleet_platform.LockHeld:
-        return [f"origin: {task.ref} {word} not told — another collect is delivering outcomes"
+        return [notice("outcome", "", None, "skipped",
+                       f"{task.ref}:{word} — another collect is delivering outcomes")
                 for task, word in events]
     except OSError as exc:
-        return [f"origin: outcomes could not be told: {exc}"]
+        return [notice("outcome", "", None, "failed", f"outcomes could not be told: {exc}")]
 
 
 def add(doc: dict, events: list) -> None:
@@ -326,11 +338,12 @@ def deliver_outcome(reach: Reach, rules: list, key: str, entry: dict, keep: bool
     target = reach.target(entry.get("origin"), rules)
     if target is None or target.kind in ("gone", "unrouted"):
         why = target.why if target else "no origin"
-        return "dropped", f"origin: {key} told nobody — {entry.get('origin')}: {why}"
-    outcome, note = tell(reach, target, str(entry.get("line")), entry, "fleet-outcome")
+        return "dropped", notice("outcome", str(entry.get("origin") or ""), None, "dropped",
+                                 f"{key} told nobody — {why}")
+    outcome, note = tell(reach, target, str(entry.get("line")), entry, "fleet-outcome", key)
     if outcome == "wait" and not keep:
         note += ", but there is no runtime directory to keep it in, so it is dropped"
-    return outcome, f"origin: {key} {note}"
+    return outcome, note
 
 
 def flush(doc: dict, keep: bool) -> list[str]:

@@ -133,7 +133,9 @@ Usage (it is `scripts/lib/reconcile.py`'s, and nothing else's):
 The second is the STALE CHECKOUT: the loop fast-forwarded the checkout and what
 arrived needs a hand. `stale()` owns its one difference from the ready notice.
 
-It prints a line worth logging, or nothing, and it exits 0 whatever happens.
+It prints what is worth logging — one `notice` line per decision, in
+`notify_delivery.notice`'s shape, and a decision already standing is not
+printed again — or nothing, and it exits 0 whatever happens.
 A notifier that can fail the pass it rides on would cost the reconciler the
 `collect` it just did, which is a real loss traded for a message.
 
@@ -188,6 +190,7 @@ fleetqueue = delivery.fleetqueue
 AT_REST, NAMED = delivery.AT_REST, delivery.NAMED
 session_rows, identity = delivery.session_rows, delivery.identity
 composer_empty, wake, post = delivery.composer_empty, delivery.wake, delivery.post
+notice = delivery.notice
 
 # The file names are the loop's runtime state from before the conductor had a
 # name, and they keep them: a `notified.json` the lead was told by is what the
@@ -515,6 +518,7 @@ def stale(state_dir: str, text: str) -> int:
     name, row, status = conductor_row()
     if not name:
         write_stale(state_dir, {}, "")
+        print(notice("sync", "", None, "skipped", "no conductor session is configured; the notice is dropped"))
         return 0
     note = stale_wait(name, row, status, pending)
     if note:
@@ -523,7 +527,7 @@ def stale(state_dir: str, text: str) -> int:
         write_stale(state_dir, pending, note)
         return 0
     write_stale(state_dir, {}, "")
-    print(f"told {name} the checkout moved: {', '.join(pending['actions'])}")
+    print(notice("sync", name, row, "typed", f"the checkout moved: {', '.join(pending['actions'])}"))
     return 0
 
 
@@ -545,17 +549,17 @@ def stale_wait(name: str, row: dict | None, status: str, pending: dict) -> str:
     A conductor that may not be typed into gets the notice in its mailbox
     once, recorded in `pending["posted"]`."""
     if not row:
-        return f"the checkout moved, but {status}; the notice waits"
+        return notice("sync", name, None, "waiting", f"the checkout moved, but {status}; the notice waits")
     sid = str(row["id"])
     line = stale_message(pending)
     why = delivery.held(name, row)
     if why:
         if not pending.get("posted"):
             pending["posted"] = post(sid, line, kind="fleet-stale")[0]
-        where = " — noted in its inbox" if pending["posted"] else ""
-        return f"the checkout moved; {why}{where}; the wake waits"
+        how = "mailbox" if pending["posted"] else "waiting"
+        return notice("sync", name, row, how, f"the checkout moved; {why}; the wake waits")
     sent, why = wake(sid, line)
-    return "" if sent else f"the checkout moved; could not wake {name}: {why}"
+    return "" if sent else notice("sync", name, row, "failed", f"the checkout moved; could not wake it: {why}")
 
 
 def reviews_message(reviews: list) -> str:
@@ -612,7 +616,8 @@ def main(argv: list) -> int:
     try:
         theirs, note = origins.questions(args.state_dir, rows)
     except Exception as exc:  # noqa: BLE001 — a notifier may not fail the pass it rides on
-        theirs, note = set(), f"questions could not be routed to their origins: {exc}"
+        theirs, note = set(), notice("needs-input", "", None, "failed",
+                                     f"questions could not be routed to their origins: {exc}")
     notes.append(note)
     asking = sorted(str(r.get("task")) for r in rows if str(r.get("task")) not in theirs)
 
@@ -631,7 +636,7 @@ def main(argv: list) -> int:
     memory["lead"] = state.get("lead")
     memory, note = deliver(now, memory, conductor_row, "no conductor session is configured")
     notes.insert(0, note)
-    return say(args.state_dir, memory, "; ".join(n for n in notes if n))
+    return say(args.state_dir, memory, "\n".join(n for n in notes if n))
 
 
 def post_news(sid: str, line: str, parts: list, now: dict, memory: dict) -> bool:
@@ -655,14 +660,14 @@ def post_news(sid: str, line: str, parts: list, now: dict, memory: dict) -> bool
     )
 
 
-# Each set, in the order its news is spoken: (typed, posted, line, what, word).
+# Each set, in the order its news is spoken: (typed, posted, line, word, kind),
+# `kind` being what its `notice` line calls it.
 SETS = (
-    ("told", "posted", message, "ready work", "ready"),
-    ("stalled", "stalled_posted", stalled_message, "a stalled worker", "stalled"),
-    ("unprompted", "unprompted_posted", unprompted_message, "an unprompted worker", "unprompted"),
-    ("needs_input", "needs_input_posted", needs_input_message,
-     "a worker that needs input", "asking for input"),
-    ("reviews", "reviews_posted", reviews_message, "pending independent reviews", "review-pending"),
+    ("told", "posted", message, "ready", "ready"),
+    ("stalled", "stalled_posted", stalled_message, "stalled", "stalled"),
+    ("unprompted", "unprompted_posted", unprompted_message, "unprompted", "unprompted"),
+    ("needs_input", "needs_input_posted", needs_input_message, "asking for input", "needs-input"),
+    ("reviews", "reviews_posted", reviews_message, "review-pending", "review"),
 )
 
 
@@ -683,33 +688,33 @@ def deliver(now: dict, memory: dict, resolve, unnamed: str) -> tuple[dict, str]:
     if not news:
         return memory, ""
 
-    what = news[0][3]
+    kinds = ",".join(s[4] for s in news)
     if not name:
-        return memory, f"{what}, but {unnamed}"
+        return memory, notice(kinds, "", None, "skipped", unnamed)
     if not row:
-        return memory, f"{what}, but {status}"
+        return memory, notice(kinds, name, None, "waiting", status)
     sid = str(row["id"])
 
     # ONE LINE, carrying whichever set has news; a set with nothing new is not
     # repeated just because another one changed.
-    parts = [(told, posted, say_it(now[told])) for told, posted, say_it, _w, _n in news]
+    parts = [(told, posted, say_it(now[told])) for told, posted, say_it, _w, _k in news]
     line = " ".join(text for _, _, text in parts)
 
     why = delivery.held(name, row)
     if why:
-        where = " — noted in its inbox" if post_news(sid, line, parts, now, memory) else ""
-        return memory, f"{what}; {why}{where}; the wake waits"
+        how = "mailbox" if post_news(sid, line, parts, now, memory) else "waiting"
+        return memory, notice(kinds, name, row, how, f"{why}; the wake waits")
 
     sent, why = wake(sid, line)
     if not sent:
-        return memory, f"could not wake {name}: {why}"
+        return memory, notice(kinds, name, row, "failed", f"could not wake it: {why}")
 
     # Only a delivered wake is remembered, so a send that failed is retried on
     # the next pass rather than swallowed.
     for told, _, _text in parts:
         memory[told] = now[told]
-    named, word = now[news[0][0]], news[0][4]
-    return memory, f"woke {name}: {len(named)} task(s) {word} — {', '.join(named[:NAMED])}"
+    named, word = now[news[0][0]], news[0][3]
+    return memory, notice(kinds, name, row, "typed", f"{len(named)} task(s) {word} — {', '.join(named[:NAMED])}")
 
 
 if __name__ == "__main__":

@@ -43,6 +43,10 @@ def main(argv: list[str]) -> int:
         with open(os.environ["RECON_SLOW_PID"], "w", encoding="utf-8", newline="\n") as fh:
             fh.write(f"{os.getpid()}\n")
         time.sleep(float(slow[verb]))
+    # RECON_FAIL=verb,verb fails those verbs, as a queue command that cannot run does.
+    if verb in os.environ.get("RECON_FAIL", "").split(","):
+        sys.stderr.write(f"queue-stub: {verb} failed on purpose\n")
+        return 5
     if verb == "root":
         # `root --foreign` is the control-plane guard's question, and the honest
         # answer for a throwaway queue is "this IS the control plane".

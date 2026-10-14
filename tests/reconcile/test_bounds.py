@@ -8,6 +8,7 @@ loop goes on; `status` on a stale heartbeat is a fault, like DOWN.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -142,6 +143,8 @@ def test_status_does_not_call_an_inside_bound_watch_stalled(recon, monkeypatch, 
         assert holder.stdout.readline().strip() == "held"
         # Controlled age covers watch, longer commands and cleanup without a slow real watch.
         write(recon.rt / "heartbeat", f"{int(time.time()) - age}\n")
+        # A loop records the code it runs before it beats; one with no record is stale.
+        write(recon.rt / "code.json", json.dumps({"pid": holder.pid, "files": {}}) + "\n")
         done = recon("status")
         assert done.code == 0, done.out
         assert "STALLED" not in done.out

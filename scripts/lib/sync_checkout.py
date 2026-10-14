@@ -290,10 +290,10 @@ def _actions(root: str, before: str, facts: dict) -> str:
         facts["actions"]["restart-reconciler"] = loop
         msg += (
             f"\nrestart-reconciler: yes — {loop}\n"
-            "A reconciler started before this sync still runs its old code, and fails every pass\n"
-            "if that code was removed. Ask 'uv run fleet reconcile status': a legacy loop it names,\n"
-            "'uv run fleet reconcile ensure' stops and replaces; a loop that is up,\n"
-            "'uv run fleet reconcile restart' replaces. One asked down stays down."
+            "A reconciler started before this sync still runs its old code. A loop that records\n"
+            "its code replaces itself at its next pass; ask 'uv run fleet reconcile status', and\n"
+            "where it says 'stale' or names a legacy loop, 'uv run fleet reconcile ensure'\n"
+            "replaces it. One asked down stays down."
         )
     return msg
 

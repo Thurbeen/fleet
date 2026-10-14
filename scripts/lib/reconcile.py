@@ -25,7 +25,9 @@ WHAT IT IS NOT. Not a cron: a cron gives no supervision, no adoption of a runnin
 instance and no durable stop. This is a loop the OPERATOR starts and stops:
 
   `ensure`  start it unless it is running or has been asked down. Adopts a live
-            loop; never a second one over one queue.
+            loop on the code it would start with, and replaces one on older
+            code (IT RUNS WHAT THE CHECKOUT SAYS, below); never a second one
+            over one queue.
   `stop`    writes a DOWN FLAG to disk first, then waits for the loop to see it.
             The flag is what makes "down" survive a restart, a reboot and the
             next skill run.
@@ -57,6 +59,26 @@ the lock is held AND the loop has written a heartbeat: a supervisor whose loop
 cannot run at all holds the lock and never beats, and is never adopted or called
 healthy. The pidfile and heartbeat stay, for people.
 
+IT RUNS WHAT THE CHECKOUT SAYS. A supervisor holds the modules it imported, and
+the checkout moves under it — its own `sync` moves it. On 2026-10-14 a loop
+started before an update kept the old `reconcile.py`, whose notifier that update
+had renamed away, and every notice failed for eight hours while `status` said
+"up". So the loop records the code it runs (`code.json`: each module of this
+checkout it loaded, by mtime and size) and, every pass, compares it with the
+disk: a change hands it to a fresh `reconcile ensure`, detached and once, which
+brings it down at a boundary and starts the new code. `ensure` and `start`
+replace an up loop whose record disagrees with the disk, or that keeps none,
+rather than adopting it; `status` names one and exits 1. Children need none of
+this: each pass starts them afresh, from the new bytes.
+
+ITS CHILDREN'S FAILURES ARE IN `status`, NOT ONLY ITS LOG. Each child that fails
+— a non-zero exit, a script that is not there, a bound — is kept in
+`failures.json` by label (`collect`, `plan`, `notify`, `sync`, …) with a count,
+since when and its last words, until that child next succeeds; `status` prints
+each as a `failing` line and exits 1. Each notice decision is one `notify:
+notice …` log line (`notify_delivery.notice`), so `grep 'notice '` says who was
+told what, by which road, or why nobody was.
+
 A LOOP FROM BEFORE THE UV PORT holds no lock: the bash `scripts/reconcile.sh`
 supervisor wrote a pidfile only, and outlived the update that deleted its
 script, failing every pass. `status` names one still running from this
@@ -72,8 +94,8 @@ otherwise leak a detached loop ticking against a deleted temp directory.
 
 IT WRITES NO RECORD. Every effect on the queue goes through `fleet queue`, the
 only writer over the records. Its own runtime directory is not an exception: a
-pid, a heartbeat, a log, the flags, `notified.json`, `stale.json` and the
-`origin_*.json` memories are facts
+pid, a heartbeat, a log, the flags, `code.json`, `failures.json`,
+`notified.json`, `stale.json` and the `origin_*.json` memories are facts
 about this loop on this machine, not about any task. It calls exactly `watch`,
 `collect`, `shepherd`, `refuel` and the read-only `plan` (plus `root`, to check
 it can). The one thing it changes outside the queue is the CHECKOUT, through
@@ -112,7 +134,8 @@ Usage:
   uv run fleet reconcile start      # start, and clear a previous `stop`
   uv run fleet reconcile stop       # durably down: writes the flag, then stops
   uv run fleet reconcile restart    # stop and start, clearing the flag
-  uv run fleet reconcile status     # ticking? since when? exit 1: down unasked, or stalled
+  uv run fleet reconcile status     # ticking? since when? exit 1: down unasked, stalled,
+                                   # on code older than the checkout, or a child failing
   uv run fleet reconcile nudge      # advisory: run the periodic pass NOW;
                                    # from a worker's Stop hook, asks once for a missing result.md
   uv run fleet reconcile hook       # print the worker Stop hook that nudges
@@ -212,7 +235,7 @@ import subprocess
 import sys
 import time
 import traceback
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 def _load_sibling(name: str, filename: str):
@@ -234,6 +257,10 @@ NOTIFY = os.path.join(CHECKOUT, "scripts", "lib", "notify_conductor.py")
 # Where notify_conductor.py keeps a stale-checkout notice it has not delivered yet, and
 # deletes it once it has: its presence is the whole question this loop asks.
 STALE_FILE = "stale.json"
+# The code the running loop started from, and how each child it runs last went
+# wrong: what `status` reads to say "running old code" and "failing".
+CODE_FILE = "code.json"
+FAILURES_FILE = "failures.json"
 
 # How fleet runs itself as a child: this interpreter, `fleet.cli.main`, off this
 # checkout. No `uv` round trip per pass, and no shell on any OS.
@@ -291,6 +318,9 @@ class Config:
     sync: int = 0
     sync_dir: str = CHECKOUT
     bound: int = 600
+    # {checkout-relative path: [mtime_ns, size]} of every module this process
+    # runs from the checkout, taken once its loop starts (`record_code`).
+    code: dict = field(default_factory=dict)
 
     @classmethod
     def from_env(cls) -> Config:
@@ -483,6 +513,99 @@ def over(cfg: Config) -> bool:
     return asked_down(cfg) or bool(orphaned(cfg))
 
 
+# --- the code it runs ---------------------------------------------------------
+
+
+def loaded_code() -> dict:
+    """{checkout-relative path: [mtime_ns, size]} of every module of this checkout
+    this process has loaded — the code a long-lived loop holds in memory.
+
+    What it RUNS AS A CHILD is not here: `fleet queue`, the notifier and the
+    sync start afresh every pass and read the new bytes by themselves."""
+    home = os.path.realpath(CHECKOUT)
+    files = {}
+    for mod in list(sys.modules.values()):
+        path = getattr(mod, "__file__", None)
+        if not path:
+            continue
+        try:
+            rel = os.path.relpath(os.path.realpath(path), home).replace(os.sep, "/")
+        except ValueError:  # Windows: another drive is not this checkout
+            continue
+        if not rel.startswith(("fleet/", "scripts/")):
+            continue
+        try:
+            st = os.stat(os.path.join(home, rel))
+        except OSError:
+            continue
+        files[rel] = [st.st_mtime_ns, st.st_size]
+    return files
+
+
+def code_changed(files: dict) -> list[str]:
+    """Which of `files` differ on disk now — new bytes, or gone."""
+    changed = []
+    for rel, was in sorted(files.items()):
+        try:
+            st = os.stat(os.path.join(CHECKOUT, rel))
+            if [st.st_mtime_ns, st.st_size] == list(was):
+                continue
+        except (OSError, TypeError):
+            pass
+        changed.append(rel)
+    return changed
+
+
+def record_code(cfg: Config) -> dict:
+    """Take the loop's code as it starts, and leave it where `status` reads it."""
+    files = loaded_code()
+    try:
+        fleet_platform.write_record(cfg.path(CODE_FILE), json.dumps(
+            {"pid": os.getpid(), "started": now(), "files": files}, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+    return files
+
+
+def stale_code(cfg: Config) -> tuple[list[str], str]:
+    """(what the running loop's code is older than on disk, when it started), from its record.
+
+    Asked of a loop that is up, which writes its record before its first beat.
+    So an up loop with no record of its own — none, or another pid's — is one
+    started before loops kept one, and it is older than any checkout that does."""
+    try:
+        doc = json.loads(read(cfg.path(CODE_FILE)) or "{}")
+    except ValueError:
+        doc = {}
+    pid = pid_of(cfg)
+    if (not isinstance(doc, dict) or not isinstance(doc.get("files"), dict)
+            or (pid and doc.get("pid") not in (None, pid))):
+        return ["its code (it keeps no record of it)"], "an unknown time"
+    return code_changed(doc["files"]), str(doc.get("started") or "?")
+
+
+def shown(paths: list[str]) -> str:
+    return ", ".join(paths[:6]) + ("" if len(paths) <= 6 else f" and {len(paths) - 6} more")
+
+
+def replace_me(cfg: Config, changed: list[str]) -> None:
+    """Ask a fresh `reconcile ensure` — the NEW code — to replace this loop.
+
+    A process cannot reload what it imported, and on 2026-10-14 the loop that
+    fast-forwarded its own checkout kept running the old code for eight hours,
+    calling a notifier that update had renamed away. `ensure` already knows how
+    to bring a loop down at a pass boundary and start the next one, honours a
+    down flag, and runs from the checkout as it is now; so the loop hands
+    itself to it, detached, once, and carries on until it is asked down."""
+    log(cfg, f"its own code changed on disk ({shown(changed)}); `reconcile ensure` replaces it")
+    try:
+        with open(cfg.log, "ab") as out:
+            fleet_platform.spawn_detached([sys.executable, "-c", BOOT, CHECKOUT, "reconcile", "ensure"],
+                                          cwd=CHECKOUT, stdout=out, stderr=out)
+    except OSError as exc:
+        log(cfg, f"could not start `reconcile ensure` to replace it: {exc}")
+
+
 # --- the loop from before the uv port -----------------------------------------
 
 # The bash reconciler put this word in its supervisor's argv, so that nothing
@@ -590,24 +713,75 @@ def run_queue(cfg: Config, args: list, merge: bool = True, loop: bool = True) ->
     try:
         done = bounded(
             cfg, args[0], cfg.queue_cmd + args, secs, loop, cwd=CHECKOUT, stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT if merge else subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT if merge else subprocess.PIPE,
         )
     except OSError as exc:
         return 127, f"cannot run {cfg.queue_label}: {exc}"
     if done is None:
         return TIMED_OUT, ""
+    # Unmerged, stdout is a reading the caller parses; stderr is said only on a failure.
+    if done.returncode != 0 and not merge:
+        return done.returncode, done.stdout + (done.stderr or "")
     return done.returncode, done.stdout
+
+
+def last_words(text: str) -> str:
+    """A failed child's last non-blank line: almost always the one that says why."""
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    return lines[-1][:300] if lines else ""
+
+
+def child_went(cfg: Config, label: str, why: str = "") -> None:
+    """Remember how the loop's last `label` child went: `why` it failed, or "" for fine.
+
+    THE LOG IS NOT WHERE ANYBODY LOOKS. On 2026-10-14 the notifier the loop
+    runs had been renamed away under it, and every notice failed for eight
+    hours — 515 lines in a megabyte of log — while `status` said "up". So each
+    child's failure is kept here, as a count, since when, and its last words,
+    until the same child next succeeds, and `status` prints it and exits 1.
+    Written only when it changes, so a healthy pass writes nothing."""
+    path = cfg.path(FAILURES_FILE)
+    try:
+        doc = json.loads(read(path) or "{}")
+    except ValueError:
+        doc = {}
+    if not isinstance(doc, dict):
+        doc = {}
+    if not why:
+        if label not in doc:
+            return
+        doc.pop(label)
+    else:
+        was = doc.get(label) if isinstance(doc.get(label), dict) else {}
+        doc[label] = {"count": int(was.get("count") or 0) + 1, "since": was.get("since") or now(),
+                      "last": now(), "why": why}
+    try:
+        fleet_platform.write_record(path, json.dumps(doc, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
+
+def failures(cfg: Config) -> dict:
+    """{label: {count, since, last, why}} for each child failing now."""
+    try:
+        doc = json.loads(read(cfg.path(FAILURES_FILE)) or "{}")
+    except ValueError:
+        return {}
+    return {k: v for k, v in doc.items() if isinstance(v, dict)} if isinstance(doc, dict) else {}
 
 
 def run_pass(cfg: Config, label: str, args: list, quiet: bool = False) -> int:
     """One queue command, logged only when it said something worth reading."""
     rc, out = run_queue(cfg, args)
     if rc == TIMED_OUT and not out:
+        child_went(cfg, label, "killed at its bound")
         return rc  # `bounded` said so, in one line
     if rc != 0:
         log(cfg, f"{label}: exit {rc}")
         log_raw(cfg, indented(out, "    "))
+        child_went(cfg, label, f"exit {rc}" + (f": {last_words(out)}" if last_words(out) else ""))
         return rc
+    child_went(cfg, label)
     if quiet and QUIET.search(out):
         return 0
     log(cfg, f"{label}:")
@@ -615,25 +789,48 @@ def run_pass(cfg: Config, label: str, args: list, quiet: bool = False) -> int:
     return 0
 
 
+def run_notifier(cfg: Config, label: str, argv: list, stdin: str) -> None:
+    """`notify_conductor.py`, held to the bound: each line it prints logged as its
+    own `notify:` line, and a failure — not there, a crash, a bound — kept for
+    `status`. Never a failure of the pass."""
+    try:
+        done = bounded(cfg, label, [sys.executable, NOTIFY, "--state-dir", cfg.rt, *argv], cfg.bound,
+                       input=stdin, cwd=CHECKOUT, capture_output=True)
+    except OSError as exc:
+        log(cfg, f"{label}: could not run {NOTIFY}: {exc}")
+        child_went(cfg, label, f"could not run: {exc}")
+        return
+    if done is None:
+        child_went(cfg, label, "killed at its bound")
+        return
+    out = (done.stdout + done.stderr).strip()
+    if done.returncode != 0:
+        log(cfg, f"{label}: exit {done.returncode}")
+        log_raw(cfg, indented(out, "    "))
+        child_went(cfg, label, f"exit {done.returncode}" + (f": {last_words(out)}" if out else ""))
+        return
+    child_went(cfg, label)
+    for line in out.splitlines():
+        if line.strip():
+            log(cfg, f"notify: {line.strip()}")
+
+
 def notify_conductor(cfg: Config) -> None:
     """What this loop says out loud about the queue, and the one question it asks it.
 
     `plan` is a READ: it prints the ready set and moves nothing. It cannot fail
-    the pass: a message is not worth the `collect` the loop just did.
+    the pass: a message is not worth the `collect` the loop just did. A `plan`
+    that fails is logged and kept for `status`, as any child's failure is.
     """
     rc, plan = run_queue(cfg, ["plan", "--json"], merge=False)
-    if rc != 0 or not plan.strip():
+    if rc != 0:
+        log(cfg, f"plan: exit {rc}")
+        log_raw(cfg, indented(plan, "    "))
+        child_went(cfg, "plan", f"exit {rc}" + (f": {last_words(plan)}" if last_words(plan) else ""))
         return
-    try:
-        done = bounded(cfg, "notify", [sys.executable, NOTIFY, "--state-dir", cfg.rt], cfg.bound,
-                       input=plan, cwd=CHECKOUT, capture_output=True)
-    except OSError:
-        return
-    if done is None:
-        return
-    out = (done.stdout + done.stderr).strip()
-    if out:
-        log(cfg, f"notify: {out}")
+    child_went(cfg, "plan")
+    if plan.strip():
+        run_notifier(cfg, "notify", [], plan)
 
 
 def sync_checkout(cfg: Config, said: str) -> tuple[dict, str]:
@@ -648,11 +845,21 @@ def sync_checkout(cfg: Config, said: str) -> tuple[dict, str]:
     try:
         done = bounded(cfg, "sync", [sys.executable, "-c", BOOT, CHECKOUT, "sync-checkout", "--json"], cfg.bound,
                        cwd=cfg.sync_dir, stdin=subprocess.DEVNULL, capture_output=True)
-        report = json.loads(done.stdout) if done else None
-    except (OSError, ValueError):
+    except OSError as exc:
+        child_went(cfg, "sync", f"could not run: {exc}")
         return {}, said
-    if not isinstance(report, dict):
+    if done is None:
+        child_went(cfg, "sync", "killed at its bound")
         return {}, said
+    try:
+        report = json.loads(done.stdout)
+    except ValueError:
+        report = None
+    if done.returncode != 0 or not isinstance(report, dict):
+        words = last_words(done.stderr) or last_words(done.stdout)
+        child_went(cfg, "sync", f"exit {done.returncode}, no report" + (f": {words}" if words else ""))
+        return {}, said
+    child_went(cfg, "sync")
     msg = report.get("message") or ""
     if msg and msg != said:
         log(cfg, "sync:")
@@ -664,16 +871,7 @@ def notify_stale(cfg: Config, report: dict) -> None:
     """Hand what a fast-forward needs done to the conductor, once: `notify_conductor.py
     --stale` owns who, when and how, and keeps it until it is delivered. An
     empty report is a retry of one still waiting."""
-    try:
-        done = bounded(cfg, "notify", [sys.executable, NOTIFY, "--state-dir", cfg.rt, "--stale"], cfg.bound,
-                       input=json.dumps(report), cwd=CHECKOUT, capture_output=True)
-    except OSError:
-        return
-    if done is None:
-        return
-    out = (done.stdout + done.stderr).strip()
-    if out:
-        log(cfg, f"notify: {out}")
+    run_notifier(cfg, "notify --stale", ["--stale"], json.dumps(report))
 
 
 def trim_log(cfg: Config) -> None:
@@ -749,10 +947,12 @@ def tick(cfg: Config) -> int:
     """The loop. Read the cadences in the docstring before changing a number here."""
     # Before the first heartbeat, so a loop that cannot run the one command it
     # drives never reads as up.
-    rc, _ = run_queue(cfg, ["root"], merge=False)
+    rc, out = run_queue(cfg, ["root"], merge=False)
     if rc != 0:
         log(cfg, f"cannot run {cfg.queue_label} — nothing to reconcile")
+        child_went(cfg, "root", f"exit {rc}" + (f": {last_words(out)}" if last_words(out) else ""))
         return 2
+    child_went(cfg, "root")
 
     # With no forge CLI on this machine a shepherd pass has nothing to ask.
     # Asked EVERY pass — `available()` is a PATH lookup, so a forge installed
@@ -762,6 +962,14 @@ def tick(cfg: Config) -> int:
     forge = _load_sibling("fleet_forge", "forge.py")
     has_forge = None
 
+    # What it runs from now on, taken once per process: a tick restarted after
+    # a crash is the same process, on the same modules. A new loop's failures
+    # are its own, so a previous loop's are cleared with it.
+    if not cfg.code:
+        cfg.code = record_code(cfg)
+        remove(cfg.path(FAILURES_FILE))
+    replacing = False
+
     last = {"collect": float("-inf"), "shepherd": float("-inf"), "refuel": float("-inf"), "sync": float("-inf")}
     synced = ""
     while True:
@@ -770,6 +978,13 @@ def tick(cfg: Config) -> int:
             return 0
         stamp = time.monotonic()
         fleet_platform.write_record(cfg.path("heartbeat"), f"{int(time.time())}\n")
+
+        # Its own code, asked every pass: a stat per module. Until `ensure`
+        # has brought it down, it goes on reconciling with what it has.
+        changed = [] if replacing else code_changed(cfg.code)
+        if changed:
+            replace_me(cfg, changed)
+            replacing = True
 
         nudged = _consume_nudge(cfg)
 
@@ -929,14 +1144,37 @@ def guard_control_plane(cfg: Config) -> bool:
 # --- commands -----------------------------------------------------------------
 
 
+def replace(cfg: Config, why: str) -> bool:
+    """Bring the running loop down at its next boundary, leaving no flag behind."""
+    os.makedirs(cfg.rt, exist_ok=True)
+    fleet_platform.write_record(cfg.path("down"), f"{why} {now()} by {who()}\n")
+    stopped = bring_down(cfg)
+    remove(cfg.path("down"))
+    return stopped
+
+
 def come_up(cfg: Config) -> int:
     # A legacy loop holds no lock, so neither adoption nor launch can see the twin.
     if not stop_legacy(cfg):
         return 1
     if running(cfg):
-        say(f"fleet reconciler: already ticking (pid {pid_of(cfg)}) — adopted, not restarted")
-        return 0
-    if not guard_control_plane(cfg) or not launch(cfg):
+        # ADOPTED ONLY ON THE CODE IT WOULD START WITH. A loop on older code is
+        # the one this checkout no longer describes, and SessionStart `ensure`
+        # used to adopt it silently while every notice it sent failed.
+        changed, started = stale_code(cfg)
+        if not changed:
+            say(f"fleet reconciler: already ticking (pid {pid_of(cfg)}) — adopted, not restarted")
+            return 0
+        say(f"fleet reconciler: ticking (pid {pid_of(cfg)}) on code older than the checkout — "
+            f"{shown(changed)} changed since it started at {started}; replacing it")
+        if not guard_control_plane(cfg):
+            return 1
+        if not replace(cfg, "replacing a loop on old code"):
+            err(f"fleet reconciler: could not stop pid {pid_of(cfg) or '?'}")
+            return 1
+    elif not guard_control_plane(cfg):
+        return 1
+    if not launch(cfg):
         return 1
     say(f"fleet reconciler: ticking (pid {pid_of(cfg)})")
     return 0
@@ -1027,11 +1265,7 @@ def cmd_stop(cfg: Config) -> int:
 
 
 def cmd_restart(cfg: Config) -> int:
-    os.makedirs(cfg.rt, exist_ok=True)
-    fleet_platform.write_record(cfg.path("down"), f"restarting {now()} by {who()}\n")
-    stopped = bring_down(cfg)
-    remove(cfg.path("down"))
-    if not stopped:
+    if not replace(cfg, "restarting"):
         err(f"fleet reconciler: could not stop pid {pid_of(cfg) or '?'}")
         return 1
     return come_up(cfg)
@@ -1077,6 +1311,18 @@ def cmd_status(cfg: Config) -> int:
         say(f"          {argv}")
         say("          its script is gone, so every pass fails; uv run fleet reconcile ensure stops it")
     stalled = _say_state(cfg)
+    faults = stalled
+    if running(cfg):
+        changed, started = stale_code(cfg)
+        if changed:
+            faults = True
+            say(f"stale     running code older than the checkout: {shown(changed)} changed since it")
+            say(f"          started at {started}; uv run fleet reconcile restart replaces it, as ensure does")
+        for label, failed in sorted(failures(cfg).items()):
+            faults = True
+            say(f"failing   {label}: {failed.get('count')} time(s) since {failed.get('since')}, "
+                f"last {failed.get('last')}")
+            say(f"          {failed.get('why')}")
     say(f"queue     {queue}")
     say(f"watch     every {cfg.watch}s, back to back — the continuous fold")
     say(f"collect   every {cfg.collect}s")
@@ -1087,7 +1333,7 @@ def cmd_status(cfg: Config) -> int:
     nudge = cfg.path("nudge")
     if os.path.isfile(nudge):
         say("nudge     one is waiting: " + (read(nudge).splitlines() or [""])[0])
-    if stalled:
+    if faults:
         return 1
     return 0 if running(cfg) or asked_down(cfg) else 1
 

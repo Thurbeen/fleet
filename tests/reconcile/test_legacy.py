@@ -19,15 +19,14 @@ from __future__ import annotations
 
 import contextlib
 import os
-import shutil
 import signal
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
-from harness import REPO, Run, expect, refute, run_fleet, write
-from reconcilekit import wait_for
+from harness import Run, expect, refute, run_fleet, write
+from reconcilekit import checkout_copy, wait_for
 
 pytestmark = pytest.mark.skipif(
     not sys.platform.startswith("linux"),
@@ -42,12 +41,6 @@ echo "$$" > "$FLEET_RECONCILE_DIR/pid"
 echo "$!"
 wait
 """
-
-
-def checkout_copy(where: Path) -> Path:
-    for part in ("fleet", "scripts/lib"):
-        shutil.copytree(REPO / part, where / part, ignore=shutil.ignore_patterns("__pycache__"))
-    return where
 
 
 def alive(pid: int) -> bool:

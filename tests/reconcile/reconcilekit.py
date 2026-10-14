@@ -10,11 +10,12 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness import Run, Stubs, run_fleet, write
+from harness import REPO, Run, Stubs, run_fleet, write
 
 STUB = Path(__file__).resolve().parent / "queue_stub.py"
 LEAD = "Gate Control"
@@ -89,3 +90,11 @@ class Recon:
 def queue_cmd(*argv: str) -> str:
     """FLEET_RECONCILE_QUEUE_CMD as a JSON argv, which survives a Windows path."""
     return json.dumps(list(argv))
+
+
+def checkout_copy(where: Path) -> Path:
+    """The code a loop runs, copied, so a test can change it under a live loop
+    or run the only loop it can find, whatever else runs on the machine."""
+    for part in ("fleet", "scripts/lib"):
+        shutil.copytree(REPO / part, where / part, ignore=shutil.ignore_patterns("__pycache__"))
+    return where
