@@ -10,6 +10,8 @@ evidence of a failure.
 
 import json
 
+import yaml
+
 import pytest
 from queuekit import S2, deletions, ok, result
 
@@ -330,3 +332,55 @@ def test_a_worker_that_withdraws_its_claim_takes_the_refusal_with_it(
     show = q("show", ref).out
     expect(show, "state:       landed")
     refute(show, "unverified")
+
+
+# A session list that fails on exactly one call. The pass reads ONE list, so
+# whichever call fails, the conductor is found in the answer every other
+# judgement reads, or nothing is judged: a lookup of its own that met the
+# failure while the pass's list answered was how it got deleted.
+FAILS_ONCE = '''
+import json
+import sys
+from fleet_stubs import root, read
+where = root()
+args = sys.argv[1:]
+if args[:2] == ["session", "list"]:
+    count = len(read(where / "listed")) + 1
+    with open(where / "listed", "a", encoding="utf-8") as fh:
+        fh.write("x")
+    if count == {n}:
+        print("null")
+    else:
+        print(json.dumps([json.loads(read(p)) for p in sorted((where / "sessions").glob("*.json"))]))
+elif args[:2] == ["session", "get"]:
+    sys.stdout.write(read(where / "sessions" / (args[2] + ".json")))
+'''
+
+
+@pytest.mark.parametrize("failing", [1, 2, 3, 4, 5])
+def test_the_conductor_is_found_in_the_passs_own_list(first_landed, stubs, queue_dir, failing):
+    sid = "88888888-8888-8888-8888-888888888888"
+    worker(first_landed, "08", "tidy-the-readme", "Tidy the readme", sid, "idle", "not-applicable",
+           "Nothing to tidy.", stubs, queue_dir)
+    as_conductor(stubs, sid)
+    names = {"FLEET_LEAD_SESSION": "Gate Control", "FLEET_CONDUCTOR_SESSION": "Gate Conductor",
+             "THURBOX_SESSION": None}
+    expect(q("collect", **names).out, "conductor's own session")
+    stubs.tool("thurbox-cli", FAILS_ONCE.replace("{n}", str(failing)))
+    q("reap", **names)
+    refute(deletions(stubs), sid)
+
+
+def test_a_done_task_whose_landing_says_nothing_is_still_kept(second_collected, stubs, queue_dir):
+    """`done` is not landed, whatever the landing check had to say about it.
+
+    A record with no artifacts left the check with an empty reason, and an
+    empty reason read as "nothing holds this session".
+    """
+    task = queue_dir / second_collected / "02-document-the-states" / "task.yaml"
+    doc = yaml.safe_load(task.read_text(encoding="utf-8"))
+    doc["artifact"] = []
+    write(task, yaml.safe_dump(doc))
+    stubs.session_is(S2, "idle")
+    expect(q("reap").out, "02-document-the-states", "kept")
+    refute(deletions(stubs), S2)

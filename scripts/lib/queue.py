@@ -8023,7 +8023,9 @@ def _reap_hold_reason(task: Task, sid: str, state: str, lead: dict, landings: di
             "evidence, and a human decides"
         )
     if state == "done":
-        return landings.get(task.ref, ("", "its artifact has not landed"))[1]
+        # `done` is not landed whatever the check said, and an empty reason —
+        # a record with no artifacts gives one — must still keep it.
+        return landings.get(task.ref, ("", ""))[1] or "its artifact has not landed"
     if live is None:
         return live_detail
     return ""
