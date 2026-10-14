@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 588" width="1000" height="588" role="img" aria-labelledby="title desc">
   <title id="title">How fleet fits together</title>
-  <desc id="desc">You prompt Mission Control, the lead session, which reads the registry and settings, opens a topic and adds its tasks to the queue. Dispatch starts one worker per task: a thurbox session in its own git worktree, on this machine or another one over ssh. Each worker gets a brief and writes back a result, and opens a pull or merge request on the forge, GitHub or GitLab, which is optional: a local-only fleet publishes a pushed commit or nothing. The Kanban board, Alt+K, shows the queue read-only, with fuel gauges from quota-axi. The reconciler loop watches, collects, shepherds and refuels, never dispatches, and tells the lead when the ready set grows: a typed line, or a mailbox message when the lead is mid-turn. The loop: prompt, topic, tasks, dispatch, watch, collect, shepherd, merge, reap, plus refuel after a token limit and reviewed for a served document.</desc>
+  <desc id="desc">You prompt Mission Control, the lead session and one origin among any number of conversations that hand fleet work. It reads the registry, opens a topic and adds its tasks to the queue. Dispatch starts one worker per task: a thurbox session in its own git worktree, on this machine or another one over ssh. Each worker gets a brief and writes back a result, and opens a pull or merge request on the forge, GitHub or GitLab, which is optional: a local-only fleet publishes a pushed commit or nothing. The Kanban board, Alt+K, shows the queue read-only, with fuel gauges from quota-axi. The reconciler loop watches, collects, shepherds and refuels, and never dispatches. It tells each origin its tasks' outcomes and its workers' questions, and tells the conductor when work is ready, a worker stalls or a sync needs a hand. The conductor, an opt-in background session (CONDUCTOR=on), dispatches, re-prompts and refuels; without one, the lead plays that role too. The loop: prompt, topic, tasks, dispatch, watch, collect, shepherd, merge, reap, plus refuel after a token limit and reviewed for a served document.</desc>
   <!--
     Palette: thurbox's built-in doom theme, doom_palette() in
     https://github.com/Thurbeen/thurbox/blob/8f3ac9d185d6288221f6cf1acd05dacb2701b04b/src/session/theme_config/palettes.rs#L289
@@ -22,6 +22,7 @@
     .s { fill: #A0A0A0; }
     .d { fill: #606060; }
     .l { font-size: 11px; fill: #A0A0A0; }
+    .xs { font-size: 10px; }
     .c { text-anchor: middle; }
     .e { text-anchor: end; }
     .ln { stroke: #606060; stroke-width: 1.25; fill: none; }
@@ -78,13 +79,17 @@
 
   <rect class="box accent" x="360" y="56" width="280" height="76" rx="8"/>
   <text class="t accent-t" x="376.5" y="82">Mission Control</text>
-  <text class="s" x="376.5" y="102">the lead agent session</text>
-  <text class="s" x="376.5" y="118">splits · writes briefs · orders</text>
+  <text class="s" x="376.5" y="102">the lead · one origin of many</text>
+  <text class="s" x="376.5" y="118">reads registry · topic · briefs</text>
 
-  <rect class="box grey" x="696" y="56" width="280" height="76" rx="8"/>
-  <text class="t" x="712.5" y="82">Registry and settings</text>
-  <text class="s" x="712.5" y="102">repo map · context/&lt;repo&gt;.md</text>
-  <text class="s" x="712.5" y="118">*.conf · session profiles</text>
+  <rect class="box cyan" x="696" y="56" width="280" height="76" rx="8"/>
+  <text class="t cyan-t" x="712.5" y="82">Reconciler</text>
+  <text class="s" x="712.5" y="102">watch · collect · shepherd · refuel</text>
+  <text class="s" x="712.5" y="118">never dispatches · no records</text>
+  <g class="tick">
+    <circle cx="949.2" cy="78" r="9" fill="none" stroke="#00D9FF" stroke-width="2" stroke-dasharray="9.4 4.7"/>
+    <circle cx="949.2" cy="69" r="2.5" fill="#00D9FF"/>
+  </g>
 
   <!-- row 2 -->
   <rect class="box grey" x="24" y="196" width="280" height="88" rx="8"/>
@@ -100,15 +105,11 @@
   <text class="s" x="376.5" y="258">task.yaml · BRIEF.md · result.md</text>
   <text class="s" x="376.5" y="274">blockers · artifact per repo</text>
 
-  <rect class="box cyan" x="696" y="196" width="280" height="88" rx="8"/>
-  <text class="t cyan-t" x="712.5" y="222">Reconciler</text>
-  <text class="s" x="712.5" y="242">watch · collect · shepherd</text>
-  <text class="s" x="712.5" y="258">refuel · reap · reads plan</text>
-  <text class="s" x="712.5" y="274">never dispatches · no records</text>
-  <g class="tick">
-    <circle cx="949.2" cy="218" r="9" fill="none" stroke="#00D9FF" stroke-width="2" stroke-dasharray="9.4 4.7"/>
-    <circle cx="949.2" cy="209" r="2.5" fill="#00D9FF"/>
-  </g>
+  <rect class="box accent" x="696" y="196" width="280" height="88" rx="8"/>
+  <text class="t accent-t" x="712.5" y="222">Conductor (opt-in)</text>
+  <text class="s" x="712.5" y="242">CONDUCTOR=on · background session</text>
+  <text class="s" x="712.5" y="258">dispatch · re-prompt · refuel</text>
+  <text class="s" x="712.5" y="274">without one, the lead does this</text>
 
   <!-- row 3 -->
   <rect class="box grey" x="24" y="348" width="280" height="88" rx="8"/>
@@ -129,7 +130,7 @@
   <rect class="box red" x="696" y="348" width="280" height="88" rx="8"/>
   <text class="t red-t" x="712.5" y="374">Forge (optional)</text>
   <text class="s" x="712.5" y="394">GitHub (gh) · GitLab (glab)</text>
-  <text class="s" x="712.5" y="410">review-prs session gives verdicts</text>
+  <text class="s" x="712.5" y="410">shepherd squash-merges</text>
   <text class="s" x="712.5" y="426">local-only: a pushed commit</text>
   <g class="merged">
     <rect x="885.4" y="361" width="78.2" height="20" rx="10" fill="#6EFF6E"/>
@@ -139,14 +140,17 @@
   <!-- arrows -->
   <line class="ln" x1="304" y1="94" x2="357.7" y2="94" marker-end="url(#a)"/>
   <text class="l c" x="332" y="86">prompt</text>
-  <line class="ln dash" x1="696" y1="94" x2="642.3" y2="94" marker-end="url(#a)"/>
-  <text class="l c" x="668" y="86">reads</text>
+  <line class="ln" x1="696" y1="94" x2="642.3" y2="94" marker-end="url(#a)"/>
+  <text class="l c" x="668" y="86">outcome</text>
+  <text class="l c xs" x="668" y="110">question</text>
 
   <line class="ln" x1="500" y1="132" x2="500" y2="194" marker-end="url(#a)"/>
   <text class="l e" x="491.8" y="168">topic add · add</text>
 
-  <path class="ln" d="M908.1,196 V164 H582.4 V134" marker-end="url(#a)"/>
-  <text class="l" x="590.6" y="158">wakes: typed line · mailbox --no-wake</text>
+  <path class="ln" d="M716,132 V164 H600 V194" marker-end="url(#a)"/>
+  <text class="l" x="608.2" y="158">collect · reap</text>
+  <line class="ln" x1="836" y1="132" x2="836" y2="194" marker-end="url(#a)"/>
+  <text class="l e" x="828" y="184">ready · stalled · sync</text>
 
   <line class="ln dash" x1="360" y1="240" x2="306.3" y2="240" marker-end="url(#a)"/>
   <text class="l c" x="332" y="232">reads</text>
@@ -154,15 +158,12 @@
   <text class="l" x="172.2" y="168">shows you</text>
 
   <line class="ln" x1="696" y1="240" x2="642.3" y2="240" marker-end="url(#a)"/>
-  <text class="l c" x="668" y="232">collect</text>
+  <text class="l c xs" x="668" y="232">dispatch</text>
 
   <line class="ln" x1="469.1" y1="284" x2="469.1" y2="346" marker-end="url(#a)"/>
   <text class="l e" x="460.9" y="320">dispatch · BRIEF.md</text>
   <line class="ln" x1="530.9" y1="348" x2="530.9" y2="286" marker-end="url(#a)"/>
   <text class="l" x="539.1" y="320">result.md</text>
-
-  <line class="ln" x1="836" y1="284" x2="836" y2="346" marker-end="url(#a)"/>
-  <text class="l e" x="828" y="320">shepherd · squash-merge</text>
 
   <line class="ln dash" x1="164" y1="348" x2="164" y2="286" marker-end="url(#a)"/>
   <text class="l" x="172.2" y="320">gauges</text>
@@ -203,16 +204,20 @@
       <animate attributeName="opacity" dur="14s" repeatCount="indefinite" values="0;1;0" keyTimes="0;0.5;0.56" calcMode="discrete"/>
     </circle>
     <circle r="4.5" fill="#00D9FF" opacity="0">
-      <animateMotion dur="14s" repeatCount="indefinite" path="M696,240 H642.3" keyPoints="0;0;1;1" keyTimes="0;0.53;0.59;1" calcMode="linear"/>
-      <animate attributeName="opacity" dur="14s" repeatCount="indefinite" values="0;1;0" keyTimes="0;0.53;0.59" calcMode="discrete"/>
+      <animateMotion dur="14s" repeatCount="indefinite" path="M716,132 V164 H600 V194" keyPoints="0;0;1;1" keyTimes="0;0.53;0.61;1" calcMode="linear"/>
+      <animate attributeName="opacity" dur="14s" repeatCount="indefinite" values="0;1;0" keyTimes="0;0.53;0.61" calcMode="discrete"/>
     </circle>
     <circle r="4.5" fill="#00D9FF" opacity="0">
-      <animateMotion dur="14s" repeatCount="indefinite" path="M836,284 V346" keyPoints="0;0;1;1" keyTimes="0;0.61;0.69;1" calcMode="linear"/>
-      <animate attributeName="opacity" dur="14s" repeatCount="indefinite" values="0;1;0" keyTimes="0;0.61;0.69" calcMode="discrete"/>
+      <animateMotion dur="14s" repeatCount="indefinite" path="M836,132 V194" keyPoints="0;0;1;1" keyTimes="0;0.2;0.25;1" calcMode="linear"/>
+      <animate attributeName="opacity" dur="14s" repeatCount="indefinite" values="0;1;0" keyTimes="0;0.2;0.25" calcMode="discrete"/>
+    </circle>
+    <circle r="4.5" fill="#FF5C54" opacity="0">
+      <animateMotion dur="14s" repeatCount="indefinite" path="M696,240 H642.3" keyPoints="0;0;1;1" keyTimes="0;0.25;0.3;1" calcMode="linear"/>
+      <animate attributeName="opacity" dur="14s" repeatCount="indefinite" values="0;1;0" keyTimes="0;0.25;0.3" calcMode="discrete"/>
     </circle>
     <circle r="4.5" fill="#00D9FF" opacity="0">
-      <animateMotion dur="14s" repeatCount="indefinite" path="M908.1,196 V164 H582.4 V134" keyPoints="0;0;1;1" keyTimes="0;0.8;0.9;1" calcMode="linear"/>
-      <animate attributeName="opacity" dur="14s" repeatCount="indefinite" values="0;1;0" keyTimes="0;0.8;0.9" calcMode="discrete"/>
+      <animateMotion dur="14s" repeatCount="indefinite" path="M696,94 H642.3" keyPoints="0;0;1;1" keyTimes="0;0.8;0.88;1" calcMode="linear"/>
+      <animate attributeName="opacity" dur="14s" repeatCount="indefinite" values="0;1;0" keyTimes="0;0.8;0.88" calcMode="discrete"/>
     </circle>
   </g>
 

@@ -13,16 +13,22 @@ queue: you give it a goal, it splits the goal into tasks, and it runs one worker
 session per task in the real repository. You get back pull or merge requests to
 review.
 
+Any conversation can hand fleet work; Mission Control, the lead session, is the
+usual one. The conversation that asked is told each task's outcome. An optional
+conductor session (`CONDUCTOR=on` in `orchestration/fleet.conf`) keeps queued
+work moving in the background; without one, the lead does that too.
+
 ![Animated architecture diagram. You prompt Mission Control, the lead
-session, which reads the registry and opens a topic of tasks in the queue.
-Dispatch gives each worker, a thurbox session in its own worktree, a brief;
-the worker writes back a result and opens a pull or merge request on the
-forge, which is optional. The Kanban board shows the queue and fuel from
-quota-axi. The reconciler collects, shepherds and squash-merges, refuels, and
-wakes the lead with a typed line or a mailbox message. Below, the loop:
-prompt, topic, tasks, dispatch, watch, collect, shepherd, merge, reap, plus
-refuel, served to reviewed, and local-only
-publishing.](docs/fleet-architecture.svg)
+session and one origin of many, which reads the registry and opens a topic of
+tasks in the queue. Dispatch gives each worker, a thurbox session in its own
+worktree, a brief; the worker writes back a result and opens a pull or merge
+request on the forge, which is optional. The Kanban board shows the queue and
+fuel from quota-axi. The reconciler collects, shepherds and refuels; it tells
+an origin its tasks' outcomes and questions, and tells the conductor what is
+ready, stalled or needs a sync. The opt-in conductor dispatches, re-prompts
+and refuels; without one, the lead does. Below, the loop: prompt, topic,
+tasks, dispatch, watch, collect, shepherd, merge, reap, plus refuel, served to
+reviewed, and local-only publishing.](docs/fleet-architecture.svg)
 
 ## Kanban dashboard
 
