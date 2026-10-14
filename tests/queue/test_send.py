@@ -14,6 +14,7 @@ nothing at all. Nothing here writes `state` or `outcome`.
 """
 
 import json
+import time
 from datetime import datetime, timedelta
 
 import pytest
@@ -21,7 +22,7 @@ import yaml
 from kit_display import rows, set_field
 from queuekit import ok
 
-from harness import expect, git, refute, write
+from harness import expect, git, refute, stream_event, write
 from harness import run_queue as q
 
 MOVED = "cccccccc-0000-0000-0000-000000000001"
@@ -88,6 +89,20 @@ def test_a_worker_that_moved_after_the_message_is_visible_as_moved(messaged, liv
         {"seq": 2, "at": (sent + timedelta(seconds=1)).isoformat(), "to": "done", "observed": now},
     )))
     expect(q("show", ref).out, "transitioned", "messaged:")
+
+
+def test_a_transition_watch_folded_from_the_real_stream_counts_as_moved(messaged, stubs):
+    # thurbox stamps an event's `at` in epoch MILLISECONDS, and `watch` copies it
+    # verbatim. Read as ISO text it was time 0, so no folded transition ever
+    # postdated a message and the transition half of this check was dead (#251).
+    ref = messaged("folded", "04", MOVED)
+    q("send", ref, "Also update the changelog.")
+    stubs.stream(stream_event(1, MOVED, "done", at=int(time.time() * 1000) + 1000))
+    ok(q("watch", "--for-secs", "1"))
+
+    out = q("show", ref).out
+    expect(out, "transitioned 0m ago")
+    refute(out, "no transition since")
 
 
 def test_a_message_with_nothing_moving_since_is_a_fact_and_never_a_verdict(messaged, queue_dir):

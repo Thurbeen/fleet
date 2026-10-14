@@ -1549,6 +1549,30 @@ def now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def stamp_datetime(stamp) -> datetime | None:
+    """A timestamp as a datetime, or None for anything unreadable.
+
+    Two spellings reach the records: this file's own ISO-8601 text, and the
+    `at` of a thurbox event, which `watch` copies verbatim and thurbox emits as
+    epoch MILLISECONDS — read as text, every folded transition was time 0
+    (#251). A bare number above 1e11 is milliseconds, below it seconds.
+    Naive text comes back naive, so each caller keeps its own reading of it.
+    """
+    if isinstance(stamp, (int, float)) and not isinstance(stamp, bool):
+        secs = stamp / 1000 if stamp > 1e11 else stamp
+        try:
+            return datetime.fromtimestamp(secs, timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
+    text = str(stamp)
+    if text.isdigit():
+        return stamp_datetime(int(text))
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        return None
+
+
 def age_of(stamp) -> str:
     """How long ago, as one short token — or "" for anything unreadable.
 
@@ -1556,9 +1580,8 @@ def age_of(stamp) -> str:
     cadence, so a state observed forty minutes ago has to look forty minutes
     old wherever it is drawn, rather than reading as what is true now.
     """
-    try:
-        then = datetime.fromisoformat(str(stamp))
-    except (TypeError, ValueError):
+    then = stamp_datetime(stamp)
+    if then is None:
         return ""
     if then.tzinfo is None:
         then = then.replace(tzinfo=timezone.utc)
@@ -9227,15 +9250,14 @@ def stale_since(age: float) -> float:
 
 
 def record_time(stamp) -> float:
-    """One of this file's own `at` timestamps as an epoch second.
+    """A record's `at` — ISO text or a thurbox epoch, as `stamp_datetime`
+    reads it — as an epoch second.
 
     Unreadable reads as the beginning of time, which makes an unparseable
     receipt fall through to the ordinary path rather than block it.
     """
-    try:
-        return datetime.fromisoformat(str(stamp)).timestamp()
-    except (TypeError, ValueError):
-        return 0.0
+    then = stamp_datetime(stamp)
+    return then.timestamp() if then else 0.0
 
 
 # --- the accounts one pass reads ---------------------------------------------
