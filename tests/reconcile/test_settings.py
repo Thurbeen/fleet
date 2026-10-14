@@ -41,5 +41,5 @@ def test_the_file_sets_a_clock_and_the_environment_beats_it(clean, monkeypatch):
 
 def test_a_value_that_is_not_a_number_refuses_and_names_it(clean):
     write(clean / "reconcile.conf", "SHEPHERD_SECS=soon\n")
-    with pytest.raises(SystemExit, match="SHEPHERD_SECS='soon' in reconcile.conf"):
+    with pytest.raises(ValueError, match="SHEPHERD_SECS='soon' in reconcile.conf"):
         clocks()

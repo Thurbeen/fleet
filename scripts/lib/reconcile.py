@@ -322,6 +322,11 @@ def runtime_dir() -> str:
     return os.path.join(CHECKOUT, os.environ.get("FLEET_RECONCILE_DIR") or os.path.join("orchestration", "reconcile"))
 
 
+class BadSetting(ValueError):
+    """A setting `Config.from_env` refuses. `main` turns it into exit 1; a hook
+    catches it like any other error, and so never fails over one."""
+
+
 @dataclass
 class Config:
     rt: str
@@ -352,7 +357,7 @@ class Config:
                 cmd = ([str(a) for a in json.loads(override)] if override.startswith("[")
                        else fleet_platform.split_command(override))
             except ValueError as exc:
-                raise SystemExit(f"fleet reconciler: FLEET_RECONCILE_QUEUE_CMD: {exc}") from exc
+                raise BadSetting(f"fleet reconciler: FLEET_RECONCILE_QUEUE_CMD: {exc}") from exc
             label = " ".join(cmd)
 
         # READ ONCE, HERE, at start — not every pass. The clocks are what
@@ -372,7 +377,7 @@ class Config:
             try:
                 return int(said)
             except ValueError:
-                raise SystemExit(
+                raise BadSetting(
                     f"fleet reconciler: {name}_SECS={said!r} in reconcile.conf is not a whole number"
                 ) from None
 
@@ -1524,13 +1529,13 @@ def main(argv: list[str]) -> int:
         sys.stdout.write(__doc__)
         return 0
     if cmd == "nudge":
-        # Whatever goes wrong, a hook must not fail: not even a bad setting,
-        # which `Config.from_env` refuses with SystemExit — and the stop decision
-        # needs no Config, so a bad setting costs the nudge and nothing else.
+        # Whatever goes wrong, a hook must not fail: not even a bad setting.
+        # The stop decision needs no Config, so a bad setting costs the nudge
+        # and nothing else.
         # Its stdout is the hook's protocol channel: the one block decision, or nothing.
         try:
             cmd_nudge(Config.from_env())
-        except (Exception, SystemExit) as exc:
+        except Exception as exc:
             err(f"fleet reconciler: could not nudge ({exc})")
         decision = stop_decision()
         if decision:
@@ -1539,7 +1544,11 @@ def main(argv: list[str]) -> int:
     if cmd == "ensure" and "--if-lead" in argv[1:]:
         # Before the settings are read: a SessionStart hook never fails, not even on a bad one.
         return cmd_ensure_if_lead()
-    cfg = Config.from_env()
+    try:
+        cfg = Config.from_env()
+    except BadSetting as exc:
+        err(str(exc))
+        return 1
     if cmd == "__supervise":
         return with_lock(cfg, supervise)
     if cmd == "__loop":
