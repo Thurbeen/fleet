@@ -116,10 +116,8 @@ BUT IT SAYS WHEN THERE IS SOMETHING TO DECIDE. A task whose blocker clears is
 READY and has no actor: this loop may not dispatch, and the lead only acts when
 spoken to. So the pass after `collect` reads `plan` and, when the ready set has
 grown — or `plan`'s stalled set has, workers at rest with nothing to show,
-its unprompted set, workers dispatched and never briefed, its needs-input
-set, workers that said they need a decision, or its unwatched set, pull
-requests on a session's branch that need a hand and that shepherd tells
-nobody about —
+its unprompted set, workers dispatched and never briefed, or its needs-input
+set, workers that said they need a decision —
 wakes the CONDUCTOR, which until fleet runs one of its own is the lead: once
 per transition and per conversation, never mid-turn, silently when there is
 none. `scripts/lib/notify_conductor.py` owns those rules. A worker's question

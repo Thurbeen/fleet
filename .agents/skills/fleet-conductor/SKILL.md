@@ -1,6 +1,6 @@
 ---
 name: fleet-conductor
-description: 'Keep a fleet''s queued and dispatched work moving from the background: read the fleet''s state itself on every wake, act on the reconciler''s ready, stalled, unprompted, needs-input, review, unwatched-PR and sync notices — dispatch, re-prompt, refuel, block on a condition — and escalate to a task''s origin whatever is not the conductor''s to decide. Use when you are the fleet''s conductor session, when a notice from the fleet reconciler reaches you, when anyone asks the conductor about the state of the fleet''s work, PRs or sessions, or when asked what keeps fleet''s work moving between the moments someone talks to it.'
+description: 'Keep a fleet''s queued and dispatched work moving from the background: read the fleet''s state itself on every wake, act on the reconciler''s ready, stalled, unprompted, needs-input, review and sync notices — dispatch, re-prompt, refuel, block on a condition — and escalate to a task''s origin whatever is not the conductor''s to decide. Use when you are the fleet''s conductor session, when a notice from the fleet reconciler reaches you, when anyone asks the conductor about the state of the fleet''s work, PRs or sessions, or when asked what keeps fleet''s work moving between the moments someone talks to it.'
 user-invocable: true
 allowed-tools: Read, Bash, Glob, Grep
 ---
@@ -37,16 +37,16 @@ the question goes where the answer is.
 ## Reading the state, before any notice
 
 **Notices are a subset, and the state is not.** The reconciler tells you what
-it judges news. `shepherd` tells a task's worker, or a session it adopted, when
-its pull request goes conflicting, red or changes-requested, and never you. A
-hand-made session's pull request is told to nobody unless `plan` lists it as
-unwatched. So, on every wake and whenever anyone asks about the fleet, read:
+it judges news. `shepherd` tells the session on a pull request — a task's
+worker, or any other session on this machine — when it goes conflicting, red
+or changes-requested, and never you. So, on every wake and whenever anyone
+asks about the fleet, read:
 
 ```bash
 uv run fleet status                # every section; its PRS line says how many no task holds
 uv run fleet queue list --live     # each live task with its PR's state, checks and threads
 uv run fleet queue prs             # every open PR in EVERY repo the queue names, task or not
-uv run fleet queue plan            # ready, stalled, unprompted, needs-input, unwatched
+uv run fleet queue plan            # ready, stalled, unprompted, needs-input
 thurbox-cli session list           # every session, the hand-made ones included
 ```
 
@@ -60,7 +60,7 @@ thurbox-cli session list           # every session, the hand-made ones included
 - **Work named in words** — "the session keys work" — is a session title or a
   PR title. Match it in `thurbox-cli session list` and
   `uv run fleet queue prs --json`, then read that PR. A session with no task is
-  still on the board; `prs` names the session whose branch an unwatched PR is.
+  still in `prs`, under its own name, once shepherd adopted it.
 - **Say what you could not read.** A `STALE` entry, an `INCOMPLETE` line or
   an unreadable forge is part of the answer, never a "nothing".
 
@@ -123,30 +123,6 @@ no origin fleet can reach, or none at all. Answer it with `send` only when the
 answer is already written down — the brief, the topic's `PROMPT.md`, a fact
 `fleet context repo` returns. Anything else is a person's: leave it on the
 board, where the operator sees it, and do not guess.
-
-### Unwatched — `pull request(s) on a session's branch need a hand and shepherd tells nobody`
-
-A pull request on a session's own branch is conflicting, failing, changes
-requested or threads open, and shepherd sends that session nothing: it
-descends from a lead or from another session somebody is driving, so whoever
-spawned it owns it. `uv run fleet queue prs` lists it under "nobody is told
-about these", with the session.
-
-- **It is not yours to fix.** Never rebase, edit or push that branch, and
-  never message the session: it is not a queue task, so `send` cannot reach it
-  and its mailbox is not yours.
-- **Leave the lead one line** in its mailbox, which wakes nothing: the PR, its
-  condition, the session it is on.
-
-  ```bash
-  thurbox-cli message send --no-wake --kind notice \
-    --to '<the lead, pasted from session list>' \
-    --body 'PR <url> is <condition> on <session>; nothing tells that session'
-  ```
-
-- **A task records it** (its `task` field in `queue prs --json`) and its
-  sessions are gone: that is shepherd's fixer to spawn, on its own pass. Say so
-  and do nothing else.
 
 ### Review owed, and a sync that needs a hand
 

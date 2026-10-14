@@ -3614,10 +3614,6 @@ def cmd_plan(args) -> int:
     needs_input = [r for r in declared.values() if r["state"] == "needs-input"]
     unprompted = unprompted_tasks(q)
     reviews = review_lifecycle().pending(sys.modules[__name__])
-    # A READ of what shepherd's last pass wrote: the pull requests on a session's
-    # branch that nobody is told about. `shepherd_store.py`'s UNWATCHED owns it.
-    store = shepherd_store()
-    unwatched = store.needs_a_hand(store.load(sys.modules[__name__])[0])
 
     if args.json:
         print(
@@ -3633,7 +3629,6 @@ def cmd_plan(args) -> int:
                     "paused": paused,
                     "needs_input": needs_input,
                     "reviews": reviews,
-                    "unwatched_prs": unwatched,
                 },
                 indent=2,
             )
@@ -3646,12 +3641,6 @@ def cmd_plan(args) -> int:
     _print_plan_declared(needs_input, paused)
     for row in reviews:
         print(f"review-{row['state']}: {row['url']} at {row['head']} — {row.get('detail', '')}")
-    if unwatched:
-        print()
-        print(f"unwatched: {len(unwatched)} pull request(s) on a session's branch that nobody is told about")
-        for row in unwatched:
-            print(f"    {row['pr']}  {row['condition']}  on {row['session_name'] or row['session']}")
-        print("          `fleet queue prs` has every one; shepherd sends these sessions nothing.")
     return 0
 
 

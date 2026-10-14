@@ -16,22 +16,27 @@ that is:
                     `peers.lead_fleet` recognises. A CONDUCTOR is refused
                     exactly like a lead — this fleet's by the manifest's
                     second session (or FLEET_CONDUCTOR_SESSION), any fleet's
-                    by `peers.conductor_fleet` — and so are its descendants,
-                    below, since it dispatches workers as the lead does;
-  not fleet's own   held by no queue task, as its worker or as a fixer sent
-                    for it (`sessions.py`'s `orphans` reads "held" the same way),
-                    and descended from no lead or conductor. A second fleet on this
-                    machine has its own queue, so this one's records cannot
-                    see its workers — but thurbox names their parent, and
-                    that parent is a lead. The whole chain of parents is
-                    walked: an ancestor that is any fleet's lead, a session
-                    this queue holds, or an id thurbox does NOT LIST makes
-                    the session somebody else's. An unlisted parent is a
-                    lead that was deleted or re-created under a new id as
-                    often as anything else, and an unknown owner is not
-                    this pass's to message. A session whose every ancestor
-                    is a listed, ordinary session is the operator's, and
-                    adopted;
+                    by `peers.conductor_fleet`;
+  not a task's      held by no queue task, as its worker or as a fixer sent
+                    for it (`sessions.py`'s `orphans` reads "held" the same
+                    way). Those are already told, by the task's own road: a
+                    fix brief into the worker, or a fixer on the branch;
+  not another       descended from no OTHER fleet's lead or conductor. A
+  fleet's           second fleet on this machine has its own queue and its own
+                    shepherd, which tells its sessions itself; this one telling
+                    them too would be every message twice. The whole chain of
+                    parents is walked, and that is the only ancestry that
+                    refuses. A session under THIS fleet's lead or conductor,
+                    under a task's worker, or under a parent thurbox no longer
+                    lists is adopted like any other. Until 2026-10-14 every one
+                    of those was refused as "somebody else's", on the guess
+                    that whoever spawned it was watching it: a session spawned
+                    under a hand-made session under the lead opened a pull
+                    request that went CONFLICTING, and nobody was told. An
+                    ancestor is this fleet's when it is the session this runs
+                    in or carries this fleet's control-session name, so a
+                    checkout with no rendered manifest, which knows neither,
+                    reads every lead as another fleet's and refuses, as before;
   local             a session on a `hosts.toml` host keeps its worktree on that
                     host, where this pass cannot ask git which branch it is on.
                     Local only, deliberately; a remote one is skipped;
@@ -128,29 +133,21 @@ below), so THIS IS A CONTRACT: add fields, never rename or retype them.
       "unwatched": [                          # added later; absent in an older file
         { ...every field of a "prs" entry above, and:
           "task": "<topic/NN-slug>" | null,   # the task that records it, if any
-          "session": "<thurbox session id>" | "",  # a local session on its branch
-          "session_name": "<its name>" | "",
           "why": "<why no session is told about it>"
         }
       ]
     }
 
-UNWATCHED: EVERY OPEN PR NOBODY IS TOLD ABOUT. `sessions` holds the pull
-requests some session hears about — a task's worker or fixer, or an adopted
-session. Every other open one this pass listed is in `unwatched`: a PR no task
-records, one whose task's session is gone, and above all one on the branch of
-a session shepherd may not adopt because it descends from a lead or another
-session somebody else is driving. On 2026-10-14 a session spawned under a
-hand-made design session under the lead opened a pull request on a repository
-a task named, it went CONFLICTING, and nothing in fleet said so: the store
-dropped it, `fleet queue prs` printed "nothing recorded yet", and the
-conductor, asked, answered from `gh pr list` in the checkout's own repository.
-Shepherd still SENDS such a session nothing — adoption's rules above are
-unchanged — but the store now records it, `session` names the local session
-whose own branch it is (read the way adoption reads one), and `plan --json`'s
-`unwatched_prs` hands the ones that need a hand to the conductor's notice.
-Review threads are counted only for a PR a session is on: the rest are other
-people's, and one GraphQL call each per pass would buy nothing.
+UNWATCHED: EVERY OPEN PR NOBODY HERE IS TOLD ABOUT. `sessions` holds the
+pull requests some session hears about — a task's worker or fixer, or an
+adopted session. Every other open one this pass listed is in `unwatched`:
+a colleague's, a fork's, or a task's whose sessions are all gone (its fixer
+is the main pass's to spawn). Shepherd sends nobody anything about these; the
+list is so that `fleet queue prs` and `fleet status` can show the whole of
+what is open, rather than only the part filed under a session. Before it, a
+pass watching 36 pull requests wrote `"sessions": {}` and `prs` printed
+"nothing recorded yet". Review threads are not counted for them: they are
+other people's, and one GraphQL call each per pass would buy nothing.
 
 `action` is what shepherd did about that PR: `sent` a line to the session (an
 adopted session, or a session already on a task's PR — its fixer or its own
@@ -642,19 +639,18 @@ def after_pass(q, args, all_tasks: list, observed: list, listings: dict, unreada
     if scoped:
         unwatched = previous.get("unwatched") or []
     else:
-        unwatched = unwatched_prs(q, snapshot, held, sessions, observed, listings, readable,
-                                  previous.get("unwatched") or [])
+        unwatched = unwatched_prs(q, sessions, observed, listings, readable, previous.get("unwatched") or [])
     if not args.dry_run:
         save(q, sessions, unwatched)
     return adopted_rows
 
 
-def _owned_elsewhere(snapshot: dict, held: dict, a_lead, sid) -> bool:
-    """Some ancestor is a lead or conductor, a session this queue holds, or one thurbox does not list."""
+def _another_fleets(snapshot: dict, foreign, sid) -> bool:
+    """Some ancestor is another fleet's lead or conductor. See "not another fleet's" above."""
     seen = {sid}
     parent = str((snapshot.get(sid) or {}).get("parent_session_id") or "")
-    while parent:
-        if parent in seen or parent not in snapshot or parent in held or a_lead(parent):
+    while parent and parent in snapshot and parent not in seen:
+        if foreign(parent):
             return True
         seen.add(parent)
         parent = str(snapshot[parent].get("parent_session_id") or "")
@@ -705,26 +701,33 @@ def _adopted_prs(q, prev: dict, fresh: list, readable: dict, branches: set, unre
 
 
 def control_check(q, snapshot: dict):
-    """`a_lead(sid)`: a lead or a conductor, this fleet's or any other's."""
+    """(`a_lead(sid)`, `foreign(sid)`): a lead or conductor of any fleet, and of another fleet only."""
     control_names, lead_id = lead_refusals(q)
     leads_fleet = lead_fleet(q)
 
+    def own(sid) -> bool:
+        name = str((snapshot.get(sid) or {}).get("name") or "")
+        return sid == lead_id or name in control_names
+
     def a_lead(sid) -> bool:
         name = str((snapshot.get(sid) or {}).get("name") or "")
-        return sid == lead_id or name in control_names or leads_fleet(name) is not None
+        return own(sid) or leads_fleet(name) is not None
 
-    return a_lead
+    def foreign(sid) -> bool:
+        return a_lead(sid) and not own(sid)
+
+    return a_lead, foreign
 
 
 def adopt(q, args, snapshot: dict, held: dict, prev_sessions: dict, listings: dict, readable: dict,
           observed: list, sessions: dict) -> list:
-    a_lead = control_check(q, snapshot)
+    a_lead, foreign = control_check(q, snapshot)
     live = set(snapshot)
     merged_by_pass = {cr.url: row.get("note") or "" for cr, _t, row in observed if row["action"] == "merged"}
     rows: list = []
     for sid, row in sorted(snapshot.items(), key=lambda kv: str(kv[1].get("name") or kv[0])):
         name = str(row.get("name") or "")
-        if sid in held or a_lead(sid) or _owned_elsewhere(snapshot, held, a_lead, sid) or not is_local(row):
+        if sid in held or a_lead(sid) or _another_fleets(snapshot, foreign, sid) or not is_local(row):
             continue
         prev = prev_sessions.get(sid) or {}
         fresh, branches, unread = _shepherd_session(q, args, sid, row, prev, listings, readable, live,
@@ -739,49 +742,10 @@ def adopt(q, args, snapshot: dict, held: dict, prev_sessions: dict, listings: di
 # --- what nobody is told about -----------------------------------------------
 
 
-def _why_unwatched(snapshot: dict, held: dict, a_lead, sid: str) -> str:
-    if sid in held:
-        return f"on the branch of session {sid}, which a task holds but whose recorded pull requests do not name it"
-    if _owned_elsewhere(snapshot, held, a_lead, sid):
-        return ("on the branch of a session that descends from a lead, a task's session or one thurbox "
-                "does not list, so shepherd leaves it to whoever drives that session and tells it nothing")
-    return "on the branch of a session shepherd did not adopt"
-
-
-def branch_sessions(q, snapshot: dict | None, held: dict, filed: set, listings: dict,
-                    readable: dict) -> dict:
-    """{(repo, branch): (session id, name, why)} for every local session no store entry speaks to.
-
-    The session's own branches, read exactly as adoption reads them, and each
-    one's repository listed on first sight so a PR there is seen even when no
-    task names that repository. A lead or conductor is never one of them.
-    """
-    if not snapshot:
-        return {}
-    a_lead = control_check(q, snapshot)
-    found: dict = {}
-    for sid, row in sorted(snapshot.items(), key=lambda kv: str(kv[1].get("name") or kv[0])):
-        if sid in filed or a_lead(sid) or not is_local(row):
-            continue
-        branches, _unread = session_branches(q, row)
-        for repo, branch in branches:
-            if _listed_prs(q, repo, listings, readable) is None:
-                continue
-            found.setdefault((repo.qualified, branch),
-                             (sid, str(row.get("name") or ""), _why_unwatched(snapshot, held, a_lead, sid)))
-    return found
-
-
-def unwatched_prs(q, snapshot: dict | None, held: dict, sessions: dict, observed: list, listings: dict,
-                  readable: dict, previous: list) -> list:
+def unwatched_prs(q, sessions: dict, observed: list, listings: dict, readable: dict, previous: list) -> list:
     """Every open PR this pass listed that no session in `sessions` is told about. See UNWATCHED."""
     filed_urls = {e.get("url") for s in sessions.values() for e in s.get("prs") or []}
-    on_branch = branch_sessions(q, snapshot, held, set(sessions), listings, readable)
     tasks = {cr.url: (task, row) for cr, task, row in observed}
-    # thurbox unread is not every session gone: keep the link the last pass read.
-    linked = {} if snapshot is not None else {
-        e.get("url"): (e.get("session"), e.get("session_name") or "", e.get("why") or "")
-        for e in previous if e.get("session")}
     out: list = []
     for repo in sorted(listings, key=lambda r: r.qualified):
         for cr in sorted(listings[repo], key=lambda c: c.number):
@@ -793,16 +757,10 @@ def unwatched_prs(q, snapshot: dict | None, held: dict, sessions: dict, observed
             else:
                 # Nobody asked this PR for an attestation; read it as adoption does.
                 condition, detail = q.classify(cr, "pr")
-            # A fork's branch can share a local branch's name; only a head in this
-            # repository is the session's, as adoption reads it.
-            mine = cr.head_is_ours is not False
-            sid, name, why = (mine and (on_branch.get((repo.qualified, cr.head_branch)) or linked.get(cr.url))
-                              or ("", "", ""))
-            if not why:
-                why = (f"task {task.ref} records it, and none of its sessions is listed" if task
-                       else "no task records it and no session on this machine is on its branch")
-            entry = entry_for(q, cr, condition, detail, "none", why, threads=bool(sid))
-            entry.update({"task": task.ref if task else None, "session": sid, "session_name": name, "why": why})
+            why = (f"task {task.ref} records it, and none of its sessions is listed" if task
+                   else "no task records it and no session on this machine is on its branch")
+            entry = entry_for(q, cr, condition, detail, "none", why, threads=False)
+            entry.update({"task": task.ref if task else None, "why": why})
             out.append(entry)
     seen = {e["url"] for e in out}
     for entry in previous:
@@ -815,27 +773,6 @@ def unwatched_prs(q, snapshot: dict | None, held: dict, sessions: dict, observed
             out.append(entry if entry.get("stale") else stale(entry, readable[repo]))
         # else the repository answered and the PR was not open in it: gone.
     return out
-
-
-# The conditions a session on the branch has to act on, and nobody will tell it.
-NEEDS_A_HAND = ("conflicting", "checks-failed", "changes-requested", "threads-open")
-
-
-def needs_a_hand(doc: dict) -> list:
-    """`plan --json`'s `unwatched_prs`: the unwatched PRs on a local session's branch that need work.
-
-    One row each, keyed by PR, condition and head, so a push or a new
-    condition is news to the conductor and the same one twice is not.
-    """
-    rows = []
-    for e in doc.get("unwatched") or []:
-        if not e.get("session") or e.get("stale") or e.get("condition") not in NEEDS_A_HAND:
-            continue
-        short = f"{str(e.get('repo') or '').split('/', 1)[-1]}#{e.get('number')}"
-        rows.append({"key": f"{short} {e.get('condition')} @{str(e.get('head_sha') or '')[:8]}",
-                     "pr": e.get("url"), "condition": e.get("condition"), "detail": e.get("detail"),
-                     "session": e.get("session"), "session_name": e.get("session_name")})
-    return rows
 
 
 # --- what the pass prints, and `fleet queue prs` ------------------------------
@@ -979,7 +916,7 @@ def cmd_prs(q, args) -> int:
         print(f"prs: nothing recorded yet — `fleet queue shepherd` writes {store_path(q)}")
         return 0
     print(f"prs: as of {doc.get('written_at')}, {len(sessions)} watched session(s), "
-          f"{len(unwatched)} open pull request(s) nobody is told about\n")
+          f"{len(unwatched)} open pull request(s) that no session here is on\n")
     for sid, s in sorted(sessions.items(), key=lambda kv: str(kv[1].get("name") or kv[0])):
         whose = s.get("task") or "adopted"
         print(f"    {s.get('name') or sid}  ({whose})")
@@ -989,12 +926,12 @@ def cmd_prs(q, args) -> int:
 
 
 def _print_unwatched(unwatched: list) -> None:
-    """The unwatched PRs, the ones on a session's branch first: those are this machine's work."""
+    """The open PRs no session on this machine is on: someone else's, or a task's whose sessions are gone."""
     if not unwatched:
         return
-    print("\n    nobody is told about these — shepherd sends no session a line for them:")
-    for e in sorted(unwatched, key=lambda e: (not e.get("session"), str(e.get("url")))):
+    print("\n    nobody here is told about these — no session on this machine is on their branch:")
+    for e in sorted(unwatched, key=lambda e: str(e.get("url"))):
         stale_note = f"  STALE: {e.get('stale_reason')}" if e.get("stale") else ""
-        on = f"  on {e.get('session_name') or e.get('session')}'s branch" if e.get("session") else ""
+        task = f"  task {e.get('task')}" if e.get("task") else ""
         print(f"        #{e.get('number')} {e.get('repo')}  {e.get('state')}, checks {e.get('checks')}, "
-              f"{e.get('condition')}{on}{stale_note}")
+              f"{e.get('condition')}{task}{stale_note}")

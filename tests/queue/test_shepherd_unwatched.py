@@ -1,13 +1,12 @@
-"""A pull request nobody is told about is still recorded, and still reaches the conductor.
+"""Every session on this machine is told about its pull request, and every other open one is still recorded.
 
 The case, from 2026-10-14: a hand-made design session under the lead spawned a
-session that opened a pull request, which went CONFLICTING. Shepherd may not
-adopt that session — it descends from a lead — and no task recorded the PR, so
-the store dropped it, `fleet queue prs` said "nothing recorded yet", `plan`
-named nothing and the conductor, asked, said no notice had reached it. Now the
-store's `unwatched` list holds every open PR no session is told about, names
-the local session whose branch it is, and `plan --json` hands the ones that
-need a hand to the notifier. Shepherd still sends that session nothing.
+session that opened a pull request, which went CONFLICTING. Shepherd refused
+to adopt that session because it descended from a lead, no task recorded the
+PR, the store dropped it, and nobody was told. Now only ANOTHER fleet's lead or
+conductor refuses its descendants, so that session is adopted and told like
+any other; and the store's `unwatched` list holds every open PR no session
+here is on, so `fleet queue prs` and `fleet status` show all of what is open.
 """
 
 import json
@@ -54,6 +53,10 @@ def store() -> dict:
     return json.loads((Path(os.environ["FLEET_SHEPHERD_DIR"]) / "prs.json").read_text(encoding="utf-8"))
 
 
+def sends(stubs, sid: str) -> list[str]:
+    return stubs.calls("thurbox-cli", f"session send {sid}")
+
+
 @pytest.fixture
 def incident(shep, stubs, tmp_path) -> None:
     """The lead, a design session under it, and its child's conflicting pull request."""
@@ -63,86 +66,59 @@ def incident(shep, stubs, tmp_path) -> None:
     session(stubs, CHILD, "Add session keys", checkout(tmp_path / "child", "feat/session-keys"),
             "feat/session-keys", parent=DESIGN)
     shep.pr(415, headRefName="feat/session-keys", body="", mergeable="CONFLICTING")
-    shep.pr(266, headRefName="fix/issue-258", body="")  # green, nobody's session
+    shep.pr(266, headRefName="fix/issue-258", body="")  # green, and no session here is on it
 
 
-def test_a_conflicting_pr_under_the_lead_is_recorded_and_its_session_named(incident, stubs):
+def test_a_session_under_this_fleets_lead_is_told_about_its_conflict(incident, stubs):
     out = q("shepherd", FLEET_LEAD_SESSION=LEAD_NAME).out
-    # Adoption is unchanged: the session descends from the lead and is sent nothing.
-    assert stubs.calls("thurbox-cli", f"session send {CHILD}") == [], out
-    doc = store()
-    assert CHILD not in doc["sessions"]
-    by_number = {e["number"]: e for e in doc["unwatched"]}
-    child = by_number[415]
-    assert child["condition"] == "conflicting"
-    assert child["mergeable"] == "conflicting"
-    assert child["session"] == CHILD
-    assert child["session_name"] == "Add session keys"
-    assert child["task"] is None
-    expect(child["why"], "descends from a lead")
-    # The green one nobody is on is listed too, with no session.
-    assert by_number[266]["session"] == ""
-    assert by_number[266]["condition"] != "policy", "nobody asked an unqueued PR for an attestation"
+    told = sends(stubs, CHILD)
+    assert len(told) == 1, out
+    expect(told[0], "PR #415", "conflicting", "Read ")
+    entry = store()["sessions"][CHILD]
+    assert entry["adopted"] is True
+    assert entry["prs"][0]["condition"] == "conflicting"
+    assert entry["prs"][0]["action"] == "sent"
+    # Once per condition per head, exactly as for any adopted session.
+    q("shepherd", FLEET_LEAD_SESSION=LEAD_NAME)
+    assert len(sends(stubs, CHILD)) == 1
+    # The lead itself is still never adopted or told.
+    assert sends(stubs, LEAD) == []
+    assert LEAD not in store()["sessions"]
 
 
-def test_fleet_queue_prs_shows_it_rather_than_nothing_recorded(incident):
+def test_a_pr_no_session_here_is_on_is_recorded_as_unwatched(incident):
+    q("shepherd", FLEET_LEAD_SESSION=LEAD_NAME)
+    unwatched = {e["number"]: e for e in store()["unwatched"]}
+    assert set(unwatched) == {266}, "the adopted session's PR is filed under it, not unwatched"
+    assert unwatched[266]["task"] is None
+    assert unwatched[266]["condition"] != "policy", "nobody asked an unqueued PR for an attestation"
+    expect(unwatched[266]["why"], "no session on this machine")
+
+
+def test_fleet_queue_prs_shows_everything_open(incident):
     q("shepherd", FLEET_LEAD_SESSION=LEAD_NAME)
     out = q("prs").out
     refute(out, "nothing recorded yet")
-    expect(out, "nobody is told about", "#415", "conflicting", "on Add session keys's branch", "#266")
+    expect(out, "Add session keys", "#415", "conflicting", "no session on this machine is on their branch", "#266")
 
 
-def test_plan_names_only_the_one_that_needs_a_hand(incident):
-    q("shepherd", FLEET_LEAD_SESSION=LEAD_NAME)
-    plan = json.loads(q("plan", "--json").stdout)
-    rows = plan["unwatched_prs"]
-    assert [r["condition"] for r in rows] == ["conflicting"], rows
-    assert rows[0]["session"] == CHILD
-    assert rows[0]["key"].startswith("Thurbeen/fleet#415 conflicting @"), rows
-    expect(q("plan").out, "unwatched: 1 pull request(s)", "pull/415", "on Add session keys")
-
-
-def test_a_push_is_a_new_key(incident, shep):
-    q("shepherd", FLEET_LEAD_SESSION=LEAD_NAME)
-    before = json.loads(q("plan", "--json").stdout)["unwatched_prs"][0]["key"]
-    shep.update(415, headRefOid="e" * 40)
-    q("shepherd", FLEET_LEAD_SESSION=LEAD_NAME)
-    after = json.loads(q("plan", "--json").stdout)["unwatched_prs"][0]["key"]
-    assert before != after
-
-
-def test_an_adopted_session_is_not_also_unwatched(shep, stubs, tmp_path):
-    session(stubs, CHILD, "hand-made", checkout(tmp_path / "own", "feat/own"), "feat/own")
-    shep.pr(201, headRefName="feat/own", body="", mergeable="CONFLICTING")
-    q("shepherd", FLEET_LEAD_SESSION=LEAD_NAME)
-    doc = store()
-    assert CHILD in doc["sessions"]
-    assert doc["unwatched"] == []
-    assert json.loads(q("plan", "--json").stdout)["unwatched_prs"] == []
+def test_a_pass_that_found_nothing_says_when_rather_than_nothing_recorded(shep):
+    q("shepherd")
+    out = q("prs").out
+    refute(out, "nothing recorded yet")
+    expect(out, "as of", "0 watched session(s), 0 open pull request(s)")
 
 
 def test_an_unreadable_forge_keeps_unwatched_entries_marked_stale(incident):
     q("shepherd", FLEET_LEAD_SESSION=LEAD_NAME)
     q("shepherd", FLEET_LEAD_SESSION=LEAD_NAME, SHEP_GH_DOWN="1")
     entries = {e["number"]: e for e in store()["unwatched"]}
-    assert entries[415]["stale"] is True
-    # A stale reading is not news to the conductor.
-    assert json.loads(q("plan", "--json").stdout)["unwatched_prs"] == []
+    assert entries[266]["stale"] is True
 
 
 def test_fleet_status_points_at_the_prs_no_task_holds(incident):
     """`fleet status` matches PRs to tasks; it now says how many more there are, and where."""
     q("shepherd", FLEET_LEAD_SESSION=LEAD_NAME)
     out = run_fleet("status").out
-    expect(out, "2 open that no task holds", "1 needing a hand", "Thurbeen/fleet#415 conflicting",
+    expect(out, "2 more that no task holds: 1 on sessions shepherd adopted, 1 that no session here is on",
            "uv run fleet queue prs")
-
-
-def test_a_forks_pr_on_the_same_branch_name_is_not_the_sessions(incident, shep):
-    """A stranger's fork can name its branch `feat/session-keys` too; that PR is not ours to pin on a session."""
-    shep.update(415, isCrossRepository=True, headRepositoryOwner={"login": "a-stranger"})
-    q("shepherd", FLEET_LEAD_SESSION=LEAD_NAME)
-    entry = {e["number"]: e for e in store()["unwatched"]}[415]
-    assert entry["session"] == ""
-    assert entry["session_name"] == ""
-    assert json.loads(q("plan", "--json").stdout)["unwatched_prs"] == []

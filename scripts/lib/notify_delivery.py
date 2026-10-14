@@ -2,9 +2,8 @@
 """How the reconciler's notices reach a session: the rules both notifiers keep.
 
 Two modules tell somebody something, and they tell different people.
-`notify_conductor.py` carries the operational notices — ready, stalled,
-unprompted, needs-input, review obligations, a pull request nobody is told
-about, and a sync that needs a hand — to the session
+`notify_conductor.py` carries the five operational notices — ready, stalled,
+unprompted, review obligations and a sync that needs a hand — to the session
 that keeps the work moving. `notify_origin.py` carries a task's outcome, and a
 worker's question, to the conversation the task came from. WHO differs; HOW
 does not, and this is the how, kept once so the two cannot drift apart:

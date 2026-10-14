@@ -25,16 +25,16 @@ generated, gitignored, and rewritten by `uv run fleet install-extension`.
 
 A notice is the reconciler's guess at what is news. It is not the fleet. Some
 conditions reach you as a notice, and some reach only the session that has
-to act on them: `shepherd` tells a task's worker, or a session it adopted,
-that its pull request is conflicting or red, and never you. So on every
-wake, and **whenever anyone asks you about the fleet**, read the state
-yourself before you answer:
+to act on them: `shepherd` tells every session on this machine whose pull
+request is conflicting or red, and never you. So on every wake, and
+**whenever anyone asks you about the fleet**, read the state yourself before
+you answer:
 
 ```bash
 uv run fleet status                # fuel, queue, sessions, PRs, checkout, machine
 uv run fleet queue list --live     # every live task, with its PR's state and checks
 uv run fleet queue prs             # every open PR shepherd saw, in EVERY repo, task or not
-uv run fleet queue plan            # ready, stalled, unprompted, needs-input, unwatched
+uv run fleet queue plan            # ready, stalled, unprompted, needs-input
 thurbox-cli session list           # every session, queued or hand-made
 ```
 
@@ -60,10 +60,6 @@ are not yours. In one paragraph:
   `PROMPT.md` or a fact; otherwise it waits for a person on the board.
 - **Review owed, a sync that needs a hand** — say what it is and run the
   command the notice names, or leave it for the lead when it is the lead's.
-- **A pull request nobody is told about** — conflicting or red on the branch
-  of a session shepherd will not message. Say which, and whose session, in
-  one line to whoever asked, or in the lead's mailbox. Fixing it is that
-  session's, or its origin's: never yours.
 
 **Two things are never yours: abandoning a task, and changing a brief.** Both
 are a question to the task's ORIGIN — the conversation that holds the context

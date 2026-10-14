@@ -483,7 +483,7 @@ def probe_prs(tasks: list) -> dict:
 
 
 def unwatched_reading() -> dict:
-    """What shepherd's last pass left that this section cannot see: PRs no task holds.
+    """What shepherd's last pass saw that this section cannot: PRs no task holds.
 
     This section matches change requests to TASKS, so a pull request nobody
     queued — a hand-made session's, a colleague's — is not on it, and "none
@@ -491,9 +491,9 @@ def unwatched_reading() -> dict:
     So it says how many more the shepherd store holds and names the command
     that lists them. A read of the store only; it asks no forge.
     """
-    store = fleetqueue.shepherd_store()
-    doc, _why = store.load(fleetqueue)
-    return {"unwatched": len(doc.get("unwatched") or []), "need_a_hand": store.needs_a_hand(doc)}
+    doc, _why = fleetqueue.shepherd_store().load(fleetqueue)
+    adopted = sum(len(x.get("prs") or []) for x in (doc.get("sessions") or {}).values() if x.get("adopted"))
+    return {"adopted": adopted, "unwatched": len(doc.get("unwatched") or [])}
 
 
 def _task_prs(repo: str, crs: list, owners: list) -> list:
@@ -1529,13 +1529,11 @@ def render_prs(sec: dict) -> list:
 
 
 def render_unwatched(sec: dict) -> list:
-    if not sec.get("unwatched"):
+    adopted, unwatched = sec.get("adopted") or 0, sec.get("unwatched") or 0
+    if not adopted and not unwatched:
         return []
-    hand = sec.get("need_a_hand") or []
-    line = f"    + {sec['unwatched']} open that no task holds and nobody is told about"
-    if hand:
-        line += f", {len(hand)} needing a hand on a session's branch ({', '.join(r['key'] for r in hand[:3])})"
-    return [line + " — uv run fleet queue prs"]
+    return [f"    + {adopted + unwatched} more that no task holds: {adopted} on sessions shepherd adopted, "
+            f"{unwatched} that no session here is on — uv run fleet queue prs"]
 
 
 def render_checkout(sec: dict) -> list:
