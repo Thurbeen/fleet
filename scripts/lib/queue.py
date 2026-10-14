@@ -1564,11 +1564,8 @@ def stamp_datetime(stamp) -> datetime | None:
             return datetime.fromtimestamp(secs, timezone.utc)
         except (OverflowError, OSError, ValueError):
             return None
-    text = str(stamp)
-    if text.isdigit():
-        return stamp_datetime(int(text))
     try:
-        return datetime.fromisoformat(text)
+        return datetime.fromisoformat(str(stamp))
     except ValueError:
         return None
 
@@ -12830,7 +12827,8 @@ def last_transition(task: Task) -> tuple[str | None, str]:
     `at` is when thurbox says the session changed state; `observed` is when
     `watch` folded it in. The first is what answers "has this worker moved",
     so a fold that happens to run after the message cannot manufacture
-    movement that predates it.
+    movement that predates it. thurbox's epoch `at` comes back as ISO text,
+    the spelling every other `at` this queue hands out has.
     """
     path = task.file(PROGRESS_FILE)
     if not os.path.exists(path):
@@ -12848,7 +12846,8 @@ def last_transition(task: Task) -> tuple[str | None, str]:
         stamp = ev.get("at")
         when = record_time(stamp)
         if when and (newest is None or when > newest[0]):
-            newest = (when, str(stamp))
+            text = stamp if isinstance(stamp, str) else datetime.fromtimestamp(when, timezone.utc).isoformat()
+            newest = (when, text)
     return (newest[1] if newest else None), ""
 
 
