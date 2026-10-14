@@ -233,18 +233,31 @@ def test_a_killed_test_run_leaks_no_supervisor(recon):
 
 @pytest.mark.skipif(os.name == "nt", reason="Windows will not delete a directory whose lock and log the loop holds "
                                             "open; the watched parent is what ends a leaked loop there")
-def test_a_supervisor_whose_runtime_directory_is_deleted_exits(recon):
+def test_a_supervisor_whose_runtime_directory_is_deleted_exits(recon, monkeypatch):
     assert recon("ensure").code == 0
     supervisor = int(recon.pid())
     mod = lib("reconcile.py")
 
-    shutil.rmtree(recon.rt)
+    original_rmdir = os.rmdir
+
+    def racing_rmdir(path, *args, **kwargs):
+        # A live writer can replace a runtime file after rmtree's scan.
+        if Path(path) == recon.rt:
+            write(recon.rt / "racing-heartbeat", "tick\n")
+        return original_rmdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "rmdir", racing_rmdir)
+
+    # Remove the watched path atomically; recursive deletion races live writes.
+    removed = recon.rt.with_name("removed-runtime")
+    recon.rt.rename(removed)
 
     assert wait_for(lambda: not mod.fleet_platform.alive(supervisor), ORPHAN_SECS), (
         "the supervisor kept ticking with its runtime directory gone")
     # Nothing in a pass may make it again: the loop would then read as at home
     # at the next boundary and never exit.
     assert not recon.rt.exists(), "the loop made its runtime directory again instead of exiting"
+    shutil.rmtree(removed)
 
 
 def test_a_directory_somebody_else_made_is_not_the_loops_own(isolated_env):
