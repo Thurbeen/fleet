@@ -6,7 +6,8 @@ against what this repo assumed it prints. Nothing here reaches the network when
 the tests run; a fake `glab` replays these files.
 
 Every `mr-*` file below was recorded on **2026-09-10** with **`glab` 1.117.0
-(44790937b)** against **gitlab.com**, unauthenticated, from the public project
+(44790937b)**, unless its row says otherwise, against **gitlab.com**,
+unauthenticated, from the public project
 `gitlab-org/cli`; those commands are exact and repeatable. `auth-status.stderr`
 is the one exception on every count — it prints whatever the running machine is
 configured for, and it was recorded elsewhere and edited afterwards. Its own
@@ -18,6 +19,8 @@ bullet below owns its provenance.
 | `mr-commits.json` | `glab api "projects/gitlab-org%2Fcli/merge_requests/3875/commits?per_page=100" --hostname gitlab.com` |
 | `mr-view-missing.json` | `glab mr view 999999 -R https://gitlab.com/gitlab-org/cli -F json` — stdout |
 | `mr-view-missing.stderr` | the same call's stderr |
+| `mr-view-merged-results.json` | `glab mr view 4110 -R https://gitlab.com/gitlab-org/cli -F json` — recorded 2026-10-14 with `glab` 1.120.0 |
+| `commit-merged-results.json` | `glab api "projects/gitlab-org%2Fcli/repository/commits/29b52e0340704d7404d05833fcbe07fbdd4070c5" --hostname gitlab.com` — the same day, the same `glab` |
 | `auth-status.stderr` | `glab auth status --all` — stderr, **with the hostnames and account renamed**, see below |
 
 `glab mr list -F json` answers with the same objects minus `head_pipeline`, so
@@ -37,6 +40,13 @@ its bytes in a control-plane repo:
   of that field and calls everything else "the forge has not said".
 - **`mr-commits.json` is NEWEST FIRST.** Fleet's `Commit` list is oldest
   first, so the adapter reverses; this file is the evidence that it must.
+- **`mr-view-merged-results.json` is a MERGED-RESULTS pipeline.** Its
+  `head_pipeline` ran on `refs/merge-requests/4110/merge`, so its `sha` is the
+  merge commit GitLab made and not the merge request's head, and
+  `GET /projects/:id/pipelines/:id` names no other commit (it has no
+  `source_sha`). **`commit-merged-results.json` is that merge commit**, and its
+  `parent_ids` are the target branch's head and the merge request's head — the
+  one answer that ties the pipeline to the code it tested.
 - **`mr-view-missing.*` is the error shape**, and it is two streams: the
   reason is the JSON on *stdout*, while stderr carries a blank-line-padded
   `ERROR` box whose first line is decoration. An adapter that read stderr
@@ -76,10 +86,12 @@ recorded, and not presented as recorded:
 
 ## Refreshing
 
-Re-run the `mr-*` commands above. `3877` and `3875` are ordinary merge
-requests on a public project and will eventually be closed; when they are,
-pick any open merge request with a fork source and any with several commits,
-and update the numbers in this table.
+Re-run the `mr-*` commands above. `3877`, `3875` and `4110` are ordinary
+merge requests on a public project and will eventually be closed; when they
+are, pick any open merge request with a fork source, any with several commits
+and any whose `head_pipeline.ref` is `refs/merge-requests/<iid>/merge`, record
+that pipeline's commit as `commit-merged-results.json`, and update the numbers
+in this table.
 
 `auth-status.stderr` is not refreshed that way: re-running `glab auth status
 --all` prints the hostnames, account and home directory of whoever ran it, and

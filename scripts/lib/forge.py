@@ -1691,7 +1691,7 @@ class GitLabForge(Forge):
             review_decision=(
                 "changes-requested" if said == GL_CHANGES_REQUESTED else ""
             ),
-            checks=self._checks(d),
+            checks=self._checks(d, repo),
             commits=list(commits or []),
             labels=[str(lb) for lb in (d.get("labels") or []) if isinstance(lb, str)],
             head_is_ours=ours,
@@ -1856,21 +1856,30 @@ class GitLabForge(Forge):
         )
         return (out or "", "") if not why else ("", f"glab api could not read the job log: {why}")
 
-    @staticmethod
-    def _checks(d: dict) -> list:
+    def _checks(self, d: dict, repo: RepoId) -> list:
         """The head pipeline, as one check — and NOTHING when it is not the head's.
 
         GitLab keeps the previous commit's pipeline in `head_pipeline` until the
         new one is created, so a pipeline whose `sha` is not the merge request's
         is a green light for code nobody ran. An empty list is `classify`'s "no
         check has reported yet", which is the correct answer there.
+
+        The one exception is a MERGED-RESULTS pipeline. It runs on
+        `refs/merge-requests/<iid>/merge`, so its `sha` is the merge commit
+        GitLab made and never the head, and the pipeline answer carries nothing
+        else that names the head. That commit's parents do, so it counts when
+        the head is one of them — `_merged_from` asks.
         """
         p = d.get("head_pipeline")
         if not isinstance(p, dict):
             return []
         ran, head = str(p.get("sha") or ""), str(d.get("sha") or "")
         if ran and head and ran.lower() != head.lower():
-            return []
+            merge_ref = f"refs/merge-requests/{d.get('iid')}/"
+            if not str(p.get("ref") or "").startswith(merge_ref):
+                return []
+            if not self._merged_from(repo, ran, head):
+                return []
         name = str(p.get("name") or "") or f"pipeline #{p.get('id') or 'unnumbered'}"
         said = str(p.get("status") or "").lower()
         if said in GL_PIPELINE_FAILED:
@@ -1880,6 +1889,15 @@ class GitLabForge(Forge):
         if said in GL_PIPELINE_CANCELLED:
             return [Check(name, "cancelled")]
         return [Check(name, "pending")]
+
+    def _merged_from(self, repo: RepoId, merge: str, head: str) -> bool:
+        """Is `head` a parent of the merge commit `merge`? A failed call is no."""
+        doc, why = self._api(
+            repo, f"projects/{self._project(repo)}/repository/commits/{merge}", timeout=30
+        )
+        if why or not isinstance(doc, dict):
+            return False
+        return head.lower() in [str(s).lower() for s in (doc.get("parent_ids") or [])]
 
     def changed_paths(self, cr: ChangeRequest) -> tuple:
         """`diffs` rather than `changes`, which GitLab truncates past its diff

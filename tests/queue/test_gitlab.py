@@ -139,6 +139,45 @@ def test_a_pipeline_is_a_check_only_for_the_head_it_ran_on(forge, glab, monkeypa
         assert verdicts({"id": 1, "sha": head, "status": said}) == [want], f"pipeline {said}"
 
 
+def test_a_merged_results_pipeline_is_a_check_for_the_head_it_merged(forge, glab):
+    """A merged-results pipeline runs on `refs/merge-requests/<iid>/merge`, so its
+    `sha` is the merge commit GitLab made and never the merge request's head. It
+    counts for the head when that commit's parents include the head, which is what
+    GitLab's own commit answer says; anything else is still no check at all."""
+    recorded = json.loads((GLAB_FIXTURES / "mr-view-merged-results.json").read_text(encoding="utf-8"))
+    merge = json.loads((GLAB_FIXTURES / "commit-merged-results.json").read_text(encoding="utf-8"))
+    write(glab.root / "mrs" / "4110.json", json.dumps(recorded))
+    gl = forge.GitLabForge()
+    ref = gl.parse_change_url(recorded["web_url"])
+    assert recorded["head_pipeline"]["sha"] != recorded["sha"], "the recording is the shape under test"
+
+    def verdicts():
+        got, why = gl.get(ref)
+        assert why == ""
+        return [c.verdict for c in got.checks]
+
+    glab.api("commit", merge)
+    assert verdicts() == ["passed"], "a passing merged-results pipeline is a passing check"
+    assert f"repository/commits/{merge['id']}" in glab.calls(), "the merge commit is asked of GitLab"
+
+    glab.api("commit", dict(merge, parent_ids=[merge["parent_ids"][0], "0" * 40]))
+    assert verdicts() == [], "a merged result of an older head is no check at all"
+
+    (glab.root / "api" / "commit.json").unlink()
+    assert verdicts() == [], "a merge commit GitLab will not describe is no check either"
+
+
+def test_a_stale_branch_pipeline_costs_no_extra_call(forge, glab, monkeypatch):
+    """Only a pipeline on a merge request ref is worth asking about: a branch
+    pipeline for an older commit is stale, and is answered without the API."""
+    monkeypatch.setenv("GITLAB_HOST", "https://gitlab.example.com/")
+    glab.mr(402, head_pipeline={"id": 1, "sha": "0" * 40, "ref": "feature", "status": "success"})
+    gl = forge.GitLabForge()
+    got, why = gl.get(gl.parse_change_url(f"{MR}402"))
+    assert why == "" and got.checks == []
+    refute(glab.calls(), "repository/commits/")
+
+
 def test_a_note_is_asked_of_the_instance_its_url_names(forge, glab, monkeypatch):
     """A comment on a merge request or an issue, and the account glab is logged in
     as THERE. The note and user answers are CONSTRUCTED from GitLab's REST

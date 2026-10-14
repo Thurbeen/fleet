@@ -387,6 +387,8 @@ if argv[:1] == ["api"]:
     path = argv[1].split("?")[0]
     if path.endswith("/commits"):
         name = "commits"
+    elif "/repository/commits/" in path:
+        name = "commit"
     elif path.endswith("/diffs"):
         name = "diffs"
     elif path.endswith("/jobs"):
