@@ -23,6 +23,8 @@ import re
 import tomllib
 from pathlib import Path
 
+import pytest
+
 from panekit import clone, sessions, thurbox
 
 from harness import PYTHON, REPO, expect, git, refute, run, run_fleet, write
@@ -219,3 +221,21 @@ def test_an_install_writes_nothing_tracked_and_a_moved_conductor_is_named(stubs,
     expect(done.stderr, "'🎼 Conductor' session still opens a different directory",
            "thurbox-cli session delete '🎼 Conductor'")
     refute(done.stderr, "extension deactivate")
+
+
+def test_a_conductor_directory_that_resolves_outside_the_checkout_is_refused(tmp_path):
+    """An `orchestration` linked elsewhere would have the render write — and a
+    later `off` remove — files that are not this checkout's."""
+    elsewhere, dest = tmp_path / "elsewhere", tmp_path / "fleet"
+    elsewhere.mkdir()
+    dest.mkdir()
+    try:
+        (dest / "orchestration").symlink_to(elsewhere, target_is_directory=True)
+    except OSError:
+        pytest.skip("this machine cannot make a symbolic link")
+    conf("fleet.conf", "CONDUCTOR=on\n")
+    done = render(dest)
+    assert done.code == 1, done.out
+    expect(done.out, "resolves outside")
+    assert not (dest / "extension.toml").exists()
+    assert list(elsewhere.iterdir()) == []
