@@ -94,6 +94,21 @@ def test_shipped_with_no_pull_request_is_a_claim_and_not_a_skip(topic, queue_dir
     expect(show, "missing")
 
 
+def test_a_queued_task_is_not_closed_by_a_result_it_never_wrote(briefed, stubs, queue_dir):
+    # 02 never had a session, so no worker wrote this: it is a previous attempt's
+    # file, left behind when the task was put back to `queued` by hand.
+    stubs.pipeline_pr(998, "fix/document-the-states")
+    # Written straight to disk: `result` would give the task the worker it lacks.
+    write(queue_dir / briefed / "02-document-the-states" / "result.md",
+          "---\noutcome: shipped\nartifact: https://github.com/Thurbeen/thurbox/pull/998\n---\n"
+          "Documented the state vocabulary.\n")
+
+    out = q("collect").out
+    refute(out, "pull/998  [publish verified")
+    expect(out, "02-document-the-states", "queued", "not read")
+    expect(q("show", f"{briefed}/02-document-the-states").out, "state:       queued")
+
+
 # --- 8b. the publish METHOD: declared at intake, verified at collect -----------
 
 
@@ -304,7 +319,7 @@ def test_allow_unverified_closes_only_the_tasks_it_names(ptopic, push_repo, queu
     out = ok(q("collect", "--allow-unverified", f"{ptopic}/12-astray-one", "--no-reap")).out
     expect(out, "12-astray-one", "closed by --allow-unverified", "1 task(s) HELD OPEN")
     assert state_of(queue_dir, f"{ptopic}/12-astray-one") == "done"
-    assert state_of(queue_dir, f"{ptopic}/13-astray-two") == "queued"
+    assert state_of(queue_dir, f"{ptopic}/13-astray-two") == "dispatched"
 
 
 def test_allow_unverified_refuses_a_ref_that_names_no_task(ptopic):
@@ -557,7 +572,7 @@ def test_collect_accepts_verified_origin_base(tmp_path, rtopic, queue_dir, stubs
     right = yaml.safe_load((queue_dir / rtopic / "01-right" / "task.yaml").read_text(encoding="utf-8"))
     wrong = yaml.safe_load((queue_dir / rtopic / "02-wrong" / "task.yaml").read_text(encoding="utf-8"))
     assert right["state"] == "done", right
-    assert wrong["state"] == "queued", wrong
+    assert wrong["state"] == "dispatched", wrong
 
 
 @pytest.mark.parametrize("case,base", [
@@ -591,4 +606,4 @@ def test_collect_does_not_strip_unverified_base_prefixes(
            "https://github.com/acme/first/pull/1330")
     expect(q("collect", "--no-reap").out, "NOT CLOSED", "onto main")
     doc = yaml.safe_load((queue_dir / rtopic / "01-unverified" / "task.yaml").read_text(encoding="utf-8"))
-    assert doc["state"] == "queued", doc
+    assert doc["state"] == "dispatched", doc

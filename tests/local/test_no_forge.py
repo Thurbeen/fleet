@@ -150,6 +150,11 @@ def add(topic: str, slug: str, number: str, repo: Path, method: str, brief: Path
 
 
 def result(task_dir: Path, outcome: str, note: str, artifact: str | None = None) -> None:
+    """The result.md a worker writes, so the task it is written for has one:
+    `collect` reads no result beside a task that is still `queued`."""
+    record = task_dir / "task.yaml"
+    write(record, re.sub(r"^state: queued$", "state: dispatched",
+                         record.read_text(encoding="utf-8"), flags=re.MULTILINE))
     front = f"outcome: {outcome}\n" + (f"artifact: {artifact}\n" if artifact else "")
     write(task_dir / "result.md", f"---\n{front}---\n{note}\n")
 
@@ -254,7 +259,7 @@ def test_a_push_whose_commit_never_reached_origin_is_still_held_open(no_forge, t
 
     out = clean(q("collect")).out
     expect(out, "NOT CLOSED", "is not on origin/main")
-    assert state_of(queue / "01-pushed") == "queued", out
+    assert state_of(queue / "01-pushed") == "dispatched", out
 
 
 def test_a_task_that_needs_a_forge_says_it_cannot_be_verified_and_how_to_add_one(no_forge, tmp_path):

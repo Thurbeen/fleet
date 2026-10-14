@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 
 import yaml
-from queuekit import ok, result
+from queuekit import has_worker, ok, result
 
 from harness import expect, refute, run_fleet, write
 from harness import run_queue as q
@@ -64,6 +64,8 @@ def test_a_record_that_is_not_yaml_is_named_and_not_a_traceback(topic, queue_dir
 
 def test_a_result_that_cannot_be_read_holds_its_own_task_and_no_other(topic, queue_dir):
     tasks = queue_dir / topic
+    has_worker(tasks / "01-drop-idle-default")
+    has_worker(tasks / "02-document-the-states")
     write(tasks / "01-drop-idle-default" / "result.md",
           "---\noutcome: [unclosed\n---\nA frontmatter a hand mangled.\n")
     # Frontmatter that reads, and a body a Windows console wrote in its own code page.
@@ -78,6 +80,6 @@ def test_a_result_that_cannot_be_read_holds_its_own_task_and_no_other(topic, que
     expect(out.out, "01-drop-idle-default", "frontmatter is not YAML",
            "02-document-the-states  not-applicable", "03-render-detected-agent  not-applicable",
            "collect: 2 result(s) read")
-    expect(q("show", f"{topic}/01-drop-idle-default").out, "state:       queued")
+    expect(q("show", f"{topic}/01-drop-idle-default").out, "state:       dispatched")
     # Concluded, and landed on the same pass: nothing was produced, so there is nothing to wait for.
     expect(q("show", f"{topic}/02-document-the-states").out, "state:       landed")

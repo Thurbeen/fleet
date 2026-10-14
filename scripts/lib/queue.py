@@ -6473,7 +6473,17 @@ def _read_result(task: Task) -> tuple | None:
     Every reason it is None that a person should see is printed.
     """
     path = task.file(RESULT_FILE)
-    if task.state in CONCLUDED_STATES and task.state not in REREAD_STATES:
+    # Only a task with a worker has a result to read. A `queued` one has none
+    # yet, so a result.md beside it is a previous attempt's, left there when
+    # the task was put back by hand: reading it would close work that never
+    # ran, and land it once that old pull request merged.
+    if task.state not in ("dispatched", *REREAD_STATES):
+        if task.state == "queued" and os.path.exists(path):
+            print(
+                f"    {task.ref}: is queued, so its result.md is not read — no worker has"
+                " run since it was written; move it aside before dispatching",
+                file=sys.stderr,
+            )
         return None
 
     # The remote transport, and the whole of it. A worker on another machine

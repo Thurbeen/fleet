@@ -267,7 +267,7 @@ def test_one_unverified_repository_holds_the_whole_task_open(two_pushes, queue_d
            both["second"]["work"], "NOT VERIFIED", "never reached the base branch",
            "in EVERY repository it spans")
     doc = record(queue_dir, both["topic"], "01-commits-in-both")
-    assert doc["state"] == "queued", "a held task is not closed"
+    assert doc["state"] == "dispatched", "a held task is not closed"
     assert doc["artifact_check"]["verdict"] == "missing"
     verdicts = {r["repo"]: r["verdict"] for r in doc["artifact_check"]["repos"]}
     assert verdicts == {both["first"]["work"]: "passed", both["second"]["work"]: "missing"}
@@ -586,7 +586,7 @@ def test_a_closed_change_request_beside_one_nobody_could_read_holds_the_task(
     stubs.pr_state(701, "CLOSED")
     (Path(os.environ["FLEET_STUB_ROOT"]) / "pr-bodies" / "702.md").unlink()
     expect(q("collect").out, "NOT CLOSED")
-    assert record(queue_dir, topic, "01-spans-two")["state"] == "queued"
+    assert record(queue_dir, topic, "01-spans-two")["state"] == "dispatched"
 
 
 def test_a_closed_change_request_beside_an_open_one_retires_the_task_at_collect(

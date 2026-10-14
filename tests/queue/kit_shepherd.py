@@ -16,7 +16,7 @@ import json
 from pathlib import Path
 
 from fleet_stubs import attest
-from queuekit import ok
+from queuekit import has_worker, ok
 
 from harness import Stubs, git, write
 from harness import run_queue as q
@@ -260,6 +260,7 @@ def repo(path: Path, *branches: str) -> Path:
 
 
 def result(task_dir: Path, artifact: str) -> None:
+    has_worker(task_dir)
     write(task_dir / "result.md", f"---\noutcome: shipped\nartifact: {artifact}\n---\nShipped it.\n")
 
 

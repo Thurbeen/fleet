@@ -7,6 +7,8 @@ same file as `01` and depends on nothing.
 
 from pathlib import Path
 
+import yaml
+
 from harness import Run, write
 
 S1 = "11111111-1111-1111-1111-111111111111"
@@ -47,8 +49,22 @@ def ok(run: Run) -> Run:
     return run
 
 
+def has_worker(task_dir: Path) -> None:
+    """Put a still-`queued` task where a worker's result is read: `dispatched`.
+
+    `collect` reads no result.md beside a queued task — no worker has run to
+    write it — so a test that hands one in stands for the dispatch it skipped.
+    """
+    record = task_dir / "task.yaml"
+    doc = yaml.safe_load(record.read_text(encoding="utf-8"))
+    if doc.get("state") == "queued":
+        doc["state"] = "dispatched"
+        write(record, yaml.safe_dump(doc, sort_keys=False))
+
+
 def result(task_dir: Path, outcome: str, note: str, artifact: str | None = None) -> None:
-    """The result.md a worker writes."""
+    """The result.md a worker writes, so the task it is written for has one."""
+    has_worker(task_dir)
     front = f"outcome: {outcome}\n" + (f"artifact: {artifact}\n" if artifact else "")
     write(task_dir / "result.md", f"---\n{front}---\n{note}\n")
 
@@ -69,6 +85,7 @@ def result_artifacts(task_dir: Path, outcome: str, note: str, artifacts: dict) -
     opposed to `result`'s single `artifact:` scalar above. Both shapes are the
     contract, and a task with one repository still writes the scalar.
     """
+    has_worker(task_dir)
     block = "".join(f"  {repo}: {url}\n" for repo, url in artifacts.items())
     write(task_dir / "result.md", f"---\noutcome: {outcome}\nartifacts:\n{block}---\n{note}\n")
 

@@ -78,7 +78,7 @@ def test_without_a_flow_the_develop_pr_is_still_refused(worked, stubs, queue_dir
     develop_pr(stubs, 1201, worked["tip"])
     result(worked["dir"], "shipped", "develop→main is open.", PR + "1201")
     expect(q("collect", "--no-reap").out, "NOT CLOSED", "is from branch develop")
-    assert record(queue_dir, worked["topic"], "01-vend")["state"] == "queued"
+    assert record(queue_dir, worked["topic"], "01-vend")["state"] == "dispatched"
 
 
 def test_a_develop_pr_without_the_task_head_is_refused(worked, stubs, isolated_env, queue_dir):
@@ -87,7 +87,7 @@ def test_a_develop_pr_without_the_task_head_is_refused(worked, stubs, isolated_e
     develop_pr(stubs, 1202, "c" * 40)
     result(worked["dir"], "shipped", "develop→main is open.", PR + "1202")
     expect(q("collect", "--no-reap").out, "NOT CLOSED", "does not contain", worked["tip"][:8])
-    assert record(queue_dir, worked["topic"], "01-vend")["state"] == "queued"
+    assert record(queue_dir, worked["topic"], "01-vend")["state"] == "dispatched"
 
 
 def test_an_attested_task_still_needs_the_develop_pr_attested_or_merged(
@@ -196,7 +196,7 @@ def test_a_no_op_with_no_reason_is_held_open(spans, queue_dir):
         "/tmp/repo-b": "no change needed",
     })
     expect(q("collect", "--no-reap").out, "NOT CLOSED", "/tmp/repo-b", "give the reason")
-    assert record(queue_dir, spans["topic"], "01-spans-two")["state"] == "queued"
+    assert record(queue_dir, spans["topic"], "01-spans-two")["state"] == "dispatched"
 
 
 
@@ -213,5 +213,5 @@ def test_a_closed_develop_pr_does_not_retire_the_task_as_closed_unmerged(
     out = q("collect", "--no-reap").out
     expect(out, "NOT CLOSED")
     doc = record(queue_dir, worked["topic"], "01-vend")
-    assert doc["state"] == "queued", doc
+    assert doc["state"] == "dispatched", doc
     assert "abandoned" not in doc
