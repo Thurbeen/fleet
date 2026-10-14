@@ -146,3 +146,28 @@ def test_a_task_with_no_origin_tells_nobody_and_asks_thurbox_nothing(queue_dir, 
     assert stubs.calls("thurbox-cli", "session send") == []
     assert not (runtime() / "origin_outcomes.json").exists() or not json.loads(
         (runtime() / "origin_outcomes.json").read_text(encoding="utf-8")).get("pending")
+
+
+def test_attach_never_reopens_a_concluded_task(queue_dir, stubs):
+    """#252: a mistyped `attach` ref on a landed task rewrote it `dispatched`,
+    so the next `collect` closed it again and told its origin twice."""
+    runtime()
+    listed(stubs)
+    ref = shipped(queue_dir, stubs, "seven", 48)
+    ok(q("collect"))
+    stubs.pr_state(48, "MERGED")
+    ok(q("collect"))
+    ok(q("reap"))
+    assert state(queue_dir, ref) == "landed"
+    told_before = len(told(stubs))
+    record = (queue_dir / ref / "task.yaml").read_text(encoding="utf-8")
+
+    stray = "5b0c7d2e-0000-4000-8000-0000000000bb"
+    refused = q("attach", ref, stray)
+    assert refused.code != 0, refused.out
+    expect(refused.out, ref, "landed")
+    assert (queue_dir / ref / "task.yaml").read_text(encoding="utf-8") == record
+
+    ok(q("collect"))
+    assert state(queue_dir, ref) == "landed"
+    assert len(told(stubs)) == told_before, "the origin was told again"

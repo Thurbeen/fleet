@@ -5509,9 +5509,22 @@ def cmd_attach(args) -> int:
     must not re-brief them. Idle is ambiguous: a startup hook can report it
     before any work is delivered. It stays unprompted unless `--prompted`
     confirms it already has its work; `--unprompted` forces the reverse.
+
+    Only a task still waiting for its worker takes one: `queued` or
+    `dispatched`. A concluded task is refused, naming its state. Binding it
+    would write `dispatched` over the verdict, the next `collect` would close
+    it again on the same result.md, and its origin would be told a second time
+    (#252) — the transitions below say nothing re-opens. `attach()` itself stays
+    unguarded: it is also dispatch's binder, which only ever hands it a
+    `queued` task.
     """
     q = Queue(queue_root())
     task = q.get(args.ref)
+    if task.state not in ("queued", "dispatched"):
+        raise QueueError(
+            f"{task.ref} is {task.state}: attach binds a session to a task still "
+            "waiting for its worker (queued or dispatched), and never re-opens one"
+        )
     prompted = args.prompted
     if not args.unprompted and not args.prompted:
         state, _why = session_state(args.session)
