@@ -224,7 +224,9 @@ Usage:
                        # numbers the task itself; stdout is the final ref.
   uv run fleet queue block <ref> --on <ref> --kind KIND --why 'reason'   # or --clear,
                        which names the blocker to remove, since a task can
-                       carry several; `block --help` lists the valid kinds
+                       carry several — as written, so it clears one naming a
+                       task whose record is gone; `block --help` lists the
+                       valid kinds
   uv run fleet queue block <ref> --condition 'what holds it' --kind KIND --why 'reason'
                        # the second form; clears only with
                        # `block <ref> --clear --condition 'what holds it'`.
@@ -3232,17 +3234,25 @@ def cmd_block(args) -> int:
     if args.condition is not None:
         return block_on_condition(task, args.condition.strip(), args)
 
-    target = q.get(args.on)
-
     if args.clear:
+        # The ref is matched as written, and as the task it resolves to when
+        # it still does. A blocker naming a task whose record is gone never
+        # clears itself — `blocker_cleared` reads it as not landed — so this
+        # is its only release, and refusing it here as `no such task` left
+        # hand-editing task.yaml as the way out.
+        try:
+            names = {args.on, q.get(args.on).ref}
+        except QueueError:
+            names = {args.on}
         before = len(task.blockers)
         task.doc["blocked_by"] = [
-            b for b in task.blockers if b.get("task") != target.ref
+            b for b in task.blockers if b.get("task") not in names
         ]
         task.save()
         print(f"{task.ref}: {before - len(task.doc['blocked_by'])} blocker(s) cleared")
         return 0
 
+    target = q.get(args.on)
     if args.kind not in BLOCKER_KINDS or not (args.why or "").strip():
         raise QueueError(blocker_kind_refusal())
     if target.ref == task.ref:

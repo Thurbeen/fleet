@@ -280,7 +280,8 @@ consumes what the other introduces), `shared-external-state`,
 `incompatible-migration`, `other`. "They edit the same file" is **not on it**:
 `block` refuses it and points at `--touches`; two agents editing one file in
 two worktrees is an ordinary rebase. `block <ref> --on <ref> --clear` removes
-one blocker; a task can carry several, so clearing names which.
+one blocker; a task can carry several, so clearing names which — as the
+blocker spells it, so one naming a task whose record is gone clears too.
 
 A blocker clears only when the task it names has **landed** — concluded AND
 merged (§5b). A stopped session does not clear it, `done` with an open pull
