@@ -13,7 +13,7 @@ read (`context.py ... --wire json`), and `.slow` holds the seconds either takes
 first.
 `.windows` hands the command to `windows_host`, which answers only what a
 PowerShell 5 sshd answers. `.origin` holds what `git remote get-url origin`
-prints there, and `.origins.json` what it prints per checkout path. `mkdir -p`/`chmod`, `rm -f`/`rmdir` and `cat >` behave as a
+prints there, and `.origins.json` what it prints per checkout path. `mkdir -p`/`chmod`, `rm -f`/`rmdir`, `mv -f` and `cat >` behave as a
 shell does: a write into a directory that does not exist fails. `.realshell` RUNS the script with `sh -c`, the way
 sshd runs an account's login shell, with HOME at `<dest>.home` and only the
 system's PATH — POSIX only.
@@ -111,6 +111,11 @@ def main() -> int:
         except OSError:
             sys.stderr.write(f"rmdir: failed to remove '{words[-1]}': Directory not empty\n")
             return 1
+    elif script.startswith("mv -f -- "):
+        words = shlex.split(script.split(" 2>/dev/null")[0])
+        src = remotes / dest / words[3].lstrip("/")
+        if src.is_file():
+            src.replace(remotes / dest / words[4].lstrip("/"))
     elif script.startswith("cat > "):
         target = remotes / dest / unquote(script[len("cat > "):]).lstrip("/")
         if not target.parent.is_dir():

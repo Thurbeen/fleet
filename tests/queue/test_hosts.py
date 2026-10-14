@@ -208,6 +208,52 @@ def test_a_remote_result_comes_back_and_its_session_outlives_a_down_host(
     expect(deletions(stubs), RSESSION)
 
 
+def test_a_requeued_remote_task_is_not_closed_on_the_previous_attempts_result(
+    devbox_dispatched, devbox_task, hosts, queue_dir
+):
+    """The first attempt wrote its result on the host. Put back to `queued` by
+    hand and dispatched again on the same branch, the new session gets the same
+    worktree, and that file is still beside it: it is not the new attempt's."""
+    stubs = hosts.stubs
+    there = hosts.remote("me@devbox", WORKTREE + ".fleet")
+    write(there / "result.md",
+          "---\noutcome: shipped\nartifact: https://github.com/remote-owner/app/pull/4242\n---\nOld attempt.\n")
+    stubs.pipeline_pr(4242, "fix/build-on-devbox")
+    record = queue_dir / devbox_task / "task.yaml"
+    doc = yaml.safe_load(record.read_text(encoding="utf-8"))
+    doc["state"] = "queued"
+    write(record, yaml.safe_dump(doc, sort_keys=False))
+
+    again = "dddddddd-dddd-dddd-dddd-dddddddddddd"
+    hosts.next_session(again)
+    hosts.session(again, name="Build it on devbox", state="working", agent="claude", hook_reported=True,
+                  worktrees=[{"repo_path": "/srv/code/app", "worktree_path": WORKTREE,
+                              "branch": "fix/build-on-devbox"}])
+    expect(q("dispatch", THURBOX_SESSION=LEAD).out, "brief copied to me@devbox")
+
+    assert not (there / "result.md").exists(), "the previous attempt's result is moved aside on the host"
+    expect((there / "result.previous.md").read_text(encoding="utf-8"), "pull/4242")
+    refute(q("collect").out, "pull/4242")
+    expect(q("show", devbox_task).out, "state:       dispatched")
+
+
+def test_a_windows_host_moves_the_previous_result_aside_in_powershell(hosts):
+    there = hosts.remote("me@winbox", WWORKTREE + ".fleet")
+    write(there / "result.md", "---\noutcome: shipped\n---\nOld attempt.\n")
+    out = queue_module(
+        "entry, why = q.host_entry('winbox')\n"
+        "shell = q.host_shell(entry)\n"
+        f"beside = {WWORKTREE + '.fleet'!r}\n"
+        "proc = q.ssh_run(entry, shell.set_aside(shell.join(beside, q.RESULT_FILE),"
+        " shell.join(beside, q.PREVIOUS_RESULT_FILE)), login=False)\n"
+        "print('rc=%s' % proc.returncode)\n"
+    )
+    expect(out, "rc=0")
+    assert not (there / "result.md").exists()
+    expect((there / "result.previous.md").read_text(encoding="utf-8"), "Old attempt.")
+    assert hosts.read_flag("me@winbox", "posix") == "", "it was PowerShell that moved it"
+
+
 def landed_on_a_real_shell(hosts) -> tuple:
     """The devbox task collected and merged, its session idle, and devbox a
     host with a real shell: (stubs, the host's HOME, its session list)."""

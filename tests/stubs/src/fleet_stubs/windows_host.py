@@ -80,6 +80,11 @@ def main(argv: list) -> int:
             sys.stderr.write("Remove-Item : The item has children and the Recurse parameter was not specified.\n")
             return 1
         print("fleet-removed")
+    elif "fleet-set-aside" in body:
+        src = local(literal(r"-LiteralPath ", body))
+        if os.path.isfile(src):
+            os.replace(src, local(literal(r"-Destination ", body)))
+        print("fleet-set-aside")
     elif "FromBase64String" in body:
         target = local(literal(r"WriteAllBytes\(", body))
         if not os.path.isdir(os.path.dirname(target)):
