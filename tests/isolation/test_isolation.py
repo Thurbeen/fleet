@@ -145,6 +145,7 @@ ISOLATION_CASES = (
     "tests/onboarding/test_preflight.py::test_a_fully_equipped_machine_exits_0_and_has_nothing_to_install",
     "tests/install/test_install.py::test_no_terminal_and_no_yes_prints_the_plan_installs_nothing_and_says_yes",
     "tests/queue/test_agent_policy.py::test_isolation_from_checkout_agent_policy_conf",
+    "tests/queue/test_worktree_command.py::test_occupancy_that_cannot_be_judged_is_not_a_release",
     "tests/pane/test_peers.py::test_no_peers_is_this_fleet_alone_and_an_empty_wire",
     "tests/pane/test_board.py::test_board_interactions[peers-readonly]",
     "tests/status/test_status.py::test_a_registry_map_of_the_right_shape_reads_as_ok",

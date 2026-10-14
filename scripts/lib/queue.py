@@ -1392,6 +1392,16 @@ def operator_instructions() -> str:
 # the extension installed is a legitimate setup and may not be made unusable by
 # a guard that cannot tell whether it is even warranted.
 
+def rendered_manifest() -> str:
+    """The rendered extension.toml: FLEET_MANIFEST_ROOT's, else this checkout's.
+
+    Gitignored, and the operator's — it names their lead and their conductor —
+    so the gate points every reader of it elsewhere, the way it does each
+    gitignored *.conf.
+    """
+    return os.path.join(os.environ.get("FLEET_MANIFEST_ROOT") or checkout_root(), "extension.toml")
+
+
 def manifest_session(path: str) -> tuple[str | None, str | None]:
     """(session name, repo_path) from the first [[sessions]] table of a manifest.
 
@@ -1448,7 +1458,7 @@ def control_plane() -> str | None:
     # The tracked extension.toml.in is the fallback source for the session's
     # NAME, so a rename (README's "Renaming" section) reaches this without a
     # second edit.
-    name, repo_path = manifest_session(os.path.join(here, "extension.toml"))
+    name, repo_path = manifest_session(rendered_manifest())
     if repo_path:
         return repo_path.rstrip("/")
     if not name:

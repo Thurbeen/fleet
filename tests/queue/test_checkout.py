@@ -23,6 +23,12 @@ from harness import REPO, Run, expect, queue_module, refute, write
 from harness import run_queue as q
 
 
+@pytest.fixture(autouse=True)
+def own_manifest(monkeypatch):
+    """Each throwaway clone's own rendered manifest is the subject here, not the operator's."""
+    monkeypatch.delenv("FLEET_MANIFEST_ROOT")
+
+
 @pytest.fixture
 def clone(tmp_path) -> Path:
     fake = tmp_path / "second-clone"

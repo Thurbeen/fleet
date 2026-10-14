@@ -146,6 +146,10 @@ Environment:
                            FLEET_LEAD_SESSION is set and this is not, there is
                            no conductor of its own: the override names the
                            whole setup, and the manifest is not read for half.
+  FLEET_MANIFEST_ROOT      the directory the rendered extension.toml is read
+                           from instead of this checkout. The gate points it at
+                           one with none, so the operator's lead never reaches
+                           a test that names no lead of its own.
 
 Requires: python3. `thurbox-cli` for the send itself — without it there is
 nothing to wake and this says so once. A thurbox with no mailbox refuses the
@@ -260,8 +264,7 @@ def lead_name() -> str:
     override = os.environ.get("FLEET_LEAD_SESSION", "").strip()
     if override:
         return override
-    root = fleetqueue.checkout_root()
-    name, _repo = fleetqueue.manifest_session(os.path.join(root, "extension.toml"))
+    name, _repo = fleetqueue.manifest_session(fleetqueue.rendered_manifest())
     if not name or "__" in name:
         return ""
     return name
@@ -279,8 +282,7 @@ def own_conductor_name() -> str:
         return override
     if os.environ.get("FLEET_LEAD_SESSION", "").strip():
         return ""
-    root = fleetqueue.checkout_root()
-    name, _repo = fleetqueue.manifest_conductor(os.path.join(root, "extension.toml"))
+    name, _repo = fleetqueue.manifest_conductor(fleetqueue.rendered_manifest())
     if not name or "__" in name:
         return ""
     return name

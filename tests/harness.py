@@ -25,7 +25,8 @@ what keeps all of that out, held to these guarantees by
             at a copy of the TRACKED *.example.conf only; FLEET_QUEUE_DIR,
             FLEET_RUNS_DIR, FLEET_RECONCILE_DIR, FLEET_SHEPHERD_DIR and
             FLEET_PEERS_DIR at empty directories; and
-            FLEET_REGISTRY_FILE at a registry map that does not exist;
+            FLEET_REGISTRY_FILE at a registry map that does not exist, and
+            FLEET_MANIFEST_ROOT at a directory with no rendered extension.toml;
             FLEET_SERVICE_MANAGER is "none", so no install enables a unit.
   keeps     PATH, PYTHONUSERBASE, and uv's cache and Python directories: where
             the tools are installed is not operator state.
@@ -169,6 +170,9 @@ def isolate(environ: dict, root: Path, stub_bin: Path) -> dict:
         FLEET_PEERS_ROOT=settings,
         FLEET_OWNERS_ROOT=settings,
         FLEET_RECONCILE_CONF_ROOT=settings,
+        # The rendered extension.toml names the operator's lead and conductor,
+        # whose sessions reap and refuel then ask thurbox about.
+        FLEET_MANIFEST_ROOT=settings,
         FLEET_VOICE_CONF=str(root / "settings" / "orchestration" / "voice.example.conf"),
         FLEET_QUEUE_DIR=str(root / "queue"),
         FLEET_RUNS_DIR=str(root / "runs"),

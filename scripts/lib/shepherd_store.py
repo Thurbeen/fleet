@@ -285,7 +285,7 @@ def lead_refusals(q) -> tuple[set, str]:
     FLEET_CONDUCTOR_SESSION, else the rendered extension.toml's two sessions —
     and the id the way `reap` refuses it, from THURBOX_SESSION.
     """
-    manifest = os.path.join(q.checkout_root(), "extension.toml")
+    manifest = q.rendered_manifest()
     lead = os.environ.get("FLEET_LEAD_SESSION", "").strip()
     conductor = os.environ.get("FLEET_CONDUCTOR_SESSION", "").strip()
     if not lead:
