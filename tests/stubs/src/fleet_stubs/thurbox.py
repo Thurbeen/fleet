@@ -14,7 +14,8 @@ and `inbox` reads it back, `--claim` marking what it returns read. A send
 without `--no-wake` is recorded as `woke`, which is the real CLI pushing the
 body into the recipient's conversation. A `no-inbox` file makes `message` the
 unknown subcommand it is on a thurbox that predates the mailbox.
-`version --json` prints `version.json`, which is how a test names the data
+`agent launch-args <name>` answers `agents/<name>.json`, else the agent as its
+own command. `version --json` prints `version.json`, which is how a test names the data
 directory — and so the flavour — of the thurbox fleet is driving.
 """
 
@@ -71,6 +72,12 @@ def main() -> int:
         # Silent without `version.json`, as an unknown verb is: fleet then
         # takes this thurbox for a release build.
         sys.stdout.write(read(root / "version.json"))
+    elif verb == "agent launch-args":
+        # `agents/<name>.json` is the whole answer where a test wrote one;
+        # otherwise the agent launches as its own name, as a stock one does.
+        shown = read(root / "agents" / f"{ident}.json")
+        print(shown.strip() or json.dumps({"agent": ident, "command": ident, "args": ["--interactive-only"],
+                                           "env": {"THURBOX_SOCKET": "stub"}}))
     elif args[:1] == ["message"]:
         return mailbox(root, args[1:])
     elif args[:1] == ["watch"]:

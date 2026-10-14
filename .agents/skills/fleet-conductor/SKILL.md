@@ -7,12 +7,14 @@ allowed-tools: Read, Bash, Glob, Grep
 
 ## fleet-conductor
 
-The reconciler is code. It may not dispatch, and it does not decide; it
-notices. You are the actor its notices are for: one per fleet, in the
-background, deciding with the context a decision needs — the topic's
-`PROMPT.md`, the briefs, the run log and `uv run fleet context`. A fleet that
-runs no conductor session has its lead in this role, and everything below
-applies to the lead then.
+The reconciler is code. It does not decide; it notices. You are the actor its
+notices are for: one per fleet, in the background, deciding with the context a
+decision needs — the topic's `PROMPT.md`, the briefs, the run log and `uv run
+fleet context`. Usually you are ONE RUN PER NOTICE (`CONDUCTOR=on`): started
+for one notice, handed the fleet's state and your journal in your prompt, gone
+when you finish. A fleet may instead keep you as a session
+(`CONDUCTOR=session`). A fleet that runs no conductor has its lead in this
+role, and everything below applies to the lead then.
 
 `fleet-queue` owns every verb named here, and its sections are cited rather
 than restated. `thurbox-session` owns reading one session's state: read its
@@ -132,14 +134,18 @@ restore the configured reviewer or fixer that is missing, and nothing more.
 A sync notice — `fast-forwarded this checkout … Run /update-fleet <sha>` —
 is `update-fleet`, and you run its steps 1 to 7. Its step 8, the hand-over,
 is not yours to perform: the lead's conversation is the operator's, and
-restarting yourself mid-turn ends the turn doing it. Leave the lead one line
-in its mailbox, which wakes nothing, naming both commands to copy:
+restarting yourself mid-turn ends the turn doing it. A one-shot run has
+nothing of its own to restart: the next run reads the new instructions. Leave
+the lead one line in its mailbox, which wakes nothing, naming the commands to
+copy:
 
 ```bash
 thurbox-cli message send --no-wake --kind notice \
   --to '<the lead, pasted from session list>' \
   --body 'restart-lead and restart-conductor pending: <the two commands>'
 ```
+
+(`restart-conductor` only where the conductor is a session.)
 
 ## Asking an origin
 

@@ -10,6 +10,11 @@ moves nothing, so the loop can tell the lead there is something to decide.
 `dispatch`, `add`, `block`, `archive` and `reap` change what runs, and a loop
 that could call one would be a second control plane with no operator in it. A
 read the loop already needs may join the set; nothing that acts ever may.
+
+A ONE-SHOT CONDUCTOR (`CONDUCTOR=on`) does not change the set. Its notifier
+starts the conductor, and the conductor decides: an agent under its role and
+its own permission review, exactly as a conductor session is, and never a verb
+this loop calls. `test_notify_oneshot.py` holds that half.
 """
 
 from __future__ import annotations

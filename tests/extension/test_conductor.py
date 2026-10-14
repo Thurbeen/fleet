@@ -1,6 +1,7 @@
-"""The conductor: a second extension-managed session, and only on request.
+"""The conductor SESSION: a second extension-managed session, and only on request.
 
-`CONDUCTOR=on` in `orchestration/fleet.conf` keeps the conductor block of
+`CONDUCTOR=on` is the one-shot conductor, which declares no session at all
+(`test_conductor_oneshot.py`); `CONDUCTOR=session` in `orchestration/fleet.conf` keeps the conductor block of
 `extension.toml.in` — a second `[[sessions]]`, bound to `CONDUCTOR_AGENT` and
 wearing the `conductor` kind's mark — and renders the directory that session
 opens, with its own standing context. These are the claims:
@@ -8,7 +9,7 @@ opens, with its own standing context. These are the claims:
   * unset, the manifest carries nothing of the conductor: the block is the
     only place the template mentions it, and it is cut whole, so the render is
     the one fleet made before the conductor existed;
-  * on, the manifest declares it AFTER the lead, so the lead — the first
+  * `session`, the manifest declares it AFTER the lead, so the lead — the first
     `[[sessions]]`, which every reader takes as the lead — is not renamed;
   * its agent and its mark are the settings', with their fallbacks;
   * its directory hands it CONDUCTOR.md and not the lead's FLEET.md, keeps the
@@ -74,17 +75,17 @@ def test_unset_renders_one_session_and_no_directory(tmp_path):
     assert [s["name"] for s in manifest(off)["sessions"]] == [LEAD]
     assert not home(off).exists()
 
-    # And on is the same manifest with the conductor's part after it, and
+    # And `session` is the same manifest with the conductor's part after it, and
     # nothing else moved: not the lead, not the header, not a byte.
-    conf("fleet.conf", "CONDUCTOR=on\n")
+    conf("fleet.conf", "CONDUCTOR=session\n")
     assert render(on).code == 0
     both = (on / "extension.toml").read_text(encoding="utf-8")
-    assert both.startswith(text), "turning the conductor on changed the manifest above it"
+    assert both.startswith(text), "turning the conductor session on changed the manifest above it"
     assert both[len(text):].startswith("\n# --- the conductor")
 
 
 def test_on_declares_the_conductor_after_the_lead(tmp_path):
-    conf("fleet.conf", "CONDUCTOR=on\n")
+    conf("fleet.conf", "CONDUCTOR=session\n")
     done = render(tmp_path)
     assert done.code == 0, done.out
     lead, conductor = manifest(tmp_path)["sessions"]
@@ -99,7 +100,7 @@ def test_on_declares_the_conductor_after_the_lead(tmp_path):
 
 
 def test_its_agent_is_its_own_setting_then_the_leads(tmp_path):
-    conf("fleet.conf", "CONDUCTOR=on\n")
+    conf("fleet.conf", "CONDUCTOR=session\n")
     conf("agent.conf", "AGENT=codex\n")
     assert render(tmp_path).code == 0
     lead, conductor = manifest(tmp_path)["sessions"]
@@ -117,7 +118,7 @@ def test_its_agent_is_its_own_setting_then_the_leads(tmp_path):
 
 
 def test_its_mark_follows_the_glyph_setting_and_its_name_the_fleets(tmp_path):
-    conf("fleet.conf", "CONDUCTOR=on\nNAME=acme\n")
+    conf("fleet.conf", "CONDUCTOR=session\nNAME=acme\n")
     assert render(tmp_path).code == 0
     assert manifest(tmp_path)["sessions"][1]["name"] == "🎼 Conductor · acme"
 
@@ -128,7 +129,7 @@ def test_its_mark_follows_the_glyph_setting_and_its_name_the_fleets(tmp_path):
 
 
 def test_a_glyph_conf_older_than_the_conductor_says_so(tmp_path):
-    conf("fleet.conf", "CONDUCTOR=on\n")
+    conf("fleet.conf", "CONDUCTOR=session\n")
     conf("session-glyphs.conf", "GLYPHS=on\nLEAD_GLYPH_ON=📡\nLEAD_GLYPH_OFF=⌖\n")
     done = render(tmp_path)
     assert done.code == 0, done.out
@@ -145,7 +146,7 @@ def test_a_value_that_is_neither_on_nor_off_is_refused_before_anything_is_writte
 
 
 def test_its_directory_hands_it_its_own_context_and_the_checkouts_hooks(tmp_path):
-    conf("fleet.conf", "CONDUCTOR=on\n")
+    conf("fleet.conf", "CONDUCTOR=session\n")
     for name in ("CLAUDE.md", "AGENTS.md"):
         (tmp_path / name).write_text((REPO / name).read_text(encoding="utf-8"), encoding="utf-8")
     assert render(tmp_path).code == 0
@@ -166,7 +167,7 @@ def test_its_directory_hands_it_its_own_context_and_the_checkouts_hooks(tmp_path
 
 
 def test_a_codex_conductor_gets_its_payload_as_the_nearer_project_config(tmp_path):
-    conf("fleet.conf", "CONDUCTOR=on\n")
+    conf("fleet.conf", "CONDUCTOR=session\n")
     conf("agent.conf", "CONDUCTOR_AGENT=codex\n")
     assert render(tmp_path).code == 0
     config = tomllib.loads((home(tmp_path) / ".codex" / "config.toml").read_text(encoding="utf-8"))
@@ -178,7 +179,7 @@ def test_a_codex_conductor_gets_its_payload_as_the_nearer_project_config(tmp_pat
 
 
 def test_turning_it_off_removes_the_directory_and_never_a_foreign_one(tmp_path):
-    conf("fleet.conf", "CONDUCTOR=on\n")
+    conf("fleet.conf", "CONDUCTOR=session\n")
     assert render(tmp_path).code == 0
     assert home(tmp_path).is_dir()
     conf("fleet.conf", "CONDUCTOR=\n")
@@ -189,7 +190,7 @@ def test_turning_it_off_removes_the_directory_and_never_a_foreign_one(tmp_path):
 
     # A directory this did not render is the operator's: refused, not written into.
     write(home(tmp_path) / "notes.md", "mine\n")
-    conf("fleet.conf", "CONDUCTOR=on\n")
+    conf("fleet.conf", "CONDUCTOR=session\n")
     done = render(tmp_path)
     assert done.code == 1, done.out
     expect(done.out, "not rendered by this")
@@ -206,7 +207,7 @@ def install(fleet: Path):
 def test_an_install_writes_nothing_tracked_and_a_moved_conductor_is_named(stubs, tmp_path):
     thurbox(stubs)
     fleet = clone(tmp_path)
-    conf("fleet.conf", "CONDUCTOR=on\n")
+    conf("fleet.conf", "CONDUCTOR=session\n")
     sessions(stubs, json.dumps([{"name": LEAD, "cwd": str(fleet)}]))
     done = install(fleet)
     assert done.code == 0, done.out
@@ -231,7 +232,7 @@ def test_a_conductor_opening_this_clone_through_a_symlink_is_not_a_move(stubs, t
         link.symlink_to(fleet, target_is_directory=True)
     except OSError:
         pytest.skip("this machine cannot make a symbolic link")
-    conf("fleet.conf", "CONDUCTOR=on\n")
+    conf("fleet.conf", "CONDUCTOR=session\n")
     sessions(stubs, json.dumps([{"name": LEAD, "cwd": str(fleet)},
                                 {"name": "🎼 Conductor", "cwd": str(home(fleet))}]))
     done = install(link)
@@ -249,7 +250,7 @@ def test_a_conductor_directory_that_resolves_outside_the_checkout_is_refused(tmp
         (dest / "orchestration").symlink_to(elsewhere, target_is_directory=True)
     except OSError:
         pytest.skip("this machine cannot make a symbolic link")
-    conf("fleet.conf", "CONDUCTOR=on\n")
+    conf("fleet.conf", "CONDUCTOR=session\n")
     done = render(dest)
     assert done.code == 1, done.out
     expect(done.out, "resolves outside")

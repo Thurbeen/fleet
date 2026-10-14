@@ -3,10 +3,13 @@
 stalled, was never briefed, or asked with nowhere else to ask, review is owed,
 or a sync needs a hand.
 
-THE CONDUCTOR is the session that keeps the work moving. A fleet whose
-`fleet.conf` says `CONDUCTOR=on` runs one of its own — the second
-`[[sessions]]` of its rendered manifest, opening `orchestration/conductor/` —
-and every notice here goes to it WHILE IT RUNS. Otherwise, and whenever that
+THE CONDUCTOR is the actor that keeps the work moving. A fleet whose
+`fleet.conf` says `CONDUCTOR=on` has it RUN ONCE PER NOTICE: `run_conductor`
+hands the line it would have typed to a headless run (`conductor_run.py`),
+and only a run that failed reaches anybody's terminal — the lead's, by the
+rules below. One that says `CONDUCTOR=session` runs a session of its own — the
+second `[[sessions]]` of its rendered manifest, opening
+`orchestration/conductor/` — and every notice here goes to it WHILE IT RUNS. Otherwise, and whenever that
 session is not running, the conductor IS the lead: a single Mission Control is
 both the only origin and the conductor, and every notice reaches exactly the
 session it always did. `conductor_row` is the one function that says which
@@ -186,6 +189,9 @@ def _load_sibling(name: str, filename: str):
 # this file reads the rules by the names they have always had.
 delivery = _load_sibling("fleet_notify_delivery", "notify_delivery.py")
 origins = _load_sibling("fleet_notify_origin", "notify_origin.py")
+# The one-shot conductor: `CONDUCTOR=on` runs it once per notice instead of
+# typing into a session. Who it is, how it runs and what it is told are its own.
+oneshot = _load_sibling("fleet_conductor_run", "conductor_run.py")
 fleetqueue = delivery.fleetqueue
 AT_REST, NAMED = delivery.AT_REST, delivery.NAMED
 session_rows, identity = delivery.session_rows, delivery.identity
@@ -497,7 +503,7 @@ def stale_message(pending: dict) -> str:
     )
 
 
-def stale(state_dir: str, text: str) -> int:
+def stale(state_dir: str, text: str, bound: float = 600) -> int:
     """Tell the conductor the checkout moved under it, once.
 
     THE SAME RULES AS THE READY NOTICE. Typed only into a conductor at rest
@@ -510,11 +516,22 @@ def stale(state_dir: str, text: str) -> int:
     Kept until delivered, across passes and restarts: by the next pass the sync
     has nothing left to say, so a notice dropped here is lost for good. A fleet
     with no conductor configured has nobody to tell, and drops it.
+
+    A ONE-SHOT conductor is run on it instead, and a run that went is
+    delivery; one that failed leaves the notice to the lead, by the rules above.
     """
     doc = read_stale(state_dir)
     pending = stale_pending(doc, text)
     if not pending:
         return 0
+    if oneshot.mode() == "oneshot":
+        ran, why = oneshot.run(state_dir, stale_message(pending), bound)
+        if ran:
+            write_stale(state_dir, {}, "")
+            print(notice("sync", CONDUCTOR_RUN, None, "ran", f"the checkout moved: {', '.join(pending['actions'])}"
+                         + (f"; {why}" if why else "")))
+            return 0
+        print(notice("sync", CONDUCTOR_RUN, None, "failed", f"{why}; the lead is told instead"))
     name, row, status = conductor_row()
     if not name:
         write_stale(state_dir, {}, "")
@@ -587,9 +604,15 @@ def main(argv: list) -> int:
         action="store_true",
         help="tell the conductor what a fast-forward needs: sync-checkout's --json report on stdin, or none to retry",
     )
+    ap.add_argument(
+        "--bound",
+        type=float,
+        default=600,
+        help="the seconds the loop gives this notifier; a one-shot run stays inside it",
+    )
     args = ap.parse_args(argv)
     if args.stale:
-        return stale(args.state_dir, sys.stdin.read())
+        return stale(args.state_dir, sys.stdin.read(), args.bound)
 
     try:
         plan = json.loads(sys.stdin.read() or "{}")
@@ -634,8 +657,12 @@ def main(argv: list) -> int:
     state = read_state(args.state_dir)
     memory = {k: [r for r in (state.get(k) or []) if r in now[k]] for k in MEMORY}
     memory["lead"] = state.get("lead")
-    memory, note = deliver(now, memory, conductor_row, "no conductor session is configured")
-    notes.insert(0, note)
+    run_note, note, handled = "", "", False
+    if oneshot.mode() == "oneshot":
+        memory, run_note, handled = run_conductor(args.state_dir, now, memory, args.bound)
+    if not handled:
+        memory, note = deliver(now, memory, conductor_row, "no conductor session is configured")
+    notes[:0] = [run_note, note]
     return say(args.state_dir, memory, "\n".join(n for n in notes if n))
 
 
@@ -671,6 +698,43 @@ SETS = (
 )
 
 
+# What a one-shot conductor is called in a `notice` line: it has no session.
+CONDUCTOR_RUN = "conductor (one-shot)"
+
+
+def news_of(now: dict, memory: dict) -> tuple[list, str]:
+    """(each set with something new in it, and the one line that says all of them)."""
+    news = [s for s in SETS if any(r not in memory[s[0]] for r in now[s[0]])]
+    return news, " ".join(say_it(now[told]) for told, _p, say_it, _w, _k in news)
+
+
+def run_conductor(state_dir: str, now: dict, memory: dict, bound: float) -> tuple[dict, str, bool]:
+    """Run the one-shot conductor on what is news: (its memory now, the note to
+    log, whether it is handled — False hands it to `deliver` and the lead).
+
+    THE SAME MEMORY THE SESSION ROAD KEEPS: a run that went marks each set
+    told; one that failed marks nothing, and the lead is told the same line
+    by `deliver`, which marks it. Either way a set is told once, and a broken
+    run costs one run per change rather than one per pass. `deliver` is not
+    asked after a run that went: a lead it has not met yet would have the
+    memory forgotten for it, and be typed what the run already acted on.
+    """
+    news, line = news_of(now, memory)
+    if not news:
+        return memory, "", True
+    kinds = ",".join(s[4] for s in news)
+    ran, why = oneshot.run(state_dir, line, bound)
+    if not ran:
+        return memory, notice(kinds, CONDUCTOR_RUN, None, "failed", f"{why}; the lead is told instead"), False
+    for told, posted, _say, _w, _k in news:
+        memory[told] = now[told]
+        memory[posted] = now[posted]
+    named, word = now[news[0][0]], news[0][3]
+    return memory, notice(kinds, CONDUCTOR_RUN, None, "ran",
+                          f"{len(named)} task(s) {word} — {', '.join(named[:NAMED])}"
+                          + (f"; {why}" if why else "")), True
+
+
 def deliver(now: dict, memory: dict, resolve, unnamed: str) -> tuple[dict, str]:
     """Tell the conductor what is news to it: (its memory now, the note to log).
 
@@ -684,7 +748,7 @@ def deliver(now: dict, memory: dict, resolve, unnamed: str) -> tuple[dict, str]:
     name, row, status = resolve()
     if row:
         memory = forget_for(memory, identity(row))
-    news = [s for s in SETS if any(r not in memory[s[0]] for r in now[s[0]])]
+    news, line = news_of(now, memory)
     if not news:
         return memory, ""
 
@@ -698,7 +762,6 @@ def deliver(now: dict, memory: dict, resolve, unnamed: str) -> tuple[dict, str]:
     # ONE LINE, carrying whichever set has news; a set with nothing new is not
     # repeated just because another one changed.
     parts = [(told, posted, say_it(now[told])) for told, posted, say_it, _w, _k in news]
-    line = " ".join(text for _, _, text in parts)
 
     why = delivery.held(name, row)
     if why:

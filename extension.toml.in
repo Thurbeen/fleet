@@ -435,9 +435,13 @@ agent = "__LEAD_AGENT__"
 # Rendered by `uv run fleet install-extension`. See the header for why this is
 # an absolute path and not a `~`.
 repo_path = "__REPO_PATH__"
-#>>> conductor: down to the closing marker, rendered only under CONDUCTOR=on
+#>>> conductor: down to the closing marker, rendered only under CONDUCTOR=session
 
 # --- the conductor: a second session, opt-in ---------------------------------
+#
+# ONLY FOR `CONDUCTOR=session`. The usual conductor, `CONDUCTOR=on`, is no
+# session at all: one headless run per notice (`scripts/lib/conductor_run.py`),
+# so it renders exactly the manifest unset does and this block is cut.
 #
 # The background session that KEEPS THE WORK MOVING: the reconciler's ready,
 # stalled, unprompted, review and sync notices go to it instead of the lead
@@ -447,8 +451,8 @@ repo_path = "__REPO_PATH__"
 # brief: those go to the task's origin as `needs-input`.
 # `.agents/skills/fleet-conductor/` is its role.
 #
-# OPT-IN, AND OFF RENDERS NOTHING. With `CONDUCTOR` unset this whole block is
-# cut, markers and all, so the manifest is byte-for-byte the one it was before
+# OPT-IN, AND OFF RENDERS NOTHING. With `CONDUCTOR` unset, or `on`, this whole
+# block is cut, markers and all, so the manifest is byte-for-byte the one it was before
 # the conductor existed — the rule `fleet.example.conf`'s NAME follows — and
 # the lead stays both the only origin and the conductor.
 #
@@ -472,9 +476,10 @@ repo_path = "__REPO_PATH__"
 # installing a new one spawns a second conductor beside the first. Its agent is
 # `CONDUCTOR_AGENT` in `orchestration/agent.conf`, else `AGENT`, else `claude`.
 #
-# TURNING IT OFF is not a rename and costs no lead. Unset CONDUCTOR, run
-# `uv run fleet install-extension` — the manifest stops declaring the session,
-# and its generated directory is removed — and THEN delete the session:
+# TURNING IT OFF is not a rename and costs no lead. Unset CONDUCTOR, or set it
+# to `on` for the one-shot, run `uv run fleet install-extension` — the
+# manifest stops declaring the session, and its generated directory is removed
+# (under `on`, rewritten for the runs) — and THEN delete the session:
 #
 #     thurbox-cli session delete '<the conductor, pasted from session list>' --force
 #

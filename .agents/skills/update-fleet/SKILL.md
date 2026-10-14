@@ -211,9 +211,11 @@ the resumed history**.
 
 ### The conductor is stale too
 
-A fleet that runs a conductor session (`CONDUCTOR=on` in
-`orchestration/fleet.conf`) has a second session that froze its instructions
-at launch: `CONDUCTOR.md`, rendered into `orchestration/conductor/`, and the
+A ONE-SHOT conductor (`CONDUCTOR=on` in `orchestration/fleet.conf`) is never
+stale: each run reads `CONDUCTOR.md` and the skills from the checkout as it
+starts, so it needs nothing here. A fleet that runs a conductor SESSION
+(`CONDUCTOR=session`) has a second session that froze its instructions at
+launch: `CONDUCTOR.md`, rendered into `orchestration/conductor/`, and the
 skills. §3's re-install re-renders that file; the session still needs the
 same restart, under its own name — `thurbox-cli session restart
 '<the conductor>'`, pasted from `session list` like the lead's. Its

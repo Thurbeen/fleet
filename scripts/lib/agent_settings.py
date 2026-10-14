@@ -46,6 +46,11 @@ THE KEYS, and nothing else is per-agent:
   TRUST_KEYS        |  the four the checkout already held globally, now
   LIMIT_BANNER      |  sayable about one agent.
   TRANSCRIPT_DIR   /
+  HEADLESS         the arguments that run this agent once, headless, after the
+                   command thurbox launches it with: the one-shot conductor's
+                   (`conductor_run.py`, whose built-in rows for claude and codex
+                   it overrides). Only ever this agent's or its `LIKE`'s: a
+                   checkout-wide line would hand one agent's flags to another.
 
 HOW A VALUE IS RESOLVED, and it is one rule for every key: the agent's own
 line, then the line of whatever it is `LIKE`, then the checkout-wide line of
@@ -77,7 +82,7 @@ AGENT_CONF_DEFAULTS = "orchestration/agent.example.conf"
 # The keys an agent may be named in front of. A dotted key outside this set is
 # left alone: it is an ordinary setting whose name happens to carry a dot, and
 # refusing one here would make this file the authority on what settings exist.
-PER_AGENT = ("LIKE", "ENV", "TRUST_SIGNATURE", "TRUST_KEYS", "LIMIT_BANNER", "TRANSCRIPT_DIR")
+PER_AGENT = ("LIKE", "ENV", "TRUST_SIGNATURE", "TRUST_KEYS", "LIMIT_BANNER", "TRANSCRIPT_DIR", "HEADLESS")
 
 # A `LIKE` chain is followed, so `a.LIKE=b` and `b.LIKE=c` resolve to `c`, but
 # never further than this: a cycle an operator typed is a settings error, not a

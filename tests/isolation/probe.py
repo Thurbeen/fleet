@@ -16,7 +16,7 @@ def test_the_actual_fixture_replaces_every_operator_root(isolated_env):
                 "FLEET_RECONCILE_DIR", "FLEET_SHEPHERD_DIR", "FLEET_PEERS_DIR", "FLEET_VOICE_CONF",
                 "FLEET_AUTO_MERGE_ROOT", "FLEET_PUBLISH_ROOT", "FLEET_AGENT_ROOT", "FLEET_AGENT_POLICY_ROOT",
                 "FLEET_GLYPH_ROOT", "FLEET_NAME_ROOT", "FLEET_PROFILES_ROOT", "FLEET_PEERS_ROOT", "FLEET_OWNERS_ROOT",
-                "FLEET_RECONCILE_CONF_ROOT"):
+                "FLEET_RECONCILE_CONF_ROOT", "FLEET_CONDUCTOR_DIR"):
         path = Path(os.environ[key])
         assert path.is_relative_to(isolated_env), f"{key} escaped the fixture: {path}"
         assert not path.is_relative_to(REPO), f"{key} reads the poisoned checkout"

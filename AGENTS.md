@@ -215,13 +215,17 @@ names every path and the reason for each.
   `sh install.sh --dir ~/fleet-acme --name acme` (`install.ps1` on Windows), and
   `uv run fleet queue`'s control-plane guard is what keeps two of them from
   writing one queue. **The same file's `CONDUCTOR=on` gives the fleet a
-  conductor**: a second `[[sessions]]` in the manifest, `<glyph> Conductor`
-  (` · <name>` too), bound to `CONDUCTOR_AGENT` in `agent.conf` (else `AGENT`,
-  else `claude`) and opening `orchestration/conductor/` — gitignored, rendered
-  by `fleet install-extension` with `CONDUCTOR.md` as its standing context,
-  because a session opened in the checkout would load the lead's. Unset, the
-  manifest is byte-for-byte what it was before the conductor existed, by the
-  rule NAME follows. `extension.toml.in`'s conductor block owns the rest.
+  conductor, run ONCE PER NOTICE**: the reconciler's notifier starts
+  `CONDUCTOR_AGENT` (else `AGENT`, else `claude`) headless — claude under its
+  auto permission mode, codex under `exec --approve-for-me` — in the gitignored
+  `orchestration/conductor/`, handed the notice, a state digest read then, its
+  journal, and `CONDUCTOR.md` and the fleet-conductor skill read from the
+  checkout then. No session and nothing frozen: the manifest is byte-for-byte
+  the one unset renders, and a run that fails hands the notice to the lead.
+  `scripts/lib/conductor_run.py` owns the run. `CONDUCTOR=session` keeps the
+  older form — a second `[[sessions]]`, `<glyph> Conductor` (` · <name>` too),
+  opening that directory with `CONDUCTOR.md` rendered as its standing context —
+  and `extension.toml.in`'s conductor block owns it.
 - `orchestration/queue/<topic>/` — the task queue. A prompt becomes a TOPIC
   holding its verbatim `PROMPT.md`; the topic decomposes into task directories,
   each with its own `task.yaml`, `BRIEF.md`, `progress.jsonl` and `result.md`.
@@ -399,7 +403,8 @@ names every path and the reason for each.
   `fleet-intake` (the one entry point for work, from any session: topic,
   briefs, its own first dispatch, and the fuel rule that leaves the rest
   queued),
-  `fleet-conductor` (what the CONDUCTOR does with the reconciler's notices,
+  `fleet-conductor` (what the CONDUCTOR does with the reconciler's notices —
+  one run per notice or a session —
   and what it must ask an origin instead),
   `thurbox-session` (a reference for driving and reading one session, and
   for spawning one with no deliverable — never the way work enters),
@@ -574,11 +579,14 @@ costs one pass and never the loop. Four things about it are load-bearing:
   Outside the queue it touches one thing: the checkout, through
   `sync-checkout`, which only fast-forwards a clean default branch.
 - **It reconciles; it does not decide.** No dispatch, no cancel, no reorder,
-  and it does not re-decide `refuel`'s rule about a spent quota window.
+  and it does not re-decide `refuel`'s rule about a spent quota window. Where
+  a fleet runs a one-shot conductor, the notifier STARTS that conductor, and
+  the conductor decides: an agent under its role and its permission review,
+  as a conductor session is, and never a verb of the loop.
 - **It tells the conductor when the ready set grows, or a worker stalls** —
-  the fleet's conductor session while one runs (`CONDUCTOR=on`), the lead
-  otherwise and whenever it does not — and once when a sync it ran needs a
-  hand (see **Pulling changes in**). A task whose
+  a one-shot run per notice (`CONDUCTOR=on`), else the fleet's conductor
+  session while one runs (`CONDUCTOR=session`), else the lead — and once when
+  a sync it ran needs a hand (see **Pulling changes in**). A task whose
   blocker clears is ready and has no actor: the loop may not dispatch, and the
   lead only acts when spoken to — on 2026-09-10 that cost six and a half hours.
   So after `collect` it reads `plan` and, when the ready set has grown, types
@@ -701,11 +709,12 @@ consequences to know before you debug the extension:
   thurbox's own `claude` — so it inherits the hook settings that let it report
   state and whatever model that agent defaults to.
   `extension.toml.in`'s no-`[[agents]]` note owns why. A fleet's
-  conductor, where it runs one, is the manifest's SECOND `[[sessions]]` and
-  is held to everything here that holds the lead: the lead is the FIRST, which
-  is what every reader of `scripts/lib/manifest.py` takes as the lead, so
-  adding a conductor renames nothing. `reap`, `refuel`, `shepherd`'s adoption
-  and `fleet sessions orphans` treat it as they treat the lead. A
+  conductor SESSION, where it runs one, is the manifest's SECOND
+  `[[sessions]]` and is held to everything here that holds the lead: the
+  lead is the FIRST, which is what every reader of `scripts/lib/manifest.py`
+  takes as the lead, so adding a conductor renames nothing. `reap`, `refuel`,
+  `shepherd`'s adoption and `fleet sessions orphans` treat it as they treat
+  the lead. A
   glyph is part of the session name because thurbox has no per-session icon
   field, and WHICH glyph is a setting (see the glyph bullet above), so the
   mailbox address must be **pasted** out of `thurbox-cli session list`, not

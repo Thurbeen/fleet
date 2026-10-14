@@ -170,6 +170,8 @@ def isolate(environ: dict, root: Path, stub_bin: Path) -> dict:
         FLEET_PEERS_ROOT=settings,
         FLEET_OWNERS_ROOT=settings,
         FLEET_RECONCILE_CONF_ROOT=settings,
+        # The rendered conductor directory a one-shot run starts in.
+        FLEET_CONDUCTOR_DIR=str(root / "settings" / "orchestration" / "conductor"),
         # The rendered extension.toml names the operator's lead and conductor,
         # whose sessions reap and refuel then ask thurbox about.
         FLEET_MANIFEST_ROOT=settings,

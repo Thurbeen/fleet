@@ -120,7 +120,10 @@ its unprompted set, workers dispatched and never briefed, or its needs-input
 set, workers that said they need a decision —
 wakes the CONDUCTOR, which until fleet runs one of its own is the lead: once
 per transition and per conversation, never mid-turn, silently when there is
-none. `scripts/lib/notify_conductor.py` owns those rules. A worker's question
+none. `scripts/lib/notify_conductor.py` owns those rules. A fleet whose
+conductor is ONE-SHOT (`CONDUCTOR=on`) has it run once per notice instead,
+inside the notifier's bound (`scripts/lib/conductor_run.py`): the notifier
+starts the actor that decides, and the loop still calls no verb that acts. A worker's question
 on a task whose origin fleet can reach goes to that origin instead, and so does
 each task's outcome, which `collect` and `reap` tell as they move it:
 `scripts/lib/notify_origin.py`, a child of this loop's children and no new
@@ -819,8 +822,8 @@ def run_notifier(cfg: Config, label: str, argv: list, stdin: str) -> None:
     own `notify:` line, and a failure — not there, a crash, a bound — kept for
     `status`. Never a failure of the pass."""
     try:
-        done = bounded(cfg, label, [sys.executable, NOTIFY, "--state-dir", cfg.rt, *argv], cfg.bound,
-                       input=stdin, cwd=CHECKOUT, capture_output=True)
+        argv = [sys.executable, NOTIFY, "--state-dir", cfg.rt, "--bound", str(cfg.bound), *argv]
+        done = bounded(cfg, label, argv, cfg.bound, input=stdin, cwd=CHECKOUT, capture_output=True)
     except OSError as exc:
         log(cfg, f"{label}: could not run {NOTIFY}: {exc}")
         child_went(cfg, label, f"could not run: {exc}")
