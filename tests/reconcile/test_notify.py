@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from harness import expect, lib, write
 from reconcilekit import wait_for
 
@@ -35,6 +37,34 @@ def test_codex_draft_is_not_mistaken_for_the_placeholder(recon, stubs):
         "output": "Done.\n\n› Ask Codex to do anything else\n  model · context left",
         "cursor_row": 2, "cursor_col": 2,
     }))
+    recon("ensure")
+    recon.ready("alpha/01-first")
+    assert wait_for(lambda: stubs.inbox("lead-uuid")), recon.log()
+    assert not stubs.calls("thurbox-cli", "session send")
+
+
+@pytest.mark.parametrize("suggestion", ['Try "create a util logging.py that..."',
+                                        'Try "refactor <filepath> to..."'])
+def test_claude_placeholder_is_an_empty_composer(recon, stubs, suggestion):
+    """Claude Code draws a dim, rotating suggestion in its empty composer. On
+    2026-10-14 every wake for a conductor at rest went to its mailbox instead,
+    because the suggestion read as a draft."""
+    stubs.claude_placeholder("lead-uuid", suggestion)
+    recon("ensure")
+    recon.ready("alpha/01-first")
+    assert wait_for(lambda: stubs.calls("thurbox-cli", "session send")), recon.log()
+
+
+@pytest.mark.parametrize("pane", [
+    {"style": ""},
+    {"style": "\x1b[7m"},
+    {"style": "\x1b[38;2;2;2;2m"},
+    {"style": "\x1b[2m", "below": "  and a second line"},
+], ids=["typed", "not-dim", "truecolor", "multiline"])
+def test_claude_draft_is_not_mistaken_for_the_placeholder(recon, stubs, pane):
+    """The same words typed, a style that is not the suggestion's, or more
+    composer below it: each is somebody's draft, and is not typed over."""
+    stubs.claude_placeholder("lead-uuid", 'Try "create a util logging.py that..."', **pane)
     recon("ensure")
     recon.ready("alpha/01-first")
     assert wait_for(lambda: stubs.inbox("lead-uuid")), recon.log()

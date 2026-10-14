@@ -40,6 +40,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -200,26 +201,18 @@ def composer_empty(sid: str) -> bool:
     `--lines 0` is the visible pane alone, which is what `cursor_row` counts
     in. Empty is the cursor right after one prompt glyph — `❯`, `›`, `>`: a
     word with no letter or digit in it — with nothing after it on the line.
-    Only Codex's exact empty placeholder with its footer also counts. A draft
-    or a thurbox that reports no cursor costs a mailbox note.
+    Only Codex's exact empty placeholder with its footer also counts, and
+    Claude Code's suggestion as `claude_placeholder` proves it. A draft or a
+    thurbox that reports no cursor costs a mailbox note.
     """
-    try:
-        out = subprocess.run(
-            ["thurbox-cli", "session", "capture", sid, "--json", "--lines", "0"],
-            capture_output=True,
-            text=True, encoding="utf-8",
-            timeout=10,
-        )
-        shown = json.loads(out.stdout) if out.returncode == 0 else {}
-    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
-        return False
-    if not isinstance(shown, dict):
-        return False
+    shown = _capture(sid)
     row, col = shown.get("cursor_row"), shown.get("cursor_col")
     lines = str(shown.get("output") or "").split("\n")
     if not isinstance(row, int) or not isinstance(col, int) or not 0 <= row < len(lines):
         return False
     before, after = lines[row][:col].split(), lines[row][col:]
+    if before == ["\u276f"] and after.strip() and claude_placeholder(sid, row, col, lines[row]):
+        return True
     # Codex draws this placeholder after the cursor in its empty composer.
     # Require the footer immediately below as well, so a multiline draft
     # cannot be mistaken for the one-line placeholder.
@@ -228,6 +221,76 @@ def composer_empty(sid: str) -> bool:
             and len(tail) == 1 and " · " in tail[0]):
         return True
     return len(before) == 1 and len(before[0]) <= 2 and not any(c.isalnum() for c in before[0]) and not after.strip()
+
+
+def _capture(sid: str, *extra: str) -> dict:
+    """`session capture --json` of the visible pane, or {} when it cannot be read."""
+    try:
+        out = subprocess.run(
+            ["thurbox-cli", "session", "capture", sid, "--json", "--lines", "0", *extra],
+            capture_output=True,
+            text=True, encoding="utf-8",
+            timeout=10,
+        )
+        shown = json.loads(out.stdout) if out.returncode == 0 else {}
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+        return {}
+    return shown if isinstance(shown, dict) else {}
+
+
+# One escape sequence in an `--ansi` capture: a CSI (SGR among them) or an OSC.
+_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
+
+
+def _faint_after(params: str, faint: bool) -> bool:
+    """Whether text is faint after one SGR's parameters: 2 sets it, 0 and 22
+    reset it, and a 38/48/58 colour's own arguments — `5;n`, `2;r;g;b` — are
+    skipped, so the 2 that opens a truecolour is never read as faint."""
+    codes = (params or "0").split(";")
+    i = 0
+    while i < len(codes):
+        code = codes[i]
+        if code in ("38", "48", "58"):
+            i += {"5": 2, "2": 4}.get(codes[i + 1] if i + 1 < len(codes) else "", 0)
+        elif code == "2":
+            faint = True
+        elif code in ("0", "", "22"):
+            faint = False
+        i += 1
+    return faint
+
+
+def claude_placeholder(sid: str, row: int, col: int, plain: str) -> bool:
+    """Whether what follows `❯` at the cursor is Claude Code's empty-composer suggestion.
+
+    Claude Code rotates the words (`Try "…"`), so no text proves it; the
+    STYLE does. Its suggestion is drawn faint (SGR 2) after the cursor, and a
+    draft is drawn in the plain foreground. So the pane is captured again with
+    `--ansi`, and it is the placeholder only when that capture shows the same
+    line under the same cursor, every visible character right of the cursor
+    is faint, and the composer's lower rule is the very next line — a second
+    line of a draft would sit between them. Anything else is not empty.
+    """
+    shown = _capture(sid, "--ansi")
+    lines = str(shown.get("output") or "").split("\n")
+    if (shown.get("cursor_row"), shown.get("cursor_col")) != (row, col) or not row + 1 < len(lines):
+        return False
+    rule = _ESCAPE.sub("", lines[row + 1]).strip()
+    if not rule or set(rule) != {"\u2500"}:
+        return False
+    faint, column, seen = False, 0, False
+    for piece in re.split(f"({_ESCAPE.pattern})", lines[row]):
+        if piece.startswith("\x1b"):
+            if piece.startswith("\x1b[") and piece.endswith("m"):
+                faint = _faint_after(piece[2:-1], faint)
+            continue
+        for ch in piece:
+            if column >= col and not ch.isspace():
+                if not faint:
+                    return False
+                seen = True
+            column += 1
+    return seen and _ESCAPE.sub("", lines[row]).rstrip() == plain.rstrip()
 
 
 def held(name: str, row: dict) -> str:

@@ -335,6 +335,22 @@ class Stubs:
             shown |= {"cursor_row": 4, "cursor_col": len(line)}
         self._write(f"panes/{sid}.json", json.dumps(shown) + "\n")
 
+    def claude_placeholder(self, sid: str, text: str, style: str = "\x1b[2m",
+                           below: str = "") -> None:
+        """`sid`'s composer as Claude Code draws it with `text` after the cursor:
+        the plain capture, and the `--ansi` one with `text` in `style` — dim is
+        how Claude Code draws its empty-composer suggestion, "" is text typed.
+        `below` is a line between the prompt and the composer's lower rule."""
+        rule = "\u2500" * 40
+        def pane(dim: str, rule_on: str, text_on: str) -> str:
+            rows = ["", "\u25cf Done.", "", rule_on + rule,
+                    text_on + "\u276f\u00a0" + dim + text + ("\x1b[0m" if dim else "")]
+            rows += [text_on + below] if below else []
+            return "\n".join(rows + [rule_on + rule, text_on + "  ? for shortcuts", ""])
+        for name, shown in ((f"{sid}.json", pane("", "", "")),
+                            (f"{sid}.ansi.json", pane(style, "\x1b[38;5;244m", "\x1b[39m"))):
+            self._write(f"panes/{name}", json.dumps({"output": shown, "cursor_row": 4, "cursor_col": 2}) + "\n")
+
     def inbox(self, sid: str) -> list[dict]:
         """Every message `message send` left for `sid`, read or not."""
         try:

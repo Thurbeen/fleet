@@ -35,7 +35,10 @@ def main() -> int:
     elif verb == "session capture":
         # `panes/<id>.json` is the whole `--json` answer, cursor and all; a
         # bare `<id>.txt` is the text alone, with no cursor to read.
-        shown = read(root / "panes" / f"{ident}.json")
+        # `--ansi` answers `<id>.ansi.json`, the same pane with its styling,
+        # where a test wrote one.
+        shown = read(root / "panes" / f"{ident}.ansi.json") if "--ansi" in args else ""
+        shown = shown or read(root / "panes" / f"{ident}.json")
         print(shown.strip() or json.dumps({"output": read(root / "panes" / f"{ident}.txt")}))
     elif verb == "session send":
         # `--no-enter` leaves the text in the composer. The real CLI types it
