@@ -130,7 +130,7 @@
   <rect class="box red" x="696" y="348" width="280" height="88" rx="8"/>
   <text class="t red-t" x="712.5" y="374">Forge (optional)</text>
   <text class="s" x="712.5" y="394">GitHub (gh) · GitLab (glab)</text>
-  <text class="s" x="712.5" y="410">shepherd squash-merges</text>
+  <text class="s" x="712.5" y="410">shepherd may squash-merge</text>
   <text class="s" x="712.5" y="426">local-only: a pushed commit</text>
   <g class="merged">
     <rect x="885.4" y="361" width="78.2" height="20" rx="10" fill="#6EFF6E"/>
