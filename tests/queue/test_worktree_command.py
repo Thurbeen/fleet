@@ -163,7 +163,7 @@ def test_a_fixers_checkout_is_handed_over_when_it_is_taken_back(gone, stubs, iso
 
 
 @pytest.fixture
-def fixer_on_the_task_branch(queue_dir, tmp_path):
+def fixer_checkout(queue_dir, tmp_path):
     """The one worktree two release points both reach.
 
     `branch_checkout` cuts a fixer's checkout on the TASK'S OWN branch, so git
@@ -181,9 +181,14 @@ def fixer_on_the_task_branch(queue_dir, tmp_path):
          "--branch", "fix/build", "--number", "01"))
     fixer = queue_dir / ".worktrees" / "disk__01-build"
     git(repo, "worktree", "add", "-q", "-b", "fix/build", str(fixer))
+    return repo, fixer
+
+
+@pytest.fixture
+def fixer_on_the_task_branch(fixer_checkout):
     ok(q("attach", REF, SID))
     ok(q("abandon", REF, "--why", "superseded"))
-    return repo, fixer
+    return fixer_checkout
 
 
 def test_one_worktree_is_handed_over_once_however_many_releases_reach_it(
@@ -221,7 +226,7 @@ def test_a_checkout_git_refuses_to_remove_is_handed_to_nobody(
 
 
 def test_the_vanished_sweep_hands_over_no_checkout_nothing_has_tried_to_release(
-        fixer_on_the_task_branch, stubs, isolated_env, queue_dir):
+        fixer_checkout, stubs, isolated_env, queue_dir):
     """The sweep runs BEFORE the removal, and git refuses this removal.
 
     The order is what made this reachable: a worker that vanished is exactly
@@ -230,7 +235,7 @@ def test_the_vanished_sweep_hands_over_no_checkout_nothing_has_tried_to_release(
     task one release point ahead of the only thing that may hand that checkout
     over.
     """
-    _repo, fixer = fixer_on_the_task_branch
+    _repo, fixer = fixer_checkout
     write(fixer / "notes.txt", "the fixer is mid-change\n")
     hook(isolated_env, stubs)
     ok(q("attach", REF, SID))

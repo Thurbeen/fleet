@@ -373,8 +373,8 @@ recorded prompted, so the bare `prompt` sweep never types the brief into work
 in progress. Idle can mean a fresh session, so it stays unprompted by default;
 `attach --prompted` confirms it already has its work, and `attach --unprompted`
 forces a session to receive the brief regardless of its state. `attach`
-takes only a `queued` or `dispatched` task and refuses a concluded one,
-naming its state: binding it would re-open a finished task.
+never re-opens a task: it refuses a `landed` or `abandoned` one, and a
+`done`, `stuck` or `failed` one keeps its state and only takes the session.
 Any delivered `send`, and a refuel restart that was briefed, marks a task
 prompted the same way.
 

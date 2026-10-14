@@ -5510,25 +5510,32 @@ def cmd_attach(args) -> int:
     before any work is delivered. It stays unprompted unless `--prompted`
     confirms it already has its work; `--unprompted` forces the reverse.
 
-    Only a task still waiting for its worker takes one: `queued` or
-    `dispatched`. A concluded task is refused, naming its state. Binding it
-    would write `dispatched` over the verdict, the next `collect` would close
-    it again on the same result.md, and its origin would be told a second time
-    (#252), where the transitions beside `reap` say nothing re-opens.
-    `attach()` stays unguarded: it is also dispatch's binder, which only ever
-    hands it a `queued` task.
+    It never re-opens a task (#252). Writing `dispatched` over a concluded one
+    made the next `collect` close it again on the same result.md and tell its
+    origin a second time, where the transitions beside `reap` say nothing
+    re-opens. So a `landed` or `abandoned` task is refused, naming its state:
+    nothing more will be asked of a session there, and reap would delete it.
+    A `done`, `stuck` or `failed` one keeps its state and only takes the new
+    session — the one shepherd and a reviewer reach for review fixes.
+    `attach()` itself stays unguarded: it is also dispatch's binder, which only
+    ever hands it a `queued` task.
     """
     q = Queue(queue_root())
     task = q.get(args.ref)
-    if task.state not in ("queued", "dispatched"):
+    if task.state in TERMINAL_STATES:
         raise QueueError(
-            f"{task.ref} is {task.state}: attach binds a session to a task still "
-            "waiting for its worker (queued or dispatched), and never re-opens one"
+            f"{task.ref} is {task.state}: attach never re-opens a finished task"
         )
     prompted = args.prompted
     if not args.unprompted and not args.prompted:
         state, _why = session_state(args.session)
         prompted = state in SESSION_BUSY | {"done"}
+    if task.state in CONCLUDED_STATES:
+        task.doc["session"] = args.session
+        task.doc["prompted"] = prompted
+        task.save()
+        print(f"{task.ref} -> {args.session}  (kept {task.state})")
+        return 0
     attach(task, args.session, prompted=prompted)
     print(f"{task.ref} -> {args.session}{'' if prompted else '  (unprompted)'}")
     return 0

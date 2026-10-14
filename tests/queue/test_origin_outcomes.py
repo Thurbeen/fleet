@@ -155,19 +155,26 @@ def test_attach_never_reopens_a_concluded_task(queue_dir, stubs):
     listed(stubs)
     ref = shipped(queue_dir, stubs, "seven", 48)
     ok(q("collect"))
+    assert state(queue_dir, ref) == "done"
+
+    fixer = "5b0c7d2e-0000-4000-8000-0000000000bb"
+    expect(ok(q("attach", ref, fixer)).out, "kept done")
+    doc = yaml.safe_load((queue_dir / ref / "task.yaml").read_text(encoding="utf-8"))
+    assert (doc["state"], doc["session"]) == ("done", fixer)
+    ok(q("collect"))
+    assert len(told(stubs)) == 1, "shipped was told again after a rebind"
+
     stubs.pr_state(48, "MERGED")
     ok(q("collect"))
     ok(q("reap"))
     assert state(queue_dir, ref) == "landed"
-    told_before = len(told(stubs))
     record = (queue_dir / ref / "task.yaml").read_text(encoding="utf-8")
 
-    stray = "5b0c7d2e-0000-4000-8000-0000000000bb"
-    refused = q("attach", ref, stray)
+    refused = q("attach", ref, fixer)
     assert refused.code != 0, refused.out
     expect(refused.out, ref, "landed")
     assert (queue_dir / ref / "task.yaml").read_text(encoding="utf-8") == record
 
     ok(q("collect"))
     assert state(queue_dir, ref) == "landed"
-    assert len(told(stubs)) == told_before, "the origin was told again"
+    assert len(told(stubs)) == 2, "the origin was told again"
