@@ -287,6 +287,10 @@ WATCH_MARGIN_SECS = 60
 # for that instant; it retries this long before concluding a twin owns it.
 LOCK_RETRY_SECS = 2
 
+# How long a loop that handed itself to `ensure` waits, running nothing, to be
+# brought down: that `ensure`'s own start-up, with room to spare.
+REPLACE_WAIT_SECS = 2 * START_WAIT_SECS
+
 # How often `serve` looks again while a down flag stands or another loop holds
 # the lock. Its takeover after that loop dies is at most this late.
 SERVE_POLL_SECS = 5
@@ -596,7 +600,7 @@ def replace_me(cfg: Config, changed: list[str]) -> None:
     calling a notifier that update had renamed away. `ensure` already knows how
     to bring a loop down at a pass boundary and start the next one, honours a
     down flag, and runs from the checkout as it is now; so the loop hands
-    itself to it, detached, once, and carries on until it is asked down."""
+    itself to it, detached, once, and waits for it (`tick`)."""
     log(cfg, f"its own code changed on disk ({shown(changed)}); `reconcile ensure` replaces it")
     try:
         with open(cfg.log, "ab") as out:
@@ -979,12 +983,16 @@ def tick(cfg: Config) -> int:
         stamp = time.monotonic()
         fleet_platform.write_record(cfg.path("heartbeat"), f"{int(time.time())}\n")
 
-        # Its own code, asked every pass: a stat per module. Until `ensure`
-        # has brought it down, it goes on reconciling with what it has.
+        # Its own code, asked every pass: a stat per module. Handed over, it
+        # starts no child while `ensure` brings it down — one started now would
+        # be cut off at the stop's grace — and goes on reconciling with what it
+        # has only if nothing came for it.
         changed = [] if replacing else code_changed(cfg.code)
         if changed:
             replace_me(cfg, changed)
             replacing = True
+            rest(cfg, REPLACE_WAIT_SECS)
+            continue
 
         nudged = _consume_nudge(cfg)
 
