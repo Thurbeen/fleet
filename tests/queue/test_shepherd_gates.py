@@ -307,3 +307,20 @@ def test_the_rule_word_is_a_word_and_not_part_of_a_repository_name(tmp_path, mon
     out = queue_module("print(sorted(q.auto_merge_repos()))\nprint(q.auto_merge_rules())\n")
     expect(out, "['github.com/acme/needs-human-tools', 'github.com/acme/needs-human-ui']",
            "[('github.com/acme/needs-human-ui', 'label', 'ui')]")
+
+
+def test_a_repository_is_named_in_any_case(ttopic, shep, tmp_path):
+    """The forge spells it `Thurbeen/thurbox`; a line that lowercases it names the same repository.
+
+    The agent policy already matched it that way, so the allowlist and its
+    `needs-human` rules must too — or one file reads as two different rules.
+    """
+    shep.files(201, "src/ui/split.rs")
+    lowered = "github.com/thurbeen/thurbox  needs-human  path:src/ui/*\n"
+    out = q("shepherd", "--topic", ttopic, "--dry-run", FLEET_AUTO_MERGE_ROOT=guarded(tmp_path, lowered)).out
+    expect(out, "needs a human: path:src/ui/* (src/ui/split.rs)")
+    refute(out, "fleet does not merge in")
+
+    out = q("shepherd", "--topic", ttopic, FLEET_AUTO_MERGE_REPOS="github.com/thurbeen/THURBOX").out
+    refute(out, "fleet does not merge in")
+    assert 201 in shep.merged(), out

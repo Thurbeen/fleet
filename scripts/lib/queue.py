@@ -9693,6 +9693,16 @@ def auto_merge_repos(root: str | None = None) -> set:
     )
 
 
+def may_auto_merge(repo: forge.RepoId) -> bool:
+    """Whether the allowlist names this repository, in whatever case either spells it.
+
+    Both forges fleet ships an adapter for resolve a path without regard to
+    case — see `same_repo` — so `github.com/thurbeen/fleet` in the file is
+    GitHub's `Thurbeen/fleet`, exactly as the agent policy already reads it.
+    """
+    return repo.qualified.casefold() in {r.casefold() for r in auto_merge_repos()}
+
+
 def auto_merge_lines(path: str) -> list:
     try:
         with open(path, encoding="utf-8") as fh:
@@ -9780,7 +9790,10 @@ def needs_human(cr: forge.ChangeRequest) -> str:
     Labels first, because they arrived with the listing; the changed files
     are asked of the forge only when a path rule covers this repository.
     """
-    rules = [r for r in auto_merge_rules() if r[0] in ("", cr.repo.qualified)]
+    # Casefolded like `may_auto_merge` and the agent policy: the forge's own
+    # spelling and the conf file's name one repository.
+    here = cr.repo.qualified.casefold()
+    rules = [r for r in auto_merge_rules() if r[0].casefold() in ("", here)]
     for _repo, kind, value in rules:
         if kind == "unreadable":
             return f"an unreadable rule, {value!r}, in {auto_merge_conf_path()}"
@@ -11332,7 +11345,7 @@ def _shepherd_ready(cr: forge.ChangeRequest, task, args, row: dict, rec: dict,
             "ever ran on the commit that would land"
         )
         return row
-    if cr.repo.qualified not in auto_merge_repos():
+    if not may_auto_merge(cr.repo):
         row["action"] = "ready"
         row["note"] = f"fleet does not merge in {cr.repo}; this one is yours"
         return row
