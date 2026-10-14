@@ -208,16 +208,9 @@ def test_a_remote_result_comes_back_and_its_session_outlives_a_down_host(
     expect(deletions(stubs), RSESSION)
 
 
-@pytest.mark.skipif(os.name == "nt", reason="the fake host's login shell is a real /bin/sh, which Windows has not got")
-def test_reap_finds_the_cli_thurbox_provisioned_on_the_host_off_path(
-    devbox_dispatched, devbox_task, hosts
-):
-    """thurbox puts its own `thurbox-cli` on a host under its data directory,
-    deliberately NOT on `PATH`, and drives every remote session through it. A
-    reap that asked the host for `thurbox-cli` by bare name read "not found" on
-    exactly the hosts thurbox provisioned, and kept every session there for
-    good. This host has a real shell, the CLI where thurbox puts it, and none
-    on any `PATH`."""
+def landed_on_a_real_shell(hosts) -> tuple:
+    """The devbox task collected and merged, its session idle, and devbox a
+    host with a real shell: (stubs, the host's HOME, its session list)."""
     stubs = hosts.stubs
     write(hosts.remote("me@devbox", WORKTREE + ".fleet") / "result.md",
           "---\noutcome: shipped\nartifact: https://github.com/remote-owner/app/pull/4242\n---\nDone.\n")
@@ -228,11 +221,31 @@ def test_reap_finds_the_cli_thurbox_provisioned_on_the_host_off_path(
                               "branch": "fix/build-on-devbox", "created_by_thurbox": True}])
     expect(q("collect").out, "shipped")
     stubs.pr_state(4242, "MERGED")
-
     hosts.flag("me@devbox", "realshell")
-    home = hosts.state / "me@devbox.home"
     listing = json.dumps([{"id": RSESSION, "cwd": WORKTREE, "backend_type": "local:tmux"}])
-    cli = home / ".local" / "share" / "thurbox" / "bin" / "thurbox-cli"
+    return stubs, hosts.state / "me@devbox.home", listing
+
+
+def host_cli(home, flavour: str, listing: str):
+    """A thurbox-cli where thurbox provisions one for `flavour`, answering `listing`."""
+    cli = home / ".local" / "share" / flavour / "bin" / "thurbox-cli"
+    write(cli, "#!/bin/sh\n[ \"$1 $2 $3\" = 'session list --json' ] || exit 2\n"
+               f"cat <<'EOF'\n{listing}\nEOF\n")
+    cli.chmod(cli.stat().st_mode | stat.S_IXUSR)
+    return cli
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the fake host's login shell is a real /bin/sh, which Windows has not got")
+def test_reap_finds_the_cli_thurbox_provisioned_on_the_host_off_path(
+    devbox_dispatched, devbox_task, hosts
+):
+    """thurbox puts its own `thurbox-cli` on a host under its data directory,
+    deliberately NOT on `PATH`, and drives every remote session through it. A
+    reap that asked the host for `thurbox-cli` by bare name read "not found" on
+    exactly the hosts thurbox provisioned, and kept every session there for
+    good. This host has a real shell, the CLI where thurbox puts it, and none
+    on any `PATH`."""
+    stubs, home, listing = landed_on_a_real_shell(hosts)
 
     # No CLI anywhere: a named keep, never a guess that the host is empty. The
     # fake host's shell is THIS machine's, so a thurbox-cli installed here
@@ -242,9 +255,26 @@ def test_reap_finds_the_cli_thurbox_provisioned_on_the_host_off_path(
         expect(out, "kept", "no thurbox-cli on the host")
         refute(deletions(stubs), RSESSION)
 
-    write(cli, "#!/bin/sh\n[ \"$1 $2 $3\" = 'session list --json' ] || exit 2\n"
-               f"cat <<'EOF'\n{listing}\nEOF\n")
-    cli.chmod(cli.stat().st_mode | stat.S_IXUSR)
+    host_cli(home, "thurbox", listing)
+    expect(q("reap").out, "reaped", RSESSION)
+    expect(deletions(stubs), RSESSION)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the fake host's login shell is a real /bin/sh, which Windows has not got")
+def test_a_dev_thurbox_reaps_through_its_own_flavours_cli_and_not_the_release_one(
+    devbox_dispatched, devbox_task, hosts
+):
+    """A dev build provisions under `thurbox-dev`, and the release copy beside
+    it reads another database. Read the wrong one and its list judges this
+    session: here it does not hold the session at all, so a reap that always
+    looked under `thurbox` keeps it, and one that asked the local CLI's
+    `data_dir` for the flavour reaps it."""
+    stubs, home, listing = landed_on_a_real_shell(hosts)
+    write(stubs.root / "version.json", json.dumps(
+        {"version": "0.0.0-dev", "data_dir": str(home / ".local" / "share" / "thurbox-dev")}))
+    host_cli(home, "thurbox", json.dumps([{"id": "release-only", "cwd": "/elsewhere",
+                                          "backend_type": "local:tmux"}]))
+    host_cli(home, "thurbox-dev", listing)
     expect(q("reap").out, "reaped", RSESSION)
     expect(deletions(stubs), RSESSION)
 

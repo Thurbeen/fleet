@@ -14,6 +14,8 @@ and `inbox` reads it back, `--claim` marking what it returns read. A send
 without `--no-wake` is recorded as `woke`, which is the real CLI pushing the
 body into the recipient's conversation. A `no-inbox` file makes `message` the
 unknown subcommand it is on a thurbox that predates the mailbox.
+`version --json` prints `version.json`, which is how a test names the data
+directory — and so the flavour — of the thurbox fleet is driving.
 """
 
 import json
@@ -62,6 +64,10 @@ def main() -> int:
             sys.stderr.write(f"no such session: {ident}\n")
             return 1
         sys.stdout.write(read(record))
+    elif args[:2] == ["version", "--json"]:
+        # Silent without `version.json`, as an unknown verb is: fleet then
+        # takes this thurbox for a release build.
+        sys.stdout.write(read(root / "version.json"))
     elif args[:1] == ["message"]:
         return mailbox(root, args[1:])
     elif args[:1] == ["watch"]:
