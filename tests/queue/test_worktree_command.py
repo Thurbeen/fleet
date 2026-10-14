@@ -376,11 +376,17 @@ elif args[:2] == ["session", "get"]:
 
 
 def test_occupancy_that_cannot_be_judged_is_not_a_release(gone, stubs, isolated_env):
-    """The same refusal the build output gets, from the same unreadable answer."""
+    """The same refusal the build output gets, from the same unreadable answer.
+
+    With a lead and a conductor named, as every installed fleet has them: their
+    ids are read off the pass's one list too, or a second list taken for them
+    spends the only answer and the drop never happens. Named here rather than
+    left to the checkout's rendered manifest, which only an operator's has.
+    """
     _repo, tree = gone
     hook(isolated_env, stubs)
     stubs.tool("thurbox-cli", STOPS_ANSWERING)
-    out = ok(q("reap")).out
+    out = ok(q("reap", FLEET_LEAD_SESSION="Gate Control", FLEET_CONDUCTOR_SESSION="Gate Conductor")).out
     expect(out, "gone", f"kept       build output in {listed(tree)}",
            f"kept       WORKTREE_RELEASED_CMD for {tree}")
     assert ran(stubs) == []

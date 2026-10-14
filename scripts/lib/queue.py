@@ -7851,6 +7851,9 @@ def _remove_fixer_worktree(task: Task, path: str) -> subprocess.CompletedProcess
 # session at all. So this checkout's lead and conductor are refused BY NAME as
 # well — `notify_conductor.control_sessions`, the one reading of who they are —
 # whoever runs the command. Asked only when there is a session to judge.
+# `reap` hands in its pass's one `session list` (see `reap`): a second list
+# taken here for the lead would be a second answer the pass could disagree
+# with, and one that fails after the first answered keeps every holder.
 CONTROL_WHY = {
     "self": "that is the lead's own session, not a worker's",
     "lead": "that is the lead's own session, not a worker's",
@@ -7858,12 +7861,15 @@ CONTROL_WHY = {
 }
 
 
-def control_session_ids() -> dict[str, str]:
-    """{session id: "self" | "lead" | "conductor"}: the sessions reap and refuel refuse."""
+def control_session_ids(rows: list | None = None) -> dict[str, str]:
+    """{session id: "self" | "lead" | "conductor"}: the sessions reap and refuel refuse.
+
+    `rows` is a `session list` already taken; None asks thurbox for one.
+    """
     found: dict[str, str] = {}
     try:
         notify = _load_sibling("fleet_notify_conductor", "notify_conductor.py")
-        found.update(notify.control_sessions())
+        found.update(notify.control_sessions(rows))
     except Exception:  # noqa: BLE001 — unknown refuses nothing more than before
         pass
     inside = os.environ.get("THURBOX_SESSION")
@@ -7933,10 +7939,14 @@ def reap(q: Queue, dry: bool = False, release: bool = True) -> int:
     # the next reap asks again about anything that is still there.
     decided: set[str] = set()
 
-    def snapshot() -> tuple[set | None, str]:
+    def rows() -> tuple[dict | None, str]:
         if not taken:
-            taken.append(live_sessions())
+            taken.append(session_snapshot())
         return taken[0]
+
+    def snapshot() -> tuple[set | None, str]:
+        sessions, why = rows()
+        return (set(sessions) if sessions is not None else None), why
 
     # Before the archive sweep, because a retired task can be the last thing
     # holding its topic open. Not under `--no-reap`: retiring a vanished
@@ -7959,10 +7969,10 @@ def reap(q: Queue, dry: bool = False, release: bool = True) -> int:
     # Before the holders: a task whose own session is long gone can still have
     # a fixer checkout on disk.
     acted += release_fixer_checkouts(q, state_of, dry, decided)
-    return acted + _reap_holders(q, state_of, landings, snapshot, dry, decided)
+    return acted + _reap_holders(q, state_of, landings, rows, dry, decided)
 
 
-def _reap_holders(q: Queue, state_of, landings: dict, snapshot, dry: bool,
+def _reap_holders(q: Queue, state_of, landings: dict, rows, dry: bool,
                   decided: set) -> int:
     """`reap`'s last step: every finished task still holding a session. Returns how many."""
     acted = 0
@@ -7975,11 +7985,12 @@ def _reap_holders(q: Queue, state_of, landings: dict, snapshot, dry: bool,
     if not holders:
         return acted
 
-    lead = control_session_ids()
-    live: set | None = None
-    live_detail = ""
-    if any(state_of(t) in ("landed", "abandoned") for t in holders):
-        live, live_detail = snapshot()
+    # The lead and the conductor are found in the pass's one list. When that
+    # list could not be read none is found, and none needs to be: without it
+    # every holder is kept below, so nothing is deleted on the gap.
+    sessions, live_detail = rows()
+    lead = control_session_ids(list(sessions.values()) if sessions is not None else [])
+    live: set | None = set(sessions) if sessions is not None else None
 
     reaped = kept = dropped = 0
     for task in holders:

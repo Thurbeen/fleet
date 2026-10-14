@@ -286,12 +286,12 @@ def own_conductor_name() -> str:
     return name
 
 
-def own_conductor_row() -> tuple[str, dict | None, str]:
+def own_conductor_row(rows: list | None = None) -> tuple[str, dict | None, str]:
     """(the own conductor's name, its `session list` row, why there is none); ("", None, "") without one."""
     name = own_conductor_name()
     if not name:
         return "", None, ""
-    row, why = session_row(name, fleetqueue.is_conductor_dir)
+    row, why = session_row(name, fleetqueue.is_conductor_dir, rows)
     return name, row, why
 
 
@@ -318,19 +318,23 @@ def conductor_name() -> str:
     return conductor_row()[0]
 
 
-def control_sessions() -> dict[str, str]:
+def control_sessions(rows: list | None = None) -> dict[str, str]:
     """{session id: "lead" | "conductor"} for this checkout's running control sessions.
 
     What `reap`, `refuel` and `sessions orphans` refuse or enumerate as the
     lead's. Either missing is simply absent; nothing here guesses.
+
+    `rows` is a `session list` the caller already took. `reap` passes its
+    pass's one list, so the lead is found in the same answer every other
+    judgement of the pass reads; None asks thurbox here.
     """
     found: dict[str, str] = {}
     name = lead_name()
     if name:
-        row, _why = lead_row(name)
+        row, _why = lead_row(name, rows)
         if row:
             found[str(row["id"])] = "lead"
-    _own, row, _why = own_conductor_row()
+    _own, row, _why = own_conductor_row(rows)
     if row:
         found[str(row["id"])] = "conductor"
     return found
@@ -342,16 +346,16 @@ def lead_session(name: str) -> tuple[str | None, str]:
     return (str(row["id"]), str(row.get("state") or "unknown")) if row else (None, why)
 
 
-def lead_row(name: str) -> tuple[dict | None, str]:
+def lead_row(name: str, rows: list | None = None) -> tuple[dict | None, str]:
     """This checkout's lead's `session list` row, or (None, why not).
 
     The one answer to "which session is the lead": the wake below and
     `reconcile.py`'s `is_lead` both read it, so they cannot disagree.
     """
-    return session_row(name, fleetqueue.is_this_checkout)
+    return session_row(name, fleetqueue.is_this_checkout, rows)
 
 
-def session_row(name: str, here_is) -> tuple[dict | None, str]:
+def session_row(name: str, here_is, rows: list | None = None) -> tuple[dict | None, str]:
     """The `session list` row named `name` whose cwd `here_is` accepts, or (None, why not).
 
     `here_is` is the directory the session opens: the checkout for the lead,
@@ -360,9 +364,11 @@ def session_row(name: str, here_is) -> tuple[dict | None, str]:
     `session list` and not `session get`: the list carries `id`, `state` and
     `agent_session_id` for every session in one call and probes no pane, which
     is the cheaper of the two answers and the one that does not touch the lead
-    to ask about it.
+    to ask about it. `rows` is one already taken; None asks for it.
     """
-    rows, why = session_rows()
+    why = ""
+    if rows is None:
+        rows, why = session_rows()
     if rows is None:
         return None, why
     named = [r for r in rows if isinstance(r, dict) and r.get("name") == name and r.get("id")]
