@@ -550,8 +550,9 @@ nobody else — never for an origin, of which there may be many — and
 running code older than the checkout, and on a child failing (its count,
 since when and last words, kept until it next succeeds) — its own pass
 included, as `tick`, which `ensure` reports rather than adopts. A loop whose
-own code changed on disk hands itself to a fresh `ensure`, and `ensure`
-replaces such a loop rather than adopting it. Each notice decision is one
+own code changed on disk hands itself to a fresh `ensure` — under `serve` it
+exits instead, for its manager to restart — and `ensure` replaces such a loop
+rather than adopting it. Each notice decision is one
 `notice` line in its log, naming kind, recipient, road and why. Every child
 it runs is held to a bound and killed with its tree past it, so a hung command
 costs one pass and never the loop. Four things about it are load-bearing:
