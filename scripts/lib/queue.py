@@ -1659,6 +1659,7 @@ TASK_RECORD = "task.yaml"
 PROMPT_FILE = "PROMPT.md"
 BRIEF_FILE = "BRIEF.md"
 RESULT_FILE = "result.md"
+PREVIOUS_RESULT_FILE = "result.previous.md"
 PROGRESS_FILE = "progress.jsonl"
 # The lock beside a record is the record's own path plus this.
 LOCK_SUFFIX = ".lock"
@@ -5379,6 +5380,14 @@ def attach(task: Task, session: str, agent: str = "", prompted: bool = False) ->
     (#117): before it, `add` recorded only an agent the operator had NAMED, and
     a task that named none left every later reader to re-derive its own.
     """
+    # A NEW ATTEMPT STARTS WITH NO RESULT. A task put back to `queued` by hand
+    # keeps the previous attempt's result.md, and once this marks it
+    # dispatched `collect` would read that file as this attempt's verdict
+    # (#258). It is moved aside, not deleted: it is still the record of what
+    # the last attempt said.
+    stale = task.file(RESULT_FILE)
+    if task.state == "queued" and os.path.exists(stale):
+        os.replace(stale, task.file(PREVIOUS_RESULT_FILE))
     if agent:
         task.doc["agent"] = agent
     task.doc["session"] = session
@@ -6481,7 +6490,7 @@ def _read_result(task: Task) -> tuple | None:
         if task.state == "queued" and os.path.exists(path):
             print(
                 f"    {task.ref}: is queued, so its result.md is not read — no worker has"
-                " run since it was written; move it aside before dispatching",
+                f" run since it was written; dispatch moves it to {PREVIOUS_RESULT_FILE}",
                 file=sys.stderr,
             )
         return None

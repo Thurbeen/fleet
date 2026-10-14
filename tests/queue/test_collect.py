@@ -13,9 +13,9 @@ import shutil
 
 import pytest
 import yaml
-from queuekit import ok, result, result_artifacts
+from queuekit import S2, ok, result, result_artifacts
 
-from harness import REPO, expect, git, queue_module, refute, squeezed, write
+from harness import REPO, expect, git, queue_module, refute, squeezed, stream_event, write
 from harness import run_queue as q
 
 PR = "https://github.com/acme/app/pull/"
@@ -107,6 +107,15 @@ def test_a_queued_task_is_not_closed_by_a_result_it_never_wrote(briefed, stubs, 
     refute(out, "pull/998  [publish verified")
     expect(out, "02-document-the-states", "queued", "not read")
     expect(q("show", f"{briefed}/02-document-the-states").out, "state:       queued")
+
+    # Dispatching it again is a new attempt, and the old file is not its result.
+    stubs.stream(stream_event(100, S2, "working", event="present"))
+    ok(q("attach", f"{briefed}/02-document-the-states", S2))
+    task = queue_dir / briefed / "02-document-the-states"
+    assert not (task / "result.md").exists(), "dispatch moves the previous attempt's result aside"
+    assert "pull/998" in (task / "result.previous.md").read_text(encoding="utf-8")
+    refute(q("collect").out, "pull/998")
+    expect(q("show", f"{briefed}/02-document-the-states").out, "state:       dispatched")
 
 
 # --- 8b. the publish METHOD: declared at intake, verified at collect -----------

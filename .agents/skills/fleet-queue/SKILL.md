@@ -500,7 +500,8 @@ WHAT   uv run fleet queue collect
        Reads the result.md each worker wrote. Only this closes a task, and
        it verifies that task's artifact before it does. A task still
        `queued` has no worker, so a result.md beside it is a previous
-       attempt's: named, and never read.
+       attempt's: named, never read, and moved to result.previous.md
+       when the task is dispatched again.
 ```
 
 And a third thing, which happens LATER and is not a completion:
