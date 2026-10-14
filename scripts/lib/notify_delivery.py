@@ -273,24 +273,25 @@ def claude_placeholder(sid: str, row: int, col: int, plain: str) -> bool:
     """
     shown = _capture(sid, "--ansi")
     lines = str(shown.get("output") or "").split("\n")
-    if (shown.get("cursor_row"), shown.get("cursor_col")) != (row, col) or not row + 1 < len(lines):
+    if (shown.get("cursor_row"), shown.get("cursor_col")) != (row, col) or row + 1 >= len(lines):
         return False
     rule = _ESCAPE.sub("", lines[row + 1]).strip()
     if not rule or set(rule) != {"\u2500"}:
         return False
-    faint, column, seen = False, 0, False
-    for piece in re.split(f"({_ESCAPE.pattern})", lines[row]):
+    return _all_faint_from(lines[row], col) and _ESCAPE.sub("", lines[row]).rstrip() == plain.rstrip()
+
+
+def _all_faint_from(line: str, col: int) -> bool:
+    """Whether `line` shows something at or right of `col`, and all of it faint."""
+    faint, column, styles = False, 0, []
+    for piece in re.split(f"({_ESCAPE.pattern})", line):
         if piece.startswith("\x1b"):
             if piece.startswith("\x1b[") and piece.endswith("m"):
                 faint = _faint_after(piece[2:-1], faint)
             continue
-        for ch in piece:
-            if column >= col and not ch.isspace():
-                if not faint:
-                    return False
-                seen = True
-            column += 1
-    return seen and _ESCAPE.sub("", lines[row]).rstrip() == plain.rstrip()
+        styles += [faint for i, ch in enumerate(piece, column) if i >= col and not ch.isspace()]
+        column += len(piece)
+    return bool(styles) and all(styles)
 
 
 def held(name: str, row: dict) -> str:
