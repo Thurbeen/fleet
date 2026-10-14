@@ -3995,6 +3995,7 @@ def ssh_argv(entry: dict) -> list:
 #     write(dest, text)       (script, stdin) that puts `text` at `dest`
 #     read(src) / decode(out) prints a file, and turns that back into its text
 #     join(worktree, name)    a path beside another, in the host's own spelling
+#     thurbox_cli(args)       runs the host's own thurbox-cli (HOST_CLI_POSIX)
 #
 # Every exit status means only zero or not: Windows' outer shell folds a
 # PowerShell script's `exit 3` into 1, so nothing here reads a code beyond
@@ -4008,6 +4009,62 @@ def ssh_argv(entry: dict) -> list:
 # only the worker's own diligence used to prevent. Beside it, no commit can
 # reach them, and `reap` removes exactly the files fleet put there.
 COMPANION_SUFFIX = ".fleet"
+
+
+# THE HOST'S OWN thurbox-cli, WHERE THURBOX LOOKS FOR IT. thurbox provisions
+# one on every host it shares sessions with, under its data directory and
+# DELIBERATELY NOT ON `PATH` (`session_ops/host_cli.rs`, `HOST_BIN_DIR`), and
+# drives every remote session through that copy. A host fleet's probes passed
+# therefore has a CLI whether or not anybody installed one, and asking for it
+# by bare name answered "not found" on exactly those hosts — `reap` kept every
+# session there for good. So the same places, in thurbox's own order: its
+# provisioned copy, then `PATH`, then the installer's defaults. The copy is
+# THIS thurbox's FLAVOUR's (`host_cli_flavour`): a dev build provisions under
+# `thurbox-dev`, and the release copy beside it reads another database, whose
+# empty list would pass every session as unoccupied. None found is an answer on
+# stderr that every caller keeps on, never an empty list.
+NO_HOST_CLI = (
+    "no thurbox-cli on the host: not where thurbox provisions it "
+    "(its data directory's bin/), and not on PATH"
+)
+HOST_CLI_POSIX = (
+    'for c in "$HOME/.local/share/{flavour}/bin/thurbox-cli" thurbox-cli '
+    '"$HOME/.local/bin/thurbox-cli" /usr/local/bin/thurbox-cli; do '
+    'p=$(command -v "$c" 2>/dev/null) && [ -x "$p" ] && exec "$p" {args}; done; '
+    "echo " + shlex.quote(NO_HOST_CLI) + " >&2; exit 127"
+)
+HOST_CLI_POWERSHELL = (
+    "$c = @(\"$env:LOCALAPPDATA\\{flavour}\\bin\\thurbox-cli.exe\", 'thurbox-cli', "
+    "\"$env:LOCALAPPDATA\\Programs\\thurbox\\thurbox-cli.exe\")\n"
+    "foreach ($p in $c) { $g = Get-Command $p -ErrorAction SilentlyContinue; "
+    "if ($g) { & $g.Source {args}; exit $LASTEXITCODE } }\n"
+    "[Console]::Error.WriteLine(__NO_CLI__)\nexit 127\n"
+)
+
+
+HOST_CLI_FLAVOURS = ("thurbox", "thurbox-dev")
+_host_cli_flavour: list = []
+
+
+def host_cli_flavour() -> str:
+    """`thurbox` or `thurbox-dev`: the data directory this machine's thurbox-cli
+    names, whose last part is what thurbox provisions a host's copy under.
+    Asked once per process; a CLI that does not say is a release one, which is
+    every thurbox before `version --json` and the only kind fleet installs."""
+    if not _host_cli_flavour:
+        flavour = "thurbox"
+        try:
+            proc = subprocess.run(
+                ["thurbox-cli", "version", "--json"],
+                capture_output=True, text=True, encoding="utf-8", timeout=10,
+            )
+            data_dir = json.loads(proc.stdout).get("data_dir") if proc.returncode == 0 else None
+            name = os.path.basename(str(data_dir).rstrip("/\\")) if data_dir else ""
+            flavour = name if name in HOST_CLI_FLAVOURS else flavour
+        except (OSError, subprocess.SubprocessError, ValueError, AttributeError):
+            pass
+        _host_cli_flavour.append(flavour)
+    return _host_cli_flavour[0]
 
 
 class PosixShell:
@@ -4059,6 +4116,9 @@ class PosixShell:
 
     def origin(self, repo: str) -> str:
         return f"git -C {shlex.quote(repo)} remote get-url origin"
+
+    def thurbox_cli(self, args: str) -> str:
+        return HOST_CLI_POSIX.replace("{flavour}", host_cli_flavour()).replace("{args}", args)
 
 
 def ps_quote(s: str) -> str:
@@ -4229,6 +4289,10 @@ class PowerShell:
 
     def origin(self, repo: str) -> str:
         return f"& git -C {ps_quote(repo)} remote get-url origin\n"
+
+    def thurbox_cli(self, args: str) -> str:
+        return (HOST_CLI_POWERSHELL.replace("{flavour}", host_cli_flavour()).replace("{args}", args)
+                .replace("__NO_CLI__", ps_quote(NO_HOST_CLI)))
 
 
 POSIX = PosixShell()
@@ -7081,7 +7145,7 @@ def host_session_snapshot(name: str) -> tuple[dict | None, dict | None, str]:
     entry, why = host_entry(name)
     if not entry:
         return None, None, why
-    proc = ssh_run(entry, "thurbox-cli session list --json")
+    proc = ssh_run(entry, host_shell(entry).thurbox_cli("session list --json"))
     if proc.returncode != 0:
         return None, entry, first_line(proc) or f"thurbox-cli session list on host {name} failed"
     sessions, why = sessions_from_json_text(

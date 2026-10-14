@@ -15,6 +15,7 @@ The `ssh` stub is a real fake host: what the push writes, the fetch reads.
 
 import json
 import os
+import stat
 
 import pytest
 import yaml
@@ -203,6 +204,47 @@ def test_a_remote_result_comes_back_and_its_session_outlives_a_down_host(
     expect(q("reap").out, "kept", RSESSION, "manual-on-host", WORKTREE)
     refute(deletions(stubs), RSESSION)
     (stubs.root / "ssh-state" / "me@devbox.session-list.json").unlink()
+    expect(q("reap").out, "reaped", RSESSION)
+    expect(deletions(stubs), RSESSION)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the fake host's login shell is a real /bin/sh, which Windows has not got")
+def test_reap_finds_the_cli_thurbox_provisioned_on_the_host_off_path(
+    devbox_dispatched, devbox_task, hosts
+):
+    """thurbox puts its own `thurbox-cli` on a host under its data directory,
+    deliberately NOT on `PATH`, and drives every remote session through it. A
+    reap that asked the host for `thurbox-cli` by bare name read "not found" on
+    exactly the hosts thurbox provisioned, and kept every session there for
+    good. This host has a real shell, the CLI where thurbox puts it, and none
+    on any `PATH`."""
+    stubs = hosts.stubs
+    write(hosts.remote("me@devbox", WORKTREE + ".fleet") / "result.md",
+          "---\noutcome: shipped\nartifact: https://github.com/remote-owner/app/pull/4242\n---\nDone.\n")
+    stubs.pipeline_pr(4242, "fix/build-on-devbox")
+    hosts.session(RSESSION, name="Build it on devbox", state="idle", agent="claude",
+                  backend_type="ssh:devbox", cwd=WORKTREE,
+                  worktrees=[{"repo_path": "/srv/code/app", "worktree_path": WORKTREE,
+                              "branch": "fix/build-on-devbox", "created_by_thurbox": True}])
+    expect(q("collect").out, "shipped")
+    stubs.pr_state(4242, "MERGED")
+
+    hosts.flag("me@devbox", "realshell")
+    home = hosts.state / "me@devbox.home"
+    listing = json.dumps([{"id": RSESSION, "cwd": WORKTREE, "backend_type": "local:tmux"}])
+    cli = home / ".local" / "share" / "thurbox" / "bin" / "thurbox-cli"
+
+    # No CLI anywhere: a named keep, never a guess that the host is empty. The
+    # fake host's shell is THIS machine's, so a thurbox-cli installed here
+    # system-wide would answer for it; that half is only provable without one.
+    if not any(os.path.exists(f"{d}/thurbox-cli") for d in ("/usr/local/bin", "/usr/bin", "/bin")):
+        out = q("reap").out
+        expect(out, "kept", "no thurbox-cli on the host")
+        refute(deletions(stubs), RSESSION)
+
+    write(cli, "#!/bin/sh\n[ \"$1 $2 $3\" = 'session list --json' ] || exit 2\n"
+               f"cat <<'EOF'\n{listing}\nEOF\n")
+    cli.chmod(cli.stat().st_mode | stat.S_IXUSR)
     expect(q("reap").out, "reaped", RSESSION)
     expect(deletions(stubs), RSESSION)
 

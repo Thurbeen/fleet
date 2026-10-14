@@ -95,7 +95,7 @@ def main(argv: list) -> int:
             return 1
         with open(target, "rb") as fh:
             print(base64.b64encode(fh.read()).decode("ascii"))
-    elif "thurbox-cli session list" in body:
+    elif "session list --json" in body:
         listing = os.path.join(state, f"{dest}.session-list.json")
         if os.path.isfile(listing):
             with open(listing, encoding="utf-8") as fh:

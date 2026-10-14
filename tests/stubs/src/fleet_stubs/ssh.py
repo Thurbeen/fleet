@@ -15,7 +15,8 @@ first.
 PowerShell 5 sshd answers. `.origin` holds what `git remote get-url origin`
 prints there. `mkdir -p`/`chmod`, `rm -f`/`rmdir` and `cat >` behave as a
 shell does: a write into a directory that does not exist fails. `.realshell` RUNS the script with `sh -c`, the way
-sshd runs an account's login shell, with HOME at `<dest>.home` — POSIX only.
+sshd runs an account's login shell, with HOME at `<dest>.home` and only the
+system's PATH — POSIX only.
 """
 
 import os
@@ -49,7 +50,9 @@ def main() -> int:
     if flag("windows"):
         return windows_host.main([str(remotes), str(state), dest, script])
     if flag("realshell"):
-        env = dict(os.environ, HOME=str(state / f"{dest}.home"))
+        # The system's PATH and not this one: the stubs on it are THIS
+        # machine's tools, and another host has none of them.
+        env = dict(os.environ, HOME=str(state / f"{dest}.home"), PATH="/usr/bin:/bin")
         return subprocess.run(["/bin/sh", "-c", script], env=env).returncode
 
     if "pane_probe.py" in script or "context.py" in script:
@@ -110,7 +113,7 @@ def main() -> int:
             sys.stderr.write(f"cat: {path}: No such file or directory\n")
             return 1
         sys.stdout.buffer.write(target.read_bytes())
-    elif "thurbox-cli session list" in script:
+    elif "session list --json" in script:
         listing = state / f"{dest}.session-list.json"
         if listing.is_file():
             sys.stdout.write(listing.read_text(encoding="utf-8"))
