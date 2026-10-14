@@ -20,7 +20,9 @@ that is:
   not a task's      held by no queue task, as its worker or as a fixer sent
                     for it (`sessions.py`'s `orphans` reads "held" the same
                     way). Those are already told, by the task's own road: a
-                    fix brief into the worker, or a fixer on the branch;
+                    fix brief into the worker, or a fixer on the branch. For the
+                    same reason a PR a task records is never an adopted
+                    session's, even when a helper sits on that branch;
   not another       descended from no OTHER fleet's lead or conductor. A
   fleet's           second fleet on this machine has its own queue and its own
                     shepherd, which tells its sessions itself; this one telling
@@ -670,7 +672,7 @@ def _listed_prs(q, repo, listings: dict, readable: dict) -> list | None:
 
 
 def _shepherd_session(q, args, sid: str, row: dict, prev: dict, listings: dict, readable: dict, live: set,
-                      merged_by_pass: dict, rows: list) -> tuple[list, set, str]:
+                      merged_by_pass: dict, rows: list, owned: set) -> tuple[list, set, str]:
     """(fresh entries, branches, why a worktree could not be read) for one adoptable session."""
     name = str(row.get("name") or "")
     prev_by_url = {e.get("url"): e for e in prev.get("prs") or []}
@@ -683,7 +685,9 @@ def _shepherd_session(q, args, sid: str, row: dict, prev: dict, listings: dict, 
         if crs is None:
             continue
         for cr in crs:
-            if cr.head_branch == branch and cr.head_is_ours is not False:
+            # A PR a task records goes by the task's road (its worker, else a fixer),
+            # so a helper session on the same branch is not told it as well.
+            if cr.head_branch == branch and cr.head_is_ours is not False and cr.url not in owned:
                 entry = shepherd_adopted(q, args, sid, cr, prev_by_url.get(cr.url) or {}, live, merged_by_pass)
                 fresh.append(entry)
                 rows.append({"session": sid, "name": name, "pr": cr.url, "repo": cr.repo.qualified,
@@ -724,6 +728,7 @@ def adopt(q, args, snapshot: dict, held: dict, prev_sessions: dict, listings: di
     a_lead, foreign = control_check(q, snapshot)
     live = set(snapshot)
     merged_by_pass = {cr.url: row.get("note") or "" for cr, _t, row in observed if row["action"] == "merged"}
+    owned = {cr.url for cr, task, _row in observed if task is not None}
     rows: list = []
     for sid, row in sorted(snapshot.items(), key=lambda kv: str(kv[1].get("name") or kv[0])):
         name = str(row.get("name") or "")
@@ -731,7 +736,7 @@ def adopt(q, args, snapshot: dict, held: dict, prev_sessions: dict, listings: di
             continue
         prev = prev_sessions.get(sid) or {}
         fresh, branches, unread = _shepherd_session(q, args, sid, row, prev, listings, readable, live,
-                                                    merged_by_pass, rows)
+                                                    merged_by_pass, rows, owned)
         prs = _adopted_prs(q, prev, fresh, readable, branches, unread)
         # Adopted on an OPEN pull request; one already followed keeps how it ended.
         if fresh or (prev.get("adopted") and prs):

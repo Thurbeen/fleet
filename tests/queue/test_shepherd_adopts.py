@@ -294,6 +294,26 @@ def test_a_child_of_this_queues_worker_is_told_itself(outside, shep, stubs, tmp_
     assert OUTSIDE in store()["sessions"]
 
 
+def test_a_child_on_the_workers_own_branch_is_not_told_about_the_tasks_pr(shep, stubs, tmp_path):
+    """The task's PR goes to the task's worker by the task's road, and to nobody else as well."""
+    held = checkout(tmp_path / "held", "main-ish")
+    topic = ok(q("topic", "add", "adoption", "--title", "Adoption",
+                 "--prompt", "shepherd outside sessions")).stdout.strip()
+    ok(q("add", topic, "held", "--title", "A task's own worker", "--repo", str(held),
+         "--branch", "feat/held", "--number", "01"))
+    git("checkout", "-q", "-b", "feat/held", cwd=held)
+    session(stubs, HELD, "queued worker", "idle", held, "feat/held")
+    ok(q("attach", f"{topic}/01-held", HELD))
+    helper = checkout(tmp_path / "helper", "feat/held")
+    session(stubs, OUTSIDE, "the worker's helper", "idle", helper, "feat/held")
+    session_row(stubs, OUTSIDE, parent_session_id=HELD)
+    shep.pr(202, headRefName="feat/held", body="", statusCheckRollup=[FAILED])
+    out = q("shepherd").out
+    refute("\n".join(sends(stubs, OUTSIDE)), "PR #202")
+    assert OUTSIDE not in store()["sessions"], out
+    assert store()["sessions"][HELD]["prs"][0]["number"] == 202
+
+
 def test_a_parent_cycle_does_not_hang(outside, shep, stubs):
     session(stubs, MIDDLE, "loop", "idle", None)
     session_row(stubs, MIDDLE, parent_session_id=OUTSIDE)
