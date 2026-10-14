@@ -1287,12 +1287,13 @@ def cmd_serve(cfg: Config) -> int:
     on disk — its manager restarts it on the new bytes — or, tests only, when
     FLEET_RECONCILE_PARENT_PID is gone; everything else is a wait, because an
     exit is what its manager restarts."""
+    # What it imported at boot, for the takeover before its first pass, which
+    # has recorded nothing yet. Before the guard: that runs a whole `fleet
+    # queue`, and an edit landing during it was read as the code serve runs.
+    boot = loaded_code()
     if not guard_control_plane(cfg):
         return 1
     cfg.served = True
-    # What it imported at boot, for the takeover before its first pass, which
-    # has recorded nothing yet.
-    boot = loaded_code()
     while not (cfg.parent and not fleet_platform.alive(cfg.parent)):
         changed = code_changed(cfg.code or boot)
         if changed:

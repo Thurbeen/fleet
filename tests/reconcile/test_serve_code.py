@@ -95,12 +95,21 @@ def test_serve_taking_over_records_the_code_it_runs_as_its_own(recon, here):
         end(proc)
 
 
-def test_serve_that_waited_before_its_first_tick_does_not_take_over_on_older_code(recon, here):
-    """It never ticked, so it recorded nothing — but it imported its modules at boot."""
+def test_serve_that_waited_before_its_first_tick_does_not_take_over_on_older_code(recon, here, monkeypatch):
+    """It never ticked, so it recorded nothing — but it imported its modules at boot.
+
+    The edit lands while its control-plane guard runs — a whole `fleet queue`
+    process, which on Windows takes long enough that a test or an update often
+    lands inside it. The guard is the first thing serve asks after importing,
+    so its call is also the proof serve booted: `asked down` is not, since the
+    flag was written before serve started."""
+    held = recon.root / "guard.pid"
+    monkeypatch.setenv("RECON_SLOW", "root:3")
+    monkeypatch.setenv("RECON_SLOW_PID", str(held))
     assert reconcile(here, "stop").code == 0
     proc = serve(here)
     try:
-        assert wait_for(lambda: "asked down" in reconcile(here, "status").out)
+        assert wait_for(lambda: held.exists()), "serve never asked its control-plane guard"
         edit(here / "scripts" / "lib" / "reconcile.py")
         (recon.rt / "down").unlink()
 
