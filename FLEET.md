@@ -187,8 +187,9 @@ opens and closes it. It is a READER over the same files, so it never disagrees
 with `list` and never writes anything.
 
 `.agents/skills/fleet-queue/` is the driving surface for 1–4, 6 and 8, and
-`.agents/skills/thurbox-session/` for the mechanics of one session — spawning,
-naming, trust, the state vocabulary, cleanup. Use both, under the two roles
+`.agents/skills/thurbox-session/` the reference for the mechanics of one
+session — spawning, naming, trust, the state vocabulary, cleanup — and never
+the way work enters. Use both, under the two roles
 above: `.agents/skills/fleet-intake/` and `.agents/skills/fleet-conductor/`.
 (`.claude/skills` points at `.agents/skills`, so every CLI loads the one
 copy.)
@@ -276,7 +277,15 @@ spent window is spent, and that is when it comes back.
 
 **Every working or analysis task runs in a worker session** — debugging, "find
 out why X", reading through another repository, any edit outside this control
-plane. However small it looks.
+plane. However small it looks. **A worker with a deliverable is a queue task**,
+added through `fleet-intake`, never a `thurbox-cli session create` of your
+own: a hand-spawned worker's pull request is one fleet tracks nothing about.
+Spawn by hand only a session with no deliverable — a discussion, an
+investigation that ends in a conversation — or one on a project fleet does not
+cover. Such a session is an origin like you: when it wants work done, it hands
+that work to fleet through `fleet-intake` too, with
+`uv run --project <this checkout>`, and the outcome comes back to it, not
+you.
 
 **These are dispatch, every time:** changing infrastructure, a repository or
 the machine; and "why did job X fail" — a red pipeline, a CI log, a forge's

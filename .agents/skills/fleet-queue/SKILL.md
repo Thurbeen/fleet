@@ -12,8 +12,11 @@ becomes **tasks** on disk, each with its own brief. `uv run fleet queue` owns
 all of it: `scripts/lib/queue.py`'s docstring is the model, and `--help` on any
 verb is that verb's flags. This skill is how to think while driving it.
 
-`thurbox-session` is how ONE session is spawned, prompted and cleaned up, and
-all of it still applies. This skill is the layer above: what work exists, what
+`fleet-intake` is how any session — not only this one — hands fleet work,
+with `uv run --project <checkout>` from outside it. `thurbox-session` is the
+reference for how ONE session is spawned, prompted and cleaned up, and all of
+it still applies; `dispatch` runs it, so a task's worker is never spawned by
+hand. This skill is the layer above: what work exists, what
 order it goes in, and how you find out it finished. Where they disagree about
 completion, this one wins: **workers write result files; they do not send mail.**
 
@@ -368,8 +371,10 @@ when its holder dies, so there is nothing stale to clear. A dispatcher that
 died between `session create` and that save left a session no record names;
 the next `dispatch` finds it — a local session under the task's name, on its
 branch in every repository the task spans — and binds it the way `attach` does below instead of failing on the
-duplicate name, so its brief is never typed twice. A session you spawned by hand for a task is bound to it
-with `fleet queue attach`. One whose agent reports working, blocked or done is
+duplicate name, so its brief is never typed twice. A session that already
+holds a task's work without `dispatch` having spawned it — one started before
+the task was recorded — is bound to it with `fleet queue attach`; never spawn
+one by hand to get there. One whose agent reports working, blocked or done is
 recorded prompted, so the bare `prompt` sweep never types the brief into work
 in progress. Idle can mean a fresh session, so it stays unprompted by default;
 `attach --prompted` confirms it already has its work, and `attach --unprompted`

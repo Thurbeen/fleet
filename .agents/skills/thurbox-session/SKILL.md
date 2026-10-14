@@ -1,21 +1,38 @@
 ---
 name: thurbox-session
-description: Spawn and drive a thurbox worker session with thurbox-cli. Use whenever the control plane is asked to do new work in a real repo. Covers single-repo and multi-repo (--add-repo / --add-dir) sessions, idempotent re-spawns (--on-existing), agent settings (--env / --command via session profiles), prompting, completion detection, and cleanup.
+description: 'Reference for driving and reading ONE thurbox session with thurbox-cli. Not an entry point for work: work that ends in a PR, a push, a note or a served document goes to fleet through fleet-intake. Use to read a worker''s state, send it a line, capture or clean it up, or spawn a session that has no deliverable (a discussion, an investigation that ends in a conversation) or works on a project fleet does not cover. Covers single-repo and multi-repo (--add-repo / --add-dir) sessions, idempotent re-spawns (--on-existing), agent settings (--env / --command via session profiles), prompting, completion detection, and cleanup.'
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Glob, Grep
 ---
 
 ## thurbox-session
 
-FLEET.md's **What you delegate** owns whether a task runs inline or here. This
-skill is the reference for driving one session once you have decided to spawn
-it. The control plane holds the plan and the run log; workers hold the
-branches. For more than one unit of work, drive it through `uv run fleet
-queue` and the `fleet-queue` skill, which owns the records, the ordering and
-both halves of completion; the commands here are what it runs underneath, and
-what you run for a session you spawn by hand.
+This is a REFERENCE for one session — spawning mechanics, the trust dialog,
+sending a line, the state table, capture, cleanup — and not a way in for
+work. **Work that ends in an artifact — a pull request, a push, a note, a
+served document — goes to fleet through `fleet-intake`**, from whatever
+session wants it done: Mission Control, a discussion session, a worker that
+needs more work done elsewhere. That session becomes the task's origin, so the
+outcome and the worker's questions come back to it; `fleet queue dispatch`
+then runs everything below for you, and `fleet-queue` owns the records, the
+ordering and both halves of completion.
+
+Spawn a session yourself only when it has **no deliverable** — a discussion,
+an investigation that ends in a conversation — or when it works on a project
+fleet does not cover: neither in the registry nor a local repository fleet
+works in. A hand-spawned session that produces a pull request is one fleet
+tracks nothing about — no task, no outcome to its origin, no reap. Not being
+in the control-plane checkout is no reason to spawn by hand:
+`uv run --project <checkout> fleet queue …` works from anywhere
+(`fleet-intake` §1 says how to find `<checkout>`).
+
+The other readers of this skill: the conductor reads worker state with §4a,
+and `diagnose-machine` and `review-prs` spawn their own sessions with §1.
 
 ## Run loop
+
+What `fleet queue dispatch` and `collect` run for each task. A hand-spawned
+session with no deliverable needs only steps 2–3, then §4a and §5.
 
 1. Sync the base branch (§1). `uv run fleet queue topic add` opens the run log.
 2. `session create` with an `--on-existing` mode (§1c) and the run's profile
@@ -304,8 +321,8 @@ every turn, including the one where it gave up; a lead that treats "turn
 ended" as "task done" closes tasks that failed. `uv run fleet queue` is
 exactly this pair (`watch` closes nothing; `collect` reads the result file).
 `orchestration/queue/POLICY.md`'s **Reporting back** is the result contract
-the queue scaffolds; for a hand-spawned worker, end the brief with it
-yourself. `not-applicable` is why a file beats polling `gh pr list`: the
+the queue scaffolds; for a hand-spawned session whose conclusion you mean to
+read rather than hear, end its prompt with it yourself. `not-applicable` is why a file beats polling `gh pr list`: the
 absence of a pull request cannot be told from "still working", but a worker
 saying so can.
 
@@ -429,7 +446,8 @@ instant and the branch head, and `list` / `show` print the comparison
 ## 5. Collect and clean up
 
 For a session the queue dispatched, its facts refresh themselves in the run
-log; for one you spawned by hand, note it there yourself.
+log; for a session you spawned by hand (one with no deliverable), note it
+there yourself if the run has a log.
 
 ```bash
 thurbox-cli session restart <uuid>          # kill window, re-spawn with --resume

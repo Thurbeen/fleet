@@ -233,9 +233,12 @@ names every path and the reason for each.
   is theirs, stays ignored, and is pointed at by every brief scaffolded while
   it exists and is not empty. **The queue belongs to the control-plane
   checkout — the clone the Mission Control session opens — and not to whatever
-  directory your shell is in**, so a second clone of this repo cannot
-  silently fork it: `topic add` and `add` refuse there, everything else
-  warns, and `fleet queue root` names the directory in use.
+  directory your shell is in, and any session creates tasks in it from
+  anywhere** with `uv run --project <that checkout> fleet queue …`, which is
+  `fleet-intake`'s job. Only fleet run from ANOTHER clone or worktree of this
+  repo is turned away, so it cannot silently fork the queue: `topic add` and
+  `add` refuse and print that `--project` command, everything else warns, and
+  `fleet queue root` names the directory in use.
 - `scripts/lib/forge.py` — the FORGE seam. Everything fleet knows about a
   change request — a pull request on GitHub, a merge request on GitLab — it
   asks this module for; `scripts/lib/queue.py` runs no forge CLI itself and
@@ -393,11 +396,14 @@ names every path and the reason for each.
   `.codex/` or `.opencode/skills`: every agent-specific path must keep pointing
   at the canonical tree. Nine skills live there: `fleet-queue` (the
   queue: intake, ordering, dispatch, and the two halves of completion),
-  `fleet-intake` (what any ORIGIN does to hand fleet work: topic, briefs, its
-  own first dispatch, and the fuel rule that leaves the rest queued),
+  `fleet-intake` (the one entry point for work, from any session: topic,
+  briefs, its own first dispatch, and the fuel rule that leaves the rest
+  queued),
   `fleet-conductor` (what the CONDUCTOR does with the reconciler's notices,
   and what it must ask an origin instead),
-  `thurbox-session` (driving one worker session), `fleet-onboarding` (a fresh
+  `thurbox-session` (a reference for driving and reading one session, and
+  for spawning one with no deliverable — never the way work enters),
+  `fleet-onboarding` (a fresh
   clone to a working control plane: dependencies, owners, registry, extension,
   the pane on screen, the loop up),
   `fleet-pane` (getting the TUI queue pane onto a screen, and diagnosing one
@@ -619,8 +625,10 @@ costs one pass and never the loop. Four things about it are load-bearing:
   Codex workers get no Stop hook, and rely on the timer and `plan`'s stalled set.
 
 `.agents/skills/fleet-queue/` is the driving surface for 1–3 and 5–8, and
-`.agents/skills/thurbox-session/` for one session: spawning, prompting, cleanup.
-Use both. In particular, read the latter's **session state** section before you
+`.agents/skills/thurbox-session/` the reference for one session: spawning,
+prompting, cleanup. Work with a deliverable enters through
+`.agents/skills/fleet-intake/` from whichever session wants it, and is never
+hand-spawned. Read `thurbox-session`'s **session state** section before you
 judge whether a worker is still working: `idle` means the agent said it is at
 rest, and `running`, `uncovered` and `unreported` each mean something else. Its
 §1c and §1d cover the two choices every spawn makes — what a name collision
