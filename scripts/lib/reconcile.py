@@ -66,7 +66,11 @@ had renamed away, and every notice failed for eight hours while `status` said
 "up". So the loop records the code it runs (`code.json`: each module of this
 checkout it loaded, by mtime and size) and, every pass, compares it with the
 disk: a change hands it to a fresh `reconcile ensure`, detached and once, which
-brings it down at a boundary and starts the new code. `ensure` and `start`
+brings it down at a boundary and starts the new code. Under `serve` a change is
+an EXIT instead: its manager starts the new code, and a detached replacement
+would be a loop no manager restarts. Whichever process takes the lock writes
+the record as its own, so `serve` taking over from a dead loop on the modules
+it already holds is not read as a loop that keeps none. `ensure` and `start`
 replace an up loop whose record disagrees with the disk, or that keeps none,
 rather than adopting it; `status` names one and exits 1. Children need none of
 this: each pass starts them afresh, from the new bytes.
@@ -334,6 +338,8 @@ class Config:
     # {checkout-relative path: [mtime_ns, size]} of every module this process
     # runs from the checkout, taken once its loop starts (`record_code`).
     code: dict = field(default_factory=dict)
+    # Run by `serve`: a code change ends the process, for its manager to restart.
+    served: bool = False
 
     @classmethod
     def from_env(cls) -> Config:
@@ -569,9 +575,10 @@ def code_changed(files: dict) -> list[str]:
     return changed
 
 
-def record_code(cfg: Config) -> dict:
-    """Take the loop's code as it starts, and leave it where `status` reads it."""
-    files = loaded_code()
+def record_code(cfg: Config, files: dict | None = None) -> dict:
+    """Take the loop's code as it starts — or keep `files`, the code it already
+    holds — and leave it, under this pid, where `status` reads it."""
+    files = loaded_code() if files is None else files
     try:
         fleet_platform.write_record(cfg.path(CODE_FILE), json.dumps(
             {"pid": os.getpid(), "started": now(), "files": files}, ensure_ascii=False) + "\n")
@@ -981,6 +988,9 @@ def tick(cfg: Config) -> int:
     if not cfg.code:
         cfg.code = record_code(cfg)
         remove(cfg.path(FAILURES_FILE))
+    elif cfg.served:
+        # `serve` taking over: the record is the dead loop's, under its pid.
+        record_code(cfg, cfg.code)
     replacing = False
 
     last = {"collect": float("-inf"), "shepherd": float("-inf"), "refuel": float("-inf"), "sync": float("-inf")}
@@ -997,6 +1007,9 @@ def tick(cfg: Config) -> int:
         # be cut off at the stop's grace — and goes on reconciling with what it
         # has only if nothing came for it.
         changed = [] if replacing else code_changed(cfg.code)
+        if changed and cfg.served:
+            log(cfg, f"its own code changed on disk ({shown(changed)}); serve exits for its manager to restart")
+            return 0
         if changed:
             replace_me(cfg, changed)
             replacing = True
@@ -1266,12 +1279,16 @@ def cmd_ensure_if_lead() -> int:
 def cmd_serve(cfg: Config) -> int:
     """The loop in the foreground, for a service manager: waits, never fights.
 
-    It exits only when the control plane guard refuses, or — tests only — when
+    It exits when the control plane guard refuses, when its own code changed
+    on disk — its manager restarts it on the new bytes — or, tests only, when
     FLEET_RECONCILE_PARENT_PID is gone; everything else is a wait, because an
     exit is what its manager restarts."""
     if not guard_control_plane(cfg):
         return 1
+    cfg.served = True
     while not (cfg.parent and not fleet_platform.alive(cfg.parent)):
+        if cfg.code and code_changed(cfg.code):
+            return 0
         if not asked_down(cfg) and not lock_held(cfg) and stop_legacy(cfg):
             with_lock(cfg, supervise)
         time.sleep(SERVE_POLL_SECS)
