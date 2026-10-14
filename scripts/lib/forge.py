@@ -1097,7 +1097,9 @@ class GitHubForge(Forge):
         so judging every entry fails a check that has since passed. A run is
         placed by when it STARTED, so a newer run still in progress replaces
         an older finished one and reads as pending. ISO-8601 UTC stamps sort
-        as strings; with none, the later entry in the list wins.
+        as strings; with none, the later entry in the list wins — except a
+        CheckRun that has not finished: a re-queued run GitHub has not started
+        yet carries no stamp at all, and it is the newest run there is.
         """
         latest = {}
         for c in rollup or []:
@@ -1105,6 +1107,8 @@ class GitHubForge(Forge):
                 continue
             key = (c.get("workflowName") or "", c.get("name") or c.get("context") or "")
             at = str(c.get("startedAt") or c.get("createdAt") or c.get("completedAt") or "")
+            if not at and "state" not in c and str(c.get("status") or "").upper() != "COMPLETED":
+                at = "\uffff"
             if key not in latest or at >= latest[key][0]:
                 latest[key] = (at, c)
         return [c for _at, c in latest.values()]

@@ -133,6 +133,13 @@ def test_a_check_is_judged_by_its_latest_run(ttopic, shep):
             statusCheckRollup=[run("FAILURE", "2026-09-13T06:22:30Z"), run("SUCCESS", "2026-09-13T06:06:55Z")])
     shep.pr(205, owner="Thurbeen/thurbox", headRefName="tbx/reruns-205",
             statusCheckRollup=[run("SUCCESS", "2026-09-13T06:06:55Z"), run(None, "2026-09-13T06:22:30Z")])
+    # A re-queued run GitHub has not started yet carries no stamp at all, and is still the newer run.
+    queued = {"__typename": "CheckRun", "name": "PR Title", "status": "QUEUED", "conclusion": None,
+              "startedAt": None, "completedAt": None}
+    shep.pr(206, owner="Thurbeen/thurbox", headRefName="tbx/reruns-206",
+            statusCheckRollup=[run("SUCCESS", "2026-09-13T06:06:55Z"), queued])
+    shep.pr(207, owner="Thurbeen/thurbox", headRefName="tbx/reruns-207",
+            statusCheckRollup=[queued, run("SUCCESS", "2026-09-13T06:06:55Z")])
 
     lines = q("shepherd", "--topic", ttopic, "--dry-run").out.splitlines()
 
@@ -147,6 +154,10 @@ def test_a_check_is_judged_by_its_latest_run(ttopic, shep):
     # A newer run still in progress is pending, never the older run's verdict.
     expect(row(205), "checks still running")
     refute(row(205), "ready: ")
+    # So is one queued with no stamp yet, in either order.
+    for n in (206, 207):
+        expect(row(n), "checks still running")
+        refute(row(n), "ready: ")
 
 
 FENCED = r'''
