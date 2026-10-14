@@ -22,9 +22,12 @@ def lifecycle(stubs, tmp_path, queue_dir):
     gh_path = stubs.root / "scripts" / "gh.py"
     gh_source = gh_path.read_text(encoding="utf-8")
     # Real gh returns only requested fields; an over-complete response hides
-    # missing ownership and author data in the single-PR reader.
+    # missing ownership and author data in the single-PR reader. A reworded
+    # stub would make the rewrite a silent no-op, so its absence is an error.
+    whole = 'sys.stdout.write(doc.read_text(encoding="utf-8"))'
+    assert gh_source.count(whole) == 1, "the gh stub no longer answers `pr view` with the whole document"
     stubs.tool("gh", gh_source.replace(
-        'sys.stdout.write(doc.read_text(encoding="utf-8"))',
+        whole,
         'fields = args[args.index("--json") + 1].split(",")\n'
         '        print(json.dumps({k: v for k, v in d.items() if k in fields}))',
     ))

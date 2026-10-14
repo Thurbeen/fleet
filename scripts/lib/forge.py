@@ -623,6 +623,10 @@ GH_STATUS_FIELDS = "number,url,title,headRefName,state,statusCheckRollup"
 # are in there because those two print them: a field not requested here is a
 # field gh never sends, and a pull request read without its checks reads as
 # one no check has reported on, which `watch` waits on until it times out.
+# The owner, cross-repository and author fields are `GH_FIELDS`' safety
+# fields: recording an independent review and the merge reread both decide
+# from this one read whether the pull request is ours, and without them every
+# pull request reads as "could not tell".
 GH_ONE_FIELDS = (
     "title,body,headRefOid,headRefName,baseRefName,state,isDraft,mergeable,"
     "reviewDecision,statusCheckRollup,commits,mergeCommit,headRepositoryOwner,"
