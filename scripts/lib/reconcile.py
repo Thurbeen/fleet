@@ -1153,11 +1153,16 @@ def guard_control_plane(cfg: Config) -> bool:
 
 
 def replace(cfg: Config, why: str) -> bool:
-    """Bring the running loop down at its next boundary, leaving no flag behind."""
+    """Bring the running loop down at its next boundary, leaving no flag of its own behind.
+
+    Only its OWN flag: a `stop` that lands while it waits writes the operator's,
+    which is theirs to clear, and `come_up` then launches nothing."""
     os.makedirs(cfg.rt, exist_ok=True)
-    fleet_platform.write_record(cfg.path("down"), f"{why} {now()} by {who()}\n")
+    flag = f"{why} {now()} by {who()}\n"
+    fleet_platform.write_record(cfg.path("down"), flag)
     stopped = bring_down(cfg)
-    remove(cfg.path("down"))
+    if read(cfg.path("down")) == flag:
+        remove(cfg.path("down"))
     return stopped
 
 
@@ -1182,6 +1187,11 @@ def come_up(cfg: Config) -> int:
             return 1
     elif not guard_control_plane(cfg):
         return 1
+    # Asked again: a `stop` may have landed while a replacement brought the
+    # old loop down.
+    if asked_down(cfg):
+        say("fleet reconciler: asked down meanwhile, and staying down")
+        return 0
     if not launch(cfg):
         return 1
     say(f"fleet reconciler: ticking (pid {pid_of(cfg)})")

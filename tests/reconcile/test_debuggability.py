@@ -178,3 +178,27 @@ def test_each_notice_decision_is_one_greppable_line(recon, stubs):
     recon.lead(None)
     recon.ready("alpha/01-first", "beta/02-second", "gamma/03-third")
     assert wait_for(lambda: "notice ready → Gate Control waiting" in recon.log(), 30), recon.log()
+
+
+def test_a_stop_during_a_replacement_is_not_undone(recon, here, monkeypatch, capsys):
+    """`replace` writes a down flag of its own to bring the old loop down. An
+    operator's `stop` landing in that wait overwrites it, and is theirs: the
+    replacement leaves it standing and launches nothing."""
+    from harness import lib
+
+    assert reconcile(here, "ensure").code == 0
+    age_the_record(recon)
+    mod = lib("reconcile.py")
+    real = mod.bring_down
+
+    def stopped_meanwhile(cfg):
+        (recon.rt / "down").write_text("stopped by the operator\n", encoding="utf-8")
+        return real(cfg)
+
+    monkeypatch.setattr(mod, "bring_down", stopped_meanwhile)
+
+    mod.main(["ensure"])
+
+    expect(capsys.readouterr().out, "staying down")
+    assert (recon.rt / "down").read_text(encoding="utf-8") == "stopped by the operator\n"
+    assert not wait_for(lambda: mod.running(mod.Config.from_env()), 3), "a new loop launched over the stop"
