@@ -5514,9 +5514,9 @@ def cmd_attach(args) -> int:
     `dispatched`. A concluded task is refused, naming its state. Binding it
     would write `dispatched` over the verdict, the next `collect` would close
     it again on the same result.md, and its origin would be told a second time
-    (#252) — the transitions below say nothing re-opens. `attach()` itself stays
-    unguarded: it is also dispatch's binder, which only ever hands it a
-    `queued` task.
+    (#252), where the transitions beside `reap` say nothing re-opens.
+    `attach()` stays unguarded: it is also dispatch's binder, which only ever
+    hands it a `queued` task.
     """
     q = Queue(queue_root())
     task = q.get(args.ref)
