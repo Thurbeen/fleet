@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Tell the conductor that ready work exists which nothing will dispatch, a worker
 stalled, was never briefed, or asked with nowhere else to ask, review is owed,
-or a sync needs a hand.
+a pull request nobody is told about needs a hand, or a sync needs a hand.
 
 THE CONDUCTOR is the session that keeps the work moving. A fleet whose
 `fleet.conf` says `CONDUCTOR=on` runs one of its own — the second
@@ -98,7 +98,21 @@ a finished turn with no assessment, and findings with no existing fixer.
 Those are told under the same safe delivery and conversation rules. The
 reconciler never replaces the recipient or declares a review clean.
 
-WHOSE NOTICE IT IS. All five operational notices are the conductor's,
+A PULL REQUEST NOBODY IS TOLD ABOUT IS THE SILENCE AFTER THE WORK. `shepherd`
+tells a task's session, or a session it adopted, when its pull request goes
+conflicting or red — and nobody else, ever. On 2026-10-14 a session spawned
+under a hand-made session under the lead opened a pull request that went
+CONFLICTING; shepherd may not adopt it (it descends from a lead), no task
+recorded it, and the conductor, asked, said no notice had reached it. Which
+was true. `plan --json`'s `unwatched_prs` names those — open, on a local
+session's own branch, and conflicting, failing, changes requested or threads
+open; `shepherd_store.py`'s UNWATCHED owns the judgement — keyed by PR,
+condition and head, and this carries them as a sixth set under the same
+rules. Telling the conductor is not sending the session a fixer: shepherd's
+rules about who it messages are unchanged, and what to do is the conductor's
+to work out, or its origin's.
+
+WHOSE NOTICE IT IS. All six operational notices are the conductor's,
 whatever a task's origin: `owners.conf` no longer routes them to an owner
 session. The one exception is a worker's question. A `needs-input` row whose
 task has an origin fleet can reach — a session, an owners rule's session, or a
@@ -203,11 +217,12 @@ STALE_FILE = "stale.json"
 # What the loop remembers, per set: what was typed into the conductor, and what
 # was left in its mailbox while it was mid-turn.
 MEMORY = ("told", "posted", "stalled", "stalled_posted", "unprompted", "unprompted_posted",
-          "needs_input", "needs_input_posted", "reviews", "reviews_posted")
+          "needs_input", "needs_input_posted", "reviews", "reviews_posted", "unwatched", "unwatched_posted")
 # Which of those a new conversation forgets, and which only a new session does:
 # a mailbox note still waiting in the same session's inbox is not news twice.
-TYPED = ("told", "stalled", "unprompted", "needs_input", "reviews")
-POSTED = ("posted", "stalled_posted", "unprompted_posted", "needs_input_posted", "reviews_posted")
+TYPED = ("told", "stalled", "unprompted", "needs_input", "reviews", "unwatched")
+POSTED = ("posted", "stalled_posted", "unprompted_posted", "needs_input_posted", "reviews_posted",
+          "unwatched_posted")
 
 
 # --- what the loop remembers -------------------------------------------------
@@ -570,6 +585,16 @@ def reviews_message(reviews: list) -> str:
     )
 
 
+def unwatched_message(keys: list) -> str:
+    """One line: which pull requests nobody is told about need a hand, and where to read them."""
+    shown = ", ".join(keys[:NAMED])
+    more = "" if len(keys) <= NAMED else f" and {len(keys) - NAMED} more"
+    return (
+        f"fleet reconciler: {len(keys)} pull request(s) on a session's branch need a hand and "
+        f"shepherd tells nobody — {shown}{more}. Look: uv run fleet queue prs"
+    )
+
+
 # --- the pass ----------------------------------------------------------------
 
 
@@ -605,6 +630,8 @@ def main(argv: list) -> int:
         for key in ("stalled", "unprompted")
     )
     reviews = sorted(str(r.get("task")) for r in (plan.get("reviews") or []) if isinstance(r, dict))
+    unwatched = sorted(str(r.get("key")) for r in (plan.get("unwatched_prs") or [])
+                       if isinstance(r, dict) and r.get("key"))
     notes = []
 
     # A QUESTION IS ITS ORIGIN'S. A worker that declared `needs-input` on a task
@@ -622,7 +649,7 @@ def main(argv: list) -> int:
     asking = sorted(str(r.get("task")) for r in rows if str(r.get("task")) not in theirs)
 
     now = {"told": ready, "stalled": stalled, "unprompted": unprompted,
-           "needs_input": asking, "reviews": reviews}
+           "needs_input": asking, "reviews": reviews, "unwatched": unwatched}
     for told, posted in zip(TYPED, POSTED):
         now[posted] = now[told]
 
@@ -668,7 +695,10 @@ SETS = (
     ("unprompted", "unprompted_posted", unprompted_message, "unprompted", "unprompted"),
     ("needs_input", "needs_input_posted", needs_input_message, "asking for input", "needs-input"),
     ("reviews", "reviews_posted", reviews_message, "review-pending", "review"),
+    ("unwatched", "unwatched_posted", unwatched_message, "need a hand", "unwatched-pr"),
 )
+# What a set's members are, where they are not tasks.
+NOUN = {"unwatched": "pull request(s)"}
 
 
 def deliver(now: dict, memory: dict, resolve, unnamed: str) -> tuple[dict, str]:
@@ -714,7 +744,8 @@ def deliver(now: dict, memory: dict, resolve, unnamed: str) -> tuple[dict, str]:
     for told, _, _text in parts:
         memory[told] = now[told]
     named, word = now[news[0][0]], news[0][3]
-    return memory, notice(kinds, name, row, "typed", f"{len(named)} task(s) {word} — {', '.join(named[:NAMED])}")
+    noun = NOUN.get(news[0][0], "task(s)")
+    return memory, notice(kinds, name, row, "typed", f"{len(named)} {noun} {word} — {', '.join(named[:NAMED])}")
 
 
 if __name__ == "__main__":

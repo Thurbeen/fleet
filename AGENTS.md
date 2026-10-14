@@ -275,7 +275,8 @@ names every path and the reason for each.
   on first start. The loop's code is tracked; nothing it writes is.
 - `orchestration/shepherd/` — shepherd's runtime state: `prs.json`, the state
   of every pull request it watches, per session — a task's worker or a session
-  it adopted — and `briefs/`, the files the one-line messages to adopted
+  it adopted — plus, as `unwatched`, every other open one it saw, which
+  nobody is told about; and `briefs/`, the files the one-line messages to adopted
   sessions point at. Written by `fleet queue shepherd`
   (`scripts/lib/shepherd_store.py`, whose docstring is the store's schema),
   read by `fleet queue prs [--json | --records]` (`--records` is the board's
@@ -568,7 +569,8 @@ costs one pass and never the loop. Four things about it are load-bearing:
   `sync-checkout`, which only fast-forwards a clean default branch.
 - **It reconciles; it does not decide.** No dispatch, no cancel, no reorder,
   and it does not re-decide `refuel`'s rule about a spent quota window.
-- **It tells the conductor when the ready set grows, or a worker stalls** —
+- **It tells the conductor when the ready set grows, a worker stalls, or a
+  pull request on a session's branch needs a hand that shepherd tells nobody** —
   the fleet's conductor session while one runs (`CONDUCTOR=on`), the lead
   otherwise and whenever it does not — and once when a sync it ran needs a
   hand (see **Pulling changes in**). A task whose

@@ -424,7 +424,7 @@ def probe_prs(tasks: list) -> dict:
     produce a sentence rather than an empty list that reads as "nothing is
     open". `scripts/lib/forge.py` decides which forge answers.
     """
-    sec: dict = {"unavailable": None, "prs": [], "errors": []}
+    sec: dict = {"unavailable": None, "prs": [], "errors": [], **unwatched_reading()}
     # A remote task's `repo` is a path on its host, so asking a forge CLI here
     # would ask the wrong filesystem and report "no such directory" about a
     # checkout that exists. Skipped and SAID, rather than turned into an error that reads as
@@ -480,6 +480,20 @@ def probe_prs(tasks: list) -> dict:
     sec["errors"] += remote
     sec["prs"].sort(key=lambda p: p["ref"])
     return sec
+
+
+def unwatched_reading() -> dict:
+    """What shepherd's last pass left that this section cannot see: PRs no task holds.
+
+    This section matches change requests to TASKS, so a pull request nobody
+    queued — a hand-made session's, a colleague's — is not on it, and "none
+    open for these tasks" read as "none open" to a conductor asked about one.
+    So it says how many more the shepherd store holds and names the command
+    that lists them. A read of the store only; it asks no forge.
+    """
+    store = fleetqueue.shepherd_store()
+    doc, _why = store.load(fleetqueue)
+    return {"unwatched": len(doc.get("unwatched") or []), "need_a_hand": store.needs_a_hand(doc)}
 
 
 def _task_prs(repo: str, crs: list, owners: list) -> list:
@@ -1510,7 +1524,18 @@ def render_prs(sec: dict) -> list:
         lines.append(f"    {p['slug']:<24} {p['checks']:<8} {p['branch'] or '':<32} {p['ref']}")
     for e in sec["errors"]:
         lines.append(f"    {e['repo']}: {e['reason']}")
+    lines += render_unwatched(sec)
     return lines
+
+
+def render_unwatched(sec: dict) -> list:
+    if not sec.get("unwatched"):
+        return []
+    hand = sec.get("need_a_hand") or []
+    line = f"    + {sec['unwatched']} open that no task holds and nobody is told about"
+    if hand:
+        line += f", {len(hand)} needing a hand on a session's branch ({', '.join(r['key'] for r in hand[:3])})"
+    return [line + " — uv run fleet queue prs"]
 
 
 def render_checkout(sec: dict) -> list:
@@ -1760,6 +1785,7 @@ def collect() -> dict:
     queue = probe_queue()
     tasks = all_tasks(queue)
     _load_lib("fleet_preflight", "preflight.py")  # loaded here, never half-loaded under a second thread
+    fleetqueue.shepherd_store()  # the same, for probe_prs's read of the store
     fuel, sessions, prs, checkout, machine = at_once(
         (probe_fuel_all,), (probe_sessions, tasks), (probe_prs, tasks), (probe_checkout,), (probe_machine,))
     return {

@@ -78,6 +78,22 @@ def test_the_control_plane_is_anchored_to_its_checkout_from_anywhere_in_it(clone
     expect(out, "run log not scaffolded")
 
 
+def test_the_conductors_directory_reads_the_checkouts_queue_and_store(clone):
+    """The conductor opens `orchestration/conductor/`, and every `uv run fleet` it runs from
+    there must read THIS checkout's queue and shepherd store — not none, and not another."""
+    declare_control_plane(clone, clone)
+    conductor = clone / "orchestration" / "conductor"
+    conductor.mkdir(parents=True)
+    queue = clone / "orchestration" / "queue"
+
+    root = fq(clone, "root", cwd=conductor)
+    assert root.code == 0, root.out
+    expect(root.out, str(queue))
+    refute(root.out, "control plane")
+    prs = fq(clone, "prs", cwd=conductor, FLEET_SHEPHERD_DIR=None).out
+    expect(prs, str(clone / "orchestration" / "shepherd" / "prs.json"))
+
+
 def test_a_second_queue_is_refused_and_an_existing_one_is_loud(clone, tmp_path):
     declare_control_plane(clone, clone)
     fq(clone, "topic", "add", "from-a-subdir", "--prompt", "opened while it was the control plane", cwd=clone)

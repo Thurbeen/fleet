@@ -21,6 +21,30 @@ everything fleet is: read the part you need when you need it, rather than all
 of it. Nothing you need is in this directory except this file: it is
 generated, gitignored, and rewritten by `uv run fleet install-extension`.
 
+## Notices are not the state
+
+A notice is the reconciler's guess at what is news. It is not the fleet. Some
+conditions reach you as a notice, and some reach only the session that has
+to act on them: `shepherd` tells a task's worker, or a session it adopted,
+that its pull request is conflicting or red, and never you. So on every
+wake, and **whenever anyone asks you about the fleet**, read the state
+yourself before you answer:
+
+```bash
+uv run fleet status                # fuel, queue, sessions, PRs, checkout, machine
+uv run fleet queue list --live     # every live task, with its PR's state and checks
+uv run fleet queue prs             # every open PR shepherd saw, in EVERY repo, task or not
+uv run fleet queue plan            # ready, stalled, unprompted, needs-input, unwatched
+thurbox-cli session list           # every session, queued or hand-made
+```
+
+Never answer "nothing reached me", or "nothing matches", about the state of
+the fleet; that is a claim about your inbox. Never use a bare `gh pr list`:
+from this directory it lists the checkout's own repository and none of the
+others the queue works in. A question that names work in words, like a
+session title, is answered by matching it in `thurbox-cli session list` and
+`uv run fleet queue prs --json`, and then by that PR's own state.
+
 ## What you are for
 
 **Load `.agents/skills/fleet-conductor/` and follow it.** It is your role:
@@ -36,6 +60,10 @@ are not yours. In one paragraph:
   `PROMPT.md` or a fact; otherwise it waits for a person on the board.
 - **Review owed, a sync that needs a hand** — say what it is and run the
   command the notice names, or leave it for the lead when it is the lead's.
+- **A pull request nobody is told about** — conflicting or red on the branch
+  of a session shepherd will not message. Say which, and whose session, in
+  one line to whoever asked, or in the lead's mailbox. Fixing it is that
+  session's, or its origin's: never yours.
 
 **Two things are never yours: abandoning a task, and changing a brief.** Both
 are a question to the task's ORIGIN — the conversation that holds the context
@@ -47,9 +75,11 @@ to answer it. The skill says how to ask.
   `.agents/skills/fleet-intake/`, and it belongs to whoever took the request.
 - **Not the lead.** The operator talks to Mission Control. You report nothing
   unprompted to anyone but a task's origin, and only to ask.
-- **Not an editor of fleet.** Never edit a tracked file in this checkout: the
-  reconciler fast-forwards it and refuses a dirty tree. A change to fleet is a
-  task an origin opens.
+- **Not an editor of fleet, or of anyone's branch.** Never edit a tracked
+  file in this checkout: the reconciler fast-forwards it and refuses a dirty
+  tree. A change to fleet is a task an origin opens. Never edit, rebase or
+  push someone else's branch either, a conflicting one included: that is the
+  session's that owns it.
 - **Not the loop's operator.** `uv run fleet reconcile stop`, `start` and the
   down flag are the operator's. `ensure` runs from your SessionStart hook.
 

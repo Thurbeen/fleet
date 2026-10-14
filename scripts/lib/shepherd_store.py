@@ -124,8 +124,33 @@ below), so THIS IS A CONTRACT: add fields, never rename or retype them.
             }
           ]
         }
-      }
+      },
+      "unwatched": [                          # added later; absent in an older file
+        { ...every field of a "prs" entry above, and:
+          "task": "<topic/NN-slug>" | null,   # the task that records it, if any
+          "session": "<thurbox session id>" | "",  # a local session on its branch
+          "session_name": "<its name>" | "",
+          "why": "<why no session is told about it>"
+        }
+      ]
     }
+
+UNWATCHED: EVERY OPEN PR NOBODY IS TOLD ABOUT. `sessions` holds the pull
+requests some session hears about — a task's worker or fixer, or an adopted
+session. Every other open one this pass listed is in `unwatched`: a PR no task
+records, one whose task's session is gone, and above all one on the branch of
+a session shepherd may not adopt because it descends from a lead or another
+session somebody else is driving. On 2026-10-14 a session spawned under a
+hand-made design session under the lead opened a pull request on a repository
+a task named, it went CONFLICTING, and nothing in fleet said so: the store
+dropped it, `fleet queue prs` printed "nothing recorded yet", and the
+conductor, asked, answered from `gh pr list` in the checkout's own repository.
+Shepherd still SENDS such a session nothing — adoption's rules above are
+unchanged — but the store now records it, `session` names the local session
+whose own branch it is (read the way adoption reads one), and `plan --json`'s
+`unwatched_prs` hands the ones that need a hand to the conductor's notice.
+Review threads are counted only for a PR a session is on: the rest are other
+people's, and one GraphQL call each per pass would buy nothing.
 
 `action` is what shepherd did about that PR: `sent` a line to the session (an
 adopted session, or a session already on a task's PR — its fixer or its own
@@ -189,9 +214,9 @@ def load(q) -> tuple[dict, str]:
     return doc, ""
 
 
-def save(q, sessions: dict) -> None:
+def save(q, sessions: dict, unwatched: list | None = None) -> None:
     os.makedirs(store_dir(q), exist_ok=True)
-    doc = {"schema": SCHEMA, "written_at": q.now(), "sessions": sessions}
+    doc = {"schema": SCHEMA, "written_at": q.now(), "sessions": sessions, "unwatched": unwatched or []}
     q.fleet_platform.write_record(store_path(q), json.dumps(doc, indent=2, ensure_ascii=False) + "\n")
 
 
@@ -223,7 +248,7 @@ def unresolved_threads(q, cr):
     return count
 
 
-def entry_for(q, cr, condition: str, detail: str, action: str, note: str) -> dict:
+def entry_for(q, cr, condition: str, detail: str, action: str, note: str, threads: bool = True) -> dict:
     checks, failing = checks_word(q, cr)
     return {
         "repo": cr.repo.qualified,
@@ -237,7 +262,7 @@ def entry_for(q, cr, condition: str, detail: str, action: str, note: str) -> dic
         "checks": checks,
         "failing_checks": failing,
         "review_decision": cr.review_decision or None,
-        "unresolved_threads": unresolved_threads(q, cr) if cr.state == "open" else None,
+        "unresolved_threads": unresolved_threads(q, cr) if threads and cr.state == "open" else None,
         "mergeable": cr.mergeable or None,
         "condition": condition,
         "detail": detail,
@@ -533,8 +558,10 @@ def mark_stale(session: dict, why: str) -> dict:
 def forge_unavailable(q, why: str) -> None:
     """No forge CLI at all: every entry stays, marked stale, and nothing is adopted."""
     previous, _why = load(q)
-    if previous["sessions"]:
-        save(q, {sid: mark_stale(s, why) for sid, s in previous["sessions"].items()})
+    unwatched = previous.get("unwatched") or []
+    if previous["sessions"] or unwatched:
+        save(q, {sid: mark_stale(s, why) for sid, s in previous["sessions"].items()},
+             [e if e.get("stale") else stale(e, why) for e in unwatched])
 
 
 def pr_session(task, snapshot: dict | None) -> str:
@@ -612,8 +639,13 @@ def after_pass(q, args, all_tasks: list, observed: list, listings: dict, unreada
     else:
         adopted_rows = adopt(q, args, snapshot, held, prev_sessions, listings, readable, observed, sessions)
 
+    if scoped:
+        unwatched = previous.get("unwatched") or []
+    else:
+        unwatched = unwatched_prs(q, snapshot, held, sessions, observed, listings, readable,
+                                  previous.get("unwatched") or [])
     if not args.dry_run:
-        save(q, sessions)
+        save(q, sessions, unwatched)
     return adopted_rows
 
 
@@ -672,16 +704,21 @@ def _adopted_prs(q, prev: dict, fresh: list, readable: dict, branches: set, unre
                     for e in prev.get("prs") or [] if e.get("url") not in seen]
 
 
-def adopt(q, args, snapshot: dict, held: dict, prev_sessions: dict, listings: dict, readable: dict,
-          observed: list, sessions: dict) -> list:
+def control_check(q, snapshot: dict):
+    """`a_lead(sid)`: a lead or a conductor, this fleet's or any other's."""
     control_names, lead_id = lead_refusals(q)
     leads_fleet = lead_fleet(q)
 
     def a_lead(sid) -> bool:
-        """A lead or a conductor, this fleet's or any other's."""
         name = str((snapshot.get(sid) or {}).get("name") or "")
         return sid == lead_id or name in control_names or leads_fleet(name) is not None
 
+    return a_lead
+
+
+def adopt(q, args, snapshot: dict, held: dict, prev_sessions: dict, listings: dict, readable: dict,
+          observed: list, sessions: dict) -> list:
+    a_lead = control_check(q, snapshot)
     live = set(snapshot)
     merged_by_pass = {cr.url: row.get("note") or "" for cr, _t, row in observed if row["action"] == "merged"}
     rows: list = []
@@ -696,6 +733,104 @@ def adopt(q, args, snapshot: dict, held: dict, prev_sessions: dict, listings: di
         # Adopted on an OPEN pull request; one already followed keeps how it ended.
         if fresh or (prev.get("adopted") and prs):
             sessions[sid] = {"session": sid, "name": name, "task": None, "adopted": True, "prs": prs}
+    return rows
+
+
+# --- what nobody is told about -----------------------------------------------
+
+
+def _why_unwatched(snapshot: dict, held: dict, a_lead, sid: str) -> str:
+    if sid in held:
+        return f"on the branch of session {sid}, which a task holds but whose recorded pull requests do not name it"
+    if _owned_elsewhere(snapshot, held, a_lead, sid):
+        return ("on the branch of a session that descends from a lead, a task's session or one thurbox "
+                "does not list, so shepherd leaves it to whoever drives that session and tells it nothing")
+    return "on the branch of a session shepherd did not adopt"
+
+
+def branch_sessions(q, snapshot: dict | None, held: dict, filed: set, listings: dict,
+                    readable: dict) -> dict:
+    """{(repo, branch): (session id, name, why)} for every local session no store entry speaks to.
+
+    The session's own branches, read exactly as adoption reads them, and each
+    one's repository listed on first sight so a PR there is seen even when no
+    task names that repository. A lead or conductor is never one of them.
+    """
+    if not snapshot:
+        return {}
+    a_lead = control_check(q, snapshot)
+    found: dict = {}
+    for sid, row in sorted(snapshot.items(), key=lambda kv: str(kv[1].get("name") or kv[0])):
+        if sid in filed or a_lead(sid) or not is_local(row):
+            continue
+        branches, _unread = session_branches(q, row)
+        for repo, branch in branches:
+            if _listed_prs(q, repo, listings, readable) is None:
+                continue
+            found.setdefault((repo.qualified, branch),
+                             (sid, str(row.get("name") or ""), _why_unwatched(snapshot, held, a_lead, sid)))
+    return found
+
+
+def unwatched_prs(q, snapshot: dict | None, held: dict, sessions: dict, observed: list, listings: dict,
+                  readable: dict, previous: list) -> list:
+    """Every open PR this pass listed that no session in `sessions` is told about. See UNWATCHED."""
+    filed_urls = {e.get("url") for s in sessions.values() for e in s.get("prs") or []}
+    on_branch = branch_sessions(q, snapshot, held, set(sessions), listings, readable)
+    tasks = {cr.url: (task, row) for cr, task, row in observed}
+    # thurbox unread is not every session gone: keep the link the last pass read.
+    linked = {} if snapshot is not None else {
+        e.get("url"): (e.get("session"), e.get("session_name") or "", e.get("why") or "")
+        for e in previous if e.get("session")}
+    out: list = []
+    for repo in sorted(listings, key=lambda r: r.qualified):
+        for cr in sorted(listings[repo], key=lambda c: c.number):
+            if cr.url in filed_urls or cr.state != "open":
+                continue
+            task, row = tasks.get(cr.url, (None, None))
+            if task is not None and row is not None:
+                condition, detail = row["condition"], row["detail"]
+            else:
+                # Nobody asked this PR for an attestation; read it as adoption does.
+                condition, detail = q.classify(cr, "pr")
+            sid, name, why = on_branch.get((repo.qualified, cr.head_branch)) or linked.get(cr.url) or ("", "", "")
+            if not why:
+                why = (f"task {task.ref} records it, and none of its sessions is listed" if task
+                       else "no task records it and no session on this machine is on its branch")
+            entry = entry_for(q, cr, condition, detail, "none", why, threads=bool(sid))
+            entry.update({"task": task.ref if task else None, "session": sid, "session_name": name, "why": why})
+            out.append(entry)
+    seen = {e["url"] for e in out}
+    for entry in previous:
+        if entry.get("url") in seen or entry.get("url") in filed_urls:
+            continue
+        repo = entry.get("repo")
+        if repo not in readable:
+            out.append(entry)  # nobody asked that repository this pass
+        elif readable[repo]:
+            out.append(entry if entry.get("stale") else stale(entry, readable[repo]))
+        # else the repository answered and the PR was not open in it: gone.
+    return out
+
+
+# The conditions a session on the branch has to act on, and nobody will tell it.
+NEEDS_A_HAND = ("conflicting", "checks-failed", "changes-requested", "threads-open")
+
+
+def needs_a_hand(doc: dict) -> list:
+    """`plan --json`'s `unwatched_prs`: the unwatched PRs on a local session's branch that need work.
+
+    One row each, keyed by PR, condition and head, so a push or a new
+    condition is news to the conductor and the same one twice is not.
+    """
+    rows = []
+    for e in doc.get("unwatched") or []:
+        if not e.get("session") or e.get("stale") or e.get("condition") not in NEEDS_A_HAND:
+            continue
+        short = f"{str(e.get('repo') or '').split('/', 1)[-1]}#{e.get('number')}"
+        rows.append({"key": f"{short} {e.get('condition')} @{str(e.get('head_sha') or '')[:8]}",
+                     "pr": e.get("url"), "condition": e.get("condition"), "detail": e.get("detail"),
+                     "session": e.get("session"), "session_name": e.get("session_name")})
     return rows
 
 
@@ -835,12 +970,27 @@ def cmd_prs(q, args) -> int:
         print(f"prs: {why}")
         return 0
     sessions = doc.get("sessions") or {}
-    if not sessions:
+    unwatched = doc.get("unwatched") or []
+    if not doc.get("written_at"):
         print(f"prs: nothing recorded yet — `fleet queue shepherd` writes {store_path(q)}")
         return 0
-    print(f"prs: as of {doc.get('written_at')}, {len(sessions)} watched session(s)\n")
+    print(f"prs: as of {doc.get('written_at')}, {len(sessions)} watched session(s), "
+          f"{len(unwatched)} open pull request(s) nobody is told about\n")
     for sid, s in sorted(sessions.items(), key=lambda kv: str(kv[1].get("name") or kv[0])):
         whose = s.get("task") or "adopted"
         print(f"    {s.get('name') or sid}  ({whose})")
         _print_session_prs(s)
+    _print_unwatched(unwatched)
     return 0
+
+
+def _print_unwatched(unwatched: list) -> None:
+    """The unwatched PRs, the ones on a session's branch first: those are this machine's work."""
+    if not unwatched:
+        return
+    print("\n    nobody is told about these — shepherd sends no session a line for them:")
+    for e in sorted(unwatched, key=lambda e: (not e.get("session"), str(e.get("url")))):
+        stale_note = f"  STALE: {e.get('stale_reason')}" if e.get("stale") else ""
+        on = f"  on {e.get('session_name') or e.get('session')}'s branch" if e.get("session") else ""
+        print(f"        #{e.get('number')} {e.get('repo')}  {e.get('state')}, checks {e.get('checks')}, "
+              f"{e.get('condition')}{on}{stale_note}")
