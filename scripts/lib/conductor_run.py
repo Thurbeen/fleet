@@ -41,9 +41,11 @@ WATCHED and so resolve through `LIKE` (`agent_settings.py`):
 
   claude  `-p`, JSON out, no session kept, `--permission-mode auto`: every
           action is reviewed by Claude Code's own classifier, and none waits
-          for a person. Pre-approved on top, so the routine never costs a
-          review: `uv run fleet`, reading sessions, capturing a pane, sending
-          a message, reading files. Measured on Claude Code 2.1.300: `-p`
+          for a person. Pre-approved on top, so a READ never costs a
+          review: fleet's read verbs, reading sessions, capturing a pane,
+          reading files. Every verb that acts — `dispatch`, `send`, `prompt`,
+          `refuel`, `block`, `declare`, `abandon`, a `message send` — is left
+          to the review, and that is the point of it. Measured on Claude Code 2.1.300: `-p`
           never stops on a prompt, and an action the classifier refuses is
           recorded in `permission_denials`, which the journal keeps. Edit,
           Write and NotebookEdit are removed outright: the conductor edits no
@@ -148,16 +150,22 @@ DIGEST = (
     ("queue", "prs"),
 )
 
-# What a claude run may do without a review. Everything else is the auto-mode
-# classifier's to allow. `uv run fleet` is every verb the skill names; the rest
-# is reading a session, its pane, and the one message the skill sends.
+# What a claude run may do without a review: READS ONLY. The prompt carries
+# text fleet did not write — a pull request's title, a worker's question — so
+# a pre-approved verb that acts is one an injected line could run unreviewed.
+# Everything that changes what runs or reaches a session (`dispatch`, `send`,
+# `abandon`, `message send`, …) is the auto-mode classifier's to allow.
 CLAUDE_ALLOWED = (
     "Read", "Grep", "Glob",
-    "Bash(uv run fleet:*)",
+    "Bash(uv run fleet status:*)",
+    "Bash(uv run fleet context:*)",
+    "Bash(uv run fleet queue plan:*)",
+    "Bash(uv run fleet queue list:*)",
+    "Bash(uv run fleet queue prs:*)",
+    "Bash(uv run fleet queue show:*)",
     "Bash(thurbox-cli session list:*)",
     "Bash(thurbox-cli session get:*)",
     "Bash(thurbox-cli session capture:*)",
-    "Bash(thurbox-cli message send:*)",
     "Bash(git log:*)", "Bash(git status:*)", "Bash(git diff:*)", "Bash(git show:*)",
 )
 

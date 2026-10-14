@@ -35,6 +35,7 @@ with open(root / "prompts.log", "a", encoding="utf-8") as fh:
     fh.write(sys.stdin.read() + "\\n<<<END>>>\\n")
 with open(root / "cwd.log", "a", encoding="utf-8") as fh:
     fh.write(os.getcwd() + "\\n")
+(root / "argv.json").write_text(json.dumps(sys.argv[1:]), encoding="utf-8")
 answer = root / "answer.json"
 if answer.is_file():
     doc = json.loads(answer.read_text(encoding="utf-8"))
@@ -100,9 +101,23 @@ def test_it_runs_as_thurbox_launches_the_agent_headless(stubs, tmp_path):
     expect(" ".join(stubs.calls("thurbox-cli", "agent launch-args")), "agent launch-args claude")
     (argv,) = stubs.calls("claude")
     expect(argv, "-p", "--output-format json", "--no-session-persistence", "--permission-mode auto",
-           "Bash(uv run fleet:*)", "--disallowedTools Edit,Write,NotebookEdit")
+           "Bash(uv run fleet queue plan:*)", "--disallowedTools Edit,Write,NotebookEdit")
     # The interactive session's own args are its status hooks, and a run is no session.
     refute(argv, "--interactive-only")
+
+
+def test_only_reads_skip_the_review(stubs, tmp_path):
+    """The prompt carries text fleet did not write, so nothing pre-approved may act:
+    every verb that changes what runs is left to the auto-mode review."""
+    oneshot(stubs)
+    notify(tmp_path, ready=["alpha/01-first"])
+    argv = json.loads((stubs.root / "argv.json").read_text(encoding="utf-8"))
+    allowed = argv[argv.index("--allowedTools") + 1].split(",")
+    assert "Bash(uv run fleet queue plan:*)" in allowed, allowed
+    assert "Bash(uv run fleet:*)" not in allowed
+    for verb in ("dispatch", "send", "prompt", "refuel", "block", "declare", "abandon", "reviewed"):
+        assert not [a for a in allowed if f"fleet queue {verb}" in a], f"{verb} skips the review: {allowed}"
+    assert not [a for a in allowed if "message send" in a or "session send" in a], allowed
 
 
 def test_the_prompt_carries_the_notice_the_state_and_the_instructions_read_now(stubs, tmp_path):
