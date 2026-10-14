@@ -134,6 +134,18 @@ def test_the_leads_own_session_is_refused_by_name(ran_dry, stubs):
     refute(out, "would restart  aaaaaaa1")
 
 
+def test_the_conductors_session_is_refused_by_name_from_any_session(ran_dry, stubs):
+    quota_is(stubs, 62, RESETS)
+    record = stubs.root / "sessions" / f"{DRY}.json"
+    row = json.loads(record.read_text(encoding="utf-8"))
+    row.pop("cwd", None)
+    write(record, json.dumps({**row, "name": "Gate Conductor"}) + "\n")
+    out = q("refuel", "--dry-run", FLEET_LEAD_SESSION="Gate Control",
+            FLEET_CONDUCTOR_SESSION="Gate Conductor", THURBOX_SESSION=None).out
+    expect(out, "conductor's own session")
+    refute(out, "would restart  aaaaaaa1")
+
+
 def test_the_cap_holds_and_a_restart_moments_ago_is_given_a_moment(ran_dry, stubs, queue_dir):
     """Receipts are rewound between passes because a restart seconds ago is not a
     second wedge: a `working` state from BEFORE the last restart is evidence from

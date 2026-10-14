@@ -117,6 +117,18 @@ def test_a_same_named_remote_lead_listed_first_does_not_hide_this_one(recon, stu
     assert recon.pid()
 
 
+def test_the_conductor_session_start_brings_it_up_too(recon, stubs):
+    """The conductor's own directory carries the same SessionStart hook, and it
+    is a session this checkout's extension keeps alive, as the lead is."""
+    write(stubs.root / "sessions" / "conductor-uuid.json", json.dumps(
+        {"id": "conductor-uuid", "name": "Gate Conductor", "state": "idle",
+         "backend_type": "local:tmux"}) + "\n")
+    done = recon("ensure", "--if-lead", FLEET_CONDUCTOR_SESSION="Gate Conductor", **lead_env("conductor-uuid"))
+    assert done.code == 0, done.out
+    expect(done.out, "ticking (pid ")
+    assert recon.pid()
+
+
 def test_any_other_session_start_leaves_it_alone(recon, stubs):
     write(stubs.root / "sessions" / "worker-uuid.json",
           json.dumps({"id": "worker-uuid", "name": "a worker", "state": "working"}) + "\n")

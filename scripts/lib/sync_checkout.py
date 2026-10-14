@@ -72,7 +72,8 @@ FETCH_TIMEOUT_SECS = 15
 # stale instructions; changing a wiring path means the installed thurbox
 # extension no longer matches the manifest it was rendered from. Neither is
 # fixable from here, so both are reported as actions for the operator.
-INSTRUCTION_PATHS = ("FLEET.md", "AGENTS.md", "CLAUDE.md", ".agents/skills", ".claude/skills", ".claude/settings.json")
+INSTRUCTION_PATHS = ("FLEET.md", "CONDUCTOR.md", "AGENTS.md", "CLAUDE.md", ".agents/skills", ".claude/skills",
+                     ".claude/settings.json")
 # session-glyphs.example.conf and voice.example.conf are wiring paths because
 # the installer RENDERS both: new defaults in the first are a new lead name, and
 # in the second they change what the rendered FLEET payload calls the operator.
@@ -80,6 +81,10 @@ WIRING_PATHS = (
     "extension.toml.in",
     "scripts/lib/install_extension.py",
     "FLEET.md",
+    # Rendered into the conductor's own directory, as FLEET.md is for the lead,
+    # and so is the checkout's settings file its hooks are copied from.
+    "CONDUCTOR.md",
+    ".claude/settings.json",
     "orchestration/session-glyphs.example.conf",
     "orchestration/voice.example.conf",
 )
@@ -266,7 +271,9 @@ def _actions(root: str, before: str, facts: dict) -> str:
             "conversation, so the old copy is still in its history. For an instruction change\n"
             "that has to win, start a fresh one instead: thurbox-cli session delete\n"
             f"'{lead}' (the extension self-heals it). Copy that name rather than\n"
-            "retyping it: a glyph is part of the session name and is not on a keyboard."
+            "retyping it: a glyph is part of the session name and is not on a keyboard.\n"
+            "A conductor session, where this fleet runs one, froze CONDUCTOR.md and its\n"
+            "skills the same way: the same restart, under its own name."
         )
 
     wiring = changed(root, before, WIRING_PATHS)

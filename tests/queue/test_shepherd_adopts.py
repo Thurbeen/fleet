@@ -109,6 +109,15 @@ def test_the_lead_is_never_adopted(shep, stubs, tmp_path):
     assert LEAD not in store()["sessions"]
 
 
+def test_this_fleets_conductor_is_never_adopted(shep, stubs, tmp_path):
+    wt = checkout(tmp_path / "conductor", "feat/conductor")
+    session(stubs, LEAD, "Gate Conductor", "idle", wt, "feat/conductor")
+    shep.pr(203, headRefName="feat/conductor", body="", statusCheckRollup=[FAILED])
+    out = q("shepherd", FLEET_LEAD_SESSION=LEAD_NAME, FLEET_CONDUCTOR_SESSION="Gate Conductor").out
+    assert sends(stubs, LEAD) == [], out
+    assert LEAD not in store()["sessions"]
+
+
 def test_a_session_held_by_a_task_is_not_adopted_and_both_land_in_the_store(outside, shep, stubs, tmp_path):
     session(stubs, OUTSIDE, "hand-made", "idle", outside, "feat/outside")
     held = checkout(tmp_path / "held", "main-ish")
@@ -212,6 +221,8 @@ def test_a_session_that_started_another_branch_of_its_own_is_still_adopted(shep,
 
 @pytest.mark.parametrize(("parent_name", "adopted"), [
     ("\U0001f4e1 Mission Control · other-fleet", False),
+    ("\U0001f3bc Conductor · other-fleet", False),
+    ("\U0001f3bc Conductor", False),
     ("an ordinary session", True),
 ])
 def test_a_session_parented_to_any_fleets_lead_is_that_fleets_and_not_adopted(

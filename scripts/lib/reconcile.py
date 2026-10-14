@@ -44,8 +44,11 @@ or a lead restart. Two things now do, and neither clears a flag:
   `ensure --if-lead`  the SessionStart hook in `.claude/settings.json`. Every
             session in a fleet checkout runs that file, and a worker running
             this loop would reap its own session, so it acts only for the
-            session this checkout's extension names as its lead, prints
-            nothing for any other, and exits 0 whatever happens.
+            sessions this checkout's extension names — its lead and, where
+            the fleet runs one, its conductor, whose own directory carries
+            the same hook — prints nothing for any other, and exits 0
+            whatever happens. An origin is neither: many may come and go,
+            and none of them owns this checkout's loop.
 
 IS IT UP. The loop holds an exclusive lock on `lock` in its runtime directory for
 its whole life. The OS drops a lock when its holder dies however it died, so a
@@ -104,7 +107,7 @@ all, needs nothing: the next pass runs the new bytes.
 
 Usage:
   uv run fleet reconcile ensure     # start unless running or asked down
-  uv run fleet reconcile ensure --if-lead  # the same, from the lead's session only
+  uv run fleet reconcile ensure --if-lead  # the same, from the lead's or conductor's session only
   uv run fleet reconcile serve      # the loop in the foreground, for a service
   uv run fleet reconcile start      # start, and clear a previous `stop`
   uv run fleet reconcile stop       # durably down: writes the flag, then stops
@@ -950,11 +953,14 @@ def cmd_ensure(cfg: Config) -> int:
 
 
 def is_lead() -> bool:
-    """Whether this process runs in the session this checkout's extension names as its lead.
+    """Whether this process runs in the session this checkout's extension names
+    as its lead, or as its conductor.
 
-    notify_conductor.py's two readings, so "who is the lead" has one answer: the
+    notify_conductor.py's readings, so "who is the lead" has one answer: the
     name from the rendered manifest, and the id of the row `lead_row` picks for
     it — this checkout's, on this machine, not the first a remote mirror lists.
+    The conductor counts for the reason the lead does: it is a session this
+    checkout's extension keeps alive, so it is up whenever the loop should be.
     """
     # THURBOX_SESSION is thurbox's id for it; THURBOX_SESSION_ID is the agent's
     # conversation, which a fresh lead changes and a restart keeps — the session
@@ -964,11 +970,14 @@ def is_lead() -> bool:
         return False
     notify = _load_sibling("fleet_notify_conductor", "notify_conductor.py")
     name = notify.lead_name()
-    return bool(name) and notify.lead_session(name)[0] == sid
+    if name and notify.lead_session(name)[0] == sid:
+        return True
+    _own, row, _why = notify.own_conductor_row()
+    return bool(row) and str(row.get("id")) == sid
 
 
 def cmd_ensure_if_lead() -> int:
-    """`ensure`, from the lead's SessionStart hook: silent elsewhere, never a failure."""
+    """`ensure`, from the lead's or conductor's SessionStart hook: silent elsewhere, never a failure."""
     try:
         if is_lead():
             cmd_ensure(Config.from_env())

@@ -219,3 +219,19 @@ def test_the_tracked_example_names_no_peer():
     text = (REPO / "orchestration" / "peers.example.conf").read_text(encoding="utf-8")
     live = [line for line in text.splitlines() if line.strip() and not line.lstrip().startswith("#")]
     assert all(not line.startswith("PEER=") or line == "PEER=" for line in live), live
+
+
+def test_a_conductor_names_its_fleet_once_and_only_when_its_lead_is_not_listed(stubs, tmp_path):
+    """A conductor opens `orchestration/conductor` inside its fleet's checkout:
+    the same fleet as its lead, so one entry and never a second peer — and the
+    entry that keeps a fleet whose lead is closed on the board."""
+    machine(stubs, tmp_path, [
+        lead("self", str(REPO), "local-tmux"),
+        lead("self-c", str(REPO / "orchestration" / "conductor"), "local-tmux", "🎼 Conductor"),
+        lead("a", "/srv/fleet", "ssh:devbox"),
+        lead("a-c", "/srv/fleet/orchestration/conductor", "ssh:devbox", "🎼 Conductor"),
+        lead("b-c", "/opt/fleet/orchestration/conductor/", "ssh:devbox", "🎼 Conductor · acme"),
+    ])
+    found = fleets(json.loads(peers("--json").stdout))
+    assert sorted(found) == sorted(["local:" + str(REPO), "devbox:/srv/fleet", "devbox:/opt/fleet"]), found
+    assert found["devbox:/opt/fleet"]["fleet"] == "acme"

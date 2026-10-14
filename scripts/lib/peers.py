@@ -24,7 +24,11 @@ lead and which fleet (the grammar `interface/fleet_reader.lua` reads, and
 checkout, and its `backend_type` — `local-tmux`, or `ssh:<host>[:<mux>]` —
 where. That is the same list the board's own lead comes from, so nothing has to
 be declared for a peer the operator can already see. This checkout is never its
-own peer.
+own peer. A fleet's CONDUCTOR is not a second peer: it opens
+`orchestration/conductor` inside its fleet's checkout, so it names the same
+fleet the lead does, and the two are one entry. It is asked only when that
+fleet's lead is not listed, which is what keeps a fleet whose lead is closed —
+and whose conductor keeps its work moving — on the board.
 
 `orchestration/peers.conf` is the OVERRIDE, gitignored, beside the tracked
 `peers.example.conf` that names none: `PEER=<host> <path> [<name>]` adds a
@@ -104,6 +108,9 @@ fleet_platform = _load_sibling("fleet_platform", "fleet_platform.py")
 # `tests/pane/test_agreement.py` holds both to the Lua's spelling.
 CONTROL_PLANE = "Mission Control"
 FLEET_MARK = " · "
+# The conductor's, by the same grammar. It names no PEER: a conductor opens a
+# directory inside its fleet's checkout, so the fleet is found by its lead.
+CONDUCTOR = "Conductor"
 
 # A peer read this recently is not read again. Under the board's 30s cadence,
 # because a reading is stamped after the session list and `uv run` start, and
@@ -120,7 +127,7 @@ RELOCATING = ("FLEET_QUEUE_DIR", "FLEET_RUNS_DIR", "FLEET_RECONCILE_DIR", "FLEET
               "FLEET_PEERS_DIR")
 
 
-def lead_fleet(name: str) -> str | None:
+def lead_fleet(name: str, word: str = CONTROL_PLANE) -> str | None:
     """The fleet a session leads — "" unnamed — or None for any other session.
 
     `fleet_of` in `interface/fleet_reader.lua`, rule for rule: one bounded mark
@@ -129,13 +136,30 @@ def lead_fleet(name: str) -> str | None:
     body = name
     mark, _, rest = name.partition(" ")
     if rest and len(mark.encode("utf-8")) <= 4 and (
-        rest == CONTROL_PLANE or rest.startswith(CONTROL_PLANE + FLEET_MARK)
+        rest == word or rest.startswith(word + FLEET_MARK)
     ):
         body = rest
-    if body == CONTROL_PLANE:
+    if body == word:
         return ""
-    found = re.fullmatch(re.escape(CONTROL_PLANE + FLEET_MARK) + r"([A-Za-z0-9_-]+)", body)
+    found = re.fullmatch(re.escape(word + FLEET_MARK) + r"([A-Za-z0-9_-]+)", body)
     return found.group(1) if found else None
+
+
+def conductor_fleet(name: str) -> str | None:
+    """The fleet a session conducts — "" unnamed — or None for any other session.
+
+    `lead_fleet`'s grammar with the conductor's word. Discovery never asks it —
+    a fleet is found by its lead, and its conductor is not a second peer — but
+    shepherd does: a conductor dispatches, so another fleet's conductor and its
+    workers are that fleet's, exactly as its lead and the lead's are.
+    """
+    return lead_fleet(name, CONDUCTOR)
+
+
+def control_fleet(name: str) -> str | None:
+    """The fleet a session leads or conducts, or None for any other session."""
+    found = lead_fleet(name)
+    return found if found is not None else conductor_fleet(name)
 
 
 def label(host: str, fleet: str, path: str) -> str:
@@ -182,22 +206,45 @@ def _parse_settings(lines: list[str]) -> tuple[bool, list[dict]]:
     return discover, declared
 
 
+# The conductor's directory under its checkout, in either separator: a host's
+# cwd is spelled by the host, not by this machine.
+CONDUCTOR_TAIL = re.compile(r"[\\/]orchestration[\\/]conductor[\\/]*$")
+
+
+def _fleet_at(row: dict) -> tuple[str, str] | None:
+    """(fleet, checkout) for a lead's or a conductor's row, or None for any other."""
+    name, cwd = str(row.get("name") or ""), str(row.get("cwd") or "")
+    if not cwd:
+        return None
+    fleet = lead_fleet(name)
+    if fleet is not None:
+        return fleet, cwd
+    fleet = conductor_fleet(name)
+    tail = CONDUCTOR_TAIL.search(cwd)
+    if fleet is None or not tail:
+        return None
+    return fleet, cwd[:tail.start()]
+
+
 def discovered() -> list[dict] | None:
-    """Every lead thurbox lists, this machine's and every host's — or None when
-    thurbox could not be asked, which is not the same as no lead anywhere."""
+    """Every fleet thurbox lists, this machine's and every host's — by its lead,
+    else by its conductor — or None when thurbox could not be asked, which is
+    not the same as no fleet anywhere."""
     sessions, _why = fleetqueue.session_snapshot()
     if sessions is None:
         return None
-    found = []
-    for row in (sessions or {}).values():
-        fleet = lead_fleet(str(row.get("name") or ""))
-        cwd = str(row.get("cwd") or "")
-        if fleet is None or not cwd:
+    found: dict = {}
+    # Leads first, so a fleet both sessions name is the lead's entry.
+    rows = sorted((sessions or {}).values(), key=lambda r: lead_fleet(str(r.get("name") or "")) is None)
+    for row in rows:
+        at = _fleet_at(row)
+        if at is None:
             continue
         backend = str(row.get("backend_type") or "")
         host = backend.split(":")[1] if ":" in backend and backend.split(":")[1] else "local"
-        found.append(peer(host, cwd, fleet, "thurbox"))
-    return found
+        entry = peer(host, at[1], at[0], "thurbox")
+        found.setdefault(entry["key"], entry)
+    return list(found.values())
 
 
 def is_self(entry: dict) -> bool:

@@ -13,10 +13,14 @@ that is:
                     FLEET_LEAD_SESSION), and by id when THURBOX_SESSION says
                     this process runs inside it — the same name `notify_conductor`
                     and `reap` refuse — and ANY fleet's lead, by the name
-                    `peers.lead_fleet` recognises;
+                    `peers.lead_fleet` recognises. A CONDUCTOR is refused
+                    exactly like a lead — this fleet's by the manifest's
+                    second session (or FLEET_CONDUCTOR_SESSION), any fleet's
+                    by `peers.conductor_fleet` — and so are its descendants,
+                    below, since it dispatches workers as the lead does;
   not fleet's own   held by no queue task, as its worker or as a fixer sent
                     for it (`sessions.py`'s `orphans` reads "held" the same way),
-                    and descended from no lead. A second fleet on this
+                    and descended from no lead or conductor. A second fleet on this
                     machine has its own queue, so this one's records cannot
                     see its workers — but thurbox names their parent, and
                     that parent is a lead. The whole chain of parents is
@@ -274,28 +278,33 @@ def task_action(row: dict) -> str:
 # --- the sessions -------------------------------------------------------------
 
 
-def lead_refusals(q) -> tuple[str, str]:
-    """(the lead's name, the lead's id), either "" when nothing here can tell.
+def lead_refusals(q) -> tuple[set, str]:
+    """(this fleet's control-session names, the id this runs in), empty when nothing here can tell.
 
-    The name the way `notify_conductor.lead_name` reads it — FLEET_LEAD_SESSION,
-    else the rendered extension.toml's session — and the id the way `reap`
-    refuses it, from THURBOX_SESSION.
+    The names the way `notify_conductor` reads them — FLEET_LEAD_SESSION and
+    FLEET_CONDUCTOR_SESSION, else the rendered extension.toml's two sessions —
+    and the id the way `reap` refuses it, from THURBOX_SESSION.
     """
-    name = os.environ.get("FLEET_LEAD_SESSION", "").strip()
-    if not name:
-        found, _repo = q.manifest_session(os.path.join(q.checkout_root(), "extension.toml"))
-        name = found if found and "__" not in found else ""
-    return name, os.environ.get("THURBOX_SESSION", "").strip()
+    manifest = os.path.join(q.checkout_root(), "extension.toml")
+    lead = os.environ.get("FLEET_LEAD_SESSION", "").strip()
+    conductor = os.environ.get("FLEET_CONDUCTOR_SESSION", "").strip()
+    if not lead:
+        found, _repo = q.manifest_session(manifest)
+        lead = found if found and "__" not in found else ""
+        if not conductor:
+            found, _repo = q.manifest_conductor(manifest)
+            conductor = found if found and "__" not in found else ""
+    return {n for n in (lead, conductor) if n}, os.environ.get("THURBOX_SESSION", "").strip()
 
 
 def lead_fleet(q):
-    """`peers.lead_fleet`: which fleet a session name leads, or None for any other session.
+    """`peers.control_fleet`: which fleet a session name leads or conducts, or None for any other session.
 
     peers.py loads queue.py as `fleet_queue`; handing it the copy already
     running keeps one queue module per process however this one was started.
     """
     sys.modules.setdefault("fleet_queue", q)
-    return q._load_sibling("fleet_peers", "peers.py").lead_fleet
+    return q._load_sibling("fleet_peers", "peers.py").control_fleet
 
 
 def held_sessions(tasks) -> dict:
@@ -609,7 +618,7 @@ def after_pass(q, args, all_tasks: list, observed: list, listings: dict, unreada
 
 
 def _owned_elsewhere(snapshot: dict, held: dict, a_lead, sid) -> bool:
-    """Some ancestor is a lead, a session this queue holds, or one thurbox does not list."""
+    """Some ancestor is a lead or conductor, a session this queue holds, or one thurbox does not list."""
     seen = {sid}
     parent = str((snapshot.get(sid) or {}).get("parent_session_id") or "")
     while parent:
@@ -665,12 +674,13 @@ def _adopted_prs(q, prev: dict, fresh: list, readable: dict, branches: set, unre
 
 def adopt(q, args, snapshot: dict, held: dict, prev_sessions: dict, listings: dict, readable: dict,
           observed: list, sessions: dict) -> list:
-    lead_name, lead_id = lead_refusals(q)
+    control_names, lead_id = lead_refusals(q)
     leads_fleet = lead_fleet(q)
 
     def a_lead(sid) -> bool:
+        """A lead or a conductor, this fleet's or any other's."""
         name = str((snapshot.get(sid) or {}).get("name") or "")
-        return sid == lead_id or (bool(lead_name) and name == lead_name) or leads_fleet(name) is not None
+        return sid == lead_id or name in control_names or leads_fleet(name) is not None
 
     live = set(snapshot)
     merged_by_pass = {cr.url: row.get("note") or "" for cr, _t, row in observed if row["action"] == "merged"}

@@ -25,6 +25,14 @@ records with it, and nothing you run reaches it.
 
 You hold the plan and the log. You do not hold the branches.
 
+You are one ORIGIN among possibly many — any conversation may hand fleet work
+— and, unless this fleet runs a conductor session of its own, you are also its
+CONDUCTOR, the one that keeps that work moving. Two skills hold the two roles:
+`fleet-intake` for taking a request, `fleet-conductor` for keeping it moving.
+`orchestration/fleet.conf`'s `CONDUCTOR=on` is what moves the second role to a
+background session (`CONDUCTOR.md` is its standing context); its notices then
+go there while it runs, and come back to you whenever it does not.
+
 ## Where things are
 
 Your working directory **is** the control-plane checkout, opened directly
@@ -123,7 +131,9 @@ hand. Nothing to push — the map is gitignored.
 ## The loop
 
 `AGENTS.md` owns the mechanics of every step below and `fleet-queue` owns how
-to run them. What is here is what is YOURS in each.
+to run them. What is here is what is YOURS in each. Steps 1–3 are an origin's
+and `fleet-intake` is how you take them; the rest keep the work moving, which
+is `fleet-conductor`'s — yours too while no conductor session runs.
 
 1. **A prompt becomes a topic**, not a turn in this conversation.
    `uv run fleet queue topic add` keeps it verbatim; `add` decomposes it into
@@ -136,7 +146,10 @@ to run them. What is here is what is YOURS in each.
    like, from scratch.
 3. **`plan`, then `dispatch`.** Everything with no recorded blocker goes out at
    once — there is no concurrency cap, and file overlap between two tasks is a
-   reported risk rather than a reason to hold one back.
+   reported risk rather than a reason to hold one back. Where a conductor
+   session runs, dispatch as an origin: `--origin` your own tasks, and only
+   while fuel is clearly above the reserve (`fleet-intake` §3); the rest is the
+   conductor's.
 4. **`watch` on your own cadence, then `collect`.** The event stream says WHEN
    a turn ended; the worker's own result file says WHAT it concluded. A turn
    ending is not a task finishing, and only `collect` closes anything.
@@ -175,8 +188,10 @@ with `list` and never writes anything.
 
 `.agents/skills/fleet-queue/` is the driving surface for 1–4, 6 and 8, and
 `.agents/skills/thurbox-session/` for the mechanics of one session — spawning,
-naming, trust, the state vocabulary, cleanup. Use both. (`.claude/skills` points
-at `.agents/skills`, so every CLI loads the one copy.)
+naming, trust, the state vocabulary, cleanup. Use both, under the two roles
+above: `.agents/skills/fleet-intake/` and `.agents/skills/fleet-conductor/`.
+(`.claude/skills` points at `.agents/skills`, so every CLI loads the one
+copy.)
 
 Two more skills are for work that is not a queue task at all, and both **drive
 a session rather than running in you**: `diagnose-machine` when the machine
@@ -216,7 +231,10 @@ per-model week. That provider's reading is the lowest of them, the screen names
 which one binds and prints them all with their own resets, and a reading served
 from cache says `stale` and how old it is.
 
-**The reserve is 20%, per account. Below it you dispatch nothing new.** That
+**The reserve is 20%, per account. Below it you dispatch nothing new** — and
+where a conductor session runs, nothing new as an origin unless the reading
+is clearly above it (`fleet-intake` §3): near the floor, the conductor is the
+one actor that dispatches. That
 is the rule, and it is checkable rather than a feeling: the screen prints the
 reading and the reserve on one line, and the pane's bar marks where the floor
 falls across it. It is fleet's own floor and not `quota-axi`'s `reserve`
@@ -406,7 +424,8 @@ carries them, a gitignored `voice.conf` beside it overrides, and
   timing. `uv run fleet queue watch` and `collect` are the two halves. The
   mailbox is still right for something genuinely urgent and wrong for routine
   completion, which is nearly all of it. Pass `--parent <your-uuid>` when you
-  create workers so you can enumerate them.
+  create workers so you can enumerate them; `uv run fleet sessions orphans`
+  lists what you and the conductor spawned that no live task holds.
 
 ## What you are not
 
@@ -423,8 +442,8 @@ the rule protects is still true of it —
 - **It observes; it does not decide.** It folds `watch`, and it runs `collect`,
   `shepherd` and `refuel` on their own clocks. It never dispatches, cancels or
   reorders anything. Choosing what runs is still yours.
-- **It wakes you when the ready set grows or a worker stalls, and that is not
-  it deciding.** A
+- **It wakes the conductor when the ready set grows or a worker stalls — you,
+  unless a conductor session runs — and that is not it deciding.** A
   task whose blocker clears has no actor — the loop may not dispatch it and you
   are not looking — so it reads `plan` and types one line into your terminal
   naming what is ready and the command that sends it. Once per transition, and

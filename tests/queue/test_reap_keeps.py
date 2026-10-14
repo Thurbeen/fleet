@@ -85,6 +85,27 @@ def test_uncovered_is_not_idle_and_the_lead_is_never_a_candidate(first_landed, s
     expect(q("reap", "--dry-run", THURBOX_SESSION=sid).out, "lead")
 
 
+def as_conductor(stubs, sid: str) -> None:
+    """`sid`'s session, renamed to the fleet's conductor: the one row under that name."""
+    record = stubs.root / "sessions" / f"{sid}.json"
+    row = json.loads(record.read_text(encoding="utf-8"))
+    row.pop("cwd", None)
+    write(record, json.dumps({**row, "name": "Gate Conductor"}) + "\n")
+
+
+def test_the_conductor_is_never_a_candidate_whoever_runs_the_reap(first_landed, stubs, queue_dir):
+    """The conductor is refused like the lead, by NAME — the reconciler runs
+    reap from no session at all, so THURBOX_SESSION cannot be what saves it."""
+    sid = "88888888-8888-8888-8888-888888888888"
+    worker(first_landed, "08", "tidy-the-readme", "Tidy the readme", sid, "idle", "not-applicable",
+           "Nothing to tidy.", stubs, queue_dir)
+    as_conductor(stubs, sid)
+    out = q("collect", FLEET_LEAD_SESSION="Gate Control", FLEET_CONDUCTOR_SESSION="Gate Conductor",
+            THURBOX_SESSION=None).out
+    expect(out, "08-tidy-the-readme", "conductor's own session")
+    refute(deletions(stubs), sid)
+
+
 def test_a_declared_uncovered_session_that_reports_is_reaped_like_any_other(
     first_landed, stubs, queue_dir
 ):

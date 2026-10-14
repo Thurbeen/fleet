@@ -435,3 +435,57 @@ agent = "__LEAD_AGENT__"
 # Rendered by `uv run fleet install-extension`. See the header for why this is
 # an absolute path and not a `~`.
 repo_path = "__REPO_PATH__"
+#>>> conductor: down to the closing marker, rendered only under CONDUCTOR=on
+
+# --- the conductor: a second session, opt-in ---------------------------------
+#
+# The background session that KEEPS THE WORK MOVING: the reconciler's ready,
+# stalled, unprompted, review and sync notices go to it instead of the lead
+# (`scripts/lib/notify_conductor.py`'s `conductor_row`, which falls back to the
+# lead whenever this session is not running), and it may dispatch, re-prompt,
+# refuel and block on a condition. It never abandons a task and never changes a
+# brief: those go to the task's origin as `needs-input`.
+# `.agents/skills/fleet-conductor/` is its role.
+#
+# OPT-IN, AND OFF RENDERS NOTHING. With `CONDUCTOR` unset this whole block is
+# cut, markers and all, so the manifest is byte-for-byte the one it was before
+# the conductor existed — the rule `fleet.example.conf`'s NAME follows — and
+# the lead stays both the only origin and the conductor.
+#
+# IT OPENS ITS OWN DIRECTORY, NOT THE CHECKOUT, and that is how it gets its
+# own standing context. Every agent loads its context files from its CWD, and
+# both a Claude lead's (`CLAUDE.md` -> `FLEET.rendered.md`) and a Codex lead's
+# (`.codex/config.toml`) live in the checkout — so a conductor opened there
+# would be told it is Mission Control. `uv run fleet install-extension` renders
+# `orchestration/conductor/` instead, gitignored, inside the checkout: a
+# `CLAUDE.md` holding `CONDUCTOR.md` rendered, a `.claude/settings.json`
+# carrying the checkout's own startup hooks and excluding the checkout's
+# `CLAUDE.md` (a CLAUDE.md that imports a file outside the cwd stops a Claude
+# session on its external-imports dialog), and for a Codex conductor a
+# `.codex/config.toml`, the nearer of two project configs, whose
+# `developer_instructions` win. Being INSIDE the checkout is what lets every
+# `uv run fleet` it types find the checkout's project, and its trust.
+#
+# ITS NAME is a second resolved-by-name string, so everything the RENAMING
+# header says applies to it too: the mark (`CONDUCTOR_GLYPH_ON`, nothing under
+# `GLYPHS=off`), the word, and the fleet's label are all part of it, and
+# installing a new one spawns a second conductor beside the first. Its agent is
+# `CONDUCTOR_AGENT` in `orchestration/agent.conf`, else `AGENT`, else `claude`.
+#
+# TURNING IT OFF is not a rename and costs no lead. Unset CONDUCTOR, run
+# `uv run fleet install-extension` — the manifest stops declaring the session,
+# and its generated directory is removed — and THEN delete the session:
+#
+#     thurbox-cli session delete '<the conductor, pasted from session list>' --force
+#
+# In that order, for the reason the RENAMING header's step 4 gives: until the
+# new manifest is installed, self-heal spawns it straight back. Until it is
+# deleted, the reconciler goes on telling it, because it is still running.
+
+[[sessions]]
+name = "__CONDUCTOR_MARK__Conductor__FLEET_LABEL__"
+agent = "__CONDUCTOR_AGENT__"
+# Rendered by `uv run fleet install-extension`: this checkout's
+# `orchestration/conductor`, absolute, for the reason the header gives.
+repo_path = "__CONDUCTOR_PATH__"
+#<<< conductor

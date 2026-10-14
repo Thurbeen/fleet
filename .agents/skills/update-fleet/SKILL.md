@@ -208,6 +208,23 @@ the lead is at rest with `thurbox-cli session get '<the lead>'`, reading the
 word as `thurbox-session` §4a says), and **the old instructions are still in
 the resumed history**.
 
+### The conductor is stale too
+
+A fleet that runs a conductor session (`CONDUCTOR=on` in
+`orchestration/fleet.conf`) has a second session that froze its instructions
+at launch: `CONDUCTOR.md`, rendered into `orchestration/conductor/`, and the
+skills. §3's re-install re-renders that file; the session still needs the
+same restart, under its own name — `thurbox-cli session restart
+'<the conductor>'`, pasted from `session list` like the lead's. Its
+conversation is worth far less than the lead's, so `session delete` is the
+ordinary choice for it.
+
+**When the conductor runs this skill** — a sync notice reaches the conductor
+first — it runs §1–§7 and performs neither hand-over: the lead's conversation
+is the operator's, and a restart of itself ends the turn doing it. It leaves
+both commands in the lead's mailbox with `--no-wake`, as
+`fleet-conductor` says, and the lead reports them.
+
 ### When the new instructions have to win
 
 For a change that must not argue with an older copy in the same context,

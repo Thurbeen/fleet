@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""`fleet sessions`: the thurbox sessions this fleet's lead spawned, seen from the queue.
+"""`fleet sessions`: the thurbox sessions this fleet's lead and conductor spawned, seen from the queue.
 
     uv run fleet sessions orphans [--json] [--parent ID]
 
@@ -10,14 +10,20 @@ task, a fixer whose task has since ended — is parented to the lead and named i
 no live record, so no queue view shows it and nothing ever releases it. Asking
 for those to be cleaned up was the operator's most repeated request.
 
-So this lists every session whose parent is the lead and which no live task
-holds: none records it, or the one that does is `landed` or `abandoned`. It
-DELETES NOTHING. Whether a reviewer's conversation is still worth having is the
-operator's call, and the line under each row is the command that makes it.
+So this lists every session whose parent is a CONTROL SESSION and which no
+live task holds: none records it, or the one that does is `landed` or
+`abandoned`. It DELETES NOTHING. Whether a reviewer's conversation is still
+worth having is the operator's call, and the line under each row is the
+command that makes it.
 
-The lead is the session `notify_conductor.py` would wake — the rendered manifest's
-name, or FLEET_LEAD_SESSION — then THURBOX_SESSION when this runs inside it;
-`--parent` names one outright.
+THE PARENTS. `dispatch` passes the session it runs in as `--parent`, so a
+worker is parented to whoever dispatched it: the lead, the conductor, or an
+origin. The control sessions are this checkout's lead and its conductor, as
+`notify_conductor.py`'s `control_sessions` finds them — the rendered manifest's
+names, or FLEET_LEAD_SESSION and FLEET_CONDUCTOR_SESSION — plus THURBOX_SESSION
+when this runs inside a session, which is how an origin lists its own. An
+origin is otherwise not enumerable: many may come and go, and none is named
+anywhere fleet can read. `--parent` names one outright, and only that one.
 """
 
 from __future__ import annotations
@@ -44,18 +50,20 @@ fleetqueue = _load_sibling("fleet_queue", "queue.py")
 notify = _load_sibling("fleet_notify_conductor", "notify_conductor.py")
 
 
-def lead_id(parent: str | None) -> tuple[str | None, str]:
-    """The lead's session id, or None with the reason it could not be found."""
+def parent_ids(parent: str | None) -> tuple[dict[str, str], str]:
+    """{session id: what it is} for the parents whose children are listed, or {} and why none was found."""
     if parent:
-        return parent, ""
+        return {parent: "the lead"}, ""
+    found = {sid: f"the {role}" for sid, role in notify.control_sessions().items()}
+    inside = os.environ.get("THURBOX_SESSION", "").strip()
+    if inside and inside not in found:
+        found[inside] = "this session"
+    if found:
+        return found, ""
     name = notify.lead_name()
     if name:
-        sid, status = notify.lead_session(name)
-        return (sid, "") if sid else (None, status)
-    inside = os.environ.get("THURBOX_SESSION", "").strip()
-    if inside:
-        return inside, ""
-    return None, "no lead session is configured; name its id with --parent"
+        return {}, notify.lead_session(name)[1]
+    return {}, "no lead session is configured; name its id with --parent"
 
 
 def _held_sessions() -> dict:
@@ -75,15 +83,16 @@ def _held_sessions() -> dict:
     return held
 
 
-def orphans(lead: str) -> tuple[list | None, str]:
-    """Every session parented to `lead` that no live task holds, oldest-idle first."""
+def orphans(parents) -> tuple[list | None, str]:
+    """Every session parented to one of `parents` that no live task holds, oldest-idle first."""
+    parents = [parents] if isinstance(parents, str) else list(parents)
     sessions, why = fleetqueue.session_snapshot()
     if sessions is None:
         return None, why
     held = _held_sessions()
     rows = []
     for sid, row in sessions.items():
-        if sid == lead or row.get("parent_session_id") != lead:
+        if sid in parents or row.get("parent_session_id") not in parents:
             continue
         tasks = sorted(held.get(sid, []), key=lambda t: t.ref)
         if any(t.state not in fleetqueue.TERMINAL_STATES for t in tasks):
@@ -96,24 +105,27 @@ def orphans(lead: str) -> tuple[list | None, str]:
             "cwd": row.get("cwd"),
             "task": tasks[0].ref if tasks else None,
             "task_state": tasks[0].state if tasks else None,
+            "parent": row.get("parent_session_id"),
         })
     rows.sort(key=lambda r: -(r["idle_secs"] if isinstance(r["idle_secs"], (int, float)) else 0))
     return rows, ""
 
 
 def cmd_orphans(args) -> int:
-    lead, why = lead_id(args.parent)
-    if not lead:
+    parents, why = parent_ids(args.parent)
+    if not parents:
         print(f"sessions orphans: {why}", file=sys.stderr)
         return 1
-    rows, why = orphans(lead)
+    rows, why = orphans(list(parents))
     if rows is None:
         print(f"sessions orphans: {why}", file=sys.stderr)
         return 1
     if args.json:
-        print(json.dumps({"lead": lead, "orphans": rows}, indent=2))
+        print(json.dumps({"lead": next(iter(parents)), "parents": list(parents), "orphans": rows}, indent=2))
         return 0
-    print(f"orphans: {len(rows)} session(s) parented to the lead that no live task holds")
+    whom = list(parents.values())
+    whom = whom[0] if len(whom) == 1 else ", ".join(whom[:-1]) + " or " + whom[-1]
+    print(f"orphans: {len(rows)} session(s) parented to {whom} that no live task holds")
     for row in rows:
         age = row["idle_secs"]
         since = f"  for {int(age) // 60}m" if isinstance(age, (int, float)) else ""
@@ -131,7 +143,7 @@ def main(argv: list) -> int:
     sub = ap.add_subparsers(dest="verb", required=True)
     o = sub.add_parser("orphans", help="the lead's sessions that no live task holds")
     o.add_argument("--json", action="store_true", help="one JSON document instead of lines")
-    o.add_argument("--parent", help="the lead's session id; by default the lead is found by name")
+    o.add_argument("--parent", help="one parent's session id; by default the lead, the conductor and this session")
     args = ap.parse_args(argv)
     return cmd_orphans(args)
 

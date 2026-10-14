@@ -891,6 +891,27 @@ def is_this_checkout(path) -> bool:
         return False
 
 
+# The conductor's own directory, inside this checkout: `fleet install-extension`
+# renders it for a fleet that runs a conductor, and the session opens it rather
+# than the checkout so that it loads its own standing context and not the
+# lead's. `extension.toml.in`'s conductor block owns the why.
+CONDUCTOR_DIR = os.path.join("orchestration", "conductor")
+
+
+def is_conductor_dir(path) -> bool:
+    """Whether `path`, on THIS machine, is this checkout's conductor directory.
+
+    `is_this_checkout`'s rule, one directory down: the conductor's cwd is the
+    one place it differs from the lead's.
+    """
+    if not isinstance(path, str) or not path:
+        return False
+    try:
+        return os.path.samefile(path, os.path.join(checkout_root(), CONDUCTOR_DIR))
+    except (OSError, ValueError):
+        return False
+
+
 # --- the session glyph, which is one setting and one name per KIND ------------
 #
 # thurbox has no per-session icon field, so a session that wears a mark wears it
@@ -1035,6 +1056,9 @@ GLYPH_KEYS = {
     "worker": "WORKER_GLYPH_ON",
     "diagnose": "DIAGNOSE_GLYPH_ON",
     "review": "REVIEW_GLYPH_ON",
+    # Not spawned by a dispatch or a skill: `fleet install-extension` renders
+    # it into the manifest's second `[[sessions]]`, through this map.
+    "conductor": "CONDUCTOR_GLYPH_ON",
 }
 
 
@@ -1378,6 +1402,11 @@ def manifest_session(path: str) -> tuple[str | None, str | None]:
     return _load_sibling("fleet_manifest", "manifest.py").read_lead_session(path)
 
 
+def manifest_conductor(path: str) -> tuple[str | None, str | None]:
+    """(session name, repo_path) of the conductor a manifest declares; (None, None) when none."""
+    return _load_sibling("fleet_manifest", "manifest.py").read_conductor_session(path)
+
+
 def live_session_cwd(name: str) -> str | None:
     """The directory the named thurbox session actually opens, if it is running."""
     try:
@@ -1404,7 +1433,17 @@ def live_session_cwd(name: str) -> str | None:
 
 
 def control_plane() -> str | None:
-    """The checkout that owns the queue, or None when it cannot be told."""
+    """The checkout that owns the queue, or None when it cannot be told.
+
+    WITH MANY ORIGINS AND ONE CONDUCTOR it is still the LEAD's checkout, and
+    still one: the lead is the manifest's first `[[sessions]]`, and it opens
+    the checkout itself. The conductor opens `orchestration/conductor` INSIDE
+    that checkout, so it names no second one, and its code runs from the same
+    files — the guard below agrees with it by construction. An origin is any
+    conversation in any directory; it reaches the queue through
+    `uv run --project <checkout>`, and this guard is what tells it which
+    checkout that is. None of them is asked here: one answer, the lead's.
+    """
     here = checkout_root()
     # The tracked extension.toml.in is the fallback source for the session's
     # NAME, so a rename (README's "Renaming" section) reaches this without a
@@ -7805,13 +7844,42 @@ def _remove_fixer_worktree(task: Task, path: str) -> subprocess.CompletedProcess
     return proc
 
 
+# THE SESSIONS NO VERB HERE MAY TAKE AS A WORKER'S. The session the command
+# runs in has always been refused by id, from THURBOX_SESSION; with a conductor
+# that is no longer the lead's alone, since the lead, the conductor and any
+# origin may each run `reap` or `refuel`, and the reconciler runs both from no
+# session at all. So this checkout's lead and conductor are refused BY NAME as
+# well — `notify_conductor.control_sessions`, the one reading of who they are —
+# whoever runs the command. Asked only when there is a session to judge.
+CONTROL_WHY = {
+    "self": "that is the lead's own session, not a worker's",
+    "lead": "that is the lead's own session, not a worker's",
+    "conductor": "that is the conductor's own session, not a worker's",
+}
+
+
+def control_session_ids() -> dict[str, str]:
+    """{session id: "self" | "lead" | "conductor"}: the sessions reap and refuel refuse."""
+    found: dict[str, str] = {}
+    try:
+        notify = _load_sibling("fleet_notify_conductor", "notify_conductor.py")
+        found.update(notify.control_sessions())
+    except Exception:  # noqa: BLE001 — unknown refuses nothing more than before
+        pass
+    inside = os.environ.get("THURBOX_SESSION")
+    if inside:
+        found[inside] = "self"
+    return found
+
+
 def reap(q: Queue, dry: bool = False, release: bool = True) -> int:
     """Land what has landed, then release the session of every task that is finished.
 
     Only ever acts on a session THIS QUEUE recorded. The lead's own session and
     anything made by hand are not in the records and so are never candidates;
     the lead's is additionally named and refused, because a task attached to it
-    by mistake would otherwise be a deletion.
+    by mistake would otherwise be a deletion — and so is the conductor's
+    (`control_session_ids`).
 
     ITS VIEW IS `all`, AND BOTH CALLERS BUILD IT THAT WAY. A task that lands
     while its worker is not yet at rest is KEPT — correctly — and a keep is a
@@ -7907,7 +7975,7 @@ def _reap_holders(q: Queue, state_of, landings: dict, snapshot, dry: bool,
     if not holders:
         return acted
 
-    lead = os.environ.get("THURBOX_SESSION")
+    lead = control_session_ids()
     live: set | None = None
     live_detail = ""
     if any(state_of(t) in ("landed", "abandoned") for t in holders):
@@ -7931,11 +7999,11 @@ def _reap_holders(q: Queue, state_of, landings: dict, snapshot, dry: bool,
     return acted
 
 
-def _reap_hold_reason(task: Task, sid: str, state: str, lead: str | None, landings: dict,
+def _reap_hold_reason(task: Task, sid: str, state: str, lead: dict, landings: dict,
                       live: set | None, live_detail: str) -> str:
     """Why `reap` keeps this holder's session before asking thurbox, or ""."""
-    if sid == lead:
-        return "that is the lead's own session, not a worker's"
+    if sid in lead:
+        return CONTROL_WHY[lead[sid]]
     if review_lifecycle().holds_reviewer(sys.modules[__name__], task):
         return "configured reviewer remains responsible for current and future heads"
     if state in ("stuck", "failed"):
@@ -7950,7 +8018,7 @@ def _reap_hold_reason(task: Task, sid: str, state: str, lead: str | None, landin
     return ""
 
 
-def _reap_holder(task: Task, state: str, lead: str | None, landings: dict, live: set | None,
+def _reap_holder(task: Task, state: str, lead: dict, landings: dict, live: set | None,
                  live_detail: str, dry: bool, decided: set) -> tuple[int, int, int]:
     """Release, keep or drop one holder's session. (reaped, kept, dropped)."""
     sid = task.doc["session"]
@@ -9097,7 +9165,7 @@ def refuel(q: Queue, ref: str | None = None, dry: bool = False) -> int:
     for account in accounts.values():
         _print_account(account)
 
-    lead = os.environ.get("THURBOX_SESSION")
+    lead = control_session_ids()
     acted = fired = kept = 0
     for task in holders:
         acted += 1
@@ -9138,7 +9206,7 @@ def _print_account(account: "Account") -> None:
         )
 
 
-def _refuel_task(task: Task, accounts: dict, lead: str | None, dry: bool) -> bool:
+def _refuel_task(task: Task, accounts: dict, lead: dict, dry: bool) -> bool:
     """Judge one session holder, and restart it when it ran dry. True when it fired."""
     sid = task.doc["session"]
     if _refuel_held(task, sid, accounts, lead):
@@ -9195,13 +9263,15 @@ def _refuel_restart(task: Task, sid: str, doc: dict, detail: str, dead: bool,
     return True
 
 
-def _refuel_held(task: Task, sid: str, accounts: dict, lead: str | None) -> bool:
+def _refuel_held(task: Task, sid: str, accounts: dict, lead: dict) -> bool:
     """Whether `refuel` leaves this session alone before reading it. True has said why."""
-    if sid == lead:
+    if sid in lead:
         # `reap`'s guard, for the same reason and a worse consequence: a
-        # restart of the lead kills the operator's own conversation.
-        print(f"    {task.ref:<46} kept          that is the session running this "
-              "command — the lead's own, not a worker's")
+        # restart of the lead kills the operator's own conversation, and one
+        # of the conductor the work that conversation was keeping moving.
+        whose = {"self": "the session running this command — the lead's own",
+                 "lead": "the lead's own session", "conductor": "the conductor's own session"}[lead[sid]]
+        print(f"    {task.ref:<46} kept          that is {whose}, not a worker's")
         return True
     reviewing = (task.state in ("done", "landed")
                  and review_lifecycle().holds_reviewer(sys.modules[__name__], task))

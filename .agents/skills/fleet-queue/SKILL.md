@@ -1015,7 +1015,9 @@ is also a setting: `<NAME>_SECS` in the gitignored
 restart` after an edit), with `FLEET_RECONCILE_<NAME>_SECS` still beating it.
 Two things are about you:
 
-- **It will type one line at you about six things:** that N
+- **It will type one line at the conductor about six things** — at you,
+  unless this fleet runs a conductor session, which `fleet-conductor` drives
+  and which asks a task's origin before anything is abandoned: that N
   tasks are ready and nothing will dispatch them — treat it as `plan` already
   run, and `dispatch`; that N workers are STALLED — dispatched, at rest past
   half an hour, no `result.md`, no new commit: `show` the task, then `send` a

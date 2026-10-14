@@ -3,10 +3,14 @@
 stalled, was never briefed, or asked with nowhere else to ask, review is owed,
 or a sync needs a hand.
 
-THE CONDUCTOR is the session that keeps the work moving. Until fleet runs one
-of its own it IS the lead — a single Mission Control is both the only origin
-and the conductor — and `conductor_name` is the one function that says which
-session it is, so pointing it somewhere else changes one answer. What a task's
+THE CONDUCTOR is the session that keeps the work moving. A fleet whose
+`fleet.conf` says `CONDUCTOR=on` runs one of its own — the second
+`[[sessions]]` of its rendered manifest, opening `orchestration/conductor/` —
+and every notice here goes to it WHILE IT RUNS. Otherwise, and whenever that
+session is not running, the conductor IS the lead: a single Mission Control is
+both the only origin and the conductor, and every notice reaches exactly the
+session it always did. `conductor_row` is the one function that says which
+session it is. What a task's
 ORIGIN is told — its outcome, its worker's question — is `notify_origin.py`'s.
 HOW either is said is `notify_delivery.py`'s, shared by both.
 
@@ -134,11 +138,14 @@ A notifier that can fail the pass it rides on would cost the reconciler the
 `collect` it just did, which is a real loss traded for a message.
 
 Environment:
-  FLEET_LEAD_SESSION  the lead session's name — and so, until there is a
-                      conductor of its own, the conductor's — overriding the
-                      rendered extension.toml. The gate uses it, since a rendered
-                      manifest belongs to the operator's checkout and is not
-                      something a test may write.
+  FLEET_LEAD_SESSION       the lead session's name, overriding the rendered
+                           extension.toml. The gate uses it, since a rendered
+                           manifest belongs to the operator's checkout and is not
+                           something a test may write.
+  FLEET_CONDUCTOR_SESSION  the conductor session's name, the same way. Where
+                           FLEET_LEAD_SESSION is set and this is not, there is
+                           no conductor of its own: the override names the
+                           whole setup, and the manifest is not read for half.
 
 Requires: python3. `thurbox-cli` for the send itself — without it there is
 nothing to wake and this says so once. A thurbox with no mailbox refuses the
@@ -260,22 +267,73 @@ def lead_name() -> str:
     return name
 
 
-def conductor_name() -> str:
-    """What the conductor session is called, or "" when nothing here can tell.
+def own_conductor_name() -> str:
+    """What this fleet's OWN conductor session is called, or "" when it runs none.
 
-    THE ONE PLACE THAT ANSWERS IT. Until fleet runs a conductor session of its
-    own, the conductor IS the lead — a single Mission Control is both the only
-    origin and the one that keeps the work moving — so this is `lead_name()`,
-    and every notice reaches exactly the session it always did.
+    The rendered manifest's second `[[sessions]]`, read the way `lead_name`
+    reads the first. "" is a fleet that did not turn the conductor on, and an
+    ordinary one: its lead is the conductor.
     """
-    return lead_name()
+    override = os.environ.get("FLEET_CONDUCTOR_SESSION", "").strip()
+    if override:
+        return override
+    if os.environ.get("FLEET_LEAD_SESSION", "").strip():
+        return ""
+    root = fleetqueue.checkout_root()
+    name, _repo = fleetqueue.manifest_conductor(os.path.join(root, "extension.toml"))
+    if not name or "__" in name:
+        return ""
+    return name
+
+
+def own_conductor_row() -> tuple[str, dict | None, str]:
+    """(the own conductor's name, its `session list` row, why there is none); ("", None, "") without one."""
+    name = own_conductor_name()
+    if not name:
+        return "", None, ""
+    row, why = session_row(name, fleetqueue.is_conductor_dir)
+    return name, row, why
 
 
 def conductor_row() -> tuple[str, dict | None, str]:
-    """(the conductor's name, its `session list` row, why there is none)."""
-    name = conductor_name()
+    """(the conductor's name, its `session list` row, why there is none).
+
+    THE ONE PLACE THAT ANSWERS IT. This fleet's own conductor while it runs;
+    the lead otherwise — a fleet that runs none, and one whose conductor was
+    deleted, closed or never spawned — because a notice nobody receives is the
+    six hours this module exists to prevent. A switch either way is a new
+    session to `forget_for`, so whichever one takes over is told the standing
+    sets afresh rather than inheriting "already told".
+    """
+    _own, row, _why = own_conductor_row()
+    if row:
+        return _own, row, ""
+    name = lead_name()
     row, status = lead_row(name) if name else (None, "")
     return name, row, status
+
+
+def conductor_name() -> str:
+    """What the conductor session is called right now, or "" when nothing here can tell."""
+    return conductor_row()[0]
+
+
+def control_sessions() -> dict[str, str]:
+    """{session id: "lead" | "conductor"} for this checkout's running control sessions.
+
+    What `reap`, `refuel` and `sessions orphans` refuse or enumerate as the
+    lead's. Either missing is simply absent; nothing here guesses.
+    """
+    found: dict[str, str] = {}
+    name = lead_name()
+    if name:
+        row, _why = lead_row(name)
+        if row:
+            found[str(row["id"])] = "lead"
+    _own, row, _why = own_conductor_row()
+    if row:
+        found[str(row["id"])] = "conductor"
+    return found
 
 
 def lead_session(name: str) -> tuple[str | None, str]:
@@ -289,6 +347,15 @@ def lead_row(name: str) -> tuple[dict | None, str]:
 
     The one answer to "which session is the lead": the wake below and
     `reconcile.py`'s `is_lead` both read it, so they cannot disagree.
+    """
+    return session_row(name, fleetqueue.is_this_checkout)
+
+
+def session_row(name: str, here_is) -> tuple[dict | None, str]:
+    """The `session list` row named `name` whose cwd `here_is` accepts, or (None, why not).
+
+    `here_is` is the directory the session opens: the checkout for the lead,
+    its `orchestration/conductor` for the conductor.
 
     `session list` and not `session get`: the list carries `id`, `state` and
     `agent_session_id` for every session in one call and probes no pane, which
@@ -307,7 +374,7 @@ def lead_row(name: str) -> tuple[dict | None, str]:
     # `is_this_checkout`, the rule `peers.py` tells a peer from itself by.
     # A sole legacy row without cwd still answers, unless its backend says it
     # runs elsewhere. Known metadata must never contradict checkout ownership.
-    here = [r for r in named if delivery.is_local(r) and fleetqueue.is_this_checkout(r.get("cwd"))]
+    here = [r for r in named if delivery.is_local(r) and here_is(r.get("cwd"))]
     if len(here) == 1:
         return here[0], ""
     if len(named) == 1 and not named[0].get("cwd") and delivery.is_local(named[0]):
@@ -415,7 +482,7 @@ def stale_message(pending: dict) -> str:
     return (
         f"fleet reconciler: fast-forwarded this checkout {before}..{pending.get('after', '')[:8]}; "
         f"it needs {', '.join(pending.get('actions', {}))} ({shown}). "
-        f"Run /update-fleet {before} to apply it — its last step hands this lead over."
+        f"Run /update-fleet {before} to apply it — its last step hands the lead over."
     )
 
 

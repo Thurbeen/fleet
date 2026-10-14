@@ -10,7 +10,7 @@ against the code that defines them, and every repository path they name against
 `git ls-files` — or `.gitignore`, because a path a running fleet writes is
 documented there and tracked nowhere.
 
-Only the instruction files: the skills, the two guides, the worker policy and
+Only the instruction files: the skills, the three guides, the worker policy and
 the queue's own README. Module docstrings are code and are held by the code.
 """
 
@@ -26,6 +26,7 @@ from harness import REPO, lib
 DOCS = sorted(REPO.glob(".agents/skills/*/SKILL.md")) + [
     REPO / "AGENTS.md",
     REPO / "FLEET.md",
+    REPO / "CONDUCTOR.md",
     REPO / "CONTRIBUTING.md",
     REPO / "orchestration" / "queue" / "README.md",
     REPO / "orchestration" / "queue" / "POLICY.md",

@@ -36,6 +36,13 @@
 # `uv run fleet sync-checkout` has to fast-forward.
 /FLEET.rendered.md
 
+# GENERATED. The conductor session's own directory — its CLAUDE.md, its
+# CONDUCTOR.rendered.md, its .claude/ and, for a Codex conductor, its .codex/ —
+# written by `uv run fleet install-extension` only when orchestration/fleet.conf
+# says CONDUCTOR=on, and removed when it stops saying so. extension.toml.in's
+# conductor block says why the conductor does not open the checkout itself.
+/orchestration/conductor/
+
 # GENERATED. Checkout-scoped Codex lead context and lifecycle hooks, rendered
 # only for a Codex lead. Workers' worktrees do not inherit this directory.
 /.codex/

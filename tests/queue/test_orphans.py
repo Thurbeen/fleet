@@ -72,3 +72,27 @@ def test_another_checkouts_lead_does_not_supply_this_fleets_orphans(attached, st
     assert run.code != 0, run.out
     expect(run.out, "none of them is this checkout's")
     refute(run.out, REVIEW, "Traceback")
+
+
+CONDUCTOR = "Gate Conductor"
+CONDUCTOR_ID = "conductor-uuid"
+FIXER = "55555555-5555-5555-5555-555555555555"
+
+
+def test_the_conductors_children_are_listed_beside_the_leads(attached, stubs):
+    """The conductor dispatches, so `--parent` names it on what it spawns."""
+    session(stubs, LEAD_ID, LEAD, None)
+    write(stubs.root / "sessions" / f"{CONDUCTOR_ID}.json", json.dumps({
+        "id": CONDUCTOR_ID, "name": CONDUCTOR, "state": "idle", "backend_type": "local:tmux",
+    }))
+    session(stubs, REVIEW, "review prs", LEAD_ID)
+    session(stubs, FIXER, "spawned by the conductor", CONDUCTOR_ID)
+    session(stubs, STRANGER, "by hand", None)
+
+    run = run_fleet("sessions", "orphans", "--json", FLEET_LEAD_SESSION=LEAD, FLEET_CONDUCTOR_SESSION=CONDUCTOR)
+    assert run.code == 0, run.out
+    doc = json.loads(run.stdout)
+    assert {row["id"] for row in doc["orphans"]} == {REVIEW, FIXER}
+    assert set(doc["parents"]) == {LEAD_ID, CONDUCTOR_ID}
+    out = run_fleet("sessions", "orphans", FLEET_LEAD_SESSION=LEAD, FLEET_CONDUCTOR_SESSION=CONDUCTOR).out
+    expect(out, "the lead or the conductor")

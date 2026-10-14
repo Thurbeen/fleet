@@ -175,24 +175,25 @@ names every path and the reason for each.
 - `orchestration/session-glyphs.example.conf` — the mark fleet's sessions wear
   in the thurbox session list: `📡` on the lead and one word per KIND of session
   fleet spawns — a queue worker, the `diagnose-machine` sweep, the `review-prs`
-  reviewer — under ONE `GLYPHS=on|off` setting whose `off` is the one-cell `⌖`
-  and no prefix on anything else. Tracked defaults; copy it to a gitignored
-  `session-glyphs.conf` beside it to change anything, since editing a tracked
-  file would leave `fleet sync-checkout` a dirty tree. TWO MODULES read it and
-  no third: `fleet install-extension` renders the lead's mark into the
+  reviewer, the conductor — under ONE `GLYPHS=on|off` setting whose `off` is the
+  one-cell `⌖` and no prefix on anything else. Tracked defaults; copy it to a
+  gitignored `session-glyphs.conf` beside it to change anything, since editing a
+  tracked file would leave `fleet sync-checkout` a dirty tree. TWO MODULES read
+  it and no third: `fleet install-extension` renders the lead's mark into the
   manifest, and `scripts/lib/queue.py` holds the map from a kind to its word —
-  which `dispatch` uses in-process for a worker and which
-  `uv run fleet session-name <kind> '<title>'` (`scripts/lib/session_name.py`)
-  renders for the two skills whose own `session create` line spawns a session,
-  since prose can read no setting. `tests/pane/test_agreement.py` fails the
-  pane, or either of those two skills, spelling one. **Changing any word is a
-  RENAME, and installing is not applying one** — see `extension.toml.in`'s
-  RENAMING header for the lead's, which is the expensive one. None of the other
-  three is free either: every session fleet spawns is looked up by the name it
-  was given (`adopt` in both skills and in the fixer, `fail` in `dispatch`), so
-  the one running under the old word is no longer found and the next spawn
-  makes a second beside it. `thurbox-cli session rename` applies a new word to
-  a live session, and only before that second one exists.
+  which the installer also asks for the conductor's, `dispatch` uses in-process
+  for a worker, and which `uv run fleet session-name <kind> '<title>'`
+  (`scripts/lib/session_name.py`) renders for the two skills whose own
+  `session create` line spawns a session, since prose can read no setting.
+  `tests/pane/test_agreement.py` fails the pane, or either of those two skills,
+  spelling one. **Changing any word is a RENAME, and installing is not applying
+  one** — see `extension.toml.in`'s RENAMING header for the lead's and the
+  conductor's, which thurbox resolves by name. None of the other three is free
+  either: every session fleet spawns is looked up by the name it was given
+  (`adopt` in both skills and in the fixer, `fail` in `dispatch`), so the one
+  running under the old word is no longer found and the next spawn makes a
+  second beside it. `thurbox-cli session rename` applies a new word to a live
+  session, and only before that second one exists.
 - `orchestration/fleet.example.conf` — THIS FLEET'S NAME, which is what lets
   one machine run more than one. A fleet is a CHECKOUT — queue, registry, run
   logs, reconciler runtime and first-run answers all live in it — so two clones
@@ -212,7 +213,14 @@ names every path and the reason for each.
   A second fleet is a second clone:
   `sh install.sh --dir ~/fleet-acme --name acme` (`install.ps1` on Windows), and
   `uv run fleet queue`'s control-plane guard is what keeps two of them from
-  writing one queue.
+  writing one queue. **The same file's `CONDUCTOR=on` gives the fleet a
+  conductor**: a second `[[sessions]]` in the manifest, `<glyph> Conductor`
+  (` · <name>` too), bound to `CONDUCTOR_AGENT` in `agent.conf` (else `AGENT`,
+  else `claude`) and opening `orchestration/conductor/` — gitignored, rendered
+  by `fleet install-extension` with `CONDUCTOR.md` as its standing context,
+  because a session opened in the checkout would load the lead's. Unset, the
+  manifest is byte-for-byte what it was before the conductor existed, by the
+  rule NAME follows. `extension.toml.in`'s conductor block owns the rest.
 - `orchestration/queue/<topic>/` — the task queue. A prompt becomes a TOPIC
   holding its verbatim `PROMPT.md`; the topic decomposes into task directories,
   each with its own `task.yaml`, `BRIEF.md`, `progress.jsonl` and `result.md`.
@@ -381,8 +389,12 @@ names every path and the reason for each.
   POSIX and junctions on Windows; a user-owned skill with the same name is
   refused and left untouched. Never add a second copy under `.claude/`,
   `.codex/` or `.opencode/skills`: every agent-specific path must keep pointing
-  at the canonical tree. Seven skills live there: `fleet-queue` (the
+  at the canonical tree. Nine skills live there: `fleet-queue` (the
   queue: intake, ordering, dispatch, and the two halves of completion),
+  `fleet-intake` (what any ORIGIN does to hand fleet work: topic, briefs, its
+  own first dispatch, and the fuel rule that leaves the rest queued),
+  `fleet-conductor` (what the CONDUCTOR does with the reconciler's notices,
+  and what it must ask an origin instead),
   `thurbox-session` (driving one worker session), `fleet-onboarding` (a fresh
   clone to a working control plane: dependencies, owners, registry, extension,
   the pane on screen, the loop up),
@@ -531,7 +543,8 @@ usage. **It comes back by itself, and never through a down flag**: `fleet
 install` offers a user service (`scripts/lib/reconcile_service.py`: a
 systemd user unit running `reconcile serve`, or a Windows Startup-folder
 script running `ensure`), the SessionStart hook runs `reconcile ensure
---if-lead`, which acts for this checkout's lead session and nobody else, and
+--if-lead`, which acts for this checkout's lead or conductor session and
+nobody else — never for an origin, of which there may be many — and
 `status` exits 1 on "DOWN, nothing asked it down" and on STALLED. Every child
 it runs is held to a bound and killed with its tree past it, so a hung command
 costs one pass and never the loop. Four things about it are load-bearing:
@@ -548,8 +561,9 @@ costs one pass and never the loop. Four things about it are load-bearing:
 - **It reconciles; it does not decide.** No dispatch, no cancel, no reorder,
   and it does not re-decide `refuel`'s rule about a spent quota window.
 - **It tells the conductor when the ready set grows, or a worker stalls** —
-  the lead, until fleet runs a conductor session of its own — and once
-  when a sync it ran needs a hand (see **Pulling changes in**). A task whose
+  the fleet's conductor session while one runs (`CONDUCTOR=on`), the lead
+  otherwise and whenever it does not — and once when a sync it ran needs a
+  hand (see **Pulling changes in**). A task whose
   blocker clears is ready and has no actor: the loop may not dispatch, and the
   lead only acts when spoken to — on 2026-09-10 that cost six and a half hours.
   So after `collect` it reads `plan` and, when the ready set has grown, types
@@ -559,7 +573,8 @@ costs one pass and never the loop. Four things about it are load-bearing:
   not type into gets the same line in its thurbox mailbox instead, posted with
   `message send --no-wake`, which enqueues and delivers nothing; a thurbox
   with no mailbox leaves it at the wait. `scripts/lib/notify_conductor.py`
-  owns who that is (`conductor_name`, the one function to repoint) and when;
+  owns who that is (`conductor_row`, the one answer, with its fallback to the
+  lead) and when;
   `scripts/lib/notify_delivery.py` owns how, for it and for the origin
   notices. **A task's ORIGIN is told two things, by the same rules**
   (`scripts/lib/notify_origin.py`): its outcome — one line when `collect`
@@ -668,7 +683,12 @@ consequences to know before you debug the extension:
   `AGENT` in `orchestration/agent.conf`, rendered into the manifest, else
   thurbox's own `claude` — so it inherits the hook settings that let it report
   state and whatever model that agent defaults to.
-  `extension.toml.in`'s no-`[[agents]]` note owns why. A
+  `extension.toml.in`'s no-`[[agents]]` note owns why. A fleet's
+  conductor, where it runs one, is the manifest's SECOND `[[sessions]]` and
+  is held to everything here that holds the lead: the lead is the FIRST, which
+  is what every reader of `scripts/lib/manifest.py` takes as the lead, so
+  adding a conductor renames nothing. `reap`, `refuel`, `shepherd`'s adoption
+  and `fleet sessions orphans` treat it as they treat the lead. A
   glyph is part of the session name because thurbox has no per-session icon
   field, and WHICH glyph is a setting (see the glyph bullet above), so the
   mailbox address must be **pasted** out of `thurbox-cli session list`, not

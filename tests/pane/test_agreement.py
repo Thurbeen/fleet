@@ -143,6 +143,20 @@ def test_fleet_peers_finds_leads_by_the_pane_s_own_grammar():
         assert peers.lead_fleet(name) == fleet, name
 
 
+def test_fleet_peers_finds_conductors_by_the_same_grammar_and_never_as_leads():
+    peers = lib("peers.py")
+    for name, fleet in (("🎼 Conductor", ""), ("Conductor · acme", "acme"),
+                        ("📡 Mission Control", None), ("🚀 Fix the Conductor", None)):
+        assert peers.conductor_fleet(name) == fleet, name
+        if fleet is not None:
+            assert peers.lead_fleet(name) is None, name
+
+
+def test_the_manifest_declares_the_conductor_by_the_word_peers_reads():
+    block = read(REPO / "extension.toml.in").split("#>>> conductor", 1)[1]
+    assert one(r'^name *= *"(.*)"', block) == f"__CONDUCTOR_MARK__{lib('peers.py').CONDUCTOR}__FLEET_LABEL__"
+
+
 def test_the_setting_carries_a_word_for_every_kind_queue_py_maps():
     """A kind with no word renders a mark-less session and fails nothing else."""
     assert len(GLYPH_KEYS) > 2, f"the setting reads as {len(GLYPH_KEYS)} words — is it still KEY=value?"
