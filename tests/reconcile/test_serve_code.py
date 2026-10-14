@@ -93,3 +93,19 @@ def test_serve_taking_over_records_the_code_it_runs_as_its_own(recon, here):
         refute(status.out, "stale")
     finally:
         end(proc)
+
+
+def test_serve_that_waited_before_its_first_tick_does_not_take_over_on_older_code(recon, here):
+    """It never ticked, so it recorded nothing — but it imported its modules at boot."""
+    assert reconcile(here, "stop").code == 0
+    proc = serve(here)
+    try:
+        assert wait_for(lambda: "asked down" in reconcile(here, "status").out)
+        edit(here / "scripts" / "lib" / "reconcile.py")
+        (recon.rt / "down").unlink()
+
+        assert wait_for(lambda: proc.poll() is not None, 60), \
+            f"serve took over on the code it booted with\n{reconcile(here, 'status').out}"
+        assert not recon.pid(), recon.log()
+    finally:
+        end(proc)

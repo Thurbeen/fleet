@@ -1008,8 +1008,7 @@ def tick(cfg: Config) -> int:
         # has only if nothing came for it.
         changed = [] if replacing else code_changed(cfg.code)
         if changed and cfg.served:
-            log(cfg, f"its own code changed on disk ({shown(changed)}); serve exits for its manager to restart")
-            return 0
+            return 0  # `serve` says why, and exits
         if changed:
             replace_me(cfg, changed)
             replacing = True
@@ -1286,8 +1285,13 @@ def cmd_serve(cfg: Config) -> int:
     if not guard_control_plane(cfg):
         return 1
     cfg.served = True
+    # What it imported at boot, for the takeover before its first pass, which
+    # has recorded nothing yet.
+    boot = loaded_code()
     while not (cfg.parent and not fleet_platform.alive(cfg.parent)):
-        if cfg.code and code_changed(cfg.code):
+        changed = code_changed(cfg.code or boot)
+        if changed:
+            log(cfg, f"its own code changed on disk ({shown(changed)}); serve exits for its manager to restart")
             return 0
         if not asked_down(cfg) and not lock_held(cfg) and stop_legacy(cfg):
             with_lock(cfg, supervise)
