@@ -22,8 +22,8 @@ RESTART THE LEAD when a sync brings new INSTRUCTIONS in. The running Mission
 Control session froze FLEET.md and every skill it had loaded at launch, and
 nothing reloads them from disk, so a fast-forward that touched one of those
 paths says so, as an action for the operator. The same goes for the extension
-manifest: once it or FLEET.md moves, the installed extension no longer matches
-what it was rendered from.
+manifest and the panes: once it, FLEET.md or any `interface/*.lua` moves, what
+thurbox has installed no longer matches what it was rendered or copied from.
 
 RESTART THE RECONCILER when a sync moves its code. A running loop keeps the
 code it started with, and one whose code the sync deleted fails every pass: the
@@ -80,6 +80,12 @@ INSTRUCTION_PATHS = ("FLEET.md", "CONDUCTOR.md", "AGENTS.md", "CLAUDE.md", ".age
 WIRING_PATHS = (
     "extension.toml.in",
     "scripts/lib/install_extension.py",
+    # The installer reads these two to render the manifest, and copies every
+    # pane under interface/ into thurbox's interface directory, so a sync that
+    # moves only one of them still leaves the installed copy stale.
+    "scripts/lib/manifest.py",
+    "scripts/lib/agent_settings.py",
+    "interface",
     "FLEET.md",
     # Rendered into the conductor's own directory, as FLEET.md is for the lead,
     # and so is the checkout's settings file its hooks are copied from.

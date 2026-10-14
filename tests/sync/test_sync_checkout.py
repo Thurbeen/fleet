@@ -252,6 +252,23 @@ def test_new_context_renderer_requires_reinstalling_the_extension(tmp_path):
     expect(sync(work).out, "reinstall-extension: yes", "scripts/lib/install_extension.py")
 
 
+def test_new_pane_code_requires_reinstalling_the_extension(tmp_path):
+    """The installer copies every `interface/*.lua` into thurbox's interface
+    directory, so a sync that moves only the Lua leaves the pane drawing with
+    the old copy until it runs again. So do the modules the render reads."""
+    work = new_repo(tmp_path)
+    for path in ("interface/fleet_reader.lua", "interface/fleet_board.lua", "scripts/lib/manifest.py",
+                 "scripts/lib/agent_settings.py"):
+        advance_origin(tmp_path, path)
+
+    report = json.loads(run_fleet("sync-checkout", "--json", cwd=work).stdout)
+
+    assert report["actions"] == {
+        "reinstall-extension": "interface/fleet_board.lua interface/fleet_reader.lua "
+                               "scripts/lib/agent_settings.py scripts/lib/manifest.py",
+    }
+
+
 def test_the_lead_is_named_as_the_installed_manifest_spells_it(tmp_path):
     """The glyph in front of the lead's name is a setting, so the name comes
     from the rendered manifest and never from a literal."""

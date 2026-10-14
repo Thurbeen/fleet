@@ -75,8 +75,7 @@ git diff --name-only <before> <after>
 
 | A path in the range | Step |
 |---|---|
-| a `reinstall-extension:` line — `extension.toml.in`, `FLEET.md`, the voice or glyph example | §3 |
-| `interface/fleet_queue.lua` | §4 |
+| a `reinstall-extension:` line — `extension.toml.in`, `FLEET.md`, any `interface/*.lua`, the voice or glyph example | §3, then §4 |
 | `registry/owners.txt` | §5 |
 | any `orchestration/*.example.conf`, or `orchestration/queue/POLICY.md` | §5b |
 | a `restart-reconciler:` line — `scripts/lib/reconcile.py`, `scripts/lib/fleet_platform.py`, `uv.lock`, `pyproject.toml` | §6 |
