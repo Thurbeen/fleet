@@ -109,7 +109,8 @@ def test_hosts_a_self_hosted_instance_and_its_subgroup_paths(forge, glab, monkey
     assert ref.repo.owner == "acme"
     for remote in ("https://gitlab.example.com/acme/group/widgets.git",
                    "git@gitlab.example.com:acme/group/widgets.git",
-                   "ssh://git@gitlab.example.com/acme/group/widgets"):
+                   "ssh://git@gitlab.example.com/acme/group/widgets",
+                   "ssh://git@gitlab.example.com:2222/acme/group/widgets.git"):
         assert selfhosted.repo_from_remote(remote) == forge.RepoId("gitlab.example.com", "acme/group/widgets"), remote
 
 

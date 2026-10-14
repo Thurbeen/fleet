@@ -32,6 +32,8 @@ def test_every_ordinary_github_remote_form_names_the_same_repository(forge):
                    "http://github.com/Thurbeen/fleet.git",
                    "https://someone@github.com/Thurbeen/fleet.git",
                    "ssh://git@github.com/Thurbeen/fleet.git",
+                   "ssh://git@github.com:22/Thurbeen/fleet.git",
+                   "ssh://git@ssh.github.com:443/Thurbeen/fleet.git",
                    "git://github.com/Thurbeen/fleet.git",
                    "git@github.com:Thurbeen/fleet.git",
                    "github.com/Thurbeen/fleet"):

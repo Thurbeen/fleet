@@ -1391,3 +1391,39 @@ def test_a_broken_profile_overlay_spawns_no_fixer(tmp_path, stubs, queue_dir):
     out = q("shepherd", "--topic", topic, **env).out
     expect(out, "session-profiles.local.yaml", "THURBOX_SESSION")
     assert shep.creates("01-conflicting") == [], out + "\n----\n" + shep.tbx_log()
+
+
+@pytest.mark.parametrize("origin", [
+    "ssh://git@github.com:22/acme/widgets.git",
+    # GitHub's documented form for a network that blocks port 22.
+    "ssh://git@ssh.github.com:443/acme/widgets.git",
+])
+def test_an_ssh_origin_with_a_port_is_covered_by_its_repository_rule(tmp_path, origin):
+    """The ssh port is not part of the repository's name.
+
+    Both remote patterns captured `host:port` as the host, which no forge
+    owns, so such a checkout resolved to no repository and every policy
+    refused it as "cannot read origin" — on a repository its rule allowed.
+    """
+    repo = tmp_path / "repo"
+    git("init", "-q", "-b", "main", str(repo))
+    git("commit", "-q", "--allow-empty", "-m", "base", cwd=repo)
+    git("remote", "add", "origin", origin, cwd=repo)
+    topic = ok(q(
+        "topic", "add", "ssh-port", "--title", "ssh port",
+        "--prompt", "an ssh origin with a port",
+    )).stdout.strip()
+    env = {"FLEET_AGENT_POLICY": "github.com/acme/widgets=allowed-agent"}
+    refused = q(
+        "add", topic, "wrong", "--title", "Wrong agent",
+        "--repo", str(repo), "--branch", "fix/wrong", "--number", "01",
+        "--agent", "not-allowed", **env,
+    )
+    assert refused.code != 0, refused.out
+    refute(refused.out, "cannot read origin")
+    expect(refused.out, "allowed-agent")
+    ok(q(
+        "add", topic, "right", "--title", "Right agent",
+        "--repo", str(repo), "--branch", "fix/right", "--number", "02",
+        "--agent", "allowed-agent", **env,
+    ))

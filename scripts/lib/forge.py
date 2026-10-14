@@ -645,6 +645,21 @@ GH_CHECK_CANCELLED = {"CANCELLED"}
 GH_URL_RE = re.compile(
     r"^https?://([^/\s]+)/([^/\s]+/[^/\s]+?)(?:\.git)?/pull/(\d+)(?:[/?#].*)?$"
 )
+
+
+def _remote_host(remote_url: str, host: str) -> str:
+    """The forge host a remote names: an ssh or git URL's port is dropped.
+
+    `ssh://git@host:2222/owner/repo` reaches `host` on a different ssh port,
+    and that port is no part of which forge it is — the host is what
+    `owns_host` knows. An http(s) URL keeps its port, because there the port
+    IS part of the web host a change request URL is spelled with.
+    """
+    if re.match(r"^(?:ssh|git)://", remote_url):
+        host = re.sub(r":\d+$", "", host)
+    return host.lower()
+
+
 # `https://host/owner/repo.git`, `ssh://git@host:2222/owner/repo.git`. A scheme
 # is the ordinary shape here and not an exotic one: `install.sh` clones this
 # repository over https, so the checkout a control plane serves first is
@@ -658,6 +673,9 @@ GH_REMOTE_URL_RE = re.compile(
 # `git@host:owner/repo.git`, and the bare `host/owner/repo` — scp syntax, which
 # carries no port and no scheme.
 GH_REMOTE_RE = re.compile(r"^(?:[^@/\s]+@)?([^:/\s]+)[:/]([^/\s]+/[^/\s]+?)(?:\.git)?/?$")
+# The host GitHub documents for ssh over port 443, which is github.com's ssh
+# endpoint and not a forge of its own.
+GH_SSH_HOSTS = {"ssh.github.com": "github.com"}
 
 # GitHub's own state words, mapped onto fleet's three. Anything else is not
 # translated into a guess: the caller is told the forge said something this
@@ -767,7 +785,8 @@ class GitHubForge(Forge):
         m = GH_REMOTE_URL_RE.match(text) or GH_REMOTE_RE.match(text)
         if not m:
             return None
-        host = m.group(1).lower()
+        host = _remote_host(text, m.group(1))
+        host = GH_SSH_HOSTS.get(host, host)
         # `git@github.com:owner/repo` has no scheme, so the host is whatever
         # came before the colon; a URL that named none of our hosts is not ours.
         if not self.owns_host(host):
@@ -1443,7 +1462,7 @@ class GitLabForge(Forge):
         m = GL_REMOTE_URL_RE.match(text) or GL_REMOTE_SCP_RE.match(text)
         if not m:
             return None
-        host, path = m.group(1).lower(), m.group(2).strip("/")
+        host, path = _remote_host(text, m.group(1)), m.group(2).strip("/")
         if not self.owns_host(host) or "/" not in path:
             return None
         return RepoId(host, path)
