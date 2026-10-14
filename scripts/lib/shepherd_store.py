@@ -793,7 +793,11 @@ def unwatched_prs(q, snapshot: dict | None, held: dict, sessions: dict, observed
             else:
                 # Nobody asked this PR for an attestation; read it as adoption does.
                 condition, detail = q.classify(cr, "pr")
-            sid, name, why = on_branch.get((repo.qualified, cr.head_branch)) or linked.get(cr.url) or ("", "", "")
+            # A fork's branch can share a local branch's name; only a head in this
+            # repository is the session's, as adoption reads it.
+            mine = cr.head_is_ours is not False
+            sid, name, why = (mine and (on_branch.get((repo.qualified, cr.head_branch)) or linked.get(cr.url))
+                              or ("", "", ""))
             if not why:
                 why = (f"task {task.ref} records it, and none of its sessions is listed" if task
                        else "no task records it and no session on this machine is on its branch")

@@ -136,3 +136,13 @@ def test_fleet_status_points_at_the_prs_no_task_holds(incident):
     out = run_fleet("status").out
     expect(out, "2 open that no task holds", "1 needing a hand", "Thurbeen/fleet#415 conflicting",
            "uv run fleet queue prs")
+
+
+def test_a_forks_pr_on_the_same_branch_name_is_not_the_sessions(incident, shep):
+    """A stranger's fork can name its branch `feat/session-keys` too; that PR is not ours to pin on a session."""
+    shep.update(415, isCrossRepository=True, headRepositoryOwner={"login": "a-stranger"})
+    q("shepherd", FLEET_LEAD_SESSION=LEAD_NAME)
+    entry = {e["number"]: e for e in store()["unwatched"]}[415]
+    assert entry["session"] == ""
+    assert entry["session_name"] == ""
+    assert json.loads(q("plan", "--json").stdout)["unwatched_prs"] == []
