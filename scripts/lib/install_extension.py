@@ -613,7 +613,10 @@ def session_list(cli: str) -> list[dict]:
 
 
 def same_dir(a: str, b: str) -> bool:
-    return os.path.normcase(os.path.normpath(a)) == os.path.normcase(os.path.normpath(b))
+    # RESOLVED, not just normalised: a multiplexer reports a process's
+    # physical cwd while this clone may be reached through a symlink, and
+    # calling that a move prescribes deleting the lead for nothing.
+    return os.path.normcase(os.path.realpath(a)) == os.path.normcase(os.path.realpath(b))
 
 
 def _lead_moved(rendered: Rendered, session_name: str, ext_name: str, cli: str) -> bool:

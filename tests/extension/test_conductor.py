@@ -223,6 +223,22 @@ def test_an_install_writes_nothing_tracked_and_a_moved_conductor_is_named(stubs,
     refute(done.stderr, "extension deactivate")
 
 
+def test_a_conductor_opening_this_clone_through_a_symlink_is_not_a_move(stubs, tmp_path):
+    thurbox(stubs)
+    fleet = clone(tmp_path)
+    link = tmp_path / "linked-fleet"
+    try:
+        link.symlink_to(fleet, target_is_directory=True)
+    except OSError:
+        pytest.skip("this machine cannot make a symbolic link")
+    conf("fleet.conf", "CONDUCTOR=on\n")
+    sessions(stubs, json.dumps([{"name": LEAD, "cwd": str(fleet)},
+                                {"name": "🎼 Conductor", "cwd": str(home(fleet))}]))
+    done = install(link)
+    assert done.code == 0, done.out
+    refute(done.out, "different directory")
+
+
 def test_a_conductor_directory_that_resolves_outside_the_checkout_is_refused(tmp_path):
     """An `orchestration` linked elsewhere would have the render write — and a
     later `off` remove — files that are not this checkout's."""

@@ -317,6 +317,22 @@ def test_a_lead_opening_this_clone_is_not_a_mismatch(stubs, tmp_path):
     refute(done.out, "different directory")
 
 
+def test_a_lead_opening_this_clone_through_a_symlink_is_not_a_mismatch(stubs, tmp_path):
+    """A multiplexer reports a process's physical cwd; the operator may reach
+    the clone through a link. Same directory, so nothing to deactivate."""
+    thurbox(stubs)
+    fleet = clone(tmp_path)
+    link = tmp_path / "linked-fleet"
+    try:
+        link.symlink_to(fleet, target_is_directory=True)
+    except OSError:
+        pytest.skip("this machine cannot make a symbolic link")
+    sessions(stubs, json.dumps([{"name": "📡 Mission Control", "cwd": str(fleet)}]))
+    done = install(link)
+    assert done.code == 0, done.out
+    refute(done.out, "different directory")
+
+
 def test_a_flipped_glyph_names_the_lead_that_is_still_running(stubs, tmp_path):
     """The new name is one no session answers to yet, so the directory check
     has nothing to compare and would say nothing."""
