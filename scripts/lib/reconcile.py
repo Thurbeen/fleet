@@ -75,7 +75,11 @@ ITS CHILDREN'S FAILURES ARE IN `status`, NOT ONLY ITS LOG. Each child that fails
 — a non-zero exit, a script that is not there, a bound — is kept in
 `failures.json` by label (`collect`, `plan`, `notify`, `sync`, …) with a count,
 since when and its last words, until that child next succeeds; `status` prints
-each as a `failing` line and exits 1. Each notice decision is one `notify:
+each as a `failing` line and exits 1. So is the loop's OWN pass, as `tick`: one
+that raises is restarted, and beats again before it raises again, so a pass
+crashing every time held the lock and a fresh heartbeat while running nothing
+past `root`. It stays `failing` until a pass runs to its end, and `ensure`
+reports it rather than adopting it as healthy. Each notice decision is one `notify:
 notice …` log line (`notify_delivery.notice`), so `grep 'notice '` says who was
 told what, by which road, or why nobody was.
 
@@ -246,7 +250,12 @@ def _load_sibling(name: str, filename: str):
     spec = importlib.util.spec_from_file_location(name, path)
     mod = importlib.util.module_from_spec(spec)
     sys.modules[name] = mod
-    spec.loader.exec_module(mod)
+    try:
+        spec.loader.exec_module(mod)
+    except BaseException:
+        # Never handed back half-made: the next load imports it again.
+        sys.modules.pop(name, None)
+        raise
     return mod
 
 
@@ -1010,6 +1019,8 @@ def tick(cfg: Config) -> int:
         synced = _sync_and_tell(cfg, last, stamp, did_collect, synced)
 
         trim_log(cfg)
+        # A whole pass ran: a crash `supervise` recorded is over.
+        child_went(cfg, "tick")
 
         # The continuous half, which also paces the loop. THE FLOOR IS NOT
         # OPTIONAL: `watch` returns at once, exit 0, when no task has a session
@@ -1047,6 +1058,9 @@ def supervise(cfg: Config) -> int:
             except Exception:
                 log(cfg, "tick loop raised:")
                 log_raw(cfg, indented(traceback.format_exc(), "    "))
+                # Kept for `status`: restarted, the pass beats again before it
+                # crashes again, so the heartbeat alone reads it as up.
+                child_went(cfg, "tick", "raised: " + last_words(traceback.format_exc()))
                 rc = 1
             why = orphaned(cfg)
             if why:
@@ -1175,6 +1189,13 @@ def come_up(cfg: Config) -> int:
         # the one this checkout no longer describes, and SessionStart `ensure`
         # used to adopt it silently while every notice it sent failed.
         changed, started = stale_code(cfg)
+        crash = failures(cfg).get("tick")
+        if not changed and crash:
+            # A fresh process on the same code would crash the same way: say
+            # so, rather than calling it adopted and healthy.
+            say(f"fleet reconciler: ticking (pid {pid_of(cfg)}), but its pass crashes: {crash.get('why')}")
+            say(f"    uv run fleet reconcile status says more; the traceback is in {cfg.log}")
+            return 1
         if not changed:
             say(f"fleet reconciler: already ticking (pid {pid_of(cfg)}) — adopted, not restarted")
             return 0

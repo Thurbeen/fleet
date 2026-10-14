@@ -161,8 +161,8 @@ new code. `status` says when it is not — a `stale` line, exit 1 — and
 `ensure` replaces a loop on older code rather than adopting it, honouring the
 down flag; never `restart` for this, which clears that flag. If `status`
 reports the loop asked down, say so and change nothing. A `failing` line is a
-child the loop runs that fails every pass: read its last words there before
-the log. A `legacy` line in `status` is a bash reconciler from before the uv
+child the loop runs that fails every pass — or, as `tick`, the loop's own pass
+crashing: read its last words there before the log, where the traceback is. A `legacy` line in `status` is a bash reconciler from before the uv
 port, still running with its script deleted and failing every pass;
 `ensure` stops it and says which pid went.
 
