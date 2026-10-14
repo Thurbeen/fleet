@@ -13,11 +13,12 @@ read (`context.py ... --wire json`), and `.slow` holds the seconds either takes
 first.
 `.windows` hands the command to `windows_host`, which answers only what a
 PowerShell 5 sshd answers. `.origin` holds what `git remote get-url origin`
-prints there. `mkdir -p`/`chmod`, `rm -f`/`rmdir` and `cat >` behave as a
+prints there, and `.origins.json` what it prints per checkout path. `mkdir -p`/`chmod`, `rm -f`/`rmdir` and `cat >` behave as a
 shell does: a write into a directory that does not exist fails. `.realshell` RUNS the script with `sh -c`, the way
 sshd runs an account's login shell, with HOME at `<dest>.home` — POSIX only.
 """
 
+import json
 import os
 import re
 import shlex
@@ -77,6 +78,16 @@ def main() -> int:
             return 1
         sys.stdout.write("ok")
     elif "remote get-url origin" in script:
+        # `.origins.json` maps a checkout path to its own origin, for a task
+        # spanning repositories; `.origin` is every other path's.
+        origins = state / f"{dest}.origins.json"
+        named = json.loads(origins.read_text(encoding="utf-8")) if origins.is_file() else {}
+        # Longest first, so `/a/b` is not answered for `/a/bc`; matched as
+        # text because a login shell wraps the script in a second quoting.
+        path = next((p for p in sorted(named, key=len, reverse=True) if p in script), None)
+        if path is not None:
+            sys.stdout.write(named[path])
+            return 0
         origin = state / f"{dest}.origin"
         if not origin.is_file():
             sys.stderr.write("error: No such remote 'origin'\n")

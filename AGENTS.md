@@ -133,8 +133,9 @@ names every path and the reason for each.
   are allowed only with `--agent`. Tracked and naming none, so a fresh clone
   enforces nothing; copy it to a gitignored `agent-policy.conf` beside it to
   set anything. `add` and `dispatch` read it on every call, so an edit takes
-  effect on the next one. A task whose checkout is on another machine, or
-  whose repository cannot be read from `origin`, is refused when any policy is
+  effect on the next one. A `--host` task's `origin` is read on its host,
+  over the same bounded ssh as dispatch's probes; a task whose repository
+  cannot be read from `origin`, here or there, is refused when any policy is
   in force. **`dispatch` RECORDS the agent it actually named**, and every
   later reader — `refuel` above all — takes that record rather than deriving
   its own, because a `refuel` that derived one judged a worker by an agent it

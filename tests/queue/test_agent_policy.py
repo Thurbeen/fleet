@@ -16,6 +16,7 @@ import pytest
 import yaml
 from kit_dispatch import ANSWERING_KEYS, next_session
 from kit_forges import FakeForgeStore
+from kit_hosts import Hosts, creates
 from kit_refuel import ACCOUNT_QUOTA, CLAUDE_BANNER, account_quota, pane, restarts, teach
 from kit_shepherd import Shep, repo
 from kit_shepherd import result as shipped
@@ -134,22 +135,139 @@ def test_no_policy_keeps_todays_behaviour(checkout, forge_store, stubs):
     assert "--agent anything" in create, create
 
 
-def test_host_task_fails_closed_when_policy_exists(forge_store):
-    topic = q(
-        "topic", "add", "host-policy", "--title", "Host policy",
-        "--prompt", "host task under policy",
-    ).stdout.strip()
+REMOTE_REPO = "/remote/repo"
+REMOTE_SID = "dd444444-4444-4444-4444-444444444444"
+
+
+def host_task(stubs, slug: str, *named: str) -> tuple[Hosts, str]:
+    """A `--host devbox` task with a written brief, and the fake host it runs on."""
+    hosts = Hosts(stubs)
+    topic = ok(q(
+        "topic", "add", slug, "--title", "Host policy",
+        "--prompt", "a host task under agent policy",
+    )).stdout.strip()
     ok(q(
         "add", topic, "remote", "--title", "Remote",
-        "--repo", "/remote/repo", "--branch", "fix/remote", "--number", "01",
-        "--host", "devbox",
+        "--repo", REMOTE_REPO, "--branch", "fix/remote", "--number", "01",
+        "--host", "devbox", *named,
     ))
     fill_brief(Path(os.environ["FLEET_QUEUE_DIR"]) / topic / "01-remote" / "BRIEF.md")
-    done = q("dispatch", **policy_env(forge_store, f"{QUALIFIED_REPO}=alpha"))
-    assert "--host task cannot be checked against agent policy" in done.out, done.out
+    return hosts, f"{topic}/01-remote"
+
+
+def host_origin(hosts: Hosts, url: str) -> None:
+    """What `git remote get-url origin` prints in the checkout on devbox."""
+    write(hosts.state / "me@devbox.origin", url + "\n")
+
+
+def test_a_host_task_is_judged_by_the_origin_read_on_its_host(
+    forge_store, stubs, isolated_env, tmp_path, queue_dir
+):
+    """The checkout is on the host, so its `origin` is read THERE, and the
+    policy answers for it as it does for a local checkout.
+
+    This refused every `--host` task outright while any policy was in force,
+    on a repository whose rule allowed the agent, and the probe two lines above
+    the refusal had just read that very `origin` over ssh.
+    """
+    env = covered(forge_store, "spare")
+    hosts, ref = host_task(stubs, "host-allowed")
+    host_origin(hosts, f"https://{FORGE}/{OWNER}/{REPO_NAME}.git")
+    hosts.next_session(REMOTE_SID)
+    hosts.session(REMOTE_SID, name="Remote", state="working", agent="spare", hook_reported=True,
+                  worktrees=[{"repo_path": REMOTE_REPO, "worktree_path": "/srv/wt/remote",
+                              "branch": "fix/remote"}])
+
+    out = q("dispatch", **env).out
+    refute(out, "NOT SPAWNED")
+    # THE WIRING: the agent the policy named reached the spawn on the host.
+    remote = [c for c in creates(stubs) if "--host devbox" in c]
+    assert remote, out
+    expect(remote[-1], "--agent spare")
+    # And it is the RECORD, as for a local task, so no later reader re-derives it.
+    task_file = queue_dir / ref / "task.yaml"
+    assert yaml.safe_load(task_file.read_text(encoding="utf-8"))["agent"] == "spare"
+
+    # `refuel` reads that record: the spare account's window is spent and the
+    # lead's has fuel, so reading the lead's would be the wrong account.
+    teach(isolated_env, "spare.LIKE=claude",
+          f"spare.ENV=CLAUDE_CONFIG_DIR={tmp_path / 'spare-account'}")
+    stubs.tool("quota-axi", ACCOUNT_QUOTA)
+    account_quota(stubs, "lead-account", 62, "2026-09-10T02:10:00+00:00")
+    account_quota(stubs, "spare-account", 0, "2026-09-10T02:10:00+00:00")
+    out = q("refuel", "--dry-run", CLAUDE_CONFIG_DIR=str(tmp_path / "lead-account"), **env).out
+    expect(out, "claude (spare)", "0% remaining", "window is spent")
+    refute(out, "62% remaining", "not knowable")
+
+
+@pytest.mark.parametrize("case", ["no-origin", "unclaimed", "forbidden", "down"])
+def test_a_host_task_is_refused_with_its_reason(case, forge_store, stubs):
+    """Reading the host is how the policy is ASKED; it never makes a refusal
+    a permission. An `origin` that cannot be read, one no forge adapter
+    claims, and an agent the rule does not allow each stay a refusal, and
+    each says which."""
+    env = covered(forge_store, "alpha")
+    hosts, ref = host_task(stubs, f"host-{case}", *(["--agent", "beta"] if case == "forbidden" else []))
+    if case != "no-origin":
+        host_origin(hosts, "git@unclaimed.invalid:acme/widgets.git" if case == "unclaimed"
+                    else f"https://{FORGE}/{OWNER}/{REPO_NAME}.git")
+    if case == "down":
+        # A host that stops answering is a refusal naming the connection.
+        # Dispatch would stop at its reachability probe first, so the dry
+        # run — which spawns nothing and probes nothing — is where this read
+        # is the first thing to go to the host.
+        hosts.flag("me@devbox", "down")
+        done = q("dispatch", "--dry-run", **env)
+    else:
+        done = q("dispatch", **env)
+    want = {
+        "no-origin": "could not be read on host devbox (error: No such remote 'origin')",
+        "unclaimed": "which no forge adapter here claims",
+        "forbidden": "task records agent 'beta', but policy",
+        "down": "could not be read on host devbox (ssh: connect to host",
+    }[case]
+    expect(done.out, f"{ref}: NOT SPAWNED", want)
     # A refused task is not a silent no-op: a script or hook reading the exit
     # code must see that the batch did not go out cleanly.
     assert done.code != 0, done.out
+    assert creates(stubs) == [], done.out
+
+
+def test_every_repository_a_host_task_spans_is_read_on_its_host(forge_store, stubs):
+    """`--add-repo` is a second repository the same agent commits in, so its
+    `origin` is read on the host too, and the policy is the INTERSECTION.
+    Reading only the primary would let a rule on the second one go unasked."""
+    env = policy_env(forge_store, f"{QUALIFIED_REPO}=alpha, beta {QUALIFIED}/gadgets=beta")
+    hosts, ref = host_task(stubs, "host-span", "--add-repo", "/remote/second")
+    write(hosts.state / "me@devbox.origins.json", json.dumps({
+        REMOTE_REPO: f"https://{FORGE}/{OWNER}/{REPO_NAME}.git\n",
+        "/remote/second": f"https://{FORGE}/{OWNER}/gadgets.git\n",
+    }))
+    hosts.next_session(REMOTE_SID)
+    out = q("dispatch", **env).out
+    remote = [c for c in creates(stubs) if "--host devbox" in c]
+    assert remote, out
+    # `alpha` is the primary's default, and the second repository forbids it.
+    expect(remote[-1], "--agent beta")
+    reads = [c for c in stubs.calls("ssh") if "remote get-url origin" in c]
+    expect("\n".join(reads), "/remote/second")
+
+
+def test_reading_a_host_task_agent_never_goes_to_the_host(forge_store, stubs, tmp_path):
+    """Only dispatch reads `origin` on a host. Listings and `refuel` ask the
+    same question of every task on every pass, and an ssh per task there —
+    up to a minute each against a host that is down — would stall them."""
+    env = covered(forge_store, "alpha")
+    hosts, ref = host_task(stubs, "host-noread")
+    host_origin(hosts, f"https://{FORGE}/{OWNER}/{REPO_NAME}.git")
+    ok(q("attach", ref, REMOTE_SID))
+    before = len(stubs.calls("ssh"))
+    q("refuel", "--dry-run", CLAUDE_CONFIG_DIR=str(tmp_path / "lead-account"), **env)
+    q("list", **env)
+    q("plan", **env)
+    q("show", ref, **env)
+    after = [c for c in stubs.calls("ssh")[before:] if "remote get-url origin" in c]
+    assert after == [], after
 
 
 def test_bare_owner_repo_entry_is_ignored_with_message(checkout, forge_store):

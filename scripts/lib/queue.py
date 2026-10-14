@@ -1667,6 +1667,9 @@ class Task:
         # The text `doc` was parsed from, or None for a record this view made.
         # A save compares the disk with it to tell whether anybody else wrote.
         self.loaded = loaded
+        # A `--host` task's repositories as read ON ITS HOST, once per view —
+        # `host_origins` fills it. A reading, never written to the record.
+        self.host_origins: dict | None = None
 
     @property
     def ref(self) -> str:
@@ -8637,7 +8640,8 @@ def task_agent_reason(task) -> tuple[str, str]:
     covering the repository. A policy is in force and the repository behind
     the checkout cannot be read — the checkout was moved or deleted, its
     `origin` names a forge no adapter claims, the task runs on another machine
-    — and then which agent the policy would have named is unknown. Falling
+    and its `origin` has not been read THERE (`host_origins`) or could not be —
+    and then which agent the policy would have named is unknown. Falling
     through to the checkout's `AGENT` there is precisely the silent wrong
     answer this function exists to stop, and it is what `dispatch` already
     refuses to do: `agent_policy_refusal` fails closed on this same state.
@@ -8662,9 +8666,19 @@ def task_agent_reason(task) -> tuple[str, str]:
 def _policy_agent(task, policy: dict) -> tuple[str, str] | None:
     """`task_agent_reason` under a policy in force; None when no rule covers the task."""
     if task.doc.get("host"):
-        return "", (f"agent policy is in force and this task's checkout is on "
-                    f"{task.doc['host']}, so which agent it runs cannot be read here")
-    for unit in task_repos(task):
+        # Only what `host_origins` already READ on the host: this answer is also
+        # asked by listings and `refuel`, which must not ssh per task to give
+        # it. `dispatch` reads first (`agent_policy_refusal`), so the spawn
+        # finds the read here; anything else is told it was not made.
+        read = task.host_origins
+        if read is None:
+            return "", (f"agent policy is in force and this task's checkout is on "
+                        f"{task.doc['host']}, whose `origin` has not been read there, "
+                        "so which agent it runs is not knowable here")
+        for repo, why in read.values():
+            if repo is None:
+                return "", f"agent policy is in force and {why}, so which agent it runs is not knowable"
+    for unit in [] if task.doc.get("host") else task_repos(task):
         if repo_from_checkout(unit["path"]) is None:
             return "", (f"agent policy is in force and no repository can be read from "
                         f"`origin` in {unit['path']!r}, so which agent it runs "
@@ -10075,7 +10089,9 @@ def integration_verdict(task: Task, cr: forge.ChangeRequest, branch: str, unit: 
     )
 
 
-def repos_policy(paths: list[str], policy: dict[str, list[str]]) -> tuple[list[str], str] | None:
+def repos_policy(
+    paths: list[str], policy: dict[str, list[str]], resolve=None
+) -> tuple[list[str], str] | None:
     """The agents EVERY one of these repositories allows, and the prefixes that said so.
 
     A task is ONE session running ONE agent, and `--add-repo` is a second
@@ -10089,12 +10105,14 @@ def repos_policy(paths: list[str], policy: dict[str, list[str]]) -> tuple[list[s
     order, same prefix, same None. A repository whose `origin` cannot be read
     contributes nothing here; refusing that is the caller's, because only the
     caller knows whether an unreadable checkout is a `--host` task.
+
+    `resolve` turns a path into its repository; this machine's checkout by
+    default, and what `host_origins` read for a path on another machine.
     """
     if not policy:
         return None
-    matched = [
-        hit for hit in (agents_for_repo(repo_from_checkout(p), policy) for p in paths) if hit
-    ]
+    resolve = resolve or repo_from_checkout
+    matched = [hit for hit in (agents_for_repo(resolve(p), policy) for p in paths) if hit]
     if not matched:
         return None
     allowed = [a for a in matched[0][0] if all(a in rest for rest, _ in matched[1:])]
@@ -10102,10 +10120,59 @@ def repos_policy(paths: list[str], policy: dict[str, list[str]]) -> tuple[list[s
 
 
 def task_policy(task: Task, policy: dict[str, list[str]]) -> tuple[list[str], str] | None:
-    """`repos_policy` over every repository this task spans; None for a remote one."""
+    """`repos_policy` over every repository this task spans.
+
+    A `--host` task's repositories are what `host_origins` read on its host,
+    and None when nothing was read: refusing that is `_policy_unreadable`'s.
+    """
+    paths = [unit["path"] for unit in task_repos(task)]
     if task.doc.get("host"):
-        return None
-    return repos_policy([unit["path"] for unit in task_repos(task)], policy)
+        read = task.host_origins
+        if read is None:
+            return None
+        return repos_policy(paths, policy, lambda p: read.get(p, (None, ""))[0])
+    return repos_policy(paths, policy)
+
+
+def host_origins(task: Task) -> dict:
+    """{path: (RepoId or None, why not)} for each repository a `--host` task spans, read ON ITS HOST.
+
+    The checkout is on another machine, so the repository behind it is a
+    question for that machine: `git remote get-url origin` there, through the
+    same shell and the same bounded `ssh_run` the dispatch probes use, and
+    resolved by the same `forge.repo_from_remote` a local checkout is. Read
+    once per Task object, kept on it (never on the record — it is a reading,
+    not a fact fleet owns), so the policy check and the agent the spawn names
+    are one answer.
+
+    Every failure is a refusal with its reason, never a permission: a host
+    that is not in hosts.toml, one that does not answer within `SSH_TIMEOUT`,
+    a checkout with no `origin`, an `origin` no forge adapter claims.
+    """
+    read = task.host_origins
+    if read is not None:
+        return read
+    host = str(task.doc["host"])
+    entry, why = host_entry(host)
+    read = {}
+    for unit in task_repos(task):
+        path = unit["path"]
+        if not entry:
+            read[path] = (None, f"host {host} cannot be asked for {path!r}'s `origin`: {why}")
+            continue
+        proc = ssh_run(entry, host_shell(entry).origin(path))
+        url = last_out_of(proc.stdout) if proc.returncode == 0 else ""
+        repo = forge.repo_from_remote(url) if url else None
+        if repo is not None:
+            read[path] = (repo, "")
+        elif url:
+            read[path] = (None, f"`origin` of {path!r} on host {host} is {url!r}, "
+                                "which no forge adapter here claims")
+        else:
+            read[path] = (None, f"`origin` of {path!r} could not be read on host {host} "
+                                f"({first_line(proc) or 'no answer'})")
+    task.host_origins = read
+    return read
 
 
 def agent_policy_refusal(task: Task) -> str | None:
@@ -10140,14 +10207,16 @@ def agent_policy_refusal(task: Task) -> str | None:
 def _policy_unreadable(task: Task) -> str | None:
     """Why a policy in force cannot be checked against this task, or None."""
     d = task.doc
+    if d.get("host"):
+        # READ, not refused on sight: the checkout is on the host, so its
+        # `origin` is asked there. What could not be read stays a refusal.
+        for _repo, why in host_origins(task).values():
+            if why:
+                return f"{why}, so agent policy cannot be checked."
+        return None
     for unit in task_repos(task):
-        if (None if d.get("host") else repo_from_checkout(unit["path"])) is not None:
+        if repo_from_checkout(unit["path"]) is not None:
             continue
-        if d.get("host"):
-            return (
-                "--host task cannot be checked against agent policy "
-                "because its checkout is on another machine."
-            )
         return (
             f"cannot read origin for {unit['path']!r}, so agent policy "
             "cannot be checked."
