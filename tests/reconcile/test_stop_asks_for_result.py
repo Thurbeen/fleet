@@ -156,3 +156,15 @@ def test_work_in_an_additional_repository_also_asks_for_the_result(tmp_path, iso
     assert decision["decision"] == "block", out.stdout
     expect(decision["reason"], str(task / "result.md"))
     assert nudged(isolated_env)
+
+
+def test_a_bad_setting_still_exits_zero_and_still_asks(tmp_path, isolated_env):
+    """A bad setting costs the nudge, never the hook or its one question (#249)."""
+    task = worker(tmp_path)
+    write(tmp_path / "conf" / "orchestration" / "reconcile.conf", "BOUND_SECS=soon\n")
+    hook = {"hook_event_name": "Stop", "stop_hook_active": False, "session_id": "conversation"}
+    out = run_fleet("reconcile", "nudge", stdin=json.dumps(hook), THURBOX_SESSION=SID,
+                    FLEET_RECONCILE_CONF_ROOT=str(tmp_path / "conf"))
+    assert out.code == 0, out.out
+    expect(out.stderr, "could not nudge", "is not a whole number")
+    expect(json.loads(out.stdout)["reason"], str(task / "result.md"))

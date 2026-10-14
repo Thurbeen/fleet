@@ -1524,11 +1524,13 @@ def main(argv: list[str]) -> int:
         sys.stdout.write(__doc__)
         return 0
     if cmd == "nudge":
-        # Whatever goes wrong, a hook must not fail: not even a bad setting.
+        # Whatever goes wrong, a hook must not fail: not even a bad setting,
+        # which `Config.from_env` refuses with SystemExit — and the stop decision
+        # needs no Config, so a bad setting costs the nudge and nothing else.
         # Its stdout is the hook's protocol channel: the one block decision, or nothing.
         try:
             cmd_nudge(Config.from_env())
-        except Exception as exc:
+        except (Exception, SystemExit) as exc:
             err(f"fleet reconciler: could not nudge ({exc})")
         decision = stop_decision()
         if decision:
