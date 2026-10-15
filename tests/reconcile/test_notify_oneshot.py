@@ -114,10 +114,15 @@ def test_only_reads_skip_the_review(stubs, tmp_path):
     argv = json.loads((stubs.root / "argv.json").read_text(encoding="utf-8"))
     allowed = argv[argv.index("--allowedTools") + 1].split(",")
     assert "Bash(uv run fleet queue plan:*)" in allowed, allowed
-    assert "Bash(uv run fleet:*)" not in allowed
-    for verb in ("dispatch", "send", "prompt", "refuel", "block", "declare", "abandon", "reviewed"):
-        assert not [a for a in allowed if f"fleet queue {verb}" in a], f"{verb} skips the review: {allowed}"
-    assert not [a for a in allowed if "message send" in a or "session send" in a], allowed
+    # A `Bash(<prefix>:*)` rule admits every command starting with <prefix>,
+    # and a bare `Bash(<command>)` that command alone: neither may admit a write.
+    writes = [f"uv run fleet queue {verb} x" for verb in
+              ("dispatch", "send", "prompt", "refuel", "block", "declare", "abandon", "reviewed")]
+    writes += ["uv run fleet context learn github.com/o/r fact",
+               "thurbox-cli message send --to x --body y", "thurbox-cli session send x y"]
+    for rule in (a[len("Bash("):-1] for a in allowed if a.startswith("Bash(")):
+        admitted = [w for w in writes if (w.startswith(rule[:-2]) if rule.endswith(":*") else w == rule)]
+        assert not admitted, f"{rule} skips the review for {admitted}"
 
 
 def test_the_prompt_carries_the_notice_the_state_and_the_instructions_read_now(stubs, tmp_path):

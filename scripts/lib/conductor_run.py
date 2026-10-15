@@ -158,7 +158,11 @@ DIGEST = (
 CLAUDE_ALLOWED = (
     "Read", "Grep", "Glob",
     "Bash(uv run fleet status:*)",
-    "Bash(uv run fleet context:*)",
+    # By name: `context learn` WRITES a fact every later worker is handed.
+    "Bash(uv run fleet context)",
+    "Bash(uv run fleet context lead:*)",
+    "Bash(uv run fleet context pending:*)",
+    "Bash(uv run fleet context repo:*)",
     "Bash(uv run fleet queue plan:*)",
     "Bash(uv run fleet queue list:*)",
     "Bash(uv run fleet queue prs:*)",
