@@ -12,8 +12,8 @@ There can be many: Mission Control, a second terminal, a chat thread served
 by an agent. Each opens its own topic, writes its own briefs, dispatches its
 own first ready set and goes back to its channel. It does not wait for the
 work to finish. Keeping the work moving after that is the conductor's
-(`fleet-conductor`), and in a fleet that runs no conductor session it is the
-lead's.
+(`fleet-conductor`), and in a fleet that runs no conductor — neither the
+one-shot run nor the session — it is the lead's.
 
 **This is the one way work enters fleet, from any session.** Mission Control
 is one origin among many, not the place work has to start. Anything that ends

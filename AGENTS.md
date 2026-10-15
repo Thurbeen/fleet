@@ -737,9 +737,13 @@ running Mission Control session is holding stale instructions** — it froze
 them at launch and nothing reloads them from disk. This is equally true of a
 plain `git pull`. The sync says so when it happens; act on it rather
 than assuming the new instructions reached the lead. A sync the reconciler
-ran says so ONCE, to the lead, by the ready notice's rules
+ran says so ONCE, to the conductor, by the ready notice's rules
 (`notify_conductor.py --stale`): one line naming the range and
-`/update-fleet <before>`, since the sync itself has nothing left to say.
+`/update-fleet <before>`, since the sync itself has nothing left to say. Under
+`CONDUCTOR=on` that line starts a one-shot run, which applies the update and
+leaves the lead a mailbox note that only the hand-over is left; the lead gets
+the line itself only where no conductor takes it — none configured, the
+session down, or a run that failed.
 
 `.agents/skills/update-fleet/` drives that whole update — the sync, then only
 the pieces it left stale (extension manifest, queue pane, registry,
