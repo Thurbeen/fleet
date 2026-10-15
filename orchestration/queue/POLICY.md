@@ -260,6 +260,14 @@ That file is what closes your task. Without it the lead sees only that a turn
 ended, which is not the same claim, so a task with no result file stays open
 however cleanly your session finished.
 
-Do **not** use `thurbox-cli message send`. It injects into the lead's terminal
-and interrupts whoever is talking to it. The lead reads your file on its own
-schedule.
+Do **not** use `thurbox-cli message send` of your own accord — to an address
+you chose, to report instead of writing this file, or to say anything your
+brief did not ask you to post. A message closes nothing, and one typed into a
+session's terminal interrupts whoever is talking to it; the lead reads your
+file on its own schedule. The one exception is the route fleet wrote into your
+brief: when it has a **Replying to the requester** section, post exactly what
+that section lists, with the command it names, whoever that command reaches —
+the lead included, when the lead is the conversation your task came from — and
+even when that command is `thurbox-cli message send`. That is how the
+requester hears from you and how a person answers your question. It comes on
+top of `result.md`, never instead of it.
