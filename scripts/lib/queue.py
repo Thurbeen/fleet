@@ -4947,6 +4947,21 @@ def brief_target(task: Task) -> str:
     return os.path.abspath(task.file(BRIEF_FILE))
 
 
+def spawn_field_problems(d: dict) -> list:
+    """What in a record `spawn_commands` would trip over, one sentence each.
+
+    The one list both sides read: `check` reports it, and `spawn_commands`
+    refuses on it, so a record `check` calls ok is one dispatch can spawn and a
+    hand-edited one is a named refusal of that task rather than a traceback
+    that ends the whole wave (#254).
+    """
+    problems = [f"missing {key}" for key in ("title", "repo", "branch", "base") if not d.get(key)]
+    for key in ("agent", "profile"):
+        if d.get(key) is not None and not isinstance(d[key], str):
+            problems.append(f"{key} {d[key]!r} is not text")
+    return problems
+
+
 def spawn_commands(task: Task) -> tuple[list, str, str]:
     """The `session create` argv, the prompt to send, and THE AGENT IT NAMES.
 
@@ -4960,6 +4975,9 @@ def spawn_commands(task: Task) -> tuple[list, str, str]:
     the same pure answer a moment later.
     """
     d = task.doc
+    problems = spawn_field_problems(d)
+    if problems:
+        raise QueueError("; ".join(problems) + " — see `fleet queue check`")
     create = [
         "thurbox-cli", "session", "create",
         "--name", session_name(d["title"], worker_glyph()),
@@ -13510,9 +13528,10 @@ def _task_problems(q: "Queue", ref: str, t: "Task") -> list:
     """What is wrong with one task's record, for `record_problems`."""
     d = t.doc
     problems = []
-    for key in ("id", "topic", "title", "state", "repo", "branch"):
+    for key in ("id", "topic", "state"):
         if not d.get(key):
             problems.append(f"{ref}: missing {key}")
+    problems += [f"{ref}: {why}" for why in spawn_field_problems(d)]
     problems += _publish_problems(ref, d)
     why = requester_problem(d.get("requested_by"))
     if why:
@@ -13520,6 +13539,10 @@ def _task_problems(q: "Queue", ref: str, t: "Task") -> list:
     for key in ("origin", "reply"):
         if d.get(key) is not None and not (isinstance(d[key], str) and d[key].strip()):
             problems.append(f"{ref}: {key} {d[key]!r} is not text")
+    if d.get("session") is not None and not isinstance(d["session"], str):
+        problems.append(f"{ref}: session {d['session']!r} is not text")
+    if d.get("prompted") is not None and not isinstance(d["prompted"], bool):
+        problems.append(f"{ref}: prompted {d['prompted']!r} is not true or false")
     if d.get("state") not in STATES:
         problems.append(f"{ref}: state {d.get('state')!r} is not one of {', '.join(STATES)}")
     if d.get("id") != t.id:

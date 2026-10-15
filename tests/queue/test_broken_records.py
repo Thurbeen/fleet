@@ -83,3 +83,41 @@ def test_a_result_that_cannot_be_read_holds_its_own_task_and_no_other(topic, que
     expect(q("show", f"{topic}/01-drop-idle-default").out, "state:       dispatched")
     # Concluded, and landed on the same pass: nothing was produced, so there is nothing to wait for.
     expect(q("show", f"{topic}/02-document-the-states").out, "state:       landed")
+
+
+def _edit(path, **fields) -> None:
+    doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+    for key, value in fields.items():
+        if value is ...:
+            doc.pop(key, None)
+        else:
+            doc[key] = value
+    write(path, yaml.safe_dump(doc, sort_keys=False))
+
+
+def test_check_names_every_field_dispatch_reads_and_dispatch_spawns_the_rest(briefed, queue_dir):
+    """#254: a record `check` called ok ended `dispatch` with a traceback, and the wave with it."""
+    tasks = queue_dir / briefed
+    _edit(tasks / "01-drop-idle-default" / "task.yaml", base=...)
+    _edit(tasks / "02-document-the-states" / "task.yaml", agent=123)
+    _edit(tasks / "04-log-state-changes" / "task.yaml", profile=["fast"], prompted="yes")
+    _edit(tasks / "03-render-detected-agent" / "task.yaml", session=7)
+
+    check = q("check")
+    assert check.code != 0, check.out
+    expect(check.out, "01-drop-idle-default: missing base", "02-document-the-states: agent 123 is not text",
+           "04-log-state-changes: profile ['fast'] is not text",
+           "04-log-state-changes: prompted 'yes' is not true or false",
+           "03-render-detected-agent: session 7 is not text")
+    expect(run_fleet("status", "--records").out, "missing base", "agent 123 is not text")
+
+    # The records `check` names are refused one by one; the run is not a traceback.
+    for flags in (["--dry-run"], []):
+        _edit(tasks / "04-log-state-changes" / "task.yaml", profile=..., prompted=False)
+        run_ = q("dispatch", *flags)
+        refute(run_.out, "Traceback")
+        expect(run_.out, "01-drop-idle-default: NOT SPAWNED", "02-document-the-states: NOT SPAWNED")
+        if flags:
+            expect(run_.out, "04-log-state-changes")
+            continue
+        expect(q("show", f"{briefed}/04-log-state-changes").out, "state:       dispatched")
