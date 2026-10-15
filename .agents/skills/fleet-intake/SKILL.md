@@ -49,7 +49,7 @@ In Mission Control's own session `<checkout>` is your working directory and
   repository — reads it off the lead: the `cwd` of the Mission Control row in
   `thurbox-cli session list --json`, the session fleet's own guard resolves
   the control plane from. Where fleet linked its skills into
-  `~/.agents/skills`, the directory two levels above this skill's resolved
+  `~/.agents/skills`, the directory three levels above this skill's resolved
   path is the same checkout.
 
 `topic add` and `add` refuse only when run from ANOTHER checkout's copy of
