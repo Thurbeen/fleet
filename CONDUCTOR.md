@@ -27,8 +27,9 @@ checkout so that you are not handed the lead's FLEET.md; everything else is
 the checkout's. `uv run fleet …` works from here, and its queue, registry and run
 logs are the checkout's. The checkout's `AGENTS.md` is the operating guide for
 everything fleet is: read the part you need when you need it, rather than all
-of it. Nothing you need is in this directory except this file: it is
-generated, gitignored, and rewritten by `uv run fleet install-extension`.
+of it. Nothing you need is in this directory: it is generated, gitignored,
+and rewritten by `uv run fleet install-extension`. A session finds this file
+rendered there; a run is handed it in its prompt, read from the checkout.
 
 ## Notices are not the state
 

@@ -1,7 +1,7 @@
 """The notices go to the fleet's own conductor while it runs, and to the lead
 whenever it does not.
 
-A fleet with `CONDUCTOR=on` declares a second session whose whole job is the
+A fleet with `CONDUCTOR=session` declares a second session whose whole job is the
 reconciler's notices. The lead keeps the operator's conversation. But a
 conductor that was deleted, closed or never spawned must not be a notice
 delivered to nobody — that is the six hours `notify_conductor.py` exists to
