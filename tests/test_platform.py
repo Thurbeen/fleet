@@ -824,6 +824,21 @@ class ProcessCensus(TempDirCase):
             proc.kill()
             proc.wait(timeout=30)
 
+    def test_a_slow_lister_is_still_read(self):
+        # A loaded Windows runner has taken longer than 10s to start PowerShell
+        # and answer the CIM query; slow is not "the OS could not list".
+        real_run = subprocess.run
+
+        def lister_that_answers_after_11s(argv, **kwargs):
+            if kwargs.get("timeout") is not None and kwargs["timeout"] < 11:
+                raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+            return real_run(argv, **kwargs)
+
+        with mock.patch.object(fp.subprocess, "run", side_effect=lister_that_answers_after_11s):
+            commands = fp.process_commands()
+        self.assertIsNotNone(commands, "a slow census was read as no census")
+        self.assertIn(os.getpid(), commands)
+
     @unittest.skipIf(WINDOWS, "POSIX ps format")
     def test_a_pid_with_no_command_does_not_poison_the_census(self):
         fake = mock.Mock(returncode=0, stdout="  1 /sbin/init\n  2\n  42 vim file\nnot-a-pid x\n")

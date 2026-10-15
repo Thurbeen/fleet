@@ -566,6 +566,13 @@ def alive(pid: int) -> bool:
     return True
 
 
+# How long the census may take before it counts as unanswered. Starting
+# PowerShell and answering a CIM query takes about half a second on an idle
+# Windows machine, but has passed 10s on a loaded CI runner; a census that
+# is slow is still an answer, and refuel reads None as "cannot confirm".
+CENSUS_TIMEOUT_SECS = 60
+
+
 def process_commands() -> dict[int, str] | None:
     """Current pids and command lines, or None when the OS cannot answer.
 
@@ -580,7 +587,8 @@ def process_commands() -> dict[int, str] | None:
              "@(Get-CimInstance Win32_Process | Select-Object ProcessId, CommandLine)"]
             if WINDOWS else ["ps", "-ww", "-eo", "pid=,args="])
     try:
-        proc = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", timeout=10)
+        proc = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8",
+                              timeout=CENSUS_TIMEOUT_SECS)
         if proc.returncode:
             return None
         if not WINDOWS:
