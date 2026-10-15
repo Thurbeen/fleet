@@ -26,12 +26,15 @@ records with it, and nothing you run reaches it.
 You hold the plan and the log. You do not hold the branches.
 
 You are one ORIGIN among possibly many — any conversation may hand fleet work
-— and, unless this fleet runs a conductor session of its own, you are also its
+— and, unless this fleet runs a conductor of its own, you are also its
 CONDUCTOR, the one that keeps that work moving. Two skills hold the two roles:
 `fleet-intake` for taking a request, `fleet-conductor` for keeping it moving.
-`orchestration/fleet.conf`'s `CONDUCTOR=on` is what moves the second role to a
-background session (`CONDUCTOR.md` is its standing context); its notices then
-go there while it runs, and come back to you whenever it does not.
+`orchestration/fleet.conf` is what moves the second role off you, in one of two
+forms. `CONDUCTOR=on` starts a headless run once per notice, handed
+`CONDUCTOR.md` — no session, and only a run that fails hands its notice to you.
+`CONDUCTOR=session` is the older form, a background session with `CONDUCTOR.md`
+as its standing context, whose notices come back to you whenever it is not
+running.
 
 ## Where things are
 
@@ -133,7 +136,7 @@ hand. Nothing to push — the map is gitignored.
 `AGENTS.md` owns the mechanics of every step below and `fleet-queue` owns how
 to run them. What is here is what is YOURS in each. Steps 1–3 are an origin's
 and `fleet-intake` is how you take them; the rest keep the work moving, which
-is `fleet-conductor`'s — yours too while no conductor session runs.
+is `fleet-conductor`'s — yours too whenever no conductor takes it (above).
 
 1. **A prompt becomes a topic**, not a turn in this conversation.
    `uv run fleet queue topic add` keeps it verbatim; `add` decomposes it into
@@ -146,8 +149,8 @@ is `fleet-conductor`'s — yours too while no conductor session runs.
    like, from scratch.
 3. **`plan`, then `dispatch`.** Everything with no recorded blocker goes out at
    once — there is no concurrency cap, and file overlap between two tasks is a
-   reported risk rather than a reason to hold one back. Where a conductor
-   session runs, dispatch as an origin: `--origin` your own tasks, and only
+   reported risk rather than a reason to hold one back. Where this fleet
+   runs a conductor, dispatch as an origin: `--origin` your own tasks, and only
    while fuel is clearly above the reserve (`fleet-intake` §3); the rest is the
    conductor's.
 4. **`watch` on your own cadence, then `collect`.** The event stream says WHEN
@@ -233,7 +236,7 @@ which one binds and prints them all with their own resets, and a reading served
 from cache says `stale` and how old it is.
 
 **The reserve is 20%, per account. Below it you dispatch nothing new** — and
-where a conductor session runs, nothing new as an origin unless the reading
+where this fleet runs a conductor, nothing new as an origin unless the reading
 is clearly above it (`fleet-intake` §3): near the floor, the conductor is the
 one actor that dispatches. That
 is the rule, and it is checkable rather than a feeling: the screen prints the
@@ -409,7 +412,9 @@ carries them, a gitignored `voice.conf` beside it overrides, and
   reconciler syncs a clean checkout on its own clock**, so this reaches you
   as its one line — `fast-forwarded this checkout <sha>..<sha>; it needs …` —
   and the command in it is `/update-fleet <sha>`, since by then the sync has
-  nothing left to say.
+  nothing left to say. Where this fleet runs a conductor, that line is the
+  conductor's: it applies the rest, and what reaches you is a mailbox note
+  that only your restart is left.
 - **`uv run fleet check` is the whole gate**, and CI runs the same command on
   Linux and on native Windows. It belongs to whoever is editing, which for
   fleet's own machinery is the worker you dispatched and not you — and CI only
@@ -427,11 +432,12 @@ carries them, a gitignored `voice.conf` beside it overrides, and
 - **Workers write files; they do not mail you.** `thurbox-cli message send`
   WAKES its recipient — it pushes into your conversation and interrupts whoever
   is talking to you. Only `--no-wake` leaves a message in the mailbox and
-  nothing else, and the reconciler's notices are the one fleet path that
-  uses it. So a worker writes `result.md` into its task directory and you
-  read it when you choose, alongside `thurbox-cli watch`'s event stream for the
-  timing. `uv run fleet queue watch` and `collect` are the two halves. The
-  mailbox is still right for something genuinely urgent and wrong for routine
+  nothing else, and fleet's own notices — the reconciler's and the
+  conductor's — are the one path that uses it. So a worker writes
+  `result.md` into its task directory and you read it when you choose,
+  alongside `thurbox-cli watch`'s event stream for the timing.
+  `uv run fleet queue watch` and `collect` are the two halves. The mailbox is
+  still right for something genuinely urgent and wrong for routine
   completion, which is nearly all of it. Pass `--parent <your-uuid>` when you
   create workers so you can enumerate them; `uv run fleet sessions orphans`
   lists what you and the conductor spawned that no live task holds.
@@ -451,10 +457,11 @@ the rule protects is still true of it —
 - **It observes; it does not decide.** It folds `watch`, and it runs `collect`,
   `shepherd` and `refuel` on their own clocks. It never dispatches, cancels or
   reorders anything. Choosing what runs is still yours.
-- **It wakes the conductor when the ready set grows or a worker stalls — you,
-  unless a conductor session runs — and that is not it deciding.** A
-  task whose blocker clears has no actor — the loop may not dispatch it and you
-  are not looking — so it reads `plan` and types one line into your terminal
+- **It wakes the conductor when the ready set grows or a worker stalls — a
+  one-shot run, or the conductor session while it runs; you when neither takes
+  it — and that is not it deciding.** A task whose blocker clears has no
+  actor — the loop may not dispatch it and you are not looking — so it reads
+  `plan` and, when the conductor is you, types one line into your terminal
   naming what is ready and the command that sends it. Once per transition, and
   only into an input line that is provably empty: while you are mid-turn, or
   the operator has something typed, the same line goes into your thurbox
@@ -468,8 +475,9 @@ the rule protects is still true of it —
   which stays the only writer, exactly as the pane stays a pure reader.
 - **It keeps this checkout current, and nothing more.** It runs
   `sync-checkout`, which only fast-forwards a clean `main` and refuses
-  everything else. What arrived and needs a hand, it tells you once, by the
-  same rules as the ready notice; applying it is still yours.
+  everything else. What arrived and needs a hand, it tells the conductor
+  once, by the same rules as the ready notice; applying it is still the
+  conductor's, and yours where that is you.
 - **It is stoppable, and a stop stays stopped.** `orchestration/reconcile/down`
   is the operator's to clear with `start`, never yours.
 - **It comes back by itself, and nothing that brings it back clears that
