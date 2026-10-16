@@ -110,7 +110,16 @@ by the account fleet runs as, git for a commit that reached the base branch,
 and nowhere at all for `served` or `none`. A `served` task is the one that does
 not then finish: its document is waiting on a reader, so the task stands `open`
 and keeps its session until `fleet queue reviewed <ref>` says a person is
-done. A change request the forge reports merged closes its task whatever its
+done. A `none` task whose artifact names a document is held the same way.
+
+**Pick `--publish` by who answers the result.** A design, spec or proposal
+somebody reviews is `pr`: the document is committed on the branch and reviewed
+in the pull request. `served` is only for a document with no forge to review it
+in. `note` is a review or comment on an existing PR or issue. `none` is only for
+a result nobody reads or answers. `add` warns when a `none` task asks for a
+spec, design, doc, report or proposal.
+
+A change request the forge reports merged closes its task whatever its
 attestation said, and keeps that as a note. **A task that
 spans repositories — `add --add-repo` — is asked once per repository**, records
 one artifact for each, and is closed only when every one of them verifies; the

@@ -201,6 +201,62 @@ def test_a_none_task_whose_deliverable_no_forge_holds_is_still_released(
     expect(deletions(stubs), "--force", sid)
 
 
+@pytest.mark.parametrize("artifact", [
+    "/tmp/repo-a/SPEC.md",
+    "https://github.com/Thurbeen/thurbox/blob/fix/spec/docs/SPEC.md",
+    "file:///tmp/repo-a/report.html",
+])
+def test_a_none_task_whose_result_names_a_document_waits_for_its_reader(
+    first_landed, stubs, queue_dir, artifact
+):
+    """2026-10-16: a spec written for review, added as `none`, reaped unread.
+
+    Its worker named the spec's file in `artifact:`, and one `collect` pass
+    shipped it, landed it and deleted the session — so nobody could discuss or
+    revise the spec with the worker that wrote it. Nobody had said `served`;
+    the result says what the deliverable is, so it holds the task the same way.
+    """
+    sid = "abababab-abab-abab-abab-abababababab"
+    ref = f"{first_landed}/19-write-the-spec"
+    worker(first_landed, "19", "write-the-spec", "Write the spec", sid, "idle", "shipped",
+           "The spec is written; nobody has read it yet.", stubs, queue_dir,
+           publish="none", artifact=artifact)
+
+    out = q("collect").out
+    expect(out, "19-write-the-spec", "shipped", "held for its reader")
+    refute(out, "reaped")
+    refute(deletions(stubs), sid)
+    expect(q("reap").out, "19-write-the-spec", "kept", f"reviewed {ref}")
+    refute(deletions(stubs), sid)
+    expect(q("show", ref).out, "state:       done")
+
+    # The same end as a served document: a person says the reader is done.
+    expect(q("reviewed", ref).out, "reap")
+    expect(q("reap").out, "landed", "reaped")
+    expect(deletions(stubs), "--force", sid)
+
+
+@pytest.mark.parametrize("artifact", [
+    None,
+    "https://github.com/Thurbeen/thurbox/issues/78",
+    "https://github.com/Thurbeen/thurbox/commit/" + "a" * 40,
+])
+def test_a_none_task_with_nothing_to_read_still_lands_at_once_and_refuses_reviewed(
+    first_landed, stubs, queue_dir, artifact
+):
+    """What `none` is for keeps closing exactly as it did, and `reviewed` is not its."""
+    sid = "cdcdcdcd-cdcd-cdcd-cdcd-cdcdcdcdcdcd"
+    ref = f"{first_landed}/20-sweep-the-machine"
+    worker(first_landed, "20", "sweep-the-machine", "Sweep the machine", sid, "idle", "shipped",
+           "Swept; nothing left for anyone.", stubs, queue_dir, publish="none", artifact=artifact)
+    out = q("collect").out
+    expect(out, "20-sweep-the-machine", "reaped")
+    refute(out, "held for its reader")
+    expect(deletions(stubs), "--force", sid)
+    out = q("reviewed", ref)
+    assert out.code != 0, out.out
+
+
 def test_a_served_task_that_served_nothing_waits_on_nobody(first_landed, stubs, queue_dir):
     """The wait needs a document, or it is a wait with no end.
 

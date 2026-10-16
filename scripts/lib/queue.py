@@ -113,7 +113,9 @@ base branch. An artifact that is not there leaves the task OPEN; a check that
 could not run says so and is never read as either verdict. The last two are
 checked nowhere, and they differ in what happens AFTER: a `none` task is
 finished, and a `served` one is a document waiting on a READER, so it holds
-its session until a person runs `fleet queue reviewed <ref>`. The TOOL is
+its session until a person runs `fleet queue reviewed <ref>` — as does a
+`none` task whose artifact names a document, since nobody may have known to
+say `served` (`names_document`). The TOOL is
 `--how`: free text rendered into the brief and never parsed, which is what lets
 a task name a publisher fleet has never heard of; a `served` task with none
 takes the operator's `SERVE` line from publish.conf, which says where pages
@@ -266,7 +268,8 @@ Usage:
   uv run fleet queue reap [--dry-run]     # land what merged, release its session;
                        retire what closed unmerged or whose session vanished,
                        and free the build output a vanished session left
-  uv run fleet queue reviewed <ref> [--why W]  # a `served` task's document is no
+  uv run fleet queue reviewed <ref> [--why W]  # a `served` task's document (or a
+                       `none` task's, when its artifact names one) is no
                        longer waiting on a reader: the next reap lands it and
                        releases the session kept to answer them
   uv run fleet queue review record <PR-URL> --head SHA --score N --findings N
@@ -710,6 +713,19 @@ def brief_shortfall(path: str) -> str:
 # IT IS A SHAPE LIKE THE OTHER FIVE. A document served by a review tool, by a
 # preview server, by `python -m http.server` in a worktree: one artifact, one
 # wait, no tool named.
+#
+# AND A WORD NOBODY PICKED CANNOT BE THE ONLY THING THAT HOLDS IT. On
+# 2026-10-16 a task asked for "a short written spec for review" was added as
+# `none`; its worker wrote the spec and named the file in `artifact:`, and one
+# `collect` pass shipped it, landed it ("a `none` task has no pull request of
+# its own to wait for") and deleted the session before anybody had read a
+# line. `served` existed; nothing steered that task to it, and the choice is
+# made at `add` by whoever adds — a lead, an origin, a relay — who has to know
+# the word. So the RESULT decides it as well: a `none` task whose artifact
+# names a DOCUMENT (`names_document`) waits on its reader exactly as a
+# `served` one does, and `fleet queue reviewed` ends that wait. A `none` task
+# whose artifact is an issue, a commit, or nothing at all is released as it
+# always was — those are the sweeps and filings `none` is for.
 # New records default to a plain PR. Existing records with an explicit
 # `attested` method keep their body check through task_publish and collect.
 PUBLISH_DEFAULT = "pr"
@@ -728,6 +744,40 @@ CHANGE_METHODS = ("attested", "pr")
 # many repositories the worker had open, and inventing a second target for one
 # would be fleet making up a deliverable the operator never asked for.
 PER_REPO_METHODS = ("attested", "pr", "push")
+
+# What a document's name ends in. Read off a URL's PATH, so a query string or
+# a fragment never hides one, and never off its host.
+DOCUMENT_SUFFIXES = (
+    ".md", ".markdown", ".mdx", ".rst", ".adoc", ".org", ".txt",
+    ".html", ".htm", ".pdf", ".docx", ".odt", ".rtf",
+)
+
+
+def names_document(artifact) -> bool:
+    """Does this artifact name a DOCUMENT — something a person opens and reads?
+
+    Two answers say yes. A FILE ON A DISK — an absolute or home-relative path,
+    a `./` one, a Windows drive path or a `file:` URL — because a worker that
+    names a file it wrote has written something for somebody to open: no
+    forge holds it and no command consumes it. And any URL or path whose last
+    segment carries a document's suffix, which is a spec on a branch's blob
+    view as much as a page on a review server.
+
+    Everything else says no, and that is the half that must not move: an
+    issue URL, a commit URL or sha, a pull request somebody else owns, or no
+    artifact at all is what `none` exists for, and keeps closing as it did.
+    """
+    text = str(artifact or "").strip()
+    if not text:
+        return False
+    if text.lower().startswith("file:") or text.startswith(("/", "~", "./", "../", "\\\\")):
+        return True
+    if re.match(r"^[A-Za-z]:[\\/]", text):
+        return True
+    path = text.split("#", 1)[0].split("?", 1)[0]
+    if "://" in path:
+        path = path.split("://", 1)[1].partition("/")[2]
+    return path.lower().rstrip("/").endswith(DOCUMENT_SUFFIXES)
 
 # Accepted wherever a method is read, so a record written before the rename
 # still loads and `--publish no-mistakes` still works. New records say
@@ -786,7 +836,8 @@ PUBLISH_METHODS = {
     },
     "served": {
         "brief": (
-            "serve the document at a URL its reader can open from their own "
+            "serve the document — one no forge holds the review of — at a URL "
+            "its reader can open from their own "
             "machine, and leave it served — a page dies with the machine "
             "serving it. There is nothing to commit and no pull request to open. "
             "Your session is kept up so the reader has somebody to answer them"
@@ -805,8 +856,11 @@ PUBLISH_METHODS = {
     },
     "none": {
         "brief": (
-            "nothing fleet can verify is expected — a document off the forge, "
-            "or work with nowhere to publish it"
+            "nothing anybody reads or answers is expected — an issue filed, a "
+            "machine swept, work with nowhere to publish it. A design, spec or "
+            "proposal somebody reviews belongs in a `pr` task; if you produce a "
+            "document anyway, name the file or its URL, and the task waits on "
+            "its reader, keeping your session, until `fleet queue reviewed`"
         ),
         "artifact": "the URL of what you produced, if there is one",
         "proof": (
@@ -2701,6 +2755,11 @@ def cmd_add(args) -> int:
     os.makedirs(path)
     task.save()
     fleet_platform.write_record(task.file(BRIEF_FILE), text)
+    warning = read_deliverable_warning(
+        task.ref, method, title, brief_sections(text).get(BRIEF_SECTIONS[0], "")
+    )
+    if warning:
+        print(warning, file=sys.stderr)
 
     if slug != args.slug:
         print(f"{args.slug}: add numbers the task itself, so the ref is {task.ref}",
@@ -5223,6 +5282,15 @@ def cmd_dispatch(args) -> int:
     if not ready:
         print("dispatch: nothing ready")
         return 0
+    # `add`'s warning again, for the brief written after a bare `add`
+    # scaffolded it — the one path `add` could not read the brief on.
+    for t in ready:
+        warning = read_deliverable_warning(
+            t.ref, task_publish(t)[0], str(t.doc.get("title") or ""),
+            brief_sections(read_text(t.file(BRIEF_FILE))).get(BRIEF_SECTIONS[0], ""),
+        )
+        if warning:
+            print(warning, file=sys.stderr)
 
     if args.ref:
         rest = len(q.ready()) - len(ready)
@@ -6744,6 +6812,8 @@ def _concluded_line(task: Task, outcome: str, rows: list, artifact, verdict: str
             line += "  [merged; its attestation did not hold — noted, not held]"
     elif verdict == "skipped" and method in ("none", "served"):
         line += f"  [publish not checked: {method}]"
+        if method == "none" and names_document(artifact):
+            line += "  [a document: held for its reader until `reviewed`]"
     elif verdict == "missing":
         line += "  [publish NOT verified — closed by --allow-unverified]"
     elif verdict == "unknown":
@@ -6887,6 +6957,16 @@ def artifact_landing(
             "a served document is awaiting its reader; nothing but "
             f"`fleet queue reviewed {task_ref}` closes that"
         )
+    if method == "none" and names_document(artifact):
+        # The same wait, for a document nobody called `served`: see
+        # `names_document`. `artifact` is never empty here, so there is
+        # always a document to wait on.
+        if reviewed:
+            return "none", "the reader's review was recorded closed"
+        return "open", (
+            f"a `none` task's document is awaiting its reader ({artifact}); "
+            f"nothing but `fleet queue reviewed {task_ref}` closes that"
+        )
     if method in ("note", "none"):
         return "none", f"a `{method}` task has no pull request of its own to wait for"
     url = forge.change_url(artifact)
@@ -7000,6 +7080,66 @@ def task_landing(task: Task) -> tuple[str, str]:
     kinds = {r["kind"] for r in rows}
     kind = next((w for w in LANDING_ORDER if w in kinds), "unknown")
     return kind, "; ".join(f"{r['repo']}: {r['detail']}" for r in rows)
+
+
+# WHICH SHAPE A DOCUMENT IS, said once where a task is added — the rule the
+# skills and the queue README state in the same words:
+#
+#   a design, spec or proposal somebody reviews  -> `pr`, the document
+#                                                    committed on the branch
+#   a document with no forge to review it in     -> `served`
+#   a review or comment on an existing PR/issue  -> `note`
+#   nothing anybody reads or answers             -> `none`
+#
+# `add` and `dispatch` WARN — they do not refuse — when a task that publishes
+# `none` asks for one of those words in its title or its "What to do": the
+# word is a strong hint and not a proof ("report the crash upstream" files an
+# issue), and the hold `names_document` puts on such a result is what keeps a
+# wrong guess from costing the reader their worker.
+READ_DELIVERABLE_RE = re.compile(
+    r"\b(spec(?:ification)?s?|designs?|docs?|documents?|documentation|"
+    r"reports?|proposals?|write-?ups?|rfcs?)\b",
+    re.IGNORECASE,
+)
+
+
+def read_deliverable_warning(ref: str, method: str, title: str, brief: str) -> str:
+    """The warning for a `none` task whose title or brief asks for a document, or ""."""
+    if method != "none":
+        return ""
+    for where, text in (("title", title), ("brief", brief)):
+        found = READ_DELIVERABLE_RE.search(
+            "" if (text or "").strip() == BRIEF_PLACEHOLDER else (text or "")
+        )
+        if found:
+            return (
+                f"warning: {ref} publishes `none`, and its {where} asks for "
+                f"\"{found.group(0)}\".\n"
+                "    A design, spec or proposal somebody reviews is `pr` — the "
+                "document committed on the branch, reviewed in the pull request;\n"
+                "    `served` only for a document with no forge to review it in; "
+                "`note` for a review or comment on an existing PR or issue;\n"
+                "    `none` only when nobody reads or answers the result. If this "
+                "one is read, abandon it and add it again with `--publish pr`."
+            )
+    return ""
+
+
+def awaits_reader(task: Task) -> bool:
+    """Is this task's deliverable a document a READER is expected to answer?
+
+    Every `served` task, and a `none` task whose recorded artifact names a
+    document (`names_document`). The one predicate the landing check, the
+    `reviewed` verb and every view that says "waiting on a reader" ask, so the
+    hold and the command that ends it can never disagree about which tasks
+    they cover.
+    """
+    method = task_publish(task)[0]
+    if method == "served":
+        return True
+    return method == "none" and any(
+        names_document(a["url"]) for a in recorded_artifacts(task)
+    )
 
 
 def review_closed(task: Task) -> bool:
@@ -8463,10 +8603,16 @@ def cmd_reviewed(args) -> int:
     q = Queue(queue_root())
     task = q.get(args.ref)
     method = task_publish(task)[0]
-    if method != "served":
+    # A `none` task is refused only once it has concluded: before that there is
+    # no artifact to say whether it names a document, and the state refusal
+    # below is the truer sentence.
+    if method != "served" and not (method == "none" and (
+        awaits_reader(task) or task.state in ("queued", "dispatched")
+    )):
         raise QueueError(
-            f"{task.ref} publishes `{method}`, and only a `served` task waits on a "
-            "reader. Nothing else here is held for one."
+            f"{task.ref} publishes `{method}`, and only a `served` task — or a "
+            "`none` one whose artifact names a document — waits on a reader. "
+            "Nothing else here is held for one."
         )
     if review_closed(task):
         was = (task.doc.get("review") or {}).get("closed")
@@ -13662,7 +13808,8 @@ def build_parser() -> argparse.ArgumentParser:
         "from its branch; `push`, a commit on its base; `note`, a review or "
         "comment on its --target; `served`, a document served to a reader, "
         "whose session is kept to answer them until `fleet queue reviewed`; "
-        "`none`, nothing fleet can check and nobody waiting. Defaults to "
+        "`none`, nothing fleet can check and nobody waiting — a `none` result "
+        "naming a document is held for its reader all the same. Defaults to "
         "orchestration/publish.conf, and to `pr` when there is none",
     )
     a.add_argument(

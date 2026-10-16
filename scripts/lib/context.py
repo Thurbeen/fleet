@@ -1015,7 +1015,7 @@ def pending_rows(q, stalled: set) -> list[dict]:
             rows.append({"task": task.ref, "why": task.state, "next": result})
         elif task.state == "dispatched" and publish == "unverified":
             rows.append({"task": task.ref, "why": "held", "next": result})
-        elif task.state == "done" and queue.task_publish(task)[0] == "served" and not queue.review_closed(task):
+        elif task.state == "done" and queue.awaits_reader(task) and not queue.review_closed(task):
             rows.append({"task": task.ref, "why": "review", "next": f"{fleet} queue reviewed {task.ref}"})
         # Whom the decision belongs to, as the record names them; null when
         # nobody was recorded.

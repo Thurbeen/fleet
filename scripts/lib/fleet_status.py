@@ -355,7 +355,9 @@ def probe_sessions(tasks: list) -> dict:
         # this" is a sentence about a reader, and it is false of a pull
         # request nobody has merged.
         held = (t.get("landing") or {}).get("state") == "open"
-        waiting_for_reader = held and t.get("publish_method") == "served"
+        # A `none` task's landing is `open` only when its artifact named a
+        # document (`queue.names_document`), so that pairing is a reader too.
+        waiting_for_reader = held and t.get("publish_method") in ("served", "none")
         if s is None:
             # A concluded task's session is MEANT to be gone — the loop's last
             # step deletes it — so that pairing is not news and is not printed.

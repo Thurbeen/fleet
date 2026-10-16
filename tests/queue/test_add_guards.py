@@ -90,3 +90,43 @@ def test_an_unknown_profile_is_refused_naming_the_known_ones(gtopic, queue_dir):
     assert r.code != 0, r.out
     expect(r.out, "'nope'", "default", "cursor-trusted")
     assert not any(p.is_dir() for p in (queue_dir / gtopic).iterdir())
+
+
+# The rule `add` warns with, in its four words — the one the skills state.
+SHAPES = ("`pr`", "`served`", "`note`", "`none` only when nobody reads")
+
+
+def test_a_none_task_whose_title_asks_for_a_spec_is_warned_toward_pr(gtopic):
+    """2026-10-16: "Spec: …", added as `none`, landed and reaped unread.
+
+    A warning and not a refusal: the word is a hint, and `collect` holds a
+    `none` result that names a document whatever `add` said.
+    """
+    added = ok(add(gtopic, "spec-the-queue", "--title", "Spec: serialize the queue",
+                   "--publish", "none"))
+    expect(added.stderr, "publishes `none`", "title", '"Spec"', "--publish pr", *SHAPES)
+
+
+def test_a_none_task_whose_brief_asks_for_a_proposal_is_warned(gtopic, tmp_path):
+    body = tmp_path / "brief.md"
+    write(body, "## What to do\nWrite a proposal for the new cache.\n## Hard constraints\nNone\n"
+                "## Coordination\nNone\n## Done means\nIt exists.\n")
+    added = ok(add(gtopic, "cache-plan", "--title", "Plan the cache", "--publish", "none",
+                   "--brief-file", str(body)))
+    expect(added.stderr, "brief", '"proposal"')
+
+
+@pytest.mark.parametrize("extra", [
+    ("--title", "Spec: serialize the queue", "--publish", "pr"),
+    ("--title", "Sweep the machine", "--publish", "none"),
+])
+def test_no_warning_where_the_shape_already_fits(gtopic, extra):
+    refute(ok(add(gtopic, "quiet", *extra)).stderr, "warning")
+
+
+def test_dispatch_warns_for_a_brief_written_after_a_bare_add(gtopic, queue_dir):
+    ref = ok(add(gtopic, "cache-plan", "--title", "Plan the cache", "--publish", "none")).stdout.strip()
+    brief = queue_dir / ref / "BRIEF.md"
+    write(brief, brief.read_text(encoding="utf-8").replace(
+        "<!-- WRITE THE INSTRUCTIONS HERE -->", "Write the design doc for the cache."))
+    expect(ok(q("dispatch", "--dry-run")).stderr, ref, "publishes `none`", '"design"')

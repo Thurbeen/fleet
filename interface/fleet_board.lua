@@ -108,12 +108,18 @@ local function pr_line(pr)
   end
   return out
 end
+-- A `done` task waiting on a READER: every `served` one, and a `none` one,
+-- which is `done` past the pass that collected it only when its artifact named
+-- a document and reap is holding it for `fleet queue reviewed`.
+local function awaits_reader(task)
+  return task.state == "done" and (task.publish_method == "served" or task.publish_method == "none")
+end
 local function needs(task)
   if
     task.state == "stuck"
     or task.state == "abandoned"
     or task.state == "failed"
-    or task.publish_method == "served" and task.state == "done"
+    or awaits_reader(task)
     or task.publish_state == "checks-failed"
     or task.publish_state == "changes-requested"
     or task.publish_state == "awaiting-approval"
@@ -137,7 +143,7 @@ local function category(task, now)
   elseif task.state == "stuck" or task.state == "abandoned" or task.state == "failed" then
     return 5
   elseif task.state == "done" then
-    return task.publish_method == "served" and 4 or 3
+    return awaits_reader(task) and 4 or 3
   elseif task.state == "dispatched" then
     return 2
   else
@@ -176,7 +182,7 @@ local function note(task)
       or task.publish_state ~= "" and task.publish_state
       or task.display_state
   end
-  if task.state == "done" and task.publish_method ~= "served" then
+  if task.state == "done" and not awaits_reader(task) then
     out[#out + 1] = task.publish_state == "green" and "yours to merge" or "review: unknown · auto-merge: unknown"
     out[#out + 1] = task.threads and task.threads .. " unresolved threads" or "threads: unknown"
   elseif (task.threads or 0) > 0 then

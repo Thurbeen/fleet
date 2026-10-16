@@ -60,6 +60,15 @@ Pass `--repo` as an absolute path: a worker is spawned from the record, long
 after your shell's directory stops meaning anything. Every `uv run fleet …`
 below takes the same `--project <checkout>` outside Mission Control.
 
+**Pick `--publish` by who answers the result.** A design, spec or proposal
+somebody reviews is `pr`: the document is committed on the branch and reviewed
+in the pull request. `served` is only for a document with no forge to review
+it in. `note` is a review or comment on an existing PR or issue (`--target`).
+`none` is only for a result nobody reads or answers: an issue filed, a machine
+swept. `add` warns when a `none` task asks for a spec, design, doc, report or
+proposal. `collect` holds a `none` result that names a document for its reader
+until `fleet queue reviewed <ref>`.
+
 **Every task you add is yours by default.** Inside thurbox, `add` records the
 session it runs in as the task's `origin` (`thurbox:<session id>`) and a
 `--reply` that reaches it, so a worker's question comes to you, and so does

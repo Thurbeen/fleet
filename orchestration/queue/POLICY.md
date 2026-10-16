@@ -85,6 +85,14 @@ them. Leave it serving, and stay available until the lead records the review
 closed. So verify your own artifact before you report done. For an `attested`
 task the command below checks the body against the current head.
 
+**A document somebody reviews travels in the shape your brief names.** For
+`pr` — the shape for a design, spec or proposal — commit the document on your
+branch, and it is reviewed in the pull request. `served` is for a document no
+forge holds, and `note` for a review on the brief's **Target**. A `none` task
+is for a result nobody reads or answers. If yours produced a document anyway,
+name the file or its URL in `artifact:`. The task then waits for its reader
+exactly as a `served` one does, so stay available until `fleet queue reviewed`.
+
 For a `served` task, host the page the way your Publish line says — the
 operator's `SERVE` setting in `orchestration/publish.conf` puts it there — or,
 where it says nothing, however you can. Put the URL in `result.md`'s

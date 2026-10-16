@@ -567,11 +567,17 @@ closed by hand for. A task that pushes to a pull request it did not open is
 `--publish pr --target <that pull request>`. `add` refuses a `note` with no
 target, a `push` with one, and a pull-request method aimed at an issue.
 
-**A deliverable somebody will READ is `served`, never `none`.** The two look
-alike, and the difference is that a reader is expected to ANSWER a served
-document, so the worker's session has to still be there when they do. `none`
-closed five such tasks the moment the document was served and reaped every
-session, and every reader who sent one back was told nobody was listening.
+**Pick `--publish` by who answers the result.** A design, spec or proposal
+somebody reviews is `pr`: the document is committed on the branch and reviewed
+in the pull request. `served` is only for a document with no forge to review
+it in. `note` is a review or comment on an existing PR or issue (`--target`).
+`none` is only for a result nobody reads or answers: an issue filed, a machine
+swept. `add` warns when a `none` task asks for a spec, design, doc, report or
+proposal. `collect` holds a `none` result that names a document for its reader
+until `fleet queue reviewed <ref>`. `none` once closed tasks
+whose deliverable was a document at the moment it was written, and reaped the
+session before anybody had read it (five served pages, then a spec on
+2026-10-16).
 
 **Those words are SHAPES and none is a tool.** `--how` is free text ("run
 `/publish`", "use `make release`"), rendered into the brief's Publish line and
