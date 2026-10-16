@@ -2689,7 +2689,7 @@ def cmd_add(args) -> int:
     brief = open(args.brief_file, encoding="utf-8").read() if args.brief_file else None
     text = render_brief(task, topic_meta, brief)
     if args.brief_file:
-        _refuse_partial_brief(args.brief_file, text)
+        _refuse_partial_brief(args.brief_file, text, brief)
 
     # A topic that grows a new task is live again, whatever it was. Without
     # this an operator who did not notice the flag would add and dispatch into
@@ -2826,19 +2826,97 @@ def _add_publish(args) -> tuple:
     return method, how, target
 
 
-def _refuse_partial_brief(brief_file: str, text: str) -> None:
-    """Refuse a `--brief-file` that left one of the brief's sections unwritten."""
+def _refuse_partial_brief(brief_file: str, text: str, body: str) -> None:
+    """Refuse a `--brief-file` that left one of the brief's sections unwritten.
+
+    A section heading is its name and nothing else on the line, and that stays
+    the contract: a heading with a gloss after it is content, kept verbatim
+    under the section before it. What this adds is saying so. A lead who wrote
+    `## Hard constraints — read this carefully` and the whole section under it
+    was told only that `Hard constraints` was unwritten and to "add the
+    heading" -- the one thing they had done. So a section the file came CLOSE
+    to opening names the line that came close, and why it did not.
+    """
     missing = unfilled_sections(text)
-    if missing:
-        raise QueueError(
-            f"{brief_file} leaves {len(missing)} of the brief's "
-            "sections unwritten:\n"
-            + "\n".join(f"    {h}" for h in missing)
-            + "\nA worker gets all four whatever the file says, so one the "
-            "file does not\nname stays the scaffold's placeholder and "
-            "`dispatch` refuses it. Add the\nheading — `None.` is a "
-            "complete answer — and run this again. Nothing was created."
-        )
+    if not missing:
+        return
+    near = {h: _near_miss_headings(body, h) for h in missing}
+    close = any(near.values())
+    rows = []
+    for h in missing:
+        rows.append(f"    {h}")
+        if close and not near[h]:
+            rows.append(f"        no line comes close: add `## {h}`.")
+        for n, line, why in near[h]:
+            rows.append(f"        line {n}: `{line}`")
+            if why is None:
+                rows.append(
+                    "        opens it, but nothing is written under it."
+                )
+                continue
+            rows.append(
+                f"        does not open it: {why}.\n"
+                f"        A section heading is `## {h}`, at the start of its line\n"
+                "        and with nothing else on it, so this one was read as text\n"
+                "        of the section before it."
+            )
+    raise QueueError(
+        f"{brief_file} leaves {len(missing)} of the brief's "
+        "sections unwritten:\n"
+        + "\n".join(rows)
+        + "\nA worker gets all four whatever the file says, so one the "
+        "file does not\nname stays the scaffold's placeholder and "
+        "`dispatch` refuses it. "
+        + ("Fix what is named\nabove" if close else "Add the\nheading")
+        + " — `None.` is a complete answer — and run this again. "
+        "Nothing was created."
+    )
+
+
+def _near_miss_headings(body: str, section: str) -> list:
+    """The `--brief-file`'s heading lines that look like `section`, and why each failed.
+
+    A markdown heading of any level, outside a fence, whose text is the
+    section's name in any case, ending there or at anything but a letter or
+    digit -- `## Hard constraints — why`, `### Hard constraints`, `  ## hard
+    constraints`, but not `### What to double-check` for `What to do`. Each
+    comes with what kept it from opening the section, in words, or None for
+    the exact heading of a section left empty: `split_brief_body` drops an
+    empty section, so that one is unwritten under a correct heading.
+
+    Only ever read to explain a refusal: `split_brief_body` alone decides what
+    opens a section, and nothing here changes which briefs are accepted.
+    """
+    out = []
+    fence = None
+    for n, line in enumerate(body.splitlines(), 1):
+        stripped = line.strip()
+        if fence is not None or stripped.startswith(("```", "~~~")):
+            fence = _next_fence(fence, stripped)
+            continue
+        hashes = len(stripped) - len(stripped.lstrip("#"))
+        if not 1 <= hashes <= 6 or stripped[hashes:hashes + 1] not in (" ", "\t"):
+            continue
+        text = stripped[hashes:].strip()
+        name, rest = text[:len(section)], text[len(section):]
+        if name.casefold() != section.casefold() or rest[:1].isalnum():
+            continue
+        if line.startswith("## ") and line[3:].strip() == section:
+            out.append((n, line.rstrip(), None))
+            continue
+        why = []
+        if line != line.lstrip():
+            why.append("it is indented")
+        if hashes != 2:
+            why.append(f"it is a level-{hashes} heading, `{'#' * hashes}`")
+        elif stripped[2] != " ":
+            why.append("a tab, not a space, follows the `##`")
+        if name != section:
+            why.append(f"it spells the name `{name}`")
+        if rest.strip():
+            why.append(f"`{rest.strip()}` follows the name")
+        out.append((n, line.rstrip(), "; ".join(why)))
+    return out
 
 
 def render_brief(task: Task, topic: dict, body: str | None) -> str:

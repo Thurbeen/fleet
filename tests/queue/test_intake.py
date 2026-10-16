@@ -12,6 +12,8 @@ worktree could be cut for is refused before a task exists; `dispatch` takes
 refs; and `block --kind` lists its values in `--help`.
 """
 
+from pathlib import Path
+
 import pytest
 from queuekit import PLACEHOLDER, ok
 
@@ -257,6 +259,72 @@ def test_a_brief_file_that_leaves_a_section_unwritten_is_refused_at_add(etopic, 
     ok(add(etopic, "half-written", "20", "--brief-file", str(half)))
     # And it dispatches in one step, with nothing hand-repaired between.
     ok(q("dispatch", f"{etopic}/20-half-written", "--dry-run"))
+
+
+# Reproduced 2026-10-15: a brief whose whole constraints section sat under
+# `## Hard constraints — <a gloss>` was refused as leaving `Hard constraints`
+# unwritten, and told to "Add the heading" -- the one thing the lead had done.
+# The contract stays: a heading is the section's name and nothing else. The
+# refusal has to say that, and name the line.
+@pytest.mark.parametrize(("heading", "why"), (
+    ("## Hard constraints — читай внимательно, тут живые сессии",
+     "`— читай внимательно, тут живые сессии` follows the name"),
+    ("## Hard constraints (read twice)", "`(read twice)` follows the name"),
+    ("### Hard constraints", "it is a level-3 heading, `###`"),
+    ("## hard constraints", "it spells the name `hard constraints`"),
+    ("  ## Hard constraints", "it is indented"),
+    ("##\tHard constraints", "a tab, not a space, follows the `##`"),
+))
+def test_a_heading_that_only_starts_with_a_section_name_is_refused_by_that_line(
+        etopic, briefs, queue_dir, heading, why):
+    text = FULL_BRIEF.replace("## Hard constraints", heading)
+    path = briefs("glossed", text)
+    out = add(etopic, "glossed-heading", "25", "--brief-file", path)
+    assert out.code != 0, out.out
+    said = " ".join(out.out.split())
+    line = text.splitlines().index(heading) + 1
+    expect(said, " ".join(f"line {line}: `{heading}` does not open it: {why}.".split()),
+           "A section heading is `## Hard constraints`, at the start of its line",
+           "Fix what is named above")
+    refute(said, "Coordination", "Done means", "Add the heading")
+    assert not (queue_dir / etopic / "25-glossed-heading").exists()
+
+    # The repair it names is the whole repair.
+    write(Path(path), text.replace(heading, "## Hard constraints"))
+    ok(add(etopic, "glossed-heading", "25", "--brief-file", path))
+
+
+def test_a_section_with_no_near_miss_beside_one_with_a_near_miss_is_still_named(etopic, briefs):
+    """Fixing the named line alone would be refused again, for the section not named."""
+    text = FULL_BRIEF.replace("## Hard constraints", "## Hard constraints: list").replace("## Coordination", "")
+    out = add(etopic, "mixed", "28", "--brief-file", briefs("mixed", text))
+    assert out.code != 0, out.out
+    said = " ".join(out.out.split())
+    expect(said, "`## Hard constraints: list` does not open it",
+           "Coordination no line comes close: add `## Coordination`.")
+
+
+def test_the_exact_heading_of_an_empty_section_is_named_as_opening_it(etopic, briefs):
+    """Not "does not open it": that would tell the lead to fix a line that is right."""
+    text = FULL_BRIEF.replace("Do not touch `src/list.rs`; another worker is in it.\n", "")
+    out = add(etopic, "empty-section", "27", "--brief-file", briefs("empty", text))
+    assert out.code != 0, out.out
+    said = " ".join(out.out.split())
+    line = text.splitlines().index("## Hard constraints") + 1
+    expect(said, f"line {line}: `## Hard constraints` opens it, but nothing is written under it.")
+    refute(said, "does not open it")
+
+
+def test_a_refusal_with_no_near_miss_says_what_it_always_said(etopic, briefs):
+    """A section the file never came close to naming -- only inside a fence, or
+    inside a longer word -- gets the plain advice and no line."""
+    text = (HALF_BRIEF + "\n### Hard constraintsXYZ\n"
+            "\n```markdown\n## Hard constraints — quoted\n```\n")
+    out = add(etopic, "never-named", "26", "--brief-file", briefs("never", text))
+    assert out.code != 0, out.out
+    said = " ".join(out.out.split())
+    expect(said, "Hard constraints", "Add the heading")
+    refute(said, "line ", "Fix what")
 
 
 def test_the_scaffold_path_is_untouched_and_its_backstop_names_the_sections(etopic):
