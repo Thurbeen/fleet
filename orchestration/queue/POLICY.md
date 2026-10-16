@@ -106,6 +106,13 @@ in-flight tasks: keep their existing publisher until the operator explicitly
 changes each task's method and assumes its manual merge review. Do not
 retroactively change their records or rewrite existing PR bodies.
 
+If the publisher your brief names writes no attestation, open the change
+request with it anyway and write `shipped` with its URL, not `stuck`: a
+missing attestation is not a reason you cannot finish. `collect` holds the
+task open until the attestation appears or the forge reports the change
+request merged, and closes it on either. Never write the attestation
+yourself.
+
 On GitHub:
 
 ```sh

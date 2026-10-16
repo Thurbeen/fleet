@@ -479,11 +479,12 @@ OUTCOMES = {
 # comparison written out three times.
 CONCLUDED_STATES = ("done", "landed", "stuck", "failed", "abandoned")
 
-# Concluded AND not on main. `sweep_landings` promotes a `done` task and only a
-# `done` task, so `landed` is unreachable from any of these as they stand: a
-# blocker naming one does not clear, and calling it "held by" describes a wait
-# with no end.
-UNLANDABLE_STATES = ("stuck", "failed", "abandoned")
+# Concluded AND never going to be on main: the forge closed it unmerged, or a
+# person gave it up. A blocker naming one does not clear, and calling it "held
+# by" describes a wait with no end. `stuck` and `failed` are not here: a worker
+# can give up on work whose change request then merges anyway, and
+# `sweep_landings` lands that task the moment every artifact it named has.
+UNLANDABLE_STATES = ("abandoned",)
 
 # The two a WORKER's own verdict put there, so the same worker's file can take
 # them back. `collect` keeps reading their result.md and acts only when the
@@ -752,7 +753,9 @@ PUBLISH_METHODS = {
         "artifact": "that pull request's URL",
         "proof": (
             "the pull request is from this task's branch and its body carries "
-            "an attestation for the commit that would merge"
+            "an attestation for the commit that would merge, or it has merged "
+            "— so if that command writes no attestation, still report "
+            "`shipped` with the pull request, not `stuck`"
         ),
     },
     "pr": {
@@ -6881,7 +6884,10 @@ def _print_collect_summary(concluded: int, held: int, artifacts: int) -> None:
 #
 # `landed` is a state the record keeps and everything reads: reaping, blocker
 # clearing, and `list`. Nothing re-opens — this is a LATER transition out of
-# `done`, discovered by asking the forge, never by a worker claiming it.
+# `done`, discovered by asking the forge, never by a worker claiming it. Out of
+# `stuck` or `failed` too, on the narrower answer that EVERY artifact the
+# worker named merged: the worker gave up, somebody finished the job on the
+# forge, and the work is on main either way (`sweep_landings`).
 
 # The only session states a reap will act on. `working` and `blocked` are the
 # ones that must never be touched, but they are not the whole exclusion:
@@ -7100,14 +7106,28 @@ def sweep_landings(q: Queue, dry: bool) -> dict:
     accident: a merge normally happens after the session that produced it is
     gone, so nothing here may depend on a worker being alive to say so.
 
+    A `stuck` or `failed` task is asked too, and moves on ONE answer only:
+    every artifact it named merged. Its worker gave up, but a person can
+    still take the pull request the rest of the way — a decision made on it,
+    an attestation the publisher would not write — and a task left `stuck`
+    over work that is on main holds its dependents and its topic on the board
+    until somebody rewrites its result by hand. Still open, closed, merged in
+    one repository of two, or no artifact named at all, and it stays exactly
+    where its worker put it: that verdict is still the truth, and the kept
+    session is still its evidence.
+
     Returns {ref: (kind, detail)} for every task it asked about, so the caller
     can say why a task it did not promote is being kept.
     """
     seen: dict = {}
     for task in sorted(q.tasks.values(), key=lambda t: t.ref):
-        if task.state != "done":
+        if task.state != "done" and task.state not in REREAD_STATES:
             continue
         kind, detail = task_landing(task)
+        if task.state != "done" and not (
+            kind == "merged" and all(a["url"] for a in recorded_artifacts(task))
+        ):
+            continue
         seen[task.ref] = (kind, detail)
         nxt = LANDED_STATE.get(kind)
         if dry:
@@ -7119,7 +7139,8 @@ def sweep_landings(q: Queue, dry: bool) -> dict:
 
 
 def _record_landing(task: Task, kind: str, detail: str, nxt: str | None) -> None:
-    """Write what the forge said of one `done` task, promoting it if it landed."""
+    """Write what the forge said of one task, promoting it if it landed."""
+    was = task.state
     task.doc["landing"] = {"state": kind, "detail": detail, "at": now()}
     if kind in ("merged", "closed"):
         # The same fact in the block that carries every other observation
@@ -7138,6 +7159,11 @@ def _record_landing(task: Task, kind: str, detail: str, nxt: str | None) -> None
         task.doc["state"] = nxt
         print(f"    {task.ref:<46} {nxt:<10} {detail}")
     task.save()
+    if was in REREAD_STATES:
+        fleet_platform.append_record(task.file(PROGRESS_FILE), json.dumps({
+            "landed": f"the worker said {was}; every artifact merged — {detail}",
+            "observed": now(),
+        }) + "\n")
 
 
 # How long a dispatched task's session has to stay missing from thurbox's

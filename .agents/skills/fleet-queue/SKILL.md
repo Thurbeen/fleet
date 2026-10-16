@@ -825,7 +825,7 @@ branch, so reap promotes it in the same pass.
 | `done` | the worker concluded; its change request is open, its served document awaits its reader, or its confirmed `push` commit is about to be promoted | **kept** |
 | `landed` | the change request merged, the commit reached the base branch, or there was never an artifact | released |
 | `abandoned` | `closed unmerged` — the change request was closed, at `collect` or after; `session gone` — thurbox has not listed a dispatched task's session for ten minutes and no `result.md` came, unless that look lost five or more of one machine's sessions and most of them, which is an outage it names for a person and retires nothing over; or `abandoned by hand` (§3) | released once at rest; the work is NOT on main |
-| `stuck` / `failed` | the worker gave up | **kept** — the session is the evidence, unless the worker rewrites its `result.md` with an outcome `collect` proves (§5) |
+| `stuck` / `failed` | the worker gave up | **kept** — the session is the evidence, unless the worker rewrites its `result.md` with an outcome `collect` proves (§5), or every artifact it named merges anyway, which lands it |
 
 **A `served` task is the one `landed` cannot be asked of.** Fleet cannot poll
 a server it did not start, and an idle session proves nothing — waiting for

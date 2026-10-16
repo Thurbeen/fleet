@@ -95,3 +95,22 @@ def test_the_policy_says_what_the_reply_route_is_for(queue_dir):
     policy = policy_named_by(scaffolded_brief(queue_dir))
     assert any(permits(p) for p in paragraphs(policy)), (
         f"POLICY.md never tells the worker to post through the brief's '{SECTION}' section")
+
+
+def ships_without_an_attestation(text: str) -> bool:
+    """Whether a sentence here says a missing attestation is still `shipped`, not `stuck`."""
+    return any(re.search(r"\battestation\b", s) and "`shipped`" in s and "not `stuck`" in s
+               for p in paragraphs(text) for s in sentences(p))
+
+
+def test_an_attested_task_with_no_attestation_ships_its_pull_request_in_both(queue_dir):
+    # 2026-10-15: a worker on an `attested` task whose publisher writes no
+    # attestation reported `stuck`, and its pull request merged a day later
+    # with the task still on the board. `collect` closes such a task on the
+    # merge, so the brief and the policy must both say to ship, and agree.
+    topic = ok(q("topic", "add", "attest", "--title", "Attest", "--prompt", "p")).stdout.strip()
+    ref = ok(q("add", topic, "attests", "--title", "Attests", "--repo", "/tmp/repo-a",
+               "--branch", "fix/attests", "--publish", "attested")).stdout.strip()
+    brief = (queue_dir / ref / "BRIEF.md").read_text(encoding="utf-8")
+    assert ships_without_an_attestation(brief), brief
+    assert ships_without_an_attestation(policy_named_by(brief)), "POLICY.md does not say it"

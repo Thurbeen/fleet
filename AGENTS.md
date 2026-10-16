@@ -489,7 +489,9 @@ a second copy — read the skill before you run any of it:
    `notify`: the task moves all the same, and the session is kept and told
    so once, at rest, for the operator to delete from `sessions orphans`. It
    never touches one that is working, blocked, or was given up in: that
-   session is the evidence. Blockers clear on `landed`, and a
+   session is the evidence — until the forge says every artifact a `stuck` or
+   `failed` task named merged anyway, which lands it like any other and says
+   so in its `progress.jsonl`. Blockers clear on `landed`, and a
    topic whose every task is terminal archives itself. Two ends nobody
    declares are read as ends too: a change request **closed unmerged**, and a
    session thurbox has **not listed for ten minutes** with no result written.
