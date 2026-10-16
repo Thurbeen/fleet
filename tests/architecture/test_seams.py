@@ -70,6 +70,47 @@ def test_the_forge_seam_is_where_the_forge_cli_actually_is():
     assert {"gh", "glab"} <= set(argv), "forge.py runs neither CLI: the rule above now proves nothing"
 
 
+# Where each temporary file takes its mode; given none, it opens in binary.
+TEMP_OPENERS = {"NamedTemporaryFile": 0, "TemporaryFile": 0, "SpooledTemporaryFile": 1}
+
+
+def opener_mode(node: ast.Call) -> tuple[ast.expr | None, str] | None:
+    """(the mode argument, the default mode) if `node` opens a file object, else None."""
+    func = node.func
+    name = func.id if isinstance(func, ast.Name) else func.attr if isinstance(func, ast.Attribute) else ""
+    owner = func.value.id if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name) else None
+    if name in TEMP_OPENERS:
+        position, default = TEMP_OPENERS[name], "w+b"
+    elif calls_builtin(node, "open") or (owner, name) in (("io", "open"), ("os", "fdopen")):
+        position, default = 1, "r"
+    elif name == "open" and owner != "os":  # `os.open` takes integer flags and returns a descriptor
+        position, default = 0, "r"
+    elif calls_method(node, "read_text", "write_text"):
+        return None, "r"
+    else:
+        return None
+    return (node.args[position] if len(node.args) > position else keyword(node, "mode")), default
+
+
+def opens_text_without_encoding(node: ast.Call) -> bool:
+    opened = opener_mode(node)
+    if opened is None or keyword(node, "encoding") is not None:
+        return False
+    given, default = opened
+    return "b" not in (default if given is None else text_constant(given) or "")
+
+
+def decodes_child_without_encoding(node: ast.Call) -> bool:
+    """Any `text=` that is not literally off, since a variable is on as often as not.
+
+    `dict(text=...)` is a key, not a decode mode.
+    """
+    textual = keyword(node, "text") or keyword(node, "universal_newlines")
+    if textual is None or calls_builtin(node, "dict") or keyword(node, "encoding") is not None:
+        return False
+    return not (isinstance(textual, ast.Constant) and textual.value in (False, None))
+
+
 def test_every_text_file_fleet_opens_names_its_encoding():
     """A record is UTF-8 on every OS, or it is a different file on Windows.
 
@@ -77,13 +118,7 @@ def test_every_text_file_fleet_opens_names_its_encoding():
     stock Windows console: a task title round-trips through a different byte,
     and a brief holding one raises where it is read.
     """
-    unnamed = []
-    for path, node in nodes(ast.Call):
-        if not (calls_builtin(node, "open") or calls_method(node, "read_text", "write_text")):
-            continue
-        mode = text_constant(node.args[1] if len(node.args) > 1 else keyword(node, "mode")) or ""
-        if "b" not in mode and keyword(node, "encoding") is None:
-            unnamed.append(at(path, node))
+    unnamed = [at(path, node) for path, node in nodes(ast.Call) if opens_text_without_encoding(node)]
     assert unnamed == [], "text is read or written in the locale's encoding at:\n  " + "\n  ".join(unnamed)
 
 
@@ -93,12 +128,50 @@ def test_no_child_process_is_decoded_in_the_locales_encoding():
     It is how `gh`'s JSON and thurbox's event stream would come back mangled on
     a Windows console. Fleet reads bytes and decodes them itself, or says utf-8.
     """
-    unnamed = []
-    for path, node in nodes(ast.Call):
-        textual = keyword(node, "text") or keyword(node, "universal_newlines")
-        if textual is not None and getattr(textual, "value", False) is True and keyword(node, "encoding") is None:
-            unnamed.append(at(path, node))
+    unnamed = [at(path, node) for path, node in nodes(ast.Call) if decodes_child_without_encoding(node)]
     assert unnamed == [], "a child's output is decoded in the locale's encoding at:\n  " + "\n  ".join(unnamed)
+
+
+LOCALE_DECODED = '''
+pathlib.Path(p).open("w")
+pathlib.Path(p).open()
+tempfile.NamedTemporaryFile("w", delete=False)
+tempfile.TemporaryFile(mode="w+")
+tempfile.SpooledTemporaryFile(mode="w")
+io.open(p)
+os.fdopen(fd, "w")
+subprocess.run(argv, capture_output=True, text=textual)
+subprocess.run(argv, universal_newlines=flag)
+'''
+
+NAMED_OR_BINARY = '''
+pathlib.Path(p).open("rb")
+pathlib.Path(p).open("w", encoding="utf-8")
+tempfile.NamedTemporaryFile(dir=where)
+tempfile.NamedTemporaryFile("w", encoding="utf-8")
+os.open(tmp, os.O_WRONLY, mode)
+subprocess.run(argv, text=textual, encoding="utf-8")
+subprocess.run(argv, text=False)
+dict(f, text=cut(f["text"]))
+'''
+
+
+def calls(source: str) -> list[ast.Call]:
+    return [ast.parse(line).body[0].value for line in source.strip().splitlines()]
+
+
+def test_the_encoding_rules_see_every_spelling_of_a_text_open():
+    """The two rules above hold only the spellings they match, so each one is named here.
+
+    Every line of LOCALE_DECODED decodes in the locale's encoding, and none of
+    them is the builtin `open` or a literal `text=True`.
+    """
+    missed = [ast.unparse(c) for c in calls(LOCALE_DECODED)
+              if not (opens_text_without_encoding(c) or decodes_child_without_encoding(c))]
+    assert missed == [], "the encoding rules let these through:\n  " + "\n  ".join(missed)
+    flagged = [ast.unparse(c) for c in calls(NAMED_OR_BINARY)
+               if opens_text_without_encoding(c) or decodes_child_without_encoding(c)]
+    assert flagged == [], "the encoding rules flag calls that name it or read bytes:\n  " + "\n  ".join(flagged)
 
 
 def test_the_rules_above_read_every_module_fleet_ships():
