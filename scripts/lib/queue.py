@@ -7121,12 +7121,12 @@ def sweep_landings(q: Queue, dry: bool) -> dict:
     """
     seen: dict = {}
     for task in sorted(q.tasks.values(), key=lambda t: t.ref):
-        if task.state != "done" and task.state not in REREAD_STATES:
+        if task.state != "done" and not (
+            task.state in REREAD_STATES and all(a["url"] for a in recorded_artifacts(task))
+        ):
             continue
         kind, detail = task_landing(task)
-        if task.state != "done" and not (
-            kind == "merged" and all(a["url"] for a in recorded_artifacts(task))
-        ):
+        if task.state != "done" and kind != "merged":
             continue
         seen[task.ref] = (kind, detail)
         nxt = LANDED_STATE.get(kind)
