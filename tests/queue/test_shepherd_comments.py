@@ -73,11 +73,12 @@ class Talk:
                                       "url": f"{PR}#issuecomment-{cid}", "author": author(who, bot)})
         self.save()
 
-    def thread(self, tid: str, path: str, line: int, *comments: tuple, resolved: bool = False):
+    def thread(self, tid: str, path: str, line: int, *comments: tuple, resolved: bool = False,
+               bot: bool = False):
         self.said["threads"].append({
             "id": tid, "isResolved": resolved, "path": path, "line": line, "originalLine": line,
             "comments": {"nodes": [{"id": cid, "body": body, "createdAt": at, "url": f"{PR}#discussion_r{cid}",
-                                    "author": author(who)} for cid, who, body, at in comments]},
+                                    "author": author(who, bot)} for cid, who, body, at in comments]},
         })
         self.save()
 

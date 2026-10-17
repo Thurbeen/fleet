@@ -529,6 +529,15 @@ a second copy — read the skill before you run any of it:
    unresolved review THREAD does: a change request every other gate clears is
    held `threads-open` until each one is resolved, and a count the forge will
    not give is `undetermined`, never ready.
+   **A draft phase is opt-in per repository** (`DRAFT_REPOS` in
+   `orchestration/publish.conf`, empty in the tracked example): there a task's
+   pull request opens as a DRAFT, shepherd judges it as the pull request it
+   will become — fixers sent, a bot's line comments and reviews relayed — and
+   marks it ready for review (`gh pr ready`) once it would otherwise be ready:
+   checks passed on its head, nothing to fix, no open thread. Once, never back
+   to draft, and never merged in the pass that flipped it; a draft no task
+   records is left a draft. The comment above `draft_repos` in `queue.py` owns
+   the rule.
    It also **adopts sessions fleet did not spawn**: every local thurbox session
    that is not a lead or conductor, is held by no task, descends from no OTHER
    fleet's lead or conductor, and sits on a branch of its own with an open

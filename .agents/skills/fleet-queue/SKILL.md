@@ -705,6 +705,21 @@ still needs its original publisher attestation. After changed feedback, absence,
 or an unreadable source, do not reuse an earlier score: finish the assessment of
 the current full head and record it again.
 
+**An optional draft phase holds a task's PR in draft while bots review it.**
+`DRAFT_REPOS` in `orchestration/publish.conf` (host-qualified, comma
+separated, empty by default) names the repositories. There the brief tells a
+`pr` or `attested` worker to open a DRAFT and never mark it ready; `shepherd`
+classifies that draft as if it were not one — fixers are sent, threads hold,
+a bot's line comments and submitted reviews are relayed like a person's — and
+once it would be `ready` it runs `gh pr ready` (`glab mr update --ready`),
+reported `marked-ready`, `would-mark-ready` under `--dry-run`. It never merges
+in that pass: the next one applies every gate above, the independent review
+included, which is when anything `ready_for_review` starts shows up as a
+check. One way: a later comment holds the merge through its thread, never by
+going back to draft, and a PR a person puts back in draft is `left-alone`
+(`shepherd_ready` on the task records the flip). A draft no task records is
+still `still a draft`, and a repository with no checks never leaves draft.
+
 **Review comments are a delivery of their own, not a condition.** Beside the
 row above — whatever it says, short of `CHANGES_REQUESTED`, a fixer this pass
 just sent, or a merge — `shepherd` reads every review, comment and thread on
@@ -716,7 +731,8 @@ sent its last comments, then a recorded fixer, then the task's own worker —
 only when that session's agent says it is at rest; a gone one is replaced by a
 fresh session on the branch, as a gone worker is for a failing check. Never
 sent: comments by the account fleet runs as (its own workers' replies, and
-your `review-prs` reviewer), bots, a resolved thread, and a line comment
+your `review-prs` reviewer), bots (outside the draft phase's line comments
+and reviews), a resolved thread, and a line comment
 fleet's account replied to in that thread. Each comment is sent once, by id, under
 `shepherd_comments` on the task — kept apart from `shepherd`, so a comment
 delivery never holds back the fixer a failing check needs next. A comment

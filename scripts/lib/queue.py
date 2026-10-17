@@ -150,6 +150,11 @@ review. `plan` exposes obligations to the lead; merging still uses shepherd's
 single gate. The configured reviewer is held for future heads and PRs even
 after its result is collected. Empty configuration preserves existing behavior.
 
+A DRAFT PHASE is the other opt-in there (publish.conf's DRAFT_REPOS): a task's
+pull request opens as a draft, bots review it, and `shepherd` marks it ready
+for review once it would otherwise be `ready` — once, never back, never merged
+in the same pass. `draft_repos` and the comment above it own the rule.
+
 THE RUN LOG IS PRODUCED, NOT REMEMBERED. `topic add` opens
 `orchestration/runs/<opened>-<topic>.md` from the tracked _TEMPLATE.md, once;
 `dispatch`, `collect` and `shepherd` rewrite the facts in the
@@ -334,6 +339,7 @@ from __future__ import annotations
 import argparse
 import base64
 import contextlib
+import dataclasses
 import difflib
 import fnmatch
 import glob
@@ -2922,6 +2928,31 @@ def _near_miss_headings(body: str, section: str) -> list:
     return out
 
 
+def _draft_brief_line(task: Task, method: str) -> str:
+    """The brief's draft-phase line, or "" where no repository of this task has one.
+
+    Read off each checkout's `origin` locally, and off a host task's origins
+    only when dispatch already read them: rendering a brief never opens ssh.
+    """
+    if method not in CHANGE_METHODS or not draft_repos():
+        return ""
+    if task.doc.get("host"):
+        origins = [repo for repo, _ in (task.host_origins or {}).values()]
+    else:
+        origins = [repo_from_checkout(u["path"]) for u in task_repos(task)]
+    if not any(draft_listed(repo) for repo in origins):
+        return ""
+    return "\n" + textwrap.fill(
+        "- **Draft.** Open the pull request as a DRAFT (`gh pr create --draft`,"
+        " `glab mr create --draft`) and never mark it ready yourself: CI and the"
+        " review bots go first, and `shepherd` marks it ready for review once"
+        " every check passed, nothing is left to fix and no review thread is"
+        " open.",
+        width=78,
+        subsequent_indent="  ",
+    )
+
+
 def render_brief(task: Task, topic: dict, body: str | None) -> str:
 
     """The worker's whole world: this file, and the one policy file it names.
@@ -2969,6 +3000,7 @@ def render_brief(task: Task, topic: dict, body: str | None) -> str:
         width=78,
         subsequent_indent="  ",
     )
+    publish_line += _draft_brief_line(task, method)
     result = os.path.abspath(task.file(RESULT_FILE))
     prompt = os.path.abspath(os.path.join(os.path.dirname(task.path), PROMPT_FILE))
     has_operator = bool(operator_instructions())
@@ -9869,7 +9901,7 @@ def parse_auto_merge(entries, source: str) -> set:
         repo = forge.RepoId.parse(entry)
         if repo is None:
             print(
-                f"{source}: ignoring {entry!r} — an auto-merge entry must "
+                f"{source}: ignoring {entry!r} — an entry must "
                 "name its forge, as in github.com/owner/repo",
                 file=sys.stderr,
             )
@@ -9916,6 +9948,59 @@ def may_auto_merge(repo: forge.RepoId) -> bool:
     GitHub's `Thurbeen/fleet`, exactly as the agent policy already reads it.
     """
     return repo.qualified.casefold() in {r.casefold() for r in auto_merge_repos()}
+
+
+# THE DRAFT PHASE. In a repository publish.conf's DRAFT_REPOS names, a task's
+# pull request is opened as a DRAFT, and a draft means "bots only": CI runs,
+# review bots comment, fixers and relayed comments go to the worker. Shepherd
+# takes it out of draft — the forge's own "ready for review", which is what
+# downstream jobs and people listen for — once it would otherwise be `ready`:
+# every check passed on its head, no fixer condition, no unresolved thread.
+#
+# ONLY A TASK'S OWN DRAFT. A draft nobody's task records is a person's work in
+# progress, and "still a draft" is still the whole answer about it.
+#
+# ONE WAY. A comment that arrives after the flip is relayed and its thread
+# holds the MERGE, as on any pull request; the pull request does not go back to
+# draft, because "ready for review" already fired whatever listens for it. And
+# a person who puts it back in draft by hand is never overruled: the flip is
+# recorded per pull request on the task (`shepherd_ready`) and done once.
+
+
+_DRAFT_REPOS_READ: dict = {}
+
+
+def draft_repos() -> set:
+    """The repositories whose task pull requests go through the draft phase.
+
+    publish.conf's DRAFT_REPOS, comma separated and host-qualified, refused
+    loudly otherwise by the parser the auto-merge list uses — once per value
+    per process, since a pass asks for every pull request. Empty: no draft
+    phase anywhere, which is the default.
+    """
+    raw = publish_conf().get("DRAFT_REPOS", "")
+    if raw not in _DRAFT_REPOS_READ:
+        _DRAFT_REPOS_READ[raw] = parse_auto_merge(raw.split(","), "DRAFT_REPOS")
+    return _DRAFT_REPOS_READ[raw]
+
+
+def draft_listed(repo: forge.RepoId | None) -> bool:
+    """Whether DRAFT_REPOS names this repository, in whatever case either spells it."""
+    return repo is not None and repo.qualified.casefold() in {
+        r.casefold() for r in draft_repos()
+    }
+
+
+def draft_phase(cr: forge.ChangeRequest, task) -> bool:
+    """Is this pull request a task's draft that shepherd takes out of draft itself?"""
+    return bool(task) and cr.state == "open" and cr.draft and draft_listed(cr.repo)
+
+
+def draft_flipped(task, url: str) -> dict:
+    """The record of shepherd having marked this pull request ready, or {}."""
+    every = task.doc.get("shepherd_ready") if task else None
+    rec = every.get(url) if isinstance(every, dict) else None
+    return rec if isinstance(rec, dict) else {}
 
 
 def auto_merge_lines(path: str) -> list:
@@ -11467,6 +11552,9 @@ def shepherd_pr(cr: forge.ChangeRequest, task, args) -> dict:
     word = publish_word(cr, condition)
     if obligation and obligation["state"] == "clean" and condition == "ready":
         word = "ready"
+    if cr.draft and condition == "ready":
+        # Every gate holds, and it is still a draft until the flip below lands.
+        word = "draft"
     # What the pass SAW, written down for every linked task and whatever the
     # condition — the facts all arrived in the one forge listing above, and a
     # record that keeps them is the difference between "shipped" and "its
@@ -11481,9 +11569,11 @@ def shepherd_pr(cr: forge.ChangeRequest, task, args) -> dict:
         row["note"] = obligation["detail"]
         return row
 
-    if _shepherd_left(condition, task, args, rec, row):
+    if _shepherd_left(cr, condition, task, args, rec, row):
         return row
 
+    if condition == "ready" and cr.draft:
+        return _shepherd_mark_ready(cr, task, args, row, rec)
     if condition == "ready":
         return _shepherd_ready(cr, task, args, row, rec, word, method, review)
 
@@ -11504,6 +11594,15 @@ def shepherd_pr(cr: forge.ChangeRequest, task, args) -> dict:
 
 def _shepherd_classify(cr: forge.ChangeRequest, task, args, method, review) -> tuple:
     """(condition, detail, review obligation) for one change request."""
+    if draft_phase(cr, task):
+        # Judged as the pull request it will be once it leaves draft, so its
+        # fixers and threads work as they do on any other. The independent
+        # review is not asked: its reviewer cannot record on a draft, and it
+        # starts on the first pass after the flip.
+        condition, detail = classify(dataclasses.replace(cr, draft=False), method)
+        if condition == "ready":
+            condition, detail = threads_gate(cr, detail)
+        return condition, detail, None
     required = review.policy(sys.modules[__name__], cr.repo)
     condition, detail = classify(cr, "pr" if required and method is None else method)
     if condition == "ready":
@@ -11513,7 +11612,8 @@ def _shepherd_classify(cr: forge.ChangeRequest, task, args, method, review) -> t
     )
 
 
-def _shepherd_left(condition: str, task, args, rec: dict, row: dict) -> bool:
+def _shepherd_left(cr: forge.ChangeRequest, condition: str, task, args, rec: dict,
+                   row: dict) -> bool:
     """Settle a change request shepherd neither merges nor fixes. True when it did."""
     # A dry run writes nothing at all, including the record-clearing below:
     # "change nothing" is the flag's whole contract, and a stale record
@@ -11535,7 +11635,8 @@ def _shepherd_left(condition: str, task, args, rec: dict, row: dict) -> bool:
         # each quoted, with its file and line — into the task's session.
         row["action"] = "not-merged"
         row["note"] = (
-            "not merged while a review thread is unresolved; "
+            ("not marked ready for review" if cr.draft else "not merged")
+            + " while a review thread is unresolved; "
             + ("what nobody has answered yet goes to its session" if task
                else "no task records it, so resolving them is yours")
         )
@@ -11589,6 +11690,41 @@ def _shepherd_ready(cr: forge.ChangeRequest, task, args, row: dict, rec: dict,
         row["note"] = f"{_merge_how(cr)} ({why})"
         return row
     return _shepherd_merge(cr, task, row, method, review)
+
+
+def _shepherd_mark_ready(cr: forge.ChangeRequest, task, args, row: dict, rec: dict) -> dict:
+    """A task's draft every gate clears: take it out of draft, once. Never merged here.
+
+    Not merged in the same pass, because "ready for review" is what starts the
+    jobs that run on it: the next pass sees their checks, and every merge gate,
+    exactly as it would for a pull request that was never a draft.
+    """
+    if rec and not args.dry_run:
+        record_shepherd(task, None)
+    flipped = draft_flipped(task, cr.url)
+    if flipped:
+        row["action"] = "left-alone"
+        row["note"] = (
+            f"shepherd marked it ready for review at {flipped.get('at', 'an earlier pass')} "
+            "and it is a draft again; whoever put it back decides when it leaves"
+        )
+        return row
+    if args.dry_run:
+        row["action"] = "would-mark-ready"
+        row["note"] = "every check passed, nothing to fix, no open thread"
+        return row
+    which, why = forge.for_repo(cr.repo)
+    done, note = which.mark_ready(cr) if which else (False, why)
+    row["action"], row["note"] = ("marked-ready" if done else "mark-ready-failed"), note
+    if done:
+        every = task.doc.get("shepherd_ready")
+        every = dict(every) if isinstance(every, dict) else {}
+        every[cr.url] = {"head": cr.head_sha, "at": now()}
+        task.doc["shepherd_ready"] = every
+        task.save()
+        record_publish(task, "draft", "marked ready for review; gated as usual next pass",
+                       "shepherd")
+    return row
 
 
 def _merge_how(cr: forge.ChangeRequest) -> str:
@@ -11905,7 +12041,7 @@ def record_comments(task: Task, url: str, entry: dict) -> None:
     )
 
 
-def unanswered_feedback(items: list, me: str, sent) -> list:
+def unanswered_feedback(items: list, me: str, sent, bots: bool = False) -> list:
     """The comments a worker has not been sent and nobody has answered, oldest first.
 
     Never the account fleet runs as — that is the worker's own reply, or the
@@ -11918,6 +12054,11 @@ def unanswered_feedback(items: list, me: str, sent) -> list:
     top level after it" as an answer dropped a person's comment for good the
     moment fleet's account left an empty review; re-sending, once, a comment
     a worker had already answered before this existed is the cheaper error.
+
+    `bots` is the draft phase's one exception (`draft_repos`): where bots ARE
+    the reviewers, a bot's line comment or submitted review is relayed like a
+    person's. Its conversation comments still are not — coverage tables and
+    preview links are status, not review.
     """
     me = me.lower()
     mine = [f for f in items if f.author.lower() == me]
@@ -11925,13 +12066,15 @@ def unanswered_feedback(items: list, me: str, sent) -> list:
     for f in mine:
         if f.kind == "inline" and f.at:
             last_in[f.thread] = max(last_in.get(f.thread, ""), f.at)
-    out = [f for f in items if _feedback_open(f, me, sent, last_in)]
+    out = [f for f in items if _feedback_open(f, me, sent, last_in, bots)]
     return sorted(out, key=lambda f: f.at)
 
 
-def _feedback_open(f, me: str, sent, last_in: dict) -> bool:
+def _feedback_open(f, me: str, sent, last_in: dict, bots: bool = False) -> bool:
     """Whether one comment is still to be sent, for `unanswered_feedback`."""
-    if f.id in sent or f.author_is_bot or not f.author or f.author.lower() == me:
+    if f.author_is_bot and not (bots and f.kind in ("inline", "review")):
+        return False
+    if f.id in sent or not f.author or f.author.lower() == me:
         return False
     if not f.body.strip():
         return False
@@ -12016,7 +12159,7 @@ def shepherd_comments(cr: forge.ChangeRequest, task, args, row: dict) -> None:
             f"could not tell which account fleet runs as ({why}); no comment sent"
         )
         return
-    new = unanswered_feedback(items, me, sent)
+    new = unanswered_feedback(items, me, sent, bots=draft_listed(cr.repo))
     if not new:
         return
     count = f"{len(new)} new comment{'s' if len(new) != 1 else ''}"

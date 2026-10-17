@@ -558,6 +558,10 @@ class Forge:
     def merge(self, cr: ChangeRequest, method: str, delete_branch: bool) -> tuple:
         return False, f"{self.name} cannot merge"
 
+    def mark_ready(self, cr: ChangeRequest) -> tuple:
+        """(done, why-not). Take a draft out of draft: the draft phase's one write."""
+        return False, f"{self.name} cannot mark a change request ready for review"
+
     def parse_target_url(self, url: str) -> Target | None:
         return None
 
@@ -1291,6 +1295,10 @@ class GitHubForge(Forge):
                 )
             return False, why
         return True, f"{method}-merged" + (", branch deleted" if delete_branch else "")
+
+    def mark_ready(self, cr: ChangeRequest) -> tuple:
+        _, why = self._run(["pr", "ready", cr.url])
+        return (False, why) if why else (True, "marked ready for review")
 
 
 # --- GitLab, the second implementation ----------------------------------------
@@ -2100,6 +2108,10 @@ class GitLabForge(Forge):
         return True, f"{method}-merged" + (
             ", source branch removed" if delete_branch else ""
         )
+
+    def mark_ready(self, cr: ChangeRequest) -> tuple:
+        _, why = self._run(["mr", "update", str(cr.number), "-R", self._repo_arg(cr.repo), "--ready"])
+        return (False, why) if why else (True, "marked ready for review")
 
 
 # --- the registry ------------------------------------------------------------

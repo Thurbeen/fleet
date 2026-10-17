@@ -2,7 +2,8 @@
 
 The shepherd asks the FORGE for every open pull request, so its `gh` answers
 `pr list` out of one JSON document per pull request under `shep/gh/`, honours
-`pr merge --match-head-commit` against that document's head, and it
+`pr merge --match-head-commit` against that document's head and `pr ready`
+on its draft flag, and it
 refuses every subcommand it was not taught — an unexpected reach for
 `pr close` fails the test rather than passing quietly. Its `thurbox-cli`
 REGISTERS each session it creates, idle and reporting, so the trust step
@@ -126,6 +127,17 @@ elif args[:2] == ["pr", "merge"]:
         sys.stderr.write("gh: could not delete local branch checked out in a worktree\n")
         raise SystemExit(1)
     print("merged")
+elif args[:2] == ["pr", "ready"]:
+    # The draft phase's one write: out of draft, and remembered as done.
+    if os.environ.get("SHEP_READY_REJECTED") == n:
+        sys.stderr.write("gh: could not mark the pull request ready\n")
+        raise SystemExit(1)
+    doc = shep / "gh" / f"{n}.json"
+    d = json.loads(doc.read_text(encoding="utf-8"))
+    d["isDraft"] = False
+    doc.write_text(json.dumps(d), encoding="utf-8")
+    with open(shep / "readied", "a", encoding="utf-8") as fh:
+        fh.write(n + "\n")
 else:
     sys.stderr.write(f"gh: the shepherd is not allowed to run '{' '.join(args[:2])}'\n")
     raise SystemExit(1)
@@ -236,6 +248,12 @@ class Shep:
     def merged(self) -> list[int]:
         try:
             return [int(n) for n in (self.root / "merged").read_text(encoding="utf-8").split()]
+        except OSError:
+            return []
+
+    def readied(self) -> list[int]:
+        try:
+            return [int(n) for n in (self.root / "readied").read_text(encoding="utf-8").split()]
         except OSError:
             return []
 

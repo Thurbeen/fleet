@@ -179,6 +179,11 @@ answered.
   `orchestration/auto-merge.conf` names (host-qualified, as in
   `github.com/owner/repo` or `gitlab.example.com/group/project`), but only once
   it clears its gates — never merge it yourself in the meantime.
+- **A draft stays a draft.** If your brief says to open the change request as
+  a draft, do, and never mark it ready for review yourself: CI and the review
+  bots go first, and `fleet queue shepherd` marks it ready once every check
+  passed, nothing is left to fix and no thread is open. Answer the bots'
+  threads as you would a person's.
 
 ## Say when you are waiting on purpose
 
