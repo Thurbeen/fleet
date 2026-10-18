@@ -131,7 +131,8 @@ verification exists to stop.
 
 `add --add-repo <path>` or `--add-repo <path>@<base>` gives the task a second
 repository with **its own worktree, on the same `--branch`**. Repeatable;
-thurbox owns the `PATH@BASE` syntax and gets your string verbatim.
+thurbox owns the `PATH@BASE` syntax and gets your string verbatim, but for the
+base, which `dispatch` fetches and hands over as `origin/<base>` (§4).
 
 **The artifact model goes plural with it, and that is the whole cost.** The
 publish method stays one per task, and everything downstream handles N:
@@ -358,7 +359,12 @@ break by-name addressing for both, permanently), `--parent $THURBOX_SESSION`
 remote worker is enumerated by its task record instead), and the task's
 profile from `orchestration/session-profiles.yaml` or the operator's
 gitignored `session-profiles.local.yaml` beside it — where a task that wants
-another model or thinking budget gets a profile of its own. Each worker is
+another model or thinking budget gets a profile of its own. Every repository
+the task spans fetches its base from `origin` first, on the task's host for a
+`--host` task, and the worktree is cut from `origin/<base>`, never a stale
+local branch; a checkout with no `origin` keeps its local base. A fetch that
+fails leaves the task queued, `NOT SPAWNED — <repo>: could not fetch
+origin/<base>`. The record's `base` stays the pull request's base. Each worker is
 sent one line pointing at the absolute path of its brief; nothing is copied
 into its worktree, so nothing lands in its pull request.
 

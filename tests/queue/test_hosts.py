@@ -129,6 +129,11 @@ def test_a_host_that_fails_a_probe_is_not_spawned(devbox_task, hosts, queue_dir)
             expect(out, "nothing local validates it")
         # Left queued, so fixing the host and re-running sends it.
         expect("\n".join(line for line in q("show", devbox_task).out.splitlines() if "state:" in line), "queued")
+    # And a base the host cannot fetch is not branched off its stale local copy.
+    write(hosts.state / "me@devbox.origin", "git@github.com:acme/app.git\n")
+    write(hosts.state / "me@devbox.nofetch", "fatal: couldn't find remote ref main\n")
+    expect(q("dispatch").out,
+           "NOT SPAWNED — /srv/code/app: could not fetch origin/main: fatal: couldn't find remote ref main")
     assert creates(hosts.stubs) == []
 
 
@@ -390,12 +395,17 @@ def test_a_windows_host_is_spoken_to_in_powershell_and_the_bytes_survive(hosts, 
         hosts.unflag("me@winbox", flag)
         # Not spawned, and the probe says why in the same words a POSIX host's does.
         expect(out, "NOT SPAWNED", want)
+    write(hosts.state / "me@winbox.origin", "git@github.com:acme/widget.git\n")
+    write(hosts.state / "me@winbox.nofetch", "fatal: Could not read from remote repository.\n")
+    expect(q("dispatch").out, "could not fetch origin/main: fatal: Could not read from remote repository.")
+    (hosts.state / "me@winbox.nofetch").unlink()
     assert creates(stubs) == [], creates(stubs)
 
     hosts.next_session(WSESSION)
     hosts.session(WSESSION, name="Build it on winbox", state="working", agent="claude", hook_reported=True,
                   worktrees=[{"repo_path": WINREPO, "worktree_path": WWORKTREE, "branch": "fix/build-on-winbox"}])
     expect(q("dispatch").out, "reachable: answers ssh, PowerShell", "brief copied to me@winbox")
+    expect(creates(stubs)[-1], "--base-branch origin/main")
     there = hosts.remote("me@winbox", WWORKTREE + ".fleet")
     for name, src in (("BRIEF.md", task / "BRIEF.md"),
                       ("POLICY.md", REPO / "orchestration" / "queue" / "POLICY.md"),

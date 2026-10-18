@@ -10,6 +10,7 @@ test about a dialog that must stay exactly as written lie.
 from __future__ import annotations
 
 import json
+import shutil
 
 from harness import Stubs, write
 
@@ -123,6 +124,32 @@ def behind_dialog(stubs: Stubs, sid: str, pane: str, queued: str | None = None,
     write(stubs.root / "panes" / f"{sid}.txt", pane + "\n")
     if queued is not None:
         write(stubs.root / "panes" / f"{sid}.next.txt", queued + "\n")
+
+
+# `git -C <repo> fetch ... +refs/heads/X:refs/remotes/origin/X` answered from the
+# checkout's own `X`, for a test whose origin is a forge URL nothing can reach:
+# dispatch fetches every base before it spawns. Every other call is real git.
+OFFLINE_FETCH = '''
+import subprocess
+import sys
+
+GIT = __GIT__
+ARGS = sys.argv[1:]
+spec = ARGS[-1] if ARGS[:1] == ["-C"] and ARGS[2:3] == ["fetch"] else ""
+if spec.startswith("+refs/heads/") and ":" in spec:
+    src, dst = spec[1:].split(":", 1)
+    head = subprocess.run([GIT, "-C", ARGS[1], "rev-parse", "--verify", "--quiet", src],
+                          capture_output=True, text=True, encoding="utf-8")
+    if head.returncode:
+        sys.stderr.write(f"fatal: couldn't find remote ref {src}\\n")
+        raise SystemExit(128)
+    raise SystemExit(subprocess.run([GIT, "-C", ARGS[1], "update-ref", dst, head.stdout.strip()]).returncode)
+raise SystemExit(subprocess.run([GIT, *ARGS]).returncode)
+'''
+
+
+def offline_fetch(stubs: Stubs) -> None:
+    stubs.tool("git", OFFLINE_FETCH.replace("__GIT__", repr(shutil.which("git"))))
 
 
 def next_session(stubs: Stubs, sid: str) -> None:

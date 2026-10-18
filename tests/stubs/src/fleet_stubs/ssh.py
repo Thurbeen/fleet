@@ -13,7 +13,9 @@ read (`context.py ... --wire json`), and `.slow` holds the seconds either takes
 first.
 `.windows` hands the command to `windows_host`, which answers only what a
 PowerShell 5 sshd answers. `.origin` holds what `git remote get-url origin`
-prints there, and `.origins.json` what it prints per checkout path. `mkdir -p`/`chmod`, `rm -f`/`rmdir`, `mv -f` and `cat >` behave as a
+prints there, and `.origins.json` what it prints per checkout path; a base
+fetch succeeds wherever one of those names an origin, unless `.nofetch` holds
+git's failure. `mkdir -p`/`chmod`, `rm -f`/`rmdir`, `mv -f` and `cat >` behave as a
 shell does: a write into a directory that does not exist fails. `.realshell` RUNS the script with `sh -c`, the way
 sshd runs an account's login shell, with HOME at `<dest>.home` and only the
 system's PATH — POSIX only.
@@ -80,6 +82,18 @@ def main() -> int:
             sys.stdout.write("no-dir")
             return 1
         sys.stdout.write("ok")
+    elif "fleet-fetched" in script:
+        # A base fetch: `.nofetch` holds what git says when it fails, and a
+        # checkout with no origin here (`.origin`, `.origins.json`) has none.
+        nofetch = state / f"{dest}.nofetch"
+        if nofetch.is_file():
+            sys.stderr.write(nofetch.read_text(encoding="utf-8"))
+            sys.stdout.write("fleet-fetch-failed")
+            return 1
+        origins = state / f"{dest}.origins.json"
+        named = json.loads(origins.read_text(encoding="utf-8")) if origins.is_file() else {}
+        known = any(p in script for p in named) or (state / f"{dest}.origin").is_file()
+        sys.stdout.write("fleet-fetched" if known else "fleet-no-origin")
     elif "remote get-url origin" in script:
         # `.origins.json` maps a checkout path to its own origin, for a task
         # spanning repositories; `.origin` is every other path's.
