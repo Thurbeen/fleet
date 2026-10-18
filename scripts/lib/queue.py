@@ -4295,7 +4295,7 @@ class PosixShell:
             f"git -C {quoted} remote get-url origin >/dev/null 2>&1 || {{ printf {FETCH_AS_WRITTEN}; exit 0; }}\n"
             f"git -C {quoted} rev-parse --verify --quiet {shlex.quote('refs/tags/' + base)} >/dev/null 2>&1"
             f" && {{ printf {FETCH_AS_WRITTEN}; exit 0; }}\n"
-            f"err=$(GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git -C {quoted}"
+            f"err=$(LC_ALL=C GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git -C {quoted}"
             f" {shell_quote(fetch_config('/dev/null'))} fetch --quiet --no-recurse-submodules origin"
             f" {shlex.quote(fetch_refspec(name))} 2>&1 </dev/null) && {{ printf {FETCH_DONE}; exit 0; }}\n"
             f"case \"$err\" in *{shlex.quote(NO_REMOTE_REF)}*) printf {FETCH_AS_WRITTEN}; exit 0 ;; esac\n"
@@ -4504,6 +4504,7 @@ class PowerShell:
             f"if ($LASTEXITCODE -ne 0) {{ Write-Output '{FETCH_AS_WRITTEN}'; exit 0 }}\n"
             f"& git -C {quoted} rev-parse --verify --quiet {ps_quote('refs/tags/' + base)} *> $null\n"
             f"if ($LASTEXITCODE -eq 0) {{ Write-Output '{FETCH_AS_WRITTEN}'; exit 0 }}\n"
+            "$env:LC_ALL = 'C'\n"
             "$env:GIT_TERMINAL_PROMPT = '0'\n"
             "$env:GCM_INTERACTIVE = 'never'\n"
             # Each stderr record as its own text, so git's `fatal:` line is not
@@ -5255,7 +5256,7 @@ def fetch_local_base(repo: str, base: str, name: str) -> tuple[str, str]:
             timeout=FETCH_TIMEOUT,
             # Nobody is at this terminal to type a password, and a prompt
             # would hold the whole wave until the timeout.
-            env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never",
+            env={**os.environ, "LC_ALL": "C", "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never",
                  **fetch_ssh_env(repo)},
         )
     except subprocess.TimeoutExpired:
