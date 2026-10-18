@@ -20,11 +20,12 @@ held by every other module in this directory staying green.
 from __future__ import annotations
 
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
 import yaml
-from kit_dispatch import ANSWERING_KEYS, next_session
+from kit_dispatch import ANSWERING_KEYS, CUTS_WORKTREES, next_session
 from kit_forges import FAKE_GLAB, GlabStore
 from queuekit import fill_brief, ok, result, result_artifacts
 
@@ -161,14 +162,15 @@ def test_add_repo_is_recorded_verbatim_and_reaches_session_create_with_its_base(
 
 
 def behind_origin(root: Path, name: str, origin: Path | None) -> Path:
-    """A checkout whose local `main` is one commit behind its origin's, or a
-    local-only one when `origin` is None."""
+    """A checkout whose `main` and `origin/main` are both one commit behind its
+    origin's, or a local-only one when `origin` is None."""
     repo = root / name
     git("init", "-q", "-b", "main", str(repo))
     git("commit", "-q", "--allow-empty", "-m", "base", cwd=repo)
     if origin is not None:
         git("clone", "-q", "--bare", str(repo), str(origin))
         git("remote", "add", "origin", str(origin), cwd=repo)
+        git("fetch", "-q", "origin", cwd=repo)
         ahead = root / f"{name}-ahead"
         git("clone", "-q", str(origin), str(ahead))
         git("commit", "-q", "--allow-empty", "-m", "landed since", cwd=ahead)
@@ -178,27 +180,34 @@ def behind_origin(root: Path, name: str, origin: Path | None) -> Path:
 
 def test_every_repository_branches_off_the_base_its_origin_just_gave(topic, queue_dir, stubs, tmp_path):
     """24b. thurbox cuts a worktree off whatever it is handed and fetches
-    nothing, so dispatch fetches each repository's base and spells every one
-    out: `origin/main` where a checkout has an origin, its own `main` where it
-    has none."""
+    nothing, so dispatch fetches each base that is a branch on `origin` and
+    spells every one out — a tag goes as written. And the worker's branch
+    tracks nothing: off `origin/main` git would make it track the base, and a
+    plain push could land there."""
     primary = behind_origin(tmp_path, "app", tmp_path / "app.git")
     sibling = behind_origin(tmp_path, "lib", tmp_path / "lib.git")
-    local = behind_origin(tmp_path, "notes", None)
+    tagged = behind_origin(tmp_path, "notes", tmp_path / "notes.git")
+    git("tag", "v1", cwd=tagged)
     ok(q("add", topic, "spans", "--title", "Spans three", "--repo", str(primary),
          "--branch", "fix/spans", "--number", "01",
-         "--add-repo", str(sibling), "--add-repo", str(local)))
+         "--add-repo", str(sibling), "--add-repo", f"{tagged}@v1"))
     fill_brief(queue_dir / topic / "01-spans" / "BRIEF.md")
     next_session(stubs, "dddddddd-0000-0000-0000-000000000004")
     stubs.session_is("dddddddd-0000-0000-0000-000000000004", "idle")
-    stubs.tool("thurbox-cli", ANSWERING_KEYS)
+    stubs.tool("thurbox-cli", CUTS_WORKTREES)
 
     ok(q("dispatch"))
     expect(creates(stubs)[0], "--base-branch origin/main",
-           f"--add-repo {sibling}@origin/main --add-repo {local}@main")
+           f"--add-repo {sibling}@origin/main --add-repo {tagged}@v1")
     for repo in (primary, sibling):
         fetched = git("rev-parse", "origin/main", cwd=repo).strip()
         assert fetched == git("rev-parse", "main", cwd=tmp_path / f"{repo.name}.git").strip()
         assert fetched != git("rev-parse", "main", cwd=repo).strip(), "local main stays as it was"
+        assert git("rev-parse", "fix/spans", cwd=repo).strip() == fetched
+    for repo in (primary, sibling, tagged):
+        tracks = subprocess.run(["git", "-C", str(repo), "config", "--get", "branch.fix/spans.merge"],
+                                capture_output=True, text=True, encoding="utf-8")
+        assert tracks.stdout == "", f"{repo.name}'s worker branch tracks {tracks.stdout.strip()}"
     # The change request's base is the record's, as written.
     expect(q("show", f"{topic}/01-spans").out, "base:        main")
 
@@ -207,6 +216,7 @@ def test_a_base_that_cannot_be_fetched_refuses_the_task(topic, queue_dir, stubs,
     """24b. Never a silent fall back to the stale local branch."""
     primary = behind_origin(tmp_path, "app", None)
     git("remote", "add", "origin", str(tmp_path / "gone.git"), cwd=primary)
+    git("update-ref", "refs/remotes/origin/main", "HEAD", cwd=primary)
     ok(q("add", topic, "stale", "--title", "Would be stale", "--repo", str(primary),
          "--branch", "fix/stale", "--number", "01"))
     fill_brief(queue_dir / topic / "01-stale" / "BRIEF.md")

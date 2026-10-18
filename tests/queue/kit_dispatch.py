@@ -43,6 +43,30 @@ if ARGS[:2] == ["session", "create"] and match and match in " ".join(ARGS):
 delegate()
 '''
 
+# `session create` cuts each worktree the way thurbox does — `git worktree add -b`
+# off the base it was handed — and reports them as thurbox's JSON does.
+CUTS_WORKTREES = DELEGATE + '''
+import json
+import subprocess
+
+if ARGS[:2] == ["session", "create"]:
+    def values(flag):
+        return [ARGS[i + 1] for i, arg in enumerate(ARGS) if arg == flag]
+
+    branch = values("--worktree-branch")[0]
+    starts = [(values("--repo-path")[0], values("--base-branch")[0])]
+    starts += [tuple(spec.rsplit("@", 1)) for spec in values("--add-repo")]
+    trees = []
+    for repo, start in starts:
+        path = ROOT / "worktrees" / Path(repo).name
+        subprocess.run(["git", "-C", repo, "worktree", "add", "-q", "-b", branch, str(path), start], check=True)
+        trees.append({"repo_path": repo, "worktree_path": str(path), "branch": branch})
+    nxt = ROOT / "next-session.json"
+    nxt.write_text(json.dumps({**json.loads(nxt.read_text(encoding="utf-8")), "worktrees": trees}),
+                   encoding="utf-8")
+delegate()
+'''
+
 # `session key <id> enter` closes whatever dialog the pane shows, revealing the
 # one queued behind it (`<id>.next.txt`), if any.
 ANSWERING_KEYS = DELEGATE + '''

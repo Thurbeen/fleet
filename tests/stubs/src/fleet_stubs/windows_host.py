@@ -64,7 +64,9 @@ def main(argv: list) -> int:
                 sys.stderr.write(fh.read())
             print("fleet-fetch-failed")
             return 1
-        print("fleet-fetched" if flag("origin") else "fleet-no-origin")
+        print("fleet-fetched" if flag("origin") else "fleet-as-written")
+    elif "fleet-no-upstream" in body:
+        print("fleet-no-upstream")
     elif "remote get-url origin" in body:
         origin = os.path.join(state, f"{dest}.origin")
         if not os.path.isfile(origin):

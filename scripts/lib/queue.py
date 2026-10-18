@@ -4155,6 +4155,7 @@ def ssh_argv(entry: dict) -> list:
 #     repo_check(repo)        prints `ok`, `no-dir` or `no-git`
 #     fetch_base(repo, name)  fetches `origin/<name>` and prints a FETCH_* word,
 #                             git's own error on stderr
+#     drop_upstream(worktree) unsets its branch's upstream, prints UPSTREAM_GONE
 #     forge_probe(repo)       prints `<host> with <credential>`, or
 #                             `no forge: <why>`, or `<host>|<tools found>`
 #     write(dest, text)       (script, stdin) that puts `text` at `dest`
@@ -4291,11 +4292,21 @@ class PosixShell:
         return (
             "command -v git >/dev/null 2>&1 || "
             f"{{ echo 'git is not on PATH' >&2; printf {FETCH_FAILED}; exit 1; }}\n"
-            f"git -C {quoted} remote get-url origin >/dev/null 2>&1 || {{ printf {FETCH_NO_ORIGIN}; exit 0; }}\n"
+            f"git -C {quoted} rev-parse --verify --quiet {shlex.quote(ORIGIN_REFS + name)} >/dev/null 2>&1"
+            f" || {{ printf {FETCH_AS_WRITTEN}; exit 0; }}\n"
             f"GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git -C {quoted} {shell_quote(fetch_config('/dev/null'))}"
             f" fetch --quiet --no-recurse-submodules origin {shlex.quote(fetch_refspec(name))} </dev/null"
             f" || {{ printf {FETCH_FAILED}; exit 1; }}\n"
             f"printf {FETCH_DONE}\n"
+        )
+
+    def drop_upstream(self, worktree: str) -> str:
+        quoted = shlex.quote(worktree)
+        return (
+            f"if git -C {quoted} rev-parse --verify --quiet '@{{upstream}}' >/dev/null 2>&1; then\n"
+            f"  git -C {quoted} branch --unset-upstream </dev/null || exit 1\n"
+            "fi\n"
+            f"printf {UPSTREAM_GONE}\n"
         )
 
     def thurbox_cli(self, args: str) -> str:
@@ -4485,14 +4496,25 @@ class PowerShell:
         return (
             "if (-not (Get-Command git -ErrorAction SilentlyContinue)) "
             f"{{ [Console]::Error.WriteLine('git is not on PATH'); Write-Output '{FETCH_FAILED}'; exit 1 }}\n"
-            f"& git -C {quoted} remote get-url origin *> $null\n"
-            f"if ($LASTEXITCODE -ne 0) {{ Write-Output '{FETCH_NO_ORIGIN}'; exit 0 }}\n"
+            f"& git -C {quoted} rev-parse --verify --quiet {ps_quote(ORIGIN_REFS + name)} *> $null\n"
+            f"if ($LASTEXITCODE -ne 0) {{ Write-Output '{FETCH_AS_WRITTEN}'; exit 0 }}\n"
             "$env:GIT_TERMINAL_PROMPT = '0'\n"
             "$env:GCM_INTERACTIVE = 'never'\n"
             f"& git -C {quoted} {' '.join(ps_quote(a) for a in fetch_config('NUL'))}"
             f" fetch --quiet --no-recurse-submodules origin {ps_quote(fetch_refspec(name))}\n"
             f"if ($LASTEXITCODE -ne 0) {{ Write-Output '{FETCH_FAILED}'; exit 1 }}\n"
             f"Write-Output '{FETCH_DONE}'\n"
+        )
+
+    def drop_upstream(self, worktree: str) -> str:
+        quoted = ps_quote(worktree)
+        return (
+            f"& git -C {quoted} rev-parse --verify --quiet '@{{upstream}}' *> $null\n"
+            "if ($LASTEXITCODE -eq 0) {\n"
+            f"  & git -C {quoted} branch --unset-upstream\n"
+            "  if ($LASTEXITCODE -ne 0) { exit 1 }\n"
+            "}\n"
+            f"Write-Output '{UPSTREAM_GONE}'\n"
         )
 
     def thurbox_cli(self, args: str) -> str:
@@ -5117,14 +5139,23 @@ def spawn_field_problems(d: dict) -> list:
 # worktree add -b <branch> <path> <base>` with no fetch of its own, and its
 # orchestration guide puts that fetch on the driver — this. A checkout's local
 # `main` is whatever it was the last time somebody pulled, which on a machine
-# that only ever dispatches is days old. So every repository of a task with an
-# `origin` fetches `<base>` from it first, and thurbox is handed
-# `origin/<base>`, a ref that fetch just wrote.
+# that only ever dispatches is days old. So a base that names a branch the
+# checkout already knows on `origin` (`refs/remotes/origin/<base>`) is fetched
+# first, and thurbox is handed `origin/<base>`, a ref that fetch just wrote.
+# Anything else — a tag, a commit, another remote's branch, a branch only this
+# checkout has, a checkout with no `origin` — is handed over as written: there
+# is no origin branch to be stale against.
 #
 # A FAILED FETCH REFUSES THE TASK, and never falls back to the local base:
-# that fallback is the stale tree this exists to stop, chosen silently. A
-# checkout with NO `origin` keeps its own base — there is nothing to fetch, and
-# a local-only repository's own branch is the truth there.
+# that fallback is the stale tree this exists to stop, chosen silently.
+#
+# NO UPSTREAM. With `origin/<base>` as its start point, git's default
+# `branch.autoSetupMerge` makes the worker's new branch track `origin/<base>`,
+# and a worker's plain `git push` then either fails or, under
+# `push.default=upstream`, lands on the base itself. A local start point set
+# none. So dispatch unsets it in every worktree the spawn reports
+# (`drop_upstreams`); thurbox's sync and review read the session's recorded
+# base, never the branch's upstream.
 #
 # The refspec is explicit because `git fetch origin <base>` only updates
 # `origin/<base>` where the remote's configured refspec covers that branch; a
@@ -5140,18 +5171,19 @@ def spawn_field_problems(d: dict) -> list:
 FETCH_TIMEOUT = 120
 ORIGIN_REFS = "refs/remotes/origin/"
 FETCH_DONE = "fleet-fetched"
-FETCH_NO_ORIGIN = "fleet-no-origin"
+FETCH_AS_WRITTEN = "fleet-as-written"
 FETCH_FAILED = "fleet-fetch-failed"
+UPSTREAM_GONE = "fleet-no-upstream"
 # A base reaches a refspec, a POSIX command line and, on a Windows host, a
 # git.exe command line PowerShell 5 builds without escaping an embedded `"` —
-# so it is a plain branch name or nothing, checked before any of those exists.
+# so it is a plain ref name or nothing, checked before any of those exists.
 BASE_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
 
 
 def base_problem(base: str) -> str:
     """Why a written base is not a branch name a fetch may carry, or ""."""
     if not BASE_RE.match(base):
-        return f"base {base!r} is not a branch name (letters, digits, `.`, `_`, `/`, `-`)"
+        return f"base {base!r} is not a branch, tag or commit name (letters, digits, `.`, `_`, `/`, `-`)"
     if base.startswith("-") or base.startswith("/") or base.endswith("/") or base.endswith(".lock"):
         return f"base {base!r} cannot start with `-` or `/`, or end with `/` or `.lock`"
     if ".." in base or "//" in base or any(part.startswith(".") for part in base.split("/")):
@@ -5183,9 +5215,18 @@ def git_error(stderr: str) -> str:
     return next((ln for ln in lines if ln.startswith(("fatal:", "error:"))), lines[0] if lines else "")
 
 
+def fetch_ssh_env(repo: str) -> dict:
+    """ssh that cannot ask for a passphrase, unless the operator chose an ssh."""
+    if any(os.environ.get(k) for k in ("GIT_SSH_COMMAND", "GIT_SSH")) or git_out(
+        repo, ["config", "--get", "core.sshCommand"]
+    ).strip():
+        return {}
+    return {"GIT_SSH_COMMAND": "ssh -o BatchMode=yes"}
+
+
 def fetch_local_base(repo: str, base: str, name: str) -> tuple[str, str]:
     """(the base to branch off, why `name` could not be fetched) for a checkout here."""
-    if not git_out(repo, ["remote", "get-url", "origin"]).strip():
+    if not git_out(repo, ["rev-parse", "--verify", "--quiet", ORIGIN_REFS + name]):
         return base, ""
     try:
         done = subprocess.run(
@@ -5195,7 +5236,8 @@ def fetch_local_base(repo: str, base: str, name: str) -> tuple[str, str]:
             timeout=FETCH_TIMEOUT,
             # Nobody is at this terminal to type a password, and a prompt
             # would hold the whole wave until the timeout.
-            env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never"},
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never",
+                 **fetch_ssh_env(repo)},
         )
     except subprocess.TimeoutExpired:
         return "", f"no answer in {FETCH_TIMEOUT}s"
@@ -5212,7 +5254,7 @@ def fetch_remote_base(entry: dict, repo: str, base: str, name: str) -> tuple[str
     word = last_out(done)
     if word == FETCH_DONE:
         return f"origin/{name}", ""
-    if word == FETCH_NO_ORIGIN:
+    if word == FETCH_AS_WRITTEN:
         return base, ""
     return "", git_error(reportable(done.stderr)) or "the host did not say why"
 
@@ -5238,7 +5280,49 @@ def fetched_bases(task: Task, entry: dict | None = None) -> tuple[list, str]:
     return repos, ""
 
 
-def spawn_commands(task: Task, repos: list | None = None) -> tuple[list, str, str]:
+def fetched_create(create: list, repos: list) -> list:
+    """`spawn_commands`' argv with every base `fetched_bases` resolved.
+
+    Each `--add-repo` is spelled `PATH@BASE` then, because inheriting
+    `--base-branch` could name an `origin/` a checkout that was not fetched
+    lacks, or a written base where one was fetched.
+    """
+    out = list(create)
+    out[out.index("--base-branch") + 1] = repos[0]["base"]
+    values = [i + 1 for i, arg in enumerate(out) if arg == "--add-repo"]
+    for i, r in zip(values, repos[1:], strict=True):
+        out[i] = f"{r['path']}@{r['base']}"
+    return out
+
+
+def drop_upstreams(proc_stdout: bytes, entry: dict | None) -> str:
+    """Unset the upstream of every worktree `session create` reports, or say why not."""
+    try:
+        worktrees = json.loads(proc_stdout).get("worktrees") or []
+    except (ValueError, AttributeError):
+        worktrees = []
+    for wt in worktrees:
+        path = str((wt or {}).get("worktree_path") or "")
+        if not path:
+            continue
+        if entry:
+            done = ssh_run(entry, host_shell(entry).drop_upstream(path))
+            if last_out(done) != UPSTREAM_GONE:
+                return f"{path}: {git_error(reportable(done.stderr)) or 'the host did not say why'}"
+            continue
+        if not git_out(path, ["rev-parse", "--verify", "--quiet", "@{upstream}"]):
+            continue
+        try:
+            done = subprocess.run(["git", "-C", path, "branch", "--unset-upstream"], capture_output=True,
+                                  stdin=subprocess.DEVNULL, text=True, encoding="utf-8", timeout=30)
+        except (OSError, subprocess.SubprocessError) as exc:
+            return f"{path}: {exc}"
+        if done.returncode != 0:
+            return f"{path}: {git_error(done.stderr) or f'git exited {done.returncode}'}"
+    return ""
+
+
+def spawn_commands(task: Task) -> tuple[list, str, str]:
     """The `session create` argv, the prompt to send, and THE AGENT IT NAMES.
 
     The third value is the whole of what `dispatch` records, and it is returned
@@ -5250,8 +5334,8 @@ def spawn_commands(task: Task, repos: list | None = None) -> tuple[list, str, st
     that takes seconds — so it is a second measurement of a moving thing, not
     the same pure answer a moment later.
 
-    `repos` is what `fetched_bases` resolved, for the spawn that actually runs.
-    Without it — a dry run, `prompt` — the bases are the record's as written.
+    The bases are the record's as written; the spawn that actually runs swaps
+    in the fetched ones (`fetched_create`).
     """
     d = task.doc
     problems = spawn_field_problems(d)
@@ -5262,7 +5346,7 @@ def spawn_commands(task: Task, repos: list | None = None) -> tuple[list, str, st
         "--name", session_name(d["title"], worker_glyph()),
         "--repo-path", d["repo"],
         "--worktree-branch", d["branch"],
-        "--base-branch", repos[0]["base"] if repos else d["base"],
+        "--base-branch", d["base"],
         # `fail` and not the default `allow`: a name already in use here means
         # the lead has lost track of a task, and a twin breaks by-name
         # addressing for both of them permanently.
@@ -5275,11 +5359,8 @@ def spawn_commands(task: Task, repos: list | None = None) -> tuple[list, str, st
         create += ["--add-dir", extra]
     # The operator's string, `PATH@BASE` included: thurbox owns that syntax,
     # and fleet reinterpreting it is how a second repository ends up branched
-    # off something nobody asked for. A spawn that fetched spells every base
-    # out instead, because inheriting `--base-branch` could name an `origin/`
-    # a local-only checkout lacks, or a local base where one was fetched.
-    extras = [f"{r['path']}@{r['base']}" for r in repos[1:]] if repos else d.get("add_repos") or []
-    for extra in extras:
+    # off something nobody asked for. Only `fetched_create` spells its base out.
+    for extra in d.get("add_repos") or []:
         create += ["--add-repo", extra]
     # The whole of what moves a worker to another machine. `--repo-path` above
     # is then a path on THAT machine, which is why nothing here looks for it
@@ -5624,15 +5705,8 @@ def cmd_dispatch(args) -> int:
                     failures += 1
                     continue
 
-            # Per task and as late as its spawn, never once for the whole wave:
-            # the last task of a long wave would branch off a fetch minutes old.
-            repos, why = fetched_bases(t, entry)
-            if why:
-                print(f"    {t.ref}: NOT SPAWNED — {why}", file=sys.stderr)
-                failures += 1
-                continue
             try:
-                create, _send, spawned_as = spawn_commands(t, repos)
+                create, _send, spawned_as = spawn_commands(t)
             except QueueError as exc:
                 print(f"    {t.ref}: NOT SPAWNED — {exc}", file=sys.stderr)
                 failures += 1
@@ -5658,6 +5732,15 @@ def cmd_dispatch(args) -> int:
                 if not prompted:
                     attached.append(t)
                 continue
+            # Per task and as late as its spawn — after an adoption, which needs
+            # no network, and never once for the whole wave, whose last task
+            # would branch off a fetch minutes old.
+            repos, why = fetched_bases(t, entry)
+            if why:
+                print(f"    {t.ref}: NOT SPAWNED — {why}", file=sys.stderr)
+                failures += 1
+                continue
+            create = fetched_create(create, repos)
             proc = None
             try:
                 proc = subprocess.run(create, capture_output=True, check=True)
@@ -5672,6 +5755,12 @@ def cmd_dispatch(args) -> int:
             # on the far side of `session create` can answer differently.
             attach(t, session, spawned_as)
             spawned.append((t, create))
+            why = drop_upstreams(proc.stdout, entry)
+            if why:
+                print(f"    {t.ref}: session exists but was NOT prompted — its branch still "
+                      f"tracks the base, so a plain push could land there: {why}", file=sys.stderr)
+                failures += 1
+                continue
 
             # The remote worker is about to be told to read a file that is not on
             # its filesystem. Put it there first, and record where — `collect`

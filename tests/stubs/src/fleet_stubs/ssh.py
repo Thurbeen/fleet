@@ -15,7 +15,7 @@ first.
 PowerShell 5 sshd answers. `.origin` holds what `git remote get-url origin`
 prints there, and `.origins.json` what it prints per checkout path; a base
 fetch succeeds wherever one of those names an origin, unless `.nofetch` holds
-git's failure. `mkdir -p`/`chmod`, `rm -f`/`rmdir`, `mv -f` and `cat >` behave as a
+git's failure, and an upstream is always unset. `mkdir -p`/`chmod`, `rm -f`/`rmdir`, `mv -f` and `cat >` behave as a
 shell does: a write into a directory that does not exist fails. `.realshell` RUNS the script with `sh -c`, the way
 sshd runs an account's login shell, with HOME at `<dest>.home` and only the
 system's PATH — POSIX only.
@@ -107,7 +107,9 @@ def main() -> int:
             sys.stdout.write("fleet-fetch-failed")
             return 1
         known = named_origin(state, dest, script) is not None
-        sys.stdout.write("fleet-fetched" if known else "fleet-no-origin")
+        sys.stdout.write("fleet-fetched" if known else "fleet-as-written")
+    elif "fleet-no-upstream" in script:
+        sys.stdout.write("fleet-no-upstream")
     elif "remote get-url origin" in script:
         origin = named_origin(state, dest, script)
         if origin is None:

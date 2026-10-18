@@ -359,12 +359,13 @@ break by-name addressing for both, permanently), `--parent $THURBOX_SESSION`
 remote worker is enumerated by its task record instead), and the task's
 profile from `orchestration/session-profiles.yaml` or the operator's
 gitignored `session-profiles.local.yaml` beside it — where a task that wants
-another model or thinking budget gets a profile of its own. Every repository
-the task spans fetches its base from `origin` first, on the task's host for a
-`--host` task, and the worktree is cut from `origin/<base>`, never a stale
-local branch; a checkout with no `origin` keeps its local base. A fetch that
-fails leaves the task queued, `NOT SPAWNED — <repo>: could not fetch
-origin/<base>`. The record's `base` stays the pull request's base. Each worker is
+another model or thinking budget gets a profile of its own. In every
+repository the task spans, a base that is a branch on `origin` is fetched
+first, on the task's host for a `--host` task, and the worktree is cut from
+`origin/<base>` with no upstream, never from a stale local branch; a tag, a
+commit or a branch `origin` lacks goes as written. A fetch that fails leaves
+the task queued, `NOT SPAWNED — <repo>: could not fetch origin/<base>`. The
+record's `base` stays the pull request's base. Each worker is
 sent one line pointing at the absolute path of its brief; nothing is copied
 into its worktree, so nothing lands in its pull request.
 

@@ -401,11 +401,14 @@ def test_a_windows_host_is_spoken_to_in_powershell_and_the_bytes_survive(hosts, 
     (hosts.state / "me@winbox.nofetch").unlink()
     assert creates(stubs) == [], creates(stubs)
 
-    hosts.next_session(WSESSION)
+    worktrees = [{"repo_path": WINREPO, "worktree_path": WWORKTREE, "branch": "fix/build-on-winbox"}]
+    write(stubs.root / "next-session.json", json.dumps({"id": WSESSION, "created": True, "worktrees": worktrees}))
     hosts.session(WSESSION, name="Build it on winbox", state="working", agent="claude", hook_reported=True,
-                  worktrees=[{"repo_path": WINREPO, "worktree_path": WWORKTREE, "branch": "fix/build-on-winbox"}])
+                  worktrees=worktrees)
     expect(q("dispatch").out, "reachable: answers ssh, PowerShell", "brief copied to me@winbox")
     expect(creates(stubs)[-1], "--base-branch origin/main")
+    # Off `origin/main` the worker's branch would track the base; it is unset there.
+    expect(hosts.read_flag("me@winbox", "commands"), f"& git -C '{WWORKTREE}' branch --unset-upstream")
     there = hosts.remote("me@winbox", WWORKTREE + ".fleet")
     for name, src in (("BRIEF.md", task / "BRIEF.md"),
                       ("POLICY.md", REPO / "orchestration" / "queue" / "POLICY.md"),
