@@ -34,8 +34,6 @@ QUALIFIED_REPO = f"{FORGE}/{OWNER}/{REPO_NAME}"
 
 @pytest.fixture(autouse=True)
 def fetchable(stubs) -> None:
-    """Every origin here is a forge URL nothing can reach, and dispatch fetches
-    each base before it spawns."""
     offline_fetch(stubs)
 
 

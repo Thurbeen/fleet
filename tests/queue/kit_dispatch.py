@@ -126,7 +126,7 @@ def behind_dialog(stubs: Stubs, sid: str, pane: str, queued: str | None = None,
         write(stubs.root / "panes" / f"{sid}.next.txt", queued + "\n")
 
 
-# `git -C <repo> fetch ... +refs/heads/X:refs/remotes/origin/X` answered from the
+# `git -C <repo> ... fetch ... +refs/heads/X:refs/remotes/origin/X` answered from the
 # checkout's own `X`, for a test whose origin is a forge URL nothing can reach:
 # dispatch fetches every base before it spawns. Every other call is real git.
 OFFLINE_FETCH = '''
@@ -135,7 +135,7 @@ import sys
 
 GIT = __GIT__
 ARGS = sys.argv[1:]
-spec = ARGS[-1] if ARGS[:1] == ["-C"] and ARGS[2:3] == ["fetch"] else ""
+spec = ARGS[-1] if ARGS[:1] == ["-C"] and "fetch" in ARGS else ""
 if spec.startswith("+refs/heads/") and ":" in spec:
     src, dst = spec[1:].split(":", 1)
     head = subprocess.run([GIT, "-C", ARGS[1], "rev-parse", "--verify", "--quiet", src],

@@ -141,10 +141,10 @@ def test_check_refuses_an_add_dirs_that_is_not_a_list_of_paths(topic, queue_dir)
 # --- §24b: --add-repo, and the artifact model going plural -------------------
 
 
-def test_add_repo_is_recorded_and_reaches_session_create_verbatim(topic, queue_dir, stubs):
-    """24b. `PATH@BASE` is thurbox's syntax and the operator's string reaches it
-    whole — fleet splits it only to answer its own two questions about the
-    repository, and never to rewrite what was asked for."""
+def test_add_repo_is_recorded_verbatim_and_reaches_session_create_with_its_base(topic, queue_dir, stubs):
+    """24b. `PATH@BASE` is thurbox's syntax and the record keeps the operator's
+    string whole. A dispatch spells each base out, the inherited one included,
+    and never rewrites one that was asked for."""
     ok(q("add", topic, "spans-two", "--title", "Spans two",
          "--repo", "/tmp/repo-a", "--branch", "fix/spans-two", "--number", "01",
          "--add-repo", "/tmp/repo-b", "--add-repo", "/tmp/repo-c@release"))
@@ -157,7 +157,76 @@ def test_add_repo_is_recorded_and_reaches_session_create_verbatim(topic, queue_d
     stubs.tool("thurbox-cli", ANSWERING_KEYS)
     ok(q("dispatch"))
     create = creates(stubs)[0]
-    assert "--add-repo /tmp/repo-b --add-repo /tmp/repo-c@release" in create, create
+    assert "--add-repo /tmp/repo-b@main --add-repo /tmp/repo-c@release" in create, create
+
+
+def behind_origin(root: Path, name: str, origin: Path | None) -> Path:
+    """A checkout whose local `main` is one commit behind its origin's, or a
+    local-only one when `origin` is None."""
+    repo = root / name
+    git("init", "-q", "-b", "main", str(repo))
+    git("commit", "-q", "--allow-empty", "-m", "base", cwd=repo)
+    if origin is not None:
+        git("clone", "-q", "--bare", str(repo), str(origin))
+        git("remote", "add", "origin", str(origin), cwd=repo)
+        ahead = root / f"{name}-ahead"
+        git("clone", "-q", str(origin), str(ahead))
+        git("commit", "-q", "--allow-empty", "-m", "landed since", cwd=ahead)
+        git("push", "-q", "origin", "main", cwd=ahead)
+    return repo
+
+
+def test_every_repository_branches_off_the_base_its_origin_just_gave(topic, queue_dir, stubs, tmp_path):
+    """24b. thurbox cuts a worktree off whatever it is handed and fetches
+    nothing, so dispatch fetches each repository's base and spells every one
+    out: `origin/main` where a checkout has an origin, its own `main` where it
+    has none."""
+    primary = behind_origin(tmp_path, "app", tmp_path / "app.git")
+    sibling = behind_origin(tmp_path, "lib", tmp_path / "lib.git")
+    local = behind_origin(tmp_path, "notes", None)
+    ok(q("add", topic, "spans", "--title", "Spans three", "--repo", str(primary),
+         "--branch", "fix/spans", "--number", "01",
+         "--add-repo", str(sibling), "--add-repo", str(local)))
+    fill_brief(queue_dir / topic / "01-spans" / "BRIEF.md")
+    next_session(stubs, "dddddddd-0000-0000-0000-000000000004")
+    stubs.session_is("dddddddd-0000-0000-0000-000000000004", "idle")
+    stubs.tool("thurbox-cli", ANSWERING_KEYS)
+
+    ok(q("dispatch"))
+    expect(creates(stubs)[0], "--base-branch origin/main",
+           f"--add-repo {sibling}@origin/main --add-repo {local}@main")
+    for repo in (primary, sibling):
+        fetched = git("rev-parse", "origin/main", cwd=repo).strip()
+        assert fetched == git("rev-parse", "main", cwd=tmp_path / f"{repo.name}.git").strip()
+        assert fetched != git("rev-parse", "main", cwd=repo).strip(), "local main stays as it was"
+    # The change request's base is the record's, as written.
+    expect(q("show", f"{topic}/01-spans").out, "base:        main")
+
+
+def test_a_base_that_cannot_be_fetched_refuses_the_task(topic, queue_dir, stubs, tmp_path):
+    """24b. Never a silent fall back to the stale local branch."""
+    primary = behind_origin(tmp_path, "app", None)
+    git("remote", "add", "origin", str(tmp_path / "gone.git"), cwd=primary)
+    ok(q("add", topic, "stale", "--title", "Would be stale", "--repo", str(primary),
+         "--branch", "fix/stale", "--number", "01"))
+    fill_brief(queue_dir / topic / "01-stale" / "BRIEF.md")
+
+    done = q("dispatch")
+    assert done.code != 0, done.out
+    expect(done.out, f"NOT SPAWNED — {primary}: could not fetch origin/main: fatal:")
+    assert creates(stubs) == []
+    expect(q("show", f"{topic}/01-stale").out, "queued")
+
+
+def test_a_base_that_is_not_a_branch_name_is_refused_at_add(topic):
+    """24b. A base reaches a refspec and a host's command line, so it is a
+    plain branch name or nothing."""
+    for flags in (["--base", 'x" --upload-pack=evil'], ["--add-repo", "/tmp/repo-b@-x"],
+                  ["--add-repo", "/tmp/repo-b@a..b"]):
+        r = q("add", topic, "odd-base", "--title", "Odd base", "--repo", "/tmp/repo-a",
+              "--branch", "fix/odd-base", *flags)
+        assert r.code != 0, r.out
+        expect(r.out, "Nothing was created")
 
 
 def test_the_brief_names_every_repository_and_asks_for_one_artifact_each(topic, queue_dir):
