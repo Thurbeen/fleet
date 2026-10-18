@@ -9,6 +9,7 @@ JSON and the `--records` wire — and that nothing on a peer moved.
 
 from __future__ import annotations
 
+import compileall
 import json
 import os
 import shutil
@@ -40,6 +41,14 @@ PEER_PROBE = (
     "B\tremote-topic/01-far\tclaude\t\tworker-far\t\t\t\nA\t0\n"
 )
 
+# One peer's bound in the timing test: `fleet peers`' own default. Every
+# reading — the local peer's too — is a whole Python start, which a loaded
+# Windows runner has taken past 2s, and a run that kills a host at its bound
+# has spent 15-17s on a 12s one there.
+TIMEOUT = 15
+# slowbox never answers inside any bound this file uses.
+NEVER = 60
+
 
 def lead(sid: str, cwd: str, backend: str, name: str = "📡 Mission Control") -> dict:
     return {"id": sid, "name": name, "cwd": cwd, "backend_type": backend, "state": "idle", "worktrees": []}
@@ -53,9 +62,12 @@ def task(root: Path, topic: str, tid: str, state: str, title: str) -> Path:
 
 
 def peer_checkout(where: Path) -> Path:
-    """A second fleet on this machine: its code, and a queue of its own."""
+    """A second fleet on this machine: its code, compiled the way its own pane
+    leaves it, and a queue of its own. Never compiled is what a peer never is:
+    on Windows its first probe took 2-8s against 0.5s for the same tree after."""
     shutil.copytree(REPO / "scripts" / "lib", where / "scripts" / "lib",
                     ignore=shutil.ignore_patterns("__pycache__"))
+    compileall.compile_dir(where / "scripts" / "lib", quiet=1)
     task(where / "orchestration" / "queue", "local-topic", "01-near", "queued", "Near task")
     return where
 
@@ -66,7 +78,7 @@ def machine(stubs: Stubs, tmp_path: Path, sessions: list[dict]) -> None:
     state = stubs.root / "ssh-state"
     write(state / "me@devbox.pane-probe", PEER_PROBE)
     write(state / "me@slowbox.pane-probe", PEER_PROBE)
-    write(state / "me@slowbox.slow", "6")
+    write(state / "me@slowbox.slow", str(NEVER))
     write(state / "me@downbox.down", "")
 
 
@@ -89,19 +101,20 @@ def test_one_peer_ok_one_unreachable_one_too_slow(stubs, tmp_path):
         lead("far", "/srv/fleet", "ssh:devbox"),
         lead("gone", "/srv/fleet", "ssh:downbox:tmux"),
         lead("late", "/srv/fleet", "ssh:slowbox"),
+        lead("later", "/opt/fleet", "ssh:slowbox"),
         {"id": "w", "name": "🚀 Rename Mission Control", "cwd": "/x", "backend_type": "local-tmux"},
     ])
     peer_before = (peer / "orchestration/queue/local-topic/01-near/task.yaml").read_bytes()
     own_before = own.read_bytes()
 
     started = time.monotonic()
-    doc = json.loads(peers("--json", "--timeout", "2").stdout)
+    doc = json.loads(peers("--json", "--timeout", str(TIMEOUT)).stdout)
     took = time.monotonic() - started
 
     found = fleets(doc)
     assert sorted(h["host"] for h in doc["hosts"]) == ["devbox", "downbox", "local", "slowbox"]
     assert set(found) == {"local:" + str(REPO), "local:" + str(peer), "devbox:/srv/fleet",
-                          "downbox:/srv/fleet", "slowbox:/srv/fleet"}, "a worker was read as a lead"
+                          "downbox:/srv/fleet", "slowbox:/srv/fleet", "slowbox:/opt/fleet"}, "a worker was read as a lead"
 
     me = found["local:" + str(REPO)]
     assert me["self"]
@@ -109,7 +122,7 @@ def test_one_peer_ok_one_unreachable_one_too_slow(stubs, tmp_path):
     assert [t["ref"] for t in me["tasks"]] == ["home-topic/01-here"]
 
     near = found["local:" + str(peer)]
-    assert near["status"] == "ok"
+    assert near["status"] == "ok", near["reason"]
     assert near["fleet"] == "near"
     assert near["source"] == "thurbox"
     assert [(t["ref"], t["state"], t["fleet"], t["host"]) for t in near["tasks"]] == [
@@ -127,13 +140,13 @@ def test_one_peer_ok_one_unreachable_one_too_slow(stubs, tmp_path):
     assert "No route to host" in gone["reason"]
     assert gone["tasks"] == []
 
-    late = found["slowbox:/srv/fleet"]
-    assert late["status"] == "unreachable", late
-    assert "2s" in late["reason"], late
+    for late in (found["slowbox:/srv/fleet"], found["slowbox:/opt/fleet"]):
+        assert late["status"] == "unreachable", late
+        assert f"{TIMEOUT}s" in late["reason"], late
 
-    # Every peer is asked at once: three hosts and a local fleet in one
-    # timeout, not one after another.
-    assert took < 5.5, f"peers were read one after another: {took:.1f}s"
+    # Every peer is asked at once: two fleets that never answer cost one
+    # timeout between them, where reading them one after another costs two.
+    assert took < 2 * TIMEOUT, f"peers were read one after another: {took:.1f}s"
     assert (peer / "orchestration/queue/local-topic/01-near/task.yaml").read_bytes() == peer_before
     assert own.read_bytes() == own_before
     assert stubs.calls("thurbox-cli", "session") == ["thurbox-cli session list --json"]
