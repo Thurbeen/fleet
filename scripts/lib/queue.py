@@ -4153,7 +4153,7 @@ def ssh_argv(entry: dict) -> list:
 #     command(script, login)  the one string ssh is handed
 #     reach()                 prints this shell's sentinel
 #     repo_check(repo)        prints `ok`, `no-dir` or `no-git`
-#     fetch_base(repo, name)  fetches `origin/<name>` and prints a FETCH_* word,
+#     fetch_base(repo, b, n)  fetches `origin/<n>` and prints a FETCH_* word,
 #                             git's own error on stderr
 #     drop_upstream(worktree) unsets its branch's upstream, prints UPSTREAM_GONE
 #     forge_probe(repo)       prints `<host> with <credential>`, or
@@ -4287,17 +4287,19 @@ class PosixShell:
     def origin(self, repo: str) -> str:
         return f"git -C {shlex.quote(repo)} remote get-url origin"
 
-    def fetch_base(self, repo: str, name: str) -> str:
+    def fetch_base(self, repo: str, base: str, name: str) -> str:
         quoted = shlex.quote(repo)
         return (
             "command -v git >/dev/null 2>&1 || "
             f"{{ echo 'git is not on PATH' >&2; printf {FETCH_FAILED}; exit 1; }}\n"
-            f"git -C {quoted} rev-parse --verify --quiet {shlex.quote(ORIGIN_REFS + name)} >/dev/null 2>&1"
-            f" || {{ printf {FETCH_AS_WRITTEN}; exit 0; }}\n"
-            f"GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git -C {quoted} {shell_quote(fetch_config('/dev/null'))}"
-            f" fetch --quiet --no-recurse-submodules origin {shlex.quote(fetch_refspec(name))} </dev/null"
-            f" || {{ printf {FETCH_FAILED}; exit 1; }}\n"
-            f"printf {FETCH_DONE}\n"
+            f"git -C {quoted} remote get-url origin >/dev/null 2>&1 || {{ printf {FETCH_AS_WRITTEN}; exit 0; }}\n"
+            f"git -C {quoted} rev-parse --verify --quiet {shlex.quote('refs/tags/' + base)} >/dev/null 2>&1"
+            f" && {{ printf {FETCH_AS_WRITTEN}; exit 0; }}\n"
+            f"err=$(GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git -C {quoted}"
+            f" {shell_quote(fetch_config('/dev/null'))} fetch --quiet --no-recurse-submodules origin"
+            f" {shlex.quote(fetch_refspec(name))} 2>&1 </dev/null) && {{ printf {FETCH_DONE}; exit 0; }}\n"
+            f"case \"$err\" in *{shlex.quote(NO_REMOTE_REF)}*) printf {FETCH_AS_WRITTEN}; exit 0 ;; esac\n"
+            f"printf '%s\\n' \"$err\" >&2; printf {FETCH_FAILED}; exit 1\n"
         )
 
     def drop_upstream(self, worktree: str) -> str:
@@ -4314,9 +4316,11 @@ class PosixShell:
 
 
 def ps_quote(s: str) -> str:
-    """A PowerShell single-quoted literal. Only `'` is special in one, doubled;
-    `\\`, `$` and the backtick are literal, which is what a Windows path needs."""
-    return "'" + str(s).replace("'", "''") + "'"
+    """A PowerShell single-quoted literal. Only a single quote is special in
+    one, doubled — and PowerShell reads the typographic ones (U+2018 to
+    U+201B) as that quote too. `\\`, `$` and the backtick are literal, which is
+    what a Windows path needs."""
+    return "'" + re.sub("['\u2018\u2019\u201a\u201b]", lambda m: m.group(0) * 2, str(s)) + "'"
 
 
 # THE POWERSHELL CREDENTIAL PROBE: FORGE_PROBE_TEMPLATE's questions, in the same
@@ -4491,19 +4495,25 @@ class PowerShell:
     def origin(self, repo: str) -> str:
         return f"& git -C {ps_quote(repo)} remote get-url origin\n"
 
-    def fetch_base(self, repo: str, name: str) -> str:
+    def fetch_base(self, repo: str, base: str, name: str) -> str:
         quoted = ps_quote(repo)
         return (
             "if (-not (Get-Command git -ErrorAction SilentlyContinue)) "
             f"{{ [Console]::Error.WriteLine('git is not on PATH'); Write-Output '{FETCH_FAILED}'; exit 1 }}\n"
-            f"& git -C {quoted} rev-parse --verify --quiet {ps_quote(ORIGIN_REFS + name)} *> $null\n"
+            f"& git -C {quoted} remote get-url origin *> $null\n"
             f"if ($LASTEXITCODE -ne 0) {{ Write-Output '{FETCH_AS_WRITTEN}'; exit 0 }}\n"
+            f"& git -C {quoted} rev-parse --verify --quiet {ps_quote('refs/tags/' + base)} *> $null\n"
+            f"if ($LASTEXITCODE -eq 0) {{ Write-Output '{FETCH_AS_WRITTEN}'; exit 0 }}\n"
             "$env:GIT_TERMINAL_PROMPT = '0'\n"
             "$env:GCM_INTERACTIVE = 'never'\n"
-            f"& git -C {quoted} {' '.join(ps_quote(a) for a in fetch_config('NUL'))}"
-            f" fetch --quiet --no-recurse-submodules origin {ps_quote(fetch_refspec(name))}\n"
-            f"if ($LASTEXITCODE -ne 0) {{ Write-Output '{FETCH_FAILED}'; exit 1 }}\n"
-            f"Write-Output '{FETCH_DONE}'\n"
+            # Each stderr record as its own text, so git's `fatal:` line is not
+            # wrapped in PowerShell's error decoration.
+            f"$err = (& git -C {quoted} {' '.join(ps_quote(a) for a in fetch_config('NUL'))}"
+            f" fetch --quiet --no-recurse-submodules origin {ps_quote(fetch_refspec(name))}"
+            " 2>&1 | ForEach-Object { \"$_\" }) -join \"`n\"\n"
+            f"if ($LASTEXITCODE -eq 0) {{ Write-Output '{FETCH_DONE}'; exit 0 }}\n"
+            f"if ($err -like {ps_quote('*' + NO_REMOTE_REF + '*')}) {{ Write-Output '{FETCH_AS_WRITTEN}'; exit 0 }}\n"
+            f"[Console]::Error.WriteLine($err); Write-Output '{FETCH_FAILED}'; exit 1\n"
         )
 
     def drop_upstream(self, worktree: str) -> str:
@@ -5139,15 +5149,16 @@ def spawn_field_problems(d: dict) -> list:
 # worktree add -b <branch> <path> <base>` with no fetch of its own, and its
 # orchestration guide puts that fetch on the driver — this. A checkout's local
 # `main` is whatever it was the last time somebody pulled, which on a machine
-# that only ever dispatches is days old. So a base that names a branch the
-# checkout already knows on `origin` (`refs/remotes/origin/<base>`) is fetched
-# first, and thurbox is handed `origin/<base>`, a ref that fetch just wrote.
-# Anything else — a tag, a commit, another remote's branch, a branch only this
-# checkout has, a checkout with no `origin` — is handed over as written: there
-# is no origin branch to be stale against.
+# that only ever dispatches is days old. So in a checkout with an `origin`, a
+# base that could be a branch there is fetched first, and thurbox is handed
+# `origin/<base>`, a ref that fetch just wrote — whether or not this checkout
+# had ever seen that branch, which a single-branch clone, or a base pushed
+# from elsewhere, has not. A commit, a tag this checkout has, a branch
+# `origin` answers it does not have, and a checkout with no `origin` are
+# handed over as written: there is no origin branch to be stale against.
 #
-# A FAILED FETCH REFUSES THE TASK, and never falls back to the local base:
-# that fallback is the stale tree this exists to stop, chosen silently.
+# ANY OTHER FAILED FETCH REFUSES THE TASK, and never falls back to the local
+# base: that fallback is the stale tree this exists to stop, chosen silently.
 #
 # NO UPSTREAM. With `origin/<base>` as its start point, git's default
 # `branch.autoSetupMerge` makes the worker's new branch track `origin/<base>`,
@@ -5174,15 +5185,21 @@ FETCH_DONE = "fleet-fetched"
 FETCH_AS_WRITTEN = "fleet-as-written"
 FETCH_FAILED = "fleet-fetch-failed"
 UPSTREAM_GONE = "fleet-no-upstream"
+# What git says when `origin` has no such branch: the one fetch failure that
+# means "not a branch there", and not "could not ask".
+NO_REMOTE_REF = "couldn't find remote ref"
+COMMIT_RE = re.compile(r"[0-9a-f]{7,40}")
 # A base reaches a refspec, a POSIX command line and, on a Windows host, a
 # git.exe command line PowerShell 5 builds without escaping an embedded `"` —
 # so it is a plain ref name or nothing, checked before any of those exists.
-BASE_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
+BASE_RE = re.compile(r"[A-Za-z0-9._/-]+")
 
 
 def base_problem(base: str) -> str:
     """Why a written base is not a branch name a fetch may carry, or ""."""
-    if not BASE_RE.match(base):
+    if base in ("HEAD", "origin/HEAD"):
+        return f"base {base!r} names whatever happens to be checked out; name the branch"
+    if not BASE_RE.fullmatch(base):
         return f"base {base!r} is not a branch, tag or commit name (letters, digits, `.`, `_`, `/`, `-`)"
     if base.startswith("-") or base.startswith("/") or base.endswith("/") or base.endswith(".lock"):
         return f"base {base!r} cannot start with `-` or `/`, or end with `/` or `.lock`"
@@ -5226,7 +5243,9 @@ def fetch_ssh_env(repo: str) -> dict:
 
 def fetch_local_base(repo: str, base: str, name: str) -> tuple[str, str]:
     """(the base to branch off, why `name` could not be fetched) for a checkout here."""
-    if not git_out(repo, ["rev-parse", "--verify", "--quiet", ORIGIN_REFS + name]):
+    if not git_out(repo, ["remote", "get-url", "origin"]).strip():
+        return base, ""
+    if git_out(repo, ["rev-parse", "--verify", "--quiet", f"refs/tags/{base}"]):
         return base, ""
     try:
         done = subprocess.run(
@@ -5244,13 +5263,15 @@ def fetch_local_base(repo: str, base: str, name: str) -> tuple[str, str]:
     except (OSError, subprocess.SubprocessError) as exc:
         return "", str(exc)
     if done.returncode != 0:
+        if NO_REMOTE_REF in done.stderr:
+            return base, ""
         return "", git_error(done.stderr) or f"git exited {done.returncode}"
     return f"origin/{name}", ""
 
 
 def fetch_remote_base(entry: dict, repo: str, base: str, name: str) -> tuple[str, str]:
     """`fetch_local_base`, asked of the host the task runs on."""
-    done = ssh_run(entry, host_shell(entry).fetch_base(repo, name), timeout=FETCH_TIMEOUT)
+    done = ssh_run(entry, host_shell(entry).fetch_base(repo, base, name), timeout=FETCH_TIMEOUT)
     word = last_out(done)
     if word == FETCH_DONE:
         return f"origin/{name}", ""
@@ -5270,6 +5291,9 @@ def fetched_bases(task: Task, entry: dict | None = None) -> tuple[list, str]:
     repos = []
     for r in task_repos(task):
         name = origin_branch(r["base"])
+        if COMMIT_RE.fullmatch(r["base"]):
+            repos.append(r)
+            continue
         if entry:
             base, why = fetch_remote_base(entry, r["path"], r["base"], name)
         else:
@@ -5295,16 +5319,17 @@ def fetched_create(create: list, repos: list) -> list:
     return out
 
 
-def drop_upstreams(proc_stdout: bytes, entry: dict | None) -> str:
-    """Unset the upstream of every worktree `session create` reports, or say why not."""
-    try:
-        worktrees = json.loads(proc_stdout).get("worktrees") or []
-    except (ValueError, AttributeError):
-        worktrees = []
-    for wt in worktrees:
-        path = str((wt or {}).get("worktree_path") or "")
-        if not path:
-            continue
+def drop_upstreams(worktrees, entry: dict | None, required: bool = True) -> str:
+    """Unset the upstream of every worktree thurbox reports, or say why not.
+
+    `required` is for an answer that must name the worktrees it cut: none there
+    means nobody knows whether a branch tracks the base, which is a refusal.
+    """
+    paths = [str(w["worktree_path"]) for w in worktrees if isinstance(w, dict) and w.get("worktree_path")] \
+        if isinstance(worktrees, list) else []
+    if required and not paths:
+        return "thurbox reported no worktree, so nothing shows its branch does not track the base"
+    for path in paths:
         if entry:
             done = ssh_run(entry, host_shell(entry).drop_upstream(path))
             if last_out(done) != UPSTREAM_GONE:
@@ -5320,6 +5345,22 @@ def drop_upstreams(proc_stdout: bytes, entry: dict | None) -> str:
         if done.returncode != 0:
             return f"{path}: {git_error(done.stderr) or f'git exited {done.returncode}'}"
     return ""
+
+
+UPSTREAM_KEPT = "its branch may still track the base, where a plain push could land"
+
+
+def untrack_session(task: Task) -> str:
+    """`drop_upstreams` for the worktrees thurbox lists for the task's session now."""
+    doc, why = session_doc(task.doc["session"])
+    if doc is None:
+        return f"could not read the session to check its branch: {why}"
+    entry = None
+    if task.doc.get("host"):
+        entry, why = host_entry(task.doc["host"])
+        if not entry:
+            return f"host {task.doc['host']}: {why}"
+    return drop_upstreams(doc.get("worktrees"), entry, required=False)
 
 
 def spawn_commands(task: Task) -> tuple[list, str, str]:
@@ -5649,6 +5690,9 @@ def cmd_dispatch(args) -> int:
     # a whole wave against one repo draws its dialogs simultaneously only if
     # session creation for task 2 does not wait on task 1's trust confirmation.
     attached: list[Task] = []
+    # Refs whose worktrees this dispatch has already left tracking nothing, so
+    # phase 2 does not ask the host about them a second time.
+    untracked: set = set()
     # Every task that HAS a session, whether or not it was prompted: coverage
     # is reported off these at the end of phase 2 rather than here, because
     # `session create` returns before the agent's own first hook has fired and
@@ -5729,6 +5773,12 @@ def cmd_dispatch(args) -> int:
                        prompted=prompted)
                 print(f"    {t.ref}: adopted {sid}, which a dispatch that did not "
                       "finish left behind" + ("" if prompted else "  (unprompted)"))
+                why = drop_upstreams(row.get("worktrees"), None)
+                if why:
+                    print(f"    {t.ref}: {UPSTREAM_KEPT}: {why}", file=sys.stderr)
+                    failures += 1
+                    continue
+                untracked.add(t.ref)
                 if not prompted:
                     attached.append(t)
                 continue
@@ -5744,8 +5794,9 @@ def cmd_dispatch(args) -> int:
             proc = None
             try:
                 proc = subprocess.run(create, capture_output=True, check=True)
-                session = json.loads(proc.stdout)["id"]
-            except (OSError, subprocess.CalledProcessError, ValueError, KeyError) as exc:
+                created = json.loads(proc.stdout)
+                session = created["id"]
+            except (OSError, subprocess.CalledProcessError, ValueError, KeyError, TypeError) as exc:
                 print(f"    {t.ref}: spawn failed: {spawn_failure(exc, proc)}", file=sys.stderr)
                 failures += 1
                 continue
@@ -5755,12 +5806,13 @@ def cmd_dispatch(args) -> int:
             # on the far side of `session create` can answer differently.
             attach(t, session, spawned_as)
             spawned.append((t, create))
-            why = drop_upstreams(proc.stdout, entry)
+            why = drop_upstreams(created.get("worktrees"), entry)
             if why:
-                print(f"    {t.ref}: session exists but was NOT prompted — its branch still "
-                      f"tracks the base, so a plain push could land there: {why}", file=sys.stderr)
+                print(f"    {t.ref}: session exists but was NOT prompted — {UPSTREAM_KEPT}: {why}",
+                      file=sys.stderr)
                 failures += 1
                 continue
+            untracked.add(t.ref)
 
             # The remote worker is about to be told to read a file that is not on
             # its filesystem. Put it there first, and record where — `collect`
@@ -5782,7 +5834,7 @@ def cmd_dispatch(args) -> int:
     # to break.
     unprompted: list = []
     for t in attached:
-        ok, report = prompt_session(t)
+        ok, report = prompt_session(t, untracked=t.ref in untracked)
         print(f"    {t.ref}  -> {t.doc['session']}{'' if ok else '  NOT PROMPTED'}")
         if report:
             print(f"        {report}", file=None if ok else sys.stderr)
@@ -5859,17 +5911,23 @@ def attach(task: Task, session: str, agent: str = "", prompted: bool = False) ->
     task.save()
 
 
-def prompt_session(task: Task, timeout: int = 20) -> tuple[bool, str]:
+def prompt_session(task: Task, timeout: int = 20, untracked: bool = False) -> tuple[bool, str]:
     """Get the session past its trust dialog, then send it its brief.
 
     Split out of dispatch because it is the retry path too. A session that
     could not be confirmed past the dialog is left recorded and UNPROMPTED
     rather than silently sent a brief that would land in the dialog — the
     record says `prompted: false` and `fleet queue prompt` picks it up again.
+
+    `untracked` is a caller that has just left the session's worktrees
+    tracking nothing; every other caller has that done here first, so no
+    route briefs a worker whose branch still tracks the base.
     """
     session = task.doc.get("session")
     if not session:
         return False, "no session attached"
+    if not untracked and (why := untrack_session(task)):
+        return False, f"{UPSTREAM_KEPT}: {why}"
 
     # A remote task whose brief never reached the host has nothing to point a
     # worker at. Sending the control plane's own path would have it read a file

@@ -19,6 +19,7 @@ held by every other module in this directory staying green.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -29,7 +30,7 @@ from kit_dispatch import ANSWERING_KEYS, CUTS_WORKTREES, next_session
 from kit_forges import FAKE_GLAB, GlabStore
 from queuekit import fill_brief, ok, result, result_artifacts
 
-from harness import expect, git, refute
+from harness import expect, git, refute, write
 from harness import run_queue as q
 
 DOCS = "/tmp/repo-docs"
@@ -178,19 +179,29 @@ def behind_origin(root: Path, name: str, origin: Path | None) -> Path:
     return repo
 
 
+def no_upstream(repo: Path, branch: str) -> None:
+    tracks = subprocess.run(["git", "-C", str(repo), "config", "--get", f"branch.{branch}.merge"],
+                            capture_output=True, text=True, encoding="utf-8")
+    assert tracks.stdout == "", f"{repo.name}'s {branch} tracks {tracks.stdout.strip()}"
+
+
 def test_every_repository_branches_off_the_base_its_origin_just_gave(topic, queue_dir, stubs, tmp_path):
     """24b. thurbox cuts a worktree off whatever it is handed and fetches
-    nothing, so dispatch fetches each base that is a branch on `origin` and
-    spells every one out — a tag goes as written. And the worker's branch
-    tracks nothing: off `origin/main` git would make it track the base, and a
-    plain push could land there."""
+    nothing, so dispatch fetches each base that could be a branch on `origin`
+    — one this checkout never saw included — and spells every one out. A tag,
+    and a branch `origin` does not have, go as written. And the worker's
+    branch tracks nothing: off `origin/main` git would make it track the base,
+    and a plain push could land there."""
     primary = behind_origin(tmp_path, "app", tmp_path / "app.git")
     sibling = behind_origin(tmp_path, "lib", tmp_path / "lib.git")
+    git("push", "-q", "origin", "main:release", cwd=tmp_path / "lib-ahead")
     tagged = behind_origin(tmp_path, "notes", tmp_path / "notes.git")
     git("tag", "v1", cwd=tagged)
-    ok(q("add", topic, "spans", "--title", "Spans three", "--repo", str(primary),
+    mine = behind_origin(tmp_path, "docs", tmp_path / "docs.git")
+    git("branch", "wip", cwd=mine)
+    ok(q("add", topic, "spans", "--title", "Spans four", "--repo", str(primary),
          "--branch", "fix/spans", "--number", "01",
-         "--add-repo", str(sibling), "--add-repo", f"{tagged}@v1"))
+         "--add-repo", f"{sibling}@release", "--add-repo", f"{tagged}@v1", "--add-repo", f"{mine}@wip"))
     fill_brief(queue_dir / topic / "01-spans" / "BRIEF.md")
     next_session(stubs, "dddddddd-0000-0000-0000-000000000004")
     stubs.session_is("dddddddd-0000-0000-0000-000000000004", "idle")
@@ -198,16 +209,14 @@ def test_every_repository_branches_off_the_base_its_origin_just_gave(topic, queu
 
     ok(q("dispatch"))
     expect(creates(stubs)[0], "--base-branch origin/main",
-           f"--add-repo {sibling}@origin/main --add-repo {tagged}@v1")
-    for repo in (primary, sibling):
-        fetched = git("rev-parse", "origin/main", cwd=repo).strip()
-        assert fetched == git("rev-parse", "main", cwd=tmp_path / f"{repo.name}.git").strip()
+           f"--add-repo {sibling}@origin/release --add-repo {tagged}@v1 --add-repo {mine}@wip")
+    for repo, ref in ((primary, "main"), (sibling, "release")):
+        fetched = git("rev-parse", f"origin/{ref}", cwd=repo).strip()
+        assert fetched == git("rev-parse", ref, cwd=tmp_path / f"{repo.name}.git").strip()
         assert fetched != git("rev-parse", "main", cwd=repo).strip(), "local main stays as it was"
         assert git("rev-parse", "fix/spans", cwd=repo).strip() == fetched
-    for repo in (primary, sibling, tagged):
-        tracks = subprocess.run(["git", "-C", str(repo), "config", "--get", "branch.fix/spans.merge"],
-                                capture_output=True, text=True, encoding="utf-8")
-        assert tracks.stdout == "", f"{repo.name}'s worker branch tracks {tracks.stdout.strip()}"
+    for repo in (primary, sibling, tagged, mine):
+        no_upstream(repo, "fix/spans")
     # The change request's base is the record's, as written.
     expect(q("show", f"{topic}/01-spans").out, "base:        main")
 
@@ -216,7 +225,6 @@ def test_a_base_that_cannot_be_fetched_refuses_the_task(topic, queue_dir, stubs,
     """24b. Never a silent fall back to the stale local branch."""
     primary = behind_origin(tmp_path, "app", None)
     git("remote", "add", "origin", str(tmp_path / "gone.git"), cwd=primary)
-    git("update-ref", "refs/remotes/origin/main", "HEAD", cwd=primary)
     ok(q("add", topic, "stale", "--title", "Would be stale", "--repo", str(primary),
          "--branch", "fix/stale", "--number", "01"))
     fill_brief(queue_dir / topic / "01-stale" / "BRIEF.md")
@@ -228,11 +236,46 @@ def test_a_base_that_cannot_be_fetched_refuses_the_task(topic, queue_dir, stubs,
     expect(q("show", f"{topic}/01-stale").out, "queued")
 
 
+def test_a_spawn_that_reports_no_worktree_is_not_prompted(topic, queue_dir, stubs):
+    """24b. Nothing then shows the worker's branch does not track the base."""
+    ok(q("add", topic, "unseen", "--title", "Unseen worktree", "--repo", "/tmp/repo-a",
+         "--branch", "fix/unseen", "--number", "01"))
+    fill_brief(queue_dir / topic / "01-unseen" / "BRIEF.md")
+    write(stubs.root / "next-session.json",
+          json.dumps({"id": "dddddddd-0000-0000-0000-000000000005", "created": True, "worktrees": []}))
+    stubs.session_is("dddddddd-0000-0000-0000-000000000005", "idle")
+
+    done = q("dispatch")
+    assert done.code != 0, done.out
+    expect(done.out, "NOT prompted", "thurbox reported no worktree")
+    assert stubs.calls("thurbox-cli", "session send") == []
+
+
+def test_prompt_unsets_the_upstream_of_a_session_it_did_not_spawn(topic, queue_dir, stubs, tmp_path):
+    """24b. Every route to a brief goes through the same unset: `prompt` reads
+    the worktrees thurbox lists for the session now."""
+    repo = behind_origin(tmp_path, "app", tmp_path / "app.git")
+    tree = tmp_path / "tree"
+    git("worktree", "add", "-q", "-b", "fix/later", str(tree), "origin/main", cwd=repo)
+    ok(q("add", topic, "later", "--title", "Later", "--repo", str(repo),
+         "--branch", "fix/other", "--number", "01"))
+    fill_brief(queue_dir / topic / "01-later" / "BRIEF.md")
+    sid = "dddddddd-0000-0000-0000-000000000006"
+    write(stubs.root / "sessions" / f"{sid}.json", json.dumps({
+        "id": sid, "name": "Later", "state": "idle", "agent": "claude", "hook_reported": True,
+        "worktrees": [{"repo_path": str(repo), "worktree_path": str(tree), "branch": "fix/later"}]}))
+    ok(q("attach", f"{topic}/01-later", sid, "--unprompted"))
+
+    ok(q("prompt"))
+    no_upstream(repo, "fix/later")
+
+
 def test_a_base_that_is_not_a_branch_name_is_refused_at_add(topic):
     """24b. A base reaches a refspec and a host's command line, so it is a
-    plain branch name or nothing."""
-    for flags in (["--base", 'x" --upload-pack=evil'], ["--add-repo", "/tmp/repo-b@-x"],
-                  ["--add-repo", "/tmp/repo-b@a..b"]):
+    plain ref name or nothing — and never `HEAD`, which is whatever happens to
+    be checked out."""
+    for flags in (["--base", 'x" --upload-pack=evil'], ["--base", "main\n"], ["--base", "HEAD"],
+                  ["--add-repo", "/tmp/repo-b@-x"], ["--add-repo", "/tmp/repo-b@a..b"]):
         r = q("add", topic, "odd-base", "--title", "Odd base", "--repo", "/tmp/repo-a",
               "--branch", "fix/odd-base", *flags)
         assert r.code != 0, r.out

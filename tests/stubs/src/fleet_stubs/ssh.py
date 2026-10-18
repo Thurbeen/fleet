@@ -103,7 +103,11 @@ def main() -> int:
         # A base fetch: `.nofetch` holds what git says when it fails.
         nofetch = state / f"{dest}.nofetch"
         if nofetch.is_file():
-            sys.stderr.write(nofetch.read_text(encoding="utf-8"))
+            said = nofetch.read_text(encoding="utf-8")
+            if "couldn't find remote ref" in said:
+                sys.stdout.write("fleet-as-written")
+                return 0
+            sys.stderr.write(said)
             sys.stdout.write("fleet-fetch-failed")
             return 1
         known = named_origin(state, dest, script) is not None

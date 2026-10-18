@@ -131,9 +131,9 @@ def test_a_host_that_fails_a_probe_is_not_spawned(devbox_task, hosts, queue_dir)
         expect("\n".join(line for line in q("show", devbox_task).out.splitlines() if "state:" in line), "queued")
     # And a base the host cannot fetch is not branched off its stale local copy.
     write(hosts.state / "me@devbox.origin", "git@github.com:acme/app.git\n")
-    write(hosts.state / "me@devbox.nofetch", "fatal: couldn't find remote ref main\n")
+    write(hosts.state / "me@devbox.nofetch", "fatal: Could not read from remote repository.\n")
     expect(q("dispatch").out,
-           "NOT SPAWNED — /srv/code/app: could not fetch origin/main: fatal: couldn't find remote ref main")
+           "NOT SPAWNED — /srv/code/app: could not fetch origin/main: fatal: Could not read from remote repository.")
     assert creates(hosts.stubs) == []
 
 
@@ -356,6 +356,14 @@ def test_a_remote_command_runs_in_a_login_shell_and_moving_bytes_does_not(hosts,
     )
     expect(moved, "push=ok", "same=True")
     refute(moved, "Welcome to profilebox")
+
+
+def test_every_single_quote_powershell_reads_is_doubled():
+    """PowerShell takes U+2018 to U+201B for `'` too, so a path carrying one
+    must not end the literal and run what follows."""
+    path = "C:\\work\\fix-\u2019; calc; \u2019"
+    assert queue_module("print(q.ps_quote(sys.argv[1]))", path).strip() == \
+        "'C:\\work\\fix-\u2019\u2019; calc; \u2019\u2019'"
 
 
 def test_a_windows_host_misdeclared_as_tmux_is_caught_at_the_first_probe(hosts):
