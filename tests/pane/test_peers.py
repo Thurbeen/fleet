@@ -43,8 +43,8 @@ PEER_PROBE = (
 
 # One peer's bound in the timing test: `fleet peers`' own default. Every
 # reading — the local peer's too — is a whole Python start, which a loaded
-# Windows runner has taken past 2s, and a run that kills a host at its bound
-# has spent 15-17s on a 12s one there.
+# Windows runner has taken past 2s, and killing a host at its bound costs
+# Windows seconds more on top: 15-17s for a 12s bound, measured.
 TIMEOUT = 15
 # slowbox never answers inside any bound this file uses.
 NEVER = 60
