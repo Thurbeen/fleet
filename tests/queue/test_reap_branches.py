@@ -199,7 +199,8 @@ def test_a_branch_checked_out_in_a_worktree_is_asked_again(queue_dir, repo, tmp_
 def test_the_main_checkouts_own_branch_is_kept(queue_dir, repo):
     record = task(queue_dir, repo)
     git("checkout", "-q", BRANCH, cwd=repo)
-    expect(ok(q("reap")).out, "kept", BRANCH, f"checked out at {repo}")
+    # git lists worktree paths with forward slashes, Windows included.
+    expect(ok(q("reap")).out, "kept", BRANCH, f"checked out at {repo.as_posix()}")
     assert has_branch(repo)
     assert released(record) is None
 
