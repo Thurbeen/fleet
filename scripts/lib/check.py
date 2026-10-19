@@ -76,6 +76,7 @@ TESTS = {
     "isolation": (["tests/isolation"], ["uv", "git"], "a poisoned checkout under a hostile host gets the same verdict"),
     "local": (["tests/local"], ["uv", "git"], "a fleet with no forge CLI and no login: preflight, the loop, the reconciler"),
     "context": (["tests/context"], ["uv", "git"], "fleet context: fact files, many writers, the AXI contract, briefs"),
+    "telemetry": (["tests/telemetry"], ["uv"], "task traces rebuilt from records, sent to a fake OTLP collector or nowhere"),
 }
 
 

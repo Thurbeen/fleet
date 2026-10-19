@@ -5414,9 +5414,45 @@ def spawn_commands(task: Task) -> tuple[list, str, str]:
     parent = os.environ.get("THURBOX_SESSION")
     if parent and not d.get("host"):
         create += ["--parent", parent]
+    create += telemetry_attr_flags(task)
     create += flags + ["--json"]
     send = f"Read {brief_target(task)} and do what it says."
     return create, send, named
+
+
+# THE TASK ON THE SESSION'S TELEMETRY. thurbox labels what an agent exports
+# with its session (`thurbox.session.id`), so a token count or a cost joins a
+# TASK only if the session also says which task it serves — the factory's
+# cost-per-task rests on it. `--env OTEL_RESOURCE_ATTRIBUTES=…` would say it by
+# REPLACING whatever the operator set for thurbox itself, so fleet waits for a
+# field of thurbox's own that merges (Thurbeen/thurbox#1529): it passes this
+# flag where `session create --help` lists it, and nothing anywhere else, so a thurbox without it spawns
+# exactly the command it always did.
+TELEMETRY_ATTR_FLAG = "--telemetry-attr"
+_THURBOX_TAKES: dict[str, bool] = {}
+
+
+def thurbox_takes(flag: str) -> bool:
+    """Whether this machine's `thurbox-cli session create` takes `flag`, asked
+    of its `--help` once per process. Unanswerable is no."""
+    if flag not in _THURBOX_TAKES:
+        try:
+            proc = subprocess.run(["thurbox-cli", "session", "create", "--help"], capture_output=True,
+                                  text=True, encoding="utf-8", errors="replace", timeout=30)
+            _THURBOX_TAKES[flag] = proc.returncode == 0 and re.search(rf"(^|\s){re.escape(flag)}\b", proc.stdout,
+                                                                         re.MULTILINE) is not None
+        except (OSError, subprocess.SubprocessError):
+            _THURBOX_TAKES[flag] = False
+    return _THURBOX_TAKES[flag]
+
+
+def telemetry_attr_flags(task: Task) -> list:
+    """`--telemetry-attr factory.task.id=<ref> --telemetry-attr factory.topic=<topic>`,
+    the keys `telemetry.py` puts on the task's own trace, or [] on a thurbox
+    that takes no such field."""
+    if not thurbox_takes(TELEMETRY_ATTR_FLAG):
+        return []
+    return [TELEMETRY_ATTR_FLAG, f"factory.task.id={task.ref}", TELEMETRY_ATTR_FLAG, f"factory.topic={task.topic}"]
 
 
 def spawn_failure(exc, proc=None) -> str:

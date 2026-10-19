@@ -25,6 +25,7 @@ GROUPS = {
     "context": ("context.py", "what fleet remembers: a project's facts, the lead's summary, learn a fact"),
     "watch": ("watch.py", "wait for a pipeline or change request to finish, a line per change"),
     "reconcile": ("reconcile.py", "the supervised loop that keeps the queue moving"),
+    "telemetry": ("telemetry.py", "OpenTelemetry: each task's trace, sent to an OTLP endpoint when turned on"),
     "check": ("check.py", "the gate: every check, or the named ones"),
     "install": ("install.py", "set this checkout up: dependencies, skills link, extension"),
     "preflight": ("preflight.py", "every dependency fleet needs, and how to install it"),

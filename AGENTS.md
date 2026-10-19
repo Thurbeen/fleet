@@ -173,6 +173,21 @@ names every path and the reason for each.
   clone runs on the defaults and runs no command; copy it
   to a gitignored `reconcile.conf`. `queue.py`'s `reconcile_conf` is its one
   reader, for both `reconcile.py` and `reap`.
+- `orchestration/telemetry.example.conf` and `scripts/lib/telemetry.py` —
+  OpenTelemetry, **off unless the gitignored `telemetry.conf` says
+  `EXPORT=on`**; the standard `OTEL_*` variables fill in what it leaves unsaid.
+  Each task is ONE TRACE, rebuilt from its records — `task.yaml`,
+  `progress.jsonl`, the review record's `rounds` — with its trace id derived
+  from the task id (`uv run fleet telemetry trace-id <ref>`) and a span per
+  stage that has closed, so re-sending is harmless and `exported.json` in the
+  gitignored `orchestration/telemetry/` sends only what is new. The reconciler
+  runs `fleet telemetry export` as a bounded child on its own clock, only while
+  it is on; a dead collector is one log line. OTLP/JSON over HTTP from the
+  standard library, no SDK — the module's docstring argues it and owns the span
+  model. Dispatch tags each worker session with `factory.task.id` through
+  thurbox's `--telemetry-attr` where `session create --help` lists it, and
+  passes nothing where it does not. `tests/telemetry/` sends to an in-process
+  collector.
 - `orchestration/session-glyphs.example.conf` — the mark fleet's sessions wear
   in the thurbox session list: `📡` on the lead and one word per KIND of session
   fleet spawns — a queue worker, the `diagnose-machine` sweep, the `review-prs`
@@ -588,7 +603,9 @@ costs one pass and never the loop. Four things about it are load-bearing:
   `dispatch` never may. Adopting outside sessions and writing the PR-state
   store are `shepherd`'s own, so the loop gains no verb and no writer.
   Outside the queue it touches one thing: the checkout, through
-  `sync-checkout`, which only fast-forwards a clean default branch.
+  `sync-checkout`, which only fast-forwards a clean default branch. Where
+  telemetry is on it also runs `fleet telemetry export`, which reads the queue
+  and writes only its own runtime directory.
 - **It reconciles; it does not decide.** No dispatch, no cancel, no reorder,
   and it does not re-decide `refuel`'s rule about a spent quota window. Where
   a fleet runs a one-shot conductor, the notifier STARTS that conductor, and

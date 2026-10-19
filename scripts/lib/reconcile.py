@@ -107,7 +107,10 @@ pid, a heartbeat, a log, the flags, `code.json`, `failures.json`,
 about this loop on this machine, not about any task. It calls exactly `watch`,
 `collect`, `shepherd`, `refuel` and the read-only `plan` (plus `root`, to check
 it can). The one thing it changes outside the queue is the CHECKOUT, through
-`sync-checkout`, which only ever fast-forwards a clean default branch.
+`sync-checkout`, which only ever fast-forwards a clean default branch. Where
+the operator turned telemetry on, it also runs `fleet telemetry export`, which
+READS the queue and writes only its own runtime directory
+(`scripts/lib/telemetry.py`).
 
 IT DOES NOT DECIDE WHAT RUNS. No dispatch, no cancel, no reorder, and it does not
 second-guess `refuel`'s rule about a spent quota window.
@@ -182,6 +185,11 @@ in the environment. `queue.py`'s `reconcile_conf` is the file's one reader.
   sync      900s. A fetch, bounded by `sync-checkout`'s own timeout. A merge on
             origin is a fact the lead can wait a quarter of an hour for, and it
             had been waiting days. 0 turns it off.
+  telemetry 300s, and only while `telemetry.conf` says EXPORT=on — asked each
+            time the clock is due, so turning it on needs no restart. A span
+            appears once its stage closes; stages close on collect's clock or
+            slower, and a trace is read after the fact, so five minutes late
+            costs nothing a dashboard shows.
 
 THE BOUNDS. Every child the loop runs is held to one, and past it is killed with
 everything it started (`fleet_platform.run_bounded`), logged as one line naming
@@ -192,7 +200,7 @@ person read `status`.
   watch     its own call plus 60s (WATCH_MARGIN_SECS): it is told how long to
             run, so anything past that and a minute is not a slow stream.
   the rest  600s each, `BOUND_SECS`: collect, shepherd, refuel, plan, the
-            notification and the sync. A generous bound and not a tuned one —
+            notification, the sync and the telemetry export. A generous bound and not a tuned one —
             the slowest honest pass is a shepherd over many repositories, and
             it ends in minutes — so it only ever cuts off a child that is
             hung. A record cut off mid-write is not torn: `write_record`
@@ -217,6 +225,7 @@ Environment:
   FLEET_RECONCILE_REFUEL_SECS   seconds between refuels    (default 300)
   FLEET_RECONCILE_SHEPHERD_SECS seconds between shepherds  (default 900)
   FLEET_RECONCILE_SYNC_SECS     seconds between syncs; 0 is off (default 900)
+  FLEET_RECONCILE_TELEMETRY_SECS seconds between telemetry exports (default 300)
   FLEET_RECONCILE_BOUND_SECS    the most any child but watch may run (default 600)
   FLEET_RECONCILE_SYNC_DIR      the checkout it keeps current (default: this one)
   FLEET_RECONCILE_CONF_ROOT     the checkout whose orchestration/reconcile.conf
@@ -343,6 +352,7 @@ class Config:
     sync: int = 0
     sync_dir: str = CHECKOUT
     bound: int = 600
+    telemetry: int = 300
     # {checkout-relative path: [mtime_ns, size]} of every module this process
     # runs from the checkout, taken once its loop starts (`record_code`).
     code: dict = field(default_factory=dict)
@@ -386,7 +396,8 @@ class Config:
 
         return cls(rt, cmd, label, secs("WATCH", 20), secs("COLLECT", 120), secs("REFUEL", 300), secs("SHEPHERD", 900),
                    int(os.environ.get("FLEET_RECONCILE_PARENT_PID") or 0), secs("SYNC", 900),
-                   os.environ.get("FLEET_RECONCILE_SYNC_DIR") or CHECKOUT, secs("BOUND", 600))
+                   os.environ.get("FLEET_RECONCILE_SYNC_DIR") or CHECKOUT, secs("BOUND", 600),
+                   secs("TELEMETRY", 300))
 
     def path(self, name: str) -> str:
         return os.path.join(self.rt, name)
@@ -920,6 +931,40 @@ def notify_stale(cfg: Config, report: dict) -> None:
     run_notifier(cfg, "notify --stale", ["--stale"], json.dumps(report))
 
 
+def export_telemetry(cfg: Config, last: dict, stamp: float) -> None:
+    """Each task's trace, on a clock of its own and only while the operator's
+    `telemetry.conf` turns it on: a fleet that never asked runs nothing new.
+
+    A fresh child, like `sync`, held to the same bound — and the child holds
+    every request to the OTLP timeout and ends at the first failure, so a dead
+    collector costs one short pass and the line the child prints once. Its
+    lines are already `telemetry: …`, so they are logged as they come."""
+    if stamp - last["telemetry"] < cfg.telemetry:
+        return
+    last["telemetry"] = stamp
+    try:
+        if not _load_sibling("fleet_telemetry", "telemetry.py").enabled():
+            return
+        done = bounded(cfg, "telemetry", [sys.executable, "-c", BOOT, CHECKOUT, "telemetry", "export"], cfg.bound,
+                       cwd=CHECKOUT, stdin=subprocess.DEVNULL, capture_output=True)
+    except OSError as exc:
+        child_went(cfg, "telemetry", f"could not run: {exc}")
+        return
+    if done is None:
+        child_went(cfg, "telemetry", "killed at its bound")
+        return
+    out = (done.stdout + done.stderr).strip()
+    if done.returncode != 0:
+        log(cfg, f"telemetry: exit {done.returncode}")
+        log_raw(cfg, indented(out, "    "))
+        child_went(cfg, "telemetry", f"exit {done.returncode}" + (f": {last_words(out)}" if out else ""))
+        return
+    child_went(cfg, "telemetry")
+    for line in out.splitlines():
+        if line.strip():
+            log(cfg, line.strip())
+
+
 def trim_log(cfg: Config) -> None:
     """In place, not by replace: on Windows the supervisor's own stderr holds the log open."""
     try:
@@ -1019,7 +1064,8 @@ def tick(cfg: Config) -> int:
         record_code(cfg, cfg.code)
     replacing = False
 
-    last = {"collect": float("-inf"), "shepherd": float("-inf"), "refuel": float("-inf"), "sync": float("-inf")}
+    last = {"collect": float("-inf"), "shepherd": float("-inf"), "refuel": float("-inf"), "sync": float("-inf"),
+            "telemetry": float("-inf")}
     synced = ""
     while True:
         # Checked at the top of every pass, so a stop is honoured at the next boundary.
@@ -1055,6 +1101,7 @@ def tick(cfg: Config) -> int:
             notify_conductor(cfg)
 
         synced = _sync_and_tell(cfg, last, stamp, did_collect, synced)
+        export_telemetry(cfg, last, stamp)
 
         trim_log(cfg)
         # A whole pass ran: a crash `supervise` recorded is over.

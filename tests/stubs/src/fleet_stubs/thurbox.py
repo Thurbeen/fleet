@@ -15,7 +15,8 @@ without `--no-wake` is recorded as `woke`, which is the real CLI pushing the
 body into the recipient's conversation. A `no-inbox` file makes `message` the
 unknown subcommand it is on a thurbox that predates the mailbox.
 `agent launch-args <name>` answers `agents/<name>.json`, else the agent as its
-own command. `version --json` prints `version.json`, which is how a test names the data
+own command. `session create --help` prints `help/session-create.txt`, which is
+how a test names a thurbox that takes a newer flag. `version --json` prints `version.json`, which is how a test names the data
 directory — and so the flavour — of the thurbox fleet is driving.
 """
 
@@ -33,6 +34,10 @@ def main() -> int:
 
     if verb == "config show":
         print(json.dumps({"paths": {"hosts_toml": str(root / "hosts.toml")}}))
+    elif verb == "session create" and "--help" in args:
+        # `help/session-create.txt` is the flags this thurbox takes; none
+        # written is a thurbox from before any flag fleet probes for.
+        sys.stdout.write(read(root / "help" / "session-create.txt") or "Usage: thurbox-cli session create [OPTIONS]\n")
     elif verb == "session create":
         print(read(root / "next-session.json").strip() or '{"id":"stub","created":true}')
     elif verb == "session capture":

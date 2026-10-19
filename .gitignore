@@ -124,6 +124,11 @@
 # default.
 /orchestration/reconcile.conf
 
+# OPERATOR. Whether fleet sends OpenTelemetry, and to which collector with
+# which token. orchestration/telemetry.example.conf is the tracked copy and
+# turns nothing on: without this file fleet sends nothing anywhere.
+/orchestration/telemetry.conf
+
 # GENERATED. Rebuilt wholesale from your `gh` accounts by
 # `uv run fleet sync-registry`, and an index of every repo you can reach is not
 # a thing to publish.
@@ -203,6 +208,12 @@ __pycache__/
 # by `uv run fleet queue shepherd` (scripts/lib/shepherd_store.py), which is
 # tracked; nothing it writes is.
 /orchestration/shepherd/
+
+# MACHINE. `fleet telemetry export`'s memory of which spans it already sent
+# (`exported.json`) and the last failure it reported, so a pass sends only what
+# is new and a collector that stays down is one log line. Written by
+# scripts/lib/telemetry.py, which is tracked; what it writes is not.
+/orchestration/telemetry/
 
 # MACHINE. The last reading of every peer fleet, written by `uv run fleet peers`
 # so the board's probe asks a host at most once per TTL and can draw a peer

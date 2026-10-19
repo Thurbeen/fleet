@@ -14,17 +14,18 @@ what keeps all of that out, held to these guarantees by
   HOME      a throwaway one — and USERPROFILE, APPDATA and LOCALAPPDATA, which
             is where Windows looks instead — with every XDG base inside it.
   env       forge credentials and host overrides, every THURBOX_* variable,
-            the caller's TMUX and TMUX_PANE, every FLEET_* variable the caller
-            had, and every AGENT_HOME variable — the knob an agent moves its
+            the caller's TMUX and TMUX_PANE, every FLEET_* and OTEL_* variable
+            the caller had — an OTLP endpoint in the operator's shell is where
+            `fleet telemetry` would send — and every AGENT_HOME variable — the knob an agent moves its
             config directory with, which on the operator's own machine names
             the account they are signed in to. FLEET_RECONCILE_PARENT_PID is
             this test run, so a loop a test starts ends with the run even when
             no teardown does, and FLEET_RECONCILE_SYNC_SECS is 0, so it never
             fetches or fast-forwards the checkout under test.
-  settings  FLEET_{AUTO_MERGE,PUBLISH,AGENT,GLYPH,NAME,PROFILES,PEERS,OWNERS,RECONCILE_CONF}_ROOT and FLEET_VOICE_CONF
+  settings  FLEET_{AUTO_MERGE,PUBLISH,AGENT,GLYPH,NAME,PROFILES,PEERS,OWNERS,RECONCILE_CONF,TELEMETRY}_ROOT and FLEET_VOICE_CONF
             at a copy of the TRACKED *.example.conf only; FLEET_QUEUE_DIR,
-            FLEET_RUNS_DIR, FLEET_RECONCILE_DIR, FLEET_SHEPHERD_DIR and
-            FLEET_PEERS_DIR at empty directories; and
+            FLEET_RUNS_DIR, FLEET_RECONCILE_DIR, FLEET_SHEPHERD_DIR,
+            FLEET_TELEMETRY_DIR and FLEET_PEERS_DIR at empty directories; and
             FLEET_REGISTRY_FILE at a registry map that does not exist, and
             FLEET_MANIFEST_ROOT at a directory with no rendered extension.toml;
             FLEET_SERVICE_MANAGER is "none", so no install enables a unit.
@@ -70,7 +71,7 @@ DROPPED = {
     "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_NAMESPACE", "GIT_PREFIX",
     *AGENT_HOMES,
 }
-DROPPED_PREFIXES = ("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_", "FLEET_", "THURBOX_")
+DROPPED_PREFIXES = ("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_", "FLEET_", "THURBOX_", "OTEL_")
 
 # How fleet's own code is run: any text read or written in the locale's encoding
 # is an error. That is UTF-8 on a Linux runner and cp1252 on a Windows console,
@@ -110,7 +111,8 @@ def isolate(environ: dict, root: Path, stub_bin: Path) -> dict:
     appdata = home / "AppData"
     for d in (home / ".config", home / ".cache", home / ".local" / "share", home / ".local" / "state",
               appdata / "Roaming", appdata / "Local", root / "settings" / "orchestration",
-              root / "queue", root / "runs", root / "reconcile", root / "shepherd", root / "peers", root / "stubs" / "bin"):
+              root / "queue", root / "runs", root / "reconcile", root / "shepherd", root / "telemetry", root / "peers",
+              root / "stubs" / "bin"):
         d.mkdir(parents=True, exist_ok=True)
     (home / ".gitconfig").write_text(
         "[user]\n\tname = selftest\n\temail = selftest@example.invalid\n"
@@ -170,6 +172,7 @@ def isolate(environ: dict, root: Path, stub_bin: Path) -> dict:
         FLEET_PEERS_ROOT=settings,
         FLEET_OWNERS_ROOT=settings,
         FLEET_RECONCILE_CONF_ROOT=settings,
+        FLEET_TELEMETRY_ROOT=settings,
         # The rendered conductor directory a one-shot run starts in.
         FLEET_CONDUCTOR_DIR=str(root / "settings" / "orchestration" / "conductor"),
         # The rendered extension.toml names the operator's lead and conductor,
@@ -180,6 +183,7 @@ def isolate(environ: dict, root: Path, stub_bin: Path) -> dict:
         FLEET_RUNS_DIR=str(root / "runs"),
         FLEET_RECONCILE_DIR=str(root / "reconcile"),
         FLEET_SHEPHERD_DIR=str(root / "shepherd"),
+        FLEET_TELEMETRY_DIR=str(root / "telemetry"),
         FLEET_PEERS_DIR=str(root / "peers"),
         FLEET_RECONCILE_PARENT_PID=str(os.getpid()),
         # The loop's sync fetches and fast-forwards the checkout it runs from,

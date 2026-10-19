@@ -28,8 +28,11 @@ def root() -> Path:
 def called(tool: str) -> Path:
     """Log this call and return the stub root, or run the test's script for this tool and exit."""
     where = root()
-    with open(where / "calls.log", "a", encoding="utf-8", newline="\n") as fh:
-        fh.write(" ".join([tool, *sys.argv[1:]]) + "\n")
+    # A `--help` read is fleet asking what a tool can do, not asking it to do
+    # anything: it is not a call, and a test counting spawns does not count it.
+    if "--help" not in sys.argv[1:]:
+        with open(where / "calls.log", "a", encoding="utf-8", newline="\n") as fh:
+            fh.write(" ".join([tool, *sys.argv[1:]]) + "\n")
     script = where / "scripts" / f"{tool}.py"
     if script.is_file():
         runpy.run_path(str(script), run_name="__main__")
