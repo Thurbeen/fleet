@@ -59,9 +59,10 @@ and what was not sent is simply sent by a later pass. The failure is printed
 once — the same failure again is not news — and its recovery once, so the
 reconciler's log carries one line per change and never one per pass. A
 collector that REJECTS the payload (a 400) would reject the same bytes again, so
-those spans are counted as sent and the rejection is printed. Any other 4xx —
-a bad token, a wrong path — is the setting's fault and not the spans': they
-wait, and the refusal is printed once, like a collector that is down.
+those spans are counted as sent and the rejection is printed. Only that and a
+2xx settle a request: anything else — a bad token, a wrong path, a redirect —
+is the setting's fault and not the spans', so they wait, and the refusal is
+printed once, like a collector that is down.
 
 WHY NO SDK. The official Python SDK is built to record spans live, in-process,
 with its own random ids and a background batch thread; this module builds
@@ -561,33 +562,34 @@ def tell(state: dict, line: str, key: str) -> None:
 
 
 def send_spans(cfg: Settings, state: dict, todo: list) -> tuple[bool, int]:
-    """(whether the collector took or finally rejected every request, how many spans it took).
+    """(whether the collector settled every request, how many spans it took).
 
-    Only a 2xx, or a 400 — the collector read the payload and rejects its
-    content, which the same bytes would meet again — counts spans as sent.
-    Every other refusal is about where or as whom they were sent: a 401 or 403
-    is the token, a 404 an endpoint with /v1/traces twice. That is the
-    operator's to fix, and the spans wait for it rather than being dropped."""
-    sent = refused = 0
+    SETTLED IS NARROW: a 2xx, or a 400 — the collector read the payload and
+    rejects its content, which the same bytes would meet again. Only those
+    count spans as sent. Everything else leaves them pending with one line,
+    told once: no answer, a 5xx or a 429 is a collector that is down; a 401 or
+    403 is the token, a 404 an endpoint with /v1/traces twice, a 307 or 308 a
+    redirect urllib will not follow with a POST. Those are the setting's to
+    fix, and the spans wait for it rather than being dropped."""
+    sent = 0
     for i in range(0, len(todo), CHUNK):
         batch = todo[i:i + CHUNK]
         status, why = post(cfg, [s for _k, s in batch])
-        if 400 < status < 500 and status != 429:
-            tell(state, f"{cfg.url} refused the request: {why}; fix ENDPOINT or HEADERS — "
-                        f"{len(todo) - sent - refused} span(s) wait for it", f"refused:{why}")
-            return False, sent
-        if down(status):
+        waiting = len(todo) - i
+        if 200 <= status < 300:
+            sent += len(batch)
+        elif status == 400:
+            print(f"telemetry: {cfg.url} rejected {len(batch)} span(s): {why}; they are not sent again")
+        elif down(status):
             # Keyed on the failure, not the request: down is one fact.
-            tell(state, f"{cfg.url} unreachable: {why}; {len(todo) - sent - refused} span(s) wait for a "
-                        "later export", f"down:{why}")
+            tell(state, f"{cfg.url} unreachable: {why}; {waiting} span(s) wait for a later export", f"down:{why}")
+            return False, sent
+        else:
+            tell(state, f"{cfg.url} refused the request: {why}; fix ENDPOINT or HEADERS — "
+                        f"{waiting} span(s) wait for it", f"refused:{why}")
             return False, sent
         for k, s in batch:
             state["sent"].setdefault(k, {})[s["spanId"]] = fingerprint(s)
-        if 200 <= status < 300:
-            sent += len(batch)
-        else:
-            refused += len(batch)
-            print(f"telemetry: {cfg.url} refused {len(batch)} span(s): {why}; they are not sent again")
         save_state(state)
     return True, sent
 

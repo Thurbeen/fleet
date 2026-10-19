@@ -278,7 +278,7 @@ def test_nothing_to_send_says_nothing_about_a_collector_it_never_asked(collector
     assert quiet.out.strip() == "", quiet.out
 
 
-@pytest.mark.parametrize("status", [401, 403, 404])
+@pytest.mark.parametrize("status", [401, 403, 404, 307, 308])
 def test_auth_and_path_errors_leave_the_spans_pending(collector, status):
     """A wrong token or a doubled /v1/traces is the operator's to fix, not the spans' fault."""
     landed_task()
@@ -302,7 +302,7 @@ def test_a_400_for_the_payload_is_final(collector):
     landed_task()
     telemetry_conf(f"EXPORT=on\nENDPOINT={collector.endpoint}\n")
     collector.status = 400
-    assert "refused" in run_fleet("telemetry", "export").out
+    assert "rejected" in run_fleet("telemetry", "export").out
     collector.status = 200
     before = len(collector.requests)
     assert run_fleet("telemetry", "export").code == 0
