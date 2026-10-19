@@ -3048,11 +3048,9 @@ def render_brief(task: Task, topic: dict, body: str | None) -> str:
         if spans
         else ""
     )
-    # Fetched fresh from `origin` at dispatch; the change request still targets
-    # the branch itself, never the tracking ref.
     fresh_note = (
         f", fetched fresh at dispatch — its pull request targets `{origin_branch(d['base'])}`"
-        if fetched_base(str(d["base"])) else ""
+        if fetched_base(d["base"]) else ""
     )
     attached = d.get("add_dirs") or []
     attached_line = (
@@ -5148,7 +5146,7 @@ def spawn_field_problems(d: dict) -> list:
 # `refs/remotes/origin/main`, or `PATH@origin/<b>`). Every repository of the
 # task whose base is written that way fetches `<b>` from `origin` right before
 # the spawn, and thurbox is handed the base as written, which that fetch has
-# just written. A plain base is handed over as it always was, with no fetch.
+# just written. A plain base is handed over as written, with no fetch.
 #
 # A FAILED FETCH REFUSES THE TASK, a branch `origin` does not have included,
 # and never falls back to whatever the ref was: the operator asked for
@@ -5181,13 +5179,13 @@ UPSTREAM_GONE = "fleet-no-upstream"
 # A fetched base reaches a refspec, a POSIX command line and, on a Windows
 # host, a git.exe command line PowerShell 5 builds without escaping an
 # embedded `"` — so it is a plain ref name or nothing, checked before any of
-# those exists. A plain base reaches only thurbox's argv, as it always did.
+# those exists. A plain base reaches only thurbox's argv.
 BASE_RE = re.compile(r"[A-Za-z0-9._/-]+")
 
 
 def fetched_base(base: str) -> bool:
     """Whether a written base asks for `origin`'s branch, fetched fresh."""
-    return base.startswith((ORIGIN_REFS, "origin/"))
+    return origin_branch(base) != base
 
 
 def origin_branch(base: str) -> str:
@@ -5200,7 +5198,13 @@ def origin_branch(base: str) -> str:
 
 
 def base_problem(base: str) -> str:
-    """Why a base written `origin/<b>` is not one a fetch may carry, or ""."""
+    """Why a base written `origin/<b>` is not one a fetch may carry, or "".
+
+    Any base reaches a `git fetch origin <base>` in the merged check, where a
+    leading `-` would be an option; no branch starts with one.
+    """
+    if base.startswith("-"):
+        return f"base {base!r} cannot start with `-`"
     if not fetched_base(base):
         return ""
     name = origin_branch(base)
@@ -5279,9 +5283,6 @@ def fetch_bases(task: Task, entry: dict | None = None) -> str:
 
     `entry` is the task's host, where its checkouts are; None is this machine.
     """
-    problems = spawn_field_problems(task.doc)
-    if problems:
-        return "; ".join(problems) + " — see `fleet queue check`"
     for r in task_repos(task):
         if not fetched_base(r["base"]):
             continue
@@ -6519,18 +6520,17 @@ def forge_base(task: Task, unit: dict) -> str:
     The checkout's identity comes from origin, so another remote cannot prove
     its landing branch. Git must resolve the ref unambiguously, and origin's
     fetch mapping must confirm its heads name; a slash alone proves neither.
-    Unreadable checkouts, including remote tasks, retain the recorded base,
-    less the `origin/` a fetched base is written with.
+    Unreadable checkouts retain the recorded base; a remote task's loses the
+    `origin/` a fetched base is written with, which nothing here can verify.
     """
     base = unit["base"]
     if task.doc.get("host"):
         return origin_branch(base)
     repo = unit["path"]
     ref = git_out(repo, ["rev-parse", "--symbolic-full-name", "--verify", "--quiet", base]).strip()
-    prefix = "refs/remotes/origin/"
-    if not ref.startswith(prefix):
+    if not ref.startswith(ORIGIN_REFS):
         return base
-    branch = ref[len(prefix):]
+    branch = ref[len(ORIGIN_REFS):]
     mappings = git_out(repo, ["config", "--get-all", "remote.origin.fetch"]).splitlines()
     allowed = {"refs/heads/*:refs/remotes/origin/*", f"refs/heads/{branch}:{ref}"}
     if any(mapping.removeprefix("+") in allowed for mapping in mappings):

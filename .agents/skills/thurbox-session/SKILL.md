@@ -56,8 +56,9 @@ branch points at, and a stale `main` produces a worker that does correct work
 and opens a CONFLICTING pull request. This repo's `SessionStart` hook runs
 `uv run fleet sync-checkout`; other repos have no such hook, so for those:
 `git -C <repo> fetch origin && git -C <repo> merge --ff-only origin/main`.
-`uv run fleet queue dispatch` needs neither: it fetches each base `origin`
-has as a branch and passes `--base-branch origin/<base>`.
+A fleet task added with `--base origin/main` needs neither: `uv run fleet
+queue dispatch` fetches that branch right before the spawn. A plain `--base
+main` is used as it is.
 
 `session create` is synchronous — the window is live when it returns.
 

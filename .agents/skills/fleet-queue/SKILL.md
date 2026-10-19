@@ -131,8 +131,8 @@ verification exists to stop.
 
 `add --add-repo <path>` or `--add-repo <path>@<base>` gives the task a second
 repository with **its own worktree, on the same `--branch`**. Repeatable;
-thurbox owns the `PATH@BASE` syntax and gets your string verbatim, but for the
-base, which `dispatch` fetches and hands over as `origin/<base>` (§4).
+thurbox owns the `PATH@BASE` syntax and gets your string verbatim. A base
+written `origin/<b>` is fetched first (§4); a plain one is used as it is.
 
 **The artifact model goes plural with it, and that is the whole cost.** The
 publish method stays one per task, and everything downstream handles N:
@@ -359,13 +359,13 @@ break by-name addressing for both, permanently), `--parent $THURBOX_SESSION`
 remote worker is enumerated by its task record instead), and the task's
 profile from `orchestration/session-profiles.yaml` or the operator's
 gitignored `session-profiles.local.yaml` beside it — where a task that wants
-another model or thinking budget gets a profile of its own. In every
-repository the task spans with an `origin`, the base is fetched from it
-first, on the task's host for a `--host` task, and the worktree is cut from
-`origin/<base>` with no upstream, never from a stale local branch; a commit,
-a local tag or a branch `origin` says it lacks goes as written. Any other
-failed fetch leaves the task queued, `NOT SPAWNED — <repo>: could not fetch
-origin/<base>`. The record's `base` stays the pull request's base. Each worker
+another model or thinking budget gets a profile of its own. A plain base
+(`--base main`) is cut from as this checkout has it, with no fetch. A base
+written `origin/<b>` (or `PATH@origin/<b>`) is fetched from `origin` right
+before the spawn, on the task's host for a `--host` task, and the worktree is
+cut from it with no upstream; a failed fetch leaves the task queued, `NOT
+SPAWNED — <repo>: could not fetch origin/<b>`. The record keeps the base as
+written; the pull request targets `<b>`. Each worker
 is sent one line pointing at the absolute path of its brief; nothing is copied
 into its worktree, so nothing lands in its pull request.
 

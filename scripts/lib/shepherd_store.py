@@ -402,7 +402,7 @@ def session_branches(q, row: dict) -> tuple[list, str]:
     A worktree git cannot read proves nothing about which branch it is on, so
     the caller keeps what it knew rather than reading the silence as a move.
     """
-    base = str(row.get("base_branch") or "").removeprefix("origin/") or "main"
+    base = str(row.get("base_branch") or "").removeprefix("refs/remotes/").removeprefix("origin/") or "main"
     found, unread = [], ""
     for wt in row.get("worktrees") or []:
         if not isinstance(wt, dict):

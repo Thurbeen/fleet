@@ -301,7 +301,8 @@ def test_only_an_origin_base_is_held_to_a_branch_name(topic):
     it always did, and anything git takes there is still taken."""
     for flags in (["--base", 'origin/x" --upload-pack=evil'], ["--base", "origin/main\n"],
                   ["--base", "origin/HEAD"], ["--add-repo", "/tmp/repo-b@origin/-x"],
-                  ["--add-repo", "/tmp/repo-b@refs/remotes/origin/a..b"]):
+                  ["--add-repo", "/tmp/repo-b@refs/remotes/origin/a..b"],
+                  ["--base=--upload-pack=evil"]):
         r = q("add", topic, "odd-base", "--title", "Odd base", "--repo", "/tmp/repo-a",
               "--branch", "fix/odd-base", *flags)
         assert r.code != 0, r.out
