@@ -499,3 +499,20 @@ def test_stopped_reviewer_cannot_complete_or_be_woken_for_a_new_head(lifecycle):
     assert row["review"]["state"] == "pending"
     assert row["review"]["action"] == "needs-lead"
     assert not t.sends(REVIEWER)
+
+
+def test_rounds_reads_every_round_or_the_one_assessment_an_older_record_kept(lifecycle):
+    from harness import lib
+
+    queue = lib("queue.py")
+    review = lib("review_lifecycle.py")
+    assert review.rounds(queue, PR) == []
+    t = lifecycle
+    pass_(t)
+    ok(record(t, score=4, findings=1))
+    assert [(r["score"], r["state"]) for r in review.rounds(queue, PR)] == [(4, "findings")]
+    path = Path(review.path(queue, PR))
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    doc.pop("rounds")
+    write(path, json.dumps(doc) + "\n")
+    assert [(r["score"], r["state"]) for r in review.rounds(queue, PR)] == [(4, "findings")]

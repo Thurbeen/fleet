@@ -357,6 +357,17 @@ def record(q, args):
     return 0
 
 
+def rounds(q, url):
+    """Every review round recorded on one change request, oldest first: `rounds`,
+    or the one `assessment` a record from before `rounds` kept. The one reader
+    other modules use, so the record's path and shape stay this module's."""
+    doc = read(path(q, url))
+    kept = doc.get("rounds")
+    if not isinstance(kept, list) or not kept:
+        kept = [doc["assessment"]] if isinstance(doc.get("assessment"), dict) else []
+    return [r for r in kept if isinstance(r, dict) and r.get("at")]
+
+
 def keep_round(doc):
     """The assessment is what the gate reads, and a new head replaces it; every
     round stays in `rounds`, for the task's trace (telemetry.py)."""

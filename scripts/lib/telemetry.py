@@ -12,7 +12,8 @@ standard OTEL_* variables fill in what the file does not say — endpoint,
 headers, timeout, service name, resource attributes — and OTEL_SDK_DISABLED=true
 turns it off whatever the file says. The file wins where both speak: it is
 written for fleet, and an OTEL_* variable in the environment may have been set
-for some other program.
+for some other program — OTEL_SERVICE_NAME included: the file's SERVICE_NAME
+names the service when it says one.
 
 A TRACE IS REBUILT, NOT RECORDED LIVE. Fleet already writes every boundary a
 task crosses — `created`, `dispatched_at`, each session transition `watch`
@@ -57,9 +58,10 @@ A DEAD COLLECTOR COSTS ONE LINE. Every request is held to the OTLP timeout
 and what was not sent is simply sent by a later pass. The failure is printed
 once — the same failure again is not news — and its recovery once, so the
 reconciler's log carries one line per change and never one per pass. A
-collector that REFUSES what it was sent (a 4xx) will refuse it again, so those
-spans are counted as sent and the refusal is printed: retrying them would only
-repeat it every pass.
+collector that REJECTS the payload (a 400) would reject the same bytes again, so
+those spans are counted as sent and the rejection is printed. Any other 4xx —
+a bad token, a wrong path — is the setting's fault and not the spans': they
+wait, and the refusal is printed once, like a collector that is down.
 
 WHY NO SDK. The official Python SDK is built to record spans live, in-process,
 with its own random ids and a background batch thread; this module builds
@@ -165,7 +167,7 @@ class Settings:
             ms = DEFAULT_TIMEOUT_MS
         self.timeout = max(ms, 1) / 1000
         self.resource = parse_pairs(env("OTEL_RESOURCE_ATTRIBUTES") or "")
-        self.resource["service.name"] = env("OTEL_SERVICE_NAME") or conf.get("SERVICE_NAME") or "fleet"
+        self.resource["service.name"] = conf.get("SERVICE_NAME") or env("OTEL_SERVICE_NAME") or "fleet"
 
     @property
     def problem(self) -> str:
@@ -244,24 +246,6 @@ def change_request(url: str) -> dict:
     if not m:
         return {}
     return {"repo": f"{m.group(2)}/{m.group(3)}", "repo_url": m.group(1), "number": m.group(4)}
-
-
-def review_rounds(q, url: str) -> list[dict]:
-    """Every review round recorded on one change request, oldest first.
-
-    `rounds` keeps them all; a record from before it existed keeps only the
-    latest `assessment`, which is one round all the same."""
-    store = os.path.join(q.shepherd_store().store_dir(q), "reviews")
-    path = os.path.join(store, hashlib.sha256(url.encode()).hexdigest() + ".json")
-    try:
-        with open(path, encoding="utf-8") as fh:
-            doc = json.loads(fh.read() or "{}")
-    except (OSError, ValueError):
-        return []
-    rounds = doc.get("rounds") if isinstance(doc, dict) else None
-    if not isinstance(rounds, list) or not rounds:
-        rounds = [doc["assessment"]] if isinstance(doc, dict) and isinstance(doc.get("assessment"), dict) else []
-    return [r for r in rounds if isinstance(r, dict) and r.get("at")]
 
 
 class Builder:
@@ -486,7 +470,7 @@ def _publish_events(q, publish: list, herded: list) -> list:
 def _reviews(b: Builder, q, url: str, parent: str, start: int) -> None:
     """One span per recorded review round, each from the round before it."""
     prev = start
-    for n, rnd in enumerate(review_rounds(q, url), 1):
+    for n, rnd in enumerate(q.review_lifecycle().rounds(q, url), 1):
         at = to_ns(q, rnd.get("at"))
         if at is None:
             continue
@@ -577,13 +561,21 @@ def tell(state: dict, line: str, key: str) -> None:
 
 
 def send_spans(cfg: Settings, state: dict, todo: list) -> tuple[bool, int]:
-    """(whether the collector answered every request, how many spans it took).
-    A refusal (4xx) is an answer: those spans are counted sent, since sending
-    them again would only be refused again."""
+    """(whether the collector took or finally rejected every request, how many spans it took).
+
+    Only a 2xx, or a 400 — the collector read the payload and rejects its
+    content, which the same bytes would meet again — counts spans as sent.
+    Every other refusal is about where or as whom they were sent: a 401 or 403
+    is the token, a 404 an endpoint with /v1/traces twice. That is the
+    operator's to fix, and the spans wait for it rather than being dropped."""
     sent = refused = 0
     for i in range(0, len(todo), CHUNK):
         batch = todo[i:i + CHUNK]
         status, why = post(cfg, [s for _k, s in batch])
+        if 400 < status < 500 and status != 429:
+            tell(state, f"{cfg.url} refused the request: {why}; fix ENDPOINT or HEADERS — "
+                        f"{len(todo) - sent - refused} span(s) wait for it", f"refused:{why}")
+            return False, sent
         if down(status):
             # Keyed on the failure, not the request: down is one fact.
             tell(state, f"{cfg.url} unreachable: {why}; {len(todo) - sent - refused} span(s) wait for a "
@@ -622,7 +614,7 @@ def export(dry_run: bool = False) -> None:
     # Recovery is news only once a request went through; with nothing to
     # send, the collector was never asked and a standing failure stands.
     if answered and todo:
-        if str(state.get("said") or "").startswith(("down:", "problem:")):
+        if str(state.get("said") or "").startswith(("down:", "problem:", "refused:")):
             print(f"telemetry: {cfg.url} takes telemetry again")
         state.pop("said", None)
     elif answered and str(state.get("said") or "").startswith("problem:"):

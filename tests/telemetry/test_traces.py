@@ -276,3 +276,42 @@ def test_nothing_to_send_says_nothing_about_a_collector_it_never_asked(collector
     quiet = run_fleet("telemetry", "export")
     assert quiet.code == 0, quiet.out
     assert quiet.out.strip() == "", quiet.out
+
+
+@pytest.mark.parametrize("status", [401, 403, 404])
+def test_auth_and_path_errors_leave_the_spans_pending(collector, status):
+    """A wrong token or a doubled /v1/traces is the operator's to fix, not the spans' fault."""
+    landed_task()
+    telemetry_conf(f"EXPORT=on\nENDPOINT={collector.endpoint}\n")
+    collector.status = status
+    run = run_fleet("telemetry", "export")
+    assert run.code == 0, run.out
+    lines = [line for line in run.out.splitlines() if line.strip()]
+    assert len(lines) == 1, run.out
+    assert str(status) in lines[0], run.out
+    assert run_fleet("telemetry", "export").out.strip() == "", "the same refusal again is not news"
+
+    collector.status = 200
+    assert run_fleet("telemetry", "export").code == 0
+    names = by_name(collector.spans())
+    assert len(names["factory task"]) == 3, "the refused spans were never sent again"
+
+
+def test_a_400_for_the_payload_is_final(collector):
+    """The collector read the request and rejected its content: the same bytes would be rejected again."""
+    landed_task()
+    telemetry_conf(f"EXPORT=on\nENDPOINT={collector.endpoint}\n")
+    collector.status = 400
+    assert "refused" in run_fleet("telemetry", "export").out
+    collector.status = 200
+    before = len(collector.requests)
+    assert run_fleet("telemetry", "export").code == 0
+    assert collector.requests[before:] == [], "a payload the collector rejected was sent again"
+
+
+def test_the_file_names_the_service_over_the_environment(collector):
+    """The file is written for fleet; an OTEL_SERVICE_NAME in the environment may be another program's."""
+    landed_task()
+    telemetry_conf(f"EXPORT=on\nENDPOINT={collector.endpoint}\nSERVICE_NAME=factory-fleet\n")
+    assert run_fleet("telemetry", "export", OTEL_SERVICE_NAME="someone-else").code == 0
+    assert collector.spans()[0]["resource"]["service.name"] == "factory-fleet"

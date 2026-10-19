@@ -38,7 +38,7 @@ def test_the_loop_sends_a_tasks_trace_when_telemetry_is_on(recon, collector, lan
     telemetry_conf(f"EXPORT=on\nENDPOINT={collector.endpoint}\n")
     recon("ensure")
     assert wait_for(lambda: any(s["name"] == "factory task" for s in collector.spans()), 30), recon.log()
-    assert "telemetry: " in recon.log()
+    assert wait_for(lambda: "telemetry: " in recon.log(), 30), recon.log()
     passes(recon, 2)
     assert sum(s["name"] == "factory task" for s in collector.spans()) == 1, "the loop sent the same span twice"
 

@@ -182,3 +182,21 @@ def test_the_rules_above_read_every_module_fleet_ships():
     paths = [path for path, _ in sources()]
     for named in (PLATFORM_SEAM, FORGE_SEAM, "scripts/lib/queue.py", "scripts/lib/reconcile.py", "fleet/cli.py"):
         assert named in paths, f"{named} is not among the {len(paths)} modules read"
+
+
+REVIEW_RECORDS = "scripts/lib/review_lifecycle.py"
+
+
+def joins_the_review_store(call: ast.Call) -> bool:
+    """`os.path.join(<shepherd store>, "reviews")`: a path into the review store."""
+    return calls_method(call, "join") and any(text_constant(a) == "reviews" for a in call.args)
+
+
+def test_review_records_have_one_reader():
+    """The review store's path and shape are review_lifecycle.py's: a module
+    that builds a path into it re-derives both, and drifts from them."""
+    crossings = [at(path, node) for path, node in nodes(ast.Call, skip=(REVIEW_RECORDS,))
+                 if joins_the_review_store(node)]
+    assert crossings == [], "a path into the review store outside review_lifecycle.py:\n  " + "\n  ".join(crossings)
+    owner = [node for path, node in nodes(ast.Call) if path == REVIEW_RECORDS and joins_the_review_store(node)]
+    assert owner, "review_lifecycle.py no longer builds the store's path: the rule above now proves nothing"
