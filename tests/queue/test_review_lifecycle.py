@@ -137,7 +137,7 @@ def test_findings_reach_resting_fixer_and_fix_needs_independent_reassessment(lif
 def test_every_recorded_round_is_kept_for_the_tasks_trace(lifecycle):
     """A new head replaces the assessment the merge gate reads, and the rounds
     before it stay: review rounds to 5/5 is a number only they can give."""
-    import hashlib
+    from harness import lib
 
     t = lifecycle
     pass_(t)
@@ -145,8 +145,7 @@ def test_every_recorded_round_is_kept_for_the_tasks_trace(lifecycle):
     t.shep.update(201, headRefOid="b" * 40)
     pass_(t)
     ok(record(t, head="b" * 40))
-    store = Path(os.environ["FLEET_SHEPHERD_DIR"]) / "reviews"
-    doc = json.loads((store / (hashlib.sha256(PR.encode()).hexdigest() + ".json")).read_text(encoding="utf-8"))
+    doc = json.loads(Path(lib("review_lifecycle.py").path(lib("queue.py"), PR)).read_text(encoding="utf-8"))
     assert [(r["head"], r["score"], r["findings"], r["state"]) for r in doc["rounds"]] == [
         (HEAD, 4, 1, "findings"), ("b" * 40, 5, 0, "clean")]
     assert all(r["at"] for r in doc["rounds"])

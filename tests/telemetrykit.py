@@ -103,8 +103,7 @@ def task(topic: str, tid: str, doc: dict, progress: list[dict] = ()) -> Path:
 
 
 def review(url: str, record: dict) -> None:
-    """The shepherd's review record for one change request."""
-    import hashlib
+    """The shepherd's review record for one change request, where review_lifecycle.py keeps it."""
+    from harness import lib
 
-    store = Path(os.environ["FLEET_SHEPHERD_DIR"]) / "reviews"
-    write(store / (hashlib.sha256(url.encode()).hexdigest() + ".json"), json.dumps(record) + "\n")
+    write(Path(lib("review_lifecycle.py").path(lib("queue.py"), url)), json.dumps(record) + "\n")
