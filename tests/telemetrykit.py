@@ -21,6 +21,7 @@ class Collector:
     def __init__(self):
         self.requests: list[dict] = []
         self.status = 200
+        self.statuses: dict[str, int] = {}  # a path's own answer, over `status`
         self.lock = threading.Lock()
         collector = self
 
@@ -33,7 +34,7 @@ class Collector:
                         "headers": {k.lower(): v for k, v in self.headers.items()},
                         "body": json.loads(body.decode("utf-8")),
                     })
-                    status = collector.status
+                    status = collector.statuses.get(self.path, collector.status)
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()

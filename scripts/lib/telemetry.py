@@ -178,25 +178,28 @@ class Settings:
         env = os.environ.get
 
         self.enabled = conf.get("EXPORT", "").lower() in ON and env("OTEL_SDK_DISABLED", "").lower() != "true"
-        self.urls = {}
+        # A per-signal variable is that signal's alone: a _TRACES_ token is
+        # the traces backend's, and never goes to the metrics endpoint.
+        self.urls, self.headers, self.timeouts = {}, {}, {}
         for signal in SIGNALS:
+            own = f"OTEL_EXPORTER_OTLP_{signal.upper()}_"
             if conf.get("ENDPOINT"):
                 self.urls[signal] = conf["ENDPOINT"].rstrip("/") + f"/v1/{signal}"
-            elif env(f"OTEL_EXPORTER_OTLP_{signal.upper()}_ENDPOINT"):
-                self.urls[signal] = env(f"OTEL_EXPORTER_OTLP_{signal.upper()}_ENDPOINT")
+            elif env(own + "ENDPOINT"):
+                self.urls[signal] = env(own + "ENDPOINT")
             else:
                 self.urls[signal] = (env("OTEL_EXPORTER_OTLP_ENDPOINT") or DEFAULT_ENDPOINT).rstrip("/") + f"/v1/{signal}"
+            self.headers[signal] = parse_pairs(conf.get("HEADERS") or env(own + "HEADERS")
+                                               or env("OTEL_EXPORTER_OTLP_HEADERS") or "")
+            try:
+                ms = int(conf.get("TIMEOUT_MS") or env(own + "TIMEOUT")
+                         or env("OTEL_EXPORTER_OTLP_TIMEOUT") or DEFAULT_TIMEOUT_MS)
+            except ValueError:
+                ms = DEFAULT_TIMEOUT_MS
+            self.timeouts[signal] = max(ms, 1) / 1000
         self.url = self.urls["traces"]
         self.protocol = (conf.get("PROTOCOL") or env("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL")
                          or env("OTEL_EXPORTER_OTLP_PROTOCOL") or "http/json")
-        self.headers = parse_pairs(conf.get("HEADERS") or env("OTEL_EXPORTER_OTLP_TRACES_HEADERS")
-                                   or env("OTEL_EXPORTER_OTLP_HEADERS") or "")
-        try:
-            ms = int(conf.get("TIMEOUT_MS") or env("OTEL_EXPORTER_OTLP_TRACES_TIMEOUT")
-                     or env("OTEL_EXPORTER_OTLP_TIMEOUT") or DEFAULT_TIMEOUT_MS)
-        except ValueError:
-            ms = DEFAULT_TIMEOUT_MS
-        self.timeout = max(ms, 1) / 1000
         self.resource = parse_pairs(env("OTEL_RESOURCE_ATTRIBUTES") or "")
         self.resource["service.name"] = conf.get("SERVICE_NAME") or env("OTEL_SERVICE_NAME") or "fleet"
 
@@ -687,9 +690,9 @@ def post(cfg: Settings, signal: str, items: list) -> tuple[int, str]:
         scoped: [{"scope": SCOPE, field: items}],
     }]}).encode("utf-8")
     req = urllib.request.Request(cfg.urls[signal], data=body, method="POST",
-                                 headers={**cfg.headers, "Content-Type": "application/json"})
+                                 headers={**cfg.headers[signal], "Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=cfg.timeout) as resp:
+        with urllib.request.urlopen(req, timeout=cfg.timeouts[signal]) as resp:
             return resp.status, ""
     except urllib.error.HTTPError as exc:
         return exc.code, f"HTTP {exc.code} {exc.reason}"
@@ -716,14 +719,20 @@ def answer(cfg: Settings, state: dict, signal: str, status: int, why: str, waiti
     again. Otherwise the request waits for a later export, told once: down (no
     answer, a 5xx, a 429), or refused for where or as whom it was sent — a 401
     or 403 is the token, a 404 an endpoint with /v1/traces twice, a 307 or 308
-    a redirect urllib will not follow with a POST. That is the operator's to fix, and what it carried waits for it rather than being
-    dropped. Keyed on the failure, not the signal: down is one fact whichever
-    request found it."""
+    a redirect urllib will not follow with a POST. That is the operator's to
+    fix, and what it carried waits for it rather than being dropped. Keyed on
+    the failure, not the signal: down is one fact whichever request found it.
+    Rejected spans are never sent again, so theirs is said each time; the
+    measures go every pass, so theirs is told once."""
     url = cfg.urls[signal]
     if 200 <= status < 300:
         return True
     if status == 400:
-        print(f"telemetry: {url} rejected {waiting}: {why}; it is not sent again")
+        line = f"{url} rejected {waiting}: {why}; it is not sent again"
+        if signal == "metrics":
+            tell(state, line, f"rejected:{why}")
+        else:
+            print(f"telemetry: {line}")
         return True
     if down(status):
         tell(state, f"{url} unreachable: {why}; {waiting} wait(s) for a later export", f"down:{why}")
@@ -774,8 +783,10 @@ def export(dry_run: bool = False) -> None:
     settled, sent = send_spans(cfg, state, todo)
     if settled:
         status, why = post(cfg, "metrics", measured)
-        settled = answer(cfg, state, "metrics", status, why, "the measures")
-    # The measures go every pass, so a settled pass is one the collector answered.
+        answer(cfg, state, "metrics", status, why, "the measures")
+        # The measures go every pass, so their 2xx is the collector taking
+        # telemetry again; their 400 keeps its rejection said.
+        settled = 200 <= status < 300
     if settled:
         if str(state.get("said") or "").startswith(("down:", "problem:", "refused:")):
             print("telemetry: the collector takes telemetry again")
@@ -788,7 +799,7 @@ def export(dry_run: bool = False) -> None:
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="fleet telemetry", description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="cmd", required=True)
-    ex = sub.add_parser("export", help="send every task stage that closed since the last export")
+    ex = sub.add_parser("export", help="send every task stage that closed since the last export, and the measures")
     ex.add_argument("--dry-run", action="store_true", help="count what would be sent; send and write nothing")
     tid = sub.add_parser("trace-id", help="the trace id a task's spans carry")
     tid.add_argument("ref", help="<topic>/<task>")

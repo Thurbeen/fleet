@@ -82,3 +82,28 @@ def test_resending_the_same_records_is_the_same_count(collector):
     a = first["factory.task.lead_time"][1][0]
     b = second["factory.task.lead_time"][1][0]
     assert (a["count"], a["startTimeUnixNano"]) == (b["count"], b["startTimeUnixNano"])
+
+
+def test_measures_a_collector_rejects_are_told_once_and_not_every_pass(collector):
+    """The measures go every pass, so a 400 for them would otherwise be a log line per pass."""
+    landed_task()
+    telemetry_conf(f"EXPORT=on\nENDPOINT={collector.endpoint}\n")
+    collector.statuses["/v1/metrics"] = 400
+    assert "rejected" in run_fleet("telemetry", "export").out
+    again = run_fleet("telemetry", "export")
+    assert again.code == 0, again.out
+    assert again.out.strip() == "", "the same rejection again is not news"
+
+
+def test_trace_only_settings_stay_with_the_traces(collector):
+    """OTEL_EXPORTER_OTLP_TRACES_HEADERS is the traces backend's token, not the metrics one's."""
+    landed_task()
+    telemetry_conf("EXPORT=on\n")
+    run = run_fleet("telemetry", "export",
+                    OTEL_EXPORTER_OTLP_ENDPOINT=collector.endpoint,
+                    OTEL_EXPORTER_OTLP_TRACES_HEADERS="authorization=Bearer%20traces",
+                    OTEL_EXPORTER_OTLP_METRICS_HEADERS="authorization=Bearer%20metrics")
+    assert run.code == 0, run.out
+    by_path = {r["path"]: r["headers"] for r in collector.requests}
+    assert by_path["/v1/traces"]["authorization"] == "Bearer traces"
+    assert by_path["/v1/metrics"]["authorization"] == "Bearer metrics"
