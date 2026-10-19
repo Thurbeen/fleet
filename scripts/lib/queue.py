@@ -6520,8 +6520,12 @@ def forge_base(task: Task, unit: dict) -> str:
     The checkout's identity comes from origin, so another remote cannot prove
     its landing branch. Git must resolve the ref unambiguously, and origin's
     fetch mapping must confirm its heads name; a slash alone proves neither.
-    Unreadable checkouts retain the recorded base; a remote task's loses the
-    `origin/` a fetched base is written with, which nothing here can verify.
+    A fetched base is the exception to the mapping: dispatch's own refspec
+    wrote that ref, so it holds unless a mapping writes it from another head —
+    a single-branch clone of `develop` still lands an `origin/main` base on
+    `main`. Unreadable checkouts retain the recorded base; a remote task's
+    loses the `origin/` a fetched base is written with, which nothing here can
+    verify.
     """
     base = unit["base"]
     if task.doc.get("host"):
@@ -6532,10 +6536,21 @@ def forge_base(task: Task, unit: dict) -> str:
         return base
     branch = ref[len(ORIGIN_REFS):]
     mappings = git_out(repo, ["config", "--get-all", "remote.origin.fetch"]).splitlines()
-    allowed = {"refs/heads/*:refs/remotes/origin/*", f"refs/heads/{branch}:{ref}"}
-    if any(mapping.removeprefix("+") in allowed for mapping in mappings):
+    sources = {mapped_source(mapping, ref) for mapping in mappings} - {None}
+    if sources == {f"refs/heads/{branch}"} or (not sources and fetched_base(base)):
         return branch
     return base
+
+
+def mapped_source(mapping: str, ref: str) -> str | None:
+    """The ref a fetch mapping writes `ref` from, or None when it does not write it."""
+    src, _, dst = mapping.removeprefix("+").partition(":")
+    if "*" not in dst:
+        return src if dst == ref else None
+    head, _, tail = dst.partition("*")
+    if not (ref.startswith(head) and ref.endswith(tail) and len(ref) > len(head) + len(tail)):
+        return None
+    return src.replace("*", ref[len(head):len(ref) - len(tail)], 1)
 
 
 def unit_repo(task: Task, unit: dict) -> forge.RepoId | None:

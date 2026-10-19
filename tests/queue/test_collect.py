@@ -584,12 +584,32 @@ def test_collect_accepts_verified_origin_base(tmp_path, rtopic, queue_dir, stubs
     assert wrong["state"] == "dispatched", wrong
 
 
+@pytest.mark.parametrize("base", ["origin/main", "refs/remotes/origin/main"])
+def test_collect_accepts_fetched_base_outside_origins_mapping(tmp_path, rtopic, queue_dir, stubs, base):
+    """A single-branch clone of `develop` maps only that head, yet dispatch's
+    explicit refspec still wrote `origin/main`: that base is the forge's `main`."""
+    work = checkout(tmp_path, "first", "https://github.com/acme/first.git")
+    git("commit", "-q", "--allow-empty", "-m", "base", cwd=work)
+    git("config", "remote.origin.fetch", "+refs/heads/develop:refs/remotes/origin/develop", cwd=work)
+    git("update-ref", "refs/remotes/origin/main", "HEAD", cwd=work)
+    ok(q("add", rtopic, "single-branch", "--title", "Single branch", "--repo", work,
+         "--branch", "fix/single-branch", "--base", base, "--number", "01", "--publish", "pr"))
+    stubs.plain_pr(1325, "fix/single-branch")
+    stubs.pr_base(1325, "main")
+    result(queue_dir / rtopic / "01-single-branch", "shipped", "Opened it.",
+           "https://github.com/acme/first/pull/1325")
+    expect(q("collect", "--no-reap").out, "01-single-branch", "[publish verified: pr]")
+    doc = yaml.safe_load((queue_dir / rtopic / "01-single-branch" / "task.yaml").read_text(encoding="utf-8"))
+    assert doc["state"] == "done", doc
+
+
 @pytest.mark.parametrize("case,base", [
     ("missing", "origin/main"),
     ("other-remote", "upstream/main"),
     ("local-slash", "release/main"),
     ("ambiguous", "origin/main"),
     ("remapped", "origin/main"),
+    ("remapped-glob", "origin/main"),
 ])
 def test_collect_does_not_strip_unverified_base_prefixes(
     tmp_path, rtopic, queue_dir, stubs, case, base,
@@ -605,6 +625,8 @@ def test_collect_does_not_strip_unverified_base_prefixes(
         git("update-ref", "refs/remotes/origin/main", "HEAD", cwd=work)
         if case == "ambiguous":
             git("branch", "origin/main", cwd=work)
+        elif case == "remapped-glob":
+            git("config", "remote.origin.fetch", "refs/heads/team/*:refs/remotes/origin/*", cwd=work)
         else:
             git("config", "remote.origin.fetch", "refs/heads/release:refs/remotes/origin/main", cwd=work)
     ok(q("add", rtopic, "unverified", "--title", "Unverified base", "--repo", work,
