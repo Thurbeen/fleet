@@ -64,7 +64,11 @@ def main(argv: list) -> int:
                 sys.stderr.write(fh.read())
             print("fleet-fetch-failed")
             return 1
-        print("fleet-fetched" if flag("origin") else "fleet-as-written")
+        if not flag("origin"):
+            sys.stderr.write("fatal: 'origin' does not appear to be a git repository\n")
+            print("fleet-fetch-failed")
+            return 1
+        print("fleet-fetched")
     elif "fleet-no-upstream" in body:
         print("fleet-no-upstream")
     elif "remote get-url origin" in body:

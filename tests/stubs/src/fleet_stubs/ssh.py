@@ -100,18 +100,17 @@ def main() -> int:
             return 1
         sys.stdout.write("ok")
     elif "fleet-fetched" in script:
-        # A base fetch: `.nofetch` holds what git says when it fails.
+        # A base fetch: `.nofetch` holds what git says when it fails, and a
+        # checkout with no origin here fails the way git does.
         nofetch = state / f"{dest}.nofetch"
-        if nofetch.is_file():
-            said = nofetch.read_text(encoding="utf-8")
-            if "couldn't find remote ref" in said:
-                sys.stdout.write("fleet-as-written")
-                return 0
+        said = nofetch.read_text(encoding="utf-8") if nofetch.is_file() else ""
+        if not said and named_origin(state, dest, script) is None:
+            said = "fatal: 'origin' does not appear to be a git repository\n"
+        if said:
             sys.stderr.write(said)
             sys.stdout.write("fleet-fetch-failed")
             return 1
-        known = named_origin(state, dest, script) is not None
-        sys.stdout.write("fleet-fetched" if known else "fleet-as-written")
+        sys.stdout.write("fleet-fetched")
     elif "fleet-no-upstream" in script:
         sys.stdout.write("fleet-no-upstream")
     elif "remote get-url origin" in script:

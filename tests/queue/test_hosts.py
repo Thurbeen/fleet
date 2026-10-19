@@ -129,11 +129,6 @@ def test_a_host_that_fails_a_probe_is_not_spawned(devbox_task, hosts, queue_dir)
             expect(out, "nothing local validates it")
         # Left queued, so fixing the host and re-running sends it.
         expect("\n".join(line for line in q("show", devbox_task).out.splitlines() if "state:" in line), "queued")
-    # And a base the host cannot fetch is not branched off its stale local copy.
-    write(hosts.state / "me@devbox.origin", "git@github.com:acme/app.git\n")
-    write(hosts.state / "me@devbox.nofetch", "fatal: Could not read from remote repository.\n")
-    expect(q("dispatch").out,
-           "NOT SPAWNED — /srv/code/app: could not fetch origin/main: fatal: Could not read from remote repository.")
     assert creates(hosts.stubs) == []
 
 
@@ -358,6 +353,37 @@ def test_a_remote_command_runs_in_a_login_shell_and_moving_bytes_does_not(hosts,
     refute(moved, "Welcome to profilebox")
 
 
+@pytest.mark.parametrize("host,dest,repo,tree", [
+    ("devbox", "me@devbox", "/srv/code/app", WORKTREE),
+    ("winbox", "me@winbox", WINREPO, WWORKTREE),
+])
+def test_an_origin_base_is_fetched_on_the_host_and_tracks_nothing_there(
+    rtopic, hosts, queue_dir, host, dest, repo, tree
+):
+    """The fetch and the unset run where the checkout is, in the shell it
+    speaks; a fetch that fails there refuses the task with git's own words."""
+    stubs = hosts.stubs
+    ok(q("add", rtopic, "fresh-there", "--title", "Fresh there", "--repo", repo, "--host", host,
+         "--branch", "fix/fresh-there", "--base", "origin/main", "--number", "40"))
+    write(queue_dir / rtopic / "40-fresh-there" / "BRIEF.md", "Build it from a fresh base.\n")
+    write(hosts.state / f"{dest}.origin", "git@github.com:acme/app.git\n")
+    write(hosts.state / f"{dest}.nofetch", "fatal: Could not read from remote repository.\n")
+    expect(q("dispatch").out,
+           f"NOT SPAWNED — {repo}: could not fetch origin/main: fatal: Could not read from remote repository.")
+    assert creates(stubs) == []
+
+    (hosts.state / f"{dest}.nofetch").unlink()
+    worktrees = [{"repo_path": repo, "worktree_path": tree, "branch": "fix/fresh-there"}]
+    write(stubs.root / "next-session.json", json.dumps({"id": RSESSION, "created": True, "worktrees": worktrees}))
+    hosts.session(RSESSION, name="Fresh there", state="working", agent="claude", hook_reported=True,
+                  worktrees=worktrees)
+    ok(q("dispatch"))
+    expect(creates(stubs)[-1], "--base-branch origin/main")
+    sent = hosts.read_flag(dest, "commands") if host == "winbox" else "\n".join(stubs.calls("ssh"))
+    # The fetch and the upstream check, each by the first line it is sent with.
+    expect(sent, "fleet-fetch-failed", "@{upstream}")
+
+
 def test_every_single_quote_powershell_reads_is_doubled():
     """PowerShell takes U+2018 to U+201B for `'` too, so a path carrying one
     must not end the literal and run what follows."""
@@ -403,20 +429,12 @@ def test_a_windows_host_is_spoken_to_in_powershell_and_the_bytes_survive(hosts, 
         hosts.unflag("me@winbox", flag)
         # Not spawned, and the probe says why in the same words a POSIX host's does.
         expect(out, "NOT SPAWNED", want)
-    write(hosts.state / "me@winbox.origin", "git@github.com:acme/widget.git\n")
-    write(hosts.state / "me@winbox.nofetch", "fatal: Could not read from remote repository.\n")
-    expect(q("dispatch").out, "could not fetch origin/main: fatal: Could not read from remote repository.")
-    (hosts.state / "me@winbox.nofetch").unlink()
     assert creates(stubs) == [], creates(stubs)
 
-    worktrees = [{"repo_path": WINREPO, "worktree_path": WWORKTREE, "branch": "fix/build-on-winbox"}]
-    write(stubs.root / "next-session.json", json.dumps({"id": WSESSION, "created": True, "worktrees": worktrees}))
+    hosts.next_session(WSESSION)
     hosts.session(WSESSION, name="Build it on winbox", state="working", agent="claude", hook_reported=True,
-                  worktrees=worktrees)
+                  worktrees=[{"repo_path": WINREPO, "worktree_path": WWORKTREE, "branch": "fix/build-on-winbox"}])
     expect(q("dispatch").out, "reachable: answers ssh, PowerShell", "brief copied to me@winbox")
-    expect(creates(stubs)[-1], "--base-branch origin/main")
-    # Off `origin/main` the worker's branch would track the base; it is unset there.
-    expect(hosts.read_flag("me@winbox", "commands"), f"& git -C '{WWORKTREE}' branch --unset-upstream")
     there = hosts.remote("me@winbox", WWORKTREE + ".fleet")
     for name, src in (("BRIEF.md", task / "BRIEF.md"),
                       ("POLICY.md", REPO / "orchestration" / "queue" / "POLICY.md"),

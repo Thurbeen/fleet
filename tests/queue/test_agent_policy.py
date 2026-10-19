@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 import yaml
-from kit_dispatch import ANSWERING_KEYS, next_session, offline_fetch
+from kit_dispatch import ANSWERING_KEYS, next_session
 from kit_forges import FakeForgeStore
 from kit_hosts import Hosts, creates
 from kit_refuel import ACCOUNT_QUOTA, CLAUDE_BANNER, account_quota, pane, restarts, teach
@@ -30,11 +30,6 @@ OWNER = "acme"
 REPO_NAME = "widgets"
 QUALIFIED = f"{FORGE}/{OWNER}"
 QUALIFIED_REPO = f"{FORGE}/{OWNER}/{REPO_NAME}"
-
-
-@pytest.fixture(autouse=True)
-def fetchable(stubs) -> None:
-    offline_fetch(stubs)
 
 
 @pytest.fixture

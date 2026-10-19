@@ -66,10 +66,7 @@ if ARGS[:2] == ["session", "create"]:
               "agent_session_id": "agent-" + sid, "cwd": str(ROOT), "backend_type": "local-tmux",
               "worktrees": []}
     (sessions / (sid + ".json")).write_text(json.dumps(record) + "\\n", encoding="utf-8")
-    # The worktree it reports, at a path nothing is at, as thurbox's answer names one.
-    tree = {"repo_path": ARGS[ARGS.index("--repo-path") + 1], "worktree_path": str(ROOT / "wt" / sid),
-            "branch": ARGS[ARGS.index("--worktree-branch") + 1]}
-    print(json.dumps({"id": sid, "created": True, "worktrees": [tree]}))
+    print(json.dumps({"id": sid, "created": True}))
     raise SystemExit(0)
 stub.called = lambda tool: ROOT
 raise SystemExit(stub.main())

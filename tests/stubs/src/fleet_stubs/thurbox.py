@@ -34,22 +34,7 @@ def main() -> int:
     if verb == "config show":
         print(json.dumps({"paths": {"hosts_toml": str(root / "hosts.toml")}}))
     elif verb == "session create":
-        answer = read(root / "next-session.json").strip() or '{"id":"stub","created":true}'
-        try:
-            doc = json.loads(answer)
-        except ValueError:
-            doc = None
-        if isinstance(doc, dict) and "--worktree-branch" in args and "worktrees" not in doc:
-            # thurbox reports the worktree it cut in every repository asked for;
-            # a test that names none gets one each, at a path nothing is at.
-            branch = args[args.index("--worktree-branch") + 1]
-            repos = [args[i + 1] for i, a in enumerate(args) if a in ("--repo-path", "--add-repo")]
-            doc["worktrees"] = [
-                {"repo_path": r, "worktree_path": f"/stub-worktrees/{n}", "branch": branch}
-                for n, r in enumerate(repos)
-            ]
-            answer = json.dumps(doc)
-        print(answer)
+        print(read(root / "next-session.json").strip() or '{"id":"stub","created":true}')
     elif verb == "session capture":
         # `panes/<id>.json` is the whole `--json` answer, cursor and all; a
         # bare `<id>.txt` is the text alone, with no cursor to read.
