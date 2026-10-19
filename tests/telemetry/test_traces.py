@@ -13,57 +13,15 @@ import hashlib
 import time
 
 import pytest
-from telemetrykit import Collector, attrs, review, task, telemetry_conf
+from telemetrykit import HEAD2, Collector, attrs, landed_task, task, telemetry_conf
 
 from harness import run_fleet
-
-PR = "https://github.com/Thurbeen/fleet/pull/42"
-HEAD1 = "a" * 40
-HEAD2 = "b" * 40
-
 
 @pytest.fixture
 def collector():
     c = Collector()
     yield c
     c.close()
-
-
-def landed_task():
-    """A task that went the whole way: queued, worked, published, reviewed twice, landed."""
-    task("ship-it", "01-thing", {
-        "state": "landed",
-        "created": "2026-10-01T08:00:00+00:00",
-        "dispatched_at": "2026-10-01T08:10:00+00:00",
-        "session": None,
-        "outcome": "shipped",
-        "artifact": PR,
-        "concluded_at": "2026-10-01T10:00:00+00:00",
-        "sends": [{"at": "2026-10-01T09:30:00+00:00", "session": "s", "text": "answer the review"}],
-        "landing": {"state": "merged", "detail": f"{PR} is merged", "at": "2026-10-01T11:05:00+00:00"},
-    }, [
-        {"seq": 1, "at": 1790842200000, "from": None, "to": "working", "reason": "state",
-         "observed": "2026-10-01T08:10:00+00:00"},
-        {"seq": 2, "at": 1790845800000, "from": "working", "to": "idle", "reason": "state",
-         "observed": "2026-10-01T09:10:00+00:00"},
-        {"publish": {"method": "pr", "how": "x", "state": "checks-failed", "detail": "failed checks: lint",
-                     "at": "2026-10-01T09:15:00+00:00", "by": "shepherd"}, "observed": "2026-10-01T09:15:00+00:00"},
-        {"seq": 3, "at": 1790847000000, "from": "idle", "to": "working", "reason": "state",
-         "observed": "2026-10-01T09:30:00+00:00"},
-        {"seq": 4, "at": 1790848800000, "from": "working", "to": "done", "reason": "state",
-         "observed": "2026-10-01T10:00:00+00:00"},
-        {"publish": {"method": "pr", "how": "x", "state": "open", "detail": "open",
-                     "at": "2026-10-01T10:00:00+00:00", "by": "collect"}, "observed": "2026-10-01T10:00:00+00:00"},
-        {"shepherd": {"condition": "merged", "detail": "squash-merged", "pr": PR,
-                      "at": "2026-10-01T11:00:00+00:00"}, "observed": "2026-10-01T11:00:00+00:00"},
-    ])
-    review(PR, {"url": PR, "head": HEAD2, "state": "clean",
-                "assessment": {"head": HEAD2, "score": 5, "findings": 0, "state": "clean",
-                               "at": "2026-10-01T10:40:00+00:00"},
-                "rounds": [
-                    {"head": HEAD1, "score": 3, "findings": 2, "state": "findings", "at": "2026-10-01T10:20:00+00:00"},
-                    {"head": HEAD2, "score": 5, "findings": 0, "state": "clean", "at": "2026-10-01T10:40:00+00:00"},
-                ]})
 
 
 def trace_id(ref: str) -> str:
@@ -261,8 +219,8 @@ def test_trace_id_prints_the_id_any_tool_derives_from_the_task():
     assert run.out.strip() == trace_id("ship-it/01-thing")
 
 
-def test_nothing_to_send_says_nothing_about_a_collector_it_never_asked(collector):
-    """Recovery is announced only after a request went through."""
+def test_a_collector_still_down_is_not_news_whatever_was_due(collector):
+    """Down is one fact, whichever request found it: spans, or the measures sent every pass."""
     import shutil
     import socket
 
@@ -306,7 +264,8 @@ def test_a_400_for_the_payload_is_final(collector):
     collector.status = 200
     before = len(collector.requests)
     assert run_fleet("telemetry", "export").code == 0
-    assert collector.requests[before:] == [], "a payload the collector rejected was sent again"
+    again = [r for r in collector.requests[before:] if r["path"] == "/v1/traces"]
+    assert again == [], "a payload the collector rejected was sent again"
 
 
 def test_the_file_names_the_service_over_the_environment(collector):

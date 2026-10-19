@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Fleet's OpenTelemetry: one trace per task, rebuilt from the task's records
-and sent to any OTLP/HTTP endpoint — when the operator turns it on.
+"""Fleet's OpenTelemetry: one trace per task and the factory's measures, rebuilt
+from the queue's records and sent to any OTLP/HTTP endpoint — when the operator
+turns it on.
 
-    uv run fleet telemetry export [--dry-run]   one pass: send what closed since the last
+    uv run fleet telemetry export [--dry-run]   one pass: the spans that closed since the
+                                                last, and every measure as it stands
     uv run fleet telemetry trace-id <topic/task> the trace id a task's spans carry
 
 OFF UNLESS ASKED. Nothing is sent until the operator's gitignored
@@ -37,6 +39,27 @@ thurbox's own `thurbox.sessions` metrics.
 The root links to its TOPIC's own trace, whose single `factory topic` span is
 sent once the topic is archived.
 
+THE MEASURES are metrics in the same pass, recomputed from the records every
+time rather than counted here, so a re-send is the same number and never a
+double one:
+
+    factory.queue.tasks           gauge, by factory.state: the live queue now
+    factory.tasks.ready           gauge: what `plan` would dispatch now
+    factory.tasks.stalled         gauge: `plan`'s stalled set
+    factory.tasks.needs_input     gauge: workers that declared they need a decision
+    factory.tasks.concluded       cumulative sum, by state and repo: landed, abandoned
+    factory.task.lead_time        histogram, s: added → landed
+    factory.task.dispatch_to_change_request   histogram, s: dispatched → first seen
+    factory.task.review_rounds    histogram: rounds up to the first clean review
+    factory.task.rework           histogram: lead sends, shepherd fixer conditions,
+                                  failing-check spells and unclean review rounds
+
+The histograms cover every task that landed, by factory.repo, cumulative from
+the first export (`metrics_start` in the runtime state); rework per landed task
+is their sum over their count. Lead time and landings per repo are what DORA's
+lead time and deployment frequency are computed from where a merge is the
+deployment.
+
 IDS ARE DERIVED, SO RE-EXPORTING IS HARMLESS. A task's trace id is the first
 16 bytes of sha256("fleet.task\\0" + "<topic>/<task>") — any tool can compute it
 from the task id, and `trace-id` prints it — and a span id is the first 8 bytes
@@ -56,7 +79,8 @@ factory.task.id and factory.topic, so a backend can find a task by either.
 A DEAD COLLECTOR COSTS ONE LINE. Every request is held to the OTLP timeout
 (OTEL_EXPORTER_OTLP_TIMEOUT, 10s by default), the first failure ends the pass,
 and what was not sent is simply sent by a later pass. The failure is printed
-once — the same failure again is not news — and its recovery once, so the
+once — the same failure again is not news, whichever signal's request met it —
+and its recovery once, so the
 reconciler's log carries one line per change and never one per pass. A
 collector that REJECTS the payload (a 400) would reject the same bytes again, so
 those spans are counted as sent and the rejection is printed. Only that and a
@@ -133,6 +157,9 @@ SCOPE = {"name": "fleet.telemetry"}
 
 ON = ("on", "true", "yes", "1")
 
+# What one export sends, each to its own OTLP/HTTP path.
+SIGNALS = ("traces", "metrics")
+
 # watch's session states, as the three stretches a trace shows. Anything else —
 # `unreported`, `stopped`, a deletion — ends the stretch before it.
 STRETCHES = {"working": "working", "idle": "at rest", "done": "at rest", "blocked": "blocked"}
@@ -151,12 +178,15 @@ class Settings:
         env = os.environ.get
 
         self.enabled = conf.get("EXPORT", "").lower() in ON and env("OTEL_SDK_DISABLED", "").lower() != "true"
-        if conf.get("ENDPOINT"):
-            self.url = conf["ENDPOINT"].rstrip("/") + "/v1/traces"
-        elif env("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"):
-            self.url = env("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
-        else:
-            self.url = (env("OTEL_EXPORTER_OTLP_ENDPOINT") or DEFAULT_ENDPOINT).rstrip("/") + "/v1/traces"
+        self.urls = {}
+        for signal in SIGNALS:
+            if conf.get("ENDPOINT"):
+                self.urls[signal] = conf["ENDPOINT"].rstrip("/") + f"/v1/{signal}"
+            elif env(f"OTEL_EXPORTER_OTLP_{signal.upper()}_ENDPOINT"):
+                self.urls[signal] = env(f"OTEL_EXPORTER_OTLP_{signal.upper()}_ENDPOINT")
+            else:
+                self.urls[signal] = (env("OTEL_EXPORTER_OTLP_ENDPOINT") or DEFAULT_ENDPOINT).rstrip("/") + f"/v1/{signal}"
+        self.url = self.urls["traces"]
         self.protocol = (conf.get("PROTOCOL") or env("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL")
                          or env("OTEL_EXPORTER_OTLP_PROTOCOL") or "http/json")
         self.headers = parse_pairs(conf.get("HEADERS") or env("OTEL_EXPORTER_OTLP_TRACES_HEADERS")
@@ -494,6 +524,124 @@ def topic_spans(q, slug: str, doc: dict) -> list[dict]:
     return b.spans
 
 
+# --- the factory's measures -------------------------------------------------------
+#
+# Recomputed from the records on every export, never accumulated here: the
+# histograms are CUMULATIVE over every task that ever landed, from the moment
+# this fleet first exported (`metrics_start`), so a re-send is the same count
+# and a lost one costs nothing the next pass does not carry. The gauges are
+# what the live queue holds now.
+
+# Seconds: five minutes to a week, the span between a quick fix and a stalled one.
+TIME_BOUNDS = [300, 900, 1800, 3600, 7200, 14400, 28800, 86400, 172800, 604800]
+ROUND_BOUNDS = [1, 2, 3, 4, 5, 8]
+REWORK_BOUNDS = [0, 1, 2, 3, 5, 8, 13]
+
+# A shepherd condition that is not a fix somebody had to make.
+NOT_REWORK = ("merged", "ready", "open")
+
+
+def first_seen(q, task, lines: list) -> int | None:
+    """When fleet first saw the task's change request: its earliest publish
+    state, shepherd condition or artifact check."""
+    check = task.doc.get("artifact_check") if isinstance(task.doc.get("artifact_check"), dict) else {}
+    seen = [to_ns(q, line[k].get("at")) for line in lines for k in ("publish", "shepherd")
+            if isinstance(line.get(k), dict)] + [to_ns(q, check.get("at"))]
+    seen = [x for x in seen if x is not None]
+    return min(seen) if seen else None
+
+
+def measures(q, task) -> dict:
+    """What one landed task contributes to each histogram, in its own units."""
+    d = task.doc
+    lines = progress_lines(task)
+    out = {}
+    created, landed = to_ns(q, d.get("created")), to_ns(q, (d.get("landing") or {}).get("at"))
+    if created and landed:
+        out["factory.task.lead_time"] = (landed - created) / 1e9
+    dispatched, seen = to_ns(q, d.get("dispatched_at")), first_seen(q, task, lines)
+    if dispatched and seen:
+        out["factory.task.dispatch_to_change_request"] = max(seen - dispatched, 0) / 1e9
+    urls = http_artifacts(q, task)
+    rounds = q.review_lifecycle().rounds(q, urls[0]) if urls else []
+    clean = next((n for n, r in enumerate(rounds, 1) if r.get("state") == "clean"), None)
+    if clean:
+        out["factory.task.review_rounds"] = clean
+    failing, last = 0, None
+    for line in lines:
+        state = (line.get("publish") or {}).get("state") if isinstance(line.get("publish"), dict) else None
+        if state:
+            failing += state == "checks-failed" and last != "checks-failed"
+            last = state
+    fixers = sum(1 for line in lines if isinstance(line.get("shepherd"), dict)
+                 and line["shepherd"].get("condition") not in NOT_REWORK)
+    out["factory.task.rework"] = (len([s for s in d.get("sends") or [] if isinstance(s, dict)]) + fixers + failing
+                                  + sum(1 for r in rounds if r.get("state") != "clean"))
+    return out
+
+
+HISTOGRAMS = {
+    "factory.task.lead_time": ("s", TIME_BOUNDS, "task added to landed"),
+    "factory.task.dispatch_to_change_request": ("s", TIME_BOUNDS, "dispatched to its change request first seen"),
+    "factory.task.review_rounds": ("{round}", ROUND_BOUNDS, "review rounds up to the first clean one"),
+    "factory.task.rework": ("{event}", REWORK_BOUNDS,
+                            "lead sends, shepherd fixer conditions, failing-check spells and unclean review rounds"),
+}
+
+
+def histogram(values: list, bounds: list) -> dict:
+    counts = [0] * (len(bounds) + 1)
+    for v in values:
+        counts[next((i for i, b in enumerate(bounds) if v <= b), len(bounds))] += 1
+    return {"count": str(len(values)), "sum": float(sum(values)), "min": float(min(values)),
+            "max": float(max(values)), "bucketCounts": [str(c) for c in counts], "explicitBounds": bounds}
+
+
+def metrics(q, live, every, start: int, now: int) -> list:
+    """Every metric one export sends, as OTLP/JSON."""
+    def gauge(name, unit, about, rows):
+        return {"name": name, "unit": unit, "description": about, "gauge": {"dataPoints": [
+            {"attributes": otlp_attrs(a), "timeUnixNano": str(now), "asInt": str(n)} for a, n in rows]}}
+
+    by_state = {}
+    for task in live.tasks.values():
+        by_state[task.state] = by_state.get(task.state, 0) + 1
+    declared = q.declared_tasks(live)
+    out = [
+        gauge("factory.queue.tasks", "{task}", "tasks in the live queue, by state",
+              [({"factory.state": s}, n) for s, n in sorted(by_state.items())]),
+        gauge("factory.tasks.ready", "{task}", "tasks plan would dispatch now", [({}, len(live.ready()))]),
+        gauge("factory.tasks.stalled", "{task}", "dispatched, at rest past half an hour, nothing to show",
+              [({}, len(q.stalled_tasks(live, declared)))]),
+        gauge("factory.tasks.needs_input", "{task}", "workers that declared they need a decision",
+              [({}, sum(1 for r in declared.values() if r["state"] == "needs-input"))]),
+    ]
+
+    ends, samples = {}, {}
+    for task in every.tasks.values():
+        if task.state not in q.TERMINAL_STATES:
+            continue
+        repo = task_repo(q, task)
+        ends[(task.state, repo)] = ends.get((task.state, repo), 0) + 1
+        if task.state != "landed":
+            continue
+        for name, value in measures(q, task).items():
+            samples.setdefault(name, {}).setdefault(repo, []).append(value)
+    out.append({"name": "factory.tasks.concluded", "unit": "{task}", "description": "tasks landed or abandoned",
+                "sum": {"aggregationTemporality": 2, "isMonotonic": True, "dataPoints": [
+                    {"attributes": otlp_attrs({"factory.state": s, "factory.repo": r}),
+                     "startTimeUnixNano": str(start), "timeUnixNano": str(now), "asInt": str(n)}
+                    for (s, r), n in sorted(ends.items())]}})
+    for name, (unit, bounds, about) in HISTOGRAMS.items():
+        points = [{"attributes": otlp_attrs({"factory.repo": repo}), "startTimeUnixNano": str(start),
+                   "timeUnixNano": str(now), **histogram(values, bounds)}
+                  for repo, values in sorted(samples.get(name, {}).items())]
+        if points:
+            out.append({"name": name, "unit": unit, "description": about,
+                        "histogram": {"aggregationTemporality": 2, "dataPoints": points}})
+    return out
+
+
 # --- the export ----------------------------------------------------------------
 
 
@@ -517,9 +665,8 @@ def save_state(doc: dict) -> None:
     fleet_platform.write_record(os.path.join(state_dir(), STATE_FILE), json.dumps(doc, sort_keys=True) + "\n")
 
 
-def pending_spans(q, state: dict, now: int) -> tuple[list, set]:
+def pending_spans(q, queue, state: dict, now: int) -> tuple[list, set]:
     """[(trace key, span)] not yet sent as they are now, and every trace key still in the queue."""
-    queue = q.Queue(q.queue_root(), scope="all")
     sent = state["sent"]
     out, keys = [], set()
     for slug, doc in sorted(queue.topics.items()):
@@ -531,13 +678,15 @@ def pending_spans(q, state: dict, now: int) -> tuple[list, set]:
     return [(k, s) for k, s in out if (sent.get(k) or {}).get(s["spanId"]) != fingerprint(s)], keys
 
 
-def post(cfg: Settings, spans: list) -> tuple[int, str]:
+def post(cfg: Settings, signal: str, items: list) -> tuple[int, str]:
     """One OTLP/HTTP request: (status, why). Status 0 is the request never answered."""
-    body = json.dumps({"resourceSpans": [{
+    kind, scoped, field = {"traces": ("resourceSpans", "scopeSpans", "spans"),
+                           "metrics": ("resourceMetrics", "scopeMetrics", "metrics")}[signal]
+    body = json.dumps({kind: [{
         "resource": {"attributes": otlp_attrs(cfg.resource)},
-        "scopeSpans": [{"scope": SCOPE, "spans": spans}],
+        scoped: [{"scope": SCOPE, field: items}],
     }]}).encode("utf-8")
-    req = urllib.request.Request(cfg.url, data=body, method="POST",
+    req = urllib.request.Request(cfg.urls[signal], data=body, method="POST",
                                  headers={**cfg.headers, "Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=cfg.timeout) as resp:
@@ -561,35 +710,40 @@ def tell(state: dict, line: str, key: str) -> None:
     state["said"] = key
 
 
-def send_spans(cfg: Settings, state: dict, todo: list) -> tuple[bool, int]:
-    """(whether the collector settled every request, how many spans it took).
+def answer(cfg: Settings, state: dict, signal: str, status: int, why: str, waiting: str) -> bool:
+    """Whether the collector settled one request: it took it (2xx), or it read
+    the payload and rejects its content (400), which the same bytes would meet
+    again. Otherwise the request waits for a later export, told once: down (no
+    answer, a 5xx, a 429), or refused for where or as whom it was sent — a 401
+    or 403 is the token, a 404 an endpoint with /v1/traces twice, a 307 or 308
+    a redirect urllib will not follow with a POST. That is the operator's to fix, and what it carried waits for it rather than being
+    dropped. Keyed on the failure, not the signal: down is one fact whichever
+    request found it."""
+    url = cfg.urls[signal]
+    if 200 <= status < 300:
+        return True
+    if status == 400:
+        print(f"telemetry: {url} rejected {waiting}: {why}; it is not sent again")
+        return True
+    if down(status):
+        tell(state, f"{url} unreachable: {why}; {waiting} wait(s) for a later export", f"down:{why}")
+    else:
+        tell(state, f"{url} refused the request: {why}; fix ENDPOINT or HEADERS — {waiting} wait(s) for it",
+             f"refused:{why}")
+    return False
 
-    SETTLED IS NARROW: a 2xx, or a 400 — the collector read the payload and
-    rejects its content, which the same bytes would meet again. Only those
-    count spans as sent. Everything else leaves them pending with one line,
-    told once: no answer, a 5xx or a 429 is a collector that is down; a 401 or
-    403 is the token, a 404 an endpoint with /v1/traces twice, a 307 or 308 a
-    redirect urllib will not follow with a POST. Those are the setting's to
-    fix, and the spans wait for it rather than being dropped."""
+
+def send_spans(cfg: Settings, state: dict, todo: list) -> tuple[bool, int]:
+    """(whether every request was settled, how many spans the collector took)."""
     sent = 0
     for i in range(0, len(todo), CHUNK):
         batch = todo[i:i + CHUNK]
-        status, why = post(cfg, [s for _k, s in batch])
-        waiting = len(todo) - i
-        if 200 <= status < 300:
-            sent += len(batch)
-        elif status == 400:
-            print(f"telemetry: {cfg.url} rejected {len(batch)} span(s): {why}; they are not sent again")
-        elif down(status):
-            # Keyed on the failure, not the request: down is one fact.
-            tell(state, f"{cfg.url} unreachable: {why}; {waiting} span(s) wait for a later export", f"down:{why}")
-            return False, sent
-        else:
-            tell(state, f"{cfg.url} refused the request: {why}; fix ENDPOINT or HEADERS — "
-                        f"{waiting} span(s) wait for it", f"refused:{why}")
+        status, why = post(cfg, "traces", [s for _k, s in batch])
+        if not answer(cfg, state, "traces", status, why, f"{len(todo) - i} span(s)"):
             return False, sent
         for k, s in batch:
             state["sent"].setdefault(k, {})[s["spanId"]] = fingerprint(s)
+        sent += len(batch) if 200 <= status < 300 else 0
         save_state(state)
     return True, sent
 
@@ -606,20 +760,25 @@ def export(dry_run: bool = False) -> None:
         return
 
     q = _load_sibling("fleet_queue", "queue.py")
-    todo, keys = pending_spans(q, state, time.time_ns())
+    now = time.time_ns()
+    every = q.Queue(q.queue_root(), scope="all")
+    todo, keys = pending_spans(q, every, state, now)
+    measured = metrics(q, q.Queue(q.queue_root()), every, int(state.get("metrics_start") or now), now)
     if dry_run:
-        print(f"telemetry: {len(todo)} span(s) would go to {cfg.url}")
+        print(f"telemetry: {len(todo)} span(s) would go to {cfg.url}, {len(measured)} metric(s) to "
+              f"{cfg.urls['metrics']}")
         return
+    state.setdefault("metrics_start", now)
     state["sent"] = {k: v for k, v in state["sent"].items() if k in keys}
 
-    answered, sent = send_spans(cfg, state, todo)
-    # Recovery is news only once a request went through; with nothing to
-    # send, the collector was never asked and a standing failure stands.
-    if answered and todo:
+    settled, sent = send_spans(cfg, state, todo)
+    if settled:
+        status, why = post(cfg, "metrics", measured)
+        settled = answer(cfg, state, "metrics", status, why, "the measures")
+    # The measures go every pass, so a settled pass is one the collector answered.
+    if settled:
         if str(state.get("said") or "").startswith(("down:", "problem:", "refused:")):
-            print(f"telemetry: {cfg.url} takes telemetry again")
-        state.pop("said", None)
-    elif answered and str(state.get("said") or "").startswith("problem:"):
+            print("telemetry: the collector takes telemetry again")
         state.pop("said", None)
     if sent:
         print(f"telemetry: {sent} span(s) sent to {cfg.url}")

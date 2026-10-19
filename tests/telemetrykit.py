@@ -68,6 +68,27 @@ class Collector:
         return out
 
 
+    def metrics(self, request: int = -1) -> dict:
+        """{metric name: (metric, [data points])} from one /v1/metrics request, the last by default."""
+        reqs = [r for r in self.requests if r["path"] == "/v1/metrics"]
+        out = {}
+        if not reqs:
+            return out
+        for rm in reqs[request]["body"]["resourceMetrics"]:
+            for sm in rm["scopeMetrics"]:
+                for metric in sm["metrics"]:
+                    kind = next(k for k in ("gauge", "sum", "histogram") if k in metric)
+                    out[metric["name"]] = (metric, metric[kind]["dataPoints"])
+        return out
+
+
+def point(points: list, **want) -> dict:
+    """The one data point whose attributes include `want`."""
+    found = [p for p in points if all(attrs(p).get(k) == v for k, v in want.items())]
+    assert len(found) == 1, (want, points)
+    return found[0]
+
+
 def attrs(holder: dict) -> dict:
     """OTLP's attribute list as a plain mapping of key to value."""
     out = {}
@@ -107,3 +128,45 @@ def review(url: str, record: dict) -> None:
     from harness import lib
 
     write(Path(lib("review_lifecycle.py").path(lib("queue.py"), url)), json.dumps(record) + "\n")
+
+
+PR = "https://github.com/Thurbeen/fleet/pull/42"
+HEAD1 = "a" * 40
+HEAD2 = "b" * 40
+
+
+def landed_task():
+    """A task that went the whole way: queued, worked, published, reviewed twice, landed."""
+    task("ship-it", "01-thing", {
+        "state": "landed",
+        "created": "2026-10-01T08:00:00+00:00",
+        "dispatched_at": "2026-10-01T08:10:00+00:00",
+        "session": None,
+        "outcome": "shipped",
+        "artifact": PR,
+        "concluded_at": "2026-10-01T10:00:00+00:00",
+        "sends": [{"at": "2026-10-01T09:30:00+00:00", "session": "s", "text": "answer the review"}],
+        "landing": {"state": "merged", "detail": f"{PR} is merged", "at": "2026-10-01T11:05:00+00:00"},
+    }, [
+        {"seq": 1, "at": 1790842200000, "from": None, "to": "working", "reason": "state",
+         "observed": "2026-10-01T08:10:00+00:00"},
+        {"seq": 2, "at": 1790845800000, "from": "working", "to": "idle", "reason": "state",
+         "observed": "2026-10-01T09:10:00+00:00"},
+        {"publish": {"method": "pr", "how": "x", "state": "checks-failed", "detail": "failed checks: lint",
+                     "at": "2026-10-01T09:15:00+00:00", "by": "shepherd"}, "observed": "2026-10-01T09:15:00+00:00"},
+        {"seq": 3, "at": 1790847000000, "from": "idle", "to": "working", "reason": "state",
+         "observed": "2026-10-01T09:30:00+00:00"},
+        {"seq": 4, "at": 1790848800000, "from": "working", "to": "done", "reason": "state",
+         "observed": "2026-10-01T10:00:00+00:00"},
+        {"publish": {"method": "pr", "how": "x", "state": "open", "detail": "open",
+                     "at": "2026-10-01T10:00:00+00:00", "by": "collect"}, "observed": "2026-10-01T10:00:00+00:00"},
+        {"shepherd": {"condition": "merged", "detail": "squash-merged", "pr": PR,
+                      "at": "2026-10-01T11:00:00+00:00"}, "observed": "2026-10-01T11:00:00+00:00"},
+    ])
+    review(PR, {"url": PR, "head": HEAD2, "state": "clean",
+                "assessment": {"head": HEAD2, "score": 5, "findings": 0, "state": "clean",
+                               "at": "2026-10-01T10:40:00+00:00"},
+                "rounds": [
+                    {"head": HEAD1, "score": 3, "findings": 2, "state": "findings", "at": "2026-10-01T10:20:00+00:00"},
+                    {"head": HEAD2, "score": 5, "findings": 0, "state": "clean", "at": "2026-10-01T10:40:00+00:00"},
+                ]})

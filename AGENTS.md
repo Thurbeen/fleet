@@ -182,11 +182,15 @@ names every path and the reason for each.
   stage that has closed, so re-sending is harmless and `exported.json` in the
   gitignored `orchestration/telemetry/` sends only what is new. The reconciler
   runs `fleet telemetry export` as a bounded child on its own clock, only while
-  it is on; a dead collector is one log line. OTLP/JSON over HTTP from the
-  standard library, no SDK — the module's docstring argues it and owns the span
-  model. Dispatch tags each local worker session with `factory.task.id` through
-  thurbox's `--telemetry-attr` where `session create --help` lists it, and
-  passes nothing where it does not. `tests/telemetry/` sends to an in-process
+  it is on; a dead collector is one log line. The same pass sends the
+  factory's measures as metrics — queue depth by state, the ready, stalled and
+  needs-input counts, and histograms over every landed task of lead time,
+  dispatch to change request, review rounds to a clean review and rework.
+  OTLP/JSON over HTTP from the standard library, no SDK — the module's
+  docstring argues it and owns the span model and the measures. Dispatch tags
+  each local worker session with `factory.task.id` through thurbox's
+  `--telemetry-attr` where `session create --help` lists it, and passes
+  nothing where it does not. `tests/telemetry/` sends to an in-process
   collector.
 - `orchestration/session-glyphs.example.conf` — the mark fleet's sessions wear
   in the thurbox session list: `📡` on the lead and one word per KIND of session
