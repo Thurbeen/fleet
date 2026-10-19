@@ -160,12 +160,35 @@ ON = ("on", "true", "yes", "1")
 # What one export sends, each to its own OTLP/HTTP path.
 SIGNALS = ("traces", "metrics")
 
+# Attribute keys and a unit more than one span or measure carries.
+REPO = "factory.repo"
+STATE = "factory.state"
+TASKS = "{task}"
+
 # watch's session states, as the three stretches a trace shows. Anything else —
 # `unreported`, `stopped`, a deletion — ends the stretch before it.
 STRETCHES = {"working": "working", "idle": "at rest", "done": "at rest", "blocked": "blocked"}
 
 
 # --- settings ------------------------------------------------------------------
+
+
+def signal_settings(conf: dict, signal: str) -> tuple[str, dict, float]:
+    """(url, headers, timeout in seconds) for one signal. A per-signal variable
+    is that signal's alone: a _TRACES_ token is the traces backend's, and never
+    goes to the metrics endpoint."""
+    env = os.environ.get
+    own = f"OTEL_EXPORTER_OTLP_{signal.upper()}_"
+    if conf.get("ENDPOINT"):
+        url = conf["ENDPOINT"].rstrip("/") + f"/v1/{signal}"
+    else:
+        url = env(own + "ENDPOINT") or (env("OTEL_EXPORTER_OTLP_ENDPOINT") or DEFAULT_ENDPOINT).rstrip("/") + f"/v1/{signal}"
+    headers = parse_pairs(conf.get("HEADERS") or env(own + "HEADERS") or env("OTEL_EXPORTER_OTLP_HEADERS") or "")
+    try:
+        ms = int(conf.get("TIMEOUT_MS") or env(own + "TIMEOUT") or env("OTEL_EXPORTER_OTLP_TIMEOUT") or DEFAULT_TIMEOUT_MS)
+    except ValueError:
+        ms = DEFAULT_TIMEOUT_MS
+    return url, headers, max(ms, 1) / 1000
 
 
 class Settings:
@@ -178,25 +201,9 @@ class Settings:
         env = os.environ.get
 
         self.enabled = conf.get("EXPORT", "").lower() in ON and env("OTEL_SDK_DISABLED", "").lower() != "true"
-        # A per-signal variable is that signal's alone: a _TRACES_ token is
-        # the traces backend's, and never goes to the metrics endpoint.
         self.urls, self.headers, self.timeouts = {}, {}, {}
         for signal in SIGNALS:
-            own = f"OTEL_EXPORTER_OTLP_{signal.upper()}_"
-            if conf.get("ENDPOINT"):
-                self.urls[signal] = conf["ENDPOINT"].rstrip("/") + f"/v1/{signal}"
-            elif env(own + "ENDPOINT"):
-                self.urls[signal] = env(own + "ENDPOINT")
-            else:
-                self.urls[signal] = (env("OTEL_EXPORTER_OTLP_ENDPOINT") or DEFAULT_ENDPOINT).rstrip("/") + f"/v1/{signal}"
-            self.headers[signal] = parse_pairs(conf.get("HEADERS") or env(own + "HEADERS")
-                                               or env("OTEL_EXPORTER_OTLP_HEADERS") or "")
-            try:
-                ms = int(conf.get("TIMEOUT_MS") or env(own + "TIMEOUT")
-                         or env("OTEL_EXPORTER_OTLP_TIMEOUT") or DEFAULT_TIMEOUT_MS)
-            except ValueError:
-                ms = DEFAULT_TIMEOUT_MS
-            self.timeouts[signal] = max(ms, 1) / 1000
+            self.urls[signal], self.headers[signal], self.timeouts[signal] = signal_settings(conf, signal)
         self.url = self.urls["traces"]
         self.protocol = (conf.get("PROTOCOL") or env("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL")
                          or env("OTEL_EXPORTER_OTLP_PROTOCOL") or "http/json")
@@ -392,12 +399,12 @@ def _root_attrs(q, task) -> dict:
     d = task.doc
     return {
         "factory.task.title": d.get("title"),
-        "factory.repo": task_repo(q, task),
+        REPO: task_repo(q, task),
         "factory.agent": d.get("agent"),
         "factory.host": d.get("host"),
         "factory.publish.method": mapping(d, "publish").get("method"),
         "factory.outcome": d.get("outcome"),
-        "factory.state": task.state,
+        STATE: task.state,
         "vcs.ref.head.name": d.get("branch"),
         "vcs.ref.base.name": d.get("base"),
         "cicd.pipeline.name": "factory",
@@ -481,7 +488,7 @@ def _change_request(b: Builder, q, task, url: str, lines: list, landed, abandone
               "vcs.repository.url.full": cr.get("repo_url"),
               "vcs.ref.head.name": task.doc.get("branch"),
               "vcs.ref.base.name": task.doc.get("base"),
-              "factory.repo": cr.get("repo"),
+              REPO: cr.get("repo"),
           })
     _reviews(b, q, url, key, min(seen))
 
@@ -570,6 +577,12 @@ def measures(q, task) -> dict:
     clean = next((n for n, r in enumerate(rounds, 1) if r.get("state") == "clean"), None)
     if clean:
         out["factory.task.review_rounds"] = clean
+    out["factory.task.rework"] = rework(d, lines, rounds)
+    return out
+
+
+def rework(doc: dict, lines: list, rounds: list) -> int:
+    """Lead sends, shepherd fixer conditions, failing-check spells and unclean review rounds."""
     failing, last = 0, None
     for line in lines:
         state = (line.get("publish") or {}).get("state") if isinstance(line.get("publish"), dict) else None
@@ -578,9 +591,8 @@ def measures(q, task) -> dict:
             last = state
     fixers = sum(1 for line in lines if isinstance(line.get("shepherd"), dict)
                  and line["shepherd"].get("condition") not in NOT_REWORK)
-    out["factory.task.rework"] = (len([s for s in d.get("sends") or [] if isinstance(s, dict)]) + fixers + failing
-                                  + sum(1 for r in rounds if r.get("state") != "clean"))
-    return out
+    return (len([s for s in doc.get("sends") or [] if isinstance(s, dict)]) + fixers + failing
+            + sum(1 for r in rounds if r.get("state") != "clean"))
 
 
 HISTOGRAMS = {
@@ -611,12 +623,12 @@ def metrics(q, live, every, start: int, now: int) -> list:
         by_state[task.state] = by_state.get(task.state, 0) + 1
     declared = q.declared_tasks(live)
     out = [
-        gauge("factory.queue.tasks", "{task}", "tasks in the live queue, by state",
-              [({"factory.state": s}, n) for s, n in sorted(by_state.items())]),
-        gauge("factory.tasks.ready", "{task}", "tasks plan would dispatch now", [({}, len(live.ready()))]),
-        gauge("factory.tasks.stalled", "{task}", "dispatched, at rest past half an hour, nothing to show",
+        gauge("factory.queue.tasks", TASKS, "tasks in the live queue, by state",
+              [({STATE: s}, n) for s, n in sorted(by_state.items())]),
+        gauge("factory.tasks.ready", TASKS, "tasks plan would dispatch now", [({}, len(live.ready()))]),
+        gauge("factory.tasks.stalled", TASKS, "dispatched, at rest past half an hour, nothing to show",
               [({}, len(q.stalled_tasks(live, declared)))]),
-        gauge("factory.tasks.needs_input", "{task}", "workers that declared they need a decision",
+        gauge("factory.tasks.needs_input", TASKS, "workers that declared they need a decision",
               [({}, sum(1 for r in declared.values() if r["state"] == "needs-input"))]),
     ]
 
@@ -630,13 +642,13 @@ def metrics(q, live, every, start: int, now: int) -> list:
             continue
         for name, value in measures(q, task).items():
             samples.setdefault(name, {}).setdefault(repo, []).append(value)
-    out.append({"name": "factory.tasks.concluded", "unit": "{task}", "description": "tasks landed or abandoned",
+    out.append({"name": "factory.tasks.concluded", "unit": TASKS, "description": "tasks landed or abandoned",
                 "sum": {"aggregationTemporality": 2, "isMonotonic": True, "dataPoints": [
-                    {"attributes": otlp_attrs({"factory.state": s, "factory.repo": r}),
+                    {"attributes": otlp_attrs({STATE: s, REPO: r}),
                      "startTimeUnixNano": str(start), "timeUnixNano": str(now), "asInt": str(n)}
                     for (s, r), n in sorted(ends.items())]}})
     for name, (unit, bounds, about) in HISTOGRAMS.items():
-        points = [{"attributes": otlp_attrs({"factory.repo": repo}), "startTimeUnixNano": str(start),
+        points = [{"attributes": otlp_attrs({REPO: repo}), "startTimeUnixNano": str(start),
                    "timeUnixNano": str(now), **histogram(values, bounds)}
                   for repo, values in sorted(samples.get(name, {}).items())]
         if points:
@@ -721,7 +733,9 @@ def answer(cfg: Settings, state: dict, signal: str, status: int, why: str, waiti
     or 403 is the token, a 404 an endpoint with /v1/traces twice, a 307 or 308
     a redirect urllib will not follow with a POST. That is the operator's to
     fix, and what it carried waits for it rather than being dropped. Keyed on
-    the failure, not the signal: down is one fact whichever request found it.
+    the failure, not the signal, when it is down: one fact whichever request
+    found it. A refusal is the signal's own, so a fixed traces token that leaves
+    the metrics one wrong is news.
     Rejected spans are never sent again, so theirs is said each time; the
     measures go every pass, so theirs is told once."""
     url = cfg.urls[signal]
@@ -730,7 +744,7 @@ def answer(cfg: Settings, state: dict, signal: str, status: int, why: str, waiti
     if status == 400:
         line = f"{url} rejected {waiting}: {why}; it is not sent again"
         if signal == "metrics":
-            tell(state, line, f"rejected:{why}")
+            tell(state, line, f"rejected:{signal}:{why}")
         else:
             print(f"telemetry: {line}")
         return True
@@ -738,7 +752,7 @@ def answer(cfg: Settings, state: dict, signal: str, status: int, why: str, waiti
         tell(state, f"{url} unreachable: {why}; {waiting} wait(s) for a later export", f"down:{why}")
     else:
         tell(state, f"{url} refused the request: {why}; fix ENDPOINT or HEADERS — {waiting} wait(s) for it",
-             f"refused:{why}")
+             f"refused:{signal}:{why}")
     return False
 
 

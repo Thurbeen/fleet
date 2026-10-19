@@ -107,3 +107,16 @@ def test_trace_only_settings_stay_with_the_traces(collector):
     by_path = {r["path"]: r["headers"] for r in collector.requests}
     assert by_path["/v1/traces"]["authorization"] == "Bearer traces"
     assert by_path["/v1/metrics"]["authorization"] == "Bearer metrics"
+
+
+def test_a_refusal_that_moves_from_traces_to_metrics_is_told(collector):
+    """A refusal is that signal's: fixing the traces token and meeting the metrics one's is news."""
+    landed_task()
+    telemetry_conf(f"EXPORT=on\nENDPOINT={collector.endpoint}\n")
+    collector.status = 401
+    assert "/v1/traces refused" in run_fleet("telemetry", "export").out
+    collector.status = 200
+    collector.statuses["/v1/metrics"] = 401
+    run = run_fleet("telemetry", "export")
+    assert run.code == 0, run.out
+    assert "/v1/metrics refused" in run.out, run.out
