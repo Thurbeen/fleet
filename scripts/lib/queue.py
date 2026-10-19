@@ -5449,8 +5449,10 @@ def thurbox_takes(flag: str) -> bool:
 def telemetry_attr_flags(task: Task) -> list:
     """`--telemetry-attr factory.task.id=<ref> --telemetry-attr factory.topic=<topic>`,
     the keys `telemetry.py` puts on the task's own trace, or [] on a thurbox
-    that takes no such field."""
-    if not thurbox_takes(TELEMETRY_ATTR_FLAG):
+    that takes no such field. Never on a `--host` spawn: that runs the host's
+    thurbox, and this machine's `--help` says nothing about which flags it
+    takes."""
+    if task.doc.get("host") or not thurbox_takes(TELEMETRY_ATTR_FLAG):
         return []
     return [TELEMETRY_ATTR_FLAG, f"factory.task.id={task.ref}", TELEMETRY_ATTR_FLAG, f"factory.topic={task.topic}"]
 

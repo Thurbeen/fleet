@@ -256,3 +256,19 @@ def test_trace_id_prints_the_id_any_tool_derives_from_the_task():
     run = run_fleet("telemetry", "trace-id", "ship-it/01-thing")
     assert run.code == 0, run.out
     assert run.out.strip() == trace_id("ship-it/01-thing")
+
+
+def test_nothing_to_send_says_nothing_about_a_collector_it_never_asked(collector):
+    """Recovery is announced only after a request went through."""
+    import shutil
+    import socket
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        dead = f"http://127.0.0.1:{s.getsockname()[1]}"
+    telemetry_conf(f"EXPORT=on\nENDPOINT={dead}\n")
+    landed_task()
+    assert "unreachable" in run_fleet("telemetry", "export").out
+    shutil.rmtree(task_dir_progress("ship-it", "01-thing").parent.parent)
+    quiet = run_fleet("telemetry", "export")
+    assert quiet.code == 0 and quiet.out.strip() == "", quiet.out

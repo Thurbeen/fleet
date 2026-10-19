@@ -51,3 +51,15 @@ def test_a_thurbox_without_the_field_spawns_exactly_as_before(ready, stubs):
     ok(q("dispatch"))
     create = creates(stubs)[0]
     refute(create, "--telemetry-attr", "OTEL_RESOURCE_ATTRIBUTES")
+
+
+def test_a_remote_spawn_carries_no_telemetry_attributes(monkeypatch):
+    """A `--host` spawn runs that host's thurbox, which this one's `--help` says nothing about."""
+    from harness import lib
+
+    queue = lib("queue.py")
+    monkeypatch.setitem(queue._THURBOX_TAKES, queue.TELEMETRY_ATTR_FLAG, True)
+    here = queue.Task("t", "01-a", "/nowhere", {"host": None})
+    there = queue.Task("t", "01-a", "/nowhere", {"host": "devbox"})
+    assert queue.telemetry_attr_flags(here)
+    assert queue.telemetry_attr_flags(there) == []

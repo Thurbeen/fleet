@@ -575,9 +575,12 @@ def export(dry_run: bool = False) -> int:
             print(f"telemetry: {cfg.url} refused {len(batch)} span(s): {why}; they are not sent again")
         save_state(state)
     else:
-        if str(state.get("said") or "").startswith(("down:", "problem:")):
+        # Recovery is news only once a request went through; with nothing to
+        # send, the collector was never asked.
+        if (sent or refused) and str(state.get("said") or "").startswith(("down:", "problem:")):
             print(f"telemetry: {cfg.url} takes spans again")
-        state.pop("said", None)
+        if sent or refused or not str(state.get("said") or "").startswith("down:"):
+            state.pop("said", None)
         if sent:
             print(f"telemetry: {sent} span(s) sent to {cfg.url}")
     save_state(state)

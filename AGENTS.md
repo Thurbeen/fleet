@@ -184,7 +184,7 @@ names every path and the reason for each.
   runs `fleet telemetry export` as a bounded child on its own clock, only while
   it is on; a dead collector is one log line. OTLP/JSON over HTTP from the
   standard library, no SDK — the module's docstring argues it and owns the span
-  model. Dispatch tags each worker session with `factory.task.id` through
+  model. Dispatch tags each local worker session with `factory.task.id` through
   thurbox's `--telemetry-attr` where `session create --help` lists it, and
   passes nothing where it does not. `tests/telemetry/` sends to an in-process
   collector.
