@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Fleet's OpenTelemetry: one trace per task and the factory's measures, rebuilt
-from the queue's records and sent to any OTLP/HTTP endpoint — when the operator
-turns it on.
+from the queue's records, and the reconciler's notice and failure lines as log
+records — sent to any OTLP/HTTP endpoint when the operator turns it on.
 
     uv run fleet telemetry export [--dry-run]   one pass: the spans that closed since the
                                                 last, and every measure as it stands
@@ -60,6 +60,16 @@ is their sum over their count. Lead time and landings per repo are what DORA's
 lead time and deployment frequency are computed from where a merge is the
 deployment.
 
+THE RECONCILER'S LINES are log records. Each notice decision (`notice <kind> →
+<who> <road>: <why>`) and each child failing, or running again after failing,
+is one record carrying event.name (`fleet.reconcile.notice`,
+`.child_failure`, `.child_recovered`), fleet.notice.kind/recipient/road or
+fleet.reconcile.child, and factory.task.id and factory.topic when the line
+names a task. The loop only APPENDS them to `logs.jsonl` here — never a
+network call from the loop — and only while telemetry is on; the export ships
+the spool, and what a collector could not take waits in `logs.sending.jsonl`
+for the next one. Past 4 MiB the spool takes no more until it drains.
+
 IDS ARE DERIVED, SO RE-EXPORTING IS HARMLESS. A task's trace id is the first
 16 bytes of sha256("fleet.task\\0" + "<topic>/<task>") — any tool can compute it
 from the task id, and `trace-id` prints it — and a span id is the first 8 bytes
@@ -100,7 +110,7 @@ as "the same endpoint, JSON body"; `grpc` is a different port and is refused.
 
 IT READS THE QUEUE AND WRITES ONLY ITS OWN STATE. No record is written: the
 runtime directory, `orchestration/telemetry/` (FLEET_TELEMETRY_DIR moves it),
-holds `exported.json` and nothing else. The reconciler runs `export` as a
+holds `exported.json` and the log spool. The reconciler runs `export` as a
 bounded child on its own clock (`TELEMETRY_SECS`) and only while the setting is
 on, so a fleet that never turned it on runs nothing new.
 """
@@ -158,7 +168,7 @@ SCOPE = {"name": "fleet.telemetry"}
 ON = ("on", "true", "yes", "1")
 
 # What one export sends, each to its own OTLP/HTTP path.
-SIGNALS = ("traces", "metrics")
+SIGNALS = ("traces", "metrics", "logs")
 
 # Attribute keys and a unit more than one span or measure carries.
 REPO = "factory.repo"
@@ -657,6 +667,101 @@ def metrics(q, live, every, start: int, now: int) -> list:
     return out
 
 
+# --- the reconciler's lines, as log records -----------------------------------
+#
+# The loop writes one greppable line per notice decision and keeps each child's
+# failure for `status`; both reach a collector as log records. The loop never
+# talks to a collector: it APPENDS to a spool here, which costs a file append,
+# and the next export ships it. Only while telemetry is on, so a fleet that
+# never asked keeps no spool.
+
+SPOOL = "logs.jsonl"
+SENDING = "logs.sending.jsonl"
+# A collector down for days must not grow the spool without end: past this,
+# new records are dropped until an export drains it.
+SPOOL_MAX_BYTES = 4 * 1024 * 1024
+SPOOL_LOCK_WAIT = 10.0
+
+NOTICE = re.compile(r"notice (?P<kind>\S+) → (?P<who>.+?)(?: \[(?P<id>[^\]]+)\])? "
+                    r"(?P<road>typed|mailbox|waiting|relayed|skipped|dropped|failed|ran)(?:: |$)")
+# A task ref as the queue spells one: `<topic>/<NN>-<slug>`.
+TASK_REF = re.compile(r"(?<![\w/.-])([a-z0-9][a-z0-9-]*)/(\d{2}-[a-z0-9-]+)")
+
+INFO, WARN = (9, "INFO"), (13, "WARN")
+
+
+def _spool(severity: tuple, body: str, attrs: dict) -> None:
+    if not enabled():
+        return
+    path = os.path.join(state_dir(), SPOOL)
+    os.makedirs(state_dir(), exist_ok=True)
+    try:
+        if os.path.getsize(path) > SPOOL_MAX_BYTES:
+            return
+    except OSError:
+        pass
+    record = {"timeUnixNano": str(time.time_ns()), "severityNumber": severity[0], "severityText": severity[1],
+              "body": {"stringValue": body}, "attributes": otlp_attrs(attrs)}
+    with fleet_platform.exclusive_lock(path + ".lock", wait=SPOOL_LOCK_WAIT):
+        fleet_platform.append_record(path, json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def record_line(line: str) -> None:
+    """A reconciler log line: spooled when it is a notice decision, ignored otherwise."""
+    at = line.find("notice ")
+    m = NOTICE.match(line, at) if at >= 0 else None
+    if not m:
+        return
+    body = line[at:].strip()
+    attrs = {"event.name": "fleet.reconcile.notice", "fleet.notice.kind": m["kind"],
+             "fleet.notice.recipient": m["who"], "fleet.notice.road": m["road"]}
+    ref = TASK_REF.search(body)
+    if ref:
+        attrs.update({"factory.task.id": ref.group(0), "factory.topic": ref.group(1)})
+    _spool(WARN if m["road"] == "failed" else INFO, body, attrs)
+
+
+def record_child(label: str, why: str, count: int) -> None:
+    """A reconciler child failing (`why`), or succeeding again after failing (`why` empty)."""
+    if why:
+        _spool(WARN, f"{label}: {why}", {"event.name": "fleet.reconcile.child_failure",
+                                          "fleet.reconcile.child": label, "fleet.reconcile.failures": count})
+    else:
+        _spool(INFO, f"{label}: running again", {"event.name": "fleet.reconcile.child_recovered",
+                                                  "fleet.reconcile.child": label})
+
+
+def drain_spool() -> list:
+    """Move what the loop spooled behind what an earlier export could not send, and return it all."""
+    spool, sending = os.path.join(state_dir(), SPOOL), os.path.join(state_dir(), SENDING)
+    if os.path.exists(spool):
+        with fleet_platform.exclusive_lock(spool + ".lock", wait=SPOOL_LOCK_WAIT):
+            with open(spool, encoding="utf-8") as fh:
+                fleet_platform.append_record(sending, fh.read())
+            os.remove(spool)
+    try:
+        with open(sending, encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        return []
+    out = []
+    for line in lines:
+        try:
+            out.append(json.loads(line))
+        except ValueError:
+            continue
+    return out
+
+
+def keep_unsent(records: list) -> None:
+    """What is still to send, written back in one step; nothing left removes the file."""
+    sending = os.path.join(state_dir(), SENDING)
+    if records:
+        fleet_platform.write_record(sending, "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records))
+    elif os.path.exists(sending):
+        os.remove(sending)
+
+
 # --- the export ----------------------------------------------------------------
 
 
@@ -696,7 +801,8 @@ def pending_spans(q, queue, state: dict, now: int) -> tuple[list, set]:
 def post(cfg: Settings, signal: str, items: list) -> tuple[int, str]:
     """One OTLP/HTTP request: (status, why). Status 0 is the request never answered."""
     kind, scoped, field = {"traces": ("resourceSpans", "scopeSpans", "spans"),
-                           "metrics": ("resourceMetrics", "scopeMetrics", "metrics")}[signal]
+                           "metrics": ("resourceMetrics", "scopeMetrics", "metrics"),
+                           "logs": ("resourceLogs", "scopeLogs", "logRecords")}[signal]
     body = json.dumps({kind: [{
         "resource": {"attributes": otlp_attrs(cfg.resource)},
         scoped: [{"scope": SCOPE, field: items}],
@@ -756,6 +862,19 @@ def answer(cfg: Settings, state: dict, signal: str, status: int, why: str, waiti
     return False
 
 
+def send_logs(cfg: Settings, state: dict) -> bool:
+    """The spooled log records; whether every request was settled. What is not
+    stays in the sending file for the next export."""
+    records = drain_spool()
+    while records:
+        status, why = post(cfg, "logs", records[:CHUNK])
+        if not answer(cfg, state, "logs", status, why, f"{len(records)} log record(s)"):
+            return False
+        records = records[CHUNK:]
+        keep_unsent(records)
+    return True
+
+
 def send_spans(cfg: Settings, state: dict, todo: list) -> tuple[bool, int]:
     """(whether every request was settled, how many spans the collector took)."""
     sent = 0
@@ -801,6 +920,8 @@ def export(dry_run: bool = False) -> None:
         # The measures go every pass, so their 2xx is the collector taking
         # telemetry again; their 400 keeps its rejection said.
         settled = 200 <= status < 300
+    if settled:
+        settled = send_logs(cfg, state)
     if settled:
         if str(state.get("said") or "").startswith(("down:", "problem:", "refused:")):
             print("telemetry: the collector takes telemetry again")

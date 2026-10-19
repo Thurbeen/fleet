@@ -211,7 +211,8 @@ __pycache__/
 
 # MACHINE. `fleet telemetry export`'s memory of which spans it already sent
 # (`exported.json`) and the last failure it reported, so a pass sends only what
-# is new and a collector that stays down is one log line. Written by
+# is new and a collector that stays down is one log line, plus the spool of the
+# reconciler's lines waiting to go as log records (`logs*.jsonl`). Written by
 # scripts/lib/telemetry.py, which is tracked; what it writes is not.
 /orchestration/telemetry/
 

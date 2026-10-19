@@ -62,3 +62,21 @@ def test_a_dead_collector_is_one_log_line_and_never_the_pass(recon, landed):
     assert recon.log().count("unreachable") == 1, recon.log()
     status = recon("status")
     assert "telemetry" not in status.out, "a dead collector is not a failing child"
+
+
+def test_a_failing_child_and_a_notice_reach_the_collector_as_log_records(recon, collector, landed, monkeypatch):
+    monkeypatch.setenv("RECON_FAIL", "refuel")
+    telemetry_conf(f"EXPORT=on\nENDPOINT={collector.endpoint}\n")
+    recon.ready("ship-it/02-next")
+    recon("ensure")
+
+    def events():
+        return {r["attrs"].get("event.name") for r in collector.logs()}
+
+    assert wait_for(lambda: {"fleet.reconcile.child_failure", "fleet.reconcile.notice"} <= events(), 40), \
+        (recon.log(), collector.logs())
+    failed = next(r for r in collector.logs() if r["attrs"]["event.name"] == "fleet.reconcile.child_failure")
+    assert failed["attrs"]["fleet.reconcile.child"] == "refuel"
+    notice = next(r for r in collector.logs() if r["attrs"]["event.name"] == "fleet.reconcile.notice")
+    assert notice["attrs"]["fleet.notice.kind"] == "ready"
+    assert notice["attrs"]["factory.task.id"] == "ship-it/02-next"

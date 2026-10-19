@@ -185,7 +185,9 @@ names every path and the reason for each.
   it is on; a dead collector is one log line. The same pass sends the
   factory's measures as metrics — queue depth by state, the ready, stalled and
   needs-input counts, and histograms over every landed task of lead time,
-  dispatch to change request, review rounds to a clean review and rework.
+  dispatch to change request, review rounds to a clean review and rework —
+  and ships the loop's notice and child-failure lines as log records, which
+  the loop only appends to a spool there.
   OTLP/JSON over HTTP from the standard library, no SDK — the module's
   docstring argues it and owns the span model and the measures. Dispatch tags
   each local worker session with `factory.task.id` through thurbox's

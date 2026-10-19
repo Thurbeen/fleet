@@ -85,7 +85,9 @@ crashing every time held the lock and a fresh heartbeat while running nothing
 past `root`. It stays `failing` until a pass runs to its end, and `ensure`
 reports it rather than adopting it as healthy. Each notice decision is one `notify:
 notice …` log line (`notify_delivery.notice`), so `grep 'notice '` says who was
-told what, by which road, or why nobody was.
+told what, by which road, or why nobody was. Where telemetry is on, each such
+line and each child's failure and recovery is also spooled as an OTLP log
+record for the next export (`telemetry.py`) — a file append, never a request.
 
 A LOOP FROM BEFORE THE UV PORT holds no lock: the bash `scripts/reconcile.sh`
 supervisor wrote a pidfile only, and outlived the update that deleted its
@@ -453,6 +455,7 @@ def log(cfg: Config, text: str) -> None:
         fleet_platform.append_record(cfg.log, f"[{now()}] {text}\n")
     except OSError:
         pass
+    to_telemetry("record_line", text)
 
 
 def log_raw(cfg: Config, text: str) -> None:
@@ -461,6 +464,20 @@ def log_raw(cfg: Config, text: str) -> None:
             fleet_platform.append_record(cfg.log, text)
         except OSError:
             pass
+        for line in text.splitlines():
+            to_telemetry("record_line", line)
+
+
+def to_telemetry(what: str, *args) -> None:
+    """A notice line or a child's failure, handed to `telemetry.py`'s spool —
+    which keeps nothing unless the operator turned telemetry on. Never a
+    failure of the loop: a log record is not worth a pass."""
+    if what == "record_line" and "notice " not in args[0]:
+        return
+    try:
+        getattr(_load_sibling("fleet_telemetry", "telemetry.py"), what)(*args)
+    except Exception:  # noqa: BLE001 — the loop outlives its telemetry
+        pass
 
 
 def who() -> str:
@@ -808,10 +825,12 @@ def child_went(cfg: Config, label: str, why: str = "") -> None:
         if label not in doc:
             return
         doc.pop(label)
+        to_telemetry("record_child", label, "", 0)
     else:
         was = doc.get(label) if isinstance(doc.get(label), dict) else {}
         doc[label] = {"count": int(was.get("count") or 0) + 1, "since": was.get("since") or now(),
                       "last": now(), "why": why}
+        to_telemetry("record_child", label, why, doc[label]["count"])
     try:
         fleet_platform.write_record(path, json.dumps(doc, ensure_ascii=False) + "\n")
     except OSError:

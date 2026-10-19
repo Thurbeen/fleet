@@ -83,6 +83,18 @@ class Collector:
         return out
 
 
+    def logs(self) -> list[dict]:
+        """Every log record received, each with its attributes as `attrs`."""
+        out = []
+        for req in self.requests:
+            if req["path"] != "/v1/logs":
+                continue
+            for rl in req["body"]["resourceLogs"]:
+                for sl in rl["scopeLogs"]:
+                    out += [{**r, "attrs": attrs(r)} for r in sl["logRecords"]]
+        return out
+
+
 def point(points: list, **want) -> dict:
     """The one data point whose attributes include `want`."""
     found = [p for p in points if all(attrs(p).get(k) == v for k, v in want.items())]
