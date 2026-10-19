@@ -319,63 +319,82 @@ def short(text, limit: int = 200) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+def mapping(doc: dict, key: str) -> dict:
+    """A record field that should be a mapping, or {} for one that is absent or is not."""
+    value = doc.get(key)
+    return value if isinstance(value, dict) else {}
+
+
+def http_artifacts(q, task) -> list[str]:
+    return [a["url"] for a in q.recorded_artifacts(task) if str(a.get("url") or "").startswith("http")]
+
+
+def task_repo(q, task) -> str:
+    """The task's repository as its first change request names it, else its checkout's name."""
+    urls = http_artifacts(q, task)
+    named = change_request(urls[0]).get("repo") if urls else None
+    return named or os.path.basename(str(task.doc.get("repo") or "").rstrip("/\\"))
+
+
 def task_spans(q, task, now: int) -> list[dict]:
     """Every closed stage of one task, as OTLP spans."""
     d = task.doc
-    t = lambda stamp: to_ns(q, stamp)  # noqa: E731
-    created = t(d.get("created"))
+    created = to_ns(q, d.get("created"))
     if created is None:
         return []
-    state = task.state
-    dispatched, concluded = t(d.get("dispatched_at")), t(d.get("concluded_at"))
-    landing = d.get("landing") if isinstance(d.get("landing"), dict) else {}
-    gave_up = d.get("abandoned") if isinstance(d.get("abandoned"), dict) else {}
-    landed = t(landing.get("at")) if state == "landed" else None
-    abandoned = t(gave_up.get("at")) if state == "abandoned" else None
+    dispatched, concluded = to_ns(q, d.get("dispatched_at")), to_ns(q, d.get("concluded_at"))
+    landed = to_ns(q, mapping(d, "landing").get("at")) if task.state == "landed" else None
+    abandoned = to_ns(q, mapping(d, "abandoned").get("at")) if task.state == "abandoned" else None
     end = landed or abandoned
     lines = progress_lines(task)
-    artifacts = [a["url"] for a in q.recorded_artifacts(task) if str(a.get("url") or "").startswith("http")]
-    first = change_request(artifacts[0]) if artifacts else {}
-    method = (d.get("publish") or {}).get("method") if isinstance(d.get("publish"), dict) else None
+    artifacts = http_artifacts(q, task)
 
     b = Builder(task.ref, {"factory.task.id": task.ref, "factory.topic": task.topic})
-    b.add("root", "factory task", created, end, parent=None, stage=False, attrs={
-        "factory.task.title": d.get("title"),
-        "factory.repo": first.get("repo") or os.path.basename(str(d.get("repo") or "").rstrip("/\\")),
-        "factory.agent": d.get("agent"),
-        "factory.host": d.get("host"),
-        "factory.publish.method": method,
-        "factory.outcome": d.get("outcome"),
-        "factory.state": state,
-        "vcs.ref.head.name": d.get("branch"),
-        "vcs.ref.base.name": d.get("base"),
-        "cicd.pipeline.name": "factory",
-        "cicd.pipeline.run.id": task.ref,
-        "cicd.pipeline.result": "success" if state == "landed" else "cancellation",
-    }, links=[(trace_id(task.topic, "topic"), span_id(task.topic, "root", "topic"))])
-
+    b.add("root", "factory task", created, end, parent=None, stage=False, attrs=_root_attrs(q, task),
+          links=[(trace_id(task.topic, "topic"), span_id(task.topic, "root", "topic"))])
     b.add("queued", "queued", created, dispatched or abandoned)
-
     if dispatched:
-        events = [(t(s.get("at")), "lead send", {}) for s in d.get("sends") or [] if isinstance(s, dict)]
-        events += [(t(r.get("at")), "refuel", {"factory.refuel.why": short(r.get("why"))})
-                   for r in d.get("refuels") or [] if isinstance(r, dict)]
-        b.add("work", "work", dispatched, concluded or abandoned, attrs={"factory.outcome": d.get("outcome")},
-              events=[e for e in events if e[0] is not None])
-
+        _work(b, q, d, dispatched, concluded or abandoned)
     _stretches(b, q, lines, end)
     _declares(b, q, lines, end, now)
     for url in artifacts:
         _change_request(b, q, task, url, lines, landed, abandoned, url == artifacts[0])
-
     if landed:
-        merged = next((t(s["shepherd"].get("at")) for s in lines if isinstance(s.get("shepherd"), dict)
-                       and s["shepherd"].get("condition") == "merged"), None)
+        merged = next((to_ns(q, line["shepherd"].get("at")) for line in lines
+                       if mapping(line, "shepherd").get("condition") == "merged"), None)
         b.add("landed", "landed", merged or landed, landed,
               attrs={"vcs.change.state": "merged", "factory.merged.by": "shepherd" if merged else "forge"})
     if abandoned:
-        b.add("abandoned", "abandoned", abandoned, abandoned, attrs={"factory.abandon.why": short(gave_up.get("why"))})
+        b.add("abandoned", "abandoned", abandoned, abandoned,
+              attrs={"factory.abandon.why": short(mapping(d, "abandoned").get("why"))})
     return b.spans
+
+
+def _root_attrs(q, task) -> dict:
+    d = task.doc
+    return {
+        "factory.task.title": d.get("title"),
+        "factory.repo": task_repo(q, task),
+        "factory.agent": d.get("agent"),
+        "factory.host": d.get("host"),
+        "factory.publish.method": mapping(d, "publish").get("method"),
+        "factory.outcome": d.get("outcome"),
+        "factory.state": task.state,
+        "vcs.ref.head.name": d.get("branch"),
+        "vcs.ref.base.name": d.get("base"),
+        "cicd.pipeline.name": "factory",
+        "cicd.pipeline.run.id": task.ref,
+        "cicd.pipeline.result": "success" if task.state == "landed" else "cancellation",
+    }
+
+
+def _work(b: Builder, q, d: dict, start: int, end) -> None:
+    """Dispatched to the result written: the lead's sends and each refuel as its events."""
+    events = [(to_ns(q, s.get("at")), "lead send", {}) for s in d.get("sends") or [] if isinstance(s, dict)]
+    events += [(to_ns(q, r.get("at")), "refuel", {"factory.refuel.why": short(r.get("why"))})
+               for r in d.get("refuels") or [] if isinstance(r, dict)]
+    b.add("work", "work", start, end, attrs={"factory.outcome": d.get("outcome")},
+          events=[e for e in events if e[0] is not None])
 
 
 def _stretches(b: Builder, q, lines: list, end) -> None:
@@ -419,50 +438,63 @@ def _declares(b: Builder, q, lines: list, end, now: int) -> None:
 def _change_request(b: Builder, q, task, url: str, lines: list, landed, abandoned, primary: bool) -> None:
     """One change request: first seen to merged or closed, its publish states as
     events, and one child span per review round."""
-    t = lambda stamp: to_ns(q, stamp)  # noqa: E731
     cr = change_request(url)
     key = f"cr:{url}"
     # Publish states carry no URL: they are the task's, so they go on its first change request.
-    publish = [line["publish"] for line in lines if primary and isinstance(line.get("publish"), dict)]
-    herded = [line["shepherd"] for line in lines if isinstance(line.get("shepherd"), dict)
-              and line["shepherd"].get("pr") in (url, None)]
-    check = task.doc.get("artifact_check") if isinstance(task.doc.get("artifact_check"), dict) else {}
-    seen = [x for x in [t(p.get("at")) for p in publish] + [t(s.get("at")) for s in herded] + [t(check.get("at"))]
-            if x is not None]
+    publish = [line["publish"] for line in lines if primary and mapping(line, "publish")]
+    herded = [line["shepherd"] for line in lines if mapping(line, "shepherd").get("pr") in (url, None)
+              and mapping(line, "shepherd")]
+    seen = [to_ns(q, x.get("at")) for x in [*publish, *herded, mapping(task.doc, "artifact_check")]]
+    seen = [x for x in seen if x is not None]
     if not seen:
         return
-    start = min(seen)
-    merged = next((t(s.get("at")) for s in herded if s.get("condition") == "merged"), None)
-    gone = next((t(p.get("at")) for p in publish if p.get("state") in ("merged", "closed")), None)
-    stop = merged or gone or landed or abandoned
-    state = "merged" if (merged or landed) else ("closed" if (abandoned or gone) else "open")
+    merged = next((to_ns(q, s.get("at")) for s in herded if s.get("condition") == "merged"), None)
+    gone = next((to_ns(q, p.get("at")) for p in publish if p.get("state") in ("merged", "closed")), None)
+    if merged or landed:
+        state = "merged"
+    elif abandoned or gone:
+        state = "closed"
+    else:
+        state = "open"
+    b.add(key, "change request", min(seen), merged or gone or landed or abandoned,
+          events=_publish_events(q, publish, herded), attrs={
+              "vcs.change.id": cr.get("number"),
+              "vcs.change.state": state,
+              "vcs.repository.url.full": cr.get("repo_url"),
+              "vcs.ref.head.name": task.doc.get("branch"),
+              "vcs.ref.base.name": task.doc.get("base"),
+              "factory.repo": cr.get("repo"),
+          })
+    _reviews(b, q, url, key, min(seen))
 
+
+def _publish_events(q, publish: list, herded: list) -> list:
+    """Each change of publish state, and each shepherd condition short of the merge."""
     events, last = [], None
     for p in publish:
-        if p.get("state") != last and t(p.get("at")) is not None:
-            events.append((t(p.get("at")), str(p.get("state")),
+        at = to_ns(q, p.get("at"))
+        if p.get("state") != last and at is not None:
+            events.append((at, str(p.get("state")),
                            {"factory.publish.by": p.get("by"), "factory.publish.detail": short(p.get("detail"))}))
         last = p.get("state")
-    events += [(t(s.get("at")), f"shepherd {s.get('condition')}", {"factory.shepherd.detail": short(s.get("detail"))})
-               for s in herded if t(s.get("at")) is not None and s.get("condition") != "merged"]
-    b.add(key, "change request", start, stop, events=events, attrs={
-        "vcs.change.id": cr.get("number"),
-        "vcs.change.state": state,
-        "vcs.repository.url.full": cr.get("repo_url"),
-        "vcs.ref.head.name": task.doc.get("branch"),
-        "vcs.ref.base.name": task.doc.get("base"),
-        "factory.repo": cr.get("repo"),
-    })
+    events += [(to_ns(q, s.get("at")), f"shepherd {s.get('condition')}",
+                {"factory.shepherd.detail": short(s.get("detail"))})
+               for s in herded if to_ns(q, s.get("at")) is not None and s.get("condition") != "merged"]
+    return events
 
+
+def _reviews(b: Builder, q, url: str, parent: str, start: int) -> None:
+    """One span per recorded review round, each from the round before it."""
     prev = start
     for n, rnd in enumerate(review_rounds(q, url), 1):
-        at = t(rnd.get("at"))
+        at = to_ns(q, rnd.get("at"))
         if at is None:
             continue
-        b.add(f"review:{url}:{n}", "review", min(prev, at), at, parent=key, attrs={
+        number = lambda key: rnd.get(key) if isinstance(rnd.get(key), int) else None  # noqa: E731
+        b.add(f"review:{url}:{n}", "review", min(prev, at), at, parent=parent, attrs={
             "factory.review.round": n,
-            "factory.review.score": rnd.get("score") if isinstance(rnd.get("score"), int) else None,
-            "factory.review.findings": rnd.get("findings") if isinstance(rnd.get("findings"), int) else None,
+            "factory.review.score": number("score"),
+            "factory.review.findings": number("findings"),
             "factory.review.state": rnd.get("state"),
             "vcs.ref.head.revision": rnd.get("head"),
         })
@@ -527,45 +559,36 @@ def post(cfg: Settings, spans: list) -> tuple[int, str]:
             return resp.status, ""
     except urllib.error.HTTPError as exc:
         return exc.code, f"HTTP {exc.code} {exc.reason}"
-    except (urllib.error.URLError, OSError, ValueError) as exc:
+    except (OSError, ValueError) as exc:  # URLError is an OSError
         return 0, str(getattr(exc, "reason", exc))
 
 
-def export(dry_run: bool = False) -> int:
-    cfg = Settings()
-    if not cfg.enabled:
-        return 0
-    state = load_state()
+def down(status: int) -> bool:
+    """A request the collector did not take but may take later: unanswered, a 5xx, or a 429."""
+    return status == 0 or status >= 500 or status == 429
 
-    def tell(line: str, key: str) -> None:
-        # One line per CHANGE: the reconciler runs this every few minutes, and a
-        # collector that stays down is one fact, not a line per pass.
-        if state.get("said") != key:
-            print(f"telemetry: {line}")
-        state["said"] = key
 
-    if cfg.problem:
-        tell(cfg.problem, "problem:" + cfg.problem)
-        if not dry_run:
-            save_state(state)
-        return 0
+def tell(state: dict, line: str, key: str) -> None:
+    """One line per CHANGE: the reconciler runs an export every few minutes, and
+    a collector that stays down is one fact, not a line per pass."""
+    if state.get("said") != key:
+        print(f"telemetry: {line}")
+    state["said"] = key
 
-    q = _load_sibling("fleet_queue", "queue.py")
-    now = time.time_ns()
-    todo, keys = pending_spans(q, state, now)
-    if dry_run:
-        print(f"telemetry: {len(todo)} span(s) would go to {cfg.url}")
-        return 0
-    state["sent"] = {k: v for k, v in state["sent"].items() if k in keys}
 
+def send_spans(cfg: Settings, state: dict, todo: list) -> tuple[bool, int]:
+    """(whether the collector answered every request, how many spans it took).
+    A refusal (4xx) is an answer: those spans are counted sent, since sending
+    them again would only be refused again."""
     sent = refused = 0
     for i in range(0, len(todo), CHUNK):
         batch = todo[i:i + CHUNK]
         status, why = post(cfg, [s for _k, s in batch])
-        if status == 0 or status >= 500 or status == 429:
-            tell(f"{cfg.url} unreachable: {why}; {len(todo) - sent - refused} span(s) wait for a later export",
-                 f"down:{cfg.url}:{why}")
-            break
+        if down(status):
+            # Keyed on the failure, not the request: down is one fact.
+            tell(state, f"{cfg.url} unreachable: {why}; {len(todo) - sent - refused} span(s) wait for a "
+                        "later export", f"down:{why}")
+            return False, sent
         for k, s in batch:
             state["sent"].setdefault(k, {})[s["spanId"]] = fingerprint(s)
         if 200 <= status < 300:
@@ -574,17 +597,39 @@ def export(dry_run: bool = False) -> int:
             refused += len(batch)
             print(f"telemetry: {cfg.url} refused {len(batch)} span(s): {why}; they are not sent again")
         save_state(state)
-    else:
-        # Recovery is news only once a request went through; with nothing to
-        # send, the collector was never asked.
-        if (sent or refused) and str(state.get("said") or "").startswith(("down:", "problem:")):
-            print(f"telemetry: {cfg.url} takes spans again")
-        if sent or refused or not str(state.get("said") or "").startswith("down:"):
-            state.pop("said", None)
-        if sent:
-            print(f"telemetry: {sent} span(s) sent to {cfg.url}")
+    return True, sent
+
+
+def export(dry_run: bool = False) -> None:
+    cfg = Settings()
+    if not cfg.enabled:
+        return
+    state = load_state()
+    if cfg.problem:
+        tell(state, cfg.problem, "problem:" + cfg.problem)
+        if not dry_run:
+            save_state(state)
+        return
+
+    q = _load_sibling("fleet_queue", "queue.py")
+    todo, keys = pending_spans(q, state, time.time_ns())
+    if dry_run:
+        print(f"telemetry: {len(todo)} span(s) would go to {cfg.url}")
+        return
+    state["sent"] = {k: v for k, v in state["sent"].items() if k in keys}
+
+    answered, sent = send_spans(cfg, state, todo)
+    # Recovery is news only once a request went through; with nothing to
+    # send, the collector was never asked and a standing failure stands.
+    if answered and todo:
+        if str(state.get("said") or "").startswith(("down:", "problem:")):
+            print(f"telemetry: {cfg.url} takes telemetry again")
+        state.pop("said", None)
+    elif answered and str(state.get("said") or "").startswith("problem:"):
+        state.pop("said", None)
+    if sent:
+        print(f"telemetry: {sent} span(s) sent to {cfg.url}")
     save_state(state)
-    return 0
 
 
 def main(argv: list[str]) -> int:
@@ -597,8 +642,9 @@ def main(argv: list[str]) -> int:
     args = parser.parse_args(argv)
     if args.cmd == "trace-id":
         print(trace_id(args.ref))
-        return 0
-    return export(args.dry_run)
+    else:
+        export(args.dry_run)
+    return 0
 
 
 if __name__ == "__main__":

@@ -349,16 +349,21 @@ def record(q, args):
                              "feedback": digest, "evidence": args.evidence,
                              "score": args.score, "findings": args.findings,
                              "state": "clean" if clean else "findings", "at": q.now()}
-        # The assessment above is what the gate reads, and a new head replaces
-        # it; every round stays here, for the task's trace (telemetry.py).
-        rounds = doc.get("rounds") if isinstance(doc.get("rounds"), list) else []
-        rounds.append({k: doc["assessment"][k] for k in ("head", "score", "findings", "state", "at")})
-        doc["rounds"] = rounds[-MAX_ROUNDS:]
+        keep_round(doc)
         doc.update(url=cr.url, repo=cr.repo.qualified, head=args.head,
                    state=doc["assessment"]["state"], action="recorded", reviewer_task=pol["task"])
         q.fleet_platform.write_record(filename, json.dumps(doc) + "\n")
     print(f"review {doc['state']}: {cr.url} at {args.head}")
     return 0
+
+
+def keep_round(doc):
+    """The assessment is what the gate reads, and a new head replaces it; every
+    round stays in `rounds`, for the task's trace (telemetry.py)."""
+    rounds = doc.get("rounds")
+    rounds = rounds if isinstance(rounds, list) else []
+    rounds.append({k: doc["assessment"][k] for k in ("head", "score", "findings", "state", "at")})
+    doc["rounds"] = rounds[-MAX_ROUNDS:]
 
 
 def pending(q):

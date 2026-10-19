@@ -199,11 +199,13 @@ def test_a_dead_collector_costs_one_line_and_the_spans_go_later(collector, tmp_p
     assert run.code == 0, run.out
     assert time.monotonic() - began < 20
     lines = [line for line in run.out.splitlines() if line.strip()]
-    assert len(lines) == 1 and dead in lines[0], run.out
+    assert len(lines) == 1, run.out
+    assert dead in lines[0], run.out
 
     # The same failure again is not news.
     again = run_fleet("telemetry", "export")
-    assert again.code == 0 and again.out.strip() == "", again.out
+    assert again.code == 0, again.out
+    assert again.out.strip() == "", again.out
 
     telemetry_conf(f"EXPORT=on\nENDPOINT={collector.endpoint}\n")
     assert run_fleet("telemetry", "export").code == 0
@@ -234,7 +236,8 @@ def test_otel_sdk_disabled_wins_over_the_setting(collector):
     landed_task()
     telemetry_conf(f"EXPORT=on\nENDPOINT={collector.endpoint}\n")
     run = run_fleet("telemetry", "export", OTEL_SDK_DISABLED="true")
-    assert run.code == 0 and collector.requests == [], run.out
+    assert run.code == 0, run.out
+    assert collector.requests == []
 
 
 def test_an_abandoned_task_ends_in_an_abandoned_span(collector):
@@ -271,4 +274,5 @@ def test_nothing_to_send_says_nothing_about_a_collector_it_never_asked(collector
     assert "unreachable" in run_fleet("telemetry", "export").out
     shutil.rmtree(task_dir_progress("ship-it", "01-thing").parent.parent)
     quiet = run_fleet("telemetry", "export")
-    assert quiet.code == 0 and quiet.out.strip() == "", quiet.out
+    assert quiet.code == 0, quiet.out
+    assert quiet.out.strip() == "", quiet.out
