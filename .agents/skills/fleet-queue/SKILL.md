@@ -888,6 +888,42 @@ checkout is git's, not thurbox's, so it is removed separately with `git
 worktree remove` and no `--force` — one holding uncommitted work is kept and
 reported.
 
+**The branch goes too, when it holds nothing.** `delete --force` takes the
+worktree and leaves the branch, and `add` refuses a branch that exists. So once
+a finished task that fleet dispatched holds no session, `reap` deletes its
+branch in each repository it spans — on its host for a `--host` task — when
+the repository path is the top of a checkout, no worktree has the branch
+checked out, and every commit on it is on `origin/<base>`, fetched first. Only
+origin's copy counts: a local base can hold commits nobody pushed, or be the
+branch itself. A task bound with `fleet queue attach` is on a branch fleet did
+not cut and is never touched; neither is a branch that is a base, `HEAD`,
+origin's default branch or a symbolic ref. The delete is `update-ref
+--no-deref -d` against the tip it checked, so a commit that lands in between
+makes git refuse; no repository hook or `refs/replace` applies, and the
+branch's `branch.<name>` config goes with it. A branch already gone, or a
+checkout no longer there, is said nothing of:
+
+```text
+    plans/01-plan-it             deleted    branch plan/topic-1 in /…/app
+    plans/02-plan-more           kept       branch plan/topic-2 in /…/app: 2 commit(s) not on origin/main
+    plans/03-plan-again          kept       branch plan/topic-3 in /…/app: checked out at /…/tree — again next pass
+```
+
+**A squash-merged branch is kept; delete it by hand.** Its commits reach the
+base squashed into one, so they are never on it as themselves, and the
+landing records no head the forge merged to compare the branch against.
+
+The record carries `branch_released: {how, at}` (`deleted`, `kept` or `gone`)
+for an answer that will not change — deleted, gone, commits not on the base, a
+base origin no longer has, any refusal above, a host no longer in
+`hosts.toml` — and is never asked again; a kept branch is yours to delete.
+Anything that can change (checked out, a fetch that failed on the network, a
+host that did not answer, git refusing) records nothing, says `again next
+pass`, and is asked on the next one; `branch_held` keeps that reason, so it is
+said again only when it changes. `--dry-run` fetches the base, deletes
+nothing, says every held reason, and reads a session the same pass would reap
+or drop as gone, a reaped one's own worktree with it.
+
 **A session that went without `delete --force` leaves its worktree behind**,
 and with it gigabytes of build output. When `reap` drops such an id, and
 before it removes a fixer's checkout, it deletes the worktree's `target/`,

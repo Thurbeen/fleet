@@ -136,3 +136,7 @@ merged, because a blocker clears on `landed` and half a task on `main` would
 release a dependent onto code that is not there. Landing releases the
 task's session and worktree and stamps `task.yaml` with a `reaped: {session,
 how, at}` receipt, because the id it names no longer resolves to anything.
+Its branch is deleted too when fleet cut it and it holds nothing — not
+checked out, every commit on it already on `origin/<base>`, fetched first —
+and `branch_released: {how, at}` records an outcome that will not change. A
+squash-merged branch is kept; delete it by hand.

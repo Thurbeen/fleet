@@ -4310,6 +4310,16 @@ class PosixShell:
             f"printf {UPSTREAM_GONE}\n"
         )
 
+    def git_refusal(self, repo: str) -> str:
+        return ""
+
+    def git(self, repo: str, argv: list) -> str:
+        return (
+            f"printf '%s\\n' {GIT_OUT}\n"
+            f"LC_ALL=C git --no-replace-objects -C {shlex.quote(repo)} {shell_quote(fetch_config('/dev/null') + argv)} </dev/null\n"
+            f"printf '\\n{GIT_EXIT}%s\\n' \"$?\"\n"
+        )
+
     def thurbox_cli(self, args: str) -> str:
         return HOST_CLI_POSIX.replace("{flavour}", host_cli_flavour()).replace("{args}", args)
 
@@ -4517,6 +4527,23 @@ class PowerShell:
             "  if ($LASTEXITCODE -ne 0) { exit 1 }\n"
             "}\n"
             f"Write-Output '{UPSTREAM_GONE}'\n"
+        )
+
+    # PowerShell 5 builds git.exe's command line without escaping an embedded
+    # `"`, so a path holding one would split into arguments of its own.
+    def git_refusal(self, repo: str) -> str:
+        if '"' in repo or any(ord(c) < 32 or ord(c) == 127 for c in repo):
+            return f"{repo!r} holds a `\"` or a control character, which PowerShell cannot pass to git"
+        return ""
+
+    def git(self, repo: str, argv: list) -> str:
+        if self.git_refusal(repo):
+            raise ValueError(self.git_refusal(repo))
+        return (
+            f"Write-Output '{GIT_OUT}'\n"
+            "$env:LC_ALL = 'C'\n"
+            f"& git --no-replace-objects -C {ps_quote(repo)} {' '.join(ps_quote(a) for a in fetch_config('NUL') + argv)}\n"
+            f"Write-Output \"{GIT_EXIT}$LASTEXITCODE\"\n"
         )
 
     def thurbox_cli(self, args: str) -> str:
@@ -5176,6 +5203,8 @@ ORIGIN_REFS = "refs/remotes/origin/"
 FETCH_DONE = "fleet-fetched"
 FETCH_FAILED = "fleet-fetch-failed"
 UPSTREAM_GONE = "fleet-no-upstream"
+GIT_OUT = "fleet-git-out"
+GIT_EXIT = "fleet-git-exit="
 # A fetched base reaches a refspec, a POSIX command line and, on a Windows
 # host, a git.exe command line PowerShell 5 builds without escaping an
 # embedded `"` — so it is a plain ref name or nothing, checked before any of
@@ -5253,7 +5282,8 @@ def fetch_local_base(repo: str, name: str) -> str:
             timeout=FETCH_TIMEOUT,
             # Nobody is at this terminal to type a password, and a prompt
             # would hold the whole wave until the timeout.
-            env={**os.environ, "LC_ALL": "C", "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never",
+            env={**{k: v for k, v in os.environ.items() if k not in GIT_REPO_ENV},
+                 "LC_ALL": "C", "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never",
                  **fetch_ssh_env(repo)},
         )
     except subprocess.TimeoutExpired:
@@ -5903,6 +5933,7 @@ def attach(task: Task, session: str, agent: str = "", prompted: bool = False) ->
         task.doc.pop("remote", None)
     if agent:
         task.doc["agent"] = agent
+    task.doc.pop("attached", None)
     task.doc["session"] = session
     task.doc["state"] = "dispatched"
     task.doc["dispatched_at"] = now()
@@ -6032,6 +6063,10 @@ def cmd_attach(args) -> int:
         print(f"{task.ref} -> {args.session}  (kept {task.state})")
         return 0
     attach(task, args.session, prompted=prompted)
+    # A session somebody else started, on a branch fleet did not cut: reap
+    # never deletes it.
+    task.doc["attached"] = True
+    task.save()
     print(f"{task.ref} -> {args.session}{'' if prompted else '  (unprompted)'}")
     return 0
 
@@ -8040,15 +8075,23 @@ def task_worktrees(task: Task) -> list[str]:
     """
     if task.doc.get("host") or not task.doc.get("branch"):
         return []
-    want = f"branch refs/heads/{task.doc['branch']}"
-    found = []
-    for unit in task_repos(task):
-        here = None
-        for line in git_out(unit["path"], ["worktree", "list", "--porcelain"]).splitlines():
-            if line.startswith(WORKTREE_LINE):
-                here = line[len(WORKTREE_LINE):]
-            elif line == want and here and not same_path(here, unit["path"]):
-                found.append(here)
+    return [
+        here
+        for unit in task_repos(task)
+        for here in checked_out_at(git_out(unit["path"], ["worktree", "list", "--porcelain"]),
+                                   task.doc["branch"])
+        if not same_path(here, unit["path"])
+    ]
+
+
+def checked_out_at(porcelain: str, branch: str) -> list[str]:
+    """Every worktree `git worktree list --porcelain` shows on `branch`."""
+    found, here = [], ""
+    for line in porcelain.splitlines():
+        if line.startswith(WORKTREE_LINE):
+            here = line[len(WORKTREE_LINE):]
+        elif line == f"branch refs/heads/{branch}" and here:
+            found.append(here)
     return found
 
 
@@ -8518,6 +8561,233 @@ def _remove_fixer_worktree(task: Task, path: str) -> subprocess.CompletedProcess
     return proc
 
 
+# A FINISHED TASK'S BRANCH IS DELETED ONLY WHEN IT CAN LOSE NOTHING: fleet cut
+# it, no worktree has it checked out, and every commit on it is on origin's
+# copy of its base, fetched this pass. A local base never counts — it can be
+# the branch itself. `branch_released` records an answer that will not change;
+# anything that might is asked again next pass, and `branch_held` keeps its
+# reason so an unchanged one is not said again.
+SHA_RE = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
+# What would point git somewhere other than `-C`'s repository.
+GIT_REPO_ENV = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR",
+                "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES")
+
+
+def task_git(entry: dict | None, repo: str, argv: list) -> tuple[int | None, str, str]:
+    """git in one repository, here or on `entry`'s host: (exit, stdout, stderr).
+
+    Exit None is git not asked at all. Every call runs under `fetch_config`,
+    because `update-ref` runs the repository's reference-transaction hook, and
+    with `--no-replace-objects`, so `refs/replace` cannot change what a count
+    of commits sees.
+    """
+    if entry is None:
+        env = {k: v for k, v in os.environ.items() if k not in GIT_REPO_ENV}
+        try:
+            done = subprocess.run(
+                ["git", "--no-replace-objects", "-C", repo, *fetch_config(os.devnull), *argv],
+                capture_output=True, stdin=subprocess.DEVNULL, text=True, encoding="utf-8",
+                timeout=30, env={**env, "LC_ALL": "C"},
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            return None, "", str(exc)
+        return done.returncode, done.stdout, done.stderr
+    done = ssh_run(entry, host_shell(entry).git(repo, argv))
+    # Between the two markers, so a profile's banner is never read as git's.
+    _banner, start, rest = done.stdout.partition(GIT_OUT + "\n")
+    out, sep, code = rest.rpartition(GIT_EXIT)
+    if not start or not sep or not code.strip().isdigit():
+        return None, "", first_line(done) or "the host did not answer"
+    return int(code.strip()), out, reportable(done.stderr)
+
+
+def release_branches(q: Queue, state_of, dry: bool, released: set) -> int:
+    """Delete the branch of every finished task that holds nothing. Returns how many it spoke of.
+
+    After the holders, so a session deleted this pass has taken its worktree
+    off the branch first. `released` is the holders that pass released, or in
+    a dry run would have: those are read as session-less, their own worktree
+    set aside.
+    """
+    acted = 0
+    down: set[str] = set()
+    fetched: dict[tuple, str] = {}
+    for task in sorted(q.tasks.values(), key=lambda t: t.ref):
+        d = task.doc
+        branch = str(d.get("branch") or "")
+        host = d.get("host")
+        if (state_of(task) not in TERMINAL_STATES or not branch or d.get("branch_released")
+                or (d.get("session") and task.ref not in released) or host in down
+                or not (d.get("reaped") or d.get("dispatched_at") or d.get("session"))):
+            continue
+        said, held = _task_branches(task, branch, dry, fetched, down)
+        if held:
+            # Said again only when the reason changed; a dry run always says it.
+            if dry or held != d.get("branch_held"):
+                said.extend(held.split("\n"))
+                if not dry:
+                    d["branch_held"] = held
+                    task.save()
+        for line in said:
+            print(f"    {task.ref:<46} {line}")
+        acted += bool(said)
+    return acted
+
+
+def _task_branches(task: Task, branch: str, dry: bool, fetched: dict,
+                   down: set) -> tuple[list[str], str]:
+    """One task's branch in every repository: (lines to say, the held reason or "").
+
+    Records `branch_released` when nothing was held.
+    """
+    d, host = task.doc, task.doc.get("host")
+    entry, why = host_entry(host) if host else (None, "")
+    if host and not entry:
+        if not why.startswith("no host named "):
+            down.add(host)
+            return [], f"kept       branch {branch}: {why} — again next pass"
+        outcomes = [("kept", f"host {host} is not configured", "")]
+    elif d.get("attached"):
+        outcomes = [("kept", "fleet did not cut it (attached)", "")]
+    else:
+        outcomes = []
+        units = task_repos(task)
+        for unit in units:
+            how, why = _release_branch(task, entry, unit, branch, dry, fetched, units)
+            outcomes.append((how, why, f" in {unit['path']}"))
+            if how == "down" and host:
+                down.add(host)
+                break
+    said, held = [], []
+    for how, why, where in outcomes:
+        if how == "deleted":
+            said.append(f"{'would delete' if dry else 'deleted   '} branch {branch}{where}")
+        elif how == "kept":
+            said.append(f"kept       branch {branch}{where}: {why}")
+        elif how != "gone":
+            held.append(f"kept       branch {branch}{where}: {why} — again next pass")
+    if not held and not dry:
+        hows = [how for how, _why, _where in outcomes]
+        d.pop("branch_held", None)
+        d["branch_released"] = {"how": next((h for h in ("kept", "deleted") if h in hows), "gone"),
+                                "at": now()}
+        task.save()
+    return said, "\n".join(held)
+
+
+def _release_branch(task: Task, entry: dict | None, unit: dict, branch: str, dry: bool,
+                    fetched: dict, units: list) -> tuple[str, str]:
+    """One repository's branch: (deleted | gone | kept | held | down, why).
+
+    `kept` is final and recorded; `held` is asked again next pass, and `down`
+    is a host that did not answer.
+    """
+    repo, base = unit["path"], unit["base"]
+    if entry is None and not os.path.isdir(repo):
+        return "gone", ""
+    name = local_branch(origin_branch(base))
+    # Both reach a host's command line, quoted, and git's as an argument.
+    if not BASE_RE.fullmatch(branch) or branch.startswith("-") or base_problem(f"origin/{name}"):
+        return "kept", f"{branch!r} or its base {base!r} is not a ref name fleet passes to git"
+    if branch == "HEAD" or any(branch == local_branch(origin_branch(u["base"])) for u in units):
+        return "kept", "it is a base branch"
+    shell = host_shell(entry) if entry else None
+    refusal = shell.git_refusal(repo) if shell else ""
+    if refusal:
+        return "kept", refusal
+
+    def git(*argv: str) -> tuple[int | None, str, str]:
+        return task_git(entry, repo, list(argv))
+
+    def failed(code, err) -> str:
+        return git_error(err) or f"git exited {code}"
+
+    # Empty only at the top of a checkout: a directory inside another one
+    # would otherwise answer for that one's branches.
+    code, out, err = git("rev-parse", "--show-cdup")
+    if code is None:
+        return "down", err
+    if code and git_error(err).startswith("fatal: cannot change to"):
+        return "gone", ""
+    if code != 0 or out.strip():
+        return "held", f"{repo} is not the top of a checkout" + (f": {failed(code, err)}" if code else "")
+    code, out, err = git("rev-parse", "--verify", "--quiet", f"refs/heads/{branch}")
+    if code is None:
+        return "down", err
+    if code == 1:
+        return "gone", ""
+    tip = last_out_of(out)
+    if code != 0 or not SHA_RE.fullmatch(tip):
+        return "held", f"could not read it: {failed(code, err)}"
+    code, out, err = git("symbolic-ref", "--quiet", f"refs/heads/{branch}")
+    if code is None:
+        return "down", err
+    if code == 0:
+        return "kept", f"it is a symbolic ref to {last_out_of(out)}"
+
+    code, out, err = git("symbolic-ref", "--quiet", "refs/remotes/origin/HEAD")
+    if code is None:
+        return "down", err
+    if code == 0 and last_out_of(out) == ORIGIN_REFS + branch:
+        return "kept", "it is origin's default branch"
+
+    key = (task.doc.get("host"), repo, name)
+    if key not in fetched:
+        fetched[key] = fetch_remote_base(entry, repo, name) if entry else fetch_local_base(repo, name)
+    if fetched[key].startswith("fatal: couldn't find remote ref"):
+        return "kept", f"origin has no {name}"
+    if fetched[key]:
+        return "held", f"could not fetch origin/{name}: {fetched[key]}"
+
+    # After the fetch, so the window between this and the delete is short.
+    code, out, err = git("worktree", "list", "--porcelain")
+    if code is None:
+        return "down", err
+    if code != 0:
+        return "held", f"could not list its worktrees: {failed(code, err)}"
+    own = _released_worktrees(task) if dry and task.doc.get("session") else []
+    holders = [p for p in checked_out_at(out, branch) if not any(same_path(p, o) for o in own)]
+    if holders:
+        return "held", f"checked out at {holders[0]}"
+
+    code, out, err = git("rev-list", "--count", f"{ORIGIN_REFS}{name}..{tip}")
+    if code is None:
+        return "down", err
+    count = last_out_of(out)
+    if code != 0 or not count.isdigit():
+        return "held", f"could not compare it with origin/{name}: {failed(code, err)}"
+    if int(count):
+        return "kept", f"{count} commit(s) not on origin/{name}"
+    if dry:
+        return "deleted", ""
+
+    # Against the tip just checked: a commit that lands on the branch between
+    # the check and here makes git refuse, and nothing is lost.
+    code, _out, err = git("update-ref", "--no-deref", "-d", f"refs/heads/{branch}", tip)
+    if code is None:
+        return "down", err
+    if code != 0:
+        return "held", f"git refused the delete: {failed(code, err)}"
+    # Best effort: a later task cut under the same name must not inherit this
+    # one's upstream.
+    git("config", "--remove-section", f"branch.{branch}")
+    return "deleted", ""
+
+
+def local_branch(ref: str) -> str:
+    """`refs/heads/<b>` and `heads/<b>` are both `<b>`."""
+    for prefix in ("refs/heads/", "heads/"):
+        ref = ref.removeprefix(prefix)
+    return ref
+
+
+def _released_worktrees(task: Task) -> list[str]:
+    """The worktrees the session a dry run would release has, which go with it."""
+    doc, _why = session_doc(task.doc["session"])
+    trees = (doc or {}).get("worktrees") or []
+    return [str(w["worktree_path"]) for w in trees if isinstance(w, dict) and w.get("worktree_path")]
+
+
 # THE SESSIONS NO VERB HERE MAY TAKE AS A WORKER'S. The session the command
 # runs in has always been refused by id, from THURBOX_SESSION; with a conductor
 # that is no longer the lead's alone, since the lead, the conductor and any
@@ -8643,12 +8913,18 @@ def reap(q: Queue, dry: bool = False, release: bool = True) -> int:
     # Before the holders: a task whose own session is long gone can still have
     # a fixer checkout on disk.
     acted += release_fixer_checkouts(q, state_of, dry, decided)
-    return acted + _reap_holders(q, state_of, landings, rows, dry, decided)
+    released: set[str] = set()
+    acted += _reap_holders(q, state_of, landings, rows, dry, decided, released)
+    return acted + release_branches(q, state_of, dry, released)
 
 
 def _reap_holders(q: Queue, state_of, landings: dict, rows, dry: bool,
-                  decided: set) -> int:
-    """`reap`'s last step: every finished task still holding a session. Returns how many."""
+                  decided: set, released: set) -> int:
+    """Every finished task still holding a session. Returns how many.
+
+    `released` gains the ref of each holder whose session it deleted or
+    dropped, or in a dry run would have.
+    """
     acted = 0
     holders = [
 
@@ -8671,6 +8947,10 @@ def _reap_holders(q: Queue, state_of, landings: dict, rows, dry: bool,
         acted += 1
         r, k, d = _reap_holder(task, state_of(task), lead, landings, live, live_detail,
                                dry, decided)
+        # Deleted or dropped, or in a dry run would be: a dry drop is
+        # the one answer that counts nothing.
+        if r or not k:
+            released.add(task.ref)
         reaped, kept, dropped = reaped + r, kept + k, dropped + d
 
     if reaped or kept or dropped:
