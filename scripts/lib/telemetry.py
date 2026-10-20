@@ -171,9 +171,11 @@ ON = ("on", "true", "yes", "1")
 # What one export sends, each to its own OTLP/HTTP path.
 SIGNALS = ("traces", "metrics", "logs")
 
-# Attribute keys and a unit more than one span or measure carries.
+# Attribute keys and a unit shared by multiple telemetry records.
 REPO = "factory.repo"
 STATE = "factory.state"
+TOPIC = "factory.topic"
+EVENT = "event.name"
 TASKS = "{task}"
 
 # watch's session states, as the three stretches a trace shows. Anything else —
@@ -385,7 +387,7 @@ def task_spans(q, task, now: int) -> list[dict]:
     lines = progress_lines(task)
     artifacts = http_artifacts(q, task)
 
-    b = Builder(task.ref, {"factory.task.id": task.ref, "factory.topic": task.topic})
+    b = Builder(task.ref, {"factory.task.id": task.ref, TOPIC: task.topic})
     b.add("root", "factory task", created, end, parent=None, stage=False, attrs=_root_attrs(q, task),
           links=[(trace_id(task.topic, "topic"), span_id(task.topic, "root", "topic"))])
     b.add("queued", "queued", created, dispatched or abandoned)
@@ -540,7 +542,7 @@ def _reviews(b: Builder, q, url: str, parent: str, start: int) -> None:
 def topic_spans(q, slug: str, doc: dict) -> list[dict]:
     """A topic's own trace, once it is archived: the parent every task's root links to."""
     start, end = to_ns(q, doc.get("created")), to_ns(q, doc.get("archived"))
-    b = Builder(slug, {"factory.topic": slug}, kind="topic")
+    b = Builder(slug, {TOPIC: slug}, kind="topic")
     b.add("root", "factory topic", start, end, parent=None, stage=False, attrs={"factory.topic.title": doc.get("title")})
     return b.spans
 
@@ -721,21 +723,21 @@ def record_line(line: str) -> None:
     if not m:
         return
     body = line[at:].strip()
-    attrs = {"event.name": "fleet.reconcile.notice", "fleet.notice.kind": m["kind"],
+    attrs = {EVENT: "fleet.reconcile.notice", "fleet.notice.kind": m["kind"],
              "fleet.notice.recipient": m["who"], "fleet.notice.road": m["road"]}
     ref = TASK_REF.search(body)
     if ref:
-        attrs.update({"factory.task.id": ref.group(0), "factory.topic": ref.group(1)})
+        attrs.update({"factory.task.id": ref.group(0), TOPIC: ref.group(1)})
     _spool(WARN if m["road"] == "failed" else INFO, body, attrs)
 
 
 def record_child(label: str, why: str, count: int) -> None:
     """A reconciler child failing (`why`), or succeeding again after failing (`why` empty)."""
     if why:
-        _spool(WARN, f"{label}: {why}", {"event.name": "fleet.reconcile.child_failure",
+        _spool(WARN, f"{label}: {why}", {EVENT: "fleet.reconcile.child_failure",
                                           "fleet.reconcile.child": label, "fleet.reconcile.failures": count})
     else:
-        _spool(INFO, f"{label}: running again", {"event.name": "fleet.reconcile.child_recovered",
+        _spool(INFO, f"{label}: running again", {EVENT: "fleet.reconcile.child_recovered",
                                                   "fleet.reconcile.child": label})
 
 
