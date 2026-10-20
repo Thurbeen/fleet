@@ -11,6 +11,9 @@ from __future__ import annotations
 
 import os
 import socket
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -83,3 +86,62 @@ def test_a_spool_the_collector_could_not_take_waits_for_the_next_export(collecto
     telemetry_conf(f"EXPORT=on\nENDPOINT={collector.endpoint}\n")
     assert run_fleet("telemetry", "export").code == 0
     assert [r["body"]["stringValue"] for r in collector.logs()] == [NOTICE]
+
+
+def test_refused_logs_cannot_grow_the_pending_spool_without_bound(collector):
+    telemetry_conf(f"EXPORT=on\nENDPOINT={collector.endpoint}\n")
+    collector.statuses["/v1/logs"] = 401
+    tel = lib("telemetry.py")
+    for _ in range(4):
+        tel.record_child("collect", "x" * (2 * 1024 * 1024), 1)
+        assert run_fleet("telemetry", "export").code == 0
+    pending = sum(p.stat().st_size for p in spool().parent.glob("logs*.jsonl"))
+    assert pending <= tel.SPOOL_MAX_BYTES, pending
+    collector.statuses["/v1/logs"] = 200
+    assert run_fleet("telemetry", "export").code == 0
+    assert not list(spool().parent.glob("logs*.jsonl"))
+
+
+def test_busy_spool_drops_a_record_without_waiting():
+    telemetry_conf("EXPORT=on\n")
+    tel = lib("telemetry.py")
+    spool().parent.mkdir(parents=True, exist_ok=True)
+    with tel.fleet_platform.exclusive_lock(str(spool()) + ".lock"):
+        started = time.monotonic()
+        tel.record_line(NOTICE)
+        assert time.monotonic() - started < 1
+    assert not spool().exists()
+
+
+def test_concurrent_exports_do_not_send_the_same_logs_twice(collector):
+    telemetry_conf(f"EXPORT=on\nENDPOINT={collector.endpoint}\n")
+    lib("telemetry.py").record_line(NOTICE)
+    entered, release = threading.Event(), threading.Event()
+    handler = collector.server.RequestHandlerClass
+    original = handler.do_POST
+
+    def paused_post(request):
+        if request.path == "/v1/logs":
+            entered.set()
+            release.wait(5)
+        original(request)
+
+    handler.do_POST = paused_post
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(run_fleet, "telemetry", "export")
+        try:
+            assert entered.wait(5)
+            second = pool.submit(run_fleet, "telemetry", "export")
+            assert second.result(timeout=8).code == 0
+        finally:
+            release.set()
+        assert first.result(timeout=8).code == 0
+    assert len(collector.logs()) == 1
+
+
+def test_export_before_anything_is_spooled_succeeds(collector):
+    telemetry_conf(f"EXPORT=on\nENDPOINT={collector.endpoint}\n")
+    spool().parent.rmdir()
+    run = run_fleet("telemetry", "export")
+    assert run.code == 0, run.out
+    assert collector.logs() == []

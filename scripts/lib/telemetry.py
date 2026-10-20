@@ -4,7 +4,7 @@ from the queue's records, and the reconciler's notice and failure lines as log
 records — sent to any OTLP/HTTP endpoint when the operator turns it on.
 
     uv run fleet telemetry export [--dry-run]   one pass: the spans that closed since the
-                                                last, and every measure as it stands
+                                                last, every measure, and the spooled logs
     uv run fleet telemetry trace-id <topic/task> the trace id a task's spans carry
 
 OFF UNLESS ASKED. Nothing is sent until the operator's gitignored
@@ -68,7 +68,8 @@ fleet.reconcile.child, and factory.task.id and factory.topic when the line
 names a task. The loop only APPENDS them to `logs.jsonl` here — never a
 network call from the loop — and only while telemetry is on; the export ships
 the spool, and what a collector could not take waits in `logs.sending.jsonl`
-for the next one. Past 4 MiB the spool takes no more until it drains.
+for the next one. The pending files together are capped at 4 MiB; a full or
+busy spool drops new records until it drains.
 
 IDS ARE DERIVED, SO RE-EXPORTING IS HARMLESS. A task's trace id is the first
 16 bytes of sha256("fleet.task\\0" + "<topic>/<task>") — any tool can compute it
@@ -695,15 +696,22 @@ def _spool(severity: tuple, body: str, attrs: dict) -> None:
         return
     path = os.path.join(state_dir(), SPOOL)
     os.makedirs(state_dir(), exist_ok=True)
-    try:
-        if os.path.getsize(path) > SPOOL_MAX_BYTES:
-            return
-    except OSError:
-        pass
     record = {"timeUnixNano": str(time.time_ns()), "severityNumber": severity[0], "severityText": severity[1],
               "body": {"stringValue": body}, "attributes": otlp_attrs(attrs)}
-    with fleet_platform.exclusive_lock(path + ".lock", wait=SPOOL_LOCK_WAIT):
-        fleet_platform.append_record(path, json.dumps(record, ensure_ascii=False) + "\n")
+    line = json.dumps(record, ensure_ascii=False) + "\n"
+    try:
+        # Telemetry must never hold up the reconciler, including behind an exporter.
+        with fleet_platform.exclusive_lock(path + ".lock"):
+            pending = 0
+            for name in (SPOOL, SENDING):
+                try:
+                    pending += os.path.getsize(os.path.join(state_dir(), name))
+                except FileNotFoundError:
+                    pass
+            if pending + len(line.encode("utf-8")) <= SPOOL_MAX_BYTES:
+                fleet_platform.append_record(path, line)
+    except fleet_platform.LockHeld:
+        pass
 
 
 def record_line(line: str) -> None:
@@ -732,13 +740,11 @@ def record_child(label: str, why: str, count: int) -> None:
 
 
 def drain_spool() -> list:
-    """Move what the loop spooled behind what an earlier export could not send, and return it all."""
+    """Retry the pending batch first; otherwise rotate the spool in one step."""
     spool, sending = os.path.join(state_dir(), SPOOL), os.path.join(state_dir(), SENDING)
-    if os.path.exists(spool):
+    if not os.path.exists(sending) and os.path.exists(spool):
         with fleet_platform.exclusive_lock(spool + ".lock", wait=SPOOL_LOCK_WAIT):
-            with open(spool, encoding="utf-8") as fh:
-                fleet_platform.append_record(sending, fh.read())
-            os.remove(spool)
+            os.replace(spool, sending)
     try:
         with open(sending, encoding="utf-8") as fh:
             lines = fh.read().splitlines()
@@ -865,14 +871,20 @@ def answer(cfg: Settings, state: dict, signal: str, status: int, why: str, waiti
 def send_logs(cfg: Settings, state: dict) -> bool:
     """The spooled log records; whether every request was settled. What is not
     stays in the sending file for the next export."""
-    records = drain_spool()
-    while records:
-        status, why = post(cfg, "logs", records[:CHUNK])
-        if not answer(cfg, state, "logs", status, why, f"{len(records)} log record(s)"):
-            return False
-        records = records[CHUNK:]
-        keep_unsent(records)
-    return True
+    os.makedirs(state_dir(), exist_ok=True)
+    try:
+        # A manual export may overlap the reconciler's child. Only one drains logs.
+        with fleet_platform.exclusive_lock(os.path.join(state_dir(), "logs.export.lock")):
+            records = drain_spool()
+            while records:
+                status, why = post(cfg, "logs", records[:CHUNK])
+                if not answer(cfg, state, "logs", status, why, f"{len(records)} log record(s)"):
+                    return False
+                records = records[CHUNK:]
+                keep_unsent(records)
+            return True
+    except fleet_platform.LockHeld:
+        return False
 
 
 def send_spans(cfg: Settings, state: dict, todo: list) -> tuple[bool, int]:
@@ -934,7 +946,7 @@ def export(dry_run: bool = False) -> None:
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="fleet telemetry", description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="cmd", required=True)
-    ex = sub.add_parser("export", help="send every task stage that closed since the last export, and the measures")
+    ex = sub.add_parser("export", help="send closed task stages, the measures, and spooled reconciler logs")
     ex.add_argument("--dry-run", action="store_true", help="count what would be sent; send and write nothing")
     tid = sub.add_parser("trace-id", help="the trace id a task's spans carry")
     tid.add_argument("ref", help="<topic>/<task>")
