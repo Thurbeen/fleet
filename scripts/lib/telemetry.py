@@ -748,16 +748,21 @@ def drain_spool() -> list:
         with fleet_platform.exclusive_lock(spool + ".lock", wait=SPOOL_LOCK_WAIT):
             os.replace(spool, sending)
     try:
-        with open(sending, encoding="utf-8") as fh:
+        with open(sending, encoding="utf-8", errors="replace") as fh:
             lines = fh.read().splitlines()
     except OSError:
         return []
     out = []
     for line in lines:
         try:
-            out.append(json.loads(line))
+            record = json.loads(line)
         except ValueError:
             continue
+        if isinstance(record, dict):
+            out.append(record)
+    if not out:
+        os.remove(sending)
+        print("telemetry: discarded unreadable log batch")
     return out
 
 

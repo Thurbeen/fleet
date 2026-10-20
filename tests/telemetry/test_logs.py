@@ -145,3 +145,23 @@ def test_export_before_anything_is_spooled_succeeds(collector):
     run = run_fleet("telemetry", "export")
     assert run.code == 0, run.out
     assert collector.logs() == []
+
+
+@pytest.mark.parametrize("broken", [b"", b'{"timeUnixNano":', b'\xe2\x86'])
+def test_an_unparseable_pending_batch_does_not_block_later_logs(collector, broken):
+    telemetry_conf(f"EXPORT=on\nENDPOINT={collector.endpoint}\n")
+    sending = spool().parent / "logs.sending.jsonl"
+    sending.write_bytes(broken)
+    lib("telemetry.py").record_line(NOTICE)
+
+    first = run_fleet("telemetry", "export")
+    assert first.code == 0, first.out
+    assert not sending.exists(), "an unparseable batch must not block the next spool"
+    assert first.out.count("discarded unreadable log batch") == 1
+
+    second = run_fleet("telemetry", "export")
+    assert second.code == 0, second.out
+    assert [r["body"]["stringValue"] for r in collector.logs()] == [NOTICE]
+    third = run_fleet("telemetry", "export")
+    assert third.code == 0, third.out
+    assert "discarded unreadable log batch" not in second.out + third.out
