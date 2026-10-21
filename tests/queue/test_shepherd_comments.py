@@ -252,6 +252,14 @@ def test_a_worker_reply_answers_and_never_comes_back_but_the_operator_s_next_wor
     assert len(talk.sends()) == 2, talk.shep.tbx_log()
 
 
+def test_a_marked_reply_from_another_account_answers_nothing(talk):
+    """The marker is the worker's only on fleet's account: anyone can type it."""
+    talk.thread("T1", "a.py", 3, ("C1", "reviewer", "Off by one.", "2026-10-01T10:00:00Z"),
+                ("C2", "someone", "Fixed." + MARK, "2026-10-01T10:10:00Z"))
+    expect(talk.pass_(), "comments sent: 2 new comments")
+    expect(talk.briefs()[-1].read_text(encoding="utf-8"), "Off by one.", "Fixed.")
+
+
 def test_a_comment_record_does_not_hold_back_a_failing_check_fixer(talk):
     talk.review("R1", "reviewer", "Nit: name.", "2026-10-01T10:00:00Z")
     expect(talk.pass_(), "comments sent")
@@ -260,6 +268,9 @@ def test_a_comment_record_does_not_hold_back_a_failing_check_fixer(talk):
     out = talk.pass_()
     expect(out, "checks-failed", "pinged")
     assert len(talk.sends()) == 2, talk.shep.tbx_log()
+    # A fixer may answer comments too, so its brief carries the marker rule.
+    [fixer] = sorted((talk.queue_dir / talk.topic / "01-talk").glob("fix-*-checks-failed.md"))
+    expect(fixer.read_text(encoding="utf-8"), "<!-- fleet:worker -->")
 
 
 def test_a_change_request_whose_review_requested_changes_is_the_fixer_s(talk):
