@@ -12763,6 +12763,20 @@ def skipped_note(total: int, skipped: dict) -> str:
     return f"{read} — {why}" if why else read
 
 
+def _thread_before(f, context) -> list:
+    """The brief's lines quoting what was said before a line comment in its thread."""
+    if f.kind != "inline" or not f.at:
+        return []
+    before = [c for c in context if c.kind == "inline" and c.thread == f.thread
+              and c.at and c.at < f.at and c.body.strip()]
+    parts: list = []
+    for c in sorted(before, key=lambda c: c.at):
+        parts += [f"In reply to {c.author}:", ""]
+        parts += [">> " + line if line else ">>" for line in c.body.strip().splitlines()]
+        parts += [""]
+    return parts
+
+
 def comments_brief(task: Task, cr: forge.ChangeRequest, items: list, context: list = ()) -> str:
     """The fix brief for comments: each one named, quoted, and linked.
 
@@ -12790,12 +12804,7 @@ def comments_brief(task: Task, cr: forge.ChangeRequest, items: list, context: li
             where = f" on `{f.path}:{f.line}`" if f.line else f" on `{f.path}`"
         what = {"review": "review", "inline": "line comment"}.get(f.kind, "comment")
         parts += ["", f"### {f.author}, {what}{where}", "", f.url or "(the forge gave no link)", ""]
-        before = [c for c in context if f.kind == "inline" and c.kind == "inline" and c.thread == f.thread
-                  and c.at and f.at and c.at < f.at and c.body.strip()]
-        for c in sorted(before, key=lambda c: c.at):
-            parts += [f"In reply to {c.author}:", ""]
-            parts += [">> " + line if line else ">>" for line in c.body.strip().splitlines()]
-            parts += [""]
+        parts += _thread_before(f, context)
         parts += ["> " + line if line else ">" for line in f.body.strip().splitlines()]
     parts += [
         "",
