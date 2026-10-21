@@ -1148,6 +1148,7 @@ uv run fleet queue list --archived   # only the topics the default view hides
 uv run fleet queue list --all        # both
 uv run fleet queue list --live       # and each open task's change requests, read from the forge now
 uv run fleet queue show <ref>        # one task's whole record, archived or not
+uv run fleet queue show <ref> --json # the same, as the stable JSON another program reads
 uv run fleet watch <pipeline-url | change-request-url | ref>  # block until it finishes
 ```
 

@@ -172,6 +172,34 @@ the lead's and never written again. `run` is that refresh made explicit, and
       # sorted by ref. `[]` and exit 0 when there are none. Read-only; whether
       # thurbox still lists the session is the caller's to ask.
 
+  uv run fleet queue show <ref> --json
+      # ONE object, the record `show` prints, with fleet's own rules applied so
+      # a caller re-derives none of them. Every key is always present:
+      #   ref, topic, slug, title, state, outcome, origin, repo, host, branch,
+      #     session        — as recorded; null when not recorded
+      #   publish          — the resolved method (attested|pr|push|note|served|none)
+      #   agent            — the agent it runs (`task_agent`); null when unknowable
+      #   artifacts        — [{"repo", "url", "ready": bool, "ready_at": str|null}],
+      #                      one per recorded artifact; `ready` is true once
+      #                      shepherd has taken that draft out of draft
+      #   abandoned        — {"how": "hand"|"closed-unmerged"|"session-gone",
+      #                      "why": str}, or null
+      #   refuels          — {"count": restarts so far, "cap": the most refuel makes}
+      #   needs_input      — {"why", "declared"} or null; paused — {"why",
+      #                      "declared", "until"} or null. The STANDING
+      #                      declaration only, exactly as `plan --json` reads it:
+      #                      a later dispatch, restart or delivered message, an
+      #                      expired pause or a written result.md voids it
+      #   live_sessions    — the task's session and every session thurbox lists
+      #                      parented under it, transitively, on the task's own
+      #                      machine; live_sessions_count is its length. Both null,
+      #                      and live_sessions_unreadable says why, when thurbox
+      #                      could not be asked
+      #   files            — {"brief", "progress", "result"}: absolute paths, which
+      #                      may not exist yet
+      # Read-only: it writes nothing and moves nothing. A key may be added; none
+      # is renamed or removed.
+
 Usage:
   uv run fleet queue topic add <slug> --title T --prompt 'the ask'   # or --prompt-file F|-
                        [--by PERSON]  # who asked, as free text: written to
@@ -297,7 +325,8 @@ Usage:
   uv run fleet queue archive <topic>      # hide a finished topic from every
                        default view; refuses one with a live task
   uv run fleet queue unarchive <topic>    # put it back in every view
-  uv run fleet queue show <ref>           # one task's whole record, archived or not
+  uv run fleet queue show <ref> [--json]  # one task's whole record, archived or not;
+                       --json is the contract documented beside `find` above
   uv run fleet queue check                # validate every record (`fleet status --records`)
   uv run fleet queue root [--foreign]     # the resolved queue directory,
                        absolute; --foreign instead names the control plane,
@@ -3601,22 +3630,36 @@ def aware_time(stamp) -> float:
     return then.timestamp() if then.tzinfo else 0.0
 
 
-def open_tasks(q: Queue) -> list:
+def is_open(task: Task) -> bool:
     """Dispatched, holding a session, with no result.md yet."""
-    return [
-        t for t in sorted(q.tasks.values(), key=lambda t: t.ref)
-        if t.state == "dispatched" and t.doc.get("session")
-        and not os.path.exists(t.file(RESULT_FILE))
-    ]
+    return bool(task.state == "dispatched" and task.doc.get("session")
+                and not os.path.exists(task.file(RESULT_FILE)))
+
+
+def open_tasks(q: Queue) -> list:
+    """Every task `is_open` names, sorted by ref."""
+    return [t for t in sorted(q.tasks.values(), key=lambda t: t.ref) if is_open(t)]
+
+
+def standing_declaration(task: Task) -> dict | None:
+    """The declaration `plan` would act on for this task, or None.
+
+    Only an open task's word stands: one that has written its result, or holds
+    no session, is waiting on nothing a declaration could say.
+    """
+    if not is_open(task):
+        return None
+    said = declaration(task)
+    return {"task": task.ref, "session": task.doc["session"], **said} if said else None
 
 
 def declared_tasks(q: Queue) -> dict:
     """{ref: row} for every open task with a standing declaration."""
     out = {}
     for task in open_tasks(q):
-        said = declaration(task)
+        said = standing_declaration(task)
         if said:
-            out[task.ref] = {"task": task.ref, "session": task.doc["session"], **said}
+            out[task.ref] = said
     return out
 
 
@@ -14231,9 +14274,101 @@ def _show_files(task: Task) -> None:
         print(f"    {'result:':<12} {task.file('result.md')}")
 
 
+def session_tree(snapshot: dict, root: str) -> list[str]:
+    """`root` and every session parented under it, transitively, that `snapshot` lists.
+
+    Breadth-first from `root`, each level in id order, so the same sessions
+    always answer the same list. A cycle in the parent links stops at the first
+    repeat rather than looping.
+    """
+    if root not in snapshot:
+        return []
+    children: dict = {}
+    for sid, row in sorted(snapshot.items()):
+        parent = str(row.get("parent_session_id") or "")
+        if parent:
+            children.setdefault(parent, []).append(sid)
+    out, todo = [], [root]
+    while todo:
+        sid = todo.pop(0)
+        if sid in out:
+            continue
+        out.append(sid)
+        todo += children.get(sid, [])
+    return out
+
+
+def task_live_sessions(task: Task) -> tuple[list | None, str]:
+    """The task's own session and every live one spawned under it, or None and why.
+
+    Asked of the machine the task runs on: this one's thurbox, or a `--host`
+    task's host over ssh. None is "could not ask", never "none are live".
+    """
+    sid = str(task.doc.get("session") or "")
+    host = task.doc.get("host")
+    if host:
+        snapshot, _entry, why = host_session_snapshot(str(host))
+    else:
+        snapshot, why = session_snapshot()
+    if snapshot is None:
+        return None, why
+    return (session_tree(snapshot, sid) if sid else []), ""
+
+
+def show_json(task: Task) -> dict:
+    """`show`'s record as `show --json` prints it: the contract in the module docstring."""
+    d = task.doc
+    method, _how = task_publish(task)
+    given_up = d.get("abandoned") or {}
+    said = standing_declaration(task)
+    sessions, why = task_live_sessions(task)
+
+    def declared(state: str) -> dict | None:
+        if not said or said["state"] != state:
+            return None
+        row = {"why": said["why"], "declared": said["declared"]}
+        return row | ({"until": said["until"]} if "until" in said else {})
+
+    def artifact(entry: dict) -> dict:
+        flipped = draft_flipped(task, str(entry["url"] or ""))
+        return {"repo": entry["repo"], "url": entry["url"], "ready": bool(flipped),
+                "ready_at": flipped.get("at") if flipped else None}
+
+    return {
+        "ref": task.ref,
+        "topic": task.topic,
+        "slug": task.id,
+        "title": d.get("title"),
+        "state": task.state,
+        "outcome": d.get("outcome"),
+        "origin": d.get("origin"),
+        "publish": method,
+        "agent": task_agent(task) or None,
+        "repo": d.get("repo"),
+        "host": d.get("host"),
+        "branch": d.get("branch"),
+        "session": d.get("session"),
+        "artifacts": [artifact(e) for e in recorded_artifacts(task) if e["url"]],
+        "abandoned": ({"how": abandon_how(task), "why": given_up.get("why", "")}
+                      if given_up.get("at") else None),
+        "refuels": {"count": len(d.get("refuels") or []), "cap": REFUEL_CAP},
+        "needs_input": declared("needs-input"),
+        "paused": declared("paused"),
+        "live_sessions": sessions,
+        "live_sessions_count": len(sessions) if sessions is not None else None,
+        "live_sessions_unreadable": why or None,
+        "files": {"brief": os.path.abspath(task.file("BRIEF.md")),
+                  "progress": os.path.abspath(task.file(PROGRESS_FILE)),
+                  "result": os.path.abspath(task.file(RESULT_FILE))},
+    }
+
+
 def cmd_show(args) -> int:
     q = Queue(queue_root())
     task = q.get(args.ref)
+    if args.json:
+        print(json.dumps(show_json(task), indent=2))
+        return 0
     d = task.doc
     print(f"{task.ref} — {d['title']}")
     for key in ("state", "repo", "host", "branch", "base", "agent", "profile", "session",
@@ -14825,6 +14960,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("show", help="one task's whole record")
     s.add_argument("ref")
+    s.add_argument("--json", action="store_true",
+                   help="the record as the stable JSON the module docstring documents")
     s.set_defaults(func=cmd_show)
 
     fi = sub.add_parser(

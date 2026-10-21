@@ -158,8 +158,11 @@ names every path and the reason for each.
   `--reply` to that session's mailbox. `queue.py`'s `origin_target` is the one
   resolver — that session, a rule's session or relay, or `gone` once thurbox no
   longer lists the session — and `fleet queue find --origin STR --json` lists an
-  origin's live tasks for another program; `queue.py`'s docstring owns all of
-  it. Tracked and naming none; copy it to a gitignored `owners.conf`.
+  origin's live tasks for another program, which `fleet queue show REF --json`
+  then reads one at a time with fleet's own rules applied (standing
+  declaration, draft marked ready, refuels, live sessions); `queue.py`'s
+  docstring owns all of it and both contracts. Tracked and naming none; copy
+  it to a gitignored `owners.conf`.
 - `orchestration/reconcile.example.conf` — the reconciler's clocks
   (`<NAME>_SECS`, read when the loop starts, beaten by
   `FLEET_RECONCILE_<NAME>_SECS`) and what `reap` does with a finished task's
