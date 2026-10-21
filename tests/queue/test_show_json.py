@@ -53,14 +53,18 @@ def test_every_documented_key_is_there_with_the_record(attached, stubs, queue_di
     assert set(doc) == KEYS
     topic, slug = REF.split("/")
     assert (doc["ref"], doc["topic"], doc["slug"]) == (REF, topic, slug)
-    assert doc["state"] == "dispatched" and doc["session"] == S1
+    assert doc["state"] == "dispatched"
+    assert doc["session"] == S1
     assert doc["publish"] == "attested"
-    assert doc["artifacts"] == [] and doc["abandoned"] is None
+    assert doc["artifacts"] == []
+    assert doc["abandoned"] is None
     assert doc["refuels"] == {"count": 0, "cap": 3}
-    assert doc["needs_input"] is None and doc["paused"] is None
+    assert doc["needs_input"] is None
+    assert doc["paused"] is None
     files = doc["files"]
     assert files["brief"] == str((queue_dir / REF / "BRIEF.md").resolve())
-    assert files["progress"].endswith("progress.jsonl") and files["result"].endswith("result.md")
+    assert files["progress"].endswith("progress.jsonl")
+    assert files["result"].endswith("result.md")
 
 
 def test_refuels_count_against_the_cap(attached, queue_dir):
@@ -98,7 +102,8 @@ def test_a_pause_carries_its_until(attached, stubs, queue_dir):
     ok(q("declare", REF, "paused", "--until", "2h", "--why", "waiting on CI"))
     doc = show()
     assert doc["needs_input"] is None
-    assert doc["paused"]["why"] == "waiting on CI" and doc["paused"]["until"]
+    assert doc["paused"]["why"] == "waiting on CI"
+    assert doc["paused"]["until"]
 
 
 def test_a_later_message_voids_the_question(attached, stubs, queue_dir):
@@ -135,19 +140,22 @@ def test_live_sessions_are_the_task_s_and_everything_under_it(attached, stubs):
     session(stubs, stranger, parent=S2)
     doc = show()
     assert doc["live_sessions"] == [S1, child, grandchild]
-    assert doc["live_sessions_count"] == 3 and doc["live_sessions_unreadable"] is None
+    assert doc["live_sessions_count"] == 3
+    assert doc["live_sessions_unreadable"] is None
 
 
 def test_a_session_thurbox_does_not_list_is_not_live(attached, stubs):
     session(stubs, S2)
     doc = show()
-    assert doc["live_sessions"] == [] and doc["live_sessions_count"] == 0
+    assert doc["live_sessions"] == []
+    assert doc["live_sessions_count"] == 0
 
 
 def test_unreadable_sessions_are_null_and_say_why(attached, stubs):
     stubs.tool("thurbox-cli", "import sys; sys.exit(1)")
     doc = show()
-    assert doc["live_sessions"] is None and doc["live_sessions_count"] is None
+    assert doc["live_sessions"] is None
+    assert doc["live_sessions_count"] is None
     assert doc["live_sessions_unreadable"]
 
 
@@ -157,7 +165,8 @@ def test_ready_is_what_shepherd_recorded_per_artifact(draft):  # noqa: F811
     assert [(a["url"], a["ready"], a["ready_at"]) for a in before] == [(PR, False, None)]
     draft.pass_()
     after = show(ref)["artifacts"]
-    assert after[0]["ready"] is True and after[0]["ready_at"]
+    assert after[0]["ready"] is True
+    assert after[0]["ready_at"]
 
 
 def test_ready_is_per_artifact_url_not_per_task(attached, queue_dir):
@@ -184,4 +193,5 @@ def test_a_host_task_s_sessions_are_read_on_its_host(attached, stubs, queue_dir,
 
 def test_the_text_view_is_unchanged_without_the_flag(attached):
     out = ok(q("show", REF)).stdout
-    assert out.startswith(f"{REF} — ") and not out.lstrip().startswith("{")
+    assert out.startswith(f"{REF} — ")
+    assert not out.lstrip().startswith("{")

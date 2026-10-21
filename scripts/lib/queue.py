@@ -5694,7 +5694,7 @@ def cmd_dispatch(args) -> int:
     # sections, so the answer is in the refusal and not in a file the lead has
     # to go and grep. It fires on a task scaffolded and never written, and on
     # one hand-edited back into a placeholder after `add` accepted it.
-    unfilled = [(t, why) for t in ready if (why := brief_shortfall(t.file("BRIEF.md")))]
+    unfilled = [(t, why) for t in ready if (why := brief_shortfall(t.file(BRIEF_FILE)))]
     if unfilled:
         raise QueueError(
             "these tasks carry a BRIEF.md a worker would have nothing to do "
@@ -14357,7 +14357,7 @@ def show_json(task: Task) -> dict:
         "live_sessions": sessions,
         "live_sessions_count": len(sessions) if sessions is not None else None,
         "live_sessions_unreadable": why or None,
-        "files": {"brief": os.path.abspath(task.file("BRIEF.md")),
+        "files": {"brief": os.path.abspath(task.file(BRIEF_FILE)),
                   "progress": os.path.abspath(task.file(PROGRESS_FILE)),
                   "result": os.path.abspath(task.file(RESULT_FILE))},
     }
