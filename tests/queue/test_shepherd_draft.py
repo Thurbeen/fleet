@@ -17,7 +17,7 @@ import pytest
 from kit_display import set_field
 from kit_shepherd import repo
 from queuekit import PUBLISH_CONF, ok
-from test_shepherd_comments import ME, PR, Talk, author, talk_on
+from test_shepherd_comments import ME, PR, WORKER, Talk, author, talk_on
 
 from harness import expect, git, refute, write
 from harness import run_queue as q
@@ -127,10 +127,13 @@ def test_the_flip_is_one_way_and_a_person_who_undoes_it_wins(draft):
     assert shep.readied() == [201] and shep.merged() == [], out
 
 
+def ago(minutes: int) -> str:
+    return (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
+
+
 def concluded(talk: Talk, minutes_ago: int | None) -> None:
-    at = "" if minutes_ago is None else (
-        datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)).isoformat()
-    set_field(talk.queue_dir, f"{talk.topic}/01-talk", "concluded_at", at)
+    set_field(talk.queue_dir, f"{talk.topic}/01-talk", "concluded_at",
+              "" if minutes_ago is None else ago(minutes_ago))
 
 
 def test_a_draft_no_check_reaches_is_flipped_once_its_task_has_been_concluded_ten_minutes(draft):
@@ -144,7 +147,23 @@ def test_a_draft_no_check_reaches_is_flipped_once_its_task_has_been_concluded_te
         expect(out, "no check has reported yet")
         assert shep.readied() == [], out
 
-    concluded(draft, 11)
+    # Concluded long ago, but a fixer went in minutes ago: its push may simply
+    # not have registered its checks yet. A refusal sent nobody anything.
+    concluded(draft, 60)
+    ref = f"{draft.topic}/01-talk"
+    set_field(draft.queue_dir, ref, "shepherd",
+              {"condition": "checks-failed", "session": WORKER, "pr": PR, "at": ago(3)})
+    expect(draft.pass_(), "no check has reported yet")
+    set_field(draft.queue_dir, ref, "shepherd",
+              {"condition": "checks-failed", "refused": "policy", "pr": PR, "at": ago(3)})
+    set_field(draft.queue_dir, ref, "shepherd_comments", {PR: {"sent": ["C1"], "at": ago(3)}})
+    expect(draft.pass_(), "no check has reported yet")
+    set_field(draft.queue_dir, ref, "shepherd_comments", {PR: {"sent": ["C1"], "at": ago(11)}})
+    shep.update(201, mergeable="UNKNOWN")
+    expect(draft.pass_(), "no check has reported yet")
+    assert shep.readied() == []
+
+    shep.update(201, mergeable="MERGEABLE")
     expect(draft.pass_("--dry-run"), "would-mark-ready", "no check configured after 10 minutes")
     out = draft.pass_()
     expect(out, "marked-ready", "no check configured after 10 minutes")

@@ -2981,7 +2981,8 @@ def _draft_brief_line(task: Task, method: str) -> str:
         " `glab mr create --draft`) and never mark it ready yourself: CI and the"
         " review bots go first, and `shepherd` marks it ready for review once"
         " every check passed (or, where none is configured, ten minutes after"
-        " you conclude), nothing is left to fix and no review thread is open.",
+        " you conclude or were last sent something to fix), nothing is left to"
+        " fix and no review thread is open.",
         width=78,
         subsequent_indent="  ",
     )
@@ -10634,12 +10635,15 @@ def may_auto_merge(repo: forge.RepoId) -> bool:
 # gives a draft that touches none of those paths no check while it is a draft:
 # waiting for one deadlocks, because what it waits for starts on the flip
 # (one sat until a person flipped it by hand, and its checks appeared within
-# seconds). So a draft with no check DRAFT_NO_CHECK_GRACE_SECS
-# after its task concluded is flipped, and says so in its record. The merge
-# rule is untouched: after the flip it is no longer a draft, `_merge_readiness`
-# still reads no check as no pass, and the checks the flip started gate it.
-# Concluded is the anchor because the worker has stopped pushing; a task with
-# no `concluded_at` is never flipped this way.
+# seconds). So a mergeable draft with no check DRAFT_NO_CHECK_GRACE_SECS
+# after its worker last had reason to push is flipped, and says so in its
+# record. The merge rule is untouched: after the flip it is no longer a draft,
+# `_merge_readiness` still reads no check as no pass, and the checks the flip
+# started gate it. "Last had reason to push" is the later of the task's
+# `concluded_at` and the last fixer or relayed comments shepherd sent into it
+# for this pull request: a push answering either can sit checkless for the
+# minute GitHub takes to register its suites, and that is not "no check
+# configured". A task with no `concluded_at` is never flipped this way.
 #
 # ONLY A TASK'S OWN DRAFT. A draft nobody's task records is a person's work in
 # progress, and "still a draft" is still the whole answer about it.
@@ -10683,12 +10687,22 @@ def draft_phase(cr: forge.ChangeRequest, task) -> bool:
 # GitHub registers a check suite for a matching workflow within a minute or
 # two of a push; ten minutes past that is a repository with nothing to run.
 DRAFT_NO_CHECK_GRACE_SECS = 10 * 60
+DRAFT_UNCHECKED = f"no check configured after {DRAFT_NO_CHECK_GRACE_SECS // 60} minutes"
 
 
-def draft_without_checks(task) -> bool:
-    """Has this draft's task been concluded for DRAFT_NO_CHECK_GRACE_SECS?"""
+def draft_without_checks(cr: forge.ChangeRequest, task) -> bool:
+    """Has this draft's worker had nothing to push for DRAFT_NO_CHECK_GRACE_SECS?"""
     concluded = aware_time(task.doc.get("concluded_at"))
-    return bool(concluded) and time.time() - concluded >= DRAFT_NO_CHECK_GRACE_SECS
+    if not concluded:
+        return False
+    fixer = rec_for(task, cr.url)
+    last = max(
+        concluded,
+        # A refusal is recorded too, and sent nobody anything to push.
+        aware_time(fixer.get("at")) if fixer.get("session") else 0.0,
+        aware_time(comments_record(task, cr.url).get("at")),
+    )
+    return time.time() - last >= DRAFT_NO_CHECK_GRACE_SECS
 
 
 def draft_flipped(task, url: str) -> dict:
@@ -12272,7 +12286,7 @@ def shepherd_pr(cr: forge.ChangeRequest, task, args) -> dict:
         return row
 
     if condition == "ready" and cr.draft:
-        return _shepherd_mark_ready(cr, task, args, row, rec)
+        return _shepherd_mark_ready(cr, task, args, row, rec, detail == DRAFT_UNCHECKED)
     if condition == "ready":
         return _shepherd_ready(cr, task, args, row, rec, word, method, review)
 
@@ -12299,11 +12313,9 @@ def _shepherd_classify(cr: forge.ChangeRequest, task, args, method, review) -> t
         # review is not asked: its reviewer cannot record on a draft, and it
         # starts on the first pass after the flip.
         condition, detail = classify(dataclasses.replace(cr, draft=False), method)
-        if detail == NO_CHECK_YET and draft_without_checks(task):
-            condition, detail = "ready", (
-                f"no check configured {DRAFT_NO_CHECK_GRACE_SECS // 60} minutes after "
-                "the task concluded; only the flip passes without one, never the merge"
-            )
+        if (detail == NO_CHECK_YET and cr.mergeable == "mergeable"
+                and draft_without_checks(cr, task)):
+            condition, detail = "ready", DRAFT_UNCHECKED
         if condition == "ready":
             condition, detail = threads_gate(cr, detail)
         return condition, detail, None
@@ -12396,7 +12408,8 @@ def _shepherd_ready(cr: forge.ChangeRequest, task, args, row: dict, rec: dict,
     return _shepherd_merge(cr, task, row, method, review)
 
 
-def _shepherd_mark_ready(cr: forge.ChangeRequest, task, args, row: dict, rec: dict) -> dict:
+def _shepherd_mark_ready(cr: forge.ChangeRequest, task, args, row: dict, rec: dict,
+                         unchecked: bool) -> dict:
     """A task's draft every gate clears: take it out of draft, once. Never merged here.
 
     Not merged in the same pass, because "ready for review" is what starts the
@@ -12413,14 +12426,12 @@ def _shepherd_mark_ready(cr: forge.ChangeRequest, task, args, row: dict, rec: di
             "and it is a draft again; whoever put it back decides when it leaves"
         )
         return row
-    # Only `draft_without_checks` lets a draft with no check this far.
-    unchecked = (
-        f"no check configured after {DRAFT_NO_CHECK_GRACE_SECS // 60} minutes"
-        if not cr.checks else ""
-    )
     if args.dry_run:
         row["action"] = "would-mark-ready"
-        row["note"] = f"{unchecked or 'every check passed'}, nothing to fix, no open thread"
+        row["note"] = (
+            f"{DRAFT_UNCHECKED if unchecked else 'every check passed'}, nothing to fix, "
+            "no open thread"
+        )
         return row
     which, why = forge.for_repo(cr.repo)
     done, note = which.mark_ready(cr) if which else (False, why)
@@ -12431,7 +12442,7 @@ def _shepherd_mark_ready(cr: forge.ChangeRequest, task, args, row: dict, rec: di
         every[cr.url] = {"head": cr.head_sha, "at": now()}
         task.doc["shepherd_ready"] = every
         task.save()
-        said = f" with {unchecked}" if unchecked else ""
+        said = f" with {DRAFT_UNCHECKED}" if unchecked else ""
         row["note"] = note + said
         # "marked ready for review" stays the prefix: readers outside fleet
         # match on it.
