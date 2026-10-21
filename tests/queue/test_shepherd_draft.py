@@ -10,9 +10,11 @@ still just a draft.
 """
 
 import os
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+from kit_display import set_field
 from kit_shepherd import repo
 from queuekit import PUBLISH_CONF, ok
 from test_shepherd_comments import ME, PR, Talk, author, talk_on
@@ -123,6 +125,38 @@ def test_the_flip_is_one_way_and_a_person_who_undoes_it_wins(draft):
     out = draft.pass_()
     expect(out, "left-alone", "it is a draft again")
     assert shep.readied() == [201] and shep.merged() == [], out
+
+
+def concluded(talk: Talk, minutes_ago: int | None) -> None:
+    at = "" if minutes_ago is None else (
+        datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)).isoformat()
+    set_field(talk.queue_dir, f"{talk.topic}/01-talk", "concluded_at", at)
+
+
+def test_a_draft_no_check_reaches_is_flipped_once_its_task_has_been_concluded_ten_minutes(draft):
+    # CI that runs only on ready_for_review, or on paths this diff misses,
+    # starts on the flip: waiting for a check here is waiting forever.
+    shep = draft.shep
+    shep.update(201, statusCheckRollup=[])
+    for anchor in (None, 9):
+        concluded(draft, anchor)
+        out = draft.pass_()
+        expect(out, "no check has reported yet")
+        assert shep.readied() == [], out
+
+    concluded(draft, 11)
+    expect(draft.pass_("--dry-run"), "would-mark-ready", "no check configured after 10 minutes")
+    out = draft.pass_()
+    expect(out, "marked-ready", "no check configured after 10 minutes")
+    assert shep.readied() == [201] and shep.merged() == [], out
+    assert draft.task()["publish"]["detail"] == (
+        "marked ready for review with no check configured after 10 minutes; gated as usual next pass"
+    )
+
+    # Out of draft, no check is no pass: the merge waits for the checks the flip starts.
+    out = draft.pass_()
+    expect(out, "no check has reported yet")
+    assert shep.merged() == [] and shep.readied() == [201], out
 
 
 def test_a_refused_flip_is_reported_and_retried_next_pass(draft):

@@ -725,7 +725,11 @@ included, which is when anything `ready_for_review` starts shows up as a
 check. One way: a later comment holds the merge through its thread, never by
 going back to draft, and a PR a person puts back in draft is `left-alone`
 (`shepherd_ready` on the task records the flip). A draft no task records is
-still `still a draft`, and a repository with no checks never leaves draft.
+still `still a draft`. A draft with NO check at all is flipped once its task
+has been concluded ten minutes, because path-filtered or `ready_for_review`
+CI starts only on the flip; its publish detail says `marked ready for review
+with no check configured after 10 minutes`, and the merge still waits for a
+check like any other.
 
 **Review comments are a delivery of their own, not a condition.** Beside the
 row above — whatever it says, short of `CHANGES_REQUESTED`, a fixer this pass

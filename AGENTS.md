@@ -561,10 +561,11 @@ a second copy — read the skill before you run any of it:
    pull request opens as a DRAFT, shepherd judges it as the pull request it
    will become — fixers sent, a bot's line comments and reviews relayed — and
    marks it ready for review (`gh pr ready`) once it would otherwise be ready:
-   checks passed on its head, nothing to fix, no open thread. Once, never back
-   to draft, and never merged in the pass that flipped it; a draft no task
-   records is left a draft. The comment above `draft_repos` in `queue.py` owns
-   the rule.
+   checks passed on its head, nothing to fix, no open thread — or, with no
+   check at all, ten minutes after its task concluded, which passes the flip
+   and never the merge. Once, never back to draft, and never merged in the
+   pass that flipped it; a draft no task records is left a draft. The comment
+   above `draft_repos` in `queue.py` owns the rule.
    It also **adopts sessions fleet did not spawn**: every local thurbox session
    that is not a lead or conductor, is held by no task, descends from no OTHER
    fleet's lead or conductor, and sits on a branch of its own with an open
