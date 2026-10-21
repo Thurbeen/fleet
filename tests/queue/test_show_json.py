@@ -14,6 +14,7 @@ from pathlib import Path
 import yaml
 from queuekit import S1, S2, ok
 from test_declare import REF, at_rest, plan, stamp
+from test_hosts import hosts  # noqa: F401 — the fixture
 from test_shepherd_draft import draft  # noqa: F401 — the fixture
 from test_shepherd_comments import PR
 
@@ -84,6 +85,14 @@ def test_needs_input_is_the_standing_one_plan_reads(attached, stubs, queue_dir):
     assert show()["paused"] is None
 
 
+def test_a_written_result_voids_the_question(attached, stubs, queue_dir):
+    at_rest(stubs, queue_dir)
+    ok(q("declare", REF, "needs-input", "--why", "keep the flag?"))
+    assert show()["needs_input"]
+    write(queue_dir / REF / "result.md", "outcome: shipped\n")
+    assert show()["needs_input"] is None
+
+
 def test_a_pause_carries_its_until(attached, stubs, queue_dir):
     at_rest(stubs, queue_dir)
     ok(q("declare", REF, "paused", "--until", "2h", "--why", "waiting on CI"))
@@ -149,6 +158,28 @@ def test_ready_is_what_shepherd_recorded_per_artifact(draft):  # noqa: F811
     draft.pass_()
     after = show(ref)["artifacts"]
     assert after[0]["ready"] is True and after[0]["ready_at"]
+
+
+def test_ready_is_per_artifact_url_not_per_task(attached, queue_dir):
+    """Two repositories, one draft flipped: only that artifact reads ready."""
+    one, two = "https://github.com/o/a/pull/1", "https://github.com/o/b/pull/2"
+    edit(queue_dir, REF, artifact=[{"repo": "/tmp/repo-a", "url": one}, {"repo": "/tmp/repo-b", "url": two}],
+         shepherd_ready={two: {"head": "f" * 40, "at": stamp(-timedelta(minutes=3))}})
+    ready = {a["url"]: a["ready"] for a in show()["artifacts"]}
+    assert ready == {one: False, two: True}
+
+
+def test_a_host_task_s_sessions_are_read_on_its_host(attached, stubs, queue_dir, hosts):  # noqa: F811
+    """The local list holds a different tree, so reading it would answer wrong."""
+    child = "a" * 8 + S1[8:]
+    session(stubs, S1)
+    session(stubs, S2, parent=S1)
+    edit(queue_dir, REF, host="devbox")
+    write(hosts.state / "me@devbox.session-list.json", json.dumps([
+        {"id": S1, "state": "working"}, {"id": child, "state": "working", "parent_session_id": S1},
+    ]))
+    doc = show()
+    assert doc["live_sessions"] == [S1, child]
 
 
 def test_the_text_view_is_unchanged_without_the_flag(attached):
