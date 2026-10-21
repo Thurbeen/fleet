@@ -11790,6 +11790,7 @@ def fixer_brief(task: Task, cr: forge.ChangeRequest, condition: str,
         " yours to do here; rebase rather than merging the base branch in.",
         "- Do not widen the change. Fix the stated condition and nothing else —"
         " other work is in flight on other branches in this repo.",
+        f"- {WORKER_MARK_RULE}",
         "",
         "## Done means",
         "",
@@ -12670,50 +12671,100 @@ def record_comments(task: Task, url: str, entry: dict) -> None:
     )
 
 
-def unanswered_feedback(items: list, me: str, sent, bots: bool = False) -> list:
+# What a fleet worker ends every comment and reply it posts on a change request
+# with. The account fleet runs as is very often the OPERATOR'S account too — one
+# person, one login — so "fleet's account wrote it" says nothing about whether
+# the worker or the person did. Reading it as "the worker's" dropped the
+# operator's own line comments and counted their "agreed, let's fix" as the
+# answer to the finding above it. So the worker marks what it posts, every
+# brief that tells it to post says so, and only a marked comment from that
+# account is the worker's. An HTML comment, so the forge renders nothing.
+WORKER_MARK = "<!-- fleet:worker -->"
+WORKER_MARK_RULE = (
+    f"End every comment, reply and review you post on the pull request with `{WORKER_MARK}`"
+    " on its own line. It is how fleet tells your words from a person's on the same"
+    " account; without it your reply is sent back to you as review feedback."
+)
+
+
+def worker_posted(f, me: str) -> bool:
+    """Whether a comment is a fleet worker's own: fleet's account, and marked."""
+    return bool(me) and f.author.lower() == me.lower() and WORKER_MARK in f.body
+
+
+def unanswered_feedback(items: list, me: str, sent, bots: bool = False,
+                        skipped: dict | None = None) -> list:
     """The comments a worker has not been sent and nobody has answered, oldest first.
 
-    Never the account fleet runs as — that is the worker's own reply, or the
-    operator's `review-prs` reviewer, and sending a session its own words is
-    how it ends up answering itself — and never a bot. A thread somebody
-    RESOLVED is answered, and so is a line comment fleet's account replied to
-    later IN THE SAME THREAD: that reply is about that comment and nothing
-    else. A conversation comment or a review has no such reply to point at,
-    so only `sent` answers it. Reading "fleet's account posted anything at the
-    top level after it" as an answer dropped a person's comment for good the
-    moment fleet's account left an empty review; re-sending, once, a comment
-    a worker had already answered before this existed is the cheaper error.
+    Never the worker's own words (`worker_posted`) — sending a session its own
+    reply is how it ends up answering itself — and never a bot. Everything
+    else fleet's account wrote IS sent: that account is the operator's as
+    often as it is fleet's, and an unmarked comment is a person until it says
+    otherwise. A thread somebody RESOLVED is answered, and so is a line comment
+    the WORKER replied to later IN THE SAME THREAD: that reply is about that
+    comment and nothing else. A later comment by the operator in that thread
+    answers nothing — "agreed, let's fix" under a finding keeps it open. A
+    conversation comment or a review has no such reply to point at, so only
+    `sent` answers it. Reading "fleet's account posted anything at the top
+    level after it" as an answer dropped a person's comment for good the
+    moment fleet's account left an empty review; re-sending, once, a comment a
+    worker had already answered before this existed is the cheaper error.
 
     `bots` is the draft phase's one exception (`draft_repos`): where bots ARE
     the reviewers, a bot's line comment or submitted review is relayed like a
     person's. Its conversation comments still are not — coverage tables and
     preview links are status, not review.
+
+    `skipped`, when given, counts every comment left out by why, so a pass
+    that reads comments and sends none can say so.
     """
-    me = me.lower()
-    mine = [f for f in items if f.author.lower() == me]
     last_in: dict = {}
-    for f in mine:
-        if f.kind == "inline" and f.at:
+    for f in items:
+        if f.kind == "inline" and f.at and worker_posted(f, me):
             last_in[f.thread] = max(last_in.get(f.thread, ""), f.at)
-    out = [f for f in items if _feedback_open(f, me, sent, last_in, bots)]
+    out = []
+    for f in items:
+        why = _feedback_skip(f, me, sent, last_in, bots)
+        if not why:
+            out.append(f)
+        elif skipped is not None:
+            skipped[why] = skipped.get(why, 0) + 1
     return sorted(out, key=lambda f: f.at)
 
 
-def _feedback_open(f, me: str, sent, last_in: dict, bots: bool = False) -> bool:
-    """Whether one comment is still to be sent, for `unanswered_feedback`."""
+def _feedback_skip(f, me: str, sent, last_in: dict, bots: bool = False) -> str:
+    """Why one comment is not to be sent, for `unanswered_feedback`; "" sends it."""
+    if f.id in sent:
+        return "sent before"
     if f.author_is_bot and not (bots and f.kind in ("inline", "review")):
-        return False
-    if f.id in sent or not f.author or f.author.lower() == me:
-        return False
-    if not f.body.strip():
-        return False
+        return "by a bot"
+    if worker_posted(f, me):
+        return "the worker's own"
+    if not f.author or not f.body.strip():
+        return "empty or unattributed"
     if f.kind == "review" and f.state not in COMMENT_REVIEW_STATES:
-        return False
-    return not (f.kind == "inline" and (f.resolved or (f.at and f.at < last_in.get(f.thread, ""))))
+        return f"a review that {f.state or 'gave no verdict'}"
+    if f.kind == "inline" and f.resolved:
+        return "in a resolved thread"
+    if f.kind == "inline" and f.at and f.at < last_in.get(f.thread, ""):
+        return "answered by the worker"
+    return ""
 
 
-def comments_brief(task: Task, cr: forge.ChangeRequest, items: list) -> str:
-    """The fix brief for comments: each one named, quoted, and linked."""
+def skipped_note(total: int, skipped: dict) -> str:
+    """`comments_note` for a pass that read comments and sent none of them."""
+    why = ", ".join(f"{n} {w}" for w, n in sorted(skipped.items(), key=lambda kv: (-kv[1], kv[0])))
+    read = f"{total} comment{'s' if total != 1 else ''} read, none to send"
+    return f"{read} — {why}" if why else read
+
+
+def comments_brief(task: Task, cr: forge.ChangeRequest, items: list, context: list = ()) -> str:
+    """The fix brief for comments: each one named, quoted, and linked.
+
+    A line comment comes with what was said before it in its thread, from
+    `context` — every comment read — because "agreed, let's fix" quoted alone
+    says nothing about what to fix.
+    """
     n = cr.number
     parts = [
         f"# {COMMENTS_TITLE.format(n=n)}",
@@ -12734,6 +12785,12 @@ def comments_brief(task: Task, cr: forge.ChangeRequest, items: list) -> str:
             where = f" on `{f.path}:{f.line}`" if f.line else f" on `{f.path}`"
         what = {"review": "review", "inline": "line comment"}.get(f.kind, "comment")
         parts += ["", f"### {f.author}, {what}{where}", "", f.url or "(the forge gave no link)", ""]
+        before = [c for c in context if f.kind == "inline" and c.kind == "inline" and c.thread == f.thread
+                  and c.at and f.at and c.at < f.at and c.body.strip()]
+        for c in sorted(before, key=lambda c: c.at):
+            parts += [f"In reply to {c.author}:", ""]
+            parts += [">> " + line if line else ">>" for line in c.body.strip().splitlines()]
+            parts += [""]
         parts += ["> " + line if line else ">" for line in f.body.strip().splitlines()]
     parts += [
         "",
@@ -12743,6 +12800,8 @@ def comments_brief(task: Task, cr: forge.ChangeRequest, items: list) -> str:
         " is behaviour — and push to the same branch. Where it is mistaken or out of"
         " scope, reply on the forge with the reason. Either way reply to it, and"
         " resolve the thread if it is one.",
+        "",
+        WORKER_MARK_RULE,
         "",
         "## Hard constraints",
         "",
@@ -12779,17 +12838,21 @@ def shepherd_comments(cr: forge.ChangeRequest, task, args, row: dict) -> None:
     rec = comments_record(task, cr.url)
     sent = set(rec.get("sent") or [])
     if not any(f.id not in sent for f in items):
+        if items:
+            row["comments_note"] = skipped_note(len(items), {"sent before": len(items)})
         return
     me, why = which.whoami(cr.repo.host)
     if not me:
-        # Without fleet's own account, its workers' replies are indistinguishable
-        # from a reviewer's, and the first one sent would start a loop.
+        # Without fleet's own account, its workers' marked replies cannot be
+        # told from a reviewer's, and the first one sent would start a loop.
         row["comments"], row["comments_note"] = "left-alone", (
             f"could not tell which account fleet runs as ({why}); no comment sent"
         )
         return
-    new = unanswered_feedback(items, me, sent, bots=draft_listed(cr.repo))
+    skipped: dict = {}
+    new = unanswered_feedback(items, me, sent, bots=draft_listed(cr.repo), skipped=skipped)
     if not new:
+        row["comments_note"] = skipped_note(len(items), skipped)
         return
     count = f"{len(new)} new comment{'s' if len(new) != 1 else ''}"
 
@@ -12810,7 +12873,7 @@ def shepherd_comments(cr: forge.ChangeRequest, task, args, row: dict) -> None:
         row["comments_note"] = f"{count} -> " + (target or "a fresh session on the branch")
         return
 
-    _send_comments(task, cr, new, sent, target, count, row)
+    _send_comments(task, cr, new, items, sent, target, count, row)
 
 
 def _comments_wanted(cr: forge.ChangeRequest, task, row: dict) -> bool:
@@ -12858,12 +12921,12 @@ def _comments_target(task: Task, cr: forge.ChangeRequest, rec: dict, count: str,
     return ""
 
 
-def _send_comments(task: Task, cr: forge.ChangeRequest, new: list, sent: set,
+def _send_comments(task: Task, cr: forge.ChangeRequest, new: list, context: list, sent: set,
                    target: str, count: str, row: dict) -> None:
     """Write the comments brief, hand it over, and record what was sent."""
     title = COMMENTS_TITLE.format(n=cr.number)
     path = next_fix_file(task, "comments")
-    fleet_platform.write_record(path, comments_brief(task, cr, new))
+    fleet_platform.write_record(path, comments_brief(task, cr, new, context))
     if target:
 
         ok, note = trust_and_send(target, f"Read {os.path.abspath(path)} and do what it says.")
@@ -13163,7 +13226,7 @@ def _print_shepherd_row(r: dict) -> None:
     print(f"        {r['condition']}: {r['detail']}")
     if r["action"] != "none":
         print(f"        {r['action']}: {r['note']}" if r["note"] else f"        {r['action']}")
-    if r.get("comments", "none") != "none":
+    if r.get("comments", "none") != "none" or r.get("comments_note"):
         print(f"        comments {r['comments']}: {r.get('comments_note', '')}")
 
 

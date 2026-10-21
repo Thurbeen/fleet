@@ -167,6 +167,12 @@ not, then resolve the thread. A change request with an unanswered thread or
 a failing review check is not done. Say in `result.md` how many threads you
 answered.
 
+End every comment, reply and review you post on a change request with
+`<!-- fleet:worker -->` on its own line. You very often post from the same
+account as the operator, and that marker is the only way `fleet queue
+shepherd` tells your words from theirs: it sends the operator's comments to
+you, and a reply of yours without it comes back to you as one of them.
+
 ## Do not merge
 
 - **Squash merge only.** It is the only method fleet merges by, and on this

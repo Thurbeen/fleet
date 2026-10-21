@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 from kit_shepherd import repo
 from queuekit import PUBLISH_CONF, ok
-from test_shepherd_comments import PR, Talk, talk_on
+from test_shepherd_comments import ME, PR, Talk, author, talk_on
 
 from harness import expect, git, refute, write
 from harness import run_queue as q
@@ -158,3 +158,19 @@ def test_the_brief_asks_for_a_draft_only_in_a_listed_repository(topic, queue_dir
     refute(brief("in-other", other), "**Draft.**")
     # A shape with no pull request has nothing to open as a draft.
     refute(brief("pushed", listed, "--publish", "push"), "**Draft.**")
+
+
+def test_the_operator_agreeing_under_a_bot_s_finding_keeps_it_open(draft):
+    """The operator, on the account fleet runs as, answers a bot's finding with
+    "agreed let's fix". That reached nobody and counted as the finding's answer;
+    it is the operator's word, so both are relayed and the finding stays open."""
+    draft.thread("T1", "src/retry.rs", 42,
+                 ("C1", "claude", "This retry never backs off.", "2026-10-01T10:00:00Z"), bot=True)
+    draft.said["threads"][0]["comments"]["nodes"].append(
+        {"id": "C2", "body": "agreed let's fix", "createdAt": "2026-10-01T10:05:00Z",
+         "url": f"{PR}#discussion_rC2", "author": author(ME)})
+    draft.save()
+    out = draft.pass_()
+    expect(out, "comments sent: 2 new comments")
+    text = draft.briefs()[-1].read_text(encoding="utf-8")
+    expect(text, "This retry never backs off.", "agreed let's fix", "In reply to claude:")

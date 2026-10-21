@@ -4,8 +4,9 @@ A reviewer who leaves a comment rather than pressing "request changes" used to
 reach nobody: the worker had finished its turn and `classify` read only the
 review decision. So `shepherd` reads every review, comment and thread on each
 open pull request, and sends what is new — once, by id — into the task's own
-session when that session says it is at rest. Its own account and bots are
-never sent, a turn is never interrupted, and the record that remembers what
+session when that session says it is at rest. A worker's own marked replies
+and bots are never sent — fleet's account is the operator's too, so an unmarked
+comment from it is a person's and is sent — a turn is never interrupted, and the record that remembers what
 was sent never holds back a fixer the same pull request needs next.
 """
 
@@ -22,6 +23,8 @@ from harness import expect, git, refute, write
 from harness import run_queue as q
 
 ME = "fleet-account"
+# What a worker ends everything it posts with (POLICY.md, every brief).
+MARK = "\n\n<!-- fleet:worker -->"
 WORKER = "c0ffee00-0000-0000-0000-000000000001"
 PR = "https://github.com/Thurbeen/fleet/pull/201"
 
@@ -167,18 +170,21 @@ def test_a_busy_worker_is_left_alone_until_it_is_at_rest(talk):
     assert len(talk.sends()) == 1
 
 
-def test_its_own_account_bots_and_answered_comments_are_not_sent(talk):
+def test_the_worker_s_own_replies_bots_and_answered_comments_are_not_sent(talk):
     talk.comment("I1", "renovate", "Bump the lockfile.", "2026-10-01T09:00:00Z", bot=True)
-    talk.comment("I2", ME, "Done — rebased.", "2026-10-01T09:30:00Z")
-    # Answered: fleet's account replied to it in its own thread.
+    talk.comment("I2", ME, "Done — rebased." + MARK, "2026-10-01T09:30:00Z")
+    # Answered: the worker replied to it in its own thread.
     talk.thread("T1", "b.py", 3, ("C1", "reviewer", "Rebase please.", "2026-10-01T09:10:00Z"),
-                ("C2", ME, "Rebased.", "2026-10-01T09:15:00Z"))
+                ("C2", ME, "Rebased." + MARK, "2026-10-01T09:15:00Z"))
     # A thread somebody resolved is answered too.
     talk.thread("T0", "a.py", 1, ("C0", "reviewer", "Typo.", "2026-10-01T09:20:00Z"), resolved=True)
     # An approval's thank-you is not a request.
     talk.review("R0", "reviewer", "LGTM, thanks!", "2026-10-01T09:40:00Z", state="APPROVED")
     out = talk.pass_()
     refute(out, "comments sent")
+    # Read, and none sent: the row says why rather than nothing.
+    expect(out, "comments none: 6 comments read, none to send", "2 the worker's own", "1 by a bot",
+           "1 in a resolved thread", "1 answered by the worker", "1 a review that approved")
     assert talk.sends() == [], talk.shep.tbx_log()
 
     talk.comment("I3", "reviewer", "One more: rename the flag.", "2026-10-01T10:00:00Z")
@@ -193,9 +199,57 @@ def test_a_later_post_by_its_own_account_does_not_swallow_a_person_s_comment(tal
     comment is still unanswered, and is still delivered."""
     talk.comment("I1", "reviewer", "Is this covered by a test?", "2026-10-01T10:00:00Z")
     talk.review("R9", ME, "", "2026-10-01T10:30:00Z")
-    talk.comment("I2", ME, "Pushed a follow-up.", "2026-10-01T10:40:00Z")
+    talk.comment("I2", ME, "Pushed a follow-up." + MARK, "2026-10-01T10:40:00Z")
     expect(talk.pass_(), "comments sent: 1 new comment")
     expect(talk.briefs()[-1].read_text(encoding="utf-8"), "Is this covered by a test?")
+
+
+def test_the_operator_s_comments_from_fleet_s_own_account_are_sent(talk):
+    """One person, one login: the operator's line comments come from the account
+    fleet runs as. Three of them, unmarked, sat unsent while the row said only
+    `threads-open` — they are a person's, and are sent."""
+    for n, (path, line, body) in enumerate([("a.py", 3, "This branch never runs."),
+                                            ("a.py", 9, "Name it for what it holds."),
+                                            ("b.py", 1, "Drop this import.")]):
+        talk.thread(f"T{n}", path, line, (f"C{n}", ME, body, f"2026-10-01T10:0{n}:00Z"))
+    expect(talk.pass_(), "comments sent: 3 new comments")
+    text = talk.briefs()[-1].read_text(encoding="utf-8")
+    expect(text, f"{ME}, line comment on `a.py:3`", "This branch never runs.", "Name it for what it holds.",
+           "Drop this import.", "<!-- fleet:worker -->")
+
+
+def test_the_operator_s_agreement_under_a_finding_keeps_it_open_and_is_sent(talk):
+    """A reviewer's finding, then the operator, on fleet's account, agreeing in
+    the same thread. That is no answer to the finding — both go to the worker,
+    the agreement quoted under what it agrees with."""
+    talk.thread("T1", "retry.py", 12, ("C1", "reviewer", "The retry never backs off.", "2026-10-01T10:00:00Z"),
+                ("C2", ME, "agreed let's fix", "2026-10-01T10:05:00Z"))
+    expect(talk.pass_(), "comments sent: 2 new comments")
+    text = talk.briefs()[-1].read_text(encoding="utf-8")
+    expect(text, "The retry never backs off.", "agreed let's fix", "In reply to reviewer:")
+    assert talk.task()["shepherd_comments"][PR]["sent"] == ["C1", "C2"]
+
+
+def test_a_worker_reply_answers_and_never_comes_back_but_the_operator_s_next_word_does(talk):
+    talk.thread("T1", "a.py", 3, ("C1", "reviewer", "Off by one.", "2026-10-01T10:00:00Z"))
+    expect(talk.pass_(), "comments sent: 1 new comment")
+    # The worker answers in the thread, marked: nothing goes back to it.
+    talk.said["threads"][0]["comments"]["nodes"].append(
+        {"id": "C2", "body": "Fixed in abc123." + MARK, "createdAt": "2026-10-01T10:10:00Z",
+         "url": f"{PR}#discussion_rC2", "author": author(ME)})
+    talk.save()
+    out = talk.pass_()
+    refute(out, "comments sent")
+    expect(out, "1 the worker's own")
+    # The operator, on the same account, unmarked, is not satisfied: that is sent.
+    talk.said["threads"][0]["comments"]["nodes"].append(
+        {"id": "C3", "body": "Still off by one at the end.", "createdAt": "2026-10-01T10:20:00Z",
+         "url": f"{PR}#discussion_rC3", "author": author(ME)})
+    talk.save()
+    expect(talk.pass_(), "comments sent: 1 new comment")
+    text = talk.briefs()[-1].read_text(encoding="utf-8")
+    expect(text, "Still off by one at the end.")
+    assert len(talk.sends()) == 2, talk.shep.tbx_log()
 
 
 def test_a_comment_record_does_not_hold_back_a_failing_check_fixer(talk):

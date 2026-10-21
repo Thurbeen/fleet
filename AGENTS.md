@@ -546,7 +546,10 @@ a second copy — read the skill before you run any of it:
    that session and the task's worker are gone. Beside the
    four fixer conditions it delivers REVIEW COMMENTS nobody requested changes
    for — once each, by id, into the PR's session when it is at rest — and
-   never its own account's or a bot's; a comment changes no merge gate. An
+   never a bot's or a worker's own reply, which ends with
+   `<!-- fleet:worker -->` (`WORKER_MARK` in `queue.py`) — fleet's account is
+   often the operator's, so its unmarked comments are a person's and are
+   sent; a comment changes no merge gate. An
    unresolved review THREAD does: a change request every other gate clears is
    held `threads-open` until each one is resolved, and a count the forge will
    not give is `undetermined`, never ready.
