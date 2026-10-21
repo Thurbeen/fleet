@@ -12744,9 +12744,14 @@ def _feedback_skip(f, me: str, sent, last_in: dict, bots: bool = False) -> str:
         return "empty or unattributed"
     if f.kind == "review" and f.state not in COMMENT_REVIEW_STATES:
         return f"a review that {f.state or 'gave no verdict'}"
-    if f.kind == "inline" and f.resolved:
+    return _thread_skip(f, last_in) if f.kind == "inline" else ""
+
+
+def _thread_skip(f, last_in: dict) -> str:
+    """Why a line comment is answered already, from its thread; "" if it is not."""
+    if f.resolved:
         return "in a resolved thread"
-    if f.kind == "inline" and f.at and f.at < last_in.get(f.thread, ""):
+    if f.at and f.at < last_in.get(f.thread, ""):
         return "answered by the worker"
     return ""
 
