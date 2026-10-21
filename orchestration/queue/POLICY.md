@@ -189,7 +189,7 @@ you, and a reply of yours without it comes back to you as one of them.
   a draft, do, and never mark it ready for review yourself: CI and the review
   bots go first, and `fleet queue shepherd` marks it ready once every check
   passed (or, where none is configured, ten minutes after you conclude or were
-  last sent something to fix), nothing is left to fix and no thread is open.
+  last sent anything), nothing is left to fix and no thread is open.
   Answer the bots' threads as you would a person's.
 
 ## Say when you are waiting on purpose

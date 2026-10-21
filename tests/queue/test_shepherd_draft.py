@@ -163,11 +163,24 @@ def test_a_draft_no_check_reaches_is_flipped_once_its_task_has_been_concluded_te
     expect(draft.pass_(), "no check has reported yet")
     assert shep.readied() == []
 
+    # The lead's own send is something to push too, once it landed: a draft
+    # flipped three minutes after "also rename the flag" ran review on the
+    # wrong code. One that never reached the worker restarts nothing.
     shep.update(201, mergeable="MERGEABLE")
+    ok(q("send", ref, "Also rename the flag."))
+    assert draft.task()["sends"][-1]["delivered"] is True
+    expect(draft.pass_(), "no check has reported yet")
+    assert shep.readied() == []
+    sends = draft.task()["sends"]
+    sends[-1]["at"] = ago(11)
+    sends.append(dict(sends[-1], at=ago(3), delivered=False))
+    set_field(draft.queue_dir, ref, "sends", sends)
+
     expect(draft.pass_("--dry-run"), "would-mark-ready", "no check configured after 10 minutes")
     out = draft.pass_()
     expect(out, "marked-ready", "no check configured after 10 minutes")
-    assert shep.readied() == [201] and shep.merged() == [], out
+    assert shep.readied() == [201], out
+    assert shep.merged() == [], out
     assert draft.task()["publish"]["detail"] == (
         "marked ready for review with no check configured after 10 minutes; gated as usual next pass"
     )
@@ -175,7 +188,8 @@ def test_a_draft_no_check_reaches_is_flipped_once_its_task_has_been_concluded_te
     # Out of draft, no check is no pass: the merge waits for the checks the flip starts.
     out = draft.pass_()
     expect(out, "no check has reported yet")
-    assert shep.merged() == [] and shep.readied() == [201], out
+    assert shep.merged() == [], out
+    assert shep.readied() == [201], out
 
 
 def test_a_refused_flip_is_reported_and_retried_next_pass(draft):

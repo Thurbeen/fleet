@@ -2981,8 +2981,8 @@ def _draft_brief_line(task: Task, method: str) -> str:
         " `glab mr create --draft`) and never mark it ready yourself: CI and the"
         " review bots go first, and `shepherd` marks it ready for review once"
         " every check passed (or, where none is configured, ten minutes after"
-        " you conclude or were last sent something to fix), nothing is left to"
-        " fix and no review thread is open.",
+        " you conclude or were last sent anything), nothing is left to fix and"
+        " no review thread is open.",
         width=78,
         subsequent_indent="  ",
     )
@@ -10639,11 +10639,12 @@ def may_auto_merge(repo: forge.RepoId) -> bool:
 # after its worker last had reason to push is flipped, and says so in its
 # record. The merge rule is untouched: after the flip it is no longer a draft,
 # `_merge_readiness` still reads no check as no pass, and the checks the flip
-# started gate it. "Last had reason to push" is the later of the task's
-# `concluded_at` and the last fixer or relayed comments shepherd sent into it
-# for this pull request: a push answering either can sit checkless for the
-# minute GitHub takes to register its suites, and that is not "no check
-# configured". A task with no `concluded_at` is never flipped this way.
+# started gate it. "Last had reason to push" is the latest of the task's
+# `concluded_at`, the last fixer or relayed comments shepherd sent into it for
+# this pull request, and the lead's last DELIVERED `fleet queue send`: a push
+# answering any of them can sit checkless for the minute GitHub takes to
+# register its suites, and that is not "no check configured". A task with no
+# `concluded_at` is never flipped this way.
 #
 # ONLY A TASK'S OWN DRAFT. A draft nobody's task records is a person's work in
 # progress, and "still a draft" is still the whole answer about it.
@@ -10701,6 +10702,10 @@ def draft_without_checks(cr: forge.ChangeRequest, task) -> bool:
         # A refusal is recorded too, and sent nobody anything to push.
         aware_time(fixer.get("at")) if fixer.get("session") else 0.0,
         aware_time(comments_record(task, cr.url).get("at")),
+        # The lead's own `fleet queue send`, once it landed: words the worker
+        # may well answer with a push. One that was not delivered reached nobody.
+        max((aware_time(s.get("at")) for s in task.doc.get("sends") or []
+             if isinstance(s, dict) and s.get("delivered")), default=0.0),
     )
     return time.time() - last >= DRAFT_NO_CHECK_GRACE_SECS
 

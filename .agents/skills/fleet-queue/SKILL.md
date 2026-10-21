@@ -726,9 +726,10 @@ check. One way: a later comment holds the merge through its thread, never by
 going back to draft, and a PR a person puts back in draft is `left-alone`
 (`shepherd_ready` on the task records the flip). A draft no task records is
 still `still a draft`. A mergeable draft with NO check at all is flipped ten
-minutes after the later of its task concluding and shepherd's last fixer or
-relayed comments into it, because path-filtered or `ready_for_review` CI
-starts only on the flip; its publish detail says `marked ready for review
+minutes after the latest of its task concluding, shepherd's last fixer or
+relayed comments into it, and the lead's last delivered `fleet queue send`,
+because path-filtered or `ready_for_review` CI starts only on the flip; its
+publish detail says `marked ready for review
 with no check configured after 10 minutes`, and the merge still waits for a
 check like any other.
 
