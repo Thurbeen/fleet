@@ -1520,10 +1520,12 @@ def stop_decision() -> dict | None:
     input: a nudge typed at a terminal reads nothing and decides nothing. Claude
     Code's protocol is `{"decision": "block", "reason": ...}` on stdout, and it
     sets `stop_hook_active` on the stop that follows one: that stop is always
-    allowed, so a worker is asked ONCE and can never be held. `queue.py`'s
-    `missing_result` owns which stops are asked about at all; any error is a
-    stop allowed, because a hook that fails a stop is worse than one that never
-    fired, and the loop's own timer still reads the queue."""
+    allowed. Every other stop is a new turn, so the heads asked about are kept
+    in `stop-asked/<session>` here: the same work is asked about ONCE, however
+    many turns a wait lasts, and a new commit is asked about again.
+    `queue.py`'s `missing_result` owns which stops are asked about at all; any
+    error is a stop allowed, because a hook that fails a stop is worse than one
+    that never fired, and the loop's own timer still reads the queue."""
     sid = os.environ.get("THURBOX_SESSION", "").strip()
     if not sid or sys.stdin is None or sys.stdin.isatty():
         return None
@@ -1532,10 +1534,17 @@ def stop_decision() -> dict | None:
         if (not isinstance(hook, dict) or hook.get("hook_event_name") != "Stop"
                 or hook.get("stop_hook_active")):
             return None
-        reason = _load_sibling("fleet_queue", "queue.py").missing_result(sid)
+        reason, heads = _load_sibling("fleet_queue", "queue.py").missing_result(sid)
+        if not reason:
+            return None
+        asked = os.path.join(runtime_dir(), "stop-asked", re.sub(r"[^A-Za-z0-9_.-]", "_", sid))
+        if os.path.isfile(asked) and read(asked).strip() == heads:
+            return None
+        os.makedirs(os.path.dirname(asked), exist_ok=True)
+        fleet_platform.write_record(asked, heads + "\n")
     except Exception:
         return None
-    return {"decision": "block", "reason": reason} if reason else None
+    return {"decision": "block", "reason": reason}
 
 
 HOOK_BARE = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789/._:@+=,~-")

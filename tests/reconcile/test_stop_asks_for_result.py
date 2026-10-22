@@ -168,3 +168,56 @@ def test_a_bad_setting_still_exits_zero_and_still_asks(tmp_path, isolated_env):
     assert out.code == 0, out.out
     expect(out.stderr, "could not nudge", "is not a whole number")
     expect(json.loads(out.stdout)["reason"], str(task / "result.md"))
+
+
+# A worker WAITING ON PURPOSE says so with `fleet queue declare`, and its brief
+# tells it to before its turn ends. Blocking that stop asked a question the
+# worker had already answered, on every turn the wait lasted.
+
+def declare(*argv: str):
+    out = run_fleet("queue", "declare", REF, *argv)
+    assert out.code == 0, out.out
+    return out
+
+
+@pytest.mark.parametrize("said", [["paused", "--until", "1h", "--why", "CI is running"],
+                                  ["needs-input", "--why", "which base?"]])
+def test_a_worker_that_declared_its_wait_stops(tmp_path, isolated_env, said):
+    worker(tmp_path)
+    declare(*said)
+    out = stop()
+    assert out.code == 0, out.out
+    assert out.stdout.strip() == "", "a declared wait was blocked anyway"
+    assert nudged(isolated_env)
+
+
+def test_an_expired_pause_is_asked_again(tmp_path, isolated_env):
+    task = worker(tmp_path)
+    write(task / "progress.jsonl", json.dumps({
+        "declare": {"state": "paused", "until": "2026-01-01T01:00:00+00:00", "why": "CI"},
+        "observed": "2026-01-01T00:00:00+00:00",
+    }) + "\n")
+    out = stop()
+    assert out.code == 0, out.out
+    assert json.loads(out.stdout)["decision"] == "block", "a pause past its time still held"
+
+
+# Asked ONCE per head: `stop_hook_active` only spares the stop that follows a
+# block, so a worker resting across many turns was blocked on every one of them.
+
+def test_the_same_head_is_asked_about_once(tmp_path, isolated_env):
+    worker(tmp_path)
+    assert json.loads(stop().stdout)["decision"] == "block"
+    assert stop(active=True).stdout.strip() == ""
+    again = stop()
+    assert again.code == 0, again.out
+    assert again.stdout.strip() == "", "the next turn's stop was blocked over the same head"
+
+
+def test_a_new_commit_is_asked_about_again(tmp_path, isolated_env):
+    task = worker(tmp_path)
+    assert json.loads(stop().stdout)["decision"] == "block"
+    git(tmp_path / "wt", "commit", "-q", "--allow-empty", "-m", "more work")
+    out = stop()
+    assert out.code == 0, out.out
+    expect(json.loads(out.stdout)["reason"], str(task / "result.md"))

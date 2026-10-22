@@ -298,7 +298,8 @@ names every path and the reason for each.
   which the file names — `stale.json`, a
   stale-checkout notice not yet delivered, and `origin_questions.json` and
   `origin_outcomes.json`, what each origin was asked and which outcomes still
-  wait for it. Those are
+  wait for it, and `stop-asked/`, the branch heads each worker's Stop hook
+  already asked about. Those are
   runtime state and not records for the same reason as all the others: "the
   lead has been told" is true of one machine's loop and one conversation, and
   writing it onto a task would make the loop a second writer over the queue.
@@ -669,8 +670,10 @@ costs one pass and never the loop. Four things about it are load-bearing:
   `nudge` runs no queue command, so a worker
   firing it can never collect or reap itself. It does read one: when the
   stopping session is a dispatched task's whose branch is ahead of its base
-  and whose `result.md` is missing, it blocks that stop once with Claude
-  Code's Stop-hook JSON naming the path (`queue.py`'s `missing_result`).
+  and whose `result.md` is missing, it blocks that stop with Claude Code's
+  Stop-hook JSON naming the path (`queue.py`'s `missing_result`) — once per
+  branch head, remembered in the runtime directory's `stop-asked/`, and never
+  while the worker's own `declare` stands.
   Codex workers get no Stop hook, and rely on the timer and `plan`'s stalled set.
 
 `.agents/skills/fleet-queue/` is the driving surface for 1–3 and 5–8, and

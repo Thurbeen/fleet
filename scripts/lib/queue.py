@@ -3748,8 +3748,8 @@ def _unit_ahead(unit: dict, branch: str) -> bool:
     return False
 
 
-def missing_result(sid: str) -> str:
-    """What a worker's Stop hook should ask for before the worker stops, or "".
+def missing_result(sid: str) -> tuple[str, str]:
+    """(what a worker's Stop hook should ask for, the heads it asks about), or ("", "").
 
     THE FAILURE IT ANSWERS. A worker publishes — commits pushed, pull request
     open — and ends its turn without the result.md its brief names, and its
@@ -3760,24 +3760,36 @@ def missing_result(sid: str) -> str:
     `reconcile nudge` hands it to the agent as a Stop-hook block; every other
     session, a lead's above all, gets "" and stops exactly as before. A `--host`
     task's result is written on that machine, so it is never asked about here.
+
+    A worker WAITING ON PURPOSE has already answered: a standing `declaration`
+    — an unexpired `paused`, or `needs-input` — is the word its brief asks for
+    before a turn ends without a result, so it is not asked again. The heads
+    are each repository's branch tip, which `reconcile nudge` remembers so the
+    same work is asked about once and not on every turn a wait lasts.
     """
     if not sid:
-        return ""
+        return "", ""
     for task in Queue(queue_root()).tasks.values():
         if task.doc.get("session") != sid:
             continue
         if task.state != "dispatched" or task.doc.get("host"):
-            return ""
+            return "", ""
         result = os.path.abspath(task.file(RESULT_FILE))
-        if os.path.exists(result) or not commits_ahead(task):
-            return ""
+        if os.path.exists(result) or declaration(task) or not commits_ahead(task):
+            return "", ""
+        branch = str(task.doc["branch"])
+        heads = ",".join(
+            git_out(unit["path"], ["rev-parse", "--verify", "--quiet", branch + "^{commit}"]).strip()
+            for unit in task_repos(task) if os.path.isdir(unit["path"])
+        )
         return (
-            f"fleet task {task.ref} has commits on {task.doc['branch']} but no result.md, "
+            f"fleet task {task.ref} has commits on {branch} but no result.md, "
             f"and only that file closes it. If your work is published, write it now at "
             f"{result} as your brief's Reporting back says, then stop. If you are stopping "
-            "to wait on a person instead, say so in one line and stop."
-        )
-    return ""
+            f"to wait on purpose instead, run `fleet queue declare {task.ref} paused` or "
+            "`needs-input` as your brief's Waiting on purpose says, then stop."
+        ), f"{task.ref}@{heads}"
+    return "", ""
 
 
 def cmd_plan(args) -> int:
