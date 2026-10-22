@@ -1522,8 +1522,8 @@ def stop_decision() -> dict | None:
     sets `stop_hook_active` on the stop that follows one: that stop is always
     allowed. Every other stop is a new turn, so the heads asked about are kept
     in `stop-asked/<session>` here: the same work is asked about ONCE, however
-    many turns a wait lasts, and a new commit is asked about again.
-    `queue.py`'s `missing_result` owns which stops are asked about at all; any
+    many turns a wait lasts, and a new commit is asked about again. A memory
+    that cannot be written still asks. `queue.py`'s `missing_result` owns which stops are asked about at all; any
     error is a stop allowed, because a hook that fails a stop is worse than one
     that never fired, and the loop's own timer still reads the queue."""
     sid = os.environ.get("THURBOX_SESSION", "").strip()
@@ -1540,10 +1540,13 @@ def stop_decision() -> dict | None:
         asked = os.path.join(runtime_dir(), "stop-asked", re.sub(r"[^A-Za-z0-9_.-]", "_", sid))
         if os.path.isfile(asked) and read(asked).strip() == heads:
             return None
-        os.makedirs(os.path.dirname(asked), exist_ok=True)
-        fleet_platform.write_record(asked, heads + "\n")
     except Exception:
         return None
+    try:
+        os.makedirs(os.path.dirname(asked), exist_ok=True)
+        fleet_platform.write_record(asked, heads + "\n")
+    except OSError:
+        pass  # forgetting costs a second question; it must not cost this one
     return {"decision": "block", "reason": reason}
 
 

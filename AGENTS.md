@@ -672,8 +672,8 @@ costs one pass and never the loop. Four things about it are load-bearing:
   stopping session is a dispatched task's whose branch is ahead of its base
   and whose `result.md` is missing, it blocks that stop with Claude Code's
   Stop-hook JSON naming the path (`queue.py`'s `missing_result`) — once per
-  branch head, remembered in the runtime directory's `stop-asked/`, and never
-  while the worker's own `declare` stands.
+  branch head, remembered in the runtime directory's `stop-asked/`, and not
+  while the worker's own `declare` stands over its newest commit.
   Codex workers get no Stop hook, and rely on the timer and `plan`'s stalled set.
 
 `.agents/skills/fleet-queue/` is the driving surface for 1–3 and 5–8, and

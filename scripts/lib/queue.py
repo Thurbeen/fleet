@@ -3763,7 +3763,10 @@ def missing_result(sid: str) -> tuple[str, str]:
 
     A worker WAITING ON PURPOSE has already answered: a standing `declaration`
     — an unexpired `paused`, or `needs-input` — is the word its brief asks for
-    before a turn ends without a result, so it is not asked again. The heads
+    before a turn ends without a result, so it is not asked again, unless a
+    commit is newer than the declaration: a word about a wait does not speak
+    for work done after it, and nothing that wakes a worker by its pane (a
+    shepherd ping, a person typing) makes that word stale. The heads
     are each repository's branch tip, which `reconcile nudge` remembers so the
     same work is asked about once and not on every turn a wait lasts.
     """
@@ -3775,19 +3778,27 @@ def missing_result(sid: str) -> tuple[str, str]:
         if task.state != "dispatched" or task.doc.get("host"):
             return "", ""
         result = os.path.abspath(task.file(RESULT_FILE))
-        if os.path.exists(result) or declaration(task) or not commits_ahead(task):
+        if os.path.exists(result) or not commits_ahead(task):
             return "", ""
         branch = str(task.doc["branch"])
+        units = [unit for unit in task_repos(task) if os.path.isdir(unit["path"])]
+        said = declaration(task)
+        if said and aware_time(said["declared"]) >= max(
+            int(git_out(unit["path"], ["log", "-1", "--format=%ct", branch, "--"]).strip() or 0)
+            for unit in units
+        ):
+            return "", ""
         heads = ",".join(
             git_out(unit["path"], ["rev-parse", "--verify", "--quiet", branch + "^{commit}"]).strip()
-            for unit in task_repos(task) if os.path.isdir(unit["path"])
+            for unit in units
         )
+        cmd = f"uv run --project {checkout_root()} fleet queue declare {task.ref}"
         return (
             f"fleet task {task.ref} has commits on {branch} but no result.md, "
             f"and only that file closes it. If your work is published, write it now at "
             f"{result} as your brief's Reporting back says, then stop. If you are stopping "
-            f"to wait on purpose instead, run `fleet queue declare {task.ref} paused` or "
-            "`needs-input` as your brief's Waiting on purpose says, then stop."
+            f"to wait on purpose instead, say so with `{cmd} paused --until 2h --why '...'` "
+            f"or `{cmd} needs-input --why '...'`, then stop."
         ), f"{task.ref}@{heads}"
     return "", ""
 

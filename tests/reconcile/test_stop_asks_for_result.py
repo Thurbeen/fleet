@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 
 import pytest
@@ -221,3 +222,54 @@ def test_a_new_commit_is_asked_about_again(tmp_path, isolated_env):
     out = stop()
     assert out.code == 0, out.out
     expect(json.loads(out.stdout)["reason"], str(task / "result.md"))
+
+
+def later(seconds: int = 120) -> str:
+    """A committer date past anything `declare` wrote this second."""
+    return time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(time.time() + seconds))
+
+
+def test_work_committed_after_a_declaration_is_asked_about(tmp_path, isolated_env):
+    """A declaration speaks for the work it was written over, not for what came after:
+    a worker pinged out of its pause commits a fix and stops without its result."""
+    task = worker(tmp_path)
+    declare("paused", "--until", "2h", "--why", "CI is running")
+    assert stop().stdout.strip() == ""
+    done = run(["git", "-C", str(tmp_path / "wt"), "commit", "-q", "--allow-empty", "-m", "the fix"],
+               GIT_COMMITTER_DATE=later())
+    assert done.code == 0, done.out
+    out = stop()
+    assert out.code == 0, out.out
+    expect(json.loads(out.stdout)["reason"], str(task / "result.md"))
+
+
+def test_a_new_commit_in_an_additional_repository_is_asked_about_again(tmp_path, isolated_env):
+    task = worker(tmp_path)
+    second = tmp_path / "second"
+    second.mkdir()
+    git(second, "init", "-q", "-b", "main")
+    git(second, "commit", "-q", "--allow-empty", "-m", "base")
+    git(second, "switch", "-q", "-c", BRANCH)
+    record = json.loads((task / "task.yaml").read_text(encoding="utf-8"))
+    write(task / "task.yaml", json.dumps(record | {"add_repos": [str(second)]}))
+    assert json.loads(stop().stdout)["decision"] == "block"
+    assert stop().stdout.strip() == ""
+    git(second, "commit", "-q", "--allow-empty", "-m", "more work")
+    out = stop()
+    assert out.code == 0, out.out
+    expect(json.loads(out.stdout)["reason"], str(task / "result.md"))
+
+
+def test_a_memory_that_cannot_be_written_still_asks(tmp_path, isolated_env):
+    """Forgetting costs a second question; failing to remember must not cost the first."""
+    task = worker(tmp_path)
+    write(isolated_env / "reconcile" / "stop-asked", "a file where the directory goes\n")
+    out = stop()
+    assert out.code == 0, out.out
+    expect(json.loads(out.stdout)["reason"], str(task / "result.md"))
+
+
+def test_the_question_names_a_declare_command_that_runs(tmp_path, isolated_env):
+    worker(tmp_path)
+    reason = json.loads(stop().stdout)["reason"]
+    expect(reason, f"fleet queue declare {REF} paused --until", "--why", "needs-input --why")
