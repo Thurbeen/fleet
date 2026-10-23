@@ -15,6 +15,7 @@ It only ever fast-forwards, and only when that is unambiguously safe:
   dirty working tree        -> report, change nothing
   not on the default branch -> report how far origin/<default> has moved
   diverged from upstream    -> report, change nothing (never rebase/reset here)
+  incompatible candidate    -> refuse before Python v1 can be replaced by v2
   strictly behind + clean   -> `git merge --ff-only`
   already current           -> say nothing
 
@@ -41,6 +42,12 @@ user, and `suppressOutput` keeps the raw text out of the transcript. ALWAYS
 EXITS 0 AND SAYS WHAT HAPPENED, whatever goes wrong: a sync problem must never
 block a session, and the hook is one shell-neutral command with no `|| true`
 of its own, so tolerating failure is this module's job.
+
+The v1 boundary inspects the fetched commit's FLEET_MAJOR marker and Python
+entry points before merging that same immutable commit. Missing metadata is
+incompatible, not permission to install an unknown replacement. A manual git
+operation is outside this updater; README.md owns pinning and deliberate v2
+opt-in instructions.
 """
 
 from __future__ import annotations
@@ -105,6 +112,21 @@ RECONCILER_PATHS = (
 )
 
 OFFLINE = "control-plane sync: could not reach origin (offline?). Working from the local checkout."
+MAJOR_BOUNDARY = (
+    "v1 update blocked: the fetched candidate is not compatible Python v1. "
+    "Pin v1.0.0 to stay stable. For explicit v2 opt-in, use a separate clone of main "
+    "and follow its README. This checkout and its data were left unchanged."
+)
+
+
+def v1_candidate(root: str, commit: str) -> bool:
+    """Inspect fetched objects before they can replace the running updater."""
+    major = git(root, "show", f"{commit}:FLEET_MAJOR")
+    if major.returncode != 0 or major.stdout.strip() != "1":
+        return False
+    return all(git(root, "cat-file", "-e", f"{commit}:{path}").returncode == 0 for path in (
+        "pyproject.toml", "fleet/cli.py", "scripts/lib/sync_checkout.py",
+    ))
 
 
 def git(root: str | None, *args: str) -> subprocess.CompletedProcess:
@@ -251,7 +273,10 @@ def _sync(facts: dict) -> str | None:
                 f"but the tree is dirty. Not fast-forwarding.{hint}")
 
     before = git(root, "rev-parse", "HEAD").stdout.strip()
-    if git(root, "merge", "--ff-only", "--quiet", remote_ref).returncode != 0:
+    candidate = git(root, "rev-parse", remote_ref).stdout.strip()
+    if not v1_candidate(root, candidate):
+        return MAJOR_BOUNDARY
+    if git(root, "merge", "--ff-only", "--quiet", candidate).returncode != 0:
         return (f"control-plane sync: '{branch}' is {behind} commit(s) behind {remote_ref} "
                 "and would not fast-forward. Left alone.")
 

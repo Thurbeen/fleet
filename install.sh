@@ -279,13 +279,33 @@ sequences - one keeps the lead's conversation, one discards it."
 	say "This fleet is named '$NAME' (orchestration/fleet.conf)."
 }
 
+# The marker alone is insufficient if a replacement accidentally inherits it.
+# Inspect objects, not files already checked out by a newer runtime.
+v1_candidate() {
+	[ "$(git -C "$DIR" show "$1:FLEET_MAJOR" 2>/dev/null)" = 1 ] || return 1
+	for path in pyproject.toml fleet/cli.py scripts/lib/sync_checkout.py; do
+		git -C "$DIR" cat-file -e "$1:$path" 2>/dev/null || return 1
+	done
+	return 0
+}
+
+major_boundary() {
+	die "v1 update blocked: the fetched candidate is not compatible Python v1.
+Pin v1.0.0 to stay stable. For explicit v2 opt-in, use a separate clone of main
+and follow its README. Existing checkout data was left unchanged."
+}
+
 # Clone into DIR, or bring the clone already there up to date without ever
 # overwriting it.
 checkout() {
 	if [ ! -e "$DIR" ] || { [ -d "$DIR" ] && [ -z "$(ls -A "$DIR" 2>/dev/null)" ]; }; then
 		mkdir -p "$(dirname "$DIR")" || die "could not create $(dirname "$DIR")"
-		git clone --quiet --branch "$BRANCH" "$REPO" "$DIR" </dev/null ||
+		git clone --quiet --no-checkout --branch "$BRANCH" "$REPO" "$DIR" </dev/null ||
 			die "git clone of $REPO failed; its error is above"
+		candidate="$(git -C "$DIR" rev-parse HEAD)" || major_boundary
+		v1_candidate "$candidate" || major_boundary
+		git -C "$DIR" checkout --quiet "$candidate" -- . </dev/null ||
+			die "could not check out the verified Python v1 candidate"
 		say "Cloned $REPO ($BRANCH)."
 		return
 	fi
@@ -323,7 +343,9 @@ Commit or stash them, then run this again:
 $dirty"
 	fi
 	if [ "$behind" -gt 0 ]; then
-		git -C "$DIR" merge --ff-only --quiet "origin/$BRANCH" </dev/null ||
+		candidate="$(git -C "$DIR" rev-parse "origin/$BRANCH")" || major_boundary
+		v1_candidate "$candidate" || major_boundary
+		git -C "$DIR" merge --ff-only --quiet "$candidate" </dev/null ||
 			die "the fast-forward of $DIR failed; its error is above"
 		say "Fast-forwarded $behind commit(s) to $(git -C "$DIR" rev-parse --short HEAD)."
 	elif [ "$ahead" -gt 0 ]; then

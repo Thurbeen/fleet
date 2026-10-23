@@ -7,6 +7,57 @@
 
 # fleet
 
+## Stable: Python v1.0.0
+
+**Use the pinned v1.0.0 release for stable Fleet.** `main` is the development
+branch for v2.0.0 beta, whose design contains only Task and its task
+controller. V2 is not a stable release and has different CLI, configuration
+and data formats. There is no automatic v1 migration.
+
+For a new stable installation, install git and
+[uv](https://docs.astral.sh/uv/getting-started/installation/), then run these
+commands on Linux or Windows PowerShell:
+
+```text
+git clone --branch v1.0.0 --single-branch https://github.com/Thurbeen/fleet.git fleet-v1
+uv run --project fleet-v1 fleet install
+```
+
+The tag checkout is detached deliberately: it stays at the frozen Python
+release rather than following `main`. Keep this directory; the extension
+records its path.
+
+**Existing users following `main` must pin v1 before updating.** In your
+existing Python Fleet checkout, preserve your operator state and resolve any
+tracked edits before switching; do not force the checkout:
+
+```text
+git fetch origin tag v1.0.0
+git switch --detach v1.0.0
+uv run fleet install
+```
+
+These commands keep the checkout in place and do not migrate its queue or
+configuration. The detached checkout prevents ordinary sync from following
+`main`. This freeze also includes a v1 major-version boundary: SessionStart
+and reconciler sync, and both v1 installers, inspect the fetched candidate
+before checkout or fast-forward. They refuse a missing or non-v1
+`FLEET_MAJOR` marker, or missing Python entry points, and leave the existing
+checkout and data unchanged. A fresh v1 installer also checks before writing
+candidate files. To reinstall a pinned checkout, use `uv run fleet install`
+there rather than the branch-tracking bootstrap.
+
+**Unpatched clients must install this freeze before v2 lands.** They can
+otherwise pull v2 through their old automatic sync or installer. Documentation
+alone cannot protect old code, and a manual `git pull` bypasses the guard.
+Pin the tag explicitly using the commands above; do not run development
+installers over a stable checkout.
+
+To inspect v2 deliberately, use a separate clone of `main` and follow its
+README. [PR #308](https://github.com/Thurbeen/fleet/pull/308) is the unmerged
+Task/controller beta candidate; v1 queues and configuration are not v2
+inputs. Keep beta configuration and data separate from v1.
+
 fleet is a control plane over [thurbox](https://github.com/Thurbeen/thurbox),
 a terminal UI for agent sessions. It maps your repositories and runs a task
 queue: you give it a goal, it splits the goal into tasks, and it runs one worker
@@ -29,57 +80,6 @@ ready, stalled or needs a sync. The opt-in conductor dispatches, re-prompts
 and refuels; without one, the lead does. Below, the loop: prompt, topic,
 tasks, dispatch, watch, collect, shepherd, merge, reap, plus refuel, served to
 reviewed, and local-only publishing.](docs/fleet-architecture.svg)
-
-## Release channels
-
-**v1.0.0 is the frozen Python release.** `main` remains the stable v1
-channel and the repository's default branch. The installers below, existing
-clones, `sync-checkout`, and the reconciler's automatic sync stay on v1.
-There is no automatic migration or replacement of v1 data or configuration.
-Keep `main` on Python v1; never merge the Rust replacement into this channel
-or change the default branch to v2. This also protects older installations
-that have no release-channel guard.
-
-**v2.0.0 is in development (beta), not a stable release.** The beta design
-contains only Task and its task controller; forge,
-ChangeRequest and conductor functionality are deferred. Rust development
-targets `v2-beta`; [the Rust replacement PR](https://github.com/Thurbeen/fleet/pull/308)
-targets that branch. It must not merge into `main`. The v2 CLI, resource
-store and configuration differ from v1; v1 queues and configuration are not
-inputs to v2. Testing beta is an explicit opt-in in a separate directory,
-with separate configuration and data. Keep the v1 checkout and its running
-services intact.
-
-Until that PR lands, `v2-beta` holds the Python baseline for its review.
-To try the current Rust candidate explicitly, clone the staging branch and
-fetch the PR head as shown below. Install the toolchain specified by the
-candidate's `rust-toolchain.toml` through rustup before building:
-
-```text
-git clone --branch v2-beta --single-branch https://github.com/Thurbeen/fleet.git fleet-v2-beta
-cd fleet-v2-beta
-git fetch origin pull/308/head
-git checkout --detach FETCH_HEAD
-cargo build --release --locked -p fleet-cli --bin fleet
-```
-
-Run the binary directly; do not replace a v1 command on PATH or run the beta
-against a v1 directory. On Linux:
-
-```sh
-./target/release/fleet --help
-```
-
-On Windows PowerShell:
-
-```powershell
-.\target\release\fleet.exe --help
-```
-
-The PR head is a changing development candidate. Read its README before
-configuring or running a Task. Building beta does not install it,
-start it, or migrate v1. Return to v1 by continuing to use the original
-checkout; no branch switch or reinstall is needed.
 
 ## Kanban dashboard
 
@@ -111,7 +111,11 @@ fuel, which stays hidden by default. Filters and navigation are read-only.
 
 The installer gets uv itself. `uv run fleet preflight` lists anything missing.
 
-## Install
+## Development installation
+
+These unpinned installers follow `main`, the v2 development channel. Use the
+pinned stable instructions above for v1. While #308 remains unmerged, `main`
+still contains Python; it is not a promise of future v1 compatibility.
 
 ```bash
 curl -LsSf https://raw.githubusercontent.com/Thurbeen/fleet/main/install.sh | sh

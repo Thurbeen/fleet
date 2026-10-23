@@ -228,14 +228,40 @@ function Set-FleetName([string]$Dir, [string]$Name) {
     return $true
 }
 
+function Test-FleetV1Candidate([string]$Dir, [string]$Commit) {
+    $major = (& git -C $Dir show "${Commit}:FLEET_MAJOR" 2>$null) -join "`n"
+    if ($LASTEXITCODE -ne 0 -or $major.Trim() -ne '1') { return $false }
+    foreach ($path in @('pyproject.toml', 'fleet/cli.py', 'scripts/lib/sync_checkout.py')) {
+        & git -C $Dir cat-file -e "${Commit}:$path" 2>$null
+        if ($LASTEXITCODE -ne 0) { return $false }
+    }
+    return $true
+}
+
+function Write-FleetMajorBoundary {
+    Write-FleetRefusal ('v1 update blocked: the fetched candidate is not compatible Python v1. ' +
+        'Pin v1.0.0 to stay stable. For explicit v2 opt-in, use a separate clone of main ' +
+        'and follow its README. Existing checkout data was left unchanged.')
+}
+
 function New-FleetClone([string]$Dir, [string]$Repo, [string]$Branch) {
     $parent = Split-Path -Parent $Dir
     if ($parent -and -not (Test-Path -LiteralPath $parent)) {
         New-Item -ItemType Directory -Force -Path $parent | Out-Null
     }
-    & git clone --quiet --branch $Branch $Repo $Dir | Out-Host
+    & git clone --quiet --no-checkout --branch $Branch $Repo $Dir | Out-Host
     if ($LASTEXITCODE -ne 0) {
         Write-FleetRefusal "git clone of $Repo failed (exit code $LASTEXITCODE); its error, if git printed one, is above."
+        return $false
+    }
+    $candidate = & git -C $Dir rev-parse HEAD
+    if ($LASTEXITCODE -ne 0 -or -not (Test-FleetV1Candidate $Dir $candidate)) {
+        Write-FleetMajorBoundary
+        return $false
+    }
+    & git -C $Dir checkout --quiet $candidate -- . | Out-Host
+    if ($LASTEXITCODE -ne 0) {
+        Write-FleetRefusal 'could not check out the verified Python v1 candidate'
         return $false
     }
     Write-Host "Cloned $Repo ($Branch)."
@@ -266,7 +292,12 @@ function Update-FleetCheckout([string]$Dir, [string]$Branch) {
         return $false
     }
     if ($behind -gt 0) {
-        & git -C $Dir merge --ff-only --quiet "origin/$Branch" | Out-Host
+        $candidate = & git -C $Dir rev-parse "origin/$Branch"
+        if ($LASTEXITCODE -ne 0 -or -not (Test-FleetV1Candidate $Dir $candidate)) {
+            Write-FleetMajorBoundary
+            return $false
+        }
+        & git -C $Dir merge --ff-only --quiet $candidate | Out-Host
         if ($LASTEXITCODE -ne 0) {
             Write-FleetRefusal "the fast-forward of $Dir failed (exit code $LASTEXITCODE); its error, if git printed one, is above."
             return $false

@@ -25,7 +25,10 @@ def new_repo(root: Path) -> Path:
     git("init", "--quiet", "--bare", "--initial-branch=main", str(origin), cwd=root)
     git("clone", "--quiet", str(origin), str(work), cwd=root)
     write(work / "README.md", "seed\n")
-    git("add", "README.md", cwd=work)
+    write(work / ".gitignore", "orchestration/queue/\norchestration/*.conf\n")
+    for file in ("FLEET_MAJOR", "pyproject.toml", "fleet/cli.py", "scripts/lib/sync_checkout.py"):
+        write(work / file, "1\n")
+    git("add", ".", cwd=work)
     git("commit", "--quiet", "-m", "seed", cwd=work)
     git("push", "--quiet", "origin", "main", cwd=work)
     # `git clone` records origin/HEAD only for a non-empty remote, and the sync

@@ -52,6 +52,7 @@ say**.
 | `is N commit(s) ahead ... and not pushed` | nothing to pull | report it; nothing to re-apply |
 | `could not reach origin (offline?)` | no fetch happened | report and stop; a re-apply on an unsynced tree proves nothing |
 | `would not fast-forward. Left alone.` | behind, but the merge refused | usually an untracked file colliding with an incoming one; report what `git merge --ff-only origin/<default>` says and stop |
+| `v1 update blocked` | fetched code is outside the Python v1 boundary | stop; follow README's pinned v1.0.0 instructions, or explicitly try v2 in a separate clone; never bypass with a manual merge |
 
 ### 1a. A dirty tree is a normal state here, not a fault
 

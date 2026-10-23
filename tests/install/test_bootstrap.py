@@ -690,30 +690,49 @@ def test_no_git_and_no_manager_says_to_install_git(box, driver, stubs):
     assert not box.clone.exists()
 
 
-def test_beta_branch_requires_explicit_opt_in_and_preserves_v1_state(box, origin, tmp_path):
-    """Both bootstraps keep default installs and existing clones on frozen main."""
-    stable = git("rev-parse", "HEAD", cwd=origin).strip()
-    git("checkout", "-qb", "v2-beta", cwd=origin)
-    write(origin / "BETA-ONLY", "v2 development\n")
-    git("add", "BETA-ONLY", cwd=origin)
-    git("commit", "-qm", "fixture: beta only", cwd=origin)
-    beta = git("rev-parse", "HEAD", cwd=origin).strip()
-    git("checkout", "main", cwd=origin)
-
+@pytest.mark.parametrize("replacement", ["removed-python", "major-bump", "missing-marker"])
+def test_v1_bootstrap_blocks_breaking_main_before_checkout(box, origin, stubs, tmp_path, replacement):
     assert box(FLEET_YES="1").code == 0
-    assert git("rev-parse", "HEAD", cwd=box.clone).strip() == stable
-    state = box.clone / "orchestration" / "operator-private.conf"
-    write(state, "preserve this v1 configuration\n")
+    stable = git("rev-parse", "HEAD", cwd=box.clone).strip()
+    git("tag", "v1.0.0", cwd=origin)
+    state = box.clone / "orchestration" / "operator.conf"
+    write(state, "keep configuration\n")
     queue = box.clone / "orchestration" / "queue" / "private-result.md"
-    write(queue, "preserve this v1 task\n")
-    assert box(FLEET_YES="1").code == 0
-    assert not (box.clone / "BETA-ONLY").exists()
-    assert state.read_text(encoding="utf-8") == "preserve this v1 configuration\n"
-    assert queue.read_text(encoding="utf-8") == "preserve this v1 task\n"
+    write(queue, "keep task\n")
+    git("check-ignore", "orchestration/operator.conf", "orchestration/queue/private-result.md", cwd=box.clone)
+    if replacement == "removed-python":
+        git("rm", "-r", "fleet", "scripts/lib", "pyproject.toml", cwd=origin)
+    elif replacement == "major-bump":
+        write(origin / "FLEET_MAJOR", "2\n")
+        git("add", "FLEET_MAJOR", cwd=origin)
+    else:
+        git("rm", "FLEET_MAJOR", cwd=origin)
+    write(origin / "Cargo.toml", "# breaking v2 replacement\n")
+    git("add", "Cargo.toml", cwd=origin)
+    git("commit", "-qm", "fixture: replace Python with v2", cwd=origin)
 
-    separate = tmp_path / "explicit-beta"
-    done = box(FLEET_YES="1", FLEET_BRANCH="v2-beta", FLEET_DIR=str(separate))
-    assert done.code == 0, done.out
-    assert git("rev-parse", "HEAD", cwd=separate).strip() == beta
-    assert (separate / "BETA-ONLY").exists()
-    assert not (box.clone / "BETA-ONLY").exists()
+    done = box(FLEET_YES="1")
+    assert git("rev-parse", "HEAD", cwd=box.clone).strip() == stable, done.out
+    assert done.code != 0, done.out
+    expect(done.out, "v1 update blocked", "v1.0.0", "separate clone")
+    assert not (box.clone / "Cargo.toml").exists()
+    assert state.read_text(encoding="utf-8") == "keep configuration\n"
+    assert queue.read_text(encoding="utf-8") == "keep task\n"
+    assert box.clone.joinpath("scripts/lib/sync_checkout.py").is_file()
+    from harness import PYTHON, run
+    from installkit import BOOT
+
+    runnable = run([*PYTHON, "-c", BOOT, str(box.clone), "--help"], cwd=box.clone)
+    assert runnable.code == 0, runnable.out
+
+    fresh = tmp_path / "fresh-default"
+    refused = box(FLEET_YES="1", FLEET_DIR=str(fresh))
+    assert refused.code != 0, refused.out
+    assert not (fresh / "Cargo.toml").exists(), "v2 was checked out before the guard"
+    pinned = tmp_path / "pinned-v1"
+    installed = box(FLEET_YES="1", FLEET_DIR=str(pinned), FLEET_BRANCH="v1.0.0")
+    assert installed.code == 0, installed.out
+    assert git("rev-parse", "HEAD", cwd=pinned).strip() == stable
+    assert not (pinned / "Cargo.toml").exists()
+    explicit = clone(origin, tmp_path / "explicit-v2")
+    assert (explicit / "Cargo.toml").exists(), "manual v2 opt-in remains possible"

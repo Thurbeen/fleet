@@ -26,7 +26,10 @@ def checkout(root: Path) -> Path:
     git("init", "--quiet", "--bare", "--initial-branch=main", str(origin), cwd=root)
     git("clone", "--quiet", str(origin), str(work), cwd=root)
     write(work / "README.md", "seed\n")
-    git("add", "README.md", cwd=work)
+    write(work / ".gitignore", "orchestration/queue/\norchestration/*.conf\n")
+    for file in ("FLEET_MAJOR", "pyproject.toml", "fleet/cli.py", "scripts/lib/sync_checkout.py"):
+        write(work / file, "1\n")
+    git("add", ".", cwd=work)
     git("commit", "--quiet", "-m", "seed", cwd=work)
     git("push", "--quiet", "origin", "main", cwd=work)
     git("remote", "set-head", "origin", "main", cwd=work)
@@ -148,20 +151,23 @@ def test_status_says_the_sync_clock_and_zero_turns_it_off(recon, monkeypatch, tm
     expect(recon("status").out, "sync      every 2s")
 
 
-def test_automatic_sync_does_not_select_beta(recon, monkeypatch, tmp_path):
+def test_reconciler_keeps_v1_when_main_replaces_python(recon, monkeypatch, tmp_path):
     work = syncing(monkeypatch, tmp_path)
+    before = head(work)
     up = tmp_path / "plane" / "upstream"
-    git("checkout", "-qb", "v2-beta", cwd=up)
-    write(up / "Cargo.toml", "# beta only\n")
+    git("rm", "-r", "fleet", "scripts", "pyproject.toml", cwd=up)
+    write(up / "Cargo.toml", "# v2 replaces Python\n")
     git("add", "Cargo.toml", cwd=up)
-    git("commit", "--quiet", "-m", "beta replacement", cwd=up)
-    git("push", "--quiet", "origin", "v2-beta", cwd=up)
-    git("checkout", "main", cwd=up)
-    write(work / "operator-state", "keep\n")
-    stable = land(tmp_path / "plane", "README.md")
+    git("commit", "--quiet", "-m", "v2 replacement", cwd=up)
+    git("push", "--quiet", "origin", "main", cwd=up)
+    state = work / "orchestration" / "queue" / "private-result.md"
+    write(state, "keep\n")
+    git("check-ignore", "orchestration/queue/private-result.md", cwd=work)
 
     recon("ensure")
-    assert wait_for(lambda: head(work) == stable), recon.log()
+    assert wait_for(lambda: "v1 update blocked" in recon.log()), recon.log()
     passes(recon, 2)
+    assert head(work) == before
     assert not (work / "Cargo.toml").exists()
-    assert (work / "operator-state").read_text(encoding="utf-8") == "keep\n"
+    assert (work / "scripts/lib/sync_checkout.py").is_file()
+    assert state.read_text(encoding="utf-8") == "keep\n"
