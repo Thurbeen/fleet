@@ -382,3 +382,33 @@ def test_the_json_report_of_a_refusal_moves_nothing_and_raises_nothing(tmp_path)
     expect(report["message"], "the tree is dirty")
     assert report["actions"] == {}
     assert report["before"] == report["after"] == ""
+
+
+def test_unpatched_sync_keeps_main_python_when_beta_advances(tmp_path):
+    """A frozen default protects legacy hooks with no new channel guard installed."""
+    work = new_repo(tmp_path)
+    legacy = tmp_path / "legacy-sync.py"
+    shutil.copyfile(REPO / "scripts/lib/sync_checkout.py", legacy)
+    up = tmp_path / "publisher"
+    git("clone", "--quiet", str(tmp_path / "origin.git"), str(up), cwd=tmp_path)
+    git("checkout", "-qb", "v2-beta", cwd=up)
+    write(up / "Cargo.toml", "# beta replacement\n")
+    git("add", "Cargo.toml", cwd=up)
+    git("commit", "--quiet", "-m", "beta replacement", cwd=up)
+    git("push", "--quiet", "origin", "v2-beta", cwd=up)
+    git("checkout", "main", cwd=up)
+    write(up / "README.md", "frozen Python v1\n")
+    git("add", "README.md", cwd=up)
+    git("commit", "--quiet", "-m", "freeze v1", cwd=up)
+    git("push", "--quiet", "origin", "main", cwd=up)
+    write(work / "operator-state", "keep\n")
+
+    from harness import PYTHON, run
+
+    done = run([*PYTHON, str(legacy), "--json"], cwd=work)
+    assert done.code == 0, done.out
+    assert head_of(work) == origin_main(tmp_path)
+    assert not (work / "Cargo.toml").exists(), "legacy sync installed beta without opt-in"
+    assert (work / "operator-state").read_text(encoding="utf-8") == "keep\n"
+    assert sync(work).code == 0
+    assert not (work / "Cargo.toml").exists()

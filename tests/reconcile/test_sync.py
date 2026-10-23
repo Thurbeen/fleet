@@ -146,3 +146,22 @@ def test_status_says_the_sync_clock_and_zero_turns_it_off(recon, monkeypatch, tm
     expect(recon("status").out, "sync      off")
     syncing(monkeypatch, tmp_path)
     expect(recon("status").out, "sync      every 2s")
+
+
+def test_automatic_sync_does_not_select_beta(recon, monkeypatch, tmp_path):
+    work = syncing(monkeypatch, tmp_path)
+    up = tmp_path / "plane" / "upstream"
+    git("checkout", "-qb", "v2-beta", cwd=up)
+    write(up / "Cargo.toml", "# beta only\n")
+    git("add", "Cargo.toml", cwd=up)
+    git("commit", "--quiet", "-m", "beta replacement", cwd=up)
+    git("push", "--quiet", "origin", "v2-beta", cwd=up)
+    git("checkout", "main", cwd=up)
+    write(work / "operator-state", "keep\n")
+    stable = land(tmp_path / "plane", "README.md")
+
+    recon("ensure")
+    assert wait_for(lambda: head(work) == stable), recon.log()
+    passes(recon, 2)
+    assert not (work / "Cargo.toml").exists()
+    assert (work / "operator-state").read_text(encoding="utf-8") == "keep\n"

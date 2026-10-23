@@ -30,6 +30,57 @@ and refuels; without one, the lead does. Below, the loop: prompt, topic,
 tasks, dispatch, watch, collect, shepherd, merge, reap, plus refuel, served to
 reviewed, and local-only publishing.](docs/fleet-architecture.svg)
 
+## Release channels
+
+**v1.0.0 is the frozen Python release.** `main` remains the stable v1
+channel and the repository's default branch. The installers below, existing
+clones, `sync-checkout`, and the reconciler's automatic sync stay on v1.
+There is no automatic migration or replacement of v1 data or configuration.
+Keep `main` on Python v1; never merge the Rust replacement into this channel
+or change the default branch to v2. This also protects older installations
+that have no release-channel guard.
+
+**v2.0.0 is in development (beta), not a stable release.** The beta design
+contains only Task and its task controller; forge,
+ChangeRequest and conductor functionality are deferred. Rust development
+targets `v2-beta`; [the Rust replacement PR](https://github.com/Thurbeen/fleet/pull/308)
+targets that branch. It must not merge into `main`. The v2 CLI, resource
+store and configuration differ from v1; v1 queues and configuration are not
+inputs to v2. Testing beta is an explicit opt-in in a separate directory,
+with separate configuration and data. Keep the v1 checkout and its running
+services intact.
+
+Until that PR lands, `v2-beta` holds the Python baseline for its review.
+To try the current Rust candidate explicitly, clone the staging branch and
+fetch the PR head as shown below. Install the toolchain specified by the
+candidate's `rust-toolchain.toml` through rustup before building:
+
+```text
+git clone --branch v2-beta --single-branch https://github.com/Thurbeen/fleet.git fleet-v2-beta
+cd fleet-v2-beta
+git fetch origin pull/308/head
+git checkout --detach FETCH_HEAD
+cargo build --release --locked -p fleet-cli --bin fleet
+```
+
+Run the binary directly; do not replace a v1 command on PATH or run the beta
+against a v1 directory. On Linux:
+
+```sh
+./target/release/fleet --help
+```
+
+On Windows PowerShell:
+
+```powershell
+.\target\release\fleet.exe --help
+```
+
+The PR head is a changing development candidate. Read its README before
+configuring or running a Task. Building beta does not install it,
+start it, or migrate v1. Return to v1 by continuing to use the original
+checkout; no branch switch or reinstall is needed.
+
 ## Kanban dashboard
 
 See the whole fleet without leaving thurbox. **Alt+K** opens six columns of

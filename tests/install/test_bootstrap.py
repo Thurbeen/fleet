@@ -688,3 +688,32 @@ def test_no_git_and_no_manager_says_to_install_git(box, driver, stubs):
     expect(done.out, "git")
     refute(done.out, "Traceback")
     assert not box.clone.exists()
+
+
+def test_beta_branch_requires_explicit_opt_in_and_preserves_v1_state(box, origin, tmp_path):
+    """Both bootstraps keep default installs and existing clones on frozen main."""
+    stable = git("rev-parse", "HEAD", cwd=origin).strip()
+    git("checkout", "-qb", "v2-beta", cwd=origin)
+    write(origin / "BETA-ONLY", "v2 development\n")
+    git("add", "BETA-ONLY", cwd=origin)
+    git("commit", "-qm", "fixture: beta only", cwd=origin)
+    beta = git("rev-parse", "HEAD", cwd=origin).strip()
+    git("checkout", "main", cwd=origin)
+
+    assert box(FLEET_YES="1").code == 0
+    assert git("rev-parse", "HEAD", cwd=box.clone).strip() == stable
+    state = box.clone / "orchestration" / "operator-private.conf"
+    write(state, "preserve this v1 configuration\n")
+    queue = box.clone / "orchestration" / "queue" / "private-result.md"
+    write(queue, "preserve this v1 task\n")
+    assert box(FLEET_YES="1").code == 0
+    assert not (box.clone / "BETA-ONLY").exists()
+    assert state.read_text(encoding="utf-8") == "preserve this v1 configuration\n"
+    assert queue.read_text(encoding="utf-8") == "preserve this v1 task\n"
+
+    separate = tmp_path / "explicit-beta"
+    done = box(FLEET_YES="1", FLEET_BRANCH="v2-beta", FLEET_DIR=str(separate))
+    assert done.code == 0, done.out
+    assert git("rev-parse", "HEAD", cwd=separate).strip() == beta
+    assert (separate / "BETA-ONLY").exists()
+    assert not (box.clone / "BETA-ONLY").exists()
