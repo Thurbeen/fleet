@@ -28,7 +28,7 @@ ChangeRequest.
 1. A person applies a Task, with or without a `spec.forge` block. Nothing
    forge-related exists yet and nothing needs to.
 2. The worker decides it needs a change, pushes, opens it as a draft with the
-   forge's CLI and runs `fleet declare <task> --change <url>`. The verb
+   forge's CLI and runs `fleet declare <task> --change-request <url>`. The verb
    ensures one ChangeRequest exists for that URL and records the declaration
    on the Task. The standing worker policy tells every worker to do this; a
    Task applied with no thought of a change declares one the same way.

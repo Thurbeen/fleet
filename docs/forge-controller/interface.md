@@ -30,12 +30,18 @@ Neither method reads the clock, disk, environment, forge or runtime itself.
 The [Task resource](../resources/task.md#planned-additions) lists these
 fields among its planned additions; their definitions are here.
 
-`status.declared` is the worker's, one item per `fleet declare`:
+`status.declared` is the worker's, one typed item per `fleet declare`. Every
+item carries `kind`, a served kind, so the verb can later declare other
+things a worker produces without a second verb; an unknown kind is refused.
+This design defines one kind:
 
 | Field | Meaning |
 | --- | --- |
+| `kind` | `ChangeRequest`. |
 | `url` | The URL as declared. |
-| `changeRequest` | The name of the ChangeRequest the verb ensured for it. |
+| `name` | The name of the ChangeRequest the verb ensured for it. |
+
+This controller reads items of kind `ChangeRequest` and ignores the rest.
 
 `status.forge` is this controller's:
 
@@ -60,10 +66,10 @@ A Task that opened a change in each of two repositories:
 ```json
 "status": {
   "declared": [
-    {"url": "https://github.com/OWNER/app/pull/88",
-     "changeRequest": "github-com-owner-app-88"},
-    {"url": "https://github.com/OWNER/infra/pull/12",
-     "changeRequest": "github-com-owner-infra-12"}
+    {"kind": "ChangeRequest", "url": "https://github.com/OWNER/app/pull/88",
+     "name": "github-com-owner-app-88"},
+    {"kind": "ChangeRequest", "url": "https://github.com/OWNER/infra/pull/12",
+     "name": "github-com-owner-infra-12"}
   ],
   "forge": {
     "changes": {
@@ -168,13 +174,15 @@ Fleet never puts a change back into draft.
 
 ## The declare verb
 
-`fleet declare TASK --change URL` is a manager verb, like `fleet result`:
+`fleet declare TASK --change-request URL` is a manager verb, like
+`fleet result`. The flag names the kind declared; this design defines only
+`--change-request`, and the verb refuses a kind it does not serve.
 
 1. Parse the URL through the Forge port; a host not configured is refused.
 2. Ensure one ChangeRequest exists for it, named from the parsed ref, by
    exclusive creation; an existing one is reused as is.
-3. Append `{url, changeRequest}` to `Task.status.declared` as field manager
-   `worker`, with CAS on the Task. A repeated URL is a no-op.
+3. Append `{kind: "ChangeRequest", url, name}` to `Task.status.declared` as
+   field manager `worker`, with CAS on the Task. A repeated URL is a no-op.
 
 It is accepted after the brief has a receipt and before deletion, and it
 concludes nothing. The two steps are not atomic; a crash between them leaves

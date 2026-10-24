@@ -137,7 +137,7 @@ person.
 
 ```sh
 fleet apply -f change-request.json            # start mirroring a change
-fleet declare fix-314 --change URL            # the same, on a Task's behalf
+fleet declare fix-314 --change-request URL    # the same, on a Task's behalf
 fleet status changerequest github-com-owner-repo-314 --json
 fleet get changerequest github-com-owner-repo-314       # the full snapshot
 fleet delete changerequest github-com-owner-repo-314    # nothing on the forge changes

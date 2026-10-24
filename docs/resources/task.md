@@ -106,7 +106,7 @@ binary.
 | Field or verb | Owner | Meaning |
 | --- | --- | --- |
 | `spec.forge` | `apply`; mutable like `dispatch` | Optional overrides of the `[forge]` defaults: `relay.notes`, `relay.checks`, `draft.policy` (a name under `[forge.readyPolicies]`, refused if undefined). |
-| `status.declared` | `worker`, through `fleet declare TASK --change URL` | The changes the worker opened, each `{url, changeRequest}`. The verb also ensures the named ChangeRequest exists. Accepted after the brief has a receipt and before deletion; a repeated URL is a no-op; it concludes nothing. |
+| `status.declared` | `worker`, through `fleet declare TASK --change-request URL` | Typed facts the worker declared, each `{kind, …}`; for a change the worker opened, `{kind: "ChangeRequest", url, name}`. The verb also ensures the named ChangeRequest exists. Accepted after the brief has a receipt and before deletion; a repeated URL is a no-op; it concludes nothing. |
 | `status.forge` | ForgeController | One entry per declared change, keyed by ChangeRequest name: `cursor`, `flipped`, `flipAttempts`, flip intents and receipts; plus this controller's conditions and its own `notBefore`. Empty for a Task that declared nothing. |
 | `status.inbox` | `Inbox`, appended by `fleet send TASK TEXT` or the Forge controller's relay | Messages for the running session: `{key, from, text, queuedAt}`. Duplicate keys are refused. |
 | `status.deliveries` | TaskController | One receipt per delivered inbox key. The entry leaves `inbox` once receipted. |
