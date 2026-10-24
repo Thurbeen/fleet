@@ -97,6 +97,25 @@ refused. `shipped` is a worker's claim: Fleet does not verify a forge artifact.
 The next reconcile changes phase to `Concluded`; it does not release the
 session until the Task is deleted.
 
+## Planned additions
+
+Design, not implemented. The [ForgeTask design](forge-task.md) adds three
+worker-facing pieces to the Task. None is served by the installed binary.
+
+| Field or verb | Owner | Meaning |
+| --- | --- | --- |
+| `status.declared` | `worker`, through `fleet declare TASK --change URL` | The changes the worker opened, each a URL. Accepted after the brief has a receipt and before deletion; a repeated URL is a no-op; it concludes nothing. |
+| `status.inbox` | `Inbox`, through `fleet send TASK TEXT` or a ForgeTask relay | Messages for the running session: `{key, from, text, queuedAt}`. |
+| `status.deliveries` | TaskController | One receipt per delivered inbox key. The entry leaves `inbox` once receipted. |
+
+TaskController delivers each inbox entry exactly as it delivers the brief:
+only to a ready session, under the entry's key as the runtime intent key,
+journaled by the runtime, at most 3 sends, then a receipt. A Concluded Task
+with a nonempty inbox is due again; a readable lookup that no longer shows
+its session is `WorkerGone` and `NeedsAttention`, never a respawn. The
+[ForgeTask controller interface](../forge-task-controller/interface.md#store-port-and-write-ownership)
+lists the resulting writers.
+
 ## Commands
 
 ```sh

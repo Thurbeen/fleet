@@ -117,6 +117,26 @@ through the existing runtime port and bounded executor before freezing a
 private launch snapshot. TaskController stays pure and owns the lifecycle.
 See [execution configuration](resources/task-config.md).
 
+## Planned: forge integration
+
+Design, not implemented. Two further kinds and controllers are documented in
+the Task controller's shape and are not served by this build:
+
+- [ChangeRequest](resources/change-request.md) and its
+  [controller](change-request-controller/README.md) mirror one change on a
+  forge through a new `Forge` port, with adapters in a planned `fleet-forge`
+  crate (`github` via `gh`, `gitlab` via `glab`, and a fake), and number
+  every item they see so consumers diff by one cursor.
+- [ForgeTask](resources/forge-task.md) and its
+  [controller](forge-task-controller/README.md) own a Task and its
+  ChangeRequests, relay what is new into the Task's inbox, and take a draft
+  change out of draft under a configured policy. They never merge.
+
+The crate graph gains `fleet-forge` beside `fleet-runtime`, an adapter
+depending on `fleet-api` and `fleet-exec`, and the manager gains a third port
+and store-performed effects. The purity, write-ownership and process rules
+above are unchanged.
+
 ## Scope and compatibility
 
 The Task controller runs sessions and records worker claims. It does not
