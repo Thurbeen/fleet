@@ -10,8 +10,7 @@
   "internalChecksFilter": "strict",
   "osvVulnerabilityAlerts": true,
   "description": [
-    "ignorePaths is empty on purpose, and is not the default. config:recommended pulls in :ignoreModulesAndTests, which ignores **/tests/**, and tests/stubs/pyproject.toml is a real package file there: it declares the uv_build the stub tools are built with, the same constraint the root pyproject holds. Ignoring it would let the two drift. This repo vendors nothing, so the rest of that preset's list has nothing to match.",
-    "lockFileMaintenance keeps uv.lock's transitive pins moving. CI runs uv run --frozen, so the lock IS what every runner installs, and nothing in pyproject.toml names those packages for a version bump to reach."
+    "Cargo.lock maintenance updates transitive dependencies. Actions remain pinned by full SHA; custom managers update the exact Rust toolchain and repository gate tools."
   ],
   "ignorePaths": [],
   "lockFileMaintenance": {
@@ -31,8 +30,47 @@
         "*"
       ],
       "semanticCommitType": "chore"
+    },
+    {
+      "description": "A crate update changes the binary users install, so it lands as a `fix:` commit (the top-level semanticCommitScope is null, so there is no `(deps)`), a type `cargo xtask release plan` bumps for. A security fix in a dependency then ships with no unrelated feat or fix to carry it. The shipped-path check keeps an Actions or tooling bump, still `chore`, from cutting a release. This rule follows the catch-all above, so it wins.",
+      "matchManagers": [
+        "cargo"
+      ],
+      "semanticCommitType": "fix"
+    },
+    {
+      "description": "Lock-file maintenance only moves transitive pins, including Cargo.lock. It stays `chore` and rides along with the next release instead of cutting a patch every week. A vulnerable transitive crate still gets its own `fix:` through the cargo rule above and osvVulnerabilityAlerts.",
+      "matchUpdateTypes": [
+        "lockFileMaintenance"
+      ],
+      "semanticCommitType": "chore"
     }
   ],
   "semanticCommits": "enabled",
-  "semanticCommitScope": null
+  "semanticCommitScope": null,
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "rust-toolchain.toml's pinned channel",
+      "managerFilePatterns": [
+        "/^rust-toolchain\\.toml$/"
+      ],
+      "matchStrings": [
+        "channel = \"(?<currentValue>\\d+\\.\\d+\\.\\d+)\""
+      ],
+      "depNameTemplate": "rust-lang/rust",
+      "datasourceTemplate": "github-tags"
+    },
+    {
+      "customType": "regex",
+      "description": "the cargo tools ci.yml installs at exact versions",
+      "managerFilePatterns": [
+        "/^\\.github/workflows/.+\\.yml$/"
+      ],
+      "matchStrings": [
+        "(?<depName>cargo-nextest|cargo-deny)@(?<currentValue>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "datasourceTemplate": "crate"
+    }
+  ]
 }

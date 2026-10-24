@@ -1,0 +1,470 @@
+//! The runtime contract served by `thurbox-cli` (Q26, n9): sessions on this
+//! machine, or on any host thurbox's own `hosts.toml` reaches over SSH or in
+//! WSL. Thurbox owns how a host is reached; fleet passes `--host <name>` and
+//! nothing else about it.
+//!
+//! Every call is one bounded `thurbox-cli … --json` through fleet-exec, so a
+//! hung call costs `call_timeout` and leaves no process behind, and a call
+//! that times out is Unknown, never a guess.
+//!
+//! Identity. A session's thurbox key is `<keyPrefix>.<uid>`: the Task's uid
+//! is unique in its store and short enough for thurbox's 64-character keys,
+//! and the prefix keeps two fleets on one host from adopting each other's
+//! sessions. Its name, for people, is the Task's name. `--on-existing adopt`
+//! makes a repeated create return the session that holds the key.
+//!
+//! The brief is sent once under its intent key, recorded in the session's
+//! own metadata (`session meta`): `fleet.brief.pending` before the send,
+//! `fleet.brief` after it. Read back, the pair says delivered, not delivered,
+//! or "sent, unconfirmed", which is Unknown and never a second send.
+
+use std::collections::BTreeMap;
+use std::ffi::OsString;
+use std::time::Duration;
+
+use fleet_api::Observation;
+use fleet_api::plan::{EffectOutcome, SpawnSpec};
+use fleet_api::runtime::Runtime;
+use fleet_api::task::{LOCAL_HOST as LOCAL, SessionRef, uid_of_session_key};
+use fleet_exec::{Outcome, Spec, run};
+use serde_json::Value;
+
+/// The longest brief sent as one argument: Windows caps a whole command line
+/// near 32 767 characters.
+pub const MAX_BRIEF: usize = 24_000;
+
+/// The most thurbox-cli calls one operation makes: a brief (meta get, meta
+/// set, send, meta set).
+pub const MAX_CALLS_PER_OPERATION: u32 = 4;
+
+const BRIEF_META: &str = "fleet.brief";
+
+#[derive(Debug, Clone)]
+pub struct ThurboxConfig {
+    /// The `thurbox-cli` executable: a path, or a name found on PATH.
+    pub cli: OsString,
+    pub call_timeout: Duration,
+    /// Prefix of every thurbox key fleet gives a session.
+    pub key_prefix: String,
+    /// The variable each harness reads its model from, for `Task.spec.model`.
+    pub model_env: BTreeMap<String, String>,
+}
+
+impl ThurboxConfig {
+    pub fn new(cli: impl Into<OsString>) -> ThurboxConfig {
+        ThurboxConfig {
+            cli: cli.into(),
+            call_timeout: Duration::from_secs(30),
+            key_prefix: "fleet".into(),
+            model_env: BTreeMap::from([
+                ("claude".into(), "ANTHROPIC_MODEL".into()),
+                ("claude-code".into(), "ANTHROPIC_MODEL".into()),
+            ]),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ThurboxRuntime {
+    cfg: ThurboxConfig,
+}
+
+/// One call's answer: the JSON it printed, or why there is none.
+enum Answer {
+    Ok(String),
+    /// thurbox-cli answered no; the first line of what it said.
+    No(String),
+    Unknown(String),
+}
+
+fn first_line(bytes: &[u8]) -> String {
+    let text = String::from_utf8_lossy(bytes);
+    let line = text
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .trim();
+    line.chars().take(200).collect()
+}
+
+impl ThurboxRuntime {
+    pub fn new(cfg: ThurboxConfig) -> ThurboxRuntime {
+        ThurboxRuntime { cfg }
+    }
+
+    pub fn thurbox_key(&self, key: &str) -> String {
+        format!("{}.{}", self.cfg.key_prefix, uid_of_session_key(key))
+    }
+
+    fn call(&self, args: &[&str]) -> Answer {
+        self.call_spec(Spec::new(&self.cfg.cli, self.cfg.call_timeout).args(args))
+    }
+
+    fn call_spec(&self, spec: Spec) -> Answer {
+        let what = spec
+            .args
+            .iter()
+            .take(2)
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join(" ");
+        match run(&spec) {
+            Outcome::Exited {
+                code: Some(0),
+                stdout,
+                ..
+            } => Answer::Ok(String::from_utf8_lossy(&stdout).into_owned()),
+            Outcome::Exited {
+                code: Some(_),
+                stderr,
+                ..
+            } => Answer::No(first_line(&stderr)),
+            other => Answer::Unknown(format!("thurbox-cli {what}: {}", other.failure())),
+        }
+    }
+
+    fn json(&self, args: &[&str]) -> Result<Option<Value>, String> {
+        match self.call(args) {
+            Answer::Ok(out) => serde_json::from_str(out.trim())
+                .map(Some)
+                .map_err(|e| format!("thurbox-cli {}: unreadable answer: {e}", args.join(" "))),
+            Answer::No(_) => Ok(None),
+            Answer::Unknown(why) => Err(why),
+        }
+    }
+
+    /// The live rows carrying a thurbox key, on `host` only. Unknown when the
+    /// list cannot be read, or when thurbox itself says the host's sessions
+    /// cannot be reached: a mirrored row of an unreachable host is not proof
+    /// of anything.
+    fn rows(&self, host: &str, filter: (&str, &str)) -> Observation<Vec<Value>> {
+        let rows = match self.call(&["session", "list", "--json", filter.0, filter.1]) {
+            Answer::Ok(out) => match serde_json::from_str::<Value>(out.trim()) {
+                Ok(Value::Array(rows)) => rows,
+                Ok(_) => return Observation::unknown("thurbox-cli session list: not a list"),
+                Err(e) => return Observation::unknown(format!("thurbox-cli session list: {e}")),
+            },
+            Answer::No(why) => {
+                return Observation::unknown(format!("thurbox-cli session list: {why}"));
+            }
+            Answer::Unknown(why) => return Observation::unknown(why),
+        };
+        let mine: Vec<Value> = rows.into_iter().filter(|r| row_host(r) == host).collect();
+        if mine.iter().any(|r| r["state"] == "unreachable") {
+            return Observation::unknown(format!("host {host}: thurbox cannot reach its sessions"));
+        }
+        Observation::Known(mine)
+    }
+
+    /// The session's own row, by id. Unknown when it cannot be read.
+    fn get(&self, session: &SessionRef) -> Observation<Value> {
+        match self.call(&["session", "get", &session.id, "--json"]) {
+            Answer::Ok(out) => match serde_json::from_str::<Value>(out.trim()) {
+                Ok(v) if v["state"] == "unreachable" => {
+                    Observation::unknown(format!("host {}: unreachable", session.host))
+                }
+                Ok(v) => Observation::Known(v),
+                Err(e) => Observation::unknown(format!("thurbox-cli session get: {e}")),
+            },
+            Answer::No(why) => Observation::unknown(format!("session {}: {why}", session.id)),
+            Answer::Unknown(why) => Observation::unknown(why),
+        }
+    }
+
+    fn meta(&self, session: &SessionRef, key: &str) -> Result<String, String> {
+        match self.call(&["session", "meta", "get", &session.id, key]) {
+            Answer::Ok(out) => Ok(out.trim().to_string()),
+            Answer::No(why) => Err(format!("session meta {key}: {why}")),
+            Answer::Unknown(why) => Err(why),
+        }
+    }
+
+    /// Every key retains its own receipt; a later prompt cannot erase an
+    /// earlier ambiguous send or the original brief's acknowledgement.
+    fn delivery_journal(&self, session: &SessionRef) -> Result<BTreeMap<String, String>, String> {
+        let value = self.meta(session, BRIEF_META)?;
+        if value.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        serde_json::from_str(&value).map_err(|e| format!("unreadable delivery journal: {e}"))
+    }
+
+    fn set_meta(&self, session: &SessionRef, key: &str, value: &str) -> Answer {
+        // The value goes on stdin, as `meta set` reads it when none is given.
+        self.call_spec(
+            Spec::new(&self.cfg.cli, self.cfg.call_timeout)
+                .args(["session", "meta", "set", &session.id, key])
+                .stdin(value.as_bytes().to_vec()),
+        )
+    }
+
+    fn state_word(&self, session: &SessionRef) -> Observation<String> {
+        self.get(session).map(|v| {
+            if v["stopped"] == true {
+                "stopped".to_string()
+            } else {
+                v["state"].as_str().unwrap_or("").to_string()
+            }
+        })
+    }
+}
+
+/// Absolute on the host the path is for: a POSIX path, or a Windows drive
+/// or UNC path, whatever this machine is.
+fn is_absolute(dir: &str) -> bool {
+    let b = dir.as_bytes();
+    dir.starts_with('/')
+        || dir.starts_with("\\\\")
+        || (b.len() > 2
+            && b[0].is_ascii_alphabetic()
+            && b[1] == b':'
+            && matches!(b[2], b'\\' | b'/'))
+}
+
+fn row_host(row: &Value) -> &str {
+    row["host"]
+        .as_str()
+        .filter(|h| !h.is_empty())
+        .unwrap_or(LOCAL)
+}
+
+impl Runtime for ThurboxRuntime {
+    fn operation_bound(&self) -> fleet_api::Millis {
+        let one = fleet_exec::worst_case(self.cfg.call_timeout) * MAX_CALLS_PER_OPERATION;
+        u64::try_from(one.as_millis()).unwrap_or(u64::MAX)
+    }
+
+    fn host(&self, host: &str) -> Observation<bool> {
+        let doctor = match self.json(&["doctor", "--json"]) {
+            Ok(Some(v)) => v,
+            Ok(None) => return Observation::unknown("thurbox-cli doctor refused"),
+            Err(why) => return Observation::unknown(why),
+        };
+        let check = |key: &str| {
+            doctor["checks"]
+                .as_array()
+                .and_then(|cs| cs.iter().find(|c| c["key"] == key))
+                .map(|c| c["level"].as_str().unwrap_or("").to_string())
+        };
+        let level = if host == LOCAL {
+            check("multiplexer")
+        } else {
+            check(&format!("host:{host}"))
+        };
+        match level.as_deref() {
+            Some("ok") | Some("warn") => {}
+            // Not configured, or thurbox says its launcher is missing.
+            _ => return Observation::Known(false),
+        }
+        if host == LOCAL {
+            return Observation::Known(true);
+        }
+        let prefix = format!("{}.", self.cfg.key_prefix);
+        self.rows(host, ("--key-prefix", &prefix)).map(|_| true)
+    }
+
+    fn spawn(&self, spec: &SpawnSpec) -> Observation<EffectOutcome> {
+        // thurbox resolves --repo-path as an absolute path on the target
+        // host; a relative one would mean whatever directory fleet ran in.
+        if !is_absolute(&spec.dir) {
+            return Observation::Known(EffectOutcome::Failed {
+                why: format!(
+                    "workspace.dir {:?} must be an absolute path on the host for the thurbox runtime",
+                    spec.dir
+                ),
+            });
+        }
+        let key = self.thurbox_key(&spec.key);
+        let name: String = spec
+            .key
+            .rsplit_once('.')
+            .map_or(&*spec.key, |(n, _)| n)
+            .chars()
+            .take(64)
+            .collect();
+        let mut args: Vec<String> = [
+            "session",
+            "create",
+            "--json",
+            "--name",
+            &name,
+            "--repo-path",
+            &spec.dir,
+            "--key",
+            &key,
+            "--on-existing",
+            "adopt",
+            "--agent",
+            &spec.harness,
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        if spec.host != LOCAL {
+            args.extend(["--host".to_string(), spec.host.clone()]);
+        }
+        if let Some(model) = &spec.model {
+            let Some(var) = self.cfg.model_env.get(&spec.harness) else {
+                return Observation::Known(EffectOutcome::Failed {
+                    why: format!(
+                        "no model variable is configured for harness {}; set runtime.modelEnv",
+                        spec.harness
+                    ),
+                });
+            };
+            args.extend(["--env".to_string(), format!("{var}={model}")]);
+        }
+        let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+        match self.call(&argv) {
+            Answer::Ok(out) => {
+                let row: Value = match serde_json::from_str(out.trim()) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return Observation::unknown(format!("thurbox-cli session create: {e}"));
+                    }
+                };
+                let Some(id) = row["id"].as_str() else {
+                    return Observation::unknown("thurbox-cli session create: no id in its answer");
+                };
+                Observation::Known(EffectOutcome::Spawned {
+                    session: SessionRef {
+                        id: id.to_string(),
+                        host: spec.host.clone(),
+                        key: spec.key.clone(),
+                    },
+                    adopted: row["created"] == false,
+                })
+            }
+            Answer::No(why) => Observation::Known(EffectOutcome::Failed { why }),
+            Answer::Unknown(why) => Observation::unknown(why),
+        }
+    }
+
+    fn find(&self, host: &str, key: &str) -> Observation<Option<SessionRef>> {
+        let tk = self.thurbox_key(key);
+        match self.rows(host, ("--key", &tk)) {
+            Observation::Known(rows) => match rows.as_slice() {
+                [] => Observation::Known(None),
+                [row] => match row["id"].as_str() {
+                    Some(id) => Observation::Known(Some(SessionRef {
+                        id: id.to_string(),
+                        host: host.to_string(),
+                        key: key.to_string(),
+                    })),
+                    None => Observation::unknown("a session row without an id"),
+                },
+                _ => Observation::unknown(format!("key {tk} is held by more than one session")),
+            },
+            Observation::Unknown { why } => Observation::Unknown { why },
+        }
+    }
+
+    fn ready(&self, session: &SessionRef) -> Observation<bool> {
+        match self.state_word(session) {
+            Observation::Known(s) => match s.as_str() {
+                "idle" | "done" => Observation::Known(true),
+                "working" | "blocked" | "stopped" => Observation::Known(false),
+                other => Observation::unknown(format!("session state {other:?} does not say")),
+            },
+            Observation::Unknown { why } => Observation::Unknown { why },
+        }
+    }
+
+    fn brief(
+        &self,
+        session: &SessionRef,
+        text: &str,
+        intent_key: &str,
+    ) -> Observation<EffectOutcome> {
+        let mut journal = match self.delivery_journal(session) {
+            Ok(journal) => journal,
+            Err(why) => return Observation::unknown(why),
+        };
+        match journal.get(intent_key).map(String::as_str) {
+            Some("delivered") => {
+                return Observation::Known(EffectOutcome::Delivered { already: true });
+            }
+            Some(_) => {
+                return Observation::unknown("prompt delivery is pending and cannot be repeated");
+            }
+            None => {}
+        }
+        if text.len() > MAX_BRIEF {
+            return Observation::Known(EffectOutcome::Failed {
+                why: format!(
+                    "the brief is {} bytes; thurbox-cli send takes at most {MAX_BRIEF}",
+                    text.len()
+                ),
+            });
+        }
+        journal.insert(intent_key.to_string(), "pending".into());
+        let pending = serde_json::to_string(&journal).expect("string map");
+        match self.set_meta(session, BRIEF_META, &pending) {
+            Answer::Ok(_) => {}
+            Answer::No(why) => return Observation::Known(EffectOutcome::Failed { why }),
+            Answer::Unknown(why) => return Observation::unknown(why),
+        }
+        // `--`: a brief that starts with `-` is text, never a flag.
+        match self.call(&["session", "send", &session.id, "--", text]) {
+            Answer::Ok(_) => {}
+            // `session send` can fail after it began typing, so a failure is
+            // not proof that nothing arrived: never typed again on it.
+            Answer::No(why) => {
+                return Observation::unknown(format!(
+                    "send failed and may have typed part of it: {why}"
+                ));
+            }
+            Answer::Unknown(why) => return Observation::unknown(why),
+        }
+        journal.insert(intent_key.to_string(), "delivered".into());
+        let delivered = serde_json::to_string(&journal).expect("string map");
+        match self.set_meta(session, BRIEF_META, &delivered) {
+            Answer::Ok(_) => Observation::Known(EffectOutcome::Delivered { already: false }),
+            Answer::No(why) | Answer::Unknown(why) => {
+                Observation::unknown(format!("sent, but the receipt was not recorded: {why}"))
+            }
+        }
+    }
+
+    fn brief_delivered(&self, session: &SessionRef, intent_key: &str) -> Observation<bool> {
+        match self.delivery_journal(session) {
+            Ok(journal) => match journal.get(intent_key).map(String::as_str) {
+                Some("delivered") => Observation::Known(true),
+                Some(_) => Observation::unknown(
+                    "the prompt was being sent and its delivery was never confirmed",
+                ),
+                None => Observation::Known(false),
+            },
+            Err(why) => Observation::unknown(why),
+        }
+    }
+
+    fn at_rest(&self, session: &SessionRef) -> Observation<bool> {
+        match self.state_word(session) {
+            Observation::Known(s) => match s.as_str() {
+                "idle" | "done" | "stopped" => Observation::Known(true),
+                "working" | "blocked" => Observation::Known(false),
+                other => Observation::unknown(format!("session state {other:?} does not say")),
+            },
+            Observation::Unknown { why } => Observation::Unknown { why },
+        }
+    }
+
+    fn release(&self, session: &SessionRef) -> Observation<EffectOutcome> {
+        // The controller proved this exact session at rest. A reused key
+        // cannot transfer that proof to another session.
+        match self.find(&session.host, &session.key) {
+            Observation::Known(None) => return Observation::Known(EffectOutcome::Released),
+            Observation::Known(Some(s)) if s.id == session.id => {}
+            Observation::Known(Some(_)) => {
+                return Observation::unknown("the session key now belongs to a different session");
+            }
+            Observation::Unknown { why } => return Observation::Unknown { why },
+        }
+        match self.call(&["session", "delete", &session.id]) {
+            Answer::Ok(_) => Observation::Known(EffectOutcome::Released),
+            Answer::No(why) => Observation::Known(EffectOutcome::Failed { why }),
+            Answer::Unknown(why) => Observation::unknown(why),
+        }
+    }
+}

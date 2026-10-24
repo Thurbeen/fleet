@@ -1,18 +1,11 @@
-<!-- rumdl-disable MD041 -->
-<!-- The banner is the first line by design; MD041 wants a level-1 heading. -->
-
-![Fleet: operators at consoles in a red mission control room, a squadron of fighter craft above them, powered by thurbox][banner]
-
-[banner]: media/fleet-banner.jpg
-
-# fleet
+# Fleet
 
 ## Stable: Python v1.0.0
 
 **Use the pinned v1.0.0 release for stable Fleet.** `main` is the development
-branch for v2.0.0 beta, whose design contains only Task and its task
-controller. V2 is not a stable release and has different CLI, configuration
-and data formats. There is no automatic v1 migration.
+branch for v2.0.0 beta, which implements the Task resource lifecycle. V2 is not
+a stable release and has different CLI, configuration and data formats. There is
+no automatic v1 migration.
 
 For a new stable installation, install git and
 [uv](https://docs.astral.sh/uv/getting-started/installation/), then run these
@@ -58,128 +51,141 @@ README. [PR #308](https://github.com/Thurbeen/fleet/pull/308) is the unmerged
 Task/controller beta candidate; v1 queues and configuration are not v2
 inputs. Keep beta configuration and data separate from v1.
 
-fleet is a control plane over [thurbox](https://github.com/Thurbeen/thurbox),
-a terminal UI for agent sessions. It maps your repositories and runs a task
-queue: you give it a goal, it splits the goal into tasks, and it runs one worker
-session per task in the real repository. You get back pull or merge requests to
-review.
+## Fleet v2 development
 
-Any conversation can hand fleet work; Mission Control, the lead session, is the
-usual one. The conversation that asked is told each task's outcome. An optional
-conductor session (`CONDUCTOR=on` in `orchestration/fleet.conf`) keeps queued
-work moving in the background; without one, the lead does that too.
+Fleet v2 runs one agent session per Task. A Task names a harness, a runtime
+host, a workspace and a brief. Its controller spawns the session, sends the
+brief once, records the worker's answer, and deletes the session when the Task
+is deleted. Fleet v2 is a Rust binary with a file-backed resource store, one
+manager lease, and explicit ownership of each status field.
 
-![Animated architecture diagram. You prompt Mission Control, the lead
-session and one origin of many, which reads the registry and opens a topic of
-tasks in the queue. Dispatch gives each worker, a thurbox session in its own
-worktree, a brief; the worker writes back a result and opens a pull or merge
-request on the forge, which is optional. The Kanban board shows the queue and
-fuel from quota-axi. The reconciler collects, shepherds and refuels; it tells
-an origin its tasks' outcomes and questions, and tells the conductor what is
-ready, stalled or needs a sync. The opt-in conductor dispatches, re-prompts
-and refuels; without one, the lead does. Below, the loop: prompt, topic,
-tasks, dispatch, watch, collect, shepherd, merge, reap, plus refuel, served to
-reviewed, and local-only publishing.](docs/fleet-architecture.svg)
+Read the [overall architecture](ARCHITECTURE.md) for the component boundaries
+and execution flow. The [Task controller guide](docs/task-controller/README.md)
+defines its [resource](docs/task-controller/resource.md),
+[state machine](docs/task-controller/state-machine.md) and
+[interface](docs/task-controller/interface.md);
+[the contracts](crates/CONTRACTS.md) record the integration guarantees.
+This is the v2 development line: releases stay held until acceptance, and
+Fleet v1 remains the default for existing users.
+The root `FLEET_MAJOR` file says `2`; a v1 checkout containing the freeze
+guard reads it before updating and refuses to move onto v2.
 
-## Kanban dashboard
+## Build and try it
 
-See the whole fleet without leaving thurbox. **Alt+K** opens six columns of
-live queue records, from waiting tasks to working sessions, open change
-requests, reader replies and work that needs your attention.
+Install the toolchain in [rust-toolchain.toml](rust-toolchain.toml) through
+rustup, then build the binary from the committed dependency lock:
 
-![Animated demo in thurbox: Mission Control beside the session list, Alt+K
-opens the Kanban board, filters work that needs attention, searches a topic,
-then Enter on a running card opens its worker session and Ctrl+X returns to
-Mission Control.](media/fleet-board.gif)
-
-The demo uses thurbox's **Doom** theme at 1920×1080. It shows the session list
-on either side of the full-screen board, using synthetic sessions and records.
-[Open the full-size animation](media/fleet-board.gif).
-
-Kanban replaces the narrow fleet pane as the main queue view. The board
-follows your light or dark theme and fits smaller terminals with
-two bands of columns. Click cards or use arrows; Enter takes you to a live
-worker or its queue record. Press **t** to search topics and **f** to show
-fuel, which stays hidden by default. Filters and navigation are read-only.
-
-## Requirements
-
-- [thurbox](https://github.com/Thurbeen/thurbox), with tmux (psmux on Windows).
-- git.
-- An agent CLI that thurbox runs, such as Claude Code or Codex.
-- Optional: `gh` or `glab`, to work with GitHub or GitLab.
-
-The installer gets uv itself. `uv run fleet preflight` lists anything missing.
-
-## Development installation
-
-These unpinned installers follow `main`, the v2 development channel. Use the
-pinned stable instructions above for v1. While #308 remains unmerged, `main`
-still contains Python; it is not a promise of future v1 compatibility.
-
-```bash
-curl -LsSf https://raw.githubusercontent.com/Thurbeen/fleet/main/install.sh | sh
+```sh
+cargo build --release --locked -p fleet-cli --bin fleet
 ```
 
-On Windows, type this at the PowerShell prompt:
+Use the deliberately isolated fake runtime example to explore resource flows
+without starting an agent or contacting a forge:
+
+```sh
+fleet --config examples/fleet.toml apply -f examples/resources.json
+fleet --config examples/fleet.toml list Task --json
+fleet --config examples/fleet.toml get Task example
+fleet --config examples/fleet.toml status Task example --json
+fleet version --json
+```
+
+The example Task is suspended (`dispatch: false`). A Task whose spec sets
+`dispatch: true` starts when `fleet reconcile` observes it. With the fake
+runtime this records a simulated session and runs no external tool. For real
+sessions configure `[runtime] kind = "thurbox"` and set the Task's
+`spec.host` to a host thurbox knows (`local` by default). Connection details
+stay in thurbox.
+
+```sh
+fleet --config examples/fleet.toml reconcile
+fleet --config examples/fleet.toml delete Task example
+fleet --config examples/fleet.toml reconcile
+```
+
+`apply -f -` reads JSON from stdin. A file can hold one object, an array of
+objects, or an object with `items`. Config uses versioned TOML; resource
+manifests use `apiVersion: fleet/v1alpha1`. Paths in the config are relative
+to that config file. Use `fleet --help` and each command's `--help` for the
+flags this build actually serves.
+
+A worker writes its answer with `fleet result TASK --generation N --outcome
+shipped --summary TEXT`; the generation must match the delivered brief, and
+required outputs must match the Task's declared schema. A result is a claim,
+not proof of an artifact landing.
+
+## Install, update and uninstall
+
+After a production release is accepted, download the matching archive and
+checksum file from [Fleet releases](https://github.com/Thurbeen/fleet/releases).
+Supported release targets are Linux x86_64 and aarch64 (musl), and Windows
+x86_64 (MSVC with a static CRT). macOS is not a release target.
+
+Fleet v1 stays the default for existing users; v2 is a beta you opt into.
+The checked-in installers never pick a version for you: they refuse to run
+unless `FLEET_VERSION` names a v2 release tag, and they never resolve
+"latest". Inspect a downloaded script, then execute it:
+
+```sh
+FLEET_VERSION=v2.0.0-beta.1 sh scripts/install-release.sh
+sh scripts/install-release.sh --uninstall
+```
+
+On Windows, use Windows PowerShell 5.1 or PowerShell 7:
 
 ```powershell
-irm https://raw.githubusercontent.com/Thurbeen/fleet/main/install.ps1 | iex
+$env:FLEET_VERSION = 'v2.0.0-beta.1'
+powershell -NoProfile -File scripts/install-release.ps1
+powershell -NoProfile -File scripts/install-release.ps1 -Uninstall
 ```
 
-Pick a clone location you will keep: the extension records the path. Running
-the installer again is safe.
+Repeat installation with a newer `FLEET_VERSION` to update. Set
+`FLEET_INSTALL_DIR` to choose an isolated binary directory; the defaults are
+`~/.local/bin` and
+`%LOCALAPPDATA%\Programs\fleet\bin`. Add that directory to PATH yourself. Installers
+verify the archive checksum and candidate version before replacing the
+binary, and refuse a second installer holding the destination lock. A failed
+update preserves the old binary. A stale `.fleet-install.lock` requires
+checking that its installer is gone before manually removing that lock.
 
-## First use
+`FLEET_RELEASE_BASE` may name an HTTPS release download base or an offline
+directory laid out as `<base>/<tag>/<archive-and-checksums>`. Installers never
+start services, install an extension, configure credentials, or alter data.
+Uninstall removes the binary only. Stop managers deliberately before updating
+or uninstalling an operational deployment; changing an executable does not
+transfer its manager lease.
 
-1. Open thurbox and start the Mission Control session.
-2. Run `/fleet-onboarding`. It builds the repository map if you work on a
-   forge, installs the Kanban dashboard and starts the reconciler. Where the
-   choice is yours, it asks.
-3. Type a goal into Mission Control in plain words.
+## Data and deliberate cutover
 
-`Alt+K` opens the full-screen Kanban board over your layout. Arrow keys and
-clicks select cards; Enter focuses a live worker, or opens its queue record
-when no session remains. `d` always
-opens the record. Click the topic chip or press `t` to search topic names and
-slugs in the bottom detail area while the board stays visible. Select with
-Enter or a click. Esc cancels; All topics clears the
-filter. Agent, needs-me and landed chips filter or fold the view. A coloured
-dot per pull request — from the shepherd's last pass — sits on each card's
-publish line, and sessions the shepherd adopted get a row of their own. Fuel is
-hidden by default; click its chip or press `f` for compact gauges in two
-columns. Esc returns from the record, then closes the board.
+The default resource store is fresh: `$XDG_DATA_HOME/fleet` or
+`~/.local/share/fleet` on Linux, `%LOCALAPPDATA%\fleet` on Windows. An explicit
+`--data-dir` wins over `[data] dir`. A nonempty directory without this build's
+store marker, an unsupported schema, or corrupt data is refused. Keep private
+config and resources outside a public checkout. Fleet v2 passes no
+environment to a session besides the model variable; credentials stay with
+the agent and its host, never in manifests or briefs.
 
-Running several fleets, here or on other hosts? Press `h` to cycle the fleet
-filter: this fleet (the default), all of them, or one peer or host. Other
-fleets' cards are read-only, and the header names any host that stopped
-answering. thurbox's session list finds the other fleets; `uv run fleet peers`
-shows what the board sees.
+To switch an existing deployment deliberately:
 
-The board uses six columns, arranged in two bands below 180 terminal columns.
-Recent landed work (the last 24 hours) starts folded. Links
-use thurbox’s normal handling. Drag-selection in the overlay awaits thurbox
-kernel support. It reads records and focuses sessions; it never
-dispatches, merges or changes the queue. Ctrl+H/Ctrl+L remain thurbox’s native
-pane cycle; card navigation uses arrows until [thurbox #1358](https://github.com/Thurbeen/thurbox/issues/1358).
+1. Preserve its checkout, configuration, records, services and active sessions.
+   Complete or explicitly retain every child before stopping its manager.
+2. Back up its private state. Disable its automatic service and hook starts at
+   the chosen no-child boundary; verify its old manager has stopped.
+3. Install the accepted Rust binary into a separate directory. Choose a fresh
+   data directory and apply freshly authored resources. There is no automatic
+   parser, importer, live-data reset, or migration of old queue records.
+4. Run `fleet version --json`, inspect resources and their schema versions,
+   then start the new manager explicitly. Never point two implementations at
+   the same data or run both as owners of the same work.
+5. If acceptance fails, stop the new manager before restoring the preserved
+   deployment. Preserve its new store for diagnosis. Installer rollback alone
+   does not downgrade a store schema.
 
-The optional legacy column is installed alongside the dashboard for
-compatibility. Onboarding still offers to place that column; choose **Skip**
-to use only Kanban, which needs no layout slot. If your layout shows the
-column, press **F3** to hide it. **Alt+K** is the dashboard shortcut, and
-**Ctrl+X** takes you back to Mission Control from any session, a worker's
-terminal included. With several fleets on one machine it reaches the one that
-ran `uv run fleet install-extension` last.
+The release readiness hold is independent of these operator actions. Changing
+it requires combined tests and review. Nothing in CI or installation performs
+a live cutover.
 
-## Read more
+## Contribute
 
-- [`AGENTS.md`](AGENTS.md): the operating guide — what is in this repository
-  and how the queue runs.
-- [`CONTRIBUTING.md`](CONTRIBUTING.md): the gate, review rules and squash-only
-  merging.
-- [`.agents/skills/`](.agents/skills/): one skill per job — onboarding, the
-  queue, the pane, updates and more.
-
-## License
-
-MIT. See [LICENSE](LICENSE).
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the native gate, release dry runs,
+and architecture tests. [AGENTS.md](AGENTS.md) holds agent working rules.

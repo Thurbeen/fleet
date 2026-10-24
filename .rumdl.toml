@@ -1,13 +1,9 @@
-# Markdown lint config. `uv run fleet check markdown` runs rumdl against an
-# explicit `git ls-files` list, not `rumdl check .` (scripts/lib/check.py says
-# why); CI runs the same command. These excludes still apply to files named on
-# the command line.
-
+# Markdown lint, run by cargo xtask check markdown.
 [global]
 # The agent-tooling trees. A SKILL.md opens with YAML frontmatter rather than
 # an h1, which MD041 rejects without anything being wrong with it — the file
 # follows the skill convention, not the document convention.
-# CLAUDE.md is the `@AGENTS.md` / `@FLEET.rendered.md` pointer, not prose — it
+# CLAUDE.md is the `@AGENTS.md` pointer, not prose — it
 # has no h1 and is not meant to grow one.
 exclude = [".git", ".agents", ".claude", "CLAUDE.md"]
 

@@ -1,57 +1,19 @@
-# Playbook: <name>
-
-> A reusable recipe for running thurbox against a class of work.
-
-**When to use.** The situation this playbook fits (e.g. "ship one scoped feature
-to a single repo", "apply the same change across N repos").
-
-**Targets.** Which repos / kinds of repos this applies to.
+# Playbook title
 
 ## Inputs
 
-- `goal` — what the run should achieve.
-- `profile` — the session profile workers start under, from
-  `../session-profiles.yaml` (default `default`).
-- `<other>` — anything the operator must decide before launching.
+Describe the requested outcome, resource kinds, configuration references,
+required policies and authorization boundary. Keep secrets in providers.
 
-## Sessions
+## Work
 
-How to decompose the goal into thurbox sessions. For each session, define:
+Create the desired resources with `fleet apply -f FILE`. Inspect their status
+with `fleet status KIND NAME --json`. Controllers reconcile through
+`fleet reconcile` under one manager lease. A worker reports a claim with
+`fleet result`; its owning controller verifies it.
 
-- **name** — an imperative sentence in sentence case, ≤ 64 bytes (see
-  `.agents/skills/thurbox-session/SKILL.md`), no slashes (e.g. `Document the
-  customization surface`). Spaces are fine. Don't prefix it with the repo; the
-  session and the run log both carry that already.
-- **repo / worktree** — the target repo and branch the worker operates on.
-- **prompt** — self-contained; the worker never sees this conversation.
-- **on collision** — the `--on-existing` mode, and why. `adopt` if re-running
-  this playbook is meant to reconcile rather than duplicate; `fail` if a name
-  already in use means the operator has two things confused. Never leave it
-  defaulted — the default is `allow`, which makes a twin and breaks by-name
-  addressing for both.
-- **done when** — the acceptance signal (a PR, a passing test, a file).
+## Acceptance
 
-## Run
-
-1. `uv run fleet queue topic add` — which opens this run's log under
-   `../runs/` for you. Write the goal into it now if it is worth keeping; the
-   facts arrive by themselves, in the `.facts.md` beside it.
-2. Fast-forward each target repo's base branch, then `thurbox-cli session create`
-   with `--parent "$THURBOX_SESSION"`, the chosen `--on-existing` mode, and the
-   profile's flags from `uv run fleet session-flags <profile>`.
-3. Get each new session past its trust dialog (`uv run fleet session-trust
-   <uuid>`), then `thurbox-cli session send <uuid>` the prompt, ending with the
-   result-FILE contract so the worker reports back instead of you polling — but
-   only when the spawn returned `created: true`; an adopted session is already
-   working. `uv run fleet queue dispatch` does both steps for you.
-4. Read the results the workers wrote (`uv run fleet queue watch` for the
-   timing, `collect` for the conclusions) — `collect`'s refresh puts each
-   outcome in the run log's facts as it lands. Do not have workers mail you —
-   `message send` wakes the lead and interrupts whoever is talking to it.
-5. Review artifacts (PRs). A queue-dispatched session releases itself once its
-   pull request merges (`collect` reaps it; `reap --dry-run` first if unsure);
-   `session delete <uuid> --force` is for one you spawned by hand.
-
-## Notes
-
-Gotchas, ordering constraints, things that bit you last time.
+Name the observed behavior, failure cases and evidence that establish the
+outcome. Report native platform gaps explicitly. A run does not authorize
+publication or live cutover beyond its brief.

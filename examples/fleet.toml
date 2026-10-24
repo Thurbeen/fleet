@@ -1,0 +1,6 @@
+version = 1
+[data]
+dir = "data"
+[runtime]
+kind = "fake"
+dir = "fake-host"

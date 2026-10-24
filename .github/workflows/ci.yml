@@ -1,124 +1,56 @@
 name: CI
-
 on:
   pull_request:
     branches: [main]
-
-# Cancel a superseded run when a new commit lands on the same PR.
+permissions:
+  contents: read
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
-
-permissions:
-  contents: read
-
 jobs:
-  # The whole gate, `uv run fleet check`, on a Linux runner and a native
-  # Windows one with no bash. One command on both, so a green local run, a
-  # green Linux job and a green Windows job all mean the same thing. Unfiltered:
-  # "still works on Windows" is a property of every file, and no paths filter
-  # can say which change breaks it.
-  #
-  # Shards keep the gate's area names. Inside each, fleet check uses up to
-  # eight independent pytest workers (bounded by CPU count); isolation uses
-  # one serial child in its poisoned checkout. Queue and isolation
-  # also partition collected node ids across jobs; the workflow check holds
-  # the complete set of partitions on both runners. No tests are omitted.
-  #
-  # The `areas` strings are a COPY of the names in scripts/lib/check.py, and a
-  # copy goes stale: check_workflow.py fails a workflow whose shards do not
-  # name every check. Add an area there and it fails here until it is listed.
-  #
-  # Every job carries a `timeout-minutes`: GitHub's default is six hours, and a
-  # hung step would hold the required status that long.
-  # scripts/lib/check_workflow.py fails a job without one.
-  check:
-    name: Gate (${{ matrix.os }}, ${{ matrix.shard.name }})
+  rust:
+    name: Gate (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
-        shard:
-          - name: queue-1
-            areas: queue --partition 1/3
-          - name: queue-2
-            areas: queue --partition 2/3
-          - name: queue-3
-            areas: queue --partition 3/3
-          - name: install
-            areas: install
-          - name: isolation-1
-            areas: isolation --partition 1/4
-          - name: isolation-2
-            areas: isolation --partition 2/4
-          - name: isolation-3
-            areas: isolation --partition 3/4
-          - name: isolation-4
-            areas: isolation --partition 4/4
-          - name: rest
-            areas: lock lint markdown docs yaml workflow profiles cli reconcile status sync onboarding pane extension skills automerge architecture local context telemetry
+        os: [ubuntu-latest, windows-latest, ubuntu-26.04-arm]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 45
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: 0
+      RUST_BACKTRACE: 1
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # uv brings Python, PyYAML and the gate's own tools (pytest, ruff, rumdl)
-      # from uv.lock, so both runners lint and test with the same versions.
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
-        with:
-          enable-cache: true
-      # Lua is the one gate tool not on PyPI: the pane check renders the pane
-      # with it, and needs 5.4 for `utf8.codes`.
-      #
-      # Linux: the runner image preinstalls a google-chrome apt source whose
-      # index can go stale and fail `apt-get update` for the whole step, so it
-      # is dropped first. The package ships no unversioned `lua`, hence the link.
-      - name: Install lua (Linux)
+      - name: Install the pinned toolchain
+        shell: bash
+        run: |
+          rustup toolchain install
+          rustup default "$(rustup show active-toolchain | cut -d' ' -f1)"
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Verify PowerShell gate prerequisite (Linux)
         if: runner.os == 'Linux'
+        shell: bash
         run: |
-          sudo rm -f /etc/apt/sources.list.d/google-chrome.list /etc/apt/sources.list.d/google-chrome.sources
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends lua5.4
-          sudo ln -sf /usr/bin/lua5.4 /usr/local/bin/lua
-      # Windows: the image ships MSYS2, whose pacman installs Lua in seconds
-      # with no third-party action. Chocolatey's `lua` is 5.1, which the pane
-      # harness cannot run. `-y` refreshes the image's package list, which
-      # otherwise names a revision the mirror drops once a newer one is out.
-      - name: Install lua (Windows)
-        if: runner.os == 'Windows'
-        run: |
-          C:\msys64\usr\bin\pacman.exe -Sy --noconfirm --needed mingw-w64-ucrt-x86_64-lua
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          "C:\msys64\ucrt64\bin" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
-      # Windows Defender scans every file the suite creates under the runner's
-      # temp directory, and the suite creates a checkout, a stub venv and a
-      # queue per test. Excluding the two directories it works in is the one
-      # Windows-only saving here that costs nothing in the gate's meaning.
-      - name: Take the work directories out of Defender (Windows)
-        if: runner.os == 'Windows'
-        continue-on-error: true
-        run: |
-          Add-MpPreference -ExclusionPath $env:RUNNER_TEMP
-          Add-MpPreference -ExclusionPath $env:GITHUB_WORKSPACE
-      # `--frozen`: run against uv.lock as committed, never a fresh resolution.
-      - run: uv run --frozen fleet check ${{ matrix.shard.areas }}
-
-  # Single required status check. A branch ruleset requires only "All Checks",
-  # so adding or removing jobs never needs a ruleset change — but a new job
-  # MUST be added to `needs:` below, or it can fail while this gate reports
-  # green. `uv run fleet check workflow` fails one that is not.
+          if ! command -v pwsh >/dev/null 2>&1; then
+            echo '::error::PowerShell 7 (pwsh) is required for the Windows installer path-policy test; install it and add pwsh to PATH (see CONTRIBUTING.md).'
+            exit 1
+          fi
+          pwsh -NoProfile -NonInteractive -Command '$PSVersionTable.PSVersion.ToString()'
+      - uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2.87.30
+        with:
+          tool: cargo-nextest@0.9.149,cargo-deny@0.20.2,rumdl@0.3.0
+      - run: cargo xtask check
   all-checks:
     name: All Checks
     if: always()
-    needs:
-      - check
+    needs: [rust]
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
-      - name: Verify all checks passed
-        run: |
-          if [[ "${{ contains(needs.*.result, 'failure') }}" == "true" ]] || \
-             [[ "${{ contains(needs.*.result, 'cancelled') }}" == "true" ]]; then
-            echo "One or more checks failed or were cancelled"
-            exit 1
-          fi
-          echo "All checks passed"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: rustup toolchain install
+      - name: Verify every declared job succeeded
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: cargo xtask verdict

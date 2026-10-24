@@ -1,0 +1,589 @@
+//! `fleet`: the command line of the Rust rewrite. It parses arguments, opens
+//! the store and the runtime the config names, calls fleet-manager, and
+//! prints. Every rule about what may be written lives in fleet-manager and
+//! below; nothing here decides.
+
+mod config;
+
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
+
+use clap::{Parser, Subcommand};
+use fleet_api::result::{Outcome, TaskResult};
+use fleet_api::runtime::Runtime;
+use fleet_api::{API_VERSION, Object, Observation, Store, StoreError};
+use fleet_manager::{Manager, RunOptions, apply, delete, record_result};
+use fleet_runtime::{FakeHost, FakeRuntime, ThurboxConfig, ThurboxRuntime};
+use fleet_store::{FileStore, SystemClock};
+use serde_json::{Value, json};
+
+use crate::config::{CONFIG_ENV, CONFIG_VERSION, Config, default_data_dir};
+
+/// The released version when CI stamps one, else the manifest's.
+const VERSION: &str = match option_env!("FLEET_RELEASE_VERSION") {
+    Some(v) => v,
+    None => env!("CARGO_PKG_VERSION"),
+};
+
+#[derive(Debug, Parser)]
+#[command(name = "fleet", version = VERSION, about = "Fleet: one agent session per Task, reconciled from a file store.")]
+struct Cli {
+    /// The config file (else $FLEET_CONFIG; else none).
+    #[arg(long, global = true)]
+    config: Option<PathBuf>,
+    /// The data directory (overrides the config file's data.dir).
+    #[arg(long, global = true)]
+    data_dir: Option<PathBuf>,
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Debug, Subcommand)]
+enum Command {
+    /// Create or update resources from a JSON file (an object, an array, or {"items": [...]}); `-` reads stdin.
+    Apply {
+        #[arg(short = 'f', long = "filename")]
+        file: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print one resource as JSON.
+    Get { kind: String, name: String },
+    /// List every resource of a kind.
+    List {
+        kind: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show what a resource's status says, and whether it is current.
+    Status {
+        kind: String,
+        name: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// The worker's answer: record the result of a briefed Task.
+    Result {
+        task: String,
+        /// The generation the brief was delivered for.
+        #[arg(long)]
+        generation: Option<u64>,
+        /// shipped, stuck, failed or not-applicable.
+        #[arg(long)]
+        outcome: Option<String>,
+        #[arg(long, default_value = "")]
+        summary: String,
+        #[arg(long = "artifact")]
+        artifacts: Vec<String>,
+        /// A structured output as NAME=JSON, repeatable.
+        #[arg(long = "output")]
+        outputs: Vec<String>,
+        /// The whole result as a JSON file instead of the flags above.
+        #[arg(long, conflicts_with_all = ["generation", "outcome", "summary", "artifacts", "outputs"])]
+        file: Option<PathBuf>,
+    },
+    /// Delete a resource; a Task is released by its controller first.
+    Delete { kind: String, name: String },
+    /// Run the Task controller under the manager lease until idle, or for at most --max-passes passes.
+    Reconcile {
+        #[arg(long, default_value_t = 50)]
+        max_passes: u32,
+        /// The lease holder name; defaults to one unique to this process.
+        #[arg(long)]
+        holder: Option<String>,
+        /// The manager lease; by default 30 s, raised to twice the longest
+        /// single runtime operation.
+        #[arg(long)]
+        lease_ttl_ms: Option<u64>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// The binary's version and every schema it reads and writes.
+    Version {
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+/// Exit codes, stable for scripts.
+mod exit {
+    pub const ERROR: u8 = 1;
+    pub const NOT_FOUND: u8 = 3;
+    pub const UNKNOWN: u8 = 4;
+    pub const CONFLICT: u8 = 5;
+    pub const LEASE: u8 = 6;
+}
+
+struct Failure {
+    code: u8,
+    message: String,
+    hint: Option<String>,
+}
+
+impl From<StoreError> for Failure {
+    fn from(e: StoreError) -> Failure {
+        let (code, hint) = match &e {
+            StoreError::NotFound(_) => (exit::NOT_FOUND, None),
+            StoreError::Unknown(_) => (
+                exit::UNKNOWN,
+                Some(
+                    "fleet could not tell; nothing was assumed. Check the path's permissions and contents.",
+                ),
+            ),
+            StoreError::Conflict { .. } | StoreError::Busy(_) => (
+                exit::CONFLICT,
+                Some("another writer got there first; run the command again"),
+            ),
+            StoreError::LeaseHeld { .. } | StoreError::LeaseLost(_) => (
+                exit::LEASE,
+                Some("one manager runs at a time; wait for it or for its lease to expire"),
+            ),
+            StoreError::Unsupported(_) => (
+                exit::ERROR,
+                Some("see crates/CONTRACTS.md for what this build serves"),
+            ),
+            _ => (exit::ERROR, None),
+        };
+        Failure {
+            code,
+            message: e.to_string(),
+            hint: hint.map(str::to_string),
+        }
+    }
+}
+
+fn fail(message: impl Into<String>) -> Failure {
+    Failure {
+        code: exit::ERROR,
+        message: message.into(),
+        hint: None,
+    }
+}
+
+fn main() -> ExitCode {
+    let cli = Cli::parse();
+    match run(cli) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(f) => {
+            eprintln!("error: {}", f.message);
+            if let Some(h) = f.hint {
+                eprintln!("hint: {h}");
+            }
+            ExitCode::from(f.code)
+        }
+    }
+}
+
+fn run(cli: Cli) -> Result<(), Failure> {
+    if let Command::Version { json } = &cli.command {
+        return version(*json);
+    }
+    let config_path = cli
+        .config
+        .clone()
+        .or_else(|| std::env::var_os(CONFIG_ENV).map(PathBuf::from));
+    let config = match &config_path {
+        Some(p) => Config::load(p).map_err(fail)?,
+        None => Config::empty(),
+    };
+    let data_dir = cli
+        .data_dir
+        .clone()
+        .or(config.data.dir.clone())
+        .or_else(default_data_dir)
+        .ok_or_else(|| {
+            fail("no data directory: pass --data-dir or set data.dir in the config file")
+        })?;
+    let file_store = FileStore::open(&data_dir)?;
+    let store: &dyn Store = &file_store;
+    match cli.command {
+        Command::Apply { file, json } => cmd_apply(store, &file, json),
+        Command::Get { kind, name } => {
+            let obj = get(store, &served_kind(&kind)?, &name)?;
+            print_json(&serde_json::to_value(&obj).map_err(|e| fail(e.to_string()))?);
+            Ok(())
+        }
+        Command::List { kind, json } => cmd_list(store, &served_kind(&kind)?, json),
+        Command::Status { kind, name, json } => {
+            let obj = get(store, &served_kind(&kind)?, &name)?;
+            let summary = status_summary(&obj);
+            if json {
+                print_json(&summary);
+            } else {
+                print_status(&summary);
+            }
+            Ok(())
+        }
+        Command::Result {
+            task,
+            generation,
+            outcome,
+            summary,
+            artifacts,
+            outputs,
+            file,
+        } => {
+            let result = match file {
+                Some(f) => serde_json::from_slice(&read_input(&f)?)
+                    .map_err(|e| fail(format!("{}: {e}", f.display())))?,
+                None => result_from_flags(generation, outcome, summary, artifacts, outputs)?,
+            };
+            let outcome = record_result(store, &task, result)?;
+            println!(
+                "Task/{task} result {}",
+                if outcome == fleet_manager::ResultOutcome::Recorded {
+                    "recorded"
+                } else {
+                    "unchanged"
+                }
+            );
+            Ok(())
+        }
+        Command::Delete { kind, name } => {
+            let kind = served_kind(&kind)?;
+            let outcome = delete(store, &kind, &name)?;
+            let word = match outcome {
+                fleet_api::DeleteOutcome::Marked => {
+                    "marked for deletion (its controller releases it)"
+                }
+                fleet_api::DeleteOutcome::Removed => "deleted",
+            };
+            println!("{kind}/{name} {word}");
+            Ok(())
+        }
+        Command::Reconcile {
+            max_passes,
+            holder,
+            lease_ttl_ms,
+            json,
+        } => {
+            let runtime = open_runtime(&config)?;
+            let lease_ttl_ms = lease_for(runtime.operation_bound(), lease_ttl_ms)?;
+            let holder = holder.unwrap_or_else(|| format!("fleet-{}", std::process::id()));
+            let manager = Manager {
+                store,
+                runtime: runtime.as_ref(),
+                clock: &SystemClock,
+                holder,
+            };
+            let report = manager.run(RunOptions {
+                max_passes,
+                lease_ttl: lease_ttl_ms,
+            })?;
+            if json {
+                print_json(&serde_json::to_value(&report).map_err(|e| fail(e.to_string()))?);
+            } else {
+                println!(
+                    "reconciled: {} passes, {} status writes, {} effects, {}",
+                    report.passes,
+                    report.status_writes,
+                    report.effects,
+                    if report.idle { "idle" } else { "work remains" }
+                );
+                for u in &report.unknowns {
+                    println!("could not tell: {u}");
+                }
+                for e in &report.errors {
+                    println!("error: {e}");
+                }
+            }
+            if report.errors.is_empty() {
+                Ok(())
+            } else {
+                Err(fail(format!(
+                    "{} objects failed to reconcile",
+                    report.errors.len()
+                )))
+            }
+        }
+        Command::Version { .. } => unreachable_version(),
+    }
+}
+
+fn unreachable_version() -> Result<(), Failure> {
+    Err(fail("version is handled before the store opens"))
+}
+
+fn version(json: bool) -> Result<(), Failure> {
+    if json {
+        print_json(&json!({
+            "version": VERSION,
+            "apiVersions": [API_VERSION],
+            "kinds": [fleet_api::task::KIND],
+            "configVersion": CONFIG_VERSION,
+            "storeFormat": {"format": "fleet-store", "version": 1},
+            "runtimes": ["thurbox", "fake"],
+        }));
+    } else {
+        println!("fleet {VERSION}");
+    }
+    Ok(())
+}
+
+fn open_runtime(config: &Config) -> Result<Box<dyn Runtime>, Failure> {
+    let Some(rt) = &config.runtime else {
+        return Err(Failure {
+            code: exit::ERROR,
+            message: "no runtime configured".into(),
+            hint: Some(
+                "set [runtime] kind = \"thurbox\" (or \"fake\" with a dir) in the config file"
+                    .into(),
+            ),
+        });
+    };
+    match rt.kind.as_str() {
+        "fake" => {
+            let dir = rt
+                .dir
+                .clone()
+                .ok_or_else(|| fail("runtime.dir is required for the fake runtime"))?;
+            let host = FakeHost::open(&dir)
+                .map_err(|e| fail(format!("fake host {}: {e}", dir.display())))?;
+            Ok(Box::new(FakeRuntime::new(host)))
+        }
+        "thurbox" => {
+            let default_cli = if cfg!(windows) {
+                "thurbox-cli.exe"
+            } else {
+                "thurbox-cli"
+            };
+            let mut cfg = ThurboxConfig::new(rt.cli.clone().unwrap_or_else(|| default_cli.into()));
+            cfg.call_timeout = std::time::Duration::from_millis(
+                rt.call_timeout_ms.unwrap_or(DEFAULT_CALL_TIMEOUT_MS),
+            );
+            if let Some(p) = &rt.key_prefix {
+                if p.len() > 32 || fleet_api::validate::validate_name(p).is_err() || p.contains('.')
+                {
+                    return Err(fail(format!(
+                        "runtime.keyPrefix {p:?}: use at most 32 lowercase letters, digits and '-'"
+                    )));
+                }
+                cfg.key_prefix = p.clone();
+            }
+            cfg.model_env.extend(rt.model_env.clone());
+            Ok(Box::new(ThurboxRuntime::new(cfg)))
+        }
+        other => Err(fail(format!(
+            "unknown runtime kind {other:?}; this build has thurbox and fake"
+        ))),
+    }
+}
+
+/// The lease a run holds: the one asked for, refused when it cannot outlast
+/// the longest operation, else the default, raised to twice that operation.
+/// The lease is renewed before every probe and every effect, so one runtime
+/// operation, bounds and grace included, must fit inside it.
+fn lease_for(bound: u64, asked: Option<u64>) -> Result<u64, Failure> {
+    match asked {
+        Some(ms) if ms <= bound => Err(Failure {
+            code: exit::ERROR,
+            message: format!(
+                "the manager lease ({ms} ms) cannot outlast one runtime operation ({bound} ms): it would expire mid-operation"
+            ),
+            hint: Some("raise --lease-ttl-ms or lower runtime.callTimeoutMs".into()),
+        }),
+        Some(ms) => Ok(ms),
+        None => Ok(DEFAULT_LEASE_MS.max(bound.saturating_mul(2))),
+    }
+}
+
+const DEFAULT_LEASE_MS: u64 = 30_000;
+
+/// thurbox-cli calls are bounded at half the default lease.
+const DEFAULT_CALL_TIMEOUT_MS: u64 = 15_000;
+
+/// `task`, `tasks` and `Task` all name Task. Unsupported kinds are refused
+/// here, as on write, never reported as unreadable.
+fn served_kind(kind: &str) -> Result<String, Failure> {
+    let lower = kind.to_ascii_lowercase();
+    let singular = lower.strip_suffix('s').unwrap_or(&lower);
+    let kind = if singular == "task" {
+        fleet_api::task::KIND.to_string()
+    } else {
+        kind.to_string()
+    };
+    fleet_api::validate::validate_kind(&kind)?;
+    Ok(kind)
+}
+
+fn get(store: &dyn Store, kind: &str, name: &str) -> Result<Object, Failure> {
+    match store.get(kind, name) {
+        Observation::Known(Some(o)) => Ok(o),
+        Observation::Known(None) => Err(StoreError::NotFound(format!("{kind}/{name}")).into()),
+        Observation::Unknown { why } => Err(StoreError::Unknown(why).into()),
+    }
+}
+
+fn read_input(path: &Path) -> Result<Vec<u8>, Failure> {
+    if path == Path::new("-") {
+        let mut buf = Vec::new();
+        std::io::stdin()
+            .read_to_end(&mut buf)
+            .map_err(|e| fail(format!("stdin: {e}")))?;
+        return Ok(buf);
+    }
+    std::fs::read(path).map_err(|e| fail(format!("{}: {e}", path.display())))
+}
+
+fn cmd_apply(store: &dyn Store, file: &Path, json_out: bool) -> Result<(), Failure> {
+    let bytes = read_input(file)?;
+    let doc: Value = serde_json::from_slice(&bytes)
+        .map_err(|e| fail(format!("{}: not JSON: {e}", file.display())))?;
+    let items = match doc {
+        Value::Array(a) => a,
+        Value::Object(mut o) if o.contains_key("items") && !o.contains_key("kind") => {
+            match o.remove("items") {
+                Some(Value::Array(a)) => a,
+                _ => return Err(fail("items must be an array")),
+            }
+        }
+        other => vec![other],
+    };
+    let mut objs = Vec::new();
+    for (i, item) in items.into_iter().enumerate() {
+        let obj: Object =
+            serde_json::from_value(item).map_err(|e| fail(format!("item {i}: {e}")))?;
+        objs.push(obj);
+    }
+    let mut out = Vec::new();
+    for obj in objs {
+        let key = obj.key();
+        let (outcome, stored) = apply(store, obj)?;
+        if json_out {
+            out.push(json!({"object": key, "outcome": outcome, "generation": stored.metadata.generation}));
+        } else {
+            println!(
+                "{key} {}",
+                serde_json::to_value(outcome)
+                    .ok()
+                    .and_then(|v| v.as_str().map(str::to_lowercase))
+                    .unwrap_or_default()
+            );
+        }
+    }
+    if json_out {
+        print_json(&Value::Array(out));
+    }
+    Ok(())
+}
+
+fn cmd_list(store: &dyn Store, kind: &str, json_out: bool) -> Result<(), Failure> {
+    let objs = match store.list(kind) {
+        Observation::Known(o) => o,
+        Observation::Unknown { why } => return Err(StoreError::Unknown(why).into()),
+    };
+    if json_out {
+        print_json(&serde_json::to_value(&objs).map_err(|e| fail(e.to_string()))?);
+        return Ok(());
+    }
+    println!("{:<40} {:<11} GENERATION", "NAME", "PHASE");
+    for o in &objs {
+        let phase = o.status.get("phase").and_then(Value::as_str).unwrap_or("-");
+        println!(
+            "{:<40} {:<11} {}",
+            o.metadata.name, phase, o.metadata.generation
+        );
+    }
+    Ok(())
+}
+
+fn status_summary(obj: &Object) -> Value {
+    let observed = obj
+        .status
+        .get("observedGeneration")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    json!({
+        "schema": "fleet.status/v1",
+        "kind": obj.kind,
+        "name": obj.metadata.name,
+        "generation": obj.metadata.generation,
+        "observedGeneration": observed,
+        "current": observed == obj.metadata.generation,
+        "deleting": obj.is_deleting(),
+        "finalizers": obj.metadata.finalizers,
+        "phase": obj.status.get("phase").cloned().unwrap_or(Value::Null),
+        "conditions": obj.status.get("conditions").cloned().unwrap_or_else(|| json!([])),
+        "session": obj.status.get("session").cloned().unwrap_or(Value::Null),
+        "brief": obj.status.get("brief").cloned().unwrap_or(Value::Null),
+        "result": obj.status.get("result").cloned().unwrap_or(Value::Null),
+    })
+}
+
+fn print_status(s: &Value) {
+    let text = |k: &str| {
+        s.get(k)
+            .map(|v| v.as_str().map_or_else(|| v.to_string(), str::to_string))
+            .unwrap_or_default()
+    };
+    println!("{}/{}  phase {}", text("kind"), text("name"), text("phase"));
+    let current = if s["current"].as_bool() == Some(true) {
+        "current"
+    } else {
+        "STALE: status lags the spec"
+    };
+    println!(
+        "generation {} observed {} ({current})",
+        text("generation"),
+        text("observedGeneration")
+    );
+    if s["deleting"].as_bool() == Some(true) {
+        println!("being deleted; finalizers {}", s["finalizers"]);
+    }
+    for c in s["conditions"].as_array().into_iter().flatten() {
+        let field = |k: &str| c.get(k).and_then(Value::as_str).unwrap_or("");
+        println!(
+            "  {:<16} {:<8} {:<26} {}",
+            field("type"),
+            field("status"),
+            field("reason"),
+            field("message")
+        );
+    }
+    if !s["result"].is_null() {
+        println!("result {}", s["result"]);
+    }
+}
+
+fn result_from_flags(
+    generation: Option<u64>,
+    outcome: Option<String>,
+    summary: String,
+    artifacts: Vec<String>,
+    outputs: Vec<String>,
+) -> Result<TaskResult, Failure> {
+    let generation = generation.ok_or_else(|| {
+        fail("--generation is required: name the generation you were briefed for")
+    })?;
+    let outcome = outcome.ok_or_else(|| fail("--outcome is required"))?;
+    let outcome: Outcome =
+        serde_json::from_value(Value::String(outcome.clone())).map_err(|_| {
+            fail(format!(
+                "--outcome {outcome:?}: use shipped, stuck, failed or not-applicable"
+            ))
+        })?;
+    let mut map = std::collections::BTreeMap::new();
+    for o in outputs {
+        let (name, raw) = o
+            .split_once('=')
+            .ok_or_else(|| fail(format!("--output {o:?}: use NAME=JSON")))?;
+        let value: Value = serde_json::from_str(raw)
+            .map_err(|e| fail(format!("--output {name}: not JSON: {e}")))?;
+        map.insert(name.to_string(), value);
+    }
+    Ok(TaskResult {
+        outcome,
+        generation,
+        summary,
+        artifacts,
+        outputs: map,
+    })
+}
+
+fn print_json(v: &Value) {
+    match serde_json::to_string_pretty(v) {
+        Ok(s) => println!("{s}"),
+        Err(e) => eprintln!("error: {e}"),
+    }
+}

@@ -1,0 +1,4 @@
+# A forced version cannot bypass this hold. Dry runs still build every target.
+# Only a reviewed acceptance change may enable the first production release.
+ready = false
+reason = "the first production release waits for complete integration acceptance"

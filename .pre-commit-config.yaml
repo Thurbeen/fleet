@@ -1,75 +1,36 @@
-# Pre-commit hooks. Run with `prek` (https://github.com/j178/prek), not the
-# Python `pre-commit`:
-#
-#     prek install
-#
-# Every hook runs `uv run fleet check <name>`, which is also what CI runs and
-# what .publish.yaml declares as the gate — so a hook cannot drift from the gate
-# it stands in for. One hook per static check rather than a single whole-gate
-# hook, so a commit touching only prose does not wait on the test suite. The
-# commands carry no shell syntax, so they run the same from bash, cmd and
-# PowerShell.
+# The same Rust-native gate as CI and publish. Install with: prek install
+# Test suites and warning-denied documentation run in the full publish gate.
 default_stages: [pre-commit]
-
 repos:
   - repo: local
     hooks:
-      - id: lock
-        name: uv.lock matches pyproject.toml
-        entry: uv run --frozen fleet check lock
-        language: system
-        files: '^(pyproject\.toml|uv\.lock|tests/stubs/pyproject\.toml)$'
-        pass_filenames: false
-
-      - id: lint
-        name: ruff
-        entry: uv run --frozen fleet check lint
-        language: system
-        files: '\.py$'
-        pass_filenames: false
-
       - id: markdown
-        name: markdown (rumdl)
-        entry: uv run --frozen fleet check markdown
+        name: Markdown
+        entry: cargo xtask check markdown docs
         language: system
         files: '\.md$'
         pass_filenames: false
-
-      - id: docs
-        name: README links and diagram
-        entry: uv run --frozen fleet check docs
-        language: system
-        files: '^(README\.md|docs/.*|scripts/lib/check_docs\.py)$'
-        pass_filenames: false
-
-      - id: yaml
-        name: YAML parses
-        entry: uv run --frozen fleet check yaml
+      - id: workflow
+        name: YAML and workflow contracts
+        entry: cargo xtask check yaml workflow
         language: system
         files: '\.ya?ml$'
         pass_filenames: false
-
-      # A job All Checks does not need can fail while the pull request reports
-      # green, and a commit straight to main never meets CI to find out.
-      - id: workflow
-        name: CI workflow gates every job
-        entry: uv run --frozen fleet check workflow
+      - id: rust-fmt
+        name: Rust formatting
+        entry: cargo xtask check rust-fmt
         language: system
-        files: '^(\.github/workflows/ci\.yml|scripts/lib/check_workflow\.py)$'
+        files: '\.rs$'
         pass_filenames: false
-
-      - id: profiles
-        name: session profiles render
-        entry: uv run --frozen fleet check profiles
+      - id: rust-lint
+        name: Clippy with warnings denied
+        entry: cargo xtask check rust-lint
         language: system
-        files: '^(orchestration/session-profiles\.yaml|scripts/lib/session_profiles\.py)$'
+        files: '(\.rs|Cargo\.(toml|lock)|rust-toolchain\.toml)$'
         pass_filenames: false
-
-      # Unfiltered: a skill hand-added under .claude/ instead of .agents/skills
-      # shows up in a commit that touches no skill at all.
-      - id: skills
-        name: agent skills layout
-        entry: uv run --frozen fleet check skills
+      - id: rust-deny
+        name: Dependency policy
+        entry: cargo xtask check rust-deny
         language: system
-        always_run: true
+        files: '(Cargo\.(toml|lock)|deny\.toml)$'
         pass_filenames: false

@@ -1,233 +1,30 @@
-# WHAT THIS REPO DOES NOT KEEP FOR YOU.
-#
-# `Thurbeen/fleet` is PUBLIC. Everything a running fleet writes — your prompts,
-# your briefs, your workers' results, your map of every repo you can reach — is
-# working state that has no business in a public repository, so none of it is
-# tracked. That is the first reason for every entry below.
-#
-# WHAT IT COSTS, stated plainly because the README says it too: this repo does
-# not back up your control plane's content. Your run logs, your project context
-# and your map live in ONE working copy and die with it unless you back that
-# copy up yourself. Nothing here is a substitute for that.
-#
-# Every entry says WHY it is here, because an entry nobody understands is one
-# somebody eventually removes. Three reasons, and no others:
-#
-#   GENERATED   written by a script from a live source; reproducible
-#   MACHINE     true on one machine — a path, a port, a pid
-#   WORKING STATE  the operator's own content: what they asked for, what came
-#                  back, and what they concluded
+# Generated build, local review surfaces and offline install fixtures.
+/target/
+/dist/
+/.lavish/
+/examples/data/
+/examples/fake-host/
 
-# MACHINE. Rendered from extension.toml.in by `uv run fleet install-extension`
-# and carrying this clone's absolute path, which is true only on one machine —
-# extension.toml.in's header says why the path cannot be a `~`.
-/extension.toml
-
-# MACHINE. Which checkout installed the thurbox plugins, rendered by
-# `uv run fleet install-extension` as an absolute path so Ctrl+X reaches
-# this fleet's lead; interface/fleet_lead.lua says why.
-/interface/fleet_home.lua
-
-# GENERATED. FLEET.md with the two voice names substituted in, written by
-# `uv run fleet install-extension` and shipped as the extension's [[files]]
-# payload. FLEET.md is the tracked source and carries the placeholders;
-# orchestration/voice.example.conf carries the defaults. Rendering to a second
-# file is what lets an operator rename themselves without dirtying the tree
-# `uv run fleet sync-checkout` has to fast-forward.
-/FLEET.rendered.md
-
-# GENERATED. The conductor session's own directory — its CLAUDE.md, its
-# CONDUCTOR.rendered.md, its .claude/ and, for a Codex conductor, its .codex/ —
-# written by `uv run fleet install-extension` only when orchestration/fleet.conf
-# says CONDUCTOR=on, and removed when it stops saying so. extension.toml.in's
-# conductor block says why the conductor does not open the checkout itself.
-/orchestration/conductor/
-
-# GENERATED. Checkout-scoped Codex lead context and lifecycle hooks, rendered
-# only for a Codex lead. Workers' worktrees do not inherit this directory.
-/.codex/
-
-# WORKING STATE. Your GitHub owners. registry/owners.example.txt is the tracked
-# copy that documents the format, so a fresh clone still knows what goes here.
-/registry/owners.txt
-
-# WORKING STATE. What you want the lead to call you, and what it answers to.
-# orchestration/voice.example.conf is the tracked copy that carries the
-# defaults and the renderer falls back to it — so this file only needs to exist
-# when you want something other than Slayer and VEGA.
-/orchestration/voice.conf
-
-# WORKING STATE. The repositories fleet may MERGE in unattended. This is the
-# one list where being wrong means acting on somebody else's code, and which
-# repositories those are is a property of the operator and never of this public,
-# agnostic repo — so it is ignored for the same reason owners.txt is, and
-# orchestration/auto-merge.example.conf is the tracked copy that documents the
-# format and deliberately names NONE. The reader falls back to it, so a fresh
-# clone merges nothing until this file says otherwise.
-/orchestration/auto-merge.conf
-
-# WORKING STATE. How your tasks publish and what fleet looks for afterwards:
-# your default method, the sentence naming YOUR publishing tool, and the
-# attestation marker your pipeline emits. orchestration/publish.example.conf is
-# the tracked copy; it models artifact SHAPES and names no tool, because a tool
-# name in tracked code is one operator's pipeline in everybody's machinery.
-/orchestration/publish.conf
-
-# WORKING STATE. Which agent your workers run, and whose quota window `refuel`
-# gates on. orchestration/agent.example.conf is the tracked copy and leaves both
-# empty — thurbox's own agents.toml already holds the first, and fleet reads the
-# second off the tasks rather than guessing.
-/orchestration/agent.conf
-
-# WORKING STATE. Which agents may serve which repositories. Like
-# auto-merge.conf, this is the operator's own policy and names nobody in the
-# tracked example; a fresh clone enforces nothing until this file says
-# otherwise.
-/orchestration/agent-policy.conf
-
-# WORKING STATE. Which repositories reach their base through an integration
-# branch (develop→main). The tracked flow.example.conf names none.
-/orchestration/flow.conf
-
-# WORKING STATE. Session profiles of the operator's own — a model, a thinking
-# budget, an agent's command line. orchestration/session-profiles.yaml is the
-# tracked file and the reader starts from it; a profile here replaces the one of
-# the same name there, and a checkout without this file renders exactly what the
-# tracked one does. Tracked, a profile of your own dirtied the tree
-# `uv run fleet sync-checkout` has to fast-forward.
-/orchestration/session-profiles.local.yaml
-
-# MACHINE. Whether this terminal's font draws a two-cell emoji at two cells is
-# true of one machine, so the glyph setting is one machine's answer.
-# orchestration/session-glyphs.example.conf is the tracked copy that carries the
-# defaults, and both readers fall back to it — so this file only needs to exist
-# when you want something other than the default.
-/orchestration/session-glyphs.conf
-
-# MACHINE. Which fleet this checkout IS, when a machine runs more than one.
-# It names an extension and a lead, so it is the answer for one clone on one
-# machine and never a property of the repository.
-# orchestration/fleet.example.conf is the tracked copy, and it names no fleet:
-# unnamed renders the two names fleet has always used, so a machine with one
-# fleet needs this file no more than it needs the others here.
-/orchestration/fleet.conf
-
-# MACHINE. Which other fleets, on which hosts, the Kanban board reads beside
-# this one: host names and checkout paths are one operator's machines.
-# orchestration/peers.example.conf is the tracked copy and names none; thurbox's
-# own session list finds most peers without this file existing at all.
-/orchestration/peers.conf
-
-# OPERATOR. How often this machine's reconciler polls, and whether a finished
-# task's session is kept. orchestration/reconcile.example.conf is the tracked
-# copy and sets nothing: without this file every clock and every reap is the
-# default.
-/orchestration/reconcile.conf
-
-# OPERATOR. Whether fleet sends OpenTelemetry, and to which collector with
-# which token. orchestration/telemetry.example.conf is the tracked copy and
-# turns nothing on: without this file fleet sends nothing anywhere.
-/orchestration/telemetry.conf
-
-# GENERATED. Rebuilt wholesale from your `gh` accounts by
-# `uv run fleet sync-registry`, and an index of every repo you can reach is not
-# a thing to publish.
-/registry/repos.generated.yaml
-
-# WORKING STATE. The judgement about one of your projects, written from
-# _TEMPLATE.md. The form is tracked; what you write into it is yours.
-/registry/context/*.md
-!/registry/context/_TEMPLATE.md
-
-# WORKING STATE. What workers learned about your projects, one fact per file
-# (`uv run fleet context`). Every fact names one of your repositories.
-/registry/facts/
-
-# WORKING STATE. One file per orchestration run — the record of what you did,
-# when, and how it went. `uv run fleet queue` opens one per topic and refreshes
-# its facts in the `.facts.md` beside it, under that file's `.lock`, so these
-# carry machine paths and session ids freely; the judgement in the log itself is
-# the operator's. _TEMPLATE.md is the form, it is generic, and it stays.
-/orchestration/runs/*.md
-/orchestration/runs/*.lock
-/orchestration/runs/*.tmp
-!/orchestration/runs/_TEMPLATE.md
-
-# WORKING STATE. The task queue: topics, per-task briefs, the transitions a run
-# produced, and what each worker concluded. This is the whole of the control
-# plane's working memory — one operator's prompts and one operator's work — and
-# it is exactly what must not reach a public repo. Three tracked files stay:
-# README.md, which documents the layout; POLICY.md, the standing policy every
-# brief points its worker at instead of restating it; and OPERATOR.example.md,
-# the form of the file below.
-#
-# OPERATOR.md itself is WORKING STATE and stays ignored: it is one operator's
-# own standing instructions to their workers — their preferences, their tools,
-# their habits — which is the same reason owners.txt is ignored while
-# owners.example.txt is tracked. Ignored is not secret, and that file's header
-# says so: credentials belong in the environment, not in it.
+# Private operator data and configuration must never enter a public commit.
+/fleet.toml
+/.env
+/orchestration/*
+!/orchestration/queue/
+!/orchestration/playbooks/
+!/orchestration/runs/
 /orchestration/queue/*
-!/orchestration/queue/README.md
 !/orchestration/queue/POLICY.md
+!/orchestration/queue/README.md
 !/orchestration/queue/OPERATOR.example.md
-
-# MACHINE. The checkout-local link that lets Claude Code and opencode load
-# .agents/skills/, made by `uv run fleet install`: a symlink on POSIX, a
-# junction on Windows. Codex reads .agents/skills directly here and uses the
-# installer's per-skill links under the user's ~/.agents/skills elsewhere. This
-# link is not tracked because a default Windows clone checks a tracked link out
-# as a text file holding its target, and then no Claude-compatible agent found
-# a single skill.
+/orchestration/playbooks/*
+!/orchestration/playbooks/_TEMPLATE.md
+/orchestration/runs/*
+!/orchestration/runs/_TEMPLATE.md
+/registry/
+/extension.toml
+/FLEET.rendered.md
+/.codex/
 /.claude/skills
-
-# GENERATED. Python's bytecode cache. scripts/lib/fleet_status.py loads
-# queue.py as a module, and importing anything writes one of these beside the
-# source — so it appears the first time a command runs and never in a fresh
-# clone.
-__pycache__/
-
-# GENERATED. The project environment `uv run` creates on first use, holding
-# PyYAML and the gate's tools at the uv.lock pins, and the `fleet` launcher.
-# One per checkout, and rebuilt from the lock on the next run when it is
-# deleted.
+# Preserve ignores for private files left by a previous checkout.
 /.venv/
-
-# MACHINE + WORKING STATE. The reconciler's runtime state: the `lock` its loop
-# holds for as long as it lives, its supervisor's pid, the heartbeat that says
-# its loop is actually ticking, its log, the advisory `nudge` flag a worker's
-# Stop hook drops, the `down` flag that keeps an explicit stop honoured across a
-# restart and a reboot, and `notified.json`. The loop's CODE is tracked
-# (scripts/lib/reconcile.py); everything it writes at runtime is not, for the
-# same reason the queue's own records are not.
-/orchestration/reconcile/
-
-# MACHINE + WORKING STATE. Shepherd's runtime state: `prs.json`, the state of
-# every pull request it watches, per session — a fleet task's or one it adopted
-# — which the board's PR dots read through `fleet queue prs`, and `briefs/`, the
-# one-line messages' files for adopted sessions that have no task brief. Written
-# by `uv run fleet queue shepherd` (scripts/lib/shepherd_store.py), which is
-# tracked; nothing it writes is.
-/orchestration/shepherd/
-
-# MACHINE. `fleet telemetry export`'s memory of which spans it already sent
-# (`exported.json`) and the last failure it reported, so a pass sends only what
-# is new and a collector that stays down is one log line, plus the spool of the
-# reconciler's lines waiting to go as log records (`logs*.jsonl`). Written by
-# scripts/lib/telemetry.py, which is tracked; what it writes is not.
-/orchestration/telemetry/
-
-# MACHINE. The last reading of every peer fleet, written by `uv run fleet peers`
-# so the board's probe asks a host at most once per TTL and can draw a peer
-# that stopped answering as `stale` rather than blank.
-/orchestration/peers/
-
-# MACHINE. The operator's answer to the one first-run question — whether the
-# queue pane goes on screen — written by `uv run fleet pane-ask` so the lead
-# asks it once per checkout and never again. The layout.lua that answer is
-# about is one machine's, and the lead's conversation is disposable, so it lives
-# here.
-/orchestration/first-run/
-
-# WORKING STATE. Which session owns the notices of a task by its --origin.
-# The tracked owners.example.conf names none.
-/orchestration/owners.conf
+__pycache__/

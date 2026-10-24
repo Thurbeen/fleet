@@ -1,0 +1,102 @@
+# Fleet's architecture rules, enforced by crates/fleet-arch (its
+# `architecture` test) on every gate and CI run. crates/CONTRACTS.md explains
+# each rule; fleet-arch's crate docs say what static checking cannot see.
+#
+# The graph, bottom up:
+#
+#   fleet-api            pure   types and ports
+#   fleet-controllers    pure   decisions          -> api
+#   fleet-exec           adapter the one process spawner
+#   fleet-store          adapter                   -> api
+#   fleet-runtime        adapter                   -> api, exec
+#   fleet-manager        orchestration             -> api, controllers
+#   fleet-cli            edge   parse, wire, print -> api, manager, store, runtime
+#   fleet-arch, fleet-dev  tooling
+
+[crates.fleet-api]
+role = "pure"
+deps = []
+external = ["serde", "serde_json", "thiserror"]
+probes = ["fleet-store", "fleet-controllers", "fleet-exec", "fleet-runtime"]
+
+[crates.fleet-controllers]
+role = "pure"
+deps = ["fleet-api"]
+external = ["serde_json"]
+probes = ["fleet-store", "fleet-runtime", "fleet-manager", "fleet-exec"]
+
+# The only crate that starts a process: bounded, its whole tree killed past
+# the bound.
+[crates.fleet-exec]
+role = "adapter"
+deps = []
+
+[crates.fleet-store]
+role = "adapter"
+deps = ["fleet-api"]
+
+[crates.fleet-runtime]
+role = "adapter"
+deps = ["fleet-api", "fleet-exec"]
+
+[crates.fleet-manager]
+role = "orchestration"
+deps = ["fleet-api", "fleet-controllers"]
+
+[crates.fleet-cli]
+role = "edge"
+deps = ["fleet-api", "fleet-manager", "fleet-runtime", "fleet-store"]
+# Every write is the manager's: the CLI parses, calls a verb, and prints.
+forbidden_methods = [
+  "create", "update_spec", "update_status", "remove_finalizer", "delete",
+  "acquire_lease", "renew_lease", "release_lease", "reconcile", "probes",
+  "spawn", "release",
+]
+
+[crates.fleet-arch]
+role = "tooling"
+deps = []
+
+[crates.fleet-dev]
+role = "tooling"
+deps = ["fleet-exec"]
+
+[pure]
+forbidden_paths = [
+  "std::fs", "std::process", "std::net", "std::env", "std::thread", "std::os",
+  "std::io", "std::time::SystemTime", "std::time::Instant",
+  "std::println", "std::eprintln", "std::print", "std::eprint", "std::dbg",
+  "std::option_env", "std::include", "std::include_str", "std::include_bytes",
+]
+clippy_guards = [
+  "std::fs::File", "std::process::Command", "std::time::Instant", "std::time::SystemTime",
+  "std::env::var", "std::fs::read", "std::thread::sleep",
+]
+
+# Who may name each field manager. Naming one is how code writes as it.
+[status_writers]
+"fleet_api::store::FieldManager::TaskController" = ["fleet-api", "fleet-controllers"]
+"fleet_api::store::FieldManager::Worker" = ["fleet-api", "fleet-manager"]
+"fleet_api::store::FieldManager::Apply" = ["fleet-api", "fleet-manager", "fleet-store"]
+
+# One crate starts processes, so every program fleet runs (thurbox-cli, the
+# gate's tools) is bounded and has its tree killed the same way.
+[[restricted]]
+path = "std::process::Command"
+allowed = ["fleet-exec"]
+why = "every external program goes through fleet-exec: bounded and tree-killed"
+
+[[restricted]]
+path = "std::os::unix::process"
+allowed = ["fleet-exec"]
+why = "process groups and signals belong to fleet-exec"
+
+[[restricted]]
+path = "std::os::windows::process"
+allowed = ["fleet-exec"]
+why = "creation flags and job objects belong to fleet-exec"
+
+[[restricted]]
+path = "process_wrap"
+allowed = ["fleet-exec"]
+why = "a second way to start a process would bypass fleet-exec's bounds"

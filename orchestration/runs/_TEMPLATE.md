@@ -1,34 +1,14 @@
-# Run: `<YYYY-MM-DD>` — `<slug>`
-
-> One run, one topic. `uv run fleet queue topic add` opens this file once, and
-> `dispatch`, `collect`, `shepherd` and `run` keep the facts file linked below
-> current from the queue's own records as the run goes on.
->
-> **This file is yours.** Fleet created it and never writes it again. The facts
-> say what happened; the sections below, all optional, say what you decided
-> and what it cost.
-
-<!-- fleet:facts-link -->
+# Run record
 
 ## Goal
 
-What this run is meant to achieve, in your words.
+The authorized outcome and resource identities.
 
-## Playbook
+## Decisions
 
-`../playbooks/<name>.md`, or "ad hoc".
-
-## Decisions worth keeping
-
-The calls you made and why: what you serialized and on what condition, what you
-dispatched together despite an overlap, what you decided not to do at all.
-
-## What went wrong
-
-Where the tooling or the plan failed, and what the next lead should do instead.
-A defect written down here is the one that gets fixed.
+Choices and evidence that cannot be recovered from resource status.
 
 ## Outcome
 
-What shipped, what is pending, what to follow up on. Update the relevant
-`registry/context/<repo>.md` if this run changed a project's goals or relations.
+What was validated, remaining limitations, and any operator action required.
+Keep this record in private storage, outside the public source tree.

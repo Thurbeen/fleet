@@ -1,0 +1,163 @@
+//! Task: one agent session doing one brief.
+
+use std::collections::BTreeMap;
+
+use serde::{Deserialize, Serialize};
+
+use crate::condition::Condition;
+use crate::meta::Millis;
+use crate::plan::{Intent, Receipt};
+use crate::result::{OutputDecl, TaskResult};
+
+pub const KIND: &str = "Task";
+
+/// The finalizer every Task carries from create: TaskController releases the
+/// session before the record goes.
+pub const RELEASE_FINALIZER: &str = "fleet.dev/release";
+
+/// The runtime host a Task runs on when it names none: this machine.
+pub const LOCAL_HOST: &str = "local";
+
+/// What a Task asks for. Fixed once created, like a Pod's spec: only
+/// `dispatch` may change, and a different brief is a different Task.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TaskSpec {
+    /// The agent harness, e.g. `claude-code`. Passed to the runtime as is.
+    pub harness: String,
+    /// The runtime host the session runs on.
+    #[serde(default = "local_host")]
+    pub host: String,
+    /// The model the harness runs, when it is not the harness's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// The brief, sent once.
+    pub brief: String,
+    pub workspace: Workspace,
+    /// Set by whoever starts the work; nothing spawns while it is false.
+    #[serde(default)]
+    pub dispatch: bool,
+    /// The structured outputs a worker's result must carry, by name.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub outputs: BTreeMap<String, OutputDecl>,
+}
+
+fn local_host() -> String {
+    LOCAL_HOST.to_string()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Workspace {
+    pub dir: String,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Phase {
+    #[default]
+    Pending,
+    Spawning,
+    Spawned,
+    Briefed,
+    Stalled,
+    Concluded,
+    Releasing,
+}
+
+/// Task status. Two field managers write it: TaskController owns every field
+/// but `result`, which the worker writes through `fleet result`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TaskStatus {
+    #[serde(default)]
+    pub phase: Phase,
+    #[serde(default)]
+    pub observed_generation: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conditions: Vec<Condition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<SessionRef>,
+    /// Effect intents, written before the effect runs.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub intents: BTreeMap<String, Intent>,
+    /// Effect receipts, written after; an intent without one is a question.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub receipts: BTreeMap<String, Receipt>,
+    #[serde(default)]
+    pub spawn_attempts: u32,
+    #[serde(default)]
+    pub release_attempts: u32,
+    /// Sends of the brief, bounded like spawn attempts.
+    #[serde(default)]
+    pub brief_sends: u32,
+    /// Consecutive unreadable delivery probes; three raise NeedsAttention.
+    #[serde(default)]
+    pub brief_probe_failures: u32,
+    /// After a failed or unknown attempt: the manager does not reconcile
+    /// this Task again before then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_before: Option<Millis>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brief: Option<BriefRecord>,
+    /// The worker's claim, written by field manager `worker` only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<TaskResult>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BriefRecord {
+    /// The effect key the brief was sent under; the session stores it too.
+    pub key: String,
+    /// The spec generation the brief was sent for; `fleet result` must name it.
+    pub generation: u64,
+    /// True when the receipt was recovered by asking the session after a crash.
+    #[serde(default)]
+    pub recovered: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SessionRef {
+    pub id: String,
+    pub host: String,
+    pub key: String,
+}
+
+/// The status fields the worker owns; every other field is TaskController's.
+pub const WORKER_FIELDS: &[&str] = &["result"];
+
+/// The session key for a Task: deterministic, so a second spawn finds the
+/// first session instead of twinning it. The uid keeps a Task recreated under
+/// the same name from adopting a session it never owned.
+pub fn session_key(name: &str, uid: &str) -> String {
+    format!("{name}.{uid}")
+}
+
+/// The uid part of a session key: `<name>.<uid>`, or a bare uid, which is
+/// what an adapter whose keys must be short hands back from `list`.
+pub fn uid_of_session_key(key: &str) -> &str {
+    key.rsplit('.').next().unwrap_or(key)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_task_runs_on_this_machine_unless_it_names_a_host() {
+        let spec: TaskSpec = serde_json::from_value(serde_json::json!({
+            "harness": "claude-code", "brief": "b", "workspace": {"dir": "w"}
+        }))
+        .unwrap();
+        assert_eq!(spec.host, LOCAL_HOST);
+        assert!(!spec.dispatch);
+    }
+
+    #[test]
+    fn a_session_key_carries_the_uid() {
+        let key = session_key("t", "u1");
+        assert_eq!(uid_of_session_key(&key), "u1");
+        assert_eq!(uid_of_session_key("u1"), "u1");
+    }
+}
