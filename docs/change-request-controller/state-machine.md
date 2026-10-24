@@ -23,7 +23,8 @@ due. Deletion removes the record from any phase.
 | Closed | Known, state draft or open | Watching | `revision += 1` even if nothing else differs, so consumers notice; wait `pollMs`. |
 | Closed | Known, still closed, within `closedGraceMs` | Closed | Write only if something differs; wait `10 × pollMs`. |
 | Closed | Known, still closed, past `closedGraceMs` | Settled | `Settled=True/ClosedGraceExpired`; no further polls. |
-| Settled | none asked | Settled | Terminal. A change reopened after the grace is a new ChangeRequest. |
+| Settled | none asked; `settledTtlMs` not yet passed | Settled | Wait until it has. |
+| Settled | none asked; `settledTtlMs` passed | Record removed | Request deletion of this object. A change reopened after the grace is a new ChangeRequest. |
 
 A Known answer whose `ref` no longer resolves, because the change was deleted
 on the forge, is `Settled=True/Gone`. An answer the adapter cannot parse is
@@ -50,8 +51,18 @@ says why the counter is Fleet's and not the forge's clock.
 Conditions keep their `lastTransitionTime` unless their status changes, so a
 pass that sees nothing new writes nothing.
 
+## Retention
+
+A ChangeRequest is tied to no Task. Settled ones would otherwise accumulate
+one per change ever opened, so the controller deletes its own object once
+`settledTtlMs` has passed since it settled, thirty days by default. This is
+the pattern of a Kubernetes Job with a TTL after finishing: the object's own
+controller removes it a configured time after it is done, and nothing else
+has to know. A follower that still names a deleted ChangeRequest sees
+readable absence and raises `ChangeGone`.
+
 ## Deletion
 
-`fleet delete changerequest NAME` removes the record on the next pass. There
-is no finalizer because nothing on the forge is held. A ChangeRequest owned by
-a Task is deleted when the Task is.
+`fleet delete changerequest NAME` removes the record on the next pass, at any
+phase. There is no finalizer because nothing on the forge is held, and no
+owner, so no other object's deletion reaches a ChangeRequest.

@@ -15,7 +15,7 @@
 <text x="165" y="177">Watching</text><text x="520" y="177">Closed</text><text x="875" y="177">Settled</text>
 </g>
 <g text-anchor="middle" font-size="12">
-<text x="165" y="199">poll every pollMs</text><text x="520" y="199">poll every 10 × pollMs</text><text x="875" y="199">no more polls</text>
+<text x="165" y="199">poll every pollMs</text><text x="520" y="199">poll every 10 × pollMs</text><text x="875" y="199">deleted after settledTtlMs</text>
 </g>
 <g fill="none" stroke="#405367" stroke-width="1.8" marker-end="url(#arrow)">
 <path id="to-closed" d="M250 172 H433"/>

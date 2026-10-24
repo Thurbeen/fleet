@@ -41,9 +41,10 @@ probe was not asked.
 
 ### Returned plan
 
-The plan carries `status` only. `effects` is always empty and
-`remove_finalizer` is always `None`: this controller writes its own object
-and touches nothing else.
+The plan carries `status`, and once a Settled object's retention has passed,
+`delete: true`, which asks the manager to delete this object. `effects` is
+always empty and `remove_finalizer` is always `None`: this controller writes
+its own object and touches nothing else.
 
 ## Forge port
 
@@ -92,8 +93,8 @@ past, like a Task.
 | Writer | May change | Required fencing |
 | --- | --- | --- |
 | `apply` | New ChangeRequest and labels; request deletion | Store validation, exclusive creation. |
-| `forge-controller` | A new ChangeRequest with an owner reference to a Task, through a `CreateObject` effect | Live manager lease. |
-| `change-request-controller` | All of `status` | Current resourceVersion and live manager lease. |
+| `declare` | A new ChangeRequest named from the URL, on a Task's behalf | Exclusive creation; an existing object is reused unchanged. |
+| `change-request-controller` | All of `status`; deletion of its own object after retention | Current resourceVersion and live manager lease. |
 
-The spec is immutable. `ownerReferences` is accepted only when it names a
-Task; the store refuses any other owner, as it refuses every owner today.
+The spec is immutable. `ownerReferences` is refused, as on every kind: a
+ChangeRequest belongs to nobody.

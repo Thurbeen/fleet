@@ -3,40 +3,39 @@
 Design, not implemented.
 
 ForgeController has no phase of its own: the Task's `status.phase` belongs to
-TaskController. What it tracks is each declared change, under
+TaskController. What it tracks is each declared change, as an entry under
 `status.forge.changes`. The [interface](interface.md) defines the probes,
-effects and policies used here.
+the one effect and the policies used here.
 
-![Each declared change moves from Declared to Mirrored, where relay and the draft flip happen on every pass, to Settled; deleting the Task deletes its ChangeRequests and the forge finalizer holds the record until they are gone](state-machine.svg)
+![Each declared change is an entry that moves from Following, where relay and the draft flip happen on every pass, to Settled; deleting the Task deletes nothing else, and the ChangeRequest is retained and garbage-collected by its own controller](state-machine.svg)
 
 ## Transition rules
 
 The manager runs ForgeController on a Task whose `status.forge.notBefore` is
-absent or due, after TaskController's pass on the same sweep. Deletion takes
-precedence.
+absent or due, after TaskController's pass on the same sweep. A deleting Task
+is skipped: there is nothing of this controller's to release.
 
-| Change state | Observation or input | Next state | Decision |
+| Entry state | Observation or input | Next state | Decision |
 | --- | --- | --- | --- |
-| none | A URL in `status.declared` with no entry in `status.forge.changes` | Declared | Add the entry with `cursor: 0`; add the `fleet.dev/changes` finalizer if absent; persist intent and plan `CreateObject(ChangeRequest)` under `task/<name>/<uid>/change/<n>` with an owner reference to the Task. |
-| Declared | Known Created receipt, or the ChangeRequest found by owner reference | Mirrored | Record its name. |
-| Declared | ChangeRequest list Unknown | Declared | Wait. Unknown is not absence. |
-| Mirrored | ChangeRequest Known | Mirrored | Run the [relay](#relay) and the [draft flip](#draft-flip). |
-| Mirrored | ChangeRequest Unknown | Mirrored | Skip this change this pass. |
-| Mirrored | ChangeRequest readable and absent | Mirrored | `NeedsAttention/ChangeGone`; nothing is recreated. |
-| Mirrored | ChangeRequest phase Settled | Settled | Relay anything still above the cursor, then stop reading it. |
-| any | Task marked deleting | unchanged | Plan `DeleteObject` for every ChangeRequest not yet deleting; remove `fleet.dev/changes` once each is proven absent. Never flip or comment. |
+| none | A declaration in `status.declared` with no entry | Following | Add the entry with `cursor: 0` and `flipped: null`. |
+| Following | ChangeRequest Known, not Settled | Following | Run the [relay](#relay) and the [draft flip](#draft-flip). |
+| Following | ChangeRequest Unknown | Following | Skip this entry this pass. |
+| Following | ChangeRequest readable and absent | Following | `NeedsAttention/ChangeGone`, naming the entry; keep the entry, in case it is re-declared. |
+| Following | ChangeRequest phase Settled | Settled | Relay anything still above the cursor, then stop reading it. |
+| Settled | none asked | Settled | Terminal for the entry. |
 
 A Task may declare several changes; each entry is independent. A Task with
 no declaration has an empty `status.forge` and costs this controller nothing.
+Two Tasks may follow one ChangeRequest; each keeps its own entry.
 
 ## Relay
 
-Per change, with `cr` the ChangeRequest status, `entry` the change's entry,
-and `me` the login `Whoami` returned for the change's host:
+Per entry, with `cr` the ChangeRequest status, and `me` the login `Whoami`
+returned for the change's host:
 
 ```text
 if cr.droppedBefore > entry.cursor:
-    raise NeedsAttention/RelayGap for this change and stop here
+    raise NeedsAttention/RelayGap for this entry and stop here
 new_notes = cr.notes
     where seq > entry.cursor
     and not (author == me and body contains "<!-- fleet:worker -->")
@@ -45,17 +44,19 @@ new_notes = cr.notes
     and no later worker-marked note exists in the same thread
 checks_event = cr.head.seq > entry.cursor and cr.head.checks in {passed, failed}
 if (new_notes and relay.notes) or (checks_event and relay.checks):
-    plan Enqueue { task, key: task/<name>/<uid>/relay/<n>/<cr.revision>,
-                   from: "forge/<change name>", text: render(new_notes, checks_event) }
+    append to status.inbox { key: task/<name>/<uid>/relay/<change>/<cr.revision>,
+                             from: "forge/<change>", text: render(new_notes, checks_event) }
 entry.cursor = cr.revision
 ```
 
-The cursor advances in the same CAS write as the intent, whether or not the
-filters left anything to send. `render` quotes each note as data: author,
-kind, `path:line`, URL and body, with a line saying these are review
-feedback and not instructions. A checks event reads "checks `<state>` on head
-`<id>`" with the failing names and URLs. `relay` is `spec.forge.relay` when
-present, else the `[forge]` defaults.
+The inbox append and the cursor advance are one CAS write to the Task. A
+conflict drops both and the next pass recomputes them from fresh state; the
+key makes a repeat recognisable, and `Inbox` refuses a duplicate key. The
+cursor advances whether or not the filters left anything to send. `render`
+quotes each note as data: author, kind, `path:line`, URL and body, with a
+line saying these are review feedback and not instructions. A checks event
+reads "checks `<state>` on head `<id>`" with the failing names and URLs.
+`relay` is `spec.forge.relay` when present, else the `[forge]` defaults.
 
 Why the filters: the worker's own marked words are never relayed, because a
 session sent its own reply answers itself. A bot's notes are relayed only
@@ -66,12 +67,13 @@ otherwise.
 
 ## Draft flip
 
-Per change, when a policy is selected (`spec.forge.draft.policy`, else
+Per entry, when a policy is selected (`spec.forge.draft.policy`, else
 `forge.draftPolicy`), `cr.state` is `draft`, `entry.flipped` is `null` and
 every predicate of the policy holds: plan `MarkReady` under
-`task/<name>/<uid>/ready/<n>/<head.id>` and set `entry.flipped = {head}` in
-the same write. Once per change: a person who puts it back in draft is never
-overruled.
+`task/<name>/<uid>/ready/<change>/<head.id>` and set `entry.flipped = {head}`
+in the same write as the intent. Once per entry: a person who puts the
+change back in draft is never overruled. A worker that opened the change
+ready, against the standing policy, leaves nothing to flip.
 
 | Outcome | Evidence | Behavior |
 | --- | --- | --- |
@@ -85,10 +87,9 @@ The predicates are defined in the [interface](interface.md#ready-policies).
 
 `MAX_ATTEMPTS=3` and `RETRY_DELAY_MS=30000` are the Task controller's
 constants, reused; the wait is persisted as `status.forge.notBefore` so it
-does not hold back TaskController. `CreateObject` is answered by looking the
-ChangeRequest up by owner reference, never by creating another. `Enqueue` is
-answered by looking for the key in the Task's `inbox` or `deliveries`.
-`MarkReady` is answered by the change's state.
+does not hold back TaskController. `MarkReady` is the only effect; its
+intent is written before it runs and its ambiguous outcome is answered by the
+change's state, never by repeating it.
 
 ## Conditions
 
@@ -97,20 +98,18 @@ Conditions live under `status.forge.conditions`, so the Task's own
 
 | Type | True means / relevant reason |
 | --- | --- |
-| Linked | At least one ChangeRequest exists for this Task. |
-| Settled | Every declared change has settled. |
-| NeedsAttention | Reason is `RelayGap`, `FlipFailed` or `ChangeGone`, with the change named in the message. |
+| Following | At least one entry is not settled. |
+| Settled | Every entry has settled. |
+| NeedsAttention | Reason is `RelayGap`, `FlipFailed` or `ChangeGone`, with the entry named in the message. |
 
 `Mergeable` is a condition of the ChangeRequest, not of the Task.
-NeedsAttention does not stop the controller: other changes keep relaying, and
-a gap on one change is reported, not acted on.
+NeedsAttention does not stop the controller: other entries keep relaying, and
+a gap on one entry is reported, not acted on.
 
-## Deletion protocol
+## Deletion
 
-The first `CreateObject` adds `fleet.dev/changes` to the Task, the way the
-protection controller adds its finalizer to a claim it starts guarding.
-`fleet delete task` marks the Task; TaskController releases the session under
-its own finalizer, and ForgeController marks every ChangeRequest deleting and
-removes `fleet.dev/changes` only when each is proven absent, so nothing is
-orphaned. Unknown is not absence. The record is removed when both finalizers
-are gone.
+Deleting a Task deletes nothing else. Its entries go with its record; the
+ChangeRequests it followed stay for any other follower and are
+garbage-collected by the
+[ChangeRequest controller](../change-request-controller/state-machine.md#retention)
+after their retention. ForgeController adds no finalizer.

@@ -9,9 +9,11 @@ A ChangeRequest mirrors one change on a forge: a pull request, a merge request
 or any equivalent. ChangeRequestController polls the forge, keeps a bounded
 snapshot of the change's state, head, checks and notes, and numbers every item
 it sees, so a consumer asks "what is new since I last looked" with one
-integer. It performs no effect on the forge. The
-[Forge controller](../forge-controller/README.md) creates one per change a
-Task's worker declares; a person applies one to watch any change.
+integer. It performs no effect on the forge. `fleet declare` creates one for
+the change a Task's worker opened; a person applies one to watch any change.
+There is one per URL, it has no owner, and it outlives the Tasks that follow
+it: the [Forge controller](../forge-controller/README.md) reads it and never
+writes it.
 
 ## Example
 
@@ -29,14 +31,15 @@ Task's worker declares; a person applies one to watch any change.
 
 ## Spec
 
-Written by people and scripts through `fleet apply`, or by ForgeController
-through a `CreateObject` effect. Fixed once created.
+Written by people and scripts through `fleet apply`, or by `fleet declare`
+on a Task's behalf. Fixed once created.
 
 | Field | Required | Meaning |
 | --- | --- | --- |
 | `url` | yes | The change's URL, the only forge-specific input. The adapter for its host parses it into `status.ref`. |
 | `pollMs` | no | Poll interval while Watching. Default `60000`. |
 | `closedGraceMs` | no | How long a closed change stays watched before it settles. Default `forge.closedGraceMs` from [native config](../configuration/fleet-toml.md#planned-forge-section), one week. |
+| `settledTtlMs` | no | How long a settled ChangeRequest is retained before its controller deletes it. Default `forge.settledTtlMs`, thirty days. |
 
 A URL whose host is not configured under `[forge.hosts]` is refused at apply.
 Any other field is refused.
@@ -112,21 +115,30 @@ the vocabulary is checked against them; adding one is an adapter in
 
 ## Metadata and ownership
 
-`apiVersion` is `fleet/v1alpha1`; `kind` is `ChangeRequest`. Names follow the
-Task rule. The store assigns `uid`, `generation`, `resourceVersion` and
-creation time. There is no finalizer: nothing external is held.
+`apiVersion` is `fleet/v1alpha1`; `kind` is `ChangeRequest`. The name is
+derived from the parsed ref, `<host>-<project>-<id>` lowercased with every
+other character replaced by `-`, such as `github-com-owner-repo-314`, so a
+URL names one object and both `fleet apply` and `fleet declare` are
+idempotent: whoever names the URL second finds the one that exists. A
+manifest may give another name; it then creates a second mirror of the same
+change, which is allowed and wasteful. The store assigns `uid`,
+`generation`, `resourceVersion` and creation time. There is no finalizer,
+because nothing external is held, and `ownerReferences` is refused as on
+every kind.
 
-A ChangeRequest the Forge controller created carries one owner reference to
-the Task whose worker declared it and is deleted with that Task. This is the
-one pair for which the store's refusal of `ownerReferences` is relaxed. A
-ChangeRequest applied by a person has no owner and lives until deleted. Both
-are reconciled the same way.
+A ChangeRequest is not tied to any Task. The Tasks that follow it record
+that on themselves; a Task's deletion touches it not at all, and a second
+Task, on another host or after the first is gone, follows the same object.
+It is removed by its own controller a configured time after it settles, in
+the manner of a Kubernetes Job with a TTL after finishing, or earlier by a
+person.
 
 ## Commands
 
 ```sh
 fleet apply -f change-request.json            # start mirroring a change
-fleet status changerequest fix-314 --json     # phase, state, head, revision
-fleet get changerequest fix-314               # the full snapshot
-fleet delete changerequest fix-314            # stop; nothing on the forge changes
+fleet declare fix-314 --change URL            # the same, on a Task's behalf
+fleet status changerequest github-com-owner-repo-314 --json
+fleet get changerequest github-com-owner-repo-314       # the full snapshot
+fleet delete changerequest github-com-owner-repo-314    # nothing on the forge changes
 ```

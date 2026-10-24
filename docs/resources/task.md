@@ -106,25 +106,25 @@ binary.
 | Field or verb | Owner | Meaning |
 | --- | --- | --- |
 | `spec.forge` | `apply`; mutable like `dispatch` | Optional overrides of the `[forge]` defaults: `relay.notes`, `relay.checks`, `draft.policy` (a name under `[forge.readyPolicies]`, refused if undefined). |
-| `status.declared` | `worker`, through `fleet declare TASK --change URL` | The changes the worker opened, each a URL. Accepted after the brief has a receipt and before deletion; a repeated URL is a no-op; it concludes nothing. |
-| `status.forge` | ForgeController | One entry per declared change (`name`, `url`, `cursor`, `flipped`, `flipAttempts`), its intents and receipts, its conditions and its own `notBefore`. Empty for a Task that declared nothing. |
-| `status.inbox` | `Inbox`, through `fleet send TASK TEXT` or the Forge controller's relay | Messages for the running session: `{key, from, text, queuedAt}`. |
+| `status.declared` | `worker`, through `fleet declare TASK --change URL` | The changes the worker opened, each `{url, changeRequest}`. The verb also ensures the named ChangeRequest exists. Accepted after the brief has a receipt and before deletion; a repeated URL is a no-op; it concludes nothing. |
+| `status.forge` | ForgeController | One entry per declared change, keyed by ChangeRequest name: `cursor`, `flipped`, `flipAttempts`, flip intents and receipts; plus this controller's conditions and its own `notBefore`. Empty for a Task that declared nothing. |
+| `status.inbox` | `Inbox`, appended by `fleet send TASK TEXT` or the Forge controller's relay | Messages for the running session: `{key, from, text, queuedAt}`. Duplicate keys are refused. |
 | `status.deliveries` | TaskController | One receipt per delivered inbox key. The entry leaves `inbox` once receipted. |
 
 Any Task may declare a change, with or without a `spec.forge` block; the
-standing worker policy tells every worker to declare the change it opens and
-to end every post on it with `<!-- fleet:worker -->` on its own line, which
-is how Fleet tells the worker's words from a person's on the same account.
-Nothing forge-related has to be created in advance.
+standing worker policy tells every worker to open its change as a draft, to
+declare it, and to end every post on it with `<!-- fleet:worker -->` on its
+own line, which is how Fleet tells the worker's words from a person's on the
+same account. Nothing forge-related has to be created in advance, and a
+second Task may declare a change another Task opened.
 
 TaskController delivers each inbox entry exactly as it delivers the brief:
 only to a ready session, under the entry's key as the runtime intent key,
 journaled by the runtime, at most 3 sends, then a receipt. A Concluded Task
 with a nonempty inbox is due again; a readable lookup that no longer shows
-its session is `WorkerGone` and `NeedsAttention`, never a respawn. The store
-adds a second finalizer, `fleet.dev/changes`, once the first ChangeRequest is
-created for the Task, and `ownerReferences` naming the Task are accepted on
-a ChangeRequest. The
+its session is `WorkerGone` and `NeedsAttention`, never a respawn. No new
+finalizer and no owner reference: a ChangeRequest outlives the Tasks that
+follow it, and deleting a Task deletes nothing else. The
 [Forge controller interface](../forge-controller/interface.md#store-port-and-write-ownership)
 lists the resulting writers.
 

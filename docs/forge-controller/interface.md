@@ -3,7 +3,7 @@
 Design, not implemented.
 
 The controller is a pure decision function over a Task and the ChangeRequests
-it owns. The manager owns I/O, persistence and process execution. The
+it follows. The manager owns I/O, persistence and process execution. The
 [state machine](state-machine.md) defines how the values below change
 `status.forge`; the [Task resource](../resources/task.md#planned-additions)
 defines the external JSON fields.
@@ -22,58 +22,57 @@ pub fn reconcile(&self, input: &ForgeInput<'_>) -> Result<Plan, StoreError>;
 ```
 
 `task` is the stored Task, including the worker's `status.declared` and this
-controller's `status.forge`. Missing `status.forge` decodes to no changes.
+controller's `status.forge`. Missing `status.forge` decodes to no entries.
 Neither method reads the clock, disk, environment, forge or runtime itself.
 
 ### Requested probes
 
 | Task state | Probes |
 | --- | --- |
-| No `status.declared` and no `status.forge.changes` | None. |
-| A declared URL without an entry | `Owned { kind: ChangeRequest, owner: uid }`, to find one already created. |
+| No declaration and no entries | None. |
 | One or more entries not Settled | `Object { kind: ChangeRequest, name }` per entry; `Whoami { host }` once per distinct host. |
-| Every entry Settled, not deleting | None. |
-| Deleting, any entries | `Object` for every entry still recorded. |
+| Every entry Settled | None. |
+| Deleting | None. |
 
-`Probe::Object` and `Probe::Owned` are generic: the manager answers them from
-the store as `Known(Some)`, `Known(None)` for proven absence, or Unknown when
-a record is unreadable. They need no lease renewal and run before any runtime
-or forge probe. `Probe::Whoami` is answered by `Forge::whoami` and cached by
-the manager for the sweep.
+`Probe::Object` is generic: the manager answers it from the store as
+`Known(Some)`, `Known(None)` for proven absence, or Unknown when the record
+is unreadable. It needs no lease renewal and runs before any runtime or forge
+probe. `Probe::Whoami` is answered by `Forge::whoami` and cached by the
+manager for the sweep.
 
-`ForgeObservations` holds `owned`, `changes` (keyed by entry index) and
-`whoami` (keyed by host). Each is optional; `None` means not asked.
+`ForgeObservations` holds `changes` (keyed by entry) and `whoami` (keyed by
+host). Each is optional; `None` means not asked.
 
 ### Returned plan
 
 The same `Plan` type the Task controller returns, restricted to this
-controller's fields: `status` carries the desired `status.forge` including
-every new intent and advanced cursor and nothing else; the store refuses a
-plan that names another manager's field. `effects` are the actions below.
-`add_finalizer` and `remove_finalizer` name `fleet.dev/changes` only.
+controller's fields: `status` carries the desired `status.forge`, including
+every advanced cursor and every new flip intent, and any entries to append
+to `status.inbox`, and nothing else; the store refuses a plan that names
+another manager's field. `effects` holds `MarkReady` actions only.
+`remove_finalizer` is always `None`.
 
 | Action | Performed by the manager through | Receipt |
 | --- | --- | --- |
-| `CreateObject(Object)` | The Store, under the lease, with an owner reference to the Task | The created object's uid; a repeat finds it by owner reference and returns `already`. |
-| `Enqueue { task, key, from, text }` | The Store: append to `Task.status.inbox` as field manager `Inbox`, CAS on the Task | `Done { already }` when the key is already in `inbox` or `deliveries`. |
 | `MarkReady { change }` | The Forge port | `Done { already }`, Failed, or Unknown. |
-| `DeleteObject { kind, name }` | The Store: mark the object deleting | `Done { already }`. |
+
+A relay is not an effect. It is part of the status write: the inbox entry and
+the cursor land together or not at all.
 
 ## Effect and recovery keys
 
 | Item | Key |
 | --- | --- |
-| ChangeRequest creation | `task/<name>/<uid>/change/<n>` |
-| Relay | `task/<name>/<uid>/relay/<n>/<revision>` |
-| Draft flip | `task/<name>/<uid>/ready/<n>/<head.id>` |
+| Relay (inbox entry) | `task/<name>/<uid>/relay/<change>/<revision>` |
+| Draft flip | `task/<name>/<uid>/ready/<change>/<head.id>` |
 
-`<n>` is the change's index in `status.forge.changes`; `<revision>` is the
-ChangeRequest revision the relay covers. The same snapshot can never produce
-two different relays, and a relay key is also the runtime intent key the
-Task controller journals the delivery under. An intent without a receipt is a
-question the next pass answers by observing the key, never by repeating the
-effect. Intents and receipts for these keys live under `status.forge`, apart
-from TaskController's.
+`<change>` is the ChangeRequest's name; `<revision>` is the ChangeRequest
+revision the relay covers. The same snapshot can never produce two different
+relays, `Inbox` refuses a duplicate key, and a relay key is also the runtime
+intent key the Task controller journals the delivery under. A flip intent
+without a receipt is a question the next pass answers by observing the
+change's state, never by repeating the effect. Flip intents and receipts
+live under `status.forge`, apart from TaskController's.
 
 ## Ready policies
 
@@ -98,6 +97,24 @@ an unknown predicate is refused at config load; a Task selecting a policy the
 config does not define is refused at apply. Adding a predicate is a controller
 change and a config key, not an API change.
 
+The standing worker policy tells every worker to open its change as a draft.
+Fleet never puts a change back into draft.
+
+## The declare verb
+
+`fleet declare TASK --change URL` is a manager verb, like `fleet result`:
+
+1. Parse the URL through the Forge port; a host not configured is refused.
+2. Ensure one ChangeRequest exists for it, named from the parsed ref, by
+   exclusive creation; an existing one is reused as is.
+3. Append `{url, changeRequest}` to `Task.status.declared` as field manager
+   `worker`, with CAS on the Task. A repeated URL is a no-op.
+
+It is accepted after the brief has a receipt and before deletion, and it
+concludes nothing. The two steps are not atomic; a crash between them leaves
+a ChangeRequest nobody follows, which retention removes, and the next
+`declare` finds it.
+
 ## Manager execution protocol
 
 The [Task controller's protocol](../task-controller/interface.md#manager-execution-protocol)
@@ -107,13 +124,10 @@ applies, with these additions:
    ForgeController when `status.forge.notBefore` is absent or due. Each
    controller's plan is CAS-written separately; a conflict between them
    rereads and reruns the later one.
-2. `Object` and `Owned` probes are answered from the store before the lease
-   is renewed for runtime or forge probes.
-3. Store effects (`CreateObject`, `Enqueue`, `DeleteObject`) are performed
-   under the lease with CAS on the target object. A conflict rereads the
-   target and retries the one write; it never reruns the plan.
-4. `MarkReady` is performed through the Forge port after the lease is
-   renewed, like a runtime effect.
+2. `Object` probes are answered from the store before the lease is renewed
+   for runtime or forge probes.
+3. `MarkReady` is performed through the Forge port after the lease is
+   renewed, like a runtime effect, then its receipt is written.
 
 ## Store port and write ownership
 
@@ -121,11 +135,11 @@ applies, with these additions:
 | --- | --- | --- |
 | `apply` | New Task, labels, `dispatch`, `spec.forge`; request deletion | Store validation, exclusive creation or resourceVersion CAS. |
 | `worker` | `status.result`; `status.declared` through `fleet declare` | Current resourceVersion and a delivered brief. |
-| `forge-controller` | All of `status.forge`; the `fleet.dev/changes` finalizer; new ChangeRequests with an owner reference; `Task.status.inbox` entries through `Enqueue` | Current resourceVersion and live manager lease. |
-| `cli` | `Task.status.inbox` entries through `fleet send`, as field manager `Inbox` | Current resourceVersion. No lease: the CLI calls a manager verb. |
-| `task-controller` | Everything else in Task status; `status.deliveries`; removes delivered `inbox` entries; the `fleet.dev/release` finalizer | Current resourceVersion and live manager lease. |
+| `forge-controller` | All of `status.forge`; appends to `status.inbox` | Current resourceVersion and live manager lease. |
+| `cli` | Appends to `status.inbox` through `fleet send`, as field manager `Inbox` | Current resourceVersion. No lease: the CLI calls a manager verb. |
+| `task-controller` | Everything else in Task status; `status.deliveries`; removes delivered `inbox` entries | Current resourceVersion and live manager lease. |
 
-`Inbox` is a field manager of its own so that two writers, the relay and a
-person, can append to one list without either owning the Task's other status
-fields. The architecture test lists which crates may name each manager, as it
-does for the managers that exist.
+`Inbox` is an append-only list with one rule, no duplicate keys, so that
+three writers can add to it without any of them owning the Task's other
+status fields. The architecture test lists which crates may name each
+manager, as it does for the managers that exist.

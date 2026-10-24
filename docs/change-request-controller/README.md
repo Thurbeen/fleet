@@ -19,8 +19,8 @@ from here.
 
 ## One run
 
-1. A ChangeRequest is applied, by a person or by the Forge controller for a
-   change a worker declared. The adapter for its host parses the URL into
+1. A ChangeRequest is applied, by a person or by `fleet declare` for the
+   change a worker opened. The adapter for its host parses the URL into
    `status.ref`.
 2. On each due pass the controller asks one probe, `Change { ref }`. The
    manager answers it through the Forge port.
@@ -31,7 +31,9 @@ from here.
    and waits one poll interval. Unknown never means closed, merged or empty.
 5. A merged change settles. A closed change is watched more slowly for a
    grace period, then settles; reopened within it, it is watched again.
-6. Deletion removes the record. There is no finalizer.
+6. A settled ChangeRequest is retained for `settledTtlMs`, then the
+   controller deletes it. A person may delete one at any time. There is no
+   finalizer and no owner: no Task's deletion reaches it.
 
 Polling cadence is `status.notBefore`, which the manager already honours for
 Tasks. One ChangeRequest costs one bounded forge call per interval and nothing
@@ -46,6 +48,9 @@ else while idle.
   a GitHub or GitLab field.
 - An unreachable forge is this controller's condition. No consumer can
   mistake it for a state of the change.
+- It outlives its followers. A Task that declared the change can be deleted
+  and another can take over on a different host; the mirror and its
+  sequence numbers stay, so the newcomer's cursor means the same thing.
 
 ## Implementation and evidence
 
