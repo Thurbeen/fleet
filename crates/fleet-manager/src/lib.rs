@@ -253,7 +253,8 @@ impl Manager<'_> {
                 if let Action::Spawn(spawn) = &mut effect.action {
                     spawn.harness = execution.harness.clone();
                     spawn.host = execution.host.clone();
-                    spawn.model = None;
+                    spawn.model = execution.model.clone();
+                    spawn.environment_frozen = true;
                     spawn.env = execution.env.clone();
                 }
             }

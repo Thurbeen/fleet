@@ -88,6 +88,15 @@ fn references_overrides_validation_and_missing_source_do_not_launch_wrong_worker
     assert_eq!(s["host"], "local");
     assert_eq!(s["harness"], "claude-code");
     assert_eq!(s["model"], "task-model");
+    assert_eq!(
+        e.host()
+            .session(&e.session_key("referenced"))
+            .unwrap()
+            .unwrap()
+            .model
+            .as_deref(),
+        Some("task-model")
+    );
     assert_eq!(launch(&e)["env"], json!({"LANGUAGE":"task","OTHER":"kept"}));
     let mut invalid = task("invalid", true);
     invalid["spec"]["env"] = json!({"BAD=KEY":"value-never-in-error"});
@@ -328,10 +337,38 @@ fn escaped_environment_values_survive_snapshot_restart_and_final_deletion() {
     e.host()
         .set_at_rest(&e.session_key("escaped"), true)
         .unwrap();
+    std::fs::write(
+        e.data.join("launches").join("crashed.tmp"),
+        "test-private-residue",
+    )
+    .unwrap();
     e.fleet(&["delete", "task", "escaped"]).ok();
     e.reconcile().ok();
     assert_eq!(
         std::fs::read_dir(e.data.join("launches")).unwrap().count(),
         0
+    );
+}
+
+#[test]
+fn all_references_are_validated_before_any_provider_command_runs() {
+    let e = Env::thurbox("source-preflight");
+    let file = e.root.join("env.json");
+    let marker = e.root.join("command-called");
+    std::fs::write(&file, "{}").unwrap();
+    e.apply(object("EnvProvider","external",json!({"sources":[{"type":"command","program":support::stub_exe(),"args":["env-output",file,marker],"cwd":e.root,"timeoutMs":1000}]}))).ok();
+    e.apply(object(
+        "TaskConfig",
+        "shared",
+        json!({"envFrom":[{"name":"external"},{"name":"missing"}]}),
+    ))
+    .ok();
+    let mut t = task("preflight", true);
+    t["spec"]["configRef"] = json!({"name":"shared"});
+    e.apply(t).ok();
+    e.reconcile().code(1).stdout_has("EnvProvider/missing");
+    assert!(
+        !marker.exists(),
+        "invalid reference must be detected before command execution"
     );
 }

@@ -271,6 +271,7 @@ impl Pass<'_, '_> {
             dir: self.spec.workspace.dir.clone(),
             model: self.spec.model.clone(),
             env: self.spec.env.clone(),
+            environment_frozen: false,
         };
         self.intend(key, Action::Spawn(spec));
     }

@@ -174,6 +174,25 @@ impl FileStore {
             let entry = entry.map_err(|e| io_unknown(&dir, e))?;
             durable::remove(&entry.path()).map_err(|e| io_unknown(&entry.path(), e))?;
         }
+        let private = self.root.join("launches");
+        if let Ok(meta) = fs::symlink_metadata(&private) {
+            if !meta.is_dir() {
+                return Err(StoreError::Unknown(
+                    "private launch directory is not a directory".into(),
+                ));
+            }
+            for entry in fs::read_dir(&private)
+                .map_err(|_| StoreError::Unknown("private launch cleanup unavailable".into()))?
+            {
+                let path = entry
+                    .map_err(|_| StoreError::Unknown("private launch cleanup unavailable".into()))?
+                    .path();
+                if path.extension().is_some_and(|s| s == "tmp") {
+                    durable::remove(&path)
+                        .map_err(|_| StoreError::Unknown("private launch cleanup failed".into()))?;
+                }
+            }
+        }
         Ok(())
     }
 

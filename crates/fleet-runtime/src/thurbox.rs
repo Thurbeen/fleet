@@ -391,7 +391,9 @@ impl Runtime for ThurboxRuntime {
             args.extend(["--host".to_string(), spec.host.clone()]);
         }
         let mut env = spec.env.clone();
-        if let Some(model) = &spec.model {
+        if let Some(model) = &spec.model
+            && !spec.environment_frozen
+        {
             let Some(var) = self.cfg.model_env.get(&spec.harness) else {
                 return Observation::Known(EffectOutcome::Failed {
                     why: format!(

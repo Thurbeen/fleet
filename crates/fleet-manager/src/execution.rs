@@ -50,34 +50,13 @@ pub(crate) fn resolve(
     } else {
         TaskConfigSpec::default()
     };
-    let mut env = std::collections::BTreeMap::new();
+    // Validate every reference before executing any external provider command.
+    let mut providers = Vec::new();
     for r in &defaults.env_from {
         let obj = source(store, ENV_PROVIDER, &r.name, &mut sources)?;
         let provider: EnvProviderSpec = typed(ENV_PROVIDER, &obj.spec)?;
-        let mut data = provider.data;
-        for (index, s) in provider.sources.iter().enumerate() {
-            if matches!(s, fleet_api::config::EnvSource::Command { .. }) && ttl <= 20_000 {
-                return Err(StoreError::Invalid(
-                    "environment command requires a manager lease above 20000 ms".into(),
-                ));
-            }
-            *lease = store.renew_lease(lease, ttl)?;
-            match runtime.env_source(s) {
-                Observation::Known(map) => merge_env(&mut data, &map),
-                Observation::Unknown { why } => {
-                    return Err(StoreError::Unknown(format!(
-                        "EnvProvider/{} source {index}: {why}",
-                        r.name
-                    )));
-                }
-            }
-            validate_env(&data)?;
-        }
-        merge_env(&mut env, &data);
+        providers.push((r.name.clone(), provider));
     }
-    merge_env(&mut env, &defaults.env);
-    merge_env(&mut env, &spec.env);
-    validate_env(&env)?;
     let harness = if task.spec.get("harness").is_some() {
         spec.harness
     } else {
@@ -94,6 +73,32 @@ pub(crate) fn resolve(
         defaults.model
     };
     validate_execution(Some(&harness), Some(&host), model.as_deref())?;
+    let mut env = std::collections::BTreeMap::new();
+    for (name, provider) in providers {
+        let mut data = provider.data;
+        for (index, s) in provider.sources.iter().enumerate() {
+            if matches!(s, fleet_api::config::EnvSource::Command { .. }) && ttl <= 20_000 {
+                return Err(StoreError::Invalid(
+                    "environment command requires a manager lease above 20000 ms".into(),
+                ));
+            }
+            *lease = store.renew_lease(lease, ttl)?;
+            match runtime.env_source(s) {
+                Observation::Known(map) => merge_env(&mut data, &map),
+                Observation::Unknown { why } => {
+                    return Err(StoreError::Unknown(format!(
+                        "EnvProvider/{} source {index}: {why}",
+                        name
+                    )));
+                }
+            }
+            validate_env(&data)?;
+        }
+        merge_env(&mut env, &data);
+    }
+    merge_env(&mut env, &defaults.env);
+    merge_env(&mut env, &spec.env);
+    validate_env(&env)?;
     match runtime.prepare_execution(&Execution {
         harness,
         host,

@@ -64,6 +64,9 @@ pub struct SpawnSpec {
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub env: std::collections::BTreeMap<String, String>,
+    /// The manager already froze runtime model-variable selection with env.
+    #[serde(default)]
+    pub environment_frozen: bool,
 }
 
 /// Written before the effect runs.

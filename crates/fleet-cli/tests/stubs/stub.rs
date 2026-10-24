@@ -189,6 +189,9 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     if args.first().map(String::as_str) == Some("env-output") {
+        if let Some(marker) = args.get(2) {
+            std::fs::write(marker, "called").expect("marker");
+        }
         let bytes = std::fs::read(&args[1]).expect("source output");
         std::io::Write::write_all(&mut std::io::stdout(), &bytes).expect("output");
         return ExitCode::SUCCESS;
