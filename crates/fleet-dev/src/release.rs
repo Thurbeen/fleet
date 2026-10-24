@@ -42,6 +42,9 @@ pub enum Command {
         directory: PathBuf,
     },
     Smoke {
+        /// Run offline initialization in a new, isolated user directory.
+        #[arg(long)]
+        first_run_dir: Option<PathBuf>,
         #[arg(long)]
         binary: PathBuf,
         #[arg(long)]
@@ -111,7 +114,28 @@ fn plan(reference: Option<&str>, forced: Option<&str>, dry: bool) -> Result {
         .map(|(_, s)| format!("{s}..HEAD"))
         .unwrap_or("HEAD".into());
     let mut reason = "no releasable commit".to_string();
-    let proposed = if let Some(v) = forced {
+    let tag = reference.and_then(|r| r.strip_prefix("refs/tags/"));
+    let proposed = if let Some(tag) = tag {
+        let v = version(tag)?;
+        if tag != format!("v{v}") {
+            return Err("release tag must use canonical v-prefixed SemVer".into());
+        }
+        let commit = git(&["rev-parse", &format!("refs/tags/{tag}^{{commit}}")])?;
+        if commit.trim() != git(&["rev-parse", "HEAD"])?.trim() {
+            return Err("release tag does not name HEAD".into());
+        }
+        git(&["merge-base", "--is-ancestor", "HEAD", "origin/main"])
+            .map_err(|_| "release tag must name a commit merged into origin/main")?;
+        let manifest: toml::Value = toml::from_str(&fs::read_to_string("Cargo.toml")?)?;
+        if manifest["workspace"]["package"]["version"].as_str() != Some(v.to_string().as_str()) {
+            return Err("release tag differs from workspace manifest version".into());
+        }
+        if forced.is_some_and(|f| version(f).ok().as_ref() != Some(&v)) {
+            return Err("forced version differs from release tag".into());
+        }
+        reason = "checked tag on main".into();
+        Some(v)
+    } else if let Some(v) = forced {
         reason = "forced by dispatch".into();
         Some(version(v)?)
     } else {
@@ -172,6 +196,7 @@ fn plan(reference: Option<&str>, forced: Option<&str>, dry: bool) -> Result {
         }
     };
     if let Some(v) = &proposed
+        && tag.is_none()
         && all.iter().any(|(t, _)| t == v)
     {
         return Err(format!("v{v} is already a tag; a tag never moves").into());
@@ -181,10 +206,11 @@ fn plan(reference: Option<&str>, forced: Option<&str>, dry: bool) -> Result {
         .and_then(|s| toml::from_str::<toml::Value>(&s).ok())
         .is_some_and(|v| v.get("ready").and_then(toml::Value::as_bool) == Some(true));
     let release = proposed.is_some();
-    let publish = release && ready && reference == Some("refs/heads/main") && !dry;
-    let newest = proposed
-        .as_ref()
-        .is_some_and(|v| v.pre.is_empty() && all.iter().all(|(t, _)| v > t));
+    let publish =
+        release && ready && (tag.is_some() || reference == Some("refs/heads/main")) && !dry;
+    let newest = proposed.as_ref().is_some_and(|v| {
+        v.pre.is_empty() && all.iter().all(|(t, _)| v > t || tag.is_some() && v == t)
+    });
     let prerelease = proposed.as_ref().is_some_and(|v| !v.pre.is_empty());
     let v = if let Some(v) = proposed {
         format!("v{v}")
@@ -269,6 +295,16 @@ fn package(target: &str, v: &str, binary: &Path, out: &Path) -> Result {
 fn checksums(v: &str, dir: &Path) -> Result {
     let v = normalized(v)?;
     let mut names = TARGETS.iter().map(|t| archive(&v, t)).collect::<Vec<_>>();
+    for name in [
+        "install-release.sh",
+        "install-release.ps1",
+        "vega-provenance.json",
+        "vega-starter.toml",
+    ] {
+        if dir.join(name).is_file() {
+            names.push(name.into());
+        }
+    }
     names.sort();
     let mut sums = String::new();
     for name in names {
@@ -311,7 +347,11 @@ pub fn run(c: Command) -> Result {
             out,
         } => package(&target, &version, &binary, &out),
         Command::Checksums { version, directory } => checksums(&version, &directory),
-        Command::Smoke { binary, version: v } => {
+        Command::Smoke {
+            binary,
+            version: v,
+            first_run_dir,
+        } => {
             let expected = version(&v)?.to_string();
             let path = fs::canonicalize(binary)?;
             let text = exec(
@@ -322,6 +362,49 @@ pub fn run(c: Command) -> Result {
             if text.trim() != format!("fleet {expected}") {
                 return Err(
                     format!("version mismatch: {text:?}, expected fleet {expected}").into(),
+                );
+            }
+            if let Some(root) = first_run_dir {
+                fs::create_dir(&root)?;
+                let root = fs::canonicalize(root)?;
+                let mut spec =
+                    fleet_exec::Spec::new(path, std::time::Duration::from_secs(30)).arg("init");
+                spec.clear_env = true;
+                spec.cwd = Some(root.clone());
+                for (key, p) in [
+                    ("HOME", root.clone()),
+                    ("USERPROFILE", root.clone()),
+                    ("XDG_CONFIG_HOME", root.join("config")),
+                    ("APPDATA", root.join("config")),
+                    ("XDG_DATA_HOME", root.join("data")),
+                    ("LOCALAPPDATA", root.join("data")),
+                    ("PATH", root.join("no-tools")),
+                ] {
+                    spec.env.push((key.into(), p.to_string_lossy().into()));
+                }
+                for key in ["SYSTEMROOT", "WINDIR"] {
+                    if let Ok(value) = std::env::var(key) {
+                        spec.env.push((key.into(), value));
+                    }
+                }
+                let outcome = fleet_exec::run(&spec);
+                if outcome.success_text().is_none() {
+                    return Err(format!("offline bootstrap failed: {}", outcome.failure()).into());
+                }
+                for file in [
+                    "config/fleet/config.toml",
+                    "data/fleet/vega/AGENTS.md",
+                    "data/fleet/vega/task.json",
+                    "data/fleet/vega/LICENSE",
+                    "data/fleet/vega/.fleet/starter.toml",
+                    "data/fleet/vega/.fleet/provenance.json",
+                ] {
+                    if !root.join(file).is_file() {
+                        return Err(format!("bootstrap missing {file}").into());
+                    }
+                }
+                println!(
+                    "offline installed bootstrap: config, starter, license and provenance verified"
                 );
             }
             Ok(())

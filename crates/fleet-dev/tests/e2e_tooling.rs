@@ -941,7 +941,7 @@ fn the_gate_never_rebuilds_the_binary_it_runs_from() {
 
 #[test]
 fn v2_installs_only_when_a_version_is_named() {
-    // Fleet v1 is the frozen default; v2 is a beta a user opts into by naming
+    // Fleet v1 stays frozen; v2 is installed by explicitly naming
     // its version. The installer never resolves "latest", which could be v1.
     let e = Env::new();
     install_fixture(&e);
@@ -966,4 +966,109 @@ fn the_tree_declares_fleet_major_2() {
     let marker = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../FLEET_MAJOR");
     let text = fs::read_to_string(&marker).expect("a root FLEET_MAJOR file");
     assert_eq!(text, "2\n", "FLEET_MAJOR must be exactly \"2\\n\"");
+}
+
+#[test]
+fn stable_tag_release_requires_main_ancestry_version_and_readiness() {
+    let e = Env::new();
+    e.repo();
+    e.write("Cargo.toml", "[workspace.package]\nversion = '2.0.0'\n");
+    e.write(".github/release-readiness.toml", "ready = true\n");
+    e.commit("feat: stable release");
+    e.git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    e.git(&["tag", "v2.0.0"]);
+    let args = ["release", "plan", "--ref", "refs/tags/v2.0.0"];
+    let (ok, out) = e.call(&args, &[]);
+    assert!(
+        ok && out.contains("publish=true") && out.contains("version=v2.0.0"),
+        "{out}"
+    );
+    assert!(
+        out.contains("newest=true"),
+        "first stable tag is latest: {out}"
+    );
+    let (ok, out) = e.call(
+        &["release", "plan", "--ref", "refs/tags/v2.0.0", "--dry-run"],
+        &[],
+    );
+    assert!(
+        ok && out.contains("publish=false") && out.contains("build=true"),
+        "{out}"
+    );
+    e.write(".github/release-readiness.toml", "ready = false\n");
+    let (ok, out) = e.call(&args, &[]);
+    assert!(ok && out.contains("publish=false"), "{out}");
+    e.write(".github/release-readiness.toml", "ready = true\n");
+    e.write("Cargo.toml", "[workspace.package]\nversion = '2.0.1'\n");
+    let (ok, out) = e.call(&args, &[]);
+    assert!(!ok && out.contains("manifest version"), "{out}");
+    e.write("Cargo.toml", "[workspace.package]\nversion = '2.0.0'\n");
+    e.write("crates/demo.rs", "pub fn unmerged() {}\n");
+    e.commit("fix: unmerged candidate");
+    let (ok, out) = e.call(&args, &[]);
+    assert!(!ok && out.contains("tag does not name HEAD"), "{out}");
+    e.git(&["tag", "v2.0.1"]);
+    let (ok, out) = e.call(&["release", "plan", "--ref", "refs/tags/v2.0.1"], &[]);
+    assert!(!ok && out.contains("main"), "unmerged tag: {out}");
+}
+
+#[test]
+fn installed_binary_has_path_guidance() {
+    let e = Env::new();
+    install_fixture(&e);
+    let (ok, out) = installer(&e, &[]);
+    assert!(ok && out.contains("PATH"), "{out}");
+}
+
+#[test]
+fn release_smoke_requires_offline_bootstrap_from_the_installed_binary() {
+    let e = Env::new();
+    let (ok, out) = e.call(
+        &[
+            "release",
+            "smoke",
+            "--binary",
+            env!("CARGO_BIN_EXE_fleet-install-fixture"),
+            "--version",
+            "v1.2.3",
+            "--first-run-dir",
+            "clean-user",
+        ],
+        &[],
+    );
+    assert!(!ok && out.contains("bootstrap missing"), "{out}");
+}
+
+#[test]
+fn release_checksums_include_published_installers_and_starter_metadata() {
+    let e = Env::new();
+    install_fixture(&e);
+    for name in [
+        "install-release.sh",
+        "install-release.ps1",
+        "vega-provenance.json",
+        "vega-starter.toml",
+    ] {
+        e.write(&format!("releases/v1.2.3/{name}"), "release metadata");
+    }
+    let (ok, out) = e.call(
+        &[
+            "release",
+            "checksums",
+            "--version",
+            "v1.2.3",
+            "releases/v1.2.3",
+        ],
+        &[],
+    );
+    assert!(ok, "{out}");
+    let sums = fs::read_to_string(e.0.join("releases/v1.2.3/fleet-v1.2.3-checksums.txt")).unwrap();
+    for name in [
+        "install-release.sh",
+        "install-release.ps1",
+        "vega-provenance.json",
+        "vega-starter.toml",
+    ] {
+        assert!(sums.contains(&format!("  {name}\n")), "{sums}");
+    }
 }

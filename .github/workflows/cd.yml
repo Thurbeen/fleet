@@ -1,13 +1,13 @@
-# Native Rust release tooling. Publication remains held by release-readiness.toml.
+# Publish immutable version tags only after native tests and installer acceptance.
 name: Release
 
 on:
   push:
-    branches: [main]
+    tags: ["v2.*"]
   workflow_dispatch:
     inputs:
       version:
-        description: "Exact version to release (e.g. 1.0.0). Empty = from the commits since the last tag."
+        description: "Version for a dry run on main (e.g. 2.0.0); publish by pushing its checked tag."
         required: false
         default: ""
         type: string
@@ -60,7 +60,9 @@ jobs:
         run: |
           args=()
           if [ -n "$FORCED" ]; then args+=(--version "$FORCED"); fi
-          if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
+          # Dispatch from a branch is always non-publishing. Production uses
+          # an existing immutable tag, checked against origin/main by the plan.
+          if [ "$GITHUB_REF_TYPE" != tag ] || [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
           cargo xtask release plan --ref "$GITHUB_REF" "${args[@]}" | tee -a "$GITHUB_OUTPUT" "$GITHUB_STEP_SUMMARY"
 
   build:
@@ -123,8 +125,7 @@ jobs:
           tool: cargo-nextest@0.9.149
       - name: Test the commit being released
         run: cargo xtask check rust-test
-      # The binary reads FLEET_RELEASE_VERSION at compile time; the manifest
-      # stays at 0.0.0.
+      # The tag and workspace manifest version must agree before this build.
       - name: Use the static Windows CRT
         if: runner.os == 'Windows'
         run: echo 'RUSTFLAGS=-C target-feature=+crt-static' >> "$GITHUB_ENV"
@@ -138,6 +139,24 @@ jobs:
           if [ "$RUNNER_OS" = "Windows" ]; then bin="$bin.exe"; fi
           cargo xtask release smoke --binary "$bin" --version "$VERSION"
           cargo xtask release package --target "$TARGET" --version "$VERSION" --binary "$bin" --out dist
+      - name: Install the archive and bootstrap offline as a clean user
+        run: |
+          mkdir -p "installer-fixture/$VERSION"
+          cp dist/* "installer-fixture/$VERSION/"
+          (cd "installer-fixture/$VERSION" && sha256sum fleet-* > "fleet-$VERSION-checksums.txt")
+          export FLEET_VERSION="$VERSION"
+          export FLEET_RELEASE_BASE="$PWD/installer-fixture"
+          export FLEET_INSTALL_DIR="$PWD/installed/bin"
+          if [ "$RUNNER_OS" = Windows ]; then
+            export FLEET_RELEASE_BASE="$(cygpath -w "$FLEET_RELEASE_BASE")"
+            export FLEET_INSTALL_DIR="$(cygpath -w "$FLEET_INSTALL_DIR")"
+            powershell -NoProfile -File scripts/install-release.ps1
+            installed="$FLEET_INSTALL_DIR/fleet.exe"
+          else
+            sh scripts/install-release.sh
+            installed="$FLEET_INSTALL_DIR/fleet"
+          fi
+          cargo xtask release smoke --binary "$installed" --version "$VERSION" --first-run-dir installed/clean-user
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-${{ matrix.target }}
@@ -160,8 +179,11 @@ jobs:
           pattern: release-*
           path: dist
           merge-multiple: true
-      - name: Checksums over every target
+      - name: Checksums over every target and pinned installers
         run: |
+          cp scripts/install-release.sh scripts/install-release.ps1 dist/
+          cp crates/fleet-cli/bundle/vega/provenance.json dist/vega-provenance.json
+          cp crates/fleet-cli/bundle/vega/starter.toml dist/vega-starter.toml
           cargo xtask release checksums --version "$VERSION" dist
           {
             echo "### fleet $VERSION"
@@ -182,12 +204,12 @@ jobs:
     needs: [plan, collect]
     if: needs.plan.outputs.publish == 'true'
     # A protected environment is where a repository admin can require a
-    # person's approval before anything is tagged.
+    # person's approval before publishing artifacts.
     environment: release
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
-      contents: write      # create the tag and the release
+      contents: write      # create the release on an existing tag
       id-token: write      # sign the provenance attestation
       attestations: write  # store it
     env:
@@ -204,16 +226,15 @@ jobs:
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: dist/*
-      # The tag is created here, on the commit every archive was built from.
-      # A cut behind the highest tag is not marked latest, which is what an
-      # installer resolves.
-      - name: Tag and release
+      # Never create or move a tag here. The plan checked the pushed tag's
+      # exact commit and main ancestry before any artifact was built.
+      - name: Publish the checked tag
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$VERSION" dist/* \
             --repo "$GITHUB_REPOSITORY" \
-            --target "$GITHUB_SHA" \
+            --verify-tag \
             --title "fleet $VERSION" \
             --generate-notes \
             --latest="$NEWEST" \

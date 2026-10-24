@@ -1,8 +1,7 @@
 # Install the fleet binary from a GitHub release on Windows, or update it:
 # running this again with a newer version replaces the binary in place.
 #
-#   FLEET_VERSION       the release tag, such as v2.0.0-beta.1 (required: Fleet v2
-#                       is a beta you opt into by naming its version)
+#   FLEET_VERSION       the release tag, such as v2.0.0 (required: upgrades are explicit)
 #   FLEET_INSTALL_DIR   where fleet.exe goes (default: %LOCALAPPDATA%\Programs\fleet\bin)
 #   FLEET_RELEASE_BASE  where releases are fetched from: an https URL laid out as
 #                       GitHub serves them (<base>/<tag>/<asset>), or a local
@@ -55,10 +54,9 @@ try {
     }
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $version = $env:FLEET_VERSION
-# Never resolved for the user: Fleet v1 stays the default, and v2 is a beta
-# installed only by naming its version.
+# Pin the version explicitly; never redirect a v1 user to v2 automatically.
 if (-not $version) {
-    Fail 'Fleet v2 is a beta and installs only when you name its version, for example $env:FLEET_VERSION = ''v2.0.0-beta.1''. Fleet v1 remains the default; see the README.'
+    Fail 'Name the release explicitly, for example $env:FLEET_VERSION = ''v2.0.0''; see the README for frozen v1 installs.'
 }
 
 if ($version -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$') { Fail "invalid release version: $version" }
