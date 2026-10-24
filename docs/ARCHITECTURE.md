@@ -115,7 +115,7 @@ CLI can reject a lease too short to outlast them.
 TaskConfig and EnvProvider are passive data; the manager resolves providers
 through the existing runtime port and bounded executor before freezing a
 private launch snapshot. TaskController stays pure and owns the lifecycle.
-See [execution configuration](docs/task-controller/execution-config.md).
+See [execution configuration](task-controller/execution-config.md).
 
 ## Scope and compatibility
 
