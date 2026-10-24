@@ -2,7 +2,7 @@
 
 The controller is a pure decision function. The manager owns I/O, persistence
 and process execution. The [state machine](state-machine.md) defines how the
-values below change the Task; the [resource](resource.md) defines the external
+values below change the Task; the [resource](../resources/task.md) defines the external
 JSON fields.
 
 ## Controller API
@@ -71,8 +71,11 @@ pub struct Plan {
 | `remove_finalizer` | Request to remove `fleet.dev/release` after the status and effects; present only for a deleting Task whose release is established. |
 
 An action is `Spawn(SpawnSpec)`, `Brief { session, text }` or
-`Release { session }`. SpawnSpec carries `host`, `key`, `harness`, `dir` and
-optional `model`. `SessionRef` carries `id`, `host` and `key`; a later session
+`Release { session }`. SpawnSpec carries `host`, `key`, `harness`, `dir`,
+optional `model`, the private environment map and `environmentFrozen`. The
+manager injects frozen values and prevents model-variable remapping before
+performing a spawn; environment values are not persisted in effect intents.
+`SessionRef` carries `id`, `host` and `key`; a later session
 reusing a key does not inherit readiness or at-rest proof for the recorded id.
 
 ## Manager execution protocol
@@ -81,8 +84,10 @@ Source: [Manager](../../crates/fleet-manager/src/lib.rs).
 
 1. Acquire the manager lease and list Tasks. A list that is Unknown is not
    treated as an empty list.
-2. For each due Task, renew the lease; request and perform its probes,
-   renewing before each probe. Call the pure controller.
+2. For each due Task, renew the lease. For a dispatched Task with reusable
+   configuration/environment, resolve or recover its private launch snapshot
+   and persist its public identity before runtime probes/effects. Request and
+   perform probes, renewing before each probe, then call the pure controller.
 3. CAS-write planned status against the resourceVersion read. This persists
    intents before effects. A conflict drops this plan; no effect runs from it.
 4. Renew before each effect, perform it, then persist its receipt. On a
@@ -120,7 +125,9 @@ return `Observation<T>`; a refused effect is
 
 | Method | Input | Answer |
 | --- | --- | --- |
-| `operation_bound` | None | Worst-case duration of one trait operation, including timeout and cleanup grace, in milliseconds. |
+| `operation_bound` | None | Worst-case duration of one session operation, including timeout and cleanup grace, in milliseconds. |
+| `prepare_execution` | Resolved execution | Freeze the runtime model-variable mapping into its private environment, or Unknown. |
+| `env_source` | Explicit file/command source | Bounded manager-local JSON string map, or redacted Unknown. |
 | `host` | Host name | Whether the runtime can reach it. |
 | `spawn` | `SpawnSpec` | `Spawned { session, adopted }`, or Failed/Unknown. |
 | `find` | Host and session key | Optional session under that key, or Unknown. |
@@ -135,8 +142,11 @@ Its session key is `<keyPrefix>.<uid>`. It journals each brief intent in
 session metadata as pending before sending and delivered afterward. A pending
 journal entry is ambiguous, so it is never a license to resend. On release,
 a different id holding the key returns Unknown and is not deleted.
-The fake adapter provides persisted sessions and faults without starting
-processes. Both implement the same port; neither is called from pure code.
+The fake adapter provides persisted sessions and faults without starting an
+agent. Explicit provider commands still run through the same bounded executor
+with either adapter; command resolution requires a lease above 20000 ms and
+renews it per source. Both implement the same port; neither is called from
+pure code.
 
 ## Store port and write ownership
 
@@ -145,12 +155,15 @@ Source: [Store](../../crates/fleet-api/src/store.rs) and
 
 | Writer | May change | Required fencing |
 | --- | --- | --- |
-| `apply` | New Task, labels and permitted spec changes; request deletion | Store validation, exclusive creation or resourceVersion CAS for spec updates. |
+| `apply` | New served resources, labels and permitted spec changes; request deletion | Store validation, exclusive creation or resourceVersion CAS for spec updates. |
 | `worker` | `status.result` through `record_result` | Current resourceVersion, delivered brief generation and declared output types. |
 | `task-controller` | Other Task status and release finalizer | Current resourceVersion and live manager lease. |
 
 `Store` supplies `get`, `list`, `create`, `update_spec`, `update_status`,
 `delete`, `remove_finalizer`, validation and lease acquire/renew/release.
+Private `launch`/`freeze_launch` methods recover or exclusively freeze launch
+data under Task UID, separately from resources. Freezing checks Task UID,
+resourceVersion and manager lease; final Task deletion removes the snapshot.
 Reads return Known/Unknown; writes return values or `StoreError`. The store
 checks ownership, CAS and lease tokens at the write boundary, including when
 a holder name is reused with a newer token. Lease-free worker writes do not

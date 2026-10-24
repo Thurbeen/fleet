@@ -81,7 +81,7 @@ manager lease, and explicit ownership of each status field.
 
 Read the [overall architecture](docs/ARCHITECTURE.md) for the component boundaries
 and execution flow. The [Task controller guide](docs/task-controller/README.md)
-defines its [resource](docs/task-controller/resource.md),
+defines its [resource](docs/resources/task.md),
 [state machine](docs/task-controller/state-machine.md) and
 [interface](docs/task-controller/interface.md);
 [the contracts](crates/CONTRACTS.md) record the integration guarantees.
@@ -124,6 +124,11 @@ deleting VEGA Tasks require inspection and deliberate recovery, not another
 automatic Task identity.
 
 ### Configuration and customization
+
+Reference: [native Fleet TOML](docs/configuration/fleet-toml.md),
+[Task](docs/resources/task.md), [TaskConfig](docs/resources/task-config.md),
+[EnvProvider](docs/resources/env-provider.md), and
+[environment JSON](docs/configuration/environment-json.md).
 
 Config selection is `--config PATH`, then `FLEET_CONFIG`, then exactly one
 native per-user path: `$XDG_CONFIG_HOME/fleet/config.toml` (fallback
@@ -290,5 +295,5 @@ Tasks can reference a passive `TaskConfig` for harness, host, model and
 environment defaults. `EnvProvider` resources supply stored string maps and
 explicit manager-local JSON files or bounded commands. Explicit Task values
 win; launch values are frozen privately before the first effect and reused
-across retries and restarts. See [execution configuration](docs/task-controller/execution-config.md)
+across retries and restarts. See [execution configuration](docs/resources/task-config.md)
 for runnable manifests, precedence, security boundaries and snapshot recovery.

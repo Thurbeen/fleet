@@ -36,7 +36,7 @@ perform resource mutations.
 ## Desired state, observations and effects
 
 The [Task controller documentation](task-controller/README.md) defines
-the [resource](task-controller/resource.md),
+the [resource](resources/task.md),
 [state machine](task-controller/state-machine.md) and
 [interface](task-controller/interface.md).
 
@@ -115,7 +115,7 @@ CLI can reject a lease too short to outlast them.
 TaskConfig and EnvProvider are passive data; the manager resolves providers
 through the existing runtime port and bounded executor before freezing a
 private launch snapshot. TaskController stays pure and owns the lifecycle.
-See [execution configuration](task-controller/execution-config.md).
+See [execution configuration](resources/task-config.md).
 
 ## Scope and compatibility
 

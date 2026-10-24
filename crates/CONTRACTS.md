@@ -78,7 +78,7 @@ The spec is immutable once created, except `dispatch`; a different brief is a
 different Task. `harness` and `host` may not start with `-`, since both reach
 the runtime as arguments.
 
-See [execution configuration](../docs/task-controller/execution-config.md) for
+See [execution configuration](../docs/resources/task-config.md) for
 reference validation, deterministic precedence and private launch freezing.
 New configuration kinds have no lifecycle, finalizers or status writers.
 
