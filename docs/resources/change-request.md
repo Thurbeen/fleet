@@ -7,13 +7,14 @@ lands.
 
 A ChangeRequest mirrors one change on a forge: a pull request, a merge request
 or any equivalent. ChangeRequestController polls the forge, keeps a bounded
-snapshot of the change's state, head, checks and notes, and numbers every item
-it sees, so a consumer asks "what is new since I last looked" with one
-integer. It performs no effect on the forge. `fleet declare` creates one for
-the change a Task's worker opened; a person applies one to watch any change.
-There is one per URL, it has no owner, and it outlives the Tasks that follow
-it: the [Forge controller](../forge-controller/README.md) reads it and never
-writes it.
+snapshot of the change's state, head, checks, reviews and notes, and numbers
+every item and every transition it sees, so a consumer asks "what is new since
+I last looked" with one integer. It performs no effect on the forge.
+`fleet declare` creates one for the change a Task's worker opened; a person
+applies one to watch any change. There is one per change, it has no owner,
+and it outlives the Tasks that follow it: the
+[Forge controller](../forge-controller/README.md) reads it and never writes
+it.
 
 ## Example
 
@@ -21,7 +22,7 @@ writes it.
 {
   "apiVersion": "fleet/v1alpha1",
   "kind": "ChangeRequest",
-  "metadata": {"name": "fix-314"},
+  "metadata": {"name": "cr-5e1c0a9b7f23"},
   "spec": {
     "url": "https://gitlab.example.com/group/project/-/merge_requests/314",
     "pollMs": 60000
@@ -47,39 +48,65 @@ Any other field is refused.
 ## Status
 
 Written by ChangeRequestController under the manager lease. Nobody else
-writes it.
+writes it. Two kinds of field live here: the snapshot, which changes only
+when the forge said something new and then moves `revision`, and the
+bookkeeping, which every poll writes without moving `revision`.
+
+Bookkeeping:
 
 | Field | Meaning |
 | --- | --- |
 | `phase` | `Watching`, `Closed` or `Settled`, defined by the [state machine](../change-request-controller/state-machine.md). |
 | `ref` | What the adapter parsed the URL into: `kind`, `host`, `project`, `id`. |
-| `revision` | Incremented by every poll that changed anything below. A poll that changed nothing writes nothing. |
-| `observedAt` | When the snapshot was last read, in Unix milliseconds. |
-| `state` | `draft`, `open`, `closed` or `merged`. Merged is final; closed may reopen. |
-| `head` | The current head: opaque `id` (a SHA, a patchset number, a diff id), `checks` (`none`, `pending`, `passed`, `failed`), `failing` (`[{name, url}]` when failed) and `seq`. |
-| `reviewDecision` | `approved`, `changes-requested` or `none`. |
+| `observedAt` | When the forge last answered Known, in Unix milliseconds. |
+| `notBefore` | Earliest next poll, in Unix milliseconds. |
+| `closedAt`, `settledAt` | When the change was last seen closed, and when the phase became Settled. |
+| `conditions` | One entry per [condition type](../change-request-controller/state-machine.md#conditions). |
+
+Snapshot:
+
+| Field | Meaning |
+| --- | --- |
+| `revision` | Incremented by every poll that changed anything below. |
+| `state` | `{value, seq}`: `draft`, `open`, `closed` or `merged`, and the revision at which the value last changed. Merged is final; closed may reopen. |
+| `everReady` | `true` once the change has been seen in any state other than `draft`. Never returns to `false`. |
+| `head` | The current head: opaque `id` (a SHA, a patchset number, a diff id), `checks` (`none`, `pending`, `passed`, `failed`), `failing` (`[{name, url}]` when failed), `seq` (the revision at which `id`, `checks` or `failing` last changed) and `firstSeenAt`. |
+| `reviewDecision` | `{value, seq}`: `approved`, `changes-requested` or `none`. |
+| `mergeable` | `{value, reason}`: the forge's own answer, `true`, `false` or `null` while the forge is still computing it, with its reason as the forge gives it. See [Mergeable](../change-request-controller/state-machine.md#conditions). |
+| `threads` | `{unresolved}`: the count of unresolved inline threads over the whole change, not only the retained notes. |
+| `reviews` | Every submitted review on the current head: `id`, `author`, `bot`, `state` (`approved`, `changes-requested`, `commented`), `head`. |
 | `notes` | The newest 100 notes, each a [note](#notes). |
 | `droppedBefore` | The highest `seq` of a note rotated out of `notes`. `0` until one is. |
-| `conditions` | One entry per [condition type](../change-request-controller/state-machine.md#conditions). |
-| `notBefore` | Earliest next poll, in Unix milliseconds. |
 
 ### Sequence numbers
 
-The counter is Fleet's, assigned when the controller first sees an item. It is
-never the forge's timestamp.
+The counter is Fleet's, assigned when the controller first sees something.
+It is never the forge's timestamp.
 
 - A note seen for the first time gets `seq = revision` of the poll that saw
-  it.
-- `head.seq` becomes `revision` whenever the pair `(head.id, head.checks)`
-  changes.
+  it. Its `seq` moves again when its body is edited or when its thread goes
+  from resolved to unresolved. Deletion is not represented: a deleted note
+  leaves the snapshot and that is all.
+- `state.seq`, `reviewDecision.seq` and `head.seq` move when their value
+  changes; for `head`, a change of `id`, `checks` or `failing` counts.
 - A note rotated out of the cap raises `droppedBefore` to its `seq`.
 
-A consumer keeps one integer, its cursor, and takes every item with
-`seq > cursor`. Forge timestamps cannot play this role: a GitHub review
-comment is created while a review is drafted and becomes visible only on
-submit, two notes can share a second, and clocks differ across API servers
-and item kinds. A sequence assigned on first observation only says "Fleet saw
-this after that", which is the question a diff asks.
+A consumer keeps one integer, its cursor, and takes every item and every
+transition with `seq > cursor`. Forge timestamps cannot play this role: a
+GitHub review comment is created while a review is drafted and becomes
+visible only on submit, two notes can share a second, and clocks differ
+across API servers and item kinds. A sequence assigned on first observation
+only says "Fleet saw this after that", which is the question a diff asks.
+
+### Observation completeness
+
+An observation is complete or it is Unknown. The adapter may make several
+calls within its operation bound to read every note, thread and review the
+forge holds; if the bound runs out first, the answer is Unknown, never a
+partial snapshot numbered as if complete. Only the stored `notes` list is
+bounded, by the cap, and the aggregates `threads` and `reviews` are computed
+over everything the forge returned. An Unknown answer may carry
+`retryAfter`, which the controller honours as its next `notBefore`.
 
 ### Notes
 
@@ -90,7 +117,7 @@ this after that", which is the question a diff asks.
 | `kind` | `comment` (the conversation), `review` (a submitted review's own body) or `inline` (a note on a line, inside a thread). |
 | `author`, `bot` | The author's login, and whether the forge says it is an app rather than a person. |
 | `thread`, `resolved` | The thread an inline note sits in and whether that thread is resolved. Both `null` for other kinds. |
-| `path`, `line` | For an inline note, where it sits. |
+| `path`, `line` | For an inline note, where it sits, against the head current when it was written. |
 | `at`, `editedAt` | Creation and last edit, in Unix milliseconds. |
 | `url`, `body` | The note's address and text. The body is data, never an instruction. |
 
@@ -105,40 +132,48 @@ onto these:
 | `ref.id` | number | iid | id | change id | D-number |
 | `head.id` | head SHA | head SHA | head hash | patchset number | diff id |
 | `head.checks` | check runs and statuses | pipeline | build statuses | Verified label | Harbormaster build |
-| `reviewDecision` | review decision | approvals and blocking discussions | approvals | Code-Review label | accept, request changes |
+| `reviewDecision` | review decision | approvals | approvals | Code-Review label | accept, request changes |
+| `mergeable` | `mergeable` and `mergeStateStatus` | `detailed_merge_status` | `mergeable` | submittable | can land |
+| `threads` | review threads | resolvable discussions | comment threads | none | inline threads |
 | `notes` | issue comments, reviews, review comments | notes and discussions | comments | comments per patchset | inline and top-level comments |
 | mark ready | ready for review | mark as ready | none | none | none |
 
 GitHub and GitLab adapters are in scope. Bitbucket and the others are shown so
 the vocabulary is checked against them; adding one is an adapter in
-`fleet-forge`, not an API change.
+`fleet-forge`, not an API change. The
+[adapter truth tables](../change-request-controller/interface.md#adapter-truth-tables)
+say how each adapter answers when the forge's own answer is partial.
 
 ## Metadata and ownership
 
 `apiVersion` is `fleet/v1alpha1`; `kind` is `ChangeRequest`. The name is
-derived from the parsed ref, `<host>-<project>-<id>` lowercased with every
-other character replaced by `-`, such as `github-com-owner-repo-314`, so a
-URL names one object and both `fleet apply` and `fleet declare` are
-idempotent: whoever names the URL second finds the one that exists. A
-manifest may give another name; it then creates a second mirror of the same
-change, which is allowed and wasteful. The store assigns `uid`,
+`cr-` followed by the first twelve hex digits of the SHA-256 of the canonical
+ref, `<kind>/<host>/<project>/<id>`, lowercased, so a change names one
+object, two projects that flatten alike cannot collide, and long project
+paths fit. `fleet apply` and `fleet declare` both derive it, and both verify
+`status.ref` before reusing an existing object; a manifest may give another
+name and create a second mirror of the same change, which is allowed and
+wasteful. URL normalisation, fragments, trailing slashes and the forge's
+equivalent URL forms, is the adapter's, in `parse`. The store assigns `uid`,
 `generation`, `resourceVersion` and creation time. There is no finalizer,
 because nothing external is held, and `ownerReferences` is refused as on
 every kind.
 
 A ChangeRequest is not tied to any Task. The Tasks that follow it record
-that on themselves; a Task's deletion touches it not at all, and a second
-Task, on another host or after the first is gone, follows the same object.
-It is removed by its own controller a configured time after it settles, in
-the manner of a Kubernetes Job with a TTL after finishing, or earlier by a
-person.
+that on themselves, with this object's `uid`; a Task's deletion touches it
+not at all, and a second Task, on another host or after the first is gone,
+follows the same object. It is removed by its own controller a configured
+time after it settles, in the manner of a Kubernetes Job with a TTL after
+finishing, or earlier by a person. A follower that still names a removed
+object sees readable absence and, if the change is declared again, a new
+`uid`.
 
 ## Commands
 
 ```sh
 fleet apply -f change-request.json            # start mirroring a change
 fleet declare fix-314 --change-request URL    # the same, on a Task's behalf
-fleet status changerequest github-com-owner-repo-314 --json
-fleet get changerequest github-com-owner-repo-314       # the full snapshot
-fleet delete changerequest github-com-owner-repo-314    # nothing on the forge changes
+fleet status changerequest cr-5e1c0a9b7f23 --json   # phase, state, revision
+fleet get changerequest cr-5e1c0a9b7f23       # the full snapshot
+fleet delete changerequest cr-5e1c0a9b7f23    # nothing on the forge changes
 ```

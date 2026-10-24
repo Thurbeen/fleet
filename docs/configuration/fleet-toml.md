@@ -169,7 +169,7 @@ noUnresolvedThreads = true
 | `forge.callTimeoutMs` | `15000` | Bound for each forge CLI call; the manager lease must outlast the port's reported worst case. |
 | `forge.closedGraceMs` | `604800000` | How long a closed change stays watched before it settles. |
 | `forge.settledTtlMs` | `2592000000` | How long a settled ChangeRequest is retained before its controller deletes it. |
-| `forge.noCheckGraceMs` | `300000` | How long `checksPassed` waits for a check to appear before treating a checkless head as passed. |
+| `forge.noCheckGraceMs` | `300000` | How long `checksPassed` waits, from a head's first observation, for a check to appear before treating that checkless head as passed. |
 | `forge.relayNotes`, `forge.relayChecks` | `true` | Relay new notes and passed or failed checks to the worker. A Task's `spec.forge.relay` overrides both. |
 | `forge.relayBots` | `false` | Relay bot-authored notes to the worker. |
 | `forge.draftPolicy` | Absent | The ready policy applied to a Task that sets none. Absent: a draft is never taken out of draft unless the Task names a policy. |

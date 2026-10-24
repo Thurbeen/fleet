@@ -131,16 +131,20 @@ in the Task controller's shape and are not served by this build:
   over the Task. When a worker declares the change it opened, `fleet declare`
   ensures the ChangeRequest exists, and the controller follows it: relays
   what is new into the Task's inbox by a cursor kept on the Task, and takes
-  a draft out of draft under a configured policy. It owns `status.forge` and
-  nothing else of the Task, and writes no ChangeRequest. It never merges.
+  a draft out of draft under a configured policy. It owns `status.forge`,
+  appends to the Task's inbox through a typed store mutation, writes nothing
+  else of the Task and no ChangeRequest. It never merges.
 
 A ChangeRequest belongs to no Task; it outlives its followers and is removed
 by its own controller after a retention period. The crate graph gains
 `fleet-forge` beside `fleet-runtime`, an adapter depending on `fleet-api` and
-`fleet-exec`, and the manager gains a third port and a second controller per
-Task. The purity, write-ownership and process rules above are unchanged:
-each controller writes only its own object, names itself as a field manager,
-and the store refuses a write to another's field.
+`fleet-exec`, and the manager gains a third port, a second controller per
+Task with its own due gate, and typed append and remove mutations on one
+Task field, `status.inbox`, which has no single owner. The purity and
+process rules above are unchanged, and the write-ownership rule gains that
+one typed exception: every other field keeps one owner, each controller
+writes only its own object, and the store refuses a write to another's
+field.
 
 ## Scope and compatibility
 

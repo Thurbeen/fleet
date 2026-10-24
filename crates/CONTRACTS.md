@@ -27,7 +27,10 @@ accepts the fields below (`deny_unknown_fields`), and no object may carry
 the Task beside it: see the
 [ChangeRequest](../docs/change-request-controller/README.md) and
 [Forge](../docs/forge-controller/README.md) controller guides. This build
-refuses the kind as unknown, and `e2e_task_lifecycle` asserts it.
+refuses the kind as unknown, and `e2e_task_lifecycle` asserts it. That
+design adds one thing to the store contract below: a Task field,
+`status.inbox`, with no single owner, reached only through typed append and
+remove mutations that refuse a duplicate key.
 
 ## Crates and the allowed graph
 

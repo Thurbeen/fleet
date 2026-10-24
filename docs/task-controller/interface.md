@@ -191,18 +191,25 @@ Design, not implemented. The [Forge](../forge-controller/interface.md) and
 [ChangeRequest](../change-request-controller/interface.md) controller designs
 extend this interface without changing what exists:
 
-- A second controller over the Task, ForgeController, run after this one on
-  each sweep and owning `status.forge` plus appends to `status.inbox`. Its
-  plan may name no other Task field, performs one effect, `MarkReady`, and
-  adds no finalizer.
+- A second controller over the Task, ForgeController, with its own due gate,
+  run after this one on each sweep from a fresh read of the Task, owning
+  `status.forge` and appending to `status.inbox`. Its plan may name no other
+  Task field, performs one effect, `MarkReady`, and adds no finalizer.
 - `Probe::Object { kind, name }`, answered by the manager from the store
   before any runtime probe, and `Probe::Whoami { host }` and
-  `Probe::Change { ref }`, answered through a new `Forge` port.
+  `Probe::Change { ref }`, answered through a new `Forge` port. `AtRest` is
+  reused by ForgeController's `workerIdle` predicate.
 - A plan field `delete`, by which the ChangeRequest controller asks for its
-  own object's removal after retention.
+  own object's removal after retention, fenced by `uid`, `resourceVersion`
+  and the lease.
 - A Task with `status.inbox` entries asks `Find`, `Ready` and
-  `BriefDelivered` per inbox key, and plans `Brief` for each entry under that
-  key, bounded and journaled like the brief. Its receipts go to
-  `status.deliveries`.
-- Field managers `ChangeRequestController`, `ForgeController` and `Inbox`,
-  and `Worker` gains `status.declared`.
+  `BriefDelivered` for the oldest entry, and plans `Brief` for it under its
+  key, bounded and journaled like the brief; one entry per pass. Its receipt
+  goes to `status.deliveries` and the entry is removed, in one write. This
+  runs in Concluded as well, as the
+  [state machine](state-machine.md#planned-additions) says.
+- Three typed store mutations on `status.inbox`: append (ForgeController and
+  `fleet send`) and record-and-remove (this controller), the store refusing
+  a duplicate key across `inbox` and `deliveries`. Field managers
+  `ChangeRequestController` and `ForgeController`, and `Worker` gains
+  `status.declared`.

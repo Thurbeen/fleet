@@ -111,3 +111,22 @@ worker result does not itself authorize release before Task deletion.
 
 See [implementation and tests](README.md#implementation-and-evidence) for the
 fault, lease-loss and identity regressions that exercise these paths.
+
+## Planned additions
+
+Design, not implemented. The [Forge controller](../forge-controller/README.md)
+design adds inbox delivery to this controller and changes one sentence above:
+Concluded stays a terminal phase, and a Concluded Task with a nonempty
+`status.inbox` is nevertheless due again, for delivery only.
+
+| Current phase | Observation or input | Next phase | Decision |
+| --- | --- | --- | --- |
+| Spawned, Briefed or Concluded | Oldest inbox entry has no receipt; session ready | unchanged | Persist the entry's intent and plan `Brief` under its key; one entry per pass. |
+| Spawned, Briefed or Concluded | Oldest inbox entry; session not ready or Unknown | unchanged | Do not send. Receipt recovery through `BriefDelivered` may still proceed. |
+| Spawned, Briefed or Concluded | Known Delivered receipt, or journal proves delivered | unchanged | Record the receipt in `status.deliveries` and remove the entry, in one write. |
+| Spawned, Briefed or Concluded | A third send of one entry would be needed | unchanged | `NeedsAttention/DeliveryFailed` naming the entry; the entry stays and later entries are still delivered. |
+| Concluded | Readable lookup lacks the recorded session | Concluded | `WorkerGone` and `NeedsAttention`; never a respawn. |
+| Stalled | Any inbox entry | Stalled | Nothing is delivered; Stalled has no session to deliver to. |
+
+Deletion keeps precedence: a deleting Task delivers nothing and releases its
+session as today. No other condition or phase changes during delivery.

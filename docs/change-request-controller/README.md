@@ -23,12 +23,15 @@ from here.
    change a worker opened. The adapter for its host parses the URL into
    `status.ref`.
 2. On each due pass the controller asks one probe, `Change { ref }`. The
-   manager answers it through the Forge port.
+   manager answers it through the Forge port with one complete observation
+   or Unknown.
 3. A Known answer is compared with the stored snapshot. If anything differs,
-   `revision` is incremented, new notes and a changed head get that `seq`,
-   and the snapshot is written. If nothing differs, nothing is written.
+   `revision` is incremented, every new or changed item gets that `seq`, and
+   the snapshot is written. If nothing differs, only the bookkeeping fields,
+   `observedAt` and `notBefore`, are written.
 4. An Unknown answer sets `Reachable=Unknown`, leaves the snapshot untouched
-   and waits one poll interval. Unknown never means closed, merged or empty.
+   and waits one poll interval, or the `retryAfter` the forge gave. Unknown
+   never means closed, merged or empty.
 5. A merged change settles. A closed change is watched more slowly for a
    grace period, then settles; reopened within it, it is watched again.
 6. A settled ChangeRequest is retained for `settledTtlMs`, then the
@@ -36,8 +39,8 @@ from here.
    finalizer and no owner: no Task's deletion reaches it.
 
 Polling cadence is `status.notBefore`, which the manager already honours for
-Tasks. One ChangeRequest costs one bounded forge call per interval and nothing
-else while idle.
+Tasks. One ChangeRequest costs one bounded observation per interval, a few
+forge calls when the change has many notes, and one small bookkeeping write.
 
 ## Why a resource of its own
 

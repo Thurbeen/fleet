@@ -34,8 +34,8 @@
 <path d="M25 318 H1015" stroke="#c9d3dd"/>
 <g font-size="14">
 <text x="25" y="348" font-weight="650">Unknown is a condition, not a phase</text>
-<text x="25" y="373">A timeout, an unparseable answer or a missing login sets Reachable=Unknown, leaves the snapshot untouched and waits.</text>
-<text x="25" y="397">Every poll that changes the snapshot increments revision; new notes and a changed head carry that number as seq.</text>
+<text x="25" y="373">A timeout, an incomplete read, a throttled answer or a missing login sets Reachable=Unknown, leaves the snapshot untouched and waits.</text>
+<text x="25" y="397">Every poll that changes the snapshot increments revision; every new or changed item carries that number as seq.</text>
 </g>
 </g>
 </svg>
