@@ -111,6 +111,68 @@ binary.
 | `status.inbox` | `Inbox`, appended by `fleet send TASK TEXT` or the Forge controller's relay | Messages for the running session: `{key, from, text, queuedAt}`. Duplicate keys are refused. |
 | `status.deliveries` | TaskController | One receipt per delivered inbox key. The entry leaves `inbox` once receipted. |
 
+### The forge fields
+
+`status.declared` is a list, one item per `fleet declare`:
+
+| Field | Meaning |
+| --- | --- |
+| `url` | The URL as declared. |
+| `changeRequest` | The name of the ChangeRequest the verb ensured for it. |
+
+`status.forge` is ForgeController's subtree:
+
+| Field | Meaning |
+| --- | --- |
+| `changes` | A map from ChangeRequest name to one entry, below. One per declared change; a change declared twice has one entry. |
+| `conditions` | `Following`, `Settled` and `NeedsAttention`, as the [state machine](../forge-controller/state-machine.md#conditions) defines them. |
+| `notBefore` | Earliest next ForgeController pass after a failed flip, in Unix milliseconds. Separate from the Task's own `notBefore`. |
+
+Each entry of `changes`:
+
+| Field | Meaning |
+| --- | --- |
+| `state` | `following` or `settled`. |
+| `cursor` | The ChangeRequest `revision` relayed through. Starts at `0`; advances in the same write as the inbox entry it covers. |
+| `flipped` | `{head}` once the change was taken out of draft, else `null`. |
+| `flipAttempts` | Bounded at 3. |
+| `intents`, `receipts` | The flip effect's intent and receipt, under its key. |
+
+A Task that opened a change in each of two repositories:
+
+```json
+"status": {
+  "declared": [
+    {"url": "https://github.com/OWNER/app/pull/88",
+     "changeRequest": "github-com-owner-app-88"},
+    {"url": "https://github.com/OWNER/infra/pull/12",
+     "changeRequest": "github-com-owner-infra-12"}
+  ],
+  "forge": {
+    "changes": {
+      "github-com-owner-app-88":
+        {"state": "following", "cursor": 7, "flipped": {"head": "9f3c…"}, "flipAttempts": 1},
+      "github-com-owner-infra-12":
+        {"state": "following", "cursor": 2, "flipped": null, "flipAttempts": 0}
+    },
+    "conditions": [{"type": "Following", "status": "True", "reason": "TwoOpen"}]
+  }
+}
+```
+
+Entries are independent: each is probed, relayed and flipped on its own, each
+relay is its own inbox entry naming the change, and a problem on one is
+reported in a condition message and stops nothing else.
+
+Each entry of `status.inbox`:
+
+| Field | Meaning |
+| --- | --- |
+| `key` | Deterministic: `task/<name>/<uid>/relay/<change>/<revision>` for a relay, `task/<name>/<uid>/send/<n>` for `fleet send`. Refused if already present in `inbox` or `deliveries`. |
+| `from` | `forge/<change>` or `cli/<user>`. |
+| `text` | The message, delivered as typed. |
+| `queuedAt` | Unix milliseconds. |
+
 Any Task may declare a change, with or without a `spec.forge` block; the
 standing worker policy tells every worker to open its change as a draft, to
 declare it, and to end every post on it with `<!-- fleet:worker -->` on its
