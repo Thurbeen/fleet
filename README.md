@@ -61,7 +61,7 @@ checkout and data unchanged. A fresh v1 installer also checks before writing
 candidate files. To reinstall a pinned checkout, use `uv run fleet install`
 there rather than the branch-tracking bootstrap.
 
-**Unpatched clients must install this freeze before v2 lands.** They can
+**Unpatched clients must install this freeze before updating.** They can
 otherwise pull v2 through their old automatic sync or installer. Documentation
 alone cannot protect old code, and a manual `git pull` bypasses the guard.
 Pin the tag explicitly using the commands above; do not run development
