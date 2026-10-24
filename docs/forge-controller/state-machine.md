@@ -134,9 +134,9 @@ by Fleet.
 | Known failed, other | The receipt | `failed` | Wait `RETRY_DELAY_MS` on this entry's `notBefore`; after 3 attempts `NeedsAttention/MarkReadyFailed`. |
 | Unknown | The next fresh ChangeRequest revision | `done` if `everReady`, else `failed` | `everReady` is a recovered receipt. Still `draft` on a fresh read counts as a failed attempt; never repeated blindly. |
 
-Once `everReady` is true, from Fleet's effect or anyone's hand, no follower marks it ready
-again, which is what protects a person's return to draft across every Task
-on the change.
+Once `everReady` is true, from Fleet's effect or anyone's hand, no follower
+marks it ready again, which is what protects a person's return to draft
+across every Task on the change.
 
 ## Retries and recovery
 
