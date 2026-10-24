@@ -119,23 +119,25 @@ See [execution configuration](resources/task-config.md).
 
 ## Planned: forge integration
 
-Design, not implemented. Two further kinds and controllers are documented in
-the Task controller's shape and are not served by this build:
+Design, not implemented. One further kind and two controllers are documented
+in the Task controller's shape and are not served by this build:
 
 - [ChangeRequest](resources/change-request.md) and its
   [controller](change-request-controller/README.md) mirror one change on a
   forge through a new `Forge` port, with adapters in a planned `fleet-forge`
   crate (`github` via `gh`, `gitlab` via `glab`, and a fake), and number
   every item they see so consumers diff by one cursor.
-- [ForgeTask](resources/forge-task.md) and its
-  [controller](forge-task-controller/README.md) own a Task and its
-  ChangeRequests, relay what is new into the Task's inbox, and take a draft
-  change out of draft under a configured policy. They never merge.
+- The [Forge controller](forge-controller/README.md) is a second controller
+  over the Task. When a worker declares the change it opened, it creates a
+  ChangeRequest owned by the Task, relays what is new into the Task's inbox,
+  and takes a draft out of draft under a configured policy. It owns
+  `status.forge` and nothing else of the Task. It never merges.
 
 The crate graph gains `fleet-forge` beside `fleet-runtime`, an adapter
-depending on `fleet-api` and `fleet-exec`, and the manager gains a third port
-and store-performed effects. The purity, write-ownership and process rules
-above are unchanged.
+depending on `fleet-api` and `fleet-exec`, and the manager gains a third port,
+store-performed effects and a second controller per Task. The purity,
+write-ownership and process rules above are unchanged: each controller names
+itself as a field manager and the store refuses a write to another's field.
 
 ## Scope and compatibility
 

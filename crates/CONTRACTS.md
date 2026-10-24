@@ -23,10 +23,11 @@ Unrecognized kinds are refused on write as `unknown kind "X"`. A Task spec
 accepts the fields below (`deny_unknown_fields`), and no object may carry
 `ownerReferences`.
 
-`ChangeRequest` and `ForgeTask` are designed and not served: see the
+`ChangeRequest` is designed and not served, with a second controller over
+the Task beside it: see the
 [ChangeRequest](../docs/change-request-controller/README.md) and
-[ForgeTask](../docs/forge-task-controller/README.md) controller guides. This
-build refuses both as unknown kinds, and `e2e_task_lifecycle` asserts it.
+[Forge](../docs/forge-controller/README.md) controller guides. This build
+refuses the kind as unknown, and `e2e_task_lifecycle` asserts it.
 
 ## Crates and the allowed graph
 

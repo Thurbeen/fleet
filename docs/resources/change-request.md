@@ -9,9 +9,9 @@ A ChangeRequest mirrors one change on a forge: a pull request, a merge request
 or any equivalent. ChangeRequestController polls the forge, keeps a bounded
 snapshot of the change's state, head, checks and notes, and numbers every item
 it sees, so a consumer asks "what is new since I last looked" with one
-integer. It performs no effect on the forge. [ForgeTask](forge-task.md)
-creates one per change its worker declares; a person applies one to watch any
-change.
+integer. It performs no effect on the forge. The
+[Forge controller](../forge-controller/README.md) creates one per change a
+Task's worker declares; a person applies one to watch any change.
 
 ## Example
 
@@ -29,8 +29,8 @@ change.
 
 ## Spec
 
-Written by people, scripts and ForgeTaskController through `fleet apply` or a
-`CreateObject` effect. Fixed once created.
+Written by people and scripts through `fleet apply`, or by ForgeController
+through a `CreateObject` effect. Fixed once created.
 
 | Field | Required | Meaning |
 | --- | --- | --- |
@@ -116,10 +116,11 @@ the vocabulary is checked against them; adding one is an adapter in
 Task rule. The store assigns `uid`, `generation`, `resourceVersion` and
 creation time. There is no finalizer: nothing external is held.
 
-A ChangeRequest a ForgeTask created carries one owner reference to that
-ForgeTask and is deleted with it. This is the one pair for which the store's
-refusal of `ownerReferences` is relaxed. A ChangeRequest applied by a person
-has no owner and lives until deleted. Both are reconciled the same way.
+A ChangeRequest the Forge controller created carries one owner reference to
+the Task whose worker declared it and is deleted with that Task. This is the
+one pair for which the store's refusal of `ownerReferences` is relaxed. A
+ChangeRequest applied by a person has no owner and lives until deleted. Both
+are reconciled the same way.
 
 ## Commands
 

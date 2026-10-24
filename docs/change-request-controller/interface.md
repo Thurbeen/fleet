@@ -56,7 +56,7 @@ a refused write is `Known(EffectOutcome::Failed { why })`.
 | `parse` | A URL | The `ChangeRef` for it, using the adapter `[forge.hosts]` names for the host. Unknown for a host not configured. |
 | `whoami` | A host | Fleet's login on that host, or Unknown. |
 | `change` | A `ChangeRef` | The `ChangeSnapshot`: `state`, `head` (id, checks, failing), `reviewDecision`, `notes`. Unknown on timeout or an unreadable answer. |
-| `mark_ready` | A `ChangeRef` and an intent key | `Done { already }`, or Failed/Unknown. Used by [ForgeTaskController](../forge-task-controller/interface.md) only. |
+| `mark_ready` | A `ChangeRef` and an intent key | `Done { already }`, or Failed/Unknown. Used by the [Forge controller](../forge-controller/interface.md) only. |
 
 The port has no merge method.
 
@@ -92,8 +92,8 @@ past, like a Task.
 | Writer | May change | Required fencing |
 | --- | --- | --- |
 | `apply` | New ChangeRequest and labels; request deletion | Store validation, exclusive creation. |
-| `forge-task-controller` | A new ChangeRequest with an owner reference, through a `CreateObject` effect | Live manager lease. |
+| `forge-controller` | A new ChangeRequest with an owner reference to a Task, through a `CreateObject` effect | Live manager lease. |
 | `change-request-controller` | All of `status` | Current resourceVersion and live manager lease. |
 
 The spec is immutable. `ownerReferences` is accepted only when it names a
-ForgeTask; the store refuses any other owner, as it refuses every owner today.
+Task; the store refuses any other owner, as it refuses every owner today.

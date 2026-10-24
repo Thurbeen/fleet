@@ -132,15 +132,18 @@ feature. `fleet init --update` preserves the user-owned native config.
 ## Planned `[forge]` section
 
 Design, not implemented. The [ChangeRequest](../resources/change-request.md)
-and [ForgeTask](../resources/forge-task.md) designs add one section. An
-unknown section is refused today, so this example does not load.
+and [Forge controller](../forge-controller/README.md) designs add one
+section. An unknown section is refused today, so this example does not load.
 
 ```toml
 [forge]
 callTimeoutMs = 15000
 closedGraceMs = 604800000     # one week; a ChangeRequest spec may override
 noCheckGraceMs = 300000       # the checksPassed predicate's wait for a check
+relayNotes = true             # defaults a Task's spec.forge may override
+relayChecks = true
 relayBots = false
+draftPolicy = "checks"        # omit to never take a draft out of draft
 
 [forge.hosts]
 "github.com"         = { kind = "github", cli = "gh" }
@@ -165,9 +168,11 @@ noUnresolvedThreads = true
 | `forge.callTimeoutMs` | `15000` | Bound for each forge CLI call; the manager lease must outlast the port's reported worst case. |
 | `forge.closedGraceMs` | `604800000` | How long a closed change stays watched before it settles. |
 | `forge.noCheckGraceMs` | `300000` | How long `checksPassed` waits for a check to appear before treating a checkless head as passed. |
+| `forge.relayNotes`, `forge.relayChecks` | `true` | Relay new notes and passed or failed checks to the worker. A Task's `spec.forge.relay` overrides both. |
 | `forge.relayBots` | `false` | Relay bot-authored notes to the worker. |
+| `forge.draftPolicy` | Absent | The ready policy applied to a Task that sets none. Absent: a draft is never taken out of draft unless the Task names a policy. |
 | `forge.hosts.<host>` | One per forge host | `kind` is `github`, `gitlab` or `fake`; `cli` is a PATH name or absolute path. A URL on a host not listed is refused at apply. |
-| `forge.readyPolicies.<name>` | The three above are shipped | A set of predicates the [ForgeTask controller](../forge-task-controller/interface.md#ready-policies) defines; an unknown predicate is refused at load. |
+| `forge.readyPolicies.<name>` | Three written by `fleet init` | A set of predicates the [Forge controller](../forge-controller/interface.md#ready-policies) defines, under a name that is only a key; an unknown predicate is refused at load. |
 
 Credentials stay with each CLI's own login. Fleet passes none to the forge and
 stores none.

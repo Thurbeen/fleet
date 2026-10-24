@@ -54,4 +54,4 @@ pass that sees nothing new writes nothing.
 
 `fleet delete changerequest NAME` removes the record on the next pass. There
 is no finalizer because nothing on the forge is held. A ChangeRequest owned by
-a ForgeTask is deleted when the ForgeTask is.
+a Task is deleted when the Task is.

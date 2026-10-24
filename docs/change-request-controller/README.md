@@ -13,14 +13,15 @@ from here.
 | [ChangeRequest](../resources/change-request.md) | What do I apply, and what does the snapshot contain? |
 | [State machine](state-machine.md) | How does a change move between Watching, Closed and Settled? |
 | [Interface](interface.md) | What are the probes, the Forge port and the write rules? |
-| [ForgeTask controller](../forge-task-controller/README.md) | Who consumes the snapshot, and how? |
+| [Forge controller](../forge-controller/README.md) | Who consumes the snapshot, and how? |
 | [Native config](../configuration/fleet-toml.md#planned-forge-section) | How are forge hosts and adapters configured? |
 | [Overall architecture](../ARCHITECTURE.md) | Where does this controller fit in Fleet? |
 
 ## One run
 
-1. A ChangeRequest is applied, by a person or by a ForgeTask. The adapter for
-   its host parses the URL into `status.ref`.
+1. A ChangeRequest is applied, by a person or by the Forge controller for a
+   change a worker declared. The adapter for its host parses the URL into
+   `status.ref`.
 2. On each due pass the controller asks one probe, `Change { ref }`. The
    manager answers it through the Forge port.
 3. A Known answer is compared with the stored snapshot. If anything differs,
@@ -38,9 +39,9 @@ else while idle.
 
 ## Why a resource of its own
 
-- One poller per change, however many consumers care. A ForgeTask, a
-  reviewer and a conductor read the same snapshot instead of each calling the
-  forge.
+- One poller per change, however many consumers care. The Forge controller,
+  a reviewer and a conductor read the same snapshot instead of each calling
+  the forge.
 - The forge's vocabulary is translated once, in the adapter. No consumer sees
   a GitHub or GitLab field.
 - An unreachable forge is this controller's condition. No consumer can
@@ -52,5 +53,5 @@ Planned. The first implementation step is this controller together with the
 `fleet-forge` crate: the Forge port, the `github` and `gitlab` adapters, the
 file-backed fake, sequence numbers and the closed grace, each with an E2E
 suite driving the built CLI against stub `gh` and `glab` executables. The
-[ForgeTask guide](../forge-task-controller/README.md#implementation-and-evidence)
+[Forge controller guide](../forge-controller/README.md#implementation-and-evidence)
 lists the steps that follow.

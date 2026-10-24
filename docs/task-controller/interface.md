@@ -187,18 +187,22 @@ absence or retries after the persisted wait. The
 
 ## Planned additions
 
-Design, not implemented. The [ForgeTask](../forge-task-controller/interface.md)
-and [ChangeRequest](../change-request-controller/interface.md) designs extend
-this interface without changing what exists:
+Design, not implemented. The [Forge](../forge-controller/interface.md) and
+[ChangeRequest](../change-request-controller/interface.md) controller designs
+extend this interface without changing what exists:
 
-- `Probe::Object { kind, name }`, answered by the manager from the store
-  before any runtime probe, and `Probe::Whoami { host }` and
-  `Probe::Change { ref }`, answered through a new `Forge` port.
+- A second controller over the Task, ForgeController, run after this one on
+  each sweep and owning `status.forge` and the `fleet.dev/changes` finalizer.
+  Its plan may name no other Task field.
+- `Probe::Object { kind, name }` and `Probe::Owned { kind, owner }`, answered
+  by the manager from the store before any runtime probe, and
+  `Probe::Whoami { host }` and `Probe::Change { ref }`, answered through a
+  new `Forge` port.
 - Actions `CreateObject`, `Enqueue`, `DeleteObject`, performed through the
   store under the lease, and `MarkReady`, performed through the Forge port.
 - A Task with `status.inbox` entries asks `Find`, `Ready` and
   `BriefDelivered` per inbox key, and plans `Brief` for each entry under that
   key, bounded and journaled like the brief. Its receipts go to
   `status.deliveries`.
-- Field managers `ChangeRequestController`, `ForgeTaskController` and
-  `Inbox`, and `Worker` gains `status.declared`.
+- Field managers `ChangeRequestController`, `ForgeController` and `Inbox`,
+  and `Worker` gains `status.declared`.
