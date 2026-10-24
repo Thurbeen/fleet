@@ -510,7 +510,9 @@ fn a_never_reported_codex_initial_composer_receives_its_brief_once() {
             .windows(2)
             .any(|a| a == ["--lines", "0"])
     );
-    // Input readiness is no proof of safe release without a lifecycle report.
+    // Keep the initial composer evidence visible: even when ready() accepts
+    // it, at_rest() must not use that proof to authorize deletion.
+    set_session_state(&env, &thurbox_key(&env, "first"), "running");
     env.fleet(&["delete", "task", "first"]).ok();
     env.reconcile().ok();
     assert_eq!(argv_of(&env, "delete").len(), 0);
