@@ -20,6 +20,26 @@ pub enum ApplyOutcome {
 /// writer; past it the conflict is reported, never forced.
 const CAS_TRIES: u32 = 8;
 
+/// Start a bootstrap Task once, retaining its immutable inputs and identity
+/// on reconnect. A changed template never rewrites an already running Task.
+pub fn ensure_task(store: &dyn Store, obj: Object) -> Result<Object, StoreError> {
+    store.validate(&obj)?;
+    for _ in 0..CAS_TRIES {
+        match store.get(&obj.kind, &obj.metadata.name) {
+            Observation::Known(Some(current)) => return Ok(current),
+            Observation::Known(None) => match store.create(obj.clone(), FieldManager::Apply) {
+                Ok(created) => return Ok(created),
+                Err(StoreError::AlreadyExists(_)) => continue,
+                Err(e) => return Err(e),
+            },
+            Observation::Unknown { why } => return Err(StoreError::Unknown(why)),
+        }
+    }
+    Err(StoreError::Busy(
+        "bootstrap Task creation kept conflicting".into(),
+    ))
+}
+
 /// Create the object, or replace its spec and labels when it exists.
 /// Status in an applied object is refused: status belongs to controllers.
 pub fn apply(store: &dyn Store, obj: Object) -> Result<(ApplyOutcome, Object), StoreError> {

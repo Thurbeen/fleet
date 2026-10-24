@@ -70,6 +70,38 @@ struct Step {
 }
 
 impl Manager<'_> {
+    /// Keep the single manager lease for the entire foreground service.
+    /// Every sweep visits all due Tasks, independently of agent activity.
+    /// `wait` supplies the clock wait and shutdown policy at the CLI edge.
+    pub fn serve(
+        &self,
+        opts: RunOptions,
+        mut wait: impl FnMut(&RunReport) -> bool,
+    ) -> Result<(), StoreError> {
+        let mut lease = self.store.acquire_lease(&self.holder, opts.lease_ttl)?;
+        let outcome = (|| {
+            loop {
+                lease = self.store.renew_lease(&lease, opts.lease_ttl)?;
+                let mut report = RunReport {
+                    holder: self.holder.clone(),
+                    lease_token: lease.token,
+                    ..RunReport::default()
+                };
+                self.passes(&mut lease, opts, &mut report)?;
+                // The last bounded operation may have consumed most of
+                // its lease. Give the subsequent poll wait a fresh lease.
+                lease = self.store.renew_lease(&lease, opts.lease_ttl)?;
+                if !wait(&report) {
+                    return Ok(());
+                }
+            }
+        })();
+        if !matches!(outcome, Err(StoreError::LeaseLost(_))) {
+            self.store.release_lease(&lease)?;
+        }
+        outcome
+    }
+
     /// Take the lease, run passes until idle or `max_passes`, give the lease
     /// back. A lease that is held elsewhere or lost mid-run ends the run with
     /// that error: no write happens without it.

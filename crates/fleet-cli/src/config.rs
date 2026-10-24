@@ -21,6 +21,14 @@ pub struct Config {
     pub data: Data,
     #[serde(default)]
     pub runtime: Option<RuntimeConfig>,
+    #[serde(default)]
+    pub starter: Option<StarterConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StarterConfig {
+    pub workspace: PathBuf,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -72,6 +80,9 @@ impl Config {
         {
             rt.dir = Some(base.join(d));
         }
+        if let Some(starter) = config.starter.as_mut() {
+            starter.workspace = base.join(&starter.workspace);
+        }
         Ok(config)
     }
 
@@ -80,8 +91,29 @@ impl Config {
             version: CONFIG_VERSION,
             data: Data::default(),
             runtime: None,
+            starter: None,
         }
     }
+}
+
+/// Explicit CLI path, then FLEET_CONFIG, then one native per-user location.
+/// No search through the current directory or its parents.
+pub fn discover(explicit: Option<PathBuf>) -> Option<PathBuf> {
+    explicit
+        .or_else(|| std::env::var_os(CONFIG_ENV).map(PathBuf::from))
+        .or_else(default_config_path)
+}
+
+pub fn default_config_path() -> Option<PathBuf> {
+    if cfg!(windows) {
+        return std::env::var_os("APPDATA")
+            .filter(|d| !d.is_empty())
+            .map(|d| PathBuf::from(d).join("fleet/config.toml"));
+    }
+    if let Some(d) = std::env::var_os("XDG_CONFIG_HOME").filter(|d| !d.is_empty()) {
+        return Some(PathBuf::from(d).join("fleet/config.toml"));
+    }
+    std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config/fleet/config.toml"))
 }
 
 /// A dedicated data directory per platform: `$XDG_DATA_HOME/fleet`, `~/.local/share/fleet`, or

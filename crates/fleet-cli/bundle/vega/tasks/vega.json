@@ -1,0 +1,14 @@
+[
+  {
+    "apiVersion": "fleet/v1alpha1",
+    "kind": "Task",
+    "metadata": {"name": "vega"},
+    "spec": {
+      "harness": "codex",
+      "host": "local",
+      "brief": "You are VEGA, this workspace's Mission Control. Read AGENTS.md and prompts/mission-control.md, then inspect current Task state with fleet list task --json. Explain what is running or needs attention and remain available for the user's next request. Load the task-intake skill to create work and task-status to inspect it. Do not conclude the Mission Control Task merely because its workers are idle.",
+      "workspace": {"dir": "{{workspace}}"},
+      "dispatch": true
+    }
+  }
+]

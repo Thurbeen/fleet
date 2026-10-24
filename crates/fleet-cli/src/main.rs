@@ -3,6 +3,7 @@
 //! prints. Every rule about what may be written lives in fleet-manager and
 //! below; nothing here decides.
 
+mod bootstrap;
 mod config;
 
 use std::io::Read;
@@ -18,7 +19,7 @@ use fleet_runtime::{FakeHost, FakeRuntime, ThurboxConfig, ThurboxRuntime};
 use fleet_store::{FileStore, SystemClock};
 use serde_json::{Value, json};
 
-use crate::config::{CONFIG_ENV, CONFIG_VERSION, Config, default_data_dir};
+use crate::config::{CONFIG_VERSION, Config, default_data_dir};
 
 /// The released version when CI stamps one, else the manifest's.
 const VERSION: &str = match option_env!("FLEET_RELEASE_VERSION") {
@@ -29,7 +30,7 @@ const VERSION: &str = match option_env!("FLEET_RELEASE_VERSION") {
 #[derive(Debug, Parser)]
 #[command(name = "fleet", version = VERSION, about = "Fleet: one agent session per Task, reconciled from a file store.")]
 struct Cli {
-    /// The config file (else $FLEET_CONFIG; else none).
+    /// Config file (else FLEET_CONFIG, then the native per-user config).
     #[arg(long, global = true)]
     config: Option<PathBuf>,
     /// The data directory (overrides the config file's data.dir).
@@ -41,6 +42,21 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Create local config and the bundled editable VEGA workspace, offline.
+    Init {
+        /// Offer bundled updates, preserving edited files with conflict copies.
+        #[arg(long)]
+        update: bool,
+    },
+    /// Start/reconnect VEGA and keep all due Tasks reconciling until Ctrl-C.
+    Up {
+        /// Interval between bounded sweeps (100..=10000 ms).
+        #[arg(long, default_value_t = 1000, value_parser = clap::value_parser!(u64).range(100..=10000))]
+        poll_ms: u64,
+        /// Manager lease; must outlast both runtime operations and poll interval.
+        #[arg(long)]
+        lease_ttl_ms: Option<u64>,
+    },
     /// Create or update resources from a JSON file (an object, an array, or {"items": [...]}); `-` reads stdin.
     Apply {
         #[arg(short = 'f', long = "filename")]
@@ -179,11 +195,31 @@ fn run(cli: Cli) -> Result<(), Failure> {
     if let Command::Version { json } = &cli.command {
         return version(*json);
     }
-    let config_path = cli
-        .config
-        .clone()
-        .or_else(|| std::env::var_os(CONFIG_ENV).map(PathBuf::from));
+    let explicit_config = cli.config.is_some() || std::env::var_os(config::CONFIG_ENV).is_some();
+    let config_path = config::discover(cli.config.clone())
+        .map(|p| bootstrap::absolute(&p))
+        .transpose()
+        .map_err(fail)?;
+    if let Command::Init { update } = cli.command {
+        let path = config_path
+            .ok_or_else(|| fail("no config location: pass --config or set HOME/APPDATA"))?;
+        let root = default_data_dir()
+            .unwrap_or_else(|| path.parent().unwrap_or(Path::new(".")).join("fleet-data"));
+        for notice in
+            bootstrap::init(&path, &root, cli.data_dir.as_deref(), update).map_err(fail)?
+        {
+            println!("{notice}");
+        }
+        println!(
+            "initialized {}; run fleet up (Thurbox and an authenticated harness are required)",
+            path.display()
+        );
+        return Ok(());
+    }
     let config = match &config_path {
+        Some(p) if !explicit_config && !p.try_exists().map_err(|e| fail(e.to_string()))? => {
+            Config::empty()
+        }
         Some(p) => Config::load(p).map_err(fail)?,
         None => Config::empty(),
     };
@@ -195,9 +231,39 @@ fn run(cli: Cli) -> Result<(), Failure> {
         .ok_or_else(|| {
             fail("no data directory: pass --data-dir or set data.dir in the config file")
         })?;
+    if matches!(cli.command, Command::Up { .. }) {
+        if config.starter.is_none() {
+            return Err(fail(
+                "no starter workspace configured; run fleet init first",
+            ));
+        }
+        if let Some(override_dir) = &cli.data_dir {
+            let configured = config
+                .data
+                .dir
+                .clone()
+                .or_else(default_data_dir)
+                .ok_or_else(|| fail("no configured data directory"))?;
+            if bootstrap::absolute(override_dir).map_err(fail)?
+                != bootstrap::absolute(&configured).map_err(fail)?
+            {
+                return Err(fail(
+                    "fleet up requires workers to share its config: persist data.dir in that config instead of using a differing --data-dir override",
+                ));
+            }
+        }
+    }
     let file_store = FileStore::open(&data_dir)?;
     let store: &dyn Store = &file_store;
     match cli.command {
+        Command::Up {
+            poll_ms,
+            lease_ttl_ms,
+        } => {
+            let path = config_path.ok_or_else(|| fail("no configuration; run fleet init first"))?;
+            cmd_up(store, &config, &path, poll_ms, lease_ttl_ms)
+        }
+        Command::Init { .. } => unreachable_version(),
         Command::Apply { file, json } => cmd_apply(store, &file, json),
         Command::Get { kind, name } => {
             let obj = get(store, &served_kind(&kind)?, &name)?;
@@ -299,6 +365,119 @@ fn run(cli: Cli) -> Result<(), Failure> {
         }
         Command::Version { .. } => unreachable_version(),
     }
+}
+
+fn cmd_up(
+    store: &dyn Store,
+    config: &Config,
+    config_path: &Path,
+    poll_ms: u64,
+    lease_ttl_ms: Option<u64>,
+) -> Result<(), Failure> {
+    let starter = config
+        .starter
+        .as_ref()
+        .ok_or_else(|| fail("no starter workspace configured; run fleet init first"))?;
+    let runtime = open_runtime(config)?;
+    let task = match store.get("Task", "vega") {
+        Observation::Known(Some(task)) => task,
+        Observation::Known(None) => {
+            let mut tasks: Vec<Object> = serde_json::from_slice(
+                &std::fs::read(starter.workspace.join("task.json"))
+                    .map_err(|e| fail(format!("starter task.json: {e}; run fleet init")))?,
+            )
+            .map_err(|e| fail(format!("starter task.json: {e}")))?;
+            if tasks.len() != 1 || tasks[0].kind != "Task" || tasks[0].metadata.name != "vega" {
+                return Err(fail("starter task.json must contain exactly Task/vega"));
+            }
+            fleet_manager::verbs::ensure_task(store, tasks.remove(0))?
+        }
+        Observation::Unknown { why } => return Err(StoreError::Unknown(why).into()),
+    };
+    let host = task.spec["host"].as_str().unwrap_or("local");
+    match runtime.host(host) {
+        Observation::Known(true) => {}
+        Observation::Known(false) => {
+            return Err(fail(
+                "Thurbox host/multiplexer unavailable; install/configure Thurbox and an authenticated agent harness, then retry fleet up",
+            ));
+        }
+        Observation::Unknown { why } => {
+            return Err(fail(format!(
+                "thurbox prerequisite could not be checked: {why}; install/configure Thurbox and authenticate the agent harness before fleet up"
+            )));
+        }
+    }
+    if task.metadata.deletion_timestamp.is_some() || !task.status["result"].is_null() {
+        return Err(fail(
+            "Task/vega is deleting or has a worker result; inspect fleet status task vega before deliberately creating a new session",
+        ));
+    }
+    let ttl = lease_for(
+        runtime.operation_bound().max(poll_ms.saturating_mul(2)),
+        lease_ttl_ms,
+    )?;
+    let stopped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let signal = stopped.clone();
+    ctrlc::set_handler(move || signal.store(true, std::sync::atomic::Ordering::Relaxed))
+        .map_err(|e| fail(format!("shutdown handler: {e}")))?;
+    let manager = Manager {
+        store,
+        runtime: runtime.as_ref(),
+        clock: &SystemClock,
+        holder: format!("fleet-up-{}", std::process::id()),
+    };
+    println!(
+        "Task/vega {}: reconciling all Tasks; config {}; Ctrl-C stops Fleet and retains sessions",
+        task.metadata.uid,
+        config_path.display()
+    );
+    let mut last = Vec::new();
+    manager.serve(
+        RunOptions {
+            max_passes: 50,
+            lease_ttl: ttl,
+        },
+        |report| {
+            let mut diagnostics: Vec<_> = report
+                .errors
+                .iter()
+                .chain(&report.unknowns)
+                .cloned()
+                .collect();
+            match store.get("Task", "vega") {
+                Observation::Known(Some(task)) => {
+                    if let Some(conditions) = task.status["conditions"].as_array() {
+                        for condition in conditions {
+                            let status = condition["status"].as_str().unwrap_or("");
+                            let startup = matches!(condition["type"].as_str(), Some("HostReachable" | "Spawned" | "Briefed"));
+                            let attention = matches!(condition["type"].as_str(), Some("NeedsAttention" | "Stalled" | "WorkerGone"));
+                            if (startup && matches!(status, "False" | "Unknown")) || (attention && status == "True") {
+                                diagnostics.push(format!("Task/vega {}: {} {}. Inspect the Thurbox session and authenticated harness if readiness or startup is blocked", condition["type"].as_str().unwrap_or(""), condition["reason"].as_str().unwrap_or(""), condition["message"].as_str().unwrap_or("")));
+                            }
+                        }
+                    }
+                },
+                Observation::Unknown { why } => diagnostics.push(format!("Task/vega status unknown: {why}")),
+                Observation::Known(None) => diagnostics.push("Task/vega is absent; inspect its deletion before restarting Mission Control".into()),
+            }
+            if diagnostics != last {
+                for line in &diagnostics {
+                    eprintln!("could not reconcile: {line}");
+                }
+                last = diagnostics;
+            }
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(poll_ms);
+            while !stopped.load(std::sync::atomic::Ordering::Relaxed)
+                && std::time::Instant::now() < deadline
+            {
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            !stopped.load(std::sync::atomic::Ordering::Relaxed)
+        },
+    )?;
+    println!("Fleet stopped; Tasks and sessions retained");
+    Ok(())
 }
 
 fn unreachable_version() -> Result<(), Failure> {
