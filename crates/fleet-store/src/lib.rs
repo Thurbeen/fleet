@@ -443,7 +443,9 @@ impl Store for FileStore {
             return Ok(existing);
         }
         let dir = self.root.join("launches");
-        let mut builder = fs::DirBuilder::new();
+        let builder = fs::DirBuilder::new();
+        #[cfg(unix)]
+        let mut builder = builder;
         #[cfg(unix)]
         {
             use std::os::unix::fs::DirBuilderExt;
