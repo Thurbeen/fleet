@@ -39,6 +39,18 @@ fn installed(env: &Env, args: &[&str]) -> Command {
     cmd
 }
 
+fn customize_config(path: &std::path::Path) -> Vec<u8> {
+    let mut config: toml::Value = toml::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+    config["runtime"]["callTimeoutMs"] = toml::Value::Integer(4321);
+    let bytes = format!(
+        "{}\n# Private local customization\n",
+        toml::to_string(&config).unwrap()
+    )
+    .into_bytes();
+    fs::write(path, &bytes).unwrap();
+    bytes
+}
+
 struct Running(std::process::Child);
 impl Drop for Running {
     fn drop(&mut self) {
@@ -126,9 +138,13 @@ fn installed_first_run_creates_runnable_config_and_editable_workspace_without_gi
         workspace.join("task.json").is_file(),
         "ordinary Task manifest"
     );
+    let customized_config = customize_config(&config);
     fs::write(workspace.join("AGENTS.md"), "custom instructions").unwrap();
     fs::write(workspace.join("private.txt"), "private customization").unwrap();
     wait(installed(&env, &["init"]).spawn().unwrap()).ok();
+    wait(installed(&env, &["init", "--update"]).spawn().unwrap()).ok();
+    assert_eq!(fs::read(&config).unwrap(), customized_config);
+
     assert_eq!(
         fs::read_to_string(workspace.join("AGENTS.md")).unwrap(),
         "custom instructions"
@@ -161,7 +177,8 @@ fn concurrent_init_preserves_identity_config_and_private_files_and_updates_safel
     wait(two).ok();
     let config = env.root.join("config/fleet/config.toml");
     let workspace = env.root.join("local-data/fleet/vega");
-    let original_config = fs::read(&config).unwrap();
+    let newest_config = fs::read(&config).unwrap();
+    let original_config = customize_config(&config);
     let original_instance = fs::read(workspace.join(".fleet/instance")).unwrap();
     let original_task = fs::read(workspace.join("task.json")).unwrap();
     fs::write(workspace.join("AGENTS.md"), "user edit").unwrap();
@@ -180,6 +197,14 @@ fn concurrent_init_preserves_identity_config_and_private_files_and_updates_safel
             .map(|b| format!("{b:02x}"))
             .collect::<String>()
     );
+    // Config remains user-owned even when it matches its older managed
+    // baseline; a new binary must offer a conflict instead of upgrading it.
+    state["files"]["config"] = serde_json::json!(
+        Sha256::digest(&original_config)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    );
     fs::write(&state_path, serde_json::to_vec_pretty(&state).unwrap()).unwrap();
     wait(installed(&env, &["init", "--update"]).spawn().unwrap())
         .ok()
@@ -194,6 +219,21 @@ fn concurrent_init_preserves_identity_config_and_private_files_and_updates_safel
         "private"
     );
     assert_eq!(fs::read(&config).unwrap(), original_config);
+    let candidate_hash: String = Sha256::digest(&newest_config)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    assert_eq!(
+        fs::read(
+            workspace
+                .join(".fleet/conflicts")
+                .join(candidate_hash)
+                .join("config")
+        )
+        .unwrap(),
+        newest_config
+    );
+
     assert_eq!(
         fs::read(workspace.join(".fleet/instance")).unwrap(),
         original_instance
