@@ -1,15 +1,19 @@
 # Fleet architecture
 
-Fleet v2 is a Rust command-line program that persists Tasks and drives one
-Task controller. A Task contains the execution inputs for one agent session:
-harness, host, workspace, brief and expected outputs. The worker reports its
-own result.
+Fleet v2 is a Rust command-line program that persists Tasks and
+ChangeRequests and drives their controllers. A Task contains the execution
+inputs for one agent session: harness, host, workspace, brief and expected
+outputs; the worker reports its own result. A ChangeRequest mirrors one
+change on a forge, read through a Forge port and numbered so consumers diff
+it by one cursor.
 
 ![Execution flow: CLI calls the manager; the manager uses the pure controller, store and runtime ports; the runtime starts bounded processes through fleet-exec](architecture.svg)
 
 Arrows show calls during execution, not Cargo dependencies. `fleet-cli`
 constructs the adapters; `fleet-manager` depends on API traits rather than
-concrete store or runtime crates.
+concrete store, runtime or forge crates. The
+[ChangeRequest controller](change-request-controller/README.md) runs in the
+same sweep as the Task controller, through the Forge port.
 
 ## Components and boundaries
 
@@ -17,10 +21,11 @@ concrete store or runtime crates.
 | --- | --- | --- |
 | [fleet-cli](../crates/fleet-cli/src/main.rs) | Parse arguments, load config, construct adapters, print results | Calls manager verbs; does not write resources or run controller effects directly. |
 | [fleet-manager](../crates/fleet-manager/src/lib.rs) | Reconcile loop, lease renewal, plan execution, apply/delete/result verbs | Reads and writes through `Store`; observes and performs effects through `Runtime`. |
-| [fleet-controllers](../crates/fleet-controllers/src/task.rs) | Pure Task decisions | Receives time and observations as values; returns probes and a plan without I/O. |
-| [fleet-api](../crates/fleet-api/src/lib.rs) | Task, plan, observation, result and port types | Pure shared contract; no adapter dependencies. |
+| [fleet-controllers](../crates/fleet-controllers/src/lib.rs) | Pure Task and ChangeRequest decisions | Receives time and observations as values; returns probes and a plan without I/O. |
+| [fleet-api](../crates/fleet-api/src/lib.rs) | Task, ChangeRequest, plan, observation, result and port types | Pure shared contract; no adapter dependencies. |
 | [fleet-store](../crates/fleet-store/src/lib.rs) | File persistence, CAS, write ownership and lease fencing | A corrupt or unreadable record is Unknown; only proven absence is not-found. |
 | [fleet-runtime](../crates/fleet-runtime/src/lib.rs) | Session operations through thurbox, or the file-backed fake host | Converts external answers to Known/Unknown; retains identity and delivery keys. |
+| [fleet-forge](../crates/fleet-forge/src/lib.rs) | Reading one change through `gh`, `glab` or the file-backed fake forge | One bounded observation is complete or Unknown; the only crate that knows a forge CLI's name. |
 | [fleet-exec](../crates/fleet-exec/src/lib.rs) | Bounded process execution | The only production process spawner; timeout/unwind kills the process tree. |
 
 `fleet-arch` and `fleet-dev` are repository tooling: architecture enforcement,
@@ -117,34 +122,33 @@ through the existing runtime port and bounded executor before freezing a
 private launch snapshot. TaskController stays pure and owns the lifecycle.
 See [execution configuration](resources/task-config.md).
 
-## Planned: forge integration
+## Forge integration
 
-Design, not implemented. One further kind and two controllers are documented
-in the Task controller's shape and are not served by this build:
+[ChangeRequest](resources/change-request.md) and its
+[controller](change-request-controller/README.md) mirror one change on a
+forge through the `Forge` port, with adapters in `fleet-forge` (`github` via
+`gh`, `gitlab` via `glab`, and a fake), and number every item they see so
+consumers diff by one cursor. A ChangeRequest belongs to no Task; it outlives
+its followers and is removed by its own controller after a retention period,
+by a delete fenced on its `uid`, its `resourceVersion` and the lease. The
+crate graph has `fleet-forge` beside `fleet-runtime`, an adapter depending
+on `fleet-api` and `fleet-exec`, and the manager a third port. The purity and
+process rules above are unchanged: every forge call is one bounded process
+through `fleet-exec`, and no forge-specific name appears above the port.
 
-- [ChangeRequest](resources/change-request.md) and its
-  [controller](change-request-controller/README.md) mirror one change on a
-  forge through a new `Forge` port, with adapters in a planned `fleet-forge`
-  crate (`github` via `gh`, `gitlab` via `glab`, and a fake), and number
-  every item they see so consumers diff by one cursor.
-- The [Forge controller](forge-controller/README.md) is a second controller
-  over the Task. When a worker declares the change it opened, `fleet declare`
-  ensures the ChangeRequest exists, and the controller follows it: relays
-  what is new into the Task's inbox by a cursor kept on the Task, and takes
-  a draft out of draft under a configured policy. It owns `status.forge`,
-  appends to the Task's inbox through a typed store mutation, writes nothing
-  else of the Task and no ChangeRequest. It never merges.
+### Planned: the Forge controller
 
-A ChangeRequest belongs to no Task; it outlives its followers and is removed
-by its own controller after a retention period. The crate graph gains
-`fleet-forge` beside `fleet-runtime`, an adapter depending on `fleet-api` and
-`fleet-exec`, and the manager gains a third port, a second controller per
-Task with its own due gate, and typed append and remove mutations on one
-Task field, `status.inbox`, which has no single owner. The purity and
-process rules above are unchanged, and the write-ownership rule gains that
-one typed exception: every other field keeps one owner, each controller
-writes only its own object, and the store refuses a write to another's
-field.
+Design, not implemented. The [Forge controller](forge-controller/README.md)
+is a second controller over the Task. When a worker declares the change it
+opened, `fleet declare` ensures the ChangeRequest exists, and the controller
+follows it: relays what is new into the Task's inbox by a cursor kept on the
+Task, and takes a draft out of draft under a configured policy. It owns
+`status.forge`, appends to the Task's inbox through a typed store mutation,
+writes nothing else of the Task and no ChangeRequest. It never merges. The
+manager then gains a second controller per Task with its own due gate, and
+typed append and remove mutations on one Task field, `status.inbox`, which
+has no single owner: the write-ownership rule gains that one typed
+exception, and every other field keeps one owner.
 
 ## Scope and compatibility
 

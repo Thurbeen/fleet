@@ -196,12 +196,11 @@ extend this interface without changing what exists:
   `status.forge` and appending to `status.inbox`. Its plan may name no other
   Task field, performs one effect, `MarkReady`, and adds no finalizer.
 - `Probe::Object { kind, name }`, answered by the manager from the store
-  before any runtime probe, and `Probe::Whoami { host }` and
-  `Probe::Change { ref }`, answered through a new `Forge` port. `AtRest` is
-  reused by ForgeController's `workerIdle` predicate.
-- A plan field `delete`, by which the ChangeRequest controller asks for its
-  own object's removal after retention, fenced by `uid`, `resourceVersion`
-  and the lease.
+  before any runtime probe, and `Probe::Whoami { host }`, answered through
+  the `Forge` port as `Probe::Change { ref }` already is for the
+  [ChangeRequest controller](../change-request-controller/interface.md).
+  `AtRest` is reused by ForgeController's `workerIdle` predicate. The plan's
+  `delete` field, by which that controller retires its own object, exists.
 - A Task with `status.inbox` entries asks `Find`, `Ready` and
   `BriefDelivered` for the oldest entry, and plans `Brief` for it under its
   key, bounded and journaled like the brief; one entry per pass. Its receipt

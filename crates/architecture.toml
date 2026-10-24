@@ -9,21 +9,22 @@
 #   fleet-exec           adapter the one process spawner
 #   fleet-store          adapter                   -> api
 #   fleet-runtime        adapter                   -> api, exec
+#   fleet-forge          adapter                   -> api, exec
 #   fleet-manager        orchestration             -> api, controllers
-#   fleet-cli            edge   parse, wire, print -> api, manager, store, runtime
+#   fleet-cli            edge   parse, wire, print -> api, manager, store, runtime, forge
 #   fleet-arch, fleet-dev  tooling
 
 [crates.fleet-api]
 role = "pure"
 deps = []
 external = ["serde", "serde_json", "thiserror"]
-probes = ["fleet-store", "fleet-controllers", "fleet-exec", "fleet-runtime"]
+probes = ["fleet-store", "fleet-controllers", "fleet-exec", "fleet-runtime", "fleet-forge"]
 
 [crates.fleet-controllers]
 role = "pure"
 deps = ["fleet-api"]
 external = ["serde_json"]
-probes = ["fleet-store", "fleet-runtime", "fleet-manager", "fleet-exec"]
+probes = ["fleet-store", "fleet-runtime", "fleet-forge", "fleet-manager", "fleet-exec"]
 
 # The only crate that starts a process: bounded, its whole tree killed past
 # the bound.
@@ -39,18 +40,25 @@ deps = ["fleet-api"]
 role = "adapter"
 deps = ["fleet-api", "fleet-exec"]
 
+# The only crate that knows `gh` and `glab` exist: every forge call is one
+# bounded process through fleet-exec, and no forge-specific name appears
+# above the port.
+[crates.fleet-forge]
+role = "adapter"
+deps = ["fleet-api", "fleet-exec"]
+
 [crates.fleet-manager]
 role = "orchestration"
 deps = ["fleet-api", "fleet-controllers"]
 
 [crates.fleet-cli]
 role = "edge"
-deps = ["fleet-api", "fleet-manager", "fleet-runtime", "fleet-store"]
+deps = ["fleet-api", "fleet-manager", "fleet-runtime", "fleet-store", "fleet-forge"]
 # Every write is the manager's: the CLI parses, calls a verb, and prints.
 forbidden_methods = [
   "create", "update_spec", "update_status", "remove_finalizer", "delete",
-  "acquire_lease", "renew_lease", "release_lease", "reconcile", "probes",
-  "spawn", "release",
+  "delete_fenced", "acquire_lease", "renew_lease", "release_lease", "reconcile",
+  "probes", "spawn", "release", "change", "mark_ready",
 ]
 
 [crates.fleet-arch]
@@ -76,6 +84,7 @@ clippy_guards = [
 # Who may name each field manager. Naming one is how code writes as it.
 [status_writers]
 "fleet_api::store::FieldManager::TaskController" = ["fleet-api", "fleet-controllers"]
+"fleet_api::store::FieldManager::ChangeRequestController" = ["fleet-api", "fleet-controllers"]
 "fleet_api::store::FieldManager::Worker" = ["fleet-api", "fleet-manager"]
 "fleet_api::store::FieldManager::Apply" = ["fleet-api", "fleet-manager", "fleet-store"]
 

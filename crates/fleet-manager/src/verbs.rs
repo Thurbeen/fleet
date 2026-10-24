@@ -2,11 +2,14 @@
 //! worker's answer (`result`). The CLI calls these and nothing below them, so
 //! every rule lives here once.
 
+use fleet_api::change_request::{self, ChangeRequestSpec};
+use fleet_api::forge::{ChangeRef, Forge};
 use fleet_api::result::{TaskResult, validate_outputs};
 use fleet_api::task::{self, TaskSpec, TaskStatus};
 use fleet_api::validate::typed;
 use fleet_api::{DeleteOutcome, FieldManager, Object, Observation, Store, StoreError};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -95,6 +98,112 @@ pub fn apply(store: &dyn Store, obj: Object) -> Result<(ApplyOutcome, Object), S
 
 pub fn delete(store: &dyn Store, kind: &str, name: &str) -> Result<DeleteOutcome, StoreError> {
     store.delete(kind, name, FieldManager::Apply)
+}
+
+/// `cr-` and the first twelve hex digits of the SHA-256 of the canonical
+/// ref: one change names one object, two projects that flatten alike cannot
+/// collide, and long project paths fit.
+pub fn derived_name(reference: &ChangeRef) -> String {
+    let digest = Sha256::digest(reference.canonical().as_bytes());
+    let hex: String = digest.iter().take(6).map(|b| format!("{b:02x}")).collect();
+    format!("cr-{hex}")
+}
+
+/// Start mirroring a change. The URL is parsed by the forge adapter for its
+/// host (a host not configured is refused), the name is derived from the
+/// canonical ref when the manifest gives none, and an existing object under
+/// the name is reused only if it mirrors the same change: its recorded
+/// `status.ref` when the controller wrote one, else its own URL parsed.
+pub fn apply_change_request(
+    store: &dyn Store,
+    forge: &dyn Forge,
+    mut obj: Object,
+) -> Result<(ApplyOutcome, Object), StoreError> {
+    if obj.kind != change_request::KIND {
+        return Err(StoreError::Invalid(format!(
+            "{}: not a ChangeRequest",
+            obj.key()
+        )));
+    }
+    let spec: ChangeRequestSpec = typed(change_request::KIND, &obj.spec)?;
+    let reference = parse_url(forge, &spec.url, &obj.metadata.name)?;
+    if obj.metadata.name.is_empty() {
+        obj.metadata.name = derived_name(&reference);
+    }
+    store.validate(&obj)?;
+    if !obj.status.is_null() {
+        return Err(StoreError::Invalid(format!(
+            "{}: status is written by controllers; remove it from the applied object",
+            obj.key()
+        )));
+    }
+    let name = obj.metadata.name.clone();
+    for _ in 0..CAS_TRIES {
+        match store.get(&obj.kind, &name) {
+            Observation::Known(None) => match store.create(obj.clone(), FieldManager::Apply) {
+                Ok(o) => return Ok((ApplyOutcome::Created, o)),
+                Err(StoreError::AlreadyExists(_)) => continue,
+                Err(e) => return Err(e),
+            },
+            Observation::Known(Some(current)) => {
+                let recorded: Option<ChangeRef> = match current.status.get("ref") {
+                    Some(v) if !v.is_null() => {
+                        Some(serde_json::from_value(v.clone()).map_err(|e| {
+                            StoreError::Unknown(format!("{}: status.ref: {e}", obj.key()))
+                        })?)
+                    }
+                    _ => None,
+                };
+                let mirrors = match recorded {
+                    Some(r) => r,
+                    None => {
+                        let existing: ChangeRequestSpec =
+                            typed(change_request::KIND, &current.spec)?;
+                        parse_url(forge, &existing.url, &name)?
+                    }
+                };
+                if mirrors != reference {
+                    return Err(StoreError::Forbidden(format!(
+                        "{} mirrors {}, not {}: a change names one object, so give this one another name",
+                        obj.key(),
+                        mirrors.canonical(),
+                        reference.canonical()
+                    )));
+                }
+                let rv = current.metadata.resource_version;
+                let labels = Some(obj.metadata.labels.clone());
+                match store.update_spec(
+                    &obj.kind,
+                    &name,
+                    obj.spec.clone(),
+                    labels,
+                    rv,
+                    FieldManager::Apply,
+                ) {
+                    Ok(o) if o.metadata.resource_version == rv => {
+                        return Ok((ApplyOutcome::Unchanged, o));
+                    }
+                    Ok(o) => return Ok((ApplyOutcome::Configured, o)),
+                    Err(StoreError::Conflict { .. }) => continue,
+                    Err(e) => return Err(e),
+                }
+            }
+            Observation::Unknown { why } => return Err(StoreError::Unknown(why)),
+        }
+    }
+    Err(StoreError::Busy(format!(
+        "{}/{name}: kept conflicting with other writers",
+        obj.kind
+    )))
+}
+
+fn parse_url(forge: &dyn Forge, url: &str, name: &str) -> Result<ChangeRef, StoreError> {
+    match forge.parse(url) {
+        Observation::Known(r) => Ok(r),
+        Observation::Unknown { why } => Err(StoreError::Invalid(format!(
+            "ChangeRequest/{name}: spec.url {url:?}: {why}"
+        ))),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

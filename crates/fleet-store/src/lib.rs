@@ -657,6 +657,36 @@ impl Store for FileStore {
         self.mark_deleted(obj)
     }
 
+    fn delete_fenced(
+        &self,
+        kind: &str,
+        name: &str,
+        uid: &str,
+        expected: u64,
+        by: FieldManager,
+        lease: &LeaseToken,
+    ) -> Result<DeleteOutcome, StoreError> {
+        if kinds::controller_of(kind) != Some(by) {
+            return Err(StoreError::Forbidden(format!(
+                "only {kind}'s controller deletes its own objects"
+            )));
+        }
+        let _guard = self.lock()?;
+        self.check_lease(lease)?;
+        let obj = self.read_existing(kind, name)?;
+        // A recreated object under the same name has a new uid: the plan that
+        // named the old one removes nothing.
+        if obj.metadata.uid != uid {
+            return Err(StoreError::Conflict {
+                key: obj.key(),
+                expected,
+                actual: obj.metadata.resource_version,
+            });
+        }
+        expect_rv(&obj, expected)?;
+        self.mark_deleted(obj)
+    }
+
     fn remove_finalizer(
         &self,
         kind: &str,

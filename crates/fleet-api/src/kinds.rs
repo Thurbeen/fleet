@@ -1,5 +1,6 @@
 //! Which kinds this build serves, and who may write what on each.
 
+use crate::change_request;
 use crate::store::FieldManager;
 use crate::task;
 
@@ -7,13 +8,20 @@ use crate::task;
 pub fn is_served(kind: &str) -> bool {
     matches!(
         kind,
-        task::KIND | crate::config::TASK_CONFIG | crate::config::ENV_PROVIDER
+        task::KIND
+            | crate::config::TASK_CONFIG
+            | crate::config::ENV_PROVIDER
+            | change_request::KIND
     )
 }
 
 /// The controller that owns a kind's status, if the kind has one.
 pub fn controller_of(kind: &str) -> Option<FieldManager> {
-    (kind == task::KIND).then_some(FieldManager::TaskController)
+    match kind {
+        task::KIND => Some(FieldManager::TaskController),
+        change_request::KIND => Some(FieldManager::ChangeRequestController),
+        _ => None,
+    }
 }
 
 /// Who owns one top-level status field of a kind. `None`: nobody may write it.
@@ -21,6 +29,7 @@ pub fn status_owner(kind: &str, field: &str) -> Option<FieldManager> {
     match kind {
         task::KIND if task::WORKER_FIELDS.contains(&field) => Some(FieldManager::Worker),
         task::KIND => Some(FieldManager::TaskController),
+        change_request::KIND => Some(FieldManager::ChangeRequestController),
         _ => None,
     }
 }

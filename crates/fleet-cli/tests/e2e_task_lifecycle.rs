@@ -819,7 +819,6 @@ fn a_task_alone_runs_from_apply_to_release_and_retired_kinds_are_refused() {
         "Conductor",
         "Forge",
         "ForgeTask",
-        "ChangeRequest",
         "ControllerPlugin",
     ] {
         env.apply(object(kind, "x", json!({})))

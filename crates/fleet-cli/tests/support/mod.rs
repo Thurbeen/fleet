@@ -13,11 +13,18 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use fleet_forge::FakeForge;
 use fleet_runtime::{FakeHost, Fault};
 use serde_json::{Value, json};
 
 static SEQ: AtomicU32 = AtomicU32::new(0);
 const TIMEOUT: Duration = Duration::from_secs(60);
+
+/// The fake forge's host in a forge environment.
+pub const FORGE_HOST: &str = "forge.test";
+/// The hosts the stub `gh` and `glab` answer for.
+pub const GITHUB_HOST: &str = "github.test";
+pub const GITLAB_HOST: &str = "gitlab.test";
 
 pub struct Env {
     pub root: PathBuf,
@@ -143,6 +150,74 @@ impl Env {
             stub_dir.to_string_lossy().into_owned(),
         ));
         env
+    }
+
+    /// An environment with a fake forge under `forge.test` beside the fake
+    /// runtime, with short retention defaults a test can still wait out.
+    pub fn forge(name: &str) -> Env {
+        let env = Env::new(name);
+        let mut cfg = fs::read_to_string(&env.config).expect("config");
+        cfg.push_str(&format!(
+            "\n[forge]\ncallTimeoutMs = 3000\n\n[forge.hosts]\n\"{FORGE_HOST}\" = {{ kind = \"fake\", dir = \"forge\" }}\n"
+        ));
+        fs::write(&env.config, cfg).expect("config");
+        env
+    }
+
+    /// An environment whose forge hosts are the stub `gh` (`github.test`)
+    /// and `glab` (`gitlab.test`): the one stub binary, copied under each
+    /// name, answers in that forge's shapes.
+    pub fn forge_stubs(name: &str) -> Env {
+        let mut env = Env::new(name);
+        let stub_dir = env.root.join("stub");
+        fs::create_dir_all(&stub_dir).expect("stub dir");
+        let bin = env.root.join("forge-bin");
+        fs::create_dir_all(&bin).expect("forge bin");
+        let exe = if cfg!(windows) { ".exe" } else { "" };
+        let gh = bin.join(format!("gh{exe}"));
+        let glab = bin.join(format!("glab{exe}"));
+        fs::copy(stub_exe(), &gh).expect("gh stub");
+        fs::copy(stub_exe(), &glab).expect("glab stub");
+        let mut cfg = fs::read_to_string(&env.config).expect("config");
+        cfg.push_str(&format!(
+            "\n[forge]\ncallTimeoutMs = 3000\n\n[forge.hosts]\n\"{GITHUB_HOST}\" = {{ kind = \"github\", cli = '{}' }}\n\"{GITLAB_HOST}\" = {{ kind = \"gitlab\", cli = '{}' }}\n",
+            gh.to_string_lossy(),
+            glab.to_string_lossy()
+        ));
+        fs::write(&env.config, cfg).expect("config");
+        env.vars.push((
+            "FLEET_STUB_DIR".into(),
+            stub_dir.to_string_lossy().into_owned(),
+        ));
+        env
+    }
+
+    /// The fake forge of a `forge` environment.
+    pub fn fake_forge(&self) -> FakeForge {
+        FakeForge::open(FORGE_HOST, &self.root.join("forge")).expect("fake forge")
+    }
+
+    /// Every call the stub forges saw for `host`, as `{argv, envNames}`.
+    pub fn forge_calls(&self, host: &str) -> Vec<Value> {
+        self.stub_calls()
+            .into_iter()
+            .filter(|c| {
+                c["argv"][0] == "api"
+                    && c["argv"]
+                        .as_array()
+                        .is_some_and(|a| a.iter().any(|x| x == host))
+            })
+            .collect()
+    }
+
+    pub fn change_request(&self, name: &str) -> Value {
+        self.fleet(&["get", "changerequest", name]).ok().json()
+    }
+
+    pub fn change_request_status(&self, name: &str) -> Value {
+        self.fleet(&["status", "changerequest", name, "--json"])
+            .ok()
+            .json()
     }
 
     pub fn set_var(&mut self, k: &str, v: &str) {
@@ -342,12 +417,17 @@ impl Env {
 
     /// Let a Task's wait before its next attempt run out now, as time would.
     pub fn expire_wait(&self, name: &str) {
-        let path = self.object_path("Task", name);
-        let mut task: Value =
-            serde_json::from_slice(&fs::read(&path).expect("task record")).expect("task json");
-        if task["status"]["notBefore"].is_u64() {
-            task["status"]["notBefore"] = json!(0);
-            fs::write(&path, task.to_string()).expect("task record");
+        self.expire_wait_of("Task", name);
+    }
+
+    /// Let an object's `notBefore` run out now, as time would.
+    pub fn expire_wait_of(&self, kind: &str, name: &str) {
+        let path = self.object_path(kind, name);
+        let mut obj: Value =
+            serde_json::from_slice(&fs::read(&path).expect("record")).expect("json");
+        if obj["status"]["notBefore"].is_u64() {
+            obj["status"]["notBefore"] = json!(0);
+            fs::write(&path, obj.to_string()).expect("record");
         }
     }
 
@@ -507,4 +587,32 @@ pub fn runtime_config() -> Value {
 
 pub fn object(kind: &str, name: &str, spec: Value) -> Value {
     json!({"apiVersion": "fleet/v1alpha1", "kind": kind, "metadata": {"name": name}, "spec": spec})
+}
+
+/// A ChangeRequest manifest with no name: `apply` derives it from the change.
+pub fn change_request(url: &str, extra: Value) -> Value {
+    let mut spec = json!({"url": url});
+    if let Some(o) = extra.as_object() {
+        spec.as_object_mut().unwrap().extend(o.clone());
+    }
+    json!({"apiVersion": "fleet/v1alpha1", "kind": "ChangeRequest", "metadata": {}, "spec": spec})
+}
+
+/// `cr-` and twelve hex digits of the SHA-256 of the canonical ref.
+pub fn derived_name(kind: &str, host: &str, project: &str, id: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let canonical = format!("{kind}/{host}/{project}/{id}").to_lowercase();
+    let hex: String = Sha256::digest(canonical.as_bytes())
+        .iter()
+        .take(6)
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    format!("cr-{hex}")
+}
+
+/// Unix milliseconds now, for bounds on `notBefore`.
+pub fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
 }

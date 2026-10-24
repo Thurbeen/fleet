@@ -1,8 +1,5 @@
 # ChangeRequest controller
 
-Design, not implemented. These pages describe a planned controller; nothing
-here is served by the installed binary.
-
 A ChangeRequest mirrors one change on a forge. Its controller decides, from
 the stored snapshot and one forge observation, whether anything changed and
 when to look again. It performs no effect: the forge is read, never written,
@@ -14,14 +11,15 @@ from here.
 | [State machine](state-machine.md) | How does a change move between Watching, Closed and Settled? |
 | [Interface](interface.md) | What are the probes, the Forge port and the write rules? |
 | [Forge controller](../forge-controller/README.md) | Who consumes the snapshot, and how? |
-| [Native config](../configuration/fleet-toml.md#planned-forge-section) | How are forge hosts and adapters configured? |
+| [Native config](../configuration/fleet-toml.md#the-forge-section) | How are forge hosts and adapters configured? |
 | [Overall architecture](../ARCHITECTURE.md) | Where does this controller fit in Fleet? |
 
 ## One run
 
-1. A ChangeRequest is applied, by a person or by `fleet declare` for the
-   change a worker opened. The adapter for its host parses the URL into
-   `status.ref`.
+1. A ChangeRequest is applied, by a person or, in a later step, by
+   `fleet declare` for the change a worker opened. The adapter for its host
+   parses the URL at apply, and again before the first poll, when the
+   controller records it as `status.ref`.
 2. On each due pass the controller asks one probe, `Change { ref }`. The
    manager answers it through the Forge port with one complete observation
    or Unknown.
@@ -57,9 +55,22 @@ forge calls when the change has many notes, and one small bookkeeping write.
 
 ## Implementation and evidence
 
-Planned. The first implementation step is this controller together with the
-`fleet-forge` crate: the Forge port, the `github` and `gitlab` adapters, the
-file-backed fake, sequence numbers and the closed grace, each with an E2E
-suite driving the built CLI against stub `gh` and `glab` executables. The
+| Responsibility | Source | Tests |
+| --- | --- | --- |
+| Pure decisions, numbering, cadence and retention | [ChangeRequestController](../../crates/fleet-controllers/src/change_request.rs) | [Controller transitions](../../crates/fleet-controllers/tests/change_request_controller.rs) |
+| Resource, status and port types | [ChangeRequest types](../../crates/fleet-api/src/change_request.rs), [Forge port](../../crates/fleet-api/src/forge.rs), [plans](../../crates/fleet-api/src/plan.rs) | [Forge E2E](../../crates/fleet-cli/tests/e2e_forge.rs) |
+| Sweep by kind, host-ordered deferral, fenced delete | [Manager](../../crates/fleet-manager/src/lib.rs) | [Forge E2E](../../crates/fleet-cli/tests/e2e_forge.rs), [Store contract](../../crates/fleet-store/tests/store_contract.rs) |
+| Apply by URL, the derived name, ref verification | [Verbs](../../crates/fleet-manager/src/verbs.rs) | [Forge E2E](../../crates/fleet-cli/tests/e2e_forge.rs) |
+| GitHub through `gh`, GitLab through `glab`, the fake | [fleet-forge](../../crates/fleet-forge/src/lib.rs): [github](../../crates/fleet-forge/src/github.rs), [gitlab](../../crates/fleet-forge/src/gitlab.rs), [fake](../../crates/fleet-forge/src/fake.rs) | Truth tables in each adapter's unit tests; [Forge E2E](../../crates/fleet-cli/tests/e2e_forge.rs) against the stub `gh` and `glab` |
+| `[forge]` configuration | [CLI config](../../crates/fleet-cli/src/config.rs) | [Forge E2E](../../crates/fleet-cli/tests/e2e_forge.rs) |
+| Crate edges and the field manager | [architecture.toml](../../crates/architecture.toml) | [Architecture suite](../../crates/fleet-arch/tests/architecture.rs) |
+
+The forge E2E suite drives the built CLI through apply by URL, idempotent
+re-apply, the aliasing refusal, bookkeeping-only polls, numbering of notes,
+edits, unresolves, head and state transitions, the 100-note cap, Unknown
+answers and `retryAfter`, host-wide deferral, the closed grace and reopen,
+merged settling, retention and the fenced delete, against the fake forge; and
+pagination, truth tables, rate limits, missing logins, a hung CLI's killed
+process tree and proven absence against the stub `gh` and `glab`. The
 [Forge controller guide](../forge-controller/README.md#implementation-and-evidence)
-lists the steps that follow.
+lists the steps that follow this one.

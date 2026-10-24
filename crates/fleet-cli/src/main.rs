@@ -11,10 +11,13 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
+use fleet_api::change_request::ChangeRequestDefaults;
+use fleet_api::forge::Forge;
 use fleet_api::result::{Outcome, TaskResult};
 use fleet_api::runtime::Runtime;
 use fleet_api::{API_VERSION, Object, Observation, Store, StoreError};
-use fleet_manager::{Manager, RunOptions, apply, delete, record_result};
+use fleet_forge::{ForgeHosts, HostConfig, HostKind};
+use fleet_manager::{Manager, RunOptions, apply, apply_change_request, delete, record_result};
 use fleet_runtime::{FakeHost, FakeRuntime, ThurboxConfig, ThurboxRuntime};
 use fleet_store::{FileStore, SystemClock};
 use serde_json::{Value, json};
@@ -264,7 +267,7 @@ fn run(cli: Cli) -> Result<(), Failure> {
             cmd_up(store, &config, &path, poll_ms, lease_ttl_ms)
         }
         Command::Init { .. } => unreachable_version(),
-        Command::Apply { file, json } => cmd_apply(store, &file, json),
+        Command::Apply { file, json } => cmd_apply(store, &config, &file, json),
         Command::Get { kind, name } => {
             let obj = get(store, &served_kind(&kind)?, &name)?;
             print_json(&serde_json::to_value(&obj).map_err(|e| fail(e.to_string()))?);
@@ -325,13 +328,19 @@ fn run(cli: Cli) -> Result<(), Failure> {
             json,
         } => {
             let runtime = open_runtime(&config)?;
-            let lease_ttl_ms = lease_for(runtime.operation_bound(), lease_ttl_ms)?;
+            let forge = open_forge(&config)?;
+            let bound = runtime
+                .operation_bound()
+                .max(forge.as_ref().map_or(0, |f| f.operation_bound()));
+            let lease_ttl_ms = lease_for(bound, lease_ttl_ms)?;
             let holder = holder.unwrap_or_else(|| format!("fleet-{}", std::process::id()));
             let manager = Manager {
                 store,
                 runtime: runtime.as_ref(),
                 clock: &SystemClock,
                 holder,
+                forge: forge.as_ref().map(|f| f as &dyn Forge),
+                change_request_defaults: forge_defaults(&config),
             };
             let report = manager.run(RunOptions {
                 max_passes,
@@ -379,6 +388,7 @@ fn cmd_up(
         .as_ref()
         .ok_or_else(|| fail("no starter workspace configured; run fleet init first"))?;
     let runtime = open_runtime(config)?;
+    let forge = open_forge(config)?;
     let task = match store.get("Task", "vega") {
         Observation::Known(Some(task)) => task,
         Observation::Known(None) => {
@@ -414,7 +424,10 @@ fn cmd_up(
         ));
     }
     let ttl = lease_for(
-        runtime.operation_bound().max(poll_ms.saturating_mul(2)),
+        runtime
+            .operation_bound()
+            .max(forge.as_ref().map_or(0, |f| f.operation_bound()))
+            .max(poll_ms.saturating_mul(2)),
         lease_ttl_ms,
     )?;
     let stopped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -426,6 +439,8 @@ fn cmd_up(
         runtime: runtime.as_ref(),
         clock: &SystemClock,
         holder: format!("fleet-up-{}", std::process::id()),
+        forge: forge.as_ref().map(|f| f as &dyn Forge),
+        change_request_defaults: forge_defaults(config),
     };
     println!(
         "Task/vega {}: reconciling all Tasks; config {}; Ctrl-C stops Fleet and retains sessions",
@@ -489,10 +504,11 @@ fn version(json: bool) -> Result<(), Failure> {
         print_json(&json!({
             "version": VERSION,
             "apiVersions": [API_VERSION],
-            "kinds": [fleet_api::task::KIND, fleet_api::config::TASK_CONFIG, fleet_api::config::ENV_PROVIDER],
+            "kinds": [fleet_api::task::KIND, fleet_api::config::TASK_CONFIG, fleet_api::config::ENV_PROVIDER, fleet_api::change_request::KIND],
             "configVersion": CONFIG_VERSION,
             "storeFormat": {"format": "fleet-store", "version": 1},
             "runtimes": ["thurbox", "fake"],
+            "forges": ["github", "gitlab", "fake"],
         }));
     } else {
         println!("fleet {VERSION}");
@@ -549,6 +565,46 @@ fn open_runtime(config: &Config) -> Result<Box<dyn Runtime>, Failure> {
     }
 }
 
+/// The configured forges, one adapter per `[forge.hosts]` entry, or `None`
+/// when the config has no `[forge]` section.
+fn open_forge(config: &Config) -> Result<Option<ForgeHosts>, Failure> {
+    let Some(cfg) = &config.forge else {
+        return Ok(None);
+    };
+    let mut hosts = std::collections::BTreeMap::new();
+    for (host, h) in &cfg.hosts {
+        let kind = HostKind::parse(&h.kind).ok_or_else(|| {
+            fail(format!(
+                "forge.hosts.{host:?}: unknown kind {:?}; this build has github, gitlab and fake",
+                h.kind
+            ))
+        })?;
+        hosts.insert(
+            host.clone(),
+            HostConfig {
+                kind,
+                cli: h.cli.clone().map(Into::into),
+                dir: h.dir.clone(),
+            },
+        );
+    }
+    let timeout =
+        std::time::Duration::from_millis(cfg.call_timeout_ms.unwrap_or(DEFAULT_CALL_TIMEOUT_MS));
+    ForgeHosts::new(hosts, timeout).map(Some).map_err(fail)
+}
+
+/// The retention defaults a ChangeRequest spec may override.
+fn forge_defaults(config: &Config) -> ChangeRequestDefaults {
+    let base = ChangeRequestDefaults::default();
+    match &config.forge {
+        Some(f) => ChangeRequestDefaults {
+            closed_grace_ms: f.closed_grace_ms.unwrap_or(base.closed_grace_ms),
+            settled_ttl_ms: f.settled_ttl_ms.unwrap_or(base.settled_ttl_ms),
+        },
+        None => base,
+    }
+}
+
 /// The lease a run holds: the one asked for, refused when it cannot outlast
 /// the longest operation, else the default, raised to twice that operation.
 /// The lease is renewed before every probe and every effect, so one runtime
@@ -569,7 +625,7 @@ fn lease_for(bound: u64, asked: Option<u64>) -> Result<u64, Failure> {
 
 const DEFAULT_LEASE_MS: u64 = 30_000;
 
-/// thurbox-cli calls are bounded at half the default lease.
+/// thurbox-cli and forge CLI calls are bounded at half the default lease.
 const DEFAULT_CALL_TIMEOUT_MS: u64 = 15_000;
 
 /// `task`, `tasks` and `Task` all name Task. Unsupported kinds are refused
@@ -581,6 +637,7 @@ fn served_kind(kind: &str) -> Result<String, Failure> {
         "task" => fleet_api::task::KIND.to_string(),
         "taskconfig" => fleet_api::config::TASK_CONFIG.to_string(),
         "envprovider" => fleet_api::config::ENV_PROVIDER.to_string(),
+        "changerequest" => fleet_api::change_request::KIND.to_string(),
         _ => kind.to_string(),
     };
     fleet_api::validate::validate_kind(&kind)?;
@@ -606,7 +663,12 @@ fn read_input(path: &Path) -> Result<Vec<u8>, Failure> {
     std::fs::read(path).map_err(|e| fail(format!("{}: {e}", path.display())))
 }
 
-fn cmd_apply(store: &dyn Store, file: &Path, json_out: bool) -> Result<(), Failure> {
+fn cmd_apply(
+    store: &dyn Store,
+    config: &Config,
+    file: &Path,
+    json_out: bool,
+) -> Result<(), Failure> {
     let bytes = read_input(file)?;
     let doc: Value = serde_json::from_slice(&bytes)
         .map_err(|e| fail(format!("{}: not JSON: {e}", file.display())))?;
@@ -627,9 +689,24 @@ fn cmd_apply(store: &dyn Store, file: &Path, json_out: bool) -> Result<(), Failu
         objs.push(obj);
     }
     let mut out = Vec::new();
+    let mut forge: Option<ForgeHosts> = None;
     for obj in objs {
-        let key = obj.key();
-        let (outcome, stored) = apply(store, obj)?;
+        let (outcome, stored) = if obj.kind == fleet_api::change_request::KIND {
+            // The forge adapter parses the URL and the name derives from it.
+            if forge.is_none() {
+                forge = Some(open_forge(config)?.ok_or_else(|| Failure {
+                    code: exit::ERROR,
+                    message: "a ChangeRequest needs a [forge] section naming its host".into(),
+                    hint: Some(
+                        "add [forge.hosts] with the change's host to the config file".into(),
+                    ),
+                })?);
+            }
+            apply_change_request(store, forge.as_ref().expect("opened"), obj)?
+        } else {
+            apply(store, obj)?
+        };
+        let key = stored.key();
         if json_out {
             out.push(json!({"object": key, "outcome": outcome, "generation": stored.metadata.generation}));
         } else {
@@ -677,7 +754,8 @@ fn status_summary(obj: &Object) -> Value {
             .and_then(Value::as_u64)
             .unwrap_or(0)
     };
-    json!({
+    let field = |k: &str| obj.status.get(k).cloned().unwrap_or(Value::Null);
+    let mut summary = json!({
         "schema": "fleet.status/v1",
         "kind": obj.kind,
         "name": obj.metadata.name,
@@ -686,13 +764,37 @@ fn status_summary(obj: &Object) -> Value {
         "current": observed == obj.metadata.generation,
         "deleting": obj.is_deleting(),
         "finalizers": obj.metadata.finalizers,
-        "phase": obj.status.get("phase").cloned().unwrap_or(Value::Null),
+        "phase": field("phase"),
         "conditions": obj.status.get("conditions").cloned().unwrap_or_else(|| json!([])),
-        "session": obj.status.get("session").cloned().unwrap_or(Value::Null),
-        "execution": obj.status.get("execution").cloned().unwrap_or(Value::Null),
-        "brief": obj.status.get("brief").cloned().unwrap_or(Value::Null),
-        "result": obj.status.get("result").cloned().unwrap_or(Value::Null),
-    })
+    });
+    let own = summary.as_object_mut().expect("object");
+    if obj.kind == fleet_api::change_request::KIND {
+        // The bookkeeping and the whole numbered snapshot.
+        for k in [
+            "ref",
+            "observedAt",
+            "notBefore",
+            "closedAt",
+            "settledAt",
+            "revision",
+            "state",
+            "everReady",
+            "head",
+            "reviewDecision",
+            "mergeable",
+            "threads",
+            "reviews",
+            "notes",
+            "droppedBefore",
+        ] {
+            own.insert(k.to_string(), field(k));
+        }
+    } else {
+        for k in ["session", "execution", "brief", "result"] {
+            own.insert(k.to_string(), field(k));
+        }
+    }
+    summary
 }
 
 fn print_status(s: &Value) {
@@ -727,6 +829,17 @@ fn print_status(s: &Value) {
     }
     if !s["result"].is_null() {
         println!("result {}", s["result"]);
+    }
+    if s["kind"] == fleet_api::change_request::KIND && !s["revision"].is_null() {
+        println!(
+            "revision {} state {} head {} checks {} notes {} unresolved {}",
+            s["revision"],
+            s["state"]["value"].as_str().unwrap_or("-"),
+            s["head"]["id"].as_str().unwrap_or("-"),
+            s["head"]["checks"].as_str().unwrap_or("-"),
+            s["notes"].as_array().map_or(0, Vec::len),
+            s["threads"]["unresolved"]
+        );
     }
 }
 

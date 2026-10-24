@@ -1,7 +1,5 @@
 # ChangeRequest state machine
 
-Design, not implemented.
-
 `status.phase` records how closely the change is watched. The snapshot fields
 record what the forge last said. The [interface](interface.md) defines the one
 probe used here.
@@ -23,6 +21,7 @@ snapshot moves `revision`.
 | Watching | Known, state closed | Closed | Write the snapshot; `closedAt = now`; wait `10 × pollMs`. |
 | Watching or Closed | Known, the change is proven absent | Settled | `Settled=True/Gone`; no further polls. |
 | Watching or Closed | Unknown | unchanged | `Reachable=Unknown` with the reason; snapshot untouched; wait the phase's interval, or the answer's `retryAfter` when it carries one. |
+| Watching, no `status.ref` yet | The URL could not be parsed by the configured adapter | Watching | `Reachable=Unknown/UrlNotParsed`; wait `pollMs`. |
 | Closed | Known, state draft or open | Watching | `revision += 1` through `state.seq` even if nothing else differs; clear `closedAt`; wait `pollMs`. |
 | Closed | Known, state merged | Settled | As from Watching. |
 | Closed | Known, still closed, within `closedGraceMs` of `closedAt` | Closed | Write only if something differs; wait `10 × pollMs`. |
@@ -50,8 +49,8 @@ observation complete.
 
 | Type | True means / relevant reason |
 | --- | --- |
-| Reachable | The last poll read the change completely. Unknown with a reason after a timeout, an incomplete or unparseable answer, a throttled answer or a missing login. |
-| Mergeable | The forge's own answer, as `status.mergeable`: True when the forge says the change can be merged now, False with the forge's reason (conflicts, missing approvals, failing required checks, branch rules, draft), Unknown while the forge is still computing it or the forge has no such answer. Fleet reports it and never acts on it. |
+| Reachable | The last poll read the change completely (`Observed`). Unknown with the reason after a timeout (`Timeout`), an incomplete read (`Incomplete`), an unparseable answer (`Unreadable`), a throttled answer (`Throttled`), a missing login (`NotLoggedIn`), a refusal that is not proven absence (`Refused`), a CLI that could not start (`CliUnavailable`) or a URL the adapter could not place (`UrlNotParsed`). |
+| Mergeable | The forge's own answer, as `status.mergeable`: True (`Mergeable`) when the forge says the change can be merged now, False with the forge's reason as a CamelCase word (`Conflicts`, `Blocked`, `CiMustPass`, `Draft`, ...) and the raw reason in the message, Unknown (`Computing`) while the forge is still computing it or has no such answer. Fleet reports it and never acts on it. |
 | Settled | `Merged`, `ClosedGraceExpired` or `Gone`. |
 
 Conditions keep their `lastTransitionTime` unless their status changes, so a

@@ -4,6 +4,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::forge::ChangeRef;
 use crate::meta::Millis;
 use crate::observation::Observation;
 use crate::task::SessionRef;
@@ -18,6 +19,10 @@ pub struct Plan {
     pub effects: Vec<Effect>,
     /// Remove this finalizer once `status` is written and every effect ran.
     pub remove_finalizer: Option<String>,
+    /// Delete this object, by its `uid` and `resourceVersion` under the
+    /// lease: how a controller retires its own object once its retention
+    /// passed. Only ChangeRequestController asks.
+    pub delete: bool,
 }
 
 /// An effect outside the store, under a deterministic key: a key that has a
@@ -111,11 +116,27 @@ pub enum EffectOutcome {
 /// the adapters, then calls the controller again with the answers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Probe {
-    Host { host: String },
-    Find { host: String, key: String },
-    Ready { session: SessionRef },
-    BriefDelivered { session: SessionRef, key: String },
-    AtRest { session: SessionRef },
+    Host {
+        host: String,
+    },
+    Find {
+        host: String,
+        key: String,
+    },
+    Ready {
+        session: SessionRef,
+    },
+    BriefDelivered {
+        session: SessionRef,
+        key: String,
+    },
+    AtRest {
+        session: SessionRef,
+    },
+    /// One complete observation of a change, through the Forge port.
+    Change {
+        change: ChangeRef,
+    },
 }
 
 /// The answers to the probes; `None` means "not asked".

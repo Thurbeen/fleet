@@ -4,3 +4,5 @@ dir = "data"
 [runtime]
 kind = "fake"
 dir = "fake-host"
+[forge.hosts]
+"forge.example" = { kind = "fake", dir = "fake-forge" }

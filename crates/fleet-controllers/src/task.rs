@@ -130,6 +130,7 @@ impl TaskController {
             status,
             effects: r.effects,
             remove_finalizer: r.remove_finalizer,
+            delete: false,
         })
     }
 }

@@ -167,7 +167,7 @@ snapshot, the Task and the probes above:
 
 `fleet init` writes three policies into the generated config, `checks`,
 `checks-and-bots` and `strict`; the
-[native config](../configuration/fleet-toml.md#planned-forge-section) shows
+[native config](../configuration/fleet-toml.md#the-forge-section) shows
 them. They are ordinary entries: rename, edit or delete them. A policy naming
 an unknown predicate is refused at config load; a Task selecting a policy the
 config does not define is refused at apply, and a policy removed from the

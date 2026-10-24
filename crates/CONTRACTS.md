@@ -18,19 +18,17 @@ v1's queue records, extension or operator configuration, and the root
 | `Task` | one agent session doing one brief | TaskController; the worker writes `status.result` |
 | `TaskConfig` | reusable execution defaults | nobody (passive data) |
 | `EnvProvider` | stored data and explicit file/command environment sources | nobody (passive data) |
+| `ChangeRequest` | one mirrored change on a forge | ChangeRequestController |
 
 Unrecognized kinds are refused on write as `unknown kind "X"`. A Task spec
 accepts the fields below (`deny_unknown_fields`), and no object may carry
 `ownerReferences`.
 
-`ChangeRequest` is designed and not served, with a second controller over
-the Task beside it: see the
-[ChangeRequest](../docs/change-request-controller/README.md) and
-[Forge](../docs/forge-controller/README.md) controller guides. This build
-refuses the kind as unknown, and `e2e_task_lifecycle` asserts it. That
-design adds one thing to the store contract below: a Task field,
-`status.inbox`, with no single owner, reached only through typed append and
-remove mutations that refuse a duplicate key.
+The [Forge controller](../docs/forge-controller/README.md), a second
+controller over the Task, is designed and not served. That design adds one
+thing to the store contract below: a Task field, `status.inbox`, with no
+single owner, reached only through typed append and remove mutations that
+refuse a duplicate key.
 
 ## Crates and the allowed graph
 
@@ -40,8 +38,9 @@ fleet-controllers  pure           TaskController         -> api
 fleet-exec         adapter        the one process spawner
 fleet-store        adapter        file store             -> api
 fleet-runtime      adapter        thurbox-cli, fake      -> api, exec
+fleet-forge        adapter        gh, glab, fake         -> api, exec
 fleet-manager      orchestration  lease, plans, verbs    -> api, controllers
-fleet-cli          edge           the `fleet` binary     -> api, manager, store, runtime
+fleet-cli          edge           the `fleet` binary     -> api, manager, store, runtime, forge
 fleet-arch         tooling        the architecture test
 fleet-dev          tooling        `cargo xtask`: gate and release
 ```
@@ -57,13 +56,17 @@ fleet-dev          tooling        `cargo xtask`: gate and release
 - No crate reaches another crate it may not depend on through a third
   crate's re-export.
 - Only the crates listed may name a status-writing field manager: only
-  fleet-controllers names `FieldManager::TaskController`.
-- The CLI calls no store write, no controller method and no runtime effect:
-  it parses, calls a fleet-manager verb, and prints.
+  fleet-controllers names `FieldManager::TaskController` and
+  `FieldManager::ChangeRequestController`.
+- The CLI calls no store write, no controller method, no runtime effect and
+  no forge read: it parses, calls a fleet-manager verb, and prints.
 - Only fleet-exec reaches `std::process::Command`, `std::os::unix::process`,
   `std::os::windows::process` or `process_wrap`. Every program fleet runs is
   bounded and has its whole process tree killed past its bound or on an early
   return: a process group on Unix, a job object on Windows.
+- fleet-forge depends on nothing above the API and the spawner and is
+  depended on by the CLI alone: no forge-specific name appears above the
+  Forge port.
 
 Each rule has a negative fixture that breaks it, and the test requires the
 checker to report exactly that rule. The pure crates also carry
@@ -138,6 +141,56 @@ Guarantees, each with its test:
 Conditions: `HostReachable`, `Spawned`, `Briefed`, `Stalled`, `WorkerGone`,
 `Concluded`, `Released`, `NeedsAttention`.
 
+## ChangeRequest
+
+```text
+spec.url             the change's URL, the only forge-specific input
+spec.pollMs          poll interval while Watching (default 60000)
+spec.closedGraceMs   how long a closed change stays watched (default forge.closedGraceMs)
+spec.settledTtlMs    how long a settled mirror is retained (default forge.settledTtlMs)
+```
+
+The spec is fixed once created. `fleet apply` parses the URL through the
+adapter of its host (a host not under `[forge.hosts]` is refused), derives
+the name `cr-<12 hex of sha256(<kind>/<host>/<project>/<id>)>` when the
+manifest gives none, and reuses an existing object only when it mirrors the
+same change: its `status.ref` once written, else its own URL parsed. See the
+[resource](../docs/resources/change-request.md),
+[state machine](../docs/change-request-controller/state-machine.md) and
+[interface](../docs/change-request-controller/interface.md).
+
+ChangeRequestController is a pure function from the ChangeRequest and one
+observation of its change to a plan: the status to write and, after
+retention, whether to delete its own object. It has no effects and no
+finalizer. Guarantees, each with its test in `change_request_controller` and
+`e2e_forge`:
+
+- **One complete observation, or Unknown.** The adapter answers Known only
+  when it read every page the forge holds; a timeout, a throttled answer, an
+  incomplete or unparseable read or a missing login is Unknown with its
+  reason, leaves the snapshot untouched, and waits one interval or the
+  forge's `retryAfter`. Unknown never means closed, merged, empty or gone.
+- **Numbered on first sight.** `revision` moves only when the snapshot
+  differs; every note first seen, edited or unresolved, and every change of
+  state, head (id, checks or failing) or review decision takes that
+  revision as its `seq`. An unchanged poll writes `observedAt` and
+  `notBefore` only. The newest 100 notes are kept; `droppedBefore` rises to
+  the `seq` of a stored note rotated out.
+- **Cadence.** Watching polls every `pollMs`; a closed change is polled ten
+  times more slowly for `closedGraceMs`, reopens into Watching with a new
+  `state.seq`, or settles (`ClosedGraceExpired`). Merged settles (`Merged`);
+  proven absence settles (`Gone`). A settled object is not polled.
+- **Retention.** `settledTtlMs` after settling, the controller plans
+  `delete`; the manager performs it by `uid` and `resourceVersion` under the
+  lease (`Store::delete_fenced`), so a recreated or rewritten object is not
+  removed. A person may delete at any time; nothing on the forge changes.
+- **Host-wide deferral.** The sweep visits ChangeRequests by host then name;
+  a `retryAfter` from one defers every later one on that host without asking.
+- **Nothing acted on.** `mergeable` is the forge's own answer, reported as
+  the `Mergeable` condition and never acted on. The port has no merge method.
+
+Conditions: `Reachable`, `Mergeable`, `Settled`.
+
 ## Store
 
 A data directory holds `store.json` (format and version), `lock`, `seq`,
@@ -158,6 +211,9 @@ refused.
   token is refused, and the token only grows.
 - Deleting marks a Task while its finalizer remains; only its controller,
   holding the lease, removes the finalizer, and only from a deleting Task.
+- A controller deletes its own object (`delete_fenced`) only with the
+  object's `uid` and current `resourceVersion` and the lease; a ChangeRequest
+  has no finalizer, so it goes at once.
 
 ## Runtime contract
 
@@ -181,10 +237,34 @@ Each adapter reports its longest single operation (`operation_bound`), and
 - **fake:** a file-backed host for tests and trials, with injectable faults
   (lost answers, refusals, delays, hangs). It runs no process.
 
+## Forge contract
+
+`fleet_api::forge::Forge`: `operation_bound`, `parse`, `whoami`, `change`
+and `mark_ready` (a default that answers `Failed` until the Forge controller
+step implements it). `change` answers `Known(Some)` with a complete
+`ChangeSnapshot`, `Known(None)` for proven absence, or Unknown with an
+`Uncertainty` and an optional `retryAfter`. Adapters live in `fleet-forge`,
+one per `[forge.hosts]` entry, chosen by the host a URL or ref names:
+
+- **github:** bounded `gh api graphql --hostname <host> --include` calls, one
+  query paginated over reviews, comments and review threads; at most six
+  calls per observation, Unknown with `Incomplete` past that.
+- **gitlab:** bounded `glab api --hostname <host> --include` calls: the
+  merge request, its discussions by page, its approvals; a 404 is absence
+  only when the project itself answers.
+- **fake:** a file-backed forge for tests and trials, with injectable faults
+  (lost, timeout, throttle with `retryAfter`, incomplete, malformed, absent).
+  It runs no process.
+
+Credentials stay with each CLI's own login; Fleet passes none and stores none.
+
 ## The command line
 
 `fleet init|up|apply|get|list|status|result|delete|reconcile|version`. Exit codes:
 0 ok, 1 refused, 2 usage, 3 not found, 4 Unknown, 5 conflict, 6 lease.
+`apply`, `get`, `list`, `status` and `delete` take `changerequest` as well as
+`task`, `taskconfig` and `envprovider`; `status changerequest NAME --json`
+prints the ref and the whole numbered snapshot.
 
 The config file is versioned TOML; relative paths are relative to it. This
 one runs the fake runtime:
@@ -200,7 +280,8 @@ kind = "fake"
 dir = "fake-host"
 ```
 
-A real host uses the thurbox runtime:
+A real host uses the thurbox runtime, and a `[forge]` section names the
+forges ChangeRequests are read from:
 
 ```text
 [runtime]
@@ -208,6 +289,9 @@ kind = "thurbox"
 cli = "thurbox-cli"       # a path or a name on PATH
 callTimeoutMs = 15000     # the bound on every call; shorter than the lease
 keyPrefix = "fleet"       # give a second fleet on the same hosts its own
+
+[forge.hosts]
+"github.com" = { kind = "github", cli = "gh" }
 ```
 
 A Task manifest:
@@ -232,7 +316,7 @@ A Task manifest:
 
 `fleet reconcile` takes the manager lease, runs passes until nothing changes
 (or `--max-passes`), and gives the lease back. Its default lease is 30 s,
-raised to twice the runtime's longest operation.
+raised to twice the longest operation of the runtime or the forge port.
 
 `fleet init` installs the pinned embedded VEGA starter offline and creates
 native per-user config; `--update` advances unedited managed workspace files
@@ -251,8 +335,9 @@ customized updates, resident progress, exclusive startup and crash/reconnect.
 ## Tests
 
 The `e2e_*` suites drive the real `fleet` binary against an isolated store,
-the fake host or a stub `thurbox-cli`, across process restarts and injected
-faults. `task_controller` tests the controller as a pure function, one
-transition or Unknown per case. `store_contract` tests the store against
-races, torn writes and stale leases. The `architecture` suite enforces the
-graph above.
+the fake host or a stub `thurbox-cli`, and, for `e2e_forge`, the fake forge
+or the same stub copied as `gh` and `glab`, across process restarts and
+injected faults. `task_controller` and `change_request_controller` test each
+controller as a pure function, one transition or Unknown per case.
+`store_contract` tests the store against races, torn writes, stale leases
+and the fenced delete. The `architecture` suite enforces the graph above.

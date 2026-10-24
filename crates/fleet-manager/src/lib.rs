@@ -6,19 +6,33 @@
 //! intent first (compare-and-swap, fenced by the lease), then the effect,
 //! then its receipt. It also hosts the spec and worker verbs, so the CLI only
 //! parses and prints.
+//!
+//! The same sweep walks the ChangeRequests: each due one is observed through
+//! the Forge port and decided by ChangeRequestController, whose plan is one
+//! status write and, after retention, one fenced delete. There are no effects
+//! and no receipts on that side.
 
 mod execution;
 pub mod verbs;
 
+use std::collections::BTreeMap;
+
+use fleet_api::change_request::{self, ChangeRequestDefaults, ChangeRequestSpec};
+use fleet_api::forge::{ChangeObservation, Forge, Uncertainty};
 use fleet_api::plan::{Action, Effect, EffectOutcome, Observations, Plan, Probe, Receipt};
 use fleet_api::runtime::Runtime;
 use fleet_api::task;
 use fleet_api::{Clock, LeaseToken, Millis, Object, Observation, Store, StoreError};
-use fleet_controllers::{TaskController, TaskInput};
+use fleet_controllers::{
+    ChangeRequestController, ChangeRequestInput, ChangeRequestObservations, TaskController,
+    TaskInput,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub use verbs::{ApplyOutcome, ResultOutcome, apply, delete, record_result};
+pub use verbs::{
+    ApplyOutcome, ResultOutcome, apply, apply_change_request, delete, derived_name, record_result,
+};
 
 /// How a bounded reconcile run ends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,6 +66,11 @@ pub struct Manager<'a> {
     pub runtime: &'a dyn Runtime,
     pub clock: &'a dyn Clock,
     pub holder: String,
+    /// The configured forges; `None` when the config has no `[forge]`, in
+    /// which case a ChangeRequest is reported as an error, never polled.
+    pub forge: Option<&'a dyn Forge>,
+    /// The `[forge]` defaults a ChangeRequest spec may override.
+    pub change_request_defaults: ChangeRequestDefaults,
 }
 
 impl std::fmt::Debug for Manager<'_> {
@@ -68,6 +87,34 @@ struct Step {
     wrote: u32,
     effects: u32,
     conflict: bool,
+}
+
+/// A forge's answer to slow down, handed to every later ChangeRequest of the
+/// same host in the sweep instead of asking again.
+#[derive(Debug, Clone)]
+struct Deferral {
+    kind: Uncertainty,
+    why: String,
+    retry_after: Millis,
+}
+
+impl Deferral {
+    fn observation(&self) -> ChangeObservation {
+        ChangeObservation::Unknown {
+            kind: self.kind,
+            why: format!("deferred with the host: {}", self.why),
+            retry_after: Some(self.retry_after),
+        }
+    }
+}
+
+/// The forge host a ChangeRequest is on, once its controller recorded the
+/// ref; empty before that, which sorts such objects first.
+fn host_of(obj: &Object) -> String {
+    obj.status["ref"]["host"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string()
 }
 
 impl Manager<'_> {
@@ -145,6 +192,7 @@ impl Manager<'_> {
                 let step = self.reconcile_task(obj, lease, opts.lease_ttl, report);
                 busy |= self.tally(step, &obj.key(), report)?;
             }
+            busy |= self.sweep_change_requests(lease, opts.lease_ttl, report)?;
             if !busy {
                 report.idle = true;
                 return Ok(());
@@ -152,6 +200,138 @@ impl Manager<'_> {
         }
         report.idle = false;
         Ok(())
+    }
+
+    /// Every due ChangeRequest, one host at a time in a stable order, so that
+    /// a `retryAfter` from a forge defers all of that host's together: the
+    /// ones after it in the order are not asked, they take the same answer.
+    /// Returns whether anything changed.
+    fn sweep_change_requests(
+        &self,
+        lease: &mut LeaseToken,
+        ttl: Millis,
+        report: &mut RunReport,
+    ) -> Result<bool, StoreError> {
+        let changes = match self.store.list(change_request::KIND) {
+            Observation::Known(c) => c,
+            Observation::Unknown { why } => {
+                report.unknowns.push(format!("list ChangeRequest: {why}"));
+                return Ok(false);
+            }
+        };
+        let mut due: Vec<&Object> = changes.iter().filter(|c| self.due(c)).collect();
+        due.sort_by_cached_key(|o| (host_of(o), o.metadata.name.clone()));
+        let mut deferred: BTreeMap<String, Deferral> = BTreeMap::new();
+        let mut busy = false;
+        for obj in due {
+            *lease = self.store.renew_lease(lease, ttl)?;
+            let step = self.reconcile_change_request(obj, lease, ttl, report, &mut deferred);
+            busy |= self.tally(step, &obj.key(), report)?;
+        }
+        Ok(busy)
+    }
+
+    /// One ChangeRequest: parse its URL when its ref is not yet recorded,
+    /// observe the change through the Forge port, decide, then write the
+    /// status (compare-and-swap, under the lease) and, when the plan says so,
+    /// delete the object by its uid and resourceVersion.
+    fn reconcile_change_request(
+        &self,
+        obj: &Object,
+        lease: &mut LeaseToken,
+        ttl: Millis,
+        report: &mut RunReport,
+        deferred: &mut BTreeMap<String, Deferral>,
+    ) -> Result<Step, StoreError> {
+        let Some(forge) = self.forge else {
+            return Err(StoreError::Invalid(
+                "no [forge] section is configured; a ChangeRequest cannot be polled".into(),
+            ));
+        };
+        let spec: ChangeRequestSpec = fleet_api::validate::typed(change_request::KIND, &obj.spec)?;
+        let mut input = ChangeRequestInput {
+            object: obj,
+            observations: ChangeRequestObservations::default(),
+            now: self.clock.now(),
+            defaults: self.change_request_defaults,
+        };
+        if obj.status.get("ref").is_none_or(Value::is_null) {
+            // The probe names the ref, so the first poll needs it parsed first.
+            let parsed = forge.parse(&spec.url);
+            if let Some(why) = parsed.why() {
+                report.unknowns.push(format!("{} parse: {why}", obj.key()));
+            }
+            input.observations.parsed = Some(parsed);
+        }
+        let ctl = ChangeRequestController;
+        for probe in ctl.probes(&input)? {
+            let Probe::Change { change } = &probe else {
+                continue;
+            };
+            *lease = self.store.renew_lease(lease, ttl)?;
+            let answer = match deferred.get(&change.host) {
+                Some(d) => d.observation(),
+                None => forge.change(change),
+            };
+            if let ChangeObservation::Unknown {
+                kind,
+                why,
+                retry_after: Some(wait),
+            } = &answer
+            {
+                deferred.entry(change.host.clone()).or_insert(Deferral {
+                    kind: *kind,
+                    why: why.clone(),
+                    retry_after: *wait,
+                });
+            }
+            if let Some(why) = answer.why() {
+                report.unknowns.push(format!("{} change: {why}", obj.key()));
+            }
+            input.observations.change = Some(answer);
+        }
+        let plan = ctl.reconcile(&input)?;
+        let by = ChangeRequestController::MANAGER;
+        let name = &obj.metadata.name;
+        let mut step = Step::default();
+        let mut rv = obj.metadata.resource_version;
+        if let Some(status) = plan.status {
+            match self.store.update_status(
+                change_request::KIND,
+                name,
+                status,
+                rv,
+                by,
+                Some(&*lease),
+            ) {
+                Ok(o) => {
+                    rv = o.metadata.resource_version;
+                    step.wrote += 1;
+                }
+                Err(StoreError::Conflict { .. }) => {
+                    step.conflict = true;
+                    return Ok(step);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        if plan.delete {
+            *lease = self.store.renew_lease(lease, ttl)?;
+            match self.store.delete_fenced(
+                change_request::KIND,
+                name,
+                &obj.metadata.uid,
+                rv,
+                by,
+                lease,
+            ) {
+                Ok(_) => step.wrote += 1,
+                // Recreated or rewritten since the decision: nothing removed.
+                Err(StoreError::Conflict { .. }) => step.conflict = true,
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(step)
     }
 
     /// A Task waiting out `notBefore` after a failed or unknown attempt is
@@ -370,6 +550,8 @@ impl Manager<'_> {
                 note("atRest", o.why());
                 obs.at_rest = Some(o);
             }
+            // Not a Task's probe: TaskController never asks it.
+            Probe::Change { .. } => {}
         }
     }
 

@@ -1,7 +1,10 @@
-//! A bounded stand-in for `thurbox-cli`, so the end-to-end tests drive the
-//! real binary against something that behaves like it without any real
-//! session or host: `session …` and `doctor …`, the slice the runtime adapter
-//! calls, answering in its JSON shapes.
+//! A bounded stand-in for `thurbox-cli`, `gh` and `glab`, so the end-to-end
+//! tests drive the real binary against something that behaves like them
+//! without any real session, host or forge. As `thurbox-cli` it answers
+//! `session …` and `doctor …`, the slice the runtime adapter calls, in its
+//! JSON shapes. Copied to a file named `gh` or `glab` it answers `api …` in
+//! that forge's shapes, GraphQL for GitHub and REST for GitLab, rendered from
+//! one forge-neutral model under `changes` in its state.
 //!
 //! Its whole state is one JSON file in `$FLEET_STUB_DIR`, guarded by a lock
 //! file so concurrent fleet processes see one host. Every call is appended to
@@ -197,9 +200,372 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     log_call(&args);
-    match args.first().map(String::as_str) {
-        Some("session") | Some("doctor") => thurbox(&args),
+    let role = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
+        .unwrap_or_default();
+    match (role.as_str(), args.first().map(String::as_str)) {
+        ("gh", Some("api")) => forge::gh(&args),
+        ("glab", Some("api")) => forge::glab(&args),
+        (_, Some("session") | Some("doctor")) => thurbox(&args),
         _ => fail("stub: unknown role"),
+    }
+}
+
+/// The forge roles: one model, two renderings. A change lives under
+/// `changes["<project>#<id>"]` as
+/// `{state, head, checks: [{name, state, url}], reviewDecision, mergeable,
+/// approvedBy, reviews: [{id, author, bot, state, body, head, at, editedAt}],
+/// comments: [{id, author, bot, body, at, editedAt}],
+/// threads: [{id, resolved, path, line, comments: [...]}]}`; `pageSize`
+/// bounds a GitHub page, `login` answers whoami, `noRepo` makes the project
+/// itself absent. Faults are armed under the call `gh` or `glab`: `fail`,
+/// `hang`, `auth`, `rate-limit` (with `retryAfter` seconds) and `malformed`.
+mod forge {
+    use std::process::ExitCode;
+
+    use serde_json::{Value, json};
+
+    use super::{Lock, fail, hang, load, save, take_fault};
+
+    const HEAD: &str = "HTTP/2.0 200 OK\r\nX-Ratelimit-Remaining: 4999\r\n\r\n";
+
+    fn iso(ms: &Value) -> Value {
+        let Some(ms) = ms.as_u64() else {
+            return Value::Null;
+        };
+        let (secs, millis) = (ms / 1000, ms % 1000);
+        let days = i64::try_from(secs / 86_400).unwrap_or(0);
+        let rem = secs % 86_400;
+        // Civil-from-days, Howard Hinnant's algorithm.
+        let z = days + 719_468;
+        let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+        let doe = z - era * 146_097;
+        let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+        let y = yoe + era * 400;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let d = doy - (153 * mp + 2) / 5 + 1;
+        let m = if mp < 10 { mp + 3 } else { mp - 9 };
+        let y = if m <= 2 { y + 1 } else { y };
+        json!(format!(
+            "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.{millis:03}Z",
+            rem / 3600,
+            (rem % 3600) / 60,
+            rem % 60
+        ))
+    }
+
+    fn var(args: &[String], name: &str) -> Option<String> {
+        args.iter()
+            .filter(|a| a.contains('='))
+            .filter_map(|a| a.split_once('='))
+            .find(|(k, _)| *k == name)
+            .map(|(_, v)| v.to_string())
+    }
+
+    fn flag(args: &[String], name: &str) -> bool {
+        var(args, name).as_deref() == Some("true")
+    }
+
+    fn answer(code: ExitCode, head: &str, body: &str) -> ExitCode {
+        print!("{head}{body}");
+        code
+    }
+
+    /// Arm and apply the role's fault; `None` means proceed normally.
+    fn faulted(
+        state: &mut Value,
+        lock: Lock,
+        role: &str,
+        args: &[String],
+    ) -> Result<Lock, ExitCode> {
+        let fault = take_fault(state, role);
+        let Some(mode) = fault.as_deref() else {
+            return Ok(lock);
+        };
+        let mode = mode.to_string();
+        save(state);
+        drop(lock);
+        let retry = state["retryAfter"].as_u64().unwrap_or(30);
+        let _ = args;
+        Err(match mode.as_str() {
+            "hang" => hang(),
+            "auth" => {
+                eprintln!("To get started with {role}, please run: {role} auth login");
+                ExitCode::from(4)
+            }
+            "rate-limit" => {
+                let status = if role == "gh" {
+                    "403 Forbidden"
+                } else {
+                    "429 Too Many Requests"
+                };
+                answer(
+                    ExitCode::from(1),
+                    &format!(
+                        "HTTP/2.0 {status}\r\nRetry-After: {retry}\r\nX-Ratelimit-Remaining: 0\r\n\r\n"
+                    ),
+                    "{\"message\":\"API rate limit exceeded for this user.\"}",
+                )
+            }
+            "malformed" => answer(ExitCode::SUCCESS, HEAD, "<html>not json"),
+            _ => fail(&format!("stub: {role} refused")),
+        })
+    }
+
+    fn change<'a>(state: &'a Value, project: &str, id: &str) -> Option<&'a Value> {
+        state["changes"].get(format!("{project}#{id}"))
+    }
+
+    fn author(item: &Value) -> Value {
+        json!({"login": item["author"], "__typename": if item["bot"] == true { "Bot" } else { "User" }})
+    }
+
+    /// One page of a connection: cursors are indexes.
+    fn page(items: &[Value], after: Option<String>, size: usize) -> (Vec<Value>, Value) {
+        let start = after
+            .and_then(|c| c.parse::<usize>().ok())
+            .map_or(0, |i| i + 1);
+        let end = (start + size).min(items.len());
+        let nodes = items[start..end].to_vec();
+        let info = json!({"hasNextPage": end < items.len(), "endCursor": if end > start { json!((end - 1).to_string()) } else { Value::Null }});
+        (nodes, info)
+    }
+
+    pub fn gh(args: &[String]) -> ExitCode {
+        let lock = Lock::take();
+        let mut state = load();
+        let _lock = match faulted(&mut state, lock, "gh", args) {
+            Ok(l) => l,
+            Err(code) => return code,
+        };
+        let query = var(args, "query").unwrap_or_default();
+        if query.contains("viewer") {
+            let login = state["login"].as_str().unwrap_or("stub-login");
+            return answer(
+                ExitCode::SUCCESS,
+                HEAD,
+                &json!({"data": {"viewer": {"login": login}}}).to_string(),
+            );
+        }
+        let (owner, name, number) = (
+            var(args, "owner").unwrap_or_default(),
+            var(args, "name").unwrap_or_default(),
+            var(args, "number").unwrap_or_default(),
+        );
+        if state["noRepo"] == true {
+            return answer(ExitCode::from(1), HEAD, &json!({"data": {"repository": null}, "errors": [{"type": "NOT_FOUND", "path": ["repository"], "message": "Could not resolve to a Repository"}]}).to_string());
+        }
+        let Some(c) = change(&state, &format!("{owner}/{name}"), &number) else {
+            return answer(ExitCode::from(1), HEAD, &json!({"data": {"repository": {"pullRequest": null}}, "errors": [{"type": "NOT_FOUND", "path": ["repository", "pullRequest"], "message": "Could not resolve to a PullRequest"}]}).to_string());
+        };
+        let size = usize::try_from(state["pageSize"].as_u64().unwrap_or(100)).unwrap_or(100);
+        let head = c["head"].as_str().unwrap_or("").to_string();
+        let mut pr = json!({});
+        if flag(args, "withCore") {
+            let state_word = match c["state"].as_str().unwrap_or("open") {
+                "closed" => "CLOSED",
+                "merged" => "MERGED",
+                _ => "OPEN",
+            };
+            let (mergeable, merge_state) = match c["mergeable"].as_str().unwrap_or("mergeable") {
+                "conflicting" => ("CONFLICTING", "DIRTY".to_string()),
+                "unknown" => ("UNKNOWN", "UNKNOWN".to_string()),
+                "mergeable" => ("MERGEABLE", "CLEAN".to_string()),
+                other => ("MERGEABLE", other.to_ascii_uppercase()),
+            };
+            let contexts: Vec<Value> = c["checks"].as_array().cloned().unwrap_or_default().iter().map(|k| {
+                let st = k["state"].as_str().unwrap_or("success");
+                if k["kind"] == "status" {
+                    json!({"__typename": "StatusContext", "context": k["name"], "state": st.to_ascii_uppercase(), "targetUrl": k["url"]})
+                } else {
+                    let (status, conclusion) = match st {
+                        "success" => ("COMPLETED", json!("SUCCESS")),
+                        "failure" => ("COMPLETED", json!("FAILURE")),
+                        "skipped" => ("COMPLETED", json!("SKIPPED")),
+                        _ => ("IN_PROGRESS", Value::Null),
+                    };
+                    json!({"__typename": "CheckRun", "name": k["name"], "status": status, "conclusion": conclusion, "detailsUrl": k["url"]})
+                }
+            }).collect();
+            pr = json!({
+                "isDraft": c["state"] == "draft",
+                "state": state_word,
+                "reviewDecision": match c["reviewDecision"].as_str() { Some("approved") => json!("APPROVED"), Some("changes-requested") => json!("CHANGES_REQUESTED"), _ => Value::Null },
+                "mergeable": mergeable,
+                "mergeStateStatus": merge_state,
+                "headRefOid": head,
+                "commits": {"nodes": [{"commit": {"oid": head, "statusCheckRollup": if contexts.is_empty() { Value::Null } else { json!({"contexts": {"pageInfo": {"hasNextPage": false}, "nodes": contexts}}) }}}]}
+            });
+        }
+        if flag(args, "withReviews") {
+            let items: Vec<Value> = c["reviews"].as_array().cloned().unwrap_or_default().iter().map(|r| json!({
+                "id": r["id"], "state": r["state"].as_str().unwrap_or("commented").replace('-', "_").to_ascii_uppercase(),
+                "body": r["body"], "url": format!("https://github.test/{owner}/{name}/pull/{number}#pullrequestreview-{}", r["id"]),
+                "createdAt": iso(&r["at"]), "lastEditedAt": iso(&r["editedAt"]), "author": author(r), "commit": {"oid": r["head"]}
+            })).collect();
+            let (nodes, info) = page(&items, var(args, "reviewsAfter"), size);
+            pr["reviews"] = json!({"pageInfo": info, "nodes": nodes});
+        }
+        if flag(args, "withComments") {
+            let items: Vec<Value> = c["comments"].as_array().cloned().unwrap_or_default().iter().map(|k| json!({
+                "id": k["id"], "body": k["body"], "url": format!("https://github.test/{owner}/{name}/pull/{number}#issuecomment-{}", k["id"]),
+                "createdAt": iso(&k["at"]), "lastEditedAt": iso(&k["editedAt"]), "author": author(k)
+            })).collect();
+            let (nodes, info) = page(&items, var(args, "commentsAfter"), size);
+            pr["comments"] = json!({"pageInfo": info, "nodes": nodes});
+        }
+        if flag(args, "withThreads") {
+            let items: Vec<Value> = c["threads"].as_array().cloned().unwrap_or_default().iter().map(|t| {
+                let comments: Vec<Value> = t["comments"].as_array().cloned().unwrap_or_default().iter().map(|k| json!({
+                    "id": k["id"], "body": k["body"], "url": format!("https://github.test/{owner}/{name}/pull/{number}#discussion_r{}", k["id"]),
+                    "path": t["path"], "line": t["line"], "originalLine": t["line"],
+                    "createdAt": iso(&k["at"]), "lastEditedAt": iso(&k["editedAt"]), "author": author(k)
+                })).collect();
+                json!({"id": t["id"], "isResolved": t["resolved"] == true, "comments": {"pageInfo": {"hasNextPage": false}, "nodes": comments}})
+            }).collect();
+            let (nodes, info) = page(&items, var(args, "threadsAfter"), size);
+            pr["reviewThreads"] = json!({"pageInfo": info, "nodes": nodes});
+        }
+        answer(
+            ExitCode::SUCCESS,
+            HEAD,
+            &json!({"data": {"repository": {"pullRequest": pr}}}).to_string(),
+        )
+    }
+
+    fn not_found() -> ExitCode {
+        answer(
+            ExitCode::from(1),
+            "HTTP/2.0 404 Not Found\r\n\r\n",
+            "{\"message\":\"404 Not found\"}",
+        )
+    }
+
+    fn gl_user(item: &Value) -> Value {
+        json!({"username": item["author"], "bot": item["bot"] == true})
+    }
+
+    pub fn glab(args: &[String]) -> ExitCode {
+        let lock = Lock::take();
+        let mut state = load();
+        let _lock = match faulted(&mut state, lock, "glab", args) {
+            Ok(l) => l,
+            Err(code) => return code,
+        };
+        let endpoint = args.last().cloned().unwrap_or_default();
+        let (path, query) = endpoint.split_once('?').unwrap_or((&endpoint, ""));
+        let param = |k: &str| {
+            query
+                .split('&')
+                .filter_map(|kv| kv.split_once('='))
+                .find(|(a, _)| *a == k)
+                .map(|(_, v)| v.to_string())
+        };
+        if path == "user" {
+            let login = state["login"].as_str().unwrap_or("stub-login");
+            return answer(
+                ExitCode::SUCCESS,
+                HEAD,
+                &json!({"username": login}).to_string(),
+            );
+        }
+        let Some(rest) = path.strip_prefix("projects/") else {
+            return fail("stub: glab endpoint not modelled");
+        };
+        let mut parts = rest.splitn(2, '/');
+        let project = parts.next().unwrap_or("").replace("%2F", "/");
+        let tail = parts.next().unwrap_or("");
+        if state["noRepo"] == true {
+            return not_found();
+        }
+        if tail.is_empty() {
+            return answer(
+                ExitCode::SUCCESS,
+                HEAD,
+                &json!({"id": 1, "path_with_namespace": project}).to_string(),
+            );
+        }
+        let Some(rest) = tail.strip_prefix("merge_requests/") else {
+            return fail("stub: glab endpoint not modelled");
+        };
+        let mut parts = rest.splitn(2, '/');
+        let iid = parts.next().unwrap_or("");
+        let sub = parts.next().unwrap_or("");
+        let Some(c) = change(&state, &project, iid) else {
+            return not_found();
+        };
+        let head = c["head"].as_str().unwrap_or("");
+        let web_url = format!("https://gitlab.test/{project}/-/merge_requests/{iid}");
+        let body = match sub {
+            "" => {
+                let checks = c["checks"].as_array().cloned().unwrap_or_default();
+                let pipeline = if checks.is_empty() {
+                    Value::Null
+                } else {
+                    let status = if checks.iter().any(|k| k["state"] == "failure") {
+                        "failed"
+                    } else if checks.iter().any(|k| k["state"] == "pending") {
+                        "running"
+                    } else {
+                        "success"
+                    };
+                    json!({"status": status, "web_url": format!("{web_url}/pipelines/1")})
+                };
+                json!({
+                    "iid": iid.parse::<u64>().unwrap_or(0),
+                    "state": match c["state"].as_str().unwrap_or("open") { "closed" => "closed", "merged" => "merged", _ => "opened" },
+                    "draft": c["state"] == "draft",
+                    "sha": head,
+                    "detailed_merge_status": c["mergeable"].as_str().unwrap_or("mergeable"),
+                    "head_pipeline": pipeline,
+                    "web_url": web_url
+                })
+            }
+            "approvals" => {
+                let by: Vec<Value> = c["approvedBy"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|u| json!({"user": {"username": u}}))
+                    .collect();
+                json!({"approved": !by.is_empty(), "approved_by": by})
+            }
+            "discussions" => {
+                let mut all: Vec<Value> = Vec::new();
+                for k in c["comments"].as_array().cloned().unwrap_or_default() {
+                    all.push(json!({"id": format!("d{}", k["id"].as_str().unwrap_or("")), "individual_note": true, "notes": [
+                        {"id": k["id"], "type": Value::Null, "body": k["body"], "author": gl_user(&k), "system": false,
+                         "created_at": iso(&k["at"]), "updated_at": iso(if k["editedAt"].is_null() { &k["at"] } else { &k["editedAt"] }), "resolvable": false}
+                    ]}));
+                }
+                for t in c["threads"].as_array().cloned().unwrap_or_default() {
+                    let notes: Vec<Value> = t["comments"].as_array().cloned().unwrap_or_default().iter().map(|k| json!({
+                        "id": k["id"], "type": "DiffNote", "body": k["body"], "author": gl_user(k), "system": false,
+                        "created_at": iso(&k["at"]), "updated_at": iso(if k["editedAt"].is_null() { &k["at"] } else { &k["editedAt"] }),
+                        "resolvable": true, "resolved": t["resolved"] == true,
+                        "position": {"new_path": t["path"], "new_line": t["line"]}
+                    })).collect();
+                    all.push(json!({"id": t["id"], "individual_note": false, "notes": notes}));
+                }
+                let per: usize = param("per_page").and_then(|v| v.parse().ok()).unwrap_or(20);
+                let page_no: usize = param("page")
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(1)
+                    .max(1);
+                let start = (page_no - 1) * per;
+                let end = (start + per).min(all.len());
+                Value::Array(if start < all.len() {
+                    all[start..end].to_vec()
+                } else {
+                    Vec::new()
+                })
+            }
+            _ => return fail("stub: glab endpoint not modelled"),
+        };
+        answer(ExitCode::SUCCESS, HEAD, &body.to_string())
     }
 }
 

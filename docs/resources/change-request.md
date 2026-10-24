@@ -1,10 +1,5 @@
 # ChangeRequest resource
 
-Design, not implemented. This page and the
-[controller guide](../change-request-controller/README.md) describe a planned
-kind. The installed binary refuses it as an unknown kind until the design
-lands.
-
 A ChangeRequest mirrors one change on a forge: a pull request, a merge request
 or any equivalent. ChangeRequestController polls the forge, keeps a bounded
 snapshot of the change's state, head, checks, reviews and notes, and numbers
@@ -37,20 +32,22 @@ on a Task's behalf. Fixed once created.
 
 | Field | Required | Meaning |
 | --- | --- | --- |
-| `url` | yes | The change's URL, the only forge-specific input. The adapter for its host parses it into `status.ref`. |
+| `url` | yes | The change's URL, the only forge-specific input. The adapter for its host parses it into `status.ref`; a URL it cannot read is refused at apply. |
 | `pollMs` | no | Poll interval while Watching. Default `60000`. |
-| `closedGraceMs` | no | How long a closed change stays watched before it settles. Default `forge.closedGraceMs` from [native config](../configuration/fleet-toml.md#planned-forge-section), one week. |
+| `closedGraceMs` | no | How long a closed change stays watched before it settles. Default `forge.closedGraceMs` from [native config](../configuration/fleet-toml.md#the-forge-section), one week. |
 | `settledTtlMs` | no | How long a settled ChangeRequest is retained before its controller deletes it. Default `forge.settledTtlMs`, thirty days. |
 
 A URL whose host is not configured under `[forge.hosts]` is refused at apply.
-Any other field is refused.
+Any other field is refused, and `pollMs` must be at least 1.
 
 ## Status
 
 Written by ChangeRequestController under the manager lease. Nobody else
 writes it. Two kinds of field live here: the snapshot, which changes only
 when the forge said something new and then moves `revision`, and the
-bookkeeping, which every poll writes without moving `revision`.
+bookkeeping, which every poll writes without moving `revision`. The typed
+status is [`ChangeRequestStatus`](../../crates/fleet-api/src/change_request.rs),
+with the two groups side by side.
 
 Bookkeeping:
 
@@ -89,7 +86,9 @@ It is never the forge's timestamp.
   leaves the snapshot and that is all.
 - `state.seq`, `reviewDecision.seq` and `head.seq` move when their value
   changes; for `head`, a change of `id`, `checks` or `failing` counts.
-- A note rotated out of the cap raises `droppedBefore` to its `seq`.
+- A note rotated out of the cap raises `droppedBefore` to its `seq`. The
+  cap keeps the newest 100 notes by creation time; a note below that window
+  that was never stored was rotated out before and is not numbered again.
 
 A consumer keeps one integer, its cursor, and takes every item and every
 transition with `seq > cursor`. Forge timestamps cannot play this role: a
@@ -150,11 +149,14 @@ say how each adapter answers when the forge's own answer is partial.
 `cr-` followed by the first twelve hex digits of the SHA-256 of the canonical
 ref, `<kind>/<host>/<project>/<id>`, lowercased, so a change names one
 object, two projects that flatten alike cannot collide, and long project
-paths fit. `fleet apply` and `fleet declare` both derive it, and both verify
-`status.ref` before reusing an existing object; a manifest may give another
-name and create a second mirror of the same change, which is allowed and
-wasteful. URL normalisation, fragments, trailing slashes and the forge's
-equivalent URL forms, is the adapter's, in `parse`. The store assigns `uid`,
+paths fit. `fleet apply` derives it when the manifest gives no name, as `fleet declare`
+will, and both verify what an existing object mirrors before reusing it:
+its `status.ref` once the controller wrote one, else its own URL parsed
+again. A manifest may give another name and create a second mirror of the
+same change, which is allowed and wasteful; a manifest that gives one
+change's derived name with another change's URL is refused. URL
+normalisation, fragments, trailing slashes and the forge's equivalent URL
+forms, is the adapter's, in `parse`. The store assigns `uid`,
 `generation`, `resourceVersion` and creation time. There is no finalizer,
 because nothing external is held, and `ownerReferences` is refused as on
 every kind.
@@ -172,8 +174,14 @@ object sees readable absence and, if the change is declared again, a new
 
 ```sh
 fleet apply -f change-request.json            # start mirroring a change
-fleet declare fix-314 --change-request URL    # the same, on a Task's behalf
-fleet status changerequest cr-5e1c0a9b7f23 --json   # phase, state, revision
-fleet get changerequest cr-5e1c0a9b7f23       # the full snapshot
+fleet declare fix-314 --change-request URL    # the same, on a Task's behalf (planned)
+fleet status changerequest cr-5e1c0a9b7f23 --json   # phase, ref, and the whole snapshot
+fleet get changerequest cr-5e1c0a9b7f23       # the stored object
+fleet list changerequests                     # one line per mirror
 fleet delete changerequest cr-5e1c0a9b7f23    # nothing on the forge changes
 ```
+
+`fleet declare` belongs to the Forge controller, a later step; the other
+commands are served. [examples/change-request.json](../../examples/change-request.json)
+is a manifest the shipped [example config](../../examples/fleet.toml) applies
+against the fake forge, offline.

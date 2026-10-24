@@ -4,6 +4,7 @@
 /.lavish/
 /examples/data/
 /examples/fake-host/
+/examples/fake-forge/
 
 # Private operator data and configuration must never enter a public commit.
 /fleet.toml

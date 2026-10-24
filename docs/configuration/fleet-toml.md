@@ -1,9 +1,12 @@
 # Native Fleet configuration (fleet.toml)
 
-The native versioned TOML file selects a resource store, runtime and optional
-VEGA workspace. It is separate from the JSON
-[Task](../resources/task.md), [TaskConfig](../resources/task-config.md) and
-[EnvProvider](../resources/env-provider.md) resources applied into that store.
+The native versioned TOML file selects a resource store, runtime, optional
+VEGA workspace and the forges ChangeRequests are read from. It is separate
+from the JSON [Task](../resources/task.md),
+[TaskConfig](../resources/task-config.md),
+[EnvProvider](../resources/env-provider.md) and
+[ChangeRequest](../resources/change-request.md) resources applied into that
+store.
 `fleet apply` does not load TOML, and `--config` does not apply resources.
 There is no `[taskConfig]`, `[envProvider]` or task-template section in TOML.
 
@@ -129,27 +132,48 @@ format `1` are separate version contracts; `fleet version --json` reports
 them. No live store/config migration or service restart occurs through this
 feature. `fleet init --update` preserves the user-owned native config.
 
-## Planned `[forge]` section
+## The `[forge]` section
 
-Design, not implemented. The [ChangeRequest](../resources/change-request.md)
-and [Forge controller](../forge-controller/README.md) designs add one
-section. An unknown section is refused today, so this example does not load.
+The forges that [ChangeRequests](../resources/change-request.md) are
+mirrored from. Without this section a ChangeRequest is refused at apply, and
+one already stored is reported by the manager and never polled.
 
 ```toml
 [forge]
 callTimeoutMs = 15000
 closedGraceMs = 604800000     # one week; a ChangeRequest spec may override
 settledTtlMs = 2592000000     # thirty days; a ChangeRequest spec may override
-noCheckGraceMs = 300000       # the checksPassed predicate's wait for a check
-relayNotes = true             # defaults a Task's spec.forge may override
-relayChecks = true
-relayBots = false
-draftPolicy = "checks"        # omit to never take a draft out of draft
 
 [forge.hosts]
 "github.com"         = { kind = "github", cli = "gh" }
 "gitlab.com"         = { kind = "gitlab", cli = "glab" }
 "gitlab.example.com" = { kind = "gitlab", cli = "glab" }
+```
+
+| Field | Required/default | Meaning |
+| --- | --- | --- |
+| `forge.callTimeoutMs` | `15000` | Bound for each forge CLI call. One observation of a change may make up to six such calls, and the manager lease is raised to outlast the port's reported worst case. |
+| `forge.closedGraceMs` | `604800000` | How long a closed change stays watched before it settles. |
+| `forge.settledTtlMs` | `2592000000` | How long a settled ChangeRequest is retained before its controller deletes it. |
+| `forge.hosts.<host>` | One per forge host | `kind` is `github`, `gitlab` or `fake`; `cli` is a PATH name or absolute path (`gh` or `glab` by default); a `fake` host takes `dir`, its directory, relative to this file. A URL on a host not listed is refused at apply. |
+
+Credentials stay with each CLI's own login. Fleet passes none to the forge and
+stores none. The shipped [example config](../../examples/fleet.toml) adds a
+fake host, `forge.example`, so a ChangeRequest can be tried offline.
+
+### Planned `[forge]` keys
+
+Design, not implemented. The [Forge controller](../forge-controller/README.md)
+design adds the keys below to this section, in later steps. They are refused
+as unknown today, so this example does not load.
+
+```toml
+[forge]
+noCheckGraceMs = 300000       # the checksPassed predicate's wait for a check
+relayNotes = true             # defaults a Task's spec.forge may override
+relayChecks = true
+relayBots = false
+draftPolicy = "checks"        # omit to never take a draft out of draft
 
 [forge.readyPolicies.checks]
 checksPassed = true
@@ -166,15 +190,8 @@ noUnresolvedThreads = true
 
 | Field | Required/default | Meaning |
 | --- | --- | --- |
-| `forge.callTimeoutMs` | `15000` | Bound for each forge CLI call; the manager lease must outlast the port's reported worst case. |
-| `forge.closedGraceMs` | `604800000` | How long a closed change stays watched before it settles. |
-| `forge.settledTtlMs` | `2592000000` | How long a settled ChangeRequest is retained before its controller deletes it. |
 | `forge.noCheckGraceMs` | `300000` | How long `checksPassed` waits, from a head's first observation, for a check to appear before treating that checkless head as passed. |
 | `forge.relayNotes`, `forge.relayChecks` | `true` | Relay new notes and passed or failed checks to the worker. A Task's `spec.forge.relay` overrides both. |
 | `forge.relayBots` | `false` | Relay bot-authored notes to the worker. |
 | `forge.draftPolicy` | Absent | The ready policy applied to a Task that sets none. Absent: a draft is never taken out of draft unless the Task names a policy. |
-| `forge.hosts.<host>` | One per forge host | `kind` is `github`, `gitlab` or `fake`; `cli` is a PATH name or absolute path. A URL on a host not listed is refused at apply. |
 | `forge.readyPolicies.<name>` | Three written by `fleet init` | A set of predicates the [Forge controller](../forge-controller/interface.md#ready-policies) defines, under a name that is only a key; an unknown predicate is refused at load. |
-
-Credentials stay with each CLI's own login. Fleet passes none to the forge and
-stores none.

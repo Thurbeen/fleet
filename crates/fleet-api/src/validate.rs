@@ -3,6 +3,7 @@
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
+use crate::change_request::{self, ChangeRequestSpec};
 use crate::config::{ENV_PROVIDER, EnvProviderSpec, EnvSource, TASK_CONFIG, TaskConfigSpec};
 use crate::kinds::is_served;
 use crate::meta::{API_VERSION, Object};
@@ -95,6 +96,7 @@ pub fn validate_spec(kind: &str, spec: &Value) -> Result<(), StoreError> {
             }
             return Ok(());
         }
+        change_request::KIND => return validate_change_request_spec(spec),
         _ => {}
     }
     let s: TaskSpec = typed(kind, spec)?;
@@ -135,6 +137,17 @@ pub fn validate_spec(kind: &str, spec: &Value) -> Result<(), StoreError> {
 /// change. A different brief is a different Task.
 pub fn validate_spec_update(kind: &str, old: &Value, new: &Value) -> Result<(), StoreError> {
     validate_spec(kind, new)?;
+    if kind == change_request::KIND {
+        let a: ChangeRequestSpec = typed(kind, old)?;
+        let b: ChangeRequestSpec = typed(kind, new)?;
+        if a != b {
+            return Err(StoreError::Invalid(
+                "ChangeRequest spec is immutable; a different change is a different ChangeRequest"
+                    .into(),
+            ));
+        }
+        return Ok(());
+    }
     if kind != task::KIND {
         return Ok(());
     }
@@ -170,14 +183,40 @@ pub fn validate_status(kind: &str, status: &Value) -> Result<(), StoreError> {
         return Ok(());
     }
     validate_kind(kind)?;
-    if kind != task::KIND {
-        return Err(StoreError::Invalid(
+    match kind {
+        task::KIND => serde_json::from_value::<task::TaskStatus>(status.clone())
+            .map(|_| ())
+            .map_err(|e| StoreError::Invalid(format!("Task status: {e}"))),
+        change_request::KIND => {
+            serde_json::from_value::<change_request::ChangeRequestStatus>(status.clone())
+                .map(|_| ())
+                .map_err(|e| StoreError::Invalid(format!("ChangeRequest status: {e}")))
+        }
+        _ => Err(StoreError::Invalid(
             "passive configuration has no status".into(),
+        )),
+    }
+}
+
+/// A ChangeRequest names one change by URL and bounds its own cadence.
+fn validate_change_request_spec(spec: &Value) -> Result<(), StoreError> {
+    let s: ChangeRequestSpec = typed(change_request::KIND, spec)?;
+    let url = s.url.trim();
+    let host = url
+        .split_once("://")
+        .map(|(scheme, rest)| (scheme, rest.split(['/', '?', '#']).next().unwrap_or("")))
+        .filter(|(scheme, host)| {
+            matches!(*scheme, "https" | "http") && !host.is_empty() && !host.contains('@')
+        });
+    if host.is_none() || url.contains(char::is_whitespace) || url.contains('\0') {
+        return Err(StoreError::Invalid(
+            "spec.url must be an http(s) URL naming a forge host".into(),
         ));
     }
-    serde_json::from_value::<task::TaskStatus>(status.clone())
-        .map(|_| ())
-        .map_err(|e| StoreError::Invalid(format!("Task status: {e}")))
+    if s.poll_ms == Some(0) {
+        return Err(StoreError::Invalid("spec.pollMs must be at least 1".into()));
+    }
+    Ok(())
 }
 
 pub fn validate_execution(

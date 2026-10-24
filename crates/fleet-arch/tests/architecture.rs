@@ -29,6 +29,7 @@ fn this_workspace_obeys_its_architecture() {
         "fleet-cli",
         "fleet-arch",
         "fleet-exec",
+        "fleet-forge",
         "fleet-dev",
     ] {
         assert!(
@@ -498,6 +499,156 @@ fn the_rules_keep_spawning_in_fleet_exec() {
             .unwrap_or_else(|| panic!("{path} is not restricted"));
         assert_eq!(r.allowed, vec!["fleet-exec".to_string()], "{path}");
     }
+}
+
+/// The forge follow-on's rules, against the real rules file: fleet-forge is
+/// an adapter reaching only the API and the spawner, the CLI is the only
+/// crate that wires it, and ChangeRequestController's field manager is
+/// named by the API and the controllers alone.
+#[test]
+fn the_rules_keep_forges_below_the_port() {
+    let rules = load_rules(&repo_root().join("crates").join("architecture.toml")).expect("rules");
+    let forge = rules
+        .crates
+        .get("fleet-forge")
+        .expect("fleet-forge is governed");
+    assert_eq!(forge.role, fleet_arch::Role::Adapter);
+    assert_eq!(
+        forge.deps,
+        vec!["fleet-api".to_string(), "fleet-exec".to_string()]
+    );
+    let dependants: Vec<&String> = rules
+        .crates
+        .iter()
+        .filter(|(_, r)| r.deps.iter().any(|d| d == "fleet-forge"))
+        .map(|(n, _)| n)
+        .collect();
+    assert_eq!(dependants, vec!["fleet-cli"], "only the edge wires a forge");
+    for pure in ["fleet-api", "fleet-controllers"] {
+        assert!(
+            rules.crates[pure].probes.iter().any(|p| p == "fleet-forge"),
+            "{pure} probes the forge edge"
+        );
+    }
+    assert_eq!(
+        rules
+            .status_writers
+            .get("fleet_api::store::FieldManager::ChangeRequestController"),
+        Some(&vec![
+            "fleet-api".to_string(),
+            "fleet-controllers".to_string()
+        ])
+    );
+    let cli = &rules.crates["fleet-cli"];
+    for method in ["delete_fenced", "change", "mark_ready"] {
+        assert!(
+            cli.forbidden_methods.iter().any(|m| m == method),
+            "the CLI may not call {method}"
+        );
+    }
+}
+
+/// A forge adapter is below the controllers and above nothing else: it may
+/// not reach a controller, and a controller may not reach it. The same
+/// shape as the runtime boundary, proven for the second adapter kind.
+#[test]
+fn a_forge_adapter_and_the_controllers_cannot_reach_each_other() {
+    let mut rules = RULES.to_string();
+    rules.push_str("\n[crates.fx-forge]\nrole = \"adapter\"\ndeps = [\"fx-api\"]\n");
+    let forge_manifest = manifest("fx-forge", &["fx-api"]);
+    expect(
+        "forge-clean",
+        &[
+            ("architecture.toml", &rules),
+            ("crates/fx-forge/fixture.toml", &forge_manifest),
+            (
+                "crates/fx-forge/src/lib.rs",
+                "pub fn change() -> fx_api::FieldManager { fx_api::FieldManager::Worker }\n",
+            ),
+        ],
+        &[],
+    );
+    expect(
+        "forge-reaches-controller",
+        &[
+            ("architecture.toml", &rules),
+            (
+                "crates/fx-forge/fixture.toml",
+                &manifest("fx-forge", &["fx-api", "fx-ctl"]),
+            ),
+            (
+                "crates/fx-forge/src/lib.rs",
+                "pub fn change() { let _ = fx_ctl::plan(); }\n",
+            ),
+        ],
+        &[("undeclared-edge", "fx-forge")],
+    );
+    expect(
+        "controller-reaches-forge",
+        &[
+            ("architecture.toml", &rules),
+            ("crates/fx-forge/fixture.toml", &forge_manifest),
+            ("crates/fx-forge/src/lib.rs", "pub fn change() {}\n"),
+            (
+                "crates/fx-ctl/fixture.toml",
+                &manifest("fx-ctl", &["fx-api", "fx-forge"]),
+            ),
+            (CTL, &ctl("pub fn x() { fx_forge::change(); }\n")),
+        ],
+        &[("undeclared-edge", "fx-ctl")],
+    );
+}
+
+/// A second controller's field manager is as guarded as the first: only the
+/// crates its rule lists may name it, whatever path they reach it by.
+#[test]
+fn only_the_listed_crates_name_a_second_controllers_field_manager() {
+    let rules = format!(
+        "{}\n[status_writers]\n\"fx_api::store::FieldManager::Ctl\" = [\"fx-api\", \"fx-ctl\"]\n\"fx_api::store::FieldManager::CrCtl\" = [\"fx-api\", \"fx-ctl\"]\n",
+        RULES.replace(
+            "[status_writers]\n\"fx_api::store::FieldManager::Ctl\" = [\"fx-api\", \"fx-ctl\"]\n",
+            ""
+        )
+    );
+    let api = "//! ```compile_fail\n//! use fx_store::Store;\n//! ```\npub mod store {\n    pub enum FieldManager { Ctl, CrCtl, Worker }\n}\npub use store::FieldManager;\nuse serde::Serialize;\n";
+    expect(
+        "second-writer-clean",
+        &[
+            ("architecture.toml", &rules),
+            ("crates/fx-api/src/lib.rs", api),
+            (
+                CTL,
+                &ctl(
+                    "use fx_api::FieldManager;\npub fn plan() -> FieldManager { FieldManager::CrCtl }\n",
+                ),
+            ),
+        ],
+        &[],
+    );
+    expect(
+        "second-writer-from-store",
+        &[
+            ("architecture.toml", &rules),
+            ("crates/fx-api/src/lib.rs", api),
+            (
+                "crates/fx-store/src/lib.rs",
+                "pub struct S;\npub fn read() { let _ = fx_api::FieldManager::CrCtl; }\n",
+            ),
+        ],
+        &[("status-writer", "fx-store")],
+    );
+    expect(
+        "second-writer-from-manager",
+        &[
+            ("architecture.toml", &rules),
+            ("crates/fx-api/src/lib.rs", api),
+            (
+                "crates/fx-mgr/src/lib.rs",
+                "use fx_api::store::FieldManager as F;\npub fn run() { let _ = F::CrCtl; }\n",
+            ),
+        ],
+        &[("status-writer", "fx-mgr")],
+    );
 }
 
 #[test]

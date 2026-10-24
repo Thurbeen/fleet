@@ -29,6 +29,9 @@ pub struct Object {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ObjectMeta {
+    /// Empty only in a manifest of a kind that derives its name (a
+    /// ChangeRequest, from its change); the store never holds an empty one.
+    #[serde(default)]
     pub name: String,
     /// Assigned by the store on create; unique for the life of the store.
     #[serde(default, skip_serializing_if = "String::is_empty")]

@@ -734,3 +734,157 @@ fn a_writer_waits_out_a_slow_lock_holder_instead_of_failing_busy() {
     );
     assert!(known(store.get("Task", "late")).is_some());
 }
+
+fn change_request(name: &str) -> Object {
+    serde_json::from_value(json!({
+        "apiVersion": "fleet/v1alpha1",
+        "kind": "ChangeRequest",
+        "metadata": {"name": name},
+        "spec": {"url": "https://forge.test/acme/widgets/pull/7"}
+    }))
+    .unwrap()
+}
+
+/// A controller retires its own object by the uid and resourceVersion it
+/// decided from, under the lease: a recreated object under the same name, a
+/// rewritten one, a stale lease and another field manager all remove nothing.
+#[test]
+fn a_controllers_delete_is_fenced_by_uid_version_and_lease() {
+    let dir = Dir::new("delete-fenced");
+    let store = FileStore::open(&dir.0).unwrap();
+    let cr = FieldManager::ChangeRequestController;
+    let created = store
+        .create(change_request("cr-1"), FieldManager::Apply)
+        .unwrap();
+    let (uid, rv) = (
+        created.metadata.uid.clone(),
+        created.metadata.resource_version,
+    );
+    let lease = store.acquire_lease("m", 60_000).unwrap();
+
+    assert!(matches!(
+        store.delete_fenced(
+            "ChangeRequest",
+            "cr-1",
+            &uid,
+            rv,
+            FieldManager::Apply,
+            &lease
+        ),
+        Err(StoreError::Forbidden(_))
+    ));
+    assert!(matches!(
+        store.delete_fenced("ChangeRequest", "cr-1", &uid, rv + 1, cr, &lease),
+        Err(StoreError::Conflict { .. })
+    ));
+    // Recreated under the same name: a new uid the old plan did not name.
+    store
+        .delete("ChangeRequest", "cr-1", FieldManager::Apply)
+        .unwrap();
+    let again = store
+        .create(change_request("cr-1"), FieldManager::Apply)
+        .unwrap();
+    assert_ne!(again.metadata.uid, uid);
+    assert!(matches!(
+        store.delete_fenced(
+            "ChangeRequest",
+            "cr-1",
+            &uid,
+            again.metadata.resource_version,
+            cr,
+            &lease
+        ),
+        Err(StoreError::Conflict { .. })
+    ));
+    assert!(
+        known(store.get("ChangeRequest", "cr-1")).is_some(),
+        "still there"
+    );
+    // A stale lease is refused even with the right identity.
+    store.release_lease(&lease).unwrap();
+    let (uid2, rv2) = (again.metadata.uid.clone(), again.metadata.resource_version);
+    assert!(matches!(
+        store.delete_fenced("ChangeRequest", "cr-1", &uid2, rv2, cr, &lease),
+        Err(StoreError::LeaseLost(_))
+    ));
+    let lease = store.acquire_lease("m", 60_000).unwrap();
+    assert_eq!(
+        store
+            .delete_fenced("ChangeRequest", "cr-1", &uid2, rv2, cr, &lease)
+            .unwrap(),
+        DeleteOutcome::Removed,
+        "no finalizer: the record goes at once"
+    );
+    assert!(known(store.get("ChangeRequest", "cr-1")).is_none());
+}
+
+#[test]
+fn change_request_status_belongs_to_its_controller_alone() {
+    let dir = Dir::new("cr-status-owner");
+    let store = FileStore::open(&dir.0).unwrap();
+    let created = store
+        .create(change_request("cr-2"), FieldManager::Apply)
+        .unwrap();
+    let rv = created.metadata.resource_version;
+    let lease = store.acquire_lease("m", 60_000).unwrap();
+    let status = json!({"phase": "Watching", "revision": 1, "everReady": true, "droppedBefore": 0});
+    for by in [
+        FieldManager::Apply,
+        FieldManager::Worker,
+        FieldManager::TaskController,
+    ] {
+        let err = store
+            .update_status(
+                "ChangeRequest",
+                "cr-2",
+                status.clone(),
+                rv,
+                by,
+                Some(&lease),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(err, StoreError::Forbidden(_) | StoreError::LeaseLost(_)),
+            "{by:?}: {err}"
+        );
+    }
+    assert!(
+        matches!(
+            store.update_status(
+                "ChangeRequest",
+                "cr-2",
+                json!({"phase": "Elsewhere"}),
+                rv,
+                FieldManager::ChangeRequestController,
+                Some(&lease)
+            ),
+            Err(StoreError::Invalid(_))
+        ),
+        "a status its readers would refuse is not stored"
+    );
+    store
+        .update_status(
+            "ChangeRequest",
+            "cr-2",
+            status,
+            rv,
+            FieldManager::ChangeRequestController,
+            Some(&lease),
+        )
+        .unwrap();
+    // The spec is fixed once created.
+    let mut other = change_request("cr-2").spec;
+    other["url"] = json!("https://forge.test/acme/widgets/pull/8");
+    let current = known(store.get("ChangeRequest", "cr-2")).unwrap();
+    assert!(matches!(
+        store.update_spec(
+            "ChangeRequest",
+            "cr-2",
+            other,
+            None,
+            current.metadata.resource_version,
+            FieldManager::Apply
+        ),
+        Err(StoreError::Invalid(_))
+    ));
+}

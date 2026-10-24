@@ -20,7 +20,7 @@ ChangeRequest.
 | [Interface](interface.md) | What are the probes, the one effect, the ready policies and the write rules? |
 | [Task controller](../task-controller/README.md) | How is the Task itself run, and how is its inbox delivered? |
 | [ChangeRequest controller](../change-request-controller/README.md) | Who mirrors the forge? |
-| [Native config](../configuration/fleet-toml.md#planned-forge-section) | Where do defaults, hosts and ready policies come from? |
+| [Native config](../configuration/fleet-toml.md#the-forge-section) | Where do defaults, hosts and ready policies come from? |
 | [Overall architecture](../ARCHITECTURE.md) | Where does this controller fit in Fleet? |
 
 ## One run

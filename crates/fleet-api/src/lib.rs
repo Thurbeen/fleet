@@ -20,8 +20,13 @@
 //! ```
 //!
 //! ```compile_fail
-//! // ...or the runtime adapters.
+//! // ...or the runtime adapters...
 //! use fleet_runtime::ThurboxRuntime;
+//! ```
+//!
+//! ```compile_fail
+//! // ...or the forge adapters.
+//! use fleet_forge::GithubForge;
 //! ```
 //!
 //! The positive control: the same shape of `use` compiles for this crate.
@@ -32,8 +37,10 @@
 //! assert!(seen.is_unknown());
 //! ```
 
+pub mod change_request;
 pub mod condition;
 pub mod config;
+pub mod forge;
 pub mod kinds;
 pub mod meta;
 pub mod observation;

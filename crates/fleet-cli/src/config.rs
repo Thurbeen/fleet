@@ -23,12 +23,43 @@ pub struct Config {
     pub runtime: Option<RuntimeConfig>,
     #[serde(default)]
     pub starter: Option<StarterConfig>,
+    #[serde(default)]
+    pub forge: Option<ForgeConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StarterConfig {
     pub workspace: PathBuf,
+}
+
+/// The `[forge]` section: the forges ChangeRequests are mirrored from. The
+/// keys of the Forge controller's design (relay, ready policies, the draft
+/// policy) belong to later steps and are refused as unknown until they load.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ForgeConfig {
+    /// The bound on every forge CLI call.
+    pub call_timeout_ms: Option<u64>,
+    /// How long a closed change stays watched before it settles.
+    pub closed_grace_ms: Option<u64>,
+    /// How long a settled ChangeRequest is retained before its controller
+    /// deletes it.
+    pub settled_ttl_ms: Option<u64>,
+    /// One adapter per forge host; a URL on a host not listed is refused.
+    #[serde(default)]
+    pub hosts: BTreeMap<String, ForgeHostConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ForgeHostConfig {
+    /// `github`, `gitlab` or `fake`.
+    pub kind: String,
+    /// The CLI executable, a path or a name on PATH (`gh`, `glab`).
+    pub cli: Option<String>,
+    /// The fake forge's directory, relative to this file.
+    pub dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -83,6 +114,13 @@ impl Config {
         if let Some(starter) = config.starter.as_mut() {
             starter.workspace = base.join(&starter.workspace);
         }
+        if let Some(forge) = config.forge.as_mut() {
+            for host in forge.hosts.values_mut() {
+                if let Some(d) = &host.dir {
+                    host.dir = Some(base.join(d));
+                }
+            }
+        }
         Ok(config)
     }
 
@@ -92,6 +130,7 @@ impl Config {
             data: Data::default(),
             runtime: None,
             starter: None,
+            forge: None,
         }
     }
 }

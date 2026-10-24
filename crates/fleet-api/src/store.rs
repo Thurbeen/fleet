@@ -19,6 +19,8 @@ pub enum FieldManager {
     Worker,
     /// The one controller for Task; owns the rest of Task status.
     TaskController,
+    /// The one controller for ChangeRequest; owns all of its status.
+    ChangeRequestController,
 }
 
 impl FieldManager {
@@ -27,12 +29,16 @@ impl FieldManager {
             FieldManager::Apply => "apply",
             FieldManager::Worker => "worker",
             FieldManager::TaskController => "task-controller",
+            FieldManager::ChangeRequestController => "change-request-controller",
         }
     }
 
     /// Controllers write only while they hold the manager lease (fencing).
     pub fn is_controller(self) -> bool {
-        self == FieldManager::TaskController
+        matches!(
+            self,
+            FieldManager::TaskController | FieldManager::ChangeRequestController
+        )
     }
 }
 
@@ -132,6 +138,18 @@ pub trait Store {
     ) -> Result<Object, StoreError>;
     fn delete(&self, kind: &str, name: &str, by: FieldManager)
     -> Result<DeleteOutcome, StoreError>;
+    /// Delete an object its own controller decided to remove: fenced by the
+    /// `uid` and `resourceVersion` the decision was made from and by the
+    /// lease, so a stale plan cannot remove a recreated object.
+    fn delete_fenced(
+        &self,
+        kind: &str,
+        name: &str,
+        uid: &str,
+        expected: u64,
+        by: FieldManager,
+        lease: &LeaseToken,
+    ) -> Result<DeleteOutcome, StoreError>;
     /// Only the kind's controller, holding the lease, removes a finalizer.
     fn remove_finalizer(
         &self,
