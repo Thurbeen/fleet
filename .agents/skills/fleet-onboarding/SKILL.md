@@ -13,11 +13,22 @@ then run `scripts/install-release.sh` or `scripts/install-release.ps1` with
 without one. Do not pipe a remote installer into a shell. An offline release
 base is supported.
 
-Choose a fresh data directory and author a versioned TOML config. Run
-`fleet version --json` before applying Tasks. Apply each Task with
+For a fresh v2 deployment, run `fleet init` to create native per-user config
+and the bundled editable VEGA workspace without Git or network. Inspect
+README.md's config precedence, source pin and managed-file rules. Install
+Thurbox and authenticate the configured harness before `fleet up`; that
+foreground manager starts or reconnects VEGA as an ordinary Task and keeps
+all due Tasks progressing. Ctrl-C retains sessions and releases its lease;
+after a crash, wait for lease expiry before reconnecting. `init --update`
+preserves customization and writes conflict candidates for review.
+
+Run `fleet version --json` before applying Tasks. Apply each Task with
 `fleet apply -f FILE`, keeping `dispatch` false until it has been inspected.
 Use the fake-runtime examples for an isolated trial. Real sessions use the
-thurbox runtime adapter, on the host each Task names.
+thurbox runtime adapter, on the host each Task names. Workers must use the
+same config as Mission Control; persist its data.dir instead of a differing
+`up --data-dir` override. `fleet reconcile` is a bounded diagnostic command
+for use while the resident manager is stopped.
 
 Installation never starts a manager or performs a live migration. Preserve
 existing deployments and active sessions. A separate, explicit no-child

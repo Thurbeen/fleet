@@ -7,7 +7,9 @@ machine and interfaces, and crates/CONTRACTS.md for integration guarantees.
 
 Inspect Tasks with `fleet list task --json`, `fleet get task NAME` and
 `fleet status task NAME --json`. Apply desired spec with
-`fleet apply -f FILE`. Run the manager with `fleet reconcile`. Never infer
+`fleet apply -f FILE`. For a fresh setup, use `fleet init`, inspect the local
+config/workspace, then keep `fleet up` running for automatic Task progress.
+Use bounded `fleet reconcile` diagnostics while `up` is stopped. Never infer
 absence from Unknown, or report a worker's claim as verified.
 
 Keep private manifests and config outside this public checkout. Do not

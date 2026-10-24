@@ -99,6 +99,14 @@ Source: [Manager](../../crates/fleet-manager/src/lib.rs).
 `idle`, per-Task `errors` and `unknowns`. Lease loss ends the run; other
 per-Task errors are reported rather than counted as successful progress.
 
+`Manager::serve(RunOptions, wait)` retains one lease across bounded sweeps.
+The edge supplies the wait/shutdown callback; controller scheduling still uses
+persisted `notBefore`. `fleet up` supplies native signal handling and polling,
+prints changed errors/unknowns, and stops on lease loss. A normal stop releases
+the lease; a crashed process leaves an expiring lease. Neither stop deletes
+Tasks or sessions. Bootstrap Task creation uses the manager's `ensure_task`
+verb, retaining an existing Task's immutable inputs and identity.
+
 The CLI's default lease is at least 30 seconds and twice the runtime operation
 bound. An explicitly supplied lease must exceed that bound. A file-store
 lease fences store writes and checks before effects; it cannot cancel an

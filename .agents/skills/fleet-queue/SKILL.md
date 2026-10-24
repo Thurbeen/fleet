@@ -19,8 +19,9 @@ proof of an artifact landing. The controller owns status; never edit status
 directly.
 Unknown means the adapter could not tell and blocks the corresponding effect.
 
-Run `fleet reconcile` to reconcile under the single manager lease. Do not
+Keep `fleet up` running to reconcile all due Tasks under the single manager
+lease. Use bounded `fleet reconcile` diagnostics while `up` is stopped. Do not
 invent an independent polling program or a second status owner. Use the
-requester's explicit config and data path, keeping private manifests out of
-public commits. Follow orchestration/queue/POLICY.md and report the final
-outcome with `fleet result`.
+requester's config, with its effective data.dir persisted. Keep private
+manifests out of public commits. Follow orchestration/queue/POLICY.md and
+report the final outcome with `fleet result`.

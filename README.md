@@ -79,6 +79,79 @@ rustup, then build the binary from the committed dependency lock:
 cargo build --release --locked -p fleet-cli --bin fleet
 ```
 
+The binary embeds a pinned [VEGA starter](https://github.com/Thurbeen/vega).
+Copy it onto PATH; initial setup needs neither Git nor a Fleet checkout:
+
+```sh
+fleet init
+fleet up
+```
+
+`init` works offline. To run real sessions, install Thurbox (`thurbox-cli`
+on PATH), configure its local multiplexer, and install and authenticate the
+starter's `codex` harness first. Fleet does not install prerequisites or change
+login state. `up` checks host availability and reports unavailable or unknown
+prerequisites. Harness login/readiness failures remain visible in Task status;
+inspect `fleet status task vega --json` and Thurbox's session before retrying.
+
+`up` runs in the foreground and continuously reconciles every due Task, even
+while VEGA is busy or idle. Keep it running in a terminal or your own service
+supervisor. Ctrl-C (also SIGTERM on Unix) finishes the bounded sweep, releases
+the manager lease and retains sessions. Run `fleet up` again to reconnect to
+the same ordinary `Task/vega`; a simultaneous manager exits with code 6.
+After a crash, wait for the recorded lease to expire before restarting. Unknown
+session observations never trigger a blind replacement. Stalled, completed or
+deleting VEGA Tasks require inspection and deliberate recovery, not another
+automatic Task identity.
+
+### Configuration and customization
+
+Config selection is `--config PATH`, then `FLEET_CONFIG`, then exactly one
+native per-user path: `$XDG_CONFIG_HOME/fleet/config.toml` (fallback
+`~/.config/fleet/config.toml`) on Linux, `%APPDATA%\fleet\config.toml` on
+Windows. Fleet never searches the current directory or its parents. Explicit
+paths must exist for commands other than `init`; `init --config PATH` creates
+a separate configuration and a default data/workspace root at
+`<native-data>/fleet/instances/<config-path-hash>/`. Relative paths inside TOML
+resolve beside that file. With no native data-home variables, explicit
+`--config` uses a `fleet-data` directory beside the config as its data root.
+An explicit store must be separate from the config and workspace.
+
+Default init writes a workspace at `$XDG_DATA_HOME/fleet/vega` (fallback
+`~/.local/share/fleet/vega`), or `%LOCALAPPDATA%\fleet\vega` on Windows, and a
+fresh resource store under the same Fleet directory at `store-v1`. The config
+records absolute paths and a generated per-instance session key prefix.
+`[starter] workspace` selects the workspace. Its `task.json` is a runnable JSON
+array containing one Task. Before first `up`, edit its harness or brief
+and customize `AGENTS.md`, prompts and skills. To set `spec.model`, first
+configure the matching `[runtime.modelEnv]` harness-to-variable mapping; the
+starter does not assume a Codex model environment variable. After creation,
+reconnect keeps
+the stored immutable Task inputs. Updated instructions can be read from the
+workspace; changing Task inputs requires deliberate deletion/recreation after
+session release. VEGA's rendered brief names the exact config file for all
+Task operations and child-worker handoffs.
+
+Repeated `init` preserves existing files and config. After updating the binary,
+run `fleet init --update` to offer its bundled content. Unedited managed
+workspace files advance; edits, deletions and private files survive. Config is
+user-owned after creation and is never replaced by an update. Review proposed
+conflicts under `vega/.fleet/conflicts/<content-hash>/`; merge them manually.
+The `.fleet` directory holds instance identity, baseline hashes, manifest and
+source provenance; preserve it with the workspace. Malformed metadata and
+managed symlinks are refused. Initializers serialize with OS locks; a crash
+releases the locks and a repeat init completes missing files conservatively.
+
+The bundled content is MIT licensed at exact source commit
+`27148af18577f954b5c3b17667f2510c5940198e`. The build verifies every allowlisted
+asset against [the provenance hashes](crates/fleet-cli/bundle/vega/provenance.json)
+and embeds the assets, source manifest and license in the executable. Runtime
+init/update never fetches a branch or downloads content. Polling defaults to
+one bounded sweep per second; `up --poll-ms` accepts 100 through 10000 ms.
+Each unfinished Briefed Task costs one bounded session lookup per sweep;
+unchanged Task status is not rewritten. A manual `fleet reconcile` remains
+available for bounded diagnostics while `up` is stopped.
+
 Use the deliberately isolated fake runtime example to explore resource flows
 without starting an agent or contacting a forge:
 
@@ -159,7 +232,10 @@ transfer its manager lease.
 
 The default resource store is fresh: `$XDG_DATA_HOME/fleet` or
 `~/.local/share/fleet` on Linux, `%LOCALAPPDATA%\fleet` on Windows. An explicit
-`--data-dir` wins over `[data] dir`. A nonempty directory without this build's
+`--data-dir` wins over `[data] dir` for resource commands. For `up`, persist
+that directory in `[data] dir` first: a differing runtime override is refused
+so the VEGA brief and workers use the same store. A nonempty directory without
+this build's
 store marker, an unsupported schema, or corrupt data is refused. Keep private
 config and resources outside a public checkout. Fleet v2 passes no
 environment to a session besides the model variable; credentials stay with

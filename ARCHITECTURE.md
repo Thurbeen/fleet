@@ -90,9 +90,20 @@ tracks spec changes; resourceVersion tracks store writes. See the
 
 There is one lease for manager reconciliation. `fleet reconcile` renews it
 before Tasks, probes and effects, and releases it on exit when still owned.
-A run ends when a pass makes no change or reaches its pass limit. Retry
-eligibility is persisted as `status.notBefore`; a later invocation is needed
-to resume after that deadline. There is no resident scheduler in this binary.
+A bounded `reconcile` run ends when a pass makes no change or reaches its pass
+limit. `fleet up` instead keeps that same manager lease across periodic sweeps,
+renewing before each sweep, Task, probe and effect. Retry eligibility remains
+persisted as `status.notBefore`; due Tasks progress without agent activity.
+Shutdown releases the lease and retains sessions; crash recovery waits for
+lease expiry and observes deterministic session/effect keys.
+
+The CLI's `init` installs the embedded, pinned VEGA workspace and a local
+config without Git or network. Bootstrap file ownership and conflict copies
+are local file concerns, separate from resource writes. `up` asks the manager
+to create `Task/vega` only when absent, then runs the ordinary Task controller
+for every due Task. VEGA has no extra resource kind, controller or privileges.
+The [README](README.md#configuration-and-customization) owns config precedence,
+managed/editable files, source provenance and startup/recovery instructions.
 
 The runtime is chosen in versioned TOML config, not a separate resource.
 Thurbox owns host connections and session execution. Fleet calls it through

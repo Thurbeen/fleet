@@ -159,7 +159,7 @@ Each adapter reports its longest single operation (`operation_bound`), and
 
 ## The command line
 
-`fleet apply|get|list|status|result|delete|reconcile|version`. Exit codes:
+`fleet init|up|apply|get|list|status|result|delete|reconcile|version`. Exit codes:
 0 ok, 1 refused, 2 usage, 3 not found, 4 Unknown, 5 conflict, 6 lease.
 
 The config file is versioned TOML; relative paths are relative to it. This
@@ -209,6 +209,20 @@ A Task manifest:
 `fleet reconcile` takes the manager lease, runs passes until nothing changes
 (or `--max-passes`), and gives the lease back. Its default lease is 30 s,
 raised to twice the runtime's longest operation.
+
+`fleet init` installs the pinned embedded VEGA starter offline and creates
+native per-user config; `--update` advances unedited managed workspace files
+and writes conflict candidates for customizations. Config is never replaced.
+The [README](../README.md#configuration-and-customization) specifies precedence,
+paths, provenance and recovery. Bootstrap does not read v1 data.
+
+`fleet up` ensures one ordinary `Task/vega` through the manager, then retains
+the manager lease across periodic sweeps for all due Tasks. The poll interval
+must fit inside the lease as well as runtime operations. Ctrl-C/SIGTERM stops
+after bounded work and releases the lease; Tasks and sessions survive. Crash
+recovery waits for lease expiry. Uncertain runtime observations remain Unknown.
+`e2e_bootstrap` covers installed first-run, repeat/concurrent initialization,
+customized updates, resident progress, exclusive startup and crash/reconnect.
 
 ## Tests
 
