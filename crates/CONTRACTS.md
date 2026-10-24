@@ -153,7 +153,14 @@ Each adapter reports its longest single operation (`operation_bound`), and
   thurbox key is `<keyPrefix>.<uid>`, and `--on-existing adopt` makes a
   repeated create return the session holding the key. The brief's delivery
   is journaled in the session's own metadata. `spec.model` reaches the
-  harness as the variable `runtime.modelEnv` names for it.
+  harness as the variable `runtime.modelEnv` names for it. Before Codex's first
+  lifecycle report, readiness additionally accepts its initial empty composer:
+  a matching owned session, corroborated live Codex process, no reported or
+  contradicted hook, and a visible-pane capture placing the cursor at the
+  initial prompt under the welcome screen. Missing or different evidence
+  remains Unknown. This input-only proof never authorizes release; `at_rest`
+  still requires idle, done or stopped. `e2e_runtime` covers initial delivery,
+  reconnect, busy/dialog/cursor guards and unchanged deletion safety.
 - **fake:** a file-backed host for tests and trials, with injectable faults
   (lost answers, refusals, delays, hangs). It runs no process.
 

@@ -464,3 +464,107 @@ fn a_brief_that_starts_with_a_dash_is_sent_as_text() {
         json!(["- fix the failing test"])
     );
 }
+
+/// A fresh Codex has not emitted a hook yet. The process state alone cannot
+/// distinguish its empty initial composer from a dialog or an active turn.
+fn initial_codex(env: &Env) {
+    env.edit_stub(|s| {
+        s["spawnState"] = json!("running");
+        s["spawnFields"] = json!({
+            "agent": "codex", "state_source": "process", "hook_reported": false,
+            "hook_state": null, "hook_state_contradicted": false,
+            "hook_corroboration": "agent", "foreground_process": "/bin/codex"
+        });
+        s["capture"] = json!({
+            "ansi": false, "lines": 0, "cursor_row": 3, "cursor_col": 2,
+            "foreground_process": "/bin/codex",
+            "output": "  >_ OpenAI Codex (v0.164.0)\n  To get started, describe a task or try one of these commands:\n\n› Ask Codex to do anything\n  ? for shortcuts\n"
+        });
+    });
+}
+
+#[test]
+fn a_never_reported_codex_initial_composer_receives_its_brief_once() {
+    let env = setup("codex-first-start", vec![]);
+    initial_codex(&env);
+    let mut t = task("first", true);
+    t["spec"]["harness"] = json!("codex");
+    env.apply(t).ok();
+    // The first manager sees startup still in progress, then exits. A new
+    // process must recover the same session when the composer becomes ready.
+    env.edit_stub(|s| s["capture"]["cursor_row"] = json!(0));
+    env.reconcile().ok();
+    assert_eq!(env.status("first")["phase"], "Spawned");
+    assert_eq!(argv_of(&env, "send").len(), 0);
+    let id = env.stub_sessions()[0]["id"].clone();
+    env.edit_stub(|s| s["capture"]["cursor_row"] = json!(3));
+    env.reconcile().ok();
+    assert_eq!(env.status("first")["phase"], "Briefed");
+    // Each reconcile is a new CLI process: reconnect keeps identity and receipt.
+    env.reconcile().ok();
+    assert_eq!(env.stub_sessions()[0]["id"], id);
+    assert_eq!(argv_of(&env, "send").len(), 1);
+    assert_eq!(argv_of(&env, "create").len(), 1);
+    assert!(
+        argv_of(&env, "capture")[0]
+            .windows(2)
+            .any(|a| a == ["--lines", "0"])
+    );
+    // Input readiness is no proof of safe release without a lifecycle report.
+    env.fleet(&["delete", "task", "first"]).ok();
+    env.reconcile().ok();
+    assert_eq!(argv_of(&env, "delete").len(), 0);
+}
+
+#[test]
+fn uncertain_or_occupied_codex_startup_never_receives_a_brief() {
+    let cases = [
+        ("working", "spawnState", json!("working")),
+        ("unknown", "spawnState", json!("unknown")),
+        ("wrong-key", "key", json!("another-task")),
+        ("hook-working", "hook_state", json!("working")),
+        ("blocked", "spawnState", json!("blocked")),
+        ("shell", "agent", json!("shell")),
+        ("stopped", "stopped", json!(true)),
+        ("reported", "hook_reported", json!(true)),
+        ("contradicted", "hook_state_contradicted", json!(true)),
+        ("uncorroborated", "hook_corroboration", json!("unknown")),
+        ("dead", "foreground_process", json!("/bin/bash")),
+        ("cursor-row", "cursor_row", json!(0)),
+        ("cursor-col", "cursor_col", json!(5)),
+        ("capture-shell", "capture_process", json!("/bin/bash")),
+        (
+            "dialog",
+            "output",
+            json!("Trust this folder?\n› Ask Codex to do anything\n"),
+        ),
+        ("occupied", "output", json!("Codex\n\n› do something\n")),
+        ("missing", "cursor_row", Value::Null),
+        ("missing-process", "foreground_process", Value::Null),
+        ("scrollback", "lines", json!(200)),
+        ("ansi", "ansi", json!(true)),
+    ];
+    for (name, field, value) in cases {
+        let env = setup(&format!("codex-guard-{name}"), vec![]);
+        initial_codex(&env);
+        env.edit_stub(|s| match field {
+            "spawnState" => s[field] = value,
+            "cursor_row" | "cursor_col" | "output" | "lines" | "ansi" => {
+                s["capture"][field] = value
+            }
+            "capture_process" => s["capture"]["foreground_process"] = value,
+            _ => s["spawnFields"][field] = value,
+        });
+        let mut t = task("guard", true);
+        t["spec"]["harness"] = json!("codex");
+        env.apply(t).ok();
+        env.reconcile().ok();
+        assert_eq!(argv_of(&env, "send").len(), 0, "{name}");
+    }
+    let env = setup("codex-unreadable-capture", vec![]);
+    initial_codex(&env);
+    env.stub_fault("capture", "fail", 10);
+    env.apply(task("guard", true)).ok();
+    env.reconcile().ok();
+    assert_eq!(argv_of(&env, "send").len(), 0);
+}

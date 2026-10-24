@@ -324,12 +324,15 @@ fn answer(
                 .iter()
                 .map(|kv| kv.split('=').next().unwrap_or_default().to_string())
                 .collect();
-            let s = json!({
+            let mut s = json!({
                 "id": format!("00000000-0000-4000-8000-{n:012}"),
                 "name": opt(args, "--name"), "key": key, "host": host,
                 "agent": opt(args, "--agent"), "cwd": opt(args, "--repo-path"),
                 "state": ready, "stopped": false, "meta": {}, "sent": [], "env": env_names
             });
+            if let Some(fields) = state["spawnFields"].as_object() {
+                s.as_object_mut().unwrap().extend(fields.clone());
+            }
             sessions(state).push(s.clone());
             event(state, "created", &s);
             let mut r = row(state, &s);
@@ -361,6 +364,12 @@ fn answer(
                 }
                 None => err(format!("no session {id}")),
             }
+        }
+        "capture" => {
+            let id = args.get(2).cloned().unwrap_or_default();
+            let mut capture = state["capture"].clone();
+            capture["session_id"] = json!(id);
+            ok(capture)
         }
         "send" => {
             let id = args.get(2).cloned().unwrap_or_default();
