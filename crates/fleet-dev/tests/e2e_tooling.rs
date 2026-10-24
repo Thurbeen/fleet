@@ -1072,3 +1072,67 @@ fn release_checksums_include_published_installers_and_starter_metadata() {
         assert!(sums.contains(&format!("  {name}\n")), "{sums}");
     }
 }
+
+#[test]
+fn native_release_fixture_installs_with_binary_mode_checksum_tools() {
+    let e = Env::new();
+    install_fixture(&e);
+    let fixture = e.0.join("installer-fixture/v1.2.3");
+    fs::create_dir_all(&fixture).unwrap();
+    for item in fs::read_dir(e.0.join("releases/v1.2.3")).unwrap() {
+        let item = item.unwrap();
+        if item
+            .file_name()
+            .to_string_lossy()
+            .ends_with("checksums.txt")
+        {
+            continue;
+        }
+        fs::copy(item.path(), fixture.join(item.file_name())).unwrap();
+    }
+    let recipe = include_str!("../../../.github/workflows/cd.yml")
+        .lines()
+        .find(|l| l.contains("sha256sum") && l.contains("checksums.txt"))
+        .expect("native release fixture checksum recipe")
+        .trim();
+    let mut spec =
+        Spec::new("bash", Duration::from_secs(30)).args(["-eo", "pipefail", "-c", recipe]);
+    spec.cwd = Some(e.0.clone());
+    spec.env.push(("VERSION".into(), "v1.2.3".into()));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // Model Windows' binary default without claiming native Windows evidence.
+        let tool =
+            run(&Spec::new("sh", Duration::from_secs(10)).args(["-c", "command -v sha256sum"]))
+                .success_text()
+                .expect("sha256sum prerequisite");
+        e.write(
+            "checksum-tools/sha256sum",
+            &format!("#!/bin/sh\nexec '{}' --binary \"$@\"\n", tool.trim()),
+        );
+        fs::set_permissions(
+            e.0.join("checksum-tools/sha256sum"),
+            fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        let mut paths = vec![e.0.join("checksum-tools")];
+        paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+        spec.env.push((
+            "PATH".into(),
+            std::env::join_paths(paths)
+                .unwrap()
+                .to_string_lossy()
+                .into(),
+        ));
+    }
+    let result = run(&spec);
+    assert!(result.success_text().is_some(), "{result:?}");
+    fs::copy(
+        fixture.join("fleet-v1.2.3-checksums.txt"),
+        e.0.join("releases/v1.2.3/fleet-v1.2.3-checksums.txt"),
+    )
+    .unwrap();
+    let (ok, out) = installer(&e, &[]);
+    assert!(ok, "native release checksum fixture: {out}");
+}

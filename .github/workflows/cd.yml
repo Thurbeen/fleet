@@ -143,7 +143,9 @@ jobs:
         run: |
           mkdir -p "installer-fixture/$VERSION"
           cp dist/* "installer-fixture/$VERSION/"
-          (cd "installer-fixture/$VERSION" && sha256sum fleet-* > "fleet-$VERSION-checksums.txt")
+          # Hash binary bytes on Windows too, then normalize the binary '*'
+          # marker to the two-space format the Rust release catalog writes.
+          (cd "installer-fixture/$VERSION" && sha256sum --binary fleet-* | sed 's/ \*/  /' > "fleet-$VERSION-checksums.txt")
           export FLEET_VERSION="$VERSION"
           export FLEET_RELEASE_BASE="$PWD/installer-fixture"
           export FLEET_INSTALL_DIR="$PWD/installed/bin"
