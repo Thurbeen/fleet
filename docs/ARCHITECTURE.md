@@ -5,7 +5,7 @@ Task controller. A Task contains the execution inputs for one agent session:
 harness, host, workspace, brief and expected outputs. The worker reports its
 own result.
 
-![Execution flow: CLI calls the manager; the manager uses the pure controller, store and runtime ports; the runtime starts bounded processes through fleet-exec](docs/architecture.svg)
+![Execution flow: CLI calls the manager; the manager uses the pure controller, store and runtime ports; the runtime starts bounded processes through fleet-exec](architecture.svg)
 
 Arrows show calls during execution, not Cargo dependencies. `fleet-cli`
 constructs the adapters; `fleet-manager` depends on API traits rather than
@@ -15,30 +15,30 @@ concrete store or runtime crates.
 
 | Crate | Owns | Boundary |
 | --- | --- | --- |
-| [fleet-cli](crates/fleet-cli/src/main.rs) | Parse arguments, load config, construct adapters, print results | Calls manager verbs; does not write resources or run controller effects directly. |
-| [fleet-manager](crates/fleet-manager/src/lib.rs) | Reconcile loop, lease renewal, plan execution, apply/delete/result verbs | Reads and writes through `Store`; observes and performs effects through `Runtime`. |
-| [fleet-controllers](crates/fleet-controllers/src/task.rs) | Pure Task decisions | Receives time and observations as values; returns probes and a plan without I/O. |
-| [fleet-api](crates/fleet-api/src/lib.rs) | Task, plan, observation, result and port types | Pure shared contract; no adapter dependencies. |
-| [fleet-store](crates/fleet-store/src/lib.rs) | File persistence, CAS, write ownership and lease fencing | A corrupt or unreadable record is Unknown; only proven absence is not-found. |
-| [fleet-runtime](crates/fleet-runtime/src/lib.rs) | Session operations through thurbox, or the file-backed fake host | Converts external answers to Known/Unknown; retains identity and delivery keys. |
-| [fleet-exec](crates/fleet-exec/src/lib.rs) | Bounded process execution | The only production process spawner; timeout/unwind kills the process tree. |
+| [fleet-cli](../crates/fleet-cli/src/main.rs) | Parse arguments, load config, construct adapters, print results | Calls manager verbs; does not write resources or run controller effects directly. |
+| [fleet-manager](../crates/fleet-manager/src/lib.rs) | Reconcile loop, lease renewal, plan execution, apply/delete/result verbs | Reads and writes through `Store`; observes and performs effects through `Runtime`. |
+| [fleet-controllers](../crates/fleet-controllers/src/task.rs) | Pure Task decisions | Receives time and observations as values; returns probes and a plan without I/O. |
+| [fleet-api](../crates/fleet-api/src/lib.rs) | Task, plan, observation, result and port types | Pure shared contract; no adapter dependencies. |
+| [fleet-store](../crates/fleet-store/src/lib.rs) | File persistence, CAS, write ownership and lease fencing | A corrupt or unreadable record is Unknown; only proven absence is not-found. |
+| [fleet-runtime](../crates/fleet-runtime/src/lib.rs) | Session operations through thurbox, or the file-backed fake host | Converts external answers to Known/Unknown; retains identity and delivery keys. |
+| [fleet-exec](../crates/fleet-exec/src/lib.rs) | Bounded process execution | The only production process spawner; timeout/unwind kills the process tree. |
 
 `fleet-arch` and `fleet-dev` are repository tooling: architecture enforcement,
 validation and release packaging. They are not controllers or services in the
 installed `fleet` runtime.
 
-The executable dependency graph is [crates/architecture.toml](crates/architecture.toml).
-The [architecture suite](crates/fleet-arch/tests/architecture.rs) checks crate
+The executable dependency graph is [crates/architecture.toml](../crates/architecture.toml).
+The [architecture suite](../crates/fleet-arch/tests/architecture.rs) checks crate
 edges, purity, restricted process APIs and permitted status writers, including
 negative fixtures. The CLI may wire adapters, but only manager verbs may
 perform resource mutations.
 
 ## Desired state, observations and effects
 
-The [Task controller documentation](docs/task-controller/README.md) defines
-the [resource](docs/task-controller/resource.md),
-[state machine](docs/task-controller/state-machine.md) and
-[interface](docs/task-controller/interface.md).
+The [Task controller documentation](task-controller/README.md) defines
+the [resource](task-controller/resource.md),
+[state machine](task-controller/state-machine.md) and
+[interface](task-controller/interface.md).
 
 One reconcile of a due Task follows this protocol:
 
@@ -61,7 +61,7 @@ file store; deterministic keys and runtime observation recover that gap.
 
 ## Resource representation
 
-[fleet-api](crates/fleet-api/src/meta.rs) defines Fleet's resource envelope
+[fleet-api](../crates/fleet-api/src/meta.rs) defines Fleet's resource envelope
 and metadata as native Rust types. Manifests use `apiVersion`, `kind`,
 `metadata`, `spec` and `status`; typed Task views validate spec and status.
 Unknown fields are refused. The store assigns identity, generation, resource
@@ -86,7 +86,7 @@ The store uses a fresh versioned data directory with a format marker, resource
 files, a sequence counter, a lock and the manager lease. Writes use synced
 temporary files and atomic publication under an OS file lock. Generation
 tracks spec changes; resourceVersion tracks store writes. See the
-[store contract](crates/CONTRACTS.md#store) for durability and deletion rules.
+[store contract](../crates/CONTRACTS.md#store) for durability and deletion rules.
 
 There is one lease for manager reconciliation. `fleet reconcile` renews it
 before Tasks, probes and effects, and releases it on exit when still owned.
@@ -102,7 +102,7 @@ config without Git or network. Bootstrap file ownership and conflict copies
 are local file concerns, separate from resource writes. `up` asks the manager
 to create `Task/vega` only when absent, then runs the ordinary Task controller
 for every due Task. VEGA has no extra resource kind, controller or privileges.
-The [README](README.md#configuration-and-customization) owns config precedence,
+The [README](../README.md#configuration-and-customization) owns config precedence,
 managed/editable files, source provenance and startup/recovery instructions.
 
 The runtime is chosen in versioned TOML config, not a separate resource.
@@ -121,5 +121,5 @@ credentials stay with the agent and host.
 V2 does not read or migrate v1 queue records or configuration. Root
 `FLEET_MAJOR=2` is the boundary checked by v1 installations containing the
 freeze guard; unpatched clients need the pinned release first. The
-[README](README.md) owns stable v1 installation, explicit v2 opt-in and the
+[README](../README.md) owns stable v1 installation, explicit v2 opt-in and the
 deliberate cutover procedure. Production release readiness remains held.

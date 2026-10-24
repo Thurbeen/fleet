@@ -1,8 +1,8 @@
 # Fleet operator context
 
 Operate Tasks with the installed `fleet` binary. Read AGENTS.md for working
-rules, README.md for safe installation and cutover, ARCHITECTURE.md for the
-overall structure, docs/task-controller/README.md for the resource, state
+rules, README.md for safe installation and cutover, docs/ARCHITECTURE.md for
+the overall structure, docs/task-controller/README.md for the resource, state
 machine and interfaces, and crates/CONTRACTS.md for integration guarantees.
 
 Inspect Tasks with `fleet list task --json`, `fleet get task NAME` and

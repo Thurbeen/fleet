@@ -108,7 +108,8 @@ Actions/toolchain updates belong to Renovate.
 
 README.md owns installation, resource examples and deliberate cutover.
 AGENTS.md owns working rules. This file owns contribution and release gates.
-[ARCHITECTURE.md](ARCHITECTURE.md) owns the overall structure and boundaries.
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) owns the overall structure and
+boundaries.
 [docs/task-controller](docs/task-controller/README.md) owns the Task resource,
 state machine and controller interface. `crates/CONTRACTS.md` owns integration
 guarantees and implementation coverage; `crates/architecture.toml` is the

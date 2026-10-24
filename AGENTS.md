@@ -2,7 +2,7 @@
 
 Fleet v2 runs Task resources through a Rust controller built from the
 workspace in `crates/`.
-Read [the architecture](ARCHITECTURE.md), [CONTRIBUTING.md](CONTRIBUTING.md)
+Read [the architecture](docs/ARCHITECTURE.md), [CONTRIBUTING.md](CONTRIBUTING.md)
 and [the contracts](crates/CONTRACTS.md) for changes in their areas. The
 [Task controller guide](docs/task-controller/README.md) owns its resource,
 state machine and interface documentation. Keep the architecture simple and

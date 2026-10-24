@@ -2,7 +2,7 @@
 
 Fleet v2 runs agent sessions through Task resources and their controller. A
 Task is one agent session doing one brief. This file says what each part guarantees
-and which tests hold it to that. The [overall architecture](../ARCHITECTURE.md)
+and which tests hold it to that. The [overall architecture](../docs/ARCHITECTURE.md)
 explains the component boundaries. The
 [Task controller guide](../docs/task-controller/README.md) defines the
 resource fields, state machine and controller interface.

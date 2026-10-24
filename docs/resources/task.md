@@ -7,5 +7,5 @@ The Task and its controller are documented together in
 - [State machine and recovery rules](../task-controller/state-machine.md).
 - [Controller, manager and runtime interface](../task-controller/interface.md).
 
-Start with the [overall architecture](../../ARCHITECTURE.md) for the component
+Start with the [overall architecture](../ARCHITECTURE.md) for the component
 boundaries. This page remains as a link for existing references.

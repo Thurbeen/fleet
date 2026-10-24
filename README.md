@@ -59,7 +59,7 @@ brief once, records the worker's answer, and deletes the session when the Task
 is deleted. Fleet v2 is a Rust binary with a file-backed resource store, one
 manager lease, and explicit ownership of each status field.
 
-Read the [overall architecture](ARCHITECTURE.md) for the component boundaries
+Read the [overall architecture](docs/ARCHITECTURE.md) for the component boundaries
 and execution flow. The [Task controller guide](docs/task-controller/README.md)
 defines its [resource](docs/task-controller/resource.md),
 [state machine](docs/task-controller/state-machine.md) and
