@@ -4,10 +4,11 @@
 
 use fleet_api::change_request::{self, ChangeRequestSpec};
 use fleet_api::forge::{ChangeRef, Forge};
+use fleet_api::inbox::{CLI_SOURCE_PREFIX, InboxEntry, send_key};
 use fleet_api::result::{TaskResult, validate_outputs};
 use fleet_api::task::{self, TaskSpec, TaskStatus};
 use fleet_api::validate::typed;
-use fleet_api::{DeleteOutcome, FieldManager, Object, Observation, Store, StoreError};
+use fleet_api::{Clock, DeleteOutcome, FieldManager, Object, Observation, Store, StoreError};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -204,6 +205,70 @@ fn parse_url(forge: &dyn Forge, url: &str, name: &str) -> Result<ChangeRef, Stor
             "ChangeRequest/{name}: spec.url {url:?}: {why}"
         ))),
     }
+}
+
+/// `fleet send`: queue a message for the Task's session as `cli/<user>`,
+/// under the key `task/<name>/<uid>/send/<n>`, through the store's typed
+/// append. `n` is the resourceVersion the append is made against, which the
+/// store hands out once for its whole life, so a key never repeats even
+/// after its receipt has rotated out of `status.deliveries`. The entry is
+/// returned as appended; delivery is the controller's, on its next pass.
+pub fn send(
+    store: &dyn Store,
+    clock: &dyn Clock,
+    name: &str,
+    user: &str,
+    text: &str,
+) -> Result<InboxEntry, StoreError> {
+    let user = user.trim();
+    if user.is_empty() || user.contains(['/', '\0']) {
+        return Err(StoreError::Invalid(format!(
+            "sender {user:?}: a user name without '/'"
+        )));
+    }
+    if text.trim().is_empty() {
+        return Err(StoreError::Invalid(
+            "nothing to send: the text is empty".into(),
+        ));
+    }
+    for _ in 0..CAS_TRIES {
+        let obj = match store.get(task::KIND, name) {
+            Observation::Known(Some(o)) => o,
+            Observation::Known(None) => {
+                return Err(StoreError::NotFound(format!("{}/{name}", task::KIND)));
+            }
+            Observation::Unknown { why } => return Err(StoreError::Unknown(why)),
+        };
+        if obj.is_deleting() {
+            return Err(StoreError::Forbidden(format!(
+                "{} is being deleted",
+                obj.key()
+            )));
+        }
+        let m = &obj.metadata;
+        let entry = InboxEntry {
+            key: send_key(&m.name, &m.uid, m.resource_version),
+            from: format!("{CLI_SOURCE_PREFIX}{user}"),
+            text: text.to_string(),
+            about: None,
+            queued_at: clock.now(),
+        };
+        match store.append_inbox(
+            name,
+            entry.clone(),
+            m.resource_version,
+            FieldManager::Cli,
+            None,
+        ) {
+            Ok(_) => return Ok(entry),
+            Err(StoreError::Conflict { .. }) => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(StoreError::Busy(format!(
+        "{}/{name}: kept conflicting with other writers",
+        task::KIND
+    )))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

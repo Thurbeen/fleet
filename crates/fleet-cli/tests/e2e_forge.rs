@@ -626,6 +626,28 @@ impl Store for Racing<'_> {
         self.inner
             .update_status(kind, name, status, expected, by, lease)
     }
+    fn append_inbox(
+        &self,
+        name: &str,
+        entry: fleet_api::inbox::InboxEntry,
+        expected: u64,
+        by: FieldManager,
+        lease: Option<&LeaseToken>,
+    ) -> Result<Object, StoreError> {
+        self.inner.append_inbox(name, entry, expected, by, lease)
+    }
+    fn record_delivery(
+        &self,
+        name: &str,
+        status: Value,
+        receipt: fleet_api::inbox::DeliveryReceipt,
+        expected: u64,
+        by: FieldManager,
+        lease: &LeaseToken,
+    ) -> Result<Object, StoreError> {
+        self.inner
+            .record_delivery(name, status, receipt, expected, by, lease)
+    }
     fn delete(
         &self,
         kind: &str,

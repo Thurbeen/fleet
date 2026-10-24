@@ -1,9 +1,9 @@
 # Task resource
 
 A Task is one agent session doing one brief. TaskController spawns the
-session on the host the Task names,
-sends the brief once, records the worker's answer, and deletes the session
-when the Task is deleted. The guarantees behind each step are in
+session on the host the Task names, sends the brief once, delivers what is
+queued in the Task's inbox, records the worker's answer, and deletes the
+session when the Task is deleted. The guarantees behind each step are in
 [the contracts](../../crates/CONTRACTS.md). Read the
 [controller overview](../task-controller/README.md),
 [interface](../task-controller/interface.md) and
@@ -52,7 +52,9 @@ precedence, validation and private launch snapshots.
 ## Status
 
 Written by TaskController under the manager lease, except `result`, which
-the worker writes through `fleet result`.
+the worker writes through `fleet result`, and `inbox`, which nobody owns and
+which changes only through the two typed mutations described under
+[Inbox](#inbox).
 
 | Field | Meaning |
 | --- | --- |
@@ -67,6 +69,9 @@ the worker writes through `fleet result`.
 | `notBefore` | Earliest next reconcile after a failed attempt, in Unix milliseconds. The fixed retry delay is 30 seconds and survives manager restarts. |
 | `brief` | The brief's key and the generation it was sent for, once it has a receipt. |
 | `result` | The worker's claim: outcome, generation, summary, artifacts, outputs. |
+| `inbox` | Messages queued for the session, oldest first: `{key, from, text, about, queuedAt}`. Appended by `fleet send`, removed by TaskController once delivered, each through a typed store mutation; never replaced as a list. |
+| `deliveries` | TaskController's: `receipts`, the newest 100 delivery receipts by inbox key (`{key, from, at, recovered}`), and `revisions`, per source the highest `about.revision` delivered, which keeps a duplicate out after its receipt has rotated. |
+| `deliveryAttempts` | TaskController's bookkeeping per inbox entry being delivered: `sends` (bounded at 3), `probeFailures` and `failed`. Removed with the entry. |
 
 ## Metadata and ownership
 
@@ -97,6 +102,45 @@ refused. `shipped` is a worker's claim: Fleet does not verify a forge artifact.
 The next reconcile changes phase to `Concluded`; it does not release the
 session until the Task is deleted.
 
+## Inbox
+
+`fleet send TASK TEXT` queues a message for the Task's session. It appends
+one entry to `status.inbox` as `cli/<user>` under the key
+`task/<name>/<uid>/send/<n>`, where `n` is the resourceVersion the append
+was made against, so a key never repeats for the life of the Task. `--json`
+prints the entry as appended.
+
+| Field | Meaning |
+| --- | --- |
+| `key` | Deterministic and unique across `inbox` and `deliveries`; also the runtime intent key the delivery is journaled under. |
+| `from` | `cli/<user>` for `fleet send`; `forge/<change>` for a relay, by design. |
+| `text` | The message, delivered as typed. |
+| `about` | For a relay: the mirror's `uid`, `revision` and `head`. Absent for `fleet send`. |
+| `queuedAt` | Unix milliseconds. |
+
+`status.inbox` has no owner. The store reaches it through two typed
+mutations, each named by its caller: append, which refuses a key already in
+`inbox` or `deliveries`, an `about.revision` not above the source's highest
+delivered one, an append while more than 20 entries are undelivered, and a
+deleting Task; and record-and-remove, TaskController's status write that
+also moves one entry's receipt into `deliveries` and the entry out of
+`inbox`. No manager may replace the list.
+
+TaskController delivers inbox entries as it delivers the brief, oldest
+first, one per pass: only to a session observed ready on that pass, under
+the entry's key as the runtime intent key, journaled by the runtime, at most
+3 sends, then a receipt. A send whose answer was lost is read back from the
+journal, never repeated blindly. An entry that exhausts its sends raises
+`NeedsAttention/DeliveryFailed` naming it and stays queued behind nothing:
+later entries are still delivered. More than 20 undelivered entries raise
+`NeedsAttention/InboxFull`. A Concluded Task with a nonempty inbox is due
+again, for delivery only, as the
+[Task state machine](../task-controller/state-machine.md#transition-rules)
+describes; a readable lookup that no longer shows its session is
+`WorkerGone` and `NeedsAttention`, never a respawn. A Stalled or deleting
+Task delivers nothing: a deleting Task refuses `fleet send` and releases its
+session as before.
+
 ## Planned additions
 
 Design, not implemented. The [Forge controller](../forge-controller/README.md)
@@ -108,12 +152,12 @@ binary.
 | `spec.forge` | `apply`; mutable like `dispatch` | Optional overrides of the `[forge]` defaults: `relay.notes`, `relay.checks`, `draft.policy` (a name under `[forge.readyPolicies]`, refused if undefined; `null` disables mark-ready). Field-level: absent fields inherit. |
 | `status.declared` | `worker`, through `fleet declare` | Facts the worker declared, each a JSON object with a required string `kind` and nothing else validated. `--change-request URL` writes `{kind: "ChangeRequest", url, name}` and ensures the named ChangeRequest exists; `--json` writes any object. Accepted after the brief has a receipt and before deletion; a repeated URL is a no-op; it concludes nothing. |
 | `status.forge` | ForgeController | One entry per declared change, keyed by ChangeRequest name: its `uid`, `cursor`, `gaps`, mark-ready record and `notBefore`; plus this controller's conditions. Empty for a Task that declared nothing. |
-| `status.inbox` | Typed append by `fleet send TASK TEXT` or the Forge controller; typed remove by TaskController | Messages for the running session: `{key, from, text, about, queuedAt}`. Duplicate keys are refused. More than 20 undelivered entries raise `NeedsAttention/InboxFull` and further appends are refused. |
-| `status.deliveries` | TaskController | The newest 100 receipts by inbox key, plus per source the highest revision delivered, which is what keeps a duplicate out after a receipt rotates. The entry leaves `inbox` once receipted. |
 
-The [Forge controller interface](../forge-controller/interface.md#fields-this-controller-reads-and-owns)
-defines every field of `status.declared`, `status.forge` and `status.inbox`,
-with an example of a Task following two changes.
+The Forge controller also appends to `status.inbox`, as `forge/<change>`,
+through the same typed append `fleet send` uses, with `about` set. The
+[Forge controller interface](../forge-controller/interface.md#fields-this-controller-reads-and-owns)
+defines every field of `status.declared` and `status.forge`, with an example
+of a Task following two changes.
 
 Any Task may declare a change, with or without a `spec.forge` block; the
 standing worker policy tells every worker to open its change as a draft, to
@@ -124,20 +168,9 @@ another's. Those three rules are the worker's to keep: a change opened ready
 is never marked ready, a change never declared is never followed, and a post
 without the mark comes back to its author as feedback. Nothing forge-related
 has to be created in advance, and a second Task may declare a change another
-Task opened.
-
-TaskController delivers inbox entries as it delivers the brief, oldest
-first, one per pass: only to a session observed ready on that pass, under
-the entry's key as the runtime intent key, journaled by the runtime, at most
-3 sends, then a receipt. An entry that exhausts its sends raises
-`NeedsAttention/DeliveryFailed` and stays queued behind nothing: later
-entries are still delivered. A Concluded Task with a nonempty inbox is due
-again, as the [Task state machine](../task-controller/state-machine.md#planned-additions)
-describes; a readable lookup that no longer shows its session is
-`WorkerGone` and `NeedsAttention`, never a respawn. No new finalizer and no
-owner reference: a ChangeRequest outlives the Tasks that follow it, and
-deleting a Task deletes nothing else. The
-[Forge controller interface](../forge-controller/interface.md#store-port-and-write-ownership)
+Task opened. No new finalizer and no owner reference: a ChangeRequest
+outlives the Tasks that follow it, and deleting a Task deletes nothing else.
+The [Forge controller interface](../forge-controller/interface.md#store-port-and-write-ownership)
 lists the resulting writers.
 
 ## Commands
@@ -145,6 +178,7 @@ lists the resulting writers.
 ```sh
 fleet apply -f task.json             # create, or change dispatch
 fleet status task design-305 --json  # phase and conditions
+fleet send design-305 "Also update the docs."  # queue a message for the session
 fleet result design-305 --generation 1 --outcome shipped \
   --output prUrl='"https://example.test/pr/1"'
 fleet delete task design-305         # release the session, then remove

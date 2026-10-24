@@ -25,10 +25,12 @@ accepts the fields below (`deny_unknown_fields`), and no object may carry
 `ownerReferences`.
 
 The [Forge controller](../docs/forge-controller/README.md), a second
-controller over the Task, is designed and not served. That design adds one
-thing to the store contract below: a Task field, `status.inbox`, with no
-single owner, reached only through typed append and remove mutations that
-refuse a duplicate key.
+controller over the Task, is designed and not served. One piece of that
+design is served already: the Task's inbox, a status field with no single
+owner, `status.inbox`, reached only through the two typed mutations under
+[Store](#store), which refuse a duplicate key. `fleet send` appends to it
+and TaskController delivers it; the Forge controller becomes a second named
+caller of the append.
 
 ## Crates and the allowed graph
 
@@ -57,7 +59,9 @@ fleet-dev          tooling        `cargo xtask`: gate and release
   crate's re-export.
 - Only the crates listed may name a status-writing field manager: only
   fleet-controllers names `FieldManager::TaskController` and
-  `FieldManager::ChangeRequestController`.
+  `FieldManager::ChangeRequestController`, and only fleet-manager's `send`
+  verb (and the store that checks it) names `FieldManager::Cli`, the caller
+  of the inbox append.
 - The CLI calls no store write, no controller method, no runtime effect and
   no forge read: it parses, calls a fleet-manager verb, and prints.
 - Only fleet-exec reaches `std::process::Command`, `std::os::unix::process`,
@@ -134,6 +138,23 @@ Guarantees, each with its test:
   abandons the Task by itself.
 - **Release.** The `fleet.dev/release` finalizer holds a deleted Task until
   its session is deleted, only once the session is proven at rest or gone.
+- **Inbox.** `fleet send TASK TEXT` appends `{key, from, text, queuedAt}` to
+  `status.inbox` as `cli/<user>`, under `task/<name>/<uid>/send/<n>`, `n`
+  the resourceVersion appended against. The oldest entry not given up on is
+  delivered as the brief is: to a session observed ready on that pass, under
+  its key as the runtime intent key, journaled, one entry per pass, at most
+  three sends; a lost answer is read back from the journal, never resent
+  blindly. A Known receipt moves the entry's receipt into
+  `status.deliveries` and the entry out of `status.inbox` in one write, and
+  drops its intent, receipt and attempt records. Three refused sends raise
+  `NeedsAttention/DeliveryFailed` naming the entry, which stays while later
+  entries go out; three unreadable journal reads raise
+  `DeliveryUnconfirmed` and reading continues; more than 20 undelivered raise
+  `InboxFull`. Delivery runs in Spawned (after the brief), Briefed and
+  Concluded, which stays terminal and is due only while its inbox is
+  nonempty; a readable list without the session there is `WorkerGone`, never
+  a respawn. Stalled delivers nothing; deletion keeps precedence and refuses
+  new sends.
 - **No churn.** A condition keeps its `lastTransitionTime` unless its status
   changes against what was stored, so a pass that sees nothing new writes
   nothing and the manager goes idle.
@@ -206,9 +227,20 @@ refused.
 - A missing record is `Known(None)`; an unreadable, corrupt or misfiled one is
   Unknown and blocks writes to that name. A list with one bad record is
   Unknown as a whole.
-- Each status field has one owner, checked on every write. A controller
-  writes only under the current manager lease: an expired or superseded
-  token is refused, and the token only grows.
+- Each status field has one owner, checked on every write, except
+  `Task.status.inbox`, which has none and which no status write may change.
+  A controller writes only under the current manager lease: an expired or
+  superseded token is refused, and the token only grows.
+- `status.inbox` is reached through two typed mutations, each named by its
+  caller and compare-and-swap under the lock: `append_inbox` (`cli`, through
+  the manager's `send` verb; no lease) refuses a key already in `inbox` or
+  `deliveries`, an `about.revision` at or below the source's highest
+  delivered one, an append while more than 20 entries are undelivered, and a
+  deleting Task; `record_delivery` (TaskController, under the lease) writes
+  the controller's status and, in the same write, the receipt into the
+  newest-100 `status.deliveries` and the entry out of `inbox`, refusing a key
+  no entry holds. Neither changes another field; `store_contract` races
+  appenders against the remover and tears the record.
 - Deleting marks a Task while its finalizer remains; only its controller,
   holding the lease, removes the finalizer, and only from a deleting Task.
 - A controller deletes its own object (`delete_fenced`) only with the
@@ -260,7 +292,8 @@ Credentials stay with each CLI's own login; Fleet passes none and stores none.
 
 ## The command line
 
-`fleet init|up|apply|get|list|status|result|delete|reconcile|version`. Exit codes:
+`fleet init|up|apply|get|list|status|send|result|delete|reconcile|version`.
+Exit codes:
 0 ok, 1 refused, 2 usage, 3 not found, 4 Unknown, 5 conflict, 6 lease.
 `apply`, `get`, `list`, `status` and `delete` take `changerequest` as well as
 `task`, `taskconfig` and `envprovider`; `status changerequest NAME --json`
@@ -337,7 +370,8 @@ customized updates, resident progress, exclusive startup and crash/reconnect.
 The `e2e_*` suites drive the real `fleet` binary against an isolated store,
 the fake host or a stub `thurbox-cli`, and, for `e2e_forge`, the fake forge
 or the same stub copied as `gh` and `glab`, across process restarts and
-injected faults. `task_controller` and `change_request_controller` test each
-controller as a pure function, one transition or Unknown per case.
+injected faults; `e2e_inbox` covers `fleet send` and delivery on both the
+fake host and the stub. `task_controller` and `change_request_controller`
+test each controller as a pure function, one transition or Unknown per case.
 `store_contract` tests the store against races, torn writes, stale leases
 and the fenced delete. The `architecture` suite enforces the graph above.

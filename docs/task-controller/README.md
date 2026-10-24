@@ -22,9 +22,11 @@ that decision through the store and runtime ports.
 3. The manager persists the intent, runs the effect and persists its receipt.
    Later passes recover ambiguous effects by their keys.
 4. A ready session receives its brief. Its delivery journal prevents a blind
-   resend when an answer is lost.
+   resend when an answer is lost. Messages queued with `fleet send` follow
+   the same way, oldest first, one per pass, each under its own key.
 5. The worker reports through `fleet result`. The controller concludes the
-   Task, retaining the session until deletion.
+   Task, retaining the session until deletion; messages sent afterwards are
+   still delivered.
 6. Deletion enters Releasing. The finalizer holds the record until the
    recorded session is released, once proven at rest or gone.
 
@@ -47,6 +49,7 @@ for the distinction between bounded sends and continuing recovery attempts.
 | Resource and effect types | [Task types](../../crates/fleet-api/src/task.rs), [plans](../../crates/fleet-api/src/plan.rs) | [CLI lifecycle](../../crates/fleet-cli/tests/e2e_task_lifecycle.rs) |
 | Lease, status, intent and receipt ordering | [Manager](../../crates/fleet-manager/src/lib.rs) | [Store contract](../../crates/fleet-store/tests/store_contract.rs), [CLI lifecycle](../../crates/fleet-cli/tests/e2e_task_lifecycle.rs) |
 | Session identity and delivery journal | [Thurbox runtime](../../crates/fleet-runtime/src/thurbox.rs) | [Runtime E2E](../../crates/fleet-cli/tests/e2e_runtime.rs) |
+| Inbox: `fleet send`, typed mutations and delivery | [Inbox types](../../crates/fleet-api/src/inbox.rs), [verbs](../../crates/fleet-manager/src/verbs.rs), [store](../../crates/fleet-store/src/lib.rs) | [Inbox E2E](../../crates/fleet-cli/tests/e2e_inbox.rs), [Store contract](../../crates/fleet-store/tests/store_contract.rs), [Controller transitions](../../crates/fleet-controllers/tests/task_controller.rs) |
 
 The lifecycle E2E suite drives the built CLI from apply to result and release,
 including crashes, failed attempts and Unknown observations. The runtime E2E

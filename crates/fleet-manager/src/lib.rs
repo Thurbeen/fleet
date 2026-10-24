@@ -32,6 +32,7 @@ use serde_json::Value;
 
 pub use verbs::{
     ApplyOutcome, ResultOutcome, apply, apply_change_request, delete, derived_name, record_result,
+    send,
 };
 
 /// How a bounded reconcile run ends.
@@ -335,12 +336,25 @@ impl Manager<'_> {
     }
 
     /// A Task waiting out `notBefore` after a failed or unknown attempt is
-    /// not looked at again until then, in this run or the next.
+    /// not looked at again until then, in this run or the next. A Concluded
+    /// Task is at rest, and due again only while its inbox holds something
+    /// to deliver, or once it is being deleted.
     fn due(&self, obj: &Object) -> bool {
-        obj.status
+        let waiting = obj
+            .status
             .get("notBefore")
             .and_then(Value::as_u64)
-            .is_none_or(|t| t <= self.clock.now())
+            .is_some_and(|t| t > self.clock.now());
+        if waiting {
+            return false;
+        }
+        let concluded = obj.status.get("phase").and_then(Value::as_str) == Some("Concluded");
+        let inbox_empty = obj
+            .status
+            .get("inbox")
+            .and_then(Value::as_array)
+            .is_none_or(Vec::is_empty);
+        !(concluded && inbox_empty && !obj.is_deleting())
     }
 
     fn tally(
@@ -455,16 +469,30 @@ impl Manager<'_> {
         let by = TaskController::MANAGER;
         let mut step = Step::default();
         let mut current = obj.clone();
-        if let Some(status) = plan.status {
+        // A delivery receipt is written with the status, as one mutation:
+        // the receipt into status.deliveries, its entry out of status.inbox.
+        let status = match (plan.status, &plan.delivery) {
+            (Some(status), _) => Some(status),
+            (None, Some(_)) => Some(current.status.clone()),
+            (None, None) => None,
+        };
+        if let Some(status) = status {
             let rv = current.metadata.resource_version;
-            match self.store.update_status(
-                task::KIND,
-                &obj.metadata.name,
-                status,
-                rv,
-                by,
-                Some(&*lease),
-            ) {
+            let written = match plan.delivery {
+                Some(receipt) => {
+                    self.store
+                        .record_delivery(&obj.metadata.name, status, receipt, rv, by, lease)
+                }
+                None => self.store.update_status(
+                    task::KIND,
+                    &obj.metadata.name,
+                    status,
+                    rv,
+                    by,
+                    Some(&*lease),
+                ),
+            };
+            match written {
                 Ok(o) => {
                     current = o;
                     step.wrote += 1;

@@ -41,6 +41,7 @@ pub mod change_request;
 pub mod condition;
 pub mod config;
 pub mod forge;
+pub mod inbox;
 pub mod kinds;
 pub mod meta;
 pub mod observation;

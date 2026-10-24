@@ -56,9 +56,10 @@ role = "edge"
 deps = ["fleet-api", "fleet-manager", "fleet-runtime", "fleet-store", "fleet-forge"]
 # Every write is the manager's: the CLI parses, calls a verb, and prints.
 forbidden_methods = [
-  "create", "update_spec", "update_status", "remove_finalizer", "delete",
-  "delete_fenced", "acquire_lease", "renew_lease", "release_lease", "reconcile",
-  "probes", "spawn", "release", "change", "mark_ready",
+  "create", "update_spec", "update_status", "append_inbox", "record_delivery",
+  "remove_finalizer", "delete", "delete_fenced", "acquire_lease", "renew_lease",
+  "release_lease", "reconcile", "probes", "spawn", "release", "change",
+  "mark_ready",
 ]
 
 [crates.fleet-arch]
@@ -81,12 +82,15 @@ clippy_guards = [
   "std::env::var", "std::fs::read", "std::thread::sleep",
 ]
 
-# Who may name each field manager. Naming one is how code writes as it.
+# Who may name each field manager. Naming one is how code writes as it, and
+# how a caller of the typed inbox mutations names itself: `Cli` appends to
+# `Task.status.inbox` through the manager's `send` verb and owns nothing.
 [status_writers]
 "fleet_api::store::FieldManager::TaskController" = ["fleet-api", "fleet-controllers"]
 "fleet_api::store::FieldManager::ChangeRequestController" = ["fleet-api", "fleet-controllers"]
 "fleet_api::store::FieldManager::Worker" = ["fleet-api", "fleet-manager"]
 "fleet_api::store::FieldManager::Apply" = ["fleet-api", "fleet-manager", "fleet-store"]
+"fleet_api::store::FieldManager::Cli" = ["fleet-api", "fleet-manager", "fleet-store"]
 
 # One crate starts processes, so every program fleet runs (thurbox-cli, the
 # gate's tools) is bounded and has its tree killed the same way.

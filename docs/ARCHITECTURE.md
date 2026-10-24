@@ -59,11 +59,14 @@ read Task + resourceVersion
 ```
 
 The controller owns Task status except `status.result`, written through the
-worker verb. A status conflict before an effect drops the plan and retries
-from fresh state. A receipt conflict rereads the object and retries the receipt
-write, preserving concurrent worker changes. Expired or superseded leases
-refuse controller writes. An effect already started cannot be fenced by the
-file store; deterministic keys and runtime observation recover that gap.
+worker verb, and `status.inbox`, which nobody owns: `fleet send` appends to
+it and the controller's delivery write removes from it, each through a
+typed store mutation that changes nothing else. A status conflict before an
+effect drops the plan and retries from fresh state. A receipt conflict
+rereads the object and retries the receipt write, preserving concurrent
+worker changes. Expired or superseded leases refuse controller writes. An
+effect already started cannot be fenced by the file store; deterministic keys
+and runtime observation recover that gap.
 
 ## Resource representation
 
@@ -143,12 +146,14 @@ is a second controller over the Task. When a worker declares the change it
 opened, `fleet declare` ensures the ChangeRequest exists, and the controller
 follows it: relays what is new into the Task's inbox by a cursor kept on the
 Task, and takes a draft out of draft under a configured policy. It owns
-`status.forge`, appends to the Task's inbox through a typed store mutation,
-writes nothing else of the Task and no ChangeRequest. It never merges. The
-manager then gains a second controller per Task with its own due gate, and
-typed append and remove mutations on one Task field, `status.inbox`, which
-has no single owner: the write-ownership rule gains that one typed
-exception, and every other field keeps one owner.
+`status.forge`, appends to the Task's inbox through the typed store mutation
+`fleet send` already uses, writes nothing else of the Task and no
+ChangeRequest. It never merges. The manager then gains a second controller
+per Task with its own due gate. The Task inbox the relay lands in, its typed
+append and remove mutations on one field with no single owner,
+`status.inbox`, and its delivery by the Task controller are served already
+(see the [Task resource](resources/task.md#inbox)): the write-ownership rule
+has that one typed exception, and every other field keeps one owner.
 
 ## Scope and compatibility
 

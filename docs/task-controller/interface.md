@@ -29,7 +29,8 @@ Neither method reads the clock, disk, environment or runtime itself.
 
 The manager starts with empty observations, asks `probes`, performs those
 probes through `Runtime`, then calls `reconcile` with their answers. It skips
-Tasks with a future `status.notBefore` before asking for any probe.
+Tasks with a future `status.notBefore` before asking for any probe, and a
+Concluded Task whose inbox is empty unless it is being deleted.
 
 ### Requested probes
 
@@ -38,10 +39,15 @@ Tasks with a future `status.notBefore` before asking for any probe.
 | Pending, `dispatch: false` | None. |
 | Pending, `dispatch: true` | `Host { host }`. |
 | Spawning | `Find { host, key }`. |
-| Spawned | `Find`; `Ready` for the recorded session; `BriefDelivered` when a brief intent exists without a known receipt. |
-| Briefed, no worker result | `Find`. |
-| Concluded or Stalled | None. |
+| Spawned | `Find`; `Ready` for the recorded session; `BriefDelivered` when a brief intent exists without a known receipt, else the inbox probes below. |
+| Briefed, no worker result | `Find`; the inbox probes below. |
+| Concluded, an inbox entry to deliver | `Find`; the inbox probes below. |
+| Concluded otherwise, or Stalled | None. |
 | Deleting, regardless of phase | `Find`; `AtRest` when a session is recorded. |
+
+The inbox probes, for the oldest entry not given up on: `Ready` for the
+recorded session, and `BriefDelivered` under the entry's key when it was
+sent without a known receipt.
 
 `Observations` holds `host`, `find`, `ready`, `brief_delivered` and `at_rest`.
 Each is optional: `None` means no answer was supplied, not a negative answer.
@@ -61,14 +67,16 @@ pub struct Plan {
     pub status: Option<serde_json::Value>,
     pub effects: Vec<Effect>,
     pub remove_finalizer: Option<String>,
+    pub delivery: Option<DeliveryReceipt>,
 }
 ```
 
 | Field | Contract |
 | --- | --- |
-| `status` | Desired typed Task status serialized as JSON, including every new effect intent; `None` means unchanged. The worker-owned `result` is preserved. |
+| `status` | Desired typed Task status serialized as JSON, including every new effect intent; `None` means unchanged. The worker-owned `result` and the unowned `inbox` are passed back as read. |
 | `effects` | Ordered effects, each with a deterministic key and `Action`. The controller does not execute them. |
 | `remove_finalizer` | Request to remove `fleet.dev/release` after the status and effects; present only for a deleting Task whose release is established. |
+| `delivery` | An inbox entry proven delivered: `{key, at, recovered}`. The manager writes it with `status` as one record-and-remove mutation: the receipt into `status.deliveries`, the entry out of `status.inbox`. |
 
 An action is `Spawn(SpawnSpec)`, `Brief { session, text }` or
 `Release { session }`. SpawnSpec carries `host`, `key`, `harness`, `dir`,
@@ -88,8 +96,10 @@ Source: [Manager](../../crates/fleet-manager/src/lib.rs).
    configuration/environment, resolve or recover its private launch snapshot
    and persist its public identity before runtime probes/effects. Request and
    perform probes, renewing before each probe, then call the pure controller.
-3. CAS-write planned status against the resourceVersion read. This persists
-   intents before effects. A conflict drops this plan; no effect runs from it.
+3. CAS-write planned status against the resourceVersion read, through the
+   record-and-remove mutation when the plan carries a delivery. This
+   persists intents before effects. A conflict drops this plan; no effect
+   runs from it.
 4. Renew before each effect, perform it, then persist its receipt. On a
    receipt conflict, reread current status and retry that receipt write so a
    concurrent worker result is preserved.
@@ -157,10 +167,21 @@ Source: [Store](../../crates/fleet-api/src/store.rs) and
 | --- | --- | --- |
 | `apply` | New served resources, labels and permitted spec changes; request deletion | Store validation, exclusive creation or resourceVersion CAS for spec updates. |
 | `worker` | `status.result` through `record_result` | Current resourceVersion, delivered brief generation and declared output types. |
-| `task-controller` | Other Task status and release finalizer | Current resourceVersion and live manager lease. |
+| `cli` | Appends to `status.inbox` through `send` | Current resourceVersion. No lease: the CLI calls a manager verb. |
+| `task-controller` | Other Task status, `status.deliveries` and the release finalizer; removes delivered `inbox` entries | Current resourceVersion and live manager lease. |
+
+`status.inbox` has no owner. It is reached only through two typed
+mutations, `append_inbox` and `record_delivery`, each named by its caller
+(`kinds::may_append_inbox`, `kinds::may_record_delivery`), with the rules the
+store enforces: no duplicate key across `inbox` and `deliveries`, no
+`about.revision` at or below the source's highest delivered one, no append
+while more than 20 entries are undelivered or the Task is deleting, and no
+other field of the Task changed by either. A plain `update_status` that
+changes `inbox` is refused whoever writes it.
 
 `Store` supplies `get`, `list`, `create`, `update_spec`, `update_status`,
-`delete`, `remove_finalizer`, validation and lease acquire/renew/release.
+`append_inbox`, `record_delivery`, `delete`, `remove_finalizer`, validation
+and lease acquire/renew/release.
 Private `launch`/`freeze_launch` methods recover or exclusively freeze launch
 data under Task UID, separately from resources. Freezing checks Task UID,
 resourceVersion and manager lease; final Task deletion removes the snapshot.
@@ -176,13 +197,17 @@ permit controller fields to change.
 | Session key | `<name>.<uid>`; the uid prevents a recreated Task adopting an earlier Task's session. |
 | Spawn effect | `task/<name>/<uid>/spawn/<attempt>`. |
 | Brief effect | `task/<name>/<uid>/brief`, reused for every permitted send of that one brief. |
+| Inbox entry | Its own `key`, reused for every permitted send of it: `task/<name>/<uid>/send/<n>` for `fleet send`, `n` the resourceVersion the append was made against. |
 | Release effect | `task/<name>/<uid>/release/<attempt>`. |
 | Intent | Action name, timestamp and generation, stored under the effect key. |
 | Receipt | Action name, timestamp and `Observation<EffectOutcome>`, stored under the effect key. |
 
 An intent without a receipt means the action may have happened. Spawn looks
-up its session key, brief reads its delivery journal, and release confirms
-absence or retries after the persisted wait. The
+up its session key, brief and inbox delivery read the delivery journal under
+their keys, and release confirms absence or retries after the persisted wait.
+Once an inbox entry's receipt is recorded in `status.deliveries`, its
+intent, effect receipt and attempt record are removed with it, so a Task's
+status stays bounded however many messages it is sent. The
 [state machine](state-machine.md#retries-and-recovery) defines each decision.
 
 ## Planned additions
@@ -201,14 +226,8 @@ extend this interface without changing what exists:
   [ChangeRequest controller](../change-request-controller/interface.md).
   `AtRest` is reused by ForgeController's `workerIdle` predicate. The plan's
   `delete` field, by which that controller retires its own object, exists.
-- A Task with `status.inbox` entries asks `Find`, `Ready` and
-  `BriefDelivered` for the oldest entry, and plans `Brief` for it under its
-  key, bounded and journaled like the brief; one entry per pass. Its receipt
-  goes to `status.deliveries` and the entry is removed, in one write. This
-  runs in Concluded as well, as the
-  [state machine](state-machine.md#planned-additions) says.
-- Three typed store mutations on `status.inbox`: append (ForgeController and
-  `fleet send`) and record-and-remove (this controller), the store refusing
-  a duplicate key across `inbox` and `deliveries`. Field managers
-  `ChangeRequestController` and `ForgeController`, and `Worker` gains
-  `status.declared`.
+- ForgeController appends to `status.inbox` through the existing
+  `append_inbox` mutation, naming itself, with `about` set on each relay;
+  its plan's status write replaces `status.forge` and appends the listed
+  entries in one CAS write. Field managers `ChangeRequestController` and
+  `ForgeController`, and `Worker` gains `status.declared`.

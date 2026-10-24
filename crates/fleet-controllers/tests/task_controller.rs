@@ -546,3 +546,495 @@ fn a_session_seen_again_clears_worker_gone() {
     assert_eq!(cond(&st, "WorkerGone").status, ConditionStatus::False);
     assert_eq!(cond(&st, "NeedsAttention").status, ConditionStatus::False);
 }
+
+// --- The inbox: delivered as the brief is, under each entry's key. --------
+
+fn entry(key: &str) -> fleet_api::inbox::InboxEntry {
+    fleet_api::inbox::InboxEntry {
+        key: key.into(),
+        from: "cli/someone".into(),
+        text: format!("message {key}"),
+        about: None,
+        queued_at: NOW - 100,
+    }
+}
+
+fn intent(at: u64) -> fleet_api::plan::Intent {
+    fleet_api::plan::Intent {
+        action: "brief".into(),
+        at,
+        generation: 1,
+    }
+}
+
+/// A Briefed Task with the given inbox and extra status.
+fn briefed_with(inbox: &[&str], extra: impl FnOnce(&mut TaskStatus)) -> Object {
+    spawned(|st| {
+        st.phase = Phase::Briefed;
+        st.brief_sends = 1;
+        st.inbox = inbox.iter().map(|k| entry(k)).collect();
+        extra(st);
+    })
+}
+
+fn live() -> Option<Observation<Option<SessionRef>>> {
+    Some(Observation::Known(Some(session())))
+}
+
+#[test]
+fn the_oldest_inbox_entry_is_sent_to_a_ready_session_under_its_key() {
+    let obj = briefed_with(&["task/t/u7/send/1", "task/t/u7/send/2"], |_| {});
+    assert_eq!(
+        probes(&obj),
+        vec![
+            Probe::Find {
+                host: "local".into(),
+                key: "t.u7".into()
+            },
+            Probe::Ready { session: session() }
+        ]
+    );
+    let (plan, st) = run(
+        &obj,
+        Observations {
+            find: live(),
+            ready: Some(Observation::Known(true)),
+            ..Default::default()
+        },
+    );
+    assert_eq!(plan.effects.len(), 1, "one entry per pass");
+    assert_eq!(plan.effects[0].key, "task/t/u7/send/1");
+    match &plan.effects[0].action {
+        Action::Brief { text, .. } => assert_eq!(text, "message task/t/u7/send/1"),
+        other => panic!("{other:?}"),
+    }
+    assert!(st.intents.contains_key("task/t/u7/send/1"));
+    assert_eq!(st.delivery_attempts["task/t/u7/send/1"].sends, 1);
+    assert_eq!(st.phase, Phase::Briefed, "delivery changes no phase");
+    assert!(plan.delivery.is_none());
+}
+
+#[test]
+fn an_inbox_entry_waits_for_a_ready_session() {
+    let obj = briefed_with(&["task/t/u7/send/1"], |_| {});
+    for ready in [
+        Observation::Known(false),
+        Observation::unknown("capture failed"),
+    ] {
+        let (plan, st) = run(
+            &obj,
+            Observations {
+                find: live(),
+                ready: Some(ready),
+                ..Default::default()
+            },
+        );
+        assert!(plan.effects.is_empty());
+        assert!(st.delivery_attempts.is_empty());
+        assert_eq!(st.phase, Phase::Briefed);
+    }
+}
+
+#[test]
+fn a_delivered_receipt_moves_the_entry_into_deliveries_in_one_write() {
+    let obj = briefed_with(&["task/t/u7/send/1", "task/t/u7/send/2"], |st| {
+        st.intents
+            .insert("task/t/u7/send/1".into(), intent(NOW - 5));
+        st.receipts.insert(
+            "task/t/u7/send/1".into(),
+            receipt(
+                "brief",
+                Observation::Known(EffectOutcome::Delivered { already: false }),
+            ),
+        );
+        st.delivery_attempts.insert(
+            "task/t/u7/send/1".into(),
+            fleet_api::inbox::DeliveryAttempt {
+                sends: 1,
+                ..Default::default()
+            },
+        );
+    });
+    let (plan, st) = run(
+        &obj,
+        Observations {
+            find: live(),
+            ready: Some(Observation::Known(true)),
+            ..Default::default()
+        },
+    );
+    let delivery = plan.delivery.expect("a delivery to record");
+    assert_eq!(delivery.key, "task/t/u7/send/1");
+    assert!(!delivery.recovered);
+    assert!(plan.status.is_some(), "the receipt rides with the status");
+    assert!(
+        plan.effects.is_empty(),
+        "recording a receipt is the pass's work; the next entry waits"
+    );
+    assert!(
+        !st.intents.contains_key("task/t/u7/send/1")
+            && !st.receipts.contains_key("task/t/u7/send/1")
+            && !st.delivery_attempts.contains_key("task/t/u7/send/1"),
+        "the effect records go with the entry: status stays bounded"
+    );
+    assert_eq!(
+        st.inbox.len(),
+        2,
+        "the controller never edits the list itself"
+    );
+}
+
+#[test]
+fn an_inbox_send_without_a_known_receipt_is_read_back_never_resent_blind() {
+    let obj = briefed_with(&["task/t/u7/send/1"], |st| {
+        st.intents
+            .insert("task/t/u7/send/1".into(), intent(NOW - 5));
+        st.delivery_attempts.insert(
+            "task/t/u7/send/1".into(),
+            fleet_api::inbox::DeliveryAttempt {
+                sends: 1,
+                ..Default::default()
+            },
+        );
+    });
+    assert!(probes(&obj).contains(&Probe::BriefDelivered {
+        session: session(),
+        key: "task/t/u7/send/1".into()
+    }));
+
+    let (plan, _) = run(
+        &obj,
+        Observations {
+            find: live(),
+            ready: Some(Observation::Known(true)),
+            brief_delivered: Some(Observation::Known(true)),
+            ..Default::default()
+        },
+    );
+    assert!(plan.effects.is_empty());
+    assert!(plan.delivery.as_ref().is_some_and(|d| d.recovered));
+
+    let (plan, st) = run(
+        &obj,
+        Observations {
+            find: live(),
+            ready: Some(Observation::Known(true)),
+            brief_delivered: Some(Observation::Known(false)),
+            ..Default::default()
+        },
+    );
+    assert_eq!(plan.effects.len(), 1, "Known not delivered: sent again");
+    assert_eq!(plan.effects[0].key, "task/t/u7/send/1");
+    assert_eq!(st.delivery_attempts["task/t/u7/send/1"].sends, 2);
+
+    let (plan, st) = run(
+        &obj,
+        Observations {
+            find: live(),
+            ready: Some(Observation::Known(true)),
+            brief_delivered: Some(Observation::unknown("journal unreadable")),
+            ..Default::default()
+        },
+    );
+    assert!(plan.effects.is_empty(), "Unknown is never a resend");
+    assert!(plan.delivery.is_none());
+    assert_eq!(st.delivery_attempts["task/t/u7/send/1"].probe_failures, 1);
+    assert!(st.not_before.is_some(), "read again after a wait");
+}
+
+#[test]
+fn three_unreadable_delivery_probes_ask_for_attention_and_keep_reading() {
+    let obj = briefed_with(&["task/t/u7/send/1"], |st| {
+        st.intents
+            .insert("task/t/u7/send/1".into(), intent(NOW - 5));
+        st.delivery_attempts.insert(
+            "task/t/u7/send/1".into(),
+            fleet_api::inbox::DeliveryAttempt {
+                sends: 1,
+                probe_failures: MAX_ATTEMPTS - 1,
+                failed: false,
+            },
+        );
+    });
+    let (plan, st) = run(
+        &obj,
+        Observations {
+            find: live(),
+            ready: Some(Observation::Known(true)),
+            brief_delivered: Some(Observation::unknown("?")),
+            ..Default::default()
+        },
+    );
+    assert!(plan.effects.is_empty());
+    assert_eq!(cond(&st, "NeedsAttention").reason, "DeliveryUnconfirmed");
+    assert_eq!(st.phase, Phase::Briefed, "a read never stalls the Task");
+    assert!(
+        probes(&task(true, Some(st)))
+            .iter()
+            .any(|p| matches!(p, Probe::BriefDelivered { .. })),
+        "the journal is still asked"
+    );
+}
+
+#[test]
+fn a_refused_inbox_send_waits_then_needs_fresh_readiness() {
+    let obj = briefed_with(&["task/t/u7/send/1"], |st| {
+        st.intents
+            .insert("task/t/u7/send/1".into(), intent(NOW - 5));
+        st.receipts.insert(
+            "task/t/u7/send/1".into(),
+            receipt(
+                "brief",
+                Observation::Known(EffectOutcome::Failed { why: "busy".into() }),
+            ),
+        );
+        st.delivery_attempts.insert(
+            "task/t/u7/send/1".into(),
+            fleet_api::inbox::DeliveryAttempt {
+                sends: 1,
+                ..Default::default()
+            },
+        );
+    });
+    let obs = || Observations {
+        find: live(),
+        ready: Some(Observation::Known(true)),
+        ..Default::default()
+    };
+    let (plan, st) = run(&obj, obs());
+    assert!(plan.effects.is_empty(), "a refused send waits first");
+    assert_eq!(st.not_before, Some(NOW - 10 + RETRY_DELAY_MS));
+    let (plan, st) = run_at(&obj, obs(), NOW + RETRY_DELAY_MS);
+    assert_eq!(plan.effects.len(), 1, "then it is sent again");
+    assert_eq!(st.delivery_attempts["task/t/u7/send/1"].sends, 2);
+    let (plan, _) = run_at(
+        &obj,
+        Observations {
+            ready: Some(Observation::Known(false)),
+            ..obs()
+        },
+        NOW + RETRY_DELAY_MS,
+    );
+    assert!(plan.effects.is_empty(), "a retry still needs readiness");
+}
+
+#[test]
+fn an_entry_whose_sends_ran_out_raises_delivery_failed_and_later_entries_still_go() {
+    let obj = briefed_with(&["task/t/u7/send/1", "task/t/u7/send/2"], |st| {
+        st.intents
+            .insert("task/t/u7/send/1".into(), intent(NOW - 5));
+        st.receipts.insert(
+            "task/t/u7/send/1".into(),
+            receipt(
+                "brief",
+                Observation::Known(EffectOutcome::Failed { why: "no".into() }),
+            ),
+        );
+        st.delivery_attempts.insert(
+            "task/t/u7/send/1".into(),
+            fleet_api::inbox::DeliveryAttempt {
+                sends: MAX_ATTEMPTS,
+                ..Default::default()
+            },
+        );
+    });
+    let obs = || Observations {
+        find: live(),
+        ready: Some(Observation::Known(true)),
+        ..Default::default()
+    };
+    let (plan, st) = run(&obj, obs());
+    assert!(plan.effects.is_empty(), "a fourth send is never made");
+    let attention = cond(&st, "NeedsAttention");
+    assert_eq!(attention.reason, "DeliveryFailed");
+    assert!(
+        attention.message.contains("task/t/u7/send/1"),
+        "{attention:?}"
+    );
+    assert!(st.delivery_attempts["task/t/u7/send/1"].failed);
+    assert_eq!(st.phase, Phase::Briefed, "no stall: the session is fine");
+    assert_eq!(st.inbox.len(), 2, "the entry stays");
+
+    let (plan, st) = run(&task(true, Some(st)), obs());
+    assert_eq!(plan.effects.len(), 1, "the next entry goes out past it");
+    assert_eq!(plan.effects[0].key, "task/t/u7/send/2");
+    assert_eq!(cond(&st, "NeedsAttention").reason, "DeliveryFailed");
+}
+
+#[test]
+fn a_concluded_task_delivers_its_inbox_and_concludes_nothing_else() {
+    let concluded = |inbox: &[&str]| {
+        briefed_with(inbox, |st| {
+            st.phase = Phase::Concluded;
+            st.result = Some(
+                serde_json::from_value(json!({"outcome": "shipped", "generation": 1})).unwrap(),
+            );
+        })
+    };
+    assert!(
+        probes(&concluded(&[])).is_empty(),
+        "nothing queued: at rest"
+    );
+    let obj = concluded(&["task/t/u7/send/1"]);
+    assert_eq!(
+        probes(&obj),
+        vec![
+            Probe::Find {
+                host: "local".into(),
+                key: "t.u7".into()
+            },
+            Probe::Ready { session: session() }
+        ]
+    );
+    let (plan, st) = run(
+        &obj,
+        Observations {
+            find: live(),
+            ready: Some(Observation::Known(true)),
+            ..Default::default()
+        },
+    );
+    assert_eq!(plan.effects.len(), 1);
+    assert_eq!(plan.effects[0].key, "task/t/u7/send/1");
+    assert_eq!(st.phase, Phase::Concluded);
+    assert_eq!(
+        st.conditions.len(),
+        0,
+        "no condition is touched by a delivery"
+    );
+}
+
+#[test]
+fn a_concluded_task_whose_session_is_gone_is_worker_gone_never_respawned() {
+    let obj = briefed_with(&["task/t/u7/send/1"], |st| {
+        st.phase = Phase::Concluded;
+    });
+    let (plan, st) = run(
+        &obj,
+        Observations {
+            find: Some(Observation::Known(None)),
+            ready: Some(Observation::unknown("no such session")),
+            ..Default::default()
+        },
+    );
+    assert!(plan.effects.is_empty(), "no send, no spawn");
+    assert_eq!(st.phase, Phase::Concluded);
+    assert_eq!(cond(&st, "WorkerGone").reason, "SessionGone");
+    assert_eq!(cond(&st, "NeedsAttention").reason, "WorkerGone");
+
+    let (plan, st) = run(
+        &obj,
+        Observations {
+            find: Some(Observation::unknown("list unreadable")),
+            ready: Some(Observation::unknown("no such session")),
+            ..Default::default()
+        },
+    );
+    assert!(plan.effects.is_empty());
+    assert!(
+        st.conditions.iter().all(|c| c.type_ != "WorkerGone"),
+        "an unreadable list is never read as gone"
+    );
+}
+
+#[test]
+fn a_stalled_or_deleting_task_delivers_nothing() {
+    let stalled = briefed_with(&["task/t/u7/send/1"], |st| st.phase = Phase::Stalled);
+    assert!(probes(&stalled).is_empty());
+    let (plan, _) = run(
+        &stalled,
+        Observations {
+            find: live(),
+            ready: Some(Observation::Known(true)),
+            ..Default::default()
+        },
+    );
+    assert!(plan.effects.is_empty() && plan.delivery.is_none());
+
+    let mut deleting = briefed_with(&["task/t/u7/send/1"], |_| {});
+    deleting.metadata.deletion_timestamp = Some(NOW - 1);
+    assert!(
+        !probes(&deleting)
+            .iter()
+            .any(|p| matches!(p, Probe::Ready { .. })),
+        "a deleting Task does not ask whether it could type"
+    );
+    let (plan, st) = run(
+        &deleting,
+        Observations {
+            find: live(),
+            ready: Some(Observation::Known(true)),
+            at_rest: Some(Observation::Known(true)),
+            ..Default::default()
+        },
+    );
+    assert_eq!(st.phase, Phase::Releasing);
+    assert!(matches!(plan.effects[0].action, Action::Release { .. }));
+    assert!(plan.delivery.is_none());
+    assert_eq!(
+        st.inbox.len(),
+        1,
+        "deletion keeps precedence; the entry stays"
+    );
+}
+
+#[test]
+fn in_spawned_the_brief_goes_first_and_an_entry_follows_on_a_later_pass() {
+    let obj = spawned(|st| st.inbox = vec![entry("task/t/u7/send/1")]);
+    let obs = || Observations {
+        find: live(),
+        ready: Some(Observation::Known(true)),
+        ..Default::default()
+    };
+    let (plan, st) = run(&obj, obs());
+    assert_eq!(
+        plan.effects.len(),
+        1,
+        "one send per pass, and it is the brief"
+    );
+    assert_eq!(plan.effects[0].key, "task/t/u7/brief");
+    assert!(st.delivery_attempts.is_empty());
+    // The brief is sent but unconfirmed: the inbox waits and asks nothing.
+    let pending = task(true, Some(st));
+    assert!(!probes(&pending).iter().any(
+        |p| matches!(p, Probe::BriefDelivered { key, .. } if key.starts_with("task/t/u7/send/"))
+    ));
+    let (plan, _) = run(
+        &pending,
+        Observations {
+            brief_delivered: Some(Observation::unknown("?")),
+            ..obs()
+        },
+    );
+    assert!(plan.effects.is_empty());
+}
+
+#[test]
+fn more_than_the_bound_queued_is_attention_until_delivered_down() {
+    let keys: Vec<String> = (0..=fleet_api::inbox::MAX_INBOX)
+        .map(|i| format!("task/t/u7/send/{i}"))
+        .collect();
+    let refs: Vec<&str> = keys.iter().map(String::as_str).collect();
+    let obj = briefed_with(&refs, |_| {});
+    let (_, st) = run(
+        &obj,
+        Observations {
+            find: live(),
+            ready: Some(Observation::Known(false)),
+            ..Default::default()
+        },
+    );
+    assert_eq!(cond(&st, "NeedsAttention").reason, "InboxFull");
+    // One delivered (the store removes it): back within the bound.
+    let mut st = st;
+    st.inbox.remove(0);
+    let (_, st) = run(
+        &task(true, Some(st)),
+        Observations {
+            find: live(),
+            ready: Some(Observation::Known(false)),
+            ..Default::default()
+        },
+    );
+    assert_eq!(cond(&st, "NeedsAttention").status, ConditionStatus::False);
+}

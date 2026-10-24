@@ -26,7 +26,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use fleet_api::inbox::{CLI_SOURCE_PREFIX, DeliveryReceipt, InboxEntry};
 use fleet_api::kinds;
+use fleet_api::task::{self, TaskStatus};
 use fleet_api::validate::{
     validate_kind, validate_name, validate_object, validate_spec_update, validate_status,
 };
@@ -311,7 +313,7 @@ impl FileStore {
             return Ok(DeleteOutcome::Marked);
         }
         let path = self.object_path(&obj.kind, &obj.metadata.name);
-        if obj.kind == fleet_api::task::KIND {
+        if obj.kind == task::KIND {
             let launch = self
                 .root
                 .join("launches")
@@ -336,13 +338,13 @@ fn read_object(path: &Path, kind: &str, name: &str) -> Observation<Option<Object
                 || o.metadata.resource_version == 0
                 || o.metadata.generation == 0
                 || o.metadata.creation_timestamp.is_none()
-                || (kind == fleet_api::task::KIND
+                || (kind == task::KIND
                     && !o.is_deleting()
                     && !o
                         .metadata
                         .finalizers
                         .iter()
-                        .any(|f| f == fleet_api::task::RELEASE_FINALIZER))
+                        .any(|f| f == task::RELEASE_FINALIZER))
                 || validate_object(&o).is_err()
                 || validate_status(kind, &o.status).is_err()
             {
@@ -368,6 +370,44 @@ fn encode(obj: &Object) -> Result<Vec<u8>, StoreError> {
 
 fn io_unknown(path: &Path, e: io::Error) -> StoreError {
     StoreError::Unknown(format!("{}: {e}", path.display()))
+}
+
+/// `by` may change only the status fields it owns; a field nobody owns
+/// (`Task.status.inbox`) may not change through a status write at all.
+fn check_owned(kind: &str, old: &Value, new: &Value, by: FieldManager) -> Result<(), StoreError> {
+    let empty = serde_json::Map::new();
+    let old = old.as_object().unwrap_or(&empty);
+    let new = new.as_object().unwrap_or(&empty);
+    for field in old.keys().chain(new.keys()) {
+        if old.get(field) != new.get(field) && kinds::status_owner(kind, field) != Some(by) {
+            return Err(StoreError::Forbidden(format!(
+                "{} may not write status.{field} of {kind}",
+                by.name()
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn task_status(obj: &Object) -> Result<TaskStatus, StoreError> {
+    if obj.status.is_null() {
+        return Ok(TaskStatus::default());
+    }
+    serde_json::from_value(obj.status.clone())
+        .map_err(|e| StoreError::Invalid(format!("{}: status: {e}", obj.key())))
+}
+
+fn encode_status(st: &TaskStatus) -> Result<Value, StoreError> {
+    serde_json::to_value(st).map_err(|e| StoreError::Invalid(format!("Task status: {e}")))
+}
+
+/// A refused append: a repeated key is `AlreadyExists`, the rest Forbidden.
+fn inbox_refusal(obj: &Object, why: String) -> StoreError {
+    if why.ends_with("already exists") {
+        StoreError::AlreadyExists(format!("{}: {why}", obj.key()))
+    } else {
+        StoreError::Forbidden(format!("{}: {why}", obj.key()))
+    }
 }
 
 fn expect_rv(obj: &Object, expected: u64) -> Result<(), StoreError> {
@@ -428,7 +468,7 @@ impl Store for FileStore {
     ) -> Result<fleet_api::config::Execution, StoreError> {
         let _guard = self.lock()?;
         self.check_lease(lease)?;
-        let current = self.read_existing(fleet_api::task::KIND, &task.metadata.name)?;
+        let current = self.read_existing(task::KIND, &task.metadata.name)?;
         if current.metadata.uid != task.metadata.uid
             || current.metadata.resource_version != task.metadata.resource_version
             || current.is_deleting()
@@ -620,21 +660,106 @@ impl Store for FileStore {
                 obj.key()
             )));
         }
-        let empty = serde_json::Map::new();
-        let old = obj.status.as_object().unwrap_or(&empty);
-        let new = status.as_object().unwrap_or(&empty);
-        for field in old.keys().chain(new.keys()) {
-            if old.get(field) != new.get(field) && kinds::status_owner(kind, field) != Some(by) {
-                return Err(StoreError::Forbidden(format!(
-                    "{} may not write status.{field} of {kind}",
-                    by.name()
-                )));
-            }
-        }
+        check_owned(kind, &obj.status, &status, by)?;
         if obj.status == status {
             return Ok(obj);
         }
         obj.status = status;
+        obj.metadata.resource_version = self.next_rv()?;
+        self.write(&obj)?;
+        Ok(obj)
+    }
+
+    fn append_inbox(
+        &self,
+        name: &str,
+        entry: InboxEntry,
+        expected: u64,
+        by: FieldManager,
+        lease: Option<&LeaseToken>,
+    ) -> Result<Object, StoreError> {
+        if !kinds::may_append_inbox(by) {
+            return Err(StoreError::Forbidden(format!(
+                "{} does not append to status.inbox",
+                by.name()
+            )));
+        }
+        if by == FieldManager::Cli && !entry.from.starts_with(CLI_SOURCE_PREFIX) {
+            return Err(StoreError::Invalid(format!(
+                "an entry {} appends names its source as {CLI_SOURCE_PREFIX}<user>, not {:?}",
+                by.name(),
+                entry.from
+            )));
+        }
+        let _guard = self.lock()?;
+        if by.is_controller() {
+            match lease {
+                Some(l) => self.check_lease(l)?,
+                None => {
+                    return Err(StoreError::LeaseLost(format!(
+                        "{} writes only under the manager lease",
+                        by.name()
+                    )));
+                }
+            }
+        }
+        let mut obj = self.read_existing(task::KIND, name)?;
+        expect_rv(&obj, expected)?;
+        if obj.is_deleting() {
+            return Err(StoreError::Forbidden(format!(
+                "{} is being deleted; nothing would deliver the entry",
+                obj.key()
+            )));
+        }
+        let mut st = task_status(&obj)?;
+        fleet_api::inbox::check_append(&st.inbox, &st.deliveries, &entry)
+            .map_err(|why| inbox_refusal(&obj, why))?;
+        st.inbox.push(entry);
+        obj.status = encode_status(&st)?;
+        obj.metadata.resource_version = self.next_rv()?;
+        self.write(&obj)?;
+        Ok(obj)
+    }
+
+    fn record_delivery(
+        &self,
+        name: &str,
+        status: Value,
+        receipt: DeliveryReceipt,
+        expected: u64,
+        by: FieldManager,
+        lease: &LeaseToken,
+    ) -> Result<Object, StoreError> {
+        if !kinds::may_record_delivery(by) {
+            return Err(StoreError::Forbidden(format!(
+                "{} does not record deliveries; only {}'s controller does",
+                by.name(),
+                task::KIND
+            )));
+        }
+        if !status.is_object() {
+            return Err(StoreError::Invalid("status must be an object".into()));
+        }
+        validate_status(task::KIND, &status)?;
+        let _guard = self.lock()?;
+        self.check_lease(lease)?;
+        let mut obj = self.read_existing(task::KIND, name)?;
+        expect_rv(&obj, expected)?;
+        // The controller's own fields change as in update_status; inbox,
+        // having no owner, must be passed back unchanged.
+        check_owned(task::KIND, &obj.status, &status, by)?;
+        let mut st: TaskStatus = serde_json::from_value(status)
+            .map_err(|e| StoreError::Invalid(format!("Task status: {e}")))?;
+        let Some(at) = st.inbox.iter().position(|e| e.key == receipt.key) else {
+            return Err(StoreError::NotFound(format!(
+                "{}: inbox entry {}",
+                obj.key(),
+                receipt.key
+            )));
+        };
+        let entry = st.inbox.remove(at);
+        st.deliveries.record(&entry, receipt);
+        obj.status = encode_status(&st)?;
         obj.metadata.resource_version = self.next_rv()?;
         self.write(&obj)?;
         Ok(obj)

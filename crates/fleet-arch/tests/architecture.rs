@@ -71,13 +71,14 @@ deps = ["fx-api", "fx-ctl"]
 [crates.fx-cli]
 role = "edge"
 deps = ["fx-api", "fx-mgr", "fx-store"]
-forbidden_methods = ["update_status"]
+forbidden_methods = ["update_status", "append_inbox"]
 
 [pure]
 forbidden_paths = ["std::fs", "std::env", "std::process", "std::time::Instant", "std::println"]
 
 [status_writers]
 "fx_api::store::FieldManager::Ctl" = ["fx-api", "fx-ctl"]
+"fx_api::store::FieldManager::Cli" = ["fx-api", "fx-mgr"]
 
 [[restricted]]
 path = "std::process::Command"
@@ -101,7 +102,7 @@ fn base() -> Vec<(String, String)> {
         ("crates/fx-api/fixture.toml", manifest("fx-api", &["serde"])),
         (
             "crates/fx-api/src/lib.rs",
-            "//! ```compile_fail\n//! use fx_store::Store;\n//! ```\npub mod store {\n    pub enum FieldManager { Ctl, Worker }\n}\npub use store::FieldManager;\nuse serde::Serialize;\n".into(),
+            "//! ```compile_fail\n//! use fx_store::Store;\n//! ```\npub mod store {\n    pub enum FieldManager { Ctl, Worker, Cli }\n}\npub use store::FieldManager;\nuse serde::Serialize;\n".into(),
         ),
         ("crates/fx-ctl/fixture.toml", manifest("fx-ctl", &["fx-api"])),
         (
@@ -326,6 +327,44 @@ fn naming_another_controllers_field_manager_is_caught() {
             "use fx_api::store;\npub fn run() { let _ = store::FieldManager::Ctl; }\n",
         )],
         &[("status-writer", "fx-mgr")],
+    );
+}
+
+/// The typed inbox mutations name their caller the way status writes do:
+/// only the manager's verb speaks as `Cli`, and the CLI never appends itself.
+#[test]
+fn an_inbox_mutation_caller_is_a_status_writer_too() {
+    expect(
+        "inbox-caller-positive",
+        &[(
+            "crates/fx-mgr/src/lib.rs",
+            "pub fn run() { let _ = fx_ctl::plan(); let _ = fx_api::FieldManager::Cli; }\n",
+        )],
+        &[],
+    );
+    expect(
+        "inbox-caller-cli",
+        &[(
+            "crates/fx-cli/src/main.rs",
+            "fn main() { let _ = fx_api::FieldManager::Cli; fx_mgr::run(); }\n",
+        )],
+        &[("status-writer", "fx-cli")],
+    );
+    expect(
+        "inbox-caller-store",
+        &[(
+            "crates/fx-store/src/lib.rs",
+            "use std::fs;\npub struct S;\npub fn read() { let _ = fs::read(\"x\"); let _ = fx_api::FieldManager::Cli; }\n",
+        )],
+        &[("status-writer", "fx-store")],
+    );
+    expect(
+        "inbox-append-from-cli",
+        &[(
+            "crates/fx-cli/src/main.rs",
+            "fn main() { let s = fx_store::S; s.append_inbox(); fx_mgr::run(); }\n",
+        )],
+        &[("cli-method", "fx-cli")],
     );
 }
 
@@ -604,9 +643,9 @@ fn a_forge_adapter_and_the_controllers_cannot_reach_each_other() {
 #[test]
 fn only_the_listed_crates_name_a_second_controllers_field_manager() {
     let rules = format!(
-        "{}\n[status_writers]\n\"fx_api::store::FieldManager::Ctl\" = [\"fx-api\", \"fx-ctl\"]\n\"fx_api::store::FieldManager::CrCtl\" = [\"fx-api\", \"fx-ctl\"]\n",
+        "{}\n[status_writers]\n\"fx_api::store::FieldManager::Ctl\" = [\"fx-api\", \"fx-ctl\"]\n\"fx_api::store::FieldManager::CrCtl\" = [\"fx-api\", \"fx-ctl\"]\n\"fx_api::store::FieldManager::Cli\" = [\"fx-api\", \"fx-mgr\"]\n",
         RULES.replace(
-            "[status_writers]\n\"fx_api::store::FieldManager::Ctl\" = [\"fx-api\", \"fx-ctl\"]\n",
+            "[status_writers]\n\"fx_api::store::FieldManager::Ctl\" = [\"fx-api\", \"fx-ctl\"]\n\"fx_api::store::FieldManager::Cli\" = [\"fx-api\", \"fx-mgr\"]\n",
             ""
         )
     );

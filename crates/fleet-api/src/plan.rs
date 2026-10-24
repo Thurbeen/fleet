@@ -23,6 +23,10 @@ pub struct Plan {
     /// lease: how a controller retires its own object once its retention
     /// passed. Only ChangeRequestController asks.
     pub delete: bool,
+    /// An inbox entry proven delivered: its receipt goes into
+    /// `status.deliveries` and the entry leaves `status.inbox` in the same
+    /// write as `status`, through the store's record-and-remove mutation.
+    pub delivery: Option<crate::inbox::DeliveryReceipt>,
 }
 
 /// An effect outside the store, under a deterministic key: a key that has a
@@ -154,6 +158,8 @@ pub struct Observations {
 /// recognised, and scoped by uid, so a Task recreated under the same name
 /// starts every key fresh. A Task's spec cannot change once created (only
 /// `dispatch` may), so one uid is one brief and needs no generation in the key.
+/// An inbox entry's key has the same shape (`send/<n>`) and is the intent key
+/// its delivery runs under.
 pub fn effect_key(kind: &str, name: &str, uid: &str, action: &str, attempt: Option<u32>) -> String {
     let kind = kind.to_ascii_lowercase();
     match attempt {

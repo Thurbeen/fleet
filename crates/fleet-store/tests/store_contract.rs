@@ -888,3 +888,493 @@ fn change_request_status_belongs_to_its_controller_alone() {
         Err(StoreError::Invalid(_))
     ));
 }
+// --- The inbox: two typed mutations on a field nobody owns. ---------------
+
+use fleet_api::inbox::{DeliveryReceipt, InboxAbout, InboxEntry, MAX_DELIVERIES, MAX_INBOX};
+
+fn entry(key: &str) -> InboxEntry {
+    InboxEntry {
+        key: key.into(),
+        from: "cli/tester".into(),
+        text: format!("message {key}"),
+        about: None,
+        queued_at: 1,
+    }
+}
+
+fn receipt(key: &str) -> DeliveryReceipt {
+    DeliveryReceipt {
+        key: key.into(),
+        from: String::new(),
+        at: 2,
+        recovered: false,
+    }
+}
+
+fn inbox_status(obj: &Object) -> TaskStatus {
+    serde_json::from_value(obj.status.clone()).unwrap_or_default()
+}
+
+#[test]
+fn an_inbox_key_is_refused_while_queued_or_receipted() {
+    let dir = Dir::new("inbox-dup");
+    let store = FileStore::open(&dir.0).unwrap();
+    let t = store.create(task("t"), FieldManager::Apply).unwrap();
+    let lease = store.acquire_lease("m", 10_000).unwrap();
+    let t = store
+        .append_inbox(
+            "t",
+            entry("k1"),
+            t.metadata.resource_version,
+            FieldManager::Cli,
+            None,
+        )
+        .unwrap();
+    let err = store
+        .append_inbox(
+            "t",
+            entry("k1"),
+            t.metadata.resource_version,
+            FieldManager::Cli,
+            None,
+        )
+        .unwrap_err();
+    assert!(matches!(err, StoreError::AlreadyExists(_)), "{err}");
+    assert_eq!(inbox_status(&t).inbox.len(), 1, "nothing was written");
+
+    // Delivered: the receipt in, the entry out, one write.
+    let rv = t.metadata.resource_version;
+    let t = store
+        .record_delivery(
+            "t",
+            t.status.clone(),
+            receipt("k1"),
+            rv,
+            FieldManager::TaskController,
+            &lease,
+        )
+        .unwrap();
+    assert_eq!(t.metadata.resource_version, rv + 1, "one write");
+    let st = inbox_status(&t);
+    assert!(st.inbox.is_empty());
+    assert_eq!(st.deliveries.receipts.len(), 1);
+    assert_eq!(st.deliveries.receipts[0].key, "k1");
+    assert_eq!(st.deliveries.receipts[0].from, "cli/tester");
+    let err = store
+        .append_inbox(
+            "t",
+            entry("k1"),
+            t.metadata.resource_version,
+            FieldManager::Cli,
+            None,
+        )
+        .unwrap_err();
+    assert!(
+        matches!(err, StoreError::AlreadyExists(_)),
+        "a receipted key is refused too: {err}"
+    );
+    // Recording a delivery nobody queued is refused, not invented.
+    assert!(matches!(
+        store.record_delivery(
+            "t",
+            t.status.clone(),
+            receipt("k9"),
+            t.metadata.resource_version,
+            FieldManager::TaskController,
+            &lease,
+        ),
+        Err(StoreError::NotFound(_))
+    ));
+}
+
+#[test]
+fn the_inbox_bound_and_the_delivered_revision_hold_on_append() {
+    let dir = Dir::new("inbox-bound");
+    let store = FileStore::open(&dir.0).unwrap();
+    let mut t = store.create(task("t"), FieldManager::Apply).unwrap();
+    for i in 0..=MAX_INBOX {
+        t = store
+            .append_inbox(
+                "t",
+                entry(&format!("k{i}")),
+                t.metadata.resource_version,
+                FieldManager::Cli,
+                None,
+            )
+            .unwrap_or_else(|e| panic!("append {i}: {e}"));
+    }
+    assert_eq!(inbox_status(&t).inbox.len(), MAX_INBOX + 1);
+    let err = store
+        .append_inbox(
+            "t",
+            entry("one-more"),
+            t.metadata.resource_version,
+            FieldManager::Cli,
+            None,
+        )
+        .unwrap_err();
+    assert!(
+        matches!(err, StoreError::Forbidden(ref m) if m.contains("undelivered")),
+        "{err}"
+    );
+    assert_eq!(inbox_status(&t).inbox.len(), MAX_INBOX + 1);
+
+    // An entry's revision survives its receipt's rotation: the store keeps
+    // the highest delivered revision per source. (A relay's source is
+    // `forge/<change>`; until that caller exists, the rule is exercised on
+    // a `cli/` source carrying `about`.)
+    let dir2 = Dir::new("inbox-revision");
+    let store2 = FileStore::open(&dir2.0).unwrap();
+    let mut r = store2.create(task("r"), FieldManager::Apply).unwrap();
+    let relay = |key: &str, revision: u64| InboxEntry {
+        from: "cli/relay".into(),
+        about: Some(InboxAbout {
+            uid: "c1".into(),
+            revision,
+            head: Some("abc".into()),
+        }),
+        ..entry(key)
+    };
+    let lease2 = store2.acquire_lease("m", 10_000).unwrap();
+    r = store2
+        .append_inbox(
+            "r",
+            relay("relay/7", 7),
+            r.metadata.resource_version,
+            FieldManager::Cli,
+            None,
+        )
+        .unwrap();
+    r = store2
+        .record_delivery(
+            "r",
+            r.status.clone(),
+            receipt("relay/7"),
+            r.metadata.resource_version,
+            FieldManager::TaskController,
+            &lease2,
+        )
+        .unwrap();
+    for i in 0..MAX_DELIVERIES {
+        let k = format!("s{i}");
+        r = store2
+            .append_inbox(
+                "r",
+                entry(&k),
+                r.metadata.resource_version,
+                FieldManager::Cli,
+                None,
+            )
+            .unwrap();
+        r = store2
+            .record_delivery(
+                "r",
+                r.status.clone(),
+                receipt(&k),
+                r.metadata.resource_version,
+                FieldManager::TaskController,
+                &lease2,
+            )
+            .unwrap();
+    }
+    let st = inbox_status(&r);
+    assert_eq!(
+        st.deliveries.receipts.len(),
+        MAX_DELIVERIES,
+        "newest 100 kept"
+    );
+    assert!(
+        !st.deliveries.delivered("relay/7"),
+        "the oldest rotated out"
+    );
+    assert_eq!(st.deliveries.revisions["cli/relay"], 7);
+    let err = store2
+        .append_inbox(
+            "r",
+            relay("relay/7b", 7),
+            r.metadata.resource_version,
+            FieldManager::Cli,
+            None,
+        )
+        .unwrap_err();
+    assert!(
+        matches!(err, StoreError::Forbidden(ref m) if m.contains("revision 7")),
+        "{err}"
+    );
+    store2
+        .append_inbox(
+            "r",
+            relay("relay/8", 8),
+            r.metadata.resource_version,
+            FieldManager::Cli,
+            None,
+        )
+        .unwrap();
+}
+
+#[test]
+fn only_named_callers_reach_the_inbox_and_never_through_a_status_write() {
+    let dir = Dir::new("inbox-callers");
+    let store = FileStore::open(&dir.0).unwrap();
+    let t = store.create(task("t"), FieldManager::Apply).unwrap();
+    let lease = store.acquire_lease("m", 10_000).unwrap();
+    let rv = t.metadata.resource_version;
+    for by in [
+        FieldManager::Apply,
+        FieldManager::Worker,
+        FieldManager::TaskController,
+    ] {
+        let err = store
+            .append_inbox("t", entry("k1"), rv, by, Some(&lease))
+            .unwrap_err();
+        assert!(matches!(err, StoreError::Forbidden(_)), "{by:?}: {err}");
+    }
+    let mut mislabelled = entry("k1");
+    mislabelled.from = "forge/cr-1".into();
+    assert!(matches!(
+        store.append_inbox("t", mislabelled, rv, FieldManager::Cli, None),
+        Err(StoreError::Invalid(_))
+    ));
+    let t = store
+        .append_inbox("t", entry("k1"), rv, FieldManager::Cli, None)
+        .unwrap();
+
+    // No manager replaces the list: not the controller, not the worker.
+    let mut replaced = t.status.clone();
+    replaced["inbox"] = json!([]);
+    for (by, lease) in [
+        (FieldManager::TaskController, Some(&lease)),
+        (FieldManager::Worker, None),
+    ] {
+        let err = store
+            .update_status(
+                "Task",
+                "t",
+                replaced.clone(),
+                t.metadata.resource_version,
+                by,
+                lease,
+            )
+            .unwrap_err();
+        assert!(
+            matches!(err, StoreError::Forbidden(ref m) if m.contains("status.inbox")),
+            "{by:?}: {err}"
+        );
+    }
+    // Not even in the record-and-remove write itself.
+    let mut edited = t.status.clone();
+    edited["inbox"][0]["text"] = json!("tampered");
+    let err = store
+        .record_delivery(
+            "t",
+            edited,
+            receipt("k1"),
+            t.metadata.resource_version,
+            FieldManager::TaskController,
+            &lease,
+        )
+        .unwrap_err();
+    assert!(matches!(err, StoreError::Forbidden(_)), "{err}");
+    for by in [FieldManager::Cli, FieldManager::Worker, FieldManager::Apply] {
+        let err = store
+            .record_delivery(
+                "t",
+                t.status.clone(),
+                receipt("k1"),
+                t.metadata.resource_version,
+                by,
+                &lease,
+            )
+            .unwrap_err();
+        assert!(matches!(err, StoreError::Forbidden(_)), "{by:?}: {err}");
+    }
+    // The controller's own fields still move in that write, under the lease.
+    let mut moved = t.status.clone();
+    moved["phase"] = json!("Briefed");
+    let t = store
+        .record_delivery(
+            "t",
+            moved,
+            receipt("k1"),
+            t.metadata.resource_version,
+            FieldManager::TaskController,
+            &lease,
+        )
+        .unwrap();
+    assert_eq!(t.status["phase"], "Briefed");
+    assert!(t.status["inbox"].as_array().is_none_or(Vec::is_empty));
+    let stale = store.acquire_lease("n", 10_000);
+    assert!(stale.is_err(), "the lease is held");
+    let t2 = store
+        .append_inbox(
+            "t",
+            entry("k2"),
+            t.metadata.resource_version,
+            FieldManager::Cli,
+            None,
+        )
+        .unwrap();
+    store.release_lease(&lease).unwrap();
+    assert!(matches!(
+        store.record_delivery(
+            "t",
+            t2.status.clone(),
+            receipt("k2"),
+            t2.metadata.resource_version,
+            FieldManager::TaskController,
+            &lease
+        ),
+        Err(StoreError::LeaseLost(_))
+    ));
+    // A deleting Task takes no more messages.
+    store.delete("Task", "t", FieldManager::Apply).unwrap();
+    let t = known(store.get("Task", "t")).unwrap();
+    assert!(matches!(
+        store.append_inbox(
+            "t",
+            entry("k3"),
+            t.metadata.resource_version,
+            FieldManager::Cli,
+            None
+        ),
+        Err(StoreError::Forbidden(_))
+    ));
+}
+
+#[test]
+fn concurrent_appends_and_removes_lose_nothing() {
+    let dir = Dir::new("inbox-race");
+    let store = FileStore::open(&dir.0).unwrap();
+    store.create(task("t"), FieldManager::Apply).unwrap();
+    let lease = store.acquire_lease("m", 60_000).unwrap();
+    let senders = 4;
+    let per = 6;
+    let appenders: Vec<_> = (0..senders)
+        .map(|s| {
+            let root = dir.0.clone();
+            thread::spawn(move || {
+                let store = FileStore::open(&root).unwrap();
+                for i in 0..per {
+                    loop {
+                        let cur = known(store.get("Task", "t")).unwrap();
+                        let e = entry(&format!("s{s}-{i}"));
+                        match store.append_inbox(
+                            "t",
+                            e,
+                            cur.metadata.resource_version,
+                            FieldManager::Cli,
+                            None,
+                        ) {
+                            Ok(_) => break,
+                            Err(StoreError::Conflict { .. } | StoreError::Forbidden(_)) => {
+                                thread::sleep(std::time::Duration::from_millis(2));
+                            }
+                            Err(e) => panic!("{e}"),
+                        }
+                    }
+                }
+            })
+        })
+        .collect();
+    // The controller, meanwhile, delivers whatever is at the head.
+    let mut delivered = 0;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while delivered < senders * per {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "delivered {delivered}"
+        );
+        let cur = known(store.get("Task", "t")).unwrap();
+        let st = inbox_status(&cur);
+        let Some(head) = st.inbox.first() else {
+            thread::sleep(std::time::Duration::from_millis(2));
+            continue;
+        };
+        match store.record_delivery(
+            "t",
+            cur.status.clone(),
+            receipt(&head.key),
+            cur.metadata.resource_version,
+            FieldManager::TaskController,
+            &lease,
+        ) {
+            Ok(_) => delivered += 1,
+            Err(StoreError::Conflict { .. }) => {}
+            Err(e) => panic!("{e}"),
+        }
+    }
+    for h in appenders {
+        h.join().unwrap();
+    }
+    let st = inbox_status(&known(store.get("Task", "t")).unwrap());
+    assert!(st.inbox.is_empty(), "{:?}", st.inbox);
+    let keys: std::collections::BTreeSet<_> = st
+        .deliveries
+        .receipts
+        .iter()
+        .map(|r| r.key.clone())
+        .collect();
+    assert_eq!(
+        keys.len(),
+        senders * per,
+        "every entry delivered exactly once"
+    );
+    assert!(
+        fs::read_dir(dir.0.join("tmp")).unwrap().next().is_none(),
+        "no temp file left"
+    );
+}
+
+#[test]
+fn a_torn_inbox_write_leaves_the_last_complete_record() {
+    let dir = Dir::new("inbox-torn");
+    let store = FileStore::open(&dir.0).unwrap();
+    let t = store.create(task("t"), FieldManager::Apply).unwrap();
+    let t = store
+        .append_inbox(
+            "t",
+            entry("k1"),
+            t.metadata.resource_version,
+            FieldManager::Cli,
+            None,
+        )
+        .unwrap();
+    drop(store);
+    // An appender that died after its temp file, before the rename.
+    fs::write(dir.0.join("tmp").join("999-0.tmp"), b"{\"half\": ").unwrap();
+    let store = FileStore::open(&dir.0).unwrap();
+    assert!(fs::read_dir(dir.0.join("tmp")).unwrap().next().is_none());
+    assert_eq!(known(store.get("Task", "t")).unwrap(), t);
+    assert_eq!(inbox_status(&t).inbox.len(), 1);
+    // A record torn in place is Unknown, and blocks both mutations.
+    let path = dir.0.join("objects").join("Task").join("t.json");
+    let bytes = fs::read(&path).unwrap();
+    fs::write(&path, &bytes[..bytes.len() / 2]).unwrap();
+    let lease = store.acquire_lease("m", 10_000).unwrap();
+    assert!(matches!(
+        store.append_inbox(
+            "t",
+            entry("k2"),
+            t.metadata.resource_version,
+            FieldManager::Cli,
+            None
+        ),
+        Err(StoreError::Unknown(_))
+    ));
+    assert!(matches!(
+        store.record_delivery(
+            "t",
+            t.status.clone(),
+            receipt("k1"),
+            t.metadata.resource_version,
+            FieldManager::TaskController,
+            &lease
+        ),
+        Err(StoreError::Unknown(_))
+    ));
+    assert_eq!(
+        fs::read(&path).unwrap(),
+        &bytes[..bytes.len() / 2],
+        "never repaired"
+    );
+}

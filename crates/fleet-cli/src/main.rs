@@ -17,7 +17,9 @@ use fleet_api::result::{Outcome, TaskResult};
 use fleet_api::runtime::Runtime;
 use fleet_api::{API_VERSION, Object, Observation, Store, StoreError};
 use fleet_forge::{ForgeHosts, HostConfig, HostKind};
-use fleet_manager::{Manager, RunOptions, apply, apply_change_request, delete, record_result};
+use fleet_manager::{
+    Manager, RunOptions, apply, apply_change_request, delete, record_result, send,
+};
 use fleet_runtime::{FakeHost, FakeRuntime, ThurboxConfig, ThurboxRuntime};
 use fleet_store::{FileStore, SystemClock};
 use serde_json::{Value, json};
@@ -101,6 +103,16 @@ enum Command {
         /// The whole result as a JSON file instead of the flags above.
         #[arg(long, conflicts_with_all = ["generation", "outcome", "summary", "artifacts", "outputs"])]
         file: Option<PathBuf>,
+    },
+    /// Queue a message for a Task's session; the controller delivers it on its next pass.
+    Send {
+        task: String,
+        /// The message, delivered as typed; it may start with a dash.
+        #[arg(allow_hyphen_values = true)]
+        text: String,
+        /// Print the appended inbox entry as JSON.
+        #[arg(long)]
+        json: bool,
     },
     /// Delete a resource; a Task is released by its controller first.
     Delete { kind: String, name: String },
@@ -309,6 +321,15 @@ fn run(cli: Cli) -> Result<(), Failure> {
             );
             Ok(())
         }
+        Command::Send { task, text, json } => {
+            let entry = send(store, &SystemClock, &task, &current_user(), &text)?;
+            if json {
+                print_json(&serde_json::to_value(&entry).map_err(|e| fail(e.to_string()))?);
+            } else {
+                println!("Task/{task} inbox {} queued from {}", entry.key, entry.from);
+            }
+            Ok(())
+        }
         Command::Delete { kind, name } => {
             let kind = served_kind(&kind)?;
             let outcome = delete(store, &kind, &name)?;
@@ -493,6 +514,17 @@ fn cmd_up(
     )?;
     println!("Fleet stopped; Tasks and sessions retained");
     Ok(())
+}
+
+/// Who `fleet send` speaks as: the login name the environment gives, else
+/// `unknown`. A name with a path separator would read as another source.
+fn current_user() -> String {
+    ["USER", "USERNAME", "LOGNAME"]
+        .iter()
+        .find_map(|v| std::env::var(v).ok())
+        .map(|u| u.trim().replace('/', "-"))
+        .filter(|u| !u.is_empty())
+        .unwrap_or_else(|| "unknown".to_string())
 }
 
 fn unreachable_version() -> Result<(), Failure> {
@@ -793,6 +825,20 @@ fn status_summary(obj: &Object) -> Value {
         for k in ["session", "execution", "brief", "result"] {
             own.insert(k.to_string(), field(k));
         }
+        own.insert(
+            "inbox".to_string(),
+            obj.status
+                .get("inbox")
+                .cloned()
+                .unwrap_or_else(|| json!([])),
+        );
+        own.insert(
+            "deliveries".to_string(),
+            obj.status
+                .get("deliveries")
+                .cloned()
+                .unwrap_or_else(|| json!({})),
+        );
     }
     summary
 }
@@ -840,6 +886,11 @@ fn print_status(s: &Value) {
             s["notes"].as_array().map_or(0, Vec::len),
             s["threads"]["unresolved"]
         );
+    }
+    let queued = s["inbox"].as_array().map_or(0, Vec::len);
+    let delivered = s["deliveries"]["receipts"].as_array().map_or(0, Vec::len);
+    if queued + delivered > 0 {
+        println!("inbox {queued} queued, {delivered} delivered");
     }
 }
 

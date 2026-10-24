@@ -9,10 +9,13 @@ proof of an external artifact landing. The
 
 ## Transition rules
 
-The manager only reconciles Tasks whose `notBefore` is absent or due.
+The manager only reconciles Tasks whose `notBefore` is absent or due, and a
+Concluded Task only while its inbox is nonempty or it is being deleted.
 Deletion takes precedence over normal progress, including Stalled and
-Concluded. With no deletion, those two phases are terminal. A recorded worker
-result concludes an active Task before its ordinary phase logic runs.
+Concluded. With no deletion, those two phases are terminal; a Concluded Task
+with a nonempty `status.inbox` is nevertheless due again, for delivery only.
+A recorded worker result concludes an active Task before its ordinary phase
+logic runs.
 
 | Current phase | Observation or input | Next phase | Decision |
 | --- | --- | --- | --- |
@@ -33,7 +36,16 @@ result concludes an active Task before its ordinary phase logic runs.
 | Briefed | No result; recorded session present or lookup unreadable | Briefed | Wait for result; Unknown does not mean WorkerGone. |
 | Briefed | No result; readable lookup lacks recorded identity | Briefed | Raise WorkerGone and NeedsAttention; never abandon or respawn. |
 | Active phase | Accepted worker result is stored | Concluded | Set `Concluded=True/ResultRecorded`; keep the session. |
-| Any phase | Task marked deleting | Releasing | Resolve spawn ambiguity if needed; release only once at rest or proven absent. |
+| Spawned, Briefed or Concluded | Oldest inbox entry has no receipt; session ready; nothing else sent this pass | unchanged | Persist the entry's intent and plan `Brief` under its key; one entry per pass. In Spawned the brief goes first: nothing is delivered while a brief send is unconfirmed. |
+| Spawned, Briefed or Concluded | Oldest inbox entry; session not ready or Unknown | unchanged | Do not send. Receipt recovery through `BriefDelivered` may still proceed. |
+| Spawned, Briefed or Concluded | Known Delivered receipt, or journal proves delivered | unchanged | Record the receipt in `status.deliveries` and remove the entry, in one write; its intent, receipt and attempt records go with it. |
+| Spawned, Briefed or Concluded | Entry send refused (Known failure) | unchanged | Wait, then send again under the same key to a session observed ready; at most 3 sends. |
+| Spawned, Briefed or Concluded | Entry delivery unreadable after an ambiguous send | unchanged | Wait, then read the journal again; after 3 unreadable reads raise `NeedsAttention/DeliveryUnconfirmed`, and keep reading. |
+| Spawned, Briefed or Concluded | A fourth send of one entry would be needed | unchanged | `NeedsAttention/DeliveryFailed` naming the entry; the entry stays, marked failed, and later entries are still delivered. |
+| Spawned, Briefed or Concluded | More than 20 entries undelivered | unchanged | `NeedsAttention/InboxFull`; cleared once delivery brings the count back within the bound. |
+| Concluded | Readable lookup lacks the recorded session | Concluded | `WorkerGone` and `NeedsAttention`; never a respawn. |
+| Stalled | Any inbox entry | Stalled | Nothing is delivered; Stalled has no session to deliver to. |
+| Any phase | Task marked deleting | Releasing | Resolve spawn ambiguity if needed; release only once at rest or proven absent. A deleting Task delivers nothing. |
 | Releasing | Busy session or unreadable rest/lookup evidence | Releasing | Keep finalizer; wait for safe evidence. |
 | Releasing | Failed, missing or Unknown release receipt | Releasing | Wait and retry; after 3 attempts also raise NeedsAttention. |
 | Releasing | Known Released receipt, or nothing was spawned and nothing remains to release | Record removed | Remove finalizer; removal is not another phase. |
@@ -56,9 +68,11 @@ These are controller constants, not extra configuration resources.
 | Delivery journal unreadable | A later readable journal answer | After 3 failures raise NeedsAttention, but keep probing after each wait. Recovery clears BriefUnconfirmed attention. |
 | Release answer missing/Unknown or failed | Recorded session at rest, or key proven absent; adapter preserves exact identity | Wait once per failed attempt, then retry. After 3 attempts raise NeedsAttention but continue; success releases the finalizer. |
 | Session lookup unreadable | A later readable lookup | Unknown is not absence and does not by itself trigger WorkerGone or permit a blind spawn. |
+| Inbox entry send refused or answer missing/Unknown | As for the brief, under the entry's key: a failure receipt, or the journal's answer | Wait before retry; every retry needs fresh readiness; at most 3 sends per entry, then `DeliveryFailed` and the next entry. Unknown journal reads continue after each wait; three raise `DeliveryUnconfirmed`. |
 
 A single brief key is reused so retrying a proven-undelivered brief does not
-create a new delivery identity. The thurbox pending journal prevents another
+create a new delivery identity, and each inbox entry's key is reused the same
+way. The thurbox pending journal prevents another
 send when the first might already have typed text. A key reused by a different
 session is not proof that the original worker is alive and does not transfer
 at-rest proof to that replacement.
@@ -85,13 +99,16 @@ are last recorded observations; absence of a condition is not a True value.
 | WorkerGone | A readable lookup no longer shows the recorded identity under its key (`SessionGone`). |
 | Concluded | A worker result was accepted and observed (`ResultRecorded`). |
 | Released | A known release completed, or there was nothing to release. |
-| NeedsAttention | Reason is Stalled, WorkerGone, BriefUnconfirmed or ReleaseFailed. |
+| NeedsAttention | Reason is Stalled, WorkerGone, BriefUnconfirmed, ReleaseFailed, DeliveryFailed, DeliveryUnconfirmed or InboxFull. |
 
 WorkerGone clears when the exact recorded session is seen again. A successful
-delivery recovery clears attention whose reason is BriefUnconfirmed. A
+delivery recovery clears attention whose reason is BriefUnconfirmed or
+DeliveryUnconfirmed; an inbox drained back within its bound clears InboxFull.
+DeliveryFailed stays while the failed entry does. A
 successful release removes the Task; a worker result alone is not a general
 reset of previous conditions. NeedsAttention does not universally stop the
-controller: its reason and phase determine what continues.
+controller: its reason and phase determine what continues. Delivering an
+inbox entry changes no phase and no condition other than those three.
 
 ## Deletion protocol
 
@@ -111,22 +128,3 @@ worker result does not itself authorize release before Task deletion.
 
 See [implementation and tests](README.md#implementation-and-evidence) for the
 fault, lease-loss and identity regressions that exercise these paths.
-
-## Planned additions
-
-Design, not implemented. The [Forge controller](../forge-controller/README.md)
-design adds inbox delivery to this controller and changes one sentence above:
-Concluded stays a terminal phase, and a Concluded Task with a nonempty
-`status.inbox` is nevertheless due again, for delivery only.
-
-| Current phase | Observation or input | Next phase | Decision |
-| --- | --- | --- | --- |
-| Spawned, Briefed or Concluded | Oldest inbox entry has no receipt; session ready | unchanged | Persist the entry's intent and plan `Brief` under its key; one entry per pass. |
-| Spawned, Briefed or Concluded | Oldest inbox entry; session not ready or Unknown | unchanged | Do not send. Receipt recovery through `BriefDelivered` may still proceed. |
-| Spawned, Briefed or Concluded | Known Delivered receipt, or journal proves delivered | unchanged | Record the receipt in `status.deliveries` and remove the entry, in one write. |
-| Spawned, Briefed or Concluded | A third send of one entry would be needed | unchanged | `NeedsAttention/DeliveryFailed` naming the entry; the entry stays and later entries are still delivered. |
-| Concluded | Readable lookup lacks the recorded session | Concluded | `WorkerGone` and `NeedsAttention`; never a respawn. |
-| Stalled | Any inbox entry | Stalled | Nothing is delivered; Stalled has no session to deliver to. |
-
-Deletion keeps precedence: a deleting Task delivers nothing and releases its
-session as today. No other condition or phase changes during delivery.

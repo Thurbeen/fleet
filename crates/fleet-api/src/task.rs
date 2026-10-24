@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::condition::Condition;
+use crate::inbox::{Deliveries, DeliveryAttempt, InboxEntry};
 use crate::meta::Millis;
 use crate::plan::{Intent, Receipt};
 use crate::result::{OutputDecl, TaskResult};
@@ -69,8 +70,10 @@ pub enum Phase {
     Releasing,
 }
 
-/// Task status. Two field managers write it: TaskController owns every field
-/// but `result`, which the worker writes through `fleet result`.
+/// Task status. TaskController owns every field but `result`, which the
+/// worker writes through `fleet result`, and `inbox`, which nobody owns: it
+/// is reached only through the store's typed append and record-and-remove
+/// mutations (see [`crate::inbox`]).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TaskStatus {
@@ -109,6 +112,17 @@ pub struct TaskStatus {
     /// The worker's claim, written by field manager `worker` only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<TaskResult>,
+    /// Messages queued for the session, oldest first. No owner: appended by
+    /// `fleet send`, removed by TaskController, each through a typed
+    /// mutation; never replaced as a list.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inbox: Vec<InboxEntry>,
+    /// The receipts of delivered inbox entries, TaskController's.
+    #[serde(default, skip_serializing_if = "Deliveries::is_empty")]
+    pub deliveries: Deliveries,
+    /// TaskController's sends and probes per inbox entry being delivered.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub delivery_attempts: BTreeMap<String, DeliveryAttempt>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -131,8 +145,12 @@ pub struct SessionRef {
     pub key: String,
 }
 
-/// The status fields the worker owns; every other field is TaskController's.
+/// The status fields the worker owns.
 pub const WORKER_FIELDS: &[&str] = &["result"];
+
+/// The status fields nobody owns: reached only through typed mutations.
+/// Every field in neither list is TaskController's.
+pub const UNOWNED_FIELDS: &[&str] = &["inbox"];
 
 /// The session key for a Task: deterministic, so a second spawn finds the
 /// first session instead of twinning it. The uid keeps a Task recreated under

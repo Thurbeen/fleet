@@ -1,11 +1,12 @@
 //! TaskController: spawns one agent session for one brief, briefs it once,
-//! records the worker's answer, and releases the session when the Task is
-//! deleted.
+//! delivers what is queued in the Task's inbox, records the worker's answer,
+//! and releases the session when the Task is deleted.
 //!
 //! Pure: it reads the Task and what the probes saw, and returns a Plan. The
 //! manager performs the plan.
 
 use fleet_api::condition::{ConditionStatus, condition, set_condition, settle_transitions};
+use fleet_api::inbox::{DeliveryAttempt, DeliveryReceipt, InboxEntry, MAX_INBOX};
 use fleet_api::meta::{Millis, Object};
 use fleet_api::plan::{
     Action, Effect, EffectOutcome, Intent, Observations, Plan, Probe, Receipt, SpawnSpec,
@@ -92,11 +93,29 @@ impl TaskController {
                             session: s.clone(),
                             key: bk,
                         });
+                    } else {
+                        // The brief is not in flight: the inbox may ask.
+                        inbox_probes(&st, s, &mut probes);
                     }
                 }
                 probes
             }
-            Phase::Briefed if st.result.is_none() => vec![find],
+            Phase::Briefed if st.result.is_none() => {
+                let mut probes = vec![find];
+                if let Some(s) = &st.session {
+                    inbox_probes(&st, s, &mut probes);
+                }
+                probes
+            }
+            // A Concluded Task is due for delivery only; its session is
+            // looked up, so a vanished worker is reported, never respawned.
+            Phase::Concluded if next_entry(&st).is_some() => {
+                let mut probes = vec![find];
+                if let Some(s) = &st.session {
+                    inbox_probes(&st, s, &mut probes);
+                }
+                probes
+            }
             _ => Vec::new(),
         })
     }
@@ -110,6 +129,7 @@ impl TaskController {
             generation: input.task.metadata.generation,
             effects: Vec::new(),
             remove_finalizer: None,
+            delivery: None,
         };
         r.st.observed_generation = r.generation;
         if input.task.is_deleting() {
@@ -118,7 +138,9 @@ impl TaskController {
             r.advance();
         }
         settle_transitions(&mut r.st.conditions, &before.conditions);
-        let status = if r.st == before {
+        // A delivery is a status write even when nothing else moved: the
+        // store takes the status along with the receipt.
+        let status = if r.st == before && r.delivery.is_none() {
             None
         } else {
             Some(
@@ -131,6 +153,7 @@ impl TaskController {
             effects: r.effects,
             remove_finalizer: r.remove_finalizer,
             delete: false,
+            delivery: r.delivery,
         })
     }
 }
@@ -143,6 +166,7 @@ struct Pass<'a, 'b> {
     generation: u64,
     effects: Vec<Effect>,
     remove_finalizer: Option<String>,
+    delivery: Option<DeliveryReceipt>,
 }
 
 impl Pass<'_, '_> {
@@ -199,8 +223,12 @@ impl Pass<'_, '_> {
     }
 
     fn advance(&mut self) {
-        if matches!(self.st.phase, Phase::Concluded | Phase::Stalled) {
-            return;
+        match self.st.phase {
+            // Stalled has no session to deliver to; nothing moves.
+            Phase::Stalled => return,
+            // Terminal, except that its inbox is still delivered.
+            Phase::Concluded => return self.concluded(),
+            _ => {}
         }
         // A recorded result ends the run: a result is only accepted once the
         // brief has a receipt, so this is Briefed in practice.
@@ -368,6 +396,23 @@ impl Pass<'_, '_> {
         if self.st.not_before.is_some_and(|t| t > self.now()) {
             return;
         }
+        self.brief_step(session.clone());
+        // The brief comes first: an entry goes out only in a pass that sent
+        // nothing and has no brief send unconfirmed.
+        if matches!(self.st.phase, Phase::Spawned | Phase::Briefed) && !self.brief_pending() {
+            self.deliver(session);
+        }
+    }
+
+    /// Whether the brief was sent and its receipt is not Known yet.
+    fn brief_pending(&self) -> bool {
+        let key = brief_key(self.input.task);
+        self.st.phase == Phase::Spawned
+            && self.st.intents.contains_key(&key)
+            && !known_receipt(&self.st, &key)
+    }
+
+    fn brief_step(&mut self, session: SessionRef) {
         let key = brief_key(self.input.task);
         match self.st.receipts.get(&key).map(|r| r.outcome.clone()) {
             Some(Observation::Known(EffectOutcome::Delivered { .. })) => {
@@ -483,7 +528,164 @@ impl Pass<'_, '_> {
     }
 
     fn briefed(&mut self) {
-        self.worker_gone();
+        if self.worker_gone() {
+            return;
+        }
+        if let Some(session) = self.st.session.clone() {
+            self.deliver(session);
+        }
+    }
+
+    /// Concluded is terminal, and delivery goes on: a message for a worker
+    /// that has reported is still a message. A readable list that no longer
+    /// shows the session is WorkerGone and attention, never a respawn.
+    fn concluded(&mut self) {
+        if next_entry(&self.st).is_none() {
+            return;
+        }
+        if self.worker_gone() {
+            return;
+        }
+        if self.st.not_before.is_some_and(|t| t > self.now()) {
+            return;
+        }
+        if let Some(session) = self.st.session.clone() {
+            self.deliver(session);
+        }
+    }
+
+    /// Deliver the oldest inbox entry not given up on: the brief protocol
+    /// under the entry's key. One entry per pass; nothing else of the Task
+    /// changes, apart from the attention a failed delivery asks for.
+    fn deliver(&mut self, session: SessionRef) {
+        if self.st.inbox.len() > MAX_INBOX {
+            self.needs_attention(
+                "InboxFull",
+                format!(
+                    "{} undelivered entries; appends are refused past {MAX_INBOX}",
+                    self.st.inbox.len()
+                ),
+            );
+        } else {
+            self.settle_attention("InboxFull");
+        }
+        // Not in a pass that sent something, is waiting something out, or
+        // has lost sight of the session.
+        if !self.effects.is_empty()
+            || self.st.not_before.is_some_and(|t| t > self.now())
+            || condition(&self.st.conditions, WORKER_GONE)
+                .is_some_and(|c| c.status == ConditionStatus::True)
+        {
+            return;
+        }
+        let Some(entry) = next_entry(&self.st).cloned() else {
+            return;
+        };
+        let key = entry.key.clone();
+        match self.st.receipts.get(&key).map(|r| r.outcome.clone()) {
+            Some(Observation::Known(EffectOutcome::Delivered { .. })) => {
+                return self.record_delivery(&entry, false);
+            }
+            Some(Observation::Known(EffectOutcome::Failed { .. })) => {
+                let attempt = self
+                    .st
+                    .delivery_attempts
+                    .get(&key)
+                    .cloned()
+                    .unwrap_or_default();
+                if attempt.sends < MAX_ATTEMPTS && self.st.not_before.is_none() {
+                    let at = self.st.receipts[&key].at;
+                    if self.wait_from(at) {
+                        return;
+                    }
+                }
+                return self.send_entry(session, &entry);
+            }
+            Some(Observation::Known(_)) => {
+                return self.send_entry(session, &entry);
+            }
+            _ => {}
+        }
+        if self.st.intents.contains_key(&key) {
+            // Sent, but no Known receipt: the session's journal decides,
+            // exactly as for the brief. Unknown is read again after a wait.
+            match self.input.observations.brief_delivered.clone() {
+                Some(Observation::Known(true)) => self.record_delivery(&entry, true),
+                Some(Observation::Known(false)) => self.send_entry(session, &entry),
+                Some(Observation::Unknown { why }) => {
+                    let attempt = self.st.delivery_attempts.entry(key.clone()).or_default();
+                    attempt.probe_failures += 1;
+                    let failures = attempt.probe_failures;
+                    self.wait_from(self.now());
+                    if failures >= MAX_ATTEMPTS {
+                        self.needs_attention(
+                            "DeliveryUnconfirmed",
+                            format!(
+                                "inbox entry {key} from {}: its delivery could not be read: {why}",
+                                entry.from
+                            ),
+                        );
+                    }
+                }
+                None => {}
+            }
+            return;
+        }
+        self.send_entry(session, &entry);
+    }
+
+    /// Send an entry under its key, to a session observed ready on this
+    /// pass, at most [`MAX_ATTEMPTS`] times; past that the entry is given
+    /// up on and later entries go out past it.
+    fn send_entry(&mut self, session: SessionRef, entry: &InboxEntry) {
+        let key = entry.key.clone();
+        let sends = self.st.delivery_attempts.get(&key).map_or(0, |a| a.sends);
+        if sends >= MAX_ATTEMPTS {
+            self.st
+                .delivery_attempts
+                .entry(key.clone())
+                .or_default()
+                .failed = true;
+            self.st.not_before = None;
+            self.needs_attention(
+                "DeliveryFailed",
+                format!(
+                    "inbox entry {key} from {}: {sends} sends refused",
+                    entry.from
+                ),
+            );
+            return;
+        }
+        if !matches!(
+            self.input.observations.ready,
+            Some(Observation::Known(true))
+        ) {
+            return;
+        }
+        let attempt = self.st.delivery_attempts.entry(key.clone()).or_default();
+        attempt.sends += 1;
+        attempt.probe_failures = 0;
+        self.st.not_before = None;
+        self.st.receipts.remove(&key);
+        let text = entry.text.clone();
+        self.intend(key, Action::Brief { session, text });
+    }
+
+    /// The entry is on the session: its receipt goes to `status.deliveries`
+    /// and the entry leaves the inbox, in one write the manager performs.
+    fn record_delivery(&mut self, entry: &InboxEntry, recovered: bool) {
+        let key = entry.key.clone();
+        self.st.delivery_attempts.remove(&key);
+        self.st.intents.remove(&key);
+        self.st.receipts.remove(&key);
+        self.st.not_before = None;
+        self.settle_attention("DeliveryUnconfirmed");
+        self.delivery = Some(DeliveryReceipt {
+            key,
+            from: entry.from.clone(),
+            at: self.now(),
+            recovered,
+        });
     }
 
     /// A session a readable list no longer shows raises WorkerGone and
@@ -674,4 +876,33 @@ fn known_receipt(st: &TaskStatus, key: &str) -> bool {
     st.receipts
         .get(key)
         .is_some_and(|r| !r.outcome.is_unknown())
+}
+
+/// The oldest inbox entry still to deliver: an entry given up on after its
+/// sends ran out stays queued but blocks nothing.
+fn next_entry(st: &TaskStatus) -> Option<&InboxEntry> {
+    st.inbox.iter().find(|e| {
+        !st.delivery_attempts
+            .get(&e.key)
+            .is_some_and(|a: &DeliveryAttempt| a.failed)
+    })
+}
+
+/// What delivering the next entry needs observed: readiness, and the
+/// journal when the entry was sent without a Known receipt.
+fn inbox_probes(st: &TaskStatus, session: &SessionRef, probes: &mut Vec<Probe>) {
+    let Some(entry) = next_entry(st) else {
+        return;
+    };
+    if !probes.iter().any(|p| matches!(p, Probe::Ready { .. })) {
+        probes.push(Probe::Ready {
+            session: session.clone(),
+        });
+    }
+    if st.intents.contains_key(&entry.key) && !known_receipt(st, &entry.key) {
+        probes.push(Probe::BriefDelivered {
+            session: session.clone(),
+            key: entry.key.clone(),
+        });
+    }
 }

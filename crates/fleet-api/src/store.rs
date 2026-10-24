@@ -21,6 +21,9 @@ pub enum FieldManager {
     TaskController,
     /// The one controller for ChangeRequest; owns all of its status.
     ChangeRequestController,
+    /// A person at the command line, through `fleet send`: appends to
+    /// `Task.status.inbox` and owns nothing.
+    Cli,
 }
 
 impl FieldManager {
@@ -30,6 +33,7 @@ impl FieldManager {
             FieldManager::Worker => "worker",
             FieldManager::TaskController => "task-controller",
             FieldManager::ChangeRequestController => "change-request-controller",
+            FieldManager::Cli => "cli",
         }
     }
 
@@ -150,6 +154,33 @@ pub trait Store {
         by: FieldManager,
         lease: &LeaseToken,
     ) -> Result<DeleteOutcome, StoreError>;
+    /// Append one entry to a Task's `status.inbox`, compare-and-swap on
+    /// resourceVersion, as a caller `kinds::may_append_inbox` admits. Refused
+    /// when the key is already in `inbox` or `deliveries`, when more than
+    /// `inbox::MAX_INBOX` entries are undelivered, or on a deleting Task.
+    /// No other status field changes.
+    fn append_inbox(
+        &self,
+        name: &str,
+        entry: crate::inbox::InboxEntry,
+        expected: u64,
+        by: FieldManager,
+        lease: Option<&LeaseToken>,
+    ) -> Result<Object, StoreError>;
+    /// TaskController's status write that also records one delivery: the
+    /// receipt goes into `status.deliveries` and its entry leaves
+    /// `status.inbox`, in the same compare-and-swap write as `status`, which
+    /// is checked for ownership exactly as in `update_status` (so it cannot
+    /// change `inbox` itself). Refused when no entry holds the receipt's key.
+    fn record_delivery(
+        &self,
+        name: &str,
+        status: Value,
+        receipt: crate::inbox::DeliveryReceipt,
+        expected: u64,
+        by: FieldManager,
+        lease: &LeaseToken,
+    ) -> Result<Object, StoreError>;
     /// Only the kind's controller, holding the lease, removes a finalizer.
     fn remove_finalizer(
         &self,

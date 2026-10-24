@@ -213,7 +213,9 @@ flags this build actually serves.
 A worker writes its answer with `fleet result TASK --generation N --outcome
 shipped --summary TEXT`; the generation must match the delivered brief, and
 required outputs must match the Task's declared schema. A result is a claim,
-not proof of an artifact landing.
+not proof of an artifact landing. `fleet send TASK TEXT` queues a message
+for a running or concluded Task's session; the next reconcile delivers it
+once, when the session is ready.
 
 ## Install, update and uninstall
 
