@@ -5,12 +5,15 @@ use crate::task;
 
 /// Whether this build stores and reconciles a kind.
 pub fn is_served(kind: &str) -> bool {
-    kind == task::KIND
+    matches!(
+        kind,
+        task::KIND | crate::config::TASK_CONFIG | crate::config::ENV_PROVIDER
+    )
 }
 
 /// The controller that owns a kind's status, if the kind has one.
 pub fn controller_of(kind: &str) -> Option<FieldManager> {
-    is_served(kind).then_some(FieldManager::TaskController)
+    (kind == task::KIND).then_some(FieldManager::TaskController)
 }
 
 /// Who owns one top-level status field of a kind. `None`: nobody may write it.

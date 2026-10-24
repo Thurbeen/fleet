@@ -283,3 +283,12 @@ a live cutover.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the native gate, release dry runs,
 and architecture tests. [AGENTS.md](AGENTS.md) holds agent working rules.
+
+## Reusable execution defaults
+
+Tasks can reference a passive `TaskConfig` for harness, host, model and
+environment defaults. `EnvProvider` resources supply stored string maps and
+explicit manager-local JSON files or bounded commands. Explicit Task values
+win; launch values are frozen privately before the first effect and reused
+across retries and restarts. See [execution configuration](docs/task-controller/execution-config.md)
+for runnable manifests, precedence, security boundaries and snapshot recovery.

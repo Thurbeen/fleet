@@ -24,6 +24,7 @@ pub const LOCAL_HOST: &str = "local";
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TaskSpec {
     /// The agent harness, e.g. `claude-code`. Passed to the runtime as is.
+    #[serde(default)]
     pub harness: String,
     /// The runtime host the session runs on.
     #[serde(default = "local_host")]
@@ -31,6 +32,10 @@ pub struct TaskSpec {
     /// The model the harness runs, when it is not the harness's default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_ref: Option<crate::config::ConfigRef>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
     /// The brief, sent once.
     pub brief: String,
     pub workspace: Workspace,
@@ -71,6 +76,8 @@ pub enum Phase {
 pub struct TaskStatus {
     #[serde(default)]
     pub phase: Phase,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<crate::config::ExecutionIdentity>,
     #[serde(default)]
     pub observed_generation: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

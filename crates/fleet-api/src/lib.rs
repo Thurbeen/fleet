@@ -33,6 +33,7 @@
 //! ```
 
 pub mod condition;
+pub mod config;
 pub mod kinds;
 pub mod meta;
 pub mod observation;

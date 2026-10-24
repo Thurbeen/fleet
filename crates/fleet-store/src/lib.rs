@@ -40,6 +40,7 @@ use crate::durable::LockGuard;
 
 const FORMAT: &str = "fleet-store";
 const FORMAT_VERSION: u32 = 1;
+const LAUNCH_CAP: usize = 1024 * 1024;
 
 /// Wall-clock milliseconds: the store stamps records and expires leases.
 #[derive(Debug, Clone, Copy, Default)]
@@ -291,6 +292,14 @@ impl FileStore {
             return Ok(DeleteOutcome::Marked);
         }
         let path = self.object_path(&obj.kind, &obj.metadata.name);
+        if obj.kind == fleet_api::task::KIND {
+            let launch = self
+                .root
+                .join("launches")
+                .join(format!("{}.json", obj.metadata.uid));
+            durable::remove(&launch)
+                .map_err(|_| StoreError::Unknown("private launch removal failed".into()))?;
+        }
         durable::remove(&path).map_err(|e| io_unknown(&path, e))?;
         Ok(DeleteOutcome::Removed)
     }
@@ -308,7 +317,8 @@ fn read_object(path: &Path, kind: &str, name: &str) -> Observation<Option<Object
                 || o.metadata.resource_version == 0
                 || o.metadata.generation == 0
                 || o.metadata.creation_timestamp.is_none()
-                || (!o.is_deleting()
+                || (kind == fleet_api::task::KIND
+                    && !o.is_deleting()
                     && !o
                         .metadata
                         .finalizers
@@ -353,6 +363,104 @@ fn expect_rv(obj: &Object, expected: u64) -> Result<(), StoreError> {
 }
 
 impl Store for FileStore {
+    fn launch(&self, task: &Object) -> Result<Option<fleet_api::config::Execution>, StoreError> {
+        validate_name(&task.metadata.uid)?;
+        let path = self
+            .root
+            .join("launches")
+            .join(format!("{}.json", task.metadata.uid));
+        match fs::symlink_metadata(&path) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(_) => return Err(StoreError::Unknown("private launch unavailable".into())),
+            Ok(meta) if !meta.is_file() || meta.len() > LAUNCH_CAP as u64 => {
+                return Err(StoreError::Unknown(
+                    "private launch is not a bounded regular file".into(),
+                ));
+            }
+            Ok(_) => {}
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for p in [&self.root.join("launches"), &path] {
+                let meta = fs::symlink_metadata(p)
+                    .map_err(|_| StoreError::Unknown("private launch unavailable".into()))?;
+                if meta.file_type().is_symlink() || meta.permissions().mode() & 0o077 != 0 {
+                    return Err(StoreError::Forbidden(
+                        "private launch permissions must restrict access to its owner".into(),
+                    ));
+                }
+            }
+        }
+        match fs::read(path) {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map(Some)
+                .map_err(|_| StoreError::Unknown("private launch is unreadable".into())),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(_) => Err(StoreError::Unknown("private launch unavailable".into())),
+        }
+    }
+
+    fn freeze_launch(
+        &self,
+        task: &Object,
+        execution: &fleet_api::config::Execution,
+        lease: &LeaseToken,
+    ) -> Result<fleet_api::config::Execution, StoreError> {
+        let _guard = self.lock()?;
+        self.check_lease(lease)?;
+        let current = self.read_existing(fleet_api::task::KIND, &task.metadata.name)?;
+        if current.metadata.uid != task.metadata.uid
+            || current.metadata.resource_version != task.metadata.resource_version
+            || current.is_deleting()
+        {
+            return Err(StoreError::Conflict {
+                key: task.key(),
+                expected: task.metadata.resource_version,
+                actual: current.metadata.resource_version,
+            });
+        }
+        if let Some(existing) = self.launch(task)? {
+            return Ok(existing);
+        }
+        let dir = self.root.join("launches");
+        let mut builder = fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        match builder.create(&dir) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(_) => {
+                return Err(StoreError::Unknown(
+                    "private launch directory unavailable".into(),
+                ));
+            }
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let meta = fs::symlink_metadata(&dir)
+                .map_err(|_| StoreError::Unknown("private launch directory unavailable".into()))?;
+            if !meta.is_dir() || meta.permissions().mode() & 0o077 != 0 {
+                return Err(StoreError::Forbidden(
+                    "private launch directory must have mode 0700".into(),
+                ));
+            }
+        }
+        let path = dir.join(format!("{}.json", task.metadata.uid));
+        let bytes = serde_json::to_vec(execution)
+            .map_err(|_| StoreError::Invalid("private launch encoding failed".into()))?;
+        if bytes.len() > LAUNCH_CAP {
+            return Err(StoreError::Invalid("private launch exceeds 1 MiB".into()));
+        }
+        durable::create_exclusive(&dir, &path, &bytes)
+            .map_err(|_| StoreError::Unknown("private launch write failed".into()))?;
+        Ok(execution.clone())
+    }
+
     fn get(&self, kind: &str, name: &str) -> Observation<Option<Object>> {
         self.read(kind, name)
     }

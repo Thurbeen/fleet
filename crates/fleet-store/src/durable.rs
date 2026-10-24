@@ -17,10 +17,14 @@ static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 pub fn write_temp(tmp_dir: &Path, bytes: &[u8]) -> io::Result<PathBuf> {
     let n = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
     let path = tmp_dir.join(format!("{}-{n}.tmp", std::process::id()));
-    let mut f = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&path)?;
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut f = options.open(&path)?;
     let written = f.write_all(bytes).and_then(|()| f.sync_all());
     if let Err(e) = written {
         drop(f);

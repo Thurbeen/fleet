@@ -188,6 +188,11 @@ fn main() -> ExitCode {
         sleep(Duration::from_secs(600));
         return ExitCode::SUCCESS;
     }
+    if args.first().map(String::as_str) == Some("env-output") {
+        let bytes = std::fs::read(&args[1]).expect("source output");
+        std::io::Write::write_all(&mut std::io::stdout(), &bytes).expect("output");
+        return ExitCode::SUCCESS;
+    }
     log_call(&args);
     match args.first().map(String::as_str) {
         Some("session") | Some("doctor") => thurbox(&args),
@@ -320,10 +325,19 @@ fn answer(
             let n = state["next"].as_u64().unwrap_or(0) + 1;
             state["next"] = json!(n);
             let ready = state["spawnState"].as_str().unwrap_or("idle").to_string();
-            let env_names: Vec<String> = opts(args, "--env")
+            let mut env_names: Vec<String> = opts(args, "--env")
                 .iter()
                 .map(|kv| kv.split('=').next().unwrap_or_default().to_string())
                 .collect();
+            if args.iter().any(|a| a == "--env-stdin") {
+                let mut input = String::new();
+                std::io::Read::read_to_string(&mut std::io::stdin(), &mut input)
+                    .expect("environment stdin");
+                let map: std::collections::BTreeMap<String, String> =
+                    serde_json::from_str(&input).expect("environment map");
+                env_names.extend(map.into_keys());
+            }
+
             let mut s = json!({
                 "id": format!("00000000-0000-4000-8000-{n:012}"),
                 "name": opt(args, "--name"), "key": key, "host": host,

@@ -33,15 +33,20 @@ except `dispatch`.
 
 | Field | Required | Meaning |
 | --- | --- | --- |
-| `harness` | yes | The agent harness, such as `claude-code`, passed to the runtime as is. |
+| `harness` | unless inherited | The agent harness, such as `claude-code`, passed to the runtime as is. |
 | `host` | no | The runtime host the session runs on. Default `local`. |
 | `model` | no | The model the harness runs; it reaches the harness through the variable `runtime.modelEnv` names for it. |
+| `configRef` | no | `{"name":"config"}` references passive execution defaults. |
+| `env` | no | Explicit string environment map; overrides inherited values. |
 | `brief` | yes | The brief, sent once to the ready session. |
 | `workspace.dir` | yes | The session's working directory. The thurbox runtime needs an absolute path on the host. |
 | `dispatch` | no | Nothing spawns while `false` (the default). |
 | `outputs` | no | The structured outputs a result must carry, by name: each `{"type": T, "required": bool}`, where T is `string`, `integer`, `number`, `boolean`, `object` or `array`. |
 
 `harness` and `host` may not start with `-`. Any other field is refused.
+
+See [reusable execution configuration](execution-config.md) for provider sources,
+precedence, validation and private launch snapshots.
 
 ## Status
 
@@ -53,6 +58,7 @@ the worker writes through `fleet result`.
 | `phase` | Execution phase, defined by the [state machine](state-machine.md). |
 | `observedGeneration` | The spec generation the controller last acted on. |
 | `conditions` | One entry per [condition type](state-machine.md#conditions), with `status`, `reason`, `message` and `lastTransitionTime`. |
+| `execution` | Frozen execution selection and source identities; environment values are private. |
 | `session` | The session's runtime id, host and key, once spawned or adopted. |
 | `intents`, `receipts` | Each effect's intent, written before it runs, and its outcome, written after. |
 | `spawnAttempts`, `briefSends` | Spawn and brief-send counters, each bounded at 3. |

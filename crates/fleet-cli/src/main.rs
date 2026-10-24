@@ -489,7 +489,7 @@ fn version(json: bool) -> Result<(), Failure> {
         print_json(&json!({
             "version": VERSION,
             "apiVersions": [API_VERSION],
-            "kinds": [fleet_api::task::KIND],
+            "kinds": [fleet_api::task::KIND, fleet_api::config::TASK_CONFIG, fleet_api::config::ENV_PROVIDER],
             "configVersion": CONFIG_VERSION,
             "storeFormat": {"format": "fleet-store", "version": 1},
             "runtimes": ["thurbox", "fake"],
@@ -577,10 +577,11 @@ const DEFAULT_CALL_TIMEOUT_MS: u64 = 15_000;
 fn served_kind(kind: &str) -> Result<String, Failure> {
     let lower = kind.to_ascii_lowercase();
     let singular = lower.strip_suffix('s').unwrap_or(&lower);
-    let kind = if singular == "task" {
-        fleet_api::task::KIND.to_string()
-    } else {
-        kind.to_string()
+    let kind = match singular {
+        "task" => fleet_api::task::KIND.to_string(),
+        "taskconfig" => fleet_api::config::TASK_CONFIG.to_string(),
+        "envprovider" => fleet_api::config::ENV_PROVIDER.to_string(),
+        _ => kind.to_string(),
     };
     fleet_api::validate::validate_kind(&kind)?;
     Ok(kind)
@@ -668,11 +669,14 @@ fn cmd_list(store: &dyn Store, kind: &str, json_out: bool) -> Result<(), Failure
 }
 
 fn status_summary(obj: &Object) -> Value {
-    let observed = obj
-        .status
-        .get("observedGeneration")
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
+    let observed = if obj.kind != fleet_api::task::KIND {
+        obj.metadata.generation
+    } else {
+        obj.status
+            .get("observedGeneration")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+    };
     json!({
         "schema": "fleet.status/v1",
         "kind": obj.kind,
@@ -685,6 +689,7 @@ fn status_summary(obj: &Object) -> Value {
         "phase": obj.status.get("phase").cloned().unwrap_or(Value::Null),
         "conditions": obj.status.get("conditions").cloned().unwrap_or_else(|| json!([])),
         "session": obj.status.get("session").cloned().unwrap_or(Value::Null),
+        "execution": obj.status.get("execution").cloned().unwrap_or(Value::Null),
         "brief": obj.status.get("brief").cloned().unwrap_or(Value::Null),
         "result": obj.status.get("result").cloned().unwrap_or(Value::Null),
     })

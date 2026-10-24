@@ -62,6 +62,8 @@ pub struct SpawnSpec {
     pub dir: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub env: std::collections::BTreeMap<String, String>,
 }
 
 /// Written before the effect runs.

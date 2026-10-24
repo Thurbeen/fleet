@@ -270,6 +270,7 @@ impl Pass<'_, '_> {
             harness: self.spec.harness.clone(),
             dir: self.spec.workspace.dir.clone(),
             model: self.spec.model.clone(),
+            env: self.spec.env.clone(),
         };
         self.intend(key, Action::Spawn(spec));
     }
@@ -641,13 +642,18 @@ impl Pass<'_, '_> {
 }
 
 fn decode(obj: &Object) -> Result<(TaskSpec, TaskStatus), StoreError> {
-    let spec: TaskSpec = typed(task::KIND, &obj.spec)?;
+    let mut spec: TaskSpec = typed(task::KIND, &obj.spec)?;
     let st: TaskStatus = if obj.status.is_null() {
         TaskStatus::default()
     } else {
         serde_json::from_value(obj.status.clone())
             .map_err(|e| StoreError::Invalid(format!("Task status: {e}")))?
     };
+    if let Some(execution) = &st.execution {
+        spec.harness = execution.harness.clone();
+        spec.host = execution.host.clone();
+        spec.model = execution.model.clone();
+    }
     Ok((spec, st))
 }
 

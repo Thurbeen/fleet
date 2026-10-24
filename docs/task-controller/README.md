@@ -7,6 +7,7 @@ that decision through the store and runtime ports.
 | Read | Answers |
 | --- | --- |
 | [Resource](resource.md) | What do I apply, inspect and report as a worker? |
+| [Execution configuration](execution-config.md) | How do reusable defaults, environment sources and frozen launches work? |
 | [State machine](state-machine.md) | Which transitions, retries and recovery paths are possible? |
 | [Interface](interface.md) | What are the inputs, outputs, ports and write ordering? |
 | [Overall architecture](../ARCHITECTURE.md) | Where does this controller fit in Fleet? |

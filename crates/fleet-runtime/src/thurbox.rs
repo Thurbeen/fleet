@@ -286,6 +286,36 @@ fn row_host(row: &Value) -> &str {
 }
 
 impl Runtime for ThurboxRuntime {
+    fn prepare_execution(
+        &self,
+        execution: &fleet_api::config::Execution,
+    ) -> Observation<fleet_api::config::Execution> {
+        let mut result = execution.clone();
+        if let Some(model) = &execution.model {
+            let Some(var) = self.cfg.model_env.get(&execution.harness) else {
+                return Observation::unknown(
+                    "no model variable configured for harness; set runtime.modelEnv",
+                );
+            };
+            let map = BTreeMap::from([(var.clone(), model.clone())]);
+            if fleet_api::validate::validate_env(&map).is_err() {
+                return Observation::unknown("invalid model environment mapping");
+            }
+            fleet_api::config::merge_env(&mut result.env, &map);
+        }
+        if fleet_api::validate::validate_env(&result.env).is_err() {
+            return Observation::unknown("launch environment exceeds bounds");
+        }
+        Observation::Known(result)
+    }
+
+    fn env_source(
+        &self,
+        source: &fleet_api::config::EnvSource,
+    ) -> Observation<std::collections::BTreeMap<String, String>> {
+        crate::resolve_env_source(source)
+    }
+
     fn operation_bound(&self) -> fleet_api::Millis {
         let one = fleet_exec::worst_case(self.cfg.call_timeout) * MAX_CALLS_PER_OPERATION;
         u64::try_from(one.as_millis()).unwrap_or(u64::MAX)
@@ -360,6 +390,7 @@ impl Runtime for ThurboxRuntime {
         if spec.host != LOCAL {
             args.extend(["--host".to_string(), spec.host.clone()]);
         }
+        let mut env = spec.env.clone();
         if let Some(model) = &spec.model {
             let Some(var) = self.cfg.model_env.get(&spec.harness) else {
                 return Observation::Known(EffectOutcome::Failed {
@@ -369,10 +400,31 @@ impl Runtime for ThurboxRuntime {
                     ),
                 });
             };
-            args.extend(["--env".to_string(), format!("{var}={model}")]);
+            if fleet_api::validate::validate_env(&BTreeMap::from([(var.clone(), model.clone())]))
+                .is_err()
+            {
+                return Observation::Known(EffectOutcome::Failed {
+                    why: "invalid model environment variable".into(),
+                });
+            }
+            fleet_api::config::merge_env(&mut env, &BTreeMap::from([(var.clone(), model.clone())]));
         }
-        let argv: Vec<&str> = args.iter().map(String::as_str).collect();
-        match self.call(&argv) {
+        let answer = if env.is_empty() {
+            let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+            self.call(&argv)
+        } else {
+            args.push("--env-stdin".into());
+            let bytes = match serde_json::to_vec(&env) {
+                Ok(b) => b,
+                Err(_) => return Observation::unknown("environment encoding failed"),
+            };
+            self.call_spec(
+                Spec::new(&self.cfg.cli, self.cfg.call_timeout)
+                    .args(&args)
+                    .stdin(bytes),
+            )
+        };
+        match answer {
             Answer::Ok(out) => {
                 let row: Value = match serde_json::from_str(out.trim()) {
                     Ok(v) => v,
@@ -392,7 +444,9 @@ impl Runtime for ThurboxRuntime {
                     adopted: row["created"] == false,
                 })
             }
-            Answer::No(why) => Observation::Known(EffectOutcome::Failed { why }),
+            Answer::No(_) => Observation::Known(EffectOutcome::Failed {
+                why: "thurbox session creation refused".into(),
+            }),
             Answer::Unknown(why) => Observation::unknown(why),
         }
     }

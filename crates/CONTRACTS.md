@@ -16,6 +16,8 @@ v1's queue records, extension or operator configuration, and the root
 | Kind | Role | Status written by |
 | --- | --- | --- |
 | `Task` | one agent session doing one brief | TaskController; the worker writes `status.result` |
+| `TaskConfig` | reusable execution defaults | nobody (passive data) |
+| `EnvProvider` | stored data and explicit file/command environment sources | nobody (passive data) |
 
 Unrecognized kinds are refused on write as `unknown kind "X"`. A Task spec
 accepts the fields below (`deny_unknown_fields`), and no object may carry
@@ -61,7 +63,9 @@ checker to report exactly that rule. The pure crates also carry
 ## Task
 
 ```text
-spec.harness        the agent harness, passed to the runtime as is
+spec.configRef      optional TaskConfig reference
+spec.env            explicit environment overrides
+spec.harness        the agent harness, explicit or inherited
 spec.host           the runtime host (default "local")
 spec.model          optional; reaches the harness through its model variable
 spec.brief          the brief, sent once
@@ -73,6 +77,10 @@ spec.outputs        optional: the structured outputs a result must carry
 The spec is immutable once created, except `dispatch`; a different brief is a
 different Task. `harness` and `host` may not start with `-`, since both reach
 the runtime as arguments.
+
+See [execution configuration](../docs/task-controller/execution-config.md) for
+reference validation, deterministic precedence and private launch freezing.
+New configuration kinds have no lifecycle, finalizers or status writers.
 
 ## Task lifecycle
 

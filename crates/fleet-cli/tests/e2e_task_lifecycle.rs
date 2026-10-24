@@ -648,7 +648,7 @@ fn invalid_and_retired_requests_are_refused_with_a_reason() {
     env.apply(run).code(1).stderr_has("unknown kind");
     for args in [
         &["list", "policy"][..],
-        &["get", "taskconfig", "worker"][..],
+        &["get", "modelprovider", "worker"][..],
     ] {
         env.fleet(args).code(1).stderr_has("unknown kind");
     }
@@ -783,7 +783,7 @@ fn the_contract_examples_apply_as_written() {
 }
 
 #[test]
-fn a_task_alone_runs_from_apply_to_release_and_no_other_kind_is_served() {
+fn a_task_alone_runs_from_apply_to_release_and_retired_kinds_are_refused() {
     let env = Env::new("task-only");
     env.apply(json!({
         "apiVersion": "fleet/v1alpha1", "kind": "Task", "metadata": {"name": "solo"},
@@ -813,10 +813,8 @@ fn a_task_alone_runs_from_apply_to_release_and_no_other_kind_is_served() {
     env.reconcile().ok();
     env.fleet(&["get", "task", "solo"]).code(3);
     for kind in [
-        "TaskConfig",
         "Policy",
         "Host",
-        "EnvProvider",
         "ModelProvider",
         "Conductor",
         "Forge",

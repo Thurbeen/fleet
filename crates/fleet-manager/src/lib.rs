@@ -7,6 +7,7 @@
 //! then its receipt. It also hosts the spec and worker verbs, so the CLI only
 //! parses and prints.
 
+mod execution;
 pub mod verbs;
 
 use fleet_api::plan::{Action, Effect, EffectOutcome, Observations, Plan, Probe, Receipt};
@@ -190,6 +191,50 @@ impl Manager<'_> {
         ttl: Millis,
         report: &mut RunReport,
     ) -> Result<Step, StoreError> {
+        let spec: task::TaskSpec = fleet_api::validate::typed(task::KIND, &obj.spec)?;
+        let st: task::TaskStatus = if obj.status.is_null() {
+            task::TaskStatus::default()
+        } else {
+            fleet_api::validate::typed(task::KIND, &obj.status)?
+        };
+        let needs_launch = spec.config_ref.is_some() || !spec.env.is_empty();
+        let mut effective = None;
+        if needs_launch && !obj.is_deleting() && spec.dispatch {
+            let snapshot = match self.store.launch(obj)? {
+                Some(e) => e,
+                None if st.execution.is_some()
+                    || !st.intents.is_empty()
+                    || st.session.is_some() =>
+                {
+                    return Err(StoreError::Unknown(
+                        "private launch missing; refusing to re-resolve an existing execution"
+                            .into(),
+                    ));
+                }
+                None => {
+                    *lease = self.store.renew_lease(lease, ttl)?;
+                    let e = execution::resolve(self.store, self.runtime, obj, lease, ttl)?;
+                    self.store.freeze_launch(obj, &e, lease)?
+                }
+            };
+            if st.execution.is_none() {
+                let mut status = st;
+                status.execution = Some(snapshot.identity());
+                let plan = Plan {
+                    status: Some(serde_json::to_value(status).map_err(|_| {
+                        StoreError::Invalid("execution status encoding failed".into())
+                    })?),
+                    ..Plan::default()
+                };
+                return self.perform_plan(obj, plan, lease, ttl, report);
+            }
+            if st.execution.as_ref() != Some(&snapshot.identity()) {
+                return Err(StoreError::Unknown(
+                    "private launch identity mismatch".into(),
+                ));
+            }
+            effective = Some(snapshot);
+        }
         let mut input = TaskInput {
             task: obj,
             observations: Observations::default(),
@@ -202,7 +247,17 @@ impl Manager<'_> {
             *lease = self.store.renew_lease(lease, ttl)?;
             self.observe(&probe, obj, &mut input.observations, report);
         }
-        let plan = ctl.reconcile(&input)?;
+        let mut plan = ctl.reconcile(&input)?;
+        if let Some(execution) = effective {
+            for effect in &mut plan.effects {
+                if let Action::Spawn(spawn) = &mut effect.action {
+                    spawn.harness = execution.harness.clone();
+                    spawn.host = execution.host.clone();
+                    spawn.model = None;
+                    spawn.env = execution.env.clone();
+                }
+            }
+        }
         self.perform_plan(obj, plan, lease, ttl, report)
     }
 

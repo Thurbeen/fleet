@@ -10,6 +10,21 @@ use crate::plan::{EffectOutcome, SpawnSpec};
 use crate::task::SessionRef;
 
 pub trait Runtime {
+    /// Resolve runtime model-variable selection into the frozen private environment.
+    fn prepare_execution(
+        &self,
+        execution: &crate::config::Execution,
+    ) -> Observation<crate::config::Execution> {
+        Observation::Known(execution.clone())
+    }
+
+    fn env_source(
+        &self,
+        _source: &crate::config::EnvSource,
+    ) -> Observation<std::collections::BTreeMap<String, String>> {
+        Observation::unknown("environment sources unsupported by this runtime")
+    }
+
     /// The longest one call of this trait can take, every bound and grace
     /// included: the manager's lease is sized to outlast it.
     fn operation_bound(&self) -> crate::Millis {

@@ -345,6 +345,13 @@ fn session_ref(x: &FakeSession) -> SessionRef {
 }
 
 impl Runtime for FakeRuntime {
+    fn env_source(
+        &self,
+        source: &fleet_api::config::EnvSource,
+    ) -> Observation<std::collections::BTreeMap<String, String>> {
+        crate::resolve_env_source(source)
+    }
+
     fn host(&self, host: &str) -> Observation<bool> {
         self.probe("host", |s| match s.hosts.get(host).map(String::as_str) {
             None | Some("up") => Observation::Known(true),

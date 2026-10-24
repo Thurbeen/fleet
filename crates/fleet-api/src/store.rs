@@ -86,6 +86,23 @@ pub enum DeleteOutcome {
 }
 
 pub trait Store {
+    /// Private immutable launch data, keyed by Task UID, never a resource/status.
+    fn launch(&self, _task: &Object) -> Result<Option<crate::config::Execution>, StoreError> {
+        Err(StoreError::Unsupported(
+            "private launches unsupported".into(),
+        ))
+    }
+    fn freeze_launch(
+        &self,
+        _task: &Object,
+        _execution: &crate::config::Execution,
+        _lease: &LeaseToken,
+    ) -> Result<crate::config::Execution, StoreError> {
+        Err(StoreError::Unsupported(
+            "private launches unsupported".into(),
+        ))
+    }
+
     /// `Known(None)` only when the store can prove absence.
     fn get(&self, kind: &str, name: &str) -> Observation<Option<Object>>;
     /// Every object of a kind, or Unknown as a whole: never a partial list.
