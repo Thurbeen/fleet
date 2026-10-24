@@ -51,6 +51,20 @@ fn customize_config(path: &std::path::Path) -> Vec<u8> {
     bytes
 }
 
+fn assert_config_instruction(brief: &str, expected: &std::path::Path) {
+    use serde::Deserialize;
+    let (_, encoded) = brief
+        .rsplit_once("Fleet configuration path (JSON string): ")
+        .expect("explicit config instruction");
+    let mut parser = serde_json::Deserializer::from_str(encoded);
+    let emitted = std::path::PathBuf::deserialize(&mut parser).expect("usable JSON config path");
+    assert_eq!(
+        fs::canonicalize(emitted).unwrap(),
+        fs::canonicalize(expected).unwrap(),
+        "the brief must identify the effective config file regardless of native path spelling"
+    );
+}
+
 struct Running(std::process::Child);
 impl Drop for Running {
     fn drop(&mut self) {
@@ -287,7 +301,7 @@ fn data_directory_override_and_config_precedence_keep_all_commands_in_one_store(
 fn installed_up_runs_real_thurbox_adapter_and_preserves_unknown_session_identity() {
     let env = Env::without_tools("installed-up");
     wait(installed(&env, &["init"]).spawn().unwrap()).ok();
-    let path = env.root.join("config/fleet/config.toml");
+    let path = env.root.join("config").join(".").join("fleet/config.toml");
     let mut config: toml::Value = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
     config["runtime"]["cli"] =
         toml::Value::String(support::stub_exe().to_string_lossy().into_owned());
@@ -301,12 +315,7 @@ fn installed_up_runs_real_thurbox_adapter_and_preserves_unknown_session_identity
     until(|| get().code == Some(0));
     until(|| get().ok().json()["status"]["phase"] == "Briefed");
     let original = get().ok().json();
-    assert!(
-        original["spec"]["brief"]
-            .as_str()
-            .unwrap()
-            .contains(&serde_json::to_string(&path).unwrap())
-    );
+    assert_config_instruction(original["spec"]["brief"].as_str().unwrap(), &path);
     assert_eq!(env.stub_calls_of("create"), 1);
     // Unreachable rows are explicit Unknown, never evidence of absence.
     let lock_path = env.stub_dir().join("state.lock");
@@ -616,12 +625,7 @@ fn separate_configurations_get_separate_starter_instances_and_boot_instructions(
             .unwrap(),
         )
         .unwrap();
-        assert!(
-            task[0]["spec"]["brief"]
-                .as_str()
-                .unwrap()
-                .contains(&serde_json::to_string(&path).unwrap())
-        );
+        assert_config_instruction(task[0]["spec"]["brief"].as_str().unwrap(), &path);
     }
 }
 
