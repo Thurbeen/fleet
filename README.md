@@ -12,7 +12,7 @@ curl -fsSL https://github.com/Thurbeen/fleet/releases/download/v2.0.0/install-re
 Windows x86_64 (PowerShell 5.1 or 7):
 
 ```powershell
-$env:FLEET_VERSION='v2.0.0'; & ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing https://github.com/Thurbeen/fleet/releases/download/v2.0.0/install-release.ps1).Content))
+$env:FLEET_VERSION='v2.0.0'; & ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing https://raw.githubusercontent.com/Thurbeen/fleet/v2.0.0/scripts/install-release.ps1).Content))
 ```
 
 Installers verify the archive checksum and exact binary version, then install

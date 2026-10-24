@@ -111,7 +111,9 @@ fn fake_bootstrap(name: &str) -> Env {
 #[test]
 fn up_continues_reconciling_other_tasks_and_reconnects_without_duplicate_sessions() {
     let env = fake_bootstrap("up-progress");
-    let first = Running(env.spawn(&["up", "--poll-ms", "100", "--lease-ttl-ms", "5000"]));
+    // Use the normal lease: a short test-only lease can expire during a
+    // legitimate filesystem operation on a busy native runner.
+    let first = Running(env.spawn(&["up", "--poll-ms", "100"]));
     until(|| env.fleet(&["get", "task", "vega"]).code == Some(0));
     until(|| env.status("vega")["phase"] == "Briefed");
     env.host()
@@ -124,10 +126,19 @@ fn up_continues_reconciling_other_tasks_and_reconnects_without_duplicate_session
     // A competing startup is refused while the resident owns the lease.
     env.fleet(&["up", "--poll-ms", "100"]).code(6);
     drop(first);
-    // A crashed manager's lease must expire before recovery; use a short
-    // explicit lease in the restart fixture instead of altering live records.
-    thread::sleep(Duration::from_millis(5300));
-    let _restart = Running(env.spawn(&["up", "--poll-ms", "100", "--lease-ttl-ms", "5000"]));
+    // Observe the actual crashed lease, rather than assuming its last
+    // renewal coincides with the test's kill. Never alter store records.
+    let lease: serde_json::Value =
+        serde_json::from_slice(&fs::read(env.data.join("lease.json")).unwrap()).unwrap();
+    let expires = lease["expiresAt"].as_u64().unwrap();
+    until(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+            >= u128::from(expires)
+    });
+    let _restart = Running(env.spawn(&["up", "--poll-ms", "100"]));
     env.apply(support::task("after-restart", true)).ok();
     until(|| env.status("after-restart")["phase"] == "Briefed");
     assert_eq!(
