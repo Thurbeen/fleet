@@ -1,0 +1,96 @@
+# Forge controller
+
+Design, not implemented. These pages describe a planned controller; nothing
+here is served by the installed binary.
+
+ForgeController is a second controller over the [Task](../resources/task.md).
+It is not a kind of its own and creates nothing. It reads the
+[ChangeRequests](../resources/change-request.md) a Task's worker declared,
+keeps the worker informed about each by relaying what is new into the Task's
+inbox, and takes a draft change out of draft when a policy says it is ready.
+It owns one status subtree, `status.forge`, the way the worker owns
+`status.result`; TaskController's fields are untouched, and so is every
+ChangeRequest.
+
+| Read | Answers |
+| --- | --- |
+| [Task](../resources/task.md#planned-additions) | What does a worker declare, and what do `spec.forge` and `status.forge` hold? |
+| [ChangeRequest](../resources/change-request.md) | What does the snapshot this controller reads contain, and who deletes it? |
+| [State machine](state-machine.md) | How does each declared change move from Following to Settled, and what is relayed when? |
+| [Interface](interface.md) | What are the probes, the one effect, the ready policies and the write rules? |
+| [Task controller](../task-controller/README.md) | How is the Task itself run, and how is its inbox delivered? |
+| [ChangeRequest controller](../change-request-controller/README.md) | Who mirrors the forge? |
+| [Native config](../configuration/fleet-toml.md#planned-forge-section) | Where do defaults, hosts and ready policies come from? |
+| [Overall architecture](../ARCHITECTURE.md) | Where does this controller fit in Fleet? |
+
+## One run
+
+1. A person applies a Task, with or without a `spec.forge` block. Nothing
+   forge-related exists yet and nothing needs to.
+2. The worker decides it needs a change, pushes, opens it as a draft with the
+   forge's CLI and runs `fleet declare <task> --change-request <url>`. The verb
+   ensures one ChangeRequest exists for that URL and records the declaration
+   on the Task. The standing worker policy tells every worker to do this; a
+   Task applied with no thought of a change declares one the same way.
+3. On the next sweep ForgeController sees the declaration and adds an entry
+   for that ChangeRequest to `status.forge.changes` with `cursor: 0`.
+4. On every later sweep it reads the Task and each ChangeRequest named in
+   its entries. Items with `seq` above the entry's cursor, filtered, become
+   one inbox entry; the inbox append and the cursor advance are one write to
+   the Task. TaskController delivers the entry to the ready session under its
+   key, journaled, as it delivered the brief.
+5. The worker replies on the forge with the forge's CLI, ending each post
+   with the worker mark, so its own words are never relayed back to it.
+6. When the ready policy holds on a draft change, ForgeController plans
+   `MarkReady` once. The next ChangeRequest revision proves it.
+7. The worker reports with `fleet result`. Notes that arrive afterwards are
+   still relayed: a Concluded Task with a nonempty inbox is due again.
+8. The ChangeRequest settles when the change merges or stays closed past its
+   grace. The entry is marked settled and read no more. Deleting the Task
+   deletes nothing else; the ChangeRequest is garbage-collected by its own
+   controller after its retention.
+
+The diff is one integer per entry. The ChangeRequest numbers every item it
+first sees with its `revision`; the entry's `cursor` is what this controller
+relayed through. A second Task that declares the same URL, on another host
+or after the first one is gone, gets its own entry and its own cursor on its
+own object, and receives everything from where it joined.
+
+## Every write is local
+
+The ChangeRequest controller writes only ChangeRequests. ForgeController
+writes only `status.forge` and the Task's inbox, and reads ChangeRequests by
+name. Nothing pushes into another object, so a relay needs no effect, intent
+or receipt: it is a status write that either lands or is retried from fresh
+state. The only effect this controller performs is the draft flip.
+
+TaskController owns `status.phase`, `conditions`, `session`, the spawn,
+brief and release records, and `status.deliveries`. The worker owns
+`status.result` and `status.declared`. ForgeController owns `status.forge`.
+`Inbox` is appended by ForgeController's relay and by `fleet send`. Each
+writer names itself and the store refuses a write to a field another manager
+owns. This is the arrangement Kubernetes uses when several controllers
+reconcile one object, a Node or a PersistentVolumeClaim, and the API server
+enforces field ownership.
+
+## Scope
+
+In scope: following declared changes, relaying notes and checks, taking a
+draft out of draft under a named policy. Out of scope, deliberately:
+merging. `Mergeable` is reported on the ChangeRequest for a person or a
+conductor; Fleet never merges.
+
+## Implementation and evidence
+
+Planned, in four steps, each its own change with its own E2E suite against the
+built CLI and stub forge executables:
+
+1. `fleet-forge` and the [ChangeRequest controller](../change-request-controller/README.md),
+   with retention.
+2. The Task inbox, `fleet send`, and inbox delivery in TaskController.
+3. `fleet declare` and ForgeController with the relay.
+4. The draft flip and the shipped ready policies.
+
+Each step keeps `cargo xtask check` green, adds its crate edges and status
+writers to `crates/architecture.toml` with negative fixtures, and shrinks the
+list of kinds `e2e_task_lifecycle` expects to be refused.

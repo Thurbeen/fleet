@@ -184,3 +184,25 @@ An intent without a receipt means the action may have happened. Spawn looks
 up its session key, brief reads its delivery journal, and release confirms
 absence or retries after the persisted wait. The
 [state machine](state-machine.md#retries-and-recovery) defines each decision.
+
+## Planned additions
+
+Design, not implemented. The [Forge](../forge-controller/interface.md) and
+[ChangeRequest](../change-request-controller/interface.md) controller designs
+extend this interface without changing what exists:
+
+- A second controller over the Task, ForgeController, run after this one on
+  each sweep and owning `status.forge` plus appends to `status.inbox`. Its
+  plan may name no other Task field, performs one effect, `MarkReady`, and
+  adds no finalizer.
+- `Probe::Object { kind, name }`, answered by the manager from the store
+  before any runtime probe, and `Probe::Whoami { host }` and
+  `Probe::Change { ref }`, answered through a new `Forge` port.
+- A plan field `delete`, by which the ChangeRequest controller asks for its
+  own object's removal after retention.
+- A Task with `status.inbox` entries asks `Find`, `Ready` and
+  `BriefDelivered` per inbox key, and plans `Brief` for each entry under that
+  key, bounded and journaled like the brief. Its receipts go to
+  `status.deliveries`.
+- Field managers `ChangeRequestController`, `ForgeController` and `Inbox`,
+  and `Worker` gains `status.declared`.

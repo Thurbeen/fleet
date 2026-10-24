@@ -85,6 +85,9 @@ defines its [resource](docs/resources/task.md),
 [state machine](docs/task-controller/state-machine.md) and
 [interface](docs/task-controller/interface.md);
 [the contracts](crates/CONTRACTS.md) record the integration guarantees.
+The planned [ChangeRequest](docs/change-request-controller/README.md) and
+[Forge](docs/forge-controller/README.md) controllers are designed in the same
+shape and not yet served.
 V2 is a standalone binary; existing Python deployments stay on frozen v1.
 The root `FLEET_MAJOR` file says `2`; a v1 checkout containing the freeze
 guard reads it before updating and refuses to move onto v2.

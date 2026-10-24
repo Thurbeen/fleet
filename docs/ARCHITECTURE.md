@@ -117,6 +117,31 @@ through the existing runtime port and bounded executor before freezing a
 private launch snapshot. TaskController stays pure and owns the lifecycle.
 See [execution configuration](resources/task-config.md).
 
+## Planned: forge integration
+
+Design, not implemented. One further kind and two controllers are documented
+in the Task controller's shape and are not served by this build:
+
+- [ChangeRequest](resources/change-request.md) and its
+  [controller](change-request-controller/README.md) mirror one change on a
+  forge through a new `Forge` port, with adapters in a planned `fleet-forge`
+  crate (`github` via `gh`, `gitlab` via `glab`, and a fake), and number
+  every item they see so consumers diff by one cursor.
+- The [Forge controller](forge-controller/README.md) is a second controller
+  over the Task. When a worker declares the change it opened, `fleet declare`
+  ensures the ChangeRequest exists, and the controller follows it: relays
+  what is new into the Task's inbox by a cursor kept on the Task, and takes
+  a draft out of draft under a configured policy. It owns `status.forge` and
+  nothing else of the Task, and writes no ChangeRequest. It never merges.
+
+A ChangeRequest belongs to no Task; it outlives its followers and is removed
+by its own controller after a retention period. The crate graph gains
+`fleet-forge` beside `fleet-runtime`, an adapter depending on `fleet-api` and
+`fleet-exec`, and the manager gains a third port and a second controller per
+Task. The purity, write-ownership and process rules above are unchanged:
+each controller writes only its own object, names itself as a field manager,
+and the store refuses a write to another's field.
+
 ## Scope and compatibility
 
 The Task controller runs sessions and records worker claims. It does not
