@@ -60,6 +60,7 @@ The new binary uses a fresh, versioned resource store. It does not read legacy
 queue records or migrate live data. Installers only install a binary; they do
 not restart managers or configure a thurbox extension. The operator chooses a
 no-child cutover boundary and preserves the old deployment for recovery.
-Keep `.github/release-readiness.toml` held until acceptance, and keep the
+Keep the native release/installer acceptance in `cd.yml` and the fail-closed
+`.github/release-readiness.toml` check, and keep the
 root `FLEET_MAJOR` at `2`: Fleet v1 checkouts read it to refuse moving onto
 v2. Report platform evidence and missing evidence precisely.

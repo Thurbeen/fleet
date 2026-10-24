@@ -82,8 +82,16 @@ restore no pull-request caches.
 version without publishing. Conventional `feat`, `fix`, `perf` and breaking
 changes trigger bumps only when shipped files changed. An existing version
 tag is refused. Prereleases are marked as such and never marked latest.
-Only main can publish, and `.github/release-readiness.toml` holds every first
-release until acceptance; a forced version cannot bypass either rule.
+Production publishes only pushed `v2.*` tags whose commit is merged into
+`origin/main` and whose SemVer matches `workspace.package.version`. The tag
+must already name HEAD; the workflow never creates or moves it. The readiness
+file must explicitly enable publication. Branch dispatches are always dry runs.
+Before the coordinator merges a release prerequisite, require the full local
+gate, independent exact-head review and native CI. After merge, push the
+version tag at that checked commit. Every release runner tests, builds,
+packages, installs its archive and runs offline first-run acceptance before
+publication. The protected release environment and provenance attestation
+remain required. No release step installs onto an existing deployment.
 
 ```sh
 cargo xtask release title 'feat: resource orchestration' 123
@@ -93,9 +101,14 @@ cargo xtask release package --target x86_64-unknown-linux-musl --version v1.2.3 
 cargo xtask release checksums --version v1.2.3 dist
 ```
 
-Packaging writes deterministic archives with the binary and LICENSE.
-Checksums require an archive for every supported target. Smoke requires the
-binary's exact release version. Offline installer tests cover clean install,
+Packaging writes deterministic archives with the binary and LICENSE; the
+pinned VEGA starter, its license and provenance are embedded in that binary.
+Release assets also include both installers and the VEGA manifest/provenance.
+Checksums require every supported target and cover those metadata assets.
+Smoke requires the exact binary version; `--first-run-dir NEW_DIRECTORY` also
+runs `init` with an empty PATH and isolated native config/data homes, then
+requires the starter, license and provenance. Offline installer tests cover
+clean install,
 update, lock refusal, checksum failure, version mismatch, and uninstall.
 No dry run creates a tag, uploads production artifacts, or invents credentials.
 

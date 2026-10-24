@@ -121,5 +121,6 @@ credentials stay with the agent and host.
 V2 does not read or migrate v1 queue records or configuration. Root
 `FLEET_MAJOR=2` is the boundary checked by v1 installations containing the
 freeze guard; unpatched clients need the pinned release first. The
-[README](../README.md) owns stable v1 installation, explicit v2 opt-in and the
-deliberate cutover procedure. Production release readiness remains held.
+[README](../README.md) owns frozen v1 installation, explicit v2 installation
+and the deliberate cutover procedure. Release publication requires native tests
+and installed offline bootstrap acceptance.

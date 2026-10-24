@@ -1,13 +1,34 @@
 # Fleet
 
-## Stable: Python v1.0.0
+Fleet v2.0.0 runs one agent session per Task, with a bundled VEGA starter.
+Install a standalone binary; Rust, Cargo and Git are not needed.
 
-**Use the pinned v1.0.0 release for stable Fleet.** `main` is the development
-branch for v2.0.0 beta, which implements the Task resource lifecycle. V2 is not
-a stable release and has different CLI, configuration and data formats. There is
-no automatic v1 migration.
+Linux x86_64 or aarch64:
 
-For a new stable installation, install git and
+```sh
+curl -fsSL https://github.com/Thurbeen/fleet/releases/download/v2.0.0/install-release.sh | FLEET_VERSION=v2.0.0 sh
+```
+
+Windows x86_64 (PowerShell 5.1 or 7):
+
+```powershell
+$env:FLEET_VERSION='v2.0.0'; & ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing https://github.com/Thurbeen/fleet/releases/download/v2.0.0/install-release.ps1).Content))
+```
+
+Installers verify the archive checksum and exact binary version, then install
+only the executable. Follow their PATH guidance. Run `fleet init` separately
+for offline setup, then `fleet up` when Thurbox and the harness are ready.
+[Release assets](https://github.com/Thurbeen/fleet/releases/tag/v2.0.0) include
+checksums, pinned installers, VEGA manifest/provenance and GitHub build
+attestations. macOS has no binary release.
+
+## Frozen Python v1.0.0
+
+**Existing Python users stay on pinned v1.0.0.** V2 has different CLI,
+configuration and data formats. There is no automatic v1 migration; installing
+v2 is a separate, deliberate choice. Preserve the v1 checkout and data.
+
+For a frozen v1 installation, install git and
 [uv](https://docs.astral.sh/uv/getting-started/installation/), then run these
 commands on Linux or Windows PowerShell:
 
@@ -46,12 +67,11 @@ alone cannot protect old code, and a manual `git pull` bypasses the guard.
 Pin the tag explicitly using the commands above; do not run development
 installers over a stable checkout.
 
-To inspect v2 deliberately, use a separate clone of `main` and follow its
-README. [PR #308](https://github.com/Thurbeen/fleet/pull/308) is the unmerged
-Task/controller beta candidate; v1 queues and configuration are not v2
-inputs. Keep beta configuration and data separate from v1.
+Keep v2 configuration and data separate from v1. The v1.0.0 tag and its
+major-version update guard stay frozen; binary installation does not change
+a running Python checkout.
 
-## Fleet v2 development
+## Fleet v2
 
 Fleet v2 runs one agent session per Task. A Task names a harness, a runtime
 host, a workspace and a brief. Its controller spawns the session, sends the
@@ -65,8 +85,7 @@ defines its [resource](docs/task-controller/resource.md),
 [state machine](docs/task-controller/state-machine.md) and
 [interface](docs/task-controller/interface.md);
 [the contracts](crates/CONTRACTS.md) record the integration guarantees.
-This is the v2 development line: releases stay held until acceptance, and
-Fleet v1 remains the default for existing users.
+V2 is a standalone binary; existing Python deployments stay on frozen v1.
 The root `FLEET_MAJOR` file says `2`; a v1 checkout containing the freeze
 guard reads it before updating and refuses to move onto v2.
 
@@ -189,27 +208,26 @@ not proof of an artifact landing.
 
 ## Install, update and uninstall
 
-After a production release is accepted, download the matching archive and
-checksum file from [Fleet releases](https://github.com/Thurbeen/fleet/releases).
+Use the one-liners above, or download and inspect the pinned installer,
+matching archive and checksum file from [Fleet releases](https://github.com/Thurbeen/fleet/releases).
 Supported release targets are Linux x86_64 and aarch64 (musl), and Windows
 x86_64 (MSVC with a static CRT). macOS is not a release target.
 
-Fleet v1 stays the default for existing users; v2 is a beta you opt into.
-The checked-in installers never pick a version for you: they refuse to run
-unless `FLEET_VERSION` names a v2 release tag, and they never resolve
-"latest". Inspect a downloaded script, then execute it:
+The installers require an explicit `FLEET_VERSION` and never resolve
+"latest". To inspect before executing, download the scripts from the versioned
+release assets into a new directory, then run:
 
 ```sh
-FLEET_VERSION=v2.0.0-beta.1 sh scripts/install-release.sh
-sh scripts/install-release.sh --uninstall
+FLEET_VERSION=v2.0.0 sh install-release.sh
+sh install-release.sh --uninstall
 ```
 
 On Windows, use Windows PowerShell 5.1 or PowerShell 7:
 
 ```powershell
-$env:FLEET_VERSION = 'v2.0.0-beta.1'
-powershell -NoProfile -File scripts/install-release.ps1
-powershell -NoProfile -File scripts/install-release.ps1 -Uninstall
+$env:FLEET_VERSION = 'v2.0.0'
+powershell -NoProfile -File install-release.ps1
+powershell -NoProfile -File install-release.ps1 -Uninstall
 ```
 
 Repeat installation with a newer `FLEET_VERSION` to update. Set
@@ -257,7 +275,7 @@ To switch an existing deployment deliberately:
    deployment. Preserve its new store for diagnosis. Installer rollback alone
    does not downgrade a store schema.
 
-The release readiness hold is independent of these operator actions. Changing
+Release acceptance is independent of these operator actions. Changing
 it requires combined tests and review. Nothing in CI or installation performs
 a live cutover.
 
