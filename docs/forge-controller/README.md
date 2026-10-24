@@ -69,7 +69,7 @@ The ChangeRequest controller writes only ChangeRequests. ForgeController
 writes only `status.forge` and the Task's inbox, and reads ChangeRequests by
 name. Nothing pushes into another object, so a relay needs no effect, intent
 or receipt: it is a status write that either lands or is retried from fresh
-state. The only effect this controller performs is the draft flip.
+state. The only effect this controller performs is the mark-ready effect.
 
 TaskController owns `status.phase`, `conditions`, `session`, the spawn,
 brief and release records, and `status.deliveries`. The worker owns
@@ -97,7 +97,7 @@ built CLI and stub forge executables:
    with retention.
 2. The Task inbox, `fleet send`, and inbox delivery in TaskController.
 3. `fleet declare` and ForgeController with the join message and the relay.
-4. The draft flip and the shipped ready policies.
+4. The mark-ready effect and the shipped ready policies.
 
 Each step keeps `cargo xtask check` green, adds its crate edges and status
 writers to `crates/architecture.toml` with negative fixtures, and shrinks the

@@ -105,9 +105,9 @@ binary.
 
 | Field or verb | Owner | Meaning |
 | --- | --- | --- |
-| `spec.forge` | `apply`; mutable like `dispatch` | Optional overrides of the `[forge]` defaults: `relay.notes`, `relay.checks`, `draft.policy` (a name under `[forge.readyPolicies]`, refused if undefined; `null` disables the flip). Field-level: absent fields inherit. |
+| `spec.forge` | `apply`; mutable like `dispatch` | Optional overrides of the `[forge]` defaults: `relay.notes`, `relay.checks`, `draft.policy` (a name under `[forge.readyPolicies]`, refused if undefined; `null` disables mark-ready). Field-level: absent fields inherit. |
 | `status.declared` | `worker`, through `fleet declare` | Facts the worker declared, each a JSON object with a required string `kind` and nothing else validated. `--change-request URL` writes `{kind: "ChangeRequest", url, name}` and ensures the named ChangeRequest exists; `--json` writes any object. Accepted after the brief has a receipt and before deletion; a repeated URL is a no-op; it concludes nothing. |
-| `status.forge` | ForgeController | One entry per declared change, keyed by ChangeRequest name: its `uid`, `cursor`, `gaps`, flip record and `notBefore`; plus this controller's conditions. Empty for a Task that declared nothing. |
+| `status.forge` | ForgeController | One entry per declared change, keyed by ChangeRequest name: its `uid`, `cursor`, `gaps`, mark-ready record and `notBefore`; plus this controller's conditions. Empty for a Task that declared nothing. |
 | `status.inbox` | Typed append by `fleet send TASK TEXT` or the Forge controller; typed remove by TaskController | Messages for the running session: `{key, from, text, about, queuedAt}`. Duplicate keys are refused. More than 20 undelivered entries raise `NeedsAttention/InboxFull` and further appends are refused. |
 | `status.deliveries` | TaskController | The newest 100 receipts by inbox key, plus per source the highest revision delivered, which is what keeps a duplicate out after a receipt rotates. The entry leaves `inbox` once receipted. |
 
@@ -121,7 +121,7 @@ declare it, and to end every post on it with
 `<!-- fleet:worker <task uid> -->` on its own line, which is how Fleet tells
 the worker's words from a person's on the same account and one worker's from
 another's. Those three rules are the worker's to keep: a change opened ready
-is never flipped, a change never declared is never followed, and a post
+is never marked ready, a change never declared is never followed, and a post
 without the mark comes back to its author as feedback. Nothing forge-related
 has to be created in advance, and a second Task may declare a change another
 Task opened.

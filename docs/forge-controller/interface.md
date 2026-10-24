@@ -54,8 +54,8 @@ Each entry of `changes`:
 | `state` | `following` or `settled`. |
 | `cursor` | The ChangeRequest `revision` relayed through. Set to the revision of the join message; advances in the same write as each later relay. |
 | `gaps` | How many times a relay found `droppedBefore` above the cursor. |
-| `flip` | `{state, head, attempts, intents, receipts}`; `state` is `none`, `pending`, `done` or `failed`. |
-| `notBefore` | Earliest next pass for this entry after a failed flip, in Unix milliseconds. Separate from the Task's own `notBefore` and from other entries'. |
+| `markReady` | `{state, head, attempts, intents, receipts}`; `state` is `none`, `pending`, `done` or `failed`. |
+| `notBefore` | Earliest next pass for this entry after a failed mark-ready, in Unix milliseconds. Separate from the Task's own `notBefore` and from other entries'. |
 
 A Task that opened a change in each of two repositories:
 
@@ -71,17 +71,17 @@ A Task that opened a change in each of two repositories:
     "changes": {
       "cr-1b7d02e4a9c3":
         {"uid": "…", "state": "following", "cursor": 7, "gaps": 0,
-         "flip": {"state": "done", "head": "9f3c…", "attempts": 1}},
+         "markReady": {"state": "done", "head": "9f3c…", "attempts": 1}},
       "cr-9e40c6f1d2ab":
         {"uid": "…", "state": "following", "cursor": 2, "gaps": 0,
-         "flip": {"state": "none", "head": null, "attempts": 0}}
+         "markReady": {"state": "none", "head": null, "attempts": 0}}
     },
     "conditions": [{"type": "Following", "status": "True", "reason": "TwoOpen"}]
   }
 }
 ```
 
-Entries are independent: each is probed, relayed and flipped on its own, each
+Entries are independent: each is probed, relayed and marked ready on its own, each
 relay is its own inbox entry naming the change, and a problem on one is
 reported in the condition message and stops nothing else.
 
@@ -102,7 +102,7 @@ to and TaskController removes from:
 | --- | --- |
 | No declaration and no entries | None. |
 | A declaration without an entry, or an entry not Settled | `Object { kind: ChangeRequest, name }` per such change; `Whoami { host }` once per distinct host. |
-| An entry whose flip is being evaluated | `AtRest { session }` for the Task's recorded session, for the `workerIdle` predicate. |
+| An entry whose mark-ready is being evaluated | `AtRest { session }` for the Task's recorded session, for the `workerIdle` predicate. |
 | Every entry Settled | None. |
 | Deleting | None. |
 
@@ -120,7 +120,7 @@ host) and `at_rest`. Each is optional; `None` means not asked.
 
 The same `Plan` type the Task controller returns, restricted to this
 controller's fields: `status` carries the desired `status.forge`, including
-every advanced cursor and every new flip intent, and a list of inbox entries
+every advanced cursor and every new mark-ready intent, and a list of inbox entries
 to append, and nothing else; the store refuses a plan that names another
 manager's field. `effects` holds `MarkReady` actions only.
 `remove_finalizer` is always `None`.
@@ -137,16 +137,16 @@ and the cursors land together or not at all.
 | Item | Key |
 | --- | --- |
 | Join or relay (inbox entry) | `task/<name>/<uid>/relay/<change uid>/<revision>` |
-| Draft flip | `task/<name>/<uid>/ready/<change uid>/<head.id>` |
+| Mark ready | `task/<name>/<uid>/ready/<change uid>/<head.id>` |
 
 `<change uid>` is the ChangeRequest's `uid`, so a mirror recreated after
 retention never collides with keys from its predecessor; `<revision>` is the
 ChangeRequest revision the message covers. The same snapshot can never
 produce two different relays, the append refuses a duplicate key, and a
 relay key is also the runtime intent key the Task controller journals the
-delivery under. A flip intent without a receipt is a question the next pass
+delivery under. A mark-ready intent without a receipt is a question the next pass
 answers by observing the change's state, never by repeating the effect.
-Flip intents and receipts live on the entry, apart from TaskController's.
+Mark-ready intents and receipts live on the entry, apart from TaskController's.
 
 ## Ready policies
 
@@ -160,7 +160,7 @@ snapshot, the Task and the probes above:
 | --- | --- |
 | `workerDone` | The Task has a `shipped` result. On in every policy and not configurable. |
 | `workerIdle` | `AtRest` for the Task's session is Known true: the agent has finished its turn and is not mid-way through answering feedback. On in every policy and not configurable. |
-| `checksPassed` | `head.checks` is `passed`; or it is `none` and `forge.noCheckGraceMs` has passed since `head.firstSeenAt`, because a repository whose CI starts only on the flip would otherwise wait forever. `pending` and Unknown never pass. |
+| `checksPassed` | `head.checks` is `passed`; or it is `none` and `forge.noCheckGraceMs` has passed since `head.firstSeenAt`, because a repository whose CI starts only once the change is ready would otherwise wait forever. `pending` and Unknown never pass. |
 | `botReviewsAddressed` | Every bot-authored inline note in the snapshot is resolved or has a later note from this Task's worker in its thread, and no bot review in `reviews` on the current head is `changes-requested`. |
 | `noUnresolvedThreads` | `threads.unresolved` is `0`, over the whole change. |
 | `forgeMergeable` | `mergeable.value` is `true`: the forge itself says the change can be merged. Optional; off in the shipped policies because a draft is often reported unmergeable for being a draft. |
@@ -176,7 +176,7 @@ name it. Adding a predicate is a controller change and a config key, not an
 API change.
 
 The standing worker policy tells every worker to open its change as a draft.
-Fleet never puts a change back into draft, and never flips a change that has
+Fleet never puts a change back into draft, and never marks ready a change that has
 ever been seen ready.
 
 ### `spec.forge`
@@ -189,7 +189,7 @@ ever been seen ready.
 ```
 
 Each field present overrides the matching `[forge]` default; a field absent
-inherits it. `"draft": {"policy": null}` disables the flip for this Task
+inherits it. `"draft": {"policy": null}` disables mark-ready for this Task
 even when the config names a default. The block is mutable like `dispatch`
 and takes effect on the next pass; turning relay back on relays only what
 comes after, because the cursor advanced meanwhile. A spec change increments
