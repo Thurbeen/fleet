@@ -14,7 +14,8 @@ Required gate tools:
 - cargo-nextest, cargo-deny and rumdl at the versions CI pins.
 - PowerShell 7 (`pwsh`) on Linux for the Windows installer's pure path test;
   Windows PowerShell (`powershell.exe`) on Windows for installer acceptance.
-- Git for tracked-file checks, and `prek` for the commit hooks.
+- Git for tracked-file checks (Git for Windows with its Bash on Windows),
+  and `prek` for the commit hooks.
 
 PowerShell must be on PATH; a missing runtime fails with setup guidance and
 never silently skips its tests. Hosted Ubuntu x64 and arm64 images include

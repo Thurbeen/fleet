@@ -1095,8 +1095,23 @@ fn native_release_fixture_installs_with_binary_mode_checksum_tools() {
         .find(|l| l.contains("sha256sum") && l.contains("checksums.txt"))
         .expect("native release fixture checksum recipe")
         .trim();
+    // On Windows PATH may resolve bash.exe to WSL, not Git Bash. Locate the
+    // shell shipped beside the declared Git prerequisite, as Actions does.
+    #[cfg(windows)]
+    let shell = {
+        let output = run(&Spec::new("git", Duration::from_secs(10)).arg("--exec-path"))
+            .success_text()
+            .expect("Git prerequisite");
+        Path::new(output.trim())
+            .ancestors()
+            .map(|p| p.join("bin/bash.exe"))
+            .find(|p| p.is_file())
+            .expect("Git for Windows Bash is required for native release fixture acceptance")
+    };
+    #[cfg(not(windows))]
+    let shell = PathBuf::from("bash");
     let mut spec =
-        Spec::new("bash", Duration::from_secs(30)).args(["-eo", "pipefail", "-c", recipe]);
+        Spec::new(shell, Duration::from_secs(30)).args(["-eo", "pipefail", "-c", recipe]);
     spec.cwd = Some(e.0.clone());
     spec.env.push(("VERSION".into(), "v1.2.3".into()));
     #[cfg(unix)]
