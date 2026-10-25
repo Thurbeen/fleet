@@ -186,3 +186,36 @@ it, or the operator's config, names a policy. The shipped
 [example config](../../examples/fleet.toml) adds a fake host,
 `forge.example`, with `draftPolicy = "checks"` and the same three policies,
 so a declared draft can be taken out of draft offline.
+
+## Planned `[plugins]` section
+
+Design, not implemented. The [Plugin controller](../plugin-controller/README.md)
+registers each plugin here, operator-owned. The section is refused as
+unknown today, so this example does not load.
+
+```toml
+[plugins.github-issues]
+program = "/usr/local/bin/node"
+args = ["/opt/fleet-plugins/github-issues/dist/plugin.js"]
+cwd = "/opt/fleet-plugins/github-issues"
+callTimeoutMs = 15000
+tasks = "own"                 # or "any"
+passEnv = ["GH_TOKEN"]
+envFrom = [{ name = "github-issues-env" }]
+```
+
+| Field | Required/default | Meaning |
+| --- | --- | --- |
+| `plugins.<name>` | One per plugin | The key is the plugin's name; the manifest's `name` must equal it. |
+| `program` | yes | Absolute path of the program on the manager, as for an EnvProvider command source: no PATH search, no shell, no rebasing beside TOML. |
+| `args` | `[]` | Arguments before the call name the host appends. |
+| `cwd` | yes | Absolute working directory on the manager. |
+| `callTimeoutMs` | `15000` | Bound for each plugin process; the tree is killed past it, and the manager lease is raised to outlast the port's reported worst case. |
+| `tasks` | `"own"` | Which Tasks the plugin may patch, delete, send to or declare on: `own`, those carrying its `fleet.dev/plugin` label, or `any`. Creating a Task needs no permission beyond this entry. |
+| `passEnv` | `[]` | Variables copied from the manager's environment into the plugin's observer calls only. |
+| `envFrom` | `[]` | EnvProviders whose merged map reaches the observer calls only, resolved per sweep through the provider machinery TaskConfig uses; a provider's command source runs under the same bounds and lease rule. |
+
+The controller calls, `manifest`, `probes` and `reconcile`, receive none of
+these variables. Values never reach the store, a status or argv. Programs run
+on the manager with the manager's user; register only programs you intend
+Fleet to execute, as for EnvProvider command sources.

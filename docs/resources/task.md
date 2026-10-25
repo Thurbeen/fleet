@@ -192,3 +192,23 @@ fleet result design-305 --generation 1 --outcome shipped \
 fleet delete task design-305         # release the session, then remove
 fleet reconcile                      # run the controller under the lease
 ```
+
+## Planned additions for plugins
+
+Design, not implemented. The [Plugin controller](../plugin-controller/README.md)
+lets a registered plugin do to a Task what a person does, through the same
+manager verbs, never through a status write:
+
+| Verb | On a Task | Carried by |
+| --- | --- | --- |
+| Create | A full Task manifest, exclusive by name; the store labels it `fleet.dev/plugin: <plugin>`, a label `apply` refuses to set | The plan's `creates` |
+| Patch | `dispatch` and `forge`, the two mutable spec fields | The plan's `patches` |
+| Send | An inbox entry from `plugin/<name>` under `task/<name>/<uid>/plugin/<plugin>/<key>`, with the inbox's own checks | The plan's `appends` |
+| Declare | `fleet declare TASK --change-request URL` on the Task's behalf, with that verb's preconditions | The plan's `declares` |
+| Delete | By name and `uid`; the release finalizer then runs as for any deletion | The plan's `deletes` |
+
+`status.result` stays the worker's: no plugin writes it. Under the config's
+`tasks = "own"`, every verb but create requires the Task to carry the
+plugin's label; `tasks = "any"` lifts that. The field owners above are
+unchanged; the inbox gains a third named appender beside `fleet send` and
+the Forge controller.

@@ -34,6 +34,14 @@ controller's one effect, mark-ready, is the only write Fleet makes on a
 forge: it takes a declared draft out of draft under a configured ready
 policy, and nothing else.
 
+The [Plugin controller](../docs/plugin-controller/README.md) is designed
+and not served: a host for controllers written outside this repository,
+whose [kinds](../docs/resources/plugin-kinds.md) the store would serve from
+their manifests, whose pure `probes` and `reconcile` calls and bounded
+`observe` and `perform` calls would each be one process through `fleet-exec`,
+and whose plans a pure gate would admit before the manager writes them as
+field manager `plugin/<name>`. No plugin kind is served today.
+
 ## Crates and the allowed graph
 
 ```text
