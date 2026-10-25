@@ -304,7 +304,7 @@ dependencies = [
 
 [[package]]
 name = "fleet-api"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -313,7 +313,7 @@ dependencies = [
 
 [[package]]
 name = "fleet-arch"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "proc-macro2",
  "serde",
@@ -323,7 +323,7 @@ dependencies = [
 
 [[package]]
 name = "fleet-cli"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "clap",
  "ctrlc",
@@ -340,7 +340,7 @@ dependencies = [
 
 [[package]]
 name = "fleet-controllers"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "fleet-api",
  "serde_json",
@@ -348,7 +348,7 @@ dependencies = [
 
 [[package]]
 name = "fleet-dev"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "clap",
  "flate2",
@@ -365,14 +365,14 @@ dependencies = [
 
 [[package]]
 name = "fleet-exec"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "process-wrap",
 ]
 
 [[package]]
 name = "fleet-forge"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "fleet-api",
  "fleet-exec",
@@ -382,7 +382,7 @@ dependencies = [
 
 [[package]]
 name = "fleet-manager"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "fleet-api",
  "fleet-controllers",
@@ -393,7 +393,7 @@ dependencies = [
 
 [[package]]
 name = "fleet-runtime"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "fleet-api",
  "fleet-exec",
@@ -403,7 +403,7 @@ dependencies = [
 
 [[package]]
 name = "fleet-store"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "fleet-api",
  "serde",
