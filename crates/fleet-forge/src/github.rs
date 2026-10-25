@@ -1,15 +1,19 @@
 //! The forge contract served by `gh` for GitHub and GitHub Enterprise: one
 //! GraphQL query, paginated over reviews, comments and review threads with
 //! bounded `gh api graphql` processes, mapped onto Fleet's vocabulary by the
-//! adapter truth table in the ChangeRequest interface page.
+//! adapter truth table in the ChangeRequest interface page; and one write,
+//! `markPullRequestReadyForReview`, after a fresh read of the head and the
+//! draft state.
 
 use std::ffi::OsString;
 use std::time::Duration;
 
 use fleet_api::forge::{
-    ChangeObservation, ChangeRef, ChangeSnapshot, ChangeState, Checks, FailingCheck, Forge,
-    HeadSeen, Mergeable, Note, NoteKind, Review, ReviewDecision, ReviewState, Threads, Uncertainty,
+    ChangeObservation, ChangeRef, ChangeSnapshot, ChangeState, Checks, Expected, FailingCheck,
+    Forge, HeadSeen, Mergeable, Note, NoteKind, Review, ReviewDecision, ReviewState, Threads,
+    Uncertainty,
 };
+use fleet_api::plan::EffectOutcome;
 use fleet_api::{Millis, Observation};
 use serde_json::Value;
 
@@ -33,6 +37,22 @@ const QUERY: &str = "query($owner: String!, $name: String!, $number: Int!, $with
       comments(first: 100, after: $commentsAfter) @include(if: $withComments) { pageInfo { hasNextPage endCursor } nodes { id body url createdAt lastEditedAt author { login __typename } } }
       reviewThreads(first: 100, after: $threadsAfter) @include(if: $withThreads) { pageInfo { hasNextPage endCursor } nodes { id isResolved comments(first: 100) { pageInfo { hasNextPage } nodes { id body url path line originalLine createdAt lastEditedAt author { login __typename } } } } }
     }
+  }
+}";
+
+/// The fresh read before a mark-ready: only what the decision rests on.
+const HEAD_QUERY: &str = "query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) { id isDraft state headRefOid }
+  }
+}";
+
+/// The one mutation. The intent key rides as `clientMutationId`, so the
+/// forge's own record of the mutation names Fleet's intent.
+const READY_MUTATION: &str = "mutation($id: ID!, $intent: String) {
+  markPullRequestReadyForReview(input: {pullRequestId: $id, clientMutationId: $intent}) {
+    clientMutationId
+    pullRequest { isDraft }
   }
 }";
 
@@ -315,6 +335,122 @@ impl Forge for GithubForge {
         match snapshot(&core, &pages.reviews, &pages.comments, &pages.threads) {
             Ok(s) => ChangeObservation::Known(Some(s)),
             Err(why) => ChangeObservation::unknown(Uncertainty::Unreadable, why),
+        }
+    }
+
+    /// Read `isDraft`, `state` and `headRefOid` afresh; refuse with `Moved`
+    /// when they are not what the decision expected; else run the
+    /// ready-for-review mutation. Everything before the mutation that goes
+    /// wrong is a Known refusal, since nothing was mutated; past it, only an
+    /// answer the adapter can read is Known.
+    fn mark_ready(
+        &self,
+        change: &ChangeRef,
+        expect: &Expected,
+        intent_key: &str,
+    ) -> Observation<EffectOutcome> {
+        let Some((owner, name)) = change.project.split_once('/') else {
+            return failed("project is not owner/repo");
+        };
+        let vars = [
+            ("owner", Var::Str(owner.to_string())),
+            ("name", Var::Str(name.to_string())),
+            ("number", Var::Typed(change.id.clone())),
+        ];
+        let reply = match self.graphql(HEAD_QUERY, &vars, self.call_timeout) {
+            Ok(r) => r,
+            Err((_, why)) => return failed(format!("fresh read: {why}")),
+        };
+        let pr = match body_of(&reply) {
+            Ok(Some(pr)) => pr,
+            Ok(None) => return failed("the pull request no longer exists"),
+            Err((_, why)) => return failed(format!("fresh read: {why}")),
+        };
+        let (head, state) = match head_and_state(&pr) {
+            Ok(x) => x,
+            Err(why) => return failed(format!("fresh read: {why}")),
+        };
+        if head != expect.head || state != expect.state {
+            return Observation::Known(EffectOutcome::Moved { head, state });
+        }
+        let Some(id) = pr["id"].as_str() else {
+            return failed("fresh read: the pull request has no id");
+        };
+        let vars = [
+            ("id", Var::Str(id.to_string())),
+            ("intent", Var::Str(intent_key.to_string())),
+        ];
+        match self.graphql(READY_MUTATION, &vars, self.call_timeout) {
+            Ok(reply) => mutation_outcome(&reply),
+            // The process ran out of time: the mutation may have landed.
+            Err((Uncertainty::Timeout, why)) => Observation::unknown(why),
+            Err((_, why)) => failed(why),
+        }
+    }
+}
+
+fn failed(why: impl Into<String>) -> Observation<EffectOutcome> {
+    Observation::Known(EffectOutcome::Failed { why: why.into() })
+}
+
+/// The head and state of a fresh read, by the same rule as the snapshot.
+fn head_and_state(pr: &Value) -> Result<(String, ChangeState), String> {
+    let state = if pr["isDraft"] == true {
+        ChangeState::Draft
+    } else {
+        match pr["state"].as_str() {
+            Some("OPEN") => ChangeState::Open,
+            Some("CLOSED") => ChangeState::Closed,
+            Some("MERGED") => ChangeState::Merged,
+            other => return Err(format!("state {other:?} cannot be placed")),
+        }
+    };
+    let head = pr["headRefOid"]
+        .as_str()
+        .ok_or("no headRefOid")?
+        .to_string();
+    Ok((head, state))
+}
+
+/// What the mutation's answer means. A refusal the forge spelled out is
+/// Known; an answer that cannot be read is Unknown, because the mutation
+/// may have landed.
+pub fn mutation_outcome(reply: &Reply) -> Observation<EffectOutcome> {
+    if reply.throttled() {
+        return failed(format!(
+            "the forge asked to slow down (HTTP {})",
+            reply.status
+        ));
+    }
+    if reply.status == 401 {
+        return failed("HTTP 401: the CLI has no login for this host");
+    }
+    let v: Value = match serde_json::from_str(reply.body.trim()) {
+        Ok(v) => v,
+        Err(e) => {
+            return Observation::unknown(format!(
+                "the mutation's answer could not be read ({e}); it may have landed"
+            ));
+        }
+    };
+    let errors = v["errors"].as_array().cloned().unwrap_or_default();
+    if let Some(e) = errors.first() {
+        let message = e["message"]
+            .as_str()
+            .unwrap_or("the forge reported an error");
+        let lower = message.to_ascii_lowercase();
+        if lower.contains("not a draft") || lower.contains("not in draft") {
+            // Someone took it out of draft inside the window: the outcome
+            // Fleet wanted, by another hand.
+            return Observation::Known(EffectOutcome::MarkedReady { already: true });
+        }
+        return failed(message.to_string());
+    }
+    match v["data"]["markPullRequestReadyForReview"]["pullRequest"]["isDraft"] {
+        Value::Bool(false) => Observation::Known(EffectOutcome::MarkedReady { already: false }),
+        Value::Bool(true) => failed("the forge left the pull request a draft"),
+        _ => {
+            Observation::unknown("the mutation's answer names no pull request; it may have landed")
         }
     }
 }
@@ -722,6 +858,39 @@ mod tests {
     fn an_answer_the_table_cannot_place_is_an_error() {
         assert!(snapshot(&core(json!({"state": "LOCKED"})), &[], &[], &[]).is_err());
         assert!(snapshot(&core(json!({"mergeable": "MAYBE"})), &[], &[], &[]).is_err());
+    }
+
+    #[test]
+    fn a_mutations_answer_is_known_only_when_it_can_be_read() {
+        let reply = |body: &str| Reply {
+            body: body.into(),
+            exit: Some(0),
+            ..Reply::default()
+        };
+        assert_eq!(
+            mutation_outcome(&reply(
+                r#"{"data":{"markPullRequestReadyForReview":{"clientMutationId":"k","pullRequest":{"isDraft":false}}}}"#
+            )),
+            Observation::Known(EffectOutcome::MarkedReady { already: false })
+        );
+        assert_eq!(
+            mutation_outcome(&reply(
+                r#"{"data":{"markPullRequestReadyForReview":null},"errors":[{"message":"Pull request is not a draft"}]}"#
+            )),
+            Observation::Known(EffectOutcome::MarkedReady { already: true })
+        );
+        assert_eq!(
+            mutation_outcome(&reply(
+                r#"{"data":null,"errors":[{"type":"FORBIDDEN","message":"Resource not accessible"}]}"#
+            )),
+            Observation::Known(EffectOutcome::Failed {
+                why: "Resource not accessible".into()
+            })
+        );
+        assert!(mutation_outcome(&reply("<html>gateway</html>")).is_unknown());
+        let (head, state) =
+            head_and_state(&json!({"isDraft": true, "state": "OPEN", "headRefOid": "h1"})).unwrap();
+        assert_eq!((head.as_str(), state), ("h1", ChangeState::Draft));
     }
 
     #[test]

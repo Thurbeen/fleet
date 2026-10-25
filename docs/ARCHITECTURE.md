@@ -20,12 +20,12 @@ same sweep as the Task controller, through the Forge port.
 | Crate | Owns | Boundary |
 | --- | --- | --- |
 | [fleet-cli](../crates/fleet-cli/src/main.rs) | Parse arguments, load config, construct adapters, print results | Calls manager verbs; does not write resources or run controller effects directly. |
-| [fleet-manager](../crates/fleet-manager/src/lib.rs) | Reconcile loop, lease renewal, plan execution, apply/delete/send/result/declare verbs | Reads and writes through `Store`; observes and performs effects through `Runtime`; reads changes and logins through `Forge`. |
+| [fleet-manager](../crates/fleet-manager/src/lib.rs) | Reconcile loop, lease renewal, plan execution, apply/delete/send/result/declare verbs | Reads and writes through `Store`; observes and performs effects through `Runtime`; reads changes and logins and performs the one forge write, mark-ready, through `Forge`. |
 | [fleet-controllers](../crates/fleet-controllers/src/lib.rs) | Pure Task, ChangeRequest and Forge decisions | Receives time and observations as values; returns probes and a plan without I/O. |
 | [fleet-api](../crates/fleet-api/src/lib.rs) | Task, ChangeRequest, plan, observation, result and port types | Pure shared contract; no adapter dependencies. |
 | [fleet-store](../crates/fleet-store/src/lib.rs) | File persistence, CAS, write ownership and lease fencing | A corrupt or unreadable record is Unknown; only proven absence is not-found. |
 | [fleet-runtime](../crates/fleet-runtime/src/lib.rs) | Session operations through thurbox, or the file-backed fake host | Converts external answers to Known/Unknown; retains identity and delivery keys. |
-| [fleet-forge](../crates/fleet-forge/src/lib.rs) | Reading one change through `gh`, `glab` or the file-backed fake forge | One bounded observation is complete or Unknown; the only crate that knows a forge CLI's name. |
+| [fleet-forge](../crates/fleet-forge/src/lib.rs) | Reading one change through `gh`, `glab` or the file-backed fake forge, and taking a draft out of draft after a fresh read | One bounded observation is complete or Unknown; the one write refuses when the head or state moved; the only crate that knows a forge CLI's name. |
 | [fleet-exec](../crates/fleet-exec/src/lib.rs) | Bounded process execution | The only production process spawner; timeout/unwind kills the process tree. |
 
 `fleet-arch` and `fleet-dev` are repository tooling: architecture enforcement,
@@ -34,9 +34,10 @@ installed `fleet` runtime.
 
 The executable dependency graph is [crates/architecture.toml](../crates/architecture.toml).
 The [architecture suite](../crates/fleet-arch/tests/architecture.rs) checks crate
-edges, purity, restricted process APIs and permitted status writers, including
-negative fixtures. The CLI may wire adapters, but only manager verbs may
-perform resource mutations.
+edges, purity, restricted process APIs, permitted status writers and the
+holders of the Forge port, including negative fixtures. The CLI may wire
+adapters, but only manager verbs may perform resource mutations, and only
+the manager performs the mark-ready effect.
 
 ## Desired state, observations and effects
 
@@ -149,17 +150,26 @@ new into the Task's inbox by a cursor kept on the Task. It owns
 `status.forge` and appends to the Task's inbox through one typed store
 mutation that lands the cursor and the entries together; it writes nothing
 else of the Task and no ChangeRequest, and the relay is a status write, not
-an effect. It never merges. The manager runs it after the Task controller
-on each sweep, under its own due gate, from a fresh read of the Task,
-answering its object probes from the store and its login probe through the
-Forge port. The Task inbox the relay lands in, `status.inbox`, is the one
-field with no single owner: the write-ownership rule has that typed
-exception, and every other field keeps one owner.
+an effect. The manager runs it after the Task controller on each sweep,
+under its own due gate, from a fresh read of the Task, answering its object
+probes from the store, its login probe through the Forge port and, last,
+its at-rest probe through the runtime. The Task inbox the relay lands in,
+`status.inbox`, is the one field with no single owner: the write-ownership
+rule has that typed exception, and every other field keeps one owner.
 
-Planned, design and not implemented: the mark-ready step, which takes a
-draft out of draft under a configured ready policy. It builds on the
-`markReady` record each entry already carries and on `spec.forge.draft.policy`,
-which is stored today and acted on then.
+Its one effect, and Fleet's one forge write, is mark-ready: when a
+configured ready policy holds on a draft change that was never seen ready,
+the worker has reported, the session is at rest and the mirror is fresh,
+the controller writes the intent on the entry with its status and the
+manager performs `MarkReady` through the Forge port, which re-reads the
+head and the draft state immediately before the mutation and refuses when
+either moved; the receipt lands on the entry, attempts are bounded at three
+with the wait on the entry's own `notBefore`, and an unknown outcome is
+answered by the change's next fresh observation, never by repeating the
+effect. Policies are named sets of a fixed predicate vocabulary in the
+native config, selected per Task or by a default. Fleet never puts a change
+back into draft and never merges: the forge's mergeability answer is
+reported, not acted on.
 
 ## Scope and compatibility
 

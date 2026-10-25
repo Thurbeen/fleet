@@ -783,6 +783,82 @@ fn runtime_effect_capability_cannot_leak_to_an_observer_adapter() {
     );
 }
 
+/// The mark-ready step's rule, against the real rules file: the Forge port,
+/// which carries Fleet's one forge write, is held by the API that defines
+/// it, the adapters that implement it, the CLI that wires it and the
+/// manager that performs it, and by nothing else.
+#[test]
+fn the_rules_keep_the_forge_port_and_its_one_write_with_the_manager() {
+    let rules = load_rules(&repo_root().join("crates").join("architecture.toml")).expect("rules");
+    let port = rules
+        .restricted
+        .iter()
+        .find(|r| r.path == "fleet_api::forge::Forge")
+        .expect("the Forge port is restricted");
+    assert_eq!(
+        port.allowed,
+        vec![
+            "fleet-api".to_string(),
+            "fleet-manager".to_string(),
+            "fleet-forge".to_string(),
+            "fleet-cli".to_string(),
+        ]
+    );
+    for excluded in ["fleet-controllers", "fleet-store", "fleet-runtime"] {
+        assert!(
+            !port.allowed.iter().any(|c| c == excluded),
+            "{excluded} must not hold the port"
+        );
+    }
+}
+
+/// A forge effect capability is held like the runtime's: an observer
+/// adapter that takes the port is caught, the manager that performs the
+/// effect is not, and a pure controller cannot hold it either.
+#[test]
+fn forge_effect_capability_cannot_leak_to_an_observer_adapter_or_a_controller() {
+    let rules = format!(
+        "{RULES}\n[[restricted]]\npath = \"fx_api::Forge\"\nallowed = [\"fx-api\", \"fx-mgr\"]\nwhy = \"only the manager performs the mark-ready effect\"\n"
+    );
+    let api = "//! ```compile_fail\n//! use fx_store::Store;\n//! ```\npub mod store {\n    pub enum FieldManager { Ctl, Worker, Cli }\n}\npub use store::FieldManager;\npub trait Forge { fn mark_ready(&self); }\nuse serde::Serialize;\n";
+    expect(
+        "forge-effect-from-store",
+        &[
+            ("architecture.toml", &rules),
+            ("crates/fx-api/src/lib.rs", api),
+            (
+                "crates/fx-store/src/lib.rs",
+                "use fx_api::Forge;\npub struct S;\npub fn read() {}\npub fn mutate(p: &dyn Forge) { p.mark_ready(); }\n",
+            ),
+        ],
+        &[("restricted", "fx-store")],
+    );
+    expect(
+        "forge-effect-from-controller",
+        &[
+            ("architecture.toml", &rules),
+            ("crates/fx-api/src/lib.rs", api),
+            (
+                CTL,
+                &ctl("use fx_api::Forge;\npub fn plan(p: &dyn Forge) { p.mark_ready(); }\n"),
+            ),
+        ],
+        &[("restricted", "fx-ctl")],
+    );
+    expect(
+        "forge-effect-from-manager",
+        &[
+            ("architecture.toml", &rules),
+            ("crates/fx-api/src/lib.rs", api),
+            (
+                "crates/fx-mgr/src/lib.rs",
+                "use fx_api::Forge;\npub fn run(p: &dyn Forge) { let _ = fx_ctl::plan(); p.mark_ready(); }\n",
+            ),
+        ],
+        &[],
+    );
+}
+
 /// The Forge controller's rules, against the real rules file: its field
 /// manager is named by the API and the controllers alone, and the relay
 /// write and the login read are the manager's, never the CLI's.

@@ -285,21 +285,22 @@ pub trait Forge {
     fn whoami(&self, host: &str) -> Observation<String>;
     /// One complete observation of the change, proven absence, or Unknown.
     fn change(&self, change: &ChangeRef) -> ChangeObservation;
-    /// Take a draft out of draft under `intent_key`, after a fresh read that
-    /// proves the change still has `expect`'s head and state. `Done {
-    /// already }`, or Failed when it moved. Nothing in this build calls it:
-    /// the Forge controller's mark-ready step, still to come, does.
+    /// Take a draft out of draft under `intent_key`: the only forge write
+    /// Fleet performs. The adapter reads the change's head and state afresh
+    /// immediately before the mutation and answers `Moved` when either
+    /// differs from `expect`, mutating nothing; the window between that
+    /// read and the mutation is the forge's and is not closed by Fleet.
+    /// `MarkedReady { already }` when the change is out of draft, Failed
+    /// when the forge answered no, Unknown when the adapter cannot tell
+    /// whether the mutation landed (a timeout, an unreadable answer): the
+    /// Forge controller then asks the change's next fresh observation,
+    /// never the forge again.
     fn mark_ready(
         &self,
         change: &ChangeRef,
         expect: &Expected,
         intent_key: &str,
-    ) -> Observation<EffectOutcome> {
-        let _ = (change, expect, intent_key);
-        Observation::Known(EffectOutcome::Failed {
-            why: "this build does not mark changes ready".into(),
-        })
-    }
+    ) -> Observation<EffectOutcome>;
 }
 
 #[cfg(test)]

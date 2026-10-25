@@ -7,7 +7,12 @@
 //!   each a JSON object with a string `kind`; the controller reads the
 //!   `ChangeRequest` ones ([`Declaration`]) and ignores the rest.
 //! - `status.forge` ([`ForgeStatus`]): one entry per followed change, with
-//!   the cursor the relay went through, and this controller's conditions.
+//!   the cursor the relay went through, its mark-ready record, and this
+//!   controller's conditions.
+//! - The ready policies ([`ReadyPolicy`]): a named set of the predicates a
+//!   draft change must satisfy before the controller takes it out of draft.
+//!   `workerDone` and `workerIdle` are on in every policy and not
+//!   configurable; the four below are the whole configurable vocabulary.
 //!
 //! The worker mark, `<!-- fleet:worker <task uid> -->`, is how a worker's
 //! own words on the forge are told from a person's on the same login and
@@ -20,7 +25,7 @@ use serde_json::Value;
 
 use crate::condition::Condition;
 use crate::meta::Millis;
-use crate::plan::{Intent, Receipt};
+use crate::plan::{Intent, Receipt, effect_key};
 
 /// The `kind` of a declaration this controller follows.
 pub const DECLARED_CHANGE_REQUEST: &str = "ChangeRequest";
@@ -43,13 +48,88 @@ pub fn marked_by(body: &str) -> Option<&str> {
     (!uid.is_empty() && !uid.contains(char::is_whitespace)).then_some(uid)
 }
 
-/// The `[forge]` relay defaults a Task's `spec.forge` may override, handed
-/// to the controller as values: it reads no configuration itself.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// How long `checksPassed` waits, from a head's first observation, for a
+/// check to appear before a checkless head counts as passed: five minutes.
+pub const DEFAULT_NO_CHECK_GRACE_MS: Millis = 300_000;
+
+/// The configurable predicates of a ready policy, in the config page's
+/// words. `workerDone` and `workerIdle` are not here: every policy has them
+/// and no policy can turn them off.
+pub const PREDICATES: &[&str] = &[
+    "checksPassed",
+    "botReviewsAddressed",
+    "noUnresolvedThreads",
+    "forgeMergeable",
+];
+
+/// One ready policy: which of the configurable predicates it requires. The
+/// name it is stored under is only a key. An unknown key is refused when the
+/// policy is read, so the vocabulary is fixed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReadyPolicy {
+    /// `head.checks` is `passed`, or `none` for longer than the no-check
+    /// grace since the head was first seen.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub checks_passed: bool,
+    /// Every bot inline note is resolved or answered by this Task's worker,
+    /// and no bot review on the head requests changes.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub bot_reviews_addressed: bool,
+    /// `threads.unresolved` is zero over the whole change.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub no_unresolved_threads: bool,
+    /// The forge itself says the change can be merged.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub forge_mergeable: bool,
+}
+
+impl ReadyPolicy {
+    /// Whether this policy waits on bot feedback: bot blockers are then
+    /// relayed to the worker whatever `relayBots` says.
+    pub fn needs_bots(&self) -> bool {
+        self.bot_reviews_addressed
+    }
+}
+
+/// The three policies `fleet init` writes into a generated config, as the
+/// config page shows them: `checks`, `checks-and-bots` and `strict`. They
+/// are ordinary entries once written.
+pub fn shipped_policies() -> BTreeMap<String, ReadyPolicy> {
+    let checks = ReadyPolicy {
+        checks_passed: true,
+        ..ReadyPolicy::default()
+    };
+    let checks_and_bots = ReadyPolicy {
+        bot_reviews_addressed: true,
+        ..checks
+    };
+    let strict = ReadyPolicy {
+        no_unresolved_threads: true,
+        ..checks_and_bots
+    };
+    BTreeMap::from([
+        ("checks".to_string(), checks),
+        ("checks-and-bots".to_string(), checks_and_bots),
+        ("strict".to_string(), strict),
+    ])
+}
+
+/// The `[forge]` defaults a Task's `spec.forge` may override, and the ready
+/// policies it may select, handed to the controller as values: it reads no
+/// configuration itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForgeDefaults {
     pub relay_notes: bool,
     pub relay_checks: bool,
     pub relay_bots: bool,
+    /// `forge.noCheckGraceMs`.
+    pub no_check_grace_ms: Millis,
+    /// `forge.draftPolicy`: the policy a Task that names none selects.
+    /// `None`: a draft is never taken out of draft unless the Task names one.
+    pub draft_policy: Option<String>,
+    /// `[forge.readyPolicies.<name>]`, by name.
+    pub ready_policies: BTreeMap<String, ReadyPolicy>,
 }
 
 impl Default for ForgeDefaults {
@@ -58,6 +138,9 @@ impl Default for ForgeDefaults {
             relay_notes: true,
             relay_checks: true,
             relay_bots: false,
+            no_check_grace_ms: DEFAULT_NO_CHECK_GRACE_MS,
+            draft_policy: None,
+            ready_policies: BTreeMap::new(),
         }
     }
 }
@@ -82,9 +165,8 @@ pub struct RelaySpec {
     pub checks: Option<bool>,
 }
 
-/// `spec.forge.draft`. Stored by this step and acted on by the mark-ready
-/// step: `policy` absent inherits `forge.draftPolicy`, `null` disables
-/// mark-ready for this Task, a name selects a policy.
+/// `spec.forge.draft`: `policy` absent inherits `forge.draftPolicy`, `null`
+/// disables mark-ready for this Task, a name selects a policy.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DraftSpec {
@@ -115,6 +197,25 @@ impl ForgeSpec {
             .as_ref()
             .and_then(|r| r.checks)
             .unwrap_or(defaults.relay_checks)
+    }
+
+    /// The ready policy this Task selects: `spec.forge.draft.policy`, else
+    /// `forge.draftPolicy`; an explicit `null` selects none.
+    pub fn draft_policy(&self, defaults: &ForgeDefaults) -> Option<String> {
+        match self.draft.as_ref().and_then(|d| d.policy.as_ref()) {
+            None => defaults.draft_policy.clone(),
+            Some(None) => None,
+            Some(Some(name)) => Some(name.clone()),
+        }
+    }
+
+    /// The policy name a Task spec names explicitly, for `apply` to check
+    /// against the config; `None` when it names none or disables.
+    pub fn named_policy(&self) -> Option<&str> {
+        match self.draft.as_ref().and_then(|d| d.policy.as_ref()) {
+            Some(Some(name)) => Some(name.as_str()),
+            _ => None,
+        }
     }
 }
 
@@ -207,11 +308,11 @@ pub struct ChangeEntry {
     /// How many times a relay found `droppedBefore` above the cursor.
     #[serde(default)]
     pub gaps: u64,
-    /// The mark-ready record, owned by the mark-ready step; stored here
-    /// untouched.
+    /// The mark-ready record: the one effect's state, intents and receipts.
     #[serde(default)]
     pub mark_ready: MarkReady,
-    /// Earliest next pass for this entry, in Unix milliseconds.
+    /// Earliest next pass for this entry after a failed mark-ready, in Unix
+    /// milliseconds. Separate from the Task's own and from other entries'.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub not_before: Option<Millis>,
 }
@@ -241,19 +342,35 @@ pub enum MarkReadyState {
 }
 
 /// `{state, head, attempts, intents, receipts}`: the mark-ready record.
+/// `pending` from the intent write to the receipt; `done` once the forge
+/// said so or the mirror showed the change ready; `failed` after a refusal,
+/// waiting on the entry's `notBefore`; `none` otherwise, including after
+/// `Moved`, which is not an attempt. `attempts` counts the intents written
+/// against the change, bounded by the Task controller's `MAX_ATTEMPTS`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MarkReady {
     #[serde(default)]
     pub state: MarkReadyState,
+    /// The head the last intent was written for.
     #[serde(default)]
     pub head: Option<String>,
     #[serde(default)]
     pub attempts: u32,
+    /// By effect key; an intent without a receipt is a question the next
+    /// fresh observation of the change answers.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub intents: BTreeMap<String, Intent>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub receipts: BTreeMap<String, Receipt>,
+}
+
+/// The mark-ready effect key: `task/<name>/<uid>/ready/<change uid>/<head>`.
+/// One key per head, so a retry on the same head is recognised as such, and
+/// a recreated mirror's keys never collide with its predecessor's.
+pub fn ready_key(name: &str, uid: &str, change_uid: &str, head: &str) -> String {
+    let base = effect_key(crate::task::KIND, name, uid, "ready", None);
+    format!("{base}/{change_uid}/{head}")
 }
 
 #[cfg(test)]
@@ -291,6 +408,46 @@ mod tests {
             serde_json::from_value::<ForgeSpec>(json!({"draft": {"ready": true}})).is_err(),
             "unknown fields are refused"
         );
+    }
+
+    #[test]
+    fn a_policy_is_a_fixed_vocabulary_and_the_shipped_three_are_as_the_page_shows() {
+        let strict: ReadyPolicy = serde_json::from_value(json!({
+            "checksPassed": true, "botReviewsAddressed": true, "noUnresolvedThreads": true
+        }))
+        .unwrap();
+        assert_eq!(shipped_policies()["strict"], strict);
+        assert!(shipped_policies()["checks-and-bots"].needs_bots());
+        assert!(!shipped_policies()["checks"].needs_bots());
+        assert_eq!(
+            serde_json::to_value(shipped_policies()["checks"]).unwrap(),
+            json!({"checksPassed": true}),
+            "only what is on is written"
+        );
+        let err = serde_json::from_value::<ReadyPolicy>(json!({"workerDone": false})).unwrap_err();
+        assert!(err.to_string().contains("unknown field"), "{err}");
+        assert!(serde_json::from_value::<ReadyPolicy>(json!({"approved": true})).is_err());
+        assert_eq!(PREDICATES.len(), 4);
+    }
+
+    #[test]
+    fn the_policy_a_task_selects_is_its_own_else_the_default_and_null_is_none() {
+        let d = ForgeDefaults {
+            draft_policy: Some("checks".into()),
+            ..ForgeDefaults::default()
+        };
+        let absent: ForgeSpec = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(absent.draft_policy(&d), Some("checks".into()));
+        assert_eq!(absent.named_policy(), None);
+        let disabled: ForgeSpec =
+            serde_json::from_value(json!({"draft": {"policy": null}})).unwrap();
+        assert_eq!(disabled.draft_policy(&d), None);
+        let named: ForgeSpec =
+            serde_json::from_value(json!({"draft": {"policy": "strict"}})).unwrap();
+        assert_eq!(named.draft_policy(&d), Some("strict".into()));
+        assert_eq!(named.named_policy(), Some("strict"));
+        assert_eq!(absent.draft_policy(&ForgeDefaults::default()), None);
+        assert_eq!(ready_key("t", "u7", "c1", "h1"), "task/t/u7/ready/c1/h1");
     }
 
     #[test]

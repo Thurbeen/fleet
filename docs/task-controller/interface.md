@@ -223,12 +223,13 @@ interface without changing what exists:
   absent or due) and runs after this controller on each sweep, from a fresh
   read of the Task, owning `status.forge` and appending to `status.inbox`.
   Its plan names no other Task field and adds no finalizer; its one effect,
-  `MarkReady`, is the mark-ready step's and is not implemented yet.
+  `MarkReady`, carries its intent and receipt on the entry, apart from this
+  controller's.
 - `Probe::Object { kind, name }` is answered by the manager from the store
   before any runtime or forge probe, and `Probe::Whoami { host }` through
   the `Forge` port, cached for the sweep, as `Probe::Change { ref }` is for
   the [ChangeRequest controller](../change-request-controller/interface.md).
-  `AtRest` will be reused by ForgeController's `workerIdle` predicate. The
+  `AtRest` is reused by ForgeController's `workerIdle` predicate. The
   plan's `delete` field, by which that controller retires its own object,
   and `appends`, the inbox entries ForgeController lands with its status,
   exist.

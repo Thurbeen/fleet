@@ -30,7 +30,9 @@ relays their feedback into the Task's inbox, a status field with no single
 owner, `status.inbox`, reached only through the typed mutations under
 [Store](#store), which refuse a duplicate key. `fleet send` and the Forge
 controller append to it and TaskController delivers it. The Forge
-controller's mark-ready step is designed and not served.
+controller's one effect, mark-ready, is the only write Fleet makes on a
+forge: it takes a declared draft out of draft under a configured ready
+policy, and nothing else.
 
 ## Crates and the allowed graph
 
@@ -72,6 +74,9 @@ fleet-dev          tooling        `cargo xtask`: gate and release
 - fleet-forge depends on nothing above the API and the spawner and is
   depended on by the CLI alone: no forge-specific name appears above the
   Forge port.
+- The Forge port itself, which carries the one forge write, is held only by
+  fleet-api, fleet-forge, fleet-manager and fleet-cli: no other adapter and
+  no controller can reach `mark_ready`.
 
 Each rule has a negative fixture that breaks it, and the test requires the
 checker to report exactly that rule. The pure crates also carry
@@ -167,10 +172,12 @@ Conditions: `HostReachable`, `Spawned`, `Briefed`, `Stalled`, `WorkerGone`,
 ## Following declared changes
 
 ForgeController is a pure function from the Task, the ChangeRequests its
-worker declared and Fleet's login on their hosts to a plan: the desired
-`status.forge` and the inbox entries to land with it. It has no effect in
-this step and no finalizer, and never writes a ChangeRequest. Guarantees,
-each with its test in `forge_controller` and `e2e_forge_controller`:
+worker declared, Fleet's login on their hosts and, when asked, whether the
+session is at rest, to a plan: the desired `status.forge`, the inbox
+entries to land with it, and the `MarkReady` effects whose intents it
+carries. It has one effect and no finalizer, and never writes a
+ChangeRequest. Guarantees, each with its test in `forge_controller`,
+`e2e_forge_controller` and `e2e_mark_ready`:
 
 - **Declare.** `fleet declare TASK --change-request URL` parses the URL
   through the Forge port, ensures one ChangeRequest under the derived name
@@ -210,11 +217,44 @@ each with its test in `forge_controller` and `e2e_forge_controller`:
   leaves every ChangeRequest alone.
 - **One write.** The cursor and the entries land through `record_relay`, or
   not at all: a duplicate key or a stale version refuses the whole write.
+  A mark-ready intent rides in the same write.
+- **Mark ready once.** A following entry whose change is a draft that was
+  never seen ready (`everReady` false), whose mirror is fresh (`Reachable`
+  True, `observedAt` within `2 × pollMs`) and whose selected policy holds,
+  `workerDone` (a `shipped` result) and `workerIdle` (`AtRest` Known true)
+  always included, gets one intent under
+  `task/<name>/<uid>/ready/<change uid>/<head>` and one `MarkReady` effect
+  through the Forge port, after the lease is renewed; the receipt lands on
+  the entry. The session is asked only once every predicate the snapshot
+  answers holds. A change opened ready, or put back into draft by a person,
+  is never marked, by this Task or any other following it; Fleet never puts
+  a change back into draft.
+- **Policies.** A policy is a named set of `checksPassed` (passed, or
+  checkless for `noCheckGraceMs` since the head was first seen),
+  `botReviewsAddressed`, `noUnresolvedThreads` and `forgeMergeable`;
+  `spec.forge.draft.policy` selects one, else `forge.draftPolicy`, and
+  `null` selects none. Any other key is refused at config load, a Task
+  naming an undefined policy is refused at apply, and a policy removed from
+  the config afterwards raises `NeedsAttention/PolicyUnknown`. A policy that
+  waits on bots relays their blockers whatever `relayBots` says. `fleet
+  init` writes `checks`, `checks-and-bots` and `strict`.
+- **Moved is not an attempt.** The adapter re-reads head and state
+  immediately before the mutation and answers `Moved` when either differs,
+  mutating nothing; the record returns to `none` without counting, and that
+  head is not tried again while the mirror still shows it. The window
+  between the fresh read and the mutation is the forge's.
+- **Retries.** A Known refusal waits `RETRY_DELAY_MS` on the entry's own
+  `notBefore`, holding back no other entry; at most `MAX_ATTEMPTS` (3)
+  intents are written against one change, then `NeedsAttention/MarkReadyFailed`
+  and no more.
+- **Unknown is a question.** An Unknown outcome, or an intent whose receipt
+  never landed, is answered by the change's next observation made after the
+  intent: ready is a recovered receipt (`done`), still a draft is a failed
+  attempt. The effect is never repeated to find out.
 
 Conditions, under `status.forge.conditions`: `Following`, `Settled`,
-`NeedsAttention` (`RelayGap`, `ChangeGone`). The mark-ready effect, the
-`AtRest` probe and the ready policies are the next step's; `markReady` and
-`spec.forge.draft.policy` are stored untouched for it.
+`NeedsAttention` (`RelayGap`, `ChangeGone`, `MarkReadyFailed`,
+`PolicyUnknown`).
 
 ## ChangeRequest
 
@@ -331,21 +371,28 @@ Each adapter reports its longest single operation (`operation_bound`), and
 ## Forge contract
 
 `fleet_api::forge::Forge`: `operation_bound`, `parse`, `whoami`, `change`
-and `mark_ready` (a default that answers `Failed` until the Forge controller
-step implements it). `change` answers `Known(Some)` with a complete
+and `mark_ready`. `change` answers `Known(Some)` with a complete
 `ChangeSnapshot`, `Known(None)` for proven absence, or Unknown with an
-`Uncertainty` and an optional `retryAfter`. Adapters live in `fleet-forge`,
-one per `[forge.hosts]` entry, chosen by the host a URL or ref names:
+`Uncertainty` and an optional `retryAfter`. `mark_ready` takes the expected
+head and state and an intent key, reads both afresh, answers `Moved` when
+either differs (nothing mutated), `MarkedReady { already }` once the change
+is out of draft, Failed when the forge said no, and Unknown only when the
+mutation's answer could not be read. Adapters live in `fleet-forge`, one
+per `[forge.hosts]` entry, chosen by the host a URL or ref names:
 
 - **github:** bounded `gh api graphql --hostname <host> --include` calls, one
   query paginated over reviews, comments and review threads; at most six
-  calls per observation, Unknown with `Incomplete` past that.
+  calls per observation, Unknown with `Incomplete` past that. Mark-ready is
+  one fresh read of `isDraft`, `state` and `headRefOid`, then
+  `markPullRequestReadyForReview` with the intent key as `clientMutationId`.
 - **gitlab:** bounded `glab api --hostname <host> --include` calls: the
   merge request, its discussions by page, its approvals; a 404 is absence
-  only when the project itself answers.
+  only when the project itself answers. Mark-ready is one fresh read, then
+  the title updated with its draft marker removed.
 - **fake:** a file-backed forge for tests and trials, with injectable faults
-  (lost, timeout, throttle with `retryAfter`, incomplete, malformed, absent).
-  It runs no process.
+  (lost, timeout, throttle with `retryAfter`, incomplete, malformed, absent;
+  for mark-ready `moved`, `failed`, `lost` and `lost-applied`). It runs no
+  process and records every mark-ready that mutated a change.
 
 Credentials stay with each CLI's own login; Fleet passes none and stores none.
 
@@ -384,6 +431,9 @@ keyPrefix = "fleet"       # give a second fleet on the same hosts its own
 
 [forge.hosts]
 "github.com" = { kind = "github", cli = "gh" }
+
+[forge.readyPolicies.checks]   # selected by spec.forge.draft.policy or forge.draftPolicy
+checksPassed = true
 ```
 
 A Task manifest:
@@ -432,6 +482,8 @@ or the same stub copied as `gh` and `glab`, across process restarts and
 injected faults; `e2e_inbox` covers `fleet send` and delivery on both the
 fake host and the stub; `e2e_forge_controller` covers `fleet declare`, the
 join and the relay against the fake forge and the fake host.
+`e2e_mark_ready` covers the mark-ready effect against the fake forge and
+the fake host, and through the stub `gh` and `glab`.
 `task_controller`, `change_request_controller` and `forge_controller` test
 each controller as a pure function, one transition or Unknown per case.
 `store_contract` tests the store against races, torn writes, stale leases

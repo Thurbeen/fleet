@@ -656,7 +656,8 @@ fn forge_defaults(config: &Config) -> ChangeRequestDefaults {
     }
 }
 
-/// The relay defaults a Task's `spec.forge` may override.
+/// The relay and draft defaults a Task's `spec.forge` may override, and the
+/// ready policies it may select.
 fn relay_defaults(config: &Config) -> ForgeDefaults {
     let base = ForgeDefaults::default();
     match &config.forge {
@@ -664,9 +665,21 @@ fn relay_defaults(config: &Config) -> ForgeDefaults {
             relay_notes: f.relay_notes.unwrap_or(base.relay_notes),
             relay_checks: f.relay_checks.unwrap_or(base.relay_checks),
             relay_bots: f.relay_bots.unwrap_or(base.relay_bots),
+            no_check_grace_ms: f.no_check_grace_ms.unwrap_or(base.no_check_grace_ms),
+            draft_policy: f.draft_policy.clone(),
+            ready_policies: f.ready_policies.clone(),
         },
         None => base,
     }
+}
+
+/// The names a Task's `spec.forge.draft.policy` may select.
+fn policy_names(config: &Config) -> std::collections::BTreeSet<String> {
+    config
+        .forge
+        .as_ref()
+        .map(|f| f.ready_policies.keys().cloned().collect())
+        .unwrap_or_default()
 }
 
 /// `fleet declare`: one of the two forms, through the manager's verbs.
@@ -811,6 +824,7 @@ fn cmd_apply(
     }
     let mut out = Vec::new();
     let mut forge: Option<ForgeHosts> = None;
+    let policies = policy_names(config);
     for obj in objs {
         let (outcome, stored) = if obj.kind == fleet_api::change_request::KIND {
             // The forge adapter parses the URL and the name derives from it.
@@ -825,7 +839,7 @@ fn cmd_apply(
             }
             apply_change_request(store, forge.as_ref().expect("opened"), obj)?
         } else {
-            apply(store, obj)?
+            apply(store, obj, &policies)?
         };
         let key = stored.key();
         if json_out {
@@ -991,10 +1005,11 @@ fn print_status(s: &Value) {
     if let Some(changes) = s["forge"]["changes"].as_object() {
         for (name, e) in changes {
             println!(
-                "following {name} {} cursor {} gaps {}",
+                "following {name} {} cursor {} gaps {} ready {}",
                 e["state"].as_str().unwrap_or("-"),
                 e["cursor"],
-                e["gaps"]
+                e["gaps"],
+                e["markReady"]["state"].as_str().unwrap_or("-")
             );
         }
         for c in s["forge"]["conditions"].as_array().into_iter().flatten() {

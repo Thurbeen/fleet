@@ -5,29 +5,38 @@
 //! owns `status.forge` and appends to `status.inbox`; it writes nothing
 //! else of the Task and never writes a ChangeRequest.
 //!
-//! Pure: it reads the Task, the ChangeRequests the manager fetched for it
-//! and Fleet's login on each forge host, and returns a Plan whose `status`
-//! is the desired `status.forge` and whose `appends` are the inbox entries
-//! to land in the same write. The relay is a status write, not an effect:
-//! no intent, no receipt, no runtime call. The mark-ready effect is a later
-//! step's; this controller plans no effect.
+//! Pure: it reads the Task, the ChangeRequests the manager fetched for it,
+//! Fleet's login on each forge host and, while a mark-ready is being
+//! evaluated, whether the session is at rest, and returns a Plan whose
+//! `status` is the desired `status.forge`, whose `appends` are the inbox
+//! entries to land in the same write, and whose `effects` are the
+//! `MarkReady` actions to perform afterwards. The relay is a status write,
+//! not an effect: no intent, no receipt, no runtime call. Mark-ready is the
+//! one effect: its intent is written with the status, its receipt lands on
+//! the entry, and an ambiguous outcome is answered by the change's next
+//! fresh observation, never by repeating it.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use fleet_api::change_request::{self, ChangeRequestStatus, Phase, StoredNote};
-use fleet_api::condition::{ConditionStatus, condition, set_condition, settle_transitions};
-use fleet_api::follow::{
-    ChangeEntry, Declaration, EntryState, ForgeDefaults, ForgeSpec, ForgeStatus, declared_changes,
-    marked_by, worker_mark,
+use fleet_api::change_request::{self, ChangeRequestSpec, ChangeRequestStatus, Phase, StoredNote};
+use fleet_api::condition::{
+    ConditionStatus, condition, is_true, set_condition, settle_transitions,
 };
-use fleet_api::forge::{Checks, FailingCheck, NoteKind};
+use fleet_api::follow::{
+    ChangeEntry, Declaration, EntryState, ForgeDefaults, ForgeSpec, ForgeStatus, MarkReadyState,
+    ReadyPolicy, declared_changes, marked_by, ready_key, worker_mark,
+};
+use fleet_api::forge::{ChangeState, Checks, Expected, FailingCheck, NoteKind, ReviewState};
 use fleet_api::inbox::{FORGE_SOURCE_PREFIX, InboxAbout, InboxEntry, relay_key};
 use fleet_api::meta::{Millis, Object};
-use fleet_api::plan::{Plan, Probe};
+use fleet_api::plan::{Action, Effect, EffectOutcome, Intent, Plan, Probe};
+use fleet_api::result::Outcome;
 use fleet_api::store::FieldManager;
 use fleet_api::task::{self, TaskSpec, TaskStatus};
 use fleet_api::validate::typed;
 use fleet_api::{Observation, StoreError};
+
+use crate::task::{MAX_ATTEMPTS, RETRY_DELAY_MS};
 
 /// What one reconcile of one Task's followed changes reads. Every outside
 /// fact arrives here as a value; nothing is read from the world inside.
@@ -36,7 +45,8 @@ pub struct ForgeInput<'a> {
     pub task: &'a Object,
     pub observations: ForgeObservations,
     pub now: Millis,
-    /// The `[forge]` relay defaults `spec.forge` may override.
+    /// The `[forge]` relay defaults `spec.forge` may override, and the
+    /// ready policies it may select.
     pub defaults: ForgeDefaults,
 }
 
@@ -48,7 +58,8 @@ pub struct ForgeObservations {
     pub changes: BTreeMap<String, Observation<Option<Object>>>,
     /// The answer to each `Probe::Whoami`, by forge host.
     pub whoami: BTreeMap<String, Observation<String>>,
-    /// The answer to `Probe::AtRest`, for the mark-ready step's `workerIdle`.
+    /// The answer to `Probe::AtRest`, for the `workerIdle` predicate; asked
+    /// only while a mark-ready is being evaluated.
     pub at_rest: Option<Observation<bool>>,
     /// Every Task's name by `uid`, so another worker's marked note can be
     /// labelled with its Task's name. Optional: a uid not here is shown as is.
@@ -64,13 +75,20 @@ pub mod conditions {
     pub const FOLLOWING: &str = "Following";
     /// Every entry has settled.
     pub const SETTLED: &str = "Settled";
-    /// `RelayGap`, `ChangeGone`, and the mark-ready step's reasons.
+    /// `RelayGap`, `ChangeGone`, `MarkReadyFailed` and `PolicyUnknown`.
     pub const NEEDS_ATTENTION: &str = "NeedsAttention";
 }
 use conditions::*;
 
 const RELAY_GAP: &str = "RelayGap";
 const CHANGE_GONE: &str = "ChangeGone";
+/// Three mark-ready attempts against one change failed.
+const MARK_READY_FAILED: &str = "MarkReadyFailed";
+/// The selected ready policy is not in the config.
+const POLICY_UNKNOWN: &str = "PolicyUnknown";
+
+/// The action name a mark-ready intent and receipt carry.
+const MARK_READY: &str = "markReady";
 
 impl ForgeController {
     /// The kind this controller reconciles and the field manager it writes as.
@@ -101,15 +119,60 @@ impl ForgeController {
 
     /// What the next `reconcile` needs observed and does not have yet: the
     /// object of every declared or following change, then Fleet's login on
-    /// each host those objects name. The manager answers what is asked and
-    /// asks again until nothing is.
+    /// each host those objects name, and whether the session is at rest
+    /// while some entry's mark-ready is being evaluated. The manager
+    /// answers what is asked and asks again until nothing is.
     pub fn probes(&self, input: &ForgeInput<'_>) -> Result<Vec<Probe>, StoreError> {
         if input.task.is_deleting() {
             return Ok(Vec::new());
         }
-        let (_, st) = decode(input.task)?;
-        let forge = st.forge.unwrap_or_default();
+        let (spec, st) = decode(input.task)?;
+        let forge = st.forge.clone().unwrap_or_default();
         let mut probes = Vec::new();
+        if input.observations.at_rest.is_none()
+            && let Some(session) = &st.session
+        {
+            let policy = Policy::select(&spec.forge.unwrap_or_default(), &input.defaults);
+            let shipped = shipped(&st);
+            let mark = worker_mark(&input.task.metadata.uid);
+            // The session is asked last, once everything the snapshot can
+            // answer holds; the login is needed for the bot predicate.
+            let wants_rest = forge.changes.iter().any(|(name, entry)| {
+                let Some(Observation::Known(Some(obj))) = input.observations.changes.get(name)
+                else {
+                    return false;
+                };
+                let (Ok(cr), Ok(poll_ms)) = (decode_change(obj), poll_ms_of(obj)) else {
+                    return false;
+                };
+                let Policy::Selected(_, ready) = &policy else {
+                    return false;
+                };
+                let me = cr
+                    .reference
+                    .as_ref()
+                    .and_then(|r| input.observations.whoami.get(&r.host))
+                    .and_then(|o| o.known());
+                let Some(me) = me else {
+                    return false;
+                };
+                entry.uid == obj.metadata.uid
+                    && evaluating(&policy, shipped, entry, &cr, poll_ms, input.now)
+                    && snapshot_predicates_hold(
+                        ready,
+                        &cr,
+                        input.now,
+                        input.defaults.no_check_grace_ms,
+                        me,
+                        &mark,
+                    )
+            });
+            if wants_rest {
+                probes.push(Probe::AtRest {
+                    session: session.clone(),
+                });
+            }
+        }
         for name in followed(&st.declared, &forge) {
             if forge
                 .changes
@@ -148,12 +211,16 @@ impl ForgeController {
         }
         let (spec, st) = decode(input.task)?;
         let before = st.forge.clone().unwrap_or_default();
+        let spec_forge = spec.forge.unwrap_or_default();
         let mut pass = Pass {
             input,
-            spec: spec.forge.unwrap_or_default(),
+            policy: Policy::select(&spec_forge, &input.defaults),
+            shipped: shipped(&st),
+            spec: spec_forge,
             forge: before.clone(),
             attention: Attention::carried(&before),
             appends: Vec::new(),
+            effects: Vec::new(),
         };
         for name in followed(&st.declared, &before) {
             pass.change(&name);
@@ -171,9 +238,179 @@ impl ForgeController {
         Ok(Plan {
             status,
             appends: pass.appends,
+            effects: pass.effects,
             ..Plan::default()
         })
     }
+}
+
+/// The worker reported `shipped`: the `workerDone` predicate.
+fn shipped(st: &TaskStatus) -> bool {
+    st.result
+        .as_ref()
+        .is_some_and(|r| r.outcome == Outcome::Shipped)
+}
+
+/// A ChangeRequest's poll interval, from its spec.
+fn poll_ms_of(obj: &Object) -> Result<Millis, StoreError> {
+    let spec: ChangeRequestSpec = typed(change_request::KIND, &obj.spec)?;
+    Ok(spec.poll_ms())
+}
+
+/// The ready policy a Task selects, and whether the config defines it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Policy {
+    /// `null`, or no default: mark-ready is off for this Task.
+    None,
+    /// Named, but not under `[forge.readyPolicies]`.
+    Unknown(String),
+    Selected(String, ReadyPolicy),
+}
+
+impl Policy {
+    fn select(spec: &ForgeSpec, defaults: &ForgeDefaults) -> Policy {
+        match spec.draft_policy(defaults) {
+            None => Policy::None,
+            Some(name) => match defaults.ready_policies.get(&name) {
+                Some(p) => Policy::Selected(name, *p),
+                None => Policy::Unknown(name),
+            },
+        }
+    }
+
+    fn needs_bots(&self) -> bool {
+        matches!(self, Policy::Selected(_, p) if p.needs_bots())
+    }
+}
+
+/// Whether an entry's mark-ready is being evaluated this pass, before the
+/// predicates: a policy is selected, the worker is done, the change is a
+/// draft that was never ready, the mirror is fresh, and the record is
+/// `none` with no `Moved` refusal for this head, or `failed` with attempts
+/// left and its wait over. Shared by `probes` (to ask `AtRest`) and the
+/// decision, so the two agree.
+fn evaluating(
+    policy: &Policy,
+    shipped: bool,
+    entry: &ChangeEntry,
+    cr: &ChangeRequestStatus,
+    poll_ms: Millis,
+    now: Millis,
+) -> bool {
+    if !matches!(policy, Policy::Selected(..)) || !shipped {
+        return false;
+    }
+    if entry.state != EntryState::Following || cr.phase == Phase::Settled {
+        return false;
+    }
+    if cr.state.as_ref().map(|s| s.value) != Some(ChangeState::Draft) || cr.ever_ready {
+        return false;
+    }
+    let Some(head) = &cr.head else {
+        return false;
+    };
+    let fresh = is_true(&cr.conditions, "Reachable")
+        && cr
+            .observed_at
+            .is_some_and(|at| at <= now && now - at <= poll_ms.saturating_mul(2));
+    if !fresh {
+        return false;
+    }
+    let record = &entry.mark_ready;
+    match record.state {
+        MarkReadyState::None => {
+            // A `Moved` refusal for this very head means the mirror has not
+            // caught up with the forge yet, or the change went ready and
+            // back to draft between two polls: wait for the mirror to show
+            // a new head, and never mark the old one.
+            let suffix = format!("/{}/{}", entry.uid, head.id);
+            let moved_here = record.receipts.iter().any(|(k, r)| {
+                k.ends_with(&suffix)
+                    && matches!(&r.outcome, Observation::Known(EffectOutcome::Moved { .. }))
+            });
+            !moved_here
+        }
+        MarkReadyState::Failed => {
+            record.attempts < MAX_ATTEMPTS && entry.not_before.is_none_or(|t| t <= now)
+        }
+        MarkReadyState::Pending | MarkReadyState::Done => false,
+    }
+}
+
+/// Every predicate of the policy the snapshot alone can answer:
+/// `checksPassed`, `botReviewsAddressed`, `noUnresolvedThreads` and
+/// `forgeMergeable`. `workerDone` held for the evaluation to start;
+/// `workerIdle` is asked of the session afterwards, and only then.
+fn snapshot_predicates_hold(
+    policy: &ReadyPolicy,
+    cr: &ChangeRequestStatus,
+    now: Millis,
+    no_check_grace_ms: Millis,
+    me: &str,
+    mark: &str,
+) -> bool {
+    let Some(head) = &cr.head else {
+        return false;
+    };
+    if policy.checks_passed {
+        let passed = match head.checks {
+            Checks::Passed => true,
+            Checks::None => now >= head.first_seen_at.saturating_add(no_check_grace_ms),
+            Checks::Pending | Checks::Failed => false,
+        };
+        if !passed {
+            return false;
+        }
+    }
+    if policy.bot_reviews_addressed && !bots_addressed(cr, me, mark) {
+        return false;
+    }
+    if policy.no_unresolved_threads && !cr.threads.is_some_and(|t| t.unresolved == 0) {
+        return false;
+    }
+    if policy.forge_mergeable && !cr.mergeable.as_ref().is_some_and(|m| m.value == Some(true)) {
+        return false;
+    }
+    true
+}
+
+/// `botReviewsAddressed`: every bot inline note is resolved or answered by
+/// this Task's worker in its thread, and no bot review on the current head
+/// requests changes.
+fn bots_addressed(cr: &ChangeRequestStatus, me: &str, mark: &str) -> bool {
+    let Some(head) = &cr.head else {
+        return false;
+    };
+    let review_blocks = cr
+        .reviews
+        .iter()
+        .any(|r| r.bot && r.head == head.id && r.state == ReviewState::ChangesRequested);
+    if review_blocks {
+        return false;
+    }
+    !cr.notes.iter().any(|n| {
+        n.bot
+            && n.kind == NoteKind::Inline
+            && n.resolved == Some(false)
+            && !answered_in_thread(cr, n, me, mark)
+    })
+}
+
+/// Only for an inline note with a non-null thread: a later note in that
+/// thread, by `seq` then `at`, is this Task's own marked reply.
+fn answered_in_thread(cr: &ChangeRequestStatus, note: &StoredNote, me: &str, mark: &str) -> bool {
+    if note.kind != NoteKind::Inline {
+        return false;
+    }
+    let Some(thread) = &note.thread else {
+        return false;
+    };
+    cr.notes.iter().any(|later| {
+        later.thread.as_ref() == Some(thread)
+            && (later.seq, later.at) > (note.seq, note.at)
+            && later.author == me
+            && later.body.contains(mark)
+    })
 }
 
 /// The names this controller looks at: every declared change, and every
@@ -270,9 +507,14 @@ impl Attention {
 struct Pass<'a, 'b> {
     input: &'a ForgeInput<'b>,
     spec: ForgeSpec,
+    /// The ready policy this Task selects, resolved once.
+    policy: Policy,
+    /// The worker reported `shipped`.
+    shipped: bool,
     forge: ForgeStatus,
     attention: Attention,
     appends: Vec<InboxEntry>,
+    effects: Vec<Effect>,
 }
 
 /// What the relay found above the cursor.
@@ -349,6 +591,7 @@ impl Pass<'_, '_> {
                 // mark-ready record belong to an object that is gone.
                 let entry = ChangeEntry::joined(&uid, cr.revision);
                 self.attention.clear(RELAY_GAP, name);
+                self.attention.clear(MARK_READY_FAILED, name);
                 self.join(&ctx, &entry, Some(&existing.uid));
                 self.forge
                     .changes
@@ -357,10 +600,221 @@ impl Pass<'_, '_> {
             Some(existing) if existing.state == EntryState::Settled => {}
             Some(existing) => {
                 let entry = self.relay(&ctx, existing);
+                let entry = self.mark_ready(&ctx, obj, entry);
                 self.forge
                     .changes
                     .insert(name.to_string(), self.settled(&ctx, entry));
             }
+        }
+    }
+
+    /// The mark-ready step for one following entry, after its relay: settle
+    /// a pending record from its receipt or from the mirror, then, when the
+    /// policy and every predicate hold, write the intent and plan the one
+    /// effect.
+    fn mark_ready(
+        &mut self,
+        ctx: &Ctx<'_>,
+        cr_obj: &Object,
+        mut entry: ChangeEntry,
+    ) -> ChangeEntry {
+        let name = ctx.name;
+        let cr = ctx.cr;
+        if entry.mark_ready.state == MarkReadyState::Pending {
+            self.settle_pending(ctx, &mut entry);
+        }
+        if cr.ever_ready {
+            // Ready, by Fleet's hand or anyone's: nothing is left to attend to.
+            self.attention.clear(MARK_READY_FAILED, name);
+        }
+        let policy = match &self.policy {
+            Policy::None => {
+                self.attention.clear(POLICY_UNKNOWN, name);
+                return entry;
+            }
+            Policy::Unknown(policy_name) => {
+                self.attention.raise(
+                    POLICY_UNKNOWN,
+                    name,
+                    format!(
+                        "the selected ready policy {policy_name:?} is not defined under [forge.readyPolicies]; the change stays a draft"
+                    ),
+                );
+                return entry;
+            }
+            Policy::Selected(_, p) => *p,
+        };
+        self.attention.clear(POLICY_UNKNOWN, name);
+        let Ok(poll_ms) = poll_ms_of(cr_obj) else {
+            return entry;
+        };
+        if !evaluating(
+            &self.policy,
+            self.shipped,
+            &entry,
+            cr,
+            poll_ms,
+            self.input.now,
+        ) {
+            return entry;
+        }
+        let (_, uid) = self.task_meta();
+        if !snapshot_predicates_hold(
+            &policy,
+            cr,
+            self.input.now,
+            self.input.defaults.no_check_grace_ms,
+            ctx.me,
+            &worker_mark(uid),
+        ) {
+            return entry;
+        }
+        // `workerIdle`, last: asked of the session only now.
+        match &self.input.observations.at_rest {
+            Some(Observation::Known(true)) => {}
+            // Mid-turn, unreadable, or not asked yet (the manager asks in
+            // rounds): nothing moves.
+            Some(_) | None => return entry,
+        }
+        let Some(head) = &cr.head else {
+            return entry;
+        };
+        let (task_name, uid) = self.task_meta();
+        let key = ready_key(task_name, uid, &entry.uid, &head.id);
+        let record = &mut entry.mark_ready;
+        record.state = MarkReadyState::Pending;
+        record.head = Some(head.id.clone());
+        record.attempts += 1;
+        record.intents.insert(
+            key.clone(),
+            Intent {
+                action: MARK_READY.to_string(),
+                at: self.input.now,
+                generation: self.input.task.metadata.generation,
+            },
+        );
+        // A retry on the same head: the manager writes this attempt's
+        // receipt under the same key, so the last one goes.
+        record.receipts.remove(&key);
+        entry.not_before = None;
+        let Some(reference) = &cr.reference else {
+            return entry;
+        };
+        self.effects.push(Effect {
+            key,
+            action: Action::MarkReady {
+                change: reference.clone(),
+                expect: Expected {
+                    head: head.id.clone(),
+                    state: ChangeState::Draft,
+                },
+            },
+        });
+        entry
+    }
+
+    /// A `pending` record is a question. Its receipt answers it when the
+    /// manager wrote one; otherwise the change's next fresh observation
+    /// does: ready is a recovered receipt, still a draft is a failed
+    /// attempt. Nothing here repeats the effect.
+    fn settle_pending(&mut self, ctx: &Ctx<'_>, entry: &mut ChangeEntry) {
+        let cr = ctx.cr;
+        let (task_name, uid) = self.task_meta();
+        let Some(head) = entry.mark_ready.head.clone() else {
+            entry.mark_ready.state = MarkReadyState::None;
+            return;
+        };
+        let key = ready_key(task_name, uid, &entry.uid, &head);
+        let outcome = entry
+            .mark_ready
+            .receipts
+            .get(&key)
+            .map(|r| r.outcome.clone());
+        match outcome {
+            Some(Observation::Known(EffectOutcome::MarkedReady { .. })) => {
+                self.done(ctx, entry, &key);
+            }
+            Some(Observation::Known(EffectOutcome::Moved { .. })) => {
+                // Not an attempt against the change. The receipt stays, so
+                // this head is not tried again while the mirror lags.
+                let record = &mut entry.mark_ready;
+                record.state = MarkReadyState::None;
+                record.attempts = record.attempts.saturating_sub(1);
+                record.intents.remove(&key);
+            }
+            Some(Observation::Known(EffectOutcome::Failed { why })) => {
+                self.failed(ctx, entry, &key, &why);
+            }
+            Some(Observation::Known(other)) => {
+                self.failed(ctx, entry, &key, &format!("unexpected outcome {other:?}"));
+            }
+            Some(Observation::Unknown { .. }) | None => {
+                let intent_at = entry.mark_ready.intents.get(&key).map(|i| i.at);
+                let Some(intent_at) = intent_at else {
+                    // No intent and no receipt: nothing was ever asked.
+                    entry.mark_ready.state = MarkReadyState::None;
+                    return;
+                };
+                let fresh_after = is_true(&cr.conditions, "Reachable")
+                    && cr.observed_at.is_some_and(|at| at > intent_at);
+                if !fresh_after {
+                    return;
+                }
+                if cr.ever_ready {
+                    self.done(ctx, entry, &key);
+                } else {
+                    self.failed(
+                        ctx,
+                        entry,
+                        &key,
+                        "the outcome was unknown and the change was still a draft on the next fresh read",
+                    );
+                }
+            }
+        }
+    }
+
+    fn done(&mut self, ctx: &Ctx<'_>, entry: &mut ChangeEntry, key: &str) {
+        entry.mark_ready.state = MarkReadyState::Done;
+        entry.mark_ready.intents.remove(key);
+        self.attention.clear(MARK_READY_FAILED, ctx.name);
+    }
+
+    /// A refused attempt: wait on this entry's own `notBefore`; after
+    /// `MAX_ATTEMPTS`, raise attention and stop.
+    fn failed(&mut self, ctx: &Ctx<'_>, entry: &mut ChangeEntry, key: &str, why: &str) {
+        let record = &mut entry.mark_ready;
+        record.state = MarkReadyState::Failed;
+        record.intents.remove(key);
+        entry.not_before = Some(self.input.now.saturating_add(RETRY_DELAY_MS));
+        if record.attempts >= MAX_ATTEMPTS {
+            self.attention.raise(
+                MARK_READY_FAILED,
+                ctx.name,
+                format!(
+                    "{} attempt(s) to mark the change ready failed; the last said: {why}",
+                    record.attempts
+                ),
+            );
+        }
+    }
+
+    /// A bot note that stands between the change and the selected policy:
+    /// an unresolved inline note, or the body of a review on the current
+    /// head that requests changes. Relayed whatever `relayBots` says when
+    /// the policy waits on bots.
+    fn bot_blocker(&self, ctx: &Ctx<'_>, note: &StoredNote) -> bool {
+        if !note.bot {
+            return false;
+        }
+        match note.kind {
+            NoteKind::Inline => note.resolved == Some(false),
+            NoteKind::Review => ctx.cr.reviews.iter().any(|r| {
+                r.id == note.id
+                    && r.state == ReviewState::ChangesRequested
+                    && ctx.cr.head.as_ref().is_some_and(|h| h.id == r.head)
+            }),
+            NoteKind::Comment => false,
         }
     }
 
@@ -491,7 +945,8 @@ impl Pass<'_, '_> {
     }
 
     /// The filters: this Task's own marked words are never relayed; a bot's
-    /// only where configured; a resolved thread is answered; a thread this
+    /// only where configured, or where the selected policy waits on bots
+    /// and the note blocks it; a resolved thread is answered; a thread this
     /// Task already replied in is answered.
     fn relayable(&self, ctx: &Ctx<'_>, note: &StoredNote) -> bool {
         let (_, uid) = self.task_meta();
@@ -499,7 +954,10 @@ impl Pass<'_, '_> {
         if note.author == ctx.me && note.body.contains(&mark) {
             return false;
         }
-        if note.bot && !self.input.defaults.relay_bots {
+        if note.bot
+            && !self.input.defaults.relay_bots
+            && !(self.policy.needs_bots() && self.bot_blocker(ctx, note))
+        {
             return false;
         }
         if note.kind == NoteKind::Inline && note.resolved == Some(true) {
@@ -508,21 +966,8 @@ impl Pass<'_, '_> {
         !self.answered_in_thread(ctx, note, &mark)
     }
 
-    /// Only for an inline note with a non-null thread: a later note in that
-    /// thread, by `seq` then `at`, is this Task's own marked reply.
     fn answered_in_thread(&self, ctx: &Ctx<'_>, note: &StoredNote, mark: &str) -> bool {
-        if note.kind != NoteKind::Inline {
-            return false;
-        }
-        let Some(thread) = &note.thread else {
-            return false;
-        };
-        ctx.cr.notes.iter().any(|later| {
-            later.thread.as_ref() == Some(thread)
-                && (later.seq, later.at) > (note.seq, note.at)
-                && later.author == ctx.me
-                && later.body.contains(mark)
-        })
+        answered_in_thread(ctx.cr, note, ctx.me, mark)
     }
 
     /// The snapshot as the join and the gap notice render it: state, head

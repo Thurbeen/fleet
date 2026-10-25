@@ -12,7 +12,9 @@
 //! This is the only crate that knows `gh` or `glab` exist. Every call to
 //! either is one bounded process through fleet-exec, its tree killed past
 //! the bound, and the CLIs' own logins are the only credentials: Fleet passes
-//! none and stores none.
+//! none and stores none. The one write, `mark_ready`, re-reads the change's
+//! head and state immediately before its mutation and refuses with `Moved`
+//! when either differs from what the caller expected.
 
 pub mod cli;
 pub mod fake;
@@ -25,7 +27,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 pub use fake::{FakeForge, FakeForgeState, ForgeFault};
-use fleet_api::forge::{ChangeObservation, ChangeRef, Forge, Uncertainty};
+use fleet_api::forge::{ChangeObservation, ChangeRef, Expected, Forge, Uncertainty};
+use fleet_api::plan::EffectOutcome;
 use fleet_api::{Millis, Observation};
 pub use github::GithubForge;
 pub use gitlab::GitlabForge;
@@ -181,6 +184,21 @@ impl Forge for ForgeHosts {
                 Uncertainty::Unavailable,
                 format!("host {} is not configured under [forge.hosts]", change.host),
             ),
+        }
+    }
+
+    fn mark_ready(
+        &self,
+        change: &ChangeRef,
+        expect: &Expected,
+        intent_key: &str,
+    ) -> Observation<EffectOutcome> {
+        match self.adapter(&change.host) {
+            Some(f) => f.mark_ready(change, expect, intent_key),
+            // Nothing ran: a Known refusal, not a question.
+            None => Observation::Known(EffectOutcome::Failed {
+                why: format!("host {} is not configured under [forge.hosts]", change.host),
+            }),
         }
     }
 }

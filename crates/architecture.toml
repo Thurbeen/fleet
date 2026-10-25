@@ -116,3 +116,13 @@ why = "creation flags and job objects belong to fleet-exec"
 path = "process_wrap"
 allowed = ["fleet-exec"]
 why = "a second way to start a process would bypass fleet-exec's bounds"
+
+# The Forge port carries Fleet's one forge write, `mark_ready`. The port is
+# defined by the API, implemented by fleet-forge, wired by the CLI and
+# performed by the manager alone, after the intent is written and the lease
+# renewed: no other adapter and no controller holds a handle that could
+# mutate a change.
+[[restricted]]
+path = "fleet_api::forge::Forge"
+allowed = ["fleet-api", "fleet-manager", "fleet-forge", "fleet-cli"]
+why = "only the manager performs the mark-ready effect, through the port the CLI wired"

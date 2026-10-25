@@ -214,12 +214,14 @@ fn main() -> ExitCode {
 
 /// The forge roles: one model, two renderings. A change lives under
 /// `changes["<project>#<id>"]` as
-/// `{state, head, checks: [{name, state, url}], reviewDecision, mergeable,
-/// approvedBy, reviews: [{id, author, bot, state, body, head, at, editedAt}],
-/// comments: [{id, author, bot, body, at, editedAt}],
+/// `{state, head, title, checks: [{name, state, url}], reviewDecision,
+/// mergeable, approvedBy, reviews: [{id, author, bot, state, body, head, at,
+/// editedAt}], comments: [{id, author, bot, body, at, editedAt}],
 /// threads: [{id, resolved, path, line, comments: [...]}]}`; `pageSize`
 /// bounds a GitHub page, `login` answers whoami, `noRepo` makes the project
-/// itself absent. Faults are armed under the call `gh` or `glab`: `fail`,
+/// itself absent. A mark-ready (the GitHub mutation, or GitLab's title
+/// update) moves `state` to `open` and records the intent under
+/// `readyIntents`. Faults are armed under the call `gh` or `glab`: `fail`,
 /// `hang`, `auth`, `rate-limit` (with `retryAfter` seconds) and `malformed`.
 mod forge {
     use std::process::ExitCode;
@@ -357,11 +359,48 @@ mod forge {
         if state["noRepo"] == true {
             return answer(ExitCode::from(1), HEAD, &json!({"data": {"repository": null}, "errors": [{"type": "NOT_FOUND", "path": ["repository"], "message": "Could not resolve to a Repository"}]}).to_string());
         }
+        if query.contains("markPullRequestReadyForReview") {
+            // The mutation names the pull request by the id the fresh read
+            // handed out: `PR_<project>#<number>`.
+            let id = var(args, "id").unwrap_or_default();
+            let Some(key) = id.strip_prefix("PR_") else {
+                return answer(ExitCode::SUCCESS, HEAD, &json!({"data": null, "errors": [{"type": "NOT_FOUND", "message": "Could not resolve to a node"}]}).to_string());
+            };
+            let key = key.to_string();
+            let intent = var(args, "intent").unwrap_or_default();
+            let Some(c) = state["changes"].get_mut(&key) else {
+                return answer(ExitCode::SUCCESS, HEAD, &json!({"data": null, "errors": [{"type": "NOT_FOUND", "message": "Could not resolve to a node"}]}).to_string());
+            };
+            if c["state"] != "draft" {
+                return answer(ExitCode::SUCCESS, HEAD, &json!({"data": {"markPullRequestReadyForReview": null}, "errors": [{"message": "Pull request is not a draft"}]}).to_string());
+            }
+            c["state"] = json!("open");
+            if !c["readyIntents"].is_array() {
+                c["readyIntents"] = json!([]);
+            }
+            c["readyIntents"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!(intent));
+            save(&state);
+            return answer(ExitCode::SUCCESS, HEAD, &json!({"data": {"markPullRequestReadyForReview": {"clientMutationId": intent, "pullRequest": {"isDraft": false}}}}).to_string());
+        }
         let Some(c) = change(&state, &format!("{owner}/{name}"), &number) else {
             return answer(ExitCode::from(1), HEAD, &json!({"data": {"repository": {"pullRequest": null}}, "errors": [{"type": "NOT_FOUND", "path": ["repository", "pullRequest"], "message": "Could not resolve to a PullRequest"}]}).to_string());
         };
         let size = usize::try_from(state["pageSize"].as_u64().unwrap_or(100)).unwrap_or(100);
         let head = c["head"].as_str().unwrap_or("").to_string();
+        if var(args, "withCore").is_none() {
+            // The fresh read before a mark-ready: id, draft, state and head.
+            let state_word = match c["state"].as_str().unwrap_or("open") {
+                "closed" => "CLOSED",
+                "merged" => "MERGED",
+                _ => "OPEN",
+            };
+            return answer(ExitCode::SUCCESS, HEAD, &json!({"data": {"repository": {"pullRequest": {
+                "id": format!("PR_{owner}/{name}#{number}"), "isDraft": c["state"] == "draft", "state": state_word, "headRefOid": head
+            }}}}).to_string());
+        }
         let mut pr = json!({});
         if flag(args, "withCore") {
             let state_word = match c["state"].as_str().unwrap_or("open") {
@@ -496,8 +535,42 @@ mod forge {
         let Some(c) = change(&state, &project, iid) else {
             return not_found();
         };
-        let head = c["head"].as_str().unwrap_or("");
+        let key = format!("{project}#{iid}");
+        let head = c["head"].as_str().unwrap_or("").to_string();
         let web_url = format!("https://gitlab.test/{project}/-/merge_requests/{iid}");
+        let title = |c: &Value| {
+            c["title"].as_str().map_or_else(
+                || {
+                    if c["state"] == "draft" {
+                        "Draft: stub change".to_string()
+                    } else {
+                        "stub change".to_string()
+                    }
+                },
+                str::to_string,
+            )
+        };
+        let put = args.iter().any(|a| a == "PUT");
+        if put && sub.is_empty() {
+            // GitLab takes a merge request out of draft through its title.
+            let new_title = var(args, "title").unwrap_or_default();
+            let c = state["changes"].get_mut(&key).expect("change");
+            c["title"] = json!(new_title);
+            let still_draft = new_title.to_ascii_lowercase().starts_with("draft");
+            if !still_draft && c["state"] == "draft" {
+                c["state"] = json!("open");
+                if !c["readyIntents"].is_array() {
+                    c["readyIntents"] = json!([]);
+                }
+                c["readyIntents"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(json!("title update"));
+            }
+            let body = json!({"iid": iid.parse::<u64>().unwrap_or(0), "draft": still_draft, "title": new_title, "sha": head});
+            save(&state);
+            return answer(ExitCode::SUCCESS, HEAD, &body.to_string());
+        }
         let body = match sub {
             "" => {
                 let checks = c["checks"].as_array().cloned().unwrap_or_default();
@@ -517,6 +590,7 @@ mod forge {
                     "iid": iid.parse::<u64>().unwrap_or(0),
                     "state": match c["state"].as_str().unwrap_or("open") { "closed" => "closed", "merged" => "merged", _ => "opened" },
                     "draft": c["state"] == "draft",
+                    "title": title(c),
                     "sha": head,
                     "detailed_merge_status": c["mergeable"].as_str().unwrap_or("mergeable"),
                     "head_pipeline": pipeline,

@@ -3,8 +3,10 @@
 //! The CLI calls these and nothing below them, so every rule lives here
 //! once.
 
+use std::collections::BTreeSet;
+
 use fleet_api::change_request::{self, ChangeRequestSpec};
-use fleet_api::follow::{DECLARED_CHANGE_REQUEST, validate_declaration};
+use fleet_api::follow::{DECLARED_CHANGE_REQUEST, ForgeSpec, validate_declaration};
 use fleet_api::forge::{ChangeRef, Forge};
 use fleet_api::inbox::{CLI_SOURCE_PREFIX, InboxEntry, send_key};
 use fleet_api::meta::API_VERSION;
@@ -49,9 +51,27 @@ pub fn ensure_task(store: &dyn Store, obj: Object) -> Result<Object, StoreError>
 }
 
 /// Create the object, or replace its spec and labels when it exists.
-/// Status in an applied object is refused: status belongs to controllers.
-pub fn apply(store: &dyn Store, obj: Object) -> Result<(ApplyOutcome, Object), StoreError> {
+/// Status in an applied object is refused: status belongs to controllers. A
+/// Task whose `spec.forge.draft.policy` names a policy not in
+/// `ready_policies`, the names under `[forge.readyPolicies]`, is refused:
+/// a policy the config does not define would never mark anything ready.
+pub fn apply(
+    store: &dyn Store,
+    obj: Object,
+    ready_policies: &BTreeSet<String>,
+) -> Result<(ApplyOutcome, Object), StoreError> {
     store.validate(&obj)?;
+    if obj.kind == task::KIND {
+        let spec: TaskSpec = typed(task::KIND, &obj.spec)?;
+        if let Some(name) = spec.forge.as_ref().and_then(ForgeSpec::named_policy)
+            && !ready_policies.contains(name)
+        {
+            return Err(StoreError::Invalid(format!(
+                "{}: spec.forge.draft.policy {name:?} is not defined under [forge.readyPolicies]",
+                obj.key()
+            )));
+        }
+    }
     if !obj.status.is_null() {
         return Err(StoreError::Invalid(format!(
             "{}: status is written by controllers; remove it from the applied object",

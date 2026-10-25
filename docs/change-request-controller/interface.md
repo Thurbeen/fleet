@@ -71,7 +71,7 @@ the manager runs on, with that machine's CLI logins.
 | `parse` | A URL | The `ChangeRef` for it, normalised, using the adapter `[forge.hosts]` names for the host. Unknown for a host not configured. |
 | `whoami` | A host | Fleet's login on that host, or Unknown. |
 | `change` | A `ChangeRef` | `Some(ChangeSnapshot)`, complete; `None` for proven absence; Unknown on timeout, an incomplete read, a throttled answer or an unreadable answer, with `retryAfter` when the forge gave one. |
-| `mark_ready` | A `ChangeRef`, the expected `head.id` and state, and an intent key | `Done { already }`, or Failed when the change is no longer the expected head or state, or Failed/Unknown otherwise. Used by the [Forge controller](../forge-controller/interface.md)'s mark-ready step only, still to come: the port carries the method now, with a default that answers `Failed`, so that step changes no port. |
+| `mark_ready` | A `ChangeRef`, the expected `head.id` and state, and an intent key | `MarkedReady { already }` once the change is out of draft, after a fresh read proved it still had the expected head and state; `Moved { head, state }` when either differed, nothing mutated; Failed when the forge answered no; Unknown when the answer could not be read, since the mutation may have landed. The [Forge controller](../forge-controller/interface.md)'s one effect, and Fleet's one forge write. |
 
 The port has no merge method.
 
@@ -94,16 +94,24 @@ six bounded calls, each of `forge.callTimeoutMs`; the port's
   `mergeable` and `mergeStateStatus`, and the check runs and statuses of the
   head. A `Retry-After` or rate-limit reset header becomes `retryAfter`. A
   head with more than 100 checks or a thread with more than 100 comments is
-  Unknown, never a partial read. `mark_ready` (the ready-for-review mutation
-  after a fresh read) is the mark-ready step's.
+  Unknown, never a partial read. `mark_ready` reads `isDraft`, `state` and
+  `headRefOid` afresh in one call, then runs `markPullRequestReadyForReview`
+  with the intent key as `clientMutationId`; the forge answering that the
+  pull request is no longer a draft is `MarkedReady { already: true }`.
 - **gitlab:** bounded `glab api --hostname <host> --include` processes read
   the merge request, its discussions with pagination, its approvals,
   `detailed_merge_status` and the head pipeline. A 404 of the merge request
-  is proven absence only when the project itself answers. `mark_ready` is
-  the mark-ready step's.
+  is proven absence only when the project itself answers. `mark_ready` reads
+  the merge request afresh, then updates its title with the draft marker
+  removed (`Draft:`, `[Draft]`, `(Draft)`, `Draft -`, or the legacy `WIP`
+  forms, however cased), which is how GitLab takes a merge request out of
+  draft; a draft whose title carries no such marker is a Known refusal.
 - **fake:** a file-backed forge for tests and trials, with injectable faults
   (lost answers, timeouts, throttling with `retryAfter`, incomplete reads,
-  malformed answers, proven absence). It runs no process. Its URLs take any
+  malformed answers, proven absence; and for `mark_ready`, `moved`,
+  `failed`, `lost` and `lost-applied`, the last two Unknown with the
+  mutation not landed and landed). It runs no process, and records the
+  intent key of every mark-ready that mutated a change. Its URLs take any
   shape a real forge uses (`/pull/N`, `/-/merge_requests/N`, `/changes/N`).
 
 Credentials stay with each CLI's own login. Fleet passes none and stores none.

@@ -721,7 +721,7 @@ fn declare_is_refused_before_the_brief_for_an_unknown_host_and_without_a_kind() 
 }
 
 #[test]
-fn the_relay_keys_load_in_the_config_and_the_mark_ready_keys_do_not_yet() {
+fn the_relay_and_mark_ready_keys_load_in_the_config_and_a_bad_one_is_refused() {
     let (env, forge, cr) = setup("config-keys");
     let cfg = fs::read_to_string(&env.config).unwrap().replace(
         "[forge]\n",
@@ -759,24 +759,39 @@ fn the_relay_keys_load_in_the_config_and_the_mark_ready_keys_do_not_yet() {
     assert_eq!(got.len(), 4, "{got:#?}");
     assert!(got[3].contains("coverage 94%"), "{}", got[3]);
     assert!(got[3].contains("(comment, bot)"), "{}", got[3]);
-    for key in ["draftPolicy = \"checks\"", "noCheckGraceMs = 1"] {
+    // The mark-ready keys load together; a default naming no policy, a
+    // predicate outside the vocabulary, and the two fixed predicates named
+    // as if they were optional are each refused at load.
+    fs::write(
+        &env.config,
+        format!(
+            "{}\n[forge.readyPolicies.checks]\nchecksPassed = true\n",
+            cfg.replace(
+                "[forge]\n",
+                "[forge]\nnoCheckGraceMs = 1\ndraftPolicy = \"checks\"\n"
+            )
+        ),
+    )
+    .unwrap();
+    env.fleet(&["list", "changerequest"]).ok();
+    fs::write(
+        &env.config,
+        cfg.replace("[forge]\n", "[forge]\ndraftPolicy = \"checks\"\n"),
+    )
+    .unwrap();
+    env.fleet(&["list", "changerequest"])
+        .code(1)
+        .stderr_has("forge.draftPolicy \"checks\" is not defined under [forge.readyPolicies]");
+    for bad in ["approved = true", "workerDone = false", "workerIdle = true"] {
         fs::write(
             &env.config,
-            cfg.replace("[forge]\n", &format!("[forge]\n{key}\n")),
+            format!("{cfg}\n[forge.readyPolicies.checks]\n{bad}\n"),
         )
         .unwrap();
         env.fleet(&["list", "changerequest"])
             .code(1)
             .stderr_has("unknown field");
     }
-    fs::write(
-        &env.config,
-        format!("{cfg}\n[forge.readyPolicies.checks]\nchecksPassed = true\n"),
-    )
-    .unwrap();
-    env.fleet(&["list", "changerequest"])
-        .code(1)
-        .stderr_has("unknown field `readyPolicies`");
 }
 
 #[test]

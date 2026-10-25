@@ -756,7 +756,7 @@ fn a_stale_delete_plan_cannot_remove_a_recreated_object() {
 }
 
 #[test]
-fn a_change_request_needs_a_configured_forge_host_and_only_this_steps_keys_load() {
+fn a_change_request_needs_a_configured_forge_host_and_a_bad_policy_is_refused_at_load() {
     let env = Env::new("no-forge");
     env.apply(change_request(URL, json!({})))
         .code(1)
@@ -785,13 +785,23 @@ fn a_change_request_needs_a_configured_forge_host_and_only_this_steps_keys_load(
     env.apply(with_status)
         .code(1)
         .stderr_has("written by controllers");
-    // Keys of later steps are refused until they load.
-    let mut cfg = fs::read_to_string(&env.config).unwrap();
-    cfg.push_str("\n[forge.readyPolicies.checks]\nchecksPassed = true\n");
-    fs::write(&env.config, cfg).unwrap();
+    // The ready policies load; a predicate outside the vocabulary does not.
+    let cfg = fs::read_to_string(&env.config).unwrap();
+    fs::write(
+        &env.config,
+        format!("{cfg}\n[forge.readyPolicies.checks]\nchecksPassed = true\n"),
+    )
+    .unwrap();
+    env.fleet(&["list", "changerequest"]).ok();
+    fs::write(
+        &env.config,
+        format!("{cfg}\n[forge.readyPolicies.checks]\napproved = true\n"),
+    )
+    .unwrap();
     env.fleet(&["list", "changerequest"])
         .code(1)
-        .stderr_has("unknown field `readyPolicies`");
+        .stderr_has("unknown field `approved`");
+    fs::write(&env.config, cfg).unwrap();
     let v = Env::new("version")
         .fleet(&["version", "--json"])
         .ok()

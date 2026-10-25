@@ -4,6 +4,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use fleet_api::follow::ReadyPolicy;
 use serde::Deserialize;
 
 /// The config schema version this build reads (P9).
@@ -33,11 +34,10 @@ pub struct StarterConfig {
     pub workspace: PathBuf,
 }
 
-/// The `[forge]` section: the forges ChangeRequests are mirrored from, and
-/// the relay defaults a Task's `spec.forge` may override. The mark-ready
-/// keys of the Forge controller's design (`draftPolicy`, `readyPolicies`,
-/// `noCheckGraceMs`) belong to a later step and are refused as unknown until
-/// they load.
+/// The `[forge]` section: the forges ChangeRequests are mirrored from, the
+/// relay and draft defaults a Task's `spec.forge` may override, and the
+/// ready policies a Task may select. A policy naming an unknown predicate
+/// is refused here, at load.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ForgeConfig {
@@ -54,6 +54,15 @@ pub struct ForgeConfig {
     pub relay_checks: Option<bool>,
     /// Relay bot-authored notes to the worker (default false).
     pub relay_bots: Option<bool>,
+    /// How long `checksPassed` waits for a check to appear on a checkless
+    /// head before treating it as passed (default five minutes).
+    pub no_check_grace_ms: Option<u64>,
+    /// The ready policy applied to a Task that names none; absent, a draft
+    /// is never taken out of draft unless the Task names a policy.
+    pub draft_policy: Option<String>,
+    /// The ready policies, by name; each a set of the fixed predicates.
+    #[serde(default)]
+    pub ready_policies: BTreeMap<String, ReadyPolicy>,
     /// One adapter per forge host; a URL on a host not listed is refused.
     #[serde(default)]
     pub hosts: BTreeMap<String, ForgeHostConfig>,
@@ -127,6 +136,14 @@ impl Config {
                 if let Some(d) = &host.dir {
                     host.dir = Some(base.join(d));
                 }
+            }
+            if let Some(name) = &forge.draft_policy
+                && !forge.ready_policies.contains_key(name)
+            {
+                return Err(format!(
+                    "config {}: forge.draftPolicy {name:?} is not defined under [forge.readyPolicies]",
+                    path.display()
+                ));
             }
         }
         Ok(config)

@@ -146,11 +146,25 @@ settledTtlMs = 2592000000     # thirty days; a ChangeRequest spec may override
 relayNotes = true             # defaults a Task's spec.forge.relay may override
 relayChecks = true
 relayBots = false
+noCheckGraceMs = 300000       # the checksPassed predicate's wait for a check
+draftPolicy = "checks"        # omit to never take a draft out of draft
 
 [forge.hosts]
 "github.com"         = { kind = "github", cli = "gh" }
 "gitlab.com"         = { kind = "gitlab", cli = "glab" }
 "gitlab.example.com" = { kind = "gitlab", cli = "glab" }
+
+[forge.readyPolicies.checks]
+checksPassed = true
+
+[forge.readyPolicies.checks-and-bots]
+botReviewsAddressed = true
+checksPassed = true
+
+[forge.readyPolicies.strict]
+botReviewsAddressed = true
+checksPassed = true
+noUnresolvedThreads = true
 ```
 
 | Field | Required/default | Meaning |
@@ -159,39 +173,16 @@ relayBots = false
 | `forge.closedGraceMs` | `604800000` | How long a closed change stays watched before it settles. |
 | `forge.settledTtlMs` | `2592000000` | How long a settled ChangeRequest is retained before its controller deletes it. |
 | `forge.relayNotes`, `forge.relayChecks` | `true` | Whether the [Forge controller](../forge-controller/README.md) relays new notes, and passed or failed checks, to a Task's worker. A Task's `spec.forge.relay` overrides each. |
-| `forge.relayBots` | `false` | Whether bot-authored notes are relayed to the worker. |
+| `forge.relayBots` | `false` | Whether bot-authored notes are relayed to the worker. A selected policy that waits on bots relays their blockers regardless. |
+| `forge.noCheckGraceMs` | `300000` | How long `checksPassed` waits, from a head's first observation, for a check to appear before treating that checkless head as passed. |
+| `forge.draftPolicy` | Absent | The ready policy applied to a Task that sets none; it must name a policy below. Absent: a draft is never taken out of draft unless the Task names a policy. |
+| `forge.readyPolicies.<name>` | Three written by `fleet init` | A set of the predicates the [Forge controller](../forge-controller/interface.md#ready-policies) defines (`checksPassed`, `botReviewsAddressed`, `noUnresolvedThreads`, `forgeMergeable`; `workerDone` and `workerIdle` are always on), under a name that is only a key. Any other key is refused at load. |
 | `forge.hosts.<host>` | One per forge host | `kind` is `github`, `gitlab` or `fake`; `cli` is a PATH name or absolute path (`gh` or `glab` by default); a `fake` host takes `dir`, its directory, relative to this file. A URL on a host not listed is refused at apply. |
 
 Credentials stay with each CLI's own login. Fleet passes none to the forge and
-stores none. The shipped [example config](../../examples/fleet.toml) adds a
-fake host, `forge.example`, so a ChangeRequest can be tried offline.
-
-### Planned `[forge]` keys
-
-Design, not implemented. The Forge controller's mark-ready step adds the
-keys below to this section. They are refused as unknown today, so this
-example does not load.
-
-```toml
-[forge]
-noCheckGraceMs = 300000       # the checksPassed predicate's wait for a check
-draftPolicy = "checks"        # omit to never take a draft out of draft
-
-[forge.readyPolicies.checks]
-checksPassed = true
-
-[forge.readyPolicies.checks-and-bots]
-checksPassed = true
-botReviewsAddressed = true
-
-[forge.readyPolicies.strict]
-checksPassed = true
-botReviewsAddressed = true
-noUnresolvedThreads = true
-```
-
-| Field | Required/default | Meaning |
-| --- | --- | --- |
-| `forge.noCheckGraceMs` | `300000` | How long `checksPassed` waits, from a head's first observation, for a check to appear before treating that checkless head as passed. |
-| `forge.draftPolicy` | Absent | The ready policy applied to a Task that sets none. Absent: a draft is never taken out of draft unless the Task names a policy. |
-| `forge.readyPolicies.<name>` | Three written by `fleet init` | A set of predicates the [Forge controller](../forge-controller/interface.md#ready-policies) defines, under a name that is only a key; an unknown predicate is refused at load. |
+stores none. `fleet init` writes the three `readyPolicies` tables above into
+the generated config and no `draftPolicy`: a Task is marked ready only once
+it, or the operator's config, names a policy. The shipped
+[example config](../../examples/fleet.toml) adds a fake host,
+`forge.example`, with `draftPolicy = "checks"` and the same three policies,
+so a declared draft can be taken out of draft offline.

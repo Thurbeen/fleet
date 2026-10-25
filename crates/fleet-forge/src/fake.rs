@@ -5,14 +5,19 @@
 //! Faults are queued per call and consumed in order. They model the Unknown
 //! cases of the forge contract: a lost answer, a timeout, a throttled answer
 //! with `retryAfter`, an incomplete read, a malformed answer, and proven
-//! absence.
+//! absence; and for `markReady`, the three outcomes a real forge can give
+//! besides success: `moved`, `failed`, and `lost` (Unknown, nothing mutated)
+//! or `lost-applied` (Unknown, but the mutation landed).
 
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
 
-use fleet_api::forge::{ChangeObservation, ChangeRef, ChangeSnapshot, Forge, Uncertainty};
+use fleet_api::forge::{
+    ChangeObservation, ChangeRef, ChangeSnapshot, ChangeState, Expected, Forge, Uncertainty,
+};
+use fleet_api::plan::EffectOutcome;
 use fleet_api::{Millis, Observation};
 use serde::{Deserialize, Serialize};
 
@@ -21,9 +26,11 @@ pub const KIND: &str = "fake";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ForgeFault {
-    /// `change`, `parse` or `whoami`.
+    /// `change`, `parse`, `whoami` or `markReady`.
     pub call: String,
-    /// `lost`, `timeout`, `throttle`, `incomplete`, `malformed` or `absent`.
+    /// For `change`: `lost`, `timeout`, `throttle`, `incomplete`,
+    /// `malformed` or `absent`. For `markReady`: `moved`, `failed`, `lost`
+    /// or `lost-applied`.
     pub mode: String,
     /// For `throttle`: what the forge says to wait, in milliseconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -67,6 +74,8 @@ pub struct FakeForgeState {
     pub calls: BTreeMap<String, u64>,
     /// What `whoami` answers.
     pub login: Option<String>,
+    /// The intent key of every mark-ready that mutated a change, in order.
+    pub marked_ready: Vec<String>,
 }
 
 /// The fake forge's directory, shared by every process that opens it.
@@ -148,6 +157,26 @@ impl FakeForge {
 
     pub fn calls(&self, call: &str) -> io::Result<u64> {
         Ok(self.state()?.calls.get(call).copied().unwrap_or(0))
+    }
+
+    /// The intent keys of every mark-ready that mutated a change, in order.
+    pub fn marked_ready(&self) -> io::Result<Vec<String>> {
+        Ok(self.state()?.marked_ready)
+    }
+
+    /// Take the change out of draft, recording the intent key. `None` when
+    /// there is no such change.
+    fn apply_ready(&self, change: &ChangeRef, intent_key: &str) -> io::Result<Option<()>> {
+        self.update(|s| {
+            let c = s
+                .changes
+                .get_mut(&change_key(&change.project, &change.id))?;
+            if c.state == ChangeState::Draft {
+                c.state = ChangeState::Open;
+            }
+            s.marked_ready.push(intent_key.to_string());
+            Some(())
+        })
     }
 
     /// Count the call and take its fault, if one is queued.
@@ -271,6 +300,80 @@ impl Forge for FakeForge {
                 Uncertainty::Unreadable,
                 format!("fake forge unreadable: {e}"),
             ),
+        }
+    }
+
+    /// A fresh read of the change's head and state, `Moved` when either is
+    /// not what was expected, else the change leaves draft. Faults: `moved`
+    /// refuses as if the fresh read disagreed, `failed` is the forge saying
+    /// no, `lost` is Unknown with nothing mutated, `lost-applied` is Unknown
+    /// with the mutation landed.
+    fn mark_ready(
+        &self,
+        change: &ChangeRef,
+        expect: &Expected,
+        intent_key: &str,
+    ) -> Observation<EffectOutcome> {
+        let fault = match self.begin("markReady") {
+            Ok(f) => f,
+            Err(why) => return Observation::unknown(why),
+        };
+        let current = match self.state() {
+            Ok(s) => s
+                .changes
+                .get(&change_key(&change.project, &change.id))
+                .cloned(),
+            Err(e) => return Observation::unknown(format!("fake forge unreadable: {e}")),
+        };
+        match fault.as_ref().map(|f| f.mode.as_str()) {
+            Some("lost") => {
+                return Observation::unknown("injected: the answer was lost; nothing was mutated");
+            }
+            Some("lost-applied") => {
+                if let Err(e) = self.apply_ready(change, intent_key) {
+                    return Observation::unknown(format!("fake forge unreadable: {e}"));
+                }
+                return Observation::unknown(
+                    "injected: the answer was lost after the mutation landed",
+                );
+            }
+            Some("failed") => {
+                return Observation::Known(EffectOutcome::Failed {
+                    why: "injected: the forge refused to mark the change ready".into(),
+                });
+            }
+            Some("moved") => {
+                let (head, state) = current.as_ref().map_or_else(
+                    || (format!("{}-moved", expect.head), ChangeState::Open),
+                    |c| (c.head.id.clone(), c.state),
+                );
+                return Observation::Known(EffectOutcome::Moved { head, state });
+            }
+            Some(other) => {
+                return Observation::Known(EffectOutcome::Failed {
+                    why: format!("injected: unknown fault mode {other}"),
+                });
+            }
+            None => {}
+        }
+        let Some(c) = current else {
+            return Observation::Known(EffectOutcome::Failed {
+                why: "the change does not exist on the forge".into(),
+            });
+        };
+        if c.head.id != expect.head || c.state != expect.state {
+            return Observation::Known(EffectOutcome::Moved {
+                head: c.head.id,
+                state: c.state,
+            });
+        }
+        let already = c.state != ChangeState::Draft;
+        match self.apply_ready(change, intent_key) {
+            Ok(Some(())) => Observation::Known(EffectOutcome::MarkedReady { already }),
+            Ok(None) => Observation::Known(EffectOutcome::Failed {
+                why: "the change vanished before the mutation".into(),
+            }),
+            Err(e) => Observation::unknown(format!("fake forge unreadable: {e}")),
         }
     }
 }

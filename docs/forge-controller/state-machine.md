@@ -62,7 +62,7 @@ else:
     new_notes = cr.notes
         where seq > entry.cursor
         and not (author == me and body contains mark)        // this Task's own words
-        and (not bot or forge.relayBots or policy needs bots)
+        and (not bot or forge.relayBots or (policy needs bots and the note blocks it))
         and (kind != inline or not resolved)
         and not answered_in_thread(note)
     transitions = those of state, reviewDecision, head with seq > entry.cursor
@@ -100,8 +100,11 @@ carries `about`, the mirror's `uid`, `revision` and `head` it was computed
 from, because by the
 time it is delivered the change may have moved on; a worker reads a relay as
 an observation at that revision, not as the present. `spec.forge.relay`
-turns notes or checks off; a policy that depends on bot feedback relays bot
-blockers regardless of `forge.relayBots` (mark-ready step).
+turns notes or checks off; a selected policy that waits on bot feedback
+(`botReviewsAddressed`) relays bot blockers regardless of `forge.relayBots`:
+a bot's inline note in an unresolved thread, or the body of a bot review
+on the current head that requests changes. A bot's other notes, a coverage
+table or a preview link, stay status.
 
 Why the filters: this Task's own marked words are never relayed, because a
 session sent its own reply answers itself. Another Fleet worker's marked
@@ -115,47 +118,62 @@ otherwise.
 
 ## Mark ready
 
-Design, not implemented: this section is the mark-ready step, which builds
-on the `markReady` record and `spec.forge.draft.policy` the relay step
-stores untouched.
-
-Per entry, plan `MarkReady` when all of the following hold:
+Per entry, after its relay, plan `MarkReady` when all of the following
+hold, in this order:
 
 - a policy is selected: `spec.forge.draft.policy`, else `forge.draftPolicy`;
+  an explicit `null` selects none. A selected name the config does not
+  define raises `NeedsAttention/PolicyUnknown` and selects nothing;
+- the worker has reported `shipped` (`workerDone`);
 - `cr.state.value` is `draft` and `cr.everReady` is `false`: Fleet marks ready only
   a change that has been a draft the whole time it has been watched, so a
   change a person put back into draft, or a worker opened ready, is never
   touched;
 - the mirror is fresh: `Reachable` is True and `observedAt` is within
   `2 × pollMs`;
-- `entry.markReady.state` is `none`, or `failed` with fewer than 3 attempts;
-- every predicate of the policy holds, `workerDone` and `workerIdle`
-  included.
+- `entry.markReady.state` is `none`, with no `Moved` receipt for the
+  mirror's current head, or `failed` with fewer than 3 attempts and the
+  entry's `notBefore` past;
+- every predicate of the policy the snapshot answers holds: `checksPassed`,
+  `botReviewsAddressed`, `noUnresolvedThreads`, `forgeMergeable`, as the
+  policy names them;
+- the session is at rest (`workerIdle`): `AtRest` is asked of the runtime
+  only once everything above holds, and only `Known(true)` passes.
 
 The plan writes `markReady = {state: pending, head: cr.head.id, attempts + 1}`
-with the intent, under key `task/<name>/<uid>/ready/<change uid>/<head.id>`.
-The effect carries the expected head and state, and the adapter re-reads
-both immediately before the mutation and refuses if either moved; the
-window between that read and the mutation is the forge's and is not closed
-by Fleet.
+and the intent, under key `task/<name>/<uid>/ready/<change uid>/<head.id>`,
+on the entry, in the same `record_relay` write as the relay; a receipt left
+under that key by an earlier attempt on the same head goes with it. The
+effect carries the expected head and state, and the adapter re-reads both
+immediately before the mutation and refuses with `Moved` if either differs;
+the window between that read and the mutation is the forge's and is not
+closed by Fleet. The manager writes the receipt onto the entry afterwards.
+
+On the next pass a `pending` record is settled from its receipt, or, with
+none or an Unknown one, from the mirror:
 
 | Outcome | Evidence | Next markReady state | Behavior |
 | --- | --- | --- | --- |
-| Known done | The receipt | `done` | Nothing more; the next ChangeRequest revision shows `open` and sets `everReady`. |
-| Known failed, head or state moved | The receipt | `none` | Not an attempt against the change; re-evaluate on the next pass with the new head. |
-| Known failed, other | The receipt | `failed` | Wait `RETRY_DELAY_MS` on this entry's `notBefore`; after 3 attempts `NeedsAttention/MarkReadyFailed`. |
-| Unknown | The next fresh ChangeRequest revision | `done` if `everReady`, else `failed` | `everReady` is a recovered receipt. Still `draft` on a fresh read counts as a failed attempt; never repeated blindly. |
+| Known `MarkedReady` | The receipt | `done` | Nothing more; the next ChangeRequest revision shows `open` and sets `everReady`. |
+| Known `Moved` | The receipt | `none` | Not an attempt against the change: `attempts` goes back down. The receipt stays, so this head is not tried again while the mirror still shows it; the mirror's next head is evaluated afresh. A change a person took out of draft and put back between two polls therefore stays a draft until it has a new head. |
+| Known `Failed` | The receipt | `failed` | Wait `RETRY_DELAY_MS` on this entry's `notBefore`; the next attempt reuses the head's key. After 3 attempts `NeedsAttention/MarkReadyFailed`, and no fourth. |
+| Unknown, or no receipt | The next observation of the change made after the intent (`Reachable` True, `observedAt` past the intent's time) | `done` if `everReady`, else `failed` | `everReady` is a recovered receipt. Still `draft` on a fresh read counts as a failed attempt; never repeated blindly. Until that read, the record waits. |
 
 Once `everReady` is true, from Fleet's effect or anyone's hand, no follower
 marks it ready again, which is what protects a person's return to draft
-across every Task on the change.
+across every Task on the change; `MarkReadyFailed` clears then, since
+nothing is left to attend to. A rebind to a new incarnation resets the
+record and clears the entry's `MarkReadyFailed`.
 
 ## Retries and recovery
 
 `MAX_ATTEMPTS=3` and `RETRY_DELAY_MS=30000` are the Task controller's
 constants, reused; a wait is persisted on the entry's own `notBefore`, so a
-failing mark-ready on one change holds back nothing else. `MarkReady` is the only
-effect; its intent is written before it runs and its ambiguous outcome is
+failing mark-ready on one change holds back nothing else: another entry of
+the same Task keeps relaying meanwhile, and this one's relay resumes with
+its wait. `MarkReady` is the only effect; its intent is written before it
+runs, its receipt lands on the entry whatever the Task did meanwhile (the
+manager re-reads and retries that write), and its ambiguous outcome is
 answered by the change's state, never by repeating it. A relay needs no
 recovery: it is a status write.
 
@@ -169,7 +187,7 @@ every open reason, each naming its entry, in its message.
 | --- | --- |
 | Following | At least one entry is not settled. |
 | Settled | Every entry has settled. |
-| NeedsAttention | Reasons are `RelayGap`, `ChangeGone`, and, with the mark-ready step, `MarkReadyFailed` and `PolicyUnknown` (the selected policy is not in the config). The message holds one line per open reason, `<Reason> <entry> <text>`, and the reason is the one kind open or `Multiple`; an entry not observed on a pass keeps its lines. |
+| NeedsAttention | Reasons are `RelayGap`, `ChangeGone`, `MarkReadyFailed` (three attempts against one change failed; the last refusal is quoted) and `PolicyUnknown` (the selected policy is not in the config). The message holds one line per open reason, `<Reason> <entry> <text>`, and the reason is the one kind open or `Multiple`; an entry not observed on a pass keeps its lines. |
 
 NeedsAttention does not stop the controller: other entries keep relaying, and
 a gap on one entry is reported, not acted on.

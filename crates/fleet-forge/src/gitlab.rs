@@ -1,15 +1,19 @@
 //! The forge contract served by `glab` for GitLab, gitlab.com or
 //! self-hosted: bounded `glab api` processes read the merge request, its
 //! discussions with pagination and its approvals, mapped onto Fleet's
-//! vocabulary by the adapter truth table in the ChangeRequest interface page.
+//! vocabulary by the adapter truth table in the ChangeRequest interface
+//! page; and one write, the merge request's title with its draft marker
+//! removed, after a fresh read of the head and the draft state.
 
 use std::ffi::OsString;
 use std::time::Duration;
 
 use fleet_api::forge::{
-    ChangeObservation, ChangeRef, ChangeSnapshot, ChangeState, Checks, FailingCheck, Forge,
-    HeadSeen, Mergeable, Note, NoteKind, Review, ReviewDecision, ReviewState, Threads, Uncertainty,
+    ChangeObservation, ChangeRef, ChangeSnapshot, ChangeState, Checks, Expected, FailingCheck,
+    Forge, HeadSeen, Mergeable, Note, NoteKind, Review, ReviewDecision, ReviewState, Threads,
+    Uncertainty,
 };
+use fleet_api::plan::EffectOutcome;
 use fleet_api::{Millis, Observation};
 use serde_json::Value;
 
@@ -37,13 +41,24 @@ impl GitlabForge {
     }
 
     fn api(&self, endpoint: &str, timeout: Duration) -> Result<Reply, (Uncertainty, String)> {
-        let args = vec![
+        self.api_with(&[], endpoint, timeout)
+    }
+
+    /// A call with extra flags before the endpoint: a method, a field.
+    fn api_with(
+        &self,
+        extra: &[String],
+        endpoint: &str,
+        timeout: Duration,
+    ) -> Result<Reply, (Uncertainty, String)> {
+        let mut args = vec![
             "api".to_string(),
             "--hostname".to_string(),
             self.host.clone(),
             "--include".to_string(),
-            endpoint.to_string(),
         ];
+        args.extend(extra.iter().cloned());
+        args.push(endpoint.to_string());
         cli::call(&self.cli, &args, timeout)
     }
 }
@@ -211,6 +226,143 @@ impl Forge for GitlabForge {
         match snapshot(&mr, &discussions, &approvals) {
             Ok(s) => ChangeObservation::Known(Some(s)),
             Err(why) => ChangeObservation::unknown(Uncertainty::Unreadable, why),
+        }
+    }
+
+    /// Read the merge request afresh; refuse with `Moved` when its head or
+    /// state is not what the decision expected; else update its title with
+    /// the draft marker removed, which is how GitLab takes a merge request
+    /// out of draft. Everything before the update that goes wrong is a Known
+    /// refusal; past it, only an answer the adapter can read is Known.
+    fn mark_ready(
+        &self,
+        change: &ChangeRef,
+        expect: &Expected,
+        intent_key: &str,
+    ) -> Observation<EffectOutcome> {
+        let project = cli::encode_segment(&change.project);
+        let base = format!("projects/{project}/merge_requests/{}", change.id);
+        let reply = match self.api(&base, self.call_timeout) {
+            Ok(r) => r,
+            Err((_, why)) => return failed(format!("fresh read: {why}")),
+        };
+        let mr = match body_of(&reply) {
+            Ok(Some(mr)) => mr,
+            Ok(None) => return failed("the merge request was not found"),
+            Err((_, why)) => return failed(format!("fresh read: {why}")),
+        };
+        let (head, state) = match head_and_state(&mr) {
+            Ok(x) => x,
+            Err(why) => return failed(format!("fresh read: {why}")),
+        };
+        if head != expect.head || state != expect.state {
+            return Observation::Known(EffectOutcome::Moved { head, state });
+        }
+        let title = mr["title"].as_str().unwrap_or("");
+        let ready_title = without_draft_marker(title);
+        if ready_title == title.trim() {
+            return failed(
+                "the merge request is a draft without a recognised draft marker in its title",
+            );
+        }
+        // GitLab's REST update has no idempotency slot for the intent key;
+        // the key stays on the Task's record, where recovery reads it.
+        let _ = intent_key;
+        let extra = vec![
+            "-X".to_string(),
+            "PUT".to_string(),
+            "-f".to_string(),
+            format!("title={ready_title}"),
+        ];
+        match self.api_with(&extra, &base, self.call_timeout) {
+            Ok(reply) => update_outcome(&reply),
+            // The process ran out of time: the update may have landed.
+            Err((Uncertainty::Timeout, why)) => Observation::unknown(why),
+            Err((_, why)) => failed(why),
+        }
+    }
+}
+
+fn failed(why: impl Into<String>) -> Observation<EffectOutcome> {
+    Observation::Known(EffectOutcome::Failed { why: why.into() })
+}
+
+/// The head and state of a fresh read, by the same rule as the snapshot.
+fn head_and_state(mr: &Value) -> Result<(String, ChangeState), String> {
+    let state = if mr["draft"] == true || mr["work_in_progress"] == true {
+        ChangeState::Draft
+    } else {
+        match mr["state"].as_str() {
+            Some("opened") => ChangeState::Open,
+            Some("closed") => ChangeState::Closed,
+            Some("merged") => ChangeState::Merged,
+            other => return Err(format!("state {other:?} cannot be placed")),
+        }
+    };
+    let head = mr["sha"].as_str().ok_or("no sha")?.to_string();
+    Ok((head, state))
+}
+
+/// A merge request's title with GitLab's draft markers removed: `Draft:`,
+/// `[Draft]`, `(Draft)`, `Draft -` and the legacy `WIP:` forms, however
+/// cased, repeated, with the whitespace around them.
+pub fn without_draft_marker(title: &str) -> String {
+    const MARKERS: &[&str] = &[
+        "[draft]", "(draft)", "draft:", "draft -", "draft ", "[wip]", "(wip)", "wip:", "wip ",
+    ];
+    let mut rest = title.trim();
+    loop {
+        let lower = rest.to_ascii_lowercase();
+        let Some(m) = MARKERS.iter().find(|m| lower.starts_with(*m)) else {
+            return rest.to_string();
+        };
+        rest = rest[m.len()..].trim_start();
+    }
+}
+
+/// What the update's answer means: Known when the forge's answer can be
+/// read, Unknown otherwise, because the update may have landed.
+pub fn update_outcome(reply: &Reply) -> Observation<EffectOutcome> {
+    if reply.throttled() {
+        return failed(format!(
+            "the forge asked to slow down (HTTP {})",
+            reply.status
+        ));
+    }
+    if reply.status == 401 {
+        return failed("HTTP 401: the CLI has no login for this host");
+    }
+    if reply.status == 404 {
+        return failed("the merge request was not found");
+    }
+    if reply.status >= 400 {
+        return failed(format!(
+            "HTTP {}: {}",
+            reply.status,
+            if reply.stderr.is_empty() {
+                reply.body.trim().chars().take(200).collect::<String>()
+            } else {
+                reply.stderr.clone()
+            }
+        ));
+    }
+    let v: Value = match serde_json::from_str(reply.body.trim()) {
+        Ok(v) => v,
+        Err(e) => {
+            return Observation::unknown(format!(
+                "the update's answer could not be read ({e}); it may have landed"
+            ));
+        }
+    };
+    match (&v["draft"], &v["work_in_progress"]) {
+        (Value::Bool(false), Value::Bool(true)) | (Value::Bool(true), _) => {
+            failed("the forge left the merge request a draft")
+        }
+        (Value::Bool(false), _) => {
+            Observation::Known(EffectOutcome::MarkedReady { already: false })
+        }
+        _ => {
+            Observation::unknown("the update's answer says nothing about draft; it may have landed")
         }
     }
 }
@@ -494,6 +646,52 @@ mod tests {
         .unwrap();
         assert_eq!(s.mergeable.value, None);
         assert_eq!(s.review_decision, ReviewDecision::None);
+    }
+
+    #[test]
+    fn the_draft_marker_is_removed_however_it_is_spelled() {
+        assert_eq!(without_draft_marker("Draft: add it"), "add it");
+        assert_eq!(
+            without_draft_marker("  [DRAFT] (draft) Draft - add it"),
+            "add it"
+        );
+        assert_eq!(without_draft_marker("WIP: add it"), "add it");
+        assert_eq!(
+            without_draft_marker("Drafting the plan"),
+            "Drafting the plan"
+        );
+        assert_eq!(without_draft_marker("add it"), "add it");
+        let (head, state) =
+            head_and_state(&json!({"draft": true, "state": "opened", "sha": "h1"})).unwrap();
+        assert_eq!((head.as_str(), state), ("h1", ChangeState::Draft));
+    }
+
+    #[test]
+    fn an_updates_answer_is_known_only_when_it_can_be_read() {
+        let reply = |status: u16, body: &str| Reply {
+            status,
+            body: body.into(),
+            exit: Some(0),
+            ..Reply::default()
+        };
+        assert_eq!(
+            update_outcome(&reply(
+                200,
+                r#"{"iid": 3, "draft": false, "title": "add it"}"#
+            )),
+            Observation::Known(EffectOutcome::MarkedReady { already: false })
+        );
+        assert_eq!(
+            update_outcome(&reply(200, r#"{"iid": 3, "draft": true}"#)),
+            Observation::Known(EffectOutcome::Failed {
+                why: "the forge left the merge request a draft".into()
+            })
+        );
+        assert!(matches!(
+            update_outcome(&reply(403, r#"{"message": "403 Forbidden"}"#)),
+            Observation::Known(EffectOutcome::Failed { .. })
+        ));
+        assert!(update_outcome(&reply(200, "<html>gateway</html>")).is_unknown());
     }
 
     #[test]

@@ -9,10 +9,14 @@
 //!
 //! Each Task has a second controller, ForgeController, with its own due
 //! gate: it runs after TaskController, from a fresh read of the Task, asks
-//! for the ChangeRequests the worker declared (answered from the store) and
+//! for the ChangeRequests the worker declared (answered from the store),
 //! Fleet's login on their hosts (through the Forge port, cached for the
-//! sweep), and its plan is one typed write: `status.forge` replaced and the
-//! relay's inbox entries appended together. No effect, no receipt.
+//! sweep) and, while a mark-ready is being evaluated, whether the session
+//! is at rest (through the runtime), and its plan is one typed write:
+//! `status.forge` replaced and the relay's inbox entries appended together,
+//! carrying any mark-ready intent. The one effect, `MarkReady`, is then
+//! performed through the Forge port after a lease renewal, and its receipt
+//! written onto the entry.
 //!
 //! The same sweep walks the ChangeRequests: each due one is observed through
 //! the Forge port and decided by ChangeRequestController, whose plan is one
@@ -25,7 +29,7 @@ pub mod verbs;
 use std::collections::BTreeMap;
 
 use fleet_api::change_request::{self, ChangeRequestDefaults, ChangeRequestSpec};
-use fleet_api::follow::ForgeDefaults;
+use fleet_api::follow::{ForgeDefaults, ForgeStatus};
 use fleet_api::forge::{ChangeObservation, Forge, Uncertainty};
 use fleet_api::plan::{Action, Effect, EffectOutcome, Observations, Plan, Probe, Receipt};
 use fleet_api::runtime::Runtime;
@@ -80,7 +84,8 @@ pub struct Manager<'a> {
     pub forge: Option<&'a dyn Forge>,
     /// The `[forge]` defaults a ChangeRequest spec may override.
     pub change_request_defaults: ChangeRequestDefaults,
-    /// The `[forge]` relay defaults a Task's `spec.forge` may override.
+    /// The `[forge]` relay defaults a Task's `spec.forge` may override, and
+    /// the ready policies it may select.
     pub forge_defaults: ForgeDefaults,
 }
 
@@ -388,9 +393,12 @@ impl Manager<'_> {
 
     /// ForgeController on one Task: answer its `Object` probes from the store
     /// (no lease renewal: no adapter is asked), then its `Whoami` probes
-    /// through the Forge port after a renewal, asking again until the
-    /// controller wants nothing more; decide; then write `status.forge` and
-    /// the relay's entries in one typed compare-and-swap write.
+    /// through the Forge port and its `AtRest` probe through the runtime,
+    /// each after a renewal, asking again until the controller wants
+    /// nothing more; decide; write `status.forge` and the relay's entries in
+    /// one typed compare-and-swap write, the mark-ready intent with them;
+    /// then perform each `MarkReady` effect through the Forge port after a
+    /// renewal and write its receipt onto the entry.
     fn reconcile_forge(
         &self,
         obj: &Object,
@@ -408,7 +416,7 @@ impl Manager<'_> {
                 ..ForgeObservations::default()
             },
             now: self.clock.now(),
-            defaults: self.forge_defaults,
+            defaults: self.forge_defaults.clone(),
         };
         // Each round answers what the last one asked; the controller asks
         // only for what it lacks, so this ends. The bound is a guard.
@@ -451,7 +459,15 @@ impl Manager<'_> {
                         }
                         input.observations.whoami.insert(host, answer);
                     }
-                    // Not this controller's in this step.
+                    Probe::AtRest { session } => {
+                        *lease = self.store.renew_lease(lease, ttl)?;
+                        let o = self.runtime.at_rest(&session);
+                        if let Some(why) = o.why() {
+                            report.unknowns.push(format!("{} atRest: {why}", obj.key()));
+                        }
+                        input.observations.at_rest = Some(o);
+                    }
+                    // Not this controller's.
                     _ => {}
                 }
             }
@@ -464,7 +480,7 @@ impl Manager<'_> {
         let forge = plan
             .status
             .unwrap_or_else(|| obj.status.get("forge").cloned().unwrap_or(Value::Null));
-        match self.store.record_relay(
+        let mut current = match self.store.record_relay(
             &obj.metadata.name,
             forge,
             plan.appends,
@@ -472,15 +488,111 @@ impl Manager<'_> {
             ForgeController::MANAGER,
             lease,
         ) {
-            Ok(_) => step.wrote += 1,
+            Ok(o) => {
+                step.wrote += 1;
+                o
+            }
             // Someone wrote first, or the key already landed: decide again
-            // from fresh state on the next pass.
+            // from fresh state on the next pass. Nothing ran yet.
             Err(StoreError::Conflict { .. }) | Err(StoreError::AlreadyExists(_)) => {
                 step.conflict = true;
+                return Ok(step);
             }
             Err(e) => return Err(e),
+        };
+        for effect in &plan.effects {
+            let Action::MarkReady { change, expect } = &effect.action else {
+                // Not this controller's effect: never performed from here.
+                continue;
+            };
+            let Some(forge) = self.forge else {
+                return Err(StoreError::Invalid(
+                    "no [forge] section is configured; a change cannot be marked ready".into(),
+                ));
+            };
+            // Intent first (written above), effect under a fresh lease,
+            // receipt after.
+            *lease = self.store.renew_lease(lease, ttl)?;
+            let outcome = forge.mark_ready(change, expect, &effect.key);
+            if let Observation::Unknown { why } = &outcome {
+                report
+                    .unknowns
+                    .push(format!("{} {}: {why}", obj.key(), effect.action.name()));
+            }
+            step.effects += 1;
+            current = self.write_forge_receipt(&current, effect, outcome, lease)?;
+            step.wrote += 1;
         }
         Ok(step)
+    }
+
+    /// The mark-ready effect happened (or may have): its receipt must land
+    /// on the entry that holds its intent, even if the Task moved meanwhile,
+    /// so this re-reads and retries on a conflict. The write replaces
+    /// `status.forge` through the Forge controller's typed mutation, with
+    /// nothing appended.
+    fn write_forge_receipt(
+        &self,
+        current: &Object,
+        effect: &Effect,
+        outcome: Observation<EffectOutcome>,
+        lease: &LeaseToken,
+    ) -> Result<Object, StoreError> {
+        let receipt = Receipt {
+            action: effect.action.name().to_string(),
+            at: self.clock.now(),
+            outcome,
+        };
+        let mut obj = current.clone();
+        for _ in 0..16 {
+            let mut forge: ForgeStatus = match obj.status.get("forge") {
+                Some(v) if !v.is_null() => serde_json::from_value(v.clone()).map_err(|e| {
+                    StoreError::Invalid(format!("{}: status.forge: {e}", obj.key()))
+                })?,
+                _ => ForgeStatus::default(),
+            };
+            let Some(entry) = forge
+                .changes
+                .values_mut()
+                .find(|e| e.mark_ready.intents.contains_key(&effect.key))
+            else {
+                return Err(StoreError::Invalid(format!(
+                    "{}: no entry holds the intent {}",
+                    obj.key(),
+                    effect.key
+                )));
+            };
+            entry
+                .mark_ready
+                .receipts
+                .insert(effect.key.clone(), receipt.clone());
+            let value =
+                serde_json::to_value(&forge).map_err(|e| StoreError::Invalid(e.to_string()))?;
+            let rv = obj.metadata.resource_version;
+            match self.store.record_relay(
+                &obj.metadata.name,
+                value,
+                Vec::new(),
+                rv,
+                ForgeController::MANAGER,
+                lease,
+            ) {
+                Ok(o) => return Ok(o),
+                Err(StoreError::Conflict { .. }) => {
+                    obj = match self.store.get(task::KIND, &obj.metadata.name) {
+                        Observation::Known(Some(o)) => o,
+                        Observation::Known(None) => return Err(StoreError::NotFound(obj.key())),
+                        Observation::Unknown { why } => return Err(StoreError::Unknown(why)),
+                    };
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Err(StoreError::Busy(format!(
+            "{}: receipt for {} kept conflicting",
+            obj.key(),
+            effect.key
+        )))
     }
 
     /// A Task waiting out `notBefore` after a failed or unknown attempt is
@@ -736,6 +848,11 @@ impl Manager<'_> {
             Action::Spawn(spec) => self.runtime.spawn(spec),
             Action::Brief { session, text } => self.runtime.brief(session, text, &effect.key),
             Action::Release { session } => self.runtime.release(session),
+            // The Forge controller's effect, performed by its own sweep;
+            // TaskController never plans it.
+            Action::MarkReady { .. } => Observation::Known(EffectOutcome::Failed {
+                why: "markReady is not a Task controller effect".into(),
+            }),
         }
     }
 

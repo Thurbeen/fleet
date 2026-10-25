@@ -96,6 +96,17 @@ fn fake_bootstrap(name: &str) -> Env {
     env.fleet(&["init"]).ok();
     let generated = fs::read_to_string(&env.config).unwrap();
     let mut config: toml::Value = toml::from_str(&generated).unwrap();
+    // The three shipped ready policies, exactly as the config page shows
+    // them, and no default policy: a draft is marked ready only when a
+    // Task names one.
+    assert!(
+        generated.contains(
+            "[forge.readyPolicies.checks]\nchecksPassed = true\n\n[forge.readyPolicies.checks-and-bots]\nbotReviewsAddressed = true\nchecksPassed = true\n\n[forge.readyPolicies.strict]\nbotReviewsAddressed = true\nchecksPassed = true\nnoUnresolvedThreads = true\n"
+        ),
+        "{generated}"
+    );
+    assert!(config["forge"].get("draftPolicy").is_none(), "{generated}");
+    assert!(config["forge"].get("hosts").is_none(), "{generated}");
     config["runtime"] = toml::Value::Table(toml::map::Map::from_iter([
         ("kind".into(), toml::Value::String("fake".into())),
         (

@@ -88,8 +88,8 @@ defines its [resource](docs/resources/task.md),
 The [ChangeRequest controller](docs/change-request-controller/README.md)
 mirrors one change on a forge in the same shape, and the
 [Forge controller](docs/forge-controller/README.md) follows the changes a
-worker declares and relays their feedback into its inbox; only its
-mark-ready step is still design.
+worker declares, relays their feedback into its inbox and takes a draft
+change out of draft under a configured ready policy.
 V2 is a standalone binary; existing Python deployments stay on frozen v1.
 The root `FLEET_MAJOR` file says `2`; a v1 checkout containing the freeze
 guard reads it before updating and refuses to move onto v2.

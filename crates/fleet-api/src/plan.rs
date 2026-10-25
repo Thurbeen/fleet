@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::forge::ChangeRef;
+use crate::forge::{ChangeRef, ChangeState, Expected};
 use crate::meta::Millis;
 use crate::observation::Observation;
 use crate::task::SessionRef;
@@ -54,6 +54,14 @@ pub enum Action {
     Release {
         session: SessionRef,
     },
+    /// Take a draft change out of draft, through the Forge port: the only
+    /// forge write Fleet performs. `expect` is the head and state the
+    /// decision was made against; the adapter re-reads both immediately
+    /// before the mutation and answers `Moved` instead when either differs.
+    MarkReady {
+        change: ChangeRef,
+        expect: Expected,
+    },
 }
 
 impl Action {
@@ -62,6 +70,7 @@ impl Action {
             Action::Spawn(_) => "spawn",
             Action::Brief { .. } => "brief",
             Action::Release { .. } => "release",
+            Action::MarkReady { .. } => "markReady",
         }
     }
 }
@@ -114,6 +123,19 @@ pub enum EffectOutcome {
         already: bool,
     },
     Released,
+    /// The change is out of draft; `already` when the forge said it was no
+    /// longer a draft by the time the mutation ran, inside the window
+    /// between the adapter's fresh read and the mutation.
+    MarkedReady {
+        already: bool,
+    },
+    /// The change is no longer what the mark-ready effect expected: its head
+    /// or state moved between the decision and the adapter's fresh read.
+    /// Nothing was mutated, and this is not an attempt against the change.
+    Moved {
+        head: String,
+        state: ChangeState,
+    },
     /// The adapter answered, and the answer is no.
     Failed {
         why: String,

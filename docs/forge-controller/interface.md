@@ -4,9 +4,7 @@ The controller is a pure decision function over a Task and the ChangeRequests
 it follows. The manager owns I/O, persistence and process execution. The
 [state machine](state-machine.md) defines how the values below change
 `status.forge`; the [Task resource](../resources/task.md#following-declared-changes)
-lists the fields on the Task. The mark-ready parts of this page, the
-`MarkReady` action, the `AtRest` probe and the [ready policies](#ready-policies),
-are design, not implemented.
+lists the fields on the Task.
 
 ## Controller API
 
@@ -28,8 +26,9 @@ pub fn reconcile(&self, input: &ForgeInput<'_>) -> Result<Plan, StoreError>;
 
 `task` is the stored Task, including the worker's `status.declared` and this
 controller's `status.forge`. Missing `status.forge` decodes to no entries.
-`defaults` carries `forge.relayNotes`, `forge.relayChecks` and
-`forge.relayBots` from the native config, as values. `due` is the
+`defaults` carries `forge.relayNotes`, `forge.relayChecks`,
+`forge.relayBots`, `forge.noCheckGraceMs`, `forge.draftPolicy` and the
+`[forge.readyPolicies]` tables from the native config, as values. `due` is the
 controller's own gate, which the manager asks before anything else. Neither
 method reads the clock, disk, environment, forge or runtime itself.
 
@@ -62,7 +61,7 @@ Each entry of `changes`:
 | `state` | `following` or `settled`. |
 | `cursor` | The ChangeRequest `revision` relayed through. Set to the revision of the join message; advances in the same write as each later relay. |
 | `gaps` | How many times a relay found `droppedBefore` above the cursor. |
-| `markReady` | `{state, head, attempts, intents, receipts}`; `state` is `none`, `pending`, `done` or `failed`. |
+| `markReady` | `{state, head, attempts, intents, receipts}`; `state` is `none`, `pending`, `done` or `failed`; `head` the head of the last intent; `attempts` the intents written against the change; `intents` and `receipts` by effect key, the mark-ready effect's own, apart from TaskController's. |
 | `notBefore` | Earliest next pass for this entry after a failed mark-ready, in Unix milliseconds. Separate from the Task's own `notBefore` and from other entries'. |
 
 A Task that opened a change in each of two repositories:
@@ -111,7 +110,7 @@ to and TaskController removes from:
 | --- | --- |
 | No declaration and no entries | None. |
 | A declaration without an entry, or an entry not Settled | `Object { kind: ChangeRequest, name }` per such change; `Whoami { host }` once per distinct host. |
-| An entry whose mark-ready is being evaluated | `AtRest { session }` for the Task's recorded session, for the `workerIdle` predicate. (Mark-ready step.) |
+| An entry whose mark-ready is being evaluated and whose snapshot predicates all hold | `AtRest { session }` for the Task's recorded session, for the `workerIdle` predicate: the runtime is asked last, and only when its answer could decide something. |
 | Every entry Settled | None. |
 | Deleting | None. |
 
@@ -120,9 +119,10 @@ to and TaskController removes from:
 is unreadable. It needs no lease renewal and runs before any runtime or forge
 probe. `Probe::Whoami` is answered by `Forge::whoami` and cached by the
 manager for the sweep. `AtRest` is the Task controller's existing probe,
-reused. `probes` returns only what the observations lack, so the manager asks
-in rounds: the objects first, then the login on each host those objects'
-`status.ref` names, until nothing is asked.
+reused and answered by the runtime. `probes` returns only what the
+observations lack, so the manager asks in rounds: the objects first, then
+the login on each host those objects' `status.ref` names, then the session,
+until nothing is asked.
 
 `ForgeObservations` holds `changes` (keyed by ChangeRequest name), `whoami`
 (keyed by host), `at_rest`, and `workers`, every Task's name by `uid`, which
@@ -135,12 +135,12 @@ controller's fields: `status` carries the desired `status.forge` alone,
 including every advanced cursor and every new mark-ready intent, and
 `appends` the inbox entries to land with it, and nothing else; the store
 refuses a plan that names another manager's field. `effects` holds
-`MarkReady` actions only (mark-ready step; empty today).
+`MarkReady` actions only, one per entry whose intent the status carries.
 `remove_finalizer` is always `None`.
 
 | Action | Performed by the manager through | Receipt |
 | --- | --- | --- |
-| `MarkReady { change, expect: {head, state} }` | The Forge port, which re-reads head and state first | `Done { already }`, Failed with `Moved` when either changed, Failed otherwise, or Unknown. |
+| `MarkReady { change, expect: {head, state} }` | The Forge port, which re-reads head and state first | `MarkedReady { already }`; `Moved { head, state }` when either differed, nothing mutated; Failed when the forge answered no; or Unknown. Written onto the entry under the effect key. |
 
 A relay is not an effect. It is part of the status write: the inbox entries
 and the cursors land together or not at all.
@@ -163,9 +163,6 @@ Mark-ready intents and receipts live on the entry, apart from TaskController's.
 
 ## Ready policies
 
-Design, not implemented: this section is the mark-ready step. `spec.forge.draft.policy`
-is stored today and acted on then.
-
 A policy is a set of predicates, declared in native config under
 `[forge.readyPolicies.<name>]` and selected by `spec.forge.draft.policy` or
 the `forge.draftPolicy` default. The name is only a key; Fleet attaches no
@@ -182,10 +179,12 @@ snapshot, the Task and the probes above:
 | `forgeMergeable` | `mergeable.value` is `true`: the forge itself says the change can be merged. Optional; off in the shipped policies because a draft is often reported unmergeable for being a draft. |
 
 `fleet init` writes three policies into the generated config, `checks`,
-`checks-and-bots` and `strict`; the
+`checks-and-bots` and `strict`, and no `draftPolicy`; the
 [native config](../configuration/fleet-toml.md#the-forge-section) shows
-them. They are ordinary entries: rename, edit or delete them. A policy naming
-an unknown predicate is refused at config load; a Task selecting a policy the
+them. They are ordinary entries: rename, edit or delete them. The four
+predicates above are the whole configurable vocabulary: a policy naming any
+other key, `workerDone` and `workerIdle` included, is refused at config
+load, as is a `draftPolicy` naming no policy; a Task selecting a policy the
 config does not define is refused at apply, and a policy removed from the
 config after that raises `NeedsAttention/PolicyUnknown` on the Tasks that
 name it. Adding a predicate is a controller change and a config key, not an
@@ -257,8 +256,11 @@ applies, with these additions:
    delivery and removes the delivered entry in one write. `fleet send`
    appends one entry.
 4. `MarkReady` is performed through the Forge port after the lease is
-   renewed, like a runtime effect, then its receipt is written. (Mark-ready
-   step.)
+   renewed, like a runtime effect, once the status carrying its intent is
+   written; its receipt is then written onto the entry that holds the
+   intent, through the same typed mutation with nothing appended, re-read
+   and retried on a conflict so it lands whatever the Task did meanwhile.
+   A conflict on the intent write runs no effect.
 
 ## Store port and write ownership
 
@@ -266,7 +268,7 @@ applies, with these additions:
 | --- | --- | --- |
 | `apply` | New Task, labels, `dispatch`, `spec.forge`; request deletion | Store validation, exclusive creation or resourceVersion CAS. |
 | `worker` | `status.result`; `status.declared` through `fleet declare` | Current resourceVersion and a delivered brief. |
-| `forge-controller` | All of `status.forge`; appends to `status.inbox`, both through `record_relay` | Current resourceVersion and live manager lease. |
+| `forge-controller` | All of `status.forge`, the mark-ready intents and receipts included; appends to `status.inbox`, both through `record_relay` | Current resourceVersion and live manager lease. |
 | `cli` | Appends to `status.inbox` through `fleet send` | Current resourceVersion. No lease: the CLI calls a manager verb. |
 | `task-controller` | Everything else in Task status; `status.deliveries`; removes delivered `inbox` entries | Current resourceVersion and live manager lease. |
 

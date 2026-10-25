@@ -200,6 +200,20 @@ pub fn init(
             };
             config["data"]["dir"] = toml::Value::String(store_dir.to_string_lossy().into_owned());
             config["runtime"]["keyPrefix"] = toml::Value::String(format!("f{instance}"));
+            // The three shipped ready policies, as the config page shows
+            // them; ordinary entries once written.
+            let policies = toml::Value::try_from(fleet_api::follow::shipped_policies())
+                .map_err(|e| e.to_string())?;
+            config
+                .as_table_mut()
+                .ok_or("config template must be a table")?
+                .insert(
+                    "forge".into(),
+                    toml::Value::Table(toml::map::Map::from_iter([(
+                        "readyPolicies".into(),
+                        policies,
+                    )])),
+                );
             config
                 .as_table_mut()
                 .ok_or("config template must be a table")?

@@ -4,5 +4,16 @@ dir = "data"
 [runtime]
 kind = "fake"
 dir = "fake-host"
+[forge]
+draftPolicy = "checks"
 [forge.hosts]
 "forge.example" = { kind = "fake", dir = "fake-forge" }
+[forge.readyPolicies.checks]
+checksPassed = true
+[forge.readyPolicies.checks-and-bots]
+botReviewsAddressed = true
+checksPassed = true
+[forge.readyPolicies.strict]
+botReviewsAddressed = true
+checksPassed = true
+noUnresolvedThreads = true
