@@ -1,24 +1,24 @@
 # Fleet
 
-Fleet v2.0.0 runs one agent session per Task, with a bundled VEGA starter.
+Fleet v2.1.0 runs one agent session per Task, with a bundled VEGA starter.
 Install a standalone binary; Rust, Cargo and Git are not needed.
 
 Linux x86_64 or aarch64:
 
 ```sh
-curl -fsSL https://github.com/Thurbeen/fleet/releases/download/v2.0.0/install-release.sh | FLEET_VERSION=v2.0.0 sh
+curl -fsSL https://github.com/Thurbeen/fleet/releases/download/v2.1.0/install-release.sh | FLEET_VERSION=v2.1.0 sh
 ```
 
 Windows x86_64 (PowerShell 5.1 or 7):
 
 ```powershell
-$env:FLEET_VERSION='v2.0.0'; & ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing https://raw.githubusercontent.com/Thurbeen/fleet/v2.0.0/scripts/install-release.ps1).Content))
+$env:FLEET_VERSION='v2.1.0'; & ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing https://raw.githubusercontent.com/Thurbeen/fleet/v2.1.0/scripts/install-release.ps1).Content))
 ```
 
 Installers verify the archive checksum and exact binary version, then install
 only the executable. Follow their PATH guidance. Run `fleet init` separately
 for offline setup, then `fleet up` when Thurbox and the harness are ready.
-[Release assets](https://github.com/Thurbeen/fleet/releases/tag/v2.0.0) include
+[Release assets](https://github.com/Thurbeen/fleet/releases/tag/v2.1.0) include
 checksums, pinned installers, VEGA manifest/provenance and GitHub build
 attestations. macOS has no binary release.
 
@@ -230,14 +230,14 @@ The installers require an explicit `FLEET_VERSION` and never resolve
 release assets into a new directory, then run:
 
 ```sh
-FLEET_VERSION=v2.0.0 sh install-release.sh
+FLEET_VERSION=v2.1.0 sh install-release.sh
 sh install-release.sh --uninstall
 ```
 
 On Windows, use Windows PowerShell 5.1 or PowerShell 7:
 
 ```powershell
-$env:FLEET_VERSION = 'v2.0.0'
+$env:FLEET_VERSION = 'v2.1.0'
 powershell -NoProfile -File install-release.ps1
 powershell -NoProfile -File install-release.ps1 -Uninstall
 ```
