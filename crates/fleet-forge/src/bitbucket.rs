@@ -355,19 +355,7 @@ fn checks_of(
     Ok((checks, failing))
 }
 
-fn mergeable_of(state: ChangeState, document: &Value) -> Result<Mergeable, String> {
-    let values = document["values"]
-        .as_array()
-        .ok_or("mergeability checks have no values array")?;
-    let size = document["size"]
-        .as_u64()
-        .ok_or("mergeability checks have no size")?;
-    if size != values.len() as u64 {
-        return Err(format!(
-            "mergeability checks were truncated ({size} announced, {} returned)",
-            values.len()
-        ));
-    }
+fn mergeable_of(state: ChangeState, values: &[Value]) -> Result<Mergeable, String> {
     if state == ChangeState::Draft {
         return Ok(Mergeable {
             value: Some(false),
@@ -401,11 +389,11 @@ fn mergeable_of(state: ChangeState, document: &Value) -> Result<Mergeable, Strin
 }
 
 fn notes_of(comments: &[Value]) -> Result<(Vec<Note>, Threads), String> {
-    let visible: Vec<&Value> = comments
+    let structural: Vec<&Value> = comments
         .iter()
-        .filter(|comment| comment["deleted"] != true && comment["pending"] != true)
+        .filter(|comment| comment["pending"] != true)
         .collect();
-    let by_id: BTreeMap<u64, &Value> = visible
+    let by_id: BTreeMap<u64, &Value> = structural
         .iter()
         .map(|comment| {
             comment["id"]
@@ -414,6 +402,10 @@ fn notes_of(comments: &[Value]) -> Result<(Vec<Note>, Threads), String> {
                 .ok_or("a pull request comment has no numeric id")
         })
         .collect::<Result<_, _>>()?;
+    let visible: Vec<&Value> = structural
+        .into_iter()
+        .filter(|comment| comment["deleted"] != true)
+        .collect();
     let mut unresolved = BTreeSet::new();
     let mut notes = Vec::new();
     for comment in visible {
@@ -456,8 +448,6 @@ fn notes_of(comments: &[Value]) -> Result<(Vec<Note>, Threads), String> {
                     .and_then(Value::as_u64)
                     .or_else(|| inline.get("from").and_then(Value::as_u64)),
             )
-        } else if parent.is_some() {
-            return Err("a pull request comment reply has no inline thread root".into());
         } else {
             (NoteKind::Comment, None, None, None, None)
         };
@@ -506,7 +496,7 @@ fn snapshot(
     final_pr: &Value,
     statuses: &[Value],
     comments: &[Value],
-    mergeability: &Value,
+    mergeability: &[Value],
 ) -> Result<ChangeSnapshot, String> {
     let first_repo = repository_identity(first, project)?;
     let final_repo = repository_identity(final_pr, project)?;
@@ -646,19 +636,12 @@ impl Forge for BitbucketCloudForge {
             Ok(values) => values,
             Err(error) => return unknown(error),
         };
-        let mergeability_reply = match self.get(&format!("{root}/mergeability/checks"), &mut budget)
-        {
-            Ok(reply) => reply,
-            Err(error) => return unknown(error),
-        };
-        let mergeability = match body_of(&mergeability_reply) {
-            Ok(Some(value)) => value,
-            Ok(None) => {
-                return ChangeObservation::unknown(
-                    Uncertainty::Refused,
-                    "pull request mergeability checks were not found",
-                );
-            }
+        let mergeability = match self.pages(
+            format!("{root}/mergeability/checks?pagelen={PAGE}"),
+            &mut budget,
+            "pull request mergeability checks",
+        ) {
+            Ok(values) => values,
             Err(error) => return unknown(error),
         };
         let final_reply = match self.get(&root, &mut budget) {
@@ -732,5 +715,41 @@ mod tests {
         assert!(
             author(&serde_json::json!({"type": "repository_access_token", "uuid": "{t}"})).is_err()
         );
+    }
+
+    fn comment(id: u64, parent: Option<u64>, inline: bool, deleted: bool) -> Value {
+        serde_json::json!({
+            "id": id,
+            "created_on": "2026-10-26T12:00:00Z",
+            "updated_on": "2026-10-26T12:00:00Z",
+            "content": {"raw": format!("comment {id}")},
+            "user": {"type": "user", "account_id": format!("u{id}")},
+            "deleted": deleted,
+            "pending": false,
+            "parent": parent.map(|id| serde_json::json!({"id": id})),
+            "inline": inline.then(|| serde_json::json!({"path": "src/lib.rs", "to": 7})),
+            "resolution": Value::Null,
+            "links": {"html": {"href": format!("https://bitbucket.org/acme/widgets/pull-requests/7#comment-{id}")}}
+        })
+    }
+
+    #[test]
+    fn ordinary_replies_are_comments_and_deleted_inline_roots_remain_structural() {
+        let ordinary = notes_of(&[
+            comment(1, None, false, false),
+            comment(2, Some(1), false, false),
+        ])
+        .unwrap();
+        assert!(ordinary.0.iter().all(|note| note.kind == NoteKind::Comment));
+
+        let inline = notes_of(&[
+            comment(3, None, true, true),
+            comment(4, Some(3), false, false),
+        ])
+        .unwrap();
+        assert_eq!(inline.0.len(), 1);
+        assert_eq!(inline.0[0].kind, NoteKind::Inline);
+        assert_eq!(inline.0[0].thread.as_deref(), Some("3"));
+        assert_eq!(inline.1.unresolved, 1);
     }
 }

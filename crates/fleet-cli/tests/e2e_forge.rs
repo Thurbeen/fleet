@@ -972,6 +972,38 @@ fn bitbucket_cloud_observation_is_complete_bounded_and_unknown_on_gaps() {
 }
 
 #[test]
+fn bitbucket_cloud_mergeability_checks_are_paginated() {
+    let env = Env::forge_stubs("bitbucket-mergeability-pages");
+    env.edit_stub(|s| {
+        s["pageSize"] = json!(1);
+        s["changes"] = json!({"acme/widgets#7": {
+            "state": "open", "head": "h1", "checks": [],
+            "reviewDecision": null, "mergeable": "mergeable",
+            "reviews": [], "comments": [], "threads": []
+        }});
+        s["mergeabilityChecks"] = json!([
+            {"type": "current_user_permission_check", "status": "PASSED", "required": true, "blocking": false},
+            {"type": "git_mergeability_check", "status": "PASSED", "required": true, "blocking": false}
+        ]);
+    });
+    let cr = derived_name("bitbucket-cloud", BITBUCKET_HOST, PROJECT, "7");
+    env.apply(change_request(
+        "https://bitbucket.org/acme/widgets/pull-requests/7",
+        json!({}),
+    ))
+    .ok();
+    env.reconcile().ok();
+    let st = env.change_request_status(&cr);
+    assert_condition(&st, "Reachable", "True", "Observed");
+    assert_eq!(st["mergeable"]["value"], true);
+    assert!(env.forge_calls(BITBUCKET_HOST).iter().any(|call| {
+        call["argv"]
+            .to_string()
+            .contains("mergeability/checks?opaque=x&cursor=1")
+    }));
+}
+
+#[test]
 fn bitbucket_cloud_state_identity_and_absence_are_not_guessed() {
     let env = Env::forge_stubs("bitbucket-states");
     let model = |state: &str, head: &str| {

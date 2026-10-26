@@ -1,4 +1,4 @@
-//! A bounded stand-in for `thurbox-cli`, `gh` and `glab`, so the end-to-end
+//! A bounded stand-in for `thurbox-cli`, `az`, `curl`, `gh` and `glab`, so the end-to-end
 //! tests drive the real binary against something that behaves like them
 //! without any real session, host or forge. As `thurbox-cli` it answers
 //! `session …` and `doctor …`, the slice the runtime adapter calls, in its
@@ -820,6 +820,13 @@ mod forge {
                 paged(values, "statuses")
             }
             "mergeability/checks" => {
+                if let Some(values) = state["mergeabilityChecks"].as_array().cloned() {
+                    return answer(
+                        ExitCode::SUCCESS,
+                        HEAD,
+                        &paged(values, "mergeability/checks").to_string(),
+                    );
+                }
                 let status = match c["mergeable"].as_str() {
                     Some("unknown") => "PENDING",
                     Some("mergeable") => "PASSED",
