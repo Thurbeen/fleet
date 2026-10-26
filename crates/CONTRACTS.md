@@ -108,6 +108,7 @@ spec.model          optional; reaches the harness through its model variable
 spec.brief          the brief, sent once
 spec.workspace.dir  the session's primary working directory
 spec.workspace.additionalDirs  prepared workspaces attached to that session
+spec.workspace.worktree  explicit runtime-owned Git worktree intent
 spec.dispatch       nothing spawns while false
 spec.outputs        optional: the structured outputs a result must carry
 spec.forge          optional: relay and draft overrides for declared changes
@@ -139,9 +140,11 @@ Guarantees, each with its test:
 
 - **Spawn once.** The session key is `<name>.<uid>`. After an unknown spawn
   outcome the controller looks the key up: found is adopted, absent is retried,
-  unreadable waits. Found is accepted only when the primary and additional
-  workspace membership matches the immutable Task; a conflicting key remains
-  Unknown and never authorizes a duplicate spawn or brief.
+  unreadable waits. Found is accepted only when the prepared paths or the
+  provisioned sources, shared branch, base, resolved paths and ownership match
+  the immutable Task; a partial or conflicting row remains Unknown and never
+  authorizes a duplicate spawn or brief. Provisioned resolved membership is
+  recorded on `status.session.workspace`; the desired sources remain in spec.
 - **Brief once.** The brief is sent only to a ready session, under one key
   the session stores. An unconfirmed send is asked about: delivered is a
   recovered receipt, not delivered is one more send under the same key, and
@@ -377,8 +380,11 @@ Each adapter reports its longest single operation (`operation_bound`), and
   thurbox key is `<keyPrefix>.<uid>`, and `--on-existing adopt` makes a
   repeated create return the session holding the key after Fleet verifies its
   declared workspace membership. `workspace.dir` becomes `--repo-path`; each
-  prepared `workspace.additionalDirs` entry becomes one `--add-dir`, never
-  `--add-repo`. The brief's delivery
+  prepared `workspace.additionalDirs` entry becomes one `--add-dir`. Only an
+  explicit `workspace.worktree` adds `--worktree-branch`, `--base-branch`,
+  optional `--existing-worktree`, and one `--add-repo PATH@BASE` per declared
+  source. One shared base keeps recovery observable with the installed runtime;
+  bases containing `@` and per-repository bases are refused. The brief's delivery
   is journaled in the session's own metadata. `spec.model` reaches the
   harness as the variable `runtime.modelEnv` names for it. Before Codex's first
   lifecycle report, readiness additionally accepts its initial empty composer:

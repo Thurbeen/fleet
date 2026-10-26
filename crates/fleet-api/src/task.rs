@@ -66,6 +66,65 @@ pub struct Workspace {
     /// The runtime must not create branches or worktrees for these paths.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub additional_dirs: Vec<String>,
+    /// An explicit request for the runtime to provision Git worktrees.
+    /// Without this field every path remains caller-prepared and attached.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<WorktreeRequest>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorktreeRequest {
+    /// The one branch shared by every repository in the runtime session.
+    pub branch: String,
+    /// The base used for the primary and every additional repository.
+    #[serde(default = "default_base_branch")]
+    pub base_branch: String,
+    /// Whether the primary path is provisioned or reused as-is.
+    #[serde(default)]
+    pub primary: PrimaryWorktree,
+    /// Repository sources from which the runtime creates additional worktrees.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub additional_repositories: Vec<RepositorySource>,
+}
+
+fn default_base_branch() -> String {
+    "main".to_string()
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PrimaryWorktree {
+    #[default]
+    Provision,
+    Existing,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RepositorySource {
+    pub path: String,
+}
+
+/// What the runtime actually resolved for a provisioned workspace. This is
+/// recorded separately from the immutable desired paths in the Task spec.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeWorkspace {
+    pub cwd: String,
+    pub base_branch: String,
+    pub worktrees: Vec<RuntimeWorktree>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub additional_dirs: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeWorktree {
+    pub repository: String,
+    pub path: String,
+    pub branch: String,
+    pub created_by_runtime: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -162,6 +221,9 @@ pub struct SessionRef {
     pub id: String,
     pub host: String,
     pub key: String,
+    /// Present for runtime-provisioned workspaces after exact verification.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<RuntimeWorkspace>,
 }
 
 /// The status fields the worker owns.
@@ -199,6 +261,7 @@ mod tests {
         .unwrap();
         assert_eq!(spec.host, LOCAL_HOST);
         assert!(spec.workspace.additional_dirs.is_empty());
+        assert!(spec.workspace.worktree.is_none());
         assert!(!spec.dispatch);
     }
 
@@ -207,5 +270,24 @@ mod tests {
         let key = session_key("t", "u1");
         assert_eq!(uid_of_session_key(&key), "u1");
         assert_eq!(uid_of_session_key("u1"), "u1");
+    }
+
+    #[test]
+    fn worktree_requests_have_explicit_stable_runtime_defaults() {
+        let spec: TaskSpec = serde_json::from_value(serde_json::json!({
+            "harness": "codex", "brief": "b",
+            "workspace": {
+                "dir": "/source/primary",
+                "worktree": {
+                    "branch": "feature/task",
+                    "additionalRepositories": [{"path": "/source/other"}]
+                }
+            }
+        }))
+        .unwrap();
+        let worktree = spec.workspace.worktree.unwrap();
+        assert_eq!(worktree.base_branch, "main");
+        assert_eq!(worktree.primary, PrimaryWorktree::Provision);
+        assert_eq!(worktree.additional_repositories[0].path, "/source/other");
     }
 }

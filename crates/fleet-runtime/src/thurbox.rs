@@ -25,7 +25,10 @@ use std::time::Duration;
 use fleet_api::Observation;
 use fleet_api::plan::{EffectOutcome, SpawnSpec};
 use fleet_api::runtime::Runtime;
-use fleet_api::task::{LOCAL_HOST as LOCAL, SessionRef, Workspace, uid_of_session_key};
+use fleet_api::task::{
+    LOCAL_HOST as LOCAL, PrimaryWorktree, RuntimeWorkspace, RuntimeWorktree, SessionRef, Workspace,
+    uid_of_session_key,
+};
 use fleet_exec::{Outcome, Spec, run};
 use serde_json::Value;
 
@@ -271,17 +274,15 @@ impl ThurboxRuntime {
                 [] => Observation::Known(None),
                 [row] => match (
                     row["id"].as_str(),
-                    workspace.map_or(Ok(true), |workspace| row_has_workspace(row, workspace)),
+                    workspace.map_or(Ok(None), |workspace| resolved_workspace(row, workspace)),
                 ) {
-                    (Some(id), Ok(true)) => Observation::Known(Some(SessionRef {
+                    (Some(id), Ok(resolved)) => Observation::Known(Some(SessionRef {
                         id: id.to_string(),
                         host: host.to_string(),
                         key: key.to_string(),
+                        workspace: resolved,
                     })),
                     (None, _) => Observation::unknown("a session row without an id"),
-                    (_, Ok(false)) => Observation::unknown(
-                        "the session holding the key has conflicting workspace membership",
-                    ),
                     (_, Err(why)) => Observation::unknown(why),
                 },
                 _ => Observation::unknown(format!("key {tk} is held by more than one session")),
@@ -310,13 +311,27 @@ fn is_absolute(dir: &str) -> bool {
 }
 
 fn validate_workspace(workspace: &Workspace) -> Result<(), String> {
-    for (field, dir) in std::iter::once(("workspace.dir".to_string(), &workspace.dir)).chain(
-        workspace
-            .additional_dirs
-            .iter()
-            .enumerate()
-            .map(|(i, dir)| (format!("workspace.additionalDirs[{i}]"), dir)),
-    ) {
+    let paths = std::iter::once(("workspace.dir".to_string(), &workspace.dir))
+        .chain(
+            workspace
+                .additional_dirs
+                .iter()
+                .enumerate()
+                .map(|(i, dir)| (format!("workspace.additionalDirs[{i}]"), dir)),
+        )
+        .chain(workspace.worktree.iter().flat_map(|worktree| {
+            worktree
+                .additional_repositories
+                .iter()
+                .enumerate()
+                .map(|(i, repository)| {
+                    (
+                        format!("workspace.worktree.additionalRepositories[{i}].path"),
+                        &repository.path,
+                    )
+                })
+        }));
+    for (field, dir) in paths {
         if !is_absolute(dir) {
             return Err(format!(
                 "{field} {dir:?} must be an absolute path on the host for the thurbox runtime"
@@ -326,7 +341,10 @@ fn validate_workspace(workspace: &Workspace) -> Result<(), String> {
     Ok(())
 }
 
-fn row_has_workspace(row: &Value, workspace: &Workspace) -> Result<bool, String> {
+fn resolved_workspace(
+    row: &Value,
+    workspace: &Workspace,
+) -> Result<Option<RuntimeWorkspace>, String> {
     let Some(dir) = row["cwd"].as_str() else {
         return Err("session row has no workspace directory".into());
     };
@@ -342,7 +360,72 @@ fn row_has_workspace(row: &Value, workspace: &Workspace) -> Result<bool, String>
             .collect::<Result<Vec<_>, _>>()?,
         Some(_) => return Err("session row has invalid additional directories".into()),
     };
-    Ok(dir == workspace.dir && additional_dirs == workspace.additional_dirs)
+    if additional_dirs != workspace.additional_dirs {
+        return Err("the session holding the key has conflicting workspace membership".into());
+    }
+    let Some(request) = &workspace.worktree else {
+        return if dir == workspace.dir {
+            Ok(None)
+        } else {
+            Err("the session holding the key has conflicting workspace membership".into())
+        };
+    };
+    let base_branch = row["base_branch"]
+        .as_str()
+        .ok_or_else(|| "session row cannot verify the provisioned base branch".to_string())?;
+    if base_branch != request.base_branch {
+        return Err("the session holding the key has a conflicting base branch".into());
+    }
+    let rows = row["worktrees"]
+        .as_array()
+        .ok_or_else(|| "session row cannot verify provisioned worktree membership".to_string())?;
+    let repositories: Vec<&str> = std::iter::once(workspace.dir.as_str())
+        .chain(
+            request
+                .additional_repositories
+                .iter()
+                .map(|repository| repository.path.as_str()),
+        )
+        .collect();
+    if rows.len() != repositories.len() {
+        return Err("the session holding the key has conflicting worktree membership".into());
+    }
+    let mut worktrees = Vec::with_capacity(rows.len());
+    for (index, (worktree, repository)) in rows.iter().zip(repositories).enumerate() {
+        let actual_repository = worktree["repo_path"]
+            .as_str()
+            .ok_or_else(|| "session row has a worktree without a repository path".to_string())?;
+        let path = worktree["worktree_path"]
+            .as_str()
+            .ok_or_else(|| "session row has a worktree without a resolved path".to_string())?;
+        let branch = worktree["branch"]
+            .as_str()
+            .ok_or_else(|| "session row has a worktree without a branch".to_string())?;
+        let created = worktree["created_by_thurbox"]
+            .as_bool()
+            .ok_or_else(|| "session row cannot verify worktree ownership".to_string())?;
+        let expected_created = index != 0 || request.primary == PrimaryWorktree::Provision;
+        if actual_repository != repository
+            || branch != request.branch
+            || created != expected_created
+            || (index == 0 && path != dir)
+            || !is_absolute(path)
+        {
+            return Err("the session holding the key has conflicting worktree membership".into());
+        }
+        worktrees.push(RuntimeWorktree {
+            repository: actual_repository.to_string(),
+            path: path.to_string(),
+            branch: branch.to_string(),
+            created_by_runtime: created,
+        });
+    }
+    Ok(Some(RuntimeWorkspace {
+        cwd: dir.to_string(),
+        base_branch: base_branch.to_string(),
+        worktrees,
+        additional_dirs,
+    }))
 }
 
 fn row_host(row: &Value) -> &str {
@@ -421,6 +504,7 @@ impl Runtime for ThurboxRuntime {
         let workspace = Workspace {
             dir: spec.dir.clone(),
             additional_dirs: spec.additional_dirs.clone(),
+            worktree: spec.worktree.clone(),
         };
         // Thurbox resolves these paths on the target host. A relative path
         // would mean whatever directory fleet happened to run in.
@@ -455,6 +539,23 @@ impl Runtime for ThurboxRuntime {
         .collect();
         for dir in &spec.additional_dirs {
             args.extend(["--add-dir".to_string(), dir.clone()]);
+        }
+        if let Some(worktree) = &spec.worktree {
+            args.extend([
+                "--worktree-branch".to_string(),
+                worktree.branch.clone(),
+                "--base-branch".to_string(),
+                worktree.base_branch.clone(),
+            ]);
+            if worktree.primary == PrimaryWorktree::Existing {
+                args.extend(["--existing-worktree".to_string(), spec.dir.clone()]);
+            }
+            for repository in &worktree.additional_repositories {
+                args.extend([
+                    "--add-repo".to_string(),
+                    format!("{}@{}", repository.path, worktree.base_branch),
+                ]);
+            }
         }
         if spec.host != LOCAL {
             args.extend(["--host".to_string(), spec.host.clone()]);
@@ -506,15 +607,13 @@ impl Runtime for ThurboxRuntime {
                 let Some(id) = row["id"].as_str() else {
                     return Observation::unknown("thurbox-cli session create: no id in its answer");
                 };
-                let session = SessionRef {
-                    id: id.to_string(),
-                    host: spec.host.clone(),
-                    key: spec.key.clone(),
-                };
                 let adopted = row["created"] == false;
                 match self.find_workspace(&spec.host, &spec.key, &workspace) {
-                    Observation::Known(Some(found)) if found.id == session.id => {
-                        Observation::Known(EffectOutcome::Spawned { session, adopted })
+                    Observation::Known(Some(found)) if found.id == id => {
+                        Observation::Known(EffectOutcome::Spawned {
+                            session: found,
+                            adopted,
+                        })
                     }
                     Observation::Known(Some(_)) => Observation::unknown(
                         "session identity changed during workspace verification",
@@ -525,8 +624,8 @@ impl Runtime for ThurboxRuntime {
                     Observation::Unknown { why } => Observation::Unknown { why },
                 }
             }
-            Answer::No(_) => Observation::Known(EffectOutcome::Failed {
-                why: "thurbox session creation refused".into(),
+            Answer::No(why) => Observation::Known(EffectOutcome::Failed {
+                why: format!("thurbox session creation refused: {why}"),
             }),
             Answer::Unknown(why) => Observation::unknown(why),
         }

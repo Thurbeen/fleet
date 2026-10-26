@@ -80,12 +80,15 @@ pub struct Plan {
 
 An action is `Spawn(SpawnSpec)`, `Brief { session, text }` or
 `Release { session }`. SpawnSpec carries `host`, `key`, `harness`, `dir`,
-`additionalDirs`, optional `model`, the private environment map and
+`additionalDirs`, optional typed `worktree`, optional `model`, the private
+environment map and
 `environmentFrozen`. The
 manager injects frozen values and prevents model-variable remapping before
 performing a spawn; environment values are not persisted in effect intents.
-`SessionRef` carries `id`, `host` and `key`; a later session
-reusing a key does not inherit readiness or at-rest proof for the recorded id.
+`SessionRef` carries `id`, `host` and `key`. For a provisioned workspace it
+also records the runtime-resolved cwd, shared base, every source/path/branch
+and whether the runtime created that worktree. A later session reusing a key
+does not inherit readiness or at-rest proof for the recorded id.
 
 ## Manager execution protocol
 
@@ -154,8 +157,11 @@ session metadata as pending before sending and delivered afterward. A pending
 journal entry is ambiguous, so it is never a license to resend. On release,
 a different id holding the key returns Unknown and is not deleted.
 The primary workspace is `--repo-path`; every prepared additional workspace is
-one `--add-dir` argument. Adoption reads the session row and requires the
-declared membership to match before returning the session.
+one `--add-dir` argument. An explicit worktree request maps to Thurbox worktree
+arguments; Fleet does not run Git. Adoption reads the session row and requires
+the desired sources, shared base and branch, resolved worktree paths, ownership,
+and prepared attachments to match before returning the session. Missing fields
+are Unknown, not compatibility defaults.
 The fake adapter provides persisted sessions and faults without starting an
 agent. Explicit provider commands still run through the same bounded executor
 with either adapter; command resolution requires a lease above 20000 ms and

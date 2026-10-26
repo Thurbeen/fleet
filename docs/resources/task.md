@@ -40,8 +40,9 @@ except `dispatch` and `forge`.
 | `configRef` | no | `{"name":"config"}` references passive execution defaults. |
 | `env` | no | Explicit string environment map; overrides inherited values. |
 | `brief` | yes | The brief, sent once to the ready session. |
-| `workspace.dir` | yes | The session's working directory. The thurbox runtime needs an absolute path on the host. |
+| `workspace.dir` | yes | A prepared primary working directory, or the primary source repository when `workspace.worktree.primary` is `provision`. The thurbox runtime needs an absolute path on the host. |
 | `workspace.additionalDirs` | no | Prepared repository workspaces to attach to the same session as-is, in order. The thurbox runtime needs absolute paths on the host. |
+| `workspace.worktree` | no | Explicit permission for the runtime to provision Git worktrees: shared `branch`, shared `baseBranch` (default `main`), `primary` (`provision`, the default, or `existing`), and `additionalRepositories` source paths. |
 | `dispatch` | no | Nothing spawns while `false` (the default). |
 | `outputs` | no | The structured outputs a result must carry, by name: each `{"type": T, "required": bool}`, where T is `string`, `integer`, `number`, `boolean`, `object` or `array`. |
 | `forge` | no | Overrides of the `[forge]` defaults for the changes this Task's worker declares: `relay.notes`, `relay.checks`, `draft.policy` (a name under `[forge.readyPolicies]`, refused at apply when the config does not define it; `null` disables mark-ready). Field-level: absent fields inherit. Mutable like `dispatch`. |
@@ -51,7 +52,23 @@ except `dispatch` and `forge`.
 See [TaskConfig](task-config.md) and [EnvProvider](env-provider.md) for provider sources,
 precedence, validation and private launch snapshots.
 
-### Multiple prepared repositories
+### Workspace ownership
+
+```text
+workspace.worktree absent                    workspace.worktree present
+paths are prepared by the caller             Git worktrees are owned by Thurbox
+dir -> --repo-path                            branch/base -> worktree flags
+additionalDirs -> --add-dir                   repositories -> --add-repo PATH@BASE
+```
+
+Existing manifests remain attach-only. A path in `additionalDirs` never means
+permission to create a branch or worktree.
+
+For migration, leave prepared-directory Tasks unchanged. Create a new Task with
+`workspace.worktree` when runtime provisioning is wanted; workspace intent is
+immutable, so an already-created Task is never widened in place.
+
+#### Multiple prepared repositories
 
 One Task can give its one worker access to multiple repositories on the same
 runtime host. `workspace.dir` remains the primary working directory;
@@ -76,15 +93,51 @@ through Thurbox's repeatable `--add-dir` argument:
 }
 ```
 
-The caller prepares and isolates every listed path before dispatch. Fleet does
-not clone repositories, create branches or worktrees, merge changes, pool
-credentials or coordinate work across hosts. In particular it does not use
-Thurbox `--add-repo`, whose worktree and branch semantics would modify source
-checkout state. Every path is passed as one argv value without a shell, so
+The caller prepares and isolates every listed path before dispatch. Every path
+is passed as one argv value without a shell, so
 spaces and native POSIX, Windows drive and UNC spellings are preserved.
 Empty, NUL-containing and exact duplicate paths (including the primary path)
 are refused; Fleet does not case-fold or canonicalize paths that belong to a
 possibly remote host.
+
+#### Runtime-provisioned worktrees
+
+```json
+{
+  "workspace": {
+    "dir": "/source/api",
+    "additionalDirs": ["/prepared/docs"],
+    "worktree": {
+      "branch": "feature/task-305",
+      "baseBranch": "main",
+      "additionalRepositories": [
+        {"path": "/source/client"}
+      ]
+    }
+  }
+}
+```
+
+This explicit shape authorizes Thurbox to create the primary and additional
+worktrees on one shared branch. Set `primary` to `existing` to keep `dir` as a
+prepared primary worktree while still provisioning the additional repositories.
+Source repositories must already exist on the target host; Fleet does not clone,
+manage credentials, overwrite branches or run Git itself. `additionalDirs` can
+be combined with either primary mode and remains attach-only.
+
+Fleet passes one explicit base for every repository because Thurbox reports one
+observable `base_branch` for the session. Per-repository bases are not accepted;
+support requires Thurbox to report each one for safe recovery. A base containing
+`@` is refused because `PATH@BASE` cannot encode it unambiguously. Paths may
+contain spaces or `@`: Fleet appends the validated base and passes the result as
+one argv value without a shell.
+
+After creation or adoption, `status.session.workspace` records the resolved cwd,
+base and every worktree's source, path, branch and runtime-ownership bit. A
+missing, partial or conflicting observation stays Unknown and is never replaced,
+deleted or briefed. Release remains a runtime operation: prepared paths and
+source repositories are not Fleet-owned, while runtime-created worktrees follow
+Thurbox's lifecycle and must not be the only copy of a worker result.
 
 The Task still owns one brief, one immutable workspace declaration and one
 session. A worker that opens an authorized draft in each repository declares
@@ -113,7 +166,7 @@ typed mutations described under [Inbox](#inbox).
 | `observedGeneration` | The spec generation the controller last acted on. |
 | `conditions` | One entry per [condition type](../controllers/task/state-machine.md#conditions), with `status`, `reason`, `message` and `lastTransitionTime`. |
 | `execution` | Frozen execution selection and source identities; environment values are private. |
-| `session` | The session's runtime id, host and key, once spawned or adopted. |
+| `session` | The session's runtime id, host and key, once spawned or adopted. Provisioned sessions also carry verified runtime-resolved `workspace` data. |
 | `intents`, `receipts` | Each effect's intent, written before it runs, and its outcome, written after. |
 | `spawnAttempts`, `briefSends` | Spawn and brief-send counters, each bounded at 3. |
 | `briefProbeFailures`, `releaseAttempts` | Three failures raise `NeedsAttention`; reads and releases continue after each wait. |
@@ -138,8 +191,8 @@ Nonempty `ownerReferences` are refused.
 `fleet apply` accepts desired spec and labels, and refuses supplied status.
 Only `dispatch` and `forge` can change in an existing spec. Setting
 `dispatch` false prevents a Pending Task from spawning; it does not stop a
-session already spawned. Changing the primary or additional workspace paths
-requires a new Task.
+session already spawned. Changing the primary, additional or worktree
+workspace intent requires a new Task.
 
 ## Worker result
 

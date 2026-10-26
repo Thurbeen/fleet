@@ -990,6 +990,11 @@ fn answer(
                 "absent" => return err(format!("host {host} is not in hosts.toml")),
                 other => return err(format!("host {host} cannot be reached ({other})")),
             }
+            if state["unsupportedWorktrees"] == true
+                && args.iter().any(|arg| arg == "--worktree-branch")
+            {
+                return err("unknown argument '--worktree-branch'".into());
+            }
             let existing = state["sessions"]
                 .as_array()
                 .and_then(|ss| {
@@ -1008,6 +1013,34 @@ fn answer(
             let n = state["next"].as_u64().unwrap_or(0) + 1;
             state["next"] = json!(n);
             let ready = state["spawnState"].as_str().unwrap_or("idle").to_string();
+            let worktree_branch = opt(args, "--worktree-branch");
+            let base_branch = opt(args, "--base-branch");
+            let existing_worktree = opt(args, "--existing-worktree");
+            let mut cwd = repo.clone();
+            let mut worktrees = Vec::new();
+            if let Some(branch) = &worktree_branch {
+                let created = existing_worktree.is_none();
+                cwd = existing_worktree
+                    .clone()
+                    .unwrap_or_else(|| format!("{repo}/.thurbox/{branch}"));
+                worktrees.push(json!({
+                    "branch": branch,
+                    "created_by_thurbox": created,
+                    "repo_path": repo,
+                    "worktree_path": cwd
+                }));
+                for encoded in opts(args, "--add-repo") {
+                    let Some((source, _base)) = encoded.rsplit_once('@') else {
+                        return err(format!("--add-repo must be PATH@BASE, got {encoded:?}"));
+                    };
+                    worktrees.push(json!({
+                        "branch": branch,
+                        "created_by_thurbox": true,
+                        "repo_path": source,
+                        "worktree_path": format!("{source}/.thurbox/{branch}")
+                    }));
+                }
+            }
             let mut env_names: Vec<String> = opts(args, "--env")
                 .iter()
                 .map(|kv| kv.split('=').next().unwrap_or_default().to_string())
@@ -1024,7 +1057,9 @@ fn answer(
             let mut s = json!({
                 "id": format!("00000000-0000-4000-8000-{n:012}"),
                 "name": opt(args, "--name"), "key": key, "host": host,
-                "agent": opt(args, "--agent"), "cwd": opt(args, "--repo-path"),
+                "agent": opt(args, "--agent"), "cwd": cwd,
+                "base_branch": base_branch,
+                "worktrees": if state["ignoreWorktrees"] == true { Vec::new() } else { worktrees },
                 "additional_dirs": if state["ignoreAddDirs"] == true { Vec::new() } else { opts(args, "--add-dir") },
                 "state": ready, "stopped": false, "meta": {}, "sent": [], "env": env_names
             });

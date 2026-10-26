@@ -22,8 +22,8 @@ logic runs.
 | Pending | `dispatch: false` | Pending | Set `Spawned=False/AwaitingDispatch`; do not spawn. |
 | Pending | Dispatched; host false, Unknown or unanswered | Pending | Report host condition; do not spawn. |
 | Pending | Dispatched; host reachable | Spawning | Increment spawn attempt; persist spawn intent and plan Spawn. |
-| Spawning | Known Spawned receipt | Spawned | Record returned SessionRef. |
-| Spawning | Missing/Unknown receipt; session key found | Spawned | Adopt the session and recover its receipt. |
+| Spawning | Known Spawned receipt | Spawned | Record returned SessionRef, including verified runtime-resolved workspace data when provisioned. |
+| Spawning | Missing/Unknown receipt; session key and exact workspace intent found | Spawned | Adopt the session and recover its receipt. Partial or conflicting membership stays Unknown. |
 | Spawning | Known failure, or ambiguous outcome with key proven absent; attempts below 3 | Pending | Schedule a wait before another spawn. |
 | Spawning | Same failure with 3 spawn attempts spent | Stalled | Raise `Stalled/SpawnAttemptsExhausted` and NeedsAttention. |
 | Spawning | Missing/Unknown receipt; session list unreadable | Spawning | Report Unknown; never infer absence or respawn blindly. |
@@ -80,7 +80,7 @@ at-rest proof to that replacement.
 `fleet reconcile` exits at a fixed point; it does not wait for `notBefore`.
 Invoke it again after the deadline. Stalled Tasks do not retry automatically;
 unreadable-delivery and release recovery continue on later due invocations.
-A different brief or a fresh run requires a new Task. Changing `dispatch`
+A different brief, workspace intent or fresh run requires a new Task. Changing `dispatch`
 does not clear attempt counters or revive a Stalled Task.
 
 ## Conditions

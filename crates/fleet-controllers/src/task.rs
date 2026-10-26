@@ -301,6 +301,7 @@ impl Pass<'_, '_> {
             harness: self.spec.harness.clone(),
             dir: self.spec.workspace.dir.clone(),
             additional_dirs: self.spec.workspace.additional_dirs.clone(),
+            worktree: self.spec.workspace.worktree.clone(),
             model: self.spec.model.clone(),
             env: self.spec.env.clone(),
             environment_frozen: false,

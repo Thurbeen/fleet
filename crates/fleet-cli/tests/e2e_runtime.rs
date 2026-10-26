@@ -176,6 +176,260 @@ fn a_task_attaches_prepared_additional_workspaces_to_one_session() {
 }
 
 #[test]
+fn a_task_can_ask_thurbox_to_provision_a_multi_repository_worktree() {
+    let (primary, attached, repositories) = if cfg!(windows) {
+        (
+            "C:\\source\\primary repo",
+            "D:\\prepared\\docs repo",
+            vec!["D:\\source\\api repo", "D:\\source\\client@source"],
+        )
+    } else {
+        (
+            "/source/primary repo",
+            "/prepared/docs repo",
+            vec!["/source/api repo", "/source/client@source"],
+        )
+    };
+    let mut t = task("provision", true);
+    t["spec"]["host"] = json!("build-host");
+    t["spec"]["workspace"] = json!({
+        "dir": primary,
+        "additionalDirs": [attached],
+        "worktree": {
+            "branch": "feature/task-worktrees",
+            "baseBranch": "release/base",
+            "additionalRepositories": repositories
+                .iter()
+                .map(|path| json!({"path": path}))
+                .collect::<Vec<_>>()
+        }
+    });
+    let env = setup("thurbox-provision-worktrees", vec![]);
+    env.edit_stub(|s| s["hosts"] = json!({"build-host": "up"}));
+    env.apply(t).ok();
+
+    env.reconcile().ok();
+
+    assert_eq!(env.status("provision")["phase"], "Briefed");
+    let create = &argv_of(&env, "create")[0];
+    let value_after = |flag: &str| {
+        let at = create.iter().position(|arg| arg == flag).unwrap();
+        create[at + 1].as_str()
+    };
+    assert_eq!(value_after("--repo-path"), primary);
+    assert_eq!(value_after("--worktree-branch"), "feature/task-worktrees");
+    assert_eq!(value_after("--base-branch"), "release/base");
+    assert_eq!(value_after("--add-dir"), attached);
+    assert_eq!(value_after("--host"), "build-host");
+    assert!(!create.iter().any(|arg| arg == "--existing-worktree"));
+    let added: Vec<&str> = create
+        .windows(2)
+        .filter(|pair| pair[0] == "--add-repo")
+        .map(|pair| pair[1].as_str())
+        .collect();
+    assert_eq!(
+        added,
+        repositories
+            .iter()
+            .map(|path| format!("{path}@release/base"))
+            .collect::<Vec<_>>()
+    );
+
+    let session = &full_status(&env, "provision")["session"];
+    assert_ne!(session["workspace"]["cwd"], primary);
+    assert_eq!(session["workspace"]["baseBranch"], "release/base");
+    assert_eq!(session["workspace"]["additionalDirs"], json!([attached]));
+    let worktrees = session["workspace"]["worktrees"].as_array().unwrap();
+    assert_eq!(worktrees.len(), 3, "{session:#}");
+    assert_eq!(worktrees[0]["repository"], primary);
+    assert_eq!(worktrees[0]["branch"], "feature/task-worktrees");
+    assert_eq!(worktrees[0]["createdByRuntime"], true);
+    assert_eq!(worktrees[2]["repository"], repositories[1]);
+}
+
+#[test]
+fn a_task_can_reuse_a_prepared_primary_while_the_runtime_owns_additional_worktrees() {
+    let (primary, attached, repository) = if cfg!(windows) {
+        (
+            "C:\\prepared\\primary repo",
+            "D:\\prepared\\notes",
+            "D:\\source\\client@source",
+        )
+    } else {
+        (
+            "/prepared/primary repo",
+            "/prepared/notes",
+            "/source/client@source",
+        )
+    };
+    let mut t = task("mixed", true);
+    t["spec"]["workspace"] = json!({
+        "dir": primary,
+        "additionalDirs": [attached],
+        "worktree": {
+            "branch": "feature/mixed",
+            "primary": "existing",
+            "additionalRepositories": [{"path": repository}]
+        }
+    });
+    let env = setup("thurbox-mixed-worktrees", vec![t]);
+
+    env.reconcile().ok();
+
+    let create = &argv_of(&env, "create")[0];
+    let existing = create
+        .iter()
+        .position(|arg| arg == "--existing-worktree")
+        .unwrap();
+    assert_eq!(create[existing + 1], primary);
+    assert!(!create.iter().any(|arg| arg == "--host"));
+    let add_repo = create.iter().position(|arg| arg == "--add-repo").unwrap();
+    assert_eq!(create[add_repo + 1], format!("{repository}@main"));
+    let session = &full_status(&env, "mixed")["session"];
+    assert_eq!(session["workspace"]["cwd"], primary);
+    assert_eq!(session["workspace"]["baseBranch"], "main");
+    assert_eq!(
+        session["workspace"]["worktrees"][0]["createdByRuntime"],
+        false
+    );
+    assert_eq!(
+        session["workspace"]["worktrees"][1]["createdByRuntime"],
+        true
+    );
+
+    let key = thurbox_key(&env, "mixed");
+    set_session_state(&env, &key, "idle");
+    env.fleet(&["delete", "task", "mixed"]).ok();
+    env.reconcile().ok();
+    env.fleet(&["get", "task", "mixed"]).code(3);
+    assert!(env.stub_sessions().is_empty());
+    assert_eq!(argv_of(&env, "delete").len(), 1);
+}
+
+#[test]
+fn worktree_intent_validation_refuses_ambiguous_or_conflicting_input() {
+    let env = setup("thurbox-worktree-validation", vec![]);
+    let source = if cfg!(windows) {
+        "C:\\source\\primary"
+    } else {
+        "/source/primary"
+    };
+    let cases = [
+        (
+            "empty-branch",
+            json!({"branch": ""}),
+            "worktree.branch must not be empty",
+        ),
+        (
+            "ambiguous-base",
+            json!({"branch": "feature/x", "baseBranch": "release@candidate"}),
+            "baseBranch must not contain '@'",
+        ),
+        (
+            "duplicate-source",
+            json!({"branch": "feature/x", "additionalRepositories": [{"path": source}]}),
+            "duplicates another workspace or repository path",
+        ),
+        (
+            "per-repository-base",
+            json!({"branch": "feature/x", "additionalRepositories": [{"path": "/source/other", "baseBranch": "other"}]}),
+            "unknown field `baseBranch`",
+        ),
+    ];
+    for (name, worktree, message) in cases {
+        let mut t = task(name, false);
+        t["spec"]["workspace"]["dir"] = json!(source);
+        t["spec"]["workspace"]["worktree"] = worktree;
+        env.apply(t).code(1).stderr_has(message);
+    }
+}
+
+#[test]
+fn a_lost_provisioning_response_is_adopted_with_resolved_membership() {
+    let mut t = task("recover", true);
+    t["spec"]["workspace"]["worktree"] = json!({
+        "branch": "feature/recover",
+        "baseBranch": "stable",
+        "additionalRepositories": [{"path": if cfg!(windows) { "D:\\source\\other" } else { "/source/other" }}]
+    });
+    let env = setup("thurbox-provision-recovery", vec![]);
+    env.stub_fault("create", "hang-after", 1);
+    env.apply(t).ok();
+
+    env.reconcile().ok();
+    env.reconcile().ok();
+
+    let status = env.status("recover");
+    assert_eq!(status["phase"], "Briefed", "{status:#}");
+    assert_condition(&status, "Spawned", "True", "Adopted");
+    assert_eq!(env.stub_sessions().len(), 1);
+    assert_eq!(argv_of(&env, "create").len(), 1, "never provisions twice");
+    assert_eq!(argv_of(&env, "send").len(), 1);
+    assert_eq!(
+        full_status(&env, "recover")["session"]["workspace"]["baseBranch"],
+        "stable"
+    );
+}
+
+#[test]
+fn partial_or_unsupported_runtime_provisioning_stays_unknown_or_stalls() {
+    let mut partial = task("partial", true);
+    partial["spec"]["workspace"]["worktree"] = json!({"branch": "feature/partial"});
+    let env = setup("thurbox-partial-provisioning", vec![]);
+    env.edit_stub(|s| s["ignoreWorktrees"] = json!(true));
+    env.apply(partial).ok();
+    let report = env.reconcile().ok().json();
+    assert_eq!(env.status("partial")["phase"], "Spawning");
+    assert!(
+        report["unknowns"]
+            .to_string()
+            .contains("conflicting worktree membership"),
+        "{report:#}"
+    );
+    assert_eq!(argv_of(&env, "create").len(), 1);
+    assert_eq!(argv_of(&env, "send").len(), 0);
+
+    let mut conflict = task("conflict", true);
+    conflict["spec"]["workspace"]["worktree"] =
+        json!({"branch": "feature/conflict", "baseBranch": "expected"});
+    let env = setup("thurbox-conflicting-provisioning", vec![]);
+    env.edit_stub(|s| s["spawnFields"] = json!({"base_branch": "stale"}));
+    env.apply(conflict).ok();
+    let report = env.reconcile().ok().json();
+    assert_eq!(env.status("conflict")["phase"], "Spawning");
+    assert!(
+        report["unknowns"]
+            .to_string()
+            .contains("conflicting base branch"),
+        "{report:#}"
+    );
+    assert_eq!(argv_of(&env, "create").len(), 1);
+    assert_eq!(argv_of(&env, "send").len(), 0);
+
+    let mut unsupported = task("unsupported", true);
+    unsupported["spec"]["workspace"]["worktree"] = json!({"branch": "feature/unsupported"});
+    let env = setup("thurbox-unsupported-provisioning", vec![]);
+    env.edit_stub(|s| s["unsupportedWorktrees"] = json!(true));
+    env.apply(unsupported).ok();
+    env.reconcile().ok();
+    for _ in 0..2 {
+        env.expire_wait("unsupported");
+        env.reconcile().ok();
+    }
+    let status = env.status("unsupported");
+    assert_eq!(status["phase"], "Stalled", "{status:#}");
+    assert_condition(&status, "Spawned", "False", "SpawnFailed");
+    assert!(
+        status
+            .to_string()
+            .contains("unknown argument '--worktree-branch'"),
+        "{status:#}"
+    );
+    assert_eq!(argv_of(&env, "create").len(), 3);
+    assert_eq!(argv_of(&env, "send").len(), 0);
+}
+
+#[test]
 fn additional_workspace_validation_is_strict_without_rewriting_host_paths() {
     let env = setup("thurbox-multi-workspace-validation", vec![]);
     let primary = if cfg!(windows) {

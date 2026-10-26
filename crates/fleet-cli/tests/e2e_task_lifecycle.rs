@@ -144,6 +144,11 @@ fn fake_runtime_preserves_multi_workspace_membership_during_recovery() {
     let env = Env::new("fake-multi-workspace");
     let mut t = task("t1", true);
     t["spec"]["workspace"]["additionalDirs"] = json!(["work/second", "work/docs with spaces"]);
+    t["spec"]["workspace"]["worktree"] = json!({
+        "branch": "feature/fake-recovery",
+        "baseBranch": "stable",
+        "additionalRepositories": [{"path": "source/other"}]
+    });
     env.apply(t).ok();
     env.fault(Fault::new("spawn", "unknown").performed());
 
@@ -155,6 +160,18 @@ fn fake_runtime_preserves_multi_workspace_membership_during_recovery() {
     assert_eq!(
         session.additional_dirs,
         vec!["work/second", "work/docs with spaces"]
+    );
+    assert_eq!(
+        session.worktree.as_ref().unwrap().branch,
+        "feature/fake-recovery"
+    );
+    let resolved = session.resolved_workspace.as_ref().unwrap();
+    assert_ne!(resolved.cwd, session.dir);
+    assert_eq!(resolved.base_branch, "stable");
+    assert_eq!(resolved.worktrees.len(), 2);
+    assert_eq!(
+        env.get("t1")["status"]["session"]["workspace"],
+        serde_json::to_value(resolved).unwrap()
     );
     assert_eq!(env.status("t1")["phase"], "Briefed");
     assert_eq!((env.calls("spawn"), env.calls("brief")), (1, 1));
@@ -807,6 +824,18 @@ fn the_contract_examples_apply_as_written() {
     env.apply(multi)
         .ok()
         .stdout_has("Task/update-api-and-client created");
+    let worktree: serde_json::Value = serde_json::from_slice(
+        &fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../..")
+                .join("examples/worktree-task.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    env.apply(worktree)
+        .ok()
+        .stdout_has("Task/provision-api-and-client created");
     env.reconcile().ok();
     let st = env
         .fleet(&["status", "task", "design-305", "--json"])

@@ -44,6 +44,7 @@ fn session() -> SessionRef {
         id: "s1".into(),
         host: "local".into(),
         key: format!("t.{TASK_UID}"),
+        workspace: None,
     }
 }
 

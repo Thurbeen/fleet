@@ -2,8 +2,9 @@
 
 Fleet v2 is a Rust command-line program that persists Tasks and
 ChangeRequests and drives their controllers. A Task contains the execution
-inputs for one agent session: harness, host, a primary workspace with optional
-prepared additional workspaces on that host, brief and expected
+inputs for one agent session: harness, host, an attached or runtime-provisioned
+primary workspace with optional prepared or provisioned additional workspaces,
+brief and expected
 outputs; the worker reports its own result. A ChangeRequest mirrors one
 change on a forge, read through a Forge port and numbered so consumers diff
 it by one cursor.
@@ -123,9 +124,10 @@ bounded processes; the fake runtime provides persisted fault injection for
 isolated tests. Runtime operations report their worst-case duration so the
 CLI can reject a lease too short to outlast them.
 
-Additional Task workspaces are attached as-is through Thurbox; repository
-preparation and isolation remain caller responsibilities. Runtime adoption
-checks the whole declared membership as well as the deterministic session key.
+Task workspace intent distinguishes prepared paths, attached as-is through
+Thurbox, from an explicit worktree request whose Git lifecycle Thurbox owns.
+Fleet never runs Git. Runtime adoption checks the deterministic session key and
+the complete resolved workspace membership before a worker is briefed.
 
 TaskConfig and EnvProvider are passive data; the manager resolves providers
 through the existing runtime port and bounded executor before freezing a

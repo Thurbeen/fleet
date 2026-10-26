@@ -7,7 +7,7 @@ use serde_json::Value;
 use crate::forge::{ChangeRef, ChangeState, Expected};
 use crate::meta::Millis;
 use crate::observation::Observation;
-use crate::task::{SessionRef, Workspace};
+use crate::task::{SessionRef, Workspace, WorktreeRequest};
 
 /// One reconcile's answer.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -84,6 +84,8 @@ pub struct SpawnSpec {
     pub dir: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub additional_dirs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<WorktreeRequest>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]

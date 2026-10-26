@@ -30,6 +30,7 @@ fn session() -> SessionRef {
         id: "s1".into(),
         host: "local".into(),
         key: "t.u7".into(),
+        workspace: None,
     }
 }
 
@@ -37,6 +38,7 @@ fn workspace() -> Workspace {
     Workspace {
         dir: "w".into(),
         additional_dirs: Vec::new(),
+        worktree: None,
     }
 }
 
@@ -122,10 +124,39 @@ fn a_dispatched_task_records_the_spawn_intent_with_its_effect() {
             );
             assert_eq!(s.dir, "w");
             assert!(s.additional_dirs.is_empty());
+            assert!(s.worktree.is_none());
         }
         other => panic!("{other:?}"),
     }
     assert_eq!(st.observed_generation, 1);
+}
+
+#[test]
+fn a_worktree_request_crosses_the_pure_controller_without_resolution() {
+    let mut obj = task(true, None);
+    obj.spec["workspace"]["additionalDirs"] = json!(["notes"]);
+    obj.spec["workspace"]["worktree"] = json!({
+        "branch": "feature/task",
+        "baseBranch": "stable",
+        "primary": "existing",
+        "additionalRepositories": [{"path": "other"}]
+    });
+    let obs = Observations {
+        host: Some(Observation::Known(true)),
+        ..Default::default()
+    };
+
+    let (plan, _) = run(&obj, obs);
+
+    let Action::Spawn(spec) = &plan.effects[0].action else {
+        panic!("expected spawn")
+    };
+    let worktree = spec.worktree.as_ref().unwrap();
+    assert_eq!(worktree.branch, "feature/task");
+    assert_eq!(worktree.base_branch, "stable");
+    assert_eq!(worktree.primary, fleet_api::task::PrimaryWorktree::Existing);
+    assert_eq!(worktree.additional_repositories[0].path, "other");
+    assert_eq!(spec.additional_dirs, ["notes"]);
 }
 
 #[test]

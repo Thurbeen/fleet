@@ -1,0 +1,22 @@
+{
+  "apiVersion": "fleet/v1alpha1",
+  "kind": "Task",
+  "metadata": {"name": "provision-api-and-client"},
+  "spec": {
+    "harness": "codex",
+    "host": "local",
+    "workspace": {
+      "dir": "/source/api",
+      "additionalDirs": ["/prepared/docs"],
+      "worktree": {
+        "branch": "feature/task-305",
+        "baseBranch": "main",
+        "additionalRepositories": [
+          {"path": "/source/client"}
+        ]
+      }
+    },
+    "brief": "Update the API and client in runtime-owned worktrees.",
+    "dispatch": false
+  }
+}

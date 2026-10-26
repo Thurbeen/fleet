@@ -17,7 +17,9 @@ use std::time::Duration;
 use fleet_api::Observation;
 use fleet_api::plan::{EffectOutcome, SpawnSpec};
 use fleet_api::runtime::Runtime;
-use fleet_api::task::{SessionRef, Workspace};
+use fleet_api::task::{
+    PrimaryWorktree, RuntimeWorkspace, RuntimeWorktree, SessionRef, Workspace, WorktreeRequest,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -80,6 +82,10 @@ pub struct FakeSession {
     pub dir: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub additional_dirs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<WorktreeRequest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_workspace: Option<RuntimeWorkspace>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     pub ready: bool,
@@ -346,7 +352,40 @@ fn session_ref(x: &FakeSession) -> SessionRef {
         id: x.id.clone(),
         host: x.host.clone(),
         key: x.key.clone(),
+        workspace: x.resolved_workspace.clone(),
     }
+}
+
+fn resolved_workspace(spec: &SpawnSpec) -> Option<RuntimeWorkspace> {
+    let request = spec.worktree.as_ref()?;
+    let cwd = if request.primary == PrimaryWorktree::Existing {
+        spec.dir.clone()
+    } else {
+        format!("{}/.fleet-worktrees/{}", spec.dir, request.branch)
+    };
+    let mut worktrees = vec![RuntimeWorktree {
+        repository: spec.dir.clone(),
+        path: cwd.clone(),
+        branch: request.branch.clone(),
+        created_by_runtime: request.primary == PrimaryWorktree::Provision,
+    }];
+    worktrees.extend(
+        request
+            .additional_repositories
+            .iter()
+            .map(|repository| RuntimeWorktree {
+                repository: repository.path.clone(),
+                path: format!("{}/.fleet-worktrees/{}", repository.path, request.branch),
+                branch: request.branch.clone(),
+                created_by_runtime: true,
+            }),
+    );
+    Some(RuntimeWorkspace {
+        cwd,
+        base_branch: request.base_branch.clone(),
+        worktrees,
+        additional_dirs: spec.additional_dirs.clone(),
+    })
 }
 
 impl Runtime for FakeRuntime {
@@ -369,7 +408,10 @@ impl Runtime for FakeRuntime {
         let spec = spec.clone();
         self.effect("spawn", move |s| {
             if let Some(x) = live(s, &spec.key) {
-                if x.dir != spec.dir || x.additional_dirs != spec.additional_dirs {
+                if x.dir != spec.dir
+                    || x.additional_dirs != spec.additional_dirs
+                    || x.worktree != spec.worktree
+                {
                     return EffectOutcome::Failed {
                         why: "the session holding the key has conflicting workspace membership"
                             .into(),
@@ -388,6 +430,8 @@ impl Runtime for FakeRuntime {
                 harness: spec.harness.clone(),
                 dir: spec.dir.clone(),
                 additional_dirs: spec.additional_dirs.clone(),
+                worktree: spec.worktree.clone(),
+                resolved_workspace: resolved_workspace(&spec),
                 model: spec.model.clone(),
                 ready: !s.spawn_not_ready,
                 at_rest: false,
@@ -427,7 +471,9 @@ impl Runtime for FakeRuntime {
             }
             _ => match live(s, key).filter(|x| x.host == host) {
                 Some(x)
-                    if x.dir != workspace.dir || x.additional_dirs != workspace.additional_dirs =>
+                    if x.dir != workspace.dir
+                        || x.additional_dirs != workspace.additional_dirs
+                        || x.worktree != workspace.worktree =>
                 {
                     Observation::unknown(
                         "the session holding the key has conflicting workspace membership",

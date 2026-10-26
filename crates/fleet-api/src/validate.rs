@@ -140,6 +140,43 @@ pub fn validate_spec(kind: &str, spec: &Value) -> Result<(), StoreError> {
             )));
         }
     }
+    if let Some(worktree) = &s.workspace.worktree {
+        for (field, value) in [
+            ("spec.workspace.worktree.branch", &worktree.branch),
+            ("spec.workspace.worktree.baseBranch", &worktree.base_branch),
+        ] {
+            if value.trim().is_empty() {
+                return Err(StoreError::Invalid(format!("{field} must not be empty")));
+            }
+            if value.contains('\0') {
+                return Err(StoreError::Invalid(format!("{field} must not contain NUL")));
+            }
+            if value.starts_with('-') {
+                return Err(StoreError::Invalid(format!(
+                    "{field} must not start with '-'"
+                )));
+            }
+        }
+        if worktree.base_branch.contains('@') {
+            return Err(StoreError::Invalid(
+                "spec.workspace.worktree.baseBranch must not contain '@'; thurbox PATH@BASE cannot represent it unambiguously".into(),
+            ));
+        }
+        for (index, repository) in worktree.additional_repositories.iter().enumerate() {
+            let field = format!("spec.workspace.worktree.additionalRepositories[{index}].path");
+            if repository.path.trim().is_empty() {
+                return Err(StoreError::Invalid(format!("{field} must not be empty")));
+            }
+            if repository.path.contains('\0') {
+                return Err(StoreError::Invalid(format!("{field} must not contain NUL")));
+            }
+            if !workspace_dirs.insert(&repository.path) {
+                return Err(StoreError::Invalid(format!(
+                    "{field} duplicates another workspace or repository path"
+                )));
+            }
+        }
+    }
     // Both reach the runtime as arguments: never as a flag.
     for (field, value) in [("spec.harness", &s.harness), ("spec.host", &s.host)] {
         if value.starts_with('-') {
