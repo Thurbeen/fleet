@@ -833,7 +833,7 @@ impl Manager<'_> {
                 key: k,
                 workspace,
             } => {
-                let o = rt.find(host, k, Some(workspace));
+                let o = rt.find_workspace(host, k, workspace);
                 note(&format!("find on {host}"), o.why());
                 obs.find = Some(o);
             }

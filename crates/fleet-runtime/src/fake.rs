@@ -369,9 +369,7 @@ impl Runtime for FakeRuntime {
         let spec = spec.clone();
         self.effect("spawn", move |s| {
             if let Some(x) = live(s, &spec.key) {
-                if x.dir != spec.workspace.dir
-                    || x.additional_dirs != spec.workspace.additional_dirs
-                {
+                if x.dir != spec.dir || x.additional_dirs != spec.additional_dirs {
                     return EffectOutcome::Failed {
                         why: "the session holding the key has conflicting workspace membership"
                             .into(),
@@ -388,8 +386,8 @@ impl Runtime for FakeRuntime {
                 host: spec.host.clone(),
                 key: spec.key.clone(),
                 harness: spec.harness.clone(),
-                dir: spec.workspace.dir.clone(),
-                additional_dirs: spec.workspace.additional_dirs.clone(),
+                dir: spec.dir.clone(),
+                additional_dirs: spec.additional_dirs.clone(),
                 model: spec.model.clone(),
                 ready: !s.spawn_not_ready,
                 at_rest: false,
@@ -408,11 +406,20 @@ impl Runtime for FakeRuntime {
         })
     }
 
-    fn find(
+    fn find(&self, host: &str, key: &str) -> Observation<Option<SessionRef>> {
+        self.probe("find", |s| match s.hosts.get(host).map(String::as_str) {
+            Some("down") | Some("unknown") => {
+                Observation::unknown(format!("host {host}: session list unreadable"))
+            }
+            _ => Observation::Known(live(s, key).filter(|x| x.host == host).map(session_ref)),
+        })
+    }
+
+    fn find_workspace(
         &self,
         host: &str,
         key: &str,
-        workspace: Option<&Workspace>,
+        workspace: &Workspace,
     ) -> Observation<Option<SessionRef>> {
         self.probe("find", |s| match s.hosts.get(host).map(String::as_str) {
             Some("down") | Some("unknown") => {
@@ -420,9 +427,7 @@ impl Runtime for FakeRuntime {
             }
             _ => match live(s, key).filter(|x| x.host == host) {
                 Some(x)
-                    if workspace.is_some_and(|workspace| {
-                        x.dir != workspace.dir || x.additional_dirs != workspace.additional_dirs
-                    }) =>
+                    if x.dir != workspace.dir || x.additional_dirs != workspace.additional_dirs =>
                 {
                     Observation::unknown(
                         "the session holding the key has conflicting workspace membership",

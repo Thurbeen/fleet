@@ -258,6 +258,37 @@ impl ThurboxRuntime {
             }
         })
     }
+
+    fn find_checked(
+        &self,
+        host: &str,
+        key: &str,
+        workspace: Option<&Workspace>,
+    ) -> Observation<Option<SessionRef>> {
+        let tk = self.thurbox_key(key);
+        match self.rows(host, ("--key", &tk)) {
+            Observation::Known(rows) => match rows.as_slice() {
+                [] => Observation::Known(None),
+                [row] => match (
+                    row["id"].as_str(),
+                    workspace.map_or(Ok(true), |workspace| row_has_workspace(row, workspace)),
+                ) {
+                    (Some(id), Ok(true)) => Observation::Known(Some(SessionRef {
+                        id: id.to_string(),
+                        host: host.to_string(),
+                        key: key.to_string(),
+                    })),
+                    (None, _) => Observation::unknown("a session row without an id"),
+                    (_, Ok(false)) => Observation::unknown(
+                        "the session holding the key has conflicting workspace membership",
+                    ),
+                    (_, Err(why)) => Observation::unknown(why),
+                },
+                _ => Observation::unknown(format!("key {tk} is held by more than one session")),
+            },
+            Observation::Unknown { why } => Observation::Unknown { why },
+        }
+    }
 }
 
 fn codex_process(value: &Value) -> bool {
@@ -387,9 +418,13 @@ impl Runtime for ThurboxRuntime {
     }
 
     fn spawn(&self, spec: &SpawnSpec) -> Observation<EffectOutcome> {
+        let workspace = Workspace {
+            dir: spec.dir.clone(),
+            additional_dirs: spec.additional_dirs.clone(),
+        };
         // Thurbox resolves these paths on the target host. A relative path
         // would mean whatever directory fleet happened to run in.
-        if let Err(why) = validate_workspace(&spec.workspace) {
+        if let Err(why) = validate_workspace(&workspace) {
             return Observation::Known(EffectOutcome::Failed { why });
         }
         let key = self.thurbox_key(&spec.key);
@@ -407,7 +442,7 @@ impl Runtime for ThurboxRuntime {
             "--name",
             &name,
             "--repo-path",
-            &spec.workspace.dir,
+            &spec.dir,
             "--key",
             &key,
             "--on-existing",
@@ -418,7 +453,7 @@ impl Runtime for ThurboxRuntime {
         .iter()
         .map(|s| s.to_string())
         .collect();
-        for dir in &spec.workspace.additional_dirs {
+        for dir in &spec.additional_dirs {
             args.extend(["--add-dir".to_string(), dir.clone()]);
         }
         if spec.host != LOCAL {
@@ -476,27 +511,19 @@ impl Runtime for ThurboxRuntime {
                     host: spec.host.clone(),
                     key: spec.key.clone(),
                 };
-                if row["created"] == false {
-                    return match self.find(&spec.host, &spec.key, Some(&spec.workspace)) {
-                        Observation::Known(Some(found)) if found.id == session.id => {
-                            Observation::Known(EffectOutcome::Spawned {
-                                session,
-                                adopted: true,
-                            })
-                        }
-                        Observation::Known(Some(_)) => Observation::unknown(
-                            "adopted session identity changed during verification",
-                        ),
-                        Observation::Known(None) => {
-                            Observation::unknown("adopted session disappeared during verification")
-                        }
-                        Observation::Unknown { why } => Observation::Unknown { why },
-                    };
+                let adopted = row["created"] == false;
+                match self.find_workspace(&spec.host, &spec.key, &workspace) {
+                    Observation::Known(Some(found)) if found.id == session.id => {
+                        Observation::Known(EffectOutcome::Spawned { session, adopted })
+                    }
+                    Observation::Known(Some(_)) => Observation::unknown(
+                        "session identity changed during workspace verification",
+                    ),
+                    Observation::Known(None) => {
+                        Observation::unknown("session disappeared during workspace verification")
+                    }
+                    Observation::Unknown { why } => Observation::Unknown { why },
                 }
-                Observation::Known(EffectOutcome::Spawned {
-                    session,
-                    adopted: false,
-                })
             }
             Answer::No(_) => Observation::Known(EffectOutcome::Failed {
                 why: "thurbox session creation refused".into(),
@@ -505,35 +532,17 @@ impl Runtime for ThurboxRuntime {
         }
     }
 
-    fn find(
+    fn find(&self, host: &str, key: &str) -> Observation<Option<SessionRef>> {
+        self.find_checked(host, key, None)
+    }
+
+    fn find_workspace(
         &self,
         host: &str,
         key: &str,
-        workspace: Option<&Workspace>,
+        workspace: &Workspace,
     ) -> Observation<Option<SessionRef>> {
-        let tk = self.thurbox_key(key);
-        match self.rows(host, ("--key", &tk)) {
-            Observation::Known(rows) => match rows.as_slice() {
-                [] => Observation::Known(None),
-                [row] => match (
-                    row["id"].as_str(),
-                    workspace.map_or(Ok(true), |workspace| row_has_workspace(row, workspace)),
-                ) {
-                    (Some(id), Ok(true)) => Observation::Known(Some(SessionRef {
-                        id: id.to_string(),
-                        host: host.to_string(),
-                        key: key.to_string(),
-                    })),
-                    (None, _) => Observation::unknown("a session row without an id"),
-                    (_, Ok(false)) => Observation::unknown(
-                        "the session holding the key has conflicting workspace membership",
-                    ),
-                    (_, Err(why)) => Observation::unknown(why),
-                },
-                _ => Observation::unknown(format!("key {tk} is held by more than one session")),
-            },
-            Observation::Unknown { why } => Observation::Unknown { why },
-        }
+        self.find_checked(host, key, Some(workspace))
     }
 
     fn ready(&self, session: &SessionRef) -> Observation<bool> {
@@ -631,7 +640,7 @@ impl Runtime for ThurboxRuntime {
     fn release(&self, session: &SessionRef) -> Observation<EffectOutcome> {
         // The controller proved this exact session at rest. A reused key
         // cannot transfer that proof to another session.
-        match self.find(&session.host, &session.key, None) {
+        match self.find(&session.host, &session.key) {
             Observation::Known(None) => return Observation::Known(EffectOutcome::Released),
             Observation::Known(Some(s)) if s.id == session.id => {}
             Observation::Known(Some(_)) => {

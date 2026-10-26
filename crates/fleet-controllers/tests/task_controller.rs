@@ -120,7 +120,8 @@ fn a_dispatched_task_records_the_spawn_intent_with_its_effect() {
                 (s.key.as_str(), s.host.as_str(), s.harness.as_str()),
                 ("t.u7", "local", "claude-code")
             );
-            assert_eq!(s.workspace, workspace());
+            assert_eq!(s.dir, "w");
+            assert!(s.additional_dirs.is_empty());
         }
         other => panic!("{other:?}"),
     }

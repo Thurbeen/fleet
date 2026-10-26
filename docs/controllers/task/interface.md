@@ -79,9 +79,9 @@ pub struct Plan {
 | `delivery` | An inbox entry proven delivered: `{key, at, recovered}`. The manager writes it with `status` as one record-and-remove mutation: the receipt into `status.deliveries`, the entry out of `status.inbox`. |
 
 An action is `Spawn(SpawnSpec)`, `Brief { session, text }` or
-`Release { session }`. SpawnSpec carries `host`, `key`, `harness`, the typed
-workspace (`dir` and `additionalDirs`), optional `model`, the private
-environment map and `environmentFrozen`. The
+`Release { session }`. SpawnSpec carries `host`, `key`, `harness`, `dir`,
+`additionalDirs`, optional `model`, the private environment map and
+`environmentFrozen`. The
 manager injects frozen values and prevents model-variable remapping before
 performing a spawn; environment values are not persisted in effect intents.
 `SessionRef` carries `id`, `host` and `key`; a later session

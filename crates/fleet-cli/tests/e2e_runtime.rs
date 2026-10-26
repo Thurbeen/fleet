@@ -378,6 +378,31 @@ fn a_matching_key_with_conflicting_workspace_membership_is_unknown() {
 }
 
 #[test]
+fn a_new_session_is_verified_before_fleet_adopts_or_briefs_it() {
+    let mut t = task("many", true);
+    t["spec"]["workspace"]["additionalDirs"] = if cfg!(windows) {
+        json!(["D:\\work\\declared"])
+    } else {
+        json!(["/work/declared"])
+    };
+    let env = setup("thurbox-created-workspace-conflict", vec![]);
+    env.edit_stub(|s| s["ignoreAddDirs"] = json!(true));
+    env.apply(t).ok();
+
+    let report = env.reconcile().ok().json();
+
+    assert_eq!(env.status("many")["phase"], "Spawning");
+    assert!(
+        report["unknowns"]
+            .to_string()
+            .contains("conflicting workspace"),
+        "{report:#}"
+    );
+    assert_eq!(argv_of(&env, "create").len(), 1);
+    assert_eq!(argv_of(&env, "send").len(), 0, "no wrong worker is briefed");
+}
+
+#[test]
 fn a_brief_whose_answer_was_lost_is_read_back_and_never_sent_twice() {
     // Recovered: the session recorded the delivery, the answer was lost.
     let env = setup("thurbox-brief-recovered", vec![]);

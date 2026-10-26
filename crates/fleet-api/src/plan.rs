@@ -81,7 +81,9 @@ pub struct SpawnSpec {
     pub host: String,
     pub key: String,
     pub harness: String,
-    pub workspace: Workspace,
+    pub dir: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub additional_dirs: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
