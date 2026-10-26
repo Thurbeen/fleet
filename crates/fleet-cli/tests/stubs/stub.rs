@@ -211,6 +211,7 @@ fn main() -> ExitCode {
         ("gh", Some("api")) => forge::gh(&args),
         ("glab", Some("api")) => forge::glab(&args),
         ("az", Some("devops" | "repos")) => forge::az(&args),
+        ("curl", Some("--include")) => forge::curl(&args),
         (_, Some("session") | Some("doctor")) => thurbox(&args),
         _ => fail("stub: unknown role"),
     }
@@ -225,7 +226,8 @@ fn main() -> ExitCode {
 /// bounds a GitHub page, `login` answers whoami, `noRepo` makes the project
 /// itself absent. A mark-ready (the GitHub mutation, or GitLab's title
 /// update) moves `state` to `open` and records the intent under
-/// `readyIntents`. Faults are armed under the call `gh` or `glab`: `fail`,
+/// `readyIntents`. Faults are armed under the call `gh`, `glab`, `az` or
+/// `curl`: `fail`,
 /// `hang`, `auth`, `rate-limit` (with `retryAfter` seconds) and `malformed`.
 mod forge {
     use std::process::ExitCode;
@@ -301,6 +303,11 @@ mod forge {
         let _ = args;
         Err(match mode.as_str() {
             "hang" => hang(),
+            "auth" if role == "curl" => answer(
+                ExitCode::from(22),
+                "HTTP/2.0 401 Unauthorized\r\n\r\n",
+                "{\"type\":\"error\",\"error\":{\"message\":\"authentication required\"}}",
+            ),
             "auth" => {
                 eprintln!("To get started with {role}, please run: {role} auth login");
                 ExitCode::from(4)
@@ -646,6 +653,181 @@ mod forge {
                 })
             }
             _ => return fail("stub: glab endpoint not modelled"),
+        };
+        answer(ExitCode::SUCCESS, HEAD, &body.to_string())
+    }
+
+    pub fn curl(args: &[String]) -> ExitCode {
+        let lock = Lock::take();
+        let mut state = load();
+        let _lock = match faulted(&mut state, lock, "curl", args) {
+            Ok(l) => l,
+            Err(code) => return code,
+        };
+        let url = super::opt(args, "--url").unwrap_or_default();
+        let Some(rest) = url.strip_prefix("https://api.bitbucket.org/2.0/") else {
+            return fail("stub: curl URL is not the Bitbucket Cloud API");
+        };
+        if rest == "user" {
+            let login = state["login"].as_str().unwrap_or("stub-login");
+            return answer(
+                ExitCode::SUCCESS,
+                HEAD,
+                &json!({"type": "user", "account_id": format!("account-{login}"), "uuid": format!("{{uuid-{login}}}")}).to_string(),
+            );
+        }
+        let (path, query) = rest.split_once('?').unwrap_or((rest, ""));
+        let mut parts = path.split('/');
+        if parts.next() != Some("repositories") {
+            return fail("stub: curl endpoint not modelled");
+        }
+        let workspace = parts.next().unwrap_or("");
+        let repository = parts.next().unwrap_or("");
+        let project = format!("{workspace}/{repository}");
+        if state["noRepo"] == true {
+            return not_found();
+        }
+        let Some(resource) = parts.next() else {
+            return answer(
+                ExitCode::SUCCESS,
+                HEAD,
+                &json!({"type": "repository", "full_name": project, "uuid": format!("{{repo-{workspace}-{repository}}}")}).to_string(),
+            );
+        };
+        if resource != "pullrequests" {
+            return fail("stub: curl resource not modelled");
+        }
+        let id = parts.next().unwrap_or("");
+        let sub = parts.collect::<Vec<_>>().join("/");
+        let moved_head = if sub.is_empty() && state["moveHeadOnFinal"] == true {
+            let reads = state["bitbucketPrReads"].as_u64().unwrap_or(0) + 1;
+            state["bitbucketPrReads"] = json!(reads);
+            save(&state);
+            (reads > 1).then_some("moved-head")
+        } else {
+            None
+        };
+        let Some(c) = change(&state, &project, id) else {
+            return not_found();
+        };
+        let page_size = usize::try_from(state["pageSize"].as_u64().unwrap_or(100)).unwrap_or(100);
+        let cursor = query
+            .split('&')
+            .filter_map(|item| item.split_once('='))
+            .find(|(key, _)| *key == "cursor")
+            .and_then(|(_, value)| value.parse::<usize>().ok())
+            .unwrap_or(0);
+        let paged = |values: Vec<Value>, suffix: &str| {
+            let end = (cursor + page_size).min(values.len());
+            json!({
+                "pagelen": end.saturating_sub(cursor),
+                "size": values.len(),
+                "values": if cursor < values.len() { values[cursor..end].to_vec() } else { Vec::new() },
+                "next": if end < values.len() {
+                    json!(format!("https://api.bitbucket.org/2.0/repositories/{project}/pullrequests/{id}/{suffix}?opaque=x&cursor={end}"))
+                } else { Value::Null }
+            })
+        };
+        let user = |item: &Value| {
+            json!({
+                "type": if item["bot"] == true { "app_user" } else { "user" },
+                "account_id": format!("account-{}", item["author"].as_str().unwrap_or("unknown")),
+                "uuid": format!("{{uuid-{}}}", item["author"].as_str().unwrap_or("unknown"))
+            })
+        };
+        let body = match sub.as_str() {
+            "" => {
+                let decision = c["reviewDecision"].as_str();
+                let participants = match decision {
+                    Some("changes-requested") => vec![
+                        json!({"user": {"type": "user", "account_id": "account-ann", "uuid": "{uuid-ann}"}, "approved": false, "state": "changes_requested"}),
+                    ],
+                    Some("approved") => vec![
+                        json!({"user": {"type": "user", "account_id": "account-ann", "uuid": "{uuid-ann}"}, "approved": true, "state": "approved"}),
+                    ],
+                    _ => Vec::new(),
+                };
+                json!({
+                    "type": "pullrequest",
+                    "id": id.parse::<u64>().unwrap_or(0),
+                    "state": match c["state"].as_str().unwrap_or("open") { "merged" => "MERGED", "closed" => "DECLINED", _ => "OPEN" },
+                    "draft": c["state"] == "draft",
+                    "source": {"commit": {"hash": moved_head.map_or_else(|| c["head"].clone(), |head| json!(head))}},
+                    "destination": {"repository": {"type": "repository", "full_name": if state["wrongRepo"] == true { "other/widgets" } else { project.as_str() }, "uuid": format!("{{repo-{workspace}-{repository}}}")}},
+                    "participants": participants,
+                    "links": {"html": {"href": format!("https://bitbucket.org/{project}/pull-requests/{id}")}}
+                })
+            }
+            "comments" => {
+                let mut values = Vec::new();
+                for item in c["comments"].as_array().cloned().unwrap_or_default() {
+                    values.push(json!({
+                        "type": "pullrequest_comment", "id": item["id"].as_str().unwrap_or("").trim_start_matches('c').parse::<u64>().unwrap_or(0),
+                        "created_on": iso(&item["at"]), "updated_on": iso(if item["editedAt"].is_null() { &item["at"] } else { &item["editedAt"] }),
+                        "content": {"raw": item["body"]}, "user": user(&item), "deleted": false,
+                        "inline": Value::Null, "parent": Value::Null, "resolution": Value::Null, "pending": false,
+                        "links": {"html": {"href": format!("https://bitbucket.org/{project}/pull-requests/{id}#comment-{}", item["id"])}}
+                    }));
+                }
+                for thread in c["threads"].as_array().cloned().unwrap_or_default() {
+                    let comments = thread["comments"].as_array().cloned().unwrap_or_default();
+                    let root = comments
+                        .first()
+                        .and_then(|v| v["id"].as_str())
+                        .unwrap_or("ic0")
+                        .trim_start_matches("ic")
+                        .parse::<u64>()
+                        .unwrap_or(0)
+                        + 100;
+                    for (index, item) in comments.into_iter().enumerate() {
+                        let comment_id = item["id"]
+                            .as_str()
+                            .unwrap_or("")
+                            .trim_start_matches("ic")
+                            .parse::<u64>()
+                            .unwrap_or(0)
+                            + 100;
+                        values.push(json!({
+                            "type": "pullrequest_comment", "id": comment_id,
+                            "created_on": iso(&item["at"]), "updated_on": iso(if item["editedAt"].is_null() { &item["at"] } else { &item["editedAt"] }),
+                            "content": {"raw": item["body"]}, "user": user(&item), "deleted": false,
+                            "inline": if index == 0 { json!({"path": thread["path"], "to": thread["line"]}) } else { Value::Null },
+                            "parent": if index == 0 { Value::Null } else { json!({"id": root}) },
+                            "resolution": if index == 0 && thread["resolved"] == true { json!({"type": "pullrequest_comment_resolution", "created_on": iso(&item["at"])}) } else { Value::Null },
+                            "pending": false,
+                            "links": {"html": {"href": format!("https://bitbucket.org/{project}/pull-requests/{id}#comment-{comment_id}")}}
+                        }));
+                    }
+                }
+                if state["missingResolution"] == true
+                    && let Some(first_inline) = values.iter_mut().find(|v| v["inline"].is_object())
+                {
+                    first_inline.as_object_mut().unwrap().remove("resolution");
+                }
+                paged(values, "comments")
+            }
+            "statuses" => {
+                let status_head = if state["wrongStatusHead"] == true {
+                    "stale-head"
+                } else {
+                    c["head"].as_str().unwrap_or("")
+                };
+                let values = c["checks"].as_array().cloned().unwrap_or_default().into_iter().map(|item| json!({
+                    "type": "build", "key": item["name"], "name": item["name"], "url": item["url"],
+                    "state": match item["state"].as_str() { Some("failure") => "FAILED", Some("pending") => "INPROGRESS", Some("skipped") => "STOPPED", _ => "SUCCESSFUL" },
+                    "links": {"commit": {"href": format!("https://api.bitbucket.org/2.0/repositories/{project}/commit/{status_head}")}}
+                })).collect();
+                paged(values, "statuses")
+            }
+            "mergeability/checks" => {
+                let status = match c["mergeable"].as_str() {
+                    Some("unknown") => "PENDING",
+                    Some("mergeable") => "PASSED",
+                    _ => "FAILED",
+                };
+                json!({"size": 1, "values": [{"type": "git_mergeability_check", "status": status, "required": true, "blocking": status == "FAILED"}]})
+            }
+            _ => return fail("stub: curl pull request endpoint not modelled"),
         };
         answer(ExitCode::SUCCESS, HEAD, &body.to_string())
     }

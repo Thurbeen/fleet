@@ -23,8 +23,8 @@ use fleet_runtime::{FakeHost, FakeRuntime};
 use fleet_store::{FileStore, SystemClock};
 use serde_json::{Value, json};
 use support::{
-    AZURE_DEVOPS_HOST, Env, FORGE_HOST, GITHUB_HOST, GITLAB_HOST, alive_after, assert_condition,
-    change_request, derived_name, now_ms,
+    AZURE_DEVOPS_HOST, BITBUCKET_HOST, Env, FORGE_HOST, GITHUB_HOST, GITLAB_HOST, alive_after,
+    assert_condition, change_request, derived_name, now_ms,
 };
 
 const PROJECT: &str = "acme/widgets";
@@ -815,8 +815,237 @@ fn a_change_request_needs_a_configured_forge_host_and_a_bad_policy_is_refused_at
     );
     assert_eq!(
         v["forges"],
-        json!(["azure-devops", "github", "gitlab", "fake"])
+        json!([
+            "azure-devops",
+            "bitbucket-cloud",
+            "github",
+            "gitlab",
+            "fake"
+        ])
     );
+}
+
+#[test]
+fn bitbucket_cloud_pull_request_urls_use_workspace_repository_identity() {
+    let env = Env::forge_stubs("bitbucket-url");
+    let url = "https://bitbucket.org/Acme/Widgets/pull-requests/7/?tab=activity#comment-1";
+    let cr = derived_name("bitbucket-cloud", BITBUCKET_HOST, "acme/widgets", "7");
+    env.apply(change_request(url, json!({})))
+        .ok()
+        .stdout_has(&format!("ChangeRequest/{cr} created"));
+    let object = env.change_request(&cr);
+    assert_eq!(object["spec"]["url"], url);
+}
+
+#[test]
+fn bitbucket_cloud_observation_is_complete_bounded_and_unknown_on_gaps() {
+    let env = Env::forge_stubs("bitbucket-cloud");
+    env.edit_stub(|s| {
+        s["login"] = json!("dev");
+        s["pageSize"] = json!(4);
+        s["changes"] = json!({"acme/widgets#7": github_model()});
+    });
+    let url = "https://bitbucket.org/acme/widgets/pull-requests/7";
+    let cr = derived_name("bitbucket-cloud", BITBUCKET_HOST, PROJECT, "7");
+    env.apply(change_request(url, json!({})))
+        .ok()
+        .stdout_has(&format!("ChangeRequest/{cr} created"));
+    let report = env.reconcile().ok().json();
+    assert_eq!(report["errors"], json!([]), "{report:#}");
+    let st = env.change_request_status(&cr);
+    assert_eq!(
+        st["ref"],
+        json!({"kind": "bitbucket-cloud", "host": BITBUCKET_HOST, "project": PROJECT, "id": "7"})
+    );
+    assert_eq!(st["state"]["value"], "open");
+    assert_eq!(st["head"]["id"], "h1");
+    assert_eq!(st["head"]["checks"], "failed");
+    assert_eq!(st["reviewDecision"]["value"], "changes-requested");
+    assert_eq!(
+        st["mergeable"],
+        json!({"value": false, "reason": "git-mergeability-check"})
+    );
+    assert_eq!(st["threads"]["unresolved"], 1);
+    assert!(st["reviews"].is_null() || st["reviews"].as_array().is_some_and(Vec::is_empty));
+    assert_eq!(st["notes"].as_array().unwrap().len(), 6);
+
+    let calls = env.forge_calls(BITBUCKET_HOST);
+    assert_eq!(
+        calls.len(),
+        6,
+        "two head reads, two comment pages, statuses and mergeability: {calls:#?}"
+    );
+    assert!(calls.iter().all(|call| {
+        let argv = call["argv"].as_array().unwrap();
+        argv.starts_with(&[json!("--include"), json!("--silent"), json!("--show-error")])
+            && argv.contains(&json!("--netrc-optional"))
+            && !argv.iter().any(|arg| {
+                arg.as_str().is_some_and(|s| {
+                    let s = s.to_ascii_lowercase();
+                    s.contains("authorization") || s.contains("token") || s.contains("password")
+                })
+            })
+            && !call["envNames"].as_array().unwrap().iter().any(|name| {
+                name.as_str()
+                    .is_some_and(|s| s.to_ascii_uppercase().contains("TOKEN"))
+            })
+    }));
+    assert!(
+        calls
+            .iter()
+            .any(|call| call["argv"].to_string().contains("opaque=x&cursor=4"))
+    );
+    assert!(
+        calls
+            .iter()
+            .all(|call| !call["argv"].to_string().contains("/pipelines"))
+    );
+
+    env.edit_stub(|s| {
+        s["moveHeadOnFinal"] = json!(true);
+        s["bitbucketPrReads"] = json!(0);
+    });
+    env.expire_wait_of("ChangeRequest", &cr);
+    env.reconcile().ok();
+    let st = env.change_request_status(&cr);
+    assert_condition(&st, "Reachable", "Unknown", "Unreadable");
+    assert_eq!(
+        st["revision"], 1,
+        "statuses are never attached to a moved head"
+    );
+    env.edit_stub(|s| {
+        s["moveHeadOnFinal"] = json!(false);
+        s["bitbucketPrReads"] = json!(0);
+        s["wrongStatusHead"] = json!(true);
+    });
+    env.expire_wait_of("ChangeRequest", &cr);
+    env.reconcile().ok();
+    let st = env.change_request_status(&cr);
+    assert_condition(&st, "Reachable", "Unknown", "Unreadable");
+    assert_eq!(st["revision"], 1, "stale statuses never attach to the head");
+    env.edit_stub(|s| s["wrongStatusHead"] = json!(false));
+
+    env.edit_stub(|s| s["retryAfter"] = json!(45));
+    env.stub_fault("curl", "rate-limit", 1);
+    env.expire_wait_of("ChangeRequest", &cr);
+    let before = now_ms();
+    env.reconcile().ok();
+    let st = env.change_request_status(&cr);
+    assert_condition(&st, "Reachable", "Unknown", "Throttled");
+    assert_eq!(st["revision"], 1);
+    assert!(st["notBefore"].as_u64().unwrap() >= before + 45_000);
+
+    for (mode, reason) in [
+        ("auth", "NotLoggedIn"),
+        ("malformed", "Unreadable"),
+        ("fail", "Refused"),
+    ] {
+        env.stub_fault("curl", mode, 1);
+        env.expire_wait_of("ChangeRequest", &cr);
+        env.reconcile().ok();
+        let st = env.change_request_status(&cr);
+        assert_condition(&st, "Reachable", "Unknown", reason);
+        assert_eq!(st["revision"], 1, "{mode}");
+    }
+
+    env.edit_stub(|s| s["missingResolution"] = json!(true));
+    env.expire_wait_of("ChangeRequest", &cr);
+    env.reconcile().ok();
+    let st = env.change_request_status(&cr);
+    assert_condition(&st, "Reachable", "Unknown", "Unreadable");
+    assert_eq!(
+        st["revision"], 1,
+        "missing thread evidence cannot become zero"
+    );
+    env.edit_stub(|s| {
+        s["missingResolution"] = json!(false);
+        s["pageSize"] = json!(1);
+    });
+    env.expire_wait_of("ChangeRequest", &cr);
+    env.reconcile().ok();
+    let st = env.change_request_status(&cr);
+    assert_condition(&st, "Reachable", "Unknown", "Incomplete");
+    assert_eq!(
+        st["revision"], 1,
+        "a truncated observation is never numbered"
+    );
+}
+
+#[test]
+fn bitbucket_cloud_state_identity_and_absence_are_not_guessed() {
+    let env = Env::forge_stubs("bitbucket-states");
+    let model = |state: &str, head: &str| {
+        json!({
+            "state": state, "head": head, "checks": [], "reviewDecision": null,
+            "mergeable": if state == "draft" { "draft" } else { "mergeable" },
+            "reviews": [], "comments": [], "threads": []
+        })
+    };
+    env.edit_stub(|s| {
+        s["changes"] = json!({
+            "acme/widgets#11": model("draft", "d1"),
+            "acme/widgets#12": model("open", "o1"),
+            "acme/widgets#13": model("closed", "c1"),
+            "acme/widgets#14": model("merged", "m1")
+        })
+    });
+    for id in 11..=14 {
+        env.apply(change_request(
+            &format!("https://bitbucket.org/acme/widgets/pull-requests/{id}"),
+            json!({}),
+        ))
+        .ok();
+    }
+    env.reconcile().ok();
+    for (id, state, phase) in [
+        (11, "draft", "Watching"),
+        (12, "open", "Watching"),
+        (13, "closed", "Closed"),
+        (14, "merged", "Settled"),
+    ] {
+        let cr = derived_name("bitbucket-cloud", BITBUCKET_HOST, PROJECT, &id.to_string());
+        let st = env.change_request_status(&cr);
+        assert_eq!(st["state"]["value"], state, "{st:#}");
+        assert_eq!(st["phase"], phase, "{st:#}");
+    }
+
+    let cr = derived_name("bitbucket-cloud", BITBUCKET_HOST, PROJECT, "12");
+    env.edit_stub(|s| s["wrongRepo"] = json!(true));
+    env.expire_wait_of("ChangeRequest", &cr);
+    env.reconcile().ok();
+    let st = env.change_request_status(&cr);
+    assert_condition(&st, "Reachable", "Unknown", "Unreadable");
+    assert_eq!(st["state"]["value"], "open");
+
+    env.edit_stub(|s| {
+        s["wrongRepo"] = json!(false);
+        s["noRepo"] = json!(true);
+    });
+    env.expire_wait_of("ChangeRequest", &cr);
+    env.reconcile().ok();
+    let st = env.change_request_status(&cr);
+    assert_eq!(st["phase"], "Watching");
+    assert_condition(&st, "Reachable", "Unknown", "Refused");
+
+    env.edit_stub(|s| {
+        s["noRepo"] = json!(false);
+        s["changes"]
+            .as_object_mut()
+            .unwrap()
+            .remove("acme/widgets#12");
+    });
+    env.expire_wait_of("ChangeRequest", &cr);
+    env.reconcile().ok();
+    let st = env.change_request_status(&cr);
+    assert_eq!(st["phase"], "Settled");
+    assert_condition(&st, "Settled", "True", "Gone");
+
+    env.apply(change_request(
+        "https://bitbucket.example/acme/widgets/pull-requests/7",
+        json!({}),
+    ))
+    .code(1)
+    .stderr_has("not configured under [forge.hosts]");
 }
 
 #[test]

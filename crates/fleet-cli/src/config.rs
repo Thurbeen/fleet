@@ -73,9 +73,9 @@ pub struct ForgeConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ForgeHostConfig {
-    /// `azure-devops`, `github`, `gitlab` or `fake`.
+    /// `azure-devops`, `bitbucket-cloud`, `github`, `gitlab` or `fake`.
     pub kind: String,
-    /// The CLI executable, a path or a name on PATH (`az`, `gh`, `glab`).
+    /// The CLI executable, a path or a name on PATH (`az`, `curl`, `gh`, `glab`).
     pub cli: Option<String>,
     /// The fake forge's directory, relative to this file.
     pub dir: Option<PathBuf>,

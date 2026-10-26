@@ -137,10 +137,10 @@ onto these:
 | `notes` | issue comments, reviews, review comments | notes and discussions | comments | comments per patchset | inline and top-level comments |
 | mark ready | ready for review | mark as ready | none | none | none |
 
-GitHub, GitLab and hosted Azure DevOps Services adapters are in scope.
-Bitbucket and the others are shown so
-the vocabulary is checked against them; adding one is an adapter in
-`fleet-forge`, not an API change. The
+GitHub, GitLab, hosted Azure DevOps Services and hosted Bitbucket Cloud
+adapters are in scope. Bitbucket Server/Data Center, Gerrit and Phabricator
+are shown so the vocabulary is checked against them; adding one is an adapter
+in `fleet-forge`, not an API change. The
 [adapter truth tables](../controllers/change-request/interface.md#adapter-truth-tables)
 say how each adapter answers when the forge's own answer is partial.
 

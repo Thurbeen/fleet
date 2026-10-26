@@ -154,6 +154,7 @@ draftPolicy = "checks"        # omit to never take a draft out of draft
 "gitlab.com"         = { kind = "gitlab", cli = "glab" }
 "gitlab.example.com" = { kind = "gitlab", cli = "glab" }
 "dev.azure.com"      = { kind = "azure-devops", cli = "az" }
+"bitbucket.org"      = { kind = "bitbucket-cloud", cli = "curl" }
 
 [forge.readyPolicies.checks]
 checksPassed = true
@@ -178,11 +179,20 @@ noUnresolvedThreads = true
 | `forge.noCheckGraceMs` | `300000` | How long `checksPassed` waits, from a head's first observation, for a check to appear before treating that checkless head as passed. |
 | `forge.draftPolicy` | Absent | The ready policy applied to a Task that sets none; it must name a policy below. Absent: a draft is never taken out of draft unless the Task names a policy. |
 | `forge.readyPolicies.<name>` | Three written by `fleet init` | A set of the predicates the [Forge controller](../controllers/forge/interface.md#ready-policies) defines (`checksPassed`, `botReviewsAddressed`, `noUnresolvedThreads`, `forgeMergeable`; `workerDone` and `workerIdle` are always on), under a name that is only a key. Any other key is refused at load. |
-| `forge.hosts.<host>` | One per forge host | `kind` is `azure-devops`, `github`, `gitlab` or `fake`; `cli` is a PATH name or absolute path (`az`, `gh` or `glab` by default); a `fake` host takes `dir`, its directory, relative to this file. Configure `dev.azure.com` once for hosted Azure DevOps Services; its `{organization}.visualstudio.com` aliases route to that adapter. A URL on any other unlisted host is refused at apply. |
+| `forge.hosts.<host>` | One per forge host | `kind` is `azure-devops`, `bitbucket-cloud`, `github`, `gitlab` or `fake`; `cli` is a PATH name or absolute path (`az`, `curl`, `gh` or `glab` by default); a `fake` host takes `dir`, its directory, relative to this file. Configure `dev.azure.com` once for hosted Azure DevOps Services; its `{organization}.visualstudio.com` aliases route to that adapter. `bitbucket-cloud` is accepted only for `bitbucket.org`; Server/Data Center is a different API. A URL on any other unlisted host is refused at apply. |
 
-Credentials stay with each CLI's own login. Fleet passes none to the forge and
-stores none. Azure DevOps login is resolved separately for each organization;
-Fleet never reads or writes a PAT, token, subscription or CLI default.
+Credentials stay with each external client's own configuration. Fleet passes
+none to the forge and stores none. Azure DevOps login is resolved separately
+for each organization; Fleet never reads or writes a PAT, token, subscription
+or CLI default.
+Bitbucket Cloud has no official CLI boundary here: Fleet runs bounded HTTPS
+GETs through `curl --netrc-optional` and relies on curl's externally managed
+config, netrc or credential helper. Fleet never constructs an Authorization
+header, username, password or token. The client must be able to read
+`/2.0/user`, pull requests, comments, pull-request commit statuses and
+mergeability checks. Draft observation is supported, but mark-ready fails
+closed because Bitbucket's `PUT draft=false` has no atomic head-and-state
+precondition.
 `fleet init` writes the three `readyPolicies` tables above into
 the generated config and no `draftPolicy`: a Task is marked ready only once
 it, or the operator's config, names a policy. The shipped
