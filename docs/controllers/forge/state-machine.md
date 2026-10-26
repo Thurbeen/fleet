@@ -197,5 +197,5 @@ a gap on one entry is reported, not acted on.
 Deleting a Task deletes nothing else. Its entries go with its record; the
 ChangeRequests it followed stay for any other follower and are
 garbage-collected by the
-[ChangeRequest controller](../change-request-controller/state-machine.md#retention)
+[ChangeRequest controller](../change-request/state-machine.md#retention)
 after their retention. ForgeController adds no finalizer.

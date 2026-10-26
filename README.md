@@ -80,14 +80,14 @@ is deleted. Fleet v2 is a Rust binary with a file-backed resource store, one
 manager lease, and explicit ownership of each status field.
 
 Read the [overall architecture](docs/ARCHITECTURE.md) for the component boundaries
-and execution flow. The [Task controller guide](docs/task-controller/README.md)
+and execution flow. The [Task controller guide](docs/controllers/task/README.md)
 defines its [resource](docs/resources/task.md),
-[state machine](docs/task-controller/state-machine.md) and
-[interface](docs/task-controller/interface.md);
+[state machine](docs/controllers/task/state-machine.md) and
+[interface](docs/controllers/task/interface.md);
 [the contracts](crates/CONTRACTS.md) record the integration guarantees.
-The [ChangeRequest controller](docs/change-request-controller/README.md)
+The [ChangeRequest controller](docs/controllers/change-request/README.md)
 mirrors one change on a forge in the same shape, and the
-[Forge controller](docs/forge-controller/README.md) follows the changes a
+[Forge controller](docs/controllers/forge/README.md) follows the changes a
 worker declares, relays their feedback into its inbox and takes a draft
 change out of draft under a configured ready policy.
 V2 is a standalone binary; existing Python deployments stay on frozen v1.

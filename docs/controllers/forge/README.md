@@ -1,8 +1,8 @@
 # Forge controller
 
-ForgeController is a second controller over the [Task](../resources/task.md).
+ForgeController is a second controller over the [Task](../../resources/task.md).
 It is not a kind of its own and creates nothing. It reads the
-[ChangeRequests](../resources/change-request.md) a Task's worker declared,
+[ChangeRequests](../../resources/change-request.md) a Task's worker declared,
 keeps the worker informed about each by relaying what is new into the Task's
 inbox, and takes a draft change out of draft when a configured ready policy
 says it is ready. It owns one status subtree, `status.forge`, the
@@ -14,14 +14,14 @@ binary.
 
 | Read | Answers |
 | --- | --- |
-| [Task](../resources/task.md#following-declared-changes) | What does a worker declare, and what do `spec.forge` and `status.forge` hold? |
-| [ChangeRequest](../resources/change-request.md) | What does the snapshot this controller reads contain, and who deletes it? |
+| [Task](../../resources/task.md#following-declared-changes) | What does a worker declare, and what do `spec.forge` and `status.forge` hold? |
+| [ChangeRequest](../../resources/change-request.md) | What does the snapshot this controller reads contain, and who deletes it? |
 | [State machine](state-machine.md) | How does each declared change move from Following to Settled, and what is relayed when? |
 | [Interface](interface.md) | What are the probes, the one effect, the ready policies and the write rules? |
-| [Task controller](../task-controller/README.md) | How is the Task itself run, and how is its inbox delivered? |
-| [ChangeRequest controller](../change-request-controller/README.md) | Who mirrors the forge? |
-| [Native config](../configuration/fleet-toml.md#the-forge-section) | Where do defaults, hosts and ready policies come from? |
-| [Overall architecture](../ARCHITECTURE.md) | Where does this controller fit in Fleet? |
+| [Task controller](../task/README.md) | How is the Task itself run, and how is its inbox delivered? |
+| [ChangeRequest controller](../change-request/README.md) | Who mirrors the forge? |
+| [Native config](../../configuration/fleet-toml.md#the-forge-section) | Where do defaults, hosts and ready policies come from? |
+| [Overall architecture](../../ARCHITECTURE.md) | Where does this controller fit in Fleet? |
 
 ## One run
 
@@ -98,7 +98,7 @@ and the fake or stub forges:
 
 | Step | What | Where | Evidence |
 | --- | --- | --- | --- |
-| 1 | `fleet-forge` and the [ChangeRequest controller](../change-request-controller/README.md), with retention | `crates/fleet-forge`, `fleet-controllers/src/change_request.rs` | `change_request_controller`, `e2e_forge` |
+| 1 | `fleet-forge` and the [ChangeRequest controller](../change-request/README.md), with retention | `crates/fleet-forge`, `fleet-controllers/src/change_request.rs` | `change_request_controller`, `e2e_forge` |
 | 2 | The Task inbox, `fleet send`, and inbox delivery in TaskController | `fleet-api/src/inbox.rs`, `fleet-store` typed mutations, `fleet-controllers/src/task.rs` | `store_contract`, `task_controller`, `e2e_inbox` |
 | 3 | `fleet declare`, `spec.forge`, `status.declared`, `status.forge`, and ForgeController with the join message and the relay | `fleet-api/src/follow.rs`, `fleet-controllers/src/forge.rs`, `fleet-manager` (`declare`, the second controller's sweep), `fleet-store` (`record_relay`) | `forge_controller`, `e2e_forge_controller`, `store_contract`, `architecture` |
 | 4 | The mark-ready effect and the shipped ready policies | `fleet-api/src/follow.rs` (the policies and the key), `fleet-forge` (`mark_ready` in each adapter), `fleet-controllers/src/forge.rs` (the decision), `fleet-manager` (the effect and its receipt), `fleet-cli` (the `[forge]` keys, `fleet init`, the apply check) | `forge_controller`, `e2e_mark_ready`, `architecture` |

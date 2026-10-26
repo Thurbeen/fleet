@@ -12,7 +12,7 @@ it by one cursor.
 Arrows show calls during execution, not Cargo dependencies. `fleet-cli`
 constructs the adapters; `fleet-manager` depends on API traits rather than
 concrete store, runtime or forge crates. The
-[ChangeRequest controller](change-request-controller/README.md) runs in the
+[ChangeRequest controller](controllers/change-request/README.md) runs in the
 same sweep as the Task controller, through the Forge port.
 
 ## Components and boundaries
@@ -41,10 +41,11 @@ the manager performs the mark-ready effect.
 
 ## Desired state, observations and effects
 
-The [Task controller documentation](task-controller/README.md) defines
+The [controller index](controllers/README.md) links the three controller
+guides. The [Task controller documentation](controllers/task/README.md) defines
 the [resource](resources/task.md),
-[state machine](task-controller/state-machine.md) and
-[interface](task-controller/interface.md).
+[state machine](controllers/task/state-machine.md) and
+[interface](controllers/task/interface.md).
 
 One reconcile of a due Task follows this protocol:
 
@@ -129,7 +130,7 @@ See [execution configuration](resources/task-config.md).
 ## Forge integration
 
 [ChangeRequest](resources/change-request.md) and its
-[controller](change-request-controller/README.md) mirror one change on a
+[controller](controllers/change-request/README.md) mirror one change on a
 forge through the `Forge` port, with adapters in `fleet-forge` (`github` via
 `gh`, `gitlab` via `glab`, and a fake), and number every item they see so
 consumers diff by one cursor. A ChangeRequest belongs to no Task; it outlives
@@ -142,7 +143,7 @@ through `fleet-exec`, and no forge-specific name appears above the port.
 
 ### The Forge controller
 
-The [Forge controller](forge-controller/README.md) is a second controller
+The [Forge controller](controllers/forge/README.md) is a second controller
 over the Task. When a worker declares the change it opened, `fleet declare`
 ensures the ChangeRequest exists, and the controller follows it: it joins at
 the present with one message holding the whole snapshot, then relays what is

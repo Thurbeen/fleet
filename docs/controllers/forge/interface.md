@@ -3,13 +3,13 @@
 The controller is a pure decision function over a Task and the ChangeRequests
 it follows. The manager owns I/O, persistence and process execution. The
 [state machine](state-machine.md) defines how the values below change
-`status.forge`; the [Task resource](../resources/task.md#following-declared-changes)
+`status.forge`; the [Task resource](../../resources/task.md#following-declared-changes)
 lists the fields on the Task.
 
 ## Controller API
 
-Source: [ForgeController](../../crates/fleet-controllers/src/forge.rs) and
-[the Task's forge fields](../../crates/fleet-api/src/follow.rs).
+Source: [ForgeController](../../../crates/fleet-controllers/src/forge.rs) and
+[the Task's forge fields](../../../crates/fleet-api/src/follow.rs).
 
 ```rust
 pub struct ForgeInput<'a> {
@@ -180,7 +180,7 @@ snapshot, the Task and the probes above:
 
 `fleet init` writes three policies into the generated config, `checks`,
 `checks-and-bots` and `strict`, and no `draftPolicy`; the
-[native config](../configuration/fleet-toml.md#the-forge-section) shows
+[native config](../../configuration/fleet-toml.md#the-forge-section) shows
 them. They are ordinary entries: rename, edit or delete them. The four
 predicates above are the whole configurable vocabulary: a policy naming any
 other key, `workerDone` and `workerIdle` included, is refused at config
@@ -216,7 +216,7 @@ a generation it has not seen.
 
 `fleet declare TASK --change-request URL` is a manager verb, like
 `fleet result` (`declare_change_request` in
-[the verbs](../../crates/fleet-manager/src/verbs.rs)):
+[the verbs](../../../crates/fleet-manager/src/verbs.rs)):
 
 1. Parse the URL through the Forge port; a host not configured is refused.
 2. Ensure one ChangeRequest exists for it, named from the canonical ref, by
@@ -238,7 +238,7 @@ which is polled until it settles and then removed by retention, and the next
 
 ## Manager execution protocol
 
-The [Task controller's protocol](../task-controller/interface.md#manager-execution-protocol)
+The [Task controller's protocol](../task/interface.md#manager-execution-protocol)
 applies, with these additions:
 
 1. Each controller has its own due gate: TaskController's `status.notBefore`,
@@ -277,7 +277,7 @@ mutations, `append_inbox`, `record_relay` and `record_delivery`, each named
 by its caller and each naming its source with its own prefix, with one rule
 the store enforces, no duplicate keys across `inbox` and `deliveries`.
 This is an addition to the store's one-owner-per-field contract, stated in
-[the contracts](../../crates/CONTRACTS.md#what-is-served), not an exception
+[the contracts](../../../crates/CONTRACTS.md#what-is-served), not an exception
 to it: no mutation touches another manager's field. The architecture test
 lists which crates may name each manager, as it does for the managers that
 exist.

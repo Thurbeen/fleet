@@ -4,7 +4,7 @@ Fleet v2 runs agent sessions through Task resources and their controller. A
 Task is one agent session doing one brief. This file says what each part guarantees
 and which tests hold it to that. The [overall architecture](../docs/ARCHITECTURE.md)
 explains the component boundaries. The
-[Task controller guide](../docs/task-controller/README.md) defines the
+[Task controller guide](../docs/controllers/task/README.md) defines the
 resource fields, state machine and controller interface.
 
 Fleet v2 is a clean break from the Python v1 control plane. It reads none of
@@ -24,7 +24,7 @@ Unrecognized kinds are refused on write as `unknown kind "X"`. A Task spec
 accepts the fields below (`deny_unknown_fields`), and no object may carry
 `ownerReferences`.
 
-The [Forge controller](../docs/forge-controller/README.md) is a second
+The [Forge controller](../docs/controllers/forge/README.md) is a second
 controller over the Task: it follows the changes a worker declared and
 relays their feedback into the Task's inbox, a status field with no single
 owner, `status.inbox`, reached only through the typed mutations under
@@ -271,8 +271,8 @@ the name `cr-<12 hex of sha256(<kind>/<host>/<project>/<id>)>` when the
 manifest gives none, and reuses an existing object only when it mirrors the
 same change: its `status.ref` once written, else its own URL parsed. See the
 [resource](../docs/resources/change-request.md),
-[state machine](../docs/change-request-controller/state-machine.md) and
-[interface](../docs/change-request-controller/interface.md).
+[state machine](../docs/controllers/change-request/state-machine.md) and
+[interface](../docs/controllers/change-request/interface.md).
 
 ChangeRequestController is a pure function from the ChangeRequest and one
 observation of its change to a plan: the status to write and, after

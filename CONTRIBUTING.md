@@ -124,7 +124,7 @@ README.md owns installation, resource examples and deliberate cutover.
 AGENTS.md owns working rules. This file owns contribution and release gates.
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) owns the overall structure and
 boundaries.
-[docs/task-controller](docs/task-controller/README.md) owns the Task resource,
+[docs/controllers/task](docs/controllers/task/README.md) owns the Task resource,
 state machine and controller interface. `crates/CONTRACTS.md` owns integration
 guarantees and implementation coverage; `crates/architecture.toml` is the
 executable graph policy. Keep each claim in its owning document and update

@@ -6,13 +6,13 @@ that decision through the store and runtime ports.
 
 | Read | Answers |
 | --- | --- |
-| [Task](../resources/task.md) | What do I apply, inspect and report as a worker? |
-| [TaskConfig](../resources/task-config.md) | How do reusable defaults and frozen launches work? |
-| [EnvProvider](../resources/env-provider.md) | How do stored/file/command environment sources work? |
-| [Native config](../configuration/fleet-toml.md) | How do I configure the store, runtime and model variables? |
+| [Task](../../resources/task.md) | What do I apply, inspect and report as a worker? |
+| [TaskConfig](../../resources/task-config.md) | How do reusable defaults and frozen launches work? |
+| [EnvProvider](../../resources/env-provider.md) | How do stored/file/command environment sources work? |
+| [Native config](../../configuration/fleet-toml.md) | How do I configure the store, runtime and model variables? |
 | [State machine](state-machine.md) | Which transitions, retries and recovery paths are possible? |
 | [Interface](interface.md) | What are the inputs, outputs, ports and write ordering? |
-| [Overall architecture](../ARCHITECTURE.md) | Where does this controller fit in Fleet? |
+| [Overall architecture](../../ARCHITECTURE.md) | Where does this controller fit in Fleet? |
 
 ## One run
 
@@ -36,7 +36,7 @@ retry deadline or run a background watch; the caller invokes it again.
 `fleet up` is the resident alternative: it retains the manager lease and
 periodically invokes bounded sweeps for all due Tasks, independently of agent
 activity. Its default VEGA session is an ordinary Task from the bundled
-starter. See [bootstrap and recovery](../../README.md#build-and-try-it).
+starter. See [bootstrap and recovery](../../../README.md#build-and-try-it).
 `NeedsAttention` is a condition, not a phase: delivery reads and releases can
 recover while attention is raised. See the [state machine](state-machine.md)
 for the distinction between bounded sends and continuing recovery attempts.
@@ -45,11 +45,11 @@ for the distinction between bounded sends and continuing recovery attempts.
 
 | Responsibility | Source | Tests |
 | --- | --- | --- |
-| Pure decisions and requested probes | [TaskController](../../crates/fleet-controllers/src/task.rs) | [Controller transitions](../../crates/fleet-controllers/tests/task_controller.rs) |
-| Resource and effect types | [Task types](../../crates/fleet-api/src/task.rs), [plans](../../crates/fleet-api/src/plan.rs) | [CLI lifecycle](../../crates/fleet-cli/tests/e2e_task_lifecycle.rs) |
-| Lease, status, intent and receipt ordering | [Manager](../../crates/fleet-manager/src/lib.rs) | [Store contract](../../crates/fleet-store/tests/store_contract.rs), [CLI lifecycle](../../crates/fleet-cli/tests/e2e_task_lifecycle.rs) |
-| Session identity and delivery journal | [Thurbox runtime](../../crates/fleet-runtime/src/thurbox.rs) | [Runtime E2E](../../crates/fleet-cli/tests/e2e_runtime.rs) |
-| Inbox: `fleet send`, typed mutations and delivery | [Inbox types](../../crates/fleet-api/src/inbox.rs), [verbs](../../crates/fleet-manager/src/verbs.rs), [store](../../crates/fleet-store/src/lib.rs) | [Inbox E2E](../../crates/fleet-cli/tests/e2e_inbox.rs), [Store contract](../../crates/fleet-store/tests/store_contract.rs), [Controller transitions](../../crates/fleet-controllers/tests/task_controller.rs) |
+| Pure decisions and requested probes | [TaskController](../../../crates/fleet-controllers/src/task.rs) | [Controller transitions](../../../crates/fleet-controllers/tests/task_controller.rs) |
+| Resource and effect types | [Task types](../../../crates/fleet-api/src/task.rs), [plans](../../../crates/fleet-api/src/plan.rs) | [CLI lifecycle](../../../crates/fleet-cli/tests/e2e_task_lifecycle.rs) |
+| Lease, status, intent and receipt ordering | [Manager](../../../crates/fleet-manager/src/lib.rs) | [Store contract](../../../crates/fleet-store/tests/store_contract.rs), [CLI lifecycle](../../../crates/fleet-cli/tests/e2e_task_lifecycle.rs) |
+| Session identity and delivery journal | [Thurbox runtime](../../../crates/fleet-runtime/src/thurbox.rs) | [Runtime E2E](../../../crates/fleet-cli/tests/e2e_runtime.rs) |
+| Inbox: `fleet send`, typed mutations and delivery | [Inbox types](../../../crates/fleet-api/src/inbox.rs), [verbs](../../../crates/fleet-manager/src/verbs.rs), [store](../../../crates/fleet-store/src/lib.rs) | [Inbox E2E](../../../crates/fleet-cli/tests/e2e_inbox.rs), [Store contract](../../../crates/fleet-store/tests/store_contract.rs), [Controller transitions](../../../crates/fleet-controllers/tests/task_controller.rs) |
 
 The lifecycle E2E suite drives the built CLI from apply to result and release,
 including crashes, failed attempts and Unknown observations. The runtime E2E

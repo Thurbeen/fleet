@@ -731,14 +731,14 @@ fn the_gate_refuses_missing_tools() {
 }
 
 #[test]
-fn docs_gate_rejects_broken_links_and_malformed_linked_svg() {
+fn docs_gate_rejects_broken_links_malformed_svg_and_inconsistent_structure() {
     let e = Env::new();
     e.repo();
     e.write("Cargo.toml", "[workspace]\nmembers=[]\n");
     e.write("README.md", "# Fixture\n\n![Diagram](diagram.svg)\n");
     e.write(
         "diagram.svg",
-        "<svg xmlns=\"http://www.w3.org/2000/svg\"><path/></svg>",
+        "<svg xmlns=\"http://www.w3.org/2000/svg\"><style>@media (prefers-color-scheme: light) { :root { color: #000; } } @media (prefers-color-scheme: dark) { :root { color: #fff; } }</style><path/></svg>",
     );
     e.git(&["add", "."]);
     let (ok, out) = e.call(&["check", "docs"], &[]);
@@ -749,6 +749,18 @@ fn docs_gate_rejects_broken_links_and_malformed_linked_svg() {
     fs::remove_file(e.0.join("diagram.svg")).unwrap();
     let (ok, out) = e.call(&["check", "docs"], &[]);
     assert!(!ok && out.contains("missing link"), "{out}");
+
+    e.write(
+        "diagram.svg",
+        "<svg xmlns=\"http://www.w3.org/2000/svg\"><path/></svg>",
+    );
+    let (ok, out) = e.call(&["check", "docs"], &[]);
+    assert!(!ok && out.contains("light and dark modes"), "{out}");
+
+    e.write("docs/task-controller/README.md", "# Task controller\n");
+    e.git(&["add", "."]);
+    let (ok, out) = e.call(&["check", "docs"], &[]);
+    assert!(!ok && out.contains("docs/controllers/task"), "{out}");
 }
 #[cfg(unix)]
 #[test]

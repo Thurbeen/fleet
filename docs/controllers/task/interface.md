@@ -2,13 +2,13 @@
 
 The controller is a pure decision function. The manager owns I/O, persistence
 and process execution. The [state machine](state-machine.md) defines how the
-values below change the Task; the [resource](../resources/task.md) defines the external
+values below change the Task; the [resource](../../resources/task.md) defines the external
 JSON fields.
 
 ## Controller API
 
-Source: [TaskController](../../crates/fleet-controllers/src/task.rs) and
-[plan types](../../crates/fleet-api/src/plan.rs).
+Source: [TaskController](../../../crates/fleet-controllers/src/task.rs) and
+[plan types](../../../crates/fleet-api/src/plan.rs).
 
 ```rust
 pub struct TaskInput<'a> {
@@ -51,7 +51,7 @@ sent without a known receipt.
 
 `Observations` holds `host`, `find`, `ready`, `brief_delivered` and `at_rest`.
 Each is optional: `None` means no answer was supplied, not a negative answer.
-Each supplied answer is an [Observation](../../crates/fleet-api/src/observation.rs):
+Each supplied answer is an [Observation](../../../crates/fleet-api/src/observation.rs):
 
 | Value | Meaning | Safe inference |
 | --- | --- | --- |
@@ -88,7 +88,7 @@ reusing a key does not inherit readiness or at-rest proof for the recorded id.
 
 ## Manager execution protocol
 
-Source: [Manager](../../crates/fleet-manager/src/lib.rs).
+Source: [Manager](../../../crates/fleet-manager/src/lib.rs).
 
 1. Acquire the manager lease and list Tasks. A list that is Unknown is not
    treated as an empty list.
@@ -129,7 +129,7 @@ external action already started. Recovery relies on stable runtime keys.
 
 ## Runtime port
 
-Source: [Runtime](../../crates/fleet-api/src/runtime.rs). All session operations
+Source: [Runtime](../../../crates/fleet-api/src/runtime.rs). All session operations
 return `Observation<T>`; a refused effect is
 `Known(EffectOutcome::Failed { why })`, distinct from an Unknown outcome.
 
@@ -160,8 +160,8 @@ pure code.
 
 ## Store port and write ownership
 
-Source: [Store](../../crates/fleet-api/src/store.rs) and
-[worker verbs](../../crates/fleet-manager/src/verbs.rs).
+Source: [Store](../../../crates/fleet-api/src/store.rs) and
+[worker verbs](../../../crates/fleet-manager/src/verbs.rs).
 
 | Writer | May change | Required fencing |
 | --- | --- | --- |
@@ -215,7 +215,7 @@ status stays bounded however many messages it is sent. The
 
 ## The second controller over the Task
 
-The [Forge controller](../forge-controller/interface.md) extends this
+The [Forge controller](../forge/interface.md) extends this
 interface without changing what exists:
 
 - ForgeController has its own due gate (`ForgeController::due`: a
@@ -228,7 +228,7 @@ interface without changing what exists:
 - `Probe::Object { kind, name }` is answered by the manager from the store
   before any runtime or forge probe, and `Probe::Whoami { host }` through
   the `Forge` port, cached for the sweep, as `Probe::Change { ref }` is for
-  the [ChangeRequest controller](../change-request-controller/interface.md).
+  the [ChangeRequest controller](../change-request/interface.md).
   `AtRest` is reused by ForgeController's `workerIdle` predicate. The
   plan's `delete` field, by which that controller retires its own object,
   and `appends`, the inbox entries ForgeController lands with its status,
