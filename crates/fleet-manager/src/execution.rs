@@ -110,3 +110,45 @@ pub(crate) fn resolve(
         Observation::Unknown { why } => Err(StoreError::Unknown(why)),
     }
 }
+
+/// Resolve the same explicit provider sources for plugin observers, once per sweep.
+pub(crate) fn resolve_providers(
+    store: &dyn Store,
+    runtime: &dyn Runtime,
+    refs: &[fleet_api::config::ConfigRef],
+    lease: &mut fleet_api::LeaseToken,
+    ttl: u64,
+) -> Result<std::collections::BTreeMap<String, String>, StoreError> {
+    let mut identities = Vec::new();
+    let mut providers = Vec::new();
+    for r in refs {
+        providers.push(typed::<EnvProviderSpec>(
+            ENV_PROVIDER,
+            &source(store, ENV_PROVIDER, &r.name, &mut identities)?.spec,
+        )?);
+    }
+    let mut env = std::collections::BTreeMap::new();
+    for provider in providers {
+        let mut data = provider.data;
+        for source in provider.sources {
+            if matches!(source, fleet_api::config::EnvSource::Command { .. }) && ttl <= 20_000 {
+                return Err(StoreError::Invalid(
+                    "environment command requires lease above 20000 ms".into(),
+                ));
+            }
+            *lease = store.renew_lease(lease, ttl)?;
+            match runtime.env_source(&source) {
+                Observation::Known(map) => merge_env(&mut data, &map),
+                Observation::Unknown { .. } => {
+                    return Err(StoreError::Unknown(
+                        "plugin environment source unavailable".into(),
+                    ));
+                }
+            }
+            validate_env(&data)?;
+        }
+        merge_env(&mut env, &data);
+    }
+    validate_env(&env)?;
+    Ok(env)
+}

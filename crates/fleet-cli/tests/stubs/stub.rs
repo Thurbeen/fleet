@@ -199,6 +199,9 @@ fn main() -> ExitCode {
         std::io::Write::write_all(&mut std::io::stdout(), &bytes).expect("output");
         return ExitCode::SUCCESS;
     }
+    if args.first().map(String::as_str) == Some("plugin") {
+        return plugin(&args);
+    }
     log_call(&args);
     let role = std::env::current_exe()
         .ok()
@@ -917,4 +920,54 @@ fn answer(
         }
         other => err(format!("stub: {other} is not modelled")),
     }
+}
+
+/// Protocol fixture: reads only the explicit input directory, never operator state.
+fn plugin(args: &[String]) -> ExitCode {
+    let root = PathBuf::from(&args[1]);
+    let call = args.last().unwrap();
+    let scenario: Value =
+        serde_json::from_slice(&fs::read(root.join("plugin.json")).unwrap()).unwrap();
+    let mut input = String::new();
+    std::io::stdin().read_to_string(&mut input).unwrap();
+    for line in input.lines() {
+        let req: Value = serde_json::from_str(line).unwrap();
+        let mut log = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(root.join("plugin-calls.jsonl"))
+            .unwrap();
+        writeln!(log, "{}", json!({"call":call,"input":req,"envNames":std::env::vars().map(|(k,_)|k).collect::<Vec<_>>()})).unwrap();
+        if scenario["failCall"] == *call {
+            if scenario["failure"] == "flood" {
+                std::io::stdout()
+                    .write_all(&vec![b'x'; 9 * 1024 * 1024])
+                    .unwrap();
+            }
+            sleep(Duration::from_secs(600));
+        }
+        let payload = match call.as_str() {
+            "manifest" => json!({"manifest":scenario["manifest"]}),
+            "probes" => {
+                json!({"probes": if req["observations"].as_object().unwrap().is_empty() {scenario.get("probes").cloned().unwrap_or(json!([]))} else {json!([])}})
+            }
+            "reconcile" if scenario["reflect"] == true => {
+                json!({"plan":{"status":{"observedGeneration":req["object"]["metadata"]["generation"],"observations":req["observations"]}}})
+            }
+            "reconcile" => json!({"plan": scenario["plan"]}),
+            "observe" if scenario["observeUnknown"] == true => {
+                json!({"unknown":{"why":"Throttled","retryAfterMs":1000}})
+            }
+            "observe" => {
+                json!({"known": {"seen": true,"providerWon":std::env::var("PLUGIN_SECRET").ok().as_deref()==Some("provider-value")}})
+            }
+            "perform" => json!({"outcome": {"done": {"posted": true}}}),
+            _ => panic!("unexpected call"),
+        };
+        let mut answer = payload;
+        answer["id"] = req["id"].clone();
+        answer["ok"] = json!(true);
+        println!("{answer}");
+    }
+    ExitCode::SUCCESS
 }

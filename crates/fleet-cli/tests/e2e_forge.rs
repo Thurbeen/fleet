@@ -728,6 +728,7 @@ fn a_stale_delete_plan_cannot_remove_a_recreated_object() {
     let runtime = FakeRuntime::new(FakeHost::open(&env.fake).unwrap());
     let forge_port = Arc::new(forge);
     let manager = Manager {
+        plugins: None,
         store: &racing,
         runtime: &runtime,
         clock: &SystemClock,

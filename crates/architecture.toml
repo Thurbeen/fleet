@@ -18,13 +18,13 @@
 role = "pure"
 deps = []
 external = ["serde", "serde_json", "thiserror"]
-probes = ["fleet-store", "fleet-controllers", "fleet-exec", "fleet-runtime", "fleet-forge"]
+probes = ["fleet-store", "fleet-controllers", "fleet-exec", "fleet-runtime", "fleet-forge", "fleet-plugin"]
 
 [crates.fleet-controllers]
 role = "pure"
 deps = ["fleet-api"]
 external = ["serde_json"]
-probes = ["fleet-store", "fleet-runtime", "fleet-forge", "fleet-manager", "fleet-exec"]
+probes = ["fleet-store", "fleet-runtime", "fleet-forge", "fleet-plugin", "fleet-manager", "fleet-exec"]
 
 # The only crate that starts a process: bounded, its whole tree killed past
 # the bound.
@@ -47,19 +47,23 @@ deps = ["fleet-api", "fleet-exec"]
 role = "adapter"
 deps = ["fleet-api", "fleet-exec"]
 
+[crates.fleet-plugin]
+role = "adapter"
+deps = ["fleet-api", "fleet-exec"]
+
 [crates.fleet-manager]
 role = "orchestration"
 deps = ["fleet-api", "fleet-controllers"]
 
 [crates.fleet-cli]
 role = "edge"
-deps = ["fleet-api", "fleet-manager", "fleet-runtime", "fleet-store", "fleet-forge"]
+deps = ["fleet-api", "fleet-manager", "fleet-runtime", "fleet-store", "fleet-forge", "fleet-plugin"]
 # Every write is the manager's: the CLI parses, calls a verb, and prints.
 forbidden_methods = [
   "create", "update_spec", "update_status", "append_inbox", "record_delivery",
   "record_relay", "remove_finalizer", "delete", "delete_fenced", "acquire_lease",
   "renew_lease", "release_lease", "reconcile", "probes", "spawn", "release",
-  "change", "mark_ready", "whoami",
+  "change", "mark_ready", "whoami", "call", "admit", "plugin_mutate",
 ]
 
 [crates.fleet-arch]
@@ -88,6 +92,7 @@ clippy_guards = [
 # `ForgeController` owns `Task.status.forge` and appends through the
 # manager's relay write.
 [status_writers]
+"fleet_api::store::FieldManager::Plugin" = ["fleet-api", "fleet-controllers"]
 "fleet_api::store::FieldManager::TaskController" = ["fleet-api", "fleet-controllers"]
 "fleet_api::store::FieldManager::ChangeRequestController" = ["fleet-api", "fleet-controllers"]
 "fleet_api::store::FieldManager::ForgeController" = ["fleet-api", "fleet-controllers"]
@@ -126,3 +131,8 @@ why = "a second way to start a process would bypass fleet-exec's bounds"
 path = "fleet_api::forge::Forge"
 allowed = ["fleet-api", "fleet-manager", "fleet-forge", "fleet-cli"]
 why = "only the manager performs the mark-ready effect, through the port the CLI wired"
+
+[[restricted]]
+path = "fleet_api::plugin::Plugins"
+allowed = ["fleet-api", "fleet-plugin", "fleet-manager", "fleet-cli"]
+why = "only the manager may invoke plugin observer and effect calls"

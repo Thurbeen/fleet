@@ -465,6 +465,7 @@ fn manager_renews_after_the_final_probe_before_waiting_under_its_lease() {
         session,
     };
     let manager = Manager {
+        plugins: None,
         store: &store,
         runtime: &runtime,
         clock: clock.as_ref(),

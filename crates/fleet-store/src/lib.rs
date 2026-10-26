@@ -18,6 +18,7 @@
 //! compare-and-swap across processes.
 
 pub mod durable;
+mod plugin;
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -67,6 +68,8 @@ struct Marker {
 pub struct FileStore {
     root: PathBuf,
     clock: Arc<dyn Clock + Send + Sync>,
+    plugins: BTreeMap<String, (String, fleet_api::plugin::PluginKind)>,
+    plugin_rights: BTreeMap<String, fleet_api::plugin::TaskAccess>,
 }
 
 impl std::fmt::Debug for FileStore {
@@ -92,6 +95,8 @@ impl FileStore {
         let store = FileStore {
             root: root.to_path_buf(),
             clock,
+            plugins: BTreeMap::new(),
+            plugin_rights: BTreeMap::new(),
         };
         let marker = root.join("store.json");
         match fs::read(&marker) {
@@ -239,10 +244,10 @@ impl FileStore {
     }
 
     fn read(&self, kind: &str, name: &str) -> Observation<Option<Object>> {
-        if let Err(e) = validate_kind(kind).and_then(|()| validate_name(name)) {
+        if let Err(e) = self.read_kind(kind).and_then(|()| validate_name(name)) {
             return Observation::unknown(e.to_string());
         }
-        read_object(&self.object_path(kind, name), kind, name)
+        read_object(self, &self.object_path(kind, name), kind, name)
     }
 
     /// Read under the lock for a write: Unknown is an error, absence NotFound.
@@ -327,7 +332,12 @@ impl FileStore {
     }
 }
 
-fn read_object(path: &Path, kind: &str, name: &str) -> Observation<Option<Object>> {
+fn read_object(
+    store: &FileStore,
+    path: &Path,
+    kind: &str,
+    name: &str,
+) -> Observation<Option<Object>> {
     let bytes = match fs::read(path) {
         Ok(b) => b,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Observation::Known(None),
@@ -346,8 +356,8 @@ fn read_object(path: &Path, kind: &str, name: &str) -> Observation<Option<Object
                         .finalizers
                         .iter()
                         .any(|f| f == task::RELEASE_FINALIZER))
-                || validate_object(&o).is_err()
-                || validate_status(kind, &o.status).is_err()
+                || store.validate_read(&o).is_err()
+                || store.validate_plugin_status(kind, &o.status).is_err()
             {
                 Observation::unknown(format!(
                     "corrupt {}: invalid persisted resource metadata or status",
@@ -380,7 +390,8 @@ fn check_owned(kind: &str, old: &Value, new: &Value, by: FieldManager) -> Result
     let old = old.as_object().unwrap_or(&empty);
     let new = new.as_object().unwrap_or(&empty);
     for field in old.keys().chain(new.keys()) {
-        if old.get(field) != new.get(field) && kinds::status_owner(kind, field) != Some(by) {
+        if old.get(field) != new.get(field) && kinds::status_owner(kind, field) != Some(by.clone())
+        {
             return Err(StoreError::Forbidden(format!(
                 "{} may not write status.{field} of {kind}",
                 by.name()
@@ -405,7 +416,7 @@ fn encode_status(st: &TaskStatus) -> Result<Value, StoreError> {
 /// Each inbox appender names its source with its own prefix: `cli/<user>`
 /// for `fleet send`, `forge/<change>` for the Forge controller.
 fn check_source(by: FieldManager, entry: &InboxEntry) -> Result<(), StoreError> {
-    let Some(prefix) = kinds::inbox_source_prefix(by) else {
+    let Some(prefix) = kinds::inbox_source_prefix(by.clone()) else {
         return Ok(());
     };
     if !entry.from.starts_with(prefix) || entry.from.len() == prefix.len() {
@@ -439,6 +450,53 @@ fn expect_rv(obj: &Object, expected: u64) -> Result<(), StoreError> {
 }
 
 impl Store for FileStore {
+    fn plugin_mutate(
+        &self,
+        mutation: fleet_api::plugin::Mutation,
+        by: FieldManager,
+        lease: &LeaseToken,
+    ) -> Result<Value, StoreError> {
+        self.mutate_plugin(mutation, by, lease)
+    }
+
+    fn served_kinds(&self) -> Vec<String> {
+        let mut kinds = vec![
+            "Task".into(),
+            "TaskConfig".into(),
+            "EnvProvider".into(),
+            "ChangeRequest".into(),
+        ];
+        kinds.extend(self.plugins.keys().cloned());
+        if let Ok(entries) = fs::read_dir(self.root.join("objects")) {
+            for entry in entries.flatten() {
+                if let Some(name) = entry.file_name().to_str()
+                    && valid_plugin_kind(name)
+                    && !kinds.iter().any(|k| k == name)
+                {
+                    kinds.push(name.into());
+                }
+            }
+        }
+        kinds
+    }
+    fn validate(&self, obj: &Object) -> Result<(), StoreError> {
+        if !kinds::is_served(&obj.kind) && !self.plugins.contains_key(&obj.kind) {
+            return Err(StoreError::Invalid(
+                "unknown kind without configured plugin".into(),
+            ));
+        }
+
+        if obj.metadata.labels.contains_key(fleet_api::plugin::CREATOR) {
+            return Err(StoreError::Forbidden(
+                "fleet.dev/plugin is assigned by the host".into(),
+            ));
+        }
+        self.validate_read(obj)
+    }
+    fn validate_plugin_status(&self, kind: &str, status: &Value) -> Result<(), StoreError> {
+        FileStore::validate_plugin_status(self, kind, status)
+    }
+
     fn launch(&self, task: &Object) -> Result<Option<fleet_api::config::Execution>, StoreError> {
         validate_name(&task.metadata.uid)?;
         let path = self
@@ -544,7 +602,7 @@ impl Store for FileStore {
     }
 
     fn list(&self, kind: &str) -> Observation<Vec<Object>> {
-        if let Err(e) = validate_kind(kind) {
+        if let Err(e) = self.read_kind(kind) {
             return Observation::unknown(e.to_string());
         }
         let dir = self.kind_dir(kind);
@@ -571,7 +629,7 @@ impl Store for FileStore {
                     path.display()
                 ));
             };
-            match read_object(&path, kind, name) {
+            match read_object(self, &path, kind, name) {
                 Observation::Known(Some(o)) => objs.push(o),
                 // Removed between read_dir and read: it is gone, which is a fact.
                 Observation::Known(None) => {}
@@ -590,7 +648,7 @@ impl Store for FileStore {
             )));
         }
         let _guard = self.lock()?;
-        self.insert(obj)
+        self.insert(obj, None)
     }
 
     fn update_spec(
@@ -617,7 +675,27 @@ impl Store for FileStore {
                 obj.key()
             )));
         }
-        validate_spec_update(kind, &obj.spec, &spec)?;
+        if let Some((_, def)) = self.plugins.get(kind) {
+            schema(&def.spec, &spec)?;
+            if def.immutable_spec && obj.spec != spec {
+                return Err(StoreError::Invalid("plugin spec is immutable".into()));
+            }
+        } else {
+            validate_spec_update(kind, &obj.spec, &spec)?;
+        }
+        let labels = if let Some(mut labels) = labels {
+            if labels.contains_key(fleet_api::plugin::CREATOR) {
+                return Err(StoreError::Forbidden(
+                    "plugin creator label is assigned by the host".into(),
+                ));
+            }
+            if let Some(creator) = obj.metadata.labels.get(fleet_api::plugin::CREATOR) {
+                labels.insert(fleet_api::plugin::CREATOR.into(), creator.clone());
+            }
+            Some(labels)
+        } else {
+            None
+        };
         let mut changed = false;
         if obj.spec != spec {
             obj.spec = spec;
@@ -650,13 +728,13 @@ impl Store for FileStore {
         by: FieldManager,
         lease: Option<&LeaseToken>,
     ) -> Result<Object, StoreError> {
-        if kinds::controller_of(kind).is_none() {
+        if self.controller_of(kind).is_none() {
             return Err(StoreError::Forbidden(format!("kind {kind} has no status")));
         }
         if !(status.is_object() || status.is_null()) {
             return Err(StoreError::Invalid("status must be an object".into()));
         }
-        validate_status(kind, &status)?;
+        self.validate_plugin_status(kind, &status)?;
         let _guard = self.lock()?;
         if by.is_controller() {
             match lease {
@@ -677,7 +755,13 @@ impl Store for FileStore {
                 obj.key()
             )));
         }
-        check_owned(kind, &obj.status, &status, by)?;
+        if let Some((owner, _)) = self.plugins.get(kind) {
+            if by.name() != format!("plugin/{owner}") {
+                return Err(StoreError::Forbidden("plugin status owner mismatch".into()));
+            }
+        } else {
+            check_owned(kind, &obj.status, &status, by)?;
+        }
         if obj.status == status {
             return Ok(obj);
         }
@@ -695,13 +779,13 @@ impl Store for FileStore {
         by: FieldManager,
         lease: Option<&LeaseToken>,
     ) -> Result<Object, StoreError> {
-        if !kinds::may_append_inbox(by) {
+        if !kinds::may_append_inbox(by.clone()) {
             return Err(StoreError::Forbidden(format!(
                 "{} does not append to status.inbox",
                 by.name()
             )));
         }
-        check_source(by, &entry)?;
+        check_source(by.clone(), &entry)?;
         let _guard = self.lock()?;
         if by.is_controller() {
             match lease {
@@ -741,7 +825,7 @@ impl Store for FileStore {
         by: FieldManager,
         lease: &LeaseToken,
     ) -> Result<Object, StoreError> {
-        if !kinds::may_record_relay(by) {
+        if !kinds::may_record_relay(by.clone()) {
             return Err(StoreError::Forbidden(format!(
                 "{} does not record relays; only the Forge controller does",
                 by.name()
@@ -756,7 +840,7 @@ impl Store for FileStore {
             )
         };
         for entry in &appends {
-            check_source(by, entry)?;
+            check_source(by.clone(), entry)?;
         }
         let _guard = self.lock()?;
         self.check_lease(lease)?;
@@ -794,7 +878,7 @@ impl Store for FileStore {
         by: FieldManager,
         lease: &LeaseToken,
     ) -> Result<Object, StoreError> {
-        if !kinds::may_record_delivery(by) {
+        if !kinds::may_record_delivery(by.clone()) {
             return Err(StoreError::Forbidden(format!(
                 "{} does not record deliveries; only {}'s controller does",
                 by.name(),
@@ -855,7 +939,7 @@ impl Store for FileStore {
         by: FieldManager,
         lease: &LeaseToken,
     ) -> Result<DeleteOutcome, StoreError> {
-        if kinds::controller_of(kind) != Some(by) {
+        if self.controller_of(kind) != Some(by.clone()) {
             return Err(StoreError::Forbidden(format!(
                 "only {kind}'s controller deletes its own objects"
             )));
@@ -885,7 +969,7 @@ impl Store for FileStore {
         by: FieldManager,
         lease: &LeaseToken,
     ) -> Result<DeleteOutcome, StoreError> {
-        if kinds::controller_of(kind) != Some(by) {
+        if self.controller_of(kind) != Some(by.clone()) {
             return Err(StoreError::Forbidden(format!(
                 "only {kind}'s controller removes its finalizers"
             )));
@@ -966,8 +1050,8 @@ impl Store for FileStore {
 impl FileStore {
     /// Create under the store lock the caller holds: validation, exclusive
     /// name, live owners, then the store's own metadata.
-    fn insert(&self, mut obj: Object) -> Result<Object, StoreError> {
-        validate_object(&obj)?;
+    fn insert(&self, mut obj: Object, creator: Option<&str>) -> Result<Object, StoreError> {
+        self.validate(&obj)?;
         let m = &obj.metadata;
         if !m.uid.is_empty()
             || m.generation != 0
@@ -985,6 +1069,11 @@ impl FileStore {
                 "status is written by controllers, not on create".into(),
             ));
         }
+        if let Some(creator) = creator {
+            obj.metadata
+                .labels
+                .insert(fleet_api::plugin::CREATOR.into(), creator.into());
+        }
         let key = obj.key();
         match self.read(&obj.kind, &obj.metadata.name) {
             Observation::Known(None) => {}
@@ -1001,7 +1090,12 @@ impl FileStore {
         obj.metadata.uid = new_uid(rv);
         obj.metadata.generation = 1;
         obj.metadata.resource_version = rv;
-        obj.metadata.finalizers = kinds::finalizers_on_create(&obj.kind);
+        obj.metadata.finalizers = self
+            .plugins
+            .get(&obj.kind)
+            .filter(|(_, k)| k.finalizer)
+            .map(|(p, _)| vec![format!("fleet.dev/plugin/{p}")])
+            .unwrap_or_else(|| kinds::finalizers_on_create(&obj.kind));
         obj.metadata.creation_timestamp = Some(self.now());
         let dir = self.kind_dir(&obj.kind);
         fs::create_dir_all(&dir).map_err(|e| io_unknown(&dir, e))?;
@@ -1032,6 +1126,122 @@ fn new_uid(rv: u64) -> String {
     format!("u{rv}-{:016x}", h.finish())
 }
 
+fn valid_plugin_kind(kind: &str) -> bool {
+    !kind.is_empty()
+        && kind.len() <= 64
+        && kind.starts_with(|c: char| c.is_ascii_uppercase())
+        && kind.chars().all(|c| c.is_ascii_alphanumeric())
+}
+fn schema(schema: &Value, value: &Value) -> Result<(), StoreError> {
+    let validator = jsonschema::validator_for(schema)
+        .map_err(|_| StoreError::Invalid("invalid plugin JSON Schema".into()))?;
+    validator
+        .validate(value)
+        .map_err(|_| StoreError::Invalid("plugin value fails JSON Schema".into()))
+}
+impl FileStore {
+    pub fn with_plugins(
+        mut self,
+        registrations: &[fleet_api::plugin::Registration],
+    ) -> Result<Self, StoreError> {
+        let mut seen = std::collections::BTreeSet::new();
+        for registration in registrations {
+            self.plugin_rights.insert(
+                registration.manifest.name.clone(),
+                registration.config.tasks,
+            );
+            fleet_api::plugin::validate_manifest(
+                &registration.manifest,
+                &registration.manifest.name,
+            )?;
+            for kind in &registration.manifest.kinds {
+                if !seen.insert(kind.kind.to_ascii_lowercase()) {
+                    return Err(StoreError::Invalid("duplicate plugin kind".into()));
+                }
+                jsonschema::validator_for(&kind.spec)
+                    .map_err(|_| StoreError::Invalid("invalid spec schema".into()))?;
+                if let Some(status) = &kind.status {
+                    jsonschema::validator_for(status)
+                        .map_err(|_| StoreError::Invalid("invalid status schema".into()))?;
+                }
+                self.plugins.insert(
+                    kind.kind.clone(),
+                    (registration.manifest.name.clone(), kind.clone()),
+                );
+            }
+        }
+        Ok(self)
+    }
+    fn read_kind(&self, kind: &str) -> Result<(), StoreError> {
+        if self.plugins.contains_key(kind)
+            || (valid_plugin_kind(kind) && self.kind_dir(kind).is_dir())
+        {
+            Ok(())
+        } else {
+            validate_kind(kind)
+        }
+    }
+    fn controller_of(&self, kind: &str) -> Option<FieldManager> {
+        self.plugins
+            .get(kind)
+            .map(|(name, _)| plugin_writer(name))
+            .or_else(|| kinds::controller_of(kind))
+    }
+    fn validate_read(&self, obj: &Object) -> Result<(), StoreError> {
+        if kinds::is_served(&obj.kind) {
+            return validate_object(obj);
+        }
+        self.read_kind(&obj.kind)?;
+        validate_name(&obj.metadata.name)?;
+        if obj.api_version != fleet_api::API_VERSION || !obj.metadata.owner_references.is_empty() {
+            return Err(StoreError::Invalid("plugin envelope".into()));
+        }
+        if let Some((_, kind)) = self.plugins.get(&obj.kind) {
+            schema(&kind.spec, &obj.spec)?;
+        }
+        Ok(())
+    }
+    fn validate_plugin_status(&self, kind: &str, status: &Value) -> Result<(), StoreError> {
+        if kinds::is_served(kind) {
+            return validate_status(kind, status);
+        }
+        if status.is_null() {
+            return Ok(());
+        }
+        let mut own = status
+            .as_object()
+            .ok_or_else(|| StoreError::Invalid("plugin status must be object".into()))?
+            .clone();
+        let host_only = own
+            .keys()
+            .any(|k| fleet_api::plugin::RESERVED.contains(&k.as_str()));
+        for reserved in fleet_api::plugin::RESERVED {
+            own.remove(reserved);
+        }
+        if status.get("notBefore").is_some_and(|v| !v.is_u64())
+            || status.get("host").is_some_and(|v| !v.is_object())
+            || status.get("effects").is_some_and(|v| !v.is_object())
+        {
+            return Err(StoreError::Invalid(
+                "malformed reserved plugin status".into(),
+            ));
+        }
+        if host_only && own.is_empty() {
+            return Ok(());
+        }
+        if let Some((_, def)) = self.plugins.get(kind)
+            && let Some(s) = &def.status
+        {
+            schema(s, &Value::Object(own))?;
+        }
+        Ok(())
+    }
+}
+
+fn plugin_writer(name: &str) -> FieldManager {
+    fleet_api::plugin::writer_for_store(name)
+}
+
 #[cfg(test)]
 mod initialization_tests {
     use super::*;
@@ -1048,6 +1258,8 @@ mod initialization_tests {
         let store = FileStore {
             root: root.clone(),
             clock: Arc::new(SystemClock),
+            plugins: BTreeMap::new(),
+            plugin_rights: BTreeMap::new(),
         };
         assert!(matches!(store.init(), Err(StoreError::Unsupported(_))));
         assert_eq!(fs::read(&marker).unwrap(), legacy);

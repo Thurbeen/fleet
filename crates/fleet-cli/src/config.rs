@@ -26,6 +26,8 @@ pub struct Config {
     pub starter: Option<StarterConfig>,
     #[serde(default)]
     pub forge: Option<ForgeConfig>,
+    #[serde(default)]
+    pub plugins: BTreeMap<String, fleet_api::plugin::PluginConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -146,6 +148,27 @@ impl Config {
                 ));
             }
         }
+        for (name, plugin) in &config.plugins {
+            fleet_api::validate::validate_name(name).map_err(|e| e.to_string())?;
+            if !Path::new(&plugin.program).is_absolute()
+                || !Path::new(&plugin.cwd).is_absolute()
+                || !(1..=300_000).contains(&plugin.call_timeout_ms)
+                || plugin.args.iter().any(|a| a.contains('\0'))
+            {
+                return Err(
+                    "plugin requires absolute program/cwd and a bounded callTimeoutMs".into(),
+                );
+            }
+            let vars = plugin
+                .pass_env
+                .iter()
+                .map(|k| (k.clone(), String::new()))
+                .collect();
+            fleet_api::validate::validate_env(&vars).map_err(|e| e.to_string())?;
+            for source in &plugin.env_from {
+                fleet_api::validate::validate_name(&source.name).map_err(|e| e.to_string())?;
+            }
+        }
         Ok(config)
     }
 
@@ -156,6 +179,7 @@ impl Config {
             runtime: None,
             starter: None,
             forge: None,
+            plugins: BTreeMap::new(),
         }
     }
 }

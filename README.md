@@ -307,3 +307,19 @@ explicit manager-local JSON files or bounded commands. Explicit Task values
 win; launch values are frozen privately before the first effect and reused
 across retries and restarts. See [execution configuration](docs/resources/task-config.md)
 for runnable manifests, precedence, security boundaries and snapshot recovery.
+
+## External controllers
+
+Register trusted protocol-1 controller programs under `[plugins.<name>]` in
+Fleet’s native config. Their manifests add schema-validated resource kinds;
+`fleet apply`, `get`, `list`, `status` and `delete` accept those kinds. Inspect
+registration with `fleet list plugins --json`, and run their controllers with
+`fleet reconcile` or `fleet up`.
+
+The [Plugin controller guide](docs/controllers/plugin/README.md) defines the
+protocol, admitted operations, effect recovery and environment separation.
+Plugins can create Tasks and, by default, steer only Tasks carrying their
+creator label. Worker results remain the worker’s responsibility. Plugin
+programs run as the manager user; controller environment scrubbing is a
+purity contract, not a sandbox. SDKs and issue-specific integrations are
+separate projects.

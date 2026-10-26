@@ -193,9 +193,9 @@ fleet delete task design-305         # release the session, then remove
 fleet reconcile                      # run the controller under the lease
 ```
 
-## Planned additions for plugins
+## Plugin operations
 
-Design, not implemented. The [Plugin controller](../controllers/plugin/README.md)
+The [Plugin controller](../controllers/plugin/README.md)
 lets a registered plugin do to a Task what a person does, through the same
 manager verbs, never through a status write:
 

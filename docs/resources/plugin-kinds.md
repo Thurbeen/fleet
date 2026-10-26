@@ -1,6 +1,6 @@
 # Plugin-defined kinds
 
-Design, not implemented. A plugin kind is refused as unknown today.
+Registered plugin kinds are served alongside Fleet’s built-in resources.
 
 A plugin declares the kinds it reconciles in its manifest, and the store
 serves them beside Task, TaskConfig, EnvProvider and ChangeRequest while the
@@ -110,13 +110,13 @@ stays until the mirror's plan, or a person, deletes it.
 fleet --config fleet.toml list plugins --json
 fleet --config fleet.toml apply -f issue-source.json
 fleet --config fleet.toml get issuesource app
-fleet --config fleet.toml list issues --json
+fleet --config fleet.toml list issue --json
 fleet --config fleet.toml status issue issue-88 --json
 fleet --config fleet.toml delete issue issue-88
 ```
 
 `list plugins` prints each registered plugin, its kinds, its protocol and
-whether the manager last found it available. The other verbs take a plugin
+whether its current manifest call succeeded. The other verbs take a plugin
 kind as they take `task` or `changerequest`; `apply` of a plugin kind loads
 the config to find the plugin and asks it for its manifest, one bounded call
 cached for the process, to validate the spec. A kind whose plugin is not in

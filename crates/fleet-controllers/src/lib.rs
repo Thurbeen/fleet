@@ -35,6 +35,10 @@
 //! use fleet_exec::run;
 //! ```
 //!
+//! ```compile_fail
+//! use fleet_plugin::StdioPlugins;
+//! ```
+//!
 //! The positive control: the port types it decides over are in scope.
 //!
 //! ```
@@ -46,6 +50,7 @@
 
 pub mod change_request;
 pub mod forge;
+pub mod plugin;
 pub mod task;
 
 pub use change_request::{ChangeRequestController, ChangeRequestInput, ChangeRequestObservations};

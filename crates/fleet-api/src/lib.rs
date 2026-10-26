@@ -29,6 +29,10 @@
 //! use fleet_forge::GithubForge;
 //! ```
 //!
+//! ```compile_fail
+//! use fleet_plugin::StdioPlugins;
+//! ```
+//!
 //! The positive control: the same shape of `use` compiles for this crate.
 //!
 //! ```
@@ -47,6 +51,7 @@ pub mod kinds;
 pub mod meta;
 pub mod observation;
 pub mod plan;
+pub mod plugin;
 pub mod result;
 pub mod runtime;
 pub mod store;

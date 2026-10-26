@@ -280,7 +280,22 @@ fn run(cli: Cli) -> Result<(), Failure> {
             }
         }
     }
-    let file_store = FileStore::open(&data_dir)?;
+    let plugins = fleet_plugin::StdioPlugins::new(config.plugins.clone());
+    let registrations = fleet_manager::plugins::register(&plugins, &config.plugins)?;
+    if let Command::List { kind, json } = &cli.command
+        && kind == "plugins"
+    {
+        let rows:Vec<_>=registrations.iter().map(|r|json!({"name":r.manifest.name,"protocol":r.manifest.protocol,"kinds":r.manifest.kinds.iter().map(|k|&k.kind).collect::<Vec<_>>(),"available":true})).collect();
+        if *json {
+            print_json(&json!(rows));
+        } else {
+            for row in rows {
+                println!("{} {}", row["name"], row["kinds"]);
+            }
+        }
+        return Ok(());
+    }
+    let file_store = FileStore::open(&data_dir)?.with_plugins(&registrations)?;
     let store: &dyn Store = &file_store;
     match cli.command {
         Command::Up {
@@ -288,18 +303,25 @@ fn run(cli: Cli) -> Result<(), Failure> {
             lease_ttl_ms,
         } => {
             let path = config_path.ok_or_else(|| fail("no configuration; run fleet init first"))?;
-            cmd_up(store, &config, &path, poll_ms, lease_ttl_ms)
+            cmd_up(
+                store,
+                &config,
+                &path,
+                poll_ms,
+                lease_ttl_ms,
+                (&plugins, &registrations),
+            )
         }
         Command::Init { .. } => unreachable_version(),
         Command::Apply { file, json } => cmd_apply(store, &config, &file, json),
         Command::Get { kind, name } => {
-            let obj = get(store, &served_kind(&kind)?, &name)?;
+            let obj = get(store, &served_kind(store, &kind)?, &name)?;
             print_json(&serde_json::to_value(&obj).map_err(|e| fail(e.to_string()))?);
             Ok(())
         }
-        Command::List { kind, json } => cmd_list(store, &served_kind(&kind)?, json),
+        Command::List { kind, json } => cmd_list(store, &served_kind(store, &kind)?, json),
         Command::Status { kind, name, json } => {
-            let obj = get(store, &served_kind(&kind)?, &name)?;
+            let obj = get(store, &served_kind(store, &kind)?, &name)?;
             let summary = status_summary(&obj);
             if json {
                 print_json(&summary);
@@ -348,7 +370,7 @@ fn run(cli: Cli) -> Result<(), Failure> {
             Ok(())
         }
         Command::Delete { kind, name } => {
-            let kind = served_kind(&kind)?;
+            let kind = served_kind(store, &kind)?;
             let outcome = delete(store, &kind, &name)?;
             let word = match outcome {
                 fleet_api::DeleteOutcome::Marked => {
@@ -369,7 +391,8 @@ fn run(cli: Cli) -> Result<(), Failure> {
             let forge = open_forge(&config)?;
             let bound = runtime
                 .operation_bound()
-                .max(forge.as_ref().map_or(0, |f| f.operation_bound()));
+                .max(forge.as_ref().map_or(0, |f| f.operation_bound()))
+                .max(fleet_api::plugin::Plugins::operation_bound(&plugins));
             let lease_ttl_ms = lease_for(bound, lease_ttl_ms)?;
             let holder = holder.unwrap_or_else(|| format!("fleet-{}", std::process::id()));
             let manager = Manager {
@@ -380,6 +403,7 @@ fn run(cli: Cli) -> Result<(), Failure> {
                 forge: forge.as_ref().map(|f| f as &dyn Forge),
                 change_request_defaults: forge_defaults(&config),
                 forge_defaults: relay_defaults(&config),
+                plugins: Some((&plugins, &registrations)),
             };
             let report = manager.run(RunOptions {
                 max_passes,
@@ -421,6 +445,10 @@ fn cmd_up(
     config_path: &Path,
     poll_ms: u64,
     lease_ttl_ms: Option<u64>,
+    plugins: (
+        &dyn fleet_api::plugin::Plugins,
+        &[fleet_api::plugin::Registration],
+    ),
 ) -> Result<(), Failure> {
     let starter = config
         .starter
@@ -466,7 +494,8 @@ fn cmd_up(
         runtime
             .operation_bound()
             .max(forge.as_ref().map_or(0, |f| f.operation_bound()))
-            .max(poll_ms.saturating_mul(2)),
+            .max(poll_ms.saturating_mul(2))
+            .max(plugins.0.operation_bound()),
         lease_ttl_ms,
     )?;
     let stopped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -481,6 +510,7 @@ fn cmd_up(
         forge: forge.as_ref().map(|f| f as &dyn Forge),
         change_request_defaults: forge_defaults(config),
         forge_defaults: relay_defaults(config),
+        plugins: Some(plugins),
     };
     println!(
         "Task/vega {}: reconciling all Tasks; config {}; Ctrl-C stops Fleet and retains sessions",
@@ -764,7 +794,7 @@ const DEFAULT_CALL_TIMEOUT_MS: u64 = 15_000;
 
 /// `task`, `tasks` and `Task` all name Task. Unsupported kinds are refused
 /// here, as on write, never reported as unreadable.
-fn served_kind(kind: &str) -> Result<String, Failure> {
+fn served_kind(store: &dyn Store, kind: &str) -> Result<String, Failure> {
     let lower = kind.to_ascii_lowercase();
     let singular = lower.strip_suffix('s').unwrap_or(&lower);
     let kind = match singular {
@@ -774,8 +804,14 @@ fn served_kind(kind: &str) -> Result<String, Failure> {
         "changerequest" => fleet_api::change_request::KIND.to_string(),
         _ => kind.to_string(),
     };
-    fleet_api::validate::validate_kind(&kind)?;
-    Ok(kind)
+    if let Some(served) = store
+        .served_kinds()
+        .into_iter()
+        .find(|s| s.eq_ignore_ascii_case(&kind) || s.eq_ignore_ascii_case(singular))
+    {
+        return Ok(served);
+    }
+    Err(StoreError::Invalid(format!("unknown kind {kind:?}")).into())
 }
 
 fn get(store: &dyn Store, kind: &str, name: &str) -> Result<Object, Failure> {
@@ -924,6 +960,8 @@ fn status_summary(obj: &Object) -> Value {
         ] {
             own.insert(k.to_string(), field(k));
         }
+    } else if !fleet_api::kinds::is_served(&obj.kind) {
+        own.insert("status".into(), obj.status.clone());
     } else {
         for k in ["session", "execution", "brief", "result", "forge"] {
             own.insert(k.to_string(), field(k));

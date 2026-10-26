@@ -1,7 +1,5 @@
 # Plugin controller interface
 
-Design, not implemented.
-
 A plugin is one program the manager runs through `fleet-exec`, with one of
 five calls on its argument list and one request on stdin. The controller
 calls are pure functions; the observer calls are bounded I/O. The
@@ -12,7 +10,7 @@ defines the objects the calls are about.
 ## Registration
 
 A plugin is registered in the native config, operator-owned, under
-[`[plugins.<name>]`](../../configuration/fleet-toml.md#planned-plugins-section):
+[`[plugins.<name>]`](../../configuration/fleet-toml.md#plugins-section):
 the program, its arguments, its working directory, its call bound, which
 Tasks it may touch, and the environment its observer half receives. Nothing
 in the store can register a plugin. At `fleet up` the manager makes the
@@ -36,12 +34,10 @@ failed call, which is never an answer of `unknown` and never a plan.
 <program> <args...> perform     stdin: one request
 ```
 
-`probes`, `reconcile` and `observe` are batched: the manager may put up to
-50 requests for one plugin on stdin as JSON Lines, each with an `id`, and
-reads one answer per line, matched by `id`, in any order. A request without
-an answer when the process exits is a failed call for that request alone. A
-`perform` request is always alone in its process, so a kill past the bound
-kills one effect.
+Requests and answers use JSON Lines with matching `id` values. The current
+host sends one request per process for every call; batching is reserved for
+a later optimization. A missing or unmatched answer fails the call. A
+`perform` request is always alone, so a kill past the bound kills one effect.
 
 Every request carries `protocol`, `plugin`, `call` and `id`. Every answer
 carries `id` and either `ok: true` with the call's payload or `ok: false`
@@ -154,7 +150,7 @@ at most three, until the answer is empty:
 | `appends[]` | Inbox entries for a Task, as `plugin/<name>` | Same store checks as `fleet send`; the key is `task/<task>/<uid>/plugin/<plugin>/<key>`, unique for the Task; the Task is within `tasks`. |
 | `declares[]` | `{task, uid, changeRequest: url}`, the `declare` verb on the Task's behalf | The verb's own preconditions: a brief receipt, not deleting; the Task is within `tasks`. |
 | `deletes[]` | Objects to delete, named with their `uid` | Own kinds, or a Task within `tasks`. Fenced on `uid`. |
-| `effects[]` | `{key, request}` to perform through `perform`, with intent before and receipt after | At most eight; no key already under `status.effects`. |
+| `effects[]` | `{key, request}` to perform through `perform`, with intent before and receipt after | At most eight; existing keys are retained and never repeated. |
 | `delete` | Retire this object, by `uid` and `resourceVersion` under the lease | Not deleting already. |
 | `removeFinalizer` | Let a deleting object go | The object is deleting and holds this plugin's finalizer. |
 
@@ -212,7 +208,7 @@ config.
 | Item | Bound |
 | --- | --- |
 | One call | `plugins.<name>.callTimeoutMs`, default 15000; the tree is killed past it. |
-| Requests per process | 50, `probes`, `reconcile` and `observe`; one for `perform`. |
+| Requests per process | One. |
 | Probe rounds per object per pass | 3. |
 | stdout per process | 8 MiB; past it the process is killed and every unanswered request has failed. |
 | One plan's `status` | 256 KiB. |
@@ -238,10 +234,10 @@ every kind: a mirror's Task outlives the mirror unless the plugin deletes it.
 
 | Piece | Crate | Role |
 | --- | --- | --- |
-| `Plugins` port: `operation_bound`, `manifest`, `probes`, `reconcile`, `observe`, `perform` | `fleet-api` | Pure types; the port the manager calls. The plan it returns is untyped JSON until admitted. |
+| `Plugins` port: `operation_bound`, `available`, and `call` (manifest, probes, reconcile, observe, perform) | `fleet-api` | Pure types; the port the manager calls. The plan it returns is untyped JSON until admitted. |
 | `PluginGate`: a pure function from an untrusted plan, the plugin's rights and the object to typed writes or a refusal | `fleet-controllers` | The only code that names `FieldManager::Plugin`. One test per rule. |
 | The stdio host: batching, environment scrubbing, JSON Lines, bounds | `fleet-plugin` (new), depending on `fleet-api` and `fleet-exec` | The only crate that knows a plugin is a process. |
-| Dynamic kinds, schema validation, the creator label, the plugin appender | `fleet-store` | Kinds are a value the store is opened with, built from the config and the manifests. |
+| Dynamic kinds, schema validation, the creator label, the plugin appender | `fleet-store` | Kinds are a value the store is configured with, built from the config and the manifests. |
 | The sweep after ForgeController; the verbs on a plugin's behalf | `fleet-manager` | Renews the lease before every plugin process. |
 | `[plugins]`, `fleet list plugins`, the kinds on the command line | `fleet-cli` | `apply` of a plugin kind reaches the manifest through the port, cached per process. |
 

@@ -36,6 +36,8 @@ pub const OUTPUT_CAP: usize = 16 * 1024 * 1024;
 pub struct Spec {
     /// Clear inherited environment before injecting declared variables.
     pub clear_env: bool,
+    /// Kill the process tree when either output stream exceeds this bound.
+    pub output_limit: Option<usize>,
     pub program: OsString,
     pub args: Vec<OsString>,
     /// Removed from the inherited environment first.
@@ -155,7 +157,11 @@ impl Drop for Guard {
 
 type Sink = Arc<Mutex<Vec<u8>>>;
 
-fn drain(pipe: Option<impl Read + Send + 'static>) -> (Sink, thread::JoinHandle<()>) {
+fn drain(
+    pipe: Option<impl Read + Send + 'static>,
+    limit: usize,
+    overflow: Arc<std::sync::atomic::AtomicBool>,
+) -> (Sink, thread::JoinHandle<()>) {
     let sink: Sink = Arc::default();
     let out = sink.clone();
     let handle = thread::spawn(move || {
@@ -166,7 +172,10 @@ fn drain(pipe: Option<impl Read + Send + 'static>) -> (Sink, thread::JoinHandle<
                 Ok(0) | Err(_) => return,
                 Ok(n) => {
                     let mut v = out.lock().unwrap_or_else(|e| e.into_inner());
-                    let room = OUTPUT_CAP.saturating_sub(v.len());
+                    let room = limit.saturating_sub(v.len());
+                    if n > room {
+                        overflow.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
                     v.extend_from_slice(&buf[..n.min(room)]);
                 }
             }
@@ -252,10 +261,16 @@ pub fn run(spec: &Spec) -> Outcome {
             let _ = pipe.write_all(&bytes);
         });
     }
-    let (out, out_h) = drain(guard.child.stdout().take());
-    let (err, err_h) = drain(guard.child.stderr().take());
+    let overflow = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let limit = spec.output_limit.unwrap_or(OUTPUT_CAP).min(OUTPUT_CAP);
+    let (out, out_h) = drain(guard.child.stdout().take(), limit, overflow.clone());
+    let (err, err_h) = drain(guard.child.stderr().take(), limit, overflow.clone());
     let mut pause = Duration::from_millis(2);
     let code = loop {
+        if spec.output_limit.is_some() && overflow.load(std::sync::atomic::Ordering::Relaxed) {
+            guard.kill();
+            return Outcome::NotStarted("output limit exceeded; process tree killed".into());
+        }
         match guard.child.try_wait() {
             Ok(Some(status)) => break Some(status.code()),
             Ok(None) if Instant::now() < deadline => {
@@ -284,6 +299,9 @@ pub fn run(spec: &Spec) -> Outcome {
     if !settle(&readers, deadline.max(Instant::now() + GRACE)) {
         guard.kill();
         settle(&readers, Instant::now() + GRACE);
+    }
+    if spec.output_limit.is_some() && overflow.load(std::sync::atomic::Ordering::Relaxed) {
+        return Outcome::NotStarted("output limit exceeded".into());
     }
     Outcome::Exited {
         code,

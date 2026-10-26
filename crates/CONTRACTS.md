@@ -34,25 +34,26 @@ controller's one effect, mark-ready, is the only write Fleet makes on a
 forge: it takes a declared draft out of draft under a configured ready
 policy, and nothing else.
 
-The [Plugin controller](../docs/controllers/plugin/README.md) is designed
-and not served: a host for controllers written outside this repository,
-whose [kinds](../docs/resources/plugin-kinds.md) the store would serve from
-their manifests, whose pure `probes` and `reconcile` calls and bounded
-`observe` and `perform` calls would each be one process through `fleet-exec`,
-and whose plans a pure gate would admit before the manager writes them as
-field manager `plugin/<name>`. No plugin kind is served today.
+The [Plugin controller](../docs/controllers/plugin/README.md) hosts external
+controllers. The store serves their schema-validated
+[kinds](../docs/resources/plugin-kinds.md); the manager calls their pure
+`probes` and `reconcile` and bounded `observe` and `perform` through the
+`Plugins` port. A pure gate admits plans before leased status writes and
+atomic verbs. `e2e_plugin_controller` and `plugin_gate` exercise the host.
+SDKs and issue-specific plugins remain separate projects.
 
 ## Crates and the allowed graph
 
 ```text
 fleet-api          pure           types and ports
-fleet-controllers  pure           the three controllers  -> api
+fleet-controllers  pure           controllers and gate   -> api
 fleet-exec         adapter        the one process spawner
 fleet-store        adapter        file store             -> api
 fleet-runtime      adapter        thurbox-cli, fake      -> api, exec
 fleet-forge        adapter        gh, glab, fake         -> api, exec
+fleet-plugin       adapter        bounded plugin stdio   -> api, exec
 fleet-manager      orchestration  lease, plans, verbs    -> api, controllers
-fleet-cli          edge           the `fleet` binary     -> api, manager, store, runtime, forge
+fleet-cli          edge           the `fleet` binary     -> api, manager, store, runtime, forge, plugin
 fleet-arch         tooling        the architecture test
 fleet-dev          tooling        `cargo xtask`: gate and release
 ```

@@ -30,6 +30,7 @@ fn this_workspace_obeys_its_architecture() {
         "fleet-arch",
         "fleet-exec",
         "fleet-forge",
+        "fleet-plugin",
         "fleet-dev",
     ] {
         assert!(
@@ -958,4 +959,37 @@ fn a_second_controller_over_one_kind_is_named_by_the_controllers_alone() {
         ],
         &[("cli-method", "fx-cli")],
     );
+}
+
+#[test]
+fn plugin_identity_and_execution_stay_behind_the_gate_and_manager() {
+    let rules = RULES.replace("forbidden_methods = [\"update_status\", \"append_inbox\"]", "forbidden_methods = [\"update_status\", \"append_inbox\", \"call\", \"admit\", \"plugin_mutate\"]")
+        .replace("[status_writers]", "[status_writers]\n\"fx_api::store::FieldManager::Plugin\" = [\"fx-api\", \"fx-ctl\"]");
+    let api = "//! ```compile_fail\n//! use fx_store::Store;\n//! ```\npub mod store { pub enum FieldManager { Ctl, Worker, Cli, Plugin(String) } }\npub use store::FieldManager;\nuse serde::Serialize;\n";
+    expect(
+        "plugin-writer-from-manager",
+        &[
+            ("architecture.toml", &rules),
+            ("crates/fx-api/src/lib.rs", api),
+            (
+                "crates/fx-mgr/src/lib.rs",
+                "pub fn run() { let _ = fx_api::FieldManager::Plugin(\"issues\".into()); }\n",
+            ),
+        ],
+        &[("status-writer", "fx-mgr")],
+    );
+    for method in ["call", "admit", "plugin_mutate"] {
+        expect(
+            &format!("plugin-cli-{method}"),
+            &[
+                ("architecture.toml", &rules),
+                ("crates/fx-api/src/lib.rs", api),
+                (
+                    "crates/fx-cli/src/main.rs",
+                    &format!("fn main() {{ let s = fx_store::S; s.{method}(); fx_mgr::run(); }}\n"),
+                ),
+            ],
+            &[("cli-method", "fx-cli")],
+        );
+    }
 }

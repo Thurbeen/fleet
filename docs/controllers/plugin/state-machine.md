@@ -1,7 +1,5 @@
 # Plugin controller state machine
 
-Design, not implemented.
-
 A plugin kind has no phase Fleet defines: the plugin's status is the plugin's,
 phases included. What Fleet defines is how one object of a plugin kind moves
 through a sweep, how an effect is carried from intent to receipt, and how an
@@ -110,9 +108,10 @@ A plugin is unavailable when its `manifest` call failed at `fleet up`, which
 refuses to start, or when three consecutive calls of either half failed to
 produce an answer at all (a process that could not start, exited nonzero
 without an answer, or timed out). An unavailable plugin's objects keep their
-`notBefore` and are not reconciled; the manager reports the plugin in its
-run output and in `fleet list plugins`, with the count, and tries again one
-call per sweep. An Unknown answer from `observe` is not a failure of the
+`notBefore` and are not reconciled; the manager reports it in run output and
+retries a manifest call once per
+sweep. `fleet list plugins` checks registration afresh in its own process. An
+Unknown answer from `observe` is not a failure of the
 plugin: it is an answer.
 
 ## Conditions

@@ -24,6 +24,7 @@
 //! and no receipts on that side.
 
 mod execution;
+pub mod plugins;
 pub mod verbs;
 
 use std::collections::BTreeMap;
@@ -81,6 +82,10 @@ pub struct Manager<'a> {
     pub holder: String,
     /// The configured forges; `None` when the config has no `[forge]`, in
     /// which case a ChangeRequest is reported as an error, never polled.
+    pub plugins: Option<(
+        &'a dyn fleet_api::plugin::Plugins,
+        &'a [fleet_api::plugin::Registration],
+    )>,
     pub forge: Option<&'a dyn Forge>,
     /// The `[forge]` defaults a ChangeRequest spec may override.
     pub change_request_defaults: ChangeRequestDefaults,
@@ -250,6 +255,7 @@ impl Manager<'_> {
                 busy |= self.tally(step, &obj.key(), report)?;
             }
             busy |= self.sweep_change_requests(lease, opts.lease_ttl, report)?;
+            busy |= self.sweep_plugins(lease, opts.lease_ttl, report)?;
             if !busy {
                 report.idle = true;
                 return Ok(());
@@ -358,7 +364,7 @@ impl Manager<'_> {
                 name,
                 status,
                 rv,
-                by,
+                by.clone(),
                 Some(&*lease),
             ) {
                 Ok(o) => {
@@ -379,7 +385,7 @@ impl Manager<'_> {
                 name,
                 &obj.metadata.uid,
                 rv,
-                by,
+                by.clone(),
                 lease,
             ) {
                 Ok(_) => step.wrote += 1,
@@ -739,16 +745,20 @@ impl Manager<'_> {
         if let Some(status) = status {
             let rv = current.metadata.resource_version;
             let written = match plan.delivery {
-                Some(receipt) => {
-                    self.store
-                        .record_delivery(&obj.metadata.name, status, receipt, rv, by, lease)
-                }
+                Some(receipt) => self.store.record_delivery(
+                    &obj.metadata.name,
+                    status,
+                    receipt,
+                    rv,
+                    by.clone(),
+                    lease,
+                ),
                 None => self.store.update_status(
                     task::KIND,
                     &obj.metadata.name,
                     status,
                     rv,
-                    by,
+                    by.clone(),
                     Some(&*lease),
                 ),
             };
@@ -790,7 +800,7 @@ impl Manager<'_> {
                 &obj.metadata.name,
                 &finalizer,
                 rv,
-                by,
+                by.clone(),
                 lease,
             )?;
             step.wrote += 1;
