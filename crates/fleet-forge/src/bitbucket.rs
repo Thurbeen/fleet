@@ -613,10 +613,11 @@ impl Forge for BitbucketCloudForge {
                     {
                         ChangeObservation::Known(None)
                     }
-                    _ => ChangeObservation::unknown(
+                    Ok(_) => ChangeObservation::unknown(
                         Uncertainty::Refused,
                         "the pull request was not found and its repository could not be verified",
                     ),
+                    Err(error) => unknown(error),
                 };
             }
             Err(error) => return unknown(error),

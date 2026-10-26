@@ -688,6 +688,16 @@ mod forge {
             return not_found();
         }
         let Some(resource) = parts.next() else {
+            if state["repoRateLimit"] == true {
+                let retry = state["retryAfter"].as_u64().unwrap_or(30);
+                return answer(
+                    ExitCode::from(1),
+                    &format!(
+                        "HTTP/2.0 429 Too Many Requests\r\nRetry-After: {retry}\r\nX-Ratelimit-Remaining: 0\r\n\r\n"
+                    ),
+                    "{\"message\":\"API rate limit exceeded for this user.\"}",
+                );
+            }
             return answer(
                 ExitCode::SUCCESS,
                 HEAD,

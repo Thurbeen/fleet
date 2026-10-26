@@ -1062,11 +1062,21 @@ fn bitbucket_cloud_state_identity_and_absence_are_not_guessed() {
 
     env.edit_stub(|s| {
         s["noRepo"] = json!(false);
+        s["repoRateLimit"] = json!(true);
+        s["retryAfter"] = json!(45);
         s["changes"]
             .as_object_mut()
             .unwrap()
             .remove("acme/widgets#12");
     });
+    env.expire_wait_of("ChangeRequest", &cr);
+    let before = now_ms();
+    env.reconcile().ok();
+    let st = env.change_request_status(&cr);
+    assert_condition(&st, "Reachable", "Unknown", "Throttled");
+    assert!(st["notBefore"].as_u64().unwrap() >= before + 45_000);
+
+    env.edit_stub(|s| s["repoRateLimit"] = json!(false));
     env.expire_wait_of("ChangeRequest", &cr);
     env.reconcile().ok();
     let st = env.change_request_status(&cr);
