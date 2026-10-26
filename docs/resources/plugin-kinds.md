@@ -6,7 +6,7 @@ A plugin declares the kinds it reconciles in its manifest, and the store
 serves them beside Task, TaskConfig, EnvProvider and ChangeRequest while the
 plugin is registered. They have Fleet's envelope, a spec the plugin's schema
 validates, and a status the plugin owns. This page defines what is common to
-every plugin kind; the [Plugin controller](../plugin-controller/README.md)
+every plugin kind; the [Plugin controller](../controllers/plugin/README.md)
 defines how they are reconciled.
 
 ## Example

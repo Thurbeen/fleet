@@ -1,6 +1,11 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 480" role="img" aria-labelledby="title desc">
 <title id="title">Plugin controller: one object of a plugin kind through one pass</title>
 <desc id="desc">At fleet up each registered plugin's manifest is read once and the store serves its kinds. When an object of a plugin kind is due, the plugin's pure probes function is asked in up to three rounds; store probes are answered from the store and plugin probes through the plugin's bounded observe call. The pure reconcile function returns a plan; a pure gate admits it against the plugin's rights; the status carrying the effect intents is written by compare-and-swap under the lease; then creates, patches, appends, declares and deletes run as manager verbs; then each effect runs through the plugin's bounded perform call and its receipt is written. A deleting object with a finalizer is reconciled until its plan removes the finalizer.</desc>
+<style>
+  svg { color-scheme:light dark }
+  @media (prefers-color-scheme: light) { svg &gt; rect{fill:#fff} svg &gt; g{fill:#182b3d} }
+  @media (prefers-color-scheme: dark) { svg &gt; rect{fill:#101820} svg &gt; g{fill:#e6edf3} [stroke="#7890a6"]{stroke:#71869a} [stroke="#405367"]{stroke:#a9bdd0} [fill="#405367"]{fill:#a9bdd0} [fill="#edf3f8"]{fill:#1d2a36} [fill="#f5f7fa"]{fill:#18232d} [fill="#fbf4e6"]{fill:#3b2d13} }
+</style>
 <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 Z" fill="#405367"/></marker></defs>
 <rect width="1040" height="480" rx="12" fill="#ffffff"/>
 <g font-family="system-ui,-apple-system,Segoe UI,sans-serif" fill="#182b3d">

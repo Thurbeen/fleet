@@ -15,13 +15,13 @@ comment on or implement each; a Notion plugin is the second.
 
 | Read | Answers |
 | --- | --- |
-| [Plugin kinds](../resources/plugin-kinds.md) | What does a plugin's resource look like, and who may write what on it? |
+| [Plugin kinds](../../resources/plugin-kinds.md) | What does a plugin's resource look like, and who may write what on it? |
 | [State machine](state-machine.md) | How does one object of a plugin kind move through a sweep, an effect, and deletion? |
 | [Interface](interface.md) | What is the protocol, the manifest, the probes, the plan verbs and the write rules? |
-| [Task](../resources/task.md#planned-additions-for-plugins) | What may a plugin do to a Task? |
-| [Native config](../configuration/fleet-toml.md#planned-plugins-section) | How is a plugin registered, bounded and given its secrets? |
-| [Forge controller](../forge-controller/README.md) | The controller this one is modelled on. |
-| [Overall architecture](../ARCHITECTURE.md#the-plugin-controller) | Where does this host fit in Fleet? |
+| [Task](../../resources/task.md#planned-additions-for-plugins) | What may a plugin do to a Task? |
+| [Native config](../../configuration/fleet-toml.md#planned-plugins-section) | How is a plugin registered, bounded and given its secrets? |
+| [Forge controller](../forge/README.md) | The controller this one is modelled on. |
+| [Overall architecture](../../ARCHITECTURE.md#the-plugin-controller) | Where does this host fit in Fleet? |
 
 ## One run
 

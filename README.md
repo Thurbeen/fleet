@@ -90,7 +90,7 @@ mirrors one change on a forge in the same shape, and the
 [Forge controller](docs/controllers/forge/README.md) follows the changes a
 worker declares, relays their feedback into its inbox and takes a draft
 change out of draft under a configured ready policy.
-The [Plugin controller](docs/plugin-controller/README.md), a host for
+The [Plugin controller](docs/controllers/plugin/README.md), a host for
 controllers written as scripts with their own kinds, is designed and not
 implemented.
 V2 is a standalone binary; existing Python deployments stay on frozen v1.

@@ -189,7 +189,7 @@ so a declared draft can be taken out of draft offline.
 
 ## Planned `[plugins]` section
 
-Design, not implemented. The [Plugin controller](../plugin-controller/README.md)
+Design, not implemented. The [Plugin controller](../controllers/plugin/README.md)
 registers each plugin here, operator-owned. The section is refused as
 unknown today, so this example does not load.
 

@@ -6,13 +6,13 @@ A plugin is one program the manager runs through `fleet-exec`, with one of
 five calls on its argument list and one request on stdin. The controller
 calls are pure functions; the observer calls are bounded I/O. The
 [state machine](state-machine.md) defines when each call is made and what is
-done with its answer; the [plugin kinds](../resources/plugin-kinds.md) page
+done with its answer; the [plugin kinds](../../resources/plugin-kinds.md) page
 defines the objects the calls are about.
 
 ## Registration
 
 A plugin is registered in the native config, operator-owned, under
-[`[plugins.<name>]`](../configuration/fleet-toml.md#planned-plugins-section):
+[`[plugins.<name>]`](../../configuration/fleet-toml.md#planned-plugins-section):
 the program, its arguments, its working directory, its call bound, which
 Tasks it may touch, and the environment its observer half receives. Nothing
 in the store can register a plugin. At `fleet up` the manager makes the

@@ -175,7 +175,7 @@ reported, not acted on.
 ### The Plugin controller
 
 Planned, design and not implemented: the
-[Plugin controller](plugin-controller/README.md), a host for controllers
+[Plugin controller](controllers/plugin/README.md), a host for controllers
 written outside this repository as scripts. A plugin registered under
 `[plugins.<name>]` declares its own kinds with a JSON Schema each, which the
 store then serves. For each due object of those kinds the manager runs the
@@ -194,7 +194,7 @@ and every plugin process is one bounded call through `fleet-exec`.
 
 The Task controller runs sessions and records worker claims. It does not
 verify that an artifact merged, conduct reviews, manage a forge or dispatch
-a hierarchy. Controller plugins are [designed](plugin-controller/README.md)
+a hierarchy. Controller plugins are [designed](controllers/plugin/README.md)
 and not loaded by this build. Connection details stay with thurbox;
 credentials stay with the agent and host.
 

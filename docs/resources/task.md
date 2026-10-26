@@ -195,7 +195,7 @@ fleet reconcile                      # run the controller under the lease
 
 ## Planned additions for plugins
 
-Design, not implemented. The [Plugin controller](../plugin-controller/README.md)
+Design, not implemented. The [Plugin controller](../controllers/plugin/README.md)
 lets a registered plugin do to a Task what a person does, through the same
 manager verbs, never through a status write:
 
