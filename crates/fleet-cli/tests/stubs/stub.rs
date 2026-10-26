@@ -820,10 +820,16 @@ mod forge {
                     "remoteUrl": web
                 })
             }
-            "pullRequestIterations" => json!({"count": 2, "value": [
-                {"id": 1, "sourceRefCommit": {"commitId": "h0"}},
-                {"id": 2, "sourceRefCommit": {"commitId": c["head"]}}
-            ]}),
+            "pullRequestIterations" => {
+                let mut values = vec![
+                    json!({"id": 1, "sourceRefCommit": {"commitId": "h0"}}),
+                    json!({"id": 2, "sourceRefCommit": {"commitId": c["head"]}}),
+                ];
+                if state["malformedIterations"] == true {
+                    values.push(json!({"sourceRefCommit": {"commitId": "newer-unknown"}}));
+                }
+                json!({"count": values.len(), "value": values})
+            }
             "pullRequestIterationStatuses" => {
                 let statuses: Vec<Value> = c["checks"]
                     .as_array()

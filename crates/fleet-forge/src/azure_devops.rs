@@ -226,8 +226,12 @@ fn answer(reply: Reply) -> Result<AzureAnswer, (Uncertainty, String, Option<Mill
 }
 
 fn retry_after_text(text: &str) -> Option<Millis> {
-    let at = text.find("retry after")?;
-    let secs = text[at + "retry after".len()..]
+    let text = text.to_ascii_lowercase();
+    let (at, marker) = ["retry-after", "retry after"]
+        .into_iter()
+        .filter_map(|marker| text.find(marker).map(|at| (at, marker)))
+        .min_by_key(|(at, _)| *at)?;
+    let secs = text[at + marker.len()..]
         .split(|c: char| !c.is_ascii_digit())
         .find(|s| !s.is_empty())?
         .parse::<u64>()
@@ -274,6 +278,19 @@ fn state_of(pr: &Value) -> Result<ChangeState, String> {
     }
 }
 
+fn latest_iteration(iterations: &[Value]) -> Result<(u64, &Value), String> {
+    let mut latest = None;
+    for iteration in iterations {
+        let id = iteration["id"]
+            .as_u64()
+            .ok_or("a pull request iteration has no numeric id")?;
+        if latest.is_none_or(|(latest_id, _)| id > latest_id) {
+            latest = Some((id, iteration));
+        }
+    }
+    latest.ok_or_else(|| "pull request has no iteration".into())
+}
+
 fn snapshot(
     expected_project: &str,
     expected_repository: &str,
@@ -294,10 +311,7 @@ fn snapshot(
     {
         return Err("the organization-level pull request id resolved to another repository".into());
     }
-    let latest = iterations
-        .iter()
-        .max_by_key(|v| v["id"].as_u64())
-        .ok_or("pull request has no iteration")?;
+    let (_, latest) = latest_iteration(iterations)?;
     let head = latest["sourceRefCommit"]["commitId"]
         .as_str()
         .ok_or("latest iteration has no sourceRefCommit.commitId")?
@@ -622,11 +636,11 @@ impl Forge for AzureDevopsForge {
             Ok(v) => v,
             Err(why) => return ChangeObservation::unknown(Uncertainty::Incomplete, why),
         };
-        let Some(iteration_id) = iterations.iter().filter_map(|v| v["id"].as_u64()).max() else {
-            return ChangeObservation::unknown(
-                Uncertainty::Unreadable,
-                "pull request has no numbered iteration",
-            );
+        let iteration_id = match latest_iteration(&iterations) {
+            Ok((id, _)) => id,
+            Err(why) => {
+                return ChangeObservation::unknown(Uncertainty::Unreadable, why);
+            }
         };
         let iteration = iteration_id.to_string();
         let mut status_routes = base.to_vec();
@@ -726,5 +740,10 @@ mod tests {
                 .canonical()
         );
         assert!(parse_url("https://server.example/Project/_git/Widgets/pullrequest/7").is_err());
+    }
+
+    #[test]
+    fn textual_retry_after_uses_the_standard_header_spelling() {
+        assert_eq!(retry_after_text("429 Retry-After: 45"), Some(45_000));
     }
 }

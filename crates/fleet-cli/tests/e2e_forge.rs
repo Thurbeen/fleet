@@ -1151,6 +1151,12 @@ fn azure_devops_services_pull_requests_use_canonical_organization_identity_and_c
     let st = env.change_request_status(&cr);
     assert_condition(&st, "Reachable", "Unknown", "Incomplete");
     assert_eq!(st["revision"], 1, "a full bounded page is not complete");
+    env.edit_stub(|s| {
+        s["changes"]["wingtip/project/widgets#7"]["policies"] = json!([
+            {"name": "required-build", "blocking": true, "status": "rejected", "url": "https://policy.test/1"},
+            {"name": "advisory", "blocking": false, "status": "broken", "url": "https://policy.test/2"}
+        ]);
+    });
 
     env.edit_stub(|s| s["retryAfter"] = json!(45));
     env.stub_fault("az", "rate-limit", 1);
@@ -1173,6 +1179,14 @@ fn azure_devops_services_pull_requests_use_canonical_organization_identity_and_c
         assert_condition(&st, "Reachable", "Unknown", reason);
         assert_eq!(st["revision"], 1, "{mode}");
     }
+
+    env.edit_stub(|s| s["malformedIterations"] = json!(true));
+    env.expire_wait_of("ChangeRequest", &cr);
+    env.reconcile().ok();
+    let st = env.change_request_status(&cr);
+    assert_condition(&st, "Reachable", "Unknown", "Unreadable");
+    assert_eq!(st["revision"], 1, "a malformed later iteration is not h1");
+    env.edit_stub(|s| s["malformedIterations"] = json!(false));
 
     env.edit_stub(|s| s["noRepo"] = json!(true));
     env.expire_wait_of("ChangeRequest", &cr);
