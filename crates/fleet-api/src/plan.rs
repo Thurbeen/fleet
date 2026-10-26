@@ -53,6 +53,10 @@ pub enum Action {
     /// Delete the session: its checkout and conversation go with it.
     Release {
         session: SessionRef,
+        /// Route cleanup through the worktree provisioner from immutable Task
+        /// intent, never from optional adapter output.
+        #[serde(default)]
+        provisioned: bool,
     },
     /// Take a draft change out of draft, through the Forge port: the only
     /// forge write Fleet performs. `expect` is the head and state the

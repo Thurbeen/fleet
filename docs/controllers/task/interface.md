@@ -159,7 +159,10 @@ manager routes a Spawn carrying explicit `worktree` intent through this port;
 ordinary sessions continue through Runtime. Its `provision`, `find` and
 `release` methods receive the separately wired Runtime, so an implementation
 can create paths with another mechanism and then delegate session operations.
-The pure controller does not select or name a provisioner.
+The pure controller does not select or name a provisioner. The manager rejects
+a provisioned spawn or lookup whose session omits verified resolved membership.
+Release remains routed through this port from immutable Task intent, so an
+incomplete adapter response cannot fall through to prepared-session cleanup.
 
 The Thurbox Runtime and WorktreeProvisioner adapters execute bounded
 `thurbox-cli` calls via `fleet-exec` and share the same configured identity.

@@ -151,7 +151,9 @@ Guarantees, each with its test:
   Prepared sessions go through the `Runtime` port; explicit worktree intent
   goes through the separately wired `WorktreeProvisioner` port. A provisioner
   may create paths and delegate session creation to any Runtime without adding
-  worktree knowledge to the controller or Runtime contract.
+  worktree knowledge to the controller or Runtime contract. Fleet rejects a
+  provisioned session until that port returns verified resolved membership;
+  release routing follows the immutable Task intent, not optional adapter output.
 - **Brief once.** The brief is sent only to a ready session, under one key
   the session stores. An unconfirmed send is asked about: delivered is a
   recovered receipt, not delivered is one more send under the same key, and

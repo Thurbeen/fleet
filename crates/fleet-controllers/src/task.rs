@@ -860,7 +860,13 @@ impl Pass<'_, '_> {
             "Releasing",
             format!("attempt {attempt}"),
         );
-        self.intend(key, Action::Release { session });
+        self.intend(
+            key,
+            Action::Release {
+                session,
+                provisioned: self.spec.workspace.worktree.is_some(),
+            },
+        );
     }
 
     fn key(&self, action: &str, attempt: Option<u32>) -> String {

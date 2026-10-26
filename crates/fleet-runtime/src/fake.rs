@@ -29,7 +29,8 @@ pub struct Fault {
     /// `host`, `spawn`, `find`, `list`, `events`, `ready`, `brief`,
     /// `briefDelivered`, `atRest`, `release`.
     pub call: String,
-    /// `unknown`, `fail` or `abort`.
+    /// `unknown`, `fail`, `abort`, or test-only `unmarked` for a provisioner
+    /// response whose session omits its resolved workspace.
     pub outcome: String,
     /// For `unknown`: whether the effect happened before the answer was lost.
     #[serde(default)]
@@ -261,6 +262,7 @@ enum Plan {
     },
     Fail,
     Abort,
+    Unmarked,
 }
 
 impl FakeRuntime {
@@ -294,6 +296,7 @@ impl FakeRuntime {
             "unknown" => Plan::Unknown { perform: f.perform },
             "fail" => Plan::Fail,
             "abort" => Plan::Abort,
+            "unmarked" => Plan::Unmarked,
             _ => Plan::Normal,
         })
     }
@@ -324,6 +327,17 @@ impl FakeRuntime {
                 // The caller dies between the effect and its receipt.
                 std::process::abort();
             }
+            Plan::Unmarked => match self.host.update(perform) {
+                Ok(EffectOutcome::Spawned {
+                    mut session,
+                    adopted,
+                }) => {
+                    session.workspace = None;
+                    Observation::Known(EffectOutcome::Spawned { session, adopted })
+                }
+                Ok(outcome) => Observation::Known(outcome),
+                Err(e) => Observation::unknown(e.to_string()),
+            },
             Plan::Normal => match self.host.update(perform) {
                 Ok(outcome) => Observation::Known(outcome),
                 Err(e) => Observation::unknown(e.to_string()),

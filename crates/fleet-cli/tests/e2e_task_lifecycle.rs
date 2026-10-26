@@ -190,6 +190,33 @@ fn fake_runtime_preserves_multi_workspace_membership_during_recovery() {
 }
 
 #[test]
+fn a_provisioner_response_without_verified_membership_is_reobserved_before_adoption() {
+    let env = Env::new("unmarked-provisioned-session");
+    let mut t = task("t1", true);
+    t["spec"]["workspace"]["worktree"] = json!({
+        "branch": "feature/verified-before-adoption"
+    });
+    env.apply(t).ok();
+    env.fault(Fault::new("provision", "unmarked"));
+
+    env.reconcile().ok();
+
+    let key = env.session_key("t1");
+    assert!(
+        env.get("t1")["status"]["session"]["workspace"].is_object(),
+        "provisioned membership must be verified before adoption"
+    );
+    assert_eq!(env.calls("brief"), 1);
+
+    env.host().set_at_rest(&key, true).unwrap();
+    env.fleet(&["delete", "task", "t1"]).ok();
+    env.reconcile().ok();
+    assert_eq!(env.calls("release"), 0, "prepared release is never used");
+    assert_eq!(env.calls("releaseProvisioned"), 1);
+    assert_eq!(env.status("t1")["phase"], "Releasing");
+}
+
+#[test]
 fn a_task_waits_for_dispatch_and_its_spec_is_fixed_except_dispatch() {
     let env = setup("dispatch", false);
     env.reconcile().ok();

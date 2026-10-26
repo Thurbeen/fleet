@@ -839,7 +839,14 @@ impl Manager<'_> {
             } => {
                 let o = if workspace.worktree.is_some() {
                     match self.worktrees {
-                        Some(worktrees) => worktrees.find(rt, host, k, workspace),
+                        Some(worktrees) => match worktrees.find(rt, host, k, workspace) {
+                            Observation::Known(Some(session)) if session.workspace.is_none() => {
+                                Observation::unknown(
+                                    "worktree provisioner returned a session without verified provisioned workspace membership",
+                                )
+                            }
+                            answer => answer,
+                        },
                         None => Observation::unknown("no worktree provisioner configured"),
                     }
                 } else {
@@ -871,15 +878,27 @@ impl Manager<'_> {
     fn perform(&self, effect: &Effect) -> Observation<EffectOutcome> {
         match &effect.action {
             Action::Spawn(spec) => match (&spec.worktree, self.worktrees) {
-                (Some(_), Some(worktrees)) => worktrees.provision(self.runtime, spec),
+                (Some(_), Some(worktrees)) => match worktrees.provision(self.runtime, spec) {
+                    Observation::Known(EffectOutcome::Spawned { session, .. })
+                        if session.workspace.is_none() =>
+                    {
+                        Observation::unknown(
+                            "worktree provisioner returned a session without verified provisioned workspace membership",
+                        )
+                    }
+                    answer => answer,
+                },
                 (Some(_), None) => Observation::Known(EffectOutcome::Failed {
                     why: "no worktree provisioner configured".into(),
                 }),
                 (None, _) => self.runtime.spawn(&spec.session),
             },
             Action::Brief { session, text } => self.runtime.brief(session, text, &effect.key),
-            Action::Release { session } => {
-                if session.workspace.is_some() {
+            Action::Release {
+                session,
+                provisioned,
+            } => {
+                if *provisioned {
                     match self.worktrees {
                         Some(worktrees) => worktrees.release(self.runtime, session),
                         None => Observation::Known(EffectOutcome::Failed {
