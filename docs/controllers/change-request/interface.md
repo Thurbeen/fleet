@@ -106,6 +106,27 @@ six bounded calls, each of `forge.callTimeoutMs`; the port's
   removed (`Draft:`, `[Draft]`, `(Draft)`, `Draft -`, or the legacy `WIP`
   forms, however cased), which is how GitLab takes a merge request out of
   draft; a draft whose title carries no such marker is a Known refusal.
+- **azure-devops:** bounded `az devops invoke` processes read the pull request,
+  its iterations, latest-iteration statuses, blocking policy evaluations and
+  threads from Azure DevOps Services REST 7.1 (policy evaluations use the
+  documented `7.1-preview.1`). The current head is the newest iteration's
+  `sourceRefCommit`, never `lastMergeSourceCommit`. Collection counts must
+  match the returned values; a partial or malformed collection is Unknown.
+  Reviewer votes set the aggregate review decision, but produce no `Review`
+  entries because a vote does not identify the head on which it was cast.
+  Policy evaluation reads use the documented CodeReview artifact identity and
+  an explicit 1,000-record page; a full page is Unknown rather than silently
+  truncated. `mark_ready` fails closed: Azure DevOps can publish a draft, but
+  exposes no atomic head-and-state precondition for that update, so Fleet
+  cannot provide the port's optimistic-concurrency guarantee. Azure DevOps
+  Server is not served by this adapter.
+  The mappings follow Microsoft's REST 7.1 references for
+  [pull requests](https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pull-requests/get-pull-request?view=azure-devops-rest-7.1),
+  [iterations](https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pull-request-iterations/list?view=azure-devops-rest-7.1),
+  [statuses](https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pull-request-iteration-statuses/list?view=azure-devops-rest-7.1),
+  [threads](https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pull-request-threads/list?view=azure-devops-rest-7.1),
+  [policies](https://learn.microsoft.com/en-us/rest/api/azure/devops/policy/evaluations/list?view=azure-devops-rest-7.1)
+  and the documented [`az repos pr update --draft false`](https://learn.microsoft.com/en-us/cli/azure/repos/pr?view=azure-cli-latest#az-repos-pr-update).
 - **fake:** a file-backed forge for tests and trials, with injectable faults
   (lost answers, timeouts, throttling with `retryAfter`, incomplete reads,
   malformed answers, proven absence; and for `mark_ready`, `moved`,
@@ -124,15 +145,22 @@ Each adapter maps the forge's answer onto the vocabulary by these rules; an
 answer the rule cannot place is Unknown for the whole observation, never a
 guess.
 
-| Field | GitHub | GitLab |
-| --- | --- | --- |
-| `state` | `isDraft` then `draft`; else `state` OPEN, CLOSED, MERGED. | `draft` then `draft`; else `state` opened, closed, merged. |
-| `head.checks` | Over check runs and commit statuses of the head: any failed or errored is `failed`; else any queued, in progress or pending is `pending`; else any success is `passed`; none at all is `none`. Skipped and neutral count as absent. | Over the head pipeline: failed or canceled is `failed`; running, pending, created or manual is `pending`; success is `passed`; no pipeline is `none`. Skipped is absent. |
-| `reviewDecision` | `reviewDecision` APPROVED, CHANGES_REQUESTED, else `none`. | Approved when the approval rules are satisfied; `changes-requested` is not a GitLab concept and is never produced; else `none`. |
-| `mergeable` | `mergeable` MERGEABLE is `true`; CONFLICTING is `false` with `conflicts`; UNKNOWN is `null`. `mergeStateStatus` BLOCKED, BEHIND, UNSTABLE, DRAFT give `false` with that word. | `detailed_merge_status` mergeable is `true`; `checking` and `unchecked` are `null`; every other value is `false` with that value. |
-| `threads.unresolved` | Review threads with `isResolved` false, over all pages. | Resolvable discussions with `resolved` false, over all pages. |
-| `reviews` | Submitted reviews on the head commit, state APPROVED, CHANGES_REQUESTED, COMMENTED; dismissed reviews are omitted. | Approvals as `approved` reviews; there are no others. |
-| `bot` | `__typename` is `Bot`. | The user is a bot or a project access token user. |
+| Field | GitHub | GitLab | Azure DevOps Services |
+| --- | --- | --- | --- |
+| `state` | `isDraft` then `draft`; else `state` OPEN, CLOSED, MERGED. | `draft` then `draft`; else `state` opened, closed, merged. | `isDraft` then `draft`; else `status` active, abandoned, completed map to open, closed, merged. |
+| `head.checks` | Over check runs and commit statuses of the head: any failed or errored is `failed`; else any queued, in progress or pending is `pending`; else any success is `passed`; none at all is `none`. Skipped and neutral count as absent. | Over the head pipeline: failed or canceled is `failed`; running, pending, created or manual is `pending`; success is `passed`; no pipeline is `none`. Skipped is absent. | Over latest-iteration statuses and enabled blocking policy evaluations: failed, error, rejected or broken is `failed`; pending, notSet, queued or running is `pending`; succeeded or approved is `passed`; notApplicable and nonblocking policies are absent. |
+| `reviewDecision` | `reviewDecision` APPROVED, CHANGES_REQUESTED, else `none`. | Approved when the approval rules are satisfied; `changes-requested` is not a GitLab concept and is never produced; else `none`. | Any reject (-10) or wait-for-author (-5) vote is `changes-requested`; otherwise any approve (10) or approve-with-suggestions (5) vote is `approved`; else `none`. |
+| `mergeable` | `mergeable` MERGEABLE is `true`; CONFLICTING is `false` with `conflicts`; UNKNOWN is `null`. `mergeStateStatus` BLOCKED, BEHIND, UNSTABLE, DRAFT give `false` with that word. | `detailed_merge_status` mergeable is `true`; `checking` and `unchecked` are `null`; every other value is `false` with that value. | Draft is `false`; `mergeStatus` succeeded is `true`; conflicts, rejectedByPolicy and failure are `false`; queued, notSet or absent is `null`. |
+| `threads.unresolved` | Review threads with `isResolved` false, over all pages. | Resolvable discussions with `resolved` false, over all pages. | Inline threads in active or pending state. Fixed, won't-fix, closed and by-design are resolved; an unknown state makes the observation Unknown. |
+| `reviews` | Submitted reviews on the head commit, state APPROVED, CHANGES_REQUESTED, COMMENTED; dismissed reviews are omitted. | Approvals as `approved` reviews; there are no others. | Empty: reviewer votes carry no head identity. |
+| `bot` | `__typename` is `Bot`. | The user is a bot or a project access token user. | `false`: the thread identity does not make a reliable bot assertion. |
+
+Azure DevOps URL identity is
+`azure-devops/{organization}.visualstudio.com/{project}/{repository}/{id}`.
+Both `https://dev.azure.com/{organization}/{project}/_git/{repository}/pullrequest/{id}`
+and the legacy `{organization}.visualstudio.com` form parse to that identity.
+The organization-specific canonical host also scopes `whoami`; equal project,
+repository and pull-request numbers in different organizations cannot collide.
 
 ## Manager execution protocol
 

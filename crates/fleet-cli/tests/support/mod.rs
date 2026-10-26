@@ -22,9 +22,10 @@ const TIMEOUT: Duration = Duration::from_secs(60);
 
 /// The fake forge's host in a forge environment.
 pub const FORGE_HOST: &str = "forge.test";
-/// The hosts the stub `gh` and `glab` answer for.
+/// The hosts the stub forge CLIs answer for.
 pub const GITHUB_HOST: &str = "github.test";
 pub const GITLAB_HOST: &str = "gitlab.test";
+pub const AZURE_DEVOPS_HOST: &str = "dev.azure.com";
 
 pub struct Env {
     pub root: PathBuf,
@@ -164,9 +165,9 @@ impl Env {
         env
     }
 
-    /// An environment whose forge hosts are the stub `gh` (`github.test`)
-    /// and `glab` (`gitlab.test`): the one stub binary, copied under each
-    /// name, answers in that forge's shapes.
+    /// An environment whose forge hosts are the stub `gh` (`github.test`),
+    /// `glab` (`gitlab.test`) and `az` (`dev.azure.com`): the one stub binary,
+    /// copied under each name, answers in that forge's shapes.
     pub fn forge_stubs(name: &str) -> Env {
         let mut env = Env::new(name);
         let stub_dir = env.root.join("stub");
@@ -176,13 +177,16 @@ impl Env {
         let exe = if cfg!(windows) { ".exe" } else { "" };
         let gh = bin.join(format!("gh{exe}"));
         let glab = bin.join(format!("glab{exe}"));
+        let az = bin.join(format!("az{exe}"));
         fs::copy(stub_exe(), &gh).expect("gh stub");
         fs::copy(stub_exe(), &glab).expect("glab stub");
+        fs::copy(stub_exe(), &az).expect("az stub");
         let mut cfg = fs::read_to_string(&env.config).expect("config");
         cfg.push_str(&format!(
-            "\n[forge]\ncallTimeoutMs = 3000\n\n[forge.hosts]\n\"{GITHUB_HOST}\" = {{ kind = \"github\", cli = '{}' }}\n\"{GITLAB_HOST}\" = {{ kind = \"gitlab\", cli = '{}' }}\n",
+            "\n[forge]\ncallTimeoutMs = 3000\n\n[forge.hosts]\n\"{GITHUB_HOST}\" = {{ kind = \"github\", cli = '{}' }}\n\"{GITLAB_HOST}\" = {{ kind = \"gitlab\", cli = '{}' }}\n\"{AZURE_DEVOPS_HOST}\" = {{ kind = \"azure-devops\", cli = '{}' }}\n",
             gh.to_string_lossy(),
-            glab.to_string_lossy()
+            glab.to_string_lossy(),
+            az.to_string_lossy()
         ));
         fs::write(&env.config, cfg).expect("config");
         env.vars.push((
@@ -202,10 +206,11 @@ impl Env {
         self.stub_calls()
             .into_iter()
             .filter(|c| {
-                c["argv"][0] == "api"
-                    && c["argv"]
-                        .as_array()
-                        .is_some_and(|a| a.iter().any(|x| x == host))
+                matches!(c["argv"][0].as_str(), Some("api" | "devops" | "repos"))
+                    && c["argv"].as_array().is_some_and(|a| {
+                        a.iter()
+                            .any(|x| x.as_str().is_some_and(|s| s.contains(host)))
+                    })
             })
             .collect()
     }

@@ -4,6 +4,7 @@
 //!   enterprise host.
 //! - [`GitlabForge`]: merge requests through `glab`, on gitlab.com or a
 //!   self-hosted instance.
+//! - [`AzureDevopsForge`]: pull requests through `az`, on Azure DevOps Services.
 //! - [`FakeForge`]: a file-backed forge for tests and trials. It runs no
 //!   process.
 //! - [`ForgeHosts`]: the adapters of a configuration's `[forge.hosts]`,
@@ -16,6 +17,7 @@
 //! head and state immediately before its mutation and refuses with `Moved`
 //! when either differs from what the caller expected.
 
+pub mod azure_devops;
 pub mod cli;
 pub mod fake;
 pub mod github;
@@ -26,6 +28,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::time::Duration;
 
+pub use azure_devops::AzureDevopsForge;
 pub use fake::{FakeForge, FakeForgeState, ForgeFault};
 use fleet_api::forge::{ChangeObservation, ChangeRef, Expected, Forge, Uncertainty};
 use fleet_api::plan::EffectOutcome;
@@ -36,6 +39,7 @@ pub use gitlab::GitlabForge;
 /// Which adapter serves a host.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostKind {
+    AzureDevops,
     Github,
     Gitlab,
     Fake,
@@ -44,6 +48,7 @@ pub enum HostKind {
 impl HostKind {
     pub fn parse(kind: &str) -> Option<HostKind> {
         match kind {
+            azure_devops::KIND => Some(HostKind::AzureDevops),
             github::KIND => Some(HostKind::Github),
             gitlab::KIND => Some(HostKind::Gitlab),
             fake::KIND => Some(HostKind::Fake),
@@ -53,6 +58,7 @@ impl HostKind {
 
     pub fn name(self) -> &'static str {
         match self {
+            HostKind::AzureDevops => azure_devops::KIND,
             HostKind::Github => github::KIND,
             HostKind::Gitlab => gitlab::KIND,
             HostKind::Fake => fake::KIND,
@@ -104,6 +110,10 @@ impl ForgeHosts {
                 }
             };
             let adapter: Box<dyn Forge> = match cfg.kind {
+                HostKind::AzureDevops => Box::new(AzureDevopsForge::new(
+                    cfg.cli.unwrap_or_else(|| default_cli("az")),
+                    call_timeout,
+                )),
                 HostKind::Github => Box::new(GithubForge::new(
                     &host,
                     cfg.cli.unwrap_or_else(|| default_cli("gh")),
@@ -136,6 +146,11 @@ impl ForgeHosts {
     fn adapter(&self, host: &str) -> Option<&dyn Forge> {
         self.hosts
             .get(&host.to_ascii_lowercase())
+            .or_else(|| {
+                host.to_ascii_lowercase()
+                    .strip_suffix(".visualstudio.com")
+                    .and_then(|_| self.hosts.get(azure_devops::SERVICES_HOST))
+            })
             .map(|b| b.as_ref())
     }
 }
@@ -200,5 +215,38 @@ impl Forge for ForgeHosts {
                 why: format!("host {} is not configured under [forge.hosts]", change.host),
             }),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_configured_services_host_routes_legacy_organization_aliases() {
+        let hosts = ForgeHosts::new(
+            BTreeMap::from([(
+                azure_devops::SERVICES_HOST.into(),
+                HostConfig {
+                    kind: HostKind::AzureDevops,
+                    cli: Some("az".into()),
+                    dir: None,
+                },
+            )]),
+            Duration::from_secs(1),
+        )
+        .unwrap();
+        let parsed = hosts.parse(
+            "https://wingtip.visualstudio.com/DefaultCollection/project/_git/widgets/pullrequest/7",
+        );
+        assert_eq!(
+            parsed,
+            Observation::Known(ChangeRef {
+                kind: azure_devops::KIND.into(),
+                host: "wingtip.visualstudio.com".into(),
+                project: "project/widgets".into(),
+                id: "7".into(),
+            })
+        );
     }
 }

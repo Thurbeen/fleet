@@ -132,7 +132,8 @@ See [execution configuration](resources/task-config.md).
 [ChangeRequest](resources/change-request.md) and its
 [controller](controllers/change-request/README.md) mirror one change on a
 forge through the `Forge` port, with adapters in `fleet-forge` (`github` via
-`gh`, `gitlab` via `glab`, and a fake), and number every item they see so
+`gh`, `gitlab` via `glab`, Azure DevOps Services via `az`, and a fake), and
+number every item they see so
 consumers diff by one cursor. A ChangeRequest belongs to no Task; it outlives
 its followers and is removed by its own controller after a retention period,
 by a delete fenced on its `uid`, its `resourceVersion` and the lease. The

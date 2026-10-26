@@ -1,4 +1,4 @@
-//! What the two CLI-backed adapters share: one bounded call through
+//! What the CLI-backed adapters share: one bounded call through
 //! fleet-exec, the HTTP head a `--include` answer carries, the forge's
 //! rate-limit advice, a budget for one observation made of several calls,
 //! and the forge's timestamps as Unix milliseconds.
@@ -104,6 +104,8 @@ pub fn call(
             ("GH_PROMPT_DISABLED", "1"),
             ("GH_NO_UPDATE_NOTIFIER", "1"),
             ("GLAB_CHECK_UPDATE", "false"),
+            ("AZURE_EXTENSION_USE_DYNAMIC_INSTALL", "no"),
+            ("AZURE_CORE_ONLY_SHOW_ERRORS", "1"),
             ("NO_COLOR", "1"),
             ("NO_PROMPT", "1"),
         ]

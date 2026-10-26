@@ -2,7 +2,7 @@
 //! real `fleet` binary, the file store, the fake host and the fake forge,
 //! under a configured ready policy, once and only once; every refusal,
 //! unknown outcome and stale observation the design names; and the same
-//! effect through the stub `gh` and `glab`, after a fresh read.
+//! effect through the stub `gh`, `glab` and `az`, after a fresh read.
 
 mod support;
 
@@ -16,7 +16,8 @@ use fleet_api::forge::{
 use fleet_forge::{FakeForge, ForgeFault};
 use serde_json::{Value, json};
 use support::{
-    Env, FORGE_HOST, GITHUB_HOST, GITLAB_HOST, assert_condition, derived_name, now_ms, task,
+    AZURE_DEVOPS_HOST, Env, FORGE_HOST, GITHUB_HOST, GITLAB_HOST, assert_condition, derived_name,
+    now_ms, task,
 };
 
 const PROJECT: &str = "acme/widgets";
@@ -906,5 +907,56 @@ fn github_and_gitlab_drafts_are_marked_ready_through_gh_and_glab_after_a_fresh_r
     assert!(
         position("{ id isDraft state headRefOid }") < position("markPullRequestReadyForReview"),
         "the fresh read comes right before the mutation: {gh_calls:#?}"
+    );
+}
+
+#[test]
+fn azure_devops_drafts_fail_closed_without_an_atomic_head_and_state_precondition() {
+    let mut env = Env::forge_stubs("azure-ready");
+    env.set_var("USER", "tester");
+    configure(&env, "checks", "");
+    env.edit_stub(|s| {
+        s["login"] = json!(LOGIN);
+        s["changes"] = json!({"acme/project/widgets#9": stub_draft("a1")});
+    });
+    env.apply(task("t1", true)).ok();
+    env.reconcile().ok();
+    let url = "https://dev.azure.com/acme/project/_git/widgets/pullrequest/9";
+    declare(&env, "t1", url).ok();
+    env.reconcile().ok();
+    let cr = derived_name(
+        "azure-devops",
+        "acme.visualstudio.com",
+        "project/widgets",
+        "9",
+    );
+    assert_eq!(entry(&env, "t1", &cr)["cursor"], 1);
+    ship(&env, "t1");
+    rest(&env, "t1", true);
+    let report = env.reconcile().ok().json();
+    assert_eq!(report["errors"], json!([]), "{report:#}");
+    assert_eq!(record(&env, "t1", &cr)["state"], "failed");
+    assert_eq!(
+        env.stub()["changes"]["acme/project/widgets#9"]["state"],
+        "draft"
+    );
+
+    let calls = env.forge_calls(AZURE_DEVOPS_HOST);
+    assert!(
+        calls
+            .iter()
+            .all(|c| !c["argv"].as_array().unwrap().starts_with(&[
+                json!("repos"),
+                json!("pr"),
+                json!("update"),
+            ])),
+        "mark-ready must not use a check-then-update race: {calls:#?}"
+    );
+    assert!(
+        calls.iter().any(|c| {
+            let argv = c["argv"].as_array().unwrap();
+            argv.contains(&json!("profiles")) && argv.contains(&json!("https://dev.azure.com/acme"))
+        }),
+        "whoami is read in the change's organization: {calls:#?}"
     );
 }

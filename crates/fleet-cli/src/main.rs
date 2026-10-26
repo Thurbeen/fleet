@@ -597,7 +597,7 @@ fn version(json: bool) -> Result<(), Failure> {
             "configVersion": CONFIG_VERSION,
             "storeFormat": {"format": "fleet-store", "version": 1},
             "runtimes": ["thurbox", "fake"],
-            "forges": ["github", "gitlab", "fake"],
+            "forges": ["azure-devops", "github", "gitlab", "fake"],
         }));
     } else {
         println!("fleet {VERSION}");
@@ -664,7 +664,7 @@ fn open_forge(config: &Config) -> Result<Option<ForgeHosts>, Failure> {
     for (host, h) in &cfg.hosts {
         let kind = HostKind::parse(&h.kind).ok_or_else(|| {
             fail(format!(
-                "forge.hosts.{host:?}: unknown kind {:?}; this build has github, gitlab and fake",
+                "forge.hosts.{host:?}: unknown kind {:?}; this build has azure-devops, github, gitlab and fake",
                 h.kind
             ))
         })?;

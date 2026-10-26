@@ -153,6 +153,7 @@ draftPolicy = "checks"        # omit to never take a draft out of draft
 "github.com"         = { kind = "github", cli = "gh" }
 "gitlab.com"         = { kind = "gitlab", cli = "glab" }
 "gitlab.example.com" = { kind = "gitlab", cli = "glab" }
+"dev.azure.com"      = { kind = "azure-devops", cli = "az" }
 
 [forge.readyPolicies.checks]
 checksPassed = true
@@ -177,10 +178,12 @@ noUnresolvedThreads = true
 | `forge.noCheckGraceMs` | `300000` | How long `checksPassed` waits, from a head's first observation, for a check to appear before treating that checkless head as passed. |
 | `forge.draftPolicy` | Absent | The ready policy applied to a Task that sets none; it must name a policy below. Absent: a draft is never taken out of draft unless the Task names a policy. |
 | `forge.readyPolicies.<name>` | Three written by `fleet init` | A set of the predicates the [Forge controller](../controllers/forge/interface.md#ready-policies) defines (`checksPassed`, `botReviewsAddressed`, `noUnresolvedThreads`, `forgeMergeable`; `workerDone` and `workerIdle` are always on), under a name that is only a key. Any other key is refused at load. |
-| `forge.hosts.<host>` | One per forge host | `kind` is `github`, `gitlab` or `fake`; `cli` is a PATH name or absolute path (`gh` or `glab` by default); a `fake` host takes `dir`, its directory, relative to this file. A URL on a host not listed is refused at apply. |
+| `forge.hosts.<host>` | One per forge host | `kind` is `azure-devops`, `github`, `gitlab` or `fake`; `cli` is a PATH name or absolute path (`az`, `gh` or `glab` by default); a `fake` host takes `dir`, its directory, relative to this file. Configure `dev.azure.com` once for hosted Azure DevOps Services; its `{organization}.visualstudio.com` aliases route to that adapter. A URL on any other unlisted host is refused at apply. |
 
 Credentials stay with each CLI's own login. Fleet passes none to the forge and
-stores none. `fleet init` writes the three `readyPolicies` tables above into
+stores none. Azure DevOps login is resolved separately for each organization;
+Fleet never reads or writes a PAT, token, subscription or CLI default.
+`fleet init` writes the three `readyPolicies` tables above into
 the generated config and no `draftPolicy`: a Task is marked ready only once
 it, or the operator's config, names a policy. The shipped
 [example config](../../examples/fleet.toml) adds a fake host,
