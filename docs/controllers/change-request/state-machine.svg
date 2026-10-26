@@ -1,6 +1,11 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 420" role="img" aria-labelledby="title desc">
 <title id="title">ChangeRequest controller state machine</title>
 <desc id="desc">Watching polls the forge every interval and writes only when the snapshot changes. A merged change settles. A closed change enters Closed, polled at ten times the interval; reopened within the grace it returns to Watching, otherwise it settles. Unknown answers change a condition and never a phase.</desc>
+<style>
+  svg { color-scheme:light dark }
+  @media (prefers-color-scheme: light) { svg &gt; rect{fill:#fff} svg &gt; g{fill:#182b3d} }
+  @media (prefers-color-scheme: dark) { svg &gt; rect{fill:#101820} svg &gt; g{fill:#e6edf3} [stroke="#7890a6"]{stroke:#71869a} [stroke="#405367"]{stroke:#a9bdd0} [stroke="#c9d3dd"]{stroke:#405367} [fill="#405367"]{fill:#a9bdd0} [fill="#edf3f8"]{fill:#1d2a36} [fill="#e9f5ef"]{fill:#173b2d} [fill="#fff2de"]{fill:#493517} }
+</style>
 <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 Z" fill="#405367"/></marker></defs>
 <rect width="1040" height="420" rx="12" fill="#ffffff"/>
 <g font-family="system-ui,-apple-system,Segoe UI,sans-serif" fill="#182b3d">

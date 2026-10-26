@@ -41,7 +41,7 @@ again by an edit or an unresolve; `state`, `reviewDecision` and `head` carry
 the `revision` at which their value last changed. The newest 100 notes are
 kept; `droppedBefore` rises to the `seq` of any note rotated out, so a
 consumer whose cursor is below it knows it has a gap rather than silently
-missing a note. The [ChangeRequest resource](../resources/change-request.md#sequence-numbers)
+missing a note. The [ChangeRequest resource](../../resources/change-request.md#sequence-numbers)
 says why the counter is Fleet's and not the forge's clock, and what makes an
 observation complete.
 

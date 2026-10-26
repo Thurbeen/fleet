@@ -5,9 +5,9 @@ session on the host the Task names, sends the brief once, delivers what is
 queued in the Task's inbox, records the worker's answer, and deletes the
 session when the Task is deleted. The guarantees behind each step are in
 [the contracts](../../crates/CONTRACTS.md). Read the
-[controller overview](../task-controller/README.md),
-[interface](../task-controller/interface.md) and
-[state machine](../task-controller/state-machine.md) for execution semantics.
+[controller overview](../controllers/task/README.md),
+[interface](../controllers/task/interface.md) and
+[state machine](../controllers/task/state-machine.md) for execution semantics.
 
 ## Example
 
@@ -54,15 +54,15 @@ precedence, validation and private launch snapshots.
 
 Written by TaskController under the manager lease, except `result` and
 `declared`, which the worker writes through `fleet result` and `fleet
-declare`, `forge`, which the [Forge controller](../forge-controller/README.md)
+declare`, `forge`, which the [Forge controller](../controllers/forge/README.md)
 writes, and `inbox`, which nobody owns and which changes only through the
 typed mutations described under [Inbox](#inbox).
 
 | Field | Meaning |
 | --- | --- |
-| `phase` | Execution phase, defined by the [state machine](../task-controller/state-machine.md). |
+| `phase` | Execution phase, defined by the [state machine](../controllers/task/state-machine.md). |
 | `observedGeneration` | The spec generation the controller last acted on. |
-| `conditions` | One entry per [condition type](../task-controller/state-machine.md#conditions), with `status`, `reason`, `message` and `lastTransitionTime`. |
+| `conditions` | One entry per [condition type](../controllers/task/state-machine.md#conditions), with `status`, `reason`, `message` and `lastTransitionTime`. |
 | `execution` | Frozen execution selection and source identities; environment values are private. |
 | `session` | The session's runtime id, host and key, once spawned or adopted. |
 | `intents`, `receipts` | Each effect's intent, written before it runs, and its outcome, written after. |
@@ -141,7 +141,7 @@ journal, never repeated blindly. An entry that exhausts its sends raises
 later entries are still delivered. More than 20 undelivered entries raise
 `NeedsAttention/InboxFull`. A Concluded Task with a nonempty inbox is due
 again, for delivery only, as the
-[Task state machine](../task-controller/state-machine.md#transition-rules)
+[Task state machine](../controllers/task/state-machine.md#transition-rules)
 describes; a readable lookup that no longer shows its session is
 `WorkerGone` and `NeedsAttention`, never a respawn. A Stalled or deleting
 Task delivers nothing: a deleting Task refuses `fleet send` and releases its
@@ -149,7 +149,7 @@ session as before.
 
 ## Following declared changes
 
-The [Forge controller](../forge-controller/README.md), a second controller
+The [Forge controller](../controllers/forge/README.md), a second controller
 over the Task, reads the changes a worker declared and relays what is new on
 each into the inbox.
 
@@ -161,7 +161,7 @@ each into the inbox.
 
 The Forge controller appends to `status.inbox` as `forge/<change>`, with
 `about` set, in the same write that advances the entry's cursor. The
-[Forge controller interface](../forge-controller/interface.md#fields-this-controller-reads-and-owns)
+[Forge controller interface](../controllers/forge/interface.md#fields-this-controller-reads-and-owns)
 defines every field of `status.declared` and `status.forge`, with an example
 of a Task following two changes.
 
@@ -176,7 +176,7 @@ without the mark comes back to its author as feedback. Nothing forge-related
 has to be created in advance, and a second Task may declare a change another
 Task opened. No new finalizer and no owner reference: a ChangeRequest
 outlives the Tasks that follow it, and deleting a Task deletes nothing else.
-The [Forge controller interface](../forge-controller/interface.md#store-port-and-write-ownership)
+The [Forge controller interface](../controllers/forge/interface.md#store-port-and-write-ownership)
 lists the resulting writers.
 
 ## Commands

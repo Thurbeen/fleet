@@ -1,15 +1,15 @@
 # ChangeRequest controller interface
 
 The controller is a pure decision function, like
-[TaskController](../task-controller/interface.md). The manager owns I/O. The
+[TaskController](../task/interface.md). The manager owns I/O. The
 [state machine](state-machine.md) defines how the values below change the
-ChangeRequest; the [resource](../resources/change-request.md) defines the
+ChangeRequest; the [resource](../../resources/change-request.md) defines the
 external JSON fields.
 
 ## Controller API
 
-Source: [ChangeRequestController](../../crates/fleet-controllers/src/change_request.rs)
-and [plan types](../../crates/fleet-api/src/plan.rs).
+Source: [ChangeRequestController](../../../crates/fleet-controllers/src/change_request.rs)
+and [plan types](../../../crates/fleet-api/src/plan.rs).
 
 ```rust
 pub struct ChangeRequestInput<'a> {
@@ -39,7 +39,7 @@ clock, disk, environment, configuration, forge or runtime itself.
 | Deleting | None. |
 
 `ChangeRequestObservations` holds two optional answers. `change`, a
-[`ChangeObservation`](../../crates/fleet-api/src/forge.rs): `Known(Some)`
+[`ChangeObservation`](../../../crates/fleet-api/src/forge.rs): `Known(Some)`
 carries the adapter's complete, forge-neutral reading of the change;
 `Known(None)` says the forge answered that the change does not exist;
 `Unknown { kind, why, retryAfter }` carries the reason, as the
@@ -60,7 +60,7 @@ object and touches nothing else.
 
 ## Forge port
 
-Source: [`fleet_api::forge::Forge`](../../crates/fleet-api/src/forge.rs). Every answer is Known or Unknown;
+Source: [`fleet_api::forge::Forge`](../../../crates/fleet-api/src/forge.rs). Every answer is Known or Unknown;
 a refused write is `Known(EffectOutcome::Failed { why })`. A host is always
 a forge hostname, never a runtime host, and every call runs on the machine
 the manager runs on, with that machine's CLI logins.
@@ -71,7 +71,7 @@ the manager runs on, with that machine's CLI logins.
 | `parse` | A URL | The `ChangeRef` for it, normalised, using the adapter `[forge.hosts]` names for the host. Unknown for a host not configured. |
 | `whoami` | A host | Fleet's login on that host, or Unknown. |
 | `change` | A `ChangeRef` | `Some(ChangeSnapshot)`, complete; `None` for proven absence; Unknown on timeout, an incomplete read, a throttled answer or an unreadable answer, with `retryAfter` when the forge gave one. |
-| `mark_ready` | A `ChangeRef`, the expected `head.id` and state, and an intent key | `MarkedReady { already }` once the change is out of draft, after a fresh read proved it still had the expected head and state; `Moved { head, state }` when either differed, nothing mutated; Failed when the forge answered no; Unknown when the answer could not be read, since the mutation may have landed. The [Forge controller](../forge-controller/interface.md)'s one effect, and Fleet's one forge write. |
+| `mark_ready` | A `ChangeRef`, the expected `head.id` and state, and an intent key | `MarkedReady { already }` once the change is out of draft, after a fresh read proved it still had the expected head and state; `Moved { head, state }` when either differed, nothing mutated; Failed when the forge answered no; Unknown when the answer could not be read, since the mutation may have landed. The [Forge controller](../forge/interface.md)'s one effect, and Fleet's one forge write. |
 
 The port has no merge method.
 
@@ -81,7 +81,7 @@ answers Known only when it read everything the forge holds for the change;
 if the bound runs out first it answers Unknown with `Incomplete`. The
 controller never numbers a partial read.
 
-Adapters live in the [`fleet-forge`](../../crates/fleet-forge/src/lib.rs)
+Adapters live in the [`fleet-forge`](../../../crates/fleet-forge/src/lib.rs)
 crate, which depends on `fleet-api` and `fleet-exec`. The crate also holds
 `ForgeHosts`, the adapters of a configuration's `[forge.hosts]`, which answers
 the port by the host a URL or a ref names. Each observation spends at most
@@ -136,7 +136,7 @@ guess.
 
 ## Manager execution protocol
 
-Source: [Manager](../../crates/fleet-manager/src/lib.rs).
+Source: [Manager](../../../crates/fleet-manager/src/lib.rs).
 
 1. For each due ChangeRequest, renew the lease. When `status.ref` is absent,
    parse `spec.url` through the Forge port and hand the answer in as

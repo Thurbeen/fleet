@@ -112,7 +112,7 @@ inbox entry changes no phase and no condition other than those three.
 
 ## Deletion protocol
 
-The [store](../../crates/fleet-store/src/lib.rs) adds `fleet.dev/release` at
+The [store](../../../crates/fleet-store/src/lib.rs) adds `fleet.dev/release` at
 Task creation. `fleet delete` marks the Task, then reconciliation takes over.
 No session ever spawned means nothing needs releasing. If a spawn was
 interrupted before its receipt, the controller first looks up its key so it

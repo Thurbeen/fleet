@@ -67,7 +67,34 @@ fn test() -> Result {
 fn docs() -> Result {
     // Check Markdown file links without reaching the network or operator data.
     let root = fs::canonicalize(".")?;
-    for file in files()?.into_iter().filter(|p| p.ends_with(".md")) {
+    let tracked = files()?;
+    for file in &tracked {
+        if let Some(relative) = file
+            .strip_prefix("docs/")
+            .and_then(|path| path.split('/').next())
+            .filter(|directory| directory.ends_with("-controller"))
+        {
+            let name = relative.trim_end_matches("-controller");
+            return Err(format!(
+                "{file}: controller documentation belongs in docs/controllers/{name}"
+            )
+            .into());
+        }
+    }
+    if tracked
+        .iter()
+        .any(|file| file == "docs/controllers/README.md")
+        && tracked.iter().any(|file| file == "AGENTS.md")
+    {
+        let agents = fs::read_to_string("AGENTS.md")?;
+        if !agents.contains("](docs/controllers/README.md)") {
+            return Err(
+                "AGENTS.md: link the controller index at docs/controllers/README.md rather than one controller alone"
+                    .into(),
+            );
+        }
+    }
+    for file in tracked.iter().filter(|p| p.ends_with(".md")) {
         let p = Path::new(&file);
         let text = fs::read_to_string(p)?;
         for tail in text.split("](").skip(1) {
@@ -93,6 +120,15 @@ fn docs() -> Result {
                 roxmltree::Document::parse(&svg)
                     .map_err(|e| format!("{file}: malformed SVG {local}: {e}"))?;
             }
+        }
+    }
+    for file in tracked.iter().filter(|p| p.ends_with(".svg")) {
+        let svg = fs::read_to_string(file)?;
+        roxmltree::Document::parse(&svg).map_err(|e| format!("malformed SVG {file}: {e}"))?;
+        if !svg.contains("prefers-color-scheme: light")
+            || !svg.contains("prefers-color-scheme: dark")
+        {
+            return Err(format!("{file}: SVG must support light and dark modes").into());
         }
     }
     Ok(())

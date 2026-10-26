@@ -7,7 +7,7 @@ description: Use when inspecting Fleet Tasks or changing their desired spec.
 
 Use `fleet list task --json`, `fleet get task NAME` and
 `fleet status task NAME --json` to read work. Task fields are documented in
-docs/task-controller/resource.md; inspect supported kinds with
+the [Task resource](../../../docs/resources/task.md); inspect supported kinds with
 `fleet version --json`. Update
 desired spec with `fleet apply -f FILE`; only `spec.dispatch` may change.
 Deletion uses `fleet delete task NAME`; the finalizer holds the record until

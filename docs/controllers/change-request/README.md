@@ -7,12 +7,12 @@ from here.
 
 | Read | Answers |
 | --- | --- |
-| [ChangeRequest](../resources/change-request.md) | What do I apply, and what does the snapshot contain? |
+| [ChangeRequest](../../resources/change-request.md) | What do I apply, and what does the snapshot contain? |
 | [State machine](state-machine.md) | How does a change move between Watching, Closed and Settled? |
 | [Interface](interface.md) | What are the probes, the Forge port and the write rules? |
-| [Forge controller](../forge-controller/README.md) | Who consumes the snapshot, and how? |
-| [Native config](../configuration/fleet-toml.md#the-forge-section) | How are forge hosts and adapters configured? |
-| [Overall architecture](../ARCHITECTURE.md) | Where does this controller fit in Fleet? |
+| [Forge controller](../forge/README.md) | Who consumes the snapshot, and how? |
+| [Native config](../../configuration/fleet-toml.md#the-forge-section) | How are forge hosts and adapters configured? |
+| [Overall architecture](../../ARCHITECTURE.md) | Where does this controller fit in Fleet? |
 
 ## One run
 
@@ -57,13 +57,13 @@ forge calls when the change has many notes, and one small bookkeeping write.
 
 | Responsibility | Source | Tests |
 | --- | --- | --- |
-| Pure decisions, numbering, cadence and retention | [ChangeRequestController](../../crates/fleet-controllers/src/change_request.rs) | [Controller transitions](../../crates/fleet-controllers/tests/change_request_controller.rs) |
-| Resource, status and port types | [ChangeRequest types](../../crates/fleet-api/src/change_request.rs), [Forge port](../../crates/fleet-api/src/forge.rs), [plans](../../crates/fleet-api/src/plan.rs) | [Forge E2E](../../crates/fleet-cli/tests/e2e_forge.rs) |
-| Sweep by kind, host-ordered deferral, fenced delete | [Manager](../../crates/fleet-manager/src/lib.rs) | [Forge E2E](../../crates/fleet-cli/tests/e2e_forge.rs), [Store contract](../../crates/fleet-store/tests/store_contract.rs) |
-| Apply by URL, the derived name, ref verification | [Verbs](../../crates/fleet-manager/src/verbs.rs) | [Forge E2E](../../crates/fleet-cli/tests/e2e_forge.rs) |
-| GitHub through `gh`, GitLab through `glab`, the fake | [fleet-forge](../../crates/fleet-forge/src/lib.rs): [github](../../crates/fleet-forge/src/github.rs), [gitlab](../../crates/fleet-forge/src/gitlab.rs), [fake](../../crates/fleet-forge/src/fake.rs) | Truth tables in each adapter's unit tests; [Forge E2E](../../crates/fleet-cli/tests/e2e_forge.rs) against the stub `gh` and `glab` |
-| `[forge]` configuration | [CLI config](../../crates/fleet-cli/src/config.rs) | [Forge E2E](../../crates/fleet-cli/tests/e2e_forge.rs) |
-| Crate edges and the field manager | [architecture.toml](../../crates/architecture.toml) | [Architecture suite](../../crates/fleet-arch/tests/architecture.rs) |
+| Pure decisions, numbering, cadence and retention | [ChangeRequestController](../../../crates/fleet-controllers/src/change_request.rs) | [Controller transitions](../../../crates/fleet-controllers/tests/change_request_controller.rs) |
+| Resource, status and port types | [ChangeRequest types](../../../crates/fleet-api/src/change_request.rs), [Forge port](../../../crates/fleet-api/src/forge.rs), [plans](../../../crates/fleet-api/src/plan.rs) | [Forge E2E](../../../crates/fleet-cli/tests/e2e_forge.rs) |
+| Sweep by kind, host-ordered deferral, fenced delete | [Manager](../../../crates/fleet-manager/src/lib.rs) | [Forge E2E](../../../crates/fleet-cli/tests/e2e_forge.rs), [Store contract](../../../crates/fleet-store/tests/store_contract.rs) |
+| Apply by URL, the derived name, ref verification | [Verbs](../../../crates/fleet-manager/src/verbs.rs) | [Forge E2E](../../../crates/fleet-cli/tests/e2e_forge.rs) |
+| GitHub through `gh`, GitLab through `glab`, the fake | [fleet-forge](../../../crates/fleet-forge/src/lib.rs): [github](../../../crates/fleet-forge/src/github.rs), [gitlab](../../../crates/fleet-forge/src/gitlab.rs), [fake](../../../crates/fleet-forge/src/fake.rs) | Truth tables in each adapter's unit tests; [Forge E2E](../../../crates/fleet-cli/tests/e2e_forge.rs) against the stub `gh` and `glab` |
+| `[forge]` configuration | [CLI config](../../../crates/fleet-cli/src/config.rs) | [Forge E2E](../../../crates/fleet-cli/tests/e2e_forge.rs) |
+| Crate edges and the field manager | [architecture.toml](../../../crates/architecture.toml) | [Architecture suite](../../../crates/fleet-arch/tests/architecture.rs) |
 
 The forge E2E suite drives the built CLI through apply by URL, idempotent
 re-apply, the aliasing refusal, bookkeeping-only polls, numbering of notes,
@@ -72,5 +72,5 @@ answers and `retryAfter`, host-wide deferral, the closed grace and reopen,
 merged settling, retention and the fenced delete, against the fake forge; and
 pagination, truth tables, rate limits, missing logins, a hung CLI's killed
 process tree and proven absence against the stub `gh` and `glab`. The
-[Forge controller guide](../forge-controller/README.md#implementation-and-evidence)
+[Forge controller guide](../forge/README.md#implementation-and-evidence)
 lists the steps that follow this one.

@@ -8,7 +8,7 @@ I last looked" with one integer. It performs no effect on the forge.
 `fleet declare` creates one for the change a Task's worker opened; a person
 applies one to watch any change. There is one per change, it has no owner,
 and it outlives the Tasks that follow it: the
-[Forge controller](../forge-controller/README.md) reads it and never writes
+[Forge controller](../controllers/forge/README.md) reads it and never writes
 it.
 
 ## Example
@@ -53,12 +53,12 @@ Bookkeeping:
 
 | Field | Meaning |
 | --- | --- |
-| `phase` | `Watching`, `Closed` or `Settled`, defined by the [state machine](../change-request-controller/state-machine.md). |
+| `phase` | `Watching`, `Closed` or `Settled`, defined by the [state machine](../controllers/change-request/state-machine.md). |
 | `ref` | What the adapter parsed the URL into: `kind`, `host`, `project`, `id`. |
 | `observedAt` | When the forge last answered Known, in Unix milliseconds. |
 | `notBefore` | Earliest next poll, in Unix milliseconds. |
 | `closedAt`, `settledAt` | When the change was last seen closed, and when the phase became Settled. |
-| `conditions` | One entry per [condition type](../change-request-controller/state-machine.md#conditions). |
+| `conditions` | One entry per [condition type](../controllers/change-request/state-machine.md#conditions). |
 
 Snapshot:
 
@@ -69,7 +69,7 @@ Snapshot:
 | `everReady` | `true` once the change has been seen in any state other than `draft`. Never returns to `false`. |
 | `head` | The current head: opaque `id` (a SHA, a patchset number, a diff id), `checks` (`none`, `pending`, `passed`, `failed`), `failing` (`[{name, url}]` when failed), `seq` (the revision at which `id`, `checks` or `failing` last changed) and `firstSeenAt`. |
 | `reviewDecision` | `{value, seq}`: `approved`, `changes-requested` or `none`. |
-| `mergeable` | `{value, reason}`: the forge's own answer, `true`, `false` or `null` while the forge is still computing it, with its reason as the forge gives it. See [Mergeable](../change-request-controller/state-machine.md#conditions). |
+| `mergeable` | `{value, reason}`: the forge's own answer, `true`, `false` or `null` while the forge is still computing it, with its reason as the forge gives it. See [Mergeable](../controllers/change-request/state-machine.md#conditions). |
 | `threads` | `{unresolved}`: the count of unresolved inline threads over the whole change, not only the retained notes. |
 | `reviews` | Every submitted review on the current head: `id`, `author`, `bot`, `state` (`approved`, `changes-requested`, `commented`), `head`. |
 | `notes` | The newest 100 notes, each a [note](#notes). |
@@ -140,7 +140,7 @@ onto these:
 GitHub and GitLab adapters are in scope. Bitbucket and the others are shown so
 the vocabulary is checked against them; adding one is an adapter in
 `fleet-forge`, not an API change. The
-[adapter truth tables](../change-request-controller/interface.md#adapter-truth-tables)
+[adapter truth tables](../controllers/change-request/interface.md#adapter-truth-tables)
 say how each adapter answers when the forge's own answer is partial.
 
 ## Metadata and ownership
@@ -181,7 +181,7 @@ fleet list changerequests                     # one line per mirror
 fleet delete changerequest cr-5e1c0a9b7f23    # nothing on the forge changes
 ```
 
-`fleet declare` is the [Forge controller](../forge-controller/README.md)'s
+`fleet declare` is the [Forge controller](../controllers/forge/README.md)'s
 verb: it ensures the mirror and records the declaration on the Task.
 [examples/change-request.json](../../examples/change-request.json)
 is a manifest the shipped [example config](../../examples/fleet.toml) applies

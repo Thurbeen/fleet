@@ -1,6 +1,11 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 580" role="img" aria-labelledby="title desc">
 <title id="title">Task controller state machine</title>
 <desc id="desc">Normal phases are Pending, Spawning, Spawned, Briefed and Concluded. Proven spawn failure retries Pending with a wait, then stalls after three attempts; a needed retry after three brief sends stalls. Deletion from any phase enters Releasing, then removes the record once release is established. Unknown delivery and failed release retry after waits and raise attention, without becoming terminal phases.</desc>
+<style>
+  svg { color-scheme:light dark }
+  @media (prefers-color-scheme: light) { svg &gt; rect{fill:#fff} svg &gt; g{fill:#182b3d} }
+  @media (prefers-color-scheme: dark) { svg &gt; rect{fill:#101820} svg &gt; g{fill:#e6edf3} [stroke="#7890a6"]{stroke:#71869a} [stroke="#405367"]{stroke:#a9bdd0} [stroke="#c9d3dd"]{stroke:#405367} [fill="#405367"]{fill:#a9bdd0} [fill="#edf3f8"]{fill:#1d2a36} [fill="#e9f5ef"]{fill:#173b2d} [fill="#fff2de"]{fill:#493517} [fill="#f0edfa"]{fill:#30294a} }
+</style>
 <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 Z" fill="#405367"/></marker></defs>
 <rect width="1040" height="580" rx="12" fill="#ffffff"/>
 <g font-family="system-ui,-apple-system,Segoe UI,sans-serif" fill="#182b3d">

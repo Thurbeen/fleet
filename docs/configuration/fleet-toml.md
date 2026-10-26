@@ -172,11 +172,11 @@ noUnresolvedThreads = true
 | `forge.callTimeoutMs` | `15000` | Bound for each forge CLI call. One observation of a change may make up to six such calls, and the manager lease is raised to outlast the port's reported worst case. |
 | `forge.closedGraceMs` | `604800000` | How long a closed change stays watched before it settles. |
 | `forge.settledTtlMs` | `2592000000` | How long a settled ChangeRequest is retained before its controller deletes it. |
-| `forge.relayNotes`, `forge.relayChecks` | `true` | Whether the [Forge controller](../forge-controller/README.md) relays new notes, and passed or failed checks, to a Task's worker. A Task's `spec.forge.relay` overrides each. |
+| `forge.relayNotes`, `forge.relayChecks` | `true` | Whether the [Forge controller](../controllers/forge/README.md) relays new notes, and passed or failed checks, to a Task's worker. A Task's `spec.forge.relay` overrides each. |
 | `forge.relayBots` | `false` | Whether bot-authored notes are relayed to the worker. A selected policy that waits on bots relays their blockers regardless. |
 | `forge.noCheckGraceMs` | `300000` | How long `checksPassed` waits, from a head's first observation, for a check to appear before treating that checkless head as passed. |
 | `forge.draftPolicy` | Absent | The ready policy applied to a Task that sets none; it must name a policy below. Absent: a draft is never taken out of draft unless the Task names a policy. |
-| `forge.readyPolicies.<name>` | Three written by `fleet init` | A set of the predicates the [Forge controller](../forge-controller/interface.md#ready-policies) defines (`checksPassed`, `botReviewsAddressed`, `noUnresolvedThreads`, `forgeMergeable`; `workerDone` and `workerIdle` are always on), under a name that is only a key. Any other key is refused at load. |
+| `forge.readyPolicies.<name>` | Three written by `fleet init` | A set of the predicates the [Forge controller](../controllers/forge/interface.md#ready-policies) defines (`checksPassed`, `botReviewsAddressed`, `noUnresolvedThreads`, `forgeMergeable`; `workerDone` and `workerIdle` are always on), under a name that is only a key. Any other key is refused at load. |
 | `forge.hosts.<host>` | One per forge host | `kind` is `github`, `gitlab` or `fake`; `cli` is a PATH name or absolute path (`gh` or `glab` by default); a `fake` host takes `dir`, its directory, relative to this file. A URL on a host not listed is refused at apply. |
 
 Credentials stay with each CLI's own login. Fleet passes none to the forge and
