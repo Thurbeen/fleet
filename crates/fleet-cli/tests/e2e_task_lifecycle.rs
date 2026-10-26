@@ -175,6 +175,12 @@ fn fake_runtime_preserves_multi_workspace_membership_during_recovery() {
     );
     assert_eq!(env.status("t1")["phase"], "Briefed");
     assert_eq!((env.calls("spawn"), env.calls("brief")), (1, 1));
+
+    env.host().set_at_rest(&key, true).unwrap();
+    env.fleet(&["delete", "task", "t1"]).ok();
+    env.reconcile().ok();
+    assert_eq!(env.status("t1")["phase"], "Releasing");
+    assert!(!env.host().session(&key).unwrap().unwrap().gone);
 }
 
 #[test]

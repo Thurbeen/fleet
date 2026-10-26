@@ -156,6 +156,8 @@ Its session key is `<keyPrefix>.<uid>`. It journals each brief intent in
 session metadata as pending before sending and delivered afterward. A pending
 journal entry is ambiguous, so it is never a license to resend. On release,
 a different id holding the key returns Unknown and is not deleted.
+Provisioned sessions fail release before any delete call because the installed
+runtime cannot prove their worktrees clean; the Task finalizer retains ownership.
 The primary workspace is `--repo-path`; every prepared additional workspace is
 one `--add-dir` argument. An explicit worktree request maps to Thurbox worktree
 arguments; Fleet does not run Git. Adoption reads the session row and requires

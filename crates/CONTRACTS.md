@@ -166,6 +166,10 @@ Guarantees, each with its test:
   abandons the Task by itself.
 - **Release.** The `fleet.dev/release` finalizer holds a deleted Task until
   its session is deleted, only once the session is proven at rest or gone.
+  A provisioned session currently remains Releasing: the installed Thurbox
+  cannot prove its worktrees clean before a hard delete, while a soft delete
+  retains them. Fleet performs neither unsafe operation and reports the exact
+  clean-safe release prerequisite.
 - **Inbox.** `fleet send TASK TEXT` appends `{key, from, text, queuedAt}` to
   `status.inbox` as `cli/<user>`, under `task/<name>/<uid>/send/<n>`, `n`
   the resourceVersion appended against. The oldest entry not given up on is
@@ -382,7 +386,7 @@ Each adapter reports its longest single operation (`operation_bound`), and
   declared workspace membership. `workspace.dir` becomes `--repo-path`; each
   prepared `workspace.additionalDirs` entry becomes one `--add-dir`. Only an
   explicit `workspace.worktree` adds `--worktree-branch`, `--base-branch`,
-  optional `--existing-worktree`, and one `--add-repo PATH@BASE` per declared
+  and one `--add-repo PATH@BASE` per declared
   source. One shared base keeps recovery observable with the installed runtime;
   bases containing `@` and per-repository bases are refused. The brief's delivery
   is journaled in the session's own metadata. `spec.model` reaches the

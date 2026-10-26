@@ -248,7 +248,7 @@ fn a_task_can_ask_thurbox_to_provision_a_multi_repository_worktree() {
 }
 
 #[test]
-fn a_task_can_reuse_a_prepared_primary_while_the_runtime_owns_additional_worktrees() {
+fn an_unverifiable_existing_primary_worktree_is_refused() {
     let (primary, attached, repository) = if cfg!(windows) {
         (
             "C:\\prepared\\primary repo",
@@ -272,38 +272,9 @@ fn a_task_can_reuse_a_prepared_primary_while_the_runtime_owns_additional_worktre
             "additionalRepositories": [{"path": repository}]
         }
     });
-    let env = setup("thurbox-mixed-worktrees", vec![t]);
-
-    env.reconcile().ok();
-
-    let create = &argv_of(&env, "create")[0];
-    let existing = create
-        .iter()
-        .position(|arg| arg == "--existing-worktree")
-        .unwrap();
-    assert_eq!(create[existing + 1], primary);
-    assert!(!create.iter().any(|arg| arg == "--host"));
-    let add_repo = create.iter().position(|arg| arg == "--add-repo").unwrap();
-    assert_eq!(create[add_repo + 1], format!("{repository}@main"));
-    let session = &full_status(&env, "mixed")["session"];
-    assert_eq!(session["workspace"]["cwd"], primary);
-    assert_eq!(session["workspace"]["baseBranch"], "main");
-    assert_eq!(
-        session["workspace"]["worktrees"][0]["createdByRuntime"],
-        false
-    );
-    assert_eq!(
-        session["workspace"]["worktrees"][1]["createdByRuntime"],
-        true
-    );
-
-    let key = thurbox_key(&env, "mixed");
-    set_session_state(&env, &key, "idle");
-    env.fleet(&["delete", "task", "mixed"]).ok();
-    env.reconcile().ok();
-    env.fleet(&["get", "task", "mixed"]).code(3);
+    let env = setup("thurbox-existing-worktree-refused", vec![]);
+    env.apply(t).code(1).stderr_has("unknown field `primary`");
     assert!(env.stub_sessions().is_empty());
-    assert_eq!(argv_of(&env, "delete").len(), 1);
 }
 
 #[test]
@@ -369,6 +340,31 @@ fn a_lost_provisioning_response_is_adopted_with_resolved_membership() {
         full_status(&env, "recover")["session"]["workspace"]["baseBranch"],
         "stable"
     );
+}
+
+#[test]
+fn provisioned_worktree_release_holds_without_cleanliness_evidence() {
+    let mut t = task("release-worktree", true);
+    t["spec"]["workspace"]["worktree"] = json!({"branch": "feature/release"});
+    let env = setup("thurbox-provision-release", vec![t]);
+    env.reconcile().ok();
+    let key = thurbox_key(&env, "release-worktree");
+    set_session_state(&env, &key, "idle");
+
+    env.fleet(&["delete", "task", "release-worktree"]).ok();
+    env.reconcile().ok();
+
+    let status = env.status("release-worktree");
+    assert_eq!(status["phase"], "Releasing", "{status:#}");
+    assert_condition(&status, "Released", "False", "ReleaseRetry");
+    assert!(
+        status
+            .to_string()
+            .contains("cannot verify that runtime-owned worktrees are clean"),
+        "{status:#}"
+    );
+    assert_eq!(argv_of(&env, "delete").len(), 0);
+    assert_eq!(status["finalizers"], json!(["fleet.dev/release"]));
 }
 
 #[test]

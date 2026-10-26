@@ -47,7 +47,7 @@ logic runs.
 | Stalled | Any inbox entry | Stalled | Nothing is delivered; Stalled has no session to deliver to. |
 | Any phase | Task marked deleting | Releasing | Resolve spawn ambiguity if needed; release only once at rest or proven absent. A deleting Task delivers nothing. |
 | Releasing | Busy session or unreadable rest/lookup evidence | Releasing | Keep finalizer; wait for safe evidence. |
-| Releasing | Failed, missing or Unknown release receipt | Releasing | Wait and retry; after 3 attempts also raise NeedsAttention. |
+| Releasing | Failed, missing or Unknown release receipt, including a provisioned workspace without clean-safe runtime release | Releasing | Wait and retry; after 3 attempts also raise NeedsAttention. |
 | Releasing | Known Released receipt, or nothing was spawned and nothing remains to release | Record removed | Remove finalizer; removal is not another phase. |
 
 A Spawned phase without a SessionRef is an invalid internal combination; the
@@ -121,6 +121,10 @@ cannot orphan an unknown session.
 For a recorded session, the controller requires Known at-rest or readable
 absence before planning Release. Thurbox checks that the current key holder
 still has the recorded id before deleting it; a replacement yields Unknown.
+For a provisioned session the adapter currently refuses before delete: a forced
+delete can discard dirty worktrees, while a soft delete retains them after the
+Task loses its ownership key. A clean-safe Thurbox release observation/effect is
+the prerequisite for lifting this limitation.
 The finalizer remains while release is failed or ambiguous. It is removed
 only after Known Released, or when there is no session to release. The
 session and its conversation/workspace may be deleted by the runtime, so a

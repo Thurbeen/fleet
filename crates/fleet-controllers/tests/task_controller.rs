@@ -138,7 +138,6 @@ fn a_worktree_request_crosses_the_pure_controller_without_resolution() {
     obj.spec["workspace"]["worktree"] = json!({
         "branch": "feature/task",
         "baseBranch": "stable",
-        "primary": "existing",
         "additionalRepositories": [{"path": "other"}]
     });
     let obs = Observations {
@@ -154,7 +153,6 @@ fn a_worktree_request_crosses_the_pure_controller_without_resolution() {
     let worktree = spec.worktree.as_ref().unwrap();
     assert_eq!(worktree.branch, "feature/task");
     assert_eq!(worktree.base_branch, "stable");
-    assert_eq!(worktree.primary, fleet_api::task::PrimaryWorktree::Existing);
     assert_eq!(worktree.additional_repositories[0].path, "other");
     assert_eq!(spec.additional_dirs, ["notes"]);
 }

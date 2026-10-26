@@ -80,9 +80,6 @@ pub struct WorktreeRequest {
     /// The base used for the primary and every additional repository.
     #[serde(default = "default_base_branch")]
     pub base_branch: String,
-    /// Whether the primary path is provisioned or reused as-is.
-    #[serde(default)]
-    pub primary: PrimaryWorktree,
     /// Repository sources from which the runtime creates additional worktrees.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub additional_repositories: Vec<RepositorySource>,
@@ -90,14 +87,6 @@ pub struct WorktreeRequest {
 
 fn default_base_branch() -> String {
     "main".to_string()
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum PrimaryWorktree {
-    #[default]
-    Provision,
-    Existing,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -287,7 +276,6 @@ mod tests {
         .unwrap();
         let worktree = spec.workspace.worktree.unwrap();
         assert_eq!(worktree.base_branch, "main");
-        assert_eq!(worktree.primary, PrimaryWorktree::Provision);
         assert_eq!(worktree.additional_repositories[0].path, "/source/other");
     }
 }

@@ -26,7 +26,7 @@ use fleet_api::Observation;
 use fleet_api::plan::{EffectOutcome, SpawnSpec};
 use fleet_api::runtime::Runtime;
 use fleet_api::task::{
-    LOCAL_HOST as LOCAL, PrimaryWorktree, RuntimeWorkspace, RuntimeWorktree, SessionRef, Workspace,
+    LOCAL_HOST as LOCAL, RuntimeWorkspace, RuntimeWorktree, SessionRef, Workspace,
     uid_of_session_key,
 };
 use fleet_exec::{Outcome, Spec, run};
@@ -404,10 +404,9 @@ fn resolved_workspace(
         let created = worktree["created_by_thurbox"]
             .as_bool()
             .ok_or_else(|| "session row cannot verify worktree ownership".to_string())?;
-        let expected_created = index != 0 || request.primary == PrimaryWorktree::Provision;
         if actual_repository != repository
             || branch != request.branch
-            || created != expected_created
+            || !created
             || (index == 0 && path != dir)
             || !is_absolute(path)
         {
@@ -547,9 +546,6 @@ impl Runtime for ThurboxRuntime {
                 "--base-branch".to_string(),
                 worktree.base_branch.clone(),
             ]);
-            if worktree.primary == PrimaryWorktree::Existing {
-                args.extend(["--existing-worktree".to_string(), spec.dir.clone()]);
-            }
             for repository in &worktree.additional_repositories {
                 args.extend([
                     "--add-repo".to_string(),
@@ -737,6 +733,11 @@ impl Runtime for ThurboxRuntime {
     }
 
     fn release(&self, session: &SessionRef) -> Observation<EffectOutcome> {
+        if session.workspace.is_some() {
+            return Observation::Known(EffectOutcome::Failed {
+                why: "cannot verify that runtime-owned worktrees are clean; thurbox needs a clean-safe provisioned-worktree release contract".into(),
+            });
+        }
         // The controller proved this exact session at rest. A reused key
         // cannot transfer that proof to another session.
         match self.find(&session.host, &session.key) {

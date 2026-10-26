@@ -40,9 +40,9 @@ except `dispatch` and `forge`.
 | `configRef` | no | `{"name":"config"}` references passive execution defaults. |
 | `env` | no | Explicit string environment map; overrides inherited values. |
 | `brief` | yes | The brief, sent once to the ready session. |
-| `workspace.dir` | yes | A prepared primary working directory, or the primary source repository when `workspace.worktree.primary` is `provision`. The thurbox runtime needs an absolute path on the host. |
+| `workspace.dir` | yes | A prepared primary working directory, or the primary source repository when `workspace.worktree` is present. The thurbox runtime needs an absolute path on the host. |
 | `workspace.additionalDirs` | no | Prepared repository workspaces to attach to the same session as-is, in order. The thurbox runtime needs absolute paths on the host. |
-| `workspace.worktree` | no | Explicit permission for the runtime to provision Git worktrees: shared `branch`, shared `baseBranch` (default `main`), `primary` (`provision`, the default, or `existing`), and `additionalRepositories` source paths. |
+| `workspace.worktree` | no | Explicit permission for the runtime to provision Git worktrees: shared `branch`, shared `baseBranch` (default `main`) and `additionalRepositories` source paths. |
 | `dispatch` | no | Nothing spawns while `false` (the default). |
 | `outputs` | no | The structured outputs a result must carry, by name: each `{"type": T, "required": bool}`, where T is `string`, `integer`, `number`, `boolean`, `object` or `array`. |
 | `forge` | no | Overrides of the `[forge]` defaults for the changes this Task's worker declares: `relay.notes`, `relay.checks`, `draft.policy` (a name under `[forge.readyPolicies]`, refused at apply when the config does not define it; `null` disables mark-ready). Field-level: absent fields inherit. Mutable like `dispatch`. |
@@ -119,11 +119,10 @@ possibly remote host.
 ```
 
 This explicit shape authorizes Thurbox to create the primary and additional
-worktrees on one shared branch. Set `primary` to `existing` to keep `dir` as a
-prepared primary worktree while still provisioning the additional repositories.
+worktrees on one shared branch.
 Source repositories must already exist on the target host; Fleet does not clone,
 manage credentials, overwrite branches or run Git itself. `additionalDirs` can
-be combined with either primary mode and remains attach-only.
+be combined with provisioning and remains attach-only.
 
 Fleet passes one explicit base for every repository because Thurbox reports one
 observable `base_branch` for the session. Per-repository bases are not accepted;
@@ -132,12 +131,21 @@ support requires Thurbox to report each one for safe recovery. A base containing
 contain spaces or `@`: Fleet appends the validated base and passes the result as
 one argv value without a shell.
 
+Reusing a prepared primary with Thurbox `--existing-worktree` is not exposed:
+Thurbox 2.75.1 records the requested branch without verifying the branch
+actually checked out there. Support requires a runtime observation that verifies
+that branch; Fleet does not bypass the runtime lifecycle by running Git itself.
+
 After creation or adoption, `status.session.workspace` records the resolved cwd,
 base and every worktree's source, path, branch and runtime-ownership bit. A
 missing, partial or conflicting observation stays Unknown and is never replaced,
 deleted or briefed. Release remains a runtime operation: prepared paths and
-source repositories are not Fleet-owned, while runtime-created worktrees follow
-Thurbox's lifecycle and must not be the only copy of a worker result.
+source repositories are not Fleet-owned. The current adapter holds deletion of
+a provisioned Task before calling Thurbox: hard deletion can discard dirty
+runtime-created worktrees, while soft deletion retains them after Fleet would
+lose the ownership key. The Task stays Releasing and raises NeedsAttention until
+Thurbox provides a clean-safe release contract. Runtime-created worktrees must
+not be the only copy of a worker result.
 
 The Task still owns one brief, one immutable workspace declaration and one
 session. A worker that opens an authorized draft in each repository declares

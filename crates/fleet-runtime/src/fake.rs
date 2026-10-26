@@ -17,9 +17,7 @@ use std::time::Duration;
 use fleet_api::Observation;
 use fleet_api::plan::{EffectOutcome, SpawnSpec};
 use fleet_api::runtime::Runtime;
-use fleet_api::task::{
-    PrimaryWorktree, RuntimeWorkspace, RuntimeWorktree, SessionRef, Workspace, WorktreeRequest,
-};
+use fleet_api::task::{RuntimeWorkspace, RuntimeWorktree, SessionRef, Workspace, WorktreeRequest};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -358,16 +356,12 @@ fn session_ref(x: &FakeSession) -> SessionRef {
 
 fn resolved_workspace(spec: &SpawnSpec) -> Option<RuntimeWorkspace> {
     let request = spec.worktree.as_ref()?;
-    let cwd = if request.primary == PrimaryWorktree::Existing {
-        spec.dir.clone()
-    } else {
-        format!("{}/.fleet-worktrees/{}", spec.dir, request.branch)
-    };
+    let cwd = format!("{}/.fleet-worktrees/{}", spec.dir, request.branch);
     let mut worktrees = vec![RuntimeWorktree {
         repository: spec.dir.clone(),
         path: cwd.clone(),
         branch: request.branch.clone(),
-        created_by_runtime: request.primary == PrimaryWorktree::Provision,
+        created_by_runtime: true,
     }];
     worktrees.extend(
         request
@@ -532,7 +526,13 @@ impl Runtime for FakeRuntime {
 
     fn release(&self, session: &SessionRef) -> Observation<EffectOutcome> {
         let key = session.key.clone();
+        let provisioned = session.workspace.is_some();
         self.effect("release", move |s| {
+            if provisioned {
+                return EffectOutcome::Failed {
+                    why: "cannot verify that runtime-owned worktrees are clean; provisioned-worktree release is unsupported".into(),
+                };
+            }
             let Some(x) = s.sessions.get_mut(&key) else {
                 return EffectOutcome::Released;
             };

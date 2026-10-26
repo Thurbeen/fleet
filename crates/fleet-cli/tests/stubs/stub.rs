@@ -1015,17 +1015,13 @@ fn answer(
             let ready = state["spawnState"].as_str().unwrap_or("idle").to_string();
             let worktree_branch = opt(args, "--worktree-branch");
             let base_branch = opt(args, "--base-branch");
-            let existing_worktree = opt(args, "--existing-worktree");
             let mut cwd = repo.clone();
             let mut worktrees = Vec::new();
             if let Some(branch) = &worktree_branch {
-                let created = existing_worktree.is_none();
-                cwd = existing_worktree
-                    .clone()
-                    .unwrap_or_else(|| format!("{repo}/.thurbox/{branch}"));
+                cwd = format!("{repo}/.thurbox/{branch}");
                 worktrees.push(json!({
                     "branch": branch,
-                    "created_by_thurbox": created,
+                    "created_by_thurbox": true,
                     "repo_path": repo,
                     "worktree_path": cwd
                 }));
