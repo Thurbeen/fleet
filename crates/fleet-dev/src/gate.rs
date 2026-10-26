@@ -81,6 +81,19 @@ fn docs() -> Result {
             .into());
         }
     }
+    if tracked
+        .iter()
+        .any(|file| file == "docs/controllers/README.md")
+        && tracked.iter().any(|file| file == "AGENTS.md")
+    {
+        let agents = fs::read_to_string("AGENTS.md")?;
+        if !agents.contains("](docs/controllers/README.md)") {
+            return Err(
+                "AGENTS.md: link the controller index at docs/controllers/README.md rather than one controller alone"
+                    .into(),
+            );
+        }
+    }
     for file in tracked.iter().filter(|p| p.ends_with(".md")) {
         let p = Path::new(&file);
         let text = fs::read_to_string(p)?;

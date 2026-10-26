@@ -761,6 +761,21 @@ fn docs_gate_rejects_broken_links_malformed_svg_and_inconsistent_structure() {
     e.git(&["add", "."]);
     let (ok, out) = e.call(&["check", "docs"], &[]);
     assert!(!ok && out.contains("docs/controllers/task"), "{out}");
+
+    fs::remove_dir_all(e.0.join("docs/task-controller")).unwrap();
+    e.write(
+        "diagram.svg",
+        "<svg xmlns=\"http://www.w3.org/2000/svg\"><style>@media (prefers-color-scheme: light) { :root { color: #000; } } @media (prefers-color-scheme: dark) { :root { color: #fff; } }</style><path/></svg>",
+    );
+    e.write("docs/controllers/README.md", "# Controllers\n");
+    e.write("docs/controllers/task/README.md", "# Task controller\n");
+    e.write(
+        "AGENTS.md",
+        "Read the [Task controller](docs/controllers/task/README.md).\n",
+    );
+    e.git(&["add", "-A"]);
+    let (ok, out) = e.call(&["check", "docs"], &[]);
+    assert!(!ok && out.contains("controller index"), "{out}");
 }
 #[cfg(unix)]
 #[test]
