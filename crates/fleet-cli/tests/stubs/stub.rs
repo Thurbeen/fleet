@@ -210,6 +210,7 @@ fn main() -> ExitCode {
     match (role.as_str(), args.first().map(String::as_str)) {
         ("gh", Some("api")) => forge::gh(&args),
         ("glab", Some("api")) => forge::glab(&args),
+        ("az", Some("devops" | "repos")) => forge::az(&args),
         (_, Some("session") | Some("doctor")) => thurbox(&args),
         _ => fail("stub: unknown role"),
     }
@@ -290,6 +291,10 @@ mod forge {
             return Ok(lock);
         };
         let mode = mode.to_string();
+        if mode == "truncated" {
+            state["truncateNext"] = json!(true);
+            return Ok(lock);
+        }
         save(state);
         drop(lock);
         let retry = state["retryAfter"].as_u64().unwrap_or(30);
@@ -643,6 +648,238 @@ mod forge {
             _ => return fail("stub: glab endpoint not modelled"),
         };
         answer(ExitCode::SUCCESS, HEAD, &body.to_string())
+    }
+
+    pub fn az(args: &[String]) -> ExitCode {
+        let lock = Lock::take();
+        let mut state = load();
+        let _lock = match faulted(&mut state, lock, "az", args) {
+            Ok(l) => l,
+            Err(code) => return code,
+        };
+        let arg = |name: &str| {
+            args.iter()
+                .position(|a| a == name)
+                .and_then(|i| args.get(i + 1))
+                .cloned()
+        };
+        let values_after = |name: &str| -> Vec<String> {
+            let Some(mut i) = args.iter().position(|a| a == name).map(|i| i + 1) else {
+                return Vec::new();
+            };
+            let mut out = Vec::new();
+            while let Some(value) = args.get(i) {
+                if value.starts_with("--") {
+                    break;
+                }
+                out.push(value.clone());
+                i += 1;
+            }
+            out
+        };
+        let routes = values_after("--route-parameters");
+        let route = |name: &str| {
+            routes
+                .iter()
+                .filter_map(|v| v.split_once('='))
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| value.to_string())
+        };
+        let org = arg("--organization")
+            .and_then(|u| {
+                u.trim_end_matches('/')
+                    .rsplit('/')
+                    .next()
+                    .map(str::to_string)
+            })
+            .unwrap_or_default();
+        if args.first().map(String::as_str) == Some("repos") {
+            let id = arg("--id").unwrap_or_default();
+            let key = state["changes"]
+                .as_object()
+                .and_then(|changes| {
+                    changes.keys().find(|key| {
+                        key.starts_with(&format!("{org}/")) && key.ends_with(&format!("#{id}"))
+                    })
+                })
+                .cloned();
+            let Some(key) = key else {
+                return answer(
+                    ExitCode::from(1),
+                    "",
+                    r#"{"statusCode":404,"message":"pull request not found"}"#,
+                );
+            };
+            let c = state["changes"].get_mut(&key).unwrap();
+            c["state"] = json!("open");
+            save(&state);
+            return answer(
+                ExitCode::SUCCESS,
+                "",
+                &json!({"pullRequestId": id.parse::<u64>().unwrap_or(0), "isDraft": false})
+                    .to_string(),
+            );
+        }
+        let resource = arg("--resource").unwrap_or_default();
+        if resource == "profiles" {
+            return answer(
+                ExitCode::SUCCESS,
+                "",
+                &json!({"id": state["login"].as_str().unwrap_or("identity-1")}).to_string(),
+            );
+        }
+        if state["truncateNext"] == true {
+            state["truncateNext"] = json!(false);
+            save(&state);
+            return answer(ExitCode::SUCCESS, "", r#"{"count":2,"value":[]}"#);
+        }
+        let project = route("project").unwrap_or_default();
+        let repository = route("repositoryId").unwrap_or_default();
+        let id = route("pullRequestId").unwrap_or_default();
+        if resource == "repositories" {
+            if state["noRepo"] == true {
+                return answer(
+                    ExitCode::from(1),
+                    "",
+                    r#"{"statusCode":404,"message":"repository not found"}"#,
+                );
+            }
+            return answer(
+                ExitCode::SUCCESS,
+                "",
+                &json!({"id": "repo-id", "name": repository, "project": {"name": project}})
+                    .to_string(),
+            );
+        }
+        if resource == "policyEvaluations" {
+            let model = state["changes"]
+                .as_object()
+                .and_then(|changes| {
+                    changes
+                        .iter()
+                        .find(|(key, _)| key.starts_with(&format!("{org}/{project}/")))
+                })
+                .map(|(_, value)| value);
+            let policies: Vec<Value> = model
+                .and_then(|c| c["policies"].as_array())
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|policy| {
+                    json!({
+                        "status": policy["status"],
+                        "configuration": {
+                            "isBlocking": policy["blocking"],
+                            "isEnabled": true,
+                            "url": policy["url"],
+                            "type": {"displayName": policy["name"]}
+                        }
+                    })
+                })
+                .collect();
+            return answer(
+                ExitCode::SUCCESS,
+                "",
+                &json!({"count": policies.len(), "value": policies}).to_string(),
+            );
+        }
+        let Some(c) = (state["noRepo"] != true)
+            .then(|| change(&state, &format!("{org}/{project}/{repository}"), &id))
+            .flatten()
+        else {
+            return answer(
+                ExitCode::from(1),
+                "",
+                r#"{"statusCode":404,"message":"pull request not found"}"#,
+            );
+        };
+        let web =
+            format!("https://dev.azure.com/{org}/{project}/_git/{repository}/pullrequest/{id}");
+        let body = match resource.as_str() {
+            "pullRequests" => {
+                let reviewers: Vec<Value> = c["reviews"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|r| r["state"] != "dismissed")
+                    .map(|r| json!({
+                        "id": r["author"],
+                        "displayName": r["author"],
+                        "vote": match r["state"].as_str() { Some("approved") => 10, Some("changes-requested") => -10, _ => 0 }
+                    }))
+                    .collect();
+                json!({
+                    "pullRequestId": id.parse::<u64>().unwrap_or(0),
+                    "status": match c["state"].as_str() { Some("closed") => "abandoned", Some("merged") => "completed", _ => "active" },
+                    "isDraft": c["state"] == "draft",
+                    "lastMergeSourceCommit": {"commitId": "stale-merge-test-head"},
+                    "mergeStatus": match c["mergeable"].as_str() { Some("conflicting") => "conflicts", Some("unstable") => "rejectedByPolicy", Some("unknown") => "queued", _ => "succeeded" },
+                    "repository": {"id": "repo-id", "name": repository, "project": {"id": "project-id", "name": project}},
+                    "reviewers": reviewers,
+                    "remoteUrl": web
+                })
+            }
+            "pullRequestIterations" => {
+                let mut values = vec![
+                    json!({"id": 1, "sourceRefCommit": {"commitId": "h0"}}),
+                    json!({"id": 2, "sourceRefCommit": {"commitId": c["head"]}}),
+                ];
+                if state["malformedIterations"] == true {
+                    values.push(json!({"sourceRefCommit": {"commitId": "newer-unknown"}}));
+                }
+                json!({"count": values.len(), "value": values})
+            }
+            "pullRequestIterationStatuses" => {
+                let statuses: Vec<Value> = c["checks"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|check| json!({
+                        "id": check["name"],
+                        "state": match check["state"].as_str() { Some("failure") => "failed", Some("pending") => "pending", Some("skipped") => "notApplicable", _ => "succeeded" },
+                        "context": {"genre": "fleet-test", "name": check["name"]},
+                        "targetUrl": check["url"]
+                    }))
+                    .collect();
+                json!({"count": statuses.len(), "value": statuses})
+            }
+            "pullRequestThreads" => {
+                let mut threads: Vec<Value> = c["comments"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, comment)| json!({
+                        "id": i + 1,
+                        "status": "active",
+                        "comments": [{
+                            "id": comment["id"].as_str().unwrap_or("").trim_start_matches('c').parse::<u64>().unwrap_or(i as u64 + 1),
+                            "author": {"id": comment["author"]}, "commentType": "text", "content": comment["body"],
+                            "publishedDate": iso(&comment["at"]), "lastContentUpdatedDate": iso(if comment["editedAt"].is_null() { &comment["at"] } else { &comment["editedAt"] })
+                        }]
+                    }))
+                    .collect();
+                for thread in c["threads"].as_array().cloned().unwrap_or_default() {
+                    let comments: Vec<Value> = thread["comments"].as_array().cloned().unwrap_or_default().into_iter().map(|comment| json!({
+                        "id": comment["id"].as_str().unwrap_or("").trim_start_matches("ic").parse::<u64>().unwrap_or(0) + 100,
+                        "author": {"id": comment["author"]}, "commentType": "text", "content": comment["body"],
+                        "publishedDate": iso(&comment["at"]), "lastContentUpdatedDate": iso(if comment["editedAt"].is_null() { &comment["at"] } else { &comment["editedAt"] })
+                    })).collect();
+                    threads.push(json!({
+                        "id": thread["id"].as_str().unwrap_or("").trim_start_matches('t').parse::<u64>().unwrap_or(0) + 1000,
+                        "status": if thread["resolved"] == true { "fixed" } else { "active" },
+                        "threadContext": {"filePath": thread["path"], "rightFileStart": {"line": thread["line"]}},
+                        "comments": comments
+                    }));
+                }
+                json!({"count": threads.len(), "value": threads})
+            }
+            _ => return fail("stub: az resource not modelled"),
+        };
+        answer(ExitCode::SUCCESS, "", &body.to_string())
     }
 }
 

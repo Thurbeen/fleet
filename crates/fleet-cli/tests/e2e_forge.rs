@@ -23,8 +23,8 @@ use fleet_runtime::{FakeHost, FakeRuntime};
 use fleet_store::{FileStore, SystemClock};
 use serde_json::{Value, json};
 use support::{
-    Env, FORGE_HOST, GITHUB_HOST, GITLAB_HOST, alive_after, assert_condition, change_request,
-    derived_name, now_ms,
+    AZURE_DEVOPS_HOST, Env, FORGE_HOST, GITHUB_HOST, GITLAB_HOST, alive_after, assert_condition,
+    change_request, derived_name, now_ms,
 };
 
 const PROJECT: &str = "acme/widgets";
@@ -813,7 +813,10 @@ fn a_change_request_needs_a_configured_forge_host_and_a_bad_policy_is_refused_at
             .unwrap()
             .contains(&json!("ChangeRequest"))
     );
-    assert_eq!(v["forges"], json!(["github", "gitlab", "fake"]));
+    assert_eq!(
+        v["forges"],
+        json!(["azure-devops", "github", "gitlab", "fake"])
+    );
 }
 
 #[test]
@@ -1042,6 +1045,232 @@ fn a_github_pull_request_whose_repository_cannot_be_seen_is_unknown_not_gone() {
         "an ambiguous not-found is never gone: {st:#}"
     );
     assert_condition(&st, "Reachable", "Unknown", "Refused");
+}
+
+#[test]
+fn azure_devops_services_pull_requests_use_canonical_organization_identity_and_complete_cli_observations()
+ {
+    let env = Env::forge_stubs("azure-devops");
+    env.edit_stub(|s| {
+        s["login"] = json!("identity-1");
+        let mut model = github_model();
+        model["checks"] = json!([
+            {"name": "ci", "state": "success", "url": "https://ci.test/1"},
+            {"name": "retired", "state": "skipped"}
+        ]);
+        model["policies"] = json!([
+            {"name": "required-build", "blocking": true, "status": "rejected", "url": "https://policy.test/1"},
+            {"name": "advisory", "blocking": false, "status": "broken", "url": "https://policy.test/2"}
+        ]);
+        s["changes"] = json!({"wingtip/project/widgets#7": model});
+    });
+    let canonical = "https://dev.azure.com/wingtip/project/_git/widgets/pullrequest/7";
+    let cr = derived_name(
+        "azure-devops",
+        "wingtip.visualstudio.com",
+        "project/widgets",
+        "7",
+    );
+    env.apply(change_request(canonical, json!({})))
+        .ok()
+        .stdout_has(&format!("ChangeRequest/{cr} created"));
+    let report = env.reconcile().ok().json();
+    assert_eq!(report["errors"], json!([]), "{report:#}");
+    let st = env.change_request_status(&cr);
+    assert_eq!(
+        st["ref"],
+        json!({
+            "kind": "azure-devops",
+            "host": "wingtip.visualstudio.com",
+            "project": "project/widgets",
+            "id": "7"
+        })
+    );
+    assert_eq!(st["state"]["value"], "open");
+    assert_eq!(st["head"]["id"], "h1");
+    assert_eq!(st["head"]["checks"], "failed");
+    assert_eq!(
+        st["head"]["failing"],
+        json!([{"name": "required-build", "url": "https://policy.test/1"}])
+    );
+    assert_eq!(st["reviewDecision"]["value"], "changes-requested");
+    assert_eq!(st["mergeable"], json!({"value": false, "reason": "policy"}));
+    assert_eq!(st["threads"]["unresolved"], 1);
+    assert!(
+        st["reviews"].is_null() || st["reviews"].as_array().is_some_and(Vec::is_empty),
+        "votes do not prove a head-bound review"
+    );
+    let notes = st["notes"].as_array().unwrap();
+    assert_eq!(
+        notes.len(),
+        6,
+        "text comments only, including resolved inline notes: {notes:#?}"
+    );
+    assert_eq!(notes.iter().filter(|n| n["resolved"] == false).count(), 2);
+
+    let calls = env.forge_calls(AZURE_DEVOPS_HOST);
+    assert_eq!(
+        calls.len(),
+        5,
+        "one bounded call per documented collection: {calls:#?}"
+    );
+    assert!(calls.iter().all(|c| {
+        let argv = c["argv"].as_array().unwrap();
+        argv.starts_with(&[json!("devops"), json!("invoke")])
+            && argv.contains(&json!("https://dev.azure.com/wingtip"))
+            && !c["envNames"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|n| n.as_str().unwrap().contains("TOKEN") || n == "AZURE_DEVOPS_EXT_PAT")
+    }));
+    let policy_call = calls
+        .iter()
+        .find(|c| c["argv"].to_string().contains("policyEvaluations"))
+        .expect("policy evaluation read");
+    assert!(
+        policy_call["argv"]
+            .to_string()
+            .contains("artifactId=vstfs:///CodeReview/CodeReviewId/project-id/7"),
+        "the policy API has a different artifact identity from Git pull requests: {policy_call:#?}"
+    );
+    assert!(
+        policy_call["argv"].to_string().contains("$top=1000"),
+        "the bounded policy read requests an explicit page: {policy_call:#?}"
+    );
+
+    env.edit_stub(|s| {
+        s["changes"]["wingtip/project/widgets#7"]["policies"] = json!(
+            (0..1000)
+                .map(|i| json!({"name": format!("policy-{i}"), "blocking": true, "status": "approved"}))
+                .collect::<Vec<_>>()
+        );
+    });
+    env.expire_wait_of("ChangeRequest", &cr);
+    env.reconcile().ok();
+    let st = env.change_request_status(&cr);
+    assert_condition(&st, "Reachable", "Unknown", "Incomplete");
+    assert_eq!(st["revision"], 1, "a full bounded page is not complete");
+    env.edit_stub(|s| {
+        s["changes"]["wingtip/project/widgets#7"]["policies"] = json!([
+            {"name": "required-build", "blocking": true, "status": "rejected", "url": "https://policy.test/1"},
+            {"name": "advisory", "blocking": false, "status": "broken", "url": "https://policy.test/2"}
+        ]);
+    });
+
+    env.edit_stub(|s| s["retryAfter"] = json!(45));
+    env.stub_fault("az", "rate-limit", 1);
+    env.expire_wait_of("ChangeRequest", &cr);
+    env.reconcile().ok();
+    let st = env.change_request_status(&cr);
+    assert_condition(&st, "Reachable", "Unknown", "Throttled");
+    assert_eq!(st["revision"], 1);
+
+    for (mode, reason) in [
+        ("auth", "NotLoggedIn"),
+        ("malformed", "Unreadable"),
+        ("truncated", "Incomplete"),
+        ("fail", "Unreadable"),
+    ] {
+        env.stub_fault("az", mode, 1);
+        env.expire_wait_of("ChangeRequest", &cr);
+        env.reconcile().ok();
+        let st = env.change_request_status(&cr);
+        assert_condition(&st, "Reachable", "Unknown", reason);
+        assert_eq!(st["revision"], 1, "{mode}");
+    }
+
+    env.edit_stub(|s| s["malformedIterations"] = json!(true));
+    env.expire_wait_of("ChangeRequest", &cr);
+    env.reconcile().ok();
+    let st = env.change_request_status(&cr);
+    assert_condition(&st, "Reachable", "Unknown", "Unreadable");
+    assert_eq!(st["revision"], 1, "a malformed later iteration is not h1");
+    env.edit_stub(|s| s["malformedIterations"] = json!(false));
+
+    env.edit_stub(|s| s["noRepo"] = json!(true));
+    env.expire_wait_of("ChangeRequest", &cr);
+    env.reconcile().ok();
+    let st = env.change_request_status(&cr);
+    assert_condition(&st, "Reachable", "Unknown", "Refused");
+    assert_eq!(st["phase"], "Watching", "an ambiguous 404 is not absence");
+
+    env.edit_stub(|s| {
+        s["noRepo"] = json!(false);
+        s["changes"]
+            .as_object_mut()
+            .unwrap()
+            .remove("wingtip/project/widgets#7");
+    });
+    env.expire_wait_of("ChangeRequest", &cr);
+    env.reconcile().ok();
+    let st = env.change_request_status(&cr);
+    assert_eq!(st["phase"], "Settled", "{st:#}");
+    assert_condition(&st, "Settled", "True", "Gone");
+
+    let other_org = env.apply(change_request(
+        "https://dev.azure.com/other/project/_git/widgets/pullrequest/7",
+        json!({}),
+    ));
+    other_org.ok();
+    assert_ne!(
+        cr,
+        derived_name(
+            "azure-devops",
+            "other.visualstudio.com",
+            "project/widgets",
+            "7"
+        ),
+        "the organization participates in canonical identity"
+    );
+}
+
+#[test]
+fn azure_devops_draft_open_closed_and_completed_states_are_not_conflated() {
+    let env = Env::forge_stubs("azure-states");
+    env.edit_stub(|s| {
+        let model = |state: &str, head: &str| {
+            json!({
+                "state": state,
+                "head": head,
+                "checks": [],
+                "mergeable": if state == "draft" { "draft" } else { "mergeable" },
+                "reviews": [],
+                "comments": [],
+                "threads": []
+            })
+        };
+        s["changes"] = json!({
+            "wingtip/project/widgets#11": model("draft", "d1"),
+            "wingtip/project/widgets#12": model("open", "o1"),
+            "wingtip/project/widgets#13": model("closed", "c1"),
+            "wingtip/project/widgets#14": model("merged", "m1")
+        });
+    });
+    for id in 11..=14 {
+        env.apply(change_request(
+            &format!("https://dev.azure.com/wingtip/project/_git/widgets/pullrequest/{id}"),
+            json!({}),
+        ))
+        .ok();
+    }
+    env.reconcile().ok();
+    for (id, state, phase) in [
+        (11, "draft", "Watching"),
+        (12, "open", "Watching"),
+        (13, "closed", "Closed"),
+        (14, "merged", "Settled"),
+    ] {
+        let cr = derived_name(
+            "azure-devops",
+            "wingtip.visualstudio.com",
+            "project/widgets",
+            &id.to_string(),
+        );
+        let status = env.change_request_status(&cr);
+        assert_eq!(status["state"]["value"], state, "{status:#}");
+        assert_eq!(status["phase"], phase, "{status:#}");
+    }
 }
 
 #[test]
