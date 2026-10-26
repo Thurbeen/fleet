@@ -174,13 +174,12 @@ reported, not acted on.
 
 ### The Plugin controller
 
-Planned, design and not implemented: the
-[Plugin controller](controllers/plugin/README.md), a host for controllers
+The [Plugin controller](controllers/plugin/README.md), a host for controllers
 written outside this repository as scripts. A plugin registered under
 `[plugins.<name>]` declares its own kinds with a JSON Schema each, which the
 store then serves. For each due object of those kinds the manager runs the
 plugin's pure `probes` and `reconcile` functions as bounded processes
-through a new `Plugins` port and a `fleet-plugin` adapter crate, answers
+through the `Plugins` port and a `fleet-plugin` adapter crate, answers
 store probes itself and plugin probes through the plugin's bounded `observe`
 call, and admits the returned plan through a pure gate in
 `fleet-controllers` before writing the plugin's status under field manager
@@ -194,8 +193,8 @@ and every plugin process is one bounded call through `fleet-exec`.
 
 The Task controller runs sessions and records worker claims. It does not
 verify that an artifact merged, conduct reviews, manage a forge or dispatch
-a hierarchy. Controller plugins are [designed](controllers/plugin/README.md)
-and not loaded by this build. Connection details stay with thurbox;
+a hierarchy. Registered [controller plugins](controllers/plugin/README.md) define their
+own kinds and act through admitted plans. Connection details stay with thurbox;
 credentials stay with the agent and host.
 
 V2 does not read or migrate v1 queue records or configuration. Root

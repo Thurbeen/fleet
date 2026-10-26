@@ -187,11 +187,10 @@ it, or the operator's config, names a policy. The shipped
 `forge.example`, with `draftPolicy = "checks"` and the same three policies,
 so a declared draft can be taken out of draft offline.
 
-## Planned `[plugins]` section
+## `[plugins]` section
 
-Design, not implemented. The [Plugin controller](../controllers/plugin/README.md)
-registers each plugin here, operator-owned. The section is refused as
-unknown today, so this example does not load.
+The [Plugin controller](../controllers/plugin/README.md) registers each
+plugin here, operator-owned.
 
 ```toml
 [plugins.github-issues]

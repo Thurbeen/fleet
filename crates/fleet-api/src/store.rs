@@ -10,7 +10,7 @@ use crate::observation::Observation;
 
 /// Who is writing. The store checks it against the kind's ownership table
 /// (`kinds::status_owner`) on every status write and finalizer change.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum FieldManager {
     /// People and scripts writing spec through `fleet apply`.
@@ -27,10 +27,11 @@ pub enum FieldManager {
     /// A person at the command line, through `fleet send`: appends to
     /// `Task.status.inbox` and owns nothing.
     Cli,
+    Plugin(String),
 }
 
 impl FieldManager {
-    pub fn name(self) -> &'static str {
+    pub fn name(&self) -> String {
         match self {
             FieldManager::Apply => "apply",
             FieldManager::Worker => "worker",
@@ -38,16 +39,19 @@ impl FieldManager {
             FieldManager::ChangeRequestController => "change-request-controller",
             FieldManager::ForgeController => "forge-controller",
             FieldManager::Cli => "cli",
+            FieldManager::Plugin(name) => return format!("plugin/{name}"),
         }
+        .into()
     }
 
     /// Controllers write only while they hold the manager lease (fencing).
-    pub fn is_controller(self) -> bool {
+    pub fn is_controller(&self) -> bool {
         matches!(
             self,
             FieldManager::TaskController
                 | FieldManager::ChangeRequestController
                 | FieldManager::ForgeController
+                | FieldManager::Plugin(_)
         )
     }
 }
@@ -102,6 +106,27 @@ pub enum DeleteOutcome {
 }
 
 pub trait Store {
+    fn plugin_mutate(
+        &self,
+        _mutation: crate::plugin::Mutation,
+        _by: FieldManager,
+        _lease: &LeaseToken,
+    ) -> Result<Value, StoreError> {
+        Err(StoreError::Unsupported("plugin verbs".into()))
+    }
+
+    fn served_kinds(&self) -> Vec<String> {
+        vec![
+            "Task".into(),
+            "TaskConfig".into(),
+            "EnvProvider".into(),
+            "ChangeRequest".into(),
+        ]
+    }
+    fn validate_plugin_status(&self, _kind: &str, _status: &Value) -> Result<(), StoreError> {
+        Err(StoreError::Unsupported("plugin status".into()))
+    }
+
     /// Private immutable launch data, keyed by Task UID, never a resource/status.
     fn launch(&self, _task: &Object) -> Result<Option<crate::config::Execution>, StoreError> {
         Err(StoreError::Unsupported(

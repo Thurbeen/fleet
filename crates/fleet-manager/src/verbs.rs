@@ -267,6 +267,27 @@ pub fn declare_change_request(
     // Eligibility first, so an ineligible Task creates no orphan.
     eligible_for_declare(store, task_name)?;
     let url = url.trim();
+    let (name, created) = ensure_change_request(store, forge, url)?;
+    let item = json!({"kind": DECLARED_CHANGE_REQUEST, "url": url, "name": name});
+    let outcome = append_declaration(store, task_name, item.clone(), |existing| {
+        existing.get("kind").and_then(Value::as_str) == Some(DECLARED_CHANGE_REQUEST)
+            && existing.get("name").and_then(Value::as_str) == Some(name.as_str())
+    })?;
+    Ok(Declared {
+        outcome,
+        item,
+        change_request: name,
+        created,
+    })
+}
+
+/// Ensure a verified mirror without applying over its operator-owned spec or labels.
+pub(crate) fn ensure_change_request(
+    store: &dyn Store,
+    forge: &dyn Forge,
+    url: &str,
+) -> Result<(String, bool), StoreError> {
+    let url = url.trim();
     let reference = match forge.parse(url) {
         Observation::Known(r) => r,
         Observation::Unknown { why } => {
@@ -274,7 +295,6 @@ pub fn declare_change_request(
         }
     };
     let name = derived_name(&reference);
-    let mut created = false;
     for _ in 0..CAS_TRIES {
         match store.get(change_request::KIND, &name) {
             Observation::Known(None) => {
@@ -290,32 +310,21 @@ pub fn declare_change_request(
                 };
                 store.validate(&manifest)?;
                 match store.create(manifest, FieldManager::Apply) {
-                    Ok(_) => {
-                        created = true;
-                        break;
-                    }
+                    Ok(_) => return Ok((name, true)),
                     Err(StoreError::AlreadyExists(_)) => continue,
                     Err(e) => return Err(e),
                 }
             }
             Observation::Known(Some(current)) => {
                 verify_mirrors(forge, &current, &reference)?;
-                break;
+                return Ok((name, false));
             }
             Observation::Unknown { why } => return Err(StoreError::Unknown(why)),
         }
     }
-    let item = json!({"kind": DECLARED_CHANGE_REQUEST, "url": url, "name": name});
-    let outcome = append_declaration(store, task_name, item.clone(), |existing| {
-        existing.get("kind").and_then(Value::as_str) == Some(DECLARED_CHANGE_REQUEST)
-            && existing.get("name").and_then(Value::as_str) == Some(name.as_str())
-    })?;
-    Ok(Declared {
-        outcome,
-        item,
-        change_request: name,
-        created,
-    })
+    Err(StoreError::Busy(
+        "ChangeRequest creation kept conflicting".into(),
+    ))
 }
 
 /// `fleet declare TASK --json OBJECT`: append any JSON object with a string

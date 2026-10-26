@@ -788,7 +788,10 @@ fn docs_gate_rejects_broken_links_malformed_svg_and_inconsistent_structure() {
     );
     e.git(&["add", "-A"]);
     let (ok, out) = e.call(&["check", "docs"], &[]);
-    assert!(!ok && out.contains("planned PluginController"), "{out}");
+    assert!(!ok && out.contains("PluginController"), "{out}");
+    e.write("docs/architecture.svg", "<svg xmlns=\"http://www.w3.org/2000/svg\"><style>@media (prefers-color-scheme: light) { :root { color: #000; } } @media (prefers-color-scheme: dark) { :root { color: #fff; } }</style><text>PluginController host</text></svg>");
+    let (ok, out) = e.call(&["check", "docs"], &[]);
+    assert!(ok, "{out}");
 }
 #[cfg(unix)]
 #[test]

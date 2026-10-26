@@ -100,9 +100,12 @@ fn docs() -> Result {
         && tracked.iter().any(|file| file == "docs/architecture.svg")
     {
         let architecture = fs::read_to_string("docs/architecture.svg")?;
-        if !architecture.contains("PluginController") || !architecture.contains("planned") {
+        let guide = fs::read_to_string("docs/controllers/plugin/README.md")?;
+        let planned = guide.contains("Design, not implemented");
+        if !architecture.contains("PluginController") || architecture.contains("planned") != planned
+        {
             return Err(
-                "docs/architecture.svg: show the planned PluginController described by the controller guide"
+                "docs/architecture.svg: show PluginController with the implementation status described by the controller guide"
                     .into(),
             );
         }

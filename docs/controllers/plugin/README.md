@@ -1,8 +1,8 @@
 # Plugin controller
 
-Design, not implemented. These pages describe a planned controller host;
-nothing here is served by the installed binary, and the lifecycle test still
-asserts that a plugin-defined kind is refused as unknown.
+Fleet hosts registered external controllers through bounded protocol-1 processes.
+The CLI acceptance suite exercises registered kinds, reconciliation, Task
+operations, environment separation and effects across process restarts.
 
 A plugin is a controller written outside this repository, in a language a
 person can read in one sitting, such as a TypeScript or Python script. It
@@ -18,8 +18,8 @@ comment on or implement each; a Notion plugin is the second.
 | [Plugin kinds](../../resources/plugin-kinds.md) | What does a plugin's resource look like, and who may write what on it? |
 | [State machine](state-machine.md) | How does one object of a plugin kind move through a sweep, an effect, and deletion? |
 | [Interface](interface.md) | What is the protocol, the manifest, the probes, the plan verbs and the write rules? |
-| [Task](../../resources/task.md#planned-additions-for-plugins) | What may a plugin do to a Task? |
-| [Native config](../../configuration/fleet-toml.md#planned-plugins-section) | How is a plugin registered, bounded and given its secrets? |
+| [Task](../../resources/task.md#plugin-operations) | What may a plugin do to a Task? |
+| [Native config](../../configuration/fleet-toml.md#plugins-section) | How is a plugin registered, bounded and given its secrets? |
 | [Forge controller](../forge/README.md) | The controller this one is modelled on. |
 | [Overall architecture](../../ARCHITECTURE.md#the-plugin-controller) | Where does this host fit in Fleet? |
 
@@ -145,18 +145,15 @@ service Fleet would have to supervise.
 
 ## Implementation and evidence
 
-Four steps, each its own change with its own E2E suite against the built CLI
-and a stub plugin that speaks the protocol without Node or Python:
+The protocol types live in `fleet-api/src/plugin.rs`, pure admission in
+`fleet-controllers/src/plugin.rs`, process hosting in `fleet-plugin`, and
+registration and sweeps in `fleet-manager/src/plugins.rs`. The file store
+validates schemas and rechecks identities, ownership and leases under its
+write lock for every plugin verb. The command line loads manifests once per
+process and accepts plugin kind names and plurals.
 
-| Step | What | Where | Evidence |
-| --- | --- | --- | --- |
-| 1 | The `Plugins` port, the `fleet-plugin` host, `[plugins]` config, the `manifest` call, plugin kinds served by the store with schema validation, `apply`, `get`, `list`, `status` and `delete` for them, `fleet list plugins` | `fleet-api/src/plugin.rs`, `crates/fleet-plugin`, `fleet-store` (dynamic kinds, schemas), `fleet-cli/src/config.rs` | `store_contract`, `e2e_plugin_kinds`, `architecture` |
-| 2 | The controller loop: `probes` in rounds, store probes, `reconcile`, the pure gate, status with the reserved fields, `notBefore`, creates and deletes of own kinds, finalizers | `fleet-controllers/src/plugin.rs`, `fleet-manager` (the sweep, after ForgeController) | `plugin_gate`, `e2e_plugin_controller` |
-| 3 | The observer half: plugin probes through `observe`, effects through `perform` with intents and receipts, `passEnv` and `envFrom`; the Task verbs: create, patch, delete, append as `plugin/<name>`, declare; `tasks = "own"` | `crates/fleet-plugin`, `fleet-manager/src/verbs.rs`, `fleet-store` (the creator label, the plugin appender) | `e2e_plugin_effects`, `e2e_plugin_tasks`, `store_contract`, `architecture` |
-| 4 | The TypeScript and Python SDKs and the issues plugin, outside this repository; the shipped example plugin in `examples/` | Separate repositories; `examples/plugins/` | Their own suites; `e2e_examples` |
-
-Each step keeps `cargo xtask check` green and adds its crate edges and status
-writers to `crates/architecture.toml` with negative fixtures. The lifecycle
-test's list of refused kinds loses `ControllerPlugin` at step 1, when a
-plugin kind registered in the test config is accepted and an unregistered
-one is still refused.
+`e2e_plugin_controller` drives the built CLI and a Rust protocol stub across
+process restarts. `plugin_gate` covers admission rules; `store_contract`
+covers fencing and creator ownership; `architecture` enforces the crate and
+writer boundaries. TypeScript/Python SDKs and issue-specific plugins remain
+outside this repository.

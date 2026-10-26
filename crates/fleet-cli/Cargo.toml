@@ -22,6 +22,7 @@ test = false
 doc = false
 
 [dependencies]
+fleet-plugin.workspace = true
 fleet-api.workspace = true
 fleet-manager.workspace = true
 fleet-runtime.workspace = true

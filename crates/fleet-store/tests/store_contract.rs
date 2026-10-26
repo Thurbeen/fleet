@@ -774,7 +774,7 @@ fn a_controllers_delete_is_fenced_by_uid_version_and_lease() {
         Err(StoreError::Forbidden(_))
     ));
     assert!(matches!(
-        store.delete_fenced("ChangeRequest", "cr-1", &uid, rv + 1, cr, &lease),
+        store.delete_fenced("ChangeRequest", "cr-1", &uid, rv + 1, cr.clone(), &lease),
         Err(StoreError::Conflict { .. })
     ));
     // Recreated under the same name: a new uid the old plan did not name.
@@ -791,7 +791,7 @@ fn a_controllers_delete_is_fenced_by_uid_version_and_lease() {
             "cr-1",
             &uid,
             again.metadata.resource_version,
-            cr,
+            cr.clone(),
             &lease
         ),
         Err(StoreError::Conflict { .. })
@@ -804,13 +804,13 @@ fn a_controllers_delete_is_fenced_by_uid_version_and_lease() {
     store.release_lease(&lease).unwrap();
     let (uid2, rv2) = (again.metadata.uid.clone(), again.metadata.resource_version);
     assert!(matches!(
-        store.delete_fenced("ChangeRequest", "cr-1", &uid2, rv2, cr, &lease),
+        store.delete_fenced("ChangeRequest", "cr-1", &uid2, rv2, cr.clone(), &lease),
         Err(StoreError::LeaseLost(_))
     ));
     let lease = store.acquire_lease("m", 60_000).unwrap();
     assert_eq!(
         store
-            .delete_fenced("ChangeRequest", "cr-1", &uid2, rv2, cr, &lease)
+            .delete_fenced("ChangeRequest", "cr-1", &uid2, rv2, cr.clone(), &lease)
             .unwrap(),
         DeleteOutcome::Removed,
         "no finalizer: the record goes at once"
@@ -839,7 +839,7 @@ fn change_request_status_belongs_to_its_controller_alone() {
                 "cr-2",
                 status.clone(),
                 rv,
-                by,
+                by.clone(),
                 Some(&lease),
             )
             .unwrap_err();
@@ -1128,7 +1128,7 @@ fn only_named_callers_reach_the_inbox_and_never_through_a_status_write() {
         FieldManager::TaskController,
     ] {
         let err = store
-            .append_inbox("t", entry("k1"), rv, by, Some(&lease))
+            .append_inbox("t", entry("k1"), rv, by.clone(), Some(&lease))
             .unwrap_err();
         assert!(matches!(err, StoreError::Forbidden(_)), "{by:?}: {err}");
     }
@@ -1155,7 +1155,7 @@ fn only_named_callers_reach_the_inbox_and_never_through_a_status_write() {
                 "t",
                 replaced.clone(),
                 t.metadata.resource_version,
-                by,
+                by.clone(),
                 lease,
             )
             .unwrap_err();
@@ -1185,7 +1185,7 @@ fn only_named_callers_reach_the_inbox_and_never_through_a_status_write() {
                 t.status.clone(),
                 receipt("k1"),
                 t.metadata.resource_version,
-                by,
+                by.clone(),
                 &lease,
             )
             .unwrap_err();
@@ -1420,7 +1420,7 @@ fn a_relay_lands_the_cursor_and_its_entries_together_or_not_at_all() {
                 forge(1),
                 vec![relay("relay/1", 1)],
                 t.metadata.resource_version,
-                by,
+                by.clone(),
                 &lease,
             )
             .unwrap_err();
@@ -1522,7 +1522,7 @@ fn a_relay_lands_the_cursor_and_its_entries_together_or_not_at_all() {
                 "t",
                 other.clone(),
                 t.metadata.resource_version,
-                by,
+                by.clone(),
                 lease,
             )
             .unwrap_err();
@@ -1594,4 +1594,114 @@ fn a_relay_lands_the_cursor_and_its_entries_together_or_not_at_all() {
         ),
         Err(StoreError::LeaseLost(_))
     ));
+}
+
+fn plugin_registration() -> fleet_api::plugin::Registration {
+    serde_json::from_value(json!({"manifest":{"name":"issues","protocol":1,"kinds":[{"kind":"Issue","pollMs":1000,"finalizer":true,"immutableSpec":true,"spec":{"type":"object","required":["number"],"properties":{"number":{"type":"integer"}},"additionalProperties":false},"status":{"type":"object","properties":{"phase":{"type":"string"}},"additionalProperties":false}}]},"config":{"program":"fixture","cwd":"fixture"}})).unwrap()
+}
+fn plugin_object() -> Object {
+    serde_json::from_value(json!({"apiVersion":"fleet/v1alpha1","kind":"Issue","metadata":{"name":"one"},"spec":{"number":1}})).unwrap()
+}
+#[test]
+fn plugin_status_and_verbs_are_fenced_and_never_write_worker_results() {
+    use fleet_api::plugin::{CREATOR, Mutation, Patch};
+    let dir = Dir::new("plugin-rights");
+    let clock = Arc::new(TestClock::default());
+    let store = FileStore::open_with_clock(&dir.0, clock.clone())
+        .unwrap()
+        .with_plugins(&[plugin_registration()])
+        .unwrap();
+    let obj = store.create(plugin_object(), FieldManager::Apply).unwrap();
+    let lease = store.acquire_lease("test", 100).unwrap();
+    let writer = fleet_api::plugin::writer_for_store("issues");
+    assert!(matches!(
+        store.update_status(
+            "Issue",
+            "one",
+            json!({"phase":"Ready"}),
+            obj.metadata.resource_version,
+            writer.clone(),
+            None
+        ),
+        Err(StoreError::LeaseLost(_))
+    ));
+    assert!(
+        store
+            .update_status(
+                "Issue",
+                "one",
+                json!({"phase":1}),
+                obj.metadata.resource_version,
+                writer.clone(),
+                Some(&lease)
+            )
+            .is_err()
+    );
+    let updated = store
+        .update_status(
+            "Issue",
+            "one",
+            json!({"phase":"Ready","host":{}}),
+            obj.metadata.resource_version,
+            writer.clone(),
+            Some(&lease),
+        )
+        .unwrap();
+    assert!(
+        store
+            .update_spec(
+                "Issue",
+                "one",
+                json!({"number":2}),
+                None,
+                updated.metadata.resource_version,
+                FieldManager::Apply
+            )
+            .is_err()
+    );
+    store
+        .plugin_mutate(Mutation::Create(task("child")), writer.clone(), &lease)
+        .unwrap();
+    let child = known(store.get("Task", "child")).unwrap();
+    assert_eq!(child.metadata.labels[CREATOR], "issues");
+    let bad = Patch {
+        kind: "Task".into(),
+        name: "child".into(),
+        uid: child.metadata.uid.clone(),
+        spec: json!({"brief":"overwrite"}),
+    };
+    assert!(
+        store
+            .plugin_mutate(Mutation::Patch(bad), writer.clone(), &lease)
+            .is_err()
+    );
+    let stale = Patch {
+        kind: "Task".into(),
+        name: "child".into(),
+        uid: "replaced".into(),
+        spec: json!({"dispatch":true}),
+    };
+    assert!(
+        store
+            .plugin_mutate(Mutation::Patch(stale), writer.clone(), &lease)
+            .is_err()
+    );
+    assert!(
+        store
+            .update_status(
+                "Task",
+                "child",
+                json!({"result":{"outcome":"shipped","summary":"forged"}}),
+                child.metadata.resource_version,
+                writer.clone(),
+                Some(&lease)
+            )
+            .is_err()
+    );
+    clock.advance(101);
+    assert!(matches!(
+        store.plugin_mutate(Mutation::Create(task("expired")), writer, &lease),
+        Err(StoreError::LeaseLost(_))
+    ));
+    assert!(known(store.get("Task", "expired")).is_none());
 }
