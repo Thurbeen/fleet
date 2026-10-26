@@ -121,6 +121,24 @@ pub fn validate_spec(kind: &str, spec: &Value) -> Result<(), StoreError> {
         if value.trim().is_empty() {
             return Err(StoreError::Invalid(format!("{field} must not be empty")));
         }
+        if value.contains('\0') {
+            return Err(StoreError::Invalid(format!("{field} must not contain NUL")));
+        }
+    }
+    let mut workspace_dirs = BTreeSet::from([s.workspace.dir.as_str()]);
+    for (index, dir) in s.workspace.additional_dirs.iter().enumerate() {
+        let field = format!("spec.workspace.additionalDirs[{index}]");
+        if dir.trim().is_empty() {
+            return Err(StoreError::Invalid(format!("{field} must not be empty")));
+        }
+        if dir.contains('\0') {
+            return Err(StoreError::Invalid(format!("{field} must not contain NUL")));
+        }
+        if !workspace_dirs.insert(dir) {
+            return Err(StoreError::Invalid(format!(
+                "{field} duplicates another workspace directory"
+            )));
+        }
     }
     // Both reach the runtime as arguments: never as a flag.
     for (field, value) in [("spec.harness", &s.harness), ("spec.host", &s.host)] {

@@ -140,6 +140,27 @@ fn a_task_runs_from_apply_to_release_with_one_spawn_and_one_brief() {
 }
 
 #[test]
+fn fake_runtime_preserves_multi_workspace_membership_during_recovery() {
+    let env = Env::new("fake-multi-workspace");
+    let mut t = task("t1", true);
+    t["spec"]["workspace"]["additionalDirs"] = json!(["work/second", "work/docs with spaces"]);
+    env.apply(t).ok();
+    env.fault(Fault::new("spawn", "unknown").performed());
+
+    env.reconcile().ok();
+
+    let key = env.session_key("t1");
+    let session = env.host().session(&key).unwrap().unwrap();
+    assert_eq!(session.dir, "work/t1");
+    assert_eq!(
+        session.additional_dirs,
+        vec!["work/second", "work/docs with spaces"]
+    );
+    assert_eq!(env.status("t1")["phase"], "Briefed");
+    assert_eq!((env.calls("spawn"), env.calls("brief")), (1, 1));
+}
+
+#[test]
 fn a_task_waits_for_dispatch_and_its_spec_is_fixed_except_dispatch() {
     let env = setup("dispatch", false);
     env.reconcile().ok();
@@ -774,12 +795,25 @@ fn the_contract_examples_apply_as_written() {
     let resources: serde_json::Value = serde_json::from_str(&block("json")).unwrap();
     let applied = env.apply(resources).ok().stdout.clone();
     assert!(applied.contains("Task/design-305 created"), "{applied}");
+    let multi: serde_json::Value = serde_json::from_slice(
+        &fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../..")
+                .join("examples/multi-repo-task.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    env.apply(multi)
+        .ok()
+        .stdout_has("Task/update-api-and-client created");
     env.reconcile().ok();
     let st = env
         .fleet(&["status", "task", "design-305", "--json"])
         .ok()
         .json();
     assert_eq!(st["phase"], "Briefed", "{st:#}");
+    assert_eq!(env.status("update-api-and-client")["phase"], "Briefed");
 }
 
 #[test]

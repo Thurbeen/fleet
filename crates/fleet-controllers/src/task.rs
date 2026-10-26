@@ -72,6 +72,7 @@ impl TaskController {
         let find = Probe::Find {
             host: host.clone(),
             key: session_key(input.task),
+            workspace: spec.workspace.clone(),
         };
         if input.task.is_deleting() {
             let mut probes = vec![find];
@@ -298,7 +299,7 @@ impl Pass<'_, '_> {
             host: self.spec.host.clone(),
             key: session_key(self.input.task),
             harness: self.spec.harness.clone(),
-            dir: self.spec.workspace.dir.clone(),
+            workspace: self.spec.workspace.clone(),
             model: self.spec.model.clone(),
             env: self.spec.env.clone(),
             environment_frozen: false,

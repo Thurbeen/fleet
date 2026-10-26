@@ -1,0 +1,15 @@
+{
+  "apiVersion": "fleet/v1alpha1",
+  "kind": "Task",
+  "metadata": {"name": "update-api-and-client"},
+  "spec": {
+    "harness": "codex",
+    "host": "local",
+    "workspace": {
+      "dir": "/work/api-change",
+      "additionalDirs": ["/work/client-change"]
+    },
+    "brief": "Update the API and its client together, then open one draft PR in each repository.",
+    "dispatch": true
+  }
+}

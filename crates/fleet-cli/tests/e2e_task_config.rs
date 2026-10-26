@@ -28,6 +28,8 @@ fn task_config_is_passive_and_launch_defaults_are_frozen_across_restart() {
     t["spec"].as_object_mut().unwrap().remove("harness");
     t["spec"].as_object_mut().unwrap().remove("host");
     t["spec"]["workspace"]["dir"] = json!(e.root.to_string_lossy());
+    let additional = e.root.join("second repo");
+    t["spec"]["workspace"]["additionalDirs"] = json!([additional.to_string_lossy()]);
     t["spec"]["configRef"] = json!({"name":"shared"});
     e.apply(t.clone()).ok();
     e.reconcile().ok();
@@ -58,6 +60,9 @@ fn task_config_is_passive_and_launch_defaults_are_frozen_across_restart() {
         .unwrap();
     let args = create["argv"].as_array().unwrap();
     assert!(args.contains(&json!("--env-stdin")));
+    assert!(args.windows(2).any(|pair| {
+        pair[0] == "--add-dir" && pair[1] == additional.to_string_lossy().as_ref()
+    }));
     assert!(!create.to_string().contains("bonjour"));
     assert!(
         e.stub_sessions()[0]["env"]
@@ -152,6 +157,8 @@ fn providers_resolve_before_launch_and_keep_values_private_on_restart() {
     t["spec"]["configRef"] = json!({"name":"shared"});
     t["spec"]["env"] = json!({"win_case":"task"});
     t["spec"]["workspace"]["dir"] = json!(e.root.to_string_lossy());
+    let additional = e.root.join("provider repo");
+    t["spec"]["workspace"]["additionalDirs"] = json!([additional.to_string_lossy()]);
     e.apply(t).ok();
     e.reconcile().ok();
     assert!(!e.get("private").to_string().contains(secret));
@@ -173,6 +180,10 @@ fn providers_resolve_before_launch_and_keep_values_private_on_restart() {
     e.reconcile().ok();
     assert_eq!(e.stub_calls_of("create"), 1);
     assert_eq!(e.stub_calls_of("send"), 1);
+    assert_eq!(
+        e.stub_sessions()[0]["additional_dirs"],
+        json!([additional.to_string_lossy()])
+    );
     assert_eq!(
         e.status("private")["execution"]["sources"]
             .as_array()

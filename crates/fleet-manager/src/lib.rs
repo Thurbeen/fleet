@@ -828,8 +828,12 @@ impl Manager<'_> {
                 note(&format!("host {host}"), o.why());
                 obs.host = Some(o);
             }
-            Probe::Find { host, key: k } => {
-                let o = rt.find(host, k);
+            Probe::Find {
+                host,
+                key: k,
+                workspace,
+            } => {
+                let o = rt.find(host, k, Some(workspace));
                 note(&format!("find on {host}"), o.why());
                 obs.find = Some(o);
             }

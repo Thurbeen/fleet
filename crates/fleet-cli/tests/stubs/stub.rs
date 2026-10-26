@@ -1025,6 +1025,7 @@ fn answer(
                 "id": format!("00000000-0000-4000-8000-{n:012}"),
                 "name": opt(args, "--name"), "key": key, "host": host,
                 "agent": opt(args, "--agent"), "cwd": opt(args, "--repo-path"),
+                "additional_dirs": opts(args, "--add-dir"),
                 "state": ready, "stopped": false, "meta": {}, "sent": [], "env": env_names
             });
             if let Some(fields) = state["spawnFields"].as_object() {

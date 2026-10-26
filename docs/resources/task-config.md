@@ -3,8 +3,8 @@
 TaskConfig supplies reusable execution defaults for a [Task](task.md).
 It is passive data: it has no controller, status or finalizer. Its spec is
 mutable; editing it affects future resolutions, while existing frozen launches
-keep their original values. Brief, workspace and outputs always belong to
-each Task. TaskConfig does not define task templates.
+keep their original values. Brief, primary/additional workspace paths and
+outputs always belong to each Task. TaskConfig does not define task templates.
 
 Save this manifest as `task-config.json`:
 
@@ -104,6 +104,9 @@ Retries and manager restarts reuse the snapshot, including a crash between
 snapshot and status writes. Config/provider edits, deletion, name reuse,
 changed files or command output cannot redirect an existing execution or
 create another session/brief. Providers are not polled for refresh.
+The immutable Task continues to supply the same workspace declaration while
+that frozen execution is reused; workspace paths are not inherited from
+TaskConfig or EnvProvider.
 
 Private plaintext snapshots live at `launches/<Task UID>.json` inside the
 store, outside resource reads. Unix directory/files use 0700/0600, including

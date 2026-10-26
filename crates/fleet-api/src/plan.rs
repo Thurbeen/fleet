@@ -7,7 +7,7 @@ use serde_json::Value;
 use crate::forge::{ChangeRef, ChangeState, Expected};
 use crate::meta::Millis;
 use crate::observation::Observation;
-use crate::task::SessionRef;
+use crate::task::{SessionRef, Workspace};
 
 /// One reconcile's answer.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -81,7 +81,7 @@ pub struct SpawnSpec {
     pub host: String,
     pub key: String,
     pub harness: String,
-    pub dir: String,
+    pub workspace: Workspace,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
@@ -152,6 +152,7 @@ pub enum Probe {
     Find {
         host: String,
         key: String,
+        workspace: Workspace,
     },
     Ready {
         session: SessionRef,

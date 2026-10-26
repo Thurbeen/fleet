@@ -433,7 +433,12 @@ fn manager_renews_after_the_final_probe_before_waiting_under_its_lease() {
         fn host(&self, _: &str) -> Observation<bool> {
             Observation::Known(true)
         }
-        fn find(&self, host: &str, key: &str) -> Observation<Option<SessionRef>> {
+        fn find(
+            &self,
+            host: &str,
+            key: &str,
+            _: Option<&fleet_api::task::Workspace>,
+        ) -> Observation<Option<SessionRef>> {
             assert_eq!(host, self.session.host);
             assert_eq!(key, self.session.key);
             self.clock.0.fetch_add(1500, Ordering::SeqCst);

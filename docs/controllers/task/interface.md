@@ -79,8 +79,9 @@ pub struct Plan {
 | `delivery` | An inbox entry proven delivered: `{key, at, recovered}`. The manager writes it with `status` as one record-and-remove mutation: the receipt into `status.deliveries`, the entry out of `status.inbox`. |
 
 An action is `Spawn(SpawnSpec)`, `Brief { session, text }` or
-`Release { session }`. SpawnSpec carries `host`, `key`, `harness`, `dir`,
-optional `model`, the private environment map and `environmentFrozen`. The
+`Release { session }`. SpawnSpec carries `host`, `key`, `harness`, the typed
+workspace (`dir` and `additionalDirs`), optional `model`, the private
+environment map and `environmentFrozen`. The
 manager injects frozen values and prevents model-variable remapping before
 performing a spawn; environment values are not persisted in effect intents.
 `SessionRef` carries `id`, `host` and `key`; a later session
@@ -140,7 +141,7 @@ return `Observation<T>`; a refused effect is
 | `env_source` | Explicit file/command source | Bounded manager-local JSON string map, or redacted Unknown. |
 | `host` | Host name | Whether the runtime can reach it. |
 | `spawn` | `SpawnSpec` | `Spawned { session, adopted }`, or Failed/Unknown. |
-| `find` | Host and session key | Optional session under that key, or Unknown. |
+| `find` | Host, session key and declared workspace | Optional session under that key, or Unknown. A matching key with different primary/additional workspace membership is Unknown, never adopted or treated as absent. |
 | `ready` | `SessionRef` | Whether the session can receive input now. |
 | `brief` | Session, text and intent key | `Delivered { already }`, or Failed/Unknown. |
 | `brief_delivered` | Session and intent key | Whether that brief was delivered, or Unknown. |
@@ -152,6 +153,9 @@ Its session key is `<keyPrefix>.<uid>`. It journals each brief intent in
 session metadata as pending before sending and delivered afterward. A pending
 journal entry is ambiguous, so it is never a license to resend. On release,
 a different id holding the key returns Unknown and is not deleted.
+The primary workspace is `--repo-path`; every prepared additional workspace is
+one `--add-dir` argument. Adoption reads the session row and requires the
+declared membership to match before returning the session.
 The fake adapter provides persisted sessions and faults without starting an
 agent. Explicit provider commands still run through the same bounded executor
 with either adapter; command resolution requires a lease above 20000 ms and

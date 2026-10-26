@@ -7,7 +7,7 @@
 
 use crate::observation::Observation;
 use crate::plan::{EffectOutcome, SpawnSpec};
-use crate::task::SessionRef;
+use crate::task::{SessionRef, Workspace};
 
 pub trait Runtime {
     /// Resolve runtime model-variable selection into the frozen private environment.
@@ -37,8 +37,15 @@ pub trait Runtime {
     /// `find` and never retries blindly.
     fn spawn(&self, spec: &SpawnSpec) -> Observation<EffectOutcome>;
     /// The session holding `key`, `Known(None)` when a readable list shows
-    /// none, Unknown when the list cannot be read.
-    fn find(&self, host: &str, key: &str) -> Observation<Option<SessionRef>>;
+    /// none, Unknown when the list cannot be read or its membership conflicts
+    /// with a supplied workspace. `None` skips membership comparison for a
+    /// recorded session whose exact id is being checked during release.
+    fn find(
+        &self,
+        host: &str,
+        key: &str,
+        workspace: Option<&Workspace>,
+    ) -> Observation<Option<SessionRef>>;
     /// Ready when the agent is running and waiting for input.
     fn ready(&self, session: &SessionRef) -> Observation<bool>;
     /// Send the brief once under `intent_key`; the session stores the key, so

@@ -41,6 +41,7 @@ except `dispatch` and `forge`.
 | `env` | no | Explicit string environment map; overrides inherited values. |
 | `brief` | yes | The brief, sent once to the ready session. |
 | `workspace.dir` | yes | The session's working directory. The thurbox runtime needs an absolute path on the host. |
+| `workspace.additionalDirs` | no | Prepared repository workspaces to attach to the same session as-is, in order. The thurbox runtime needs absolute paths on the host. |
 | `dispatch` | no | Nothing spawns while `false` (the default). |
 | `outputs` | no | The structured outputs a result must carry, by name: each `{"type": T, "required": bool}`, where T is `string`, `integer`, `number`, `boolean`, `object` or `array`. |
 | `forge` | no | Overrides of the `[forge]` defaults for the changes this Task's worker declares: `relay.notes`, `relay.checks`, `draft.policy` (a name under `[forge.readyPolicies]`, refused at apply when the config does not define it; `null` disables mark-ready). Field-level: absent fields inherit. Mutable like `dispatch`. |
@@ -49,6 +50,54 @@ except `dispatch` and `forge`.
 
 See [TaskConfig](task-config.md) and [EnvProvider](env-provider.md) for provider sources,
 precedence, validation and private launch snapshots.
+
+### Multiple prepared repositories
+
+One Task can give its one worker access to multiple repositories on the same
+runtime host. `workspace.dir` remains the primary working directory;
+`workspace.additionalDirs` attaches the other prepared checkouts or worktrees
+through Thurbox's repeatable `--add-dir` argument:
+
+```json
+{
+  "apiVersion": "fleet/v1alpha1",
+  "kind": "Task",
+  "metadata": {"name": "update-api-and-client"},
+  "spec": {
+    "harness": "codex",
+    "host": "local",
+    "workspace": {
+      "dir": "/work/api-change",
+      "additionalDirs": ["/work/client-change"]
+    },
+    "brief": "Update the API and its client together, then open one draft PR in each repository.",
+    "dispatch": true
+  }
+}
+```
+
+The caller prepares and isolates every listed path before dispatch. Fleet does
+not clone repositories, create branches or worktrees, merge changes, pool
+credentials or coordinate work across hosts. In particular it does not use
+Thurbox `--add-repo`, whose worktree and branch semantics would modify source
+checkout state. Every path is passed as one argv value without a shell, so
+spaces and native POSIX, Windows drive and UNC spellings are preserved.
+Empty, NUL-containing and exact duplicate paths (including the primary path)
+are refused; Fleet does not case-fold or canonicalize paths that belong to a
+possibly remote host.
+
+The Task still owns one brief, one immutable workspace declaration and one
+session. A worker that opens an authorized draft in each repository declares
+both through the existing change interface:
+
+```sh
+fleet declare update-api-and-client --change-request https://github.com/OWNER/api/pull/41
+fleet declare update-api-and-client --change-request https://github.com/OWNER/client/pull/77
+```
+
+Both declarations remain in `status.declared`; the Forge controller follows
+each independently. Multi-repository workspace membership does not replace or
+infer forge tracking.
 
 ## Status
 
@@ -89,7 +138,8 @@ Nonempty `ownerReferences` are refused.
 `fleet apply` accepts desired spec and labels, and refuses supplied status.
 Only `dispatch` and `forge` can change in an existing spec. Setting
 `dispatch` false prevents a Pending Task from spawning; it does not stop a
-session already spawned.
+session already spawned. Changing the primary or additional workspace paths
+requires a new Task.
 
 ## Worker result
 

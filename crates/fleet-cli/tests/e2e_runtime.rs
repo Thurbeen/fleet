@@ -113,6 +113,10 @@ fn a_task_lives_its_whole_life_on_thurbox_cli() {
         !create.iter().any(|a| a == "--host"),
         "the local host is thurbox's own, not a --host: {create:?}"
     );
+    assert!(
+        !create.iter().any(|a| a == "--add-dir" || a == "--add-repo"),
+        "a legacy Task stays a single-workspace session: {create:?}"
+    );
 
     env.fleet(&result_args("t1", "1")).ok();
     env.reconcile().ok();
@@ -128,6 +132,111 @@ fn a_task_lives_its_whole_life_on_thurbox_cli() {
     assert!(env.stub_sessions().is_empty(), "{:#?}", env.stub_sessions());
     env.fleet(&["get", "task", "t1"]).code(3);
     env.assert_no_temp();
+}
+
+#[test]
+fn a_task_attaches_prepared_additional_workspaces_to_one_session() {
+    let mut t = task("many", true);
+    let additional = if cfg!(windows) {
+        vec!["D:\\work\\api", "D:\\work\\docs with spaces"]
+    } else {
+        vec!["/work/api", "/work/docs with spaces"]
+    };
+    t["spec"]["workspace"]["additionalDirs"] = json!(additional);
+    let env = setup("thurbox-multi-workspace", vec![t]);
+
+    env.reconcile().ok();
+
+    assert_eq!(env.status("many")["phase"], "Briefed");
+    let create = &argv_of(&env, "create")[0];
+    let attached: Vec<&str> = create
+        .windows(2)
+        .filter(|pair| pair[0] == "--add-dir")
+        .map(|pair| pair[1].as_str())
+        .collect();
+    assert_eq!(attached, additional);
+    assert!(
+        !create.iter().any(|arg| arg == "--add-repo"),
+        "prepared workspaces must be attached as-is: {create:?}"
+    );
+    assert_eq!(env.stub_sessions()[0]["additional_dirs"], json!(additional));
+
+    let mut changed = task("many", true);
+    changed["spec"]["workspace"]["additionalDirs"] = json!([additional[0]]);
+    env.apply(changed)
+        .code(1)
+        .stderr_has("Task spec is immutable");
+
+    let key = thurbox_key(&env, "many");
+    set_session_state(&env, &key, "idle");
+    env.fleet(&["delete", "task", "many"]).ok();
+    env.reconcile().ok();
+    env.fleet(&["get", "task", "many"]).code(3);
+    assert!(env.stub_sessions().is_empty());
+}
+
+#[test]
+fn additional_workspace_validation_is_strict_without_rewriting_host_paths() {
+    let env = setup("thurbox-multi-workspace-validation", vec![]);
+    let primary = if cfg!(windows) {
+        "C:\\work\\primary"
+    } else {
+        "/work/primary"
+    };
+    let duplicate = if cfg!(windows) {
+        "D:\\work\\duplicate"
+    } else {
+        "/work/duplicate"
+    };
+    for (name, dirs, message) in [
+        ("empty", vec![""], "must not be empty"),
+        ("blank", vec!["   "], "must not be empty"),
+        ("nul", vec!["/work/has\0nul"], "must not contain NUL"),
+        (
+            "primary-duplicate",
+            vec![primary],
+            "duplicates another workspace directory",
+        ),
+        (
+            "additional-duplicate",
+            vec![duplicate, duplicate],
+            "duplicates another workspace directory",
+        ),
+    ] {
+        let mut t = task(name, false);
+        t["spec"]["workspace"]["dir"] = json!(primary);
+        t["spec"]["workspace"]["additionalDirs"] = json!(dirs);
+        env.apply(t).code(1).stderr_has(message);
+    }
+}
+
+#[test]
+fn remote_windows_workspace_spellings_keep_their_argv_boundaries() {
+    let mut t = task("windows-paths", true);
+    t["spec"]["host"] = json!("windows-host");
+    t["spec"]["workspace"] = json!({
+        "dir": "C:\\work\\primary repo",
+        "additionalDirs": ["D:\\work\\client repo", "\\\\server\\share\\docs repo"]
+    });
+    let env = setup("thurbox-remote-windows-paths", vec![]);
+    env.edit_stub(|s| s["hosts"] = json!({"windows-host": "up"}));
+    env.apply(t).ok();
+
+    env.reconcile().ok();
+
+    assert_eq!(env.status("windows-paths")["phase"], "Briefed");
+    let create = &argv_of(&env, "create")[0];
+    let repo = create.iter().position(|arg| arg == "--repo-path").unwrap();
+    assert_eq!(create[repo + 1], "C:\\work\\primary repo");
+    let attached: Vec<&str> = create
+        .windows(2)
+        .filter(|pair| pair[0] == "--add-dir")
+        .map(|pair| pair[1].as_str())
+        .collect();
+    assert_eq!(
+        attached,
+        ["D:\\work\\client repo", "\\\\server\\share\\docs repo"]
+    );
 }
 
 #[test]
@@ -185,7 +294,14 @@ fn a_spawn_that_times_out_is_adopted_by_its_key_and_its_process_tree_is_killed()
     let env = setup("thurbox-spawn-timeout", vec![]);
     // The session is created, then the answer never comes.
     env.stub_fault("create", "hang-after", 1);
-    env.apply(task("t1", true)).ok();
+    let mut t = task("t1", true);
+    t["spec"]["workspace"]["additionalDirs"] = if cfg!(windows) {
+        json!(["D:\\work\\second"])
+    } else {
+        json!(["/work/second"])
+    };
+    env.apply(t).ok();
+    env.reconcile().ok();
     env.reconcile().ok();
 
     let st = env.status("t1");
@@ -193,6 +309,7 @@ fn a_spawn_that_times_out_is_adopted_by_its_key_and_its_process_tree_is_killed()
     assert_condition(&st, "Spawned", "True", "Adopted");
     assert_eq!(env.stub_sessions().len(), 1, "never twinned");
     assert_eq!(argv_of(&env, "create").len(), 1, "never respawned blindly");
+    assert_eq!(argv_of(&env, "send").len(), 1, "the brief stays idempotent");
     let pids = env.grandchildren();
     assert!(!pids.is_empty(), "the stub hung with a grandchild");
     for pid in pids {
@@ -211,7 +328,9 @@ fn an_orphan_session_holding_the_key_is_adopted_not_twinned() {
     env.edit_stub(|s| {
         s["sessions"] = json!([{
             "id": "00000000-0000-4000-8000-000000000099", "key": key, "host": "local",
-            "name": key, "state": "idle", "stopped": false, "meta": {}, "sent": [], "env": []
+            "name": key, "state": "idle", "stopped": false, "meta": {}, "sent": [], "env": [],
+            "cwd": if cfg!(windows) { "C:\\work\\t1" } else { "/work/t1" },
+            "additional_dirs": []
         }]);
     });
     env.apply(task("t1", true)).ok();
@@ -222,6 +341,40 @@ fn an_orphan_session_holding_the_key_is_adopted_not_twinned() {
         .iter()
         .any(|r| r["outcome"]["known"]["adopted"] == true);
     assert!(adopted, "{:#}", full_status(&env, "t1"));
+}
+
+#[test]
+fn a_matching_key_with_conflicting_workspace_membership_is_unknown() {
+    let mut t = task("many", false);
+    t["spec"]["workspace"]["additionalDirs"] = if cfg!(windows) {
+        json!(["D:\\work\\declared"])
+    } else {
+        json!(["/work/declared"])
+    };
+    let env = setup("thurbox-workspace-conflict", vec![t.clone()]);
+    let key = thurbox_key(&env, "many");
+    env.edit_stub(|s| {
+        s["sessions"] = json!([{
+            "id": "00000000-0000-4000-8000-000000000099", "key": key, "host": "local",
+            "name": key, "state": "idle", "stopped": false, "meta": {}, "sent": [], "env": [],
+            "cwd": if cfg!(windows) { "C:\\work\\many" } else { "/work/many" },
+            "additional_dirs": if cfg!(windows) { json!(["D:\\work\\other"]) } else { json!(["/work/other"]) }
+        }]);
+    });
+    t["spec"]["dispatch"] = json!(true);
+    env.apply(t).ok();
+
+    let report = env.reconcile().ok().json();
+
+    assert_eq!(env.status("many")["phase"], "Spawning");
+    assert!(
+        report["unknowns"]
+            .to_string()
+            .contains("conflicting workspace"),
+        "{report:#}"
+    );
+    assert_eq!(argv_of(&env, "create").len(), 1, "no duplicate startup");
+    assert_eq!(argv_of(&env, "send").len(), 0, "no wrong worker is briefed");
 }
 
 #[test]
@@ -371,6 +524,20 @@ fn a_relative_workspace_is_refused_before_any_session_is_made() {
     let spawned = support::condition(&st, "Spawned");
     assert!(
         spawned["message"].as_str().unwrap().contains("absolute"),
+        "{st:#}"
+    );
+    assert_eq!(argv_of(&env, "create").len(), 0, "thurbox is never asked");
+
+    let mut t = task("relative-extra", true);
+    t["spec"]["workspace"]["additionalDirs"] = json!(["work/other"]);
+    env.apply(t).ok();
+    env.reconcile().ok();
+    let st = env.status("relative-extra");
+    assert!(
+        support::condition(&st, "Spawned")["message"]
+            .as_str()
+            .unwrap()
+            .contains("additionalDirs"),
         "{st:#}"
     );
     assert_eq!(argv_of(&env, "create").len(), 0, "thurbox is never asked");

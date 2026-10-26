@@ -74,7 +74,8 @@ a running Python checkout.
 ## Fleet v2
 
 Fleet v2 runs one agent session per Task. A Task names a harness, a runtime
-host, a workspace and a brief. Its controller spawns the session, sends the
+host, a primary workspace, optional prepared additional workspaces and a brief.
+Its controller spawns the session, sends the
 brief once, records the worker's answer, and deletes the session when the Task
 is deleted. Fleet v2 is a Rust binary with a file-backed resource store, one
 manager lease, and explicit ownership of each status field.
@@ -85,6 +86,10 @@ defines its [resource](docs/resources/task.md),
 [state machine](docs/controllers/task/state-machine.md) and
 [interface](docs/controllers/task/interface.md);
 [the contracts](crates/CONTRACTS.md) record the integration guarantees.
+The [Task resource](docs/resources/task.md#multiple-prepared-repositories)
+includes a two-repository example. Fleet attaches those same-host paths to one
+session; callers still prepare the checkouts and workers declare each draft PR
+through the existing multiple-change interface.
 The [ChangeRequest controller](docs/controllers/change-request/README.md)
 mirrors one change on a forge in the same shape, and the
 [Forge controller](docs/controllers/forge/README.md) follows the changes a

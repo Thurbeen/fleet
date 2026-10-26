@@ -62,6 +62,10 @@ fn local_host() -> String {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Workspace {
     pub dir: String,
+    /// Prepared repository workspaces attached to the same session as-is.
+    /// The runtime must not create branches or worktrees for these paths.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub additional_dirs: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -194,6 +198,7 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(spec.host, LOCAL_HOST);
+        assert!(spec.workspace.additional_dirs.is_empty());
         assert!(!spec.dispatch);
     }
 

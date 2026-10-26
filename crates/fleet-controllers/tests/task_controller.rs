@@ -4,7 +4,7 @@
 
 use fleet_api::condition::ConditionStatus;
 use fleet_api::plan::{Action, EffectOutcome, Observations, Plan, Probe, Receipt};
-use fleet_api::task::{Phase, SessionRef, TaskStatus};
+use fleet_api::task::{Phase, SessionRef, TaskStatus, Workspace};
 use fleet_api::{Object, Observation};
 use fleet_controllers::{MAX_ATTEMPTS, RETRY_DELAY_MS, TaskController, TaskInput};
 use serde_json::json;
@@ -30,6 +30,13 @@ fn session() -> SessionRef {
         id: "s1".into(),
         host: "local".into(),
         key: "t.u7".into(),
+    }
+}
+
+fn workspace() -> Workspace {
+    Workspace {
+        dir: "w".into(),
+        additional_dirs: Vec::new(),
     }
 }
 
@@ -108,10 +115,13 @@ fn a_dispatched_task_records_the_spawn_intent_with_its_effect() {
         "the intent is in the status written before the effect"
     );
     match &e.action {
-        Action::Spawn(s) => assert_eq!(
-            (s.key.as_str(), s.host.as_str(), s.harness.as_str()),
-            ("t.u7", "local", "claude-code")
-        ),
+        Action::Spawn(s) => {
+            assert_eq!(
+                (s.key.as_str(), s.host.as_str(), s.harness.as_str()),
+                ("t.u7", "local", "claude-code")
+            );
+            assert_eq!(s.workspace, workspace());
+        }
         other => panic!("{other:?}"),
     }
     assert_eq!(st.observed_generation, 1);
@@ -151,7 +161,8 @@ fn an_intent_without_a_receipt_is_decided_by_the_session_key() {
         probes(&obj),
         vec![Probe::Find {
             host: "local".into(),
-            key: "t.u7".into()
+            key: "t.u7".into(),
+            workspace: workspace(),
         }]
     );
 
@@ -589,7 +600,8 @@ fn the_oldest_inbox_entry_is_sent_to_a_ready_session_under_its_key() {
         vec![
             Probe::Find {
                 host: "local".into(),
-                key: "t.u7".into()
+                key: "t.u7".into(),
+                workspace: workspace(),
             },
             Probe::Ready { session: session() }
         ]
@@ -881,7 +893,8 @@ fn a_concluded_task_delivers_its_inbox_and_concludes_nothing_else() {
         vec![
             Probe::Find {
                 host: "local".into(),
-                key: "t.u7".into()
+                key: "t.u7".into(),
+                workspace: workspace(),
             },
             Probe::Ready { session: session() }
         ]
