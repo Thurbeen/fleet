@@ -466,7 +466,12 @@ fn remote_windows_workspace_spellings_keep_their_argv_boundaries() {
     t["spec"]["host"] = json!("windows-host");
     t["spec"]["workspace"] = json!({
         "dir": "C:\\work\\primary repo",
-        "additionalDirs": ["D:\\work\\client repo", "\\\\server\\share\\docs repo"]
+        "additionalDirs": ["D:\\work\\client repo", "\\\\server\\share\\docs repo"],
+        "worktree": {
+            "branch": "feature/windows-worktree",
+            "baseBranch": "release/windows",
+            "additionalRepositories": [{"path": "E:\\source\\client@repo"}]
+        }
     });
     let env = setup("thurbox-remote-windows-paths", vec![]);
     env.edit_stub(|s| s["hosts"] = json!({"windows-host": "up"}));
@@ -487,6 +492,17 @@ fn remote_windows_workspace_spellings_keep_their_argv_boundaries() {
         attached,
         ["D:\\work\\client repo", "\\\\server\\share\\docs repo"]
     );
+    let added: Vec<&str> = create
+        .windows(2)
+        .filter(|pair| pair[0] == "--add-repo")
+        .map(|pair| pair[1].as_str())
+        .collect();
+    assert_eq!(added, ["E:\\source\\client@repo@release/windows"]);
+    let branch = create
+        .iter()
+        .position(|arg| arg == "--worktree-branch")
+        .unwrap();
+    assert_eq!(create[branch + 1], "feature/windows-worktree");
 }
 
 #[test]

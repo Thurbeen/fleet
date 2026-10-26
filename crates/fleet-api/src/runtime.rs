@@ -41,18 +41,18 @@ pub trait Runtime {
     fn find(&self, host: &str, key: &str) -> Observation<Option<SessionRef>>;
     /// Find a session only when its primary and additional workspace
     /// membership matches. Existing runtime implementations remain safe for
-    /// legacy single-workspace Tasks; multi-workspace support is fail-closed
-    /// until they implement this method.
+    /// legacy single-workspace Tasks; multi-workspace and provisioned-worktree
+    /// support is fail-closed until they implement this method.
     fn find_workspace(
         &self,
         host: &str,
         key: &str,
         workspace: &Workspace,
     ) -> Observation<Option<SessionRef>> {
-        if workspace.additional_dirs.is_empty() {
+        if workspace.additional_dirs.is_empty() && workspace.worktree.is_none() {
             self.find(host, key)
         } else {
-            Observation::unknown("runtime cannot verify additional workspace membership")
+            Observation::unknown("runtime cannot verify requested workspace membership")
         }
     }
     /// Ready when the agent is running and waiting for input.
