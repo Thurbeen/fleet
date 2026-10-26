@@ -16,13 +16,16 @@ use fleet_api::follow::ForgeDefaults;
 use fleet_api::forge::Forge;
 use fleet_api::result::{Outcome, TaskResult};
 use fleet_api::runtime::Runtime;
+use fleet_api::worktree::WorktreeProvisioner;
 use fleet_api::{API_VERSION, Object, Observation, Store, StoreError};
 use fleet_forge::{ForgeHosts, HostConfig, HostKind};
 use fleet_manager::{
     DeclareOutcome, Manager, RunOptions, apply, apply_change_request, declare,
     declare_change_request, delete, record_result, send,
 };
-use fleet_runtime::{FakeHost, FakeRuntime, ThurboxConfig, ThurboxRuntime};
+use fleet_runtime::{
+    FakeHost, FakeRuntime, FakeWorktrees, ThurboxConfig, ThurboxRuntime, ThurboxWorktrees,
+};
 use fleet_store::{FileStore, SystemClock};
 use serde_json::{Value, json};
 
@@ -398,14 +401,17 @@ fn run(cli: Cli) -> Result<(), Failure> {
             let runtime = open_runtime(&config)?;
             let forge = open_forge(&config)?;
             let bound = runtime
+                .sessions
                 .operation_bound()
+                .max(runtime.worktrees.operation_bound())
                 .max(forge.as_ref().map_or(0, |f| f.operation_bound()))
                 .max(fleet_api::plugin::Plugins::operation_bound(&plugins));
             let lease_ttl_ms = lease_for(bound, lease_ttl_ms)?;
             let holder = holder.unwrap_or_else(|| format!("fleet-{}", std::process::id()));
             let manager = Manager {
                 store,
-                runtime: runtime.as_ref(),
+                runtime: runtime.sessions.as_ref(),
+                worktrees: Some(runtime.worktrees.as_ref()),
                 clock: &SystemClock,
                 holder,
                 forge: forge.as_ref().map(|f| f as &dyn Forge),
@@ -480,7 +486,7 @@ fn cmd_up(
         Observation::Unknown { why } => return Err(StoreError::Unknown(why).into()),
     };
     let host = task.spec["host"].as_str().unwrap_or("local");
-    match runtime.host(host) {
+    match runtime.sessions.host(host) {
         Observation::Known(true) => {}
         Observation::Known(false) => {
             return Err(fail(
@@ -500,7 +506,9 @@ fn cmd_up(
     }
     let ttl = lease_for(
         runtime
+            .sessions
             .operation_bound()
+            .max(runtime.worktrees.operation_bound())
             .max(forge.as_ref().map_or(0, |f| f.operation_bound()))
             .max(poll_ms.saturating_mul(2))
             .max(plugins.0.operation_bound()),
@@ -512,7 +520,8 @@ fn cmd_up(
         .map_err(|e| fail(format!("shutdown handler: {e}")))?;
     let manager = Manager {
         store,
-        runtime: runtime.as_ref(),
+        runtime: runtime.sessions.as_ref(),
+        worktrees: Some(runtime.worktrees.as_ref()),
         clock: &SystemClock,
         holder: format!("fleet-up-{}", std::process::id()),
         forge: forge.as_ref().map(|f| f as &dyn Forge),
@@ -605,7 +614,12 @@ fn version(json: bool) -> Result<(), Failure> {
     Ok(())
 }
 
-fn open_runtime(config: &Config) -> Result<Box<dyn Runtime>, Failure> {
+struct RuntimePorts {
+    sessions: Box<dyn Runtime>,
+    worktrees: Box<dyn WorktreeProvisioner>,
+}
+
+fn open_runtime(config: &Config) -> Result<RuntimePorts, Failure> {
     let Some(rt) = &config.runtime else {
         return Err(Failure {
             code: exit::ERROR,
@@ -624,7 +638,10 @@ fn open_runtime(config: &Config) -> Result<Box<dyn Runtime>, Failure> {
                 .ok_or_else(|| fail("runtime.dir is required for the fake runtime"))?;
             let host = FakeHost::open(&dir)
                 .map_err(|e| fail(format!("fake host {}: {e}", dir.display())))?;
-            Ok(Box::new(FakeRuntime::new(host)))
+            Ok(RuntimePorts {
+                sessions: Box::new(FakeRuntime::new(host.clone())),
+                worktrees: Box::new(FakeWorktrees::new(host)),
+            })
         }
         "thurbox" => {
             let default_cli = if cfg!(windows) {
@@ -646,7 +663,10 @@ fn open_runtime(config: &Config) -> Result<Box<dyn Runtime>, Failure> {
                 cfg.key_prefix = p.clone();
             }
             cfg.model_env.extend(rt.model_env.clone());
-            Ok(Box::new(ThurboxRuntime::new(cfg)))
+            Ok(RuntimePorts {
+                sessions: Box::new(ThurboxRuntime::new(cfg.clone())),
+                worktrees: Box::new(ThurboxWorktrees::new(cfg)),
+            })
         }
         other => Err(fail(format!(
             "unknown runtime kind {other:?}; this build has thurbox and fake"

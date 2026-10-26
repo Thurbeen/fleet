@@ -23,12 +23,13 @@ use std::ffi::OsString;
 use std::time::Duration;
 
 use fleet_api::Observation;
-use fleet_api::plan::{EffectOutcome, SpawnSpec};
+use fleet_api::plan::{EffectOutcome, SessionSpec, SpawnSpec};
 use fleet_api::runtime::Runtime;
 use fleet_api::task::{
-    LOCAL_HOST as LOCAL, RuntimeWorkspace, RuntimeWorktree, SessionRef, Workspace,
+    LOCAL_HOST as LOCAL, ProvisionedWorkspace, ProvisionedWorktree, SessionRef, Workspace,
     uid_of_session_key,
 };
+use fleet_api::worktree::WorktreeProvisioner;
 use fleet_exec::{Outcome, Spec, run};
 use serde_json::Value;
 
@@ -72,6 +73,13 @@ pub struct ThurboxRuntime {
     cfg: ThurboxConfig,
 }
 
+/// Worktree creation through Thurbox's atomic session-create contract. Kept
+/// behind the provisioner port so the session Runtime stays path-only.
+#[derive(Debug, Clone)]
+pub struct ThurboxWorktrees {
+    runtime: ThurboxRuntime,
+}
+
 /// One call's answer: the JSON it printed, or why there is none.
 enum Answer {
     Ok(String),
@@ -97,6 +105,19 @@ impl ThurboxRuntime {
 
     pub fn thurbox_key(&self, key: &str) -> String {
         format!("{}.{}", self.cfg.key_prefix, uid_of_session_key(key))
+    }
+
+    fn spawn_with_worktrees(
+        &self,
+        spec: &SessionSpec,
+        worktree: Option<&fleet_api::task::WorktreeRequest>,
+    ) -> Observation<EffectOutcome> {
+        let workspace = Workspace {
+            dir: spec.dir.clone(),
+            additional_dirs: spec.additional_dirs.clone(),
+            worktree: worktree.cloned(),
+        };
+        self.spawn_checked(spec, &workspace)
     }
 
     fn call(&self, args: &[&str]) -> Answer {
@@ -344,7 +365,7 @@ fn validate_workspace(workspace: &Workspace) -> Result<(), String> {
 fn resolved_workspace(
     row: &Value,
     workspace: &Workspace,
-) -> Result<Option<RuntimeWorkspace>, String> {
+) -> Result<Option<ProvisionedWorkspace>, String> {
     let Some(dir) = row["cwd"].as_str() else {
         return Err("session row has no workspace directory".into());
     };
@@ -412,14 +433,14 @@ fn resolved_workspace(
         {
             return Err("the session holding the key has conflicting worktree membership".into());
         }
-        worktrees.push(RuntimeWorktree {
+        worktrees.push(ProvisionedWorktree {
             repository: actual_repository.to_string(),
             path: path.to_string(),
             branch: branch.to_string(),
-            created_by_runtime: created,
+            created_by_provisioner: created,
         });
     }
-    Ok(Some(RuntimeWorkspace {
+    Ok(Some(ProvisionedWorkspace {
         cwd: dir.to_string(),
         base_branch: base_branch.to_string(),
         worktrees,
@@ -499,132 +520,8 @@ impl Runtime for ThurboxRuntime {
         self.rows(host, ("--key-prefix", &prefix)).map(|_| true)
     }
 
-    fn spawn(&self, spec: &SpawnSpec) -> Observation<EffectOutcome> {
-        let workspace = Workspace {
-            dir: spec.dir.clone(),
-            additional_dirs: spec.additional_dirs.clone(),
-            worktree: spec.worktree.clone(),
-        };
-        // Thurbox resolves these paths on the target host. A relative path
-        // would mean whatever directory fleet happened to run in.
-        if let Err(why) = validate_workspace(&workspace) {
-            return Observation::Known(EffectOutcome::Failed { why });
-        }
-        let key = self.thurbox_key(&spec.key);
-        let name: String = spec
-            .key
-            .rsplit_once('.')
-            .map_or(&*spec.key, |(n, _)| n)
-            .chars()
-            .take(64)
-            .collect();
-        let mut args: Vec<String> = [
-            "session",
-            "create",
-            "--json",
-            "--name",
-            &name,
-            "--repo-path",
-            &spec.dir,
-            "--key",
-            &key,
-            "--on-existing",
-            "adopt",
-            "--agent",
-            &spec.harness,
-        ]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
-        for dir in &spec.additional_dirs {
-            args.extend(["--add-dir".to_string(), dir.clone()]);
-        }
-        if let Some(worktree) = &spec.worktree {
-            args.extend([
-                "--worktree-branch".to_string(),
-                worktree.branch.clone(),
-                "--base-branch".to_string(),
-                worktree.base_branch.clone(),
-            ]);
-            for repository in &worktree.additional_repositories {
-                args.extend([
-                    "--add-repo".to_string(),
-                    format!("{}@{}", repository.path, worktree.base_branch),
-                ]);
-            }
-        }
-        if spec.host != LOCAL {
-            args.extend(["--host".to_string(), spec.host.clone()]);
-        }
-        let mut env = spec.env.clone();
-        if let Some(model) = &spec.model
-            && !spec.environment_frozen
-        {
-            let Some(var) = self.cfg.model_env.get(&spec.harness) else {
-                return Observation::Known(EffectOutcome::Failed {
-                    why: format!(
-                        "no model variable is configured for harness {}; set runtime.modelEnv",
-                        spec.harness
-                    ),
-                });
-            };
-            if fleet_api::validate::validate_env(&BTreeMap::from([(var.clone(), model.clone())]))
-                .is_err()
-            {
-                return Observation::Known(EffectOutcome::Failed {
-                    why: "invalid model environment variable".into(),
-                });
-            }
-            fleet_api::config::merge_env(&mut env, &BTreeMap::from([(var.clone(), model.clone())]));
-        }
-        let answer = if env.is_empty() {
-            let argv: Vec<&str> = args.iter().map(String::as_str).collect();
-            self.call(&argv)
-        } else {
-            args.push("--env-stdin".into());
-            let bytes = match serde_json::to_vec(&env) {
-                Ok(b) => b,
-                Err(_) => return Observation::unknown("environment encoding failed"),
-            };
-            self.call_spec(
-                Spec::new(&self.cfg.cli, self.cfg.call_timeout)
-                    .args(&args)
-                    .stdin(bytes),
-            )
-        };
-        match answer {
-            Answer::Ok(out) => {
-                let row: Value = match serde_json::from_str(out.trim()) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        return Observation::unknown(format!("thurbox-cli session create: {e}"));
-                    }
-                };
-                let Some(id) = row["id"].as_str() else {
-                    return Observation::unknown("thurbox-cli session create: no id in its answer");
-                };
-                let adopted = row["created"] == false;
-                match self.find_workspace(&spec.host, &spec.key, &workspace) {
-                    Observation::Known(Some(found)) if found.id == id => {
-                        Observation::Known(EffectOutcome::Spawned {
-                            session: found,
-                            adopted,
-                        })
-                    }
-                    Observation::Known(Some(_)) => Observation::unknown(
-                        "session identity changed during workspace verification",
-                    ),
-                    Observation::Known(None) => {
-                        Observation::unknown("session disappeared during workspace verification")
-                    }
-                    Observation::Unknown { why } => Observation::Unknown { why },
-                }
-            }
-            Answer::No(why) => Observation::Known(EffectOutcome::Failed {
-                why: format!("thurbox session creation refused: {why}"),
-            }),
-            Answer::Unknown(why) => Observation::unknown(why),
-        }
+    fn spawn(&self, spec: &SessionSpec) -> Observation<EffectOutcome> {
+        self.spawn_with_worktrees(spec, None)
     }
 
     fn find(&self, host: &str, key: &str) -> Observation<Option<SessionRef>> {
@@ -635,9 +532,15 @@ impl Runtime for ThurboxRuntime {
         &self,
         host: &str,
         key: &str,
-        workspace: &Workspace,
+        dir: &str,
+        additional_dirs: &[String],
     ) -> Observation<Option<SessionRef>> {
-        self.find_checked(host, key, Some(workspace))
+        let workspace = Workspace {
+            dir: dir.to_string(),
+            additional_dirs: additional_dirs.to_vec(),
+            worktree: None,
+        };
+        self.find_checked(host, key, Some(&workspace))
     }
 
     fn ready(&self, session: &SessionRef) -> Observation<bool> {
@@ -733,11 +636,6 @@ impl Runtime for ThurboxRuntime {
     }
 
     fn release(&self, session: &SessionRef) -> Observation<EffectOutcome> {
-        if session.workspace.is_some() {
-            return Observation::Known(EffectOutcome::Failed {
-                why: "cannot verify that runtime-owned worktrees are clean; thurbox needs a clean-safe provisioned-worktree release contract".into(),
-            });
-        }
         // The controller proved this exact session at rest. A reused key
         // cannot transfer that proof to another session.
         match self.find(&session.host, &session.key) {
@@ -753,5 +651,172 @@ impl Runtime for ThurboxRuntime {
             Answer::No(why) => Observation::Known(EffectOutcome::Failed { why }),
             Answer::Unknown(why) => Observation::unknown(why),
         }
+    }
+}
+
+impl ThurboxRuntime {
+    fn spawn_checked(
+        &self,
+        spec: &SessionSpec,
+        workspace: &Workspace,
+    ) -> Observation<EffectOutcome> {
+        if let Err(why) = validate_workspace(workspace) {
+            return Observation::Known(EffectOutcome::Failed { why });
+        }
+        let key = self.thurbox_key(&spec.key);
+        let name: String = spec
+            .key
+            .rsplit_once('.')
+            .map_or(&*spec.key, |(n, _)| n)
+            .chars()
+            .take(64)
+            .collect();
+        let mut args: Vec<String> = [
+            "session",
+            "create",
+            "--json",
+            "--name",
+            &name,
+            "--repo-path",
+            &spec.dir,
+            "--key",
+            &key,
+            "--on-existing",
+            "adopt",
+            "--agent",
+            &spec.harness,
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        for dir in &spec.additional_dirs {
+            args.extend(["--add-dir".to_string(), dir.clone()]);
+        }
+        if let Some(worktree) = &workspace.worktree {
+            args.extend([
+                "--worktree-branch".to_string(),
+                worktree.branch.clone(),
+                "--base-branch".to_string(),
+                worktree.base_branch.clone(),
+            ]);
+            for repository in &worktree.additional_repositories {
+                args.extend([
+                    "--add-repo".to_string(),
+                    format!("{}@{}", repository.path, worktree.base_branch),
+                ]);
+            }
+        }
+        if spec.host != LOCAL {
+            args.extend(["--host".to_string(), spec.host.clone()]);
+        }
+        let mut env = spec.env.clone();
+        if let Some(model) = &spec.model
+            && !spec.environment_frozen
+        {
+            let Some(var) = self.cfg.model_env.get(&spec.harness) else {
+                return Observation::Known(EffectOutcome::Failed {
+                    why: format!(
+                        "no model variable is configured for harness {}; set runtime.modelEnv",
+                        spec.harness
+                    ),
+                });
+            };
+            if fleet_api::validate::validate_env(&BTreeMap::from([(var.clone(), model.clone())]))
+                .is_err()
+            {
+                return Observation::Known(EffectOutcome::Failed {
+                    why: "invalid model environment variable".into(),
+                });
+            }
+            fleet_api::config::merge_env(&mut env, &BTreeMap::from([(var.clone(), model.clone())]));
+        }
+        let answer = if env.is_empty() {
+            let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+            self.call(&argv)
+        } else {
+            args.push("--env-stdin".into());
+            let bytes = match serde_json::to_vec(&env) {
+                Ok(b) => b,
+                Err(_) => return Observation::unknown("environment encoding failed"),
+            };
+            self.call_spec(
+                Spec::new(&self.cfg.cli, self.cfg.call_timeout)
+                    .args(&args)
+                    .stdin(bytes),
+            )
+        };
+        match answer {
+            Answer::Ok(out) => {
+                let row: Value = match serde_json::from_str(out.trim()) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return Observation::unknown(format!("thurbox-cli session create: {e}"));
+                    }
+                };
+                let Some(id) = row["id"].as_str() else {
+                    return Observation::unknown("thurbox-cli session create: no id in its answer");
+                };
+                let adopted = row["created"] == false;
+                match self.find_checked(&spec.host, &spec.key, Some(workspace)) {
+                    Observation::Known(Some(found)) if found.id == id => {
+                        Observation::Known(EffectOutcome::Spawned {
+                            session: found,
+                            adopted,
+                        })
+                    }
+                    Observation::Known(Some(_)) => Observation::unknown(
+                        "session identity changed during workspace verification",
+                    ),
+                    Observation::Known(None) => {
+                        Observation::unknown("session disappeared during workspace verification")
+                    }
+                    Observation::Unknown { why } => Observation::Unknown { why },
+                }
+            }
+            Answer::No(why) => Observation::Known(EffectOutcome::Failed {
+                why: format!("thurbox session creation refused: {why}"),
+            }),
+            Answer::Unknown(why) => Observation::unknown(why),
+        }
+    }
+}
+
+impl ThurboxWorktrees {
+    pub fn new(cfg: ThurboxConfig) -> Self {
+        Self {
+            runtime: ThurboxRuntime::new(cfg),
+        }
+    }
+}
+
+impl WorktreeProvisioner for ThurboxWorktrees {
+    fn operation_bound(&self) -> fleet_api::Millis {
+        self.runtime.operation_bound()
+    }
+
+    fn provision(&self, _runtime: &dyn Runtime, spec: &SpawnSpec) -> Observation<EffectOutcome> {
+        let Some(worktree) = spec.worktree.as_ref() else {
+            return Observation::Known(EffectOutcome::Failed {
+                why: "worktree provisioner called without worktree intent".into(),
+            });
+        };
+        self.runtime
+            .spawn_with_worktrees(&spec.session, Some(worktree))
+    }
+
+    fn find(
+        &self,
+        _runtime: &dyn Runtime,
+        host: &str,
+        key: &str,
+        workspace: &Workspace,
+    ) -> Observation<Option<SessionRef>> {
+        self.runtime.find_checked(host, key, Some(workspace))
+    }
+
+    fn release(&self, _runtime: &dyn Runtime, _session: &SessionRef) -> Observation<EffectOutcome> {
+        Observation::Known(EffectOutcome::Failed {
+            why: "cannot verify that provisioner-owned worktrees are clean; thurbox needs a clean-safe provisioned-worktree release contract".into(),
+        })
     }
 }

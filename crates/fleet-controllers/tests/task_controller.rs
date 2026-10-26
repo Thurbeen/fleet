@@ -119,11 +119,15 @@ fn a_dispatched_task_records_the_spawn_intent_with_its_effect() {
     match &e.action {
         Action::Spawn(s) => {
             assert_eq!(
-                (s.key.as_str(), s.host.as_str(), s.harness.as_str()),
+                (
+                    s.session.key.as_str(),
+                    s.session.host.as_str(),
+                    s.session.harness.as_str()
+                ),
                 ("t.u7", "local", "claude-code")
             );
-            assert_eq!(s.dir, "w");
-            assert!(s.additional_dirs.is_empty());
+            assert_eq!(s.session.dir, "w");
+            assert!(s.session.additional_dirs.is_empty());
             assert!(s.worktree.is_none());
         }
         other => panic!("{other:?}"),
@@ -154,7 +158,7 @@ fn a_worktree_request_crosses_the_pure_controller_without_resolution() {
     assert_eq!(worktree.branch, "feature/task");
     assert_eq!(worktree.base_branch, "stable");
     assert_eq!(worktree.additional_repositories[0].path, "other");
-    assert_eq!(spec.additional_dirs, ["notes"]);
+    assert_eq!(spec.session.additional_dirs, ["notes"]);
 }
 
 #[test]

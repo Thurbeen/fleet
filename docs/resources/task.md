@@ -42,7 +42,7 @@ except `dispatch` and `forge`.
 | `brief` | yes | The brief, sent once to the ready session. |
 | `workspace.dir` | yes | A prepared primary working directory, or the primary source repository when `workspace.worktree` is present. The thurbox runtime needs an absolute path on the host. |
 | `workspace.additionalDirs` | no | Prepared repository workspaces to attach to the same session as-is, in order. The thurbox runtime needs absolute paths on the host. |
-| `workspace.worktree` | no | Explicit permission for the runtime to provision Git worktrees: shared `branch`, shared `baseBranch` (default `main`) and `additionalRepositories` source paths. |
+| `workspace.worktree` | no | Explicit permission for the configured worktree provisioner to create Git worktrees: shared `branch`, shared `baseBranch` (default `main`) and `additionalRepositories` source paths. |
 | `dispatch` | no | Nothing spawns while `false` (the default). |
 | `outputs` | no | The structured outputs a result must carry, by name: each `{"type": T, "required": bool}`, where T is `string`, `integer`, `number`, `boolean`, `object` or `array`. |
 | `forge` | no | Overrides of the `[forge]` defaults for the changes this Task's worker declares: `relay.notes`, `relay.checks`, `draft.policy` (a name under `[forge.readyPolicies]`, refused at apply when the config does not define it; `null` disables mark-ready). Field-level: absent fields inherit. Mutable like `dispatch`. |
@@ -56,16 +56,16 @@ precedence, validation and private launch snapshots.
 
 ```text
 workspace.worktree absent                    workspace.worktree present
-paths are prepared by the caller             Git worktrees are owned by Thurbox
-dir -> --repo-path                            branch/base -> worktree flags
-additionalDirs -> --add-dir                   repositories -> --add-repo PATH@BASE
+paths are prepared by the caller             Git worktrees are provisioner-owned
+Runtime receives prepared paths              WorktreeProvisioner receives intent
+additionalDirs remain attach-only            provider may compose with any Runtime
 ```
 
 Existing manifests remain attach-only. A path in `additionalDirs` never means
 permission to create a branch or worktree.
 
 For migration, leave prepared-directory Tasks unchanged. Create a new Task with
-`workspace.worktree` when runtime provisioning is wanted; workspace intent is
+`workspace.worktree` when provisioning is wanted; workspace intent is
 immutable, so an already-created Task is never widened in place.
 
 #### Multiple prepared repositories
@@ -100,7 +100,7 @@ Empty, NUL-containing and exact duplicate paths (including the primary path)
 are refused; Fleet does not case-fold or canonicalize paths that belong to a
 possibly remote host.
 
-#### Runtime-provisioned worktrees
+#### Provisioned worktrees
 
 ```json
 {
@@ -118,8 +118,11 @@ possibly remote host.
 }
 ```
 
-This explicit shape authorizes Thurbox to create the primary and additional
-worktrees on one shared branch.
+This explicit shape authorizes the separately wired `WorktreeProvisioner` to
+create the primary and additional worktrees on one shared branch. Runtime
+adapters receive only prepared paths; a different provisioner can create paths
+with another mechanism and delegate session creation to any Runtime. The
+current Thurbox provisioner uses Thurbox's atomic worktree/session operation.
 Source repositories must already exist on the target host; Fleet does not clone,
 manage credentials, overwrite branches or run Git itself. `additionalDirs` can
 be combined with provisioning and remains attach-only.
@@ -133,18 +136,19 @@ one argv value without a shell.
 
 Reusing a prepared primary with Thurbox `--existing-worktree` is not exposed:
 Thurbox 2.75.1 records the requested branch without verifying the branch
-actually checked out there. Support requires a runtime observation that verifies
-that branch; Fleet does not bypass the runtime lifecycle by running Git itself.
+actually checked out there. Support requires a provisioner observation that
+verifies that branch; Fleet does not bypass the provisioner by running Git itself.
 
 After creation or adoption, `status.session.workspace` records the resolved cwd,
-base and every worktree's source, path, branch and runtime-ownership bit. A
+base and every worktree's source, path, branch and provisioner-ownership bit. A
 missing, partial or conflicting observation stays Unknown and is never replaced,
-deleted or briefed. Release remains a runtime operation: prepared paths and
-source repositories are not Fleet-owned. The current adapter holds deletion of
-a provisioned Task before calling Thurbox: hard deletion can discard dirty
-runtime-created worktrees, while soft deletion retains them after Fleet would
-lose the ownership key. The Task stays Releasing and raises NeedsAttention until
-Thurbox provides a clean-safe release contract. Runtime-created worktrees must
+deleted or briefed. Provisioned release remains a WorktreeProvisioner operation:
+prepared paths and source repositories are not Fleet-owned. The current adapter
+holds deletion of a provisioned Task before calling Thurbox: hard deletion can
+discard dirty provisioner-created worktrees, while soft deletion retains them
+after Fleet would lose the ownership key. The Task stays Releasing and raises
+NeedsAttention until Thurbox provides a clean-safe release contract.
+Provisioner-created worktrees must
 not be the only copy of a worker result.
 
 The Task still owns one brief, one immutable workspace declaration and one
@@ -174,7 +178,7 @@ typed mutations described under [Inbox](#inbox).
 | `observedGeneration` | The spec generation the controller last acted on. |
 | `conditions` | One entry per [condition type](../controllers/task/state-machine.md#conditions), with `status`, `reason`, `message` and `lastTransitionTime`. |
 | `execution` | Frozen execution selection and source identities; environment values are private. |
-| `session` | The session's runtime id, host and key, once spawned or adopted. Provisioned sessions also carry verified runtime-resolved `workspace` data. |
+| `session` | The session's runtime id, host and key, once spawned or adopted. Provisioned sessions also carry verified provisioner-resolved `workspace` data. |
 | `intents`, `receipts` | Each effect's intent, written before it runs, and its outcome, written after. |
 | `spawnAttempts`, `briefSends` | Spawn and brief-send counters, each bounded at 3. |
 | `briefProbeFailures`, `releaseAttempts` | Three failures raise `NeedsAttention`; reads and releases continue after each wait. |

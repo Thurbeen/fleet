@@ -150,7 +150,7 @@ fn fake_runtime_preserves_multi_workspace_membership_during_recovery() {
         "additionalRepositories": [{"path": "source/other"}]
     });
     env.apply(t).ok();
-    env.fault(Fault::new("spawn", "unknown").performed());
+    env.fault(Fault::new("provision", "unknown").performed());
 
     env.reconcile().ok();
 
@@ -174,7 +174,13 @@ fn fake_runtime_preserves_multi_workspace_membership_during_recovery() {
         serde_json::to_value(resolved).unwrap()
     );
     assert_eq!(env.status("t1")["phase"], "Briefed");
-    assert_eq!((env.calls("spawn"), env.calls("brief")), (1, 1));
+    assert_eq!(env.calls("provision"), 1);
+    assert_eq!(
+        env.calls("spawn"),
+        0,
+        "the session runtime stays worktree-agnostic"
+    );
+    assert_eq!(env.calls("brief"), 1);
 
     env.host().set_at_rest(&key, true).unwrap();
     env.fleet(&["delete", "task", "t1"]).ok();

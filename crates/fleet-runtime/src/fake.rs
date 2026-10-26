@@ -15,9 +15,12 @@ use std::thread;
 use std::time::Duration;
 
 use fleet_api::Observation;
-use fleet_api::plan::{EffectOutcome, SpawnSpec};
+use fleet_api::plan::{EffectOutcome, SessionSpec, SpawnSpec};
 use fleet_api::runtime::Runtime;
-use fleet_api::task::{RuntimeWorkspace, RuntimeWorktree, SessionRef, Workspace, WorktreeRequest};
+use fleet_api::task::{
+    ProvisionedWorkspace, ProvisionedWorktree, SessionRef, Workspace, WorktreeRequest,
+};
+use fleet_api::worktree::WorktreeProvisioner;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -83,7 +86,7 @@ pub struct FakeSession {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree: Option<WorktreeRequest>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub resolved_workspace: Option<RuntimeWorkspace>,
+    pub resolved_workspace: Option<ProvisionedWorkspace>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     pub ready: bool,
@@ -244,6 +247,11 @@ pub struct FakeRuntime {
     host: FakeHost,
 }
 
+#[derive(Debug, Clone)]
+pub struct FakeWorktrees {
+    runtime: FakeRuntime,
+}
+
 /// What a queued fault tells a call to do.
 enum Plan {
     Normal,
@@ -341,6 +349,14 @@ impl FakeRuntime {
     }
 }
 
+impl FakeWorktrees {
+    pub fn new(host: FakeHost) -> Self {
+        Self {
+            runtime: FakeRuntime::new(host),
+        }
+    }
+}
+
 fn live<'a>(s: &'a FakeState, key: &str) -> Option<&'a FakeSession> {
     s.sessions.get(key).filter(|x| !x.gone)
 }
@@ -354,31 +370,29 @@ fn session_ref(x: &FakeSession) -> SessionRef {
     }
 }
 
-fn resolved_workspace(spec: &SpawnSpec) -> Option<RuntimeWorkspace> {
+fn resolved_workspace(spec: &SpawnSpec) -> Option<ProvisionedWorkspace> {
     let request = spec.worktree.as_ref()?;
-    let cwd = format!("{}/.fleet-worktrees/{}", spec.dir, request.branch);
-    let mut worktrees = vec![RuntimeWorktree {
-        repository: spec.dir.clone(),
+    let session = &spec.session;
+    let cwd = format!("{}/.fleet-worktrees/{}", session.dir, request.branch);
+    let mut worktrees = vec![ProvisionedWorktree {
+        repository: session.dir.clone(),
         path: cwd.clone(),
         branch: request.branch.clone(),
-        created_by_runtime: true,
+        created_by_provisioner: true,
     }];
-    worktrees.extend(
-        request
-            .additional_repositories
-            .iter()
-            .map(|repository| RuntimeWorktree {
-                repository: repository.path.clone(),
-                path: format!("{}/.fleet-worktrees/{}", repository.path, request.branch),
-                branch: request.branch.clone(),
-                created_by_runtime: true,
-            }),
-    );
-    Some(RuntimeWorkspace {
+    worktrees.extend(request.additional_repositories.iter().map(|repository| {
+        ProvisionedWorktree {
+            repository: repository.path.clone(),
+            path: format!("{}/.fleet-worktrees/{}", repository.path, request.branch),
+            branch: request.branch.clone(),
+            created_by_provisioner: true,
+        }
+    }));
+    Some(ProvisionedWorkspace {
         cwd,
         base_branch: request.base_branch.clone(),
         worktrees,
-        additional_dirs: spec.additional_dirs.clone(),
+        additional_dirs: session.additional_dirs.clone(),
     })
 }
 
@@ -398,13 +412,13 @@ impl Runtime for FakeRuntime {
         })
     }
 
-    fn spawn(&self, spec: &SpawnSpec) -> Observation<EffectOutcome> {
+    fn spawn(&self, spec: &SessionSpec) -> Observation<EffectOutcome> {
         let spec = spec.clone();
         self.effect("spawn", move |s| {
             if let Some(x) = live(s, &spec.key) {
                 if x.dir != spec.dir
                     || x.additional_dirs != spec.additional_dirs
-                    || x.worktree != spec.worktree
+                    || x.worktree.is_some()
                 {
                     return EffectOutcome::Failed {
                         why: "the session holding the key has conflicting workspace membership"
@@ -424,8 +438,8 @@ impl Runtime for FakeRuntime {
                 harness: spec.harness.clone(),
                 dir: spec.dir.clone(),
                 additional_dirs: spec.additional_dirs.clone(),
-                worktree: spec.worktree.clone(),
-                resolved_workspace: resolved_workspace(&spec),
+                worktree: None,
+                resolved_workspace: None,
                 model: spec.model.clone(),
                 ready: !s.spawn_not_ready,
                 at_rest: false,
@@ -457,7 +471,8 @@ impl Runtime for FakeRuntime {
         &self,
         host: &str,
         key: &str,
-        workspace: &Workspace,
+        dir: &str,
+        additional_dirs: &[String],
     ) -> Observation<Option<SessionRef>> {
         self.probe("find", |s| match s.hosts.get(host).map(String::as_str) {
             Some("down") | Some("unknown") => {
@@ -465,9 +480,9 @@ impl Runtime for FakeRuntime {
             }
             _ => match live(s, key).filter(|x| x.host == host) {
                 Some(x)
-                    if x.dir != workspace.dir
-                        || x.additional_dirs != workspace.additional_dirs
-                        || x.worktree != workspace.worktree =>
+                    if x.dir != dir
+                        || x.additional_dirs != additional_dirs
+                        || x.worktree.is_some() =>
                 {
                     Observation::unknown(
                         "the session holding the key has conflicting workspace membership",
@@ -526,13 +541,7 @@ impl Runtime for FakeRuntime {
 
     fn release(&self, session: &SessionRef) -> Observation<EffectOutcome> {
         let key = session.key.clone();
-        let provisioned = session.workspace.is_some();
         self.effect("release", move |s| {
-            if provisioned {
-                return EffectOutcome::Failed {
-                    why: "cannot verify that runtime-owned worktrees are clean; provisioned-worktree release is unsupported".into(),
-                };
-            }
             let Some(x) = s.sessions.get_mut(&key) else {
                 return EffectOutcome::Released;
             };
@@ -543,6 +552,95 @@ impl Runtime for FakeRuntime {
             x.gone = true;
             s.log.push(format!("release {key}"));
             EffectOutcome::Released
+        })
+    }
+}
+
+impl WorktreeProvisioner for FakeWorktrees {
+    fn provision(&self, _runtime: &dyn Runtime, spec: &SpawnSpec) -> Observation<EffectOutcome> {
+        let spec = spec.clone();
+        self.runtime.effect("provision", move |s| {
+            let Some(worktree) = spec.worktree.as_ref() else {
+                return EffectOutcome::Failed {
+                    why: "worktree provisioner called without worktree intent".into(),
+                };
+            };
+            let session = &spec.session;
+            if let Some(x) = live(s, &session.key) {
+                if x.dir != session.dir
+                    || x.additional_dirs != session.additional_dirs
+                    || x.worktree.as_ref() != Some(worktree)
+                {
+                    return EffectOutcome::Failed {
+                        why: "the session holding the key has conflicting workspace membership"
+                            .into(),
+                    };
+                }
+                return EffectOutcome::Spawned {
+                    session: session_ref(x),
+                    adopted: true,
+                };
+            }
+            s.next_id += 1;
+            let x = FakeSession {
+                id: format!("fake-{}", s.next_id),
+                host: session.host.clone(),
+                key: session.key.clone(),
+                harness: session.harness.clone(),
+                dir: session.dir.clone(),
+                additional_dirs: session.additional_dirs.clone(),
+                worktree: spec.worktree.clone(),
+                resolved_workspace: resolved_workspace(&spec),
+                model: session.model.clone(),
+                ready: !s.spawn_not_ready,
+                at_rest: false,
+                briefs: Vec::new(),
+                texts: Vec::new(),
+                gone: false,
+                released: false,
+            };
+            s.log.push(format!("provision {}", session.key));
+            let reference = session_ref(&x);
+            s.sessions.insert(session.key.clone(), x);
+            EffectOutcome::Spawned {
+                session: reference,
+                adopted: false,
+            }
+        })
+    }
+
+    fn find(
+        &self,
+        _runtime: &dyn Runtime,
+        host: &str,
+        key: &str,
+        workspace: &Workspace,
+    ) -> Observation<Option<SessionRef>> {
+        self.runtime
+            .probe("find", |s| match s.hosts.get(host).map(String::as_str) {
+                Some("down") | Some("unknown") => {
+                    Observation::unknown(format!("host {host}: session list unreadable"))
+                }
+                _ => match live(s, key).filter(|x| x.host == host) {
+                    Some(x)
+                        if x.dir != workspace.dir
+                            || x.additional_dirs != workspace.additional_dirs
+                            || x.worktree != workspace.worktree =>
+                    {
+                        Observation::unknown(
+                            "the session holding the key has conflicting workspace membership",
+                        )
+                    }
+                    session => Observation::Known(session.map(session_ref)),
+                },
+            })
+    }
+
+    fn release(&self, _runtime: &dyn Runtime, _session: &SessionRef) -> Observation<EffectOutcome> {
+        self.runtime.effect("releaseProvisioned", |_| {
+            EffectOutcome::Failed {
+                why: "cannot verify that provisioner-owned worktrees are clean; provisioned-worktree release is unsupported".into(),
+            }
         })
     }
 }

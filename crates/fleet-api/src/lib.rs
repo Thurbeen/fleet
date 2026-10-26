@@ -57,6 +57,7 @@ pub mod runtime;
 pub mod store;
 pub mod task;
 pub mod validate;
+pub mod worktree;
 
 pub use meta::{API_VERSION, Millis, Object, ObjectMeta, OwnerReference};
 pub use observation::Observation;

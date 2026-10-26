@@ -6,8 +6,8 @@
 //! unprefixed.
 
 use crate::observation::Observation;
-use crate::plan::{EffectOutcome, SpawnSpec};
-use crate::task::{SessionRef, Workspace};
+use crate::plan::{EffectOutcome, SessionSpec};
+use crate::task::SessionRef;
 
 pub trait Runtime {
     /// Resolve runtime model-variable selection into the frozen private environment.
@@ -35,24 +35,25 @@ pub trait Runtime {
     /// `Spawned`, or `Spawned { adopted: true }` when a live session already
     /// holds the key. Unknown on timeout: the next pass looks the key up with
     /// `find` and never retries blindly.
-    fn spawn(&self, spec: &SpawnSpec) -> Observation<EffectOutcome>;
+    fn spawn(&self, spec: &SessionSpec) -> Observation<EffectOutcome>;
     /// The session holding `key`, `Known(None)` when a readable list shows
     /// none, Unknown when the list cannot be read.
     fn find(&self, host: &str, key: &str) -> Observation<Option<SessionRef>>;
-    /// Find a session only when its primary and additional workspace
-    /// membership matches. Existing runtime implementations remain safe for
-    /// legacy single-workspace Tasks; multi-workspace and provisioned-worktree
-    /// support is fail-closed until they implement this method.
+    /// Find a session only when its prepared primary and additional workspace
+    /// membership matches. Worktree creation and verification belong to the
+    /// separate `WorktreeProvisioner` port.
     fn find_workspace(
         &self,
         host: &str,
         key: &str,
-        workspace: &Workspace,
+        dir: &str,
+        additional_dirs: &[String],
     ) -> Observation<Option<SessionRef>> {
-        if workspace.additional_dirs.is_empty() && workspace.worktree.is_none() {
+        let _ = dir;
+        if additional_dirs.is_empty() {
             self.find(host, key)
         } else {
-            Observation::unknown("runtime cannot verify requested workspace membership")
+            Observation::unknown("runtime cannot verify additional workspace membership")
         }
     }
     /// Ready when the agent is running and waiting for input.

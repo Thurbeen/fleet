@@ -78,14 +78,22 @@ impl Action {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SpawnSpec {
+    pub session: SessionSpec,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<WorktreeRequest>,
+}
+
+/// Session inputs that contain only prepared paths. Runtime adapters never
+/// receive worktree creation intent; the WorktreeProvisioner port owns it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionSpec {
     pub host: String,
     pub key: String,
     pub harness: String,
     pub dir: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub additional_dirs: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub worktree: Option<WorktreeRequest>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]

@@ -62,7 +62,7 @@ deps = ["fleet-api", "fleet-manager", "fleet-runtime", "fleet-store", "fleet-for
 forbidden_methods = [
   "create", "update_spec", "update_status", "append_inbox", "record_delivery",
   "record_relay", "remove_finalizer", "delete", "delete_fenced", "acquire_lease",
-  "renew_lease", "release_lease", "reconcile", "probes", "spawn", "release",
+  "renew_lease", "release_lease", "reconcile", "probes", "spawn", "provision", "release",
   "change", "mark_ready", "whoami", "call", "admit", "plugin_mutate",
 ]
 
@@ -136,3 +136,8 @@ why = "only the manager performs the mark-ready effect, through the port the CLI
 path = "fleet_api::plugin::Plugins"
 allowed = ["fleet-api", "fleet-plugin", "fleet-manager", "fleet-cli"]
 why = "only the manager may invoke plugin observer and effect calls"
+
+[[restricted]]
+path = "fleet_api::worktree::WorktreeProvisioner"
+allowed = ["fleet-api", "fleet-runtime", "fleet-manager", "fleet-cli"]
+why = "only the manager invokes the separately wired worktree provisioner port"

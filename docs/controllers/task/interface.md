@@ -79,15 +79,15 @@ pub struct Plan {
 | `delivery` | An inbox entry proven delivered: `{key, at, recovered}`. The manager writes it with `status` as one record-and-remove mutation: the receipt into `status.deliveries`, the entry out of `status.inbox`. |
 
 An action is `Spawn(SpawnSpec)`, `Brief { session, text }` or
-`Release { session }`. SpawnSpec carries `host`, `key`, `harness`, `dir`,
-`additionalDirs`, optional typed `worktree`, optional `model`, the private
-environment map and
-`environmentFrozen`. The
+`Release { session }`. SpawnSpec separates a prepared `SessionSpec` (`host`,
+`key`, `harness`, `dir`, `additionalDirs`, optional `model`, the private
+environment map and `environmentFrozen`) from optional typed `worktree`
+intent. The
 manager injects frozen values and prevents model-variable remapping before
 performing a spawn; environment values are not persisted in effect intents.
 `SessionRef` carries `id`, `host` and `key`. For a provisioned workspace it
-also records the runtime-resolved cwd, shared base, every source/path/branch
-and whether the runtime created that worktree. A later session reusing a key
+also records the provisioner-resolved cwd, shared base, every source/path/branch
+and whether the provisioner created that worktree. A later session reusing a key
 does not inherit readiness or at-rest proof for the recorded id.
 
 ## Manager execution protocol
@@ -126,8 +126,9 @@ the lease; a crashed process leaves an expiring lease. Neither stop deletes
 Tasks or sessions. Bootstrap Task creation uses the manager's `ensure_task`
 verb, retaining an existing Task's immutable inputs and identity.
 
-The CLI's default lease is at least 30 seconds and twice the runtime operation
-bound. An explicitly supplied lease must exceed that bound. A file-store
+The CLI's default lease is at least 30 seconds and twice the largest runtime or
+worktree-provisioner operation bound. An explicitly supplied lease must exceed
+that bound. A file-store
 lease fences store writes and checks before effects; it cannot cancel an
 external action already started. Recovery relies on stable runtime keys.
 
@@ -143,32 +144,44 @@ return `Observation<T>`; a refused effect is
 | `prepare_execution` | Resolved execution | Freeze the runtime model-variable mapping into its private environment, or Unknown. |
 | `env_source` | Explicit file/command source | Bounded manager-local JSON string map, or redacted Unknown. |
 | `host` | Host name | Whether the runtime can reach it. |
-| `spawn` | `SpawnSpec` | `Spawned { session, adopted }`, or Failed/Unknown. |
-| `find` | Host, session key and declared workspace | Optional session under that key, or Unknown. A matching key with different primary/additional workspace membership is Unknown, never adopted or treated as absent. |
+| `spawn` | Prepared `SessionSpec` | `Spawned { session, adopted }`, or Failed/Unknown. Worktree intent cannot cross this interface. |
+| `find` | Host, session key and prepared primary/additional paths | Optional session under that key, or Unknown. A matching key with different membership is Unknown, never adopted or treated as absent. |
 | `ready` | `SessionRef` | Whether the session can receive input now. |
 | `brief` | Session, text and intent key | `Delivered { already }`, or Failed/Unknown. |
 | `brief_delivered` | Session and intent key | Whether that brief was delivered, or Unknown. |
 | `at_rest` | `SessionRef` | Whether it is safe to release that recorded session, or Unknown. |
 | `release` | `SessionRef` | `Released` if deleted or proven absent, or Failed/Unknown. Repeating a completed release is a no-op. |
 
-The thurbox adapter executes bounded `thurbox-cli` calls via `fleet-exec`.
+## WorktreeProvisioner port
+
+Source: [WorktreeProvisioner](../../../crates/fleet-api/src/worktree.rs). The
+manager routes a Spawn carrying explicit `worktree` intent through this port;
+ordinary sessions continue through Runtime. Its `provision`, `find` and
+`release` methods receive the separately wired Runtime, so an implementation
+can create paths with another mechanism and then delegate session operations.
+The pure controller does not select or name a provisioner.
+
+The Thurbox Runtime and WorktreeProvisioner adapters execute bounded
+`thurbox-cli` calls via `fleet-exec` and share the same configured identity.
 Its session key is `<keyPrefix>.<uid>`. It journals each brief intent in
 session metadata as pending before sending and delivered afterward. A pending
 journal entry is ambiguous, so it is never a license to resend. On release,
 a different id holding the key returns Unknown and is not deleted.
 Provisioned sessions fail release before any delete call because the installed
-runtime cannot prove their worktrees clean; the Task finalizer retains ownership.
+Thurbox provisioner cannot prove its worktrees clean; the Task finalizer retains
+ownership.
 The primary workspace is `--repo-path`; every prepared additional workspace is
-one `--add-dir` argument. An explicit worktree request maps to Thurbox worktree
-arguments; Fleet does not run Git. Adoption reads the session row and requires
+one `--add-dir` argument. The Thurbox provisioner maps an explicit worktree
+request to worktree arguments; Fleet does not run Git. Adoption reads the
+session row and requires
 the desired sources, shared base and branch, resolved worktree paths, ownership,
 and prepared attachments to match before returning the session. Missing fields
 are Unknown, not compatibility defaults.
-The fake adapter provides persisted sessions and faults without starting an
-agent. Explicit provider commands still run through the same bounded executor
-with either adapter; command resolution requires a lease above 20000 ms and
-renews it per source. Both implement the same port; neither is called from
-pure code.
+Separate fake Runtime and WorktreeProvisioner adapters provide persisted calls
+and faults without starting an agent; acceptance asserts provisioned Tasks do
+not call Runtime::spawn. Explicit environment-provider commands still run
+through the same bounded executor; command resolution requires a lease above
+20000 ms and renews it per source. No adapter port is called from pure code.
 
 ## Store port and write ownership
 

@@ -48,7 +48,7 @@ for the distinction between bounded sends and continuing recovery attempts.
 | Pure decisions and requested probes | [TaskController](../../../crates/fleet-controllers/src/task.rs) | [Controller transitions](../../../crates/fleet-controllers/tests/task_controller.rs) |
 | Resource and effect types | [Task types](../../../crates/fleet-api/src/task.rs), [plans](../../../crates/fleet-api/src/plan.rs) | [CLI lifecycle](../../../crates/fleet-cli/tests/e2e_task_lifecycle.rs) |
 | Lease, status, intent and receipt ordering | [Manager](../../../crates/fleet-manager/src/lib.rs) | [Store contract](../../../crates/fleet-store/tests/store_contract.rs), [CLI lifecycle](../../../crates/fleet-cli/tests/e2e_task_lifecycle.rs) |
-| Session identity and delivery journal | [Thurbox runtime](../../../crates/fleet-runtime/src/thurbox.rs) | [Runtime E2E](../../../crates/fleet-cli/tests/e2e_runtime.rs) |
+| Session identity, worktree provisioning and delivery journal | [Thurbox adapters](../../../crates/fleet-runtime/src/thurbox.rs) | [Runtime E2E](../../../crates/fleet-cli/tests/e2e_runtime.rs) |
 | Inbox: `fleet send`, typed mutations and delivery | [Inbox types](../../../crates/fleet-api/src/inbox.rs), [verbs](../../../crates/fleet-manager/src/verbs.rs), [store](../../../crates/fleet-store/src/lib.rs) | [Inbox E2E](../../../crates/fleet-cli/tests/e2e_inbox.rs), [Store contract](../../../crates/fleet-store/tests/store_contract.rs), [Controller transitions](../../../crates/fleet-controllers/tests/task_controller.rs) |
 
 The lifecycle E2E suite drives the built CLI from apply to result and release,

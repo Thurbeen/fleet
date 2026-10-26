@@ -9,8 +9,8 @@ use fleet_api::condition::{ConditionStatus, condition, set_condition, settle_tra
 use fleet_api::inbox::{DeliveryAttempt, DeliveryReceipt, InboxEntry, MAX_INBOX};
 use fleet_api::meta::{Millis, Object};
 use fleet_api::plan::{
-    Action, Effect, EffectOutcome, Intent, Observations, Plan, Probe, Receipt, SpawnSpec,
-    effect_key,
+    Action, Effect, EffectOutcome, Intent, Observations, Plan, Probe, Receipt, SessionSpec,
+    SpawnSpec, effect_key,
 };
 use fleet_api::store::FieldManager;
 use fleet_api::task::{self, BriefRecord, Phase, SessionRef, TaskSpec, TaskStatus};
@@ -296,15 +296,17 @@ impl Pass<'_, '_> {
             format!("attempt {attempt}"),
         );
         let spec = SpawnSpec {
-            host: self.spec.host.clone(),
-            key: session_key(self.input.task),
-            harness: self.spec.harness.clone(),
-            dir: self.spec.workspace.dir.clone(),
-            additional_dirs: self.spec.workspace.additional_dirs.clone(),
+            session: SessionSpec {
+                host: self.spec.host.clone(),
+                key: session_key(self.input.task),
+                harness: self.spec.harness.clone(),
+                dir: self.spec.workspace.dir.clone(),
+                additional_dirs: self.spec.workspace.additional_dirs.clone(),
+                model: self.spec.model.clone(),
+                env: self.spec.env.clone(),
+                environment_frozen: false,
+            },
             worktree: self.spec.workspace.worktree.clone(),
-            model: self.spec.model.clone(),
-            env: self.spec.env.clone(),
-            environment_frozen: false,
         };
         self.intend(key, Action::Spawn(spec));
     }

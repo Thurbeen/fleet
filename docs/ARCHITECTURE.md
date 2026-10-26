@@ -2,14 +2,14 @@
 
 Fleet v2 is a Rust command-line program that persists Tasks and
 ChangeRequests and drives their controllers. A Task contains the execution
-inputs for one agent session: harness, host, an attached or runtime-provisioned
+inputs for one agent session: harness, host, an attached or provisioned
 primary workspace with optional prepared or provisioned additional workspaces,
 brief and expected
 outputs; the worker reports its own result. A ChangeRequest mirrors one
 change on a forge, read through a Forge port and numbered so consumers diff
 it by one cursor.
 
-![Execution flow: CLI calls the manager; the manager uses the pure controller, store and runtime ports; the runtime starts bounded processes through fleet-exec](architecture.svg)
+![Execution flow: CLI calls the manager; the manager uses the pure controller, store, runtime, worktree-provisioner and forge ports; adapters start bounded processes through fleet-exec](architecture.svg)
 
 Arrows show calls during execution, not Cargo dependencies. `fleet-cli`
 constructs the adapters; `fleet-manager` depends on API traits rather than
@@ -22,11 +22,11 @@ same sweep as the Task controller, through the Forge port.
 | Crate | Owns | Boundary |
 | --- | --- | --- |
 | [fleet-cli](../crates/fleet-cli/src/main.rs) | Parse arguments, load config, construct adapters, print results | Calls manager verbs; does not write resources or run controller effects directly. |
-| [fleet-manager](../crates/fleet-manager/src/lib.rs) | Reconcile loop, lease renewal, plan execution, apply/delete/send/result/declare verbs | Reads and writes through `Store`; observes and performs effects through `Runtime`; reads changes and logins and performs the one forge write, mark-ready, through `Forge`. |
+| [fleet-manager](../crates/fleet-manager/src/lib.rs) | Reconcile loop, lease renewal, plan execution, apply/delete/send/result/declare verbs | Reads and writes through `Store`; performs prepared-session effects through `Runtime`, provisioned-workspace effects through `WorktreeProvisioner`, and the one forge write through `Forge`. |
 | [fleet-controllers](../crates/fleet-controllers/src/lib.rs) | Pure Task, ChangeRequest and Forge decisions | Receives time and observations as values; returns probes and a plan without I/O. |
 | [fleet-api](../crates/fleet-api/src/lib.rs) | Task, ChangeRequest, plan, observation, result and port types | Pure shared contract; no adapter dependencies. |
 | [fleet-store](../crates/fleet-store/src/lib.rs) | File persistence, CAS, write ownership and lease fencing | A corrupt or unreadable record is Unknown; only proven absence is not-found. |
-| [fleet-runtime](../crates/fleet-runtime/src/lib.rs) | Session operations through thurbox, or the file-backed fake host | Converts external answers to Known/Unknown; retains identity and delivery keys. |
+| [fleet-runtime](../crates/fleet-runtime/src/lib.rs) | Session-runtime adapters and separately wired worktree provisioners through Thurbox, or file-backed fakes | Converts external answers to Known/Unknown; retains identity, delivery and provisioning keys. |
 | [fleet-forge](../crates/fleet-forge/src/lib.rs) | Reading one change through `gh`, `glab` or the file-backed fake forge, and taking a draft out of draft after a fresh read | One bounded observation is complete or Unknown; the one write refuses when the head or state moved; the only crate that knows a forge CLI's name. |
 | [fleet-exec](../crates/fleet-exec/src/lib.rs) | Bounded process execution | The only production process spawner; timeout/unwind kills the process tree. |
 
@@ -87,10 +87,10 @@ The resource API version is separately `fleet/v1alpha1`. These contracts do
 not imply compatibility with Kubernetes metadata or APIs.
 
 The workspace has no kube dependencies. Fleet's current consumers use its
-own Store and Runtime ports, so resource validation, persistence, lease
-fencing and effect recovery remain explicit Fleet contracts. A familiar
-manifest shape does not require a Kubernetes resource library. The bounded
-manager's scheduling behavior is defined below, independently of the
+own Store, Runtime and WorktreeProvisioner ports, so resource validation,
+persistence, lease fencing and effect recovery remain explicit Fleet contracts.
+A familiar manifest shape does not require a Kubernetes resource library. The
+bounded manager's scheduling behavior is defined below, independently of the
 resource representation.
 
 ## Persistence and execution
@@ -121,13 +121,17 @@ managed/editable files, source provenance and startup/recovery instructions.
 The runtime is chosen in versioned TOML config, not a separate resource.
 Thurbox owns host connections and session execution. Fleet calls it through
 bounded processes; the fake runtime provides persisted fault injection for
-isolated tests. Runtime operations report their worst-case duration so the
-CLI can reject a lease too short to outlast them.
+isolated tests. Runtime and worktree-provisioner operations report their
+worst-case duration so the CLI can reject a lease too short to outlast them.
 
-Task workspace intent distinguishes prepared paths, attached as-is through
-Thurbox, from an explicit worktree request whose Git lifecycle Thurbox owns.
-Fleet never runs Git. Runtime adoption checks the deterministic session key and
-the complete resolved workspace membership before a worker is briefed.
+Task workspace intent distinguishes prepared paths, attached through the
+`Runtime` port, from an explicit worktree request sent through the dedicated
+`WorktreeProvisioner` port. A provisioner may create paths and delegate session
+creation to any Runtime. The current Thurbox adapter instead uses Thurbox's
+atomic session/worktree creation contract; that adapter detail does not reach
+the controller or Runtime interface. Fleet never runs Git. Provisioner adoption
+checks the deterministic session key and complete resolved workspace membership
+before a worker is briefed.
 
 TaskConfig and EnvProvider are passive data; the manager resolves providers
 through the existing runtime port and bounded executor before freezing a

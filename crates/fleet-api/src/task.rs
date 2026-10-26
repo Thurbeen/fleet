@@ -99,21 +99,21 @@ pub struct RepositorySource {
 /// recorded separately from the immutable desired paths in the Task spec.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RuntimeWorkspace {
+pub struct ProvisionedWorkspace {
     pub cwd: String,
     pub base_branch: String,
-    pub worktrees: Vec<RuntimeWorktree>,
+    pub worktrees: Vec<ProvisionedWorktree>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub additional_dirs: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RuntimeWorktree {
+pub struct ProvisionedWorktree {
     pub repository: String,
     pub path: String,
     pub branch: String,
-    pub created_by_runtime: bool,
+    pub created_by_provisioner: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -210,9 +210,9 @@ pub struct SessionRef {
     pub id: String,
     pub host: String,
     pub key: String,
-    /// Present for runtime-provisioned workspaces after exact verification.
+    /// Present for provisioned workspaces after exact verification.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub workspace: Option<RuntimeWorkspace>,
+    pub workspace: Option<ProvisionedWorkspace>,
 }
 
 /// The status fields the worker owns.

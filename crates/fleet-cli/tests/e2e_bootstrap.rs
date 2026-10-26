@@ -393,7 +393,7 @@ fn up_refuses_a_store_override_that_would_send_workers_to_another_store() {
 
 #[test]
 fn manager_renews_after_the_final_probe_before_waiting_under_its_lease() {
-    use fleet_api::plan::{EffectOutcome, SpawnSpec};
+    use fleet_api::plan::{EffectOutcome, SessionSpec};
     use fleet_api::runtime::Runtime;
     use fleet_api::task::SessionRef;
     use fleet_api::{Clock, Observation};
@@ -448,7 +448,7 @@ fn manager_renews_after_the_final_probe_before_waiting_under_its_lease() {
         fn at_rest(&self, _: &SessionRef) -> Observation<bool> {
             panic!("not deleting")
         }
-        fn spawn(&self, _: &SpawnSpec) -> Observation<EffectOutcome> {
+        fn spawn(&self, _: &SessionSpec) -> Observation<EffectOutcome> {
             panic!("must retain session")
         }
         fn brief(&self, _: &SessionRef, _: &str, _: &str) -> Observation<EffectOutcome> {
@@ -468,6 +468,7 @@ fn manager_renews_after_the_final_probe_before_waiting_under_its_lease() {
         plugins: None,
         store: &store,
         runtime: &runtime,
+        worktrees: None,
         clock: clock.as_ref(),
         holder: "lease-clock-test".into(),
         forge: None,

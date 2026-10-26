@@ -92,6 +92,9 @@ fleet-dev          tooling        `cargo xtask`: gate and release
 - The Forge port itself, which carries the one forge write, is held only by
   fleet-api, fleet-forge, fleet-manager and fleet-cli: no other adapter and
   no controller can reach `mark_ready`.
+- Worktree creation intent is held only by the dedicated
+  `WorktreeProvisioner` port. `Runtime::spawn` receives prepared paths and
+  cannot be coupled to a Git implementation or provisioning CLI.
 
 Each rule has a negative fixture that breaks it, and the test requires the
 checker to report exactly that rule. The pure crates also carry
@@ -108,7 +111,7 @@ spec.model          optional; reaches the harness through its model variable
 spec.brief          the brief, sent once
 spec.workspace.dir  the session's primary working directory
 spec.workspace.additionalDirs  prepared workspaces attached to that session
-spec.workspace.worktree  explicit runtime-owned Git worktree intent
+spec.workspace.worktree  explicit provisioner-owned Git worktree intent
 spec.dispatch       nothing spawns while false
 spec.outputs        optional: the structured outputs a result must carry
 spec.forge          optional: relay and draft overrides for declared changes
@@ -145,6 +148,10 @@ Guarantees, each with its test:
   the immutable Task; a partial or conflicting row remains Unknown and never
   authorizes a duplicate spawn or brief. Provisioned resolved membership is
   recorded on `status.session.workspace`; the desired sources remain in spec.
+  Prepared sessions go through the `Runtime` port; explicit worktree intent
+  goes through the separately wired `WorktreeProvisioner` port. A provisioner
+  may create paths and delegate session creation to any Runtime without adding
+  worktree knowledge to the controller or Runtime contract.
 - **Brief once.** The brief is sent only to a ready session, under one key
   the session stores. An unconfirmed send is asked about: delivered is a
   recovered receipt, not delivered is one more send under the same key, and
@@ -373,19 +380,25 @@ refused.
   object's `uid` and current `resourceVersion` and the lease; a ChangeRequest
   has no finalizer, so it goes at once.
 
-## Runtime contract
+## Runtime and worktree contracts
 
 `fleet_api::runtime::Runtime`: `host`, `spawn`, `find`, `ready`, `brief`,
 `brief_delivered`, `at_rest` and `release`, each answering Known or Unknown.
-Each adapter reports its longest single operation (`operation_bound`), and
-`fleet reconcile` refuses a lease that could not outlast it.
+`spawn` and workspace lookup receive prepared paths only.
+`fleet_api::worktree::WorktreeProvisioner`: `provision`, `find` and `release`
+for explicit worktree intent; it receives a Runtime handle so an implementation
+such as Treehouse can create paths and delegate the session lifecycle. Each port
+reports its longest complete operation (`operation_bound`), and `fleet
+reconcile` refuses a lease that could not outlast either.
 
-- **thurbox:** every call is one bounded `thurbox-cli … --json`. A session's
+- **thurbox:** separate Runtime and WorktreeProvisioner adapters share one
+  bounded `thurbox-cli … --json` contract. A session's
   thurbox key is `<keyPrefix>.<uid>`, and `--on-existing adopt` makes a
   repeated create return the session holding the key after Fleet verifies its
   declared workspace membership. `workspace.dir` becomes `--repo-path`; each
-  prepared `workspace.additionalDirs` entry becomes one `--add-dir`. Only an
-  explicit `workspace.worktree` adds `--worktree-branch`, `--base-branch`,
+  prepared `workspace.additionalDirs` entry becomes one `--add-dir`. Only the
+  provisioner adapter maps explicit `workspace.worktree` to
+  `--worktree-branch`, `--base-branch`,
   and one `--add-repo PATH@BASE` per declared
   source. One shared base keeps recovery observable with the installed runtime;
   bases containing `@` and per-repository bases are refused. The brief's delivery
@@ -398,8 +411,10 @@ Each adapter reports its longest single operation (`operation_bound`), and
   remains Unknown. This input-only proof never authorizes release; `at_rest`
   still requires idle, done or stopped. `e2e_runtime` covers initial delivery,
   reconnect, busy/dialog/cursor guards and unchanged deletion safety.
-- **fake:** a file-backed host for tests and trials, with injectable faults
-  (lost answers, refusals, delays, hangs). It runs no process.
+- **fake:** separate file-backed Runtime and WorktreeProvisioner adapters for
+  tests and trials, with injectable faults (lost answers, refusals, delays,
+  hangs). The persisted call log proves which port owned an effect. It runs no
+  process.
 
 ## Forge contract
 

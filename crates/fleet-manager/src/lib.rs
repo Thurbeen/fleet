@@ -35,6 +35,7 @@ use fleet_api::forge::{ChangeObservation, Forge, Uncertainty};
 use fleet_api::plan::{Action, Effect, EffectOutcome, Observations, Plan, Probe, Receipt};
 use fleet_api::runtime::Runtime;
 use fleet_api::task;
+use fleet_api::worktree::WorktreeProvisioner;
 use fleet_api::{Clock, LeaseToken, Millis, Object, Observation, Store, StoreError};
 use fleet_controllers::{
     ChangeRequestController, ChangeRequestInput, ChangeRequestObservations, ForgeController,
@@ -78,6 +79,9 @@ pub struct RunReport {
 pub struct Manager<'a> {
     pub store: &'a dyn Store,
     pub runtime: &'a dyn Runtime,
+    /// Optional because a runtime may serve prepared workspaces without any
+    /// configured worktree creation mechanism.
+    pub worktrees: Option<&'a dyn WorktreeProvisioner>,
     pub clock: &'a dyn Clock,
     pub holder: String,
     /// The configured forges; `None` when the config has no `[forge]`, in
@@ -711,11 +715,11 @@ impl Manager<'_> {
         if let Some(execution) = effective {
             for effect in &mut plan.effects {
                 if let Action::Spawn(spawn) = &mut effect.action {
-                    spawn.harness = execution.harness.clone();
-                    spawn.host = execution.host.clone();
-                    spawn.model = execution.model.clone();
-                    spawn.environment_frozen = true;
-                    spawn.env = execution.env.clone();
+                    spawn.session.harness = execution.harness.clone();
+                    spawn.session.host = execution.host.clone();
+                    spawn.session.model = execution.model.clone();
+                    spawn.session.environment_frozen = true;
+                    spawn.session.env = execution.env.clone();
                 }
             }
         }
@@ -833,7 +837,14 @@ impl Manager<'_> {
                 key: k,
                 workspace,
             } => {
-                let o = rt.find_workspace(host, k, workspace);
+                let o = if workspace.worktree.is_some() {
+                    match self.worktrees {
+                        Some(worktrees) => worktrees.find(rt, host, k, workspace),
+                        None => Observation::unknown("no worktree provisioner configured"),
+                    }
+                } else {
+                    rt.find_workspace(host, k, &workspace.dir, &workspace.additional_dirs)
+                };
                 note(&format!("find on {host}"), o.why());
                 obs.find = Some(o);
             }
@@ -859,9 +870,26 @@ impl Manager<'_> {
 
     fn perform(&self, effect: &Effect) -> Observation<EffectOutcome> {
         match &effect.action {
-            Action::Spawn(spec) => self.runtime.spawn(spec),
+            Action::Spawn(spec) => match (&spec.worktree, self.worktrees) {
+                (Some(_), Some(worktrees)) => worktrees.provision(self.runtime, spec),
+                (Some(_), None) => Observation::Known(EffectOutcome::Failed {
+                    why: "no worktree provisioner configured".into(),
+                }),
+                (None, _) => self.runtime.spawn(&spec.session),
+            },
             Action::Brief { session, text } => self.runtime.brief(session, text, &effect.key),
-            Action::Release { session } => self.runtime.release(session),
+            Action::Release { session } => {
+                if session.workspace.is_some() {
+                    match self.worktrees {
+                        Some(worktrees) => worktrees.release(self.runtime, session),
+                        None => Observation::Known(EffectOutcome::Failed {
+                            why: "no worktree provisioner configured".into(),
+                        }),
+                    }
+                } else {
+                    self.runtime.release(session)
+                }
+            }
             // The Forge controller's effect, performed by its own sweep;
             // TaskController never plans it.
             Action::MarkReady { .. } => Observation::Known(EffectOutcome::Failed {

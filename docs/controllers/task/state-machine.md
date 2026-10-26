@@ -22,7 +22,7 @@ logic runs.
 | Pending | `dispatch: false` | Pending | Set `Spawned=False/AwaitingDispatch`; do not spawn. |
 | Pending | Dispatched; host false, Unknown or unanswered | Pending | Report host condition; do not spawn. |
 | Pending | Dispatched; host reachable | Spawning | Increment spawn attempt; persist spawn intent and plan Spawn. |
-| Spawning | Known Spawned receipt | Spawned | Record returned SessionRef, including verified runtime-resolved workspace data when provisioned. |
+| Spawning | Known Spawned receipt | Spawned | Record returned SessionRef, including verified provisioner-resolved workspace data when provisioned. |
 | Spawning | Missing/Unknown receipt; session key and exact workspace intent found | Spawned | Adopt the session and recover its receipt. Partial or conflicting membership stays Unknown. |
 | Spawning | Known failure, or ambiguous outcome with key proven absent; attempts below 3 | Pending | Schedule a wait before another spawn. |
 | Spawning | Same failure with 3 spawn attempts spent | Stalled | Raise `Stalled/SpawnAttemptsExhausted` and NeedsAttention. |
@@ -47,7 +47,7 @@ logic runs.
 | Stalled | Any inbox entry | Stalled | Nothing is delivered; Stalled has no session to deliver to. |
 | Any phase | Task marked deleting | Releasing | Resolve spawn ambiguity if needed; release only once at rest or proven absent. A deleting Task delivers nothing. |
 | Releasing | Busy session or unreadable rest/lookup evidence | Releasing | Keep finalizer; wait for safe evidence. |
-| Releasing | Failed, missing or Unknown release receipt, including a provisioned workspace without clean-safe runtime release | Releasing | Wait and retry; after 3 attempts also raise NeedsAttention. |
+| Releasing | Failed, missing or Unknown release receipt, including a provisioned workspace without clean-safe provisioner release | Releasing | Wait and retry; after 3 attempts also raise NeedsAttention. |
 | Releasing | Known Released receipt, or nothing was spawned and nothing remains to release | Record removed | Remove finalizer; removal is not another phase. |
 
 A Spawned phase without a SessionRef is an invalid internal combination; the
@@ -121,13 +121,13 @@ cannot orphan an unknown session.
 For a recorded session, the controller requires Known at-rest or readable
 absence before planning Release. Thurbox checks that the current key holder
 still has the recorded id before deleting it; a replacement yields Unknown.
-For a provisioned session the adapter currently refuses before delete: a forced
-delete can discard dirty worktrees, while a soft delete retains them after the
-Task loses its ownership key. A clean-safe Thurbox release observation/effect is
-the prerequisite for lifting this limitation.
+For a provisioned session the worktree provisioner currently refuses before
+delete: a forced delete can discard dirty worktrees, while a soft delete retains
+them after the Task loses its ownership key. A clean-safe Thurbox release
+observation/effect is the prerequisite for lifting this limitation.
 The finalizer remains while release is failed or ambiguous. It is removed
 only after Known Released, or when there is no session to release. The
-session and its conversation/workspace may be deleted by the runtime, so a
+session and its conversation/workspace may be deleted by an adapter, so a
 worker result does not itself authorize release before Task deletion.
 
 See [implementation and tests](README.md#implementation-and-evidence) for the

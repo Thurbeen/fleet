@@ -731,6 +731,7 @@ fn a_stale_delete_plan_cannot_remove_a_recreated_object() {
         plugins: None,
         store: &racing,
         runtime: &runtime,
+        worktrees: None,
         clock: &SystemClock,
         holder: "stale-delete-test".into(),
         forge: Some(forge_port.as_ref()),

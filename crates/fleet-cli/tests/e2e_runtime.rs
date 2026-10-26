@@ -243,7 +243,7 @@ fn a_task_can_ask_thurbox_to_provision_a_multi_repository_worktree() {
     assert_eq!(worktrees.len(), 3, "{session:#}");
     assert_eq!(worktrees[0]["repository"], primary);
     assert_eq!(worktrees[0]["branch"], "feature/task-worktrees");
-    assert_eq!(worktrees[0]["createdByRuntime"], true);
+    assert_eq!(worktrees[0]["createdByProvisioner"], true);
     assert_eq!(worktrees[2]["repository"], repositories[1]);
 }
 
@@ -360,7 +360,7 @@ fn provisioned_worktree_release_holds_without_cleanliness_evidence() {
     assert!(
         status
             .to_string()
-            .contains("cannot verify that runtime-owned worktrees are clean"),
+            .contains("cannot verify that provisioner-owned worktrees are clean"),
         "{status:#}"
     );
     assert_eq!(argv_of(&env, "delete").len(), 0);

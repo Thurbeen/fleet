@@ -1,15 +1,15 @@
-//! Implementations of the runtime contract ([`fleet_api::runtime::Runtime`]).
+//! Implementations of the session-runtime and provisioned-workspace contracts.
 //!
-//! - [`ThurboxRuntime`]: sessions through `thurbox-cli`, on this machine or a
-//!   host thurbox reaches over SSH or WSL.
-//! - [`FakeRuntime`]: a file-backed fake host for tests and local trials. It
-//!   keeps sessions as records, not processes, and runs nothing.
+//! - [`ThurboxRuntime`] serves prepared-path sessions; [`ThurboxWorktrees`]
+//!   serves the separate [`fleet_api::worktree::WorktreeProvisioner`] port.
+//! - [`FakeRuntime`] and [`FakeWorktrees`] persist the same separated calls for
+//!   executable lifecycle tests and local trials.
 
 pub mod fake;
 pub mod thurbox;
 
-pub use fake::{FakeHost, FakeRuntime, Fault};
-pub use thurbox::{ThurboxConfig, ThurboxRuntime};
+pub use fake::{FakeHost, FakeRuntime, FakeWorktrees, Fault};
+pub use thurbox::{ThurboxConfig, ThurboxRuntime, ThurboxWorktrees};
 
 /// Resolve manager-local explicit sources, never an implicit shell. Errors
 /// deliberately omit child output, paths and parser text (all may contain values).
