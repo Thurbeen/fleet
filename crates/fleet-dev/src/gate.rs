@@ -94,6 +94,19 @@ fn docs() -> Result {
             );
         }
     }
+    if tracked
+        .iter()
+        .any(|file| file == "docs/controllers/plugin/README.md")
+        && tracked.iter().any(|file| file == "docs/architecture.svg")
+    {
+        let architecture = fs::read_to_string("docs/architecture.svg")?;
+        if !architecture.contains("PluginController") || !architecture.contains("planned") {
+            return Err(
+                "docs/architecture.svg: show the planned PluginController described by the controller guide"
+                    .into(),
+            );
+        }
+    }
     for file in tracked.iter().filter(|p| p.ends_with(".md")) {
         let p = Path::new(&file);
         let text = fs::read_to_string(p)?;

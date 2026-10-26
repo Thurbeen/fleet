@@ -172,11 +172,30 @@ native config, selected per Task or by a default. Fleet never puts a change
 back into draft and never merges: the forge's mergeability answer is
 reported, not acted on.
 
+### The Plugin controller
+
+Planned, design and not implemented: the
+[Plugin controller](controllers/plugin/README.md), a host for controllers
+written outside this repository as scripts. A plugin registered under
+`[plugins.<name>]` declares its own kinds with a JSON Schema each, which the
+store then serves. For each due object of those kinds the manager runs the
+plugin's pure `probes` and `reconcile` functions as bounded processes
+through a new `Plugins` port and a `fleet-plugin` adapter crate, answers
+store probes itself and plugin probes through the plugin's bounded `observe`
+call, and admits the returned plan through a pure gate in
+`fleet-controllers` before writing the plugin's status under field manager
+`plugin/<name>`, performing its Task verbs (create, patch `dispatch` and
+`forge`, send, declare, delete) and running its keyed effects through the
+plugin's `perform` call with intent before and receipt after. The purity and
+process rules above are unchanged: the plugin decides, the manager performs,
+and every plugin process is one bounded call through `fleet-exec`.
+
 ## Scope and compatibility
 
 The Task controller runs sessions and records worker claims. It does not
-verify that an artifact merged, conduct reviews, manage a forge, dispatch a
-hierarchy or load controller plugins. Connection details stay with thurbox;
+verify that an artifact merged, conduct reviews, manage a forge or dispatch
+a hierarchy. Controller plugins are [designed](controllers/plugin/README.md)
+and not loaded by this build. Connection details stay with thurbox;
 credentials stay with the agent and host.
 
 V2 does not read or migrate v1 queue records or configuration. Root
