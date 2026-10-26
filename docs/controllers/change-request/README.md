@@ -61,7 +61,7 @@ forge calls when the change has many notes, and one small bookkeeping write.
 | Resource, status and port types | [ChangeRequest types](../../../crates/fleet-api/src/change_request.rs), [Forge port](../../../crates/fleet-api/src/forge.rs), [plans](../../../crates/fleet-api/src/plan.rs) | [Forge E2E](../../../crates/fleet-cli/tests/e2e_forge.rs) |
 | Sweep by kind, host-ordered deferral, fenced delete | [Manager](../../../crates/fleet-manager/src/lib.rs) | [Forge E2E](../../../crates/fleet-cli/tests/e2e_forge.rs), [Store contract](../../../crates/fleet-store/tests/store_contract.rs) |
 | Apply by URL, the derived name, ref verification | [Verbs](../../../crates/fleet-manager/src/verbs.rs) | [Forge E2E](../../../crates/fleet-cli/tests/e2e_forge.rs) |
-| GitHub through `gh`, GitLab through `glab`, Azure DevOps Services through `az`, the fake | [fleet-forge](../../../crates/fleet-forge/src/lib.rs): [github](../../../crates/fleet-forge/src/github.rs), [gitlab](../../../crates/fleet-forge/src/gitlab.rs), [azure-devops](../../../crates/fleet-forge/src/azure_devops.rs), [fake](../../../crates/fleet-forge/src/fake.rs) | Truth tables in each adapter's unit tests; [Forge E2E](../../../crates/fleet-cli/tests/e2e_forge.rs) against the stub CLIs |
+| GitHub through `gh`, GitLab through `glab`, Azure DevOps Services through `az`, Bitbucket Cloud through authenticated `curl`, the fake | [fleet-forge](../../../crates/fleet-forge/src/lib.rs): [github](../../../crates/fleet-forge/src/github.rs), [gitlab](../../../crates/fleet-forge/src/gitlab.rs), [azure-devops](../../../crates/fleet-forge/src/azure_devops.rs), [bitbucket-cloud](../../../crates/fleet-forge/src/bitbucket.rs), [fake](../../../crates/fleet-forge/src/fake.rs) | Truth tables in each adapter's unit tests; [Forge E2E](../../../crates/fleet-cli/tests/e2e_forge.rs) against the stub CLIs |
 | `[forge]` configuration | [CLI config](../../../crates/fleet-cli/src/config.rs) | [Forge E2E](../../../crates/fleet-cli/tests/e2e_forge.rs) |
 | Crate edges and the field manager | [architecture.toml](../../../crates/architecture.toml) | [Architecture suite](../../../crates/fleet-arch/tests/architecture.rs) |
 
@@ -71,6 +71,7 @@ edits, unresolves, head and state transitions, the 100-note cap, Unknown
 answers and `retryAfter`, host-wide deferral, the closed grace and reopen,
 merged settling, retention and the fenced delete, against the fake forge; and
 pagination, truth tables, rate limits, missing logins, a hung CLI's killed
-process tree and proven absence against the stub `gh` and `glab`. The
+process tree and proven absence against the stub `gh`, `glab`, `az` and
+authenticated HTTP client. The
 [Forge controller guide](../forge/README.md#implementation-and-evidence)
 lists the steps that follow this one.

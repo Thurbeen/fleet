@@ -5,19 +5,24 @@
 //! - [`GitlabForge`]: merge requests through `glab`, on gitlab.com or a
 //!   self-hosted instance.
 //! - [`AzureDevopsForge`]: pull requests through `az`, on Azure DevOps Services.
+//! - [`BitbucketCloudForge`]: pull requests on bitbucket.org through an
+//!   externally authenticated `curl`.
 //! - [`FakeForge`]: a file-backed forge for tests and trials. It runs no
 //!   process.
 //! - [`ForgeHosts`]: the adapters of a configuration's `[forge.hosts]`,
 //!   chosen by the host a URL or a reference names.
 //!
-//! This is the only crate that knows `gh` or `glab` exist. Every call to
-//! either is one bounded process through fleet-exec, its tree killed past
-//! the bound, and the CLIs' own logins are the only credentials: Fleet passes
-//! none and stores none. The one write, `mark_ready`, re-reads the change's
-//! head and state immediately before its mutation and refuses with `Moved`
-//! when either differs from what the caller expected.
+//! This is the only crate that knows the forge clients (`az`, `curl`, `gh`
+//! and `glab`) exist. Every call is one bounded process through fleet-exec,
+//! its tree killed past the bound, and the clients' own configuration is the
+//! only credential source: Fleet passes none and stores none. Adapters that
+//! implement the one write, `mark_ready`, re-read the change's head and state
+//! immediately before mutation and refuse with `Moved` when either differs
+//! from what the caller expected. Providers without that guarantee fail
+//! closed.
 
 pub mod azure_devops;
+pub mod bitbucket;
 pub mod cli;
 pub mod fake;
 pub mod github;
@@ -29,6 +34,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 pub use azure_devops::AzureDevopsForge;
+pub use bitbucket::BitbucketCloudForge;
 pub use fake::{FakeForge, FakeForgeState, ForgeFault};
 use fleet_api::forge::{ChangeObservation, ChangeRef, Expected, Forge, Uncertainty};
 use fleet_api::plan::EffectOutcome;
@@ -40,6 +46,7 @@ pub use gitlab::GitlabForge;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostKind {
     AzureDevops,
+    BitbucketCloud,
     Github,
     Gitlab,
     Fake,
@@ -49,6 +56,7 @@ impl HostKind {
     pub fn parse(kind: &str) -> Option<HostKind> {
         match kind {
             azure_devops::KIND => Some(HostKind::AzureDevops),
+            bitbucket::KIND => Some(HostKind::BitbucketCloud),
             github::KIND => Some(HostKind::Github),
             gitlab::KIND => Some(HostKind::Gitlab),
             fake::KIND => Some(HostKind::Fake),
@@ -59,6 +67,7 @@ impl HostKind {
     pub fn name(self) -> &'static str {
         match self {
             HostKind::AzureDevops => azure_devops::KIND,
+            HostKind::BitbucketCloud => bitbucket::KIND,
             HostKind::Github => github::KIND,
             HostKind::Gitlab => gitlab::KIND,
             HostKind::Fake => fake::KIND,
@@ -114,6 +123,18 @@ impl ForgeHosts {
                     cfg.cli.unwrap_or_else(|| default_cli("az")),
                     call_timeout,
                 )),
+                HostKind::BitbucketCloud => {
+                    if host != bitbucket::HOST {
+                        return Err(format!(
+                            "forge.hosts.{host}: bitbucket-cloud serves only {}",
+                            bitbucket::HOST
+                        ));
+                    }
+                    Box::new(BitbucketCloudForge::new(
+                        cfg.cli.unwrap_or_else(|| default_cli("curl")),
+                        call_timeout,
+                    ))
+                }
                 HostKind::Github => Box::new(GithubForge::new(
                     &host,
                     cfg.cli.unwrap_or_else(|| default_cli("gh")),

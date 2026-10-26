@@ -127,6 +127,28 @@ six bounded calls, each of `forge.callTimeoutMs`; the port's
   [threads](https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pull-request-threads/list?view=azure-devops-rest-7.1),
   [policies](https://learn.microsoft.com/en-us/rest/api/azure/devops/policy/evaluations/list?view=azure-devops-rest-7.1)
   and the documented [`az repos pr update --draft false`](https://learn.microsoft.com/en-us/cli/azure/repos/pr?view=azure-cli-latest#az-repos-pr-update).
+- **bitbucket-cloud:** bounded `curl` processes read hosted `bitbucket.org`
+  REST 2.0. Fleet sends only HTTPS URLs and Accept headers and uses
+  `--netrc-optional`; curl's config, netrc or credential helper owns
+  authentication. The pull request is read before and after its paginated
+  comments, commit statuses and mergeability checks; each collection follows
+  the API's opaque `next` links. A moved head or
+  repository UUID makes the whole observation Unknown. Every pull-request
+  commit status must link to that exact head. Pipelines are not read separately
+  because they have a separate permission and duplicate pipeline-produced commit
+  statuses. Participant votes set the aggregate decision but create no
+  head-bound `Review`. Inline root comments must carry the API's `resolution`
+  field; missing resolution evidence is Unknown, never zero unresolved
+  threads. `account_id`, falling back to UUID, is the user identity.
+  `mark_ready` fails closed: the documented draft update has no atomic
+  head-and-state precondition. Bitbucket Server/Data Center is not served.
+  These mappings follow Atlassian's references for
+  [pull requests](https://developer.atlassian.com/cloud/bitbucket/rest/api-group-pullrequests/),
+  [commit statuses](https://developer.atlassian.com/cloud/bitbucket/rest/api-group-commit-statuses/),
+  [users](https://developer.atlassian.com/cloud/bitbucket/rest/api-group-users/),
+  [pagination](https://developer.atlassian.com/cloud/bitbucket/rest/intro/#pagination),
+  [API request limits](https://support.atlassian.com/bitbucket-cloud/docs/api-request-limits/)
+  and [draft semantics](https://support.atlassian.com/bitbucket-cloud/docs/draft-pull-requests/).
 - **fake:** a file-backed forge for tests and trials, with injectable faults
   (lost answers, timeouts, throttling with `retryAfter`, incomplete reads,
   malformed answers, proven absence; and for `mark_ready`, `moved`,
@@ -135,9 +157,8 @@ six bounded calls, each of `forge.callTimeoutMs`; the port's
   intent key of every mark-ready that mutated a change. Its URLs take any
   shape a real forge uses (`/pull/N`, `/-/merge_requests/N`, `/changes/N`).
 
-Credentials stay with each CLI's own login. Fleet passes none and stores none.
-A later adapter for a forge without a CLI would use HTTP from `fleet-forge`;
-nothing above the port changes.
+Credentials stay with each CLI or authenticated client's own configuration.
+Fleet passes none and stores none.
 
 ### Adapter truth tables
 
@@ -145,15 +166,15 @@ Each adapter maps the forge's answer onto the vocabulary by these rules; an
 answer the rule cannot place is Unknown for the whole observation, never a
 guess.
 
-| Field | GitHub | GitLab | Azure DevOps Services |
-| --- | --- | --- | --- |
-| `state` | `isDraft` then `draft`; else `state` OPEN, CLOSED, MERGED. | `draft` then `draft`; else `state` opened, closed, merged. | `isDraft` then `draft`; else `status` active, abandoned, completed map to open, closed, merged. |
-| `head.checks` | Over check runs and commit statuses of the head: any failed or errored is `failed`; else any queued, in progress or pending is `pending`; else any success is `passed`; none at all is `none`. Skipped and neutral count as absent. | Over the head pipeline: failed or canceled is `failed`; running, pending, created or manual is `pending`; success is `passed`; no pipeline is `none`. Skipped is absent. | Over latest-iteration statuses and enabled blocking policy evaluations: failed, error, rejected or broken is `failed`; pending, notSet, queued or running is `pending`; succeeded or approved is `passed`; notApplicable and nonblocking policies are absent. |
-| `reviewDecision` | `reviewDecision` APPROVED, CHANGES_REQUESTED, else `none`. | Approved when the approval rules are satisfied; `changes-requested` is not a GitLab concept and is never produced; else `none`. | Any reject (-10) or wait-for-author (-5) vote is `changes-requested`; otherwise any approve (10) or approve-with-suggestions (5) vote is `approved`; else `none`. |
-| `mergeable` | `mergeable` MERGEABLE is `true`; CONFLICTING is `false` with `conflicts`; UNKNOWN is `null`. `mergeStateStatus` BLOCKED, BEHIND, UNSTABLE, DRAFT give `false` with that word. | `detailed_merge_status` mergeable is `true`; `checking` and `unchecked` are `null`; every other value is `false` with that value. | Draft is `false`; `mergeStatus` succeeded is `true`; conflicts, rejectedByPolicy and failure are `false`; queued, notSet or absent is `null`. |
-| `threads.unresolved` | Review threads with `isResolved` false, over all pages. | Resolvable discussions with `resolved` false, over all pages. | Inline threads in active or pending state. Fixed, won't-fix, closed and by-design are resolved; an unknown state makes the observation Unknown. |
-| `reviews` | Submitted reviews on the head commit, state APPROVED, CHANGES_REQUESTED, COMMENTED; dismissed reviews are omitted. | Approvals as `approved` reviews; there are no others. | Empty: reviewer votes carry no head identity. |
-| `bot` | `__typename` is `Bot`. | The user is a bot or a project access token user. | `false`: the thread identity does not make a reliable bot assertion. |
+| Field | GitHub | GitLab | Azure DevOps Services | Bitbucket Cloud |
+| --- | --- | --- | --- | --- |
+| `state` | `isDraft` then `draft`; else `state` OPEN, CLOSED, MERGED. | `draft` then `draft`; else `state` opened, closed, merged. | `isDraft` then `draft`; else `status` active, abandoned, completed map to open, closed, merged. | `draft` then `draft`; else `state` OPEN, DECLINED/SUPERSEDED, MERGED map to open, closed, merged. |
+| `head.checks` | Over check runs and commit statuses of the head: any failed or errored is `failed`; else any queued, in progress or pending is `pending`; else any success is `passed`; none at all is `none`. Skipped and neutral count as absent. | Over the head pipeline: failed or canceled is `failed`; running, pending, created or manual is `pending`; success is `passed`; no pipeline is `none`. Skipped is absent. | Over latest-iteration statuses and enabled blocking policy evaluations: failed, error, rejected or broken is `failed`; pending, notSet, queued or running is `pending`; succeeded or approved is `passed`; notApplicable and nonblocking policies are absent. | Over paginated pull-request commit statuses bracketed by, and linked to, the same `source.commit.hash`: FAILED or STOPPED is `failed`; INPROGRESS is `pending`; SUCCESSFUL is `passed`; none is `none`. Pipelines are not read separately. |
+| `reviewDecision` | `reviewDecision` APPROVED, CHANGES_REQUESTED, else `none`. | Approved when the approval rules are satisfied; `changes-requested` is not a GitLab concept and is never produced; else `none`. | Any reject (-10) or wait-for-author (-5) vote is `changes-requested`; otherwise any approve (10) or approve-with-suggestions (5) vote is `approved`; else `none`. | Any participant `changes_requested` wins; otherwise any `approved` participant is approved; else `none`. |
+| `mergeable` | `mergeable` MERGEABLE is `true`; CONFLICTING is `false` with `conflicts`; UNKNOWN is `null`. `mergeStateStatus` BLOCKED, BEHIND, UNSTABLE, DRAFT give `false` with that word. | `detailed_merge_status` mergeable is `true`; `checking` and `unchecked` are `null`; every other value is `false` with that value. | Draft is `false`; `mergeStatus` succeeded is `true`; conflicts, rejectedByPolicy and failure are `false`; queued, notSet or absent is `null`. | Draft is `false`; a blocking FAILED mergeability check is `false` with its type; any UNKNOWN or a blocking PENDING check is `null`; PASSED, SKIPPED, and other non-blocking checks do not block merging. |
+| `threads.unresolved` | Review threads with `isResolved` false, over all pages. | Resolvable discussions with `resolved` false, over all pages. | Inline threads in active or pending state. Fixed, won't-fix, closed and by-design are resolved; an unknown state makes the observation Unknown. | Inline root comments whose `resolution` is null, over every comments page. Deleted roots remain structural for visible replies; a missing root or resolution field makes the observation Unknown. |
+| `reviews` | Submitted reviews on the head commit, state APPROVED, CHANGES_REQUESTED, COMMENTED; dismissed reviews are omitted. | Approvals as `approved` reviews; there are no others. | Empty: reviewer votes carry no head identity. | Empty: participant votes carry no head identity. |
+| `bot` | `__typename` is `Bot`. | The user is a bot or a project access token user. | `false`: the thread identity does not make a reliable bot assertion. | User is false; the documented app-user type is true; any unknown type makes the observation Unknown. |
 
 Azure DevOps URL identity is
 `azure-devops/{organization}.visualstudio.com/{project}/{repository}/{id}`.
@@ -161,6 +182,12 @@ Both `https://dev.azure.com/{organization}/{project}/_git/{repository}/pullreque
 and the legacy `{organization}.visualstudio.com` form parse to that identity.
 The organization-specific canonical host also scopes `whoami`; equal project,
 repository and pull-request numbers in different organizations cannot collide.
+
+Bitbucket Cloud URL identity is
+`bitbucket-cloud/bitbucket.org/{workspace}/{repository}/{id}`. Workspace and
+repository slugs are lowercased; each observation verifies the destination's
+`full_name`, immutable repository UUID, and source and destination commit hashes
+before and after collecting evidence.
 
 ## Manager execution protocol
 

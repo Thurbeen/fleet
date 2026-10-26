@@ -16,8 +16,8 @@ use fleet_api::forge::{
 use fleet_forge::{FakeForge, ForgeFault};
 use serde_json::{Value, json};
 use support::{
-    AZURE_DEVOPS_HOST, Env, FORGE_HOST, GITHUB_HOST, GITLAB_HOST, assert_condition, derived_name,
-    now_ms, task,
+    AZURE_DEVOPS_HOST, BITBUCKET_HOST, Env, FORGE_HOST, GITHUB_HOST, GITLAB_HOST, assert_condition,
+    derived_name, now_ms, task,
 };
 
 const PROJECT: &str = "acme/widgets";
@@ -958,5 +958,43 @@ fn azure_devops_drafts_fail_closed_without_an_atomic_head_and_state_precondition
             argv.contains(&json!("profiles")) && argv.contains(&json!("https://dev.azure.com/acme"))
         }),
         "whoami is read in the change's organization: {calls:#?}"
+    );
+}
+
+#[test]
+fn bitbucket_cloud_drafts_fail_closed_without_an_atomic_head_and_state_precondition() {
+    let mut env = Env::forge_stubs("bitbucket-ready");
+    env.set_var("USER", "tester");
+    configure(&env, "checks", "");
+    env.edit_stub(|s| {
+        s["login"] = json!(LOGIN);
+        s["changes"] = json!({"acme/widgets#9": stub_draft("b1")});
+    });
+    env.apply(task("t1", true)).ok();
+    env.reconcile().ok();
+    let url = "https://bitbucket.org/acme/widgets/pull-requests/9";
+    declare(&env, "t1", url).ok();
+    env.reconcile().ok();
+    let cr = derived_name("bitbucket-cloud", BITBUCKET_HOST, PROJECT, "9");
+    assert_eq!(entry(&env, "t1", &cr)["cursor"], 1);
+    ship(&env, "t1");
+    rest(&env, "t1", true);
+    let report = env.reconcile().ok().json();
+    assert_eq!(report["errors"], json!([]), "{report:#}");
+    assert_eq!(record(&env, "t1", &cr)["state"], "failed");
+    assert_eq!(env.stub()["changes"]["acme/widgets#9"]["state"], "draft");
+
+    let calls = env.forge_calls(BITBUCKET_HOST);
+    assert!(
+        calls
+            .iter()
+            .any(|call| call["argv"].to_string().contains("/2.0/user")),
+        "whoami uses the stable account identity from the authenticated Cloud user: {calls:#?}"
+    );
+    assert!(
+        calls
+            .iter()
+            .all(|call| !call["argv"].as_array().unwrap().contains(&json!("PUT"))),
+        "mark-ready must not use a check-then-update race: {calls:#?}"
     );
 }

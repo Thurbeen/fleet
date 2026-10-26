@@ -54,7 +54,7 @@ fleet-controllers  pure           controllers and gate   -> api
 fleet-exec         adapter        the one process spawner
 fleet-store        adapter        file store             -> api
 fleet-runtime      adapter        thurbox-cli, fake      -> api, exec
-fleet-forge        adapter        gh, glab, fake         -> api, exec
+fleet-forge        adapter        az, curl, gh, glab, fake -> api, exec
 fleet-plugin       adapter        bounded plugin stdio   -> api, exec
 fleet-manager      orchestration  lease, plans, verbs    -> api, controllers
 fleet-cli          edge           the `fleet` binary     -> api, manager, store,
@@ -406,12 +406,25 @@ per `[forge.hosts]` entry, chosen by the host a URL or ref names:
   merge request, its discussions by page, its approvals; a 404 is absence
   only when the project itself answers. Mark-ready is one fresh read, then
   the title updated with its draft marker removed.
+- **azure-devops:** bounded `az devops invoke` calls for hosted Azure DevOps
+  Services. Organization/project/repository identities are checked against
+  the URL and every continuation token stays inside the adapter's call bound.
+- **bitbucket-cloud:** bounded authenticated `curl` reads against
+  `https://api.bitbucket.org/2.0/` for `bitbucket.org` only. The adapter
+  brackets paginated comments, commit statuses and mergeability checks with
+  two pull-request reads, requires every status to link to that exact head,
+  and rejects repository or head movement. Participant
+  votes are not exposed as head-bound reviews. Inline thread counts require
+  explicit resolution evidence. Mark-ready fails closed because Bitbucket's
+  `PUT draft=false` has no atomic head-and-state precondition.
 - **fake:** a file-backed forge for tests and trials, with injectable faults
   (lost, timeout, throttle with `retryAfter`, incomplete, malformed, absent;
   for mark-ready `moved`, `failed`, `lost` and `lost-applied`). It runs no
   process and records every mark-ready that mutated a change.
 
-Credentials stay with each CLI's own login; Fleet passes none and stores none.
+Credentials stay with each external client's own configuration; Fleet passes
+none and stores none. Bitbucket Cloud uses curl configuration or netrc rather
+than assuming an official provider CLI.
 
 ## The command line
 
@@ -449,6 +462,7 @@ keyPrefix = "fleet"       # give a second fleet on the same hosts its own
 
 [forge.hosts]
 "github.com" = { kind = "github", cli = "gh" }
+"bitbucket.org" = { kind = "bitbucket-cloud", cli = "curl" }
 
 [forge.readyPolicies.checks]   # selected by spec.forge.draft.policy or
 forge.draftPolicy
@@ -497,12 +511,12 @@ customized updates, resident progress, exclusive startup and crash/reconnect.
 
 The `e2e_*` suites drive the real `fleet` binary against an isolated store,
 the fake host or a stub `thurbox-cli`, and, for `e2e_forge`, the fake forge
-or the same stub copied as `gh` and `glab`, across process restarts and
-injected faults; `e2e_inbox` covers `fleet send` and delivery on both the
-fake host and the stub; `e2e_forge_controller` covers `fleet declare`, the
-join and the relay against the fake forge and the fake host.
+or the same stub copied as `az`, `curl`, `gh` and `glab`, across process
+restarts and injected faults; `e2e_inbox` covers `fleet send` and delivery on
+both the fake host and the stub; `e2e_forge_controller` covers `fleet declare`,
+the join and the relay against the fake forge and the fake host.
 `e2e_mark_ready` covers the mark-ready effect against the fake forge and
-the fake host, and through the stub `gh` and `glab`.
+the fake host, and through the stub `az`, `curl`, `gh` and `glab`.
 `task_controller`, `change_request_controller` and `forge_controller` test
 each controller as a pure function, one transition or Unknown per case.
 `store_contract` tests the store against races, torn writes, stale leases
