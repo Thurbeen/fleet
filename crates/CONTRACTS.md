@@ -473,7 +473,7 @@ A Task manifest:
       "harness": "claude-code",
       "host": "local",
       "brief": "Write the controller design.",
-      "workspace": {"dir": "work/design-305", "additionalDirs": ["work/shared-library"]},
+      "workspace": {"dir": "/work/design-305", "additionalDirs": ["/work/shared-library"]},
       "dispatch": true,
       "outputs": {"prUrl": {"type": "string", "required": true}}
     }

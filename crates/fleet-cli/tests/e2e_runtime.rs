@@ -403,6 +403,91 @@ fn a_new_session_is_verified_before_fleet_adopts_or_briefs_it() {
 }
 
 #[test]
+fn a_recorded_session_with_changed_workspace_membership_is_not_briefed() {
+    let mut t = task("many", true);
+    t["spec"]["workspace"]["additionalDirs"] = if cfg!(windows) {
+        json!(["D:\\work\\declared"])
+    } else {
+        json!(["/work/declared"])
+    };
+    let env = setup("thurbox-recorded-workspace-conflict", vec![]);
+    env.edit_stub(|s| s["spawnState"] = json!("working"));
+    env.apply(t).ok();
+    env.reconcile().ok();
+    assert_eq!(env.status("many")["phase"], "Spawned");
+
+    let key = thurbox_key(&env, "many");
+    env.edit_stub(|s| {
+        let session = s["sessions"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|session| session["key"] == key)
+            .unwrap();
+        session["state"] = json!("idle");
+        session["additional_dirs"] = if cfg!(windows) {
+            json!(["D:\\work\\other"])
+        } else {
+            json!(["/work/other"])
+        };
+    });
+
+    let report = env.reconcile().ok().json();
+
+    assert_eq!(env.status("many")["phase"], "Spawned", "{report:#}");
+    assert!(
+        report["unknowns"]
+            .to_string()
+            .contains("conflicting workspace"),
+        "{report:#}"
+    );
+    assert_eq!(argv_of(&env, "send").len(), 0, "no wrong worker is briefed");
+}
+
+#[test]
+fn a_briefed_session_with_changed_workspace_membership_gets_no_inbox_message() {
+    let mut t = task("many", true);
+    t["spec"]["workspace"]["additionalDirs"] = if cfg!(windows) {
+        json!(["D:\\work\\declared"])
+    } else {
+        json!(["/work/declared"])
+    };
+    let env = setup("thurbox-briefed-workspace-conflict", vec![t]);
+    env.reconcile().ok();
+    env.fleet(&["send", "many", "new instructions"]).ok();
+
+    let key = thurbox_key(&env, "many");
+    env.edit_stub(|s| {
+        let session = s["sessions"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|session| session["key"] == key)
+            .unwrap();
+        session["additional_dirs"] = if cfg!(windows) {
+            json!(["D:\\work\\other"])
+        } else {
+            json!(["/work/other"])
+        };
+    });
+
+    let report = env.reconcile().ok().json();
+
+    assert!(
+        report["unknowns"]
+            .to_string()
+            .contains("conflicting workspace"),
+        "{report:#}"
+    );
+    assert_eq!(
+        argv_of(&env, "send").len(),
+        1,
+        "only the original brief was sent"
+    );
+    assert_eq!(env.status("many")["inbox"].as_array().unwrap().len(), 1);
+}
+
+#[test]
 fn a_brief_whose_answer_was_lost_is_read_back_and_never_sent_twice() {
     // Recovered: the session recorded the delivery, the answer was lost.
     let env = setup("thurbox-brief-recovered", vec![]);

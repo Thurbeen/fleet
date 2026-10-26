@@ -396,6 +396,9 @@ impl Pass<'_, '_> {
         if self.worker_gone() {
             return;
         }
+        if !self.worker_verified() {
+            return;
+        }
         if self.st.not_before.is_some_and(|t| t > self.now()) {
             return;
         }
@@ -534,6 +537,9 @@ impl Pass<'_, '_> {
         if self.worker_gone() {
             return;
         }
+        if !self.worker_verified() {
+            return;
+        }
         if let Some(session) = self.st.session.clone() {
             self.deliver(session);
         }
@@ -547,6 +553,9 @@ impl Pass<'_, '_> {
             return;
         }
         if self.worker_gone() {
+            return;
+        }
+        if !self.worker_verified() {
             return;
         }
         if self.st.not_before.is_some_and(|t| t > self.now()) {
@@ -722,6 +731,15 @@ impl Pass<'_, '_> {
         );
         self.needs_attention("WorkerGone", "the session vanished before a result");
         true
+    }
+
+    /// A brief or inbox entry goes only to the recorded session after this
+    /// pass positively verified its immutable workspace membership.
+    fn worker_verified(&self) -> bool {
+        matches!(
+            (&self.input.observations.find, &self.st.session),
+            (Some(Observation::Known(Some(found))), Some(recorded)) if found == recorded
+        )
     }
 
     /// The finalizer: the session is deleted only once it is proven at rest
