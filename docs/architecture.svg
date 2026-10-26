@@ -4,11 +4,11 @@
 <style>
   svg { color-scheme:light dark } .background{fill:#fff} .ink{fill:#182b3d} .muted{fill:#405367}
   .box{stroke:#7890a6;stroke-width:1.5} .pure{fill:#e9f5ef} .orchestration{fill:#edf3f8} .adapter{fill:#f3f4f5} .process{fill:#fff2de}
-  .arrow{fill:none;stroke:#405367;stroke-width:2;marker-end:url(#arrow)}
+  .arrow{fill:none;stroke:#405367;stroke-width:2;marker-end:url(#arrow)} .arrowhead{fill:#405367}
   @media (prefers-color-scheme: light) { .background{fill:#fff} .ink{fill:#182b3d} }
-  @media (prefers-color-scheme: dark) { .background{fill:#101820} .ink{fill:#e6edf3} .muted{fill:#a9bdd0} .box{stroke:#71869a} .pure{fill:#173b2d} .orchestration{fill:#1d2a36} .adapter{fill:#202a33} .process{fill:#493517} .arrow{stroke:#a9bdd0} }
+  @media (prefers-color-scheme: dark) { .background{fill:#101820} .ink{fill:#e6edf3} .muted{fill:#a9bdd0} .box{stroke:#71869a} .pure{fill:#173b2d} .orchestration{fill:#1d2a36} .adapter{fill:#202a33} .process{fill:#493517} .arrow{stroke:#a9bdd0} .arrowhead{fill:#a9bdd0} }
 </style>
-<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 Z" fill="context-stroke"/></marker></defs>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="arrowhead" d="M0 0 L10 5 L0 10 Z"/></marker></defs>
 <rect class="background" width="1080" height="700" rx="12"/>
 <g font-family="system-ui,-apple-system,Segoe UI,sans-serif" class="ink">
   <text x="30" y="36" font-size="21" font-weight="700">Fleet v2 execution flow</text>
