@@ -878,6 +878,7 @@ fn bitbucket_cloud_observation_is_complete_bounded_and_unknown_on_gaps() {
     assert!(calls.iter().all(|call| {
         let argv = call["argv"].as_array().unwrap();
         argv.starts_with(&[json!("--include"), json!("--silent"), json!("--show-error")])
+            && argv.contains(&json!("--suppress-connect-headers"))
             && argv.contains(&json!("--netrc-optional"))
             && !argv.iter().any(|arg| {
                 arg.as_str().is_some_and(|s| {

@@ -51,6 +51,7 @@ impl BitbucketCloudForge {
             "--include".into(),
             "--silent".into(),
             "--show-error".into(),
+            "--suppress-connect-headers".into(),
             "--netrc-optional".into(),
             "--proto".into(),
             "=https".into(),
