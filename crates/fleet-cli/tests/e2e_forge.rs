@@ -916,6 +916,19 @@ fn bitbucket_cloud_observation_is_complete_bounded_and_unknown_on_gaps() {
     );
     env.edit_stub(|s| {
         s["moveHeadOnFinal"] = json!(false);
+        s["moveTargetOnFinal"] = json!(true);
+        s["bitbucketPrReads"] = json!(0);
+    });
+    env.expire_wait_of("ChangeRequest", &cr);
+    env.reconcile().ok();
+    let st = env.change_request_status(&cr);
+    assert_condition(&st, "Reachable", "Unknown", "Unreadable");
+    assert_eq!(
+        st["revision"], 1,
+        "mergeability is never attached after the destination moves"
+    );
+    env.edit_stub(|s| {
+        s["moveTargetOnFinal"] = json!(false);
         s["bitbucketPrReads"] = json!(0);
         s["wrongStatusHead"] = json!(true);
     });
@@ -1002,6 +1015,42 @@ fn bitbucket_cloud_mergeability_checks_are_paginated() {
             .to_string()
             .contains("mergeability/checks?opaque=x&cursor=1")
     }));
+}
+
+#[test]
+fn bitbucket_cloud_mergeability_checks_handle_documented_statuses() {
+    let env = Env::forge_stubs("bitbucket-mergeability-statuses");
+    env.edit_stub(|s| {
+        s["changes"] = json!({"acme/widgets#7": {
+            "state": "open", "head": "h1", "checks": [],
+            "reviewDecision": null, "mergeable": "mergeable",
+            "reviews": [], "comments": [], "threads": []
+        }});
+        s["mergeabilityChecks"] = json!([
+            {"type": "custom_pre_merge_check", "status": "SKIPPED", "required": false, "blocking": false}
+        ]);
+    });
+    let cr = derived_name("bitbucket-cloud", BITBUCKET_HOST, PROJECT, "7");
+    env.apply(change_request(
+        "https://bitbucket.org/acme/widgets/pull-requests/7",
+        json!({}),
+    ))
+    .ok();
+    env.reconcile().ok();
+    let st = env.change_request_status(&cr);
+    assert_condition(&st, "Reachable", "True", "Observed");
+    assert_eq!(st["mergeable"]["value"], true);
+
+    env.edit_stub(|s| {
+        s["mergeabilityChecks"] = json!([
+            {"type": "custom_pre_merge_check", "status": "UNKNOWN", "required": false, "blocking": false}
+        ]);
+    });
+    env.expire_wait_of("ChangeRequest", &cr);
+    env.reconcile().ok();
+    let st = env.change_request_status(&cr);
+    assert_condition(&st, "Reachable", "True", "Observed");
+    assert!(st["mergeable"]["value"].is_null());
 }
 
 #[test]

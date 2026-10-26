@@ -709,13 +709,15 @@ mod forge {
         }
         let id = parts.next().unwrap_or("");
         let sub = parts.collect::<Vec<_>>().join("/");
-        let moved_head = if sub.is_empty() && state["moveHeadOnFinal"] == true {
+        let final_read = if sub.is_empty()
+            && (state["moveHeadOnFinal"] == true || state["moveTargetOnFinal"] == true)
+        {
             let reads = state["bitbucketPrReads"].as_u64().unwrap_or(0) + 1;
             state["bitbucketPrReads"] = json!(reads);
             save(&state);
-            (reads > 1).then_some("moved-head")
+            reads > 1
         } else {
-            None
+            false
         };
         let Some(c) = change(&state, &project, id) else {
             return not_found();
@@ -762,8 +764,11 @@ mod forge {
                     "id": id.parse::<u64>().unwrap_or(0),
                     "state": match c["state"].as_str().unwrap_or("open") { "merged" => "MERGED", "closed" => "DECLINED", _ => "OPEN" },
                     "draft": c["state"] == "draft",
-                    "source": {"commit": {"hash": moved_head.map_or_else(|| c["head"].clone(), |head| json!(head))}},
-                    "destination": {"repository": {"type": "repository", "full_name": if state["wrongRepo"] == true { "other/widgets" } else { project.as_str() }, "uuid": format!("{{repo-{workspace}-{repository}}}")}},
+                    "source": {"commit": {"hash": if final_read && state["moveHeadOnFinal"] == true { json!("moved-head") } else { c["head"].clone() }}},
+                    "destination": {
+                        "commit": {"hash": if final_read && state["moveTargetOnFinal"] == true { "moved-target" } else { c["target"].as_str().unwrap_or("target-head") }},
+                        "repository": {"type": "repository", "full_name": if state["wrongRepo"] == true { "other/widgets" } else { project.as_str() }, "uuid": format!("{{repo-{workspace}-{repository}}}")}
+                    },
                     "participants": participants,
                     "links": {"html": {"href": format!("https://bitbucket.org/{project}/pull-requests/{id}")}}
                 })

@@ -378,8 +378,9 @@ fn mergeable_of(state: ChangeState, values: &[Value]) -> Result<Mergeable, Strin
                     reason: Some(kind.replace('_', "-")),
                 });
             }
+            Some("UNKNOWN") => pending = true,
             Some("PENDING") if blocking => pending = true,
-            Some("PASSED" | "FAILED" | "PENDING") => {}
+            Some("PASSED" | "FAILED" | "PENDING" | "SKIPPED") => {}
             other => return Err(format!("mergeability status {other:?} cannot be placed")),
         }
     }
@@ -514,6 +515,19 @@ fn snapshot(
         .ok_or("pull request source has no commit hash")?;
     if first_head != head {
         return Err("the pull request head changed while its evidence was being read".into());
+    }
+    let first_target = first["destination"]["commit"]["hash"]
+        .as_str()
+        .filter(|target| !target.is_empty())
+        .ok_or("pull request destination has no commit hash")?;
+    let target = final_pr["destination"]["commit"]["hash"]
+        .as_str()
+        .filter(|target| !target.is_empty())
+        .ok_or("pull request destination has no commit hash")?;
+    if first_target != target {
+        return Err(
+            "the pull request destination changed while its evidence was being read".into(),
+        );
     }
     let state = state_of(final_pr)?;
     let (checks, failing) = checks_of(statuses, project, head)?;
