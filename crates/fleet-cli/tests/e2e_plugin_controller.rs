@@ -277,3 +277,152 @@ fn lost_pending_intent_is_recovered_without_performing_it() {
             .all(|l| serde_json::from_str::<Value>(l).unwrap()["call"] != "perform")
     );
 }
+
+#[test]
+fn builtin_and_plural_alias_collisions_refuse_registration() {
+    for kind in [
+        "TASK",
+        "Tasks",
+        "Taskconfig",
+        "Envproviders",
+        "CHANGErequest",
+    ] {
+        let env = setup(&format!("plugin-alias-{}", kind.to_ascii_lowercase()));
+        edit_scenario(&env, |s| s["manifest"]["kinds"][0]["kind"] = json!(kind));
+        env.fleet(&["list", "plugins", "--json"]).code(1);
+    }
+    let env = setup("plugin-plural-alias");
+    edit_scenario(&env, |s| {
+        let mut plural = s["manifest"]["kinds"][0].clone();
+        plural["kind"] = json!("Issues");
+        s["manifest"]["kinds"].as_array_mut().unwrap().push(plural);
+    });
+    env.fleet(&["list", "plugins", "--json"]).code(1);
+}
+
+#[test]
+fn successful_probes_do_not_hide_repeated_reconcile_failures() {
+    for failure in ["exit", "malformed"] {
+        let env = setup(&format!("plugin-availability-{failure}"));
+        for n in 0..5 {
+            let mut obj = issue();
+            obj["metadata"]["name"] = json!(format!("issue-{n}"));
+            env.apply(obj).ok();
+        }
+        edit_scenario(&env, |s| {
+            s["failCall"] = json!("reconcile");
+            s["failure"] = json!(failure);
+        });
+        env.reconcile().code(1).stdout_has("unavailable");
+        let calls = fs::read_to_string(env.root.join("plugin-calls.jsonl")).unwrap();
+        assert_eq!(
+            calls
+                .lines()
+                .filter(|l| serde_json::from_str::<Value>(l).unwrap()["call"] == "reconcile")
+                .count(),
+            3
+        );
+    }
+}
+
+#[test]
+fn self_delete_cannot_remove_the_journal_before_performing_an_effect() {
+    let env = setup("plugin-self-delete");
+    edit_scenario(&env, |s| {
+        s["manifest"]["kinds"][0]["finalizer"] = json!(false)
+    });
+    env.apply(issue()).ok();
+    let uid = env.fleet(&["get", "issue", "issue-1"]).ok().json()["metadata"]["uid"].clone();
+    edit_scenario(
+        &env,
+        |s| s["plan"] = json!({"deletes":[{"kind":"Issue","name":"issue-1","uid":uid}],"effects":[{"key":"after-delete","request":{}}]}),
+    );
+    env.reconcile().code(1);
+    env.fleet(&["get", "issue", "issue-1"]).ok();
+    let calls = fs::read_to_string(env.root.join("plugin-calls.jsonl")).unwrap();
+    assert!(
+        calls
+            .lines()
+            .all(|l| serde_json::from_str::<Value>(l).unwrap()["call"] != "perform")
+    );
+}
+
+#[test]
+fn failed_plugin_manifest_does_not_block_builtin_reads_or_worker_verbs() {
+    let env = setup("plugin-builtin-recovery");
+    env.apply(support::task("worker", true)).ok();
+    env.reconcile().ok();
+    let generation = env.get("worker")["metadata"]["generation"]
+        .as_u64()
+        .unwrap()
+        .to_string();
+    edit_scenario(&env, |s| {
+        s["failCall"] = json!("manifest");
+        s["failure"] = json!("exit");
+    });
+    env.fleet(&["get", "task", "worker"]).ok();
+    env.fleet(&["send", "worker", "Inspect the plugin failure"])
+        .ok();
+    env.fleet(&[
+        "result",
+        "worker",
+        "--generation",
+        &generation,
+        "--outcome",
+        "shipped",
+        "--summary",
+        "done",
+        "--output",
+        "prUrl=\"https://forge.test/example/project/pull/1\"",
+    ])
+    .ok();
+    env.fleet(&["delete", "task", "worker"]).ok();
+}
+
+#[test]
+fn declarations_reuse_existing_mirrors_without_changing_spec_or_labels() {
+    let env = setup("plugin-declare-existing");
+    let mut cfg = fs::read_to_string(&env.config).unwrap();
+    cfg.push_str("\n[forge.hosts]\n\"forge.test\" = {kind = 'fake', dir = 'forge'}\n");
+    fs::write(&env.config, cfg).unwrap();
+    env.apply(issue()).ok();
+    scenario(&env, json!({"creates":[support::task("child",true)]}));
+    env.reconcile().ok();
+    let child = env.get("child");
+    assert!(child["status"]["brief"].is_object());
+    let url = "https://forge.test/example/project/pull/1";
+    let mirror_name = support::derived_name("fake", "forge.test", "example/project", "1");
+    let mirror = json!({"apiVersion":"fleet/v1alpha1","kind":"ChangeRequest","metadata":{"name":mirror_name,"labels":{"keep":"operator"}},"spec":{"url":url,"pollMs":12345}});
+    env.apply(mirror.clone()).ok();
+    scenario(
+        &env,
+        json!({"declares":[{"task":"child","uid":child["metadata"]["uid"],"changeRequest":url}]}),
+    );
+    env.expire_wait_of("Issue", "issue-1");
+    env.reconcile().ok();
+    assert_eq!(
+        env.get("child")["status"]["declared"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    let after = env
+        .fleet(&["get", "changerequest", &mirror_name])
+        .ok()
+        .json();
+    assert_eq!(after["spec"], mirror["spec"]);
+    assert_eq!(after["metadata"]["labels"], mirror["metadata"]["labels"]);
+}
+
+#[test]
+fn unregistered_plugin_objects_are_reported_by_the_manager() {
+    let env = setup("plugin-orphan-report");
+    env.apply(issue()).ok();
+    let cfg = fs::read_to_string(&env.config).unwrap();
+    fs::write(&env.config, cfg.split("[plugins.test]").next().unwrap()).unwrap();
+    env.reconcile()
+        .code(1)
+        .stdout_has("Issue")
+        .stdout_has("unregistered");
+}

@@ -8,7 +8,7 @@ use std::time::Duration;
 #[derive(Debug)]
 pub struct StdioPlugins {
     configs: BTreeMap<String, PluginConfig>,
-    failures: std::cell::RefCell<BTreeMap<String, u32>>,
+    failures: std::cell::RefCell<BTreeMap<(String, String), u32>>,
 }
 impl StdioPlugins {
     pub fn new(configs: BTreeMap<String, PluginConfig>) -> Self {
@@ -20,7 +20,11 @@ impl StdioPlugins {
 }
 impl Plugins for StdioPlugins {
     fn available(&self, plugin: &str) -> bool {
-        self.failures.borrow().get(plugin).copied().unwrap_or(0) < 3
+        !self
+            .failures
+            .borrow()
+            .iter()
+            .any(|((name, _), count)| name == plugin && *count >= 3)
     }
     fn operation_bound(&self) -> u64 {
         self.configs
@@ -38,7 +42,10 @@ impl Plugins for StdioPlugins {
     ) -> Result<Value, String> {
         let result = self.invoke(plugin, call, request, env);
         let mut failures = self.failures.borrow_mut();
-        let count = failures.entry(plugin.into()).or_default();
+        if call == "manifest" && result.is_ok() {
+            failures.retain(|(name, _), _| name != plugin);
+        }
+        let count = failures.entry((plugin.into(), call.into())).or_default();
         if result.is_ok() {
             *count = 0;
         } else {
@@ -98,6 +105,33 @@ impl StdioPlugins {
         let answer: Value = serde_json::from_str(&output).map_err(|_| "malformed plugin answer")?;
         if answer["id"] != request["id"] || answer["ok"] != true {
             return Err("plugin refused request or returned an unmatched id".into());
+        }
+        let payload_valid = match call {
+            "manifest" => {
+                serde_json::from_value::<fleet_api::plugin::Manifest>(answer["manifest"].clone())
+                    .is_ok()
+            }
+            "probes" => {
+                serde_json::from_value::<Vec<fleet_api::plugin::Probe>>(answer["probes"].clone())
+                    .is_ok()
+            }
+            "reconcile" => {
+                serde_json::from_value::<fleet_api::plugin::Plan>(answer["plan"].clone()).is_ok()
+            }
+            "observe" => {
+                (answer.get("known").is_some() && answer.get("unknown").is_none())
+                    || (answer.get("known").is_none() && answer["unknown"]["why"].is_string())
+            }
+            "perform" => answer["outcome"].as_object().is_some_and(|o| {
+                o.len() == 1
+                    && ["done", "failed", "unknown"]
+                        .iter()
+                        .any(|key| o.contains_key(*key))
+            }),
+            _ => false,
+        };
+        if !payload_valid {
+            return Err("malformed plugin payload".into());
         }
         Ok(answer)
     }

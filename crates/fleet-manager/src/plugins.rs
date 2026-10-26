@@ -27,11 +27,17 @@ pub fn register(
             .map_err(|_| StoreError::Invalid("malformed plugin manifest".into()))?;
         fleet_api::plugin::validate_manifest(&manifest, name)?;
         for kind in &manifest.kinds {
-            if !kinds.insert(kind.kind.to_ascii_lowercase()) {
+            if fleet_api::plugin::kind_aliases(&kind.kind)
+                .iter()
+                .any(|alias| kinds.contains(alias))
+            {
                 return Err(StoreError::Invalid(
                     "two plugins claim the same kind".into(),
                 ));
             }
+        }
+        for kind in &manifest.kinds {
+            kinds.extend(fleet_api::plugin::kind_aliases(&kind.kind));
         }
         registrations.push(Registration {
             manifest,
@@ -56,6 +62,32 @@ impl Manager<'_> {
         ttl: u64,
         report: &mut RunReport,
     ) -> Result<bool, StoreError> {
+        let registered = self
+            .plugins
+            .map(|(_, registrations)| registrations)
+            .unwrap_or(&[]);
+        for kind in self.store.served_kinds() {
+            if fleet_api::kinds::is_served(&kind)
+                || registered
+                    .iter()
+                    .any(|r| r.manifest.kinds.iter().any(|k| k.kind == kind))
+            {
+                continue;
+            }
+            match self.store.list(&kind) {
+                Observation::Known(objects) if !objects.is_empty() => {
+                    let message = format!(
+                        "{kind}: unregistered plugin; {} objects retained without reconciliation",
+                        objects.len()
+                    );
+                    if !report.errors.contains(&message) {
+                        report.errors.push(message);
+                    }
+                }
+                Observation::Unknown { why } => report.unknowns.push(why),
+                _ => {}
+            }
+        }
         let Some((port, registrations)) = self.plugins else {
             return Ok(false);
         };
@@ -384,14 +416,12 @@ impl Manager<'_> {
                 {
                     return Err(StoreError::Forbidden("ineligible declaration Task".into()));
                 }
-                let reference = match forge.parse(&declaration.change_request) {
-                    Observation::Known(r) => r,
-                    Observation::Unknown { why } => return Err(StoreError::Unknown(why)),
-                };
-                let name = crate::derived_name(&reference);
-                let manifest: Object=serde_json::from_value(json!({"apiVersion":fleet_api::API_VERSION,"kind":"ChangeRequest","metadata":{"name":name},"spec":{"url":declaration.change_request}})).map_err(|e|StoreError::Invalid(e.to_string()))?;
                 *lease = self.store.renew_lease(lease, ttl)?;
-                crate::apply_change_request(self.store, forge, manifest)?;
+                let (name, _) = crate::verbs::ensure_change_request(
+                    self.store,
+                    forge,
+                    &declaration.change_request,
+                )?;
                 self.store.plugin_mutate(Mutation::Declare{task:declaration.task,uid:declaration.uid,item:json!({"kind":"ChangeRequest","name":name,"url":declaration.change_request})},by.clone(),lease)
             })();
             verbs.push(verb_result(result)?);

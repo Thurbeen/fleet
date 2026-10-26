@@ -149,7 +149,7 @@ at most three, until the answer is empty:
 | `patches[]` | Spec fields to change on an existing object, named with its `uid` | Task: `dispatch` and `forge` only. Own kinds: nothing; a mirror's identity is its spec. The `uid` matches, and the Task is this plugin's under `tasks = "own"`. |
 | `appends[]` | Inbox entries for a Task, as `plugin/<name>` | Same store checks as `fleet send`; the key is `task/<task>/<uid>/plugin/<plugin>/<key>`, unique for the Task; the Task is within `tasks`. |
 | `declares[]` | `{task, uid, changeRequest: url}`, the `declare` verb on the Task's behalf | The verb's own preconditions: a brief receipt, not deleting; the Task is within `tasks`. |
-| `deletes[]` | Objects to delete, named with their `uid` | Own kinds, or a Task within `tasks`. Fenced on `uid`. |
+| `deletes[]` | Objects to delete, named with their `uid` | Own kinds, or a Task within `tasks`. Fenced on `uid`; retire the current controller object with `delete`, after effects. |
 | `effects[]` | `{key, request}` to perform through `perform`, with intent before and receipt after | At most eight; existing keys are retained and never repeated. |
 | `delete` | Retire this object, by `uid` and `resourceVersion` under the lease | Not deleting already. |
 | `removeFinalizer` | Let a deleting object go | The object is deleting and holds this plugin's finalizer. |

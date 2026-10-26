@@ -86,20 +86,33 @@ pub fn validate_manifest(manifest: &Manifest, name: &str) -> Result<(), StoreErr
         ));
     }
     let mut names = std::collections::BTreeSet::new();
+    for builtin in ["Task", "TaskConfig", "EnvProvider", "ChangeRequest"] {
+        for alias in kind_aliases(builtin) {
+            names.insert(alias);
+        }
+    }
     for kind in &manifest.kinds {
         if kind.poll_ms < 1000
             || kind.kind.len() > 64
             || !kind.kind.starts_with(|c: char| c.is_ascii_uppercase())
             || !kind.kind.chars().all(|c| c.is_ascii_alphanumeric())
-            || crate::kinds::is_served(&kind.kind)
-            || !names.insert(kind.kind.to_ascii_lowercase())
+            || kind_aliases(&kind.kind)
+                .iter()
+                .any(|alias| names.contains(alias))
         {
             return Err(StoreError::Invalid(
                 "invalid or duplicate plugin kind".into(),
             ));
         }
+        names.extend(kind_aliases(&kind.kind));
     }
     Ok(())
+}
+
+/// Every spelling the CLI accepts, including a simple plural.
+pub fn kind_aliases(kind: &str) -> [String; 2] {
+    let lower = kind.to_ascii_lowercase();
+    [lower.clone(), format!("{lower}s")]
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]

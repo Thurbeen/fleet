@@ -105,9 +105,11 @@ Task's own controller then releases its session as for any deletion.
 ## Unavailable plugins
 
 A plugin is unavailable when its `manifest` call failed at `fleet up`, which
-refuses to start, or when three consecutive calls of either half failed to
-produce an answer at all (a process that could not start, exited nonzero
-without an answer, or timed out). An unavailable plugin's objects keep their
+refuses to start, or when one call type fails three consecutive times to
+produce a valid answer (a process that could not start, exited nonzero
+without an answer, or timed out). Successful calls of another type do not reset
+that failure count. An
+unavailable plugin's objects keep their
 `notBefore` and are not reconciled; the manager reports it in run output and
 retries a manifest call once per
 sweep. `fleet list plugins` checks registration afresh in its own process. An

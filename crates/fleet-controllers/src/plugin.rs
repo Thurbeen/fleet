@@ -115,6 +115,11 @@ pub fn admit(
         target("Task", &declare.task, &declare.uid)?;
     }
     for delete in &plan.deletes {
+        if delete.kind == object.kind && delete.name == object.metadata.name {
+            return Err(refuse(
+                "deletes: use delete:true to retire the controller object after its effects",
+            ));
+        }
         target(&delete.kind, &delete.name, &delete.uid)?;
     }
     Ok(Admitted {

@@ -939,6 +939,13 @@ fn plugin(args: &[String]) -> ExitCode {
             .unwrap();
         writeln!(log, "{}", json!({"call":call,"input":req,"envNames":std::env::vars().map(|(k,_)|k).collect::<Vec<_>>()})).unwrap();
         if scenario["failCall"] == *call {
+            if scenario["failure"] == "exit" {
+                return ExitCode::FAILURE;
+            }
+            if scenario["failure"] == "malformed" {
+                println!("{}", json!({"id":req["id"],"ok":true,"plan":42}));
+                continue;
+            }
             if scenario["failure"] == "flood" {
                 std::io::stdout()
                     .write_all(&vec![b'x'; 9 * 1024 * 1024])

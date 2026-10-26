@@ -1,8 +1,10 @@
 # Fleet v2: the contracts of the Task core
 
 Fleet v2 runs agent sessions through Task resources and their controller. A
-Task is one agent session doing one brief. This file says what each part guarantees
-and which tests hold it to that. The [overall architecture](../docs/ARCHITECTURE.md)
+Task is one agent session doing one brief. This file says what each part
+guarantees
+and which tests hold it to that. The [overall
+architecture](../docs/ARCHITECTURE.md)
 explains the component boundaries. The
 [Task controller guide](../docs/controllers/task/README.md) defines the
 resource fields, state machine and controller interface.
@@ -19,8 +21,10 @@ v1's queue records, extension or operator configuration, and the root
 | `TaskConfig` | reusable execution defaults | nobody (passive data) |
 | `EnvProvider` | stored data and explicit file/command environment sources | nobody (passive data) |
 | `ChangeRequest` | one mirrored change on a forge | ChangeRequestController |
+| Plugin-defined | a registered external controller’s resource | `plugin/<name>`, including reserved host bookkeeping |
 
-Unrecognized kinds are refused on write as `unknown kind "X"`. A Task spec
+Kinds not built in or registered by a plugin are refused on write as `unknown
+kind "X"`. A Task spec
 accepts the fields below (`deny_unknown_fields`), and no object may carry
 `ownerReferences`.
 
@@ -53,7 +57,8 @@ fleet-runtime      adapter        thurbox-cli, fake      -> api, exec
 fleet-forge        adapter        gh, glab, fake         -> api, exec
 fleet-plugin       adapter        bounded plugin stdio   -> api, exec
 fleet-manager      orchestration  lease, plans, verbs    -> api, controllers
-fleet-cli          edge           the `fleet` binary     -> api, manager, store, runtime, forge, plugin
+fleet-cli          edge           the `fleet` binary     -> api, manager, store,
+runtime, forge, plugin
 fleet-arch         tooling        the architecture test
 fleet-dev          tooling        `cargo xtask`: gate and release
 ```
@@ -71,6 +76,7 @@ fleet-dev          tooling        `cargo xtask`: gate and release
 - Only the crates listed may name a status-writing field manager: only
   fleet-controllers names `FieldManager::TaskController`,
   `FieldManager::ChangeRequestController` and `FieldManager::ForgeController`,
+  only fleet-api and fleet-controllers name `FieldManager::Plugin`;
   only fleet-manager's `result` and `declare` verbs name `FieldManager::Worker`,
   and only fleet-manager's `send` verb (and the store that checks it) names
   `FieldManager::Cli`, the caller of the inbox append.
@@ -270,8 +276,10 @@ Conditions, under `status.forge.conditions`: `Following`, `Settled`,
 ```text
 spec.url             the change's URL, the only forge-specific input
 spec.pollMs          poll interval while Watching (default 60000)
-spec.closedGraceMs   how long a closed change stays watched (default forge.closedGraceMs)
-spec.settledTtlMs    how long a settled mirror is retained (default forge.settledTtlMs)
+spec.closedGraceMs   how long a closed change stays watched (default
+forge.closedGraceMs)
+spec.settledTtlMs    how long a settled mirror is retained (default
+forge.settledTtlMs)
 ```
 
 The spec is fixed once created. `fleet apply` parses the URL through the
@@ -407,7 +415,8 @@ Credentials stay with each CLI's own login; Fleet passes none and stores none.
 
 ## The command line
 
-`fleet init|up|apply|get|list|status|send|declare|result|delete|reconcile|version`.
+`fleet
+init|up|apply|get|list|status|send|declare|result|delete|reconcile|version`.
 Exit codes:
 0 ok, 1 refused, 2 usage, 3 not found, 4 Unknown, 5 conflict, 6 lease.
 `apply`, `get`, `list`, `status` and `delete` take `changerequest` as well as
@@ -441,7 +450,8 @@ keyPrefix = "fleet"       # give a second fleet on the same hosts its own
 [forge.hosts]
 "github.com" = { kind = "github", cli = "gh" }
 
-[forge.readyPolicies.checks]   # selected by spec.forge.draft.policy or forge.draftPolicy
+[forge.readyPolicies.checks]   # selected by spec.forge.draft.policy or
+forge.draftPolicy
 checksPassed = true
 ```
 

@@ -1155,9 +1155,13 @@ impl FileStore {
                 &registration.manifest.name,
             )?;
             for kind in &registration.manifest.kinds {
-                if !seen.insert(kind.kind.to_ascii_lowercase()) {
+                if fleet_api::plugin::kind_aliases(&kind.kind)
+                    .iter()
+                    .any(|alias| seen.contains(alias))
+                {
                     return Err(StoreError::Invalid("duplicate plugin kind".into()));
                 }
+                seen.extend(fleet_api::plugin::kind_aliases(&kind.kind));
                 jsonschema::validator_for(&kind.spec)
                     .map_err(|_| StoreError::Invalid("invalid spec schema".into()))?;
                 if let Some(status) = &kind.status {

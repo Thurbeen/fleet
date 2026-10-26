@@ -281,7 +281,15 @@ fn run(cli: Cli) -> Result<(), Failure> {
         }
     }
     let plugins = fleet_plugin::StdioPlugins::new(config.plugins.clone());
-    let registrations = fleet_manager::plugins::register(&plugins, &config.plugins)?;
+    let registrations = if matches!(
+        cli.command,
+        Command::Up { .. } | Command::Reconcile { .. } | Command::Apply { .. }
+    ) || matches!(&cli.command,Command::List{kind,..} if kind=="plugins")
+    {
+        fleet_manager::plugins::register(&plugins, &config.plugins)?
+    } else {
+        Vec::new()
+    };
     if let Command::List { kind, json } = &cli.command
         && kind == "plugins"
     {
