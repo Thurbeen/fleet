@@ -90,8 +90,10 @@ mirrors one change on a forge in the same shape, and the
 [Forge controller](docs/controllers/forge/README.md) follows the changes a
 worker declares, relays their feedback into its inbox and takes a draft
 change out of draft under a configured ready policy.
-The [Plugin controller](docs/controllers/plugin/README.md), a host for
-controllers written as scripts with their own kinds, is designed and not
+The [Plugin controller](docs/controllers/plugin/README.md) hosts
+controllers written as scripts with their own kinds.
+The [Gateway controller](docs/controllers/gateway/README.md), which would tie
+chat threads to Tasks with Slack as the first platform, is a design and not
 implemented.
 V2 is a standalone binary; existing Python deployments stay on frozen v1.
 The root `FLEET_MAJOR` file says `2`; a v1 checkout containing the freeze

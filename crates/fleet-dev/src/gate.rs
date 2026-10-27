@@ -94,20 +94,41 @@ fn docs() -> Result {
             );
         }
     }
-    if tracked
-        .iter()
-        .any(|file| file == "docs/controllers/plugin/README.md")
-        && tracked.iter().any(|file| file == "docs/architecture.svg")
-    {
+    // Every controller guide appears in the diagram as <Name>Controller; one
+    // marked as design appears as "planned <Name>Controller", and only then.
+    if tracked.iter().any(|file| file == "docs/architecture.svg") {
         let architecture = fs::read_to_string("docs/architecture.svg")?;
-        let guide = fs::read_to_string("docs/controllers/plugin/README.md")?;
-        let planned = guide.contains("Design, not implemented");
-        if !architecture.contains("PluginController") || architecture.contains("planned") != planned
-        {
-            return Err(
-                "docs/architecture.svg: show PluginController with the implementation status described by the controller guide"
-                    .into(),
-            );
+        let mut guides = tracked
+            .iter()
+            .filter_map(|file| {
+                file.strip_prefix("docs/controllers/")?
+                    .strip_suffix("/README.md")
+                    .filter(|name| !name.contains('/'))
+                    .map(|name| (file, name))
+            })
+            .collect::<Vec<_>>();
+        guides.sort();
+        for (guide, name) in guides {
+            let controller = name
+                .split('-')
+                .map(|word| {
+                    let mut chars = word.chars();
+                    chars
+                        .next()
+                        .map(|first| first.to_uppercase().chain(chars).collect::<String>())
+                        .unwrap_or_default()
+                })
+                .collect::<String>()
+                + "Controller";
+            let planned = fs::read_to_string(guide)?.contains("Design, not implemented");
+            if !architecture.contains(&controller)
+                || architecture.contains(&format!("planned {controller}")) != planned
+            {
+                return Err(format!(
+                    "docs/architecture.svg: show {controller} with the implementation status described by the controller guide"
+                )
+                .into());
+            }
         }
     }
     for file in tracked.iter().filter(|p| p.ends_with(".md")) {
