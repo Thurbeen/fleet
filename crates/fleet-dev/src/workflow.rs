@@ -153,6 +153,86 @@ fn shell_checks(name: &str, doc: &Value, errors: &mut Vec<String>) -> Result {
     }
     Ok(())
 }
+/// The SignPath settings a maintainer stores in the repository. The token is a
+/// secret; the ids may be variables or secrets, never literals in the workflow.
+const SIGNPATH: &[(&str, &str)] = &[
+    ("api-token", "SIGNPATH_API_TOKEN"),
+    ("organization-id", "SIGNPATH_ORGANIZATION_ID"),
+    ("project-slug", "SIGNPATH_PROJECT_SLUG"),
+    ("signing-policy-slug", "SIGNPATH_SIGNING_POLICY_SLUG"),
+];
+const SIGNPATH_GATE: &str = "steps.signpath.outputs.enabled == 'true'";
+/// A Windows release signs fleet.exe before packaging, so checksums and the
+/// provenance attestation cover the signed bytes, and verifies the packaged
+/// signature. Both run only when the `signpath` step finds every setting on a
+/// publishing run, so releases stay unsigned and green until the project is
+/// approved, and dry runs never ask an approver.
+fn signing(build: &Value, errors: &mut Vec<String>) {
+    let all = steps(build).collect::<Vec<_>>();
+    let gated = |s: &Value| {
+        s["if"]
+            .as_str()
+            .is_some_and(|c| c == SIGNPATH_GATE || c == format!("${{{{ {SIGNPATH_GATE} }}}}"))
+    };
+    let package = all.iter().position(|s| {
+        s["run"]
+            .as_str()
+            .is_some_and(|r| r.contains("release package"))
+    });
+    let Some(sign) = all.iter().position(|s| {
+        s["uses"].as_str().is_some_and(|u| {
+            u.to_ascii_lowercase()
+                .starts_with("signpath/github-action-submit-signing-request@")
+        })
+    }) else {
+        errors.push("Windows release has no SignPath signing step".into());
+        return;
+    };
+    if !gated(all[sign]) {
+        errors.push(format!("SignPath signing must be gated on {SIGNPATH_GATE}"));
+    }
+    let config = all.iter().find(|s| s["id"] == "signpath");
+    if !config.is_some_and(|s| {
+        s["env"]["PUBLISH"] == "${{ needs.plan.outputs.publish }}"
+            && s["run"].as_str().is_some_and(|r| r.contains("$PUBLISH"))
+    }) {
+        errors.push("the signpath gate step must sign only when PUBLISH is set by the plan".into());
+    }
+    for (input, name) in SIGNPATH {
+        let secret = format!("${{{{ secrets.{name} }}}}");
+        let var = format!("${{{{ vars.{name} }}}}");
+        let from_settings = |v: &Value| v == &secret || (*input != "api-token" && v == &var);
+        if !from_settings(&all[sign]["with"][input]) {
+            errors.push(format!(
+                "SignPath {input} must come from the repository setting {name}"
+            ));
+        }
+        if !config.is_some_and(|s| from_settings(&s["env"][name])) {
+            errors.push(format!("the signpath gate step must check {name}"));
+        }
+    }
+    if package.is_none_or(|p| p < sign) {
+        errors.push("release must sign before packaging".into());
+    } else if !all[sign..package.unwrap_or(sign)].iter().any(|s| {
+        gated(s)
+            && s["run"]
+                .as_str()
+                .is_some_and(|r| r.contains("signed/fleet.exe"))
+    }) {
+        errors.push("release must package signed/fleet.exe from SignPath".into());
+    }
+    if !all.iter().enumerate().any(|(i, s)| {
+        package.is_some_and(|p| i > p)
+            && gated(s)
+            && s["run"]
+                .as_str()
+                .is_some_and(|r| r.contains("Get-AuthenticodeSignature"))
+    }) {
+        errors.push(format!(
+            "a signed release must verify Get-AuthenticodeSignature after packaging, gated on {SIGNPATH_GATE}"
+        ));
+    }
+}
 pub fn check() -> Result {
     let root = Path::new(".github/workflows");
     let ci = yaml(&root.join("ci.yml"))?;
@@ -291,6 +371,9 @@ pub fn check() -> Result {
             }
             if !packaged {
                 errors.push("release has no packaging step".into());
+            }
+            if runners(build)?.iter().any(|r| r.contains("windows")) {
+                signing(build, &mut errors);
             }
         }
         if name == "pr-title.yml" {

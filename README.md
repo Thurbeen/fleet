@@ -20,7 +20,9 @@ only the executable. Follow their PATH guidance. Run `fleet init` separately
 for offline setup, then `fleet up` when Thurbox and the harness are ready.
 [Release assets](https://github.com/Thurbeen/fleet/releases/tag/v2.1.0) include
 checksums, pinned installers, VEGA manifest/provenance and GitHub build
-attestations. macOS has no binary release.
+attestations. macOS has no binary release. The Windows executable is signed
+under the [code signing policy](docs/CODE_SIGNING.md) once SignPath Foundation
+approves the project.
 
 ## Frozen Python v1.0.0
 
