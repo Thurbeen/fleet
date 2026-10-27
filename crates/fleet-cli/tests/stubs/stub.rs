@@ -1439,7 +1439,7 @@ fn plugin(args: &[String]) -> ExitCode {
 /// The Slack role of `curl`: the Web API behind the Slack gateway adapter,
 /// from the model under `slack` in the state: `{team, botUser, botId,
 /// botName, clock, pageSize, messages: {"<channel>": [message, …]},
-/// tombstones: [ts, …], postError, posts, calls}`. Each message is in
+/// tombstones: [ts, …], postError, postErrorAfter, posts, calls}`. Each message is in
 /// Slack's own shape (`ts`, `user` or `bot_id`, `text`, `thread_ts`,
 /// `metadata`, `subtype`). `conversations.replies` answers a thread's
 /// messages oldest first, paged by `pageSize` or the call's `limit`, with
@@ -1665,6 +1665,11 @@ mod slack {
                 "metadata": body["metadata"], "mrkdwn": body["mrkdwn"],
             }));
         save(state);
+        // `postErrorAfter`: the post landed, and Slack answers an error
+        // anyway, as its `internal_error` and `fatal_error` may.
+        if let Some(error) = state["slack"]["postErrorAfter"].as_str() {
+            return ok_false(error);
+        }
         answer(
             HEAD,
             &json!({"ok": true, "channel": channel, "ts": ts, "message": message}),

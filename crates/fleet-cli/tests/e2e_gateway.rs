@@ -1061,7 +1061,12 @@ fn a_slack_account_is_served_by_curl_and_refused_without_what_curl_needs() {
         .code(1)
         .stderr_has("accounts.fake-main: a slack account needs a curlConfig");
     // Without `cli`, `curl` is found on PATH: the stub, since that is all
-    // the children's PATH holds.
+    // the children's PATH holds. Not on Windows, where process creation
+    // searches the system directories before PATH and finds the system's
+    // own curl.exe, which a test must not run.
+    if cfg!(windows) {
+        return;
+    }
     let without_cli = base.replace(&format!("cli = '{}'\n", curl.to_string_lossy()), "");
     assert_ne!(without_cli, base);
     env.set_gateway(&without_cli);
@@ -1155,7 +1160,7 @@ fn slack_calls(env: &Env) -> Vec<Value> {
 fn the_slack_adapter_reads_identity_capabilities_and_a_thread_through_the_stub_curl() {
     let (env, curl, curl_config) = slack_env("slack-reads");
     seed_slack(&env);
-    let g = slack_adapter(&curl, &curl_config, Duration::from_secs(3));
+    let g = slack_adapter(&curl, &curl_config, Duration::from_secs(30));
     assert_eq!(
         g.whoami(GATEWAY_ACCOUNT),
         Observation::Known(Identity {
@@ -1282,7 +1287,7 @@ fn the_slack_adapter_reads_identity_capabilities_and_a_thread_through_the_stub_c
 fn the_slack_adapter_opens_and_posts_keyed_mrkdwn_through_the_stub_curl() {
     let (env, curl, curl_config) = slack_env("slack-writes");
     seed_slack(&env);
-    let g = slack_adapter(&curl, &curl_config, Duration::from_secs(3));
+    let g = slack_adapter(&curl, &curl_config, Duration::from_secs(30));
     let channel = thread(PARENT_TS).channel();
     let opened = g.open(
         GATEWAY_ACCOUNT,
@@ -1427,9 +1432,30 @@ fn the_slack_adapter_opens_and_posts_keyed_mrkdwn_through_the_stub_curl() {
 fn the_slack_adapters_unknowns_carry_slacks_reasons() {
     let (env, curl, curl_config) = slack_env("slack-faults");
     seed_slack(&env);
-    let g = slack_adapter(&curl, &curl_config, Duration::from_secs(2));
+    // A bound a loaded test host never reaches, and a short one for the
+    // two cases that need the stub to run past it.
+    let g = slack_adapter(&curl, &curl_config, Duration::from_secs(30));
+    let quick = slack_adapter(&curl, &curl_config, Duration::from_secs(2));
     let t = thread(PARENT_TS);
     let since = HistoryQuery::Since { at: 0 };
+    // `internal_error` and `fatal_error` are the two `ok: false` answers
+    // Slack documents as "some aspect of the operation may have succeeded":
+    // the stub lands the post and then answers so. The write is Unknown,
+    // never a Known failure that step 4 would retry under the same key.
+    for error in ["internal_error", "fatal_error"] {
+        env.edit_stub(|s| s["slack"]["postErrorAfter"] = json!(error));
+        let landed = slack_posts(&env).len();
+        assert!(matches!(
+            g.post(GATEWAY_ACCOUNT, &t, "x", &format!("k-{error}")),
+            Observation::Unknown { why } if why.contains(error) && why.contains("may have")
+        ));
+        assert_eq!(
+            slack_posts(&env).len(),
+            landed + 1,
+            "the post landed under {error}"
+        );
+    }
+    env.edit_stub(|s| s["slack"]["postErrorAfter"] = Value::Null);
     env.edit_stub(|s| s["retryAfter"] = json!(45));
     env.stub_fault("curl", "rate-limit", 1);
     assert!(matches!(
@@ -1470,17 +1496,11 @@ fn the_slack_adapters_unknowns_carry_slacks_reasons() {
         g.capabilities(GATEWAY_ACCOUNT),
         Observation::Unknown { why } if why.contains("curl exited 1")
     ));
-    env.stub_fault("curl", "hang", 1);
-    assert!(matches!(
-        g.history(GATEWAY_ACCOUNT, &t, &since),
-        HistoryObservation::Unknown {
-            kind: Uncertainty::Timeout,
-            ..
-        }
-    ));
-    env.stub_fault("curl", "hang", 1);
-    assert!(g.post(GATEWAY_ACCOUNT, &t, "x", "k3").is_unknown());
-    assert!(slack_posts(&env).is_empty(), "no fault let a post land");
+    assert_eq!(
+        slack_posts(&env).len(),
+        2,
+        "no fault but Slack's two maybe-performed errors let a post land"
+    );
     // A split post refused after its first chunk landed is Unknown, naming
     // what landed, for a recovery read to settle.
     env.stub_fault_after("curl", "auth", 1, 1);
@@ -1489,7 +1509,7 @@ fn the_slack_adapters_unknowns_carry_slacks_reasons() {
         g.post(GATEWAY_ACCOUNT, &t, &long, "k4"),
         Observation::Unknown { why } if why.contains("1 of 2 posts landed under k4")
     ));
-    assert_eq!(slack_posts(&env).len(), 1);
+    assert_eq!(slack_posts(&env).len(), 3);
     // A curl that cannot start: nothing was sent, so a write is a Known
     // refusal and a read is Unavailable.
     let missing = slack_adapter(
@@ -1509,4 +1529,22 @@ fn the_slack_adapters_unknowns_carry_slacks_reasons() {
         }
     ));
     assert!(missing.whoami(GATEWAY_ACCOUNT).is_unknown());
+    // A call past its bound is a timeout. Last, because the stub takes its
+    // fault only once it runs, and a loaded host can see it killed first,
+    // leaving the fault armed for whatever call comes next.
+    env.stub_fault("curl", "hang", 1);
+    assert!(matches!(
+        quick.history(GATEWAY_ACCOUNT, &t, &since),
+        HistoryObservation::Unknown {
+            kind: Uncertainty::Timeout,
+            ..
+        }
+    ));
+    env.stub_fault("curl", "hang", 1);
+    assert!(quick.post(GATEWAY_ACCOUNT, &t, "x", "k3").is_unknown());
+    assert_eq!(
+        slack_posts(&env).len(),
+        3,
+        "a timed-out post landed nothing"
+    );
 }

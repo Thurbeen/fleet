@@ -879,9 +879,11 @@ pub enum CallError {
     /// done, and `retry_after` is its `Retry-After` in milliseconds.
     Throttled { retry_after: Option<Millis> },
     /// Slack answered `ok: false` with this error: the request was not
-    /// performed.
+    /// performed. Not `internal_error` or `fatal_error`, which Slack
+    /// documents as possibly performed in part: those are `Unreadable`.
     Refused(String),
-    /// No readable answer: the request may or may not have been performed.
+    /// No answer that tells whether the request was performed: an
+    /// unreadable body, or Slack's `internal_error`/`fatal_error`.
     Unreadable(String),
     /// The call ran past its bound and its process tree was killed.
     Timeout(String),
@@ -1029,6 +1031,13 @@ impl Reply {
             });
         }
         if v["ok"] == false {
+            // Slack documents these two as "some aspect of the operation
+            // may have succeeded": the request may have been performed.
+            if matches!(error, "internal_error" | "fatal_error") {
+                return Err(CallError::Unreadable(format!(
+                    "{method}: {error}; Slack says some aspect of the operation may have succeeded"
+                )));
+            }
             return Err(CallError::Refused(format!("{method}: {error}")));
         }
         Err(CallError::Unreadable(format!(
@@ -1777,6 +1786,19 @@ mod tests {
             Err(CallError::Refused("auth.test: invalid_auth".into()))
         );
         assert!(CallError::Refused(String::new()).certain_failure());
+        for error in ["internal_error", "fatal_error"] {
+            let r = Reply::parse(
+                &format!("HTTP/2 200 \r\n\r\n{{\"ok\":false,\"error\":\"{error}\"}}"),
+                Some(0),
+                b"",
+            );
+            let e = r.answer("chat.postMessage").unwrap_err();
+            assert!(
+                matches!(&e, CallError::Unreadable(w) if w.contains(error) && w.contains("may have")),
+                "{e:?}"
+            );
+            assert!(!e.certain_failure());
+        }
         let r = Reply::parse("HTTP/2 200 \r\n\r\n<html>not json", Some(0), b"");
         assert!(matches!(r.answer("x"), Err(CallError::Unreadable(w)) if w.contains("HTTP 200")));
         let r = Reply::parse("", Some(7), b"curl: (7) Failed to connect\n");
