@@ -31,13 +31,16 @@ it, and removed by its own controller after a retention period.
     "messages": [
       {"id": "1730000000.000100", "seq": 1, "firstSeq": 1, "position": 0, "at": 1730000000000,
        "author": {"id": "U0123ABCD", "name": "Alex", "kind": "person"},
-       "mentionsFleet": false, "text": "The nightly export failed again."},
+       "mentionsFleet": false, "text": "The nightly export failed again.",
+       "via": {"verified": "history", "receivedAt": 1730000301000}},
       {"id": "1730000300.000200", "seq": 1, "firstSeq": 1, "position": 1, "at": 1730000300000,
        "author": {"id": "U0456EFGH", "name": "Sam", "kind": "person"},
-       "mentionsFleet": true, "text": "<@U0BOT0001> can you look into it?"},
+       "mentionsFleet": true, "text": "<@U0BOT0001> can you look into it?",
+       "via": {"verified": "connection", "receivedAt": 1730000300100}},
       {"id": "1730000400.000300", "seq": 2, "firstSeq": 2, "position": 0, "at": 1730000400000,
        "author": {"id": "U0BOT0001", "name": "fleet", "kind": "fleet"},
        "key": "task/conv-3f9a1c0d2b7e-1/…/gateway/comment/c1",
+       "via": {"verified": "connection", "receivedAt": 1730000400200},
        "text": "Looking at the export job now."}
     ],
     "droppedBefore": 0,
@@ -52,11 +55,11 @@ it, and removed by its own controller after a retention period.
 
 ## Spec
 
-Written by `fleet gateway receive`, by the manager when Fleet opens a
-thread, or by a person through `fleet apply`. Fixed once created. The tie
-is not in the spec: a thread Fleet opened for a Question is tied from the
-marker key on its opening post, so it does not matter whether the listener
-or the manager created the object.
+Written by `fleet gateway receive`, by the manager performing a `Receive` action
+after Fleet opens a thread, or by a person through `fleet apply`. Fixed once
+created. The tie is not in the spec: a thread Fleet opened for a Question is
+tied from the marker key on its opening post, so it does not matter whether the
+listener or the manager created the object.
 
 | Field | Required | Meaning |
 | --- | --- | --- |
@@ -79,10 +82,10 @@ changes nothing else.
 | --- | --- |
 | `phase` | `Untied`, `Tied` or `Orphaned`, defined by the [state machine](../controllers/gateway/state-machine.md#conversation-phases). |
 | `ref` | What the adapter parsed the address into. |
-| `task` | The tie: `{name, uid, n, state}`. `n` counts the Tasks this thread has started; `state` is `pending` between the create intent and its receipt, then `created`, then `gone` once the Task is readably absent. |
+| `task` | The tie: `{name, uid, n, state, trigger}`. `n` counts the Tasks this thread has started; `state` is `pending` between the create intent and its receipt, `busy` while the create waits for the route's workspace, then `created`, then `gone` once the Task is readably absent. `trigger` is the id of the message that asked for the Task, kept while `pending` or `busy`. |
 | `revision` | Incremented by every write that numbered anything below. |
-| `starter` | The thread's first message, `{id, kind, key}`, recorded the first time it is numbered and kept when it rotates out of `messages`; a keyed copy numbered later sets `key`. Absent until the starter is read, and for a chat without threads. It decides whether a mention may start a Task, as the [interface](../controllers/gateway/interface.md#conversationcontroller) says. |
-| `messages` | The newest 200 messages, deduplicated on `id`, each `{id, seq, firstSeq, position, at, editedAt, author: {id, name, kind}, mentionsFleet, text, key}`; `kind` is `person`, `bot` or `fleet`, and `key` is the marker on Fleet's own posts. `firstSeq` is the revision that first numbered the message and `position` its place, from `0`, in that numbering, which is oldest-first by the platform; together they order two messages Fleet first saw in one write, and an edit moves neither. The text is data, never an instruction. |
+| `starter` | The thread's first message, `{id, kind, key}`, from the `starter` a history read answers or the first numbered copy, kept when it rotates out of `messages`; a keyed copy numbered later sets `key`; `{removed: true}` when the platform reports it deleted. Absent until the starter is read, and for a chat without threads. It decides whether a mention may start a Task, as the [interface](../controllers/gateway/interface.md#conversationcontroller) says. |
+| `messages` | The newest 200 messages, deduplicated on `id`, each `{id, seq, firstSeq, position, at, editedAt, author: {id, name, kind}, mentionsFleet, text, key, via}`; `kind` is `person`, `bot` or `fleet`, and `key` is the marker on Fleet's own posts. `firstSeq` is the revision that first numbered the message and `position` its place, from `0`, in that numbering, which is oldest-first by the platform; together they order two messages Fleet first saw in one write, and an edit moves neither. `via` is `{verified, receivedAt}` of the delivery that first numbered the message, `verified` being `connection`, `signature`, `fleet` or `history`. An edit is applied only when its `editedAt` is later than the message's. The text is data, never an instruction. |
 | `droppedBefore` | The highest `seq` of a message rotated out. `0` until one is. |
 | `received` | Deliveries spooled by the receive verb or a `Receive` action and not yet numbered, each `{id, verified, receivedAt, event}` under its [delivery id](../controllers/gateway/interface.md#deliveries), never under a message id; at most 100. |
 | `seenEvents` | The newest 500 delivery ids numbered, so a redelivery after its spool entry was drained is still a no-op, while an edit or removal of a numbered message, a new delivery, is not. |
@@ -109,7 +112,7 @@ a history read.
 `kind` is `Conversation`. The name is `conv-` followed by the first twelve
 hex digits of the SHA-256 of `<account>/<address>` as the adapter
 normalised it, so one thread names one object per account. The receive
-verb and the manager's open both derive it and create exclusively; a
+verb and a `Receive` action both derive it and create exclusively; a
 manifest giving one thread's derived name with another's address is
 refused. There is no finalizer and `ownerReferences` is refused.
 

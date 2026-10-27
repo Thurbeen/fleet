@@ -37,7 +37,8 @@ mapped on paper to check the model.
    mentioning Fleet's bot, in a new thread or partway through an old one.
 2. The platform delivers the event to a listener, a resident process outside
    the manager that holds the platform's connection. The listener hands the
-   raw payload to `fleet gateway receive`, a bounded manager verb. The verb
+   raw payload, in an envelope saying how it authenticated it, to
+   `fleet gateway receive`, a bounded manager verb. The verb
    asks the adapter to read the payload into a platform-neutral event. An
    event for a thread Fleet already mirrors, or one that could start a Task
    or earn a refusal, is appended to the spool of that thread's
@@ -89,10 +90,10 @@ mapped on paper to check the model.
    `Open` intent under `task/<name>/<uid>/gateway/question/q1`.
 3. The manager opens a new thread in that route's question channel with the
    Question as its first post, carrying the key as its marker, and writes
-   the receipt. The same write records a second keyed step, `Receive`,
-   which the manager performs against the store: it ensures the
-   Conversation for the new thread and spools that first post, as the
-   receive verb would. Whichever of the two creates the Conversation,
+   the receipt. On its next pass GatewayController plans a second keyed
+   step, `Receive`, which the manager performs against the store: it
+   ensures the Conversation for the new thread and spools that first post,
+   as the receive verb would. Whichever of the two creates the Conversation,
    ConversationController ties the thread to the Task the marker key names.
 4. Replies in that thread are relayed to the Task's inbox. The first
    allowlisted reply written after the Question's own post records it as answered
@@ -141,8 +142,8 @@ ChangeRequests and child Tasks by name or label. Two writes reach a
 Conversation from outside its controller, both through the one typed spool
 append and neither touching its status otherwise: the receive verb, and the
 manager performing a `Receive` action, which records the post Fleet just
-made. A Listener's `beat` is the listener's, written only by the receive
-verb's `--beat`; the rest of it is ListenerController's.
+made. A Listener's beats and refusals are the listener's, written only by
+the receive verb; the rest of it is ListenerController's.
 `status.answered`, like `status.inbox`, has no single owner: it is written
 only by the typed inbox append that carries the answer, first writer wins.
 Posting is the only effect either controller performs.
@@ -195,19 +196,18 @@ The options:
 | (b) `fleet up` holds the connection | One resident process already exists | The manager gains a network service and a WebSocket stack; a listener stall shares fate with reconciliation; `fleet reconcile` alone can never receive |
 | (c) A separate listener hands events to a manager verb | The manager stays bounded; the verb is one store write, like `fleet send`; the listener holds nothing durable | One more resident process for the operator to run |
 
-Recommendation: **(c)**, for every platform. The listener is transport
-only: it holds the connection or the endpoint, authenticates the platform
-(the Socket Mode token, a webhook's signature or JWT), and pipes each raw
-payload into `fleet gateway receive --account NAME`. The verb runs the
-adapter's pure `event` reading, so platform parsing stays in
-`fleet-gateway` with its truth tables; it refuses a duplicate delivery id, so
-a platform's at-least-once redelivery is harmless; and the listener
-acknowledges only after the verb exits zero. A listener crash loses only
-unacknowledged events, which the platform redelivers or, for tied threads,
-the history backstop recovers. Telegram's listener is a loop of bounded
-`getUpdates` calls that confirms an offset only after the verb succeeds; a
-later step may run that loop inside `fleet up` as option (a), since it
-needs no connection.
+Recommendation: **(c)**, for every platform. The listener is transport only: it
+holds the connection or the endpoint, authenticates the platform (the Socket
+Mode token, a webhook's signature or JWT), and pipes each raw payload, in its
+envelope, into `fleet gateway receive --account NAME`. The verb runs the
+adapter's pure `event` reading, so platform parsing stays in `fleet-gateway`
+with its truth tables; it refuses a duplicate delivery id, so a platform's
+at-least-once redelivery is harmless; and the listener acknowledges only after
+the verb exits zero. A listener crash loses only unacknowledged events, which
+the platform redelivers or, for tied threads, the history backstop recovers.
+Telegram's listener is a loop of bounded `getUpdates` calls that confirms an
+offset only after the verb succeeds; a later step may run that loop inside
+`fleet up` as option (a), since it needs no connection.
 
 A listener is not part of Fleet's runtime, and `fleet-gateway` stays an
 adapter of bounded calls through `fleet-exec`, with no WebSocket client and
@@ -243,7 +243,7 @@ receive verb a listener calls, and the Listener that reports its health.
 
 Out of scope, deliberately: merging, as for the Forge controller; suspending
 and resuming idle sessions; Notion, which is a plugin's; any judgement about
-a message's worth, an intake model, a planner or a heartbeat; implementing
+a message's worth, an intake model, a planner or a nudging heartbeat; implementing
 the Telegram, Discord or Teams adapters, which are mapped in
 [adapters](adapters.md) only to check the model; reactions, files, edits by
 Fleet of its own posts and interactive components; the listener programs themselves.

@@ -42,7 +42,7 @@ Unknown; a refused write is `Known(EffectOutcome::Failed { why })`.
 | `event` | An account's configuration, including Fleet's bot id on it (`gateway.accounts.<name>.bot`), and a [delivery envelope](#deliveries) as the listener wrote it | `Known(Some(Delivery))`, `Known(None)` for a payload the gateway ignores (a reaction, a presence change), or Unknown when it cannot be read. Pure: everything it needs, the bot id that tells `fleet` authors and mentions apart included, arrives as values, so the receive verb runs it without the lease. |
 | `whoami` | An account | Fleet's bot identity as the platform reports it. ListenerController compares it with the configured `bot` and holds the account's `Resolved` False with `IdentityMismatch` when they differ, rather than trusting either silently. |
 | `capabilities` | An account | What the platform gives Fleet there, as values: `history` (bool), `marker` (`metadata`, `nonce { windowMs }` or `none`), `unmentioned` (whether messages that do not mention the bot are delivered), `threads` (whether the platform has threads in that kind of chat). Unknown when it cannot be told. The [adapters](adapters.md#what-the-platforms-changed) say why each exists. |
-| `history` | A `ConversationRef` (a thread, or a channel for a top-level read), an optional `after` message id or `since` time, a `limit` | The messages after `after`, or written at or after `since`, oldest first. A read with `after` returns at most `limit`, the newest ones when more exist, with a count of those left out. A read with `since`, which recovery uses, is complete only when it left nothing out: it pages oldest-first from `since` within the call bound, and answers Unknown (`Incomplete`) rather than a window when it cannot read everything, so a missing key in a Known answer always means the post is absent. Otherwise Unknown with `retryAfter`; `Unsupported` where the platform has no history for bots. Fleet's own posts carry their marker key when the platform keeps one. The first read of a thread asks for the newest 200; older messages are recorded as `droppedBefore`, never mirrored. |
+| `history` | A `ConversationRef` (a thread, or a channel for a top-level read), an optional `after` message id or `since` time, a `limit` | The messages after `after`, or written at or after `since`, oldest first. A read with `after` returns at most `limit`, the newest ones when more exist, with a count of those left out. A read with `since`, which recovery uses, is complete only when it left nothing out: it pages oldest-first from `since` within the call bound, and answers Unknown (`Incomplete`) rather than a window when it cannot read everything, so a missing key in a Known answer always means the post is absent. Otherwise Unknown with `retryAfter`; `Unsupported` where the platform has no history for bots. Fleet's own posts carry their marker key when the platform keeps one. The first read of a thread asks for the newest 200; older messages are recorded as `droppedBefore`, never mirrored. A read of a thread also answers `starter`: the thread's first message, read with its own call when the window does not reach it (Slack's parent, Discord's starter message), or `removed` when the platform reports it deleted. |
 | `open` | A channel `ConversationRef`, rendered text, an intent key | `Opened { conversation, message, at }`: a new thread whose first post is the text, carrying the key as its marker. Failed when refused; Unknown when the answer was lost. Where opening takes two platform calls, the adapter keys both from the one intent key and finishes a half-done open on a retry. |
 | `post` | A `ConversationRef`, rendered text, an intent key | `Posted { message, at }`, carrying the key as its marker; `at` is the platform's own time for the post (Slack's `ts`, Telegram's `date`, Discord's `timestamp`, Teams' activity time). Failed when refused; Unknown when the answer was lost. |
 
@@ -51,7 +51,7 @@ Unknown; a refused write is `Known(EffectOutcome::Failed { why })`.
 | Event | Fields |
 | --- | --- |
 | `Message` | `id` (the platform's, unique per conversation), `conversation` (`ConversationRef`), `author` (`id`, `name`, `kind`: `person`, `bot` or `fleet`), `mentionsFleet`, `at`, `text`, `key` (the marker key on a Fleet post, else absent). A message starting a thread and a reply in one are both `Message`; the address says which thread. |
-| `Edited` | `id`, `conversation`, `text`, `editedAt`. It sets the message's `editedAt` and moves its `seq`; its `at`, the time it was written, never changes. |
+| `Edited` | `id`, `conversation`, `text`, `editedAt`. It sets the message's `editedAt` and moves its `seq`; its `at`, the time it was written, never changes. Applied only when its `editedAt` is later than the mirror's, so two edits delivered out of order leave the newer text. |
 | `Removed` | `id`, `conversation`. |
 
 ### Deliveries
@@ -64,7 +64,7 @@ spool is keyed by the delivery, not the message:
 | Field | Meaning |
 | --- | --- |
 | `id` | The delivery id: the platform's own identity for this event where it has one, the same on every redelivery (Slack's `event_id`, Telegram's `update_id`, the Teams activity `id`); else derived by the adapter from the event's own identity and version (Discord's Gateway has none: `create/<message id>`, `update/<message id>/<edited_timestamp>`, `delete/<message id>`). Never the message id alone. |
-| `verified` | How the listener authenticated it, copied from the envelope: `connection` (an authenticated socket, as Socket Mode and Discord's Gateway are; they sign no single event) or `signature` (a signed HTTPS delivery the listener verified, as the Events API's signing secret or a Teams JWT). |
+| `verified` | How the listener authenticated it, copied from the envelope: `connection` (an authenticated socket, as Socket Mode and Discord's Gateway are; they sign no single event) or `signature` (a signed HTTPS delivery the listener verified, as the Events API's signing secret or a Teams JWT). `fleet` for a delivery a `Receive` action spooled, and `history` for a message the backstop read. |
 | `receivedAt` | When the listener received it, from the envelope. |
 | `event` | The `Message`, `Edited` or `Removed` above. |
 
@@ -80,9 +80,12 @@ listener's word: Fleet cannot check a signature it never saw, and a
 connection-authenticated event carries none. The trust boundary is the
 local listener, run by the operator as the manager's user; any process able
 to run the verb could already write the store as that user. What the
-envelope adds is a record: each spooled delivery keeps its `verified` and
-`receivedAt`, so a Conversation shows how every message reached it, and a
-listener cannot claim a method its account was not configured for. Message
+envelope adds is a record: each numbered message keeps, as `via`, the
+`verified` and `receivedAt` of the delivery that first numbered it, so a
+Conversation shows how every message reached it after the spool is
+drained, and a listener cannot claim a method its account was not
+configured for. A refused envelope is recorded on the account's
+[Listener](#listener-heartbeats), since no Conversation took it. Message
 identity stays the mirror's: numbering, edits and removals are matched on
 the message `id`.
 
@@ -99,10 +102,10 @@ splits it at the platform's limit into consecutive posts under derived keys
 
 ## The receive verb
 
-`fleet gateway receive --account NAME` reads one raw payload from stdin. It
+`fleet gateway receive --account NAME` reads one delivery envelope from stdin. It
 is a manager verb, like `fleet send`, and takes no lease:
 
-1. Ask the adapter's `event` for the payload. `Known(None)` exits zero, an
+1. Ask the adapter's `event` for the envelope. `Known(None)` exits zero, an
    ignored payload; Unknown exits 4 and the listener does not acknowledge.
 2. Find the route covering the event's channel; an event in a channel no
    route covers exits zero having written nothing.
@@ -148,16 +151,28 @@ other is a duplicate message and changes nothing.
 ### Listener heartbeats
 
 `fleet gateway receive --account NAME --beat` reads one beat instead of an
-envelope, `{"state": "connecting"|"connected"|"closing", "digest", "at",
-"lastDeliveryAt"}`, and records it on the account's
+envelope, `{"instance", "state": "connecting"|"connected"|"closing",
+"digest", "sentAt", "lastDeliveryAt"}`, and records it on the account's
 [Listener](../../resources/listener.md) through the typed mutation
-`record_beat`, as `listener/<account>`. `digest` is the account digest the
+`record_beat`, as `listener/<account>`, creating the Listener exclusively
+when the manager has not yet. `instance` names one listener process, so
+two processes on one account, a replicated pair or the old and new halves
+of a restart, keep separate entries and never overwrite each other. The
+verb stamps the beat's `at` with its own clock; the listener's `sentAt` is
+kept beside it but judges nothing, so a listener's wrong clock cannot keep
+it looking alive. `digest` is the account digest the
 listener started from, printed by `fleet gateway account NAME --json` with
 what a listener needs to connect (the platform, the team, the bot id, the
 `inbound` method, the routes' channels), so a listener running on an old
 configuration is told apart from a current one. A listener beats on every
 state change and at least every `gateway.beatMs`. The exit codes are the
 receive verb's.
+
+Every envelope the verb refuses or cannot read, exit 1 or 4, is also
+recorded on the Listener through `record_refusal`, as `{count, lastAt,
+reason}`, since no Conversation took it. A listener whose deliveries are
+all refused, sent with the wrong `verified` for instance, is then visible
+while it keeps beating.
 
 ## ConversationController
 
@@ -174,15 +189,16 @@ pub fn probes(&self, input: &ConversationInput<'_>) -> Result<Vec<Probe>, StoreE
 pub fn reconcile(&self, input: &ConversationInput<'_>) -> Result<Plan, StoreError>;
 ```
 
-`defaults` carries the route the spec names, its admission rules, the
-people table, the route's brief text (read by the manager when it loads the
-config, so the controller reads no file) and `gateway.retainMs`, as values.
-`due` holds when the spool is nonempty, `notBefore` passed, or an intent
-awaits its receipt. Every plan sets `notBefore`: `pollMs` while the thread
-is active, so the history backstop runs, and `pollMs` afterwards too, when
-an idle pass asks only the store `Object` probe for its Task. So an idle
-Tied thread still notices its Task is gone, becomes Orphaned and is retired
-by retention.
+`defaults` carries the route the spec names, its admission rules, the people
+table, the route's brief text (read by the manager when it loads the config, so
+the controller reads no file) and `gateway.retainMs`, as values. `due` holds
+when the spool is nonempty, `notBefore` passed, or an intent awaits its receipt
+and its next recovery read is due, at `RETRY_DELAY_MS` after the intent and then
+at its `recovery.nextAt`. Every plan sets `notBefore`: `pollMs` while the thread
+is active, so the history backstop runs, and `pollMs` afterwards too, when an
+idle pass asks only the store `Object` probe for its Task. So an idle Tied
+thread still notices its Task is gone, becomes Orphaned and is retired by
+retention.
 
 Numbering dedupes on the message `id`, whichever way a message arrived: a
 message first seen in `history` and later in the spool, or the reverse, is
@@ -191,37 +207,43 @@ marker `key` and the other does not, the numbered message keeps the key,
 so a listener's keyless copy of Fleet's opening post cannot hide the
 marker the tie is read from.
 
-A Fleet post whose marker key is `task/<name>/<uid>/gateway/question/<id>`,
-in an Untied Conversation with no tie, ties it to that Task: the tie is
-`{name, uid, n: 1, state: created}` once the Task is Known with that `uid`.
-This is how a thread Fleet opened for a Question is tied, without the tie
-being part of the fixed spec, and whichever of the listener and the manager
-created the Conversation. A marker tie takes precedence: in a pass that
-sees both a Question marker and an `Admitted` mention, the thread is tied to
-the marker's Task, no Task is created, and the mention is relayed to it.
-When the marker's Task is Unknown that pass, nothing is created and the
-pass waits; only when it is readably absent may the mention start a Task.
-A thread whose starter message is a Fleet post without a key never starts a
-Task from a mention: Fleet started that thread for some Task, and the tie
-comes from the keyed copy. The starter is the thread's first message, which
-the adapter reads with the thread (Slack's parent, Discord's starter
-message), so it is known even when older replies were dropped; in a chat
-without threads the rule does not apply. The controller records it in
-`status.starter`, `{id, kind, key}`, the first time it numbers it, outside
-the rotating message list: a keyed copy numbered later sets the `key`
-there, and the guard reads `status.starter`, never `messages`, so it holds
-however many replies rotate past the starter. Where the account has
-history, no mention starts a Task before `status.starter` is set: a first
-read that answered Unknown is retried and the mention waits in the mirror.
-Where it has none, the guard applies once a starter is numbered. A thread
-Fleet opens there always has its opening post numbered with its key,
-through the `Receive` action the manager performs in the pass that records
-the `Opened` receipt; a crash between the two is the one window in which a
-mention may start a Task in a thread Fleet opened. If the keyed copy never arrives,
-because the marker was lost or recovery could not use it and the opening
-Task reports `PostUnconfirmed`, the thread is deliberately dead to
-mentions: Fleet does not guess which Task it belongs to, and the person
-re-asks in a new thread.
+A Fleet post whose marker key is `task/<name>/<uid>/gateway/question/<id>`, in
+an Untied Conversation with no tie, ties it to that Task: the tie is `{name,
+uid, n: 1, state: created}` once the Task is Known with that `uid`. This is how
+a thread Fleet opened for a Question is tied, without the tie being part of the
+fixed spec, and whichever of the listener and the manager created the
+Conversation. A marker tie takes precedence: in a pass that sees both a Question
+marker and an `Admitted` mention, the thread is tied to the marker's Task, no
+Task is created, and the mention is relayed to it. When the marker's Task is
+Unknown that pass, nothing is created and the pass waits; only when it is
+readably absent may the mention start a Task. A thread whose starter message is
+a Fleet post without a key never starts a Task from a mention: Fleet started
+that thread for some Task, and the tie comes from the keyed copy. The starter is
+the thread's first message, which `history` answers explicitly as `starter`,
+read on its own when the newest 200 do not reach it, so it is known however long
+the thread is; never the first message of the window. In a chat without threads
+the rule does not apply. The controller records it in `status.starter`, `{id,
+kind, key}`, the first time it numbers it, outside the rotating message list: a
+keyed copy numbered later sets the `key` there, and the guard reads
+`status.starter`, never `messages`, so it holds however many replies rotate past
+the starter. Where the account has history, no mention starts a Task before
+`status.starter` is set: a first read that answered Unknown is retried and the
+mention waits in the mirror. A starter the platform reports deleted is recorded
+as `{removed: true}`, and the guard passes: no keyed copy of a deleted post can
+arrive to tie the thread, and refusing it would leave the thread dead to
+mentions without a word. Where it has none, the guard applies once a starter is
+numbered. A thread Fleet opens there has its opening post numbered with its key
+through the `Receive` action GatewayController plans on the pass after the
+`Opened` receipt. Between that receipt and the `Receive`, at least one sweep, a
+mention in the new thread may start a Task before the marker is seen; the marker
+numbered later then finds the thread already tied and is relayed as an ordinary
+Fleet post, so the Question's Task is not tied there and raises
+`ConversationGone`. This window exists only on a platform without history, where
+the listener may deliver a reply before Fleet's own post. If the keyed copy
+never arrives, because the marker was lost or recovery could not use it and the
+opening Task reports `PostUnconfirmed`, the thread is deliberately dead to
+mentions: Fleet does not guess which Task it belongs to, and the person re-asks
+in a new thread.
 
 ### Requested probes
 
@@ -230,7 +252,7 @@ re-asks in a new thread.
 | No `revision` yet, or a backstop due | `History { conversation, after }`, `after` absent on the first pass. |
 | A tie recorded, or a Question marker naming a Task | `Object { kind: Task, name }`, to see whether that Task exists with its `uid`. |
 | A pass that will call the platform (the first read, the backstop, a recovery read or a refusal post), at most once per account per sweep | `Capabilities { account }`, cached by the manager for the sweep. An idle pass does not ask it and keeps the `MentionsOnly` reason it last had: a probe not asked is never read as absence. Fleet's identity on the account is the [Listener's](#listenercontroller) to check. |
-| A refusal's intent without a settled receipt, `RETRY_DELAY_MS` after it | `History { conversation, since }` from before the intent, to look for the key. |
+| A refusal's intent without a settled receipt, `RETRY_DELAY_MS` after it, then at its `recovery.nextAt` | `History { conversation, since }` from before the intent, to look for the key. |
 | Settled into deletion, or deleting | None. |
 
 ### Returned plan
@@ -239,7 +261,9 @@ re-asks in a new thread.
 was numbered in the same write (`record_received`). `creates` carries at
 most one Task, from the route, when the [state machine](state-machine.md)
 says to start one; its intent is the tie written in the same status.
-`effects` carries at most one `Post` per author, the polite refusal.
+`effects` carries at most one `Post` per author, the polite refusal, and
+at most one busy notice per tie number, keyed
+`conversation/<conv uid>/busy/<n>`.
 `delete: true` retires the object after retention, fenced on `uid` and
 `resourceVersion` under the lease.
 
@@ -263,9 +287,9 @@ they change in these ways, each with its architecture rule:
   plan reaches a Conversation's spool; see [its ordering and
   recovery](#returned-plan-1).
 - A create's optional `exclusive` precondition, `{workspace}`: the manager,
-  holding the lease, performs the create only when no Task in the store has
-  the same `spec.workspace.dir`, read in the same pass, and answers Failed
-  `WorkspaceBusy` otherwise. ConversationController sets it for a route
+  holding the lease, reads the store's Tasks immediately before that create and
+  performs it only when none has the same `spec.workspace.dir`, and answers
+  Failed `WorkspaceBusy` otherwise. ConversationController sets it for a route
   whose workspace is a shared directory; see [workspaces](#workspaces).
 
 The kind names `Conversation` and `Listener` are reserved for this design:
@@ -311,19 +335,38 @@ Task it creates the same `workspace`. Task specs today name a directory and
 nothing provisions one, so a route's workspace is a shared directory, and
 two conversation Tasks writing through it at once could corrupt each
 other's work. ConversationController therefore serialises a route: every
-create it plans carries the `exclusive: {workspace}` precondition, and the
-manager, holding the lease, refuses it with `WorkspaceBusy` while any Task
-in the store has the same `spec.workspace.dir`, whoever created that Task.
-The manager is the only performer of creates under the lease and performs
-them one at a time, so two threads of one route cannot both pass the check
-in one sweep. A refused create is not a failed attempt, since nothing was
-created: its receipt withdraws the tie's intent, the thread stays Untied or
-Orphaned with `NeedsAttention/WorkspaceBusy`, its mentions wait in the
-mirror, and the create is planned again under the same key every `pollMs`.
-The first pass after the workspace's Task is deleted starts the Task,
-joined with the whole thread. A route therefore runs one conversation Task at a
-time until per-Task provisioned workspaces exist; a route that should run
-several needs that change first, and is not offered before it.
+create it plans carries the `exclusive: {workspace}` precondition. The
+manager, holding the lease, reads the store's Tasks immediately before each
+such create, not from the sweep's listing, and refuses it with
+`WorkspaceBusy` while any Task has the same directory, whoever created that
+Task. Directories are compared after lexical normalisation (no trailing
+slash, no `.` or `..` segment), and the config is refused at load when one
+route's directory equals, contains or lies inside another's. The manager
+performs creates one at a time under the lease, so two threads of one route
+cannot both pass the check.
+
+The check guards a conversation Task from every Task already there. It
+does not stop a Task applied, or created by a plugin, into the same
+directory later: Fleet has no rule refusing that today. A route's directory
+should therefore be one no other Task names, and the route's documentation
+says so. Symbolic links are the operator's to avoid.
+
+A refused create is not a failed attempt, since nothing was created. The
+tie is kept as `{n, state: busy, trigger}`, `trigger` being the id of the
+message that asked for the Task, so the start is remembered however many
+messages rotate past it, and the thread raises `NeedsAttention/WorkspaceBusy`.
+The create is planned again under the same key every `pollMs`, and the
+first pass after the workspace's Task is deleted starts the Task, joined
+with the whole thread. The person who asked is told once, by a post keyed
+`conversation/<conv uid>/busy/<n>` saying the request is queued behind
+another conversation, so a waiting thread is never silent.
+
+A Task keeps its directory until it is deleted, Concluded or not, and
+nothing deletes a conversation Task automatically in this design. A route
+therefore runs one conversation Task at a time, and the next waits for a
+person to delete the last; a route whose requests come often, such as an
+alert channel, is usable only once per-Task provisioned workspaces exist, a
+change of its own that this design waits for rather than works around.
 
 ## ListenerController
 
@@ -347,27 +390,30 @@ pub fn probes(&self, input: &ListenerInput<'_>) -> Result<Vec<Probe>, StoreError
 pub fn reconcile(&self, input: &ListenerInput<'_>) -> Result<Plan, StoreError>;
 ```
 
-`defaults` carries the account's configuration and its digest, computed by
-the manager when it loads the config, the same digest
-`fleet gateway account` prints. `due` holds when `notBefore` passed or
-`status.beat` changed. The probes are `Capabilities { account }` and
+`defaults` carries the account's configuration and its digest, computed by the
+manager when it loads the config, the same digest `fleet gateway account`
+prints. `due` holds when `notBefore` passed or `status.beatRevision`,
+incremented by every `record_beat` and `record_refusal`, is above `status.seen`,
+the revision last judged. The probes are `Capabilities { account }` and
 `GatewayWhoami { account }`, every `gateway.pollMs`, from the sweep's
-per-account cache. The plan is status alone, three conditions, and
-`delete: true` for a Listener whose account left the config:
+per-account cache. The plan is status alone, three conditions, and `delete:
+true` for a Listener whose account left the config:
 
 | Condition | True when | False or Unknown, by reason |
 | --- | --- | --- |
 | `Accepted` | The account in the loaded config is valid and some route uses it; `status.accepted` holds its digest and when it was loaded. | `NoRoute`: no route names the account. |
 | `Resolved` | `whoami` is Known and is the configured `bot`, and `capabilities` is Known. | False `IdentityMismatch`, the two ids quoted; Unknown with the port's reason. |
-| `InboundReady` | `status.beat.state` is `connected`, its `digest` is `status.accepted.digest`, and its `at` is within three `gateway.beatMs` of now. | `NoListener`, never a beat; `Connecting`; `Closing`; `ListenerStale`, the last beat's age quoted; `ListenerConfigOld`, a digest that is not the accepted one. |
+| `InboundReady` | Some instance in `status.beats` is `connected`, its `digest` is `status.accepted.digest`, and its verb-stamped `at` is within three `gateway.beatMs` of now; and no envelope was refused within that time. | `NoListener`, never a beat; `Connecting`; `Closing`; `ListenerStale`, the freshest beat's age quoted; `ListenerConfigOld`, no fresh instance on the accepted digest; `DeliveriesRefused`, the last refusal's reason quoted. |
 
-`notBefore` is the earlier of the next `pollMs` and the moment the last
+`notBefore` is the earlier of the next `pollMs` and the moment the freshest
 beat goes stale, so a listener that stops beating turns `InboundReady`
-False within one sweep of three missed beats. What a listener cannot
+False within one sweep of three missed beats. One instance's `closing`
+beat does not hide another's fresh `connected` one, and a dead instance's
+last `connected` beat goes stale on its own `at`. What a listener cannot
 report is a platform's own subscription settings: a connected, current
 listener whose app is not subscribed to message events receives nothing.
-`status.beat.lastDeliveryAt` is shown beside the condition, and `fleet
-gateway status` prints it for each account, so a connected listener that
+Each instance's `lastDeliveryAt` is shown beside the condition, and
+`fleet gateway status` prints it for each account, so a connected listener that
 has delivered nothing is visible as such; Fleet does not guess why.
 
 ## GatewayController
@@ -388,7 +434,9 @@ pub fn reconcile(&self, input: &GatewayInput<'_>) -> Result<Plan, StoreError>;
 `due` holds for a tied Task when its Conversation's `revision` is above
 `status.gateway.seen` (the manager lists Conversations once per sweep and
 answers from that listing), for a Task waiting for its tie, and for a Task
-with an unsettled post; a quiet tied Task costs nothing. It also holds when
+with an unsettled post once its next recovery read is due, at
+`RETRY_DELAY_MS` after the intent and then at its `recovery.nextAt`; a
+quiet tied Task costs nothing. It also holds when
 `status.declared` or `status.result` holds something past the controller's
 cursors, or when one of its children changed: the manager lists Tasks once
 per sweep, indexes them by their `gateway.fleet.dev/parent` label, and marks
@@ -403,11 +451,11 @@ sweep, not one per Task.
 | --- | --- |
 | Labelled `gateway.fleet.dev/conversation`, or `status.gateway.conversation` recorded | `Object { kind: Conversation, name }`. |
 | A `ChangeRequest` declaration and a tie | `Object { kind: ChangeRequest, name }`, for its news. |
-| Due for its children | `List { kind: Task, labels: {gateway.fleet.dev/parent: <name>} }`, answered from the sweep's listing. |
+| Due for its children | `List { kind: Task, labels: {gateway.fleet.dev/parent: <name>, gateway.fleet.dev/parent-uid: <uid>} }`, answered from the sweep's listing. |
 | Carrying `gateway.fleet.dev/parent` | `Object { kind: Task, name }` for its parent. |
 | A `Question` on an untied Task with no live parent | None: the route is config. |
-| A `Post` intent without a settled receipt, `RETRY_DELAY_MS` after it | `History { conversation, since }` from before the intent, to look for the key. GatewayController asks this itself, so recovery does not depend on the Conversation's backstop cadence. |
-| Opening, with an `Open` intent without a settled receipt, `RETRY_DELAY_MS` after it | `History { conversation: <channel>, since }` from before the intent, for a top-level post carrying the key. |
+| A `Post` intent without a settled receipt, `RETRY_DELAY_MS` after it, then at its `recovery.nextAt` | `History { conversation, since }` from before the intent, to look for the key. GatewayController asks this itself, so recovery does not depend on the Conversation's backstop cadence. |
+| Opening, with an `Open` intent without a settled receipt, `RETRY_DELAY_MS` after it, then at its `recovery.nextAt` | `History { conversation: <channel>, since }` from before the intent, for a top-level post carrying the key. |
 | Deleting | None. |
 
 ### Fields this controller owns
@@ -437,7 +485,9 @@ Every map here is bounded by what the Task declared: `questions`,
 `posted` and `status.answered` by its declared Questions, Comments and
 Drafts, `changes` by its declared changes, under the per-Task declarations
 cap the [open questions](README.md#open-questions-and-recommendations)
-recommend; `children` by the 200 a `List` probe answers: past 200 the
+recommend; `children` by the 200 a `List` probe answers, selecting on both
+the parent's name and its `uid`, so children made for an earlier Task of
+that name are not counted: past 200 the
 probe is Unknown with `TooMany`, no child is relayed, and the parent raises
 `NeedsAttention/TooManyChildren`.
 
@@ -483,8 +533,9 @@ Question counts when the platform's own message order puts it after the
 post (Slack's full `ts`, Telegram's increasing `message_id`, a Discord
 snowflake), and else when it was first numbered after the post: each
 message keeps `firstSeq`, the revision that first numbered it, and its
-position in that numbering, which is oldest-first by the platform; an edit
-moves neither. On a platform with neither sub-second time nor message
+position in that numbering, which is oldest-first by the platform and, for
+two messages the platform gives the same time and no order, by message id;
+an edit moves neither. On a platform with neither sub-second time nor message
 order, a message in the same second as the Question is therefore counted
 only when Fleet first saw it after the post, which is the best Fleet can
 tell.
@@ -515,23 +566,34 @@ always `None`.
 | Action | Performed through | Receipt |
 | --- | --- | --- |
 | `Open { account, route, channel, text, key }` | `Gateway::open` | `Opened { conversation, message, at }`, Failed, or Unknown |
-| `Receive { account, address, route, delivery }`, under `<question key>/receive` | The store, never a platform: `receive_event` with exclusive creation, exactly as [the receive verb](#the-receive-verb) performs it, the delivery being the opening post under `open/<message id>` | `Received` (written or a duplicate), or Unknown |
+| `Receive { account, address, route, delivery }`, under `<question key>/receive` | The store, never a platform: `receive_event` with exclusive creation, exactly as [the receive verb](#the-receive-verb) performs it, the delivery being the opening post under `open/<message id>` with `verified: fleet` | `Received` (written or a duplicate); Failed when the store refuses it (a full spool, a deleting Conversation); or Unknown |
 | `Post { conversation, text, key }` | `Gateway::post` | `Posted { message, at }`, Failed, or Unknown |
 
-A Question's thread is reached in two keyed steps, each intent before and
-receipt after. The `Opened` receipt, direct or recovered, moves the tie to
-`opened` and, in the same write, records the `Receive` intent; the manager
-performs it in the same pass, then writes `Received`, which moves the tie to
-`waiting`. `Receive` is the only internal action, and it changes nothing
+A Question's thread is reached in two keyed steps, each planned by
+GatewayController, each intent before and receipt after. The manager writes
+the `Open` answer as the `Opened` receipt and nothing else, as after any
+effect. GatewayController's next pass, reading that receipt or recovering
+one from channel history, moves the tie to `opened` and plans the `Receive`
+intent and action, building its delivery from the receipt and the
+Question's own text; the manager performs it and writes `Received`, which
+moves the tie to `waiting`. The two paths differ only in where the receipt
+came from. `Receive` is the only internal action, and it changes nothing
 outside the store. An Unknown answer, or a crash before its receipt, is
 answered by observation as any effect is: the next pass asks the `Object`
-probe for the Conversation, and one whose spool, `seenEvents` or mirror
-holds `open/<message id>` is the recovered receipt; one readably without it
-is a failed attempt, performed again under the same key at most
-`MAX_ATTEMPTS` times, then `NeedsAttention/ReceiveFailed`. A second attempt
-that races a first one landing late is a duplicate delivery and changes
-nothing. The tie never waits on a thread whose Conversation was not
-ensured, and the manager decides nothing: it performs the plan.
+probe for the Conversation, and one whose `received` or `seenEvents` holds
+the delivery id `open/<message id>` is the recovered receipt; one readably
+without it is a failed attempt, performed again under the same key. A
+second attempt that races a first one landing late is a duplicate delivery
+and changes nothing.
+
+Whatever `Receive` answers, a Conversation whose `status.task` already names
+this Task's `uid` moves the tie straight to `tied`: the listener's keyed copy
+did the work. Otherwise, after `MAX_ATTEMPTS` Failed or readably failed
+attempts, the controller raises `NeedsAttention/ReceiveFailed` and the tie
+returns to none: the Question stays posted, recorded in `posted` and
+`questions`, the Task reads its later declarations as an untied Task does,
+and a later Question opens a new thread. Nothing waits forever on a thread
+that never reached its Conversation.
 
 Posts to one conversation go out in declaration order and one at a time: a
 post whose receipt is missing or Unknown holds back every later post to
@@ -548,7 +610,8 @@ that conversation, so a thread never reads out of order.
 | Change news | `task/<name>/<uid>/gateway/change/<cr uid>/<state.seq>` |
 | Result | `task/<name>/<uid>/gateway/result/<generation>` |
 | Refusal | `conversation/<conv uid>/refuse/<author id>`; every refused author id is kept for the Conversation's life, and past 200 distinct refused authors no further refusal is sent, so the key never repeats |
-| Task creation | `conversation/<conv uid>/task/<n>` |
+| Task creation | `conversation/<conv uid>/task/<n>`, planned again under the same key while its answer is `WorkspaceBusy`, since nothing was created |
+| Busy notice | `conversation/<conv uid>/busy/<n>`, once per tie number |
 | A Question thread's `Receive` | `task/<name>/<uid>/gateway/question/<id>/receive` |
 
 Fleet never repeats a key. An Unknown `post` or `open`, or an intent without
@@ -628,24 +691,27 @@ unlisted bot gets none.
 | `gateway-controller` | All of `status.gateway`; appends to `status.inbox`, recording `status.answered` | Current resourceVersion and the live lease. |
 | `apply` | Creates a Conversation by manifest, refused unless its name is the one derived from its account and address; requests deletion | Store validation, exclusive creation. |
 | `cli`, `plugin/<name>` | Inbox appends as today, each now able to carry `answers`; the parent labels on a Task they create | As today; the parent labels only at creation, under the parent's scope above. |
-| `listener/<account>`, through `fleet gateway receive --beat` | A Listener's `status.beat` | Current resourceVersion. No lease. |
+| `listener/<account>`, through `fleet gateway receive` | A Listener's `status.beats`, `status.refused` and `status.beatRevision`, through `record_beat` and `record_refusal`; creates the Listener when it does not exist | Exclusive creation; current resourceVersion. No lease. |
 | The manager, loading the config | Creates one Listener per configured account | Exclusive creation. |
-| `listener-controller` | All of Listener status but `beat`; deletes a Listener whose account left the config | Current resourceVersion and the live lease. |
+| `listener-controller` | All of Listener status but `beats`, `refused` and `beatRevision`; deletes a Listener whose account left the config | Current resourceVersion and the live lease. |
 | `conversation-controller`, through its create | The labels `gateway.fleet.dev/conversation` and `gateway.fleet.dev/conversation-uid` on the Tasks it creates | Exclusive creation; `apply` refuses both labels. |
 
 `gateway.fleet.dev/parent` is authority, not routing: a parent relays its
 children's words into its own inbox, so naming a parent is writing to that
 Task's inbox. The store accepts it only at a Task's creation, together with
-`gateway.fleet.dev/parent-uid`, the parent's `uid`, and only from a writer
-that could already append to the parent's inbox: `cli`, which `fleet send`
-already lets write to any Task, or `plugin/<name>` under `tasks = "any"`,
-or under `tasks = "own"` when the parent carries `fleet.dev/plugin: <name>`.
-Anything else is refused at the create, and both labels are refused on any
-later write, so a `tasks = "own"` plugin cannot attach its child to another
-plugin's Task or to a person's. The parent's GatewayController relays only
-a child whose `parent-uid` is its own `uid`; a child naming the parent's
-name with another `uid` was made for an earlier Task of that name and is
-treated as untied. A tie, once verified, wins over a parent label.
+`gateway.fleet.dev/parent-uid`, the parent's `uid`, and only from a writer that
+could already append to the parent's inbox: a person, through `apply` or `cli`,
+whom `fleet send` already lets write to any Task; or `plugin/<name>` under
+`tasks = "any"`, or under `tasks = "own"` when the parent carries
+`fleet.dev/plugin: <name>`. At the create the store reads the named parent: it
+must exist with that `uid`, or the create is refused, and a parent it cannot
+read refuses the create as Unknown, to be retried, never accepted unchecked. Any
+other writer is refused at the create, and both labels are refused on any later
+write, so a `tasks = "own"` plugin cannot attach its child to another plugin's
+Task or to a person's. The parent's GatewayController relays only a child whose
+`parent-uid` is its own `uid`; a child naming the parent's name with another
+`uid` was made for an earlier Task of that name and is treated as untied. A tie,
+once verified, wins over a parent label.
 
 `gateway.fleet.dev/route` chooses which route's channel a Question opens
 in. It is an ordinary label: a route is configured by the operator as one
