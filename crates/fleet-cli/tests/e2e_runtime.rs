@@ -514,9 +514,14 @@ fn a_brief_waits_for_a_thurbox_state_that_says_ready() {
     assert_eq!(argv_of(&env, "send").len(), 1);
     assert_eq!(argv_of(&env, "create").len(), 1);
     assert_eq!(argv_of(&env, "capture").len(), 0, "no screen is read");
-    // A running process is no proof of rest either: deletion waits.
-    set_session_state(&env, &thurbox_key(&env, "first"), "running");
+    // Neither subagents still at work nor a running process is proof of
+    // rest: deletion waits.
+    set_session_state(&env, &thurbox_key(&env, "first"), "background");
     env.fleet(&["delete", "task", "first"]).ok();
+    env.reconcile().ok();
+    let st = full_status(&env, "first");
+    assert_condition(&st, "Released", "False", "SessionBusy");
+    set_session_state(&env, &thurbox_key(&env, "first"), "running");
     env.reconcile().ok();
     assert_eq!(argv_of(&env, "delete").len(), 0);
 }
@@ -635,6 +640,14 @@ fn feedback_waits_for_a_thurbox_state_that_says_ready_whatever_the_agent() {
     for agent in ["odex", "laude", "agent"] {
         assert!(!msg.contains(agent), "says nothing about agents: {msg}");
     }
+
+    // Background (subagents still running) is thurbox's word for a session
+    // still busy: nothing is sent, and nothing pages the operator for it.
+    set_session_state(&env, &key, "background");
+    env.reconcile().ok();
+    assert_eq!(env.stub_sessions()[0]["sent"].as_array().unwrap().len(), 1);
+    let st = full_status(&env, "t1");
+    assert_condition(&st, "NeedsAttention", "False", "Resolved");
 
     // Thurbox reports it idle: the join and the feedback go out, one per
     // pass, each to a session observed idle on that pass.

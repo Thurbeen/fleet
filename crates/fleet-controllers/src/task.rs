@@ -697,6 +697,7 @@ impl Pass<'_, '_> {
         self.st.receipts.remove(&key);
         self.st.not_before = None;
         self.settle_attention("DeliveryUnconfirmed");
+        self.settle_attention("ReadyUnknown");
         self.delivery = Some(DeliveryReceipt {
             key,
             from: entry.from.clone(),

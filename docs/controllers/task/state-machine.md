@@ -104,7 +104,8 @@ are last recorded observations; absence of a condition is not a True value.
 WorkerGone clears when the exact recorded session is seen again. A successful
 delivery recovery clears attention whose reason is BriefUnconfirmed or
 DeliveryUnconfirmed; an inbox drained back within its bound clears InboxFull;
-a Known readiness answer while an entry waits clears ReadyUnknown.
+a Known readiness answer while an entry waits, or that entry's delivery,
+clears ReadyUnknown.
 DeliveryFailed stays while the failed entry does. A
 successful release removes the Task; a worker result alone is not a general
 reset of previous conditions. NeedsAttention does not universally stop the

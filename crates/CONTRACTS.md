@@ -391,9 +391,11 @@ Each adapter reports its longest single operation (`operation_bound`), and
   is journaled in the session's own metadata. `spec.model` reaches the
   harness as the variable `runtime.modelEnv` names for it. Readiness is
   thurbox's classification, never an agent-specific check: `idle` or `done`
-  is ready, `working`, `blocked`, `stopped` or a stopped row is not, and any
+  is ready, `working`, `blocked`, `background`, `stopped` or a stopped row is
+  not, and any
   other state (a session thurbox sees only as a running process) is Unknown,
-  named in the reason. `at_rest` requires idle, done or stopped.
+  named in the reason. `at_rest` requires idle, done or stopped; `background`
+  (subagents still running) is not at rest.
   `e2e_runtime` covers a brief and a relay waiting on an unclassified state,
   the harness name passed to thurbox unchanged, reconnect and unchanged
   deletion safety.

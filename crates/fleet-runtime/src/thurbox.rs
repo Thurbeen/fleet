@@ -420,7 +420,8 @@ impl Runtime for ThurboxRuntime {
             Observation::Known(row) if row["stopped"] == true => Observation::Known(false),
             Observation::Known(row) => match row["state"].as_str() {
                 Some("idle" | "done") => Observation::Known(true),
-                Some("working" | "blocked" | "stopped") => Observation::Known(false),
+                // background: the turn rests while subagents it started run.
+                Some("working" | "blocked" | "background" | "stopped") => Observation::Known(false),
                 // Readiness is thurbox's to classify, whatever agent runs in
                 // the session; any other state is no proof either way.
                 _ => Observation::unknown(format!(
@@ -505,7 +506,7 @@ impl Runtime for ThurboxRuntime {
         match self.state_word(session) {
             Observation::Known(s) => match s.as_str() {
                 "idle" | "done" | "stopped" => Observation::Known(true),
-                "working" | "blocked" => Observation::Known(false),
+                "working" | "blocked" | "background" => Observation::Known(false),
                 other => Observation::unknown(format!("session state {other:?} does not say")),
             },
             Observation::Unknown { why } => Observation::Unknown { why },

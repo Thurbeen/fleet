@@ -668,6 +668,36 @@ fn an_entry_waiting_on_unknown_readiness_says_why_until_a_known_answer() {
         (ConditionStatus::False, "Resolved")
     );
 
+    // An entry the journal proves delivered takes its attention with it.
+    let obj = briefed_with(&["task/t/u7/send/1"], |st| {
+        st.intents
+            .insert("task/t/u7/send/1".into(), intent(NOW - 5));
+        fleet_api::condition::set_condition(
+            &mut st.conditions,
+            "NeedsAttention",
+            ConditionStatus::True,
+            "ReadyUnknown",
+            "",
+            1,
+            NOW,
+        )
+    });
+    let (plan, st) = run(
+        &obj,
+        Observations {
+            find: live(),
+            ready: Some(Observation::unknown("unclassified")),
+            brief_delivered: Some(Observation::Known(true)),
+            ..Default::default()
+        },
+    );
+    assert!(plan.delivery.is_some(), "{plan:#?}");
+    let c = cond(&st, "NeedsAttention");
+    assert_eq!(
+        (c.status, c.reason.as_str()),
+        (ConditionStatus::False, "Resolved")
+    );
+
     // It never masks attention another cause raised.
     let obj = briefed_with(&["task/t/u7/send/1"], |st| {
         fleet_api::condition::set_condition(
