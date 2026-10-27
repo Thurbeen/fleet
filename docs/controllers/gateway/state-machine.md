@@ -14,8 +14,9 @@ effects and keys used here.
 | Phase | Observation or input | Next phase | Decision |
 | --- | --- | --- | --- |
 | none | `fleet gateway receive` for an address with no Conversation, with an event that could start a Task or earn a refusal | Untied | Create it exclusively by derived name, append the event to the spool. Any other event in an unmirrored thread creates nothing. |
-| none | An `Open` receipt for a Task's Question, or the listener's copy of that opening post | Untied | Create it exclusively by derived name and spool the opening post; whichever comes second is a duplicate message. |
-| Untied | A spooled Fleet post whose marker is a Question key naming a Task Known with that `uid` | Tied | The tie is that Task, `n = 1`, `state: created`. No Task is created. |
+| none | An `Opened` answer for a Task's Question, before its receipt, or the listener's copy of that opening post | Untied | Create it exclusively by derived name and spool the opening post; whichever comes second is a duplicate message. |
+| Untied | A spooled Fleet post whose marker is a Question key naming a Task Known with that `uid` | Tied | The tie is that Task, `n = 1`, `state: created`. No Task is created, even for an `Admitted` mention in the same pass, which is relayed to that Task. |
+| Untied | The same, the named Task Unknown | Untied | Wait; create nothing. Readable absence lets a mention start a Task as below. |
 | Untied | First pass, no `revision` | Untied | Ask `History` from the beginning; number every message and the spool in one write. |
 | Untied | An `Admitted` message meeting the route's mention rule | Untied, then Tied | Write the tie's intent, `task = {name, n, state: pending}`, and create the Task under `conversation/<uid>/task/<n>`; the receipt writes its `uid` and the phase. |
 | Untied | A `Context` message that mentions Fleet | Untied | One refusal per author, under its refusal key. |
@@ -137,7 +138,7 @@ Under `status.gateway.conditions` on a Task, written by GatewayController:
 | Type | True means / relevant reason |
 | --- | --- |
 | Tied | The Task is tied to a Conversation it verified. |
-| NeedsAttention | `RelayGap`, `ConversationGone`, `PostFailed` (three refused attempts on one key, the refusal quoted), `PostUnconfirmed` (an Unknown outcome on a platform with no marker), `DeclarationInvalid` (a Question, Comment or Draft without an `id`), `RouteUnknown`. |
+| NeedsAttention | `RelayGap`, `ConversationGone`, `PostFailed` (three refused attempts on one key, the refusal quoted), `PostUnconfirmed` (an Unknown outcome on a platform with no marker), `DeclarationInvalid` (a Question, Comment or Draft without an `id`), `TooManyChildren` (more than 200 children), `RouteUnknown`. |
 
 NeedsAttention stops nothing else: relay continues while one post waits,
 and one conversation's held post holds back no other conversation's.

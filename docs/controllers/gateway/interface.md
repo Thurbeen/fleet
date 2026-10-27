@@ -42,7 +42,7 @@ Unknown; a refused write is `Known(EffectOutcome::Failed { why })`.
 | `event` | An account's configuration, including Fleet's bot id on it (`gateway.accounts.<name>.bot`), and a raw payload, as the listener received it | `Known(Some(Event))`, `Known(None)` for a payload the gateway ignores (a reaction, a presence change), or Unknown when it cannot be read. Pure: everything it needs, the bot id that tells `fleet` authors and mentions apart included, arrives as values, so the receive verb runs it without the lease. |
 | `whoami` | An account | Fleet's bot identity as the platform reports it. ConversationController compares it with the configured `bot` and raises `NeedsAttention/IdentityMismatch` when they differ, rather than trusting either silently. |
 | `capabilities` | An account | What the platform gives Fleet there, as values: `history` (bool), `marker` (`metadata`, `nonce { windowMs }` or `none`), `unmentioned` (whether messages that do not mention the bot are delivered), `threads` (whether the platform has threads in that kind of chat). Unknown when it cannot be told. The [adapters](adapters.md#what-the-platforms-changed) say why each exists. |
-| `history` | A `ConversationRef`, an optional `after` message id, a `limit` | The messages after `after`, oldest first, at most `limit` (the newest ones when more exist, with a count of those left out), complete within that window or Unknown with `retryAfter`; `Unsupported` where the platform has no history for bots. Fleet's own posts carry their marker key when the platform keeps one. The first read of a thread asks for the newest 200; older messages are recorded as `droppedBefore`, never mirrored. |
+| `history` | A `ConversationRef` (a thread, or a channel for a top-level read), an optional `after` message id or `since` time, a `limit` | The messages after `after`, oldest first, at most `limit` (the newest ones when more exist, with a count of those left out), complete within that window or Unknown with `retryAfter`; `Unsupported` where the platform has no history for bots. Fleet's own posts carry their marker key when the platform keeps one. The first read of a thread asks for the newest 200; older messages are recorded as `droppedBefore`, never mirrored. |
 | `open` | A channel `ConversationRef`, rendered text, an intent key | `Opened { conversation, message, at }`: a new thread whose first post is the text, carrying the key as its marker. Failed when refused; Unknown when the answer was lost. Where opening takes two platform calls, the adapter keys both from the one intent key and finishes a half-done open on a retry. |
 | `post` | A `ConversationRef`, rendered text, an intent key | `Posted { message, at }`, carrying the key as its marker; `at` is the platform's own time for the post (Slack's `ts`, Telegram's `date`, Discord's `timestamp`, Teams' activity time). Failed when refused; Unknown when the answer was lost. |
 
@@ -51,7 +51,7 @@ Unknown; a refused write is `Known(EffectOutcome::Failed { why })`.
 | Event | Fields |
 | --- | --- |
 | `Message` | `id` (the platform's, unique per conversation), `conversation` (`ConversationRef`), `author` (`id`, `name`, `kind`: `person`, `bot` or `fleet`), `mentionsFleet`, `at`, `text`, `key` (the marker key on a Fleet post, else absent). A message starting a thread and a reply in one are both `Message`; the address says which thread. |
-| `Edited` | `id`, `conversation`, `text`, `at`. |
+| `Edited` | `id`, `conversation`, `text`, `editedAt`. It sets the message's `editedAt` and moves its `seq`; its `at`, the time it was written, never changes. |
 | `Removed` | `id`, `conversation`. |
 
 There is no separate `Mention` event: a mention is a `Message` with
@@ -103,11 +103,12 @@ The creation and the append are not atomic. A crash between them leaves an
 empty Conversation, which its controller fills from `history` on its first
 pass, or, where there is no history, retains until its retention passes.
 
-After an `Open` receipt the manager does the same, as `gateway-controller`:
-it ensures the new thread's Conversation and appends Fleet's opening post
-to its spool, keyed `open/<message id>`. Whichever arrives first, the
-listener's copy of that post or the manager's, creates the Conversation;
-the other is a duplicate message and changes nothing.
+After an `Opened` answer, before writing the receipt, the manager does the
+same, as `gateway-controller`: it ensures the new thread's Conversation and
+appends Fleet's opening post to its spool, keyed `open/<message id>`.
+Whichever arrives first, the listener's copy of that post or the manager's,
+creates the Conversation; the other is a duplicate message and changes
+nothing.
 
 ## ConversationController
 
@@ -149,15 +150,22 @@ being part of the fixed spec, and whichever of the listener and the manager
 created the Conversation. A marker tie takes precedence: in a pass that
 sees both a Question marker and an `Admitted` mention, the thread is tied to
 the marker's Task, no Task is created, and the mention is relayed to it.
+When the marker's Task is Unknown that pass, nothing is created and the
+pass waits; only when it is readably absent may the mention start a Task.
+A Fleet post without a key, the listener's copy of an opening post on a
+platform that delivers Fleet's own posts, also holds back Task creation in
+a thread Fleet started until the manager's keyed copy is numbered or
+`RETRY_DELAY_MS` passes, so the narrow race between the two copies cannot
+start a second Task.
 
 ### Requested probes
 
 | State | Probes |
 | --- | --- |
-| No `revision` yet, or a backstop due | `History { ref, after }`, `after` absent on the first pass. |
+| No `revision` yet, or a backstop due | `History { conversation, after }`, `after` absent on the first pass. |
 | A tie recorded, or a Question marker naming a Task | `Object { kind: Task, name }`, to see whether that Task exists with its `uid`. |
-| Every pass while Tied, at most once per account per sweep | `Capabilities { account }` and `GatewayWhoami { account }`, cached by the manager for the sweep. |
-| A post's intent without a receipt | `History { ref, after }` from before the intent, to look for the key. |
+| A pass that will call the platform (the first read, the backstop, or a recovery), at most once per account per sweep | `Capabilities { account }` and `GatewayWhoami { account }`, cached by the manager for the sweep. An idle pass asks neither. |
+| A refusal's intent without a receipt | `History { conversation, since }` from before the intent, to look for the key. |
 | Settled into deletion, or deleting | None. |
 
 ### Returned plan
@@ -257,8 +265,8 @@ sweep, not one per Task.
 | Due for its children | `List { kind: Task, labels: {gateway.fleet.dev/parent: <name>} }`, answered from the sweep's listing. |
 | Carrying `gateway.fleet.dev/parent` | `Object { kind: Task, name }` for its parent. |
 | A `Question` on an untied Task with no live parent | None: the route is config. |
-| A `Post` intent without a settled receipt, `RETRY_DELAY_MS` after it | `History { conversation, after }` from before the intent, to look for the key. GatewayController asks this itself, so recovery does not depend on the Conversation's backstop cadence. |
-| Opening, with an `Open` intent without a settled receipt, `RETRY_DELAY_MS` after it | `History { channel, after }` from before the intent, for a top-level post carrying the key. |
+| A `Post` intent without a settled receipt, `RETRY_DELAY_MS` after it | `History { conversation, since }` from before the intent, to look for the key. GatewayController asks this itself, so recovery does not depend on the Conversation's backstop cadence. |
+| Opening, with an `Open` intent without a settled receipt, `RETRY_DELAY_MS` after it | `History { conversation: <channel>, since }` from before the intent, for a top-level post carrying the key. |
 | Deleting | None. |
 
 ### Fields this controller owns
@@ -277,7 +285,7 @@ sweep, not one per Task.
 | `posts` | Per intent key, `{intent, receipt, attempts}`: the post effects, apart from TaskController's records. Newest 100 settled, every unsettled. |
 | `posted` | Every Question, Comment and Draft id posted, by kind, for the life of the Task, so an id reused later is never posted again after its record in `posts` rotated out. Bounded by the declarations a Task may hold. |
 | `questions` | Per Question id, `{key, conversation, message, at}` once posted: the platform message id and time from the post's receipt, so answers are ordered on the platform's own clock and need no marker. |
-| `gaps` | How many times a relay found `droppedBefore` above the cursor. |
+| `gaps` | How many times a relay, past the join, found `droppedBefore` above the cursor. |
 | `conditions` | `Tied`, `NeedsAttention`. |
 
 `status.answered` has no owner. It is a map from Question id to
@@ -329,7 +337,10 @@ posts are never relayed. An edited message is relayed again, marked as an
 edit of the one already sent. A gap is stated as on the Forge controller's
 relay. A relay whose admitted messages include one written, by the
 platform's clock, after a posted, unanswered Question's `at` carries
-`answers` with those Question ids.
+`answers` with those Question ids. A message with the same `at` as the
+Question counts when the platform's own message order puts it after the
+post (Slack's full `ts`, Telegram's increasing `message_id`, a Discord
+snowflake), and else by its Fleet `seq`.
 
 The join and every relay are bounded: an entry renders at most 64 KiB of
 messages, newest kept, and says how many older ones it left out and that
@@ -390,8 +401,10 @@ and the conversation's later posts wait for a person.
 
 An Unknown `open` has no thread to read yet. It is answered by a complete
 `history` read of the channel, from before the intent: a top-level message
-by Fleet carrying the key is the opened thread, recovered with its address,
-and the manager then ensures its Conversation as after a receipt. Where
+by Fleet carrying the key is the opened thread, recovered with its address;
+the manager ensures its Conversation and spools the post when that answer
+arrives, before the controller's status write records the recovered
+receipt, so no receipt ever names a Conversation that was not ensured. Where
 opening takes two calls, a recovered starter message without its thread is
 finished by retrying `open` under the same key, which the adapter completes
 rather than starting again. Without channel history or a marker, an Unknown
@@ -433,7 +446,7 @@ unlisted bot gets none.
 | Writer | May change | Required fencing |
 | --- | --- | --- |
 | `listener/<account>`, through `fleet gateway receive` | Creates a Conversation; appends to its `status.received` | Exclusive creation; current resourceVersion. No lease. |
-| The manager after an `Open` receipt, as `gateway-controller` | Creates the new thread's Conversation; appends the opening post to its `status.received`, through the same `receive_event` | Exclusive creation; current resourceVersion; the live lease. |
+| The manager after an `Opened` answer, before its receipt, as `gateway-controller` | Creates the new thread's Conversation; appends the opening post to its `status.received`, through the same `receive_event` | Exclusive creation; current resourceVersion; the live lease. |
 | `conversation-controller` | All of Conversation status but `received`; drains `received`; creates conversation Tasks; deletes its own object | Current resourceVersion and the live lease. |
 | `gateway-controller` | All of `status.gateway`; appends to `status.inbox`, recording `status.answered` | Current resourceVersion and the live lease. |
 | `apply` | Creates a Conversation by manifest, refused unless its name is the one derived from its account and address; requests deletion | Store validation, exclusive creation. |

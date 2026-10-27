@@ -88,10 +88,10 @@ mapped on paper to check the model.
    `Open` intent under `task/<name>/<uid>/gateway/question/q1`.
 3. The manager opens a new thread in that route's question channel with the
    Question as its first post, carrying the key as its marker. With the
-   receipt it ensures the Conversation for the new thread and spools that
-   first post, as the receive verb would; whichever of the two creates the
-   Conversation, ConversationController ties the thread to the Task the
-   marker key names.
+   answer, before writing the receipt, it ensures the Conversation for the
+   new thread and spools that first post, as the receive verb would;
+   whichever of the two creates the Conversation, ConversationController
+   ties the thread to the Task the marker key names.
 4. Replies in that thread are relayed to the Task's inbox. The first
    allowlisted reply written after the Question's own post records it as answered
    on the Task, `status.answered.q1`, in the same write that queues the
