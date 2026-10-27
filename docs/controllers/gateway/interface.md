@@ -50,7 +50,7 @@ Unknown; a refused write is `Known(EffectOutcome::Failed { why })`.
 
 | Event | Fields |
 | --- | --- |
-| `Message` | `id` (the platform's, unique per conversation), `conversation` (`ConversationRef`), `author` (`id`, `name`, `kind`: `person`, `bot` or `fleet`), `mentionsFleet`, `at`, `text`, `key` (the marker key on a Fleet post, else absent). A message starting a thread and a reply in one are both `Message`; the address says which thread. |
+| `Message` | `id` (the platform's, unique per conversation), `conversation` (`ConversationRef`), `author` (`id`, `name`, `kind`: `person`, `bot` or `fleet`), `mentionsFleet`, `at`, `text`, `key` (the marker key on a Fleet post, else absent), `startsThread` (true when the platform's payload says the message starts its thread, as a Discord thread's starter or a Telegram topic's first message; else false). A message starting a thread and a reply in one are both `Message`; the address says which thread. |
 | `Edited` | `id`, `conversation`, `text`, `editedAt`. It sets the message's `editedAt` and moves its `seq`; its `at`, the time it was written, never changes. Applied only when its `editedAt` is later than the mirror's, so two edits delivered out of order leave the newer text. |
 | `Removed` | `id`, `conversation`. |
 
@@ -171,12 +171,15 @@ receive verb's.
 Every envelope the verb refuses or cannot read, exit 1 or 4, is also
 recorded on the Listener through `record_refusal`, counted by reason, since
 no Conversation took it. Only a listener's own fault, an envelope that is
-not one (unreadable as an envelope, or for an account not configured) or
-one whose `verified` is not the account's `inbound`, sets
+not one (unreadable as an envelope) or one whose `verified` is not the
+account's `inbound`, sets
 `refused.lastFaultAt` and turns `InboundReady` False. A full spool, a
 deleting Conversation or a payload the adapter cannot read are one
 thread's or one event's trouble, counted but not judged account-wide; the
-first is already the Conversation's `SpoolFull`. A listener whose
+first is already the Conversation's `SpoolFull`. An envelope for an account
+the config does not have is refused with nothing recorded, since it has no
+Listener; that account's absence is what `fleet gateway status` shows. A
+listener whose
 deliveries are all refused for its own fault is then visible while it keeps
 beating.
 
@@ -240,12 +243,13 @@ arrive to tie the thread, and refusing it would leave the thread dead to
 mentions without a word. Where it has none, the guard applies once a starter is
 numbered. A thread Fleet opens there has its opening post numbered with its key
 through the `Receive` action GatewayController plans after the `Opened`
-receipt. The manager closes the gap between the two: having written an
+receipt. The manager narrows the gap between the two: having written an
 `Opened` receipt, it reconciles that Task's GatewayController again in the
 same pass, under the same lease, so `Receive` is planned and performed before
-the pass ends and before the listener's next delivery can find the thread
-unmirrored. Only a crash between the receipt and the `Receive` leaves a
-window. In it, on a platform with neither history nor marker, a reply to the
+the pass ends. The gap is narrowed, not closed: the listener runs on its own,
+so a reply delivered between `open` returning and the `Receive` write, or
+in a longer gap after a crash between the two, finds the thread unmirrored.
+In that gap, on a platform with neither history nor marker, a reply to the
 Question in the new thread is an event in an unmirrored thread and is
 acknowledged and dropped, and a mention may start a Task there; the opening
 post numbered later is never relayed, and the Question's Task, finding the

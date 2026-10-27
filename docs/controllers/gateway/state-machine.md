@@ -53,6 +53,8 @@ then `NeedsAttention/TaskCreateFailed`.
 | Opened | `Receive` Failed, or Unknown or missing with the Conversation readably without `open/<message id>` | Opened | A failed attempt; perform `Receive` again under the same key. With the delivery present, the receipt is recovered. |
 | Opened | The third failed `Receive` attempt | Abandoned | `NeedsAttention/ReceiveFailed`. The Question stays posted; later declarations are read as an untied Task's. |
 | Abandoned | Every `pollMs`, the Conversation's `status.task` names this Task's `uid` | Tied | The listener's keyed copy tied it after all. |
+| Abandoned | The Conversation names another `uid`, or is readably absent past `gateway.retainMs` after the abandonment | none | Stop watching; the Task is untied. |
+| Abandoned | A later `Question` declared | Opening | As from none: it opens a new thread, and the abandoned one is no longer watched. |
 | Opening | Failed | Opening | Retry under the same key after `RETRY_DELAY_MS`, at most three attempts, then `NeedsAttention/PostFailed` and back to none. |
 | Opening | A channel recovery read answers Unknown, `Incomplete` or otherwise | Opening | Not an attempt: `recovery.reads += 1`, the next read at `RETRY_DELAY_MS × 2^(reads − 1)`, capped at `pollMs`, later if the platform gave `retryAfter`. At three reads, `NeedsAttention/RecoveryIncomplete`; reading continues on the capped schedule, nothing is opened again. A complete read resets `reads` to `0` and is decided as a recovered receipt or a failed attempt. |
 | Opening | Unknown, and the channel has no history or no marker | Opening | `NeedsAttention/PostUnconfirmed`; nothing is opened again until a person acts. |

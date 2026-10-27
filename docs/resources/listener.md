@@ -53,7 +53,7 @@ A manifest through `fleet apply` is refused: the config is the only source.
 | --- | --- | --- |
 | `accepted` | `listener-controller` | `{digest, at}`: the account's digest in the loaded config, the one `fleet gateway account NAME --json` prints for a listener to start from, and when it was loaded. |
 | `beats` | `listener/<account>`, through `fleet gateway receive --beat` | Per listener `instance`, its last beat: `{state, digest, at, sentAt, lastDeliveryAt}`, `state` being `connecting`, `connected` or `closing`, `at` stamped by the verb's clock and `sentAt` the listener's. At most 8 instances; a new one past that replaces the entry with the oldest `at`. Written through the typed mutation `record_beat`, which changes nothing else. |
-| `refused` | `listener/<account>`, through `fleet gateway receive` | Counts by reason of envelopes the verb refused or could not read, and `lastFaultAt`, the last one that was the listener's own fault (not an envelope, an unknown account, the wrong `verified`), through `record_refusal`. |
+| `refused` | `listener/<account>`, through `fleet gateway receive` | Counts by reason of envelopes the verb refused or could not read, and `lastFaultAt`, the last one that was the listener's own fault (not an envelope, or the wrong `verified`), through `record_refusal`. |
 | `beatRevision` | `listener/<account>` | Incremented by every `record_beat` and `record_refusal`. |
 | `seen` | `listener-controller` | The `beatRevision` last judged, so the Listener is due only when something new was reported. |
 | `observedAt` | `listener-controller` | When `whoami` and `capabilities` last answered Known. |
