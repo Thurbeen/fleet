@@ -83,7 +83,8 @@ jobs:
           - target: x86_64-pc-windows-msvc
             os: windows-latest
     runs-on: ${{ matrix.os }}
-    # A signing request waits for a person to approve it in SignPath.
+    # A signing request waits up to 45 minutes for a person to approve it in
+    # SignPath, on top of the tests and build.
     timeout-minutes: 90
     permissions:
       contents: read
@@ -193,7 +194,7 @@ jobs:
           signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
           github-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
           wait-for-completion: true
-          wait-for-completion-timeout-in-seconds: 3600
+          wait-for-completion-timeout-in-seconds: 2700
           output-artifact-directory: signed
       - name: Use the signed executable
         if: steps.signpath.outputs.enabled == 'true'

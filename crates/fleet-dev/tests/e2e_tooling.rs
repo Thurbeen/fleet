@@ -671,11 +671,12 @@ jobs:
       - run: cargo xtask check rust-test
       - id: signpath
         env:
+          PUBLISH: ${{ needs.plan.outputs.publish }}
           SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
           SIGNPATH_ORGANIZATION_ID: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
           SIGNPATH_PROJECT_SLUG: ${{ vars.SIGNPATH_PROJECT_SLUG }}
           SIGNPATH_SIGNING_POLICY_SLUG: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
-        run: echo enabled=true >> "$GITHUB_OUTPUT"
+        run: echo "enabled=$PUBLISH" >> "$GITHUB_OUTPUT"
       - if: steps.signpath.outputs.enabled == 'true'
         uses: SignPath/github-action-submit-signing-request@c92b958760219087e01f8d67a1669ed57afe2627
         with:
@@ -683,6 +684,8 @@ jobs:
           organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
           project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
           signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+      - if: steps.signpath.outputs.enabled == 'true'
+        run: cp signed/fleet.exe "$BIN"
       - run: cargo xtask release package
       - if: steps.signpath.outputs.enabled == 'true'
         run: powershell -NoProfile -Command Get-AuthenticodeSignature fleet.exe
@@ -738,6 +741,34 @@ fn windows_release_signs_before_packaging_behind_its_configuration_gate() {
             "organization-id",
         ),
         (late, "sign before packaging"),
+        (
+            SIGNED_CD.replace(
+                "      - if: steps.signpath.outputs.enabled == 'true'\n        run: cp signed/fleet.exe \"$BIN\"\n",
+                "",
+            ),
+            "signed/fleet.exe",
+        ),
+        (
+            SIGNED_CD.replace(
+                "          PUBLISH: ${{ needs.plan.outputs.publish }}\n",
+                "",
+            ),
+            "PUBLISH",
+        ),
+        (
+            SIGNED_CD.replace(
+                "echo \"enabled=$PUBLISH\"",
+                "echo \"enabled=true\"",
+            ),
+            "PUBLISH",
+        ),
+        (
+            SIGNED_CD.replace(
+                "      - if: steps.signpath.outputs.enabled == 'true'\n        uses:",
+                "      - if: always() || steps.signpath.outputs.enabled == 'true'\n        uses:",
+            ),
+            "gated on steps.signpath",
+        ),
         (
             SIGNED_CD.replace("Get-AuthenticodeSignature", "Get-FileHash"),
             "Get-AuthenticodeSignature",

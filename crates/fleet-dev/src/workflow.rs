@@ -164,11 +164,16 @@ const SIGNPATH: &[(&str, &str)] = &[
 const SIGNPATH_GATE: &str = "steps.signpath.outputs.enabled == 'true'";
 /// A Windows release signs fleet.exe before packaging, so checksums and the
 /// provenance attestation cover the signed bytes, and verifies the packaged
-/// signature. Both run only when the `signpath` step finds every setting, so
-/// releases stay unsigned and green until the project is approved.
+/// signature. Both run only when the `signpath` step finds every setting on a
+/// publishing run, so releases stay unsigned and green until the project is
+/// approved, and dry runs never ask an approver.
 fn signing(build: &Value, errors: &mut Vec<String>) {
     let all = steps(build).collect::<Vec<_>>();
-    let gated = |s: &Value| s["if"].as_str().is_some_and(|c| c.contains(SIGNPATH_GATE));
+    let gated = |s: &Value| {
+        s["if"]
+            .as_str()
+            .is_some_and(|c| c == SIGNPATH_GATE || c == format!("${{{{ {SIGNPATH_GATE} }}}}"))
+    };
     let package = all.iter().position(|s| {
         s["run"]
             .as_str()
@@ -187,6 +192,12 @@ fn signing(build: &Value, errors: &mut Vec<String>) {
         errors.push(format!("SignPath signing must be gated on {SIGNPATH_GATE}"));
     }
     let config = all.iter().find(|s| s["id"] == "signpath");
+    if !config.is_some_and(|s| {
+        s["env"]["PUBLISH"] == "${{ needs.plan.outputs.publish }}"
+            && s["run"].as_str().is_some_and(|r| r.contains("$PUBLISH"))
+    }) {
+        errors.push("the signpath gate step must sign only when PUBLISH is set by the plan".into());
+    }
     for (input, name) in SIGNPATH {
         let secret = format!("${{{{ secrets.{name} }}}}");
         let var = format!("${{{{ vars.{name} }}}}");
@@ -202,6 +213,13 @@ fn signing(build: &Value, errors: &mut Vec<String>) {
     }
     if package.is_none_or(|p| p < sign) {
         errors.push("release must sign before packaging".into());
+    } else if !all[sign..package.unwrap_or(sign)].iter().any(|s| {
+        gated(s)
+            && s["run"]
+                .as_str()
+                .is_some_and(|r| r.contains("signed/fleet.exe"))
+    }) {
+        errors.push("release must package signed/fleet.exe from SignPath".into());
     }
     if !all.iter().enumerate().any(|(i, s)| {
         package.is_some_and(|p| i > p)
