@@ -41,7 +41,7 @@ then `NeedsAttention/TaskCreateFailed`.
 | none | The Task carries `gateway.fleet.dev/conversation` | Waiting | Record the Conversation's name; read no declaration yet. |
 | Waiting | That Conversation's `status.task` has the Task's `uid` | Tied | The cursor starts at `0`, so the first relay is the [join](#joining). Declarations made while waiting are read now, in order. |
 | Waiting | The Conversation readably absent, or tied to another `uid` | none | `NeedsAttention/ConversationGone`; from then on the Task is untied. |
-| none | The Task carries `gateway.fleet.dev/parent` naming a Task that is Known or Unknown | Child | Never ties. The parent relays this Task's declarations. |
+| none | The Task carries `gateway.fleet.dev/parent` naming a Task that is Known or Unknown | Child | Never ties. The parent relays this Task's declarations; this Task's own `declared` cursor advances over each without posting, so nothing is replayed if it later becomes untied. |
 | none | A `Question` declared, no tie, no live parent | Opening | Write the `Open` intent under the Question's key; perform `Open`. |
 | Opening | `Opened` receipt, or an Unknown one recovered from the channel's history | Waiting | Record the new Conversation's name; the manager has ensured it and spooled the post. The Conversation ties itself from the post's marker. |
 | Opening | Failed | Opening | Retry under the same key after `RETRY_DELAY_MS`, at most three attempts, then `NeedsAttention/PostFailed` and back to none. |
@@ -73,8 +73,9 @@ new  = conv.messages where seq > cursor and admit(route, m) == Admitted
 if new is empty, or the inbox holds more than 20 undelivered entries:
     nothing: held and new messages wait above the cursor
 else:
-    if conv.droppedBefore > cursor:
+    if conv.droppedBefore > cursor and cursor > 0:
         gaps += 1; NeedsAttention/RelayGap; the entry starts with the gap notice
+    (at cursor 0 the older messages are stated in the join, not as a gap)
     append { key: task/<name>/<uid>/gateway/<conv uid>/<conv.revision>,
              from: gateway/<conversation>, text: render(held, new),
              about: {uid: conv uid, revision: conv.revision},
@@ -105,8 +106,8 @@ the declarations read on the same pass:
    in one write. Perform `Post` through the port after renewing the lease.
    Write the receipt on `status.gateway.posts`.
 
-A Question's receipt records `status.gateway.questions.<id>`; its `seq`
-is filled in once the mirror has numbered the post. Posting does not wait
+A Question's receipt records `status.gateway.questions.<id>` with the
+post's platform message id and time `at`. Posting does not wait
 on a full inbox: a write with nothing appended carries the intents.
 
 ## Children

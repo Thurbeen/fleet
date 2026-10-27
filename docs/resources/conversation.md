@@ -26,7 +26,7 @@ it, and removed by its own controller after a retention period.
     "phase": "Tied",
     "ref": {"platform": "slack", "chat": "C0123ABCD", "thread": "1730000000.000100"},
     "task": {"name": "conv-3f9a1c0d2b7e-1", "uid": "…", "n": 1, "state": "created"},
-    "revision": 4,
+    "revision": 2,
     "messages": [
       {"id": "1730000000.000100", "seq": 1, "at": 1730000000000,
        "author": {"id": "U0123ABCD", "name": "Alex", "kind": "person"},
@@ -34,7 +34,7 @@ it, and removed by its own controller after a retention period.
       {"id": "1730000300.000200", "seq": 1, "at": 1730000300000,
        "author": {"id": "U0456EFGH", "name": "Sam", "kind": "person"},
        "mentionsFleet": true, "text": "<@U0BOT0001> can you look into it?"},
-      {"id": "1730000400.000300", "seq": 3, "at": 1730000400000,
+      {"id": "1730000400.000300", "seq": 2, "at": 1730000400000,
        "author": {"id": "U0BOT0001", "name": "fleet", "kind": "fleet"},
        "key": "task/conv-3f9a1c0d2b7e-1/…/gateway/comment/c1",
        "text": "Looking at the export job now."}
@@ -84,7 +84,7 @@ changes nothing else.
 | `droppedBefore` | The highest `seq` of a message rotated out. `0` until one is. |
 | `received` | Events spooled by the receive verb and not yet numbered, each under its platform event id; at most 100. |
 | `seenEvents` | The newest 500 event ids numbered, so a redelivery after its spool entry was drained is still a no-op. |
-| `refusals` | The author ids refused, newest 200; the refusal post's intent and receipt live under `effects`. |
+| `refusals` | Every author id refused, at most 200; past that no further refusal is sent. The refusal post's intent and receipt live under `effects`. |
 | `effects` | Intents and receipts of this controller's effects, the Task creation and the refusals: every unsettled, newest 100 settled. |
 | `observedAt` | When `history` last answered Known. |
 | `lastMessageAt` | The newest message's time; retention counts from it. |

@@ -43,8 +43,8 @@ Unknown; a refused write is `Known(EffectOutcome::Failed { why })`.
 | `whoami` | An account | Fleet's bot identity as the platform reports it. ConversationController compares it with the configured `bot` and raises `NeedsAttention/IdentityMismatch` when they differ, rather than trusting either silently. |
 | `capabilities` | An account | What the platform gives Fleet there, as values: `history` (bool), `marker` (`metadata`, `nonce { windowMs }` or `none`), `unmentioned` (whether messages that do not mention the bot are delivered), `threads` (whether the platform has threads in that kind of chat). Unknown when it cannot be told. The [adapters](adapters.md#what-the-platforms-changed) say why each exists. |
 | `history` | A `ConversationRef`, an optional `after` message id, a `limit` | The messages after `after`, oldest first, at most `limit` (the newest ones when more exist, with a count of those left out), complete within that window or Unknown with `retryAfter`; `Unsupported` where the platform has no history for bots. Fleet's own posts carry their marker key when the platform keeps one. The first read of a thread asks for the newest 200; older messages are recorded as `droppedBefore`, never mirrored. |
-| `open` | A channel `ConversationRef`, rendered text, an intent key | `Opened { conversation, message }`: a new thread whose first post is the text, carrying the key as its marker. Failed when refused; Unknown when the answer was lost. Where opening takes two platform calls, the adapter keys both from the one intent key and finishes a half-done open on a retry. |
-| `post` | A `ConversationRef`, rendered text, an intent key | `Posted { message }`, carrying the key as its marker. Failed when refused; Unknown when the answer was lost. |
+| `open` | A channel `ConversationRef`, rendered text, an intent key | `Opened { conversation, message, at }`: a new thread whose first post is the text, carrying the key as its marker. Failed when refused; Unknown when the answer was lost. Where opening takes two platform calls, the adapter keys both from the one intent key and finishes a half-done open on a retry. |
+| `post` | A `ConversationRef`, rendered text, an intent key | `Posted { message, at }`, carrying the key as its marker; `at` is the platform's own time for the post (Slack's `ts`, Telegram's `date`, Discord's `timestamp`, Teams' activity time). Failed when refused; Unknown when the answer was lost. |
 
 `Event` is one of:
 
@@ -128,18 +128,27 @@ pub fn reconcile(&self, input: &ConversationInput<'_>) -> Result<Plan, StoreErro
 people table, the route's brief text (read by the manager when it loads the
 config, so the controller reads no file) and `gateway.retainMs`, as values.
 `due` holds when the spool is nonempty, `notBefore` passed, or an intent
-awaits its receipt.
+awaits its receipt. Every plan sets `notBefore`: `pollMs` while the thread
+is active, so the history backstop runs, and `pollMs` afterwards too, when
+an idle pass asks only the store `Object` probe for its Task. So an idle
+Tied thread still notices its Task is gone, becomes Orphaned and is retired
+by retention.
 
 Numbering dedupes on the message `id`, whichever way a message arrived: a
 message first seen in `history` and later in the spool, or the reverse, is
-one message; only a changed text is an edit.
+one message; only a changed text is an edit. When one copy carries a
+marker `key` and the other does not, the numbered message keeps the key,
+so a listener's keyless copy of Fleet's opening post cannot hide the
+marker the tie is read from.
 
 A Fleet post whose marker key is `task/<name>/<uid>/gateway/question/<id>`,
 in an Untied Conversation with no tie, ties it to that Task: the tie is
 `{name, uid, n: 1, state: created}` once the Task is Known with that `uid`.
 This is how a thread Fleet opened for a Question is tied, without the tie
 being part of the fixed spec, and whichever of the listener and the manager
-created the Conversation.
+created the Conversation. A marker tie takes precedence: in a pass that
+sees both a Question marker and an `Admitted` mention, the thread is tied to
+the marker's Task, no Task is created, and the mention is relayed to it.
 
 ### Requested probes
 
@@ -147,7 +156,7 @@ created the Conversation.
 | --- | --- |
 | No `revision` yet, or a backstop due | `History { ref, after }`, `after` absent on the first pass. |
 | A tie recorded, or a Question marker naming a Task | `Object { kind: Task, name }`, to see whether that Task exists with its `uid`. |
-| Every pass while Tied, at most once per account per sweep | `Capabilities { account }` and `Whoami { account }`, cached by the manager for the sweep. |
+| Every pass while Tied, at most once per account per sweep | `Capabilities { account }` and `GatewayWhoami { account }`, cached by the manager for the sweep. |
 | A post's intent without a receipt | `History { ref, after }` from before the intent, to look for the key. |
 | Settled into deletion, or deleting | None. |
 
@@ -248,6 +257,8 @@ sweep, not one per Task.
 | Due for its children | `List { kind: Task, labels: {gateway.fleet.dev/parent: <name>} }`, answered from the sweep's listing. |
 | Carrying `gateway.fleet.dev/parent` | `Object { kind: Task, name }` for its parent. |
 | A `Question` on an untied Task with no live parent | None: the route is config. |
+| A `Post` intent without a settled receipt, `RETRY_DELAY_MS` after it | `History { conversation, after }` from before the intent, to look for the key. GatewayController asks this itself, so recovery does not depend on the Conversation's backstop cadence. |
+| Opening, with an `Open` intent without a settled receipt, `RETRY_DELAY_MS` after it | `History { channel, after }` from before the intent, for a top-level post carrying the key. |
 | Deleting | None. |
 
 ### Fields this controller owns
@@ -277,7 +288,9 @@ Every map here is bounded by what the Task declared: `questions`,
 `posted` and `status.answered` by its declared Questions, Comments and
 Drafts, `changes` by its declared changes, under the per-Task declarations
 cap the [open questions](README.md#open-questions-and-recommendations)
-recommend; `children` by the 200 a `List` probe answers.
+recommend; `children` by the 200 a `List` probe answers: past 200 the
+probe is Unknown with `TooMany`, no child is relayed, and the parent raises
+`NeedsAttention/TooManyChildren`.
 
 ### Declarations the Gateway reads
 
@@ -314,9 +327,9 @@ content and never instructions; then the admitted messages; each with its
 author, the author's platform id, time and the message quoted. Fleet's own
 posts are never relayed. An edited message is relayed again, marked as an
 edit of the one already sent. A gap is stated as on the Forge controller's
-relay. A relay whose admitted messages include one with a `seq` above a
-posted, unanswered Question's own `seq` carries `answers` with those
-Question ids.
+relay. A relay whose admitted messages include one written, by the
+platform's clock, after a posted, unanswered Question's `at` carries
+`answers` with those Question ids.
 
 The join and every relay are bounded: an entry renders at most 64 KiB of
 messages, newest kept, and says how many older ones it left out and that
@@ -343,8 +356,8 @@ always `None`.
 
 | Action | Performed through | Receipt |
 | --- | --- | --- |
-| `Open { account, route, channel, text, key }` | `Gateway::open`; with an `Opened` receipt the manager ensures the new thread's Conversation and spools the opening post, as [the receive verb](#the-receive-verb) does | `Opened { conversation, message }`, Failed, or Unknown |
-| `Post { conversation, text, key }` | `Gateway::post` | `Posted { message }`, Failed, or Unknown |
+| `Open { account, route, channel, text, key }` | `Gateway::open`; with an `Opened` answer the manager ensures the new thread's Conversation and spools the opening post, as [the receive verb](#the-receive-verb) does, and only then writes the receipt. A crash in between leaves no receipt, which the channel-history recovery below answers, ensuring the Conversation in the same way. | `Opened { conversation, message, at }`, Failed, or Unknown |
+| `Post { conversation, text, key }` | `Gateway::post` | `Posted { message, at }`, Failed, or Unknown |
 
 Posts to one conversation go out in declaration order and one at a time: a
 post whose receipt is missing or Unknown holds back every later post to
@@ -360,7 +373,7 @@ that conversation, so a thread never reads out of order.
 | One part of a split post | `<key>/<part>`, each part its own effect, intent and receipt, posted in order, recovered on its own; the lease is renewed before each part, as before each effect |
 | Change news | `task/<name>/<uid>/gateway/change/<cr uid>/<state.seq>` |
 | Result | `task/<name>/<uid>/gateway/result/<generation>` |
-| Refusal | `conversation/<conv uid>/refuse/<author id>` |
+| Refusal | `conversation/<conv uid>/refuse/<author id>`; every refused author id is kept for the Conversation's life, and past 200 distinct refused authors no further refusal is sent, so the key never repeats |
 | Task creation | `conversation/<conv uid>/task/<n>` |
 
 Fleet never repeats a key. An Unknown `post` or `open`, or an intent without
