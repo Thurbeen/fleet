@@ -4,10 +4,11 @@ This page defines the Gateway's APIs: the port that adapters implement, the
 CLI verbs that listeners and people run, what a Task declares and receives,
 and who may write what. The port, the addresses and admission are
 implemented in `fleet_api::gateway`; the three verbs, the Conversation and
-Listener kinds, ConversationController's mirror and ListenerController are
-implemented; ConversationController's Task creation and refusals,
-GatewayController and the declarations are design, not implemented. It
-follows the shape of the
+Listener kinds, ConversationController's mirror, ListenerController,
+GatewayController's tie, join and relay, `answers`, the parent labels and
+`Probe::List` are implemented; ConversationController's Task creation and
+refusals, GatewayController's posting, the actions and the declarations
+are design, not implemented. It follows the shape of the
 [Forge controller interface](../forge/interface.md). The
 [state machine](state-machine.md) defines when each thing happens.
 

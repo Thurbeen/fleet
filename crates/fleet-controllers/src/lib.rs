@@ -10,6 +10,9 @@
 //!   to a Task honest.
 //! - [`ListenerController`] judges one chat account's listener from its
 //!   heartbeats.
+//! - [`GatewayController`] keeps a Task's tie to its chat thread, relays
+//!   the thread into the Task's inbox and a child's words into its
+//!   parent's.
 //!
 //! Adapters sit above this crate and are unreachable from it, which the
 //! compiler enforces:
@@ -52,12 +55,13 @@
 //!
 //! ```
 //! use fleet_controllers::{
-//!     ChangeRequestController, ConversationController, ForgeController, ListenerController,
-//!     TaskController,
+//!     ChangeRequestController, ConversationController, ForgeController, GatewayController,
+//!     ListenerController, TaskController,
 //! };
 //! assert_eq!(TaskController::KIND, "Task");
 //! assert_eq!(ChangeRequestController::KIND, "ChangeRequest");
 //! assert_eq!(ForgeController::KIND, "Task");
+//! assert_eq!(GatewayController::KIND, "Task");
 //! assert_eq!(ConversationController::KIND, "Conversation");
 //! assert_eq!(ListenerController::KIND, "Listener");
 //! ```
@@ -65,6 +69,7 @@
 pub mod change_request;
 pub mod conversation;
 pub mod forge;
+pub mod gateway;
 pub mod listener;
 pub mod plugin;
 pub mod task;
@@ -72,5 +77,6 @@ pub mod task;
 pub use change_request::{ChangeRequestController, ChangeRequestInput, ChangeRequestObservations};
 pub use conversation::{ConversationController, ConversationInput, ConversationObservations};
 pub use forge::{ForgeController, ForgeInput, ForgeObservations};
+pub use gateway::{GatewayController, GatewayInput, GatewayObservations};
 pub use listener::{ListenerController, ListenerInput, ListenerObservations};
 pub use task::{MAX_ATTEMPTS, RETRY_DELAY_MS, TaskController, TaskInput};

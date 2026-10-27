@@ -5,8 +5,11 @@ Design, not implemented in full. The installed binary has step 1 below: the
 adapter, the `Conversation` and `Listener` kinds, ConversationController's
 mirror (numbering, the history backstop, orphaning and retention),
 ListenerController, and the `fleet gateway receive`, `account` and `status`
-verbs. Admission, Task creation, the refusal post and GatewayController are
-design, not implemented: a mention is mirrored, and starts nothing yet.
+verbs. It has step 3 too: GatewayController's tie, the join and the relay,
+`status.answered` with the `answers` inbox field, the parent labels and a
+child's words reaching its parent's inbox. Admission, Task creation, the
+refusal post and posting are design, not implemented: a mention is
+mirrored, and starts nothing yet.
 
 The Gateway ties chat threads to Tasks:
 

@@ -125,6 +125,10 @@ enum Command {
         /// The message, delivered as typed; it may start with a dash.
         #[arg(allow_hyphen_values = true)]
         text: String,
+        /// A declared Question this message answers, by id; repeatable.
+        /// Recorded in the Task's status.answered, first answer wins.
+        #[arg(long = "answers", value_name = "ID")]
+        answers: Vec<String>,
         /// Print the appended inbox entry as JSON.
         #[arg(long)]
         json: bool,
@@ -402,8 +406,13 @@ fn run(cli: Cli) -> Result<(), Failure> {
             change_request,
             json,
         } => cmd_declare(store, &config, &task, change_request, json),
-        Command::Send { task, text, json } => {
-            let entry = send(store, &SystemClock, &task, &current_user(), &text)?;
+        Command::Send {
+            task,
+            text,
+            answers,
+            json,
+        } => {
+            let entry = send(store, &SystemClock, &task, &current_user(), &text, &answers)?;
             if json {
                 print_json(&serde_json::to_value(&entry).map_err(|e| fail(e.to_string()))?);
             } else {
@@ -1250,7 +1259,15 @@ fn status_summary(obj: &Object) -> Value {
     } else if !fleet_api::kinds::is_served(&obj.kind) {
         own.insert("status".into(), obj.status.clone());
     } else {
-        for k in ["session", "execution", "brief", "result", "forge"] {
+        for k in [
+            "session",
+            "execution",
+            "brief",
+            "result",
+            "forge",
+            "gateway",
+            "answered",
+        ] {
             own.insert(k.to_string(), field(k));
         }
         own.insert(
@@ -1366,6 +1383,39 @@ fn print_status(s: &Value) {
                 field("message").lines().next().unwrap_or("")
             );
         }
+    }
+    if let Some(gw) = s.get("gateway").filter(|g| g.is_object()) {
+        if let Some(tie) = gw.get("conversation").filter(|t| t.is_object()) {
+            println!(
+                "gateway {} {} cursor {} seen {} gaps {}",
+                tie["state"].as_str().unwrap_or("-"),
+                tie["name"].as_str().unwrap_or("-"),
+                gw["cursor"],
+                gw["seen"],
+                gw["gaps"]
+            );
+        }
+        let children = gw["children"].as_object().map_or(0, |c| c.len());
+        if children > 0 {
+            println!("gateway children {children}");
+        }
+        for c in gw["conditions"].as_array().into_iter().flatten() {
+            let field = |k: &str| c.get(k).and_then(Value::as_str).unwrap_or("");
+            println!(
+                "  gateway {:<8} {:<8} {:<26} {}",
+                field("type"),
+                field("status"),
+                field("reason"),
+                field("message").lines().next().unwrap_or("")
+            );
+        }
+    }
+    for (id, a) in s["answered"].as_object().into_iter().flatten() {
+        println!(
+            "answered {id} by {} ({})",
+            a["from"].as_str().unwrap_or("-"),
+            a["key"].as_str().unwrap_or("-")
+        );
     }
 }
 

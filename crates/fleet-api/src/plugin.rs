@@ -159,6 +159,10 @@ pub struct Append {
     pub uid: String,
     pub key: String,
     pub text: String,
+    /// The declared Questions the entry answers, recorded in the Task's
+    /// `status.answered` by the store, first answer wins.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub answers: Vec<String>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

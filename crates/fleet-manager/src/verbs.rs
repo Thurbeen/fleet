@@ -452,7 +452,10 @@ fn parse_url(forge: &dyn Forge, url: &str, name: &str) -> Result<ChangeRef, Stor
 /// under the key `task/<name>/<uid>/send/<n>`, through the store's typed
 /// append. `n` is the resourceVersion the append is made against, which the
 /// store hands out once for its whole life, so a key never repeats even
-/// after its receipt has rotated out of `status.deliveries`. The entry is
+/// after its receipt has rotated out of `status.deliveries`. `answers`
+/// names the declared Questions the message answers (`--answers ID`): the
+/// store records each in `status.answered` in the same write, first answer
+/// wins, and refuses an id that names no declared Question. The entry is
 /// returned as appended; delivery is the controller's, on its next pass.
 pub fn send(
     store: &dyn Store,
@@ -460,6 +463,7 @@ pub fn send(
     name: &str,
     user: &str,
     text: &str,
+    answers: &[String],
 ) -> Result<InboxEntry, StoreError> {
     let user = user.trim();
     if user.is_empty() || user.contains(['/', '\0']) {
@@ -492,6 +496,7 @@ pub fn send(
             from: format!("{CLI_SOURCE_PREFIX}{user}"),
             text: text.to_string(),
             about: None,
+            answers: answers.iter().map(|a| a.trim().to_string()).collect(),
             queued_at: clock.now(),
         };
         match store.append_inbox(

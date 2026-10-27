@@ -10,6 +10,7 @@ use crate::inbox::{Deliveries, DeliveryAttempt, InboxEntry};
 use crate::meta::Millis;
 use crate::plan::{Intent, Receipt};
 use crate::result::{OutputDecl, TaskResult};
+use crate::talk::{Answer, GatewayStatus};
 
 pub const KIND: &str = "Task";
 
@@ -78,9 +79,10 @@ pub enum Phase {
 
 /// Task status. TaskController owns every field but `result` and
 /// `declared`, which the worker writes through `fleet result` and `fleet
-/// declare`, `forge`, which ForgeController owns, and `inbox`, which nobody
-/// owns: it is reached only through the store's typed append and
-/// record-and-remove mutations (see [`crate::inbox`]).
+/// declare`, `forge`, which ForgeController owns, `gateway`, which
+/// GatewayController owns, and `inbox` and `answered`, which nobody owns:
+/// they are reached only through the store's typed append and
+/// record-and-remove mutations (see [`crate::inbox`] and [`crate::talk`]).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TaskStatus {
@@ -138,6 +140,29 @@ pub struct TaskStatus {
     /// conditions. Absent for a Task that declared nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub forge: Option<ForgeStatus>,
+    /// The Gateway controller's: the tie to a chat thread, the relay
+    /// cursor, the children read, the post records and its conditions.
+    /// Absent for a Task that never talks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway: Option<GatewayStatus>,
+    /// Per Question id, the inbox entry that answered it. No owner: written
+    /// only by an inbox append that carries `answers`, first writer wins.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub answered: BTreeMap<String, Answer>,
+}
+
+impl TaskStatus {
+    /// Record what an appended entry answers: each id it carries, unless
+    /// an earlier entry answered it already.
+    pub fn record_answers(&mut self, entry: &InboxEntry) {
+        for id in &entry.answers {
+            self.answered.entry(id.clone()).or_insert_with(|| Answer {
+                key: entry.key.clone(),
+                from: entry.from.clone(),
+                at: entry.queued_at,
+            });
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -166,9 +191,12 @@ pub const WORKER_FIELDS: &[&str] = &["result", "declared"];
 /// The status fields ForgeController owns.
 pub const FORGE_FIELDS: &[&str] = &["forge"];
 
+/// The status fields GatewayController owns.
+pub const GATEWAY_FIELDS: &[&str] = &["gateway"];
+
 /// The status fields nobody owns: reached only through typed mutations.
 /// Every field in none of these lists is TaskController's.
-pub const UNOWNED_FIELDS: &[&str] = &["inbox"];
+pub const UNOWNED_FIELDS: &[&str] = &["inbox", "answered"];
 
 /// The session key for a Task: deterministic, so a second spawn finds the
 /// first session instead of twinning it. The uid keeps a Task recreated under

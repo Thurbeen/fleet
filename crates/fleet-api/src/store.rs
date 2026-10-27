@@ -27,6 +27,9 @@ pub enum FieldManager {
     /// A person at the command line, through `fleet send`: appends to
     /// `Task.status.inbox` and owns nothing.
     Cli,
+    /// The third controller over Task; owns `Task.status.gateway` and
+    /// appends to `Task.status.inbox`.
+    GatewayController,
     Plugin(String),
     /// The one controller for Conversation; owns all of its status but the
     /// spool, `received`, which it drains.
@@ -49,6 +52,7 @@ impl FieldManager {
             FieldManager::ChangeRequestController => "change-request-controller",
             FieldManager::ForgeController => "forge-controller",
             FieldManager::Cli => "cli",
+            FieldManager::GatewayController => "gateway-controller",
             FieldManager::Plugin(name) => return format!("plugin/{name}"),
             FieldManager::ConversationController => "conversation-controller",
             FieldManager::ListenerController => "listener-controller",
@@ -64,6 +68,7 @@ impl FieldManager {
             FieldManager::TaskController
                 | FieldManager::ChangeRequestController
                 | FieldManager::ForgeController
+                | FieldManager::GatewayController
                 | FieldManager::Plugin(_)
                 | FieldManager::ConversationController
                 | FieldManager::ListenerController
@@ -203,8 +208,10 @@ pub trait Store {
     /// Append one entry to a Task's `status.inbox`, compare-and-swap on
     /// resourceVersion, as a caller `kinds::may_append_inbox` admits. Refused
     /// when the key is already in `inbox` or `deliveries`, when more than
-    /// `inbox::MAX_INBOX` entries are undelivered, or on a deleting Task.
-    /// No other status field changes.
+    /// `inbox::MAX_INBOX` entries are undelivered, on a deleting Task, or
+    /// when an `answers` id names no declared Question. The entry's
+    /// `answers` are recorded in `status.answered` in the same write, first
+    /// answer wins. No other status field changes.
     fn append_inbox(
         &self,
         name: &str,
@@ -227,15 +234,17 @@ pub trait Store {
         by: FieldManager,
         lease: &LeaseToken,
     ) -> Result<Object, StoreError>;
-    /// ForgeController's status write: replace `Task.status.forge` with
-    /// `forge` and append `appends` to `status.inbox`, each checked as
-    /// `append_inbox` checks one, in the same compare-and-swap write under
-    /// the lease. The cursors in `forge` and the entries land together or
-    /// not at all; no other field changes.
+    /// A relaying controller's status write: replace the writer's own Task
+    /// status field (`kinds::relay_field`: `status.forge` for
+    /// ForgeController, `status.gateway` for GatewayController) with
+    /// `status` and append `appends` to `status.inbox`, each checked as
+    /// `append_inbox` checks one and its `answers` recorded, in the same
+    /// compare-and-swap write under the lease. The cursors and the entries
+    /// land together or not at all; no other field changes.
     fn record_relay(
         &self,
         name: &str,
-        forge: Value,
+        status: Value,
         appends: Vec<crate::inbox::InboxEntry>,
         expected: u64,
         by: FieldManager,

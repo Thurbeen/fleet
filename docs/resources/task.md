@@ -76,8 +76,8 @@ typed mutations described under [Inbox](#inbox).
 | `deliveryAttempts` | TaskController's bookkeeping per inbox entry being delivered: `sends` (bounded at 3), `probeFailures` and `failed`. Removed with the entry. |
 | `declared` | The worker's, through `fleet declare`: facts it declared, each a JSON object with a required string `kind` and nothing else validated. See [Following declared changes](#following-declared-changes). |
 | `forge` | The Forge controller's: one entry per declared change, keyed by ChangeRequest name, with its `uid`, `state`, `cursor`, `gaps`, mark-ready record and `notBefore`, plus that controller's conditions. Absent for a Task that declared nothing. |
-| `gateway` | Design, not implemented: the [Gateway controller](../controllers/gateway/README.md)'s tie to a chat conversation, relay cursor, post records and children. See [Talking in a conversation](#talking-in-a-conversation). |
-| `answered` | Design, not implemented: per Question id, `{key, from, at}`: the inbox entry that answered it, its source and when. No owner; written only by an inbox append carrying `answers`. |
+| `gateway` | The [Gateway controller](../controllers/gateway/README.md)'s: its tie to a chat conversation, relay cursor, children and post records, plus that controller's conditions. Absent for a Task that never talks. See [Talking in a conversation](#talking-in-a-conversation). |
+| `answered` | Per Question id, `{key, from, at}`: the inbox entry that answered it, its source and when. No owner; written only by an inbox append carrying `answers`, first answer wins. |
 
 ## Metadata and ownership
 
@@ -183,10 +183,12 @@ lists the resulting writers.
 
 ## Talking in a conversation
 
-Design, not implemented. The [Gateway controller](../controllers/gateway/README.md)
-would tie a Task to a chat thread and relay between them, as the Forge
-controller does for a change. A worker never posts in a chat and holds no
-platform credential: it declares, and Fleet relays.
+Partly implemented. The [Gateway controller](../controllers/gateway/README.md)
+ties a Task to a chat thread and relays the thread into its inbox, as the
+Forge controller does for a change. Posting what the Task declares, and
+opening a thread for a Question, are design, not implemented. A worker
+never posts in a chat and holds no platform credential: it declares, and
+Fleet relays.
 
 | Field, label or verb | Owner | Meaning |
 | --- | --- | --- |

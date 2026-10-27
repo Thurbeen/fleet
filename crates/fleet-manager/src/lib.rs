@@ -18,6 +18,13 @@
 //! performed through the Forge port after a lease renewal, and its receipt
 //! written onto the entry.
 //!
+//! A third controller, GatewayController, runs after the Forge one on each
+//! Task it is due for: the Conversation its labels name is answered from
+//! the store, its children from the sweep's one Task listing, and its plan
+//! is the same typed write, `status.gateway` replaced and the relay's
+//! entries appended together. Whether a tied Task is due is judged from
+//! the sweep's Conversation listing, so a quiet tied Task costs nothing.
+//!
 //! The same sweep walks the ChangeRequests: each due one is observed through
 //! the Forge port and decided by ChangeRequestController, whose plan is one
 //! status write and, after retention, one fenced delete. There are no effects
@@ -49,12 +56,14 @@ use fleet_api::gateway::{
 use fleet_api::listener::{self, ListenerSpec};
 use fleet_api::plan::{Action, Effect, EffectOutcome, Observations, Plan, Probe, Receipt};
 use fleet_api::runtime::Runtime;
+use fleet_api::talk::{PARENT_LABEL, PARENT_UID_LABEL};
 use fleet_api::task;
 use fleet_api::{Clock, LeaseToken, Millis, Object, Observation, Store, StoreError};
 use fleet_controllers::{
     ChangeRequestController, ChangeRequestInput, ChangeRequestObservations, ConversationController,
     ConversationInput, ConversationObservations, ForgeController, ForgeInput, ForgeObservations,
-    ListenerController, ListenerInput, ListenerObservations, TaskController, TaskInput,
+    GatewayController, GatewayInput, GatewayObservations, ListenerController, ListenerInput,
+    ListenerObservations, TaskController, TaskInput,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -269,45 +278,96 @@ impl Manager<'_> {
                 .iter()
                 .map(|t| (t.metadata.uid.clone(), t.metadata.name.clone()))
                 .collect();
+            // What the Gateway controller's due test needs besides the
+            // Task: the Conversations as they stand, and each Task's
+            // children, from this one listing.
+            let conversations: Observation<BTreeMap<String, Object>> =
+                self.store.list(conversation::KIND).map(|list| {
+                    list.into_iter()
+                        .map(|c| (c.metadata.name.clone(), c))
+                        .collect()
+                });
+            if let Some(why) = conversations.why() {
+                report.unknowns.push(format!("list Conversation: {why}"));
+            }
+            let mut children_of: BTreeMap<&str, Vec<&Object>> = BTreeMap::new();
+            for t in &tasks {
+                if let (Some(parent), Some(_)) = (
+                    t.metadata.labels.get(PARENT_LABEL),
+                    t.metadata.labels.get(PARENT_UID_LABEL),
+                ) {
+                    children_of.entry(parent.as_str()).or_default().push(t);
+                }
+            }
             let now = self.clock.now();
             for obj in &tasks {
                 let task_due = self.due(obj);
                 let forge_due = ForgeController::due(obj, now);
-                if !(task_due || forge_due) {
+                let gateway_due = {
+                    let conversation = match &conversations {
+                        Observation::Known(map) => Observation::Known(
+                            obj.metadata
+                                .labels
+                                .get(conversation::CONVERSATION_LABEL)
+                                .and_then(|name| map.get(name)),
+                        ),
+                        Observation::Unknown { why } => Observation::Unknown { why: why.clone() },
+                    };
+                    let children = children_of
+                        .get(obj.metadata.name.as_str())
+                        .map(Vec::as_slice)
+                        .unwrap_or_default();
+                    GatewayController::due_with(obj, now, &conversation, children)
+                };
+                if !(task_due || forge_due || gateway_due) {
                     continue;
                 }
                 *lease = self.store.renew_lease(lease, opts.lease_ttl)?;
+                // Each later controller decides from the Task as it is now,
+                // after the earlier one's write, so the plans do not
+                // conflict on every sweep.
+                let mut moved = false;
                 if task_due {
                     let step = self.reconcile_task(obj, lease, opts.lease_ttl, report);
                     busy |= self.tally(step, &obj.key(), report)?;
+                    moved = true;
                 }
-                if !forge_due {
-                    continue;
-                }
-                // The second controller decides from the Task as it is now,
-                // after the first one's write, so the two plans do not
-                // conflict on every sweep.
-                let fresh = if task_due {
+                let fresh = |moved: bool, report: &mut RunReport| -> Option<Object> {
+                    if !moved {
+                        return Some(obj.clone());
+                    }
                     match self.store.get(task::KIND, &obj.metadata.name) {
-                        Observation::Known(Some(o)) => o,
-                        Observation::Known(None) => continue,
+                        Observation::Known(Some(o)) => Some(o),
+                        Observation::Known(None) => None,
                         Observation::Unknown { why } => {
                             report.unknowns.push(format!("{} reread: {why}", obj.key()));
-                            continue;
+                            None
                         }
                     }
-                } else {
-                    obj.clone()
                 };
-                let step = self.reconcile_forge(
-                    &fresh,
-                    lease,
-                    opts.lease_ttl,
-                    report,
-                    &mut whoami,
-                    &workers,
-                );
-                busy |= self.tally(step, &obj.key(), report)?;
+                if forge_due {
+                    let Some(current) = fresh(moved, report) else {
+                        continue;
+                    };
+                    let step = self.reconcile_forge(
+                        &current,
+                        lease,
+                        opts.lease_ttl,
+                        report,
+                        &mut whoami,
+                        &workers,
+                    );
+                    busy |= self.tally(step, &obj.key(), report)?;
+                    moved = true;
+                }
+                if gateway_due {
+                    let Some(current) = fresh(moved, report) else {
+                        continue;
+                    };
+                    let step =
+                        self.reconcile_gateway(&current, lease, opts.lease_ttl, report, &tasks);
+                    busy |= self.tally(step, &obj.key(), report)?;
+                }
             }
             busy |= self.sweep_change_requests(lease, opts.lease_ttl, report)?;
             let mut cache = GatewayCache::default();
@@ -926,6 +986,109 @@ impl Manager<'_> {
         Ok(step)
     }
 
+    /// GatewayController on one Task: answer its `Object` probe for the
+    /// Conversation from the store and its `List` probe for the children
+    /// from the sweep's Task listing (neither renews the lease: no adapter
+    /// is asked), asking again until the controller wants nothing more;
+    /// decide; write `status.gateway` and the relay's entries in one typed
+    /// compare-and-swap write. This step plans no effect; an `Open`,
+    /// `Receive` or `Post` action would be the next step's to perform.
+    fn reconcile_gateway(
+        &self,
+        obj: &Object,
+        lease: &mut LeaseToken,
+        ttl: Millis,
+        report: &mut RunReport,
+        tasks: &[Object],
+    ) -> Result<Step, StoreError> {
+        let _ = ttl;
+        let ctl = GatewayController;
+        let mut input = GatewayInput {
+            task: obj,
+            observations: GatewayObservations::default(),
+            now: self.clock.now(),
+            defaults: self
+                .gateway
+                .as_ref()
+                .map(|g| g.config.defaults())
+                .unwrap_or_default(),
+        };
+        for _ in 0..4 {
+            let probes = ctl.probes(&input)?;
+            if probes.is_empty() {
+                break;
+            }
+            for probe in probes {
+                match probe {
+                    Probe::Object { kind, name } if kind == conversation::KIND => {
+                        let o = self.store.get(&kind, &name);
+                        if let Some(why) = o.why() {
+                            report
+                                .unknowns
+                                .push(format!("{} object {kind}/{name}: {why}", obj.key()));
+                        }
+                        input.observations.conversation = Some(o);
+                    }
+                    Probe::List { kind, labels } => {
+                        let selected = |list: &[Object]| -> Vec<Object> {
+                            list.iter()
+                                .filter(|o| {
+                                    labels
+                                        .iter()
+                                        .all(|(k, v)| o.metadata.labels.get(k) == Some(v))
+                                })
+                                .cloned()
+                                .collect()
+                        };
+                        let answer = if kind == task::KIND {
+                            Observation::Known(selected(tasks))
+                        } else {
+                            match self.store.list(&kind) {
+                                Observation::Known(list) => Observation::Known(selected(&list)),
+                                Observation::Unknown { why } => {
+                                    report
+                                        .unknowns
+                                        .push(format!("{} list {kind}: {why}", obj.key()));
+                                    Observation::Unknown { why }
+                                }
+                            }
+                        };
+                        input.observations.children = Some(answer);
+                    }
+                    // Not this step's: the next step performs the platform
+                    // reads and the posts.
+                    _ => {}
+                }
+            }
+        }
+        let plan = ctl.reconcile(&input)?;
+        let mut step = Step::default();
+        if plan.status.is_none() && plan.appends.is_empty() {
+            return Ok(step);
+        }
+        let gateway = plan
+            .status
+            .unwrap_or_else(|| obj.status.get("gateway").cloned().unwrap_or(Value::Null));
+        *lease = self.store.renew_lease(lease, ttl)?;
+        match self.store.record_relay(
+            &obj.metadata.name,
+            gateway,
+            plan.appends,
+            obj.metadata.resource_version,
+            GatewayController::MANAGER,
+            lease,
+        ) {
+            Ok(_) => step.wrote += 1,
+            // Someone wrote first, or the key already landed: decide again
+            // from fresh state on the next pass.
+            Err(StoreError::Conflict { .. }) | Err(StoreError::AlreadyExists(_)) => {
+                step.conflict = true;
+            }
+            Err(e) => return Err(e),
+        }
+        Ok(step)
+    }
+
     /// The mark-ready effect happened (or may have): its receipt must land
     /// on the entry that holds its intent, even if the Task moved meanwhile,
     /// so this re-reads and retries on a conflict. The write replaces
@@ -1245,6 +1408,7 @@ impl Manager<'_> {
             // Not TaskController's probes: it never asks them.
             Probe::Change { .. }
             | Probe::Object { .. }
+            | Probe::List { .. }
             | Probe::Whoami { .. }
             | Probe::History { .. }
             | Probe::Capabilities { .. }
