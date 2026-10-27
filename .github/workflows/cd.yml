@@ -83,7 +83,11 @@ jobs:
           - target: x86_64-pc-windows-msvc
             os: windows-latest
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    # A signing request waits for a person to approve it in SignPath.
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      actions: read  # SignPath reads this job and its unsigned artifact
     env:
       CARGO_TERM_COLOR: always
       TARGET: ${{ matrix.target }}
@@ -133,12 +137,71 @@ jobs:
         env:
           FLEET_RELEASE_VERSION: ${{ needs.plan.outputs.semver }}
         run: cargo build --release --locked --target "$TARGET" -p fleet-cli --bin fleet
-      - name: Check the binary reports its version, then package it
+      - name: Check the binary reports its version
         run: |
           bin="target/$TARGET/release/fleet"
           if [ "$RUNNER_OS" = "Windows" ]; then bin="$bin.exe"; fi
           cargo xtask release smoke --binary "$bin" --version "$VERSION"
-          cargo xtask release package --target "$TARGET" --version "$VERSION" --binary "$bin" --out dist
+          echo "BIN=$bin" >> "$GITHUB_ENV"
+      # SignPath Foundation signs fleet.exe with Authenticode before it is
+      # packaged, so the checksums and the provenance attestation cover the
+      # signed bytes. Only a publishing run with every setting present signs;
+      # until the project is approved, releases stay unsigned and green. A
+      # partial configuration fails rather than silently shipping unsigned.
+      # docs/CODE_SIGNING.md is the policy.
+      - name: Check the SignPath configuration
+        id: signpath
+        if: runner.os == 'Windows'
+        env:
+          PUBLISH: ${{ needs.plan.outputs.publish }}
+          SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+          SIGNPATH_ORGANIZATION_ID: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          SIGNPATH_PROJECT_SLUG: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          SIGNPATH_SIGNING_POLICY_SLUG: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+        run: |
+          settings=(SIGNPATH_API_TOKEN SIGNPATH_ORGANIZATION_ID SIGNPATH_PROJECT_SLUG SIGNPATH_SIGNING_POLICY_SLUG)
+          missing=()
+          for name in "${settings[@]}"; do
+            if [ -z "${!name}" ]; then missing+=("$name"); fi
+          done
+          if [ "${#missing[@]}" -ne 0 ] && [ "${#missing[@]}" -ne "${#settings[@]}" ]; then
+            echo "::error::SignPath is partly configured; missing ${missing[*]}"
+            exit 1
+          fi
+          if [ "$PUBLISH" = true ] && [ "${#missing[@]}" -eq 0 ]; then
+            echo 'enabled=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'enabled=false' >> "$GITHUB_OUTPUT"
+            echo "fleet.exe is not signed: publish=$PUBLISH, SignPath settings missing: ${#missing[@]}" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload the unsigned executable for SignPath
+        id: unsigned
+        if: steps.signpath.outputs.enabled == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: unsigned-${{ matrix.target }}
+          path: ${{ env.BIN }}
+          if-no-files-found: error
+          retention-days: 1
+      - name: Sign fleet.exe through SignPath
+        if: steps.signpath.outputs.enabled == 'true'
+        uses: SignPath/github-action-submit-signing-request@c92b958760219087e01f8d67a1669ed57afe2627 # v2.3.0
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          github-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: signed
+      - name: Use the signed executable
+        if: steps.signpath.outputs.enabled == 'true'
+        run: |
+          cp signed/fleet.exe "$BIN"
+          cargo xtask release smoke --binary "$BIN" --version "$VERSION"
+      - name: Package the binary
+        run: cargo xtask release package --target "$TARGET" --version "$VERSION" --binary "$BIN" --out dist
       - name: Install the archive and bootstrap offline as a clean user
         run: |
           mkdir -p "installer-fixture/$VERSION"
@@ -159,6 +222,17 @@ jobs:
             installed="$FLEET_INSTALL_DIR/fleet"
           fi
           cargo xtask release smoke --binary "$installed" --version "$VERSION" --first-run-dir installed/clean-user
+      # The archive's fleet.exe, as a clean install lays it down, carries a
+      # valid Authenticode signature. Checksums and provenance are verified
+      # as before; this adds to them.
+      - name: Verify the installed executable's Authenticode signature
+        if: steps.signpath.outputs.enabled == 'true'
+        run: |
+          powershell -NoProfile -NonInteractive -Command '
+            $s = Get-AuthenticodeSignature -LiteralPath installed/bin/fleet.exe
+            Write-Output "$($s.Status): $($s.SignerCertificate.Subject)"
+            if ($s.Status -ne "Valid") { exit 1 }
+          '
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-${{ matrix.target }}

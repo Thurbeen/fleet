@@ -93,6 +93,12 @@ version tag at that checked commit. Every release runner tests, builds,
 packages, installs its archive and runs offline first-run acceptance before
 publication. The protected release environment and provenance attestation
 remain required. No release step installs onto an existing deployment.
+A publishing Windows build signs `fleet.exe` through SignPath before
+packaging and verifies the installed signature. It does so only when the
+`SIGNPATH_API_TOKEN` secret and the `SIGNPATH_ORGANIZATION_ID`,
+`SIGNPATH_PROJECT_SLUG` and `SIGNPATH_SIGNING_POLICY_SLUG` variables are all
+set. A partial configuration fails the build.
+[docs/CODE_SIGNING.md](docs/CODE_SIGNING.md) is the signing policy.
 
 ```sh
 cargo xtask release title 'feat: resource orchestration' 123

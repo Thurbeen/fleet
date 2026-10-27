@@ -663,6 +663,99 @@ fn release_and_title_workflows_keep_native_platform_and_trust_promises() {
     assert!(!ok && out.contains("rust-deny"), "{out}");
 }
 
+const SIGNED_CD: &str = r#"defaults: {run: {shell: bash}}
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - run: cargo xtask check rust-test
+      - id: signpath
+        env:
+          SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+          SIGNPATH_ORGANIZATION_ID: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          SIGNPATH_PROJECT_SLUG: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          SIGNPATH_SIGNING_POLICY_SLUG: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+        run: echo enabled=true >> "$GITHUB_OUTPUT"
+      - if: steps.signpath.outputs.enabled == 'true'
+        uses: SignPath/github-action-submit-signing-request@c92b958760219087e01f8d67a1669ed57afe2627
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+      - run: cargo xtask release package
+      - if: steps.signpath.outputs.enabled == 'true'
+        run: powershell -NoProfile -Command Get-AuthenticodeSignature fleet.exe
+  publish:
+    environment: release
+    steps: []
+"#;
+#[test]
+fn windows_release_signs_before_packaging_behind_its_configuration_gate() {
+    let e = Env::new();
+    e.write(".github/workflows/ci.yml", CI);
+    e.write(".github/workflows/cd.yml", SIGNED_CD);
+    let (ok, out) = e.call(&["workflow"], &[]);
+    assert!(ok, "{out}");
+    let sign = "      - if: steps.signpath.outputs.enabled == 'true'\n        uses: SignPath";
+    let package = "      - run: cargo xtask release package\n";
+    let start = SIGNED_CD.find(sign).unwrap();
+    let end = SIGNED_CD.find(package).unwrap();
+    let late = SIGNED_CD
+        .replace(package, "")
+        .replace(sign, &format!("{package}{sign}"));
+    for (cd, why) in [
+        (
+            SIGNED_CD.replace(&SIGNED_CD[start..end], ""),
+            "no SignPath signing step",
+        ),
+        (
+            SIGNED_CD.replace(
+                "      - if: steps.signpath.outputs.enabled == 'true'\n        uses:",
+                "      - uses:",
+            ),
+            "gated on steps.signpath",
+        ),
+        (
+            SIGNED_CD.replace(
+                "          SIGNPATH_PROJECT_SLUG: ${{ vars.SIGNPATH_PROJECT_SLUG }}\n",
+                "",
+            ),
+            "SIGNPATH_PROJECT_SLUG",
+        ),
+        (
+            SIGNED_CD.replace(
+                "api-token: ${{ secrets.SIGNPATH_API_TOKEN }}",
+                "api-token: committed-token",
+            ),
+            "api-token",
+        ),
+        (
+            SIGNED_CD.replace(
+                "organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}",
+                "organization-id: 00000000-0000-0000-0000-000000000000",
+            ),
+            "organization-id",
+        ),
+        (late, "sign before packaging"),
+        (
+            SIGNED_CD.replace("Get-AuthenticodeSignature", "Get-FileHash"),
+            "Get-AuthenticodeSignature",
+        ),
+        (
+            SIGNED_CD.replace(
+                "      - if: steps.signpath.outputs.enabled == 'true'\n        run: powershell",
+                "      - run: powershell",
+            ),
+            "Get-AuthenticodeSignature",
+        ),
+    ] {
+        e.write(".github/workflows/cd.yml", &cd);
+        let (ok, out) = e.call(&["workflow"], &[]);
+        assert!(!ok && out.contains(why), "{why}: {out}");
+    }
+}
+
 #[test]
 fn release_plan_semver_ordering_prereleases_and_backdated_tags() {
     let e = Env::new();
