@@ -154,11 +154,45 @@ fleet gateway status                # per account: accepted, resolved, inbound, 
 ## Controllers
 
 All three controllers are pure: they read what the manager observes and
-return a plan. The manager performs every effect and every write.
+return a plan. The manager owns I/O, persistence and process execution, and
+performs every effect and every write. Each controller has the shape of the
+[Forge controller](../forge/interface.md): `due`, `probes` and `reconcile`.
 
 ### ConversationController
 
-Works over each [Conversation](../../resources/conversation.md):
+```rust
+pub struct ConversationInput<'a> {
+    pub object: &'a Object,
+    pub observations: ConversationObservations,
+    pub now: Millis,
+    pub defaults: GatewayDefaults,
+}
+
+pub fn due(object: &Object, now: Millis) -> bool;
+pub fn probes(&self, input: &ConversationInput<'_>) -> Result<Vec<Probe>, StoreError>;
+pub fn reconcile(&self, input: &ConversationInput<'_>) -> Result<Plan, StoreError>;
+```
+
+- `defaults` carries the route the spec names, its admission rules, the
+  people table, the route's brief text and `gateway.retainMs`, as values.
+  The manager reads the brief when it loads the config, so the controller
+  reads no file.
+- `due` holds when the thread has unread events, when `notBefore` passed,
+  or when an effect awaits its receipt and a recovery read is due.
+- `probes` asks `History` for the first read, the backstop and recovery;
+  `Object` for the tied Task, or the Task a Question marker names; and
+  `Capabilities` for the account, at most once per account per sweep.
+- `reconcile` returns:
+  - `status`: the whole Conversation status. The same write drains the
+    events it numbered.
+  - `creates`: at most one Task, from the route, with its intent in the same
+    status.
+  - `effects`: at most one refusal `Post` per author, and one busy notice
+    per tie number.
+  - `delete: true`: retires the object after retention, fenced on `uid` and
+    `resourceVersion`.
+
+It works over each [Conversation](../../resources/conversation.md):
 
 - numbers new messages into the mirror, from the receive verb and from a
   `history` backstop while the thread is active,
@@ -228,9 +262,31 @@ Task names.
 
 ### ListenerController
 
-Works over each account's [Listener](../../resources/listener.md). Fleet's
-calls are outbound, so reaching the platform's API proves nothing about
-inbound delivery. ListenerController judges the listener's heartbeats
+```rust
+pub struct ListenerInput<'a> {
+    pub object: &'a Object,
+    pub observations: ListenerObservations,
+    pub now: Millis,
+    pub defaults: GatewayDefaults,
+}
+
+pub fn due(object: &Object, now: Millis) -> bool;
+pub fn probes(&self, input: &ListenerInput<'_>) -> Result<Vec<Probe>, StoreError>;
+pub fn reconcile(&self, input: &ListenerInput<'_>) -> Result<Plan, StoreError>;
+```
+
+- `defaults` carries the account's configuration and its digest, the one
+  `fleet gateway account` prints.
+- `due` holds when `notBefore` passed, or when a heartbeat or refusal was
+  recorded since the last pass.
+- `probes` asks `Capabilities` and `GatewayWhoami` for the account, every
+  `gateway.pollMs`, from the sweep's per-account cache.
+- `reconcile` returns status alone: the three conditions below, and
+  `delete: true` for a Listener whose account left the config.
+
+It works over each account's [Listener](../../resources/listener.md).
+Fleet's calls are outbound, so reaching the platform's API proves nothing
+about inbound delivery. ListenerController judges the listener's heartbeats
 against the configuration Fleet runs:
 
 | Condition | True when | False reasons |
@@ -245,8 +301,37 @@ delivers nothing. Fleet cannot see that setting, so it shows each instance's
 
 ### GatewayController
 
-A second controller over each [Task](../../resources/task.md). It owns
-`status.gateway` and:
+```rust
+pub struct GatewayInput<'a> {
+    pub task: &'a Object,
+    pub observations: GatewayObservations,
+    pub now: Millis,
+    pub defaults: GatewayDefaults,
+}
+
+pub fn due(task: &Object, now: Millis) -> bool;
+pub fn probes(&self, input: &GatewayInput<'_>) -> Result<Vec<Probe>, StoreError>;
+pub fn reconcile(&self, input: &GatewayInput<'_>) -> Result<Plan, StoreError>;
+```
+
+- `due` holds when the tied Conversation moved, when the Task declared or
+  reported something not yet read, when a child changed, while the tie is
+  being set up, or when a post's recovery read is due. A quiet tied Task
+  costs nothing.
+- `probes` asks `Object` for the Conversation, each followed ChangeRequest
+  and the parent; `List` for the children, by the parent labels; and
+  `History` to recover a post or an open. The manager answers `List` from
+  one Task listing per sweep.
+- `reconcile` returns:
+  - `status`: `status.gateway`.
+  - `appends`: the inbox entries, through `record_relay`, so the entry and
+    the cursor land in one write.
+  - `effects`: the `Open`, `Receive` and `Post` actions whose intents the
+    status carries.
+  - `remove_finalizer`: always `None`.
+
+It is a second controller over each [Task](../../resources/task.md). It
+owns `status.gateway` and:
 
 - joins a newly tied Task with the whole retained thread,
 - relays new messages into the inbox, under a cursor,
@@ -254,6 +339,59 @@ A second controller over each [Task](../../resources/task.md). It owns
 - opens a thread for a Question from an untied Task,
 - records answers to Questions,
 - routes a child Task's words into its parent's inbox.
+
+#### Fields this controller owns
+
+| Field | Meaning |
+| --- | --- |
+| `conversation` | `{name, uid, state}` of the tied Conversation. `state` is `opening`, `opened`, `waiting`, `tied` or `abandoned`, as the [state machine](state-machine.md#the-tie-on-a-task) defines. |
+| `seen` | The Conversation `revision` last read. |
+| `cursor` | The Conversation `revision` relayed through. It starts at `0`, so the first relay is the whole retained thread. |
+| `declared` | How many items of `status.declared` were read. |
+| `result` | The result generation posted, if any. |
+| `changes` | Per ChangeRequest name, the `state.seq` posted through. |
+| `children` | Per child Task name, `{uid, seen, declared, result}`. |
+| `posts` | Per intent key, `{intent, receipt, attempts, recovery}`. The newest 100 settled, and every unsettled. |
+| `posted` | Every Question, Comment and Draft id posted, for the life of the Task. |
+| `questions` | Per Question id, where and when it was posted. |
+| `gaps` | How many relays found messages dropped from the mirror. |
+| `conditions` | `Tied`, `NeedsAttention`. |
+
+`status.answered` has no single owner. It maps a Question id to
+`{key, from, at}`, and only an inbox append that carries `answers` writes
+it.
+
+### Actions
+
+| Action | Performed through | Receipt |
+| --- | --- | --- |
+| `Open { account, route, channel, text, key }` | `Gateway::open` | `Opened { conversation, message, at }`, Failed, or Unknown |
+| `Receive { account, address, route, delivery }`, under `<question key>/receive` | The store, never a platform: it creates the opened thread's Conversation and adds Fleet's opening post, as the receive verb would | `Received` (written or a duplicate), Failed, or Unknown |
+| `Post { conversation, text, key }` | `Gateway::post` | `Posted { message, at }`, Failed, or Unknown |
+
+`Receive` is the one way a plan reaches a Conversation, and it changes
+nothing outside the store.
+
+### Changes to Plan and Probe
+
+`Plan` and `Probe` in `fleet_api::plan` change as follows, each with its
+architecture rule:
+
+- `Plan.creates`, today only in the plugin protocol, is carried by
+  ConversationController's plans. The manager's create verb performs it.
+- `Plan.appends`, today ForgeController's, is also GatewayController's.
+- `Plan.delete`, today ChangeRequestController's, is also
+  ConversationController's.
+- A create may carry an `exclusive: {workspace}` precondition. See
+  [workspaces](#workspaces).
+- New probes: `Probe::List { kind, labels }`, answered by the store;
+  `Probe::History`, `Probe::Capabilities` and
+  `Probe::GatewayWhoami { account }`, answered by the Gateway port. The
+  existing `Whoami { host }` stays the Forge port's.
+- New actions: `Open`, `Post` and `Receive`, above.
+
+The kind names `Conversation` and `Listener` are reserved. Once they are
+built in, a plugin manifest that claims either kind is refused.
 
 ## Declarations the Gateway reads
 

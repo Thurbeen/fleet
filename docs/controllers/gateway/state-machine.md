@@ -42,7 +42,8 @@ Behaviour in every phase:
 | --- | --- |
 | none | The Task is not tied. It can still open a thread with a Question. |
 | opening | Fleet is opening a thread for the Task's Question. |
-| waiting | The thread exists, and Fleet waits for its Conversation to name this Task. |
+| opened | The thread is open. Fleet is adding its opening post to the thread's Conversation, through `Receive`. |
+| waiting | The Conversation exists, and Fleet waits for it to name this Task. |
 | tied | The Task and the thread are tied. Fleet relays and posts. |
 | abandoned | The opened thread never reached its Conversation. The Task acts as untied. |
 | child | The Task has a parent. Its words go to the parent's inbox. |
@@ -52,20 +53,23 @@ Behaviour in every phase:
 | none | The Task carries the `conversation` label, because a thread created it | waiting |
 | none | The Task declares a `Question` and has no live parent | opening |
 | none | The Task carries parent labels naming a Task that exists with that `uid`, or that is Unknown | child |
-| opening | The thread is open | waiting |
+| opening | The thread is open | opened |
 | opening | Three attempts are refused | none, with `PostFailed` |
 | opening | The outcome is Unknown, and the platform has no history or marker | opening, with `PostUnconfirmed`, until a person acts |
+| opened | `Receive` succeeded | waiting |
+| opened | The Conversation already names this Task | tied |
+| opened | Three `Receive` attempts failed | abandoned, with `ReceiveFailed` |
 | waiting | The Conversation names this Task | tied |
-| waiting | Fleet's opening post cannot be added to the Conversation after three attempts | abandoned, with `ReceiveFailed` |
 | abandoned | The Conversation later names this Task | tied |
 | abandoned | A later `Question` | opening |
 | abandoned | The Conversation names another Task, or is readably gone past `gateway.retainMs` | none |
 | tied or waiting | The Conversation is readably gone, or names another Task | none, with `ConversationGone` |
 | child | The parent is readably gone | none |
 
-While the tie is `opening` or `waiting`, the Task's later declarations wait.
-They are posted in order once the tie is verified. A Comment, Draft, change
-or result on an untied Task is skipped and never posted later.
+While the tie is `opening`, `opened` or `waiting`, the Task's later
+declarations wait. They are posted in order once the tie is verified. A
+Comment, Draft, change or result on an untied Task is skipped and never
+posted later.
 
 ## Joining
 
