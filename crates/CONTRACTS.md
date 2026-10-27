@@ -175,22 +175,23 @@ Guarantees, each with its test:
 - **Release.** The `fleet.dev/release` finalizer holds a deleted Task until
   its session is deleted, only once the session is proven at rest or gone.
 - **Inbox.** `fleet send TASK TEXT` appends `{key, from, text, queuedAt}` to
-  `status.inbox` as `cli/<user>`, under `task/<name>/<uid>/send/<n>`, `n`
-  the resourceVersion appended against. The oldest entry not given up on is
+  `status.inbox` as `cli/<user>`, under `task/<name>/<uid>/send/<n>`, `n` the
+  resourceVersion appended against. The oldest entry not given up on is
   delivered as the brief is: to a session observed ready on that pass, under
   its key as the runtime intent key, journaled, one entry per pass, at most
   three sends; a lost answer is read back from the journal, never resent
-  blindly. A Known receipt moves the entry's receipt into
-  `status.deliveries` and the entry out of `status.inbox` in one write, and
-  drops its intent, receipt and attempt records. Three refused sends raise
+  blindly. A Known receipt moves the entry's receipt into `status.deliveries`
+  and the entry out of `status.inbox` in one write, and drops its intent,
+  receipt and attempt records. Three refused sends raise
   `NeedsAttention/DeliveryFailed` naming the entry, which stays while later
-  entries go out; three unreadable journal reads raise
-  `DeliveryUnconfirmed` and reading continues; more than 20 undelivered raise
-  `InboxFull`. Delivery runs in Spawned (after the brief), Briefed and
-  Concluded, which stays terminal and is due only while its inbox is
-  nonempty; a readable list without the session there is `WorkerGone`, never
-  a respawn. Stalled delivers nothing; deletion keeps precedence and refuses
-  new sends.
+  entries go out; three unreadable journal reads raise `DeliveryUnconfirmed`
+  and reading continues; readiness Unknown while an entry waits raises
+  `ReadyUnknown` naming why, unless another attention holds, until a Known
+  answer; more than 20 undelivered raise `InboxFull`. Delivery runs in Spawned
+  (after the brief), Briefed and Concluded, which stays terminal and is due
+  only while its inbox is nonempty; a readable list without the session there
+  is `WorkerGone`, never a respawn. Stalled delivers nothing; deletion keeps
+  precedence and refuses new sends.
 - **No churn.** A condition keeps its `lastTransitionTime` unless its status
   changes against what was stored, so a pass that sees nothing new writes
   nothing and the manager goes idle.
@@ -388,14 +389,14 @@ Each adapter reports its longest single operation (`operation_bound`), and
   thurbox key is `<keyPrefix>.<uid>`, and `--on-existing adopt` makes a
   repeated create return the session holding the key. The brief's delivery
   is journaled in the session's own metadata. `spec.model` reaches the
-  harness as the variable `runtime.modelEnv` names for it. Before Codex's first
-  lifecycle report, readiness additionally accepts its initial empty composer:
-  a matching owned session, corroborated live Codex process, no reported or
-  contradicted hook, and a visible-pane capture placing the cursor at the
-  initial prompt under the welcome screen. Missing or different evidence
-  remains Unknown. This input-only proof never authorizes release; `at_rest`
-  still requires idle, done or stopped. `e2e_runtime` covers initial delivery,
-  reconnect, busy/dialog/cursor guards and unchanged deletion safety.
+  harness as the variable `runtime.modelEnv` names for it. Readiness is
+  thurbox's classification, never an agent-specific check: `idle` or `done`
+  is ready, `working`, `blocked`, `stopped` or a stopped row is not, and any
+  other state (a session thurbox sees only as a running process) is Unknown,
+  named in the reason. `at_rest` requires idle, done or stopped.
+  `e2e_runtime` covers a brief and a relay waiting on an unclassified state,
+  the harness name passed to thurbox unchanged, reconnect and unchanged
+  deletion safety.
 - **fake:** a file-backed host for tests and trials, with injectable faults
   (lost answers, refusals, delays, hangs). It runs no process.
 

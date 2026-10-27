@@ -1266,12 +1266,6 @@ fn answer(
                 None => err(format!("no session {id}")),
             }
         }
-        "capture" => {
-            let id = args.get(2).cloned().unwrap_or_default();
-            let mut capture = state["capture"].clone();
-            capture["session_id"] = json!(id);
-            ok(capture)
-        }
         "send" => {
             let id = args.get(2).cloned().unwrap_or_default();
             // As thurbox-cli parses it: a text that starts with `-` is a

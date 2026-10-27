@@ -37,7 +37,7 @@ logic runs.
 | Briefed | No result; readable lookup lacks recorded identity | Briefed | Raise WorkerGone and NeedsAttention; never abandon or respawn. |
 | Active phase | Accepted worker result is stored | Concluded | Set `Concluded=True/ResultRecorded`; keep the session. |
 | Spawned, Briefed or Concluded | Oldest inbox entry has no receipt; session ready; nothing else sent this pass | unchanged | Persist the entry's intent and plan `Brief` under its key; one entry per pass. In Spawned the brief goes first: nothing is delivered while a brief send is unconfirmed. |
-| Spawned, Briefed or Concluded | Oldest inbox entry; session not ready or Unknown | unchanged | Do not send. Receipt recovery through `BriefDelivered` may still proceed. |
+| Spawned, Briefed or Concluded | Oldest inbox entry; session not ready or Unknown | unchanged | Do not send. Readiness Unknown raises `NeedsAttention/ReadyUnknown` with its reason unless another attention holds; a Known answer clears it. Receipt recovery through `BriefDelivered` may still proceed. |
 | Spawned, Briefed or Concluded | Known Delivered receipt, or journal proves delivered | unchanged | Record the receipt in `status.deliveries` and remove the entry, in one write; its intent, receipt and attempt records go with it. |
 | Spawned, Briefed or Concluded | Entry send refused (Known failure) | unchanged | Wait, then send again under the same key to a session observed ready; at most 3 sends. |
 | Spawned, Briefed or Concluded | Entry delivery unreadable after an ambiguous send | unchanged | Wait, then read the journal again; after 3 unreadable reads raise `NeedsAttention/DeliveryUnconfirmed`, and keep reading. |
@@ -99,16 +99,17 @@ are last recorded observations; absence of a condition is not a True value.
 | WorkerGone | A readable lookup no longer shows the recorded identity under its key (`SessionGone`). |
 | Concluded | A worker result was accepted and observed (`ResultRecorded`). |
 | Released | A known release completed, or there was nothing to release. |
-| NeedsAttention | Reason is Stalled, WorkerGone, BriefUnconfirmed, ReleaseFailed, DeliveryFailed, DeliveryUnconfirmed or InboxFull. |
+| NeedsAttention | Reason is Stalled, WorkerGone, BriefUnconfirmed, ReleaseFailed, DeliveryFailed, DeliveryUnconfirmed, ReadyUnknown or InboxFull. |
 
 WorkerGone clears when the exact recorded session is seen again. A successful
 delivery recovery clears attention whose reason is BriefUnconfirmed or
-DeliveryUnconfirmed; an inbox drained back within its bound clears InboxFull.
+DeliveryUnconfirmed; an inbox drained back within its bound clears InboxFull;
+a Known readiness answer while an entry waits clears ReadyUnknown.
 DeliveryFailed stays while the failed entry does. A
 successful release removes the Task; a worker result alone is not a general
 reset of previous conditions. NeedsAttention does not universally stop the
 controller: its reason and phase determine what continues. Delivering an
-inbox entry changes no phase and no condition other than those three.
+inbox entry changes no phase and no condition other than those four.
 
 ## Deletion protocol
 

@@ -171,57 +171,6 @@ impl ThurboxRuntime {
         }
     }
 
-    /// Before its first turn Codex may not have emitted any lifecycle hook.
-    /// Process liveness is insufficient: prove the initial empty composer at
-    /// the visible cursor, never by searching scrollback for an old prompt.
-    fn initial_codex_ready(&self, session: &SessionRef, row: &Value) -> Observation<bool> {
-        if row["id"] != session.id
-            || row["key"] != self.thurbox_key(&session.key)
-            || row_host(row) != session.host
-            || row["agent"] != "codex"
-            || row["state"] != "running"
-            || row["state_source"] != "process"
-            || row["stopped"] != false
-            || row["hook_reported"] != false
-            || !row["hook_state"].is_null()
-            || row["hook_state_contradicted"] != false
-            || row["hook_corroboration"] != "agent"
-            || !codex_process(&row["foreground_process"])
-        {
-            return Observation::unknown("session has no initial Codex readiness evidence");
-        }
-        let capture =
-            match self.json(&["session", "capture", &session.id, "--lines", "0", "--json"]) {
-                Ok(Some(v)) => v,
-                Ok(None) => return Observation::unknown("initial composer capture refused"),
-                Err(why) => return Observation::unknown(why),
-            };
-        let Some(output) = capture["output"].as_str() else {
-            return Observation::unknown("initial composer capture has no output");
-        };
-        let cursor_line = capture["cursor_row"]
-            .as_u64()
-            .and_then(|n| usize::try_from(n).ok())
-            .and_then(|n| output.lines().nth(n));
-        if capture["session_id"] == session.id
-            && capture["ansi"] == false
-            && capture["lines"] == 0
-            && codex_process(&capture["foreground_process"])
-            && capture["cursor_col"] == 2
-            && cursor_line.map(str::trim_end) == Some("› Ask Codex to do anything")
-            && output
-                .lines()
-                .any(|l| l.trim_start().starts_with(">_ OpenAI Codex ("))
-            && output.lines().any(|l| {
-                l.trim() == "To get started, describe a task or try one of these commands:"
-            })
-        {
-            Observation::Known(true)
-        } else {
-            Observation::unknown("capture does not prove an empty initial Codex composer")
-        }
-    }
-
     fn meta(&self, session: &SessionRef, key: &str) -> Result<String, String> {
         match self.call(&["session", "meta", "get", &session.id, key]) {
             Answer::Ok(out) => Ok(out.trim().to_string()),
@@ -258,12 +207,6 @@ impl ThurboxRuntime {
             }
         })
     }
-}
-
-fn codex_process(value: &Value) -> bool {
-    value
-        .as_str()
-        .is_some_and(|p| matches!(p.rsplit(['/', '\\']).next(), Some("codex" | "codex.exe")))
 }
 
 /// Absolute on the host the path is for: a POSIX path, or a Windows drive
@@ -478,7 +421,12 @@ impl Runtime for ThurboxRuntime {
             Observation::Known(row) => match row["state"].as_str() {
                 Some("idle" | "done") => Observation::Known(true),
                 Some("working" | "blocked" | "stopped") => Observation::Known(false),
-                _ => self.initial_codex_ready(session, &row),
+                // Readiness is thurbox's to classify, whatever agent runs in
+                // the session; any other state is no proof either way.
+                _ => Observation::unknown(format!(
+                    "thurbox session state {} (source {}) does not say whether it can take input",
+                    row["state"], row["state_source"]
+                )),
             },
             Observation::Unknown { why } => Observation::Unknown { why },
         }

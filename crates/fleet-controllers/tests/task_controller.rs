@@ -636,6 +636,55 @@ fn an_inbox_entry_waits_for_a_ready_session() {
 }
 
 #[test]
+fn an_entry_waiting_on_unknown_readiness_says_why_until_a_known_answer() {
+    let waits = |obj: &Object, ready| {
+        run(
+            obj,
+            Observations {
+                find: live(),
+                ready: Some(ready),
+                ..Default::default()
+            },
+        )
+    };
+    let obj = briefed_with(&["task/t/u7/send/1"], |_| {});
+    let (_, st) = waits(
+        &obj,
+        Observation::unknown("thurbox session state \"running\""),
+    );
+    let c = cond(&st, "NeedsAttention");
+    assert_eq!(c.status, ConditionStatus::True);
+    assert_eq!(c.reason, "ReadyUnknown");
+    assert!(c.message.contains("task/t/u7/send/1"), "{}", c.message);
+    assert!(c.message.contains("\"running\""), "{}", c.message);
+
+    // A Known answer, even not ready, settles it.
+    let conditions = st.conditions.clone();
+    let obj = briefed_with(&["task/t/u7/send/1"], |st| st.conditions = conditions);
+    let (_, st) = waits(&obj, Observation::Known(false));
+    let c = cond(&st, "NeedsAttention");
+    assert_eq!(
+        (c.status, c.reason.as_str()),
+        (ConditionStatus::False, "Resolved")
+    );
+
+    // It never masks attention another cause raised.
+    let obj = briefed_with(&["task/t/u7/send/1"], |st| {
+        fleet_api::condition::set_condition(
+            &mut st.conditions,
+            "NeedsAttention",
+            ConditionStatus::True,
+            "DeliveryFailed",
+            "",
+            1,
+            NOW,
+        )
+    });
+    let (_, st) = waits(&obj, Observation::unknown("unclassified"));
+    assert_eq!(cond(&st, "NeedsAttention").reason, "DeliveryFailed");
+}
+
+#[test]
 fn a_delivered_receipt_moves_the_entry_into_deliveries_in_one_write() {
     let obj = briefed_with(&["task/t/u7/send/1", "task/t/u7/send/2"], |st| {
         st.intents

@@ -657,11 +657,26 @@ impl Pass<'_, '_> {
             );
             return;
         }
-        if !matches!(
-            self.input.observations.ready,
-            Some(Observation::Known(true))
-        ) {
-            return;
+        match self.input.observations.ready.clone() {
+            Some(Observation::Known(ready)) => {
+                self.settle_attention("ReadyUnknown");
+                if !ready {
+                    return;
+                }
+            }
+            Some(Observation::Unknown { why }) => {
+                // Never masks attention another cause raised.
+                if !condition(&self.st.conditions, NEEDS_ATTENTION).is_some_and(|c| {
+                    c.status == ConditionStatus::True && c.reason != "ReadyUnknown"
+                }) {
+                    self.needs_attention(
+                        "ReadyUnknown",
+                        format!("inbox entry {key} waits for a ready session: {why}"),
+                    );
+                }
+                return;
+            }
+            None => return,
         }
         let attempt = self.st.delivery_attempts.entry(key.clone()).or_default();
         attempt.sends += 1;

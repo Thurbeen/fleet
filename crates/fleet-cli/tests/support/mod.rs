@@ -157,13 +157,21 @@ impl Env {
     /// An environment with a fake forge under `forge.test` beside the fake
     /// runtime, with short retention defaults a test can still wait out.
     pub fn forge(name: &str) -> Env {
-        let env = Env::new(name);
-        let mut cfg = fs::read_to_string(&env.config).expect("config");
+        Env::new(name).with_fake_forge()
+    }
+
+    /// The thurbox stub runtime beside the fake forge under `forge.test`.
+    pub fn thurbox_forge(name: &str) -> Env {
+        Env::thurbox(name).with_fake_forge()
+    }
+
+    fn with_fake_forge(self) -> Env {
+        let mut cfg = fs::read_to_string(&self.config).expect("config");
         cfg.push_str(&format!(
             "\n[forge]\ncallTimeoutMs = 3000\n\n[forge.hosts]\n\"{FORGE_HOST}\" = {{ kind = \"fake\", dir = \"forge\" }}\n"
         ));
-        fs::write(&env.config, cfg).expect("config");
-        env
+        fs::write(&self.config, cfg).expect("config");
+        self
     }
 
     /// An environment whose forge hosts are the stub `gh` (`github.test`),
