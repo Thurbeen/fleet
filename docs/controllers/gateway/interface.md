@@ -169,10 +169,16 @@ state change and at least every `gateway.beatMs`. The exit codes are the
 receive verb's.
 
 Every envelope the verb refuses or cannot read, exit 1 or 4, is also
-recorded on the Listener through `record_refusal`, as `{count, lastAt,
-reason}`, since no Conversation took it. A listener whose deliveries are
-all refused, sent with the wrong `verified` for instance, is then visible
-while it keeps beating.
+recorded on the Listener through `record_refusal`, counted by reason, since
+no Conversation took it. Only a listener's own fault, an envelope that is
+not one (unreadable as an envelope, or for an account not configured) or
+one whose `verified` is not the account's `inbound`, sets
+`refused.lastFaultAt` and turns `InboundReady` False. A full spool, a
+deleting Conversation or a payload the adapter cannot read are one
+thread's or one event's trouble, counted but not judged account-wide; the
+first is already the Conversation's `SpoolFull`. A listener whose
+deliveries are all refused for its own fault is then visible while it keeps
+beating.
 
 ## ConversationController
 
@@ -233,13 +239,17 @@ as `{removed: true}`, and the guard passes: no keyed copy of a deleted post can
 arrive to tie the thread, and refusing it would leave the thread dead to
 mentions without a word. Where it has none, the guard applies once a starter is
 numbered. A thread Fleet opens there has its opening post numbered with its key
-through the `Receive` action GatewayController plans on the pass after the
-`Opened` receipt. Between that receipt and the `Receive`, at least one sweep, a
-mention in the new thread may start a Task before the marker is seen; the marker
-numbered later then finds the thread already tied and is relayed as an ordinary
-Fleet post, so the Question's Task is not tied there and raises
-`ConversationGone`. This window exists only on a platform without history, where
-the listener may deliver a reply before Fleet's own post. If the keyed copy
+through the `Receive` action GatewayController plans after the `Opened`
+receipt. The manager closes the gap between the two: having written an
+`Opened` receipt, it reconciles that Task's GatewayController again in the
+same pass, under the same lease, so `Receive` is planned and performed before
+the pass ends and before the listener's next delivery can find the thread
+unmirrored. Only a crash between the receipt and the `Receive` leaves a
+window. In it, on a platform with neither history nor marker, a reply to the
+Question in the new thread is an event in an unmirrored thread and is
+acknowledged and dropped, and a mention may start a Task there; the opening
+post numbered later is never relayed, and the Question's Task, finding the
+thread tied to another, raises `ConversationGone`. If the keyed copy
 never arrives, because the marker was lost or recovery could not use it and the
 opening Task reports `PostUnconfirmed`, the thread is deliberately dead to
 mentions: Fleet does not guess which Task it belongs to, and the person re-asks
@@ -359,7 +369,10 @@ The create is planned again under the same key every `pollMs`, and the
 first pass after the workspace's Task is deleted starts the Task, joined
 with the whole thread. The person who asked is told once, by a post keyed
 `conversation/<conv uid>/busy/<n>` saying the request is queued behind
-another conversation, so a waiting thread is never silent.
+another conversation, so a waiting thread is never silent. A busy tie holds
+off the Conversation's retention, since the person was told the request is
+queued; a trigger message later removed withdraws the busy tie and starts
+nothing, as no request remains.
 
 A Task keeps its directory until it is deleted, Concluded or not, and
 nothing deletes a conversation Task automatically in this design. A route
@@ -403,7 +416,7 @@ true` for a Listener whose account left the config:
 | --- | --- | --- |
 | `Accepted` | The account in the loaded config is valid and some route uses it; `status.accepted` holds its digest and when it was loaded. | `NoRoute`: no route names the account. |
 | `Resolved` | `whoami` is Known and is the configured `bot`, and `capabilities` is Known. | False `IdentityMismatch`, the two ids quoted; Unknown with the port's reason. |
-| `InboundReady` | Some instance in `status.beats` is `connected`, its `digest` is `status.accepted.digest`, and its verb-stamped `at` is within three `gateway.beatMs` of now; and no envelope was refused within that time. | `NoListener`, never a beat; `Connecting`; `Closing`; `ListenerStale`, the freshest beat's age quoted; `ListenerConfigOld`, no fresh instance on the accepted digest; `DeliveriesRefused`, the last refusal's reason quoted. |
+| `InboundReady` | Some instance in `status.beats` is `connected`, its `digest` is `status.accepted.digest`, and its verb-stamped `at` is within three `gateway.beatMs` of now; and no listener fault was refused within that time. | `NoListener`, never a beat; `Connecting`; `Closing`; `ListenerStale`, the freshest beat's age quoted; `ListenerConfigOld`, no fresh instance on the accepted digest; `DeliveriesRefused`, the last refusal's reason quoted. |
 
 `notBefore` is the earlier of the next `pollMs` and the moment the freshest
 beat goes stale, so a listener that stops beating turns `InboundReady`
@@ -433,13 +446,15 @@ pub fn reconcile(&self, input: &GatewayInput<'_>) -> Result<Plan, StoreError>;
 
 `due` holds for a tied Task when its Conversation's `revision` is above
 `status.gateway.seen` (the manager lists Conversations once per sweep and
-answers from that listing), for a Task waiting for its tie, and for a Task
+answers from that listing), for a Task whose tie is `opening`, `opened` or
+`waiting`, for an `abandoned` tie every `pollMs`, and for a Task
 with an unsettled post once its next recovery read is due, at
 `RETRY_DELAY_MS` after the intent and then at its `recovery.nextAt`; a
 quiet tied Task costs nothing. It also holds when
 `status.declared` or `status.result` holds something past the controller's
 cursors, or when one of its children changed: the manager lists Tasks once
-per sweep, indexes them by their `gateway.fleet.dev/parent` label, and marks
+per sweep, indexes them by their `gateway.fleet.dev/parent` and
+`parent-uid` labels, and marks
 a parent due when a child's `resourceVersion` is above the one
 `status.gateway.children` recorded for it, or a child is new. The `List`
 probe is answered from that one listing, so children cost one store list per
@@ -464,7 +479,7 @@ sweep, not one per Task.
 
 | Field | Meaning |
 | --- | --- |
-| `conversation` | `{name, uid, state}` of the Conversation: `opening` from an `Open` intent until its receipt, `opened` from the receipt until its `Receive` action's receipt, `waiting` until the Conversation's `status.task` names this Task's `uid`, then `tied`. A Task carrying `gateway.fleet.dev/conversation` starts `waiting`. While `opening`, `opened` or `waiting` the Task reads no declaration past the Question that opened, so nothing it says before its tie is verified is skipped; it reads them in order once tied. |
+| `conversation` | `{name, uid, state}` of the Conversation: `opening` from an `Open` intent until its receipt, `opened` from the receipt until its `Receive` action's receipt, `waiting` until the Conversation's `status.task` names this Task's `uid`, then `tied`; `abandoned` after `ReceiveFailed`, until the Conversation ties itself to this Task or a later Question opens another thread. A Task carrying `gateway.fleet.dev/conversation` starts `waiting`. While `opening`, `opened` or `waiting` the Task reads no declaration past the Question that opened, so nothing it says before its tie is verified is skipped; it reads them in order once tied. |
 | `seen` | The Conversation `revision` last read, so a tied Task is due only when its Conversation moved. |
 | `cursor` | The Conversation `revision` relayed through. Starts at `0`, so the first relay is the whole retained thread. Advances only when an entry is appended: messages that may not start a turn wait above it. |
 | `declared` | How many items of `status.declared` were read. Each is read once, in order. |
@@ -590,10 +605,14 @@ Whatever `Receive` answers, a Conversation whose `status.task` already names
 this Task's `uid` moves the tie straight to `tied`: the listener's keyed copy
 did the work. Otherwise, after `MAX_ATTEMPTS` Failed or readably failed
 attempts, the controller raises `NeedsAttention/ReceiveFailed` and the tie
-returns to none: the Question stays posted, recorded in `posted` and
+becomes `abandoned`: the Question stays posted, recorded in `posted` and
 `questions`, the Task reads its later declarations as an untied Task does,
 and a later Question opens a new thread. Nothing waits forever on a thread
-that never reached its Conversation.
+that never reached its Conversation. An `abandoned` tie keeps the
+Conversation's name and its `Object` probe every `pollMs`: if the
+listener's keyed copy later creates it and it ties itself to this Task's
+`uid`, the tie becomes `tied`, so a thread tied to this Task never goes
+unheard.
 
 Posts to one conversation go out in declaration order and one at a time: a
 post whose receipt is missing or Unknown holds back every later post to
@@ -690,7 +709,7 @@ unlisted bot gets none.
 | `conversation-controller` | All of Conversation status but `received`; drains `received`; creates conversation Tasks; deletes its own object | Current resourceVersion and the live lease. |
 | `gateway-controller` | All of `status.gateway`; appends to `status.inbox`, recording `status.answered` | Current resourceVersion and the live lease. |
 | `apply` | Creates a Conversation by manifest, refused unless its name is the one derived from its account and address; requests deletion | Store validation, exclusive creation. |
-| `cli`, `plugin/<name>` | Inbox appends as today, each now able to carry `answers`; the parent labels on a Task they create | As today; the parent labels only at creation, under the parent's scope above. |
+| `apply`, `cli`, `plugin/<name>` | Inbox appends as today (`cli`, `plugin/<name>`), each now able to carry `answers`; the parent labels on a Task they create | As today; the parent labels only at creation, under the parent's scope above. |
 | `listener/<account>`, through `fleet gateway receive` | A Listener's `status.beats`, `status.refused` and `status.beatRevision`, through `record_beat` and `record_refusal`; creates the Listener when it does not exist | Exclusive creation; current resourceVersion. No lease. |
 | The manager, loading the config | Creates one Listener per configured account | Exclusive creation. |
 | `listener-controller` | All of Listener status but `beats`, `refused` and `beatRevision`; deletes a Listener whose account left the config | Current resourceVersion and the live lease. |
@@ -706,12 +725,12 @@ whom `fleet send` already lets write to any Task; or `plugin/<name>` under
 `fleet.dev/plugin: <name>`. At the create the store reads the named parent: it
 must exist with that `uid`, or the create is refused, and a parent it cannot
 read refuses the create as Unknown, to be retried, never accepted unchecked. Any
-other writer is refused at the create, and both labels are refused on any later
-write, so a `tasks = "own"` plugin cannot attach its child to another plugin's
-Task or to a person's. The parent's GatewayController relays only a child whose
-`parent-uid` is its own `uid`; a child naming the parent's name with another
-`uid` was made for an earlier Task of that name and is treated as untied. A tie,
-once verified, wins over a parent label.
+other writer is refused at the create, and a later write that changes or removes
+either label is refused, so a `tasks = "own"` plugin cannot attach its child to
+another plugin's Task or to a person's. The parent's GatewayController relays
+only a child whose `parent-uid` is its own `uid`; a child naming the parent's
+name with another `uid` was made for an earlier Task of that name and is treated
+as untied. A tie, once verified, wins over a parent label.
 
 `gateway.fleet.dev/route` chooses which route's channel a Question opens
 in. It is an ordinary label: a route is configured by the operator as one

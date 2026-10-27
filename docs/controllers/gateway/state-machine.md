@@ -23,12 +23,12 @@ effects and keys used here.
 | Untied | An `Admitted` message meeting the route's mention rule, the guard on `status.starter` passed | Untied, then Tied | Write the tie's intent, `task = {name, n, state: pending, trigger}`, and create the Task under `conversation/<uid>/task/<n>`, exclusive on the route's workspace; the receipt writes its `uid` and the phase. |
 | Untied or Orphaned | That create answered `WorkspaceBusy` | unchanged | Keep the tie as `state: busy` with its `trigger`; `NeedsAttention/WorkspaceBusy`; post the busy notice once under `conversation/<uid>/busy/<n>`; plan the create again under the same key every `pollMs`. Not a failed attempt. |
 | Untied | A `Context` message that mentions Fleet | Untied | One refusal per author, under its refusal key. |
-| Untied | Nothing for `gateway.retainMs` since the last message | deleted | Plan `delete`, fenced on `uid` and `resourceVersion`. |
+| Untied | Nothing for `gateway.retainMs` since the last message, and no `busy` tie | deleted | Plan `delete`, fenced on `uid` and `resourceVersion`. |
 | Tied | The tied Task Known with the same `uid` | Tied | Number spooled events; where the account has history, ask `History` for the backstop every `pollMs`, but only while the thread had a message within `gateway.activeMs` (one day by default): the listener is the primary path, and an idle thread costs no platform call. |
 | Tied | The tied Task Unknown | Tied | Wait; Unknown never means gone. |
 | Tied | The tied Task readably absent, or a different `uid` under its name | Orphaned | Keep the messages; the tie is history. |
 | Orphaned | An `Admitted` message, mention or not | Orphaned, then Tied | Create Task `n + 1` as above. Its GatewayController joins from cursor `0`, so it receives the whole retained thread. |
-| Orphaned | Nothing for `gateway.retainMs` since the later of the last message and orphaning | deleted | Plan `delete`, fenced. |
+| Orphaned | Nothing for `gateway.retainMs` since the later of the last message and orphaning, and no `busy` tie | deleted | Plan `delete`, fenced. |
 | any | `History` Unknown | unchanged | `Reachable` Unknown with the reason; the spool is still numbered; wait one interval or the platform's `retryAfter`. |
 | any | The spool holds an `Edited` or `Removed` event | unchanged | An edit whose `editedAt` is later than the message's moves its `seq` to the new revision, and an older one is dropped; a removal leaves the mirror, as on a ChangeRequest. |
 | any | A message already numbered arrives again, from the spool or `history` | unchanged | Deduplicated on its message `id`; only a changed text is an edit. |
@@ -51,7 +51,8 @@ then `NeedsAttention/TaskCreateFailed`.
 | Opened | `Received` | Waiting | The Conversation exists and holds the opening post; it ties itself from the post's marker. |
 | Opened | The Conversation's `status.task` names this Task's `uid` | Tied | Whatever `Receive` answered: the listener's keyed copy tied it. |
 | Opened | `Receive` Failed, or Unknown or missing with the Conversation readably without `open/<message id>` | Opened | A failed attempt; perform `Receive` again under the same key. With the delivery present, the receipt is recovered. |
-| Opened | The third failed `Receive` attempt | none | `NeedsAttention/ReceiveFailed`. The Question stays posted; later declarations are read as an untied Task's. |
+| Opened | The third failed `Receive` attempt | Abandoned | `NeedsAttention/ReceiveFailed`. The Question stays posted; later declarations are read as an untied Task's. |
+| Abandoned | Every `pollMs`, the Conversation's `status.task` names this Task's `uid` | Tied | The listener's keyed copy tied it after all. |
 | Opening | Failed | Opening | Retry under the same key after `RETRY_DELAY_MS`, at most three attempts, then `NeedsAttention/PostFailed` and back to none. |
 | Opening | A channel recovery read answers Unknown, `Incomplete` or otherwise | Opening | Not an attempt: `recovery.reads += 1`, the next read at `RETRY_DELAY_MS × 2^(reads − 1)`, capped at `pollMs`, later if the platform gave `retryAfter`. At three reads, `NeedsAttention/RecoveryIncomplete`; reading continues on the capped schedule, nothing is opened again. A complete read resets `reads` to `0` and is decided as a recovered receipt or a failed attempt. |
 | Opening | Unknown, and the channel has no history or no marker | Opening | `NeedsAttention/PostUnconfirmed`; nothing is opened again until a person acts. |

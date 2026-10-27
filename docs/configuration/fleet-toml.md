@@ -280,7 +280,7 @@ allow = ["alex", "sam"]
 allowBots = ["B0123ABCD"]     # the alerting app whose posts are requests
 taskConfig = "conversation"
 brief = "/etc/fleet/briefs/triage.md"
-workspace = { dir = "/work/triage" }
+workspace = { dir = "/work/triage" }   # shared: each alert waits for the last Task's deletion
 ```
 
 | Field | Required/default | Meaning |
