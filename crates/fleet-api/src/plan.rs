@@ -21,7 +21,8 @@ pub struct Plan {
     pub remove_finalizer: Option<String>,
     /// Delete this object, by its `uid` and `resourceVersion` under the
     /// lease: how a controller retires its own object once its retention
-    /// passed. Only ChangeRequestController asks.
+    /// passed. ChangeRequestController, ConversationController and
+    /// ListenerController ask.
     pub delete: bool,
     /// An inbox entry proven delivered: its receipt goes into
     /// `status.deliveries` and the entry leaves `status.inbox` in the same
@@ -193,6 +194,22 @@ pub enum Probe {
     /// the manager for the sweep.
     Whoami {
         host: String,
+    },
+    /// One read of a thread's history through the Gateway port.
+    History {
+        account: String,
+        conversation: crate::gateway::ConversationRef,
+        query: crate::gateway::HistoryQuery,
+    },
+    /// What the platform offers on an account, through the Gateway port;
+    /// cached by the manager for the sweep.
+    Capabilities {
+        account: String,
+    },
+    /// Fleet's bot identity on an account, through the Gateway port; cached
+    /// by the manager for the sweep.
+    GatewayWhoami {
+        account: String,
     },
 }
 

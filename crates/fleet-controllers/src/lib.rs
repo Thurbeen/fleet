@@ -6,6 +6,10 @@
 //! - [`ChangeRequestController`] mirrors one change on a forge.
 //! - [`ForgeController`] follows the changes a Task's worker declared and
 //!   relays what is new into the Task's inbox.
+//! - [`ConversationController`] mirrors one chat thread and keeps its tie
+//!   to a Task honest.
+//! - [`ListenerController`] judges one chat account's listener from its
+//!   heartbeats.
 //!
 //! Adapters sit above this crate and are unreachable from it, which the
 //! compiler enforces:
@@ -47,17 +51,26 @@
 //! The positive control: the port types it decides over are in scope.
 //!
 //! ```
-//! use fleet_controllers::{ChangeRequestController, ForgeController, TaskController};
+//! use fleet_controllers::{
+//!     ChangeRequestController, ConversationController, ForgeController, ListenerController,
+//!     TaskController,
+//! };
 //! assert_eq!(TaskController::KIND, "Task");
 //! assert_eq!(ChangeRequestController::KIND, "ChangeRequest");
 //! assert_eq!(ForgeController::KIND, "Task");
+//! assert_eq!(ConversationController::KIND, "Conversation");
+//! assert_eq!(ListenerController::KIND, "Listener");
 //! ```
 
 pub mod change_request;
+pub mod conversation;
 pub mod forge;
+pub mod listener;
 pub mod plugin;
 pub mod task;
 
 pub use change_request::{ChangeRequestController, ChangeRequestInput, ChangeRequestObservations};
+pub use conversation::{ConversationController, ConversationInput, ConversationObservations};
 pub use forge::{ForgeController, ForgeInput, ForgeObservations};
+pub use listener::{ListenerController, ListenerInput, ListenerObservations};
 pub use task::{MAX_ATTEMPTS, RETRY_DELAY_MS, TaskController, TaskInput};

@@ -410,6 +410,64 @@ impl Env {
         wait(self.spawn(args))
     }
 
+    /// Run `fleet` with `input` on its stdin, as a listener runs the receive
+    /// verb: one envelope or heartbeat per process.
+    pub fn fleet_stdin(&self, args: &[&str], input: &str) -> Run {
+        use std::io::Write;
+        let mut cmd = self.command(args);
+        cmd.stdin(Stdio::piped());
+        let mut child = cmd.spawn().expect("spawn fleet");
+        let mut stdin = child.stdin.take().expect("stdin");
+        stdin.write_all(input.as_bytes()).expect("write stdin");
+        drop(stdin);
+        wait(child)
+    }
+
+    /// `fleet gateway receive --account fake-main` with one envelope whose
+    /// payload is the fake platform's `{"id", "event"}` shape.
+    pub fn receive(&self, delivery_id: &str, event: Value) -> Run {
+        let envelope = json!({
+            "verified": "connection",
+            "receivedAt": now_ms(),
+            "payload": {"id": delivery_id, "event": event}
+        });
+        self.fleet_stdin(
+            &["gateway", "receive", "--account", GATEWAY_ACCOUNT, "--json"],
+            &envelope.to_string(),
+        )
+    }
+
+    /// `fleet gateway receive --beat` with one heartbeat.
+    pub fn beat(&self, instance: &str, state: &str, digest: &str) -> Run {
+        let beat = json!({
+            "instance": instance, "state": state, "digest": digest,
+            "sentAt": now_ms(), "lastDeliveryAt": null
+        });
+        self.fleet_stdin(
+            &[
+                "gateway",
+                "receive",
+                "--account",
+                GATEWAY_ACCOUNT,
+                "--beat",
+                "--json",
+            ],
+            &beat.to_string(),
+        )
+    }
+
+    pub fn conversation_status(&self, name: &str) -> Value {
+        self.fleet(&["status", "conversation", name, "--json"])
+            .ok()
+            .json()
+    }
+
+    pub fn listener_status(&self, name: &str) -> Value {
+        self.fleet(&["status", "listener", name, "--json"])
+            .ok()
+            .json()
+    }
+
     pub fn apply(&self, doc: Value) -> Run {
         let n = SEQ.fetch_add(1, Ordering::Relaxed);
         let path = self.root.join(format!("apply-{n}.json"));
@@ -436,6 +494,11 @@ impl Env {
 
     pub fn status(&self, name: &str) -> Value {
         self.fleet(&["status", "task", name, "--json"]).ok().json()
+    }
+
+    /// The Task is readably absent.
+    pub fn get_absent(&self, name: &str) {
+        self.fleet(&["get", "task", name]).code(3);
     }
 
     pub fn session_key(&self, name: &str) -> String {
@@ -667,6 +730,32 @@ pub fn gateway_section(root: &Path) -> String {
 [gateway.routes.{GATEWAY_ROUTE}]\naccount = \"{GATEWAY_ACCOUNT}\"\nchannels = [\"{GATEWAY_CHANNEL}\"]\nmention = \"required\"\nallow = [\"alex\", \"sam\"]\n\
 taskConfig = \"conversation\"\nbrief = \"{root}/briefs/conversation.md\"\nworkspace = {{ dir = \"{root}/work/conversations\" }}\n"
     )
+}
+
+/// A person's message event on the fake platform, in the port's own shape:
+/// `thread` is the fake address `fake:<chat>:<thread>`.
+pub fn message_event(thread: &str, id: &str, author: &str, at: u64, text: &str) -> Value {
+    let conversation = thread.split(':').collect::<Vec<_>>();
+    let mut conv = json!({"platform": conversation[0], "chat": conversation[1]});
+    if let Some(t) = conversation.get(2) {
+        conv["thread"] = json!(t);
+    }
+    json!({
+        "type": "message", "conversation": conv, "id": id,
+        "author": {"id": author, "name": "Alex", "kind": "person"},
+        "at": at, "text": text
+    })
+}
+
+/// `conv-` and twelve hex digits of the SHA-256 of `<account>/<address>`.
+pub fn conversation_name(account: &str, address: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let hex: String = Sha256::digest(format!("{account}/{address}").as_bytes())
+        .iter()
+        .take(6)
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    format!("conv-{hex}")
 }
 
 /// Unix milliseconds now, for bounds on `notBefore`.

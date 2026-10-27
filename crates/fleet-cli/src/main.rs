@@ -19,10 +19,11 @@ use fleet_api::result::{Outcome, TaskResult};
 use fleet_api::runtime::Runtime;
 use fleet_api::{API_VERSION, Object, Observation, Store, StoreError};
 use fleet_forge::{ForgeHosts, HostConfig, HostKind};
-use fleet_gateway::{GatewayAccounts, Platform};
+use fleet_gateway::{GatewayAccounts, Platform, account_digest, listener_account};
 use fleet_manager::{
-    DeclareOutcome, Manager, RunOptions, apply, apply_change_request, declare,
-    declare_change_request, delete, record_result, send,
+    DeclareOutcome, GatewaySide, Manager, RunOptions, apply, apply_change_request,
+    apply_conversation, beat, declare, declare_change_request, delete, receive, record_result,
+    send,
 };
 use fleet_runtime::{FakeHost, FakeRuntime, ThurboxConfig, ThurboxRuntime};
 use fleet_store::{FileStore, SystemClock};
@@ -144,8 +145,39 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Chat accounts: what a listener runs per event and per beat, and what it starts from.
+    Gateway {
+        #[command(subcommand)]
+        command: GatewayCommand,
+    },
     /// The binary's version and every schema it reads and writes.
     Version {
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum GatewayCommand {
+    /// Read one delivery envelope from stdin (or, with --beat, one heartbeat) and record it on the thread's Conversation (or the account's Listener).
+    Receive {
+        /// The `[gateway.accounts]` entry the listener delivers for.
+        #[arg(long)]
+        account: String,
+        /// Stdin holds a heartbeat, not an envelope.
+        #[arg(long)]
+        beat: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// What a listener needs to connect to an account, with the digest its beats carry.
+    Account {
+        name: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Each account's listener: accepted, resolved, inbound, last delivery.
+    Status {
         #[arg(long)]
         json: bool,
     },
@@ -416,6 +448,7 @@ fn run(cli: Cli) -> Result<(), Failure> {
                 change_request_defaults: forge_defaults(&config),
                 forge_defaults: relay_defaults(&config),
                 plugins: Some((&plugins, &registrations)),
+                gateway: gateway_side(&config, gateway.as_ref()),
             };
             let report = manager.run(RunOptions {
                 max_passes,
@@ -447,8 +480,170 @@ fn run(cli: Cli) -> Result<(), Failure> {
                 )))
             }
         }
+        Command::Gateway { command } => cmd_gateway(store, &config, command),
         Command::Version { .. } => unreachable_version(),
     }
+}
+
+/// The `fleet gateway` verbs: each reads the `[gateway]` section and calls
+/// the manager's verb; the receive verb runs the adapter's pure event
+/// reading through the port the section names.
+fn cmd_gateway(store: &dyn Store, config: &Config, command: GatewayCommand) -> Result<(), Failure> {
+    let Some(section) = &config.gateway else {
+        return Err(Failure {
+            code: exit::ERROR,
+            message: "no [gateway] section is configured".into(),
+            hint: Some("add [gateway.accounts] and [gateway.routes] to the config file".into()),
+        });
+    };
+    match command {
+        GatewayCommand::Receive {
+            account,
+            beat: is_beat,
+            json,
+        } => {
+            let mut text = String::new();
+            std::io::stdin()
+                .read_to_string(&mut text)
+                .map_err(|e| fail(format!("stdin: {e}")))?;
+            let received = if is_beat {
+                beat(store, &SystemClock, section, &account, &text)?
+            } else {
+                let gateway = open_gateway(config)?.ok_or_else(|| fail("no [gateway] section"))?;
+                receive(store, &SystemClock, &gateway, section, &account, &text)?
+            };
+            if json {
+                print_json(&serde_json::to_value(&received).map_err(|e| fail(e.to_string()))?);
+            } else {
+                println!(
+                    "{}",
+                    match &received {
+                        fleet_manager::Received::Written {
+                            conversation,
+                            delivery,
+                        } => format!("Conversation/{conversation} received {delivery}"),
+                        fleet_manager::Received::Duplicate {
+                            conversation,
+                            delivery,
+                        } => format!("Conversation/{conversation} already holds {delivery}"),
+                        fleet_manager::Received::Ignored { why } => format!("ignored: {why}"),
+                        fleet_manager::Received::Beat { listener, instance } =>
+                            format!("Listener/{listener} beat from {instance}"),
+                    }
+                );
+            }
+            Ok(())
+        }
+        GatewayCommand::Account { name, json } => {
+            let Some(account) = section.accounts.get(&name) else {
+                return Err(fail(format!(
+                    "account {name:?} is not configured under [gateway.accounts]"
+                )));
+            };
+            let la = listener_account(&name, account);
+            if json {
+                print_json(&serde_json::to_value(&la).map_err(|e| fail(e.to_string()))?);
+            } else {
+                println!(
+                    "{} platform {} bot {} inbound {} digest {}",
+                    la.name,
+                    la.platform,
+                    la.bot,
+                    la.inbound.name(),
+                    la.digest
+                );
+            }
+            Ok(())
+        }
+        GatewayCommand::Status { json } => {
+            let mut rows = Vec::new();
+            for name in section.accounts.keys() {
+                let listener = fleet_api::listener::listener_name(name);
+                let (status, last_delivery) = match store.get(fleet_api::listener::KIND, &listener)
+                {
+                    Observation::Known(Some(o)) => {
+                        let st: fleet_api::listener::ListenerStatus = if o.status.is_null() {
+                            Default::default()
+                        } else {
+                            serde_json::from_value(o.status.clone())
+                                .map_err(|e| fail(format!("{listener}: status: {e}")))?
+                        };
+                        let last = st.last_delivery_at();
+                        (Some(st), last)
+                    }
+                    Observation::Known(None) => (None, None),
+                    Observation::Unknown { why } => return Err(StoreError::Unknown(why).into()),
+                };
+                let cond = |t: &str| -> Value {
+                    match status
+                        .as_ref()
+                        .and_then(|st| fleet_api::condition::condition(&st.conditions, t))
+                    {
+                        Some(c) => {
+                            json!({"status": c.status, "reason": c.reason, "message": c.message})
+                        }
+                        None => {
+                            json!({"status": "Unknown", "reason": "NotObserved", "message": ""})
+                        }
+                    }
+                };
+                rows.push(json!({
+                    "account": name,
+                    "listener": listener,
+                    "accepted": cond("Accepted"),
+                    "resolved": cond("Resolved"),
+                    "inbound": cond("InboundReady"),
+                    "lastDeliveryAt": last_delivery,
+                }));
+            }
+            if json {
+                print_json(&Value::Array(rows));
+            } else {
+                for row in rows {
+                    let c = |k: &str| {
+                        format!(
+                            "{} {} {}",
+                            row[k]["status"].as_str().unwrap_or("-"),
+                            row[k]["reason"].as_str().unwrap_or("-"),
+                            row[k]["message"].as_str().unwrap_or("")
+                        )
+                        .trim_end()
+                        .to_string()
+                    };
+                    println!(
+                        "{}  Accepted {}  Resolved {}  InboundReady {}  last delivery {}",
+                        row["account"].as_str().unwrap_or("-"),
+                        c("accepted"),
+                        c("resolved"),
+                        c("inbound"),
+                        row["lastDeliveryAt"]
+                            .as_u64()
+                            .map_or("never".to_string(), |t| t.to_string())
+                    );
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
+/// The manager's chat side: the port the section opened, the section, and
+/// each account's digest.
+fn gateway_side<'a>(
+    config: &Config,
+    gateway: Option<&'a GatewayAccounts>,
+) -> Option<GatewaySide<'a>> {
+    let (section, port) = (config.gateway.as_ref()?, gateway?);
+    let digests = section
+        .accounts
+        .iter()
+        .map(|(name, account)| (name.clone(), account_digest(name, account)))
+        .collect();
+    Some(GatewaySide {
+        port,
+        config: section.clone(),
+        digests,
+    })
 }
 
 fn cmd_up(
@@ -525,6 +720,7 @@ fn cmd_up(
         change_request_defaults: forge_defaults(config),
         forge_defaults: relay_defaults(config),
         plugins: Some(plugins),
+        gateway: gateway_side(config, gateway.as_ref()),
     };
     println!(
         "Task/vega {}: reconciling all Tasks; config {}; Ctrl-C stops Fleet and retains sessions",
@@ -599,7 +795,7 @@ fn version(json: bool) -> Result<(), Failure> {
         print_json(&json!({
             "version": VERSION,
             "apiVersions": [API_VERSION],
-            "kinds": [fleet_api::task::KIND, fleet_api::config::TASK_CONFIG, fleet_api::config::ENV_PROVIDER, fleet_api::change_request::KIND],
+            "kinds": fleet_api::kinds::BUILT_IN,
             "configVersion": CONFIG_VERSION,
             "storeFormat": {"format": "fleet-store", "version": 1},
             "runtimes": ["thurbox", "fake"],
@@ -693,9 +889,7 @@ fn open_forge(config: &Config) -> Result<Option<ForgeHosts>, Failure> {
 /// entry, or `None` when the config has no `[gateway]` section. The section's
 /// own rules ran at load; this is where a platform this build lacks, an
 /// `inbound` its listener cannot deliver by, or a fake without a dir is
-/// refused. The manager has no Gateway handle yet: the port is wired here
-/// so the lease outlasts its worst case and a bad account is refused before
-/// a run, and the controllers that use it are later steps.
+/// refused.
 fn open_gateway(config: &Config) -> Result<Option<GatewayAccounts>, Failure> {
     let Some(cfg) = &config.gateway else {
         return Ok(None);
@@ -834,6 +1028,8 @@ fn served_kind(store: &dyn Store, kind: &str) -> Result<String, Failure> {
         "taskconfig" => fleet_api::config::TASK_CONFIG.to_string(),
         "envprovider" => fleet_api::config::ENV_PROVIDER.to_string(),
         "changerequest" => fleet_api::change_request::KIND.to_string(),
+        "conversation" => fleet_api::conversation::KIND.to_string(),
+        "listener" => fleet_api::listener::KIND.to_string(),
         _ => kind.to_string(),
     };
     if let Some(served) = store
@@ -892,9 +1088,25 @@ fn cmd_apply(
     }
     let mut out = Vec::new();
     let mut forge: Option<ForgeHosts> = None;
+    let mut gateway: Option<GatewayAccounts> = None;
     let policies = policy_names(config);
     for obj in objs {
-        let (outcome, stored) = if obj.kind == fleet_api::change_request::KIND {
+        let (outcome, stored) = if obj.kind == fleet_api::conversation::KIND {
+            // The account's adapter parses the address and the name derives from it.
+            let Some(section) = &config.gateway else {
+                return Err(Failure {
+                    code: exit::ERROR,
+                    message: "a Conversation needs a [gateway] section naming its account".into(),
+                    hint: Some(
+                        "add [gateway.accounts] and [gateway.routes] to the config file".into(),
+                    ),
+                });
+            };
+            if gateway.is_none() {
+                gateway = Some(open_gateway(config)?.ok_or_else(|| fail("no [gateway] section"))?);
+            }
+            apply_conversation(store, gateway.as_ref().expect("opened"), section, obj)?
+        } else if obj.kind == fleet_api::change_request::KIND {
             // The forge adapter parses the URL and the name derives from it.
             if forge.is_none() {
                 forge = Some(open_forge(config)?.ok_or_else(|| Failure {
@@ -992,6 +1204,49 @@ fn status_summary(obj: &Object) -> Value {
         ] {
             own.insert(k.to_string(), field(k));
         }
+    } else if obj.kind == fleet_api::conversation::KIND {
+        // The tie, the numbered mirror and the spool.
+        for k in [
+            "ref",
+            "task",
+            "revision",
+            "starter",
+            "droppedBefore",
+            "observedAt",
+            "lastMessageAt",
+            "notBefore",
+        ] {
+            own.insert(k.to_string(), field(k));
+        }
+        for k in ["messages", "received", "seenEvents", "refusals"] {
+            own.insert(
+                k.to_string(),
+                field(k).as_array().map_or_else(|| json!([]), |a| json!(a)),
+            );
+        }
+        own.insert(
+            "effects".to_string(),
+            field("effects")
+                .as_object()
+                .map_or_else(|| json!({}), |o| json!(o)),
+        );
+    } else if obj.kind == fleet_api::listener::KIND {
+        for k in [
+            "accepted",
+            "refused",
+            "beatRevision",
+            "seen",
+            "observedAt",
+            "notBefore",
+        ] {
+            own.insert(k.to_string(), field(k));
+        }
+        own.insert(
+            "beats".to_string(),
+            field("beats")
+                .as_object()
+                .map_or_else(|| json!({}), |o| json!(o)),
+        );
     } else if !fleet_api::kinds::is_served(&obj.kind) {
         own.insert("status".into(), obj.status.clone());
     } else {
@@ -1066,6 +1321,25 @@ fn print_status(s: &Value) {
             s["notes"].as_array().map_or(0, Vec::len),
             s["threads"]["unresolved"]
         );
+    }
+    if s["kind"] == fleet_api::conversation::KIND && !s["revision"].is_null() {
+        println!(
+            "revision {} task {} {} message(s) {} spooled",
+            s["revision"],
+            s["task"]["name"].as_str().unwrap_or("-"),
+            s["messages"].as_array().map_or(0, Vec::len),
+            s["received"].as_array().map_or(0, Vec::len)
+        );
+    }
+    if s["kind"] == fleet_api::listener::KIND && !s["beatRevision"].is_null() {
+        for (instance, b) in s["beats"].as_object().into_iter().flatten() {
+            println!(
+                "beat {instance} {} digest {} at {}",
+                b["state"].as_str().unwrap_or("-"),
+                b["digest"].as_str().unwrap_or("-"),
+                b["at"]
+            );
+        }
     }
     let queued = s["inbox"].as_array().map_or(0, Vec::len);
     let delivered = s["deliveries"]["receipts"].as_array().map_or(0, Vec::len);

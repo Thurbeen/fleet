@@ -286,6 +286,8 @@ fn builtin_and_plural_alias_collisions_refuse_registration() {
         "Taskconfig",
         "Envproviders",
         "CHANGErequest",
+        "Conversation",
+        "Listeners",
     ] {
         let env = setup(&format!("plugin-alias-{}", kind.to_ascii_lowercase()));
         edit_scenario(&env, |s| s["manifest"]["kinds"][0]["kind"] = json!(kind));

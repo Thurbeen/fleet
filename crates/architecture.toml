@@ -73,6 +73,7 @@ forbidden_methods = [
   "renew_lease", "release_lease", "reconcile", "probes", "spawn", "release",
   "change", "mark_ready", "whoami", "call", "admit", "plugin_mutate",
   "history", "capabilities", "post",
+  "receive_event", "record_received", "record_beat", "record_refusal",
 ]
 
 [crates.fleet-arch]
@@ -99,15 +100,22 @@ clippy_guards = [
 # how a caller of the typed inbox mutations names itself: `Cli` appends to
 # `Task.status.inbox` through the manager's `send` verb and owns nothing;
 # `ForgeController` owns `Task.status.forge` and appends through the
-# manager's relay write.
+# manager's relay write. `Listener` is an account's listener program,
+# speaking through the manager's receive verb: it spools deliveries on a
+# Conversation and records beats on its Listener, and owns nothing;
+# `ConversationController` and `ListenerController` own the rest of those
+# two kinds and are named by the controllers alone.
 [status_writers]
 "fleet_api::store::FieldManager::Plugin" = ["fleet-api", "fleet-controllers"]
 "fleet_api::store::FieldManager::TaskController" = ["fleet-api", "fleet-controllers"]
 "fleet_api::store::FieldManager::ChangeRequestController" = ["fleet-api", "fleet-controllers"]
 "fleet_api::store::FieldManager::ForgeController" = ["fleet-api", "fleet-controllers"]
+"fleet_api::store::FieldManager::ConversationController" = ["fleet-api", "fleet-controllers"]
+"fleet_api::store::FieldManager::ListenerController" = ["fleet-api", "fleet-controllers"]
 "fleet_api::store::FieldManager::Worker" = ["fleet-api", "fleet-manager"]
 "fleet_api::store::FieldManager::Apply" = ["fleet-api", "fleet-manager", "fleet-store"]
 "fleet_api::store::FieldManager::Cli" = ["fleet-api", "fleet-manager", "fleet-store"]
+"fleet_api::store::FieldManager::Listener" = ["fleet-api", "fleet-manager", "fleet-store"]
 
 # One crate starts processes, so every program fleet runs (thurbox-cli, the
 # gate's tools) is bounded and has its tree killed the same way.

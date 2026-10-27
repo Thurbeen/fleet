@@ -595,14 +595,33 @@ pub struct GatewayConfig {
     pub routes: BTreeMap<String, RouteConfig>,
 }
 
-/// The `[gateway]` timing defaults, as values, for the controllers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// What the controllers decide over, as values: the `[gateway]` timings,
+/// and the part of the config the object in hand names. The manager fills
+/// the per-object part; the controllers read no configuration themselves.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GatewayDefaults {
     pub call_timeout_ms: Millis,
     pub poll_ms: Millis,
     pub active_ms: Millis,
     pub retain_ms: Millis,
     pub beat_ms: Millis,
+    /// For a Conversation: the route its spec names, while the config has
+    /// it. `None`: the route left the config.
+    pub route: Option<RouteConfig>,
+    /// For a Listener: the account its spec names, while the config has it.
+    /// `None`: the account left the config.
+    pub account: Option<ListenerAccount>,
+}
+
+/// The account a Listener reports on, as the loaded config has it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListenerAccount {
+    pub config: AccountConfig,
+    /// The digest `fleet gateway account NAME --json` prints, which a
+    /// listener's beats carry.
+    pub digest: String,
+    /// Some route uses the account.
+    pub routed: bool,
 }
 
 impl Default for GatewayDefaults {
@@ -613,6 +632,28 @@ impl Default for GatewayDefaults {
             active_ms: 86_400_000,
             retain_ms: 2_592_000_000,
             beat_ms: 60_000,
+            route: None,
+            account: None,
+        }
+    }
+}
+
+impl GatewayDefaults {
+    /// The same timings, for the Conversation whose spec names `route`.
+    pub fn for_route(&self, route: Option<RouteConfig>) -> GatewayDefaults {
+        GatewayDefaults {
+            route,
+            account: None,
+            ..self.clone()
+        }
+    }
+
+    /// The same timings, for the Listener of `account`.
+    pub fn for_account(&self, account: Option<ListenerAccount>) -> GatewayDefaults {
+        GatewayDefaults {
+            route: None,
+            account,
+            ..self.clone()
         }
     }
 }
@@ -627,7 +668,14 @@ impl GatewayConfig {
             active_ms: self.active_ms.unwrap_or(base.active_ms),
             retain_ms: self.retain_ms.unwrap_or(base.retain_ms),
             beat_ms: self.beat_ms.unwrap_or(base.beat_ms),
+            route: None,
+            account: None,
         }
+    }
+
+    /// Whether some route uses the account.
+    pub fn is_routed(&self, account: &str) -> bool {
+        self.routes.values().any(|r| r.account == account)
     }
 
     /// The route a channel on an account belongs to, if any.
