@@ -475,6 +475,7 @@ name = "fleet-gateway"
 version = "2.1.0"
 dependencies = [
  "fleet-api",
+ "fleet-exec",
  "serde",
  "serde_json",
  "sha2",

@@ -1,6 +1,7 @@
 # Gateway adapters
 
-Design, not implemented. Slack is the first adapter.
+Slack is the first adapter, implemented in `crates/fleet-gateway/src/slack.rs`
+as this page maps it. The rest of this page is design, not implemented.
 
 Telegram, Discord and Microsoft Teams are mapped on paper only. The
 purpose is to check the [port](interface.md#gateway-port) against

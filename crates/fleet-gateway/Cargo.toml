@@ -1,6 +1,6 @@
 [package]
 name = "fleet-gateway"
-description = "Implementations of fleet's gateway contract: a file-backed fake, with the platform adapters to follow."
+description = "Implementations of fleet's gateway contract: Slack through curl, and a file-backed fake."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,6 +10,7 @@ publish.workspace = true
 
 [dependencies]
 fleet-api.workspace = true
+fleet-exec.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
