@@ -94,18 +94,34 @@ fn docs() -> Result {
             );
         }
     }
-    // A guide marked as design must appear in the diagram as "planned <Name>",
-    // and a shipped one must not.
-    for (guide, controller) in [
-        ("docs/controllers/plugin/README.md", "PluginController"),
-        ("docs/controllers/gateway/README.md", "GatewayController"),
-    ] {
-        if tracked.iter().any(|file| file == guide)
-            && tracked.iter().any(|file| file == "docs/architecture.svg")
-        {
-            let architecture = fs::read_to_string("docs/architecture.svg")?;
+    // Every controller guide appears in the diagram as <Name>Controller; one
+    // marked as design appears as "planned <Name>Controller", and only then.
+    if tracked.iter().any(|file| file == "docs/architecture.svg") {
+        let architecture = fs::read_to_string("docs/architecture.svg")?;
+        let mut guides = tracked
+            .iter()
+            .filter_map(|file| {
+                file.strip_prefix("docs/controllers/")?
+                    .strip_suffix("/README.md")
+                    .filter(|name| !name.contains('/'))
+                    .map(|name| (file, name))
+            })
+            .collect::<Vec<_>>();
+        guides.sort();
+        for (guide, name) in guides {
+            let controller = name
+                .split('-')
+                .map(|word| {
+                    let mut chars = word.chars();
+                    chars
+                        .next()
+                        .map(|first| first.to_uppercase().chain(chars).collect::<String>())
+                        .unwrap_or_default()
+                })
+                .collect::<String>()
+                + "Controller";
             let planned = fs::read_to_string(guide)?.contains("Design, not implemented");
-            if !architecture.contains(controller)
+            if !architecture.contains(&controller)
                 || architecture.contains(&format!("planned {controller}")) != planned
             {
                 return Err(format!(

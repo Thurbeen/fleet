@@ -191,12 +191,12 @@ platform credential: it declares, and Fleet relays.
 | Field, label or verb | Owner | Meaning |
 | --- | --- | --- |
 | `fleet declare --json '{"kind":"Question","id":"q1","text":"…"}'` | `worker` | Ask once. Posted in the tied thread, or, on a Task with no tie and no parent, opens a thread in the questions route's channel and ties the Task to it. Never reposted. |
-| `fleet declare --json '{"kind":"Comment","text":"…"}'` | `worker` | Say something in the tied thread. Never opens a thread. |
-| `fleet declare --json '{"kind":"Draft","title":"…","text":"…"}'` | `worker` | Show a draft for review in the tied thread. Never opens a thread. |
+| `fleet declare --json '{"kind":"Comment","id":"c1","text":"…"}'` | `worker` | Say something in the tied thread. Never opens a thread. The `id`, unique for the Task, keeps two identical Comments apart. |
+| `fleet declare --json '{"kind":"Draft","id":"d1","title":"…","text":"…"}'` | `worker` | Show a draft for review in the tied thread. Never opens a thread. |
 | `status.gateway` | GatewayController | `conversation`, the verified tie; `cursor`, the Conversation revision relayed through; `declared`, `result`, `changes` and `children`, what was read or posted; `posts`, the post effects' intents and receipts; `questions`, each posted Question; `gaps`; and its conditions. Absent for a Task that never talks. |
 | `status.answered` | none; inbox appends carrying `answers` | Per Question id `{key, from, at}`, first writer wins. Another channel showing the same Question reads it and stops waiting. |
-| `gateway.fleet.dev/conversation` label | the Conversation's controller, at creation | The Conversation a conversation Task was created for. |
-| `gateway.fleet.dev/parent` label | whoever creates a child | The parent Task's name. A child never talks in a thread; its parent relays its Questions, Comments, Drafts and results into its own inbox. |
+| `gateway.fleet.dev/conversation`, `gateway.fleet.dev/conversation-uid` labels | the Conversation's controller, at creation; `apply` refuses both | The Conversation a conversation Task was created for, by name and `uid`. |
+| `gateway.fleet.dev/parent` label | whoever creates a child | The parent Task's name. A child never talks in a thread; its parent relays its Questions, Comments, Drafts and results into its own inbox. Routing, not authority; a verified tie wins over it. |
 | `gateway.fleet.dev/route` label | whoever creates the Task | The route whose channel a Question from this untied Task opens a thread in, instead of `gateway.questions`. |
 | `fleet send TASK --answers ID TEXT` | `cli` | Answer a declared Question from the command line, or as a parent answering a child, recording `status.answered`. |
 

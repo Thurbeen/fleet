@@ -23,7 +23,7 @@ those pages do not state is marked **unverified**.
 | Own posts | Every post carries message metadata, `{"event_type": "fleet_post", "event_payload": {"key": "<intent key>"}}`[^slack-post], read back by `conversations.history` and `conversations.replies` with `include_all_metadata`, under `message_metadata:read`[^slack-metadata][^slack-replies]. Metadata is visible to every member of the workspace[^slack-post]: a key names a Task and its `uid`, never a secret. A bot's message carries `bot_id`[^slack-bot]. Whether the app receives its own posts as events is not stated; Bolt's `ignoreSelf` implies it does[^slack-ignoreself], so the adapter reads them as `author.kind = fleet`. |
 | Idempotency | None on `chat.postMessage`: `client_msg_id` is not an argument[^slack-post]. Recovery is by the metadata key in a later `history` read. |
 | Identity | User ids, unique in their workspace, paired with the team[^slack-user]; in an Enterprise org every user has one global id starting with `U` or `W`[^slack-ent]. The allowlist names ids, never display names or emails. |
-| Credentials | `curl`, as the Bitbucket Cloud forge adapter does: the bot token lives in a curl config file the operator owns, named by `curlConfig`; Fleet never constructs an Authorization header. The listener holds the app-level token. |
+| Credentials | Bounded `curl` calls, keeping the Bitbucket Cloud forge adapter's rule that Fleet never constructs an Authorization header. Unlike that adapter, which relies on netrc, the bot token lives in a curl config file the operator owns, which Fleet names with `curl -K` from `curlConfig` and never reads; that key is new. The listener holds the app-level token. |
 
 Two things a Slack route must know. A message posted while the listener was
 disconnected may be lost[^slack-socket]: in a tied thread the history
@@ -61,8 +61,8 @@ Each correction is already in the [interface](interface.md) and the
    message in a channel the bot is in; Telegram, Discord and Teams deliver
    unmentioned messages only under a platform permission. The adapter's
    `capabilities` reports whether unmentioned messages reach Fleet on an
-   account; without it a tied thread relays only mentions, and the route
-   raises `NeedsAttention/MentionsOnly` once rather than pretending.
+   account; without it a tied thread relays only mentions, and its
+   Conversation raises `NeedsAttention/MentionsOnly` rather than pretending.
 3. **Recognising Fleet's posts is a capability, not a given.** Slack has a
    metadata marker, Discord a nonce window, Telegram and Teams nothing.
    `capabilities` reports `marker` as `metadata`, `nonce` with its window,

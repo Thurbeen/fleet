@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 470" role="img" aria-labelledby="title desc">
 <title id="title">Gateway controller state machine (design)</title>
-<desc id="desc">Design, not implemented. A Conversation mirrors one chat thread. The receive verb creates it Untied; Fleet opening a thread for a Task's Question creates it Tied. An admitted mention in an Untied thread creates a Task and ties it. When the tied Task is readably gone the Conversation is Orphaned, and the next admitted message creates a new Task joined with the thread's history. While Tied, GatewayController relays new messages into the Task's inbox and posts what the Task declares. An Untied or Orphaned Conversation with no message for its retention is deleted by its own controller; nothing on the platform changes.</desc>
+<desc id="desc">Design, not implemented. A Conversation mirrors one chat thread. The receive verb, or Fleet opening a thread for a Task's Question, creates it Untied; a thread Fleet opened is tied at once to the Task its opening post's marker names. An admitted mention in an Untied thread creates a Task and ties it. When the tied Task is readably gone the Conversation is Orphaned, and the next admitted message creates a new Task joined with the thread's history. While Tied, GatewayController relays new messages into the Task's inbox and posts what the Task declares. An Untied or Orphaned Conversation with no message for its retention is deleted by its own controller; nothing on the platform changes.</desc>
 <style>
   svg { color-scheme:light dark }
   @media (prefers-color-scheme: light) { svg &gt; rect{fill:#fff} svg &gt; g{fill:#182b3d} }
@@ -40,7 +40,7 @@
 <path id="retain-untied" d="M365 224 V410 H900 V376"/>
 </g>
 <g font-size="12" fill="#405367">
-<text x="625" y="100" text-anchor="middle">opened for an untied Task's Question</text>
+<text x="625" y="100" text-anchor="middle">opened for a Question, tied by its marker</text>
 <text x="494" y="134" text-anchor="middle">admitted mention</text>
 <text x="494" y="148" text-anchor="middle">creates a Task</text>
 <text x="759" y="172" text-anchor="middle">Task gone</text>

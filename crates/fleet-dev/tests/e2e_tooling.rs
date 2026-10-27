@@ -789,7 +789,7 @@ fn docs_gate_rejects_broken_links_malformed_svg_and_inconsistent_structure() {
     e.git(&["add", "-A"]);
     let (ok, out) = e.call(&["check", "docs"], &[]);
     assert!(!ok && out.contains("PluginController"), "{out}");
-    e.write("docs/architecture.svg", "<svg xmlns=\"http://www.w3.org/2000/svg\"><style>@media (prefers-color-scheme: light) { :root { color: #000; } } @media (prefers-color-scheme: dark) { :root { color: #fff; } }</style><text>PluginController host</text></svg>");
+    e.write("docs/architecture.svg", "<svg xmlns=\"http://www.w3.org/2000/svg\"><style>@media (prefers-color-scheme: light) { :root { color: #000; } } @media (prefers-color-scheme: dark) { :root { color: #fff; } }</style><text>TaskController</text><text>PluginController host</text></svg>");
     let (ok, out) = e.call(&["check", "docs"], &[]);
     assert!(ok, "{out}");
 
@@ -800,12 +800,23 @@ fn docs_gate_rejects_broken_links_malformed_svg_and_inconsistent_structure() {
     e.git(&["add", "-A"]);
     let (ok, out) = e.call(&["check", "docs"], &[]);
     assert!(!ok && out.contains("GatewayController"), "{out}");
-    e.write("docs/architecture.svg", "<svg xmlns=\"http://www.w3.org/2000/svg\"><style>@media (prefers-color-scheme: light) { :root { color: #000; } } @media (prefers-color-scheme: dark) { :root { color: #fff; } }</style><text>GatewayController</text><text>PluginController host</text></svg>");
+    e.write("docs/architecture.svg", "<svg xmlns=\"http://www.w3.org/2000/svg\"><style>@media (prefers-color-scheme: light) { :root { color: #000; } } @media (prefers-color-scheme: dark) { :root { color: #fff; } }</style><text>TaskController</text><text>GatewayController</text><text>PluginController host</text></svg>");
     let (ok, out) = e.call(&["check", "docs"], &[]);
     assert!(!ok && out.contains("GatewayController"), "{out}");
-    e.write("docs/architecture.svg", "<svg xmlns=\"http://www.w3.org/2000/svg\"><style>@media (prefers-color-scheme: light) { :root { color: #000; } } @media (prefers-color-scheme: dark) { :root { color: #fff; } }</style><text>planned GatewayController</text><text>PluginController host</text></svg>");
+    e.write("docs/architecture.svg", "<svg xmlns=\"http://www.w3.org/2000/svg\"><style>@media (prefers-color-scheme: light) { :root { color: #000; } } @media (prefers-color-scheme: dark) { :root { color: #fff; } }</style><text>TaskController</text><text>planned GatewayController</text><text>PluginController host</text></svg>");
     let (ok, out) = e.call(&["check", "docs"], &[]);
     assert!(ok, "{out}");
+
+    e.write("docs/architecture.svg", "<svg xmlns=\"http://www.w3.org/2000/svg\"><style>@media (prefers-color-scheme: light) { :root { color: #000; } } @media (prefers-color-scheme: dark) { :root { color: #fff; } }</style><text>TaskController</text><text>planned GatewayController</text><text>planned PluginController host</text></svg>");
+    let (ok, out) = e.call(&["check", "docs"], &[]);
+    assert!(!ok && out.contains("PluginController"), "{out}");
+    e.write(
+        "docs/controllers/gateway/README.md",
+        "# Gateway controller\n\nShipped.\n",
+    );
+    e.write("docs/architecture.svg", "<svg xmlns=\"http://www.w3.org/2000/svg\"><style>@media (prefers-color-scheme: light) { :root { color: #000; } } @media (prefers-color-scheme: dark) { :root { color: #fff; } }</style><text>TaskController</text><text>planned GatewayController</text><text>PluginController host</text></svg>");
+    let (ok, out) = e.call(&["check", "docs"], &[]);
+    assert!(!ok && out.contains("GatewayController"), "{out}");
 }
 #[cfg(unix)]
 #[test]
