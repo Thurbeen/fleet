@@ -22,6 +22,7 @@ mapped on paper to check the model.
 | Read | Answers |
 | --- | --- |
 | [Conversation](../../resources/conversation.md) | What does the mirror of one thread hold, and who deletes it? |
+| [Listener](../../resources/listener.md) | Is an account's listener running, connected and current? |
 | [Task gateway status](../../resources/task.md#talking-in-a-conversation) | What does a Task declare to talk, and what do `status.gateway` and `status.answered` hold? |
 | [State machine](state-machine.md) | How does a thread move between Untied, Tied and Orphaned, and what is relayed or posted when? |
 | [Interface](interface.md) | What are the port, the receive verb, the probes, the effects, the keys and the write rules? |
@@ -87,11 +88,12 @@ mapped on paper to check the model.
    `gateway.fleet.dev/route` label or the `[gateway]` default, and writes an
    `Open` intent under `task/<name>/<uid>/gateway/question/q1`.
 3. The manager opens a new thread in that route's question channel with the
-   Question as its first post, carrying the key as its marker. With the
-   answer, before writing the receipt, it ensures the Conversation for the
-   new thread and spools that first post, as the receive verb would;
-   whichever of the two creates the Conversation, ConversationController
-   ties the thread to the Task the marker key names.
+   Question as its first post, carrying the key as its marker, and writes
+   the receipt. The same write records a second keyed step, `Receive`,
+   which the manager performs against the store: it ensures the
+   Conversation for the new thread and spools that first post, as the
+   receive verb would. Whichever of the two creates the Conversation,
+   ConversationController ties the thread to the Task the marker key names.
 4. Replies in that thread are relayed to the Task's inbox. The first
    allowlisted reply written after the Question's own post records it as answered
    on the Task, `status.answered.q1`, in the same write that queues the
@@ -138,7 +140,9 @@ below, and read Conversations,
 ChangeRequests and child Tasks by name or label. Two writes reach a
 Conversation from outside its controller, both through the one typed spool
 append and neither touching its status otherwise: the receive verb, and the
-manager after an `Open` receipt, which records the post it just made.
+manager performing a `Receive` action, which records the post Fleet just
+made. A Listener's `beat` is the listener's, written only by the receive
+verb's `--beat`; the rest of it is ListenerController's.
 `status.answered`, like `status.inbox`, has no single owner: it is written
 only by the typed inbox append that carries the answer, first writer wins.
 Posting is the only effect either controller performs.
@@ -196,7 +200,7 @@ only: it holds the connection or the endpoint, authenticates the platform
 (the Socket Mode token, a webhook's signature or JWT), and pipes each raw
 payload into `fleet gateway receive --account NAME`. The verb runs the
 adapter's pure `event` reading, so platform parsing stays in
-`fleet-gateway` with its truth tables; it refuses a duplicate event id, so
+`fleet-gateway` with its truth tables; it refuses a duplicate delivery id, so
 a platform's at-least-once redelivery is harmless; and the listener
 acknowledges only after the verb exits zero. A listener crash loses only
 unacknowledged events, which the platform redelivers or, for tied threads,
@@ -211,7 +215,20 @@ no resident code. The first listener, for Slack Socket Mode, is a separate
 small program maintained outside the workspace, as plugin SDKs are, written
 against Slack's own SDK. Any program that holds the connection and runs the
 verb per event is a listener. The operator's service manager runs it; Fleet
-supervises nothing.
+supervises nothing, but it does observe it. A listener reports its state
+through `fleet gateway receive --beat`, carrying the digest of the account
+configuration it started from, and the account's
+[Listener](../../resources/listener.md) shows whether it is accepted (the
+config is valid and routed), resolved (the platform confirms Fleet's bot
+identity) and inbound-ready (a fresh beat, connected, from the current
+configuration). A dead listener or one left on an old configuration is a
+False condition within one sweep, never a silence that looks healthy.
+
+Each delivery reaches the verb in an envelope stating how the listener
+authenticated it, an authenticated connection or a verified signature; the
+account's `inbound` setting fixes which, and the verb refuses any other.
+The spool is keyed by the delivery's own id, the platform's where it has
+one, so a redelivery is a duplicate and an edit of a message is not.
 
 ## Scope
 
@@ -222,7 +239,7 @@ one Task per thread, created from a route; relaying a thread into its
 Task's inbox under a cursor; posting what a Task declares, keyed, in order;
 opening a thread for a Question from an untied Task; recording answers;
 funnelling a child Task's words to its parent; the Slack adapter; the
-receive verb a listener calls.
+receive verb a listener calls, and the Listener that reports its health.
 
 Out of scope, deliberately: merging, as for the Forge controller; suspending
 and resuming idle sessions; Notion, which is a plugin's; any judgement about
@@ -237,15 +254,15 @@ Fleet of its own posts and interactive components; the listener programs themsel
 | --- | --- |
 | Where does the thread history go when a mention lands partway through a thread? | The first inbox entry, as the Forge controller's join message, not the brief. The brief stays the route's, identical for every conversation Task and frozen at creation; the history can be long and is data. |
 | What is the brief of a conversation Task? | The route's `brief` file, read by the manager when it loads the config and copied into each Task's spec when the Task is created. TaskConfig does not define briefs or workspaces, so a route names a TaskConfig for execution defaults and carries the brief and workspace itself. |
-| What workspace does a conversation Task get? | A route setting. Prefer a provisioned worktree per Task, from the repository the route names and on a branch derived from the Conversation's name, once provisioned workspaces land. Until then a prepared directory, which concurrent conversation Tasks on one route would share; the route documentation says so. |
-| How is a child tied to its parent? | A label on the child, `gateway.fleet.dev/parent: <parent Task name>`, set by whoever creates it. The parent's GatewayController lists its children by that label and relays their Questions, Comments, Drafts and results into the parent's own inbox; the child's GatewayController never opens or ties a thread. A label names a Task by name, not `uid`, so a child created after its parent was replaced by a same-named Task follows the new one; the parent's controller records each child's `uid` on first sight. |
+| What workspace does a conversation Task get? | A route setting, today a directory, which every Task of the route would share. Two Tasks writing through one directory break Fleet's one-workspace-per-Task rule, so the route is serialised: its creates carry an `exclusive` precondition and the manager starts no Task while another Task has that directory; a waiting thread raises `WorkspaceBusy` and starts when the workspace is free. Concurrent conversations on one route wait for provisioned workspaces, a worktree per Task from the route's repository on a branch derived from the Conversation's name, which is a change of its own. |
+| How is a child tied to its parent? | Two labels on the child, `gateway.fleet.dev/parent: <parent Task name>` and `gateway.fleet.dev/parent-uid: <its uid>`, set only when the child is created and only by a writer that may already append to the parent's inbox: a person, or a plugin whose Task scope covers the parent. Naming a parent writes to its inbox, so a `tasks = "own"` plugin cannot name another's Task. The parent's GatewayController lists its children by the name label, relays only those whose `parent-uid` is its own, and relays their Questions, Comments, Drafts and results into its own inbox; the child's GatewayController never opens or ties a thread. |
 | A child whose parent is readably gone? | It is treated as untied: its next Question opens a thread through the questions route, because nobody else will answer it. Its earlier declarations are not replayed. |
 | How is an answer recognised in a thread? | The first allowlisted message whose platform time is after the Question post's own time, taken from the post's receipt, answers every Question of that Task posted in that thread and still open. A message written before the Question but relayed after it does not count, and neither does an old message edited later, since an edit moves its `seq` and not its time. Only on a platform with neither sub-second time nor message order is a same-second message decided by when Fleet first saw it. The Gateway makes no judgement whether it really answers; a worker that needs more declares a new Question with a new id. |
 | What does a person get when writing in a thread whose Task is gone? | A new Task, numbered after the last, joined with the retained thread history, if the Conversation still exists and the message passes admission. After the Conversation's retention it is a new thread, and the route's mention rule applies again. |
 | How long is a Conversation kept? | While its tied Task exists, always. Untied or Orphaned, `gateway.retainMs` after the later of its last message and its orphaning, thirty days by default, then its controller deletes it by `uid` and `resourceVersion`, as ChangeRequest retention does. |
 | How long can a conversation Task's declarations grow? | `status.declared` has no cap today and a long thread declares a Comment per reply. Recommend a store cap on declarations per Task, refused past it with `NeedsAttention/DeclaredFull`, so a person deletes the Task and the thread starts a new one with its history; the Gateway itself only keeps cursors. |
 | Why does a Comment carry an `id`? | `fleet declare` treats an identical object as a no-op, so two identical Comments ("Done.") would be one. A per-Task unique `id` makes each its own declaration and its own post key. |
-| Who deletes a conversation Task? | Nobody automatically in the first step: a person or a conductor, as for any Task. A route-level policy that deletes a Concluded Task idle for a set time is a later change. |
+| Who deletes a conversation Task? | Nobody automatically in the first step: a person or a conductor, as for any Task. On a serialised route the next thread waits for that deletion, under `WorkspaceBusy`. A route-level policy that deletes a Concluded Task idle for a set time is a later change. |
 | How is the questions route overridden per Task? | The label `gateway.fleet.dev/route`, which a plugin or a person sets on the Task it creates. A TaskConfig field would also work, but TaskConfig is execution defaults and labels are already how plugins mark Tasks. |
 | What vocabulary of declarations does the Gateway read? | `Question`, `Comment` and `Draft`, plus the existing `ChangeRequest` and the result. Unknown kinds are ignored, as the Forge controller ignores them. See the [interface](interface.md#declarations-the-gateway-reads). |
 | What if a platform cannot recognise Fleet's posts? | An Unknown post outcome there is never repeated: it raises `NeedsAttention/PostUnconfirmed` and later posts to that thread wait for a person. See [adapters](adapters.md). |
@@ -259,8 +276,8 @@ its crate edges, field managers and negative fixtures to
 
 | Step | What | Where | Evidence |
 | --- | --- | --- | --- |
-| 1 | The Gateway port, `fleet-gateway` with the fake adapter, the Conversation kind and ConversationController with numbering and retention, `fleet gateway receive`, `[gateway]` config | `fleet-api/src/gateway.rs`, `crates/fleet-gateway`, `fleet-controllers/src/conversation.rs`, `fleet-manager`, `fleet-cli` | `conversation_controller`, `e2e_gateway`, `store_contract`, `architecture` |
-| 2 | Admission, routes and Task creation from a Conversation, the refusal post | `fleet-controllers/src/conversation.rs`, `fleet-api/src/gateway.rs` | `conversation_controller`, `e2e_gateway` |
-| 3 | GatewayController: the tie, the join, the relay under a cursor, `status.answered` and the `answers` inbox field | `fleet-controllers/src/gateway.rs`, `fleet-store` (`record_relay` for `status.gateway`, `append_inbox`) | `gateway_controller`, `e2e_gateway_controller`, `store_contract` |
-| 4 | Posting declarations, results and change news; opening a thread for a Question; children | `fleet-controllers/src/gateway.rs`, `fleet-manager` (the effects and receipts) | `gateway_controller`, `e2e_gateway_post` |
+| 1 | The Gateway port, `fleet-gateway` with the fake adapter, the Conversation and Listener kinds, ConversationController with numbering and retention, ListenerController, `fleet gateway receive` with its envelope and `--beat`, `fleet gateway account` and `status`, `[gateway]` config | `fleet-api/src/gateway.rs`, `crates/fleet-gateway`, `fleet-controllers/src/conversation.rs`, `fleet-manager`, `fleet-cli` | `conversation_controller`, `e2e_gateway`, `store_contract`, `architecture` |
+| 2 | Admission, routes and Task creation from a Conversation with the `exclusive` workspace precondition, the refusal post | `fleet-controllers/src/conversation.rs`, `fleet-api/src/gateway.rs` | `conversation_controller`, `e2e_gateway` |
+| 3 | GatewayController: the tie, the join, the relay under a cursor, `status.answered` and the `answers` inbox field, the parent labels and their scope check | `fleet-controllers/src/gateway.rs`, `fleet-store` (`record_relay` for `status.gateway`, `append_inbox`) | `gateway_controller`, `e2e_gateway_controller`, `store_contract` |
+| 4 | Posting declarations, results and change news; opening a thread for a Question and its `Receive`; children | `fleet-controllers/src/gateway.rs`, `fleet-manager` (the effects and receipts) | `gateway_controller`, `e2e_gateway_post` |
 | 5 | The Slack adapter through `curl` | `crates/fleet-gateway/src/slack.rs` | Truth tables in the adapter's unit tests, recorded Socket Mode payloads read through `event`; `e2e_gateway` against the stub `curl` |

@@ -47,14 +47,15 @@ atomic verbs. `e2e_plugin_controller` and `plugin_gate` exercise the host.
 SDKs and issue-specific plugins remain separate projects.
 
 The [Gateway controller](../docs/controllers/gateway/README.md) is a design
-and serves nothing yet: `Conversation` is refused as an unknown kind,
+and serves nothing yet: `Conversation` and `Listener` are refused as unknown kinds,
 `[gateway]` as an unknown config field, and no `fleet gateway` verb exists.
 As designed it adds a `Gateway` port in `fleet-api`, adapters in a
 `fleet-gateway` crate depending on `fleet-api` and `fleet-exec` only,
-`ConversationController` and `GatewayController` field managers, a
-`listener/<account>` appender to the Conversation spool (and the manager
-appending Fleet's opening post there after an `Opened` answer, direct or
-recovered from channel history), a `gateway/`
+`ConversationController`, `ListenerController` and `GatewayController`
+field managers, a `listener/<account>` appender to the Conversation spool
+and writer of its Listener's beat (and the manager appending Fleet's opening
+post to the spool through a keyed `Receive` action of GatewayController's
+plan), a `gateway/`
 inbox source, and `status.answered`, written only by an inbox append that
 carries `answers`. None of these guarantees hold until implemented with
 their tests.

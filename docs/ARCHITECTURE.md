@@ -204,7 +204,9 @@ the route's admission rules and creates one Task per thread; GatewayController,
 a third controller over the Task, owns `status.gateway`, relays new messages
 into the inbox under a cursor through `record_relay`, and posts what the
 Task declares as keyed effects through a `Gateway` port, with adapters in a
-planned `fleet-gateway` crate, Slack first. The purity and process rules
+planned `fleet-gateway` crate, Slack first. ListenerController reports each
+account's inbound health from the listener's own beats, on a
+[Listener](resources/listener.md). The purity and process rules
 above are unchanged: the Gateway runs no model, every adapter call is
 bounded, and no platform name appears above the port.
 

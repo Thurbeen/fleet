@@ -17,9 +17,11 @@ effects and keys used here.
 | none | An `Opened` answer for a Task's Question, before its receipt, or the listener's keyed copy of that opening post | Untied | Create it exclusively by derived name and spool the opening post; whichever comes second is a duplicate message. |
 | Untied | A spooled Fleet post whose marker is a Question key naming a Task Known with that `uid` | Tied | The tie is that Task, `n = 1`, `state: created`. No Task is created, even for an `Admitted` mention in the same pass, which is relayed to that Task. |
 | Untied | The same, the named Task Unknown | Untied | Wait; create nothing. Readable absence lets a mention start a Task as below. |
-| Untied | The thread's starter is a Fleet post without a key | Untied | Create no Task from any mention; wait for the keyed copy. If it never comes, the thread is dead to mentions and a person re-asks in a new thread. |
-| Untied | First pass, no `revision` | Untied | Ask `History` from the beginning; number every message and the spool in one write. |
-| Untied | An `Admitted` message meeting the route's mention rule, in a thread whose starter is not a keyless Fleet post | Untied, then Tied | Write the tie's intent, `task = {name, n, state: pending}`, and create the Task under `conversation/<uid>/task/<n>`; the receipt writes its `uid` and the phase. |
+| Untied | `status.starter` is a Fleet post without a key | Untied | Create no Task from any mention; wait for the keyed copy, which sets `status.starter.key`. If it never comes, the thread is dead to mentions and a person re-asks in a new thread. |
+| Untied | The account has history and `status.starter` is not yet set | Untied | Create no Task; the first read is retried and mentions wait in the mirror. |
+| Untied | First pass, no `revision` | Untied | Ask `History` from the beginning; number every message and the spool in one write, and record the thread's first message as `status.starter`. |
+| Untied | An `Admitted` message meeting the route's mention rule, the guard on `status.starter` passed | Untied, then Tied | Write the tie's intent, `task = {name, n, state: pending}`, and create the Task under `conversation/<uid>/task/<n>`, exclusive on the route's workspace; the receipt writes its `uid` and the phase. |
+| Untied or Orphaned | That create answered `WorkspaceBusy` | unchanged | Withdraw the intent; `NeedsAttention/WorkspaceBusy`; plan the create again under the same key every `pollMs`. Not a failed attempt. |
 | Untied | A `Context` message that mentions Fleet | Untied | One refusal per author, under its refusal key. |
 | Untied | Nothing for `gateway.retainMs` since the last message | deleted | Plan `delete`, fenced on `uid` and `resourceVersion`. |
 | Tied | The tied Task Known with the same `uid` | Tied | Number spooled events; where the account has history, ask `History` for the backstop every `pollMs`, but only while the thread had a message within `gateway.activeMs` (one day by default): the listener is the primary path, and an idle thread costs no platform call. |
@@ -43,18 +45,20 @@ then `NeedsAttention/TaskCreateFailed`.
 | none | The Task carries `gateway.fleet.dev/conversation` | Waiting | Record the Conversation's name; read no declaration yet. |
 | Waiting | That Conversation's `status.task` has the Task's `uid` | Tied | The cursor starts at `0`, so the first relay is the [join](#joining). Declarations made while waiting are read now, in order. |
 | Waiting | The Conversation readably absent, or tied to another `uid` | none | `NeedsAttention/ConversationGone`; from then on the Task is untied. |
-| none | The Task carries `gateway.fleet.dev/parent` naming a Task that is Known or Unknown | Child | Never ties. The parent relays this Task's declarations; this Task's own `declared` cursor advances over each without posting, so nothing is replayed if it later becomes untied. |
+| none | The Task carries `gateway.fleet.dev/parent` and `parent-uid`, naming a Task that is Unknown, or Known with that `uid` | Child | Never ties. The parent relays this Task's declarations; this Task's own `declared` cursor advances over each without posting, so nothing is replayed if it later becomes untied. |
 | none | A `Question` declared, no tie, no live parent | Opening | Write the `Open` intent under the Question's key; perform `Open`. |
-| Opening | `Opened` receipt, or an Unknown one recovered from the channel's history | Waiting | Record the new Conversation's name; the manager has ensured it and spooled the post. The Conversation ties itself from the post's marker. |
+| Opening | `Opened` receipt, or an Unknown one recovered from the channel's history | Opened | Record the new Conversation's name and, in the same write, the `Receive` intent; the manager performs it in the same pass. |
+| Opened | `Received` | Waiting | The Conversation exists and holds the opening post; it ties itself from the post's marker. |
+| Opened | `Receive` Unknown, or no receipt, and the Conversation readably without `open/<message id>` | Opened | A failed attempt; perform `Receive` again under the same key, at most three attempts, then `NeedsAttention/ReceiveFailed`. With it present, the receipt is recovered. |
 | Opening | Failed | Opening | Retry under the same key after `RETRY_DELAY_MS`, at most three attempts, then `NeedsAttention/PostFailed` and back to none. |
-| Opening | A channel recovery read stays Unknown (`Incomplete`) past three attempts | Opening | `NeedsAttention/RecoveryIncomplete`; reading continues, nothing is opened again. |
+| Opening | A channel recovery read answers Unknown, `Incomplete` or otherwise | Opening | Not an attempt: `recovery.reads += 1`, the next read at `RETRY_DELAY_MS × 2^(reads − 1)`, capped at `pollMs`, later if the platform gave `retryAfter`. At three reads, `NeedsAttention/RecoveryIncomplete`; reading continues on the capped schedule, nothing is opened again. A complete read resets `reads` to `0` and is decided as a recovered receipt or a failed attempt. |
 | Opening | Unknown, and the channel has no history or no marker | Opening | `NeedsAttention/PostUnconfirmed`; nothing is opened again until a person acts. |
 | none | A `Comment`, `Draft`, change or result | none | Read and skipped: the declared cursor advances past it. |
 | Tied | New messages above the cursor | Tied | [Relay](#relay). |
 | Tied | Declarations or a result past the cursors | Tied | [Post](#posting) each, in order. |
 | Tied | The Conversation readably absent, or its `status.task` names another `uid` | none | `NeedsAttention/ConversationGone`; nothing more is posted. A later Question opens a new thread. |
 | Tied | The Task also carries `gateway.fleet.dev/parent` | Tied | The verified tie wins; the label is ignored. |
-| Child | The parent readably absent | none | Treated as untied from then on. |
+| Child | The parent readably absent, or Known with another `uid` | none | Treated as untied from then on. |
 
 ## Joining
 
@@ -134,14 +138,14 @@ On a Conversation, written by ConversationController:
 | --- | --- |
 | Reachable | The last `History` was Known. Unknown carries the reason. |
 | Tied | A Task is tied and Known. |
-| NeedsAttention | `TaskCreateFailed`, `SpoolFull` (more than 100 unnumbered events), `RouteUnknown` (the spec's route was removed from config), `MentionsOnly` (the account's `capabilities` say unmentioned messages are not delivered, so a tied thread relays only mentions), `IdentityMismatch` (`whoami` differs from the configured bot id). |
+| NeedsAttention | `TaskCreateFailed`, `SpoolFull` (more than 100 unnumbered events), `RouteUnknown` (the spec's route was removed from config), `MentionsOnly` (the account's `capabilities` say unmentioned messages are not delivered, so a tied thread relays only mentions), `WorkspaceBusy` (a Task this thread would start waits for its route's workspace). The account's identity and its listener are its [Listener's](../../resources/listener.md) conditions. |
 
 Under `status.gateway.conditions` on a Task, written by GatewayController:
 
 | Type | True means / relevant reason |
 | --- | --- |
 | Tied | The Task is tied to a Conversation it verified. |
-| NeedsAttention | `RelayGap`, `ConversationGone`, `PostFailed` (three refused attempts on one key, the refusal quoted), `PostUnconfirmed` (an Unknown outcome on a platform with no marker), `DeclarationInvalid` (a Question, Comment or Draft without an `id`), `TooManyChildren` (more than 200 children), `RecoveryIncomplete` (a channel read for an Unknown open stayed incomplete), `RouteUnknown`. |
+| NeedsAttention | `RelayGap`, `ConversationGone`, `PostFailed` (three refused attempts on one key, the refusal quoted), `PostUnconfirmed` (an Unknown outcome on a platform with no marker), `DeclarationInvalid` (a Question, Comment or Draft without an `id`), `TooManyChildren` (more than 200 children), `RecoveryIncomplete` (three recovery reads for one key came back incomplete, counted on `posts.<key>.recovery`), `ReceiveFailed` (three readably failed `Receive` attempts for an opened thread), `RouteUnknown`. |
 
 NeedsAttention stops nothing else: relay continues while one post waits,
 and one conversation's held post holds back no other conversation's.
