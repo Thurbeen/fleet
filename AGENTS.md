@@ -53,6 +53,27 @@ Read `~/.agent-rules/OPINIONS.md` before picking tools, adding dependencies or
 changing CI. Read `~/.agent-rules/VOICE.md` before publishing prose on behalf
 of the operator. Do not invent these files if they are absent.
 
+## Writing specs
+
+A design document describes the flows, the APIs and the behaviour that a
+user, an adapter author or another component can observe. It states each
+guarantee as a rule. It does not describe the algorithm that keeps the
+guarantee; the code and its tests own that.
+
+Write design and interface documents in the style of ASD-STE100 Simplified
+Technical English. Follow its writing rules, not its controlled vocabulary:
+
+- Write one fact per sentence, in about 25 words or fewer.
+- Give each paragraph one topic.
+- Use the active voice and name the subject. Do not let "it" or "that" point
+  across sentences.
+- Use one term for one concept, and define a term before you use it.
+- Write steps and conditions as lists, not as chains of clauses.
+- Keep the reason for a rule in a sentence apart from the rule.
+
+When you rewrite existing text, change its form only. Keep every heading's
+text, so its anchor still resolves.
+
 ## Deployment safety
 
 The new binary uses a fresh, versioned resource store. It does not read legacy

@@ -1,283 +1,246 @@
 # Gateway controller
 
-Design, not implemented. No `[gateway]` key, port, crate or resource kind
-described here exists in the installed binary; a `Conversation` manifest is
+Design, not implemented. The installed binary has no `[gateway]` key, port,
+crate or resource kind from this page. A `Conversation` manifest is
 refused today as an unknown kind.
 
-The Gateway ties chat conversations to Tasks. It is a way for messages to
-get into Fleet and out of it, not a domain of its own: a person mentions
-Fleet's bot in a thread, a Task is started for that thread, and from then on
-every message in the thread reaches the Task's inbox and what the Task
-declares reaches the thread. The Gateway never runs a model. Everything
-agentic is a Task; the Gateway admits people, keeps the tie between a thread
-and its Task, and moves messages.
+The Gateway ties chat threads to Tasks:
 
-It is the [Forge controller](../forge/README.md) applied to chat. A Task
-declares what it wants said, a mirror object follows the thread, new
-messages are relayed into the Task's inbox under a cursor, Fleet's own posts
-are recognised by a marker, and one adapter per platform sits behind one
-port. Slack is the first adapter; Telegram, Discord and Microsoft Teams are
-mapped on paper to check the model.
+1. A person mentions Fleet's bot in a thread.
+2. Fleet starts a Task for that thread.
+3. Every later message in the thread reaches the Task's inbox.
+4. What the Task declares is posted in the thread.
+
+The Gateway never runs a model. It admits people, keeps the tie between a
+thread and its Task, and moves messages. The Task does all agentic work.
+
+The Gateway is the [Forge controller](../forge/README.md) applied to chat.
+A Task declares what it wants said. A mirror object follows the thread.
+Fleet relays new messages into the inbox under a cursor, and recognises its
+own posts by a marker. One adapter per platform sits behind one port. Slack
+is the first adapter. Telegram, Discord and Microsoft Teams are mapped on
+paper, to check the model.
 
 | Read | Answers |
 | --- | --- |
-| [Conversation](../../resources/conversation.md) | What does the mirror of one thread hold, and who deletes it? |
+| [Conversation](../../resources/conversation.md) | What does the mirror of one thread hold? Who deletes it? |
 | [Listener](../../resources/listener.md) | Is an account's listener running, connected and current? |
-| [Task gateway status](../../resources/task.md#talking-in-a-conversation) | What does a Task declare to talk, and what do `status.gateway` and `status.answered` hold? |
-| [State machine](state-machine.md) | How does a thread move between Untied, Tied and Orphaned, and what is relayed or posted when? |
-| [Interface](interface.md) | What are the port, the receive verb, the probes, the effects, the keys and the write rules? |
-| [Adapters](adapters.md) | How do Slack, Telegram, Discord and Teams map onto the port, and what did each change in the model? |
+| [Task gateway status](../../resources/task.md#talking-in-a-conversation) | What does a Task declare to talk? What do `status.gateway` and `status.answered` hold? |
+| [State machine](state-machine.md) | Which states does a thread and a tie go through? What is relayed or posted, and when? |
+| [Interface](interface.md) | What are the port, the CLI verbs, the declarations, the inbox entries and the keys? |
+| [Adapters](adapters.md) | How do Slack, Telegram, Discord and Teams map onto the port? |
 | [Native config](../../configuration/fleet-toml.md#the-gateway-section) | Where do accounts, people, routes and admission come from? |
-| [Forge controller](../forge/README.md) | The controller this one is modelled on. |
-| [Overall architecture](../../ARCHITECTURE.md#the-gateway-controller) | Where would this fit in Fleet? |
+| [Overall architecture](../../ARCHITECTURE.md#the-gateway-controller) | Where does this fit in Fleet? |
 
-## One run: a mention starts a Task
+## The parts
 
-1. A person on a route's allowlist writes in a channel the route covers,
-   mentioning Fleet's bot, in a new thread or partway through an old one.
-2. The platform delivers the event to a listener, a resident process outside
-   the manager that holds the platform's connection. The listener hands the
-   raw payload, in an envelope saying how it authenticated it, to
-   `fleet gateway receive`, a bounded manager verb. The verb
-   asks the adapter to read the payload into a platform-neutral event. An
-   event for a thread Fleet already mirrors, or one that could start a Task
-   or earn a refusal, is appended to the spool of that thread's
-   [Conversation](../../resources/conversation.md), which the verb creates
-   under a name derived from the address when it does not exist; any other
-   event is dropped. The listener acknowledges the platform only once the
-   verb exits zero.
-3. On the next sweep ConversationController numbers the spooled event into
-   the mirror. For a thread it has never seen it first asks the adapter for
-   the thread's whole history, so a mention partway through a thread brings
-   everything before it. The mention passes the route's admission rules, so
-   the plan creates one Task from the route, with the route's TaskConfig,
-   brief and workspace, labelled with the Conversation's name and `uid`, and
-   records the Task's name and `uid` as the thread's tie.
-4. GatewayController, a controller over that Task, finds the tie, and joins
-   at the beginning: its first relay is one inbox entry holding the whole
-   retained thread, each message labelled with its author and whether that
-   author is on the allowlist. TaskController delivers it after the brief.
-5. Every later message by an allowlisted person in the thread is relayed;
-   whatever arrived since the last relay goes out as one inbox entry, the
-   cursor advancing in the same write. Every message is
-   a worker turn; nothing decides whether an admitted message deserves one. Messages
-   from people off the allowlist start no turn: they wait above the cursor
-   and ride along with the next allowlisted message, labelled as not coming
-   from someone on the allowlist, content and never instructions.
-6. The worker answers by declaring: `fleet declare TASK --json
-   '{"kind":"Comment","id":"c1","text":"…"}'` to say something, a
-   `Question` to ask,
-   a `ChangeRequest` when it opens a change, and `fleet result` when it
-   reports. GatewayController renders each into one post, writes the post's
-   intent with its key, and the manager posts it through the Gateway port;
-   the receipt lands on the Task. The worker holds no platform credential
-   and names no destination.
-7. The thread lives as long as people write in it. A Concluded Task still
-   receives what is relayed, as it does today. If the Task is deleted, the
-   Conversation is Orphaned; the next allowlisted message in the thread
-   starts a new Task, joined with the thread's history.
-8. An Orphaned or Untied Conversation that sees no message for its
-   retention is deleted by its own controller. Nothing on the platform
-   changes.
+| Part | Role |
+| --- | --- |
+| Listener | A small program outside Fleet. It holds the platform connection and hands each event to `fleet gateway receive`. One per account. |
+| `fleet gateway receive` | A bounded manager verb. It reads one event and adds it to the thread's Conversation. |
+| [Conversation](../../resources/conversation.md) | The mirror of one thread. It numbers the messages and records which Task the thread is tied to. |
+| ConversationController | Keeps each Conversation current, starts a Task for an admitted mention, and retires old Conversations. |
+| GatewayController | A second controller over each Task. It relays the thread into the inbox and posts what the Task declares. |
+| [Listener resource](../../resources/listener.md) and ListenerController | Show whether an account's listener is running, connected and on the current configuration. |
+| Gateway port | The platform API behind one interface: read events, read history, open a thread, post. |
 
-## One run: a Question opens a thread
+## Flow: a mention starts a Task
 
-1. A Task nobody started from chat, one a Notion factory plugin created for
-   example, declares `{"kind":"Question","id":"q1","text":"…"}`.
-2. GatewayController sees a Question on a Task that has no tie and no
-   parent. It picks the questions route, from the Task's
-   `gateway.fleet.dev/route` label or the `[gateway]` default, and writes an
-   `Open` intent under `task/<name>/<uid>/gateway/question/q1`.
-3. The manager opens a new thread in that route's question channel with the
-   Question as its first post, carrying the key as its marker, and writes
-   the receipt. On its next pass GatewayController plans a second keyed
-   step, `Receive`, which the manager performs against the store: it
-   ensures the Conversation for the new thread and spools that first post,
-   as the receive verb would. Whichever of the two creates the Conversation,
-   ConversationController ties the thread to the Task the marker key names.
-4. Replies in that thread are relayed to the Task's inbox. The first
-   allowlisted reply written after the Question's own post records it as answered
-   on the Task, `status.answered.q1`, in the same write that queues the
-   reply. A Notion factory plugin showing the same Question as "Needs input"
-   reads that fact and stops showing it; if the answer arrives there first,
-   the plugin's inbox append records it instead and the thread stops
-   waiting. Nothing is reposted, nudged or reminded.
-5. A `Comment`, a change's news or a result never opens a thread. They are
-   posted only on a Task already tied.
+1. A person on a route's allowlist mentions Fleet's bot in a channel that
+   the route covers. The thread can be new or old.
+2. The listener receives the event and runs `fleet gateway receive`. The
+   verb creates the thread's Conversation and adds the event to it. The
+   listener acknowledges the event only after the verb succeeds.
+3. ConversationController reads the thread's history, so a mention partway
+   through a thread brings everything before it.
+4. The mention passes the route's admission rules. ConversationController
+   creates one Task from the route, with the route's TaskConfig, brief and
+   workspace, and records the tie.
+5. GatewayController sends the whole retained thread to the Task as its
+   first inbox entry, after the brief.
+6. Each later message from an allowlisted person reaches the inbox and is a
+   worker turn. Messages from other people start no turn. They go out with
+   the next allowlisted message, marked as content, never instructions.
+7. The worker answers with declarations: a `Comment`, a `Question`, a
+   `Draft`, a declared `ChangeRequest`, or its `fleet result`. Fleet posts
+   each one in the thread, in order, and never twice. The worker holds no
+   platform credential and names no destination.
+8. The thread lives as long as people write in it. A Concluded Task still
+   receives the thread, so a later message reaches the same Task.
+9. If someone deletes the Task, the thread becomes Orphaned. The next
+   admitted message, with or without a mention, starts a new Task with the
+   thread's history.
+10. An Orphaned or Untied thread with no message for its retention period is
+    forgotten. Nothing on the platform changes. A later message there is
+    treated as a new thread, and the mention rule applies again.
 
-## The Forge pattern, applied to chat
+## Flow: a Question opens a thread
 
-| Forge | Gateway | Why the same |
-| --- | --- | --- |
-| A forge host, one adapter per kind (`gh`, `glab`, `az`, `curl`) | A chat account, one adapter per platform | Nothing above the port names a platform; the adapter translates once. |
-| `ChangeRequest`, the mirror of one change, named from its canonical ref | `Conversation`, the mirror of one thread, named from its canonical address | One reader per thread however many consumers; an unreachable platform is the mirror's condition, never a state of the thread. |
-| `revision` and per-note `seq` | `revision` and per-message `seq` | A consumer diffs with one integer. |
-| ForgeController over the Task, owning `status.forge` | GatewayController over the Task, owning `status.gateway` | A second writer on the Task with its own subtree, writing nothing else. |
-| Relay into the inbox under a cursor, in one CAS write (`record_relay`) | The same mutation, for `status.gateway` | The cursor and the entries land together or not at all. |
-| The worker mark `<!-- fleet:worker <uid> -->` | A platform marker carrying the post's intent key | Fleet tells its own words from a person's, and recovers an Unknown post by looking for the key. |
-| Mark-ready, the one forge write, keyed, intent before and receipt after | `Open` and `Post`, keyed, intent before and receipt after | Fleet never repeats a key; an Unknown outcome is answered by observation. |
-| `fleet declare --change-request` ensures the mirror | `fleet gateway receive` ensures the mirror | A mirror exists as soon as anything names it, created exclusively by name. |
+1. A Task that nobody started from chat declares a `Question`. For example,
+   a plugin created the Task.
+2. GatewayController opens a new thread in the channel of the questions
+   route. The first post is the Question, and it carries a marker that names
+   the Task.
+3. The new thread gets a Conversation, which is tied to that Task by the
+   marker.
+4. Replies in the thread reach the Task's inbox. The first allowlisted reply
+   written after the Question records it as answered in
+   `status.answered`.
+5. An answer can also arrive another way, for example through a plugin that
+   shows the Question as "Needs input". Whichever answer arrives first wins.
+   Fleet does not repost, nudge or remind.
 
-Where the two differ, the difference is chat's:
+A `Comment`, a change or a result never opens a thread. Fleet posts them
+only for a Task that is already tied.
 
-- **A chat pushes.** A forge is polled; a chat platform delivers events,
-  over a WebSocket or a webhook, and offers history only as a backstop or
-  not at all. Fleet adds an inbound verb and a listener; see
-  [inbound transport](#inbound-transport).
-- **A thread creates its Task.** A change is opened by a Task that already
-  exists. A conversation starts before any Task, so the mirror's controller
-  creates one, through the same create verb a plugin's plan uses.
-- **Fleet speaks.** The Forge controller writes one thing on a forge;
-  the Gateway posts on every declaration. Each post is a keyed effect, and
-  posts to one thread go out in declaration order, one unresolved at a
-  time.
+## Flow: a child speaks through its parent
 
-## Every write is local
+A Task can carry parent labels that name another Task. Its Questions,
+Comments, Drafts, changes and result then go to the parent's inbox, not to
+a thread. The parent answers with `fleet send CHILD --answers ID TEXT`.
+Only the parent speaks in the thread. When the parent is gone, the child
+acts as an untied Task.
 
-ConversationController writes only Conversations, and creates Tasks through
-the manager's create verb. GatewayController's plans write only
-`status.gateway` and the Task's own inbox, apart from the one spool append
-below, and read Conversations,
-ChangeRequests and child Tasks by name or label. Two writes reach a
-Conversation from outside its controller, both through the one typed spool
-append and neither touching its status otherwise: the receive verb, and the
-manager performing a `Receive` action, which records the post Fleet just
-made. A Listener's beats and refusals are the listener's, written only by
-the receive verb; the rest of it is ListenerController's.
-`status.answered`, like `status.inbox`, has no single owner: it is written
-only by the typed inbox append that carries the answer, first writer wins.
-Posting is the only effect either controller performs.
+## Behaviour
 
-## Where it lives
+These rules hold across all flows:
 
-A built-in controller, not a Fleet plugin. A plugin would need:
+- **One thread, one mirror, one Task at a time.** A thread has one
+  Conversation per account. It is tied to at most one live Task.
+- **Fleet speaks only through declarations.** Every post is a keyed effect:
+  Fleet writes the intent first and the receipt after.
+- **Fleet never posts twice.** A post whose outcome is unknown is looked
+  for by its marker, never sent again blindly. Where a platform cannot find
+  it, Fleet raises `NeedsAttention/PostUnconfirmed` and waits for a person.
+- **Posts in one thread go out in declaration order.** A post with an
+  unknown outcome holds back the later posts to that thread only.
+- **Fleet never relays its own posts.**
+- **Unknown never means absent.** A platform or store answer that Fleet
+  cannot read makes Fleet wait. It never makes Fleet act as if something
+  is gone.
+- **Delivery is at least once.** A redelivered event changes nothing. In
+  a tied, active thread, an event the listener lost is recovered from
+  history where the platform has it. A mention lost in an untied thread is
+  not recovered.
+- **A thread Fleet opened belongs to its Question's Task.** While that Task
+  exists, a mention there starts no other Task. If Fleet cannot tell which
+  Task opened the thread, the thread ignores mentions rather than guess.
+- **A route runs one conversation Task at a time.** The route's workspace
+  is a shared directory, so a second thread waits, says so once, and starts
+  when the workspace is free.
+- **Every problem is a visible condition.** The Conversation, the Task and
+  the Listener each report `NeedsAttention` with a reason. Nothing fails
+  silently.
 
-- **Every Task.** The Gateway reads any Task's declarations and posts for any
-  Task that asks a Question. A plugin would need `tasks = "any"`, the widest
-  right Fleet has, to do what a built-in does as a named field manager with
-  one subtree.
-- **A Task subtree.** Relaying under a cursor in the same write as the
-  inbox append needs a status subtree on the Task. The
-  [Plugin controller](../plugin/README.md#scope) leaves a plugin-owned
-  subtree on a built-in kind out of scope; a plugin would have to keep its
-  cursor on its own object and append without the atomic guarantee
-  `record_relay` gives.
-- **Waking on a Task.** A plugin object is due only on `notBefore`, a
-  `generation` change or deletion; a new declaration on a Task does not wake
-  it. Every Comment would wait for the plugin's poll.
-- **A resident connection.** A plugin process serves one bounded call. The
-  listener the platforms require is resident either way, so a plugin saves
-  nothing there.
-- **Kinds another component writes.** The receive verb must ensure a
-  Conversation; a plugin's kinds are created only through its own plans.
+## Why it is shaped this way
 
-The Notion factory is the opposite case: its records are its own, it needs
-only its own Tasks, and its cadence is a poll. It stays a plugin and meets
-the Gateway only on a Task: in `status.declared`, in the inbox and in
-`status.answered`.
+### The Forge pattern, applied to chat
 
-## Inbound transport
+| Forge | Gateway |
+| --- | --- |
+| One adapter per forge kind | One adapter per chat platform |
+| `ChangeRequest`, the mirror of one change | `Conversation`, the mirror of one thread |
+| `revision` and per-note `seq` | `revision` and per-message `seq` |
+| ForgeController owns `status.forge` | GatewayController owns `status.gateway` |
+| Relay under a cursor, in one write | The same |
+| The worker mark on forge posts | A platform marker on Fleet's posts |
+| Mark-ready, a keyed effect | `Open` and `Post`, keyed effects |
 
-Fleet's rule is bounded calls and no service of its own to supervise. Every
-platform but one pushes:
+Chat differs from a forge in three ways:
 
-| Platform | What it offers | What it forces |
-| --- | --- | --- |
-| Slack | Socket Mode, a WebSocket; or the Events API, HTTPS to a public URL | A resident connection or a public endpoint. History is readable, rate-limited. |
-| Telegram | `getUpdates`, a long poll with an offset; or a webhook | Nothing resident: a bounded call with a cursor works. No history. |
-| Discord | The Gateway, a WebSocket; no other way to receive channel messages | A resident connection. History is readable. |
-| Microsoft Teams | HTTPS to the bot's messaging endpoint | A public endpoint. History through Microsoft Graph, separately permitted. |
+- **A chat pushes.** Fleet polls a forge, but a chat platform delivers
+  events. So Fleet adds an inbound verb and a listener.
+- **A thread creates its Task.** A Task opens a change, but a conversation
+  starts before any Task exists. So ConversationController creates the Task.
+- **Fleet speaks often.** The Forge controller writes one thing. The Gateway
+  posts on every declaration.
 
-The options:
+### A built-in, not a plugin
+
+The Gateway reads the declarations of every Task, keeps a cursor on each
+Task in the same write as the inbox append, and must wake when a Task
+declares something. A plugin can do none of these today. A plugin also
+cannot hold a resident connection, and the platforms need one either way.
+
+A plugin that keeps its own records, works on its own Tasks and polls stays
+a plugin. It meets the Gateway only on a Task: in `status.declared`, in the
+inbox and in `status.answered`.
+
+### Inbound transport
+
+Fleet's rule is bounded calls and no service of its own to supervise. But
+every platform except Telegram pushes events, over a WebSocket or a public
+HTTPS endpoint.
 
 | Option | For | Against |
 | --- | --- | --- |
-| (a) Poll inside bounded calls | Fits Fleet exactly; Telegram's offset is a natural cursor | Discord and Teams cannot be polled for new mentions; Slack's history methods are rate-limited per channel, and finding a mention in an untied thread means reading every channel the route covers |
-| (b) `fleet up` holds the connection | One resident process already exists | The manager gains a network service and a WebSocket stack; a listener stall shares fate with reconciliation; `fleet reconcile` alone can never receive |
-| (c) A separate listener hands events to a manager verb | The manager stays bounded; the verb is one store write, like `fleet send`; the listener holds nothing durable | One more resident process for the operator to run |
+| (a) Poll inside bounded calls | Fits Fleet exactly. | Discord and Teams cannot be polled for mentions. Slack's history has rate limits. |
+| (b) `fleet up` holds the connection | One resident process already exists. | The manager gains a network service. A listener stall stalls reconciliation. |
+| (c) A separate listener hands events to a manager verb | The manager stays bounded. The listener holds nothing durable. | One more process for the operator to run. |
 
-Recommendation: **(c)**, for every platform. The listener is transport only: it
-holds the connection or the endpoint, authenticates the platform (the Socket
-Mode token, a webhook's signature or JWT), and pipes each raw payload, in its
-envelope, into `fleet gateway receive --account NAME`. The verb runs the
-adapter's pure `event` reading, so platform parsing stays in `fleet-gateway`
-with its truth tables; it refuses a duplicate delivery id, so a platform's
-at-least-once redelivery is harmless; and the listener acknowledges only after
-the verb exits zero. A listener crash loses only unacknowledged events, which
-the platform redelivers or, for tied threads, the history backstop recovers.
-Telegram's listener is a loop of bounded `getUpdates` calls that confirms an
-offset only after the verb succeeds; a later step may run that loop inside
-`fleet up` as option (a), since it needs no connection.
+Recommendation: **(c)**, for every platform.
 
-A listener is not part of Fleet's runtime, and `fleet-gateway` stays an
-adapter of bounded calls through `fleet-exec`, with no WebSocket client and
-no resident code. The first listener, for Slack Socket Mode, is a separate
-small program maintained outside the workspace, as plugin SDKs are, written
-against Slack's own SDK. Any program that holds the connection and runs the
-verb per event is a listener. The operator's service manager runs it; Fleet
-supervises nothing, but it does observe it. A listener reports its state
-through `fleet gateway receive --beat`, carrying the digest of the account
-configuration it started from, and the account's
-[Listener](../../resources/listener.md) shows whether it is accepted (the
-config is valid and routed), resolved (the platform confirms Fleet's bot
-identity) and inbound-ready (a fresh beat, connected, from the current
-configuration). A dead listener or one left on an old configuration is a
-False condition within one sweep, never a silence that looks healthy.
-
-Each delivery reaches the verb in an envelope stating how the listener
-authenticated it, an authenticated connection or a verified signature; the
-account's `inbound` setting fixes which, and the verb refuses any other.
-The spool is keyed by the delivery's own id, the platform's where it has
-one, so a redelivery is a duplicate and an edit of a message is not.
+- The listener is transport only. It holds the connection, authenticates
+  the platform, and pipes each event into `fleet gateway receive`.
+- Platform parsing stays in Fleet's adapter, with its tests.
+- The first listener is for Slack Socket Mode. It is a small program
+  maintained outside the workspace, and the operator's service manager runs
+  it. Any program that runs the verb per event is a listener.
+- Fleet supervises no listener but observes each one. A listener reports
+  heartbeats, and the account's Listener turns `InboundReady` False when the
+  listener stops, stalls or runs an old configuration.
 
 ## Scope
 
-In scope: accounts, people and routes in native config; admission (the
-allowlist, mention rules, which authors count per channel, one polite
-refusal); the Conversation mirror with numbered messages and retention;
-one Task per thread, created from a route; relaying a thread into its
-Task's inbox under a cursor; posting what a Task declares, keyed, in order;
-opening a thread for a Question from an untied Task; recording answers;
-funnelling a child Task's words to its parent; the Slack adapter; the
-receive verb a listener calls, and the Listener that reports its health.
+In scope:
 
-Out of scope, deliberately: merging, as for the Forge controller; suspending
-and resuming idle sessions; Notion, which is a plugin's; any judgement about
-a message's worth, an intake model, a planner or a nudging heartbeat; implementing
-the Telegram, Discord or Teams adapters, which are mapped in
-[adapters](adapters.md) only to check the model; reactions, files, edits by
-Fleet of its own posts and interactive components; the listener programs themselves.
+- accounts, people and routes in native config,
+- admission: the allowlist, the mention rule, and one polite refusal,
+- the Conversation mirror, with numbered messages and retention,
+- one Task per thread, created from a route,
+- relaying a thread into its Task's inbox,
+- posting what a Task declares, in order,
+- opening a thread for a Question from an untied Task, and recording
+  answers,
+- routing a child Task's words to its parent,
+- the Slack adapter, the receive verb and the Listener.
+
+Out of scope, deliberately:
+
+- merging, as for the Forge controller,
+- suspending and resuming idle sessions,
+- any judgement about the worth of a message: an intake model, a planner or
+  a nudging heartbeat,
+- implementing the Telegram, Discord or Teams adapters,
+- reactions, files, edits of Fleet's own posts, and interactive components,
+- the listener programs themselves.
 
 ## Open questions and recommendations
 
 | Question | Recommendation |
 | --- | --- |
-| Where does the thread history go when a mention lands partway through a thread? | The first inbox entry, as the Forge controller's join message, not the brief. The brief stays the route's, identical for every conversation Task and frozen at creation; the history can be long and is data. |
-| What is the brief of a conversation Task? | The route's `brief` file, read by the manager when it loads the config and copied into each Task's spec when the Task is created. TaskConfig does not define briefs or workspaces, so a route names a TaskConfig for execution defaults and carries the brief and workspace itself. |
-| What workspace does a conversation Task get? | A route setting, today a directory, which every Task of the route would share. Two Tasks writing through one directory break Fleet's one-workspace-per-Task rule, so the route is serialised: its creates carry an `exclusive` precondition and the manager starts no Task while another Task has that directory; a waiting thread raises `WorkspaceBusy` and starts when the workspace is free. Concurrent conversations on one route wait for provisioned workspaces, a worktree per Task from the route's repository on a branch derived from the Conversation's name, which is a change of its own. |
-| How is a child tied to its parent? | Two labels on the child, `gateway.fleet.dev/parent: <parent Task name>` and `gateway.fleet.dev/parent-uid: <its uid>`, set only when the child is created and only by a writer that may already append to the parent's inbox: a person, or a plugin whose Task scope covers the parent. Naming a parent writes to its inbox, so a `tasks = "own"` plugin cannot name another's Task. The parent's GatewayController lists its children by the name label, relays only those whose `parent-uid` is its own, and relays their Questions, Comments, Drafts and results into its own inbox; the child's GatewayController never opens or ties a thread. |
-| A child whose parent is readably gone? | It is treated as untied: its next Question opens a thread through the questions route, because nobody else will answer it. Its earlier declarations are not replayed. |
-| How is an answer recognised in a thread? | The first allowlisted message whose platform time is after the Question post's own time, taken from the post's receipt, answers every Question of that Task posted in that thread and still open. A message written before the Question but relayed after it does not count, and neither does an old message edited later, since an edit moves its `seq` and not its time. Only on a platform with neither sub-second time nor message order is a same-second message decided by when Fleet first saw it. The Gateway makes no judgement whether it really answers; a worker that needs more declares a new Question with a new id. |
-| What does a person get when writing in a thread whose Task is gone? | A new Task, numbered after the last, joined with the retained thread history, if the Conversation still exists and the message passes admission. After the Conversation's retention it is a new thread, and the route's mention rule applies again. |
-| How long is a Conversation kept? | While its tied Task exists, always. Untied or Orphaned, `gateway.retainMs` after the later of its last message and its orphaning, thirty days by default, then its controller deletes it by `uid` and `resourceVersion`, as ChangeRequest retention does. |
-| How long can a conversation Task's declarations grow? | `status.declared` has no cap today and a long thread declares a Comment per reply. Recommend a store cap on declarations per Task, refused past it with `NeedsAttention/DeclaredFull`, so a person deletes the Task and the thread starts a new one with its history; the Gateway itself only keeps cursors. |
-| Why does a Comment carry an `id`? | `fleet declare` treats an identical object as a no-op, so two identical Comments ("Done.") would be one. A per-Task unique `id` makes each its own declaration and its own post key. |
-| Who deletes a conversation Task? | Nobody automatically in the first step: a person or a conductor, as for any Task. On a serialised route the next thread waits for that deletion, under `WorkspaceBusy`. A route-level policy that deletes a Concluded Task idle for a set time is a later change. |
-| How is the questions route overridden per Task? | The label `gateway.fleet.dev/route`, which a plugin or a person sets on the Task it creates. A TaskConfig field would also work, but TaskConfig is execution defaults and labels are already how plugins mark Tasks. |
-| What vocabulary of declarations does the Gateway read? | `Question`, `Comment` and `Draft`, plus the existing `ChangeRequest` and the result. Unknown kinds are ignored, as the Forge controller ignores them. See the [interface](interface.md#declarations-the-gateway-reads). |
-| What if a platform cannot recognise Fleet's posts? | An Unknown post outcome there is never repeated: it raises `NeedsAttention/PostUnconfirmed` and later posts to that thread wait for a person. See [adapters](adapters.md). |
+| Where does the earlier history go when a mention lands partway through a thread? | In the first inbox entry, not in the brief. The brief stays the route's brief, the same for every conversation Task. |
+| What brief and workspace does a conversation Task get? | The route's. TaskConfig holds execution defaults only. So a route names a TaskConfig, and carries the brief and the workspace itself. |
+| How can a route run several conversations at once? | With a provisioned workspace per Task, such as a worktree from the route's repository. That is a separate change. Until then a route runs one conversation Task at a time. |
+| Who deletes a conversation Task? | A person or a conductor, as for any Task. A later change can add a route policy that deletes a Concluded Task after it is idle. |
+| How long is a Conversation kept? | While its Task exists. When Untied or Orphaned, `gateway.retainMs` after the later of its last message and its orphaning, thirty days by default. A thread waiting for a busy workspace is kept. |
+| How large can a conversation Task's declarations grow? | `status.declared` has no cap today. Recommendation: a store cap per Task, past which the store refuses with `NeedsAttention/DeclaredFull`. |
+| Why does a Comment carry an `id`? | `fleet declare` treats an identical object as a no-op. So two Comments that say "Done." need two ids to be two posts. |
+| How is the questions route chosen per Task? | By the label `gateway.fleet.dev/route`, else the `[gateway]` default. Plugins already mark Tasks with labels. |
+| How is an answer recognised? | The first allowlisted message written after the Question, by the platform's clock. The Gateway does not judge whether it really answers. A worker that needs more asks a new Question. |
+| What if a platform cannot find Fleet's posts again? | Fleet never repeats a post whose outcome is unknown there. It raises `NeedsAttention/PostUnconfirmed`, and later posts to that thread wait for a person. |
 
 ## Implementation steps
 
-Each step its own change, with its own E2E suite against the built CLI, a
-fake gateway and a stub `curl`, keeping `cargo xtask check` green and adding
-its crate edges, field managers and negative fixtures to
-`crates/architecture.toml`:
+Each step is its own change. Each has its own E2E suite against the built
+CLI, a fake gateway and a stub `curl`. Each keeps `cargo xtask check` green
+and adds its crate edges, field managers and negative fixtures to
+`crates/architecture.toml`.
 
 | Step | What | Where | Evidence |
 | --- | --- | --- | --- |
-| 1 | The Gateway port, `fleet-gateway` with the fake adapter, the Conversation and Listener kinds, ConversationController with numbering and retention, ListenerController, `fleet gateway receive` with its envelope and `--beat`, `fleet gateway account` and `status`, `[gateway]` config | `fleet-api/src/gateway.rs`, `crates/fleet-gateway`, `fleet-controllers/src/conversation.rs`, `fleet-manager`, `fleet-cli` | `conversation_controller`, `e2e_gateway`, `store_contract`, `architecture` |
-| 2 | Admission, routes and Task creation from a Conversation with the `exclusive` workspace precondition, the refusal post | `fleet-controllers/src/conversation.rs`, `fleet-api/src/gateway.rs` | `conversation_controller`, `e2e_gateway` |
-| 3 | GatewayController: the tie, the join, the relay under a cursor, `status.answered` and the `answers` inbox field, the parent labels and their scope check | `fleet-controllers/src/gateway.rs`, `fleet-store` (`record_relay` for `status.gateway`, `append_inbox`) | `gateway_controller`, `e2e_gateway_controller`, `store_contract` |
-| 4 | Posting declarations, results and change news; opening a thread for a Question and its `Receive`; children | `fleet-controllers/src/gateway.rs`, `fleet-manager` (the effects and receipts) | `gateway_controller`, `e2e_gateway_post` |
-| 5 | The Slack adapter through `curl` | `crates/fleet-gateway/src/slack.rs` | Truth tables in the adapter's unit tests, recorded Socket Mode payloads read through `event`; `e2e_gateway` against the stub `curl` |
+| 1 | The Gateway port; `fleet-gateway` with the fake adapter; the Conversation and Listener kinds; ConversationController with numbering and retention; ListenerController; `fleet gateway receive` and `--beat`; `fleet gateway account` and `status`; `[gateway]` config | `fleet-api/src/gateway.rs`, `crates/fleet-gateway`, `fleet-controllers/src/conversation.rs`, `fleet-manager`, `fleet-cli` | `conversation_controller`, `e2e_gateway`, `store_contract`, `architecture` |
+| 2 | Admission; routes; Task creation with the workspace precondition; the refusal post | `fleet-controllers/src/conversation.rs`, `fleet-api/src/gateway.rs` | `conversation_controller`, `e2e_gateway` |
+| 3 | GatewayController: the tie, the join and the relay; `status.answered` and the `answers` inbox field; the parent labels | `fleet-controllers/src/gateway.rs`, `fleet-store` | `gateway_controller`, `e2e_gateway_controller`, `store_contract` |
+| 4 | Posting declarations, results and change news; opening a thread for a Question; children | `fleet-controllers/src/gateway.rs`, `fleet-manager` | `gateway_controller`, `e2e_gateway_post` |
+| 5 | The Slack adapter through `curl` | `crates/fleet-gateway/src/slack.rs` | Truth tables in the adapter's unit tests; recorded Socket Mode payloads; `e2e_gateway` against the stub `curl` |
