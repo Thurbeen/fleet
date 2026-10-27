@@ -76,6 +76,8 @@ typed mutations described under [Inbox](#inbox).
 | `deliveryAttempts` | TaskController's bookkeeping per inbox entry being delivered: `sends` (bounded at 3), `probeFailures` and `failed`. Removed with the entry. |
 | `declared` | The worker's, through `fleet declare`: facts it declared, each a JSON object with a required string `kind` and nothing else validated. See [Following declared changes](#following-declared-changes). |
 | `forge` | The Forge controller's: one entry per declared change, keyed by ChangeRequest name, with its `uid`, `state`, `cursor`, `gaps`, mark-ready record and `notBefore`, plus that controller's conditions. Absent for a Task that declared nothing. |
+| `gateway` | Design, not implemented: the [Gateway controller](../controllers/gateway/README.md)'s tie to a chat conversation, relay cursor, post records and children. See [Talking in a conversation](#talking-in-a-conversation). |
+| `answered` | Design, not implemented: per Question id, which inbox entry answered it. No owner; written only by an inbox append carrying `answers`. |
 
 ## Metadata and ownership
 
@@ -178,6 +180,31 @@ Task opened. No new finalizer and no owner reference: a ChangeRequest
 outlives the Tasks that follow it, and deleting a Task deletes nothing else.
 The [Forge controller interface](../controllers/forge/interface.md#store-port-and-write-ownership)
 lists the resulting writers.
+
+## Talking in a conversation
+
+Design, not implemented. The [Gateway controller](../controllers/gateway/README.md)
+would tie a Task to a chat thread and relay between them, as the Forge
+controller does for a change. A worker never posts in a chat and holds no
+platform credential: it declares, and Fleet relays.
+
+| Field, label or verb | Owner | Meaning |
+| --- | --- | --- |
+| `fleet declare --json '{"kind":"Question","id":"q1","text":"…"}'` | `worker` | Ask once. Posted in the tied thread, or, on a Task with no tie and no parent, opens a thread in the questions route's channel and ties the Task to it. Never reposted. |
+| `fleet declare --json '{"kind":"Comment","text":"…"}'` | `worker` | Say something in the tied thread. Never opens a thread. |
+| `fleet declare --json '{"kind":"Draft","title":"…","text":"…"}'` | `worker` | Show a draft for review in the tied thread. Never opens a thread. |
+| `status.gateway` | GatewayController | `conversation`, the verified tie; `cursor`, the Conversation revision relayed through; `declared`, `result`, `changes` and `children`, what was read or posted; `posts`, the post effects' intents and receipts; `questions`, each posted Question; `gaps`; and its conditions. Absent for a Task that never talks. |
+| `status.answered` | none; inbox appends carrying `answers` | Per Question id `{key, from, at}`, first writer wins. Another channel showing the same Question reads it and stops waiting. |
+| `gateway.fleet.dev/conversation` label | the Conversation's controller, at creation | The Conversation a conversation Task was created for. |
+| `gateway.fleet.dev/parent` label | whoever creates a child | The parent Task's name. A child never talks in a thread; its parent relays its Questions, Comments, Drafts and results into its own inbox. |
+| `gateway.fleet.dev/route` label | whoever creates the Task | The route whose channel a Question from this untied Task opens a thread in, instead of `gateway.questions`. |
+| `fleet send TASK --answers ID TEXT` | `cli` | Answer a declared Question from the command line, or as a parent answering a child, recording `status.answered`. |
+
+Inbox entries from the Gateway come from `gateway/<conversation>` or
+`gateway/child/<child>`, under keys the
+[interface](../controllers/gateway/interface.md#inbox-entries) defines.
+Unknown declaration kinds are ignored, as the Forge controller ignores
+them.
 
 ## Commands
 

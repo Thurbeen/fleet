@@ -94,20 +94,25 @@ fn docs() -> Result {
             );
         }
     }
-    if tracked
-        .iter()
-        .any(|file| file == "docs/controllers/plugin/README.md")
-        && tracked.iter().any(|file| file == "docs/architecture.svg")
-    {
-        let architecture = fs::read_to_string("docs/architecture.svg")?;
-        let guide = fs::read_to_string("docs/controllers/plugin/README.md")?;
-        let planned = guide.contains("Design, not implemented");
-        if !architecture.contains("PluginController") || architecture.contains("planned") != planned
+    // A guide marked as design must appear in the diagram as "planned <Name>",
+    // and a shipped one must not.
+    for (guide, controller) in [
+        ("docs/controllers/plugin/README.md", "PluginController"),
+        ("docs/controllers/gateway/README.md", "GatewayController"),
+    ] {
+        if tracked.iter().any(|file| file == guide)
+            && tracked.iter().any(|file| file == "docs/architecture.svg")
         {
-            return Err(
-                "docs/architecture.svg: show PluginController with the implementation status described by the controller guide"
-                    .into(),
-            );
+            let architecture = fs::read_to_string("docs/architecture.svg")?;
+            let planned = fs::read_to_string(guide)?.contains("Design, not implemented");
+            if !architecture.contains(controller)
+                || architecture.contains(&format!("planned {controller}")) != planned
+            {
+                return Err(format!(
+                    "docs/architecture.svg: show {controller} with the implementation status described by the controller guide"
+                )
+                .into());
+            }
         }
     }
     for file in tracked.iter().filter(|p| p.ends_with(".md")) {

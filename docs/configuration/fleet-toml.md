@@ -231,3 +231,65 @@ The controller calls, `manifest`, `probes` and `reconcile`, receive none of
 these variables. Values never reach the store, a status or argv. Programs run
 on the manager with the manager's user; register only programs you intend
 Fleet to execute, as for EnvProvider command sources.
+
+## The `[gateway]` section
+
+Design, not implemented: the installed binary refuses this section as an
+unknown field. The [Gateway controller](../controllers/gateway/README.md)
+would read its chat accounts, people and routes from here, as the Forge
+controller reads `[forge.hosts]`.
+
+```toml
+[gateway]
+callTimeoutMs = 15000
+pollMs = 300000               # history backstop for tied threads
+retainMs = 2592000000         # thirty days: an Untied or Orphaned Conversation's retention
+questions = "eng"             # the route whose channel takes Questions from untied Tasks
+
+[gateway.accounts.slack-main]
+platform = "slack"
+workspace = "T0123ABCD"       # the team, or the enterprise id in an Enterprise org
+cli = "curl"
+curlConfig = "/etc/fleet/slack-curl.conf"   # operator-owned; holds the bot token header
+
+[gateway.people.alex]
+slack-main = "U0123ABCD"      # one platform id per account
+
+[gateway.people.sam]
+slack-main = "U0456EFGH"
+
+[gateway.routes.eng]
+account = "slack-main"
+channels = ["C0123ABCD"]
+mention = "required"          # a new thread needs a mention of Fleet's bot
+allow = ["alex", "sam"]       # names under [gateway.people]
+taskConfig = "conversation"   # a TaskConfig resource: harness, host, model, env
+brief = "/etc/fleet/briefs/conversation.md"
+workspace = { dir = "/work/conversations" }
+refusal = "Sorry, I only take requests from people on this channel's list."
+
+[gateway.routes.alerts]
+account = "slack-main"
+channels = ["C0789IJKL"]
+mention = "top-level"         # every top-level post starts a Task
+allow = ["alex", "sam"]
+allowBots = ["B0123ABCD"]     # the alerting app whose posts are requests
+taskConfig = "conversation"
+brief = "/etc/fleet/briefs/triage.md"
+workspace = { dir = "/work/triage" }
+```
+
+| Field | Required/default | Meaning |
+| --- | --- | --- |
+| `gateway.callTimeoutMs` | `15000` | Bound for each adapter call; the manager lease is raised to outlast the port's reported worst case. |
+| `gateway.pollMs` | `300000` | How often a Tied Conversation reads its history as a backstop for events a listener missed, where the account has history. |
+| `gateway.retainMs` | `2592000000` | How long an Untied or Orphaned Conversation is kept after its last message. |
+| `gateway.questions` | Absent | The route whose first channel takes a new thread for a Question declared by a Task with no tie and no parent. A Task's `gateway.fleet.dev/route` label overrides it. Absent and unlabelled: such a Question is not posted. |
+| `gateway.accounts.<name>` | One per chat account | `platform` is `slack` (or, later, `telegram`, `discord`, `teams`, and `fake` with `dir`); `workspace` the platform's workspace identity; `cli` and the platform's credential reference, here `curlConfig`, an absolute path Fleet passes to `curl -K` and never reads. |
+| `gateway.people.<name>` | Optional | A person, with one platform id per account name. Ids only: never a display name, username or email. |
+| `gateway.routes.<name>` | One per set of channels | `account`; `channels`, platform channel ids; `mention`, `required` or `top-level`; `allow`, people names; `allowBots`, bot or app ids whose messages count as a person's; `taskConfig`, the TaskConfig a new conversation Task references; `brief`, an absolute path read once per created Task; `workspace`, the Task's workspace as a Task spec gives it; `refusal`, the one polite refusal. A channel belongs to at most one route. |
+
+Credentials stay with the external client: Fleet passes the curl config's
+path and never constructs an Authorization header. The listener holds the
+platform's connection token itself. TaskConfig defines no brief or
+workspace, so a route carries both.

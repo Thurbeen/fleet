@@ -93,6 +93,9 @@ change out of draft under a configured ready policy.
 The [Plugin controller](docs/controllers/plugin/README.md), a host for
 controllers written as scripts with their own kinds, is designed and not
 implemented.
+The [Gateway controller](docs/controllers/gateway/README.md), which would tie
+chat threads to Tasks with Slack as the first platform, is a design and not
+implemented.
 V2 is a standalone binary; existing Python deployments stay on frozen v1.
 The root `FLEET_MAJOR` file says `2`; a v1 checkout containing the freeze
 guard reads it before updating and refuses to move onto v2.

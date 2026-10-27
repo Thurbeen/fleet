@@ -41,8 +41,9 @@ the manager performs the mark-ready effect.
 
 ## Desired state, observations and effects
 
-The [controller index](controllers/README.md) links the three controller
-guides. The [Task controller documentation](controllers/task/README.md) defines
+The [controller index](controllers/README.md) links the controller
+guides, including the planned Gateway controller's design. The
+[Task controller documentation](controllers/task/README.md) defines
 the [resource](resources/task.md),
 [state machine](controllers/task/state-machine.md) and
 [interface](controllers/task/interface.md).
@@ -190,6 +191,22 @@ call, and admits the returned plan through a pure gate in
 plugin's `perform` call with intent before and receipt after. The purity and
 process rules above are unchanged: the plugin decides, the manager performs,
 and every plugin process is one bounded call through `fleet-exec`.
+
+### The Gateway controller
+
+Design, not implemented. The [Gateway controller](controllers/gateway/README.md)
+would be the Forge controller's pattern applied to chat. A listener outside
+the manager holds a chat platform's connection and hands each raw event to
+`fleet gateway receive`, a bounded manager verb that reads it through the
+adapter and spools it on a [Conversation](resources/conversation.md), the
+mirror of one thread. ConversationController numbers its messages, applies
+the route's admission rules and creates one Task per thread; GatewayController,
+a third controller over the Task, owns `status.gateway`, relays new messages
+into the inbox under a cursor through `record_relay`, and posts what the
+Task declares as keyed effects through a `Gateway` port, with adapters in a
+planned `fleet-gateway` crate, Slack first. The purity and process rules
+above are unchanged: the Gateway runs no model, every adapter call is
+bounded, and no platform name appears above the port.
 
 ## Scope and compatibility
 
