@@ -143,6 +143,12 @@ crate graph has `fleet-forge` beside `fleet-runtime`, an adapter depending
 on `fleet-api` and `fleet-exec`, and the manager a third port. The purity and
 process rules above are unchanged: every forge call is one bounded process
 through `fleet-exec`, and no forge-specific name appears above the port.
+Polls are paced per forge host: an adapter counts the calls it makes, and
+the manager asks a pure `HostGate` in `fleet-controllers`, rebuilt on every
+sweep from the ChangeRequests' own statuses, whether a due poll may start
+under the host's call budget and any back-off the forge asked for. The
+store is the only memory of that pacing, so it holds across manager runs
+without new persisted state.
 
 ### The Forge controller
 

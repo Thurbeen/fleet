@@ -21,7 +21,10 @@
 //! The same sweep walks the ChangeRequests: each due one is observed through
 //! the Forge port and decided by ChangeRequestController, whose plan is one
 //! status write and, after retention, one fenced delete. There are no effects
-//! and no receipts on that side.
+//! and no receipts on that side. Each forge host is paced by a `HostGate`:
+//! its call budget, counted in the calls the port reports, and a back-off
+//! when the forge asks to slow down, both kept in the ChangeRequests' own
+//! statuses.
 
 mod execution;
 pub mod plugins;
@@ -29,7 +32,7 @@ pub mod verbs;
 
 use std::collections::BTreeMap;
 
-use fleet_api::change_request::{self, ChangeRequestDefaults, ChangeRequestSpec};
+use fleet_api::change_request::{self, ChangeRequestDefaults, ChangeRequestSpec, HostPacing};
 use fleet_api::follow::{ForgeDefaults, ForgeStatus};
 use fleet_api::forge::{ChangeObservation, Forge, Uncertainty};
 use fleet_api::plan::{Action, Effect, EffectOutcome, Observations, Plan, Probe, Receipt};
@@ -38,7 +41,7 @@ use fleet_api::task;
 use fleet_api::{Clock, LeaseToken, Millis, Object, Observation, Store, StoreError};
 use fleet_controllers::{
     ChangeRequestController, ChangeRequestInput, ChangeRequestObservations, ForgeController,
-    ForgeInput, ForgeObservations, TaskController, TaskInput,
+    ForgeInput, ForgeObservations, HostGate, TaskController, TaskInput,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -89,6 +92,8 @@ pub struct Manager<'a> {
     pub forge: Option<&'a dyn Forge>,
     /// The `[forge]` defaults a ChangeRequest spec may override.
     pub change_request_defaults: ChangeRequestDefaults,
+    /// Each `[forge.hosts]` entry's poll interval and call budget, by host.
+    pub forge_hosts: BTreeMap<String, HostPacing>,
     /// The `[forge]` relay defaults a Task's `spec.forge` may override, and
     /// the ready policies it may select.
     pub forge_defaults: ForgeDefaults,
@@ -110,25 +115,6 @@ struct Step {
     conflict: bool,
 }
 
-/// A forge's answer to slow down, handed to every later ChangeRequest of the
-/// same host in the sweep instead of asking again.
-#[derive(Debug, Clone)]
-struct Deferral {
-    kind: Uncertainty,
-    why: String,
-    retry_after: Millis,
-}
-
-impl Deferral {
-    fn observation(&self) -> ChangeObservation {
-        ChangeObservation::Unknown {
-            kind: self.kind,
-            why: format!("deferred with the host: {}", self.why),
-            retry_after: Some(self.retry_after),
-        }
-    }
-}
-
 /// The forge host a ChangeRequest is on, once its controller recorded the
 /// ref; empty before that, which sorts such objects first.
 fn host_of(obj: &Object) -> String {
@@ -136,6 +122,12 @@ fn host_of(obj: &Object) -> String {
         .as_str()
         .unwrap_or_default()
         .to_string()
+}
+
+/// When the forge last answered for a ChangeRequest; 0 for never, which
+/// sorts it first.
+fn observed_at(obj: &Object) -> Millis {
+    obj.status["observedAt"].as_u64().unwrap_or(0)
 }
 
 impl Manager<'_> {
@@ -265,10 +257,13 @@ impl Manager<'_> {
         Ok(())
     }
 
-    /// Every due ChangeRequest, one host at a time in a stable order, so that
-    /// a `retryAfter` from a forge defers all of that host's together: the
-    /// ones after it in the order are not asked, they take the same answer.
-    /// Returns whether anything changed.
+    /// Every due ChangeRequest, one host at a time, the oldest observed
+    /// first, so a short budget reaches the stalest mirror before a fresh
+    /// one. Each host's gate is seeded from every stored ChangeRequest on it,
+    /// due or not: the calls their statuses record and a throttled wait one
+    /// of them serves. A throttled answer pauses the whole host: the ones
+    /// after it are not asked, they take the same answer. Returns whether
+    /// anything changed.
     fn sweep_change_requests(
         &self,
         lease: &mut LeaseToken,
@@ -282,16 +277,59 @@ impl Manager<'_> {
                 return Ok(false);
             }
         };
+        let mut gates: BTreeMap<String, HostGate> = BTreeMap::new();
+        for obj in &changes {
+            let host = host_of(obj);
+            if !host.is_empty() {
+                self.gate(&mut gates, &host).seed(obj);
+            }
+        }
         let mut due: Vec<&Object> = changes.iter().filter(|c| self.due(c)).collect();
-        due.sort_by_cached_key(|o| (host_of(o), o.metadata.name.clone()));
-        let mut deferred: BTreeMap<String, Deferral> = BTreeMap::new();
+        due.sort_by_cached_key(|o| {
+            (
+                self.entry(&host_of(o)),
+                observed_at(o),
+                o.metadata.name.clone(),
+            )
+        });
         let mut busy = false;
         for obj in due {
             *lease = self.store.renew_lease(lease, ttl)?;
-            let step = self.reconcile_change_request(obj, lease, ttl, report, &mut deferred);
+            let step = self.reconcile_change_request(obj, lease, ttl, report, &mut gates);
             busy |= self.tally(step, &obj.key(), report)?;
         }
         Ok(busy)
+    }
+
+    /// The `[forge.hosts]` entry a forge host is paced under.
+    fn entry(&self, host: &str) -> String {
+        match self.forge {
+            Some(forge) => forge.entry(host),
+            None => host.to_ascii_lowercase(),
+        }
+    }
+
+    /// The gate of the entry serving `host`, made with its budget.
+    fn gate<'g>(&self, gates: &'g mut BTreeMap<String, HostGate>, host: &str) -> &'g mut HostGate {
+        let entry = self.entry(host);
+        let budget = self
+            .forge_hosts
+            .get(&entry)
+            .and_then(|p| p.max_calls_per_minute);
+        gates.entry(entry).or_insert_with(|| HostGate::new(budget))
+    }
+
+    /// The configured values for a ChangeRequest on `host`: its poll
+    /// interval is the host's `pollMs`, else the `[forge]` default.
+    fn defaults_for(&self, host: Option<&str>) -> ChangeRequestDefaults {
+        let mut defaults = self.change_request_defaults;
+        if let Some(poll) = host
+            .and_then(|h| self.forge_hosts.get(&self.entry(h)))
+            .and_then(|p| p.poll_ms)
+        {
+            defaults.poll_ms = poll;
+        }
+        defaults
     }
 
     /// One ChangeRequest: parse its URL when its ref is not yet recorded,
@@ -304,7 +342,7 @@ impl Manager<'_> {
         lease: &mut LeaseToken,
         ttl: Millis,
         report: &mut RunReport,
-        deferred: &mut BTreeMap<String, Deferral>,
+        gates: &mut BTreeMap<String, HostGate>,
     ) -> Result<Step, StoreError> {
         let Some(forge) = self.forge else {
             return Err(StoreError::Invalid(
@@ -318,36 +356,50 @@ impl Manager<'_> {
             now: self.clock.now(),
             defaults: self.change_request_defaults,
         };
+        let mut host = Some(host_of(obj)).filter(|h| !h.is_empty());
         if obj.status.get("ref").is_none_or(Value::is_null) {
             // The probe names the ref, so the first poll needs it parsed first.
             let parsed = forge.parse(&spec.url);
             if let Some(why) = parsed.why() {
                 report.unknowns.push(format!("{} parse: {why}", obj.key()));
             }
+            host = parsed.known().map(|r| r.host.clone());
             input.observations.parsed = Some(parsed);
         }
+        // Resolved on every pass, so a config change reaches an existing
+        // object on its next poll.
+        input.defaults = self.defaults_for(host.as_deref());
         let ctl = ChangeRequestController;
         for probe in ctl.probes(&input)? {
             let Probe::Change { change } = &probe else {
                 continue;
             };
             *lease = self.store.renew_lease(lease, ttl)?;
-            let answer = match deferred.get(&change.host) {
-                Some(d) => d.observation(),
-                None => forge.change(change),
+            let gate = self.gate(gates, &change.host);
+            let answer = match gate.admit(input.now) {
+                Some(waiting) => waiting,
+                None => {
+                    let before = forge.calls();
+                    let mut answer = forge.change(change);
+                    let spent = forge.calls().saturating_sub(before);
+                    gate.charge(input.now, spent);
+                    input.observations.calls = Some(spent);
+                    if let ChangeObservation::Unknown {
+                        kind,
+                        why,
+                        retry_after,
+                    } = &mut answer
+                        && (*kind == Uncertainty::Throttled || retry_after.is_some())
+                    {
+                        // The forge's advice, else one poll interval, for
+                        // the whole host; this object waits the same, so
+                        // the stored wait is the host's.
+                        let wait = *retry_after.get_or_insert(spec.poll_ms(&input.defaults));
+                        gate.pause(input.now.saturating_add(wait), *kind, why);
+                    }
+                    answer
+                }
             };
-            if let ChangeObservation::Unknown {
-                kind,
-                why,
-                retry_after: Some(wait),
-            } = &answer
-            {
-                deferred.entry(change.host.clone()).or_insert(Deferral {
-                    kind: *kind,
-                    why: why.clone(),
-                    retry_after: *wait,
-                });
-            }
             if let Some(why) = answer.why() {
                 report.unknowns.push(format!("{} change: {why}", obj.key()));
             }

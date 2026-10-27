@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use fleet_api::change_request::ChangeRequestDefaults;
+use fleet_api::change_request::{ChangeRequestDefaults, HostPacing};
 use fleet_api::follow::ForgeDefaults;
 use fleet_api::forge::Forge;
 use fleet_api::result::{Outcome, TaskResult};
@@ -410,6 +410,7 @@ fn run(cli: Cli) -> Result<(), Failure> {
                 holder,
                 forge: forge.as_ref().map(|f| f as &dyn Forge),
                 change_request_defaults: forge_defaults(&config),
+                forge_hosts: host_pacing(&config),
                 forge_defaults: relay_defaults(&config),
                 plugins: Some((&plugins, &registrations)),
             };
@@ -517,6 +518,7 @@ fn cmd_up(
         holder: format!("fleet-up-{}", std::process::id()),
         forge: forge.as_ref().map(|f| f as &dyn Forge),
         change_request_defaults: forge_defaults(config),
+        forge_hosts: host_pacing(config),
         forge_defaults: relay_defaults(config),
         plugins: Some(plugins),
     };
@@ -682,16 +684,35 @@ fn open_forge(config: &Config) -> Result<Option<ForgeHosts>, Failure> {
     ForgeHosts::new(hosts, timeout).map(Some).map_err(fail)
 }
 
-/// The retention defaults a ChangeRequest spec may override.
+/// The poll and retention defaults a ChangeRequest spec may override.
 fn forge_defaults(config: &Config) -> ChangeRequestDefaults {
     let base = ChangeRequestDefaults::default();
     match &config.forge {
         Some(f) => ChangeRequestDefaults {
+            poll_ms: f.poll_ms.unwrap_or(base.poll_ms),
             closed_grace_ms: f.closed_grace_ms.unwrap_or(base.closed_grace_ms),
             settled_ttl_ms: f.settled_ttl_ms.unwrap_or(base.settled_ttl_ms),
         },
         None => base,
     }
+}
+
+/// Each `[forge.hosts]` entry's poll interval and call budget, by host.
+fn host_pacing(config: &Config) -> std::collections::BTreeMap<String, HostPacing> {
+    config
+        .forge
+        .iter()
+        .flat_map(|f| &f.hosts)
+        .map(|(host, h)| {
+            (
+                host.trim().to_ascii_lowercase(),
+                HostPacing {
+                    poll_ms: h.poll_ms,
+                    max_calls_per_minute: h.max_calls_per_minute.map(u64::from),
+                },
+            )
+        })
+        .collect()
 }
 
 /// The relay and draft defaults a Task's `spec.forge` may override, and the

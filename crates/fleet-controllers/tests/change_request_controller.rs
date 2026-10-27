@@ -3,7 +3,8 @@
 //! transition or one Unknown of the mirror's lifecycle.
 
 use fleet_api::change_request::{
-    ChangeRequestDefaults, ChangeRequestStatus, DEFAULT_POLL_MS, NOTE_CAP, Phase,
+    CALL_WINDOW_MS, ChangeRequestDefaults, ChangeRequestStatus, DEFAULT_POLL_MS, ForgeCalls,
+    NOTE_CAP, Phase,
 };
 use fleet_api::condition::ConditionStatus;
 use fleet_api::forge::{
@@ -12,7 +13,9 @@ use fleet_api::forge::{
 };
 use fleet_api::plan::{Plan, Probe};
 use fleet_api::{Object, Observation};
-use fleet_controllers::{ChangeRequestController, ChangeRequestInput, ChangeRequestObservations};
+use fleet_controllers::{
+    ChangeRequestController, ChangeRequestInput, ChangeRequestObservations, HostGate,
+};
 use serde_json::json;
 
 const NOW: u64 = 1_000_000;
@@ -95,6 +98,7 @@ fn seen(s: ChangeSnapshot) -> ChangeRequestObservations {
     ChangeRequestObservations {
         parsed: Some(Observation::Known(change_ref())),
         change: Some(ChangeObservation::Known(Some(s))),
+        calls: None,
     }
 }
 
@@ -622,6 +626,7 @@ fn the_configured_defaults_apply_when_the_spec_names_none() {
     let defaults = ChangeRequestDefaults {
         closed_grace_ms: 7,
         settled_ttl_ms: 11,
+        ..ChangeRequestDefaults::default()
     };
     let input = ChangeRequestInput {
         object: &obj,
@@ -640,4 +645,158 @@ fn the_configured_defaults_apply_when_the_spec_names_none() {
         Some(NOW + DEFAULT_POLL_MS),
         "the resource's poll default"
     );
+}
+
+#[test]
+fn a_spec_without_an_interval_takes_the_resolved_host_interval() {
+    let mut obj = object(None);
+    obj.spec = json!({"url": "https://forge.test/acme/widgets/pull/7"});
+    let input = ChangeRequestInput {
+        object: &obj,
+        observations: seen(snapshot(ChangeState::Open)),
+        now: NOW,
+        defaults: ChangeRequestDefaults {
+            poll_ms: 300_000,
+            ..ChangeRequestDefaults::default()
+        },
+    };
+    let plan = ChangeRequestController.reconcile(&input).unwrap();
+    let st: ChangeRequestStatus = serde_json::from_value(plan.status.unwrap()).unwrap();
+    assert_eq!(st.not_before, Some(NOW + 300_000));
+    // The spec's own interval still wins.
+    let (_, st) = run(&object(None), seen(snapshot(ChangeState::Open)));
+    assert_eq!(st.not_before, Some(NOW + POLL));
+}
+
+#[test]
+fn every_poll_records_its_calls_for_the_window_and_forgets_older_ones() {
+    let mut obs = seen(snapshot(ChangeState::Open));
+    obs.calls = Some(4);
+    let (_, st) = run(&object(None), obs);
+    assert_eq!(st.forge_calls, vec![ForgeCalls { at: NOW, count: 4 }]);
+
+    let later = NOW + 10_000;
+    let unknown = ChangeRequestObservations {
+        change: Some(ChangeObservation::unknown(Uncertainty::Timeout, "t")),
+        calls: Some(2),
+        ..ChangeRequestObservations::default()
+    };
+    let (_, st) = run_at(&object(Some(&st)), unknown, later);
+    assert_eq!(
+        st.forge_calls,
+        vec![
+            ForgeCalls { at: NOW, count: 4 },
+            ForgeCalls {
+                at: later,
+                count: 2
+            }
+        ],
+        "an Unknown answer still spent its calls"
+    );
+
+    // A deferred answer made no call; the window has moved past the first.
+    let deferred = ChangeRequestObservations {
+        change: Some(ChangeObservation::unknown(Uncertainty::OverBudget, "spent")),
+        calls: None,
+        ..ChangeRequestObservations::default()
+    };
+    let (_, st) = run_at(&object(Some(&st)), deferred, NOW + CALL_WINDOW_MS);
+    assert_eq!(
+        st.forge_calls,
+        vec![ForgeCalls {
+            at: later,
+            count: 2
+        }]
+    );
+    let reachable = st
+        .conditions
+        .iter()
+        .find(|c| c.type_ == "Reachable")
+        .unwrap();
+    assert_eq!(reachable.reason, "OverBudget");
+    assert_eq!(st.revision, 1, "the snapshot stands");
+}
+
+fn spent(at: u64, count: u64) -> Object {
+    object(Some(&ChangeRequestStatus {
+        forge_calls: vec![ForgeCalls { at, count }],
+        ..ChangeRequestStatus::default()
+    }))
+}
+
+#[test]
+fn a_host_gate_admits_a_poll_only_while_its_worst_case_fits_the_budget() {
+    let mut gate = HostGate::new(Some(12));
+    assert_eq!(gate.admit(NOW), None);
+    gate.seed(&spent(NOW - 50_000, 3));
+    gate.charge(NOW - 10_000, 3);
+    // 6 spent + 6 worst case = 12.
+    assert_eq!(gate.admit(NOW), None);
+    gate.charge(NOW, 1);
+    let Some(ChangeObservation::Unknown {
+        kind,
+        why,
+        retry_after,
+    }) = gate.admit(NOW)
+    else {
+        panic!("over budget")
+    };
+    assert_eq!(kind, Uncertainty::OverBudget);
+    assert!(why.contains("stale"), "{why}");
+    // Free once the oldest three calls leave the window.
+    assert_eq!(retry_after, Some(10_000));
+    assert_eq!(gate.admit(NOW + 10_000), None);
+    // Calls older than the window never count.
+    let mut old = HostGate::new(Some(6));
+    old.seed(&spent(NOW - CALL_WINDOW_MS, 6));
+    assert_eq!(old.admit(NOW), None);
+    // No budget: always admitted.
+    let mut free = HostGate::new(None);
+    free.charge(NOW, 1_000);
+    assert_eq!(free.admit(NOW), None);
+}
+
+#[test]
+fn a_throttled_answer_pauses_the_host_and_a_stored_one_still_does() {
+    let mut gate = HostGate::new(None);
+    gate.pause(NOW + 30_000, Uncertainty::Throttled, "429");
+    gate.pause(NOW + 10_000, Uncertainty::Throttled, "shorter");
+    let Some(ChangeObservation::Unknown {
+        kind,
+        why,
+        retry_after,
+    }) = gate.admit(NOW)
+    else {
+        panic!("paused")
+    };
+    assert_eq!(kind, Uncertainty::Throttled);
+    assert!(why.starts_with("deferred with the host: 429"), "{why}");
+    assert_eq!(retry_after, Some(30_000), "the longest wait wins");
+    assert_eq!(gate.admit(NOW + 30_000), None);
+
+    // A new run learns the pause from the object serving it.
+    let throttled = ChangeRequestObservations {
+        change: Some(ChangeObservation::Unknown {
+            kind: Uncertainty::Throttled,
+            why: "429".into(),
+            retry_after: Some(45_000),
+        }),
+        ..ChangeRequestObservations::default()
+    };
+    let (_, st) = run(&object(Some(&watched())), throttled);
+    let mut seeded = HostGate::new(None);
+    seeded.seed(&object(Some(&st)));
+    assert!(seeded.admit(NOW + 44_999).is_some());
+    assert_eq!(seeded.admit(NOW + 45_000), None);
+    // Another Unknown is not a pause.
+    let (_, st) = run(
+        &object(Some(&watched())),
+        ChangeRequestObservations {
+            change: Some(ChangeObservation::unknown(Uncertainty::Timeout, "t")),
+            ..ChangeRequestObservations::default()
+        },
+    );
+    let mut seeded = HostGate::new(None);
+    seeded.seed(&object(Some(&st)));
+    assert_eq!(seeded.admit(NOW), None);
 }

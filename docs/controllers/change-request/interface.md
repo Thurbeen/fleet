@@ -24,8 +24,11 @@ pub fn reconcile(&self, input: &ChangeRequestInput<'_>) -> Result<Plan, StoreErr
 ```
 
 `object` is the stored ChangeRequest. `now` comes from the manager's `Clock`.
-`defaults` carries `forge.closedGraceMs` and `forge.settledTtlMs` from the
-native config, as values, for a spec that names neither. Missing status
+`defaults` carries, as values for a spec that names none, the poll interval
+already resolved for the object's host (the host's `pollMs`, else
+`forge.pollMs`, else 60 s), `forge.closedGraceMs` and `forge.settledTtlMs`.
+The manager resolves them on every poll, so a config change reaches an
+existing object without recreating it. Missing status
 decodes to the default Watching state with `revision: 0`; malformed typed
 spec or status returns `StoreError::Invalid`. Neither method reads the
 clock, disk, environment, configuration, forge or runtime itself.
@@ -44,7 +47,12 @@ carries the adapter's complete, forge-neutral reading of the change;
 `Known(None)` says the forge answered that the change does not exist;
 `Unknown { kind, why, retryAfter }` carries the reason, as the
 `Uncertainty` the `Reachable` condition is named from, and, when the forge
-said so, how long to wait. `None` means the probe was not asked. `parsed`,
+said so, how long to wait. The manager also answers Unknown itself, without
+asking the forge, while the host waits: `Throttled` during a host back-off
+and `OverBudget` while its call budget is spent, each with the wait.
+`None` means the probe was not asked. `calls` is the number of forge calls
+the answer took, which the controller records in `status.forgeCalls` for
+the last minute. `parsed`,
 an `Observation<ChangeRef>`, is the manager's parse of `spec.url`, supplied
 only while `status.ref` is absent: the probe names the ref, so the first
 poll needs it before `probes` is asked, and the controller records it as
@@ -70,7 +78,9 @@ the manager runs on, with that machine's CLI logins.
 | `operation_bound` | None | Worst-case duration of one call, in milliseconds. The lease is sized to outlast it. |
 | `parse` | A URL | The `ChangeRef` for it, normalised, using the adapter `[forge.hosts]` names for the host. Unknown for a host not configured. |
 | `whoami` | A host | Fleet's login on that host, or Unknown. |
-| `change` | A `ChangeRef` | `Some(ChangeSnapshot)`, complete; `None` for proven absence; Unknown on timeout, an incomplete read, a throttled answer or an unreadable answer, with `retryAfter` when the forge gave one. |
+| `change` | A `ChangeRef` | `Some(ChangeSnapshot)`, complete; `None` for proven absence; Unknown on timeout, an incomplete read, a throttled answer or an unreadable answer, with `retryAfter` when the forge gave one. At most six calls. |
+| `calls` | None | Every forge call the port has made so far: each process started, a timed-out one included. The manager reads it around `change` to count what a poll spent. |
+| `entry` | A host | The `[forge.hosts]` key the host is paced under: itself, or `dev.azure.com` for an `{organization}.visualstudio.com` alias. |
 | `mark_ready` | A `ChangeRef`, the expected `head.id` and state, and an intent key | `MarkedReady { already }` once the change is out of draft, after a fresh read proved it still had the expected head and state; `Moved { head, state }` when either differed, nothing mutated; Failed when the forge answered no; Unknown when the answer could not be read, since the mutation may have landed. The [Forge controller](../forge/interface.md)'s one effect, and Fleet's one forge write. |
 
 The port has no merge method.
@@ -195,9 +205,11 @@ Source: [Manager](../../../crates/fleet-manager/src/lib.rs).
 
 1. For each due ChangeRequest, renew the lease. When `status.ref` is absent,
    parse `spec.url` through the Forge port and hand the answer in as
-   `parsed`. Ask `probes`, perform the `Change` probe through the Forge
-   port, renewing before it.
-2. Call `reconcile` with the answers, the time and the configured defaults.
+   `parsed`. Ask `probes`. Ask the host's gate; when it admits the poll,
+   perform the `Change` probe through the Forge port, renewing before it,
+   and count the calls it made; otherwise hand in the gate's Unknown.
+2. Call `reconcile` with the answers, the calls, the time and the defaults
+   resolved for the object's host.
 3. CAS-write the planned status against the resourceVersion read. A conflict
    drops the plan; the next pass rereads.
 4. When the plan says `delete`, delete the object by `uid` and
@@ -206,10 +218,32 @@ Source: [Manager](../../../crates/fleet-manager/src/lib.rs).
 
 There are no effects and no receipts. `fleet up` sweeps ChangeRequests in the
 same loop as Tasks, after them; a ChangeRequest is due when `notBefore` is
-absent or past, like a Task. ChangeRequests of one host are swept in a stable
-order, by host then name, so that a `retryAfter` from the forge defers all of
-them together: the ones after it in the order are not asked and take the same
-Unknown answer with the same wait. A sweep spends no more than its bounded
+absent or past, like a Task. Due ChangeRequests are swept by host, then
+oldest `observedAt` first (never observed first), then name.
+
+### Host pacing
+
+Each `[forge.hosts]` entry has a gate,
+[`HostGate`](../../../crates/fleet-controllers/src/change_request.rs), a pure
+value the manager builds on every sweep from every stored ChangeRequest on
+that host, due or not: the calls their `status.forgeCalls` record in the
+last minute, and the `notBefore` of any whose `Reachable` is
+`Unknown/Throttled`, which is a back-off the whole host is serving. The
+store is its memory, so a new `fleet reconcile` or a restarted `fleet up`
+honours what the last run spent and waited for.
+
+| Gate state | Answer handed in instead of asking | Wait |
+| --- | --- | --- |
+| Backing off: a throttled answer, or another answer carrying `retryAfter`, earlier in this sweep; or a stored `Reachable=Unknown/Throttled` whose `notBefore` is still ahead | `Unknown/Throttled`, "deferred with the host" | Until the back-off ends: `retryAfter`, else one poll interval. |
+| `maxCallsPerMinute` set and the calls of the last minute plus six would exceed it | `Unknown/OverBudget` | Until enough recorded calls leave the minute. |
+| Otherwise | None: the forge is asked | |
+
+Six is the most calls one observation makes, so a poll admitted under the
+budget cannot take the host over it. Admitting by the worst case leaves at
+most five calls of a minute unused. The pacing covers polls only: a Forge
+controller's `whoami`, cached per sweep, and its mark-ready write are not
+gated. A ChangeRequest deleted within the minute, or whose status write
+conflicts, takes its record of calls with it. A sweep spends no more than its bounded
 run on them, so forge polling cannot starve Task delivery, deletion or lease
 renewal. A store without a `[forge]` section reports each ChangeRequest as
 an error and polls nothing.

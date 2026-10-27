@@ -17,7 +17,7 @@ use fleet_api::plan::EffectOutcome;
 use fleet_api::{Millis, Observation};
 use serde_json::Value;
 
-use crate::cli::{self, Budget, Reply};
+use crate::cli::{self, Budget, CallCount, Reply};
 
 pub const KIND: &str = "gitlab";
 
@@ -29,6 +29,7 @@ pub struct GitlabForge {
     host: String,
     cli: OsString,
     call_timeout: Duration,
+    calls: CallCount,
 }
 
 impl GitlabForge {
@@ -37,6 +38,7 @@ impl GitlabForge {
             host: host.to_ascii_lowercase(),
             cli: cli.into(),
             call_timeout,
+            calls: CallCount::default(),
         }
     }
 
@@ -59,7 +61,7 @@ impl GitlabForge {
         ];
         args.extend(extra.iter().cloned());
         args.push(endpoint.to_string());
-        cli::call(&self.cli, &args, timeout)
+        cli::call(&self.cli, &args, timeout, &self.calls)
     }
 }
 
@@ -100,6 +102,10 @@ fn body_of(reply: &Reply) -> Result<Option<Value>, (Uncertainty, String)> {
 impl Forge for GitlabForge {
     fn operation_bound(&self) -> Millis {
         cli::operation_bound(self.call_timeout)
+    }
+
+    fn calls(&self) -> u64 {
+        self.calls.get()
     }
 
     /// `https://<host>/<group>/<project>/-/merge_requests/<iid>`; the `/-`

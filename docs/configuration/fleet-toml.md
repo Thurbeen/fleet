@@ -141,6 +141,7 @@ one already stored is reported by the manager and never polled.
 ```toml
 [forge]
 callTimeoutMs = 15000
+pollMs = 60000                # a ChangeRequest's interval; host and spec override
 closedGraceMs = 604800000     # one week; a ChangeRequest spec may override
 settledTtlMs = 2592000000     # thirty days; a ChangeRequest spec may override
 relayNotes = true             # defaults a Task's spec.forge.relay may override
@@ -152,7 +153,7 @@ draftPolicy = "checks"        # omit to never take a draft out of draft
 [forge.hosts]
 "github.com"         = { kind = "github", cli = "gh" }
 "gitlab.com"         = { kind = "gitlab", cli = "glab" }
-"gitlab.example.com" = { kind = "gitlab", cli = "glab" }
+"gitlab.example.com" = { kind = "gitlab", cli = "glab", pollMs = 300000, maxCallsPerMinute = 30 }
 "dev.azure.com"      = { kind = "azure-devops", cli = "az" }
 "bitbucket.org"      = { kind = "bitbucket-cloud", cli = "curl" }
 
@@ -172,6 +173,7 @@ noUnresolvedThreads = true
 | Field | Required/default | Meaning |
 | --- | --- | --- |
 | `forge.callTimeoutMs` | `15000` | Bound for each forge CLI call. One observation of a change may make up to six such calls, and the manager lease is raised to outlast the port's reported worst case. |
+| `forge.pollMs` | `60000` | How often a ChangeRequest is polled while Watching, when neither its `spec.pollMs` nor its host's `pollMs` names an interval. |
 | `forge.closedGraceMs` | `604800000` | How long a closed change stays watched before it settles. |
 | `forge.settledTtlMs` | `2592000000` | How long a settled ChangeRequest is retained before its controller deletes it. |
 | `forge.relayNotes`, `forge.relayChecks` | `true` | Whether the [Forge controller](../controllers/forge/README.md) relays new notes, and passed or failed checks, to a Task's worker. A Task's `spec.forge.relay` overrides each. |
@@ -180,6 +182,18 @@ noUnresolvedThreads = true
 | `forge.draftPolicy` | Absent | The ready policy applied to a Task that sets none; it must name a policy below. Absent: a draft is never taken out of draft unless the Task names a policy. |
 | `forge.readyPolicies.<name>` | Three written by `fleet init` | A set of the predicates the [Forge controller](../controllers/forge/interface.md#ready-policies) defines (`checksPassed`, `botReviewsAddressed`, `noUnresolvedThreads`, `forgeMergeable`; `workerDone` and `workerIdle` are always on), under a name that is only a key. Any other key is refused at load. |
 | `forge.hosts.<host>` | One per forge host | `kind` is `azure-devops`, `bitbucket-cloud`, `github`, `gitlab` or `fake`; `cli` is a PATH name or absolute path (`az`, `curl`, `gh` or `glab` by default); a `fake` host takes `dir`, its directory, relative to this file. Configure `dev.azure.com` once for hosted Azure DevOps Services; its `{organization}.visualstudio.com` aliases route to that adapter. `bitbucket-cloud` is accepted only for `bitbucket.org`; Server/Data Center is a different API. A URL on any other unlisted host is refused at apply. |
+| `forge.hosts.<host>.pollMs` | Absent | The poll interval of every ChangeRequest on this host whose spec names none. Resolution: `spec.pollMs`, then this, then `forge.pollMs`, then `60000`. Read on every poll: a change applies to existing ChangeRequests on their next poll, without recreating them. |
+| `forge.hosts.<host>.maxCallsPerMinute` | Absent: unbounded | The forge calls every ChangeRequest on this host may make together in any minute, counted as the adapter makes them (one poll is several calls). A due poll starts only while one observation's worst case, six calls, still fits, so the value must be at least `6`; otherwise it waits, reported as `Reachable=Unknown/OverBudget`, and the due polls are taken oldest-observed first. Fleet's login check and the mark-ready write are not counted. |
+
+A 429, or another answer the forge marks as a rate limit, pauses the whole
+host: no ChangeRequest on it is polled until the forge's `Retry-After` (or
+rate-limit reset) has passed, or one poll interval when the CLI surfaced
+none. Each reports `Reachable=Unknown/Throttled` meanwhile, and polling
+resumes on its own afterwards. The budget and the pause are kept in the
+ChangeRequests' own statuses, so they survive a restart of the manager; a
+ChangeRequest deleted within the minute takes its share of the count with
+it. `fleet up` reads this file when it starts: restart it to apply an edit,
+which then reaches existing ChangeRequests on their next poll.
 
 Credentials stay with each external client's own configuration. Fleet passes
 none to the forge and stores none. Azure DevOps login is resolved separately

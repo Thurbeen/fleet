@@ -165,14 +165,7 @@ impl ForgeHosts {
     }
 
     fn adapter(&self, host: &str) -> Option<&dyn Forge> {
-        self.hosts
-            .get(&host.to_ascii_lowercase())
-            .or_else(|| {
-                host.to_ascii_lowercase()
-                    .strip_suffix(".visualstudio.com")
-                    .and_then(|_| self.hosts.get(azure_devops::SERVICES_HOST))
-            })
-            .map(|b| b.as_ref())
+        self.hosts.get(&self.entry(host)).map(|b| b.as_ref())
     }
 }
 
@@ -211,6 +204,23 @@ impl Forge for ForgeHosts {
                 Observation::unknown(format!("host {host} is not configured under [forge.hosts]"))
             }
         }
+    }
+
+    fn calls(&self) -> u64 {
+        self.hosts.values().map(|f| f.calls()).sum()
+    }
+
+    /// The `[forge.hosts]` key serving `host`: itself, or `dev.azure.com`
+    /// for an `{organization}.visualstudio.com` alias.
+    fn entry(&self, host: &str) -> String {
+        let host = host.to_ascii_lowercase();
+        if !self.hosts.contains_key(&host)
+            && host.ends_with(".visualstudio.com")
+            && self.hosts.contains_key(azure_devops::SERVICES_HOST)
+        {
+            return azure_devops::SERVICES_HOST.to_string();
+        }
+        host
     }
 
     fn change(&self, change: &ChangeRef) -> ChangeObservation {

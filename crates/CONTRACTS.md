@@ -289,7 +289,8 @@ Conditions, under `status.forge.conditions`: `Following`, `Settled`,
 
 ```text
 spec.url             the change's URL, the only forge-specific input
-spec.pollMs          poll interval while Watching (default 60000)
+spec.pollMs          poll interval while Watching (default the host's
+forge.hosts.<host>.pollMs, else forge.pollMs, else 60000)
 spec.closedGraceMs   how long a closed change stays watched (default
 forge.closedGraceMs)
 spec.settledTtlMs    how long a settled mirror is retained (default
@@ -330,8 +331,18 @@ finalizer. Guarantees, each with its test in `change_request_controller` and
   `delete`; the manager performs it by `uid` and `resourceVersion` under the
   lease (`Store::delete_fenced`), so a recreated or rewritten object is not
   removed. A person may delete at any time; nothing on the forge changes.
-- **Host-wide deferral.** The sweep visits ChangeRequests by host then name;
-  a `retryAfter` from one defers every later one on that host without asking.
+- **Host pacing.** The sweep visits due ChangeRequests by host, then oldest
+  `observedAt` first. A throttled answer pauses the whole host until its
+  `retryAfter`, or one poll interval: every ChangeRequest on it that comes
+  due meanwhile is not asked and takes `Reachable=Unknown/Throttled`. A
+  host's `maxCallsPerMinute` counts the calls the port reports, each poll's
+  recorded in its object's `status.forgeCalls`; a poll starts only while
+  six more calls fit, else it waits as `Reachable=Unknown/OverBudget`. Both
+  are rebuilt from the stored statuses on every sweep, so a new manager run
+  honours them (`e2e_forge_budget`).
+- **Configured interval.** The host's or `[forge]` poll interval is handed
+  to the controller on every poll, so a config change reaches an existing
+  object on its next poll.
 - **Nothing acted on.** `mergeable` is the forge's own answer, reported as
   the `Mergeable` condition and never acted on. The port has no merge method.
 
@@ -401,8 +412,11 @@ Each adapter reports its longest single operation (`operation_bound`), and
 
 ## Forge contract
 
-`fleet_api::forge::Forge`: `operation_bound`, `parse`, `whoami`, `change`
-and `mark_ready`. `change` answers `Known(Some)` with a complete
+`fleet_api::forge::Forge`: `operation_bound`, `parse`, `whoami`, `change`,
+`calls`, `entry` and `mark_ready`. `calls` counts every forge call the port
+has made (each process started, a timed-out one included); `entry` names the
+`[forge.hosts]` key a host is paced under. `change` makes at most
+`MAX_CALLS_PER_OBSERVATION` (six) calls. `change` answers `Known(Some)` with a complete
 `ChangeSnapshot`, `Known(None)` for proven absence, or Unknown with an
 `Uncertainty` and an optional `retryAfter`. `mark_ready` takes the expected
 head and state and an intent key, reads both afresh, answers `Moved` when

@@ -130,7 +130,8 @@ hold, in this order:
   change a person put back into draft, or a worker opened ready, is never
   touched;
 - the mirror is fresh: `Reachable` is True and `observedAt` is within
-  `2 × pollMs`;
+  `2 × pollMs`, the ChangeRequest's `spec.pollMs` or else 60 s, whatever its
+  host's interval: a slower host makes a mirror stale sooner, never fresher;
 - `entry.markReady.state` is `none`, with no `Moved` receipt for the
   mirror's current head, or `failed` with fewer than 3 attempts and the
   entry's `notBefore` past;

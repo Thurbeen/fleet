@@ -17,7 +17,7 @@ use fleet_api::plan::EffectOutcome;
 use fleet_api::{Millis, Observation};
 use serde_json::Value;
 
-use crate::cli::{self, Budget, Reply};
+use crate::cli::{self, Budget, CallCount, Reply};
 
 pub const KIND: &str = "github";
 
@@ -61,6 +61,7 @@ pub struct GithubForge {
     host: String,
     cli: OsString,
     call_timeout: Duration,
+    calls: CallCount,
 }
 
 impl GithubForge {
@@ -69,6 +70,7 @@ impl GithubForge {
             host: host.to_ascii_lowercase(),
             cli: cli.into(),
             call_timeout,
+            calls: CallCount::default(),
         }
     }
 
@@ -93,7 +95,7 @@ impl GithubForge {
                 Var::Typed(s) => args.extend(["-F".to_string(), format!("{k}={s}")]),
             }
         }
-        cli::call(&self.cli, &args, timeout)
+        cli::call(&self.cli, &args, timeout, &self.calls)
     }
 }
 
@@ -197,6 +199,10 @@ fn page(conn: &Value, nodes: &mut Vec<Value>, after: &mut Option<String>, done: 
 impl Forge for GithubForge {
     fn operation_bound(&self) -> Millis {
         cli::operation_bound(self.call_timeout)
+    }
+
+    fn calls(&self) -> u64 {
+        self.calls.get()
     }
 
     /// `https://<host>/<owner>/<repo>/pull/<number>`, fragments, queries and

@@ -12,8 +12,11 @@ use crate::meta::Millis;
 
 pub const KIND: &str = "ChangeRequest";
 
-/// Poll interval while Watching, when the spec names none.
+/// Poll interval while Watching, when neither the spec, the host nor the
+/// `[forge]` section names one.
 pub const DEFAULT_POLL_MS: Millis = 60_000;
+/// The window a host's call budget counts over: `maxCallsPerMinute`.
+pub const CALL_WINDOW_MS: Millis = 60_000;
 /// How long a closed change stays watched before it settles: one week.
 pub const DEFAULT_CLOSED_GRACE_MS: Millis = 604_800_000;
 /// How long a settled ChangeRequest is retained: thirty days.
@@ -38,10 +41,13 @@ pub struct ChangeRequestSpec {
     pub settled_ttl_ms: Option<Millis>,
 }
 
-/// The `[forge]` defaults a spec may override, handed to the controller as
-/// values: it reads no configuration itself.
+/// The configured values a spec may override, handed to the controller as
+/// values: it reads no configuration itself. `poll_ms` is already resolved
+/// for the object's host: the host's `pollMs`, else `[forge] pollMs`, else
+/// [`DEFAULT_POLL_MS`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChangeRequestDefaults {
+    pub poll_ms: Millis,
     pub closed_grace_ms: Millis,
     pub settled_ttl_ms: Millis,
 }
@@ -49,15 +55,26 @@ pub struct ChangeRequestDefaults {
 impl Default for ChangeRequestDefaults {
     fn default() -> Self {
         ChangeRequestDefaults {
+            poll_ms: DEFAULT_POLL_MS,
             closed_grace_ms: DEFAULT_CLOSED_GRACE_MS,
             settled_ttl_ms: DEFAULT_SETTLED_TTL_MS,
         }
     }
 }
 
+/// One `[forge.hosts]` entry's pacing, as values for the manager.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HostPacing {
+    /// The host's poll interval, between a spec's and the `[forge]` default.
+    pub poll_ms: Option<Millis>,
+    /// The calls every ChangeRequest on the host may make together in any
+    /// [`CALL_WINDOW_MS`].
+    pub max_calls_per_minute: Option<u64>,
+}
+
 impl ChangeRequestSpec {
-    pub fn poll_ms(&self) -> Millis {
-        self.poll_ms.unwrap_or(DEFAULT_POLL_MS).max(1)
+    pub fn poll_ms(&self, defaults: &ChangeRequestDefaults) -> Millis {
+        self.poll_ms.unwrap_or(defaults.poll_ms).max(1)
     }
 
     pub fn closed_grace_ms(&self, defaults: &ChangeRequestDefaults) -> Millis {
@@ -191,6 +208,11 @@ pub struct ChangeRequestStatus {
     pub settled_at: Option<Millis>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub conditions: Vec<Condition>,
+    /// The forge calls this object's polls made in the last
+    /// [`CALL_WINDOW_MS`]: its share of the host's budget, kept with the
+    /// object so the next manager run still counts it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub forge_calls: Vec<ForgeCalls>,
 
     // The snapshot.
     /// Incremented by every poll that changed anything below.
@@ -220,6 +242,14 @@ pub struct ChangeRequestStatus {
     pub dropped_before: u64,
 }
 
+/// The calls one poll made, and when.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ForgeCalls {
+    pub at: Millis,
+    pub count: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -230,13 +260,15 @@ mod tests {
             serde_json::from_value(serde_json::json!({"url": "https://forge.example/p/1"}))
                 .unwrap();
         let defaults = ChangeRequestDefaults::default();
-        assert_eq!(spec.poll_ms(), DEFAULT_POLL_MS);
+        assert_eq!(spec.poll_ms(&defaults), DEFAULT_POLL_MS);
         assert_eq!(spec.closed_grace_ms(&defaults), DEFAULT_CLOSED_GRACE_MS);
         assert_eq!(spec.settled_ttl_ms(&defaults), DEFAULT_SETTLED_TTL_MS);
         let overridden = ChangeRequestDefaults {
+            poll_ms: 4,
             closed_grace_ms: 5,
             settled_ttl_ms: 6,
         };
+        assert_eq!(spec.poll_ms(&overridden), 4);
         assert_eq!(spec.closed_grace_ms(&overridden), 5);
         assert_eq!(spec.settled_ttl_ms(&overridden), 6);
     }

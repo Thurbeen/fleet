@@ -83,6 +83,9 @@ pub struct FakeForgeState {
 pub struct FakeForge {
     host: String,
     dir: PathBuf,
+    /// The forge calls this handle answered: each `change`, `whoami` and
+    /// `mark_ready` is one call.
+    calls: crate::cli::CallCount,
 }
 
 /// `<project>/<id>`: the key a change is stored under.
@@ -96,6 +99,7 @@ impl FakeForge {
         Ok(FakeForge {
             host: host.to_string(),
             dir: dir.to_path_buf(),
+            calls: crate::cli::CallCount::default(),
         })
     }
 
@@ -179,8 +183,12 @@ impl FakeForge {
         })
     }
 
-    /// Count the call and take its fault, if one is queued.
+    /// Count the call and take its fault, if one is queued. Parsing a URL is
+    /// local on every real forge, so it is not a forge call.
     fn begin(&self, call: &str) -> Result<Option<ForgeFault>, String> {
+        if call != "parse" {
+            self.calls.add();
+        }
         self.update(|s| {
             *s.calls.entry(call.to_string()).or_default() += 1;
             let i = s.faults.iter().position(|f| f.call == call)?;
@@ -220,6 +228,10 @@ impl Drop for Lock {
 impl Forge for FakeForge {
     fn operation_bound(&self) -> Millis {
         0
+    }
+
+    fn calls(&self) -> u64 {
+        self.calls.get()
     }
 
     fn parse(&self, url: &str) -> Observation<ChangeRef> {

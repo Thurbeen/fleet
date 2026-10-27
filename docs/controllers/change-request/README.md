@@ -39,6 +39,11 @@ from here.
 Polling cadence is `status.notBefore`, which the manager already honours for
 Tasks. One ChangeRequest costs one bounded observation per interval, a few
 forge calls when the change has many notes, and one small bookkeeping write.
+The interval is the spec's `pollMs`, else its host's, else the `[forge]`
+default, else 60 s. Every ChangeRequest on one host shares that host's
+[pacing](interface.md#host-pacing): a call budget per minute, counted in the
+calls the adapter actually makes, and a back-off of the whole host when the
+forge answers 429.
 
 ## Why a resource of its own
 
@@ -59,7 +64,7 @@ forge calls when the change has many notes, and one small bookkeeping write.
 | --- | --- | --- |
 | Pure decisions, numbering, cadence and retention | [ChangeRequestController](../../../crates/fleet-controllers/src/change_request.rs) | [Controller transitions](../../../crates/fleet-controllers/tests/change_request_controller.rs) |
 | Resource, status and port types | [ChangeRequest types](../../../crates/fleet-api/src/change_request.rs), [Forge port](../../../crates/fleet-api/src/forge.rs), [plans](../../../crates/fleet-api/src/plan.rs) | [Forge E2E](../../../crates/fleet-cli/tests/e2e_forge.rs) |
-| Sweep by kind, host-ordered deferral, fenced delete | [Manager](../../../crates/fleet-manager/src/lib.rs) | [Forge E2E](../../../crates/fleet-cli/tests/e2e_forge.rs), [Store contract](../../../crates/fleet-store/tests/store_contract.rs) |
+| Sweep by kind, host pacing, fenced delete | [Manager](../../../crates/fleet-manager/src/lib.rs), [HostGate](../../../crates/fleet-controllers/src/change_request.rs) | [Forge E2E](../../../crates/fleet-cli/tests/e2e_forge.rs), [budget E2E](../../../crates/fleet-cli/tests/e2e_forge_budget.rs), [Store contract](../../../crates/fleet-store/tests/store_contract.rs) |
 | Apply by URL, the derived name, ref verification | [Verbs](../../../crates/fleet-manager/src/verbs.rs) | [Forge E2E](../../../crates/fleet-cli/tests/e2e_forge.rs) |
 | GitHub through `gh`, GitLab through `glab`, Azure DevOps Services through `az`, Bitbucket Cloud through authenticated `curl`, the fake | [fleet-forge](../../../crates/fleet-forge/src/lib.rs): [github](../../../crates/fleet-forge/src/github.rs), [gitlab](../../../crates/fleet-forge/src/gitlab.rs), [azure-devops](../../../crates/fleet-forge/src/azure_devops.rs), [bitbucket-cloud](../../../crates/fleet-forge/src/bitbucket.rs), [fake](../../../crates/fleet-forge/src/fake.rs) | Truth tables in each adapter's unit tests; [Forge E2E](../../../crates/fleet-cli/tests/e2e_forge.rs) against the stub CLIs |
 | `[forge]` configuration | [CLI config](../../../crates/fleet-cli/src/config.rs) | [Forge E2E](../../../crates/fleet-cli/tests/e2e_forge.rs) |

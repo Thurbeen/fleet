@@ -251,10 +251,13 @@ fn shipped(st: &TaskStatus) -> bool {
         .is_some_and(|r| r.outcome == Outcome::Shipped)
 }
 
-/// A ChangeRequest's poll interval, from its spec.
+/// The interval a mirror's freshness is measured against: its spec's
+/// `pollMs`, else the built-in default. A host or `[forge]` interval is not
+/// handed to this controller, so a slower host only makes the mirror look
+/// stale sooner, never fresher than it is.
 fn poll_ms_of(obj: &Object) -> Result<Millis, StoreError> {
     let spec: ChangeRequestSpec = typed(change_request::KIND, &obj.spec)?;
-    Ok(spec.poll_ms())
+    Ok(spec.poll_ms(&change_request::ChangeRequestDefaults::default()))
 }
 
 /// The ready policy a Task selects, and whether the config defines it.

@@ -17,7 +17,7 @@ use fleet_api::plan::EffectOutcome;
 use fleet_api::{Millis, Observation};
 use serde_json::Value;
 
-use crate::cli::{self, Budget, Reply};
+use crate::cli::{self, Budget, CallCount, Reply};
 
 pub const KIND: &str = "bitbucket-cloud";
 pub const HOST: &str = "bitbucket.org";
@@ -30,6 +30,7 @@ type ReadError = (Uncertainty, String, Option<Millis>);
 pub struct BitbucketCloudForge {
     cli: OsString,
     call_timeout: Duration,
+    calls: CallCount,
 }
 
 impl BitbucketCloudForge {
@@ -37,6 +38,7 @@ impl BitbucketCloudForge {
         Self {
             cli: cli.into(),
             call_timeout,
+            calls: CallCount::default(),
         }
     }
 
@@ -62,7 +64,7 @@ impl BitbucketCloudForge {
             "--url".into(),
             url.into(),
         ];
-        cli::call(&self.cli, &args, timeout)
+        cli::call(&self.cli, &args, timeout, &self.calls)
     }
 
     fn get(&self, url: &str, budget: &mut Budget) -> Result<Reply, ReadError> {
@@ -559,6 +561,10 @@ fn unknown(error: ReadError) -> ChangeObservation {
 impl Forge for BitbucketCloudForge {
     fn operation_bound(&self) -> Millis {
         cli::operation_bound(self.call_timeout)
+    }
+
+    fn calls(&self) -> u64 {
+        self.calls.get()
     }
 
     fn parse(&self, url: &str) -> Observation<ChangeRef> {

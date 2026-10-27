@@ -17,7 +17,7 @@ use fleet_api::plan::EffectOutcome;
 use fleet_api::{Millis, Observation};
 use serde_json::Value;
 
-use crate::cli::{self, Budget, Reply};
+use crate::cli::{self, Budget, CallCount, Reply};
 
 pub const KIND: &str = "azure-devops";
 pub const SERVICES_HOST: &str = "dev.azure.com";
@@ -29,6 +29,7 @@ const POLICY_PAGE_SIZE: usize = 1000;
 pub struct AzureDevopsForge {
     cli: OsString,
     call_timeout: Duration,
+    calls: CallCount,
 }
 
 impl AzureDevopsForge {
@@ -36,6 +37,7 @@ impl AzureDevopsForge {
         AzureDevopsForge {
             cli: cli.into(),
             call_timeout,
+            calls: CallCount::default(),
         }
     }
 
@@ -78,7 +80,7 @@ impl AzureDevopsForge {
             "json".into(),
             "--only-show-errors".into(),
         ]);
-        cli::call(&self.cli, &args, timeout)
+        cli::call(&self.cli, &args, timeout, &self.calls)
     }
 }
 
@@ -513,6 +515,10 @@ fn snapshot(
 impl Forge for AzureDevopsForge {
     fn operation_bound(&self) -> Millis {
         cli::operation_bound(self.call_timeout)
+    }
+
+    fn calls(&self) -> u64 {
+        self.calls.get()
     }
 
     fn parse(&self, url: &str) -> Observation<ChangeRef> {

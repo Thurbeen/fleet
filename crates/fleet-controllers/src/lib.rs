@@ -53,6 +53,8 @@ pub mod forge;
 pub mod plugin;
 pub mod task;
 
-pub use change_request::{ChangeRequestController, ChangeRequestInput, ChangeRequestObservations};
+pub use change_request::{
+    ChangeRequestController, ChangeRequestInput, ChangeRequestObservations, HostGate,
+};
 pub use forge::{ForgeController, ForgeInput, ForgeObservations};
 pub use task::{MAX_ATTEMPTS, RETRY_DELAY_MS, TaskController, TaskInput};

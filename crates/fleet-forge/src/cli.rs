@@ -1,18 +1,36 @@
 //! What the CLI-backed adapters share: one bounded call through
-//! fleet-exec, the HTTP head a `--include` answer carries, the forge's
-//! rate-limit advice, a budget for one observation made of several calls,
-//! and the forge's timestamps as Unix milliseconds.
+//! fleet-exec and its count, the HTTP head a `--include` answer carries, the
+//! forge's rate-limit advice, a budget for one observation made of several
+//! calls, and the forge's timestamps as Unix milliseconds.
 
 use std::ffi::OsString;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use fleet_api::Millis;
 use fleet_api::forge::Uncertainty;
 use fleet_exec::{Outcome, Spec, run};
 
-/// The most calls one observation of a change makes. The bound reported for
+/// The most calls one observation of a change makes: the port's
+/// [`fleet_api::forge::MAX_CALLS_PER_OBSERVATION`]. The bound reported for
 /// the port is this many worst-case calls; the budget below runs out first.
-pub const MAX_CALLS_PER_OBSERVATION: u32 = 6;
+pub const MAX_CALLS_PER_OBSERVATION: u32 = fleet_api::forge::MAX_CALLS_PER_OBSERVATION as u32;
+
+/// Every call an adapter has started, shared by its clones: what the port's
+/// `calls` answers and a host's call budget counts.
+#[derive(Debug, Clone, Default)]
+pub struct CallCount(Arc<AtomicU64>);
+
+impl CallCount {
+    pub fn get(&self) -> u64 {
+        self.0.load(Ordering::Relaxed)
+    }
+
+    pub fn add(&self) {
+        self.0.fetch_add(1, Ordering::Relaxed);
+    }
+}
 
 /// One HTTP answer as `gh api --include` and `glab api --include` print it:
 /// the status line and headers, then the body.
@@ -90,11 +108,14 @@ pub fn parse_reply(stdout: &str) -> (u16, Vec<(String, String)>, String) {
     (status, headers, body.to_string())
 }
 
-/// One bounded call. The process tree is killed past `timeout`.
+/// One bounded call, counted in `count` once its process started, since the
+/// forge may have answered it even when it timed out. The process tree is
+/// killed past `timeout`.
 pub fn call(
     program: &OsString,
     args: &[String],
     timeout: Duration,
+    count: &CallCount,
 ) -> Result<Reply, (Uncertainty, String)> {
     let what = args.first().cloned().unwrap_or_default();
     let mut spec = Spec::new(program, timeout).args(args);
@@ -111,7 +132,11 @@ pub fn call(
         ]
         .map(|(k, v)| (k.to_string(), v.to_string())),
     );
-    match run(&spec) {
+    let outcome = run(&spec);
+    if !matches!(outcome, Outcome::NotStarted(_)) {
+        count.add();
+    }
+    match outcome {
         Outcome::Exited {
             code,
             stdout,

@@ -21,6 +21,7 @@ snapshot moves `revision`.
 | Watching | Known, state closed | Closed | Write the snapshot; `closedAt = now`; wait `10 × pollMs`. |
 | Watching or Closed | Known, the change is proven absent | Settled | `Settled=True/Gone`; no further polls. |
 | Watching or Closed | Unknown | unchanged | `Reachable=Unknown` with the reason; snapshot untouched; wait the phase's interval, or the answer's `retryAfter` when it carries one. |
+| Watching or Closed | Not asked: the host is backing off or its budget is spent ([host pacing](interface.md#host-pacing)) | unchanged | `Reachable=Unknown/Throttled` or `Unknown/OverBudget`, the message saying the last observation is stale; snapshot and `observedAt` untouched; wait until the host may be asked. |
 | Watching, no `status.ref` yet | The URL could not be parsed by the configured adapter | Watching | `Reachable=Unknown/UrlNotParsed`; wait `pollMs`. |
 | Closed | Known, state draft or open | Watching | `revision += 1` through `state.seq` even if nothing else differs; clear `closedAt`; wait `pollMs`. |
 | Closed | Known, state merged | Settled | As from Watching. |
@@ -49,7 +50,7 @@ observation complete.
 
 | Type | True means / relevant reason |
 | --- | --- |
-| Reachable | The last poll read the change completely (`Observed`). Unknown with the reason after a timeout (`Timeout`), an incomplete read (`Incomplete`), an unparseable answer (`Unreadable`), a throttled answer (`Throttled`), a missing login (`NotLoggedIn`), a refusal that is not proven absence (`Refused`), a CLI that could not start (`CliUnavailable`) or a URL the adapter could not place (`UrlNotParsed`). |
+| Reachable | The last poll read the change completely (`Observed`). Unknown with the reason after a timeout (`Timeout`), an incomplete read (`Incomplete`), an unparseable answer (`Unreadable`), a throttled answer (`Throttled`), a missing login (`NotLoggedIn`), a refusal that is not proven absence (`Refused`), a CLI that could not start (`CliUnavailable`) or a URL the adapter could not place (`UrlNotParsed`). `Throttled` also while the host backs off after another ChangeRequest's throttled answer, and `OverBudget` while the host's call budget is spent: the forge was not asked. |
 | Mergeable | The forge's own answer, as `status.mergeable`: True (`Mergeable`) when the forge says the change can be merged now, False with the forge's reason as a CamelCase word (`Conflicts`, `Blocked`, `CiMustPass`, `Draft`, ...) and the raw reason in the message, Unknown (`Computing`) while the forge is still computing it or has no such answer. Fleet reports it and never acts on it. |
 | Settled | `Merged`, `ClosedGraceExpired` or `Gone`. |
 

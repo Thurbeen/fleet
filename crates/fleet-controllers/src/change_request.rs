@@ -7,11 +7,14 @@
 //! Plan. The manager performs the plan.
 
 use fleet_api::change_request::{
-    self, CLOSED_POLL_FACTOR, ChangeRequestDefaults, ChangeRequestSpec, ChangeRequestStatus, Head,
-    NOTE_CAP, Phase, Sequenced, StoredNote,
+    self, CALL_WINDOW_MS, CLOSED_POLL_FACTOR, ChangeRequestDefaults, ChangeRequestSpec,
+    ChangeRequestStatus, ForgeCalls, Head, NOTE_CAP, Phase, Sequenced, StoredNote,
 };
 use fleet_api::condition::{ConditionStatus, set_condition, settle_transitions};
-use fleet_api::forge::{ChangeObservation, ChangeRef, ChangeSnapshot, ChangeState, Note};
+use fleet_api::forge::{
+    ChangeObservation, ChangeRef, ChangeSnapshot, ChangeState, MAX_CALLS_PER_OBSERVATION, Note,
+    Uncertainty,
+};
 use fleet_api::meta::{Millis, Object};
 use fleet_api::plan::{Plan, Probe};
 use fleet_api::store::FieldManager;
@@ -25,7 +28,8 @@ pub struct ChangeRequestInput<'a> {
     pub object: &'a Object,
     pub observations: ChangeRequestObservations,
     pub now: Millis,
-    /// The `[forge]` defaults the spec may override.
+    /// The configured values the spec may override, the poll interval
+    /// already resolved for the object's host.
     pub defaults: ChangeRequestDefaults,
 }
 
@@ -37,6 +41,8 @@ pub struct ChangeRequestObservations {
     pub parsed: Option<Observation<ChangeRef>>,
     /// The answer to `Probe::Change`.
     pub change: Option<ChangeObservation>,
+    /// The forge calls that answer took; `None` or 0 when none was made.
+    pub calls: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -141,7 +147,7 @@ impl Pass<'_, '_> {
     /// The phase's poll interval: `pollMs` while Watching, ten times that
     /// while Closed.
     fn interval(&self) -> Millis {
-        let poll = self.spec.poll_ms();
+        let poll = self.spec.poll_ms(&self.input.defaults);
         match self.st.phase {
             Phase::Closed => poll.saturating_mul(CLOSED_POLL_FACTOR),
             Phase::Watching | Phase::Settled => poll,
@@ -168,6 +174,9 @@ impl Pass<'_, '_> {
                 None => return,
             }
         }
+        if self.input.observations.change.is_some() {
+            self.record_calls();
+        }
         match self.input.observations.change.clone() {
             None => {}
             Some(ChangeObservation::Unknown {
@@ -193,6 +202,17 @@ impl Pass<'_, '_> {
                 self.absorb(snapshot);
                 self.schedule();
             }
+        }
+    }
+
+    /// Keep this object's share of its host's budget: the calls of its polls
+    /// in the last window, this one's included.
+    fn record_calls(&mut self) {
+        let now = self.now();
+        let since = now.saturating_sub(CALL_WINDOW_MS);
+        self.st.forge_calls.retain(|c| c.at > since);
+        if let Some(count) = self.input.observations.calls.filter(|c| *c > 0) {
+            self.st.forge_calls.push(ForgeCalls { at: now, count });
         }
     }
 
@@ -424,6 +444,118 @@ fn camel(reason: &str) -> String {
         "NotMergeable".to_string()
     } else {
         out
+    }
+}
+
+/// One forge host's pacing over a sweep: the calls every ChangeRequest on it
+/// made in the last [`CALL_WINDOW_MS`], as their statuses record them, and a
+/// back-off the forge asked for. The manager seeds it from the stored
+/// objects, asks it before each poll and tells it what each poll spent; the
+/// store is its memory, so a new manager run still counts what the last one
+/// spent.
+#[derive(Debug, Clone, Default)]
+pub struct HostGate {
+    budget: Option<u64>,
+    spent: Vec<ForgeCalls>,
+    paused: Option<Pause>,
+}
+
+#[derive(Debug, Clone)]
+struct Pause {
+    until: Millis,
+    kind: Uncertainty,
+    why: String,
+}
+
+impl HostGate {
+    /// A gate for a host whose ChangeRequests may make `budget` calls
+    /// together in any window; `None` for no budget.
+    pub fn new(budget: Option<u64>) -> HostGate {
+        HostGate {
+            budget,
+            ..HostGate::default()
+        }
+    }
+
+    /// Count one stored ChangeRequest of the host: the calls its status
+    /// records, and the wait of a throttled answer it is serving, which the
+    /// whole host serves with it. An undecodable status counts nothing.
+    pub fn seed(&mut self, obj: &Object) {
+        let Ok((_, st)) = decode(obj) else {
+            return;
+        };
+        self.spent.extend(st.forge_calls);
+        let throttled = st.conditions.iter().any(|c| {
+            c.type_ == REACHABLE
+                && c.status == ConditionStatus::Unknown
+                && c.reason == Uncertainty::Throttled.reason()
+        });
+        if let (true, Some(until)) = (throttled, st.not_before) {
+            self.pause(
+                until,
+                Uncertainty::Throttled,
+                "the forge asked to slow down",
+            );
+        }
+    }
+
+    /// Back the whole host off until `until`, keeping the longest wait.
+    pub fn pause(&mut self, until: Millis, kind: Uncertainty, why: &str) {
+        if self.paused.as_ref().is_none_or(|p| p.until < until) {
+            self.paused = Some(Pause {
+                until,
+                kind,
+                why: why.to_string(),
+            });
+        }
+    }
+
+    /// Record the calls a poll started at `now` made.
+    pub fn charge(&mut self, now: Millis, count: u64) {
+        if count > 0 {
+            self.spent.push(ForgeCalls { at: now, count });
+        }
+    }
+
+    /// `None` when a poll may start now: the host is not backing off and
+    /// its budget still holds one observation's worst case. Otherwise the
+    /// Unknown answer to hand the controller instead of asking, with the
+    /// wait until the host may be asked again.
+    pub fn admit(&self, now: Millis) -> Option<ChangeObservation> {
+        if let Some(p) = self.paused.as_ref().filter(|p| p.until > now) {
+            return Some(ChangeObservation::Unknown {
+                kind: p.kind,
+                why: format!(
+                    "deferred with the host: {}; the last observation stands and is stale",
+                    p.why
+                ),
+                retry_after: Some(p.until - now),
+            });
+        }
+        let budget = self.budget?;
+        let since = now.saturating_sub(CALL_WINDOW_MS);
+        let mut live: Vec<&ForgeCalls> = self.spent.iter().filter(|c| c.at > since).collect();
+        live.sort_by_key(|c| c.at);
+        let mut total: u64 = live.iter().map(|c| c.count).sum();
+        if total + MAX_CALLS_PER_OBSERVATION <= budget {
+            return None;
+        }
+        // The first moment enough of the window has aged out.
+        let mut free_at = now + CALL_WINDOW_MS;
+        for c in live {
+            total -= c.count;
+            if total + MAX_CALLS_PER_OBSERVATION <= budget {
+                free_at = c.at + CALL_WINDOW_MS;
+                break;
+            }
+        }
+        Some(ChangeObservation::Unknown {
+            kind: Uncertainty::OverBudget,
+            why: format!(
+                "the host's budget of {budget} forge calls a minute is spent; the last observation stands and is stale"
+            ),
+            retry_after: Some(free_at.saturating_sub(now).max(1)),
+        })
     }
 }
 

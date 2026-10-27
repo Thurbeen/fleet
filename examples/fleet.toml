@@ -6,8 +6,11 @@ kind = "fake"
 dir = "fake-host"
 [forge]
 draftPolicy = "checks"
+pollMs = 60000
 [forge.hosts]
-"forge.example" = { kind = "fake", dir = "fake-forge" }
+"forge.example" = { kind = "fake", dir = "fake-forge", maxCallsPerMinute = 30 }
+# A self-hosted GitLab polled every five minutes, within its rate limit:
+# "gitlab.example.com" = { kind = "gitlab", cli = "glab", pollMs = 300000, maxCallsPerMinute = 30 }
 # Hosted Bitbucket Cloud uses an externally authenticated curl client:
 # "bitbucket.org" = { kind = "bitbucket-cloud", cli = "curl" }
 [forge.readyPolicies.checks]

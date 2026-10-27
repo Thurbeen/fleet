@@ -33,7 +33,7 @@ on a Task's behalf. Fixed once created.
 | Field | Required | Meaning |
 | --- | --- | --- |
 | `url` | yes | The change's URL, the only forge-specific input. The adapter for its host parses it into `status.ref`; a URL it cannot read is refused at apply. |
-| `pollMs` | no | Poll interval while Watching. Default `60000`. |
+| `pollMs` | no | Poll interval while Watching. Default: the host's `pollMs` under [`[forge.hosts]`](../configuration/fleet-toml.md#the-forge-section), else `forge.pollMs`, else `60000`. Only the spec's own value is fixed at creation; the configured ones are read again on every poll, so a config change reaches an existing ChangeRequest on its next poll. |
 | `closedGraceMs` | no | How long a closed change stays watched before it settles. Default `forge.closedGraceMs` from [native config](../configuration/fleet-toml.md#the-forge-section), one week. |
 | `settledTtlMs` | no | How long a settled ChangeRequest is retained before its controller deletes it. Default `forge.settledTtlMs`, thirty days. |
 
@@ -57,6 +57,7 @@ Bookkeeping:
 | `ref` | What the adapter parsed the URL into: `kind`, `host`, `project`, `id`. |
 | `observedAt` | When the forge last answered Known, in Unix milliseconds. |
 | `notBefore` | Earliest next poll, in Unix milliseconds. |
+| `forgeCalls` | `[{at, count}]`: the forge calls this object's polls made in the last minute. Its share of the host's `maxCallsPerMinute`, kept here so the next manager run still counts it. |
 | `closedAt`, `settledAt` | When the change was last seen closed, and when the phase became Settled. |
 | `conditions` | One entry per [condition type](../controllers/change-request/state-machine.md#conditions). |
 
@@ -106,6 +107,19 @@ partial snapshot numbered as if complete. Only the stored `notes` list is
 bounded, by the cap, and the aggregates `threads` and `reviews` are computed
 over everything the forge returned. An Unknown answer may carry
 `retryAfter`, which the controller honours as its next `notBefore`.
+
+### Host pacing
+
+Every ChangeRequest on one forge host shares that host's pacing. A poll
+waits, rather than asking, while the host is backing off after the forge
+asked Fleet to slow down, or while the host's `maxCallsPerMinute` cannot
+hold one more observation's worst case of six calls. The budget counts the
+calls the adapter actually made, not polls: one poll is several calls. A
+poll that waits is an Unknown answer: `Reachable=Unknown` with reason
+`OverBudget` or `Throttled`, the snapshot and `observedAt` left as they were
+and the message saying the last observation is stale, and `notBefore` set to
+when the host can be asked again. Due polls are taken oldest `observedAt`
+first, so the stalest mirror is read first and none starves.
 
 ### Notes
 

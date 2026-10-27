@@ -17,6 +17,10 @@ use crate::meta::Millis;
 use crate::observation::Observation;
 use crate::plan::EffectOutcome;
 
+/// The most forge calls one `change` observation makes. A host's call budget
+/// lets a poll start only while this many calls still fit in it.
+pub const MAX_CALLS_PER_OBSERVATION: u64 = 6;
+
 /// What the adapter parsed a change's URL into: enough to name the change
 /// again, in Fleet's words.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -210,6 +214,8 @@ pub enum Uncertainty {
     Refused,
     /// The forge's CLI could not be started on this machine.
     Unavailable,
+    /// Fleet did not ask: the host's call budget for the minute is spent.
+    OverBudget,
 }
 
 impl Uncertainty {
@@ -222,6 +228,7 @@ impl Uncertainty {
             Uncertainty::NotLoggedIn => "NotLoggedIn",
             Uncertainty::Refused => "Refused",
             Uncertainty::Unavailable => "CliUnavailable",
+            Uncertainty::OverBudget => "OverBudget",
         }
     }
 }
@@ -285,7 +292,17 @@ pub trait Forge {
     /// Fleet's own login on the host, or Unknown.
     fn whoami(&self, host: &str) -> Observation<String>;
     /// One complete observation of the change, proven absence, or Unknown.
+    /// It makes at most [`MAX_CALLS_PER_OBSERVATION`] forge calls.
     fn change(&self, change: &ChangeRef) -> ChangeObservation;
+    /// Every forge call this port has made so far, each process it ran or
+    /// request it sent: a host's budget counts these, not polls.
+    fn calls(&self) -> u64;
+    /// The configured host that serves `host`, which its poll interval and
+    /// call budget are kept under: the host itself unless the adapter
+    /// routes it to another entry.
+    fn entry(&self, host: &str) -> String {
+        host.to_ascii_lowercase()
+    }
     /// Take a draft out of draft under `intent_key`: the only forge write
     /// Fleet performs. The adapter reads the change's head and state afresh
     /// immediately before the mutation and answers `Moved` when either

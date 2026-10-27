@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use fleet_api::follow::ReadyPolicy;
+use fleet_api::forge::MAX_CALLS_PER_OBSERVATION;
 use serde::Deserialize;
 
 /// The config schema version this build reads (P9).
@@ -45,6 +46,9 @@ pub struct StarterConfig {
 pub struct ForgeConfig {
     /// The bound on every forge CLI call.
     pub call_timeout_ms: Option<u64>,
+    /// How often a ChangeRequest is polled while Watching, when neither its
+    /// spec nor its host names an interval.
+    pub poll_ms: Option<u64>,
     /// How long a closed change stays watched before it settles.
     pub closed_grace_ms: Option<u64>,
     /// How long a settled ChangeRequest is retained before its controller
@@ -79,6 +83,12 @@ pub struct ForgeHostConfig {
     pub cli: Option<String>,
     /// The fake forge's directory, relative to this file.
     pub dir: Option<PathBuf>,
+    /// How often a ChangeRequest on this host is polled while Watching, when
+    /// its spec names no interval.
+    pub poll_ms: Option<u64>,
+    /// The forge calls every ChangeRequest on this host may make together
+    /// in any minute.
+    pub max_calls_per_minute: Option<u32>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -134,9 +144,31 @@ impl Config {
             starter.workspace = base.join(&starter.workspace);
         }
         if let Some(forge) = config.forge.as_mut() {
-            for host in forge.hosts.values_mut() {
+            if forge.poll_ms == Some(0) {
+                return Err(format!(
+                    "config {}: forge.pollMs must be positive",
+                    path.display()
+                ));
+            }
+            for (name, host) in forge.hosts.iter_mut() {
                 if let Some(d) = &host.dir {
                     host.dir = Some(base.join(d));
+                }
+                if host.poll_ms == Some(0) {
+                    return Err(format!(
+                        "config {}: forge.hosts.{name:?}.pollMs must be positive",
+                        path.display()
+                    ));
+                }
+                // A poll starts only while its worst case still fits, so a
+                // smaller budget would never poll at all.
+                if let Some(max) = host.max_calls_per_minute
+                    && u64::from(max) < MAX_CALLS_PER_OBSERVATION
+                {
+                    return Err(format!(
+                        "config {}: forge.hosts.{name:?}.maxCallsPerMinute is {max}; one observation of a change may make {MAX_CALLS_PER_OBSERVATION} calls, so it must be at least that",
+                        path.display()
+                    ));
                 }
             }
             if let Some(name) = &forge.draft_policy
