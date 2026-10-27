@@ -87,6 +87,18 @@ is a manager verb, like `fleet send`, and takes no lease:
    platform's event id. A key already in `received` or in the newest
    `seenEvents` is a no-op, so a redelivered event is harmless.
 
+Exit codes are the CLI's. Zero: written, a duplicate, or ignored; the
+listener acknowledges. 4, Unknown (an unreadable payload or record) and 5,
+a conflict the verb's own compare-and-swap retries did not resolve: the
+listener does not acknowledge, and the platform redelivers under its own
+retry policy. 1, refused, because the spool already holds 100 unnumbered
+events or the Conversation is being deleted: the listener does not
+acknowledge either; once the platform stops redelivering, the event is lost
+to the spool and recovered, where the account has history, by the next
+backstop read. The refusal is visible as the Conversation's
+`NeedsAttention/SpoolFull`, which its controller raises from the spool it
+reads.
+
 The creation and the append are not atomic. A crash between them leaves an
 empty Conversation, which its controller fills from `history` on its first
 pass, or, where there is no history, retains until its retention passes.
@@ -150,11 +162,23 @@ says to start one; its intent is the tie written in the same status.
 `resourceVersion` under the lease.
 
 `Plan` and `Probe` are the built-in types in `fleet_api::plan`. As designed
-they gain `creates` (carried by this controller's plans alone among the
-built-ins, performed by the same manager create verb a plugin plan's
-`creates` uses) and `Probe::List { kind, labels }`, answered from the store
-as the plugin host answers its `list` probe; today both exist only in the
-plugin protocol types.
+they change in these ways, each with its architecture rule:
+
+- `Plan.creates`, carried by this controller's plans alone among the
+  built-ins and performed by the same manager create verb a plugin plan's
+  `creates` uses; today it exists only in the plugin protocol types.
+- `Plan.appends`, today asked only by ForgeController, is also asked by
+  GatewayController; `Plan.delete`, today asked only by
+  ChangeRequestController, is also asked by ConversationController.
+- `Probe::List { kind, labels }`, answered from the store as the plugin
+  host answers its `list` probe; `Probe::History`, `Probe::Capabilities`
+  and `Probe::GatewayWhoami { account }`, answered through the Gateway port
+  (the existing `Whoami { host }` stays the Forge port's).
+- The actions `Open` and `Post`, performed through the Gateway port.
+
+The kind name `Conversation` is reserved for this design: a plugin manifest
+claiming it would be refused once the kind is built in, as one claiming
+`Task` is refused today.
 
 The Task it creates:
 
@@ -203,16 +227,17 @@ pub fn probes(&self, input: &GatewayInput<'_>) -> Result<Vec<Probe>, StoreError>
 pub fn reconcile(&self, input: &GatewayInput<'_>) -> Result<Plan, StoreError>;
 ```
 
-`due` holds on every sweep for a tied Task, a Task waiting for its tie or a
-Task with an unsettled post, as a following Forge entry is: the
-Conversation is read from the store, which costs one read and no platform
-call. Otherwise it holds when `status.declared` or `status.result` holds
-something past the controller's cursors, or when one of its children
-changed: the manager lists Tasks once per sweep, indexes them by their
-`gateway.fleet.dev/parent` label, and marks a parent due when a child's
-`resourceVersion` is above the one `status.gateway.children` recorded for
-it, or a child is new. The `List` probe is answered from that one listing,
-so children cost one store list per sweep, not one per Task.
+`due` holds for a tied Task when its Conversation's `revision` is above
+`status.gateway.seen` (the manager lists Conversations once per sweep and
+answers from that listing), for a Task waiting for its tie, and for a Task
+with an unsettled post; a quiet tied Task costs nothing. It also holds when
+`status.declared` or `status.result` holds something past the controller's
+cursors, or when one of its children changed: the manager lists Tasks once
+per sweep, indexes them by their `gateway.fleet.dev/parent` label, and marks
+a parent due when a child's `resourceVersion` is above the one
+`status.gateway.children` recorded for it, or a child is new. The `List`
+probe is answered from that one listing, so children cost one store list per
+sweep, not one per Task.
 
 ### Requested probes
 
@@ -231,20 +256,28 @@ so children cost one store list per sweep, not one per Task.
 
 | Field | Meaning |
 | --- | --- |
-| `conversation` | `{name, uid, state}` of the Conversation: `opening` from an `Open` intent until its receipt, `waiting` until the Conversation's `status.task` names this Task's `uid`, then `tied`. A Task carrying `gateway.fleet.dev/conversation` starts `waiting`, and reads no declaration while it waits, so nothing it says before its tie is verified is skipped. |
+| `conversation` | `{name, uid, state}` of the Conversation: `opening` from an `Open` intent until its receipt, `waiting` until the Conversation's `status.task` names this Task's `uid`, then `tied`. A Task carrying `gateway.fleet.dev/conversation` starts `waiting`. While `opening` or `waiting` the Task reads no declaration past the Question that opened, so nothing it says before its tie is verified is skipped; it reads them in order once tied. |
+| `seen` | The Conversation `revision` last read, so a tied Task is due only when its Conversation moved. |
 | `cursor` | The Conversation `revision` relayed through. Starts at `0`, so the first relay is the whole retained thread. Advances only when an entry is appended: messages that may not start a turn wait above it. |
 | `declared` | How many items of `status.declared` were read. Each is read once, in order. |
 | `result` | The result generation posted, if any. |
 | `changes` | Per ChangeRequest name, the `state.seq` posted through. |
 | `children` | Per child Task name, `{uid, seen, declared, result}`: the child's `uid` on first sight, the `resourceVersion` last read, and its own cursors. |
 | `posts` | Per intent key, `{intent, receipt, attempts}`: the post effects, apart from TaskController's records. Newest 100 settled, every unsettled. |
-| `questions` | Per Question id, `{key, conversation, seq, postedAt}` once posted; `seq` is the post's own sequence number in the mirror, once numbered. |
+| `posted` | Every Question, Comment and Draft id posted, by kind, for the life of the Task, so an id reused later is never posted again after its record in `posts` rotated out. Bounded by the declarations a Task may hold. |
+| `questions` | Per Question id, `{key, conversation, message, at}` once posted: the platform message id and time from the post's receipt, so answers are ordered on the platform's own clock and need no marker. |
 | `gaps` | How many times a relay found `droppedBefore` above the cursor. |
 | `conditions` | `Tied`, `NeedsAttention`. |
 
 `status.answered` has no owner. It is a map from Question id to
 `{key, from, at}`, written only by the typed inbox append when an entry
 carries `answers`, first writer wins, never removed while the Task lives.
+
+Every map here is bounded by what the Task declared: `questions`,
+`posted` and `status.answered` by its declared Questions, Comments and
+Drafts, `changes` by its declared changes, under the per-Task declarations
+cap the [open questions](README.md#open-questions-and-recommendations)
+recommend; `children` by the 200 a `List` probe answers.
 
 ### Declarations the Gateway reads
 
@@ -256,8 +289,8 @@ and ignores the rest:
 | --- | --- | --- | --- | --- |
 | `Question` | `id` (string, unique for the Task), `text` (Markdown) | Posted once, under `…/gateway/question/<id>`. | Opens a thread in the questions route's channel, then is tied to it. | Relayed to the parent's inbox. |
 | `Comment` | `id` (string, unique for the Task), `text` (Markdown) | Posted once, under `…/gateway/comment/<id>`. | Skipped, never posted later. | Relayed to the parent's inbox. |
-| `Draft` | `id`, `title`, `text` (Markdown) or `url` | Posted once as a draft for review, under `…/gateway/comment/<id>`. | Skipped. | Relayed to the parent's inbox. |
-| `ChangeRequest` | `url`, `name`, as today | Posted when declared and when its mirror's `state` becomes `open`, `merged` or `closed`, under `…/gateway/change/<cr uid>/<state.seq>`. | Skipped. | Relayed to the parent's inbox. |
+| `Draft` | `id`, `title`, `text` (Markdown) or `url` | Posted once as a draft for review, under `…/gateway/draft/<id>`. | Skipped. | Relayed to the parent's inbox. |
+| `ChangeRequest` | `url`, `name`, as today | Posted once its mirror has a `uid` and a `state` (until then it waits, as the Forge controller's join does), and again when the mirror's `state` becomes `open`, `merged` or `closed`, under `…/gateway/change/<cr uid>/<state.seq>`. | Skipped. | Relayed to the parent's inbox. |
 | `status.result` | As today | Posted once per generation, under `…/gateway/result/<generation>`. | Skipped. | Relayed to the parent's inbox. |
 
 A Question, Comment or Draft whose `id` was already posted is not posted
@@ -310,7 +343,7 @@ always `None`.
 
 | Action | Performed through | Receipt |
 | --- | --- | --- |
-| `Open { channel, text, key }` | `Gateway::open`; with an `Opened` receipt the manager ensures the new thread's Conversation and spools the opening post, as [the receive verb](#the-receive-verb) does | `Opened { conversation, message }`, Failed, or Unknown |
+| `Open { account, route, channel, text, key }` | `Gateway::open`; with an `Opened` receipt the manager ensures the new thread's Conversation and spools the opening post, as [the receive verb](#the-receive-verb) does | `Opened { conversation, message }`, Failed, or Unknown |
 | `Post { conversation, text, key }` | `Gateway::post` | `Posted { message }`, Failed, or Unknown |
 
 Posts to one conversation go out in declaration order and one at a time: a
@@ -322,7 +355,9 @@ that conversation, so a thread never reads out of order.
 | Item | Key |
 | --- | --- |
 | Question post or open | `task/<name>/<uid>/gateway/question/<id>` |
-| Comment, Draft | `task/<name>/<uid>/gateway/comment/<id>` |
+| Comment | `task/<name>/<uid>/gateway/comment/<id>` |
+| Draft | `task/<name>/<uid>/gateway/draft/<id>` |
+| One part of a split post | `<key>/<part>`, each part its own effect, intent and receipt, posted in order, recovered on its own; the lease is renewed before each part, as before each effect |
 | Change news | `task/<name>/<uid>/gateway/change/<cr uid>/<state.seq>` |
 | Result | `task/<name>/<uid>/gateway/result/<generation>` |
 | Refusal | `conversation/<conv uid>/refuse/<author id>` |
@@ -388,6 +423,7 @@ unlisted bot gets none.
 | The manager after an `Open` receipt, as `gateway-controller` | Creates the new thread's Conversation; appends the opening post to its `status.received`, through the same `receive_event` | Exclusive creation; current resourceVersion; the live lease. |
 | `conversation-controller` | All of Conversation status but `received`; drains `received`; creates conversation Tasks; deletes its own object | Current resourceVersion and the live lease. |
 | `gateway-controller` | All of `status.gateway`; appends to `status.inbox`, recording `status.answered` | Current resourceVersion and the live lease. |
+| `apply` | Creates a Conversation by manifest, refused unless its name is the one derived from its account and address; requests deletion | Store validation, exclusive creation. |
 | `cli`, `plugin/<name>` | Inbox appends as today, each now able to carry `answers` | As today. |
 | `conversation-controller`, through its create | The labels `gateway.fleet.dev/conversation` and `gateway.fleet.dev/conversation-uid` on the Tasks it creates | Exclusive creation; `apply` refuses both labels. |
 
@@ -398,6 +434,7 @@ which `fleet send` could already do, and a tie, once verified, wins over a
 parent label.
 
 Every other Task field keeps its owner. `status.received` on a Conversation
-is the second field with no single owner, reached only through
-`receive_event` and `record_received`, which refuse a duplicate event key,
-more than 100 unnumbered events and a deleting Conversation.
+joins `status.inbox` and `status.answered` as a field with no single owner,
+reached only through `receive_event` and `record_received`, which refuse a
+duplicate event key, more than 100 unnumbered events and a deleting
+Conversation.

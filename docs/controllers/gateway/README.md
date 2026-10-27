@@ -58,7 +58,7 @@ mapped on paper to check the model.
 5. Every later message by an allowlisted person in the thread is relayed;
    whatever arrived since the last relay goes out as one inbox entry, the
    cursor advancing in the same write. Every message is
-   a worker turn; nothing decides whether a message deserves one. Messages
+   a worker turn; nothing decides whether an admitted message deserves one. Messages
    from people off the allowlist start no turn: they wait above the cursor
    and ride along with the next allowlisted message, labelled as not coming
    from someone on the allowlist, content and never instructions.
@@ -93,7 +93,7 @@ mapped on paper to check the model.
    Conversation, ConversationController ties the thread to the Task the
    marker key names.
 4. Replies in that thread are relayed to the Task's inbox. The first
-   allowlisted reply numbered after the Question's own post records it as answered
+   allowlisted reply written after the Question's own post records it as answered
    on the Task, `status.answered.q1`, in the same write that queues the
    reply. A Notion factory plugin showing the same Question as "Needs input"
    reads that fact and stops showing it; if the answer arrives there first,
@@ -133,7 +133,8 @@ Where the two differ, the difference is chat's:
 
 ConversationController writes only Conversations, and creates Tasks through
 the manager's create verb. GatewayController's plans write only
-`status.gateway` and the Task's own inbox, and read Conversations,
+`status.gateway` and the Task's own inbox, apart from the one spool append
+below, and read Conversations,
 ChangeRequests and child Tasks by name or label. Two writes reach a
 Conversation from outside its controller, both through the one typed spool
 append and neither touching its status otherwise: the receive verb, and the
@@ -235,11 +236,11 @@ Fleet of its own posts and interactive components; the listener programs themsel
 | Question | Recommendation |
 | --- | --- |
 | Where does the thread history go when a mention lands partway through a thread? | The first inbox entry, as the Forge controller's join message, not the brief. The brief stays the route's, identical for every conversation Task and frozen at creation; the history can be long and is data. |
-| What is the brief of a conversation Task? | The route's `brief` file, read when the Task is created and copied into its spec. TaskConfig does not define briefs or workspaces, so a route names a TaskConfig for execution defaults and carries the brief and workspace itself. |
+| What is the brief of a conversation Task? | The route's `brief` file, read by the manager when it loads the config and copied into each Task's spec when the Task is created. TaskConfig does not define briefs or workspaces, so a route names a TaskConfig for execution defaults and carries the brief and workspace itself. |
 | What workspace does a conversation Task get? | A route setting. Prefer a provisioned worktree per Task, from the repository the route names and on a branch derived from the Conversation's name, once provisioned workspaces (open as a draft) land. Until then a prepared directory, which concurrent conversation Tasks on one route would share; the route documentation says so. |
 | How is a child tied to its parent? | A label on the child, `gateway.fleet.dev/parent: <parent Task name>`, set by whoever creates it. The parent's GatewayController lists its children by that label and relays their Questions, Comments, Drafts and results into the parent's own inbox; the child's GatewayController never opens or ties a thread. A label names a Task by name, not `uid`, so a child created after its parent was replaced by a same-named Task follows the new one; the parent's controller records each child's `uid` on first sight. |
 | A child whose parent is readably gone? | It is treated as untied: its next Question opens a thread through the questions route, because nobody else will answer it. Its earlier declarations are not replayed. |
-| How is an answer recognised in a thread? | The first allowlisted message whose `seq` is above the Question post's own `seq` in the mirror answers every Question of that Task posted in that thread and still open. A message written before the Question but relayed after it does not count. The Gateway makes no judgement whether it really answers; a worker that needs more declares a new Question with a new id. |
+| How is an answer recognised in a thread? | The first allowlisted message whose platform time is after the Question post's own time, taken from the post's receipt, answers every Question of that Task posted in that thread and still open. A message written before the Question but relayed after it does not count, and neither does an old message edited later, since an edit moves its `seq` and not its time. The Gateway makes no judgement whether it really answers; a worker that needs more declares a new Question with a new id. |
 | What does a person get when writing in a thread whose Task is gone? | A new Task, numbered after the last, joined with the retained thread history, if the Conversation still exists and the message passes admission. After the Conversation's retention it is a new thread, and the route's mention rule applies again. |
 | How long is a Conversation kept? | While its tied Task exists, always. Untied or Orphaned, `gateway.retainMs` after the later of its last message and its orphaning, thirty days by default, then its controller deletes it by `uid` and `resourceVersion`, as ChangeRequest retention does. |
 | How long can a conversation Task's declarations grow? | `status.declared` has no cap today and a long thread declares a Comment per reply. Recommend a store cap on declarations per Task, refused past it with `NeedsAttention/DeclaredFull`, so a person deletes the Task and the thread starts a new one with its history; the Gateway itself only keeps cursors. |

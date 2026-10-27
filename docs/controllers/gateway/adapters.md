@@ -12,7 +12,7 @@ those pages do not state is marked **unverified**.
 
 | Port item | Slack |
 | --- | --- |
-| Account | One workspace (`team_id`, or `enterprise_id` in an Enterprise org, which Slack advises keying stored data on[^slack-ent]), one bot, one `[gateway.accounts.<name>]` entry with `platform = "slack"`. |
+| Account | One workspace, the account's `team` (`team_id`, or `enterprise_id` in an Enterprise org, which Slack advises keying stored data on[^slack-ent]), one bot, one `[gateway.accounts.<name>]` entry with `platform = "slack"`. |
 | Conversation | A thread: the channel id and the parent's `ts`. A message is in a thread when it has `thread_ts`; `thread_ts == ts` is the parent[^slack-threads]. `ts` is unique within a channel[^slack-threads]. Address `slack:C0123ABCD:1730000000.000100`. A reply is posted with the parent's `ts` as `thread_ts`, never a reply's[^slack-post]. |
 | Message ids | `ts`, unique within the channel; the event wrapper's `event_id`, globally unique, is the receive verb's de-duplication key[^slack-events]. |
 | Inbound | Message events through the `message.channels` and `message.groups` subscriptions, with `channels:history` and `groups:history`[^slack-message]. Thread replies arrive as ordinary message events; `message_replied` lacks its subtype over the Events API, so a reply is told by `thread_ts != ts`[^slack-replied]. |

@@ -52,7 +52,8 @@ and serves nothing yet: `Conversation` is refused as an unknown kind,
 As designed it adds a `Gateway` port in `fleet-api`, adapters in a
 `fleet-gateway` crate depending on `fleet-api` and `fleet-exec` only,
 `ConversationController` and `GatewayController` field managers, a
-`listener/<account>` appender to the Conversation spool, a `gateway/`
+`listener/<account>` appender to the Conversation spool (and the manager
+appending Fleet's opening post there after an `Open` receipt), a `gateway/`
 inbox source, and `status.answered`, written only by an inbox append that
 carries `answers`. None of these guarantees hold until implemented with
 their tests.

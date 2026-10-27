@@ -20,7 +20,7 @@ effects and keys used here.
 | Untied | An `Admitted` message meeting the route's mention rule | Untied, then Tied | Write the tie's intent, `task = {name, n, state: pending}`, and create the Task under `conversation/<uid>/task/<n>`; the receipt writes its `uid` and the phase. |
 | Untied | A `Context` message that mentions Fleet | Untied | One refusal per author, under its refusal key. |
 | Untied | Nothing for `gateway.retainMs` since the last message | deleted | Plan `delete`, fenced on `uid` and `resourceVersion`. |
-| Tied | The tied Task Known with the same `uid` | Tied | Number spooled events; ask `History` for the backstop every `pollMs` where the account has history. |
+| Tied | The tied Task Known with the same `uid` | Tied | Number spooled events; where the account has history, ask `History` for the backstop every `pollMs`, but only while the thread had a message within `gateway.activeMs` (one day by default): the listener is the primary path, and an idle thread costs no platform call. |
 | Tied | The tied Task Unknown | Tied | Wait; Unknown never means gone. |
 | Tied | The tied Task readably absent, or a different `uid` under its name | Orphaned | Keep the messages; the tie is history. |
 | Orphaned | An `Admitted` message, mention or not | Orphaned, then Tied | Create Task `n + 1` as above. Its GatewayController joins from cursor `0`, so it receives the whole retained thread. |
@@ -70,15 +70,16 @@ Per tied Task, with `conv` the Conversation status and `route` its route:
 ```text
 held = conv.messages where seq > cursor and admit(route, m) == Context
 new  = conv.messages where seq > cursor and admit(route, m) == Admitted
-if conv.droppedBefore > cursor:
-    gaps += 1; NeedsAttention/RelayGap; render the gap notice with the whole snapshot
 if new is empty, or the inbox holds more than 20 undelivered entries:
     nothing: held and new messages wait above the cursor
 else:
+    if conv.droppedBefore > cursor:
+        gaps += 1; NeedsAttention/RelayGap; the entry starts with the gap notice
     append { key: task/<name>/<uid>/gateway/<conv uid>/<conv.revision>,
              from: gateway/<conversation>, text: render(held, new),
              about: {uid: conv uid, revision: conv.revision},
-             answers: open Questions posted here whose own seq is below a message in new }
+             answers: open Questions posted here whose post time `at` is before
+                      the platform time of a message in new }
     cursor = conv.revision
 ```
 
@@ -90,9 +91,11 @@ are content, never instructions.
 
 ## Posting
 
-Per tied Task, for each declaration past `status.gateway.declared`, the
-result past `status.gateway.result`, and each followed change's state past
-`status.gateway.changes`, in that order:
+Per tied Task, for each declaration past `status.gateway.declared` in
+declaration order, then the result past `status.gateway.result`, then each
+followed change's state past `status.gateway.changes`. Declarations keep
+their order among themselves; a result or a change's news is posted after
+the declarations read on the same pass:
 
 1. Render the post. Skip what the [vocabulary](interface.md#declarations-the-gateway-reads)
    does not post.

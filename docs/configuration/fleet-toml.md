@@ -243,12 +243,13 @@ controller reads `[forge.hosts]`.
 [gateway]
 callTimeoutMs = 15000
 pollMs = 300000               # history backstop for tied threads
+activeMs = 86400000           # ... while the thread had a message this recently
 retainMs = 2592000000         # thirty days: an Untied or Orphaned Conversation's retention
 questions = "eng"             # the route whose channel takes Questions from untied Tasks
 
 [gateway.accounts.slack-main]
 platform = "slack"
-workspace = "T0123ABCD"       # the team, or the enterprise id in an Enterprise org
+team = "T0123ABCD"            # the team, or the enterprise id in an Enterprise org
 bot = "U0BOT0001"             # Fleet's bot user id, checked against the platform's answer
 cli = "curl"
 curlConfig = "/etc/fleet/slack-curl.conf"   # operator-owned; holds the bot token header
@@ -284,9 +285,10 @@ workspace = { dir = "/work/triage" }
 | --- | --- | --- |
 | `gateway.callTimeoutMs` | `15000` | Bound for each adapter call; the manager lease is raised to outlast the port's reported worst case. |
 | `gateway.pollMs` | `300000` | How often a Tied Conversation reads its history as a backstop for events a listener missed, where the account has history. |
+| `gateway.activeMs` | `86400000` | How long after a Tied thread's last message its history backstop keeps polling. A Conversation's `spec.pollMs` overrides `gateway.pollMs` for that thread. |
 | `gateway.retainMs` | `2592000000` | How long an Untied or Orphaned Conversation is kept after the later of its last message and its orphaning. |
 | `gateway.questions` | Absent | The route whose first channel takes a new thread for a Question declared by a Task with no tie and no parent. A Task's `gateway.fleet.dev/route` label overrides it. Absent and unlabelled: such a Question is not posted. |
-| `gateway.accounts.<name>` | One per chat account | `platform` is `slack` (or, later, `telegram`, `discord`, `teams`, and `fake` with `dir`); `workspace` the platform's workspace identity; `bot`, Fleet's bot id there, which the adapter's pure event reading uses to tell Fleet's own posts and mentions apart; `cli` and the platform's credential reference, here `curlConfig`, an absolute path Fleet passes to `curl -K` and never reads. |
+| `gateway.accounts.<name>` | One per chat account | `platform` is `slack` (or, later, `telegram`, `discord`, `teams`, and `fake` with `dir`); `team` the platform's workspace identity; `bot`, Fleet's bot id there, which the adapter's pure event reading uses to tell Fleet's own posts and mentions apart; `cli` and the platform's credential reference, here `curlConfig`, an absolute path Fleet passes to `curl -K` and never reads. |
 | `gateway.people.<name>` | Optional | A person, with one platform id per account name. Ids only: never a display name, username or email. |
 | `gateway.routes.<name>` | One per set of channels | `account`; `channels`, platform channel ids; `mention`, `required` or `top-level`; `allow`, people names; `allowBots`, bot or app ids whose messages count as a person's; `taskConfig`, the TaskConfig a new conversation Task references; `brief`, an absolute path the manager reads when it loads the config and copies into each Task it creates; `workspace`, the Task's workspace as a Task spec gives it; `refusal`, the one polite refusal. A channel belongs to at most one route. |
 

@@ -36,7 +36,7 @@ it, and removed by its own controller after a retention period.
        "mentionsFleet": true, "text": "<@U0BOT0001> can you look into it?"},
       {"id": "1730000400.000300", "seq": 3, "at": 1730000400000,
        "author": {"id": "U0BOT0001", "name": "fleet", "kind": "fleet"},
-       "key": "task/conv-3f9a1c0d2b7e-1/…/gateway/declared/0",
+       "key": "task/conv-3f9a1c0d2b7e-1/…/gateway/comment/c1",
        "text": "Looking at the export job now."}
     ],
     "droppedBefore": 0,
@@ -61,7 +61,7 @@ or the manager created the object.
 | --- | --- | --- |
 | `account` | yes | The `[gateway.accounts]` entry the thread lives on. |
 | `address` | yes | `platform:chat[:thread]`, the only platform-specific input. The account's adapter parses it into `status.ref`; an address it cannot read is refused at apply. |
-| `route` | yes | The `[gateway.routes]` entry whose admission rules, Task template and retention apply. |
+| `route` | yes | The `[gateway.routes]` entry whose admission rules and Task template apply. Retention is the global `gateway.retainMs`. |
 | `pollMs` | no | The history backstop interval while Tied, where the account has history. Default `gateway.pollMs`. |
 
 An account or route not configured is refused at apply. Any other field is
@@ -84,8 +84,8 @@ changes nothing else.
 | `droppedBefore` | The highest `seq` of a message rotated out. `0` until one is. |
 | `received` | Events spooled by the receive verb and not yet numbered, each under its platform event id; at most 100. |
 | `seenEvents` | The newest 500 event ids numbered, so a redelivery after its spool entry was drained is still a no-op. |
-| `refusals` | Per author id, the refusal post's intent and receipt. |
-| `effects` | Intents and receipts of this controller's effects: the Task creation and the refusals. |
+| `refusals` | The author ids refused, newest 200; the refusal post's intent and receipt live under `effects`. |
+| `effects` | Intents and receipts of this controller's effects, the Task creation and the refusals: every unsettled, newest 100 settled. |
 | `observedAt` | When `history` last answered Known. |
 | `lastMessageAt` | The newest message's time; retention counts from it. |
 | `notBefore` | Earliest next pass. |

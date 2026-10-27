@@ -52,6 +52,6 @@
 <text x="380" y="402">retention, no message for gateway.retainMs</text>
 </g>
 <path d="M25 428 H1015" stroke="#c9d3dd"/>
-<text x="25" y="452" font-size="14">The Gateway never runs a model. Admission, the tie and moving messages are all it decides; every message is a worker turn.</text>
+<text x="25" y="452" font-size="14">The Gateway never runs a model. Admission, the tie and moving messages are all it decides; every admitted message is a worker turn.</text>
 </g>
 </svg>
