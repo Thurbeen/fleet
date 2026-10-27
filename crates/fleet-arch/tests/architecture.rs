@@ -31,6 +31,7 @@ fn this_workspace_obeys_its_architecture() {
         "fleet-exec",
         "fleet-forge",
         "fleet-plugin",
+        "fleet-gateway",
         "fleet-dev",
     ] {
         assert!(
@@ -857,6 +858,173 @@ fn forge_effect_capability_cannot_leak_to_an_observer_adapter_or_a_controller() 
             ),
         ],
         &[],
+    );
+}
+
+/// The Gateway's first step, against the real rules file: fleet-gateway is
+/// an adapter reaching only the API and the spawner, the CLI is the only
+/// crate that wires it, both pure crates probe its edge, the Gateway port
+/// with its two writes is held by the API, the adapters, the manager and
+/// the CLI alone, and the CLI may not call its reads or its post itself.
+#[test]
+fn the_rules_keep_the_gateway_below_its_port_and_its_writes_with_the_manager() {
+    let rules = load_rules(&repo_root().join("crates").join("architecture.toml")).expect("rules");
+    let gateway = rules
+        .crates
+        .get("fleet-gateway")
+        .expect("fleet-gateway is governed");
+    assert_eq!(gateway.role, fleet_arch::Role::Adapter);
+    assert_eq!(
+        gateway.deps,
+        vec!["fleet-api".to_string(), "fleet-exec".to_string()]
+    );
+    let dependants: Vec<&String> = rules
+        .crates
+        .iter()
+        .filter(|(_, r)| r.deps.iter().any(|d| d == "fleet-gateway"))
+        .map(|(n, _)| n)
+        .collect();
+    assert_eq!(
+        dependants,
+        vec!["fleet-cli"],
+        "only the edge wires a gateway"
+    );
+    for pure in ["fleet-api", "fleet-controllers"] {
+        assert!(
+            rules.crates[pure]
+                .probes
+                .iter()
+                .any(|p| p == "fleet-gateway"),
+            "{pure} probes the gateway edge"
+        );
+    }
+    let port = rules
+        .restricted
+        .iter()
+        .find(|r| r.path == "fleet_api::gateway::Gateway")
+        .expect("the Gateway port is restricted");
+    assert_eq!(
+        port.allowed,
+        vec![
+            "fleet-api".to_string(),
+            "fleet-manager".to_string(),
+            "fleet-gateway".to_string(),
+            "fleet-cli".to_string(),
+        ]
+    );
+    for excluded in [
+        "fleet-controllers",
+        "fleet-store",
+        "fleet-runtime",
+        "fleet-forge",
+    ] {
+        assert!(
+            !port.allowed.iter().any(|c| c == excluded),
+            "{excluded} must not hold the port"
+        );
+    }
+    let cli = &rules.crates["fleet-cli"];
+    for method in ["history", "capabilities", "post"] {
+        assert!(
+            cli.forbidden_methods.iter().any(|m| m == method),
+            "the CLI may not call {method}"
+        );
+    }
+}
+
+/// A chat write capability is held like the forge's: an observer adapter or
+/// a pure controller that takes the Gateway port is caught, the manager
+/// that performs the effect is not, and a second adapter cannot reach it
+/// through the first.
+#[test]
+fn gateway_effect_capability_cannot_leak_to_an_observer_adapter_or_a_controller() {
+    let rules = format!(
+        "{RULES}\n[[restricted]]\npath = \"fx_api::Gateway\"\nallowed = [\"fx-api\", \"fx-mgr\"]\nwhy = \"only the manager performs the post effect\"\n"
+    );
+    let api = "//! ```compile_fail\n//! use fx_store::Store;\n//! ```\npub mod store {\n    pub enum FieldManager { Ctl, Worker, Cli }\n}\npub use store::FieldManager;\npub trait Gateway { fn post(&self); fn open(&self); }\nuse serde::Serialize;\n";
+    expect(
+        "gateway-effect-from-store",
+        &[
+            ("architecture.toml", &rules),
+            ("crates/fx-api/src/lib.rs", api),
+            (
+                "crates/fx-store/src/lib.rs",
+                "use fx_api::Gateway;\npub struct S;\npub fn read() {}\npub fn mutate(p: &dyn Gateway) { p.post(); }\n",
+            ),
+        ],
+        &[("restricted", "fx-store")],
+    );
+    expect(
+        "gateway-effect-from-controller",
+        &[
+            ("architecture.toml", &rules),
+            ("crates/fx-api/src/lib.rs", api),
+            (
+                CTL,
+                &ctl("use fx_api::Gateway;\npub fn plan(p: &dyn Gateway) { p.open(); }\n"),
+            ),
+        ],
+        &[("restricted", "fx-ctl")],
+    );
+    expect(
+        "gateway-effect-from-manager",
+        &[
+            ("architecture.toml", &rules),
+            ("crates/fx-api/src/lib.rs", api),
+            (
+                "crates/fx-mgr/src/lib.rs",
+                "use fx_api::Gateway;\npub fn run(p: &dyn Gateway) { let _ = fx_ctl::plan(); p.post(); }\n",
+            ),
+        ],
+        &[],
+    );
+    // A gateway adapter beside the forge one: each is below the controllers
+    // and above nothing else, and neither reaches the other.
+    let mut rules = RULES.to_string();
+    rules.push_str(
+        "\n[crates.fx-forge]\nrole = \"adapter\"\ndeps = [\"fx-api\"]\n\n[crates.fx-gateway]\nrole = \"adapter\"\ndeps = [\"fx-api\"]\n",
+    );
+    expect(
+        "gateway-reaches-forge",
+        &[
+            ("architecture.toml", &rules),
+            (
+                "crates/fx-forge/fixture.toml",
+                &manifest("fx-forge", &["fx-api"]),
+            ),
+            ("crates/fx-forge/src/lib.rs", "pub fn change() {}\n"),
+            (
+                "crates/fx-gateway/fixture.toml",
+                &manifest("fx-gateway", &["fx-api", "fx-forge"]),
+            ),
+            (
+                "crates/fx-gateway/src/lib.rs",
+                "pub fn post() { fx_forge::change(); }\n",
+            ),
+        ],
+        &[("undeclared-edge", "fx-gateway")],
+    );
+    expect(
+        "controller-reaches-gateway",
+        &[
+            ("architecture.toml", &rules),
+            (
+                "crates/fx-forge/fixture.toml",
+                &manifest("fx-forge", &["fx-api"]),
+            ),
+            ("crates/fx-forge/src/lib.rs", "pub fn change() {}\n"),
+            (
+                "crates/fx-gateway/fixture.toml",
+                &manifest("fx-gateway", &["fx-api"]),
+            ),
+            ("crates/fx-gateway/src/lib.rs", "pub fn post() {}\n"),
+            (
+                "crates/fx-ctl/fixture.toml",
+                &manifest("fx-ctl", &["fx-api", "fx-gateway"]),
+            ),
+            (CTL, &ctl("pub fn x() { fx_gateway::post(); }\n")),
+        ],
+        &[("undeclared-edge", "fx-ctl")],
     );
 }
 

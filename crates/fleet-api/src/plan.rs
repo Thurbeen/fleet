@@ -136,6 +136,20 @@ pub enum EffectOutcome {
         head: String,
         state: ChangeState,
     },
+    /// A thread is open on the platform, through the Gateway port: its
+    /// address, the id of the opening post and the platform's own time for
+    /// it.
+    Opened {
+        conversation: crate::gateway::ConversationRef,
+        message: String,
+        at: Millis,
+    },
+    /// A post landed in a thread, through the Gateway port: its id and the
+    /// platform's own time for it.
+    Posted {
+        message: String,
+        at: Millis,
+    },
     /// The adapter answered, and the answer is no.
     Failed {
         why: String,

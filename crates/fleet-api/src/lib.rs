@@ -33,6 +33,11 @@
 //! use fleet_plugin::StdioPlugins;
 //! ```
 //!
+//! ```compile_fail
+//! // ...or the gateway adapters.
+//! use fleet_gateway::FakeGateway;
+//! ```
+//!
 //! The positive control: the same shape of `use` compiles for this crate.
 //!
 //! ```
@@ -46,6 +51,7 @@ pub mod condition;
 pub mod config;
 pub mod follow;
 pub mod forge;
+pub mod gateway;
 pub mod inbox;
 pub mod kinds;
 pub mod meta;

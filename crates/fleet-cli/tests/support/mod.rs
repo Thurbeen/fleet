@@ -14,6 +14,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use fleet_forge::FakeForge;
+use fleet_gateway::FakeGateway;
 use fleet_runtime::{FakeHost, Fault};
 use serde_json::{Value, json};
 
@@ -22,6 +23,14 @@ const TIMEOUT: Duration = Duration::from_secs(60);
 
 /// The fake forge's host in a forge environment.
 pub const FORGE_HOST: &str = "forge.test";
+/// The fake gateway's account in a gateway environment, and the route over
+/// its channel.
+pub const GATEWAY_ACCOUNT: &str = "fake-main";
+pub const GATEWAY_ROUTE: &str = "eng";
+/// The route's channel, and the people on its allowlist, as platform ids.
+pub const GATEWAY_CHANNEL: &str = "C0123ABCD";
+pub const ALEX_ID: &str = "U0123ABCD";
+pub const SAM_ID: &str = "U0456EFGH";
 /// The hosts the stub forge CLIs answer for.
 pub const GITHUB_HOST: &str = "github.test";
 pub const GITLAB_HOST: &str = "gitlab.test";
@@ -199,6 +208,29 @@ impl Env {
             stub_dir.to_string_lossy().into_owned(),
         ));
         env
+    }
+
+    /// An environment with a `[gateway]` section beside the fake runtime:
+    /// one fake account, two people and one route, each path inside the
+    /// test's own directory. `gateway_section` is the text it appends.
+    pub fn gateway(name: &str) -> Env {
+        let env = Env::new(name);
+        let mut cfg = fs::read_to_string(&env.config).expect("config");
+        cfg.push_str(&gateway_section(&env.root));
+        fs::write(&env.config, cfg).expect("config");
+        env
+    }
+
+    /// Replace the config's `[gateway]` section with `section`.
+    pub fn set_gateway(&self, section: &str) {
+        let cfg = fs::read_to_string(&self.config).expect("config");
+        let head = cfg.split("\n[gateway]\n").next().expect("head").to_string();
+        fs::write(&self.config, format!("{head}{section}")).expect("config");
+    }
+
+    /// The fake gateway of a `gateway` environment.
+    pub fn fake_gateway(&self) -> FakeGateway {
+        FakeGateway::open(GATEWAY_ACCOUNT, &self.root.join("gateway")).expect("fake gateway")
     }
 
     /// The fake forge of a `forge` environment.
@@ -620,6 +652,21 @@ pub fn derived_name(kind: &str, host: &str, project: &str, id: &str) -> String {
         .map(|b| format!("{b:02x}"))
         .collect();
     format!("cr-{hex}")
+}
+
+/// The `[gateway]` section a gateway environment runs: a fake account under
+/// `root/gateway`, two people, and one route whose brief and workspace live
+/// under `root` too. A test edits the text to make each invalid case.
+pub fn gateway_section(root: &Path) -> String {
+    let root = root.to_string_lossy().replace('\\', "/");
+    format!(
+        "\n[gateway]\ncallTimeoutMs = 3000\nquestions = \"{GATEWAY_ROUTE}\"\n\n\
+[gateway.accounts.{GATEWAY_ACCOUNT}]\nplatform = \"fake\"\nbot = \"B0FLEET001\"\ninbound = \"connection\"\ndir = \"gateway\"\n\n\
+[gateway.people.alex]\n{GATEWAY_ACCOUNT} = \"{ALEX_ID}\"\n\n\
+[gateway.people.sam]\n{GATEWAY_ACCOUNT} = \"{SAM_ID}\"\n\n\
+[gateway.routes.{GATEWAY_ROUTE}]\naccount = \"{GATEWAY_ACCOUNT}\"\nchannels = [\"{GATEWAY_CHANNEL}\"]\nmention = \"required\"\nallow = [\"alex\", \"sam\"]\n\
+taskConfig = \"conversation\"\nbrief = \"{root}/briefs/conversation.md\"\nworkspace = {{ dir = \"{root}/work/conversations\" }}\n"
+    )
 }
 
 /// Unix milliseconds now, for bounds on `notBefore`.

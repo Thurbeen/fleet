@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use fleet_api::follow::ReadyPolicy;
+use fleet_api::gateway::GatewayConfig;
 use serde::Deserialize;
 
 /// The config schema version this build reads (P9).
@@ -28,6 +29,11 @@ pub struct Config {
     pub forge: Option<ForgeConfig>,
     #[serde(default)]
     pub plugins: BTreeMap<String, fleet_api::plugin::PluginConfig>,
+    /// The `[gateway]` section: chat accounts, people and routes. Its rules
+    /// are the API's ([`GatewayConfig::validate`]); the platform checks run
+    /// when the gateway opens.
+    #[serde(default)]
+    pub gateway: Option<GatewayConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -148,6 +154,16 @@ impl Config {
                 ));
             }
         }
+        if let Some(gateway) = config.gateway.as_mut() {
+            gateway
+                .validate()
+                .map_err(|e| format!("config {}: {e}", path.display()))?;
+            for account in gateway.accounts.values_mut() {
+                if let Some(d) = &account.dir {
+                    account.dir = Some(base.join(d));
+                }
+            }
+        }
         for (name, plugin) in &config.plugins {
             fleet_api::validate::validate_name(name).map_err(|e| e.to_string())?;
             if !Path::new(&plugin.program).is_absolute()
@@ -180,6 +196,7 @@ impl Config {
             starter: None,
             forge: None,
             plugins: BTreeMap::new(),
+            gateway: None,
         }
     }
 }

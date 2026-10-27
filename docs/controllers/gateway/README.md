@@ -1,8 +1,9 @@
 # Gateway controller
 
-Design, not implemented. The installed binary has no `[gateway]` key, port,
-crate or resource kind from this page. A `Conversation` manifest is
-refused today as an unknown kind.
+Design, not implemented. The installed binary has the `[gateway]` key, the
+Gateway port and the `fleet-gateway` crate with its fake adapter, from step
+1 below, but no resource kind, controller or verb from this page. A
+`Conversation` manifest is refused today as an unknown kind.
 
 The Gateway ties chat threads to Tasks:
 

@@ -8,6 +8,7 @@ use std::collections::BTreeSet;
 use fleet_api::change_request::{self, ChangeRequestSpec};
 use fleet_api::follow::{DECLARED_CHANGE_REQUEST, ForgeSpec, validate_declaration};
 use fleet_api::forge::{ChangeRef, Forge};
+use fleet_api::gateway::ConversationRef;
 use fleet_api::inbox::{CLI_SOURCE_PREFIX, InboxEntry, send_key};
 use fleet_api::meta::API_VERSION;
 use fleet_api::result::{TaskResult, validate_outputs};
@@ -132,6 +133,16 @@ pub fn derived_name(reference: &ChangeRef) -> String {
     let digest = Sha256::digest(reference.canonical().as_bytes());
     let hex: String = digest.iter().take(6).map(|b| format!("{b:02x}")).collect();
     format!("cr-{hex}")
+}
+
+/// `conv-` and the first twelve hex digits of the SHA-256 of
+/// `<account>/<address>`, the address as the adapter normalised it: one
+/// thread names one Conversation per account, and the account, not the
+/// address, carries the platform workspace.
+pub fn conversation_name(account: &str, conversation: &ConversationRef) -> String {
+    let digest = Sha256::digest(conversation.canonical(account).as_bytes());
+    let hex: String = digest.iter().take(6).map(|b| format!("{b:02x}")).collect();
+    format!("conv-{hex}")
 }
 
 /// Start mirroring a change. The URL is parsed by the forge adapter for its
@@ -560,4 +571,49 @@ pub fn record_result(
         "{}/{name}: kept conflicting with other writers",
         task::KIND
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_conversation_is_named_from_its_account_and_normalised_address() {
+        let thread = ConversationRef::split("slack:C0123ABCD:1730000000.000100").unwrap();
+        let name = conversation_name("slack-main", &thread);
+        assert!(name.starts_with("conv-") && name.len() == 5 + 12, "{name}");
+        assert!(name[5..].chars().all(|c| c.is_ascii_hexdigit()));
+        assert_eq!(
+            name,
+            conversation_name("slack-main", &thread),
+            "deterministic"
+        );
+        assert_ne!(
+            name,
+            conversation_name("slack-other", &thread),
+            "per account"
+        );
+        assert_ne!(
+            name,
+            conversation_name("slack-main", &thread.channel()),
+            "per thread"
+        );
+        // The canonical string is `<account>/<address>`, and the hash is of exactly that.
+        use sha2::{Digest, Sha256};
+        let hex: String = Sha256::digest(b"slack-main/slack:C0123ABCD:1730000000.000100")
+            .iter()
+            .take(6)
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        assert_eq!(name, format!("conv-{hex}"));
+        assert_ne!(
+            name,
+            derived_name(&ChangeRef {
+                kind: "github".into(),
+                host: "h".into(),
+                project: "p".into(),
+                id: "1".into()
+            })
+        );
+    }
 }
