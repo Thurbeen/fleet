@@ -55,6 +55,11 @@ of the operator. Do not invent these files if they are absent.
 
 ## Writing specs
 
+A design document describes the flows, the APIs and the behaviour that a
+user, an adapter author or another component can observe. It states each
+guarantee as a rule. It does not describe the algorithm that keeps the
+guarantee; the code and its tests own that.
+
 Write design and interface documents in the style of ASD-STE100 Simplified
 Technical English. Follow its writing rules, not its controlled vocabulary:
 
