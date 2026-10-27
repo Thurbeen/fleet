@@ -28,13 +28,13 @@ it, and removed by its own controller after a retention period.
     "task": {"name": "conv-3f9a1c0d2b7e-1", "uid": "…", "n": 1, "state": "created"},
     "revision": 2,
     "messages": [
-      {"id": "1730000000.000100", "seq": 1, "at": 1730000000000,
+      {"id": "1730000000.000100", "seq": 1, "firstSeq": 1, "at": 1730000000000,
        "author": {"id": "U0123ABCD", "name": "Alex", "kind": "person"},
        "mentionsFleet": false, "text": "The nightly export failed again."},
-      {"id": "1730000300.000200", "seq": 1, "at": 1730000300000,
+      {"id": "1730000300.000200", "seq": 1, "firstSeq": 1, "at": 1730000300000,
        "author": {"id": "U0456EFGH", "name": "Sam", "kind": "person"},
        "mentionsFleet": true, "text": "<@U0BOT0001> can you look into it?"},
-      {"id": "1730000400.000300", "seq": 2, "at": 1730000400000,
+      {"id": "1730000400.000300", "seq": 2, "firstSeq": 2, "at": 1730000400000,
        "author": {"id": "U0BOT0001", "name": "fleet", "kind": "fleet"},
        "key": "task/conv-3f9a1c0d2b7e-1/…/gateway/comment/c1",
        "text": "Looking at the export job now."}

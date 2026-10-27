@@ -106,7 +106,7 @@ pass, or, where there is no history, retains until its retention passes.
 After an `Opened` answer, before writing the receipt, the manager does the
 same, as `gateway-controller`: it ensures the new thread's Conversation and
 appends Fleet's opening post to its spool, keyed `open/<message id>`.
-Whichever arrives first, the listener's copy of that post or the manager's,
+Whichever arrives first, the listener's keyed copy of that post or the manager's,
 creates the Conversation; the other is a duplicate message and changes
 nothing.
 
@@ -152,13 +152,16 @@ sees both a Question marker and an `Admitted` mention, the thread is tied to
 the marker's Task, no Task is created, and the mention is relayed to it.
 When the marker's Task is Unknown that pass, nothing is created and the
 pass waits; only when it is readably absent may the mention start a Task.
-A thread whose first message is a Fleet post without a key, the listener's
-copy of an opening post on a platform that delivers Fleet's own posts,
-never starts a Task from a mention: Fleet started that thread for some
-Task, and the tie comes from the manager's keyed copy. If that copy never
-arrives (the manager crashed on a platform with no marker, which the
-opening Task reports as `PostUnconfirmed`), the thread stays Untied until a
-person acts; no timer turns it into an ordinary thread.
+A thread whose starter message is a Fleet post without a key never starts a
+Task from a mention: Fleet started that thread for some Task, and the tie
+comes from the keyed copy. The starter is the thread's first message, which
+the adapter reads with the thread (Slack's parent, Discord's starter
+message), so it is known even when older replies were dropped; in a chat
+without threads the rule does not apply. If the keyed copy never arrives,
+because the marker was lost or recovery could not use it and the opening
+Task reports `PostUnconfirmed`, the thread is deliberately dead to
+mentions: Fleet does not guess which Task it belongs to, and the person
+re-asks in a new thread.
 
 ### Requested probes
 
@@ -194,6 +197,12 @@ they change in these ways, each with its architecture rule:
   and `Probe::GatewayWhoami { account }`, answered through the Gateway port
   (the existing `Whoami { host }` stays the Forge port's).
 - The actions `Open` and `Post`, performed through the Gateway port.
+- `Plan.ensures`, carried by GatewayController alone: the Conversation to
+  ensure and the opening post to spool, `{account, address, route, post}`,
+  when its plan records an `Opened` receipt recovered from channel history.
+  The manager performs it before the status write that holds the receipt,
+  as it does on the direct path, so it acts on the plan, not on a probe
+  answer.
 
 The kind name `Conversation` is reserved for this design: a plugin manifest
 claiming it would be refused once the kind is built in, as one claiming
@@ -286,7 +295,7 @@ sweep, not one per Task.
 | `children` | Per child Task name, `{uid, seen, declared, result}`: the child's `uid` on first sight, the `resourceVersion` last read, and its own cursors. |
 | `posts` | Per intent key, `{intent, receipt, attempts}`: the post effects, apart from TaskController's records. Newest 100 settled, every unsettled. |
 | `posted` | Every Question, Comment and Draft id posted, by kind, for the life of the Task, so an id reused later is never posted again after its record in `posts` rotated out. Bounded by the declarations a Task may hold. |
-| `questions` | Per Question id, `{key, conversation, message, at}` once posted: the platform message id and time from the post's receipt, so answers are ordered on the platform's own clock and need no marker. |
+| `questions` | Per Question id, `{key, conversation, message, at, firstSeq, position}` once posted, the last two filled in when the mirror first numbers the post and kept after it rotates out: the platform message id and time from the post's receipt, so answers are ordered on the platform's own clock and need no marker. |
 | `gaps` | How many times a relay, past the join, found `droppedBefore` above the cursor. |
 | `conditions` | `Tied`, `NeedsAttention`. |
 
@@ -343,8 +352,12 @@ platform's clock, after a posted, unanswered Question's `at` carries
 Question counts when the platform's own message order puts it after the
 post (Slack's full `ts`, Telegram's increasing `message_id`, a Discord
 snowflake), and else when it was first numbered after the post: each
-message keeps `firstSeq`, the revision that first numbered it, which an
-edit never moves.
+message keeps `firstSeq`, the revision that first numbered it, and its
+position in that numbering, which is oldest-first by the platform; an edit
+moves neither. On a platform with neither sub-second time nor message
+order, a message in the same second as the Question is therefore counted
+only when Fleet first saw it after the post, which is the best Fleet can
+tell.
 
 The join and every relay are bounded: an entry renders at most 64 KiB of
 messages, newest kept, and says how many older ones it left out and that
@@ -452,7 +465,7 @@ unlisted bot gets none.
 | Writer | May change | Required fencing |
 | --- | --- | --- |
 | `listener/<account>`, through `fleet gateway receive` | Creates a Conversation; appends to its `status.received` | Exclusive creation; current resourceVersion. No lease. |
-| The manager after an `Opened` answer, before its receipt, as `gateway-controller` | Creates the new thread's Conversation; appends the opening post to its `status.received`, through the same `receive_event` | Exclusive creation; current resourceVersion; the live lease. |
+| The manager after an `Opened` answer, before its receipt, or performing a plan's `ensures` for a recovered one, as `gateway-controller` | Creates the new thread's Conversation; appends the opening post to its `status.received`, through the same `receive_event` | Exclusive creation; current resourceVersion; the live lease. |
 | `conversation-controller` | All of Conversation status but `received`; drains `received`; creates conversation Tasks; deletes its own object | Current resourceVersion and the live lease. |
 | `gateway-controller` | All of `status.gateway`; appends to `status.inbox`, recording `status.answered` | Current resourceVersion and the live lease. |
 | `apply` | Creates a Conversation by manifest, refused unless its name is the one derived from its account and address; requests deletion | Store validation, exclusive creation. |

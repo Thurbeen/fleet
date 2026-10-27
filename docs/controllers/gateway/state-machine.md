@@ -14,12 +14,12 @@ effects and keys used here.
 | Phase | Observation or input | Next phase | Decision |
 | --- | --- | --- | --- |
 | none | `fleet gateway receive` for an address with no Conversation, with an event that could start a Task or earn a refusal | Untied | Create it exclusively by derived name, append the event to the spool. Any other event in an unmirrored thread creates nothing. |
-| none | An `Opened` answer for a Task's Question, before its receipt, or the listener's copy of that opening post | Untied | Create it exclusively by derived name and spool the opening post; whichever comes second is a duplicate message. |
+| none | An `Opened` answer for a Task's Question, before its receipt, or the listener's keyed copy of that opening post | Untied | Create it exclusively by derived name and spool the opening post; whichever comes second is a duplicate message. |
 | Untied | A spooled Fleet post whose marker is a Question key naming a Task Known with that `uid` | Tied | The tie is that Task, `n = 1`, `state: created`. No Task is created, even for an `Admitted` mention in the same pass, which is relayed to that Task. |
 | Untied | The same, the named Task Unknown | Untied | Wait; create nothing. Readable absence lets a mention start a Task as below. |
-| Untied | The first message is a Fleet post without a key | Untied | Create no Task from any mention; wait for the keyed copy, or for a person. |
+| Untied | The thread's starter is a Fleet post without a key | Untied | Create no Task from any mention; wait for the keyed copy. If it never comes, the thread is dead to mentions and a person re-asks in a new thread. |
 | Untied | First pass, no `revision` | Untied | Ask `History` from the beginning; number every message and the spool in one write. |
-| Untied | An `Admitted` message meeting the route's mention rule, in a thread whose first message is not a keyless Fleet post | Untied, then Tied | Write the tie's intent, `task = {name, n, state: pending}`, and create the Task under `conversation/<uid>/task/<n>`; the receipt writes its `uid` and the phase. |
+| Untied | An `Admitted` message meeting the route's mention rule, in a thread whose starter is not a keyless Fleet post | Untied, then Tied | Write the tie's intent, `task = {name, n, state: pending}`, and create the Task under `conversation/<uid>/task/<n>`; the receipt writes its `uid` and the phase. |
 | Untied | A `Context` message that mentions Fleet | Untied | One refusal per author, under its refusal key. |
 | Untied | Nothing for `gateway.retainMs` since the last message | deleted | Plan `delete`, fenced on `uid` and `resourceVersion`. |
 | Tied | The tied Task Known with the same `uid` | Tied | Number spooled events; where the account has history, ask `History` for the backstop every `pollMs`, but only while the thread had a message within `gateway.activeMs` (one day by default): the listener is the primary path, and an idle thread costs no platform call. |
@@ -47,6 +47,7 @@ then `NeedsAttention/TaskCreateFailed`.
 | none | A `Question` declared, no tie, no live parent | Opening | Write the `Open` intent under the Question's key; perform `Open`. |
 | Opening | `Opened` receipt, or an Unknown one recovered from the channel's history | Waiting | Record the new Conversation's name; the manager has ensured it and spooled the post. The Conversation ties itself from the post's marker. |
 | Opening | Failed | Opening | Retry under the same key after `RETRY_DELAY_MS`, at most three attempts, then `NeedsAttention/PostFailed` and back to none. |
+| Opening | A channel recovery read stays Unknown (`Incomplete`) past three attempts | Opening | `NeedsAttention/RecoveryIncomplete`; reading continues, nothing is opened again. |
 | Opening | Unknown, and the channel has no history or no marker | Opening | `NeedsAttention/PostUnconfirmed`; nothing is opened again until a person acts. |
 | none | A `Comment`, `Draft`, change or result | none | Read and skipped: the declared cursor advances past it. |
 | Tied | New messages above the cursor | Tied | [Relay](#relay). |
@@ -83,7 +84,7 @@ else:
              about: {uid: conv uid, revision: conv.revision},
              answers: open Questions posted here that a message in new follows:
                       a later platform time, or the same time and later by
-                      platform order, else by firstSeq }
+                      platform order, else by first numbering }
     cursor = conv.revision
 ```
 
@@ -140,7 +141,7 @@ Under `status.gateway.conditions` on a Task, written by GatewayController:
 | Type | True means / relevant reason |
 | --- | --- |
 | Tied | The Task is tied to a Conversation it verified. |
-| NeedsAttention | `RelayGap`, `ConversationGone`, `PostFailed` (three refused attempts on one key, the refusal quoted), `PostUnconfirmed` (an Unknown outcome on a platform with no marker), `DeclarationInvalid` (a Question, Comment or Draft without an `id`), `TooManyChildren` (more than 200 children), `RouteUnknown`. |
+| NeedsAttention | `RelayGap`, `ConversationGone`, `PostFailed` (three refused attempts on one key, the refusal quoted), `PostUnconfirmed` (an Unknown outcome on a platform with no marker), `DeclarationInvalid` (a Question, Comment or Draft without an `id`), `TooManyChildren` (more than 200 children), `RecoveryIncomplete` (a channel read for an Unknown open stayed incomplete), `RouteUnknown`. |
 
 NeedsAttention stops nothing else: relay continues while one post waits,
 and one conversation's held post holds back no other conversation's.
