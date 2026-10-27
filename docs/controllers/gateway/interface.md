@@ -42,7 +42,7 @@ Unknown; a refused write is `Known(EffectOutcome::Failed { why })`.
 | `event` | An account's configuration, including Fleet's bot id on it (`gateway.accounts.<name>.bot`), and a raw payload, as the listener received it | `Known(Some(Event))`, `Known(None)` for a payload the gateway ignores (a reaction, a presence change), or Unknown when it cannot be read. Pure: everything it needs, the bot id that tells `fleet` authors and mentions apart included, arrives as values, so the receive verb runs it without the lease. |
 | `whoami` | An account | Fleet's bot identity as the platform reports it. ConversationController compares it with the configured `bot` and raises `NeedsAttention/IdentityMismatch` when they differ, rather than trusting either silently. |
 | `capabilities` | An account | What the platform gives Fleet there, as values: `history` (bool), `marker` (`metadata`, `nonce { windowMs }` or `none`), `unmentioned` (whether messages that do not mention the bot are delivered), `threads` (whether the platform has threads in that kind of chat). Unknown when it cannot be told. The [adapters](adapters.md#what-the-platforms-changed) say why each exists. |
-| `history` | A `ConversationRef` (a thread, or a channel for a top-level read), an optional `after` message id or `since` time, a `limit` | The messages after `after`, oldest first, at most `limit` (the newest ones when more exist, with a count of those left out), complete within that window or Unknown with `retryAfter`; `Unsupported` where the platform has no history for bots. Fleet's own posts carry their marker key when the platform keeps one. The first read of a thread asks for the newest 200; older messages are recorded as `droppedBefore`, never mirrored. |
+| `history` | A `ConversationRef` (a thread, or a channel for a top-level read), an optional `after` message id or `since` time, a `limit` | The messages after `after`, or written at or after `since`, oldest first. A read with `after` returns at most `limit`, the newest ones when more exist, with a count of those left out. A read with `since`, which recovery uses, is complete only when it left nothing out: it pages oldest-first from `since` within the call bound, and answers Unknown (`Incomplete`) rather than a window when it cannot read everything, so a missing key in a Known answer always means the post is absent. Otherwise Unknown with `retryAfter`; `Unsupported` where the platform has no history for bots. Fleet's own posts carry their marker key when the platform keeps one. The first read of a thread asks for the newest 200; older messages are recorded as `droppedBefore`, never mirrored. |
 | `open` | A channel `ConversationRef`, rendered text, an intent key | `Opened { conversation, message, at }`: a new thread whose first post is the text, carrying the key as its marker. Failed when refused; Unknown when the answer was lost. Where opening takes two platform calls, the adapter keys both from the one intent key and finishes a half-done open on a retry. |
 | `post` | A `ConversationRef`, rendered text, an intent key | `Posted { message, at }`, carrying the key as its marker; `at` is the platform's own time for the post (Slack's `ts`, Telegram's `date`, Discord's `timestamp`, Teams' activity time). Failed when refused; Unknown when the answer was lost. |
 
@@ -152,11 +152,13 @@ sees both a Question marker and an `Admitted` mention, the thread is tied to
 the marker's Task, no Task is created, and the mention is relayed to it.
 When the marker's Task is Unknown that pass, nothing is created and the
 pass waits; only when it is readably absent may the mention start a Task.
-A Fleet post without a key, the listener's copy of an opening post on a
-platform that delivers Fleet's own posts, also holds back Task creation in
-a thread Fleet started until the manager's keyed copy is numbered or
-`RETRY_DELAY_MS` passes, so the narrow race between the two copies cannot
-start a second Task.
+A thread whose first message is a Fleet post without a key, the listener's
+copy of an opening post on a platform that delivers Fleet's own posts,
+never starts a Task from a mention: Fleet started that thread for some
+Task, and the tie comes from the manager's keyed copy. If that copy never
+arrives (the manager crashed on a platform with no marker, which the
+opening Task reports as `PostUnconfirmed`), the thread stays Untied until a
+person acts; no timer turns it into an ordinary thread.
 
 ### Requested probes
 
@@ -164,8 +166,8 @@ start a second Task.
 | --- | --- |
 | No `revision` yet, or a backstop due | `History { conversation, after }`, `after` absent on the first pass. |
 | A tie recorded, or a Question marker naming a Task | `Object { kind: Task, name }`, to see whether that Task exists with its `uid`. |
-| A pass that will call the platform (the first read, the backstop, or a recovery), at most once per account per sweep | `Capabilities { account }` and `GatewayWhoami { account }`, cached by the manager for the sweep. An idle pass asks neither. |
-| A refusal's intent without a receipt | `History { conversation, since }` from before the intent, to look for the key. |
+| A pass that will call the platform (the first read, the backstop, a recovery read or a refusal post), at most once per account per sweep | `Capabilities { account }` and `GatewayWhoami { account }`, cached by the manager for the sweep. An idle pass asks neither and keeps the `MentionsOnly` and `IdentityMismatch` reasons it last had: a probe not asked is never read as absence. |
+| A refusal's intent without a settled receipt, `RETRY_DELAY_MS` after it | `History { conversation, since }` from before the intent, to look for the key. |
 | Settled into deletion, or deleting | None. |
 
 ### Returned plan
@@ -340,7 +342,9 @@ platform's clock, after a posted, unanswered Question's `at` carries
 `answers` with those Question ids. A message with the same `at` as the
 Question counts when the platform's own message order puts it after the
 post (Slack's full `ts`, Telegram's increasing `message_id`, a Discord
-snowflake), and else by its Fleet `seq`.
+snowflake), and else when it was first numbered after the post: each
+message keeps `firstSeq`, the revision that first numbered it, which an
+edit never moves.
 
 The join and every relay are bounded: an entry renders at most 64 KiB of
 messages, newest kept, and says how many older ones it left out and that
@@ -401,10 +405,12 @@ and the conversation's later posts wait for a person.
 
 An Unknown `open` has no thread to read yet. It is answered by a complete
 `history` read of the channel, from before the intent: a top-level message
-by Fleet carrying the key is the opened thread, recovered with its address;
-the manager ensures its Conversation and spools the post when that answer
-arrives, before the controller's status write records the recovered
-receipt, so no receipt ever names a Conversation that was not ensured. Where
+by Fleet carrying the key is the opened thread, recovered with its address.
+GatewayController decides that: its plan carries the recovered `Opened`
+receipt, and the manager, applying the plan, ensures the Conversation and
+spools the post before it writes the status holding that receipt, the same
+order as on the direct `Opened` path. No receipt ever names a Conversation
+that was not ensured, and the manager interprets no probe answer itself. Where
 opening takes two calls, a recovered starter message without its thread is
 finished by retrying `open` under the same key, which the adapter completes
 rather than starting again. Without channel history or a marker, an Unknown

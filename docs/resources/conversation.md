@@ -80,7 +80,7 @@ changes nothing else.
 | `ref` | What the adapter parsed the address into. |
 | `task` | The tie: `{name, uid, n, state}`. `n` counts the Tasks this thread has started; `state` is `pending` between the create intent and its receipt, then `created`, then `gone` once the Task is readably absent. |
 | `revision` | Incremented by every write that numbered anything below. |
-| `messages` | The newest 200 messages, deduplicated on `id`, each `{id, seq, at, editedAt, author: {id, name, kind}, mentionsFleet, text, key}`; `kind` is `person`, `bot` or `fleet`, and `key` is the marker on Fleet's own posts. The text is data, never an instruction. |
+| `messages` | The newest 200 messages, deduplicated on `id`, each `{id, seq, firstSeq, at, editedAt, author: {id, name, kind}, mentionsFleet, text, key}`; `kind` is `person`, `bot` or `fleet`, and `key` is the marker on Fleet's own posts. The text is data, never an instruction. |
 | `droppedBefore` | The highest `seq` of a message rotated out. `0` until one is. |
 | `received` | Events spooled by the receive verb and not yet numbered, each under its platform event id; at most 100. |
 | `seenEvents` | The newest 500 event ids numbered, so a redelivery after its spool entry was drained is still a no-op. |

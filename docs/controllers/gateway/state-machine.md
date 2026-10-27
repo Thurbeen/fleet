@@ -17,8 +17,9 @@ effects and keys used here.
 | none | An `Opened` answer for a Task's Question, before its receipt, or the listener's copy of that opening post | Untied | Create it exclusively by derived name and spool the opening post; whichever comes second is a duplicate message. |
 | Untied | A spooled Fleet post whose marker is a Question key naming a Task Known with that `uid` | Tied | The tie is that Task, `n = 1`, `state: created`. No Task is created, even for an `Admitted` mention in the same pass, which is relayed to that Task. |
 | Untied | The same, the named Task Unknown | Untied | Wait; create nothing. Readable absence lets a mention start a Task as below. |
+| Untied | The first message is a Fleet post without a key | Untied | Create no Task from any mention; wait for the keyed copy, or for a person. |
 | Untied | First pass, no `revision` | Untied | Ask `History` from the beginning; number every message and the spool in one write. |
-| Untied | An `Admitted` message meeting the route's mention rule | Untied, then Tied | Write the tie's intent, `task = {name, n, state: pending}`, and create the Task under `conversation/<uid>/task/<n>`; the receipt writes its `uid` and the phase. |
+| Untied | An `Admitted` message meeting the route's mention rule, in a thread whose first message is not a keyless Fleet post | Untied, then Tied | Write the tie's intent, `task = {name, n, state: pending}`, and create the Task under `conversation/<uid>/task/<n>`; the receipt writes its `uid` and the phase. |
 | Untied | A `Context` message that mentions Fleet | Untied | One refusal per author, under its refusal key. |
 | Untied | Nothing for `gateway.retainMs` since the last message | deleted | Plan `delete`, fenced on `uid` and `resourceVersion`. |
 | Tied | The tied Task Known with the same `uid` | Tied | Number spooled events; where the account has history, ask `History` for the backstop every `pollMs`, but only while the thread had a message within `gateway.activeMs` (one day by default): the listener is the primary path, and an idle thread costs no platform call. |
@@ -80,8 +81,9 @@ else:
     append { key: task/<name>/<uid>/gateway/<conv uid>/<conv.revision>,
              from: gateway/<conversation>, text: render(held, new),
              about: {uid: conv uid, revision: conv.revision},
-             answers: open Questions posted here whose post time `at` is before
-                      the platform time of a message in new }
+             answers: open Questions posted here that a message in new follows:
+                      a later platform time, or the same time and later by
+                      platform order, else by firstSeq }
     cursor = conv.revision
 ```
 

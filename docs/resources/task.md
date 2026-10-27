@@ -77,7 +77,7 @@ typed mutations described under [Inbox](#inbox).
 | `declared` | The worker's, through `fleet declare`: facts it declared, each a JSON object with a required string `kind` and nothing else validated. See [Following declared changes](#following-declared-changes). |
 | `forge` | The Forge controller's: one entry per declared change, keyed by ChangeRequest name, with its `uid`, `state`, `cursor`, `gaps`, mark-ready record and `notBefore`, plus that controller's conditions. Absent for a Task that declared nothing. |
 | `gateway` | Design, not implemented: the [Gateway controller](../controllers/gateway/README.md)'s tie to a chat conversation, relay cursor, post records and children. See [Talking in a conversation](#talking-in-a-conversation). |
-| `answered` | Design, not implemented: per Question id, which inbox entry answered it. No owner; written only by an inbox append carrying `answers`. |
+| `answered` | Design, not implemented: per Question id, `{key, from, at}`: the inbox entry that answered it, its source and when. No owner; written only by an inbox append carrying `answers`. |
 
 ## Metadata and ownership
 
