@@ -47,18 +47,21 @@ atomic verbs. `e2e_plugin_controller` and `plugin_gate` exercise the host.
 SDKs and issue-specific plugins remain separate projects.
 
 The [Gateway controller](../docs/controllers/gateway/README.md) is a design
-and serves nothing yet: `Conversation` and `Listener` are refused as unknown kinds,
-`[gateway]` as an unknown config field, and no `fleet gateway` verb exists.
-As designed it adds a `Gateway` port in `fleet-api`, adapters in a
-`fleet-gateway` crate depending on `fleet-api` and `fleet-exec` only,
-`ConversationController`, `ListenerController` and `GatewayController`
-field managers, a `listener/<account>` appender to the Conversation spool
-and writer of its Listener's beat (and the manager appending Fleet's opening
-post to the spool through a keyed `Receive` action of GatewayController's
-plan), a `gateway/`
-inbox source, and `status.answered`, written only by an inbox append that
-carries `answers`. None of these guarantees hold until implemented with
-their tests.
+whose first step is built: the `Gateway` port in `fleet_api::gateway`, with
+the `[gateway]` section's types, its validation and the pure admission
+function; the `fleet-gateway` adapter crate, depending on `fleet-api` and
+`fleet-exec` only, with a file-backed fake that models every `capabilities`
+combination; and the `[gateway]` config, loaded and validated by the CLI,
+whose accounts are opened before a manager run so the lease outlasts the
+port's worst case. `Conversation` and `Listener` are still refused as
+unknown kinds, and no `fleet gateway` verb exists. As designed, the later
+steps add `ConversationController`, `ListenerController` and
+`GatewayController` field managers, a `listener/<account>` appender to the
+Conversation spool and writer of its Listener's beat (and the manager
+appending Fleet's opening post to the spool through a keyed `Receive`
+action of GatewayController's plan), a `gateway/` inbox source, and
+`status.answered`, written only by an inbox append that carries `answers`.
+None of those guarantees hold until implemented with their tests.
 
 ## Crates and the allowed graph
 
@@ -69,10 +72,11 @@ fleet-exec         adapter        the one process spawner
 fleet-store        adapter        file store             -> api
 fleet-runtime      adapter        thurbox-cli, fake      -> api, exec
 fleet-forge        adapter        az, curl, gh, glab, fake -> api, exec
+fleet-gateway      adapter        the fake chat platform -> api, exec
 fleet-plugin       adapter        bounded plugin stdio   -> api, exec
 fleet-manager      orchestration  lease, plans, verbs    -> api, controllers
 fleet-cli          edge           the `fleet` binary     -> api, manager, store,
-runtime, forge, plugin
+runtime, forge, gateway, plugin
 fleet-arch         tooling        the architecture test
 fleet-dev          tooling        `cargo xtask`: gate and release
 ```
@@ -106,6 +110,11 @@ fleet-dev          tooling        `cargo xtask`: gate and release
 - The Forge port itself, which carries the one forge write, is held only by
   fleet-api, fleet-forge, fleet-manager and fleet-cli: no other adapter and
   no controller can reach `mark_ready`.
+- fleet-gateway, likewise, depends on nothing above the API and the spawner
+  and is depended on by the CLI alone, and the Gateway port, which carries
+  the chat writes `open` and `post`, is held only by fleet-api,
+  fleet-gateway, fleet-manager and fleet-cli. The CLI may not call the
+  port's `history`, `capabilities` or `post`.
 
 Each rule has a negative fixture that breaks it, and the test requires the
 checker to report exactly that rule. The pure crates also carry
@@ -440,6 +449,35 @@ Credentials stay with each external client's own configuration; Fleet passes
 none and stores none. Bitbucket Cloud uses curl configuration or netrc rather
 than assuming an official provider CLI.
 
+## Gateway contract
+
+`fleet_api::gateway::Gateway`: `operation_bound`, `parse`, `event`,
+`whoami`, `capabilities`, `history`, `open` and `post`, each answering
+Known or Unknown; a refused write is `Known(EffectOutcome::Failed)`, and
+`open` and `post` answer `Opened { conversation, message, at }` and
+`Posted { message, at }` with the platform's own time. `history` answers a
+complete `History` with its `starter`, `Unsupported` where bots cannot read
+history, or Unknown with an `Uncertainty` and an optional `retryAfter`.
+An address is `<platform>:<chat>[:<thread>]`, a Conversation is named
+`conv-<12 hex of sha256(<account>/<address>)>` (`fleet_manager::conversation_name`),
+and `admit` sorts a message into `Own`, `Admitted` or `Context` from a
+route and the people table. The `[gateway]` section is validated at load
+as the [config page](../docs/configuration/fleet-toml.md#the-gateway-section)
+states, a route directory that equals, contains or lies inside another's
+included; a platform this build lacks, an `inbound` its listener cannot
+deliver by, or a fake without a dir is refused when the gateway opens.
+Adapters live in `fleet-gateway`, one per `[gateway.accounts]` entry:
+
+- **fake:** a file-backed platform for tests and trials, with injectable
+  faults (`lost`, `timeout`, `throttle` with `retryAfter`, `incomplete`,
+  `malformed`; for `open` and `post` `failed`, `lost` and `lost-applied`)
+  and settable `capabilities`: history on or off, a `metadata`, `nonce` or
+  `none` marker, `unmentioned` and `threads`. It runs no process and
+  records every post it landed, in order.
+
+`listener_account` is what a listener starts from, with its digest over the
+account's name, platform, team, bot and inbound method.
+
 ## The command line
 
 `fleet
@@ -531,6 +569,7 @@ both the fake host and the stub; `e2e_forge_controller` covers `fleet declare`,
 the join and the relay against the fake forge and the fake host.
 `e2e_mark_ready` covers the mark-ready effect against the fake forge and
 the fake host, and through the stub `az`, `curl`, `gh` and `glab`.
+`e2e_gateway` covers the `[gateway]` section against the fake gateway.
 `task_controller`, `change_request_controller` and `forge_controller` test
 each controller as a pure function, one transition or Unknown per case.
 `store_contract` tests the store against races, torn writes, stale leases

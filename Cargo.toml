@@ -21,6 +21,7 @@ fleet-runtime = { path = "crates/fleet-runtime" }
 fleet-manager = { path = "crates/fleet-manager" }
 fleet-exec = { path = "crates/fleet-exec" }
 fleet-forge = { path = "crates/fleet-forge" }
+fleet-gateway = { path = "crates/fleet-gateway" }
 clap = { version = "4.6.7", features = ["derive"] }
 process-wrap = { version = "10.0.1", default-features = false, features = ["std", "process-group", "job-object", "kill-on-drop"] }
 proc-macro2 = { version = "1.0.107", features = ["span-locations"] }

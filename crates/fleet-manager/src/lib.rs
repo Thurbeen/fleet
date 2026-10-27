@@ -44,8 +44,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub use verbs::{
-    ApplyOutcome, DeclareOutcome, Declared, ResultOutcome, apply, apply_change_request, declare,
-    declare_change_request, delete, derived_name, record_result, send,
+    ApplyOutcome, DeclareOutcome, Declared, ResultOutcome, apply, apply_change_request,
+    conversation_name, declare, declare_change_request, delete, derived_name, record_result, send,
 };
 
 /// How a bounded reconcile run ends.

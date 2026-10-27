@@ -39,6 +39,11 @@
 //! use fleet_plugin::StdioPlugins;
 //! ```
 //!
+//! ```compile_fail
+//! // ...nor a gateway adapter.
+//! use fleet_gateway::FakeGateway;
+//! ```
+//!
 //! The positive control: the port types it decides over are in scope.
 //!
 //! ```

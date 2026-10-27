@@ -417,6 +417,7 @@ dependencies = [
  "ctrlc",
  "fleet-api",
  "fleet-forge",
+ "fleet-gateway",
  "fleet-manager",
  "fleet-plugin",
  "fleet-runtime",
@@ -467,6 +468,16 @@ dependencies = [
  "fleet-exec",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "fleet-gateway"
+version = "2.1.0"
+dependencies = [
+ "fleet-api",
+ "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]

@@ -10,21 +10,22 @@
 #   fleet-store          adapter                   -> api
 #   fleet-runtime        adapter                   -> api, exec
 #   fleet-forge          adapter                   -> api, exec
+#   fleet-gateway        adapter                   -> api, exec
 #   fleet-manager        orchestration             -> api, controllers
-#   fleet-cli            edge   parse, wire, print -> api, manager, store, runtime, forge
+#   fleet-cli            edge   parse, wire, print -> api, manager, store, runtime, forge, gateway
 #   fleet-arch, fleet-dev  tooling
 
 [crates.fleet-api]
 role = "pure"
 deps = []
 external = ["serde", "serde_json", "thiserror"]
-probes = ["fleet-store", "fleet-controllers", "fleet-exec", "fleet-runtime", "fleet-forge", "fleet-plugin"]
+probes = ["fleet-store", "fleet-controllers", "fleet-exec", "fleet-runtime", "fleet-forge", "fleet-plugin", "fleet-gateway"]
 
 [crates.fleet-controllers]
 role = "pure"
 deps = ["fleet-api"]
 external = ["serde_json"]
-probes = ["fleet-store", "fleet-runtime", "fleet-forge", "fleet-plugin", "fleet-manager", "fleet-exec"]
+probes = ["fleet-store", "fleet-runtime", "fleet-forge", "fleet-plugin", "fleet-manager", "fleet-exec", "fleet-gateway"]
 
 # The only crate that starts a process: bounded, its whole tree killed past
 # the bound.
@@ -47,6 +48,13 @@ deps = ["fleet-api", "fleet-exec"]
 role = "adapter"
 deps = ["fleet-api", "fleet-exec"]
 
+# The only crate that will know a chat platform's client exists: every
+# platform call is one bounded process through fleet-exec, the fake runs
+# none, and no platform name appears above the Gateway port.
+[crates.fleet-gateway]
+role = "adapter"
+deps = ["fleet-api", "fleet-exec"]
+
 [crates.fleet-plugin]
 role = "adapter"
 deps = ["fleet-api", "fleet-exec"]
@@ -57,13 +65,14 @@ deps = ["fleet-api", "fleet-controllers"]
 
 [crates.fleet-cli]
 role = "edge"
-deps = ["fleet-api", "fleet-manager", "fleet-runtime", "fleet-store", "fleet-forge", "fleet-plugin"]
+deps = ["fleet-api", "fleet-manager", "fleet-runtime", "fleet-store", "fleet-forge", "fleet-plugin", "fleet-gateway"]
 # Every write is the manager's: the CLI parses, calls a verb, and prints.
 forbidden_methods = [
   "create", "update_spec", "update_status", "append_inbox", "record_delivery",
   "record_relay", "remove_finalizer", "delete", "delete_fenced", "acquire_lease",
   "renew_lease", "release_lease", "reconcile", "probes", "spawn", "release",
   "change", "mark_ready", "whoami", "call", "admit", "plugin_mutate",
+  "history", "capabilities", "post",
 ]
 
 [crates.fleet-arch]
@@ -131,6 +140,16 @@ why = "a second way to start a process would bypass fleet-exec's bounds"
 path = "fleet_api::forge::Forge"
 allowed = ["fleet-api", "fleet-manager", "fleet-forge", "fleet-cli"]
 why = "only the manager performs the mark-ready effect, through the port the CLI wired"
+
+# The Gateway port carries Fleet's chat writes, `open` and `post`. As the
+# Forge port, it is defined by the API, implemented by fleet-gateway, wired
+# by the CLI and performed by the manager alone, after the intent is written
+# and the lease renewed: no other adapter and no controller holds a handle
+# that could post in a thread.
+[[restricted]]
+path = "fleet_api::gateway::Gateway"
+allowed = ["fleet-api", "fleet-manager", "fleet-gateway", "fleet-cli"]
+why = "only the manager performs the open and post effects, through the port the CLI wired"
 
 [[restricted]]
 path = "fleet_api::plugin::Plugins"

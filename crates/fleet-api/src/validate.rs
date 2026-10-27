@@ -266,18 +266,24 @@ pub fn validate_env(env: &BTreeMap<String, String>) -> Result<(), StoreError> {
 }
 
 fn validate_absolute(path: &str) -> Result<(), StoreError> {
-    // Platform-native interpretation belongs to the adapter; allow both portable forms.
-    let bytes = path.as_bytes();
-    if path.contains('\0')
-        || !(path.starts_with('/')
-            || (bytes.len() > 2
-                && bytes[0].is_ascii_alphabetic()
-                && bytes[1] == b':'
-                && matches!(bytes[2], b'/' | b'\\')))
-    {
+    if !is_absolute_path(path) {
         return Err(StoreError::Invalid(
             "environment source paths must be absolute".into(),
         ));
     }
     Ok(())
+}
+
+/// Whether a path is absolute in either portable form, `/…` or `C:/…`,
+/// whatever this build's platform: a config file is read on one platform
+/// and names paths the adapters interpret, so the rule is the same
+/// everywhere. A NUL byte is never a path.
+pub fn is_absolute_path(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    !path.contains('\0')
+        && (path.starts_with('/')
+            || (bytes.len() > 2
+                && bytes[0].is_ascii_alphabetic()
+                && bytes[1] == b':'
+                && matches!(bytes[2], b'/' | b'\\')))
 }

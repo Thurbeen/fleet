@@ -234,10 +234,11 @@ Fleet to execute, as for EnvProvider command sources.
 
 ## The `[gateway]` section
 
-Design, not implemented: the installed binary refuses this section as an
-unknown field. The [Gateway controller](../controllers/gateway/README.md)
-would read its chat accounts, people and routes from here, as the Forge
-controller reads `[forge.hosts]`.
+The installed binary reads and validates this section, and opens its
+accounts before a manager run, but the
+[Gateway controller](../controllers/gateway/README.md) that acts on it is a
+design, not implemented. It reads its chat accounts, people and routes from
+here, as the Forge controller reads `[forge.hosts]`.
 
 ```toml
 [gateway]
@@ -291,7 +292,7 @@ workspace = { dir = "/work/triage" }   # shared: each alert waits for the last T
 | `gateway.retainMs` | `2592000000` | How long an Untied or Orphaned Conversation is kept after the later of its last message and its orphaning. |
 | `gateway.beatMs` | `60000` | The longest a listener goes between beats. An account's `InboundReady` turns False when three are missed. |
 | `gateway.questions` | Absent | The route whose first channel takes a new thread for a Question declared by a Task with no tie and no parent. A Task's `gateway.fleet.dev/route` label overrides it. Absent and unlabelled: such a Question is not posted. |
-| `gateway.accounts.<name>` | One per chat account | `platform` is `slack` (or, later, `telegram`, `discord`, `teams`, and `fake` with `dir`); `team` the platform's workspace identity; `bot`, Fleet's bot id there, which the adapter's pure event reading uses to tell Fleet's own posts and mentions apart; `inbound`, required, the one way its listener receives deliveries, which fixes how each is authenticated (Slack: `socket-mode`, an authenticated connection, or `events-api`, a signed HTTPS delivery; `fake`: `connection`), and an envelope claiming another is refused; `cli` and the platform's credential reference, here `curlConfig`, an absolute path Fleet passes to `curl -K` and never reads. |
+| `gateway.accounts.<name>` | One per chat account | `platform` is `fake` with a `dir` in this build, `slack` once the Slack adapter lands, and later `telegram`, `discord` or `teams`; a platform the build lacks is refused when the manager runs; `team` the platform's workspace identity; `bot`, Fleet's bot id there, which the adapter's pure event reading uses to tell Fleet's own posts and mentions apart; `inbound`, required, the one way its listener receives deliveries, which fixes how each is authenticated (Slack: `socket-mode`, an authenticated connection, or `events-api`, a signed HTTPS delivery; `fake`: `connection`), and an envelope claiming another is refused; `cli` and the platform's credential reference, here `curlConfig`, an absolute path Fleet passes to `curl -K` and never reads. |
 | `gateway.people.<name>` | Optional | A person, with one platform id per account name. Ids only: never a display name, username or email. |
 | `gateway.routes.<name>` | One per set of channels | `account`; `channels`, platform channel ids; `mention`, `required` or `top-level`; `allow`, people names; `allowBots`, bot or app ids whose messages count as a person's; `taskConfig`, the TaskConfig a new conversation Task references; `brief`, an absolute path the manager reads when it loads the config and copies into each Task it creates; `workspace`, the Task's workspace as a Task spec gives it, a directory every Task of the route shares, so the route starts a Task only while no other Task uses that directory, and no two routes' directories may equal or contain each other; `refusal`, the one polite refusal. A channel belongs to at most one route. |
 

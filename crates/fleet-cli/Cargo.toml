@@ -28,6 +28,7 @@ fleet-manager.workspace = true
 fleet-runtime.workspace = true
 fleet-store.workspace = true
 fleet-forge.workspace = true
+fleet-gateway.workspace = true
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true

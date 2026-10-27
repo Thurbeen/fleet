@@ -14,10 +14,12 @@ use clap::{Parser, Subcommand};
 use fleet_api::change_request::ChangeRequestDefaults;
 use fleet_api::follow::ForgeDefaults;
 use fleet_api::forge::Forge;
+use fleet_api::gateway::Gateway;
 use fleet_api::result::{Outcome, TaskResult};
 use fleet_api::runtime::Runtime;
 use fleet_api::{API_VERSION, Object, Observation, Store, StoreError};
 use fleet_forge::{ForgeHosts, HostConfig, HostKind};
+use fleet_gateway::{GatewayAccounts, Platform};
 use fleet_manager::{
     DeclareOutcome, Manager, RunOptions, apply, apply_change_request, declare,
     declare_change_request, delete, record_result, send,
@@ -397,9 +399,11 @@ fn run(cli: Cli) -> Result<(), Failure> {
         } => {
             let runtime = open_runtime(&config)?;
             let forge = open_forge(&config)?;
+            let gateway = open_gateway(&config)?;
             let bound = runtime
                 .operation_bound()
                 .max(forge.as_ref().map_or(0, |f| f.operation_bound()))
+                .max(gateway.as_ref().map_or(0, |g| g.operation_bound()))
                 .max(fleet_api::plugin::Plugins::operation_bound(&plugins));
             let lease_ttl_ms = lease_for(bound, lease_ttl_ms)?;
             let holder = holder.unwrap_or_else(|| format!("fleet-{}", std::process::id()));
@@ -464,6 +468,7 @@ fn cmd_up(
         .ok_or_else(|| fail("no starter workspace configured; run fleet init first"))?;
     let runtime = open_runtime(config)?;
     let forge = open_forge(config)?;
+    let gateway = open_gateway(config)?;
     let task = match store.get("Task", "vega") {
         Observation::Known(Some(task)) => task,
         Observation::Known(None) => {
@@ -502,6 +507,7 @@ fn cmd_up(
         runtime
             .operation_bound()
             .max(forge.as_ref().map_or(0, |f| f.operation_bound()))
+            .max(gateway.as_ref().map_or(0, |g| g.operation_bound()))
             .max(poll_ms.saturating_mul(2))
             .max(plugins.0.operation_bound()),
         lease_ttl_ms,
@@ -598,6 +604,7 @@ fn version(json: bool) -> Result<(), Failure> {
             "storeFormat": {"format": "fleet-store", "version": 1},
             "runtimes": ["thurbox", "fake"],
             "forges": ["azure-devops", "bitbucket-cloud", "github", "gitlab", "fake"],
+            "gateways": Platform::ALL,
         }));
     } else {
         println!("fleet {VERSION}");
@@ -680,6 +687,23 @@ fn open_forge(config: &Config) -> Result<Option<ForgeHosts>, Failure> {
     let timeout =
         std::time::Duration::from_millis(cfg.call_timeout_ms.unwrap_or(DEFAULT_CALL_TIMEOUT_MS));
     ForgeHosts::new(hosts, timeout).map(Some).map_err(fail)
+}
+
+/// The configured chat accounts, one adapter per `[gateway.accounts]`
+/// entry, or `None` when the config has no `[gateway]` section. The section's
+/// own rules ran at load; this is where a platform this build lacks, an
+/// `inbound` its listener cannot deliver by, or a fake without a dir is
+/// refused. The manager has no Gateway handle yet: the port is wired here
+/// so the lease outlasts its worst case and a bad account is refused before
+/// a run, and the controllers that use it are later steps.
+fn open_gateway(config: &Config) -> Result<Option<GatewayAccounts>, Failure> {
+    let Some(cfg) = &config.gateway else {
+        return Ok(None);
+    };
+    let timeout = std::time::Duration::from_millis(cfg.defaults().call_timeout_ms);
+    GatewayAccounts::new(cfg.accounts.clone(), timeout)
+        .map(Some)
+        .map_err(fail)
 }
 
 /// The retention defaults a ChangeRequest spec may override.
